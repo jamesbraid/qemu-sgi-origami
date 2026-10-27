@@ -4,8 +4,12 @@
 #define HW_MIPS_SGI_MACE_PS2_H
 
 #include "qemu/host-utils.h"
+#include "hw/core/qdev.h"
 
 #define TYPE_SGI_MACE_PS2 "sgi-mace-ps2"
+
+/* Run child progress after MACE has restored its IRQ baseline. */
+void sgi_mace_ps2_restore_post_load(DeviceState *dev);
 
 #define MACE_PS2_POST_TX  0x01
 #define MACE_PS2_TXEN     0x02

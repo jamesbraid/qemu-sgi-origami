@@ -27,6 +27,7 @@
 #include "qemu/timer.h"
 #include "qemu/units.h"
 #include "system/qtest.h"
+#include "system/runstate.h"
 
 #define MACE_APERTURE_SIZE 0x400000
 #define MACE_RING_BASE     0x310000
@@ -102,6 +103,11 @@ struct SGIMACEState {
     DeviceState *crime_device;
     qemu_irq crime[16];
     uint16_t crime_normal;
+    /* Child post-load callbacks can precede these parent IRQ baselines. */
+    bool crime_irq_loading;
+    bool crime_irq_reconciled;
+    bool rtc_irq_deferred;
+    bool rtc_irq_deferred_level;
     qemu_irq isa_reset;
     QEMUTimer *timer;
     int64_t epoch_ns;
@@ -157,7 +163,13 @@ static uint64_t mace_elapsed_ticks(SGIMACEState *s)
 static void mace_publish_normal(SGIMACEState *s, uint16_t mask,
                                 uint16_t value, bool force)
 {
-    uint16_t changed = force ? mask : (s->crime_normal ^ value) & mask;
+    uint16_t changed;
+
+    if (s->crime_irq_loading ||
+        (runstate_check(RUN_STATE_INMIGRATE) && !s->crime_irq_reconciled)) {
+        return;
+    }
+    changed = force ? mask : (s->crime_normal ^ value) & mask;
 
     s->crime_normal = (s->crime_normal & ~mask) | (value & mask);
     if (!changed) {
@@ -266,12 +278,23 @@ static void mace_ps2_irq(void *opaque, int n, int level)
     mace_update_irqs(s);
 }
 
+static void mace_rtc_apply_irq(SGIMACEState *s, int level)
+{
+    s->istat = (s->istat & ~(1U << 8)) | (level ? (1U << 8) : 0);
+    mace_update_irqs(s);
+}
+
 static void mace_rtc_irq(void *opaque, int n, int level)
 {
     SGIMACEState *s = opaque;
 
-    s->istat = (s->istat & ~(1U << 8)) | (level ? (1U << 8) : 0);
-    mace_update_irqs(s);
+    if (s->crime_irq_loading ||
+        (runstate_check(RUN_STATE_INMIGRATE) && !s->crime_irq_reconciled)) {
+        s->rtc_irq_deferred = true;
+        s->rtc_irq_deferred_level = level;
+        return;
+    }
+    mace_rtc_apply_irq(s, level);
 }
 
 void sgi_mace_enable_rx_threshold_retirement(DeviceState *dev, Error **errp)
@@ -1040,6 +1063,9 @@ static void mace_reset_hold(Object *obj, ResetType type)
     memset(s->compare_programmed, 0, sizeof(s->compare_programmed));
     timer_del(s->timer);
     s->crime_normal = 0;
+    s->crime_irq_loading = false;
+    s->crime_irq_reconciled = false;
+    s->rtc_irq_deferred = false;
     if (s->crime_device) {
         sgi_crime_update_mace_inputs(s->crime_device, MACE_IRQ_MASK, 0);
     }
@@ -1066,6 +1092,8 @@ static int mace_pre_load(void *opaque)
 {
     SGIMACEState *s = opaque;
 
+    s->crime_irq_loading = true;
+    s->crime_irq_reconciled = false;
     s->serial_dma.loading = true;
     return 0;
 }
@@ -1079,11 +1107,6 @@ static int mace_post_load(void *opaque, int version_id)
     }
     s->epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
                   s->saved_elapsed_ns;
-    mace_update_irqs(s);
-    mace_update_pci_irqs(s);
-    for (unsigned i = 0; i < 16; i++) {
-        qemu_set_irq(s->crime[i], (s->crime_normal >> i) & 1);
-    }
     serial_set_rx_discard(&s->uart[0], s->ring_base & 1);
     serial_set_rx_discard(&s->uart[1], s->ring_base & 1);
     qemu_set_irq(s->isa_reset, s->ring_base & 1);
@@ -1091,7 +1114,24 @@ static int mace_post_load(void *opaque, int version_id)
     if (mace_audio_post_load(&s->audio) < 0) {
         return -EINVAL;
     }
-    return mace_serial_dma_post_load(&s->serial_dma);
+    if (mace_serial_dma_post_load(&s->serial_dma) < 0) {
+        return -EINVAL;
+    }
+    sgi_mace_ps2_restore_post_load(s->ps2);
+    s->crime_irq_loading = false;
+    s->crime_irq_reconciled = true;
+    if (s->rtc_irq_deferred) {
+        mace_rtc_apply_irq(s, s->rtc_irq_deferred_level);
+        s->rtc_irq_deferred = false;
+    }
+    mace_update_irqs(s);
+    mace_update_pci_irqs(s);
+    /* Reconcile child IRQ outputs only after N and CRIME's P are restored. */
+    sgi_mace_eth_restore_post_load(&s->eth);
+    for (unsigned i = 0; i < 16; i++) {
+        qemu_set_irq(s->crime[i], (s->crime_normal >> i) & 1);
+    }
+    return 0;
 }
 
 static const VMStateDescription vmstate_mace = {

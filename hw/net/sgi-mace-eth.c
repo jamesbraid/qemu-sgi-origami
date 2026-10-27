@@ -903,10 +903,16 @@ static int sgi_mace_eth_post_load(void *opaque, int version_id)
 {
     SGIMACEEthState *s = opaque;
 
+    /* MACE publishes the restored Ethernet level after its own baseline. */
+    sgi_mace_eth_rx_retire(s);
+    return 0;
+}
+
+void sgi_mace_eth_restore_post_load(SGIMACEEthState *s)
+{
     sgi_mace_eth_rx_retire(s);
     sgi_mace_eth_update_irq(s);
     sgi_mace_eth_schedule_flush(s);
-    return 0;
 }
 
 static const VMStateDescription vmstate_sgi_mace_eth = {
