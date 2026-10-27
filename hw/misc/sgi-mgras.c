@@ -2645,6 +2645,12 @@ static const Property mgras_properties[] = {
      * are the same either way.
      */
     DEFINE_PROP_BOOL("x-raster-bands", SGIMgrasState, raster_bands, true),
+    /*
+     * Host-only qtest: draws and clears of at least this many pixels run
+     * in bands, in place of the rasterizer's threshold; 0 keeps it.
+     */
+    DEFINE_PROP_UINT32("x-test-raster-band-pixels", SGIMgrasState,
+                       raster_band_pixels, 0),
     DEFINE_PROP_LINK("fabric", SGIMgrasState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     /*

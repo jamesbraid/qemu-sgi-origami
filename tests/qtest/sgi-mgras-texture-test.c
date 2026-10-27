@@ -19,6 +19,7 @@
 #include "sgi-test.h"
 #include "sn0-user-image.h"
 #include "sgi-mgras-test.h"
+#include "sgi-raster-bands.h"
 
 static QTestState *tex_sb_file_migrate_and_restart(QTestState *from,
                                                     const char *args,
@@ -224,6 +225,93 @@ static void test_gl_texture_load_draws_the_level(gconstpointer data)
     g_assert_cmphex(gl_window_pixel(t, 48, 31), ==, 0);
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
     qtest_quit(t);
+}
+
+#define GL_ONE_MINUS_SRC_ALPHA 0x303
+
+/*
+ * A textured quad blended at half alpha, writing a stencil value, then an
+ * untextured blended quad drawn only where that stencil was written; the
+ * window's 128 rows read back from the bank. Each quad covers fewer pixels
+ * than the rasterizer's own band threshold, so only
+ * x-test-raster-band-pixels puts it on band workers. Free the result.
+ */
+static uint32_t *tex_band_scene(QTestState *t, int *workers)
+{
+    static const float half[4] = { 1, 1, 1, 0.5 };
+    static const float green[4] = { 0, 1, 0, 0.5 };
+    static const float under[4][4] = {
+        { 10, 10, 0, 0 }, { 48, 10, 1, 0 }, { 48, 48, 1, 1 },
+        { 10, 48, 0, 1 },
+    };
+    static const float over[4][4] = {
+        { 30, 20, 0, 0 }, { 60, 30, 0, 0 }, { 50, 60, 0, 0 },
+        { 25, 50, 0, 0 },
+    };
+    uint32_t *window = g_new(uint32_t, 128 * 128);
+    uint8_t texels[32];
+
+    tex_texels(texels);
+    gl_one(t, GL_STENCIL_TEST_HDR, 1);
+    gl_stencil(t, GL_STENCIL_ALWAYS, 1, 0xff, GL_OP_KEEP, GL_OP_KEEP,
+               GL_OP_REPLACE);
+    gl_blend(t, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_FUNC_ADD);
+    gl_one(t, GL_BLEND_HDR, 1);
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad_rect(t, half, under);
+    gl_stencil(t, GL_STENCIL_EQUAL, 1, 0xff, GL_OP_KEEP, GL_OP_KEEP,
+               GL_OP_INCR);
+    tex_quad_rect(t, green, over);
+    for (int y = 0; y < 128; y++) {
+        g_autofree uint32_t *row = mgras_test_pixel_row(t, 256, 256 + y, 128);
+
+        memcpy(&window[y * 128], row, 128 * sizeof(uint32_t));
+    }
+    *workers = sgi_raster_band_workers(t);
+    return window;
+}
+
+/*
+ * The scene drawn with every draw in bands (x-test-raster-band-pixels=1)
+ * leaves the same window as drawn on one thread (x-raster-bands=off),
+ * through the texture readers and the blend and stencil callbacks; the
+ * textured quad and the stencilled green show, and band workers drew.
+ */
+static void test_gl_bands_match_one_thread(gconstpointer data)
+{
+    g_autofree char *banded_args = g_strdup_printf(
+        MACHINE_ARGS ",product=%s,x-test-raster-band-pixels=1", (char *)data);
+    g_autofree char *serial_args = g_strdup_printf(
+        MACHINE_ARGS ",product=%s,x-raster-bands=off", (char *)data);
+    QTestState *t = tex_start(banded_args);
+    g_autofree uint32_t *banded = NULL, *serial = NULL;
+    int workers, serial_workers;
+
+    banded = tex_band_scene(t, &workers);
+    qtest_quit(t);
+    t = tex_start(serial_args);
+    serial = tex_band_scene(t, &serial_workers);
+    qtest_quit(t);
+    for (int i = 0; i < 128 * 128; i++) {
+        g_assert_cmphex(banded[i], ==, serial[i]);
+    }
+    /*
+     * Rows read top down: two texels of the under quad differ, the green
+     * shows only over it, and the window outside both stays black.
+     */
+    g_assert_cmphex(serial[(127 - 15) * 128 + 15], !=,
+                    serial[(127 - 15) * 128 + 43]);
+    g_assert_cmphex(serial[(127 - 40) * 128 + 40], !=,
+                    serial[(127 - 15) * 128 + 43]);
+    g_assert_cmphex(serial[(127 - 58) * 128 + 50], ==, 0);
+    g_assert_cmphex(serial[(127 - 100) * 128 + 100], ==, 0);
+    if (workers < 0) {
+        g_test_skip("needs Linux /proc and two host processors");
+        return;
+    }
+    g_assert_cmpint(workers, >, 0);
+    g_assert_cmpint(serial_workers, ==, 0);
 }
 
 /* The client's glTexGen and generic enable words (sgi-mgras-gl.c). */
@@ -6092,6 +6180,8 @@ int main(int argc, char **argv)
         "mxi", test_gl_texture_pixel_texture_pass_migration);
     qtest_add_data_func("sn0/origin2000/mgras/gl-pixels-zoom-migration/si-t",
                         "si-t", test_gl_pixels_zoom_migration);
+    add_texture_board_cases("sn0/origin2000/mgras/gl-bands-match-one-thread",
+                            test_gl_bands_match_one_thread);
     add_texture_board_cases("sn0/origin2000/mgras/gl-texture-volume-pixel-rgba",
                             test_gl_texture_volume_pixel_rgba);
     add_texture_board_cases(
