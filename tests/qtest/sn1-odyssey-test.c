@@ -14,6 +14,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
+#include "sgi-raster-bands.h"
 #include "sgi-test.h"
 #include "sgi-mips-emit.h"
 #include "sgi-migrate.h"
@@ -5912,6 +5913,33 @@ static void window_300_200(QTestState *qts)
     window_origin(qts, 300, 200);
     window_clip(qts, (const uint32_t[][4]) { { 300, 200, 499, 349 } }, 1);
     push_window_transform(qts, odsy_window_transform_200x150);
+}
+
+/*
+ * A clear of the 200x150 window is large enough to draw in bands of rows,
+ * and the GL target lets it: the clear starts the rasterizer's band
+ * workers and still fills exactly the window.
+ */
+static void test_gl_large_clear_draws_in_bands(void)
+{
+    QTestState *qts = board_start("");
+    int workers;
+
+    window_300_200(qts);
+    g_assert_cmpint(sgi_raster_band_workers(qts), <=, 0);
+    push_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_200,
+               ODSY_F_150);
+    g_assert_cmphex(odsy_test_pixel(qts, 300, 200), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 499, 349), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 299, 200), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 499, 350), ==, 0);
+    workers = sgi_raster_band_workers(qts);
+    board_quit(qts);
+    if (workers < 0) {
+        g_test_skip("needs Linux /proc and two host processors");
+        return;
+    }
+    g_assert_cmpint(workers, >, 0);
 }
 
 /*
@@ -21641,6 +21669,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_clear_rect);
     add_case("sn1/odyssey/command-fifo-gl-clear-then-triangle",
              test_command_fifo_gl_clear_then_triangle);
+    add_fresh_case("sn1/odyssey/gl-large-clear-draws-in-bands",
+                   test_gl_large_clear_draws_in_bands);
     add_case("sn1/odyssey/command-fifo-gl-window-origin-and-clip",
              test_command_fifo_gl_window_origin_and_clip);
     add_case("sn1/odyssey/command-fifo-gl-clip-rectangles",
