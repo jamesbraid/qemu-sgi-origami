@@ -127,6 +127,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
 #define ISP2200_MBOX_INITIATE_LIP       0x0062
 #define ISP2200_MBOX_POSITION_MAP       0x0063
 #define ISP2200_MBOX_GET_PORT_DB        0x0064
+#define ISP2200_MBOX_GET_PORT_NAME      0x006a
 #define ISP2200_MBOX_LIP_RESET          0x006c
 #define ISP2200_MBOX_FULL_LOGIN_LIP     0x0072
 #define ISP2200_MBOX_PORT_NAME_LIST     0x0075
@@ -1654,6 +1655,41 @@ static uint16_t isp2200_get_port_db(QLogicISP2200State *s, const uint16_t *in)
 }
 
 /*
+ * One port's name, by loop ID: option 0 the port name, 1 the node name,
+ * the names the port database also reports. Each of m2, m3, m6 and m7
+ * carries two wire-order bytes with the earlier in its low half. NetBSD
+ * decodes that order on every part before the 24xx and qlogicfc on this
+ * part; mainline Linux decodes the other way, but on this part it asks
+ * only for the fabric port, which is refused. The real firmware's order
+ * is unknown. Refusals follow the port database's, so the fabric check
+ * at 0x7e finds no fabric and a scan of every loop ID skips the adapter.
+ */
+static uint16_t isp2200_get_port_name(QLogicISP2200State *s,
+                                      const uint16_t *in, uint16_t *out)
+{
+    unsigned option = in[1] & 0xff;
+    SCSIDevice *sdev;
+    uint8_t name[8];
+
+    if (!isp2200_loop_ready(s)) {
+        return ISP2200_MBOX_COMMAND_ERROR;
+    }
+    if (option > 1) {
+        return ISP2200_MBOX_PARAM_ERROR;
+    }
+    sdev = isp2200_target(s, in[1] >> 8);
+    if (!sdev) {
+        return ISP2200_MBOX_COMMAND_ERROR;
+    }
+    stq_be_p(name, option ? sdev->wwn : sdev->port_wwn);
+    out[2] = lduw_le_p(name);
+    out[3] = lduw_le_p(name + 2);
+    out[6] = lduw_le_p(name + 4);
+    out[7] = lduw_le_p(name + 6);
+    return ISP2200_MBOX_COMPLETE;
+}
+
+/*
  * The position map: the count with the adapter, the adapter's AL_PA, then
  * the ports' in loop ID order. A real map follows loop position; the
  * order here is a model choice, and Linux reads only the count.
@@ -1707,6 +1743,9 @@ static uint16_t isp2200_fc_mailbox(QLogicISP2200State *s, uint16_t cmd,
 
     case ISP2200_MBOX_GET_PORT_DB:
         return isp2200_get_port_db(s, in);
+
+    case ISP2200_MBOX_GET_PORT_NAME:
+        return isp2200_get_port_name(s, in, out);
 
     case ISP2200_MBOX_POSITION_MAP:
         return isp2200_position_map(s, in);

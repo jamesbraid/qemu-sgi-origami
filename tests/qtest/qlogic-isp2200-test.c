@@ -87,6 +87,7 @@
 #define CMD_INITIATE_LIP    0x0062
 #define CMD_POSITION_MAP    0x0063
 #define CMD_GET_PORT_DB     0x0064
+#define CMD_GET_PORT_NAME   0x006a
 #define CMD_FULL_LOGIN_LIP  0x0072
 #define CMD_PORT_NAME_LIST  0x0075
 #define CMD_GET_ID_LIST     0x007c
@@ -4143,6 +4144,100 @@ static void test_loop_dma_refused(void *obj, void *data,
     isp_close(&t);
 }
 
+static uint16_t isp_port_name(Isp *t, uint8_t loop_id, uint8_t option)
+{
+    return isp_call(t, CMD_GET_PORT_NAME, loop_id << 8 | option, 0, 0);
+}
+
+/* The name a get port name reply carries, in wire order. */
+static void port_name_bytes(Isp *t, uint8_t *name)
+{
+    stw_le_p(name, rd(t, MBOX(2)));
+    stw_le_p(name + 2, rd(t, MBOX(3)));
+    stw_le_p(name + 4, rd(t, MBOX(6)));
+    stw_le_p(name + 6, rd(t, MBOX(7)));
+}
+
+/*
+ * Approximation: get port name. Option 0 is the port name, option 1 the
+ * node name, as Linux and NetBSD read them. Each mailbox carries two
+ * wire-order bytes with the earlier in its low half, the order NetBSD
+ * and qlogicfc decode on this part; mainline Linux decodes the other
+ * way. The name agrees byte for byte with the port database's. An empty
+ * loop ID, the adapter's own, the fabric port 0x7e and anything above
+ * it are refused as the port database refuses them, so is every loop ID
+ * before the loop is ready, and an option other than 0 or 1 is a
+ * parameter error.
+ */
+static void test_port_name(void *obj, void *data, QGuestAllocator *alloc)
+{
+    static const uint8_t ports[] = { 1, 5 };
+    static const uint8_t refused[] = { 0, 3, 6, 0x7d, 0x7e, 0x7f, 0xff };
+    uint8_t name[8], pd[128];
+    uint64_t buf;
+    unsigned i, opt;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    t.hard_addr = 3;
+    isp_start(&t);
+    isp_rings_at(&t, 16, 16, guest_alloc(alloc, ICB_SIZE),
+                 guest_alloc(alloc, 16 * ENTRY_SIZE),
+                 guest_alloc(alloc, 16 * ENTRY_SIZE), ICB_OPT_HARD_ADDR, 0);
+
+    /* Not ready yet: every loop ID, present or not. */
+    for (i = 0; i < ARRAY_SIZE(ports); i++) {
+        g_assert_cmphex(isp_port_name(&t, ports[i], 0), ==,
+                        MBOX_COMMAND_ERROR);
+        isp_ack(&t);
+    }
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_events(&t, bringup_events, 2);
+    g_assert_cmphex(isp_call(&t, CMD_GET_ADAPTER_ID, 0, 0, 0), ==,
+                    MBOX_COMPLETE);
+    g_assert_cmphex(rd(&t, MBOX(1)), ==, 3);
+    isp_ack(&t);
+
+    buf = guest_alloc(alloc, sizeof(pd));
+    for (i = 0; i < ARRAY_SIZE(ports); i++) {
+        g_assert_cmphex(isp_call_dma(&t, CMD_GET_PORT_DB, ports[i] << 8,
+                                     buf), ==, MBOX_COMPLETE);
+        isp_ack(&t);
+        qtest_memread(t.qts, buf, pd, sizeof(pd));
+
+        for (opt = 0; opt < 2; opt++) {
+            uint64_t want = opt ? WWN_NODE(ports[i]) : WWN_PORT(ports[i]);
+
+            g_assert_cmphex(isp_port_name(&t, ports[i], opt), ==,
+                            MBOX_COMPLETE);
+            /* Byte 0 is the name's most significant byte. */
+            g_assert_cmphex(rd(&t, MBOX(2)), ==,
+                            bswap16((want >> 48) & 0xffff));
+            g_assert_cmphex(rd(&t, MBOX(3)), ==,
+                            bswap16((want >> 32) & 0xffff));
+            g_assert_cmphex(rd(&t, MBOX(6)), ==,
+                            bswap16((want >> 16) & 0xffff));
+            g_assert_cmphex(rd(&t, MBOX(7)), ==, bswap16(want & 0xffff));
+            port_name_bytes(&t, name);
+            isp_ack(&t);
+            g_assert_cmpmem(name, sizeof(name), pd + (opt ? 12 : 20), 8);
+        }
+    }
+
+    for (i = 0; i < ARRAY_SIZE(refused); i++) {
+        for (opt = 0; opt < 2; opt++) {
+            g_assert_cmphex(isp_port_name(&t, refused[i], opt), ==,
+                            MBOX_COMMAND_ERROR);
+            isp_ack(&t);
+        }
+    }
+    g_assert_cmphex(isp_port_name(&t, 5, 2), ==, MBOX_PARAM_ERROR);
+    isp_ack(&t);
+    g_assert_cmphex(isp_port_name(&t, 1, 0xff), ==, MBOX_PARAM_ERROR);
+    isp_ack(&t);
+    isp_close(&t);
+}
+
 /*
  * Approximation: IRIX 6.5.30 rang get firmware state on the model while
  * the bring-up's loop-up event was posted and unread. The event stays
@@ -4384,6 +4479,7 @@ static void isp2200_register_nodes(void)
                  test_loop_down_commands, &loop_opts);
     qos_add_test("loop-dma-refused", "qlogic-isp2200", test_loop_dma_refused,
                  &loop_opts);
+    qos_add_test("port-name", "qlogic-isp2200", test_port_name, &loop_opts);
     qos_add_test("writes-behind-loop-up", "qlogic-isp2200",
                  test_writes_behind_loop_up, &loop_opts);
     qos_add_test("port-name-list-retains-m7", "qlogic-isp2200",
