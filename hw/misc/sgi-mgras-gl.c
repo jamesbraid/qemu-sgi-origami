@@ -3771,6 +3771,15 @@ static SGIRenderResource mgras_gl_render_resource(const SGIMgrasState *s,
     };
 }
 
+/*
+ * The callbacks may run on band workers (concurrent_pixels): each writes
+ * only its own pixel's elements of the planes, and reads the clip-ID
+ * plane, the context image and the texture views, which nothing changes
+ * during a draw. They keep no counters or caches; the one log message
+ * is thread-safe. A slice's draw on the board's thread has let go of the
+ * big lock, but its workers touch only what the draw itself would, and
+ * finish before it takes the lock back (mgras_gl_soft_draw()).
+ */
 static const SGIRasterTarget mgras_gl_target = {
     .store_colour = mgras_gl_store_colour,
     .load_colour = mgras_gl_load_colour,
@@ -3781,6 +3790,7 @@ static const SGIRasterTarget mgras_gl_target = {
     .store_depth = mgras_gl_store_depth,
     .load_stencil = mgras_gl_load_stencil,
     .store_stencil = mgras_gl_store_stencil,
+    .concurrent_pixels = true,
 };
 
 /* Host-only qtest access to one typed colour pixel of the current front. */
