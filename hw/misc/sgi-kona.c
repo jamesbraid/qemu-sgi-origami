@@ -10075,32 +10075,65 @@ static void sgi_kona_texture_source_position(const SGIKonaTextureUpload *u,
     *word = have;
 }
 
+/*
+ * Stage n source bytes of one row, from byte offset byte: each pixel's
+ * bytes go most significant first into its sgi_kona_texture_source_words()
+ * words, a bitmap's bits one texel each. Bytes past the row's end and
+ * rows past the image's are dropped.
+ */
+static void sgi_kona_texture_upload_bytes(SGIKonaTextureUpload *u,
+                                          uint32_t row, uint64_t byte,
+                                          const uint8_t *value, size_t n)
+{
+    uint32_t width = u->header[1];
+    uint64_t row_bytes = sgi_kona_texture_row_bytes(u);
+    uint32_t bytes, words;
+    uint64_t pixel;
+    uint32_t within;
+
+    if (row >= u->header[2] || byte >= row_bytes) {
+        return;
+    }
+    n = MIN(n, row_bytes - byte);
+    if (sgi_kona_texture_bitmap(u->header)) {
+        for (; n; n--, byte++, value++) {
+            for (unsigned bit = 0; bit < 8; bit++) {
+                uint64_t x = byte * 8 + bit;
+
+                if (x >= u->bitmap_skip && x - u->bitmap_skip < width) {
+                    u->pixels[(uint64_t)row * width + x - u->bitmap_skip] =
+                        (*value >> (u->bitmap_lsb ? bit : 7 - bit)) & 1;
+                }
+            }
+        }
+        return;
+    }
+    bytes = sgi_kona_texture_source_bytes(u->header[3], u->header[4]);
+    words = sgi_kona_texture_source_words(u);
+    if (bytes == words * 4) {
+        /* Whole words a pixel: the row is one run of big-endian words. */
+        sgi_kona_gl_words_or_bytes(u->pixels,
+                                   (uint64_t)row * width * bytes + byte,
+                                   value, n);
+        return;
+    }
+    pixel = (uint64_t)row * width + byte / bytes;
+    within = byte % bytes;
+    for (; n; n--, value++) {
+        u->pixels[pixel * words + within / 4] |=
+            (uint32_t)*value << (24 - (within % 4) * 8);
+        if (++within == bytes) {
+            within = 0;
+            pixel++;
+        }
+    }
+}
+
 static void sgi_kona_texture_upload_byte(SGIKonaTextureUpload *u,
                                          uint32_t row, uint32_t byte,
                                          uint8_t value)
 {
-    uint32_t width = u->header[1];
-
-    if (row >= u->header[2] || byte >= sgi_kona_texture_row_bytes(u)) {
-        return;
-    }
-    if (sgi_kona_texture_bitmap(u->header)) {
-        for (unsigned bit = 0; bit < 8; bit++) {
-            uint32_t x = byte * 8 + bit;
-
-            if (x >= u->bitmap_skip && x - u->bitmap_skip < width) {
-                u->pixels[row * width + x - u->bitmap_skip] =
-                    (value >> (u->bitmap_lsb ? bit : 7 - bit)) & 1;
-            }
-        }
-    } else {
-        uint32_t bytes = sgi_kona_texture_source_bytes(u->header[3],
-                                                       u->header[4]);
-        uint32_t at = row * width + byte / bytes;
-
-        at = at * sgi_kona_texture_source_words(u) + (byte % bytes) / 4;
-        u->pixels[at] |= (uint32_t)value << (24 - ((byte % bytes) % 4) * 8);
-    }
+    sgi_kona_texture_upload_bytes(u, row, byte, &value, 1);
 }
 
 /* Stage source components; defaults and replication wait for finish. */
@@ -16555,18 +16588,25 @@ bool sgi_kona_texture_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
                 sgi_kona_texture_upload_clear(s);
                 return false;
             }
-            for (uint32_t k = 0; k < n; k++) {
+            /* Each run is one row's bytes; the upload drops any padding. */
+            for (uint32_t k = 0; k < n;) {
                 uint32_t source = offset + k;
-                uint32_t row, col;
+                uint32_t row, col, run;
 
-                if (!u->header[7] && source < prefix) {
+                if (u->header[7]) {
+                    row = line;
+                    col = source;
+                    run = n - k;
+                } else if (source < prefix) {
+                    k += MIN(n - k, prefix - source);
                     continue;
+                } else {
+                    row = (source - prefix) / u->source_stride;
+                    col = (source - prefix) % u->source_stride;
+                    run = MIN(n - k, u->source_stride - col);
                 }
-                row = u->header[7] ? line :
-                      (source - prefix) / u->source_stride;
-                col = u->header[7] ? source :
-                      (source - prefix) % u->source_stride;
-                sgi_kona_texture_upload_byte(u, row, col, chunk[k]);
+                sgi_kona_texture_upload_bytes(u, row, col, chunk + k, run);
+                k += run;
             }
             offset += n;
         }

@@ -733,6 +733,23 @@ static const SGIKonaGLPackedPixel *sgi_kona_gl_packed_pixel(uint32_t format,
     return &types[type - 8];
 }
 
+void sgi_kona_gl_words_or_bytes(uint32_t *words, uint64_t at,
+                                const uint8_t *bytes, size_t n)
+{
+    /* Partial words a byte at a time, whole words by a big-endian load. */
+    while (n && (at & 3)) {
+        words[at / 4] |= (uint32_t)*bytes++ << (24 - 8 * (at & 3));
+        at++;
+        n--;
+    }
+    for (; n >= 4; n -= 4, at += 4, bytes += 4) {
+        words[at / 4] |= ldl_be_p(bytes);
+    }
+    for (; n; n--, at++) {
+        words[at / 4] |= (uint32_t)*bytes++ << (24 - 8 * (at & 3));
+    }
+}
+
 uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type)
 {
     static const uint8_t widths[] = { 1, 1, 2, 2, 4, 4, 4 };
