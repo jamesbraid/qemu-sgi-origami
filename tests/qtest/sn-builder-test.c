@@ -11081,6 +11081,169 @@ static void test_vbrick_two_pipes_refused(void)
                         "node; node 'c2' on port 0xb would be a second");
 }
 
+/*
+ * An InfiniteReality pipe's widget registers (include/hw/misc/sgi-kona.h):
+ * its identity, and its control register, which the model stores
+ * without interpreting.
+ */
+#define GBRICK_PIPE_WIDGET_ID      0x04
+#define GBRICK_PIPE_WIDGET_CONTROL 0x24
+
+static const char *const gbrick_pipe_ids[] = {
+    "gbrick0-pipe0", "gbrick0-pipe1", "gbrick1-pipe0", "gbrick1-pipe1",
+};
+
+/* The N-brick fixture with a pipe -device for each slot in @mask. */
+static QTestState *gbrick_start(const char *prom, unsigned int mask,
+                                const char *extra)
+{
+    g_autoptr(GString) args = g_string_new(extra);
+
+    for (unsigned int k = 0; k < 4; k++) {
+        if (mask & (1u << k)) {
+            g_string_append_printf(args, " -device sgi-kona,slot=%s",
+                                   gbrick_pipe_ids[k]);
+        }
+    }
+    return qtest_initf("-M sn-builder-bedrock-test,"
+                       "construction-fault=cbrick-nbrick-gbrick,"
+                       "x-uncatalogued-graphics=on -cpu R14000 "
+                       "-smp 4,sockets=4,cores=1,threads=1 -m 256 -bios %s "
+                       "-nodefaults -display none %s", prom, args->str);
+}
+
+/*
+ * Four C-bricks behind one N-brick, each chip's free Crosstown2 port
+ * cabled to one pipe of two two-pipe G-bricks. Each pipe sits in its
+ * G-brick's module, answers its InfiniteReality identity at that port
+ * through the C-brick on the same chip, and composes its packets for
+ * that chip's host port, the Bedrock. A value each node writes to its
+ * pipe's control register reads back only through that node.
+ */
+static void test_gbrick_pipes_on_nbrick(void)
+{
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = gbrick_start(prom, 0xf, "");
+
+    for (unsigned int k = 0; k < 4; k++) {
+        unsigned int host = k % 2 ? 0xb : 0xa;
+        unsigned int port = k % 2 ? 0xa : 0xb;
+        g_autofree char *module = g_strdup_printf("/machine/module%u",
+                                                  5 + k / 2);
+        g_autofree char *pipe = g_strdup_printf("%s/%s", module,
+                                                gbrick_pipe_ids[k]);
+        g_autofree char *type = qom_child_type(qts, module,
+                                               gbrick_pipe_ids[k]);
+        g_autofree char *bedrock = g_strdup_printf("node%u", k);
+        uint32_t identity = 0;
+        uint8_t bytes[4];
+
+        g_assert_cmpstr(type, ==, "sgi-kona");
+        g_assert_cmpuint(qom_get_uint(qts, pipe, "fabric-hub-widget"), ==,
+                         host);
+        g_assert_true(cbrick_bedrock_links(qts, bedrock, port));
+        g_assert_true(nasid_test_cpu_readl(qts, k, CBRICK_WIDGET(port) +
+                                           GBRICK_PIPE_WIDGET_ID, &identity));
+        g_assert_cmphex((identity >> 12) & 0xffff, ==, 0xc102);
+        g_assert_cmphex((identity >> 1) & 0x7ff, ==, 0x2aa);
+        stl_be_p(bytes, 0x100u << k);
+        g_assert_true(qtest_memwrite_cpu(qts, k,
+                                         CBRICK_WIDGET(port) +
+                                         GBRICK_PIPE_WIDGET_CONTROL,
+                                         bytes, sizeof(bytes)));
+    }
+    for (unsigned int k = 0; k < 4; k++) {
+        uint32_t control = 0;
+
+        g_assert_true(nasid_test_cpu_readl(qts, k,
+                                           CBRICK_WIDGET(k % 2 ? 0xa : 0xb) +
+                                           GBRICK_PIPE_WIDGET_CONTROL,
+                                           &control));
+        g_assert_cmphex(control, ==, 0x100u << k);
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * Four pipes of one device type in two G-bricks: save and restore the
+ * fixture, so each pipe's control register comes back on its own chip.
+ */
+static void test_gbrick_save_restore(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = cbrick_blank_prom();
+    g_autofree char *dir = g_dir_make_tmp("sn-builder-gbrick-migrate-XXXXXX",
+                                          &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = gbrick_start(prom, 0xf, "-S");
+    to = gbrick_start(prom, 0xf, "-S -incoming defer");
+    for (unsigned int k = 0; k < 4; k++) {
+        uint8_t bytes[4];
+
+        stl_be_p(bytes, 0x1000u << k);
+        g_assert_true(qtest_memwrite_cpu(from, k,
+                                         CBRICK_WIDGET(k % 2 ? 0xa : 0xb) +
+                                         GBRICK_PIPE_WIDGET_CONTROL,
+                                         bytes, sizeof(bytes)));
+    }
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    for (unsigned int k = 0; k < 4; k++) {
+        uint32_t control = 0;
+
+        g_assert_true(nasid_test_cpu_readl(to, k,
+                                           CBRICK_WIDGET(k % 2 ? 0xa : 0xb) +
+                                           GBRICK_PIPE_WIDGET_CONTROL,
+                                           &control));
+        g_assert_cmphex(control, ==, 0x1000u << k);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(socket);
+    g_unlink(prom);
+    g_rmdir(dir);
+}
+
+/*
+ * One pipe fitted, the one in slot @data. Only the C-brick on that pipe's
+ * N-brick chip reaches a pipe: every other node's read at its own chip's
+ * free port finds no widget there, which the chip's empty port answers
+ * with no identity at all.
+ */
+static void test_gbrick_pipe_reached_only_through_its_chip(const void *data)
+{
+    unsigned int fitted = GPOINTER_TO_UINT(data);
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = gbrick_start(prom, 1u << fitted, "");
+
+    for (unsigned int k = 0; k < 4; k++) {
+        unsigned int port = k % 2 ? 0xa : 0xb;
+        uint32_t identity = 0;
+        bool read = nasid_test_cpu_readl(qts, k, CBRICK_WIDGET(port) +
+                                         GBRICK_PIPE_WIDGET_ID, &identity);
+
+        if (k == fitted) {
+            g_assert_true(read);
+            g_assert_cmphex((identity >> 12) & 0xffff, ==, 0xc102);
+        } else {
+            g_assert_cmphex(read ? identity : 0, ==, 0);
+        }
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
 typedef struct CbrickRefusalCase {
     const char *machine;
     const char *message;
@@ -11142,7 +11305,7 @@ static const CbrickRefusalCase cbrick_refusal_cases[] = {
       "which no XIO cable reaches" },
     { CBRICK_FIXTURE("board-preset-unbuilt"),
       "I/O board 'xbrick-board' is cabled to crossbar 'xbrick-xbridge'; "
-      "preset 'kona' is not built on an enclosure crossbar yet" },
+      "preset 'mgras' is not built on an enclosure crossbar yet" },
     { CBRICK_FIXTURE("rbrick-node-port-1"),
       "node 'c1' is cabled to router 'rbrick-router' port 1; it takes a "
       "node only on ports 2, 3, 4, 5" },
@@ -11169,6 +11332,9 @@ static const CbrickRefusalCase cbrick_refusal_cases[] = {
     { CBRICK_FIXTURE("module-l1-no-node"),
       "controller 'l1-rbrick' is owned by module 'rbrick', which lists no "
       "node to link it into" },
+    { CBRICK_FIXTURE("pipe-without-label"),
+      "pipe 'port-b-board' on crossbar 'ibrick-xbridge' has no slot label "
+      "for a pipe to claim" },
     { CBRICK_FIXTURE("onboard-xbridge-node"),
       "node 'c0' has an XBridge on its own board; only an IP35 node takes "
       "an XIO cable" },
@@ -12214,6 +12380,17 @@ int main(int argc, char **argv)
                    test_vbrick_save_restore);
     qtest_add_func("sn/builder/cbrick/vbrick-two-pipes-refused",
                    test_vbrick_two_pipes_refused);
+    qtest_add_func("sn/builder/cbrick/gbrick-pipes-on-nbrick",
+                   test_gbrick_pipes_on_nbrick);
+    qtest_add_func("sn/builder/cbrick/gbrick-save-restore",
+                   test_gbrick_save_restore);
+    for (unsigned int k = 0; k < 4; k++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn/builder/cbrick/gbrick-pipe-only-through-its-chip/%u", k);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(k),
+                            test_gbrick_pipe_reached_only_through_its_chip);
+    }
     qtest_add_func("sn/builder/cbrick/save-restore", test_cbrick_save_restore);
     qtest_add_func("sn/builder/cbrick/rbrick-without-l1-management",
                    test_rbrick_router_without_l1_management);

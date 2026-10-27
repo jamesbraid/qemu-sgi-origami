@@ -1731,6 +1731,36 @@ static void bedrock_test_install_vbrick_two_pipes(void)
 }
 
 /*
+ * The N-brick fixture with an InfiniteReality pipe on each chip's free
+ * port in place of the stand-in board: chip k carries pipe k % 2 of
+ * G-brick k / 2, as 007-4264-002 printed page 58 puts four pipes, two in
+ * each of two G-bricks, behind one N-brick. Each pipe record is a slot a
+ * pipe -device claims by its label. Parts are fixture values.
+ */
+static void bedrock_test_install_nbrick_gbrick(void)
+{
+    static const char *const pipe_ids[] = {
+        "gbrick0-pipe0", "gbrick0-pipe1", "gbrick1-pipe0", "gbrick1-pipe1",
+    };
+
+    bedrock_test_install_nbrick();
+    cbrick_test_modules[5].id = (char *)"gbrick0";
+    cbrick_test_modules[6] = cbrick_test_modules[5];
+    cbrick_test_modules[6].id = (char *)"gbrick1";
+    for (unsigned int k = 0; k < CBRICK_TEST_MAX_NODES; k++) {
+        SGIModelIoBoard *pipe = &cbrick_test_io_boards[k];
+
+        pipe->id = (char *)pipe_ids[k];
+        pipe->label = (char *)pipe_ids[k];
+        pipe->module_index = 5 + k / 2;
+        pipe->preset = SGI_MODEL_IO_BOARD_PRESET_KONA;
+        pipe->part = (char *)"030-1398-001";
+        pipe->has_serial = false;
+    }
+    cbrick_test_publish(7, 4, 4, 4);
+}
+
+/*
  * A P-brick-shaped module: c0 cabled to port A of U0, and the four links
  * of 108-0240-002 Figure 2-24 (printed page 2-31) from U0 to U1 and U2,
  * two per downstream chip on distinct ports. No contract gives the
@@ -2061,7 +2091,7 @@ static bool bedrock_test_install_cbrick_fault(const char *fault)
         cbrick_test_xio_cable_list[0].next = NULL;
     } else if (!strcmp(fault, "board-preset-unbuilt")) {
         bedrock_test_install_cbrick_board(8);
-        cbrick_test_io_boards[0].preset = SGI_MODEL_IO_BOARD_PRESET_KONA;
+        cbrick_test_io_boards[0].preset = SGI_MODEL_IO_BOARD_PRESET_MGRAS;
     } else if (!strcmp(fault, "memory-node-console")) {
         bedrock_test_install_memory_node();
         bedrock_test_topology.console = 1;
@@ -2093,6 +2123,9 @@ static bool bedrock_test_install_cbrick_fault(const char *fault)
         bedrock_test_install_rbrick_fixture("rbrick");
         cbrick_test_controllers[2].has_owner = true;
         cbrick_test_controllers[2].owner = SGI_MODEL_CONTROLLER_OWNER_MODULE;
+    } else if (!strcmp(fault, "pipe-without-label")) {
+        bedrock_test_install_cbrick_board(0xb);
+        cbrick_test_io_boards[0].preset = SGI_MODEL_IO_BOARD_PRESET_KONA;
     } else if (!strcmp(fault, "onboard-xbridge-node")) {
         cbrick_test_nodes[0].has_board_kind = false;
     } else if (!strcmp(fault, "routed-host")) {
@@ -2231,6 +2264,8 @@ static void bedrock_test_set_construction_fault(Object *obj,
         bedrock_test_install_vbrick();
     } else if (!strcmp(value, "cbrick-vbrick-two-pipes")) {
         bedrock_test_install_vbrick_two_pipes();
+    } else if (!strcmp(value, "cbrick-nbrick-gbrick")) {
+        bedrock_test_install_nbrick_gbrick();
     } else if (!strcmp(value, "cbrick-board-port-8")) {
         bedrock_test_install_cbrick_board(8);
     } else if (!strcmp(value, "cbrick-board-port-b")) {

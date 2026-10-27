@@ -1428,15 +1428,26 @@ chip's host node, whose Bedrock decodes the board's widget there. The
 builder creates the board as ``/machine/module<M>/<board id>`` in the
 board's own module and joins it to the port with one XIO link once the
 nodes have realized. Only the XIO cards ``pci-carrier``,
-``pci-shoehorn``, ``menet`` and ``mscsi``, and the V-brick's VPro V12,
-are built at such a port; any other graphics pipe or a BaseIO card
-cabled there is refused. A V12 record cabled to a crossbar port is a
+``pci-shoehorn``, ``menet`` and ``mscsi``, the V-brick's VPro V12 and the
+InfiniteReality pipe of a G-brick are built at such a port; any other
+graphics pipe or a BaseIO card cabled there is refused. A V12 record cabled to a crossbar port is a
 graphics slot named by the record's catalogue id: ``-device
 sgi-odyssey,slot=<id>`` fits the pipe there, it is built in the
 record's module, and the chip's host node reaches it at that port. The
 V-brick's midplane XBridge takes one host, so a two-pipe V-brick, whose
 second pipe needs a second C-brick on the other Crosstown2 port, is
 refused like any second host.
+
+A G-brick pipe record at such a port is a slot, named by the record's
+label, that ``-device sgi-kona,slot=<label>`` claims after machine init,
+as the Onyx2's pipe slot is. The pipe joins the chip's port, sits in its
+G-brick's module as ``/machine/module<M>/<board id>`` and composes its
+packets for the chip's host port, which the crossbar delivers to the
+hosting Bedrock. Each pipe of an N-brick is therefore reached only from
+the C-brick cabled to the same chip. A G-brick pipe on an Origin 3000
+machine is a model arrangement: no Onyx 3000 hardware graph or widget
+listing has been captured, so the widget number at which a C-brick sees
+its pipe and the pipe's identity there are not established.
 
 An SN1 router is built as ``/machine/module<M>/router`` beside its
 module's L1 and that L1's UART, whether or not the topology carries the
