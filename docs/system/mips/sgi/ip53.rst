@@ -246,9 +246,14 @@ them: ``board-id-word``, ``l1-type-code``, ``l1-revision`` and
      - L1 type
      - L1 revision
      - Flash machine type
-   * - Origin 350, Onyx 350, Onyx 4 host
+   * - Origin 350, Onyx 4 host
      - ``0x2001``
      - ``0x37`` (``7``)
+     - 1.18.5
+     - 0
+   * - Onyx 350
+     - ``0x2001``
+     - ``0x38`` (``8``)
      - 1.18.5
      - 0
    * - Tezro tower
@@ -268,9 +273,18 @@ them: ``board-id-word``, ``l1-type-code``, ``l1-revision`` and
   every product. On the IP53 products the low bits ``0x001`` are a
   choice. The register is on :doc:`hardware/bedrock`.
 - L1 type: Kaloz's series maps ``9`` and ``Q`` to the Tezro deskside and
-  rack (:src:`lore-kaloz-ip35-35`), a *software expectation*. ``0x37``
-  on the IP53 servers is a choice. No captured L1 type reply exists for
-  any of them, *unknown*.
+  rack (:src:`lore-kaloz-ip35-35`), a *software expectation*. The stock
+  IP35 PROM names type ``7`` the 2U server and ``8`` the graphics module,
+  and on a fresh NVRAM picks the graphics console for ``8``, ``9`` and
+  ``Q`` (:src:`ip35-prom-6.210`), a *software expectation*. A published
+  POD session on a real Onyx 350 graphics module with a VPro board prints
+  the graphics-module class and then installs the graphics console
+  (:src:`graphica-o350-chimera-notes`), *observed*, so the Onyx 350
+  profile reports ``8``, *inferred*. ``0x37`` on the Origin 350 and the
+  Onyx 4 host is a choice. No captured L1 type reply exists for any of
+  them, *unknown*. No published L1 image labels type ``8`` in its
+  ``brick`` reply, so the model leaves that reply unanswered for the
+  Onyx 350, an *approximation*.
 - L1 revision: the Tezro's 1.48.1 is the image in the IP35 patch
   :src:`ip35-patch-sg0007149`. The others are choices.
 - Flash machine type: the value written into the PROM's configuration
