@@ -592,6 +592,12 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
     }
 }
 
+/*
+ * A processor's PIO request leaves on the XIO link to the widget its
+ * address names. The hand-on into that widget's view goes through an
+ * SGIPioForward: it calls the handlers address_space_write() would reach,
+ * in the same order, remembering the page between topology changes.
+ */
 static MemTxResult ii_pio_rw(SGIBedrockIOState *s, hwaddr offset,
                              uint64_t *data, unsigned size, bool write)
 {
@@ -654,16 +660,14 @@ static MemTxResult ii_pio_rw(SGIBedrockIOState *s, hwaddr offset,
         if (!s->widget_as_initialized[widget]) {
             return MEMTX_DECODE_ERROR;
         }
-        return address_space_write(&s->widget_as[widget], target,
-                                   MEMTXATTRS_UNSPECIFIED,
-                                   buffer, size);
+        return sgi_pio_forward_write(&s->widget_forward[widget], target,
+                                     MEMTXATTRS_UNSPECIFIED, buffer, size);
     }
     if (!s->widget_as_initialized[widget]) {
         return MEMTX_DECODE_ERROR;
     }
-    result = address_space_read(&s->widget_as[widget], target,
-                                MEMTXATTRS_UNSPECIFIED,
-                                buffer, size);
+    result = sgi_pio_forward_read(&s->widget_forward[widget], target,
+                                  MEMTXATTRS_UNSPECIFIED, buffer, size);
     if (result != MEMTX_OK) {
         return result;
     }
@@ -1131,6 +1135,8 @@ bool sgi_bedrock_io_set_widget(SGIBedrockIOState *s, unsigned int widget,
     name = g_strdup_printf("sgi-bedrock-io.widget%u", widget);
     s->widget_mr[widget] = region;
     address_space_init(&s->widget_as[widget], region, name);
+    sgi_pio_forward_init(&s->widget_forward[widget], &s->widget_as[widget],
+                         name);
     s->widget_as_initialized[widget] = true;
     return true;
 }
@@ -1290,6 +1296,7 @@ static void ii_unrealize(DeviceState *dev)
     }
     for (unsigned i = 0; i < ARRAY_SIZE(s->widget_as); i++) {
         if (s->widget_as_initialized[i]) {
+            sgi_pio_forward_destroy(&s->widget_forward[i]);
             address_space_destroy(&s->widget_as[i]);
             s->widget_as_initialized[i] = false;
         }
@@ -1405,6 +1412,8 @@ static void ii_realize(DeviceState *dev, Error **errp)
                 g_strdup_printf("sgi-bedrock-io.widget%u", i);
 
             address_space_init(&s->widget_as[i], s->widget_mr[i], name);
+            sgi_pio_forward_init(&s->widget_forward[i], &s->widget_as[i],
+                                 name);
             s->widget_as_initialized[i] = true;
         }
     }

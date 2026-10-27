@@ -5,6 +5,7 @@
 
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi-xio-port.h"
+#include "hw/misc/sgi-pio-forward.h"
 
 #define TYPE_SGI_BEDROCK_IO "sgi-bedrock-io"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockIOState, SGI_BEDROCK_IO)
@@ -51,6 +52,8 @@ struct SGIBedrockIOState {
     bool hub_as_initialized;
     MemoryRegion *widget_mr[16];
     AddressSpace widget_as[16];
+    /* The last page each widget view resolved to (sgi-pio-forward.h). */
+    SGIPioForward widget_forward[16];
     bool widget_as_initialized[16];
     uint8_t local_region;
     uint8_t node_number;
