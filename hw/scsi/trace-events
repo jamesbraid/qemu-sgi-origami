@@ -435,6 +435,8 @@ qlogic_isp_mbox_busy(uint16_t cmd) "cmd 0x%04x refused, result still held"
 
 # qlogic-isp2200.c
 qlogic_isp2200_irq(bool level) "level %d"
+qlogic_isp2200_reg_read(uint64_t addr, unsigned size, uint64_t val) "0x%02" PRIx64 " size %u -> 0x%04" PRIx64
+qlogic_isp2200_reg_write(uint64_t addr, unsigned size, uint64_t val) "0x%02" PRIx64 " size %u <- 0x%04" PRIx64
 qlogic_isp2200_soft_reset(void) ""
 qlogic_isp2200_host_command(uint16_t val) "hccr 0x%04x"
 qlogic_isp2200_mbox_command(uint16_t cmd) "cmd 0x%04x"

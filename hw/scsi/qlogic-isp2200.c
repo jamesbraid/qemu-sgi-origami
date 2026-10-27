@@ -2389,9 +2389,9 @@ static void isp2200_semaphore_write(QLogicISP2200State *s, uint16_t val)
     isp2200_service_posts(s);
 }
 
-static uint64_t isp2200_reg_read(void *opaque, hwaddr addr, unsigned size)
+static uint16_t isp2200_reg_value(QLogicISP2200State *s, hwaddr addr,
+                                  unsigned size)
 {
-    QLogicISP2200State *s = opaque;
     bool reset_visible = s->csr_reset_visible;
     int idx;
 
@@ -2442,6 +2442,14 @@ static uint64_t isp2200_reg_read(void *opaque, hwaddr addr, unsigned size)
     }
 }
 
+static uint64_t isp2200_reg_read(void *opaque, hwaddr addr, unsigned size)
+{
+    uint16_t val = isp2200_reg_value(opaque, addr, size);
+
+    trace_qlogic_isp2200_reg_read(addr, size, val);
+    return val;
+}
+
 static void isp2200_reg_write(void *opaque, hwaddr addr, uint64_t val64,
                               unsigned size)
 {
@@ -2449,6 +2457,7 @@ static void isp2200_reg_write(void *opaque, hwaddr addr, uint64_t val64,
     uint16_t val = val64;
     int idx;
 
+    trace_qlogic_isp2200_reg_write(addr, size, val64);
     if (size != 2) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "qlogic-isp2200: %u-byte write at 0x%02" HWADDR_PRIx
