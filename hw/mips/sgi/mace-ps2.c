@@ -224,9 +224,13 @@ static int mace_ps2_post_load(void *opaque, int version_id)
             return -EINVAL;
         }
     }
-    /* Child VMState loads first because the children realize first. */
-    mace_ps2_progress(s);
+    /* MACE starts child progress after its IRQ baseline is restored. */
     return 0;
+}
+
+void sgi_mace_ps2_restore_post_load(DeviceState *dev)
+{
+    mace_ps2_progress(SGI_MACE_PS2(dev));
 }
 
 static const VMStateDescription vmstate_mace_ps2_port = {

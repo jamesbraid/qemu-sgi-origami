@@ -32,6 +32,9 @@
 #define CRIME_STATUS UINT64_C(0x14000010)
 #define CRIME_ENABLE UINT64_C(0x14000018)
 #define CRIME_SOFTWARE UINT64_C(0x14000020)
+#define MACE_ISTAT UINT64_C(0x1f310010)
+#define MACE_IMASK UINT64_C(0x1f310018)
+#define MACE_RTC UINT64_C(0x1f3a0000)
 #define RAM_FULL UINT64_C(0x40000000)
 #define RAM_NO_ECC UINT64_C(0x80000000)
 #define RX_REINIT_OLD_BASE (RAM_FULL + 0x80000)
@@ -121,7 +124,12 @@ static void test_interrupt_request_port(void)
 
     qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00080008));
     g_assert_true(qtest_get_irq(qts, 0));
-    qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00280020));
+    {
+        uint64_t raises = qtest_get_irq_raise_count(qts, 0);
+
+        qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00280020));
+        g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, raises);
+    }
     g_assert_true(qtest_readq(qts, CRIME_STATUS) & (UINT64_C(1) << 5));
     g_assert_false(qtest_readq(qts, CRIME_STATUS) & (UINT64_C(1) << 3));
     g_assert_true(qtest_get_irq(qts, 0));
@@ -505,6 +513,110 @@ static void test_tx_inline_raw(void)
     g_assert_cmphex(qtest_readq(to, ETH_BASE + 0x58), ==, 0);
     qtest_quit(to);
     qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+    close(dest_sv[0]);
+    close(dest_sv[1]);
+    g_unlink(socket);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+static void test_interrupt_request_mixed_state_migration(void)
+{
+    static const uint8_t command[8] = {
+        0, 0, 0, 0, 0x01, 0x44, 0, 0x3b
+    };
+    static const uint64_t tx_vector = UINT64_C(0x800000000080003c);
+    g_autofree char *dir = g_dir_make_tmp("mace-irq-migrate-XXXXXX", NULL);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    const uint64_t descriptor = RAM_FULL + 0x4000;
+    uint8_t frame[60], got[60];
+    uint32_t wire_length;
+    int64_t source_clock;
+    int sv[2], dest_sv[2];
+    QTestState *from, *to;
+
+    for (unsigned i = 0; i < sizeof(frame); i++) {
+        frame[i] = i * 9 + 7;
+    }
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    socket_timeout(sv[0]);
+    from = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth,"
+                       "mac=02:a1:4c:73:95:e6", sv[1]);
+    qtest_writeq(from, CRIME_ENABLE, (1U << 3) | (1U << 4) | (1U << 5));
+    mdio_write(from, 8, 0, 0x2100);
+    qtest_writeq(from, ETH_BASE + MAC_CONTROL, 0);
+    qtest_writeq(from, ETH_BASE + DMA_CONTROL, 3);
+    g_assert_true(qtest_readq(from, ETH_BASE + INT_STATUS) & 1);
+    g_assert_true(qtest_readq(from, CRIME_STATUS) & (1U << 3));
+
+    qtest_writeq(from, MACE_IMASK, 1U << 8);
+    qtest_writeb(from, MACE_RTC + 0x0a00, 0x26);
+    qtest_writeb(from, MACE_RTC + 0x0b00, 0x46);
+    source_clock = qtest_clock_step(from, 1000000);
+    g_assert_true(qtest_readq(from, MACE_ISTAT) & (1U << 8));
+    g_assert_true(qtest_readq(from, CRIME_STATUS) & (1U << 5));
+
+    qtest_writeq(from, ETH_BASE + 0x58, UINT64_C(0x00380010));
+    g_assert_true(qtest_readq(from, ETH_BASE + INT_STATUS) & 1);
+    g_assert_cmphex(qtest_readq(from, CRIME_STATUS) & 0x38, ==,
+                    1U << 4);
+
+    qtest_memwrite(from, descriptor, command, sizeof(command));
+    qtest_memwrite(from, descriptor + 68, frame, sizeof(frame));
+    qtest_writeq(from, ETH_BASE + TX_BASE, descriptor);
+    qtest_writeq(from, ETH_BASE + TX_POINTER, 1);
+    g_assert_cmpint(recv(sv[0], &wire_length, sizeof(wire_length),
+                         MSG_WAITALL), ==, sizeof(wire_length));
+    g_assert_cmpuint(ntohl(wire_length), ==, sizeof(frame));
+    g_assert_cmpint(recv(sv[0], got, sizeof(got), MSG_WAITALL), ==,
+                    sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), frame, sizeof(frame));
+    g_assert_cmphex(qtest_readq(from, ETH_BASE + 0x58), ==, tx_vector);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, dest_sv), ==, 0);
+    to = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 -S "
+                     "-incoming defer "
+                     "-nic socket,id=n0,fd=%d,model=sgi-mace-eth,"
+                     "mac=02:a1:4c:73:95:e6", dest_sv[1]);
+    qtest_qmp_assert_success(from, "{'execute':'stop'}");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    qtest_clock_set(to, source_clock);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+
+    g_assert_true(qtest_readq(to, ETH_BASE + INT_STATUS) & 1);
+    g_assert_cmphex(qtest_readq(to, ETH_BASE + 0x58), ==, tx_vector);
+    g_assert_cmphex(qtest_readq(to, CRIME_STATUS) & 0x38, ==,
+                    1U << 4);
+    g_assert_true(qtest_readq(to, MACE_ISTAT) & (1U << 8));
+    g_assert_true(qtest_readq(to, MACE_IMASK) & (1U << 8));
+
+    qtest_writeq(to, ETH_BASE + DMA_CONTROL, 3);
+    qtest_writeq(to, MACE_IMASK, 1U << 8);
+    g_assert_cmphex(qtest_readq(to, CRIME_STATUS) & 0x38, ==,
+                    1U << 4);
+
+    qtest_writeq(to, ETH_BASE + DMA_CONTROL, 2);
+    g_assert_false(qtest_readq(to, CRIME_STATUS) & (1U << 3));
+    qtest_writeq(to, ETH_BASE + DMA_CONTROL, 3);
+    g_assert_true(qtest_readq(to, CRIME_STATUS) & (1U << 3));
+
+    g_assert_true(qtest_readb(to, MACE_RTC + 0x0c00) & 0x40);
+    g_assert_false(qtest_readq(to, MACE_ISTAT) & (1U << 8));
+    g_assert_false(qtest_readq(to, CRIME_STATUS) & (1U << 5));
+    qtest_writeq(to, MACE_IMASK, 1U << 20);
+    qtest_set_irq_in(to, "/machine/mace", "uart", 0, 1);
+    g_assert_true(qtest_readq(to, CRIME_STATUS) & (1U << 4));
+    qtest_set_irq_in(to, "/machine/mace", "uart", 0, 0);
+    g_assert_false(qtest_readq(to, CRIME_STATUS) & (1U << 4));
+
+    qtest_quit(to);
+    qtest_quit(from);
     close(sv[0]);
     close(sv[1]);
     close(dest_sv[0]);
@@ -4534,6 +4646,7 @@ static void test_rx_threshold_migration(void)
         fifo = qtest_readq(from, ETH_BASE + RX_FIFO_INFO);
         events = qtest_readq(from, ETH_BASE + INT_STATUS);
         qtest_memread(from, FAULT_MEMORY + 0x8000, before, sizeof(before));
+        g_assert_cmpint(qtest_get_irq(from, 3), ==, mode == 0);
         qtest_qmp_assert_success(from, "{'execute':'stop'}");
         qtest_qmp_assert_success(to,
             "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
@@ -4682,6 +4795,8 @@ int main(int argc, char **argv)
                    test_selected_word_control_mdio);
     qtest_add_func("/sgi/mace/ethernet/interrupt-request-port",
                    test_interrupt_request_port);
+    qtest_add_func("/sgi/mace/ethernet/interrupt-request-mixed-migration",
+                   test_interrupt_request_mixed_state_migration);
     qtest_add_func("/sgi/mace/ethernet/interrupt-request-normal-baseline",
                    test_interrupt_request_preserves_normal_baseline);
     qtest_add_func("/sgi/mace/ethernet/selected-word-status-ack",

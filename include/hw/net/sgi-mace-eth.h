@@ -18,6 +18,8 @@ typedef void (*SGIMACEEthResetIRQ)(void *opaque);
 void sgi_mace_eth_set_irq_handlers(SGIMACEEthState *s, void *opaque,
                                    SGIMACEEthIRQRequest request,
                                    SGIMACEEthResetIRQ reset);
+/* Recompute IRQs after MACE has restored its IRQ baseline. */
+void sgi_mace_eth_restore_post_load(SGIMACEEthState *s);
 
 struct SGIMACEEthState {
     SysBusDevice parent_obj;
