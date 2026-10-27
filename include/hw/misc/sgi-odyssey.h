@@ -497,6 +497,8 @@ struct SGIOdysseyState {
      * scalar path; a session like that cannot count as fallback-free.
      */
     bool mesa_unavailable;
+    /* Host-only: GL draws may run in bands of rows (x-raster-bands). */
+    bool raster_bands;
     /* Read-only x-mesa-* properties; host diagnostics, never migrated. */
     OdysseyMesaCounts mesa_counts;
     bool gl_in_prim;

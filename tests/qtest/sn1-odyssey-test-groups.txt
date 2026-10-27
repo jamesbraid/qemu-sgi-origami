@@ -141,6 +141,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-clear-rect
 gl /mips64/sn1/odyssey/command-fifo-kernel-clear-box
 gl /mips64/sn1/odyssey/command-fifo-gl-clear-then-triangle
 gl /mips64/sn1/odyssey/gl-large-clear-draws-in-bands
+gl /mips64/sn1/odyssey/gl-raster-bands-off-draws-on-one-thread
 gl /mips64/sn1/odyssey/command-fifo-gl-window-origin-and-clip
 gl /mips64/sn1/odyssey/command-fifo-gl-clip-rectangles
 gl /mips64/sn1/odyssey/command-fifo-gl-ortho-combined-matrix

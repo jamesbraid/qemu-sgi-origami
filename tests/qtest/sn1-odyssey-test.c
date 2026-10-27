@@ -5951,6 +5951,29 @@ static void test_gl_large_clear_draws_in_bands(void)
 }
 
 /*
+ * With x-raster-bands off the same clear draws on the calling thread
+ * alone: no band worker is started, and the window still fills.
+ */
+static void test_gl_raster_bands_off_draws_on_one_thread(void)
+{
+    QTestState *qts = board_start(" -global sgi-odyssey.x-raster-bands=off");
+    int workers;
+
+    window_300_200(qts);
+    push_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_200,
+               ODSY_F_150);
+    g_assert_cmphex(odsy_test_pixel(qts, 300, 200), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 499, 349), ==, ODSY_PLANE_BLUE);
+    workers = sgi_raster_band_workers(qts);
+    board_quit(qts);
+    if (workers < 0) {
+        g_test_skip("needs Linux /proc and two host processors");
+        return;
+    }
+    g_assert_cmpint(workers, ==, 0);
+}
+
+/*
  * The client's window-relative clear and triangle land inside the kernel's
  * window: the clear covers exactly (300, 200) .. (499, 349), and the triangle
  * -- vertices (325, 331.25), (475, 321.875) and the apex (387.5, 219.92) --
@@ -21679,6 +21702,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_clear_then_triangle);
     add_fresh_case("sn1/odyssey/gl-large-clear-draws-in-bands",
                    test_gl_large_clear_draws_in_bands);
+    add_fresh_case("sn1/odyssey/gl-raster-bands-off-draws-on-one-thread",
+                   test_gl_raster_bands_off_draws_on_one_thread);
     add_case("sn1/odyssey/command-fifo-gl-window-origin-and-clip",
              test_command_fifo_gl_window_origin_and_clip);
     add_case("sn1/odyssey/command-fifo-gl-clip-rectangles",
