@@ -13541,6 +13541,131 @@ static void texture_adapter_current_point(QTestState *qts, int x, int y)
     push_user_words(qts, words, ARRAY_SIZE(words));
 }
 
+/*
+ * A quad of four vertices (x, y, s, t) in one colour, textured with the
+ * bound texture, through the client's quad draw.
+ */
+static void band_textured_quad(QTestState *qts, const uint32_t colour[4],
+                               const float v[4][4])
+{
+    push_user_words(qts, (uint32_t[]) {
+        ODSY_GL_COLOR_4F, colour[0], colour[1], colour[2], colour[3],
+        ODSY_CMD_GL_BEGIN, 7,
+    }, 7);
+    for (unsigned i = 0; i < 4; i++) {
+        push_user_words(qts, (uint32_t[]) {
+            0xc380c821, bitmap_rect_float(v[i][2]),
+            bitmap_rect_float(v[i][3]),
+            ODSY_GL_VERTEX_2F, bitmap_rect_float(v[i][0]),
+            bitmap_rect_float(v[i][1]),
+        }, 6);
+    }
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+}
+
+/*
+ * A 2x2 texture of half-alpha texels over a quad, blended, that writes
+ * stencil 1, then a second quad of the green texel drawn only where the
+ * stencil is 1; the 64x64 corner they sit in read back. Each quad covers
+ * fewer pixels than the rasterizer's own band threshold, so only
+ * x-test-raster-band-pixels puts it on band workers. Free the result.
+ */
+static uint32_t *band_scene(const char *extra, int *workers)
+{
+    static const uint32_t texels[4] = {
+        0xff000080, 0x00ff0080, 0x0000ff80, 0xffff0080,
+    };
+    static const uint32_t half_white[4] = {
+        ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE, 0x3f000000,
+    };
+    static const uint32_t half_green[4] = {
+        0, ODSY_F_ONE, 0, 0x3f000000,
+    };
+    static const float under[4][4] = {
+        { 10, 10, 0, 0 }, { 48, 10, 1, 0 }, { 48, 48, 1, 1 },
+        { 10, 48, 0, 1 },
+    };
+    static const float over[4][4] = {
+        { 30, 20, 0.75, 0.25 }, { 60, 30, 0.75, 0.25 },
+        { 50, 60, 0.75, 0.25 }, { 25, 50, 0.75, 0.25 },
+    };
+    static const uint32_t identity[16] = {
+        ODSY_F_ONE, 0, 0, 0, 0, ODSY_F_ONE, 0, 0,
+        0, 0, ODSY_F_ONE, 0, 0, 0, 0, ODSY_F_ONE,
+    };
+    const uint32_t window[16] = {
+        ODSY_F_ONE, 0, 0, 0,
+        0, ODSY_F_ONE, 0, 0,
+        0, 0, bitmap_rect_float(0x1.ffff8p31f),
+        bitmap_rect_float(0x1.ffff8p31f),
+        0, 0, 0, ODSY_F_ONE,
+    };
+    QTestState *qts = board_start(extra);
+    uint32_t *corner = g_new(uint32_t, 64 * 64);
+
+    texture_adapter_upload(qts, 0x180000, texels);
+    /*
+     * texture_adapter_window() without its clear, which is large enough
+     * to start the band workers whatever the threshold.
+     */
+    push_window_transform(qts, window);
+    push_block_16(qts, ODSY_F_ONE);
+    user_cmd_push(qts, ODSY_GL_MATRIX_SELECT_TEXTURE);
+    user_cmd_push(qts, ODSY_GL_MATRIX_LOAD);
+    push_user_words(qts, identity, ARRAY_SIZE(identity));
+    clip_box_set(qts, 0, 1279, 0, 1023);
+    texture_adapter_bind(qts, 0x180000, 0x13000000, 1);
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_BLEND |
+            ODSY_MODE_STENCIL_TEST);
+    set_blend(qts, 0x639, 0, 0);
+    set_reg(qts, ODSY_REG_STENCIL_FUNC, 0x0e92ff01);
+    band_textured_quad(qts, half_white, under);
+    set_reg(qts, ODSY_REG_STENCIL_FUNC, 0x0400ff01);
+    band_textured_quad(qts, half_green, over);
+    odsy_test_pixels(qts, 0, 0, 64, 64, corner);
+    *workers = sgi_raster_band_workers(qts);
+    board_quit(qts);
+    return corner;
+}
+
+/*
+ * The scene drawn with every draw in bands (x-test-raster-band-pixels=1)
+ * leaves the same pixels as drawn on one thread (x-raster-bands=off),
+ * through the texel readers and the blend and stencil callbacks; the
+ * blended texels and the stencilled green show, and band workers drew.
+ */
+static void test_gl_bands_match_one_thread(void)
+{
+    int workers, serial_workers;
+    g_autofree uint32_t *banded =
+        band_scene(" -global sgi-odyssey.x-test-raster-band-pixels=1",
+                   &workers);
+    g_autofree uint32_t *serial =
+        band_scene(" -global sgi-odyssey.x-raster-bands=off",
+                   &serial_workers);
+
+    for (int i = 0; i < 64 * 64; i++) {
+        g_assert_cmphex(banded[i], ==, serial[i]);
+    }
+    /*
+     * Two texels of the under quad blend over the background differently,
+     * the green blends again where both quads lie, and where the green
+     * quad lies outside the under one the stencil keeps the background.
+     */
+    g_assert_cmphex(serial[15 * 64 + 15], !=, serial[5 * 64 + 5]);
+    g_assert_cmphex(serial[15 * 64 + 15], !=, serial[15 * 64 + 43]);
+    g_assert_cmphex(serial[40 * 64 + 40], !=, serial[15 * 64 + 43]);
+    g_assert_cmphex(serial[40 * 64 + 40], !=, serial[40 * 64 + 15]);
+    g_assert_cmphex(serial[40 * 64 + 55], ==, serial[5 * 64 + 5]);
+    if (workers < 0) {
+        g_test_skip("needs Linux /proc and two host processors");
+        return;
+    }
+    g_assert_cmpint(workers, >, 0);
+    g_assert_cmpint(serial_workers, ==, 0);
+}
+
 static void texture_chain_upload_solid(QTestState *qts, uint32_t base,
                                        uint32_t width, uint32_t height,
                                        uint32_t pixel)
@@ -21704,6 +21829,8 @@ int main(int argc, char **argv)
                    test_gl_large_clear_draws_in_bands);
     add_fresh_case("sn1/odyssey/gl-raster-bands-off-draws-on-one-thread",
                    test_gl_raster_bands_off_draws_on_one_thread);
+    add_fresh_case("sn1/odyssey/gl-bands-match-one-thread",
+                   test_gl_bands_match_one_thread);
     add_case("sn1/odyssey/command-fifo-gl-window-origin-and-clip",
              test_command_fifo_gl_window_origin_and_clip);
     add_case("sn1/odyssey/command-fifo-gl-clip-rectangles",

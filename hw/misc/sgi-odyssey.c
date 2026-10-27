@@ -5541,6 +5541,7 @@ static SGIRasterTarget odyssey_gl_target(SGIOdysseyState *s)
         .fog_factor = odyssey_gl_fog_factor,
         .opaque = s,
         .concurrent_pixels = s->raster_bands,
+        .band_min_pixels = s->raster_band_pixels,
     };
 
     odyssey_gl_stipple_background(s, &t);
@@ -12994,6 +12995,12 @@ static const Property odyssey_properties[] = {
      * are the same either way.
      */
     DEFINE_PROP_BOOL("x-raster-bands", SGIOdysseyState, raster_bands, true),
+    /*
+     * Host-only qtest: draws and clears of at least this many pixels run
+     * in bands, in place of the rasterizer's threshold; 0 keeps it.
+     */
+    DEFINE_PROP_UINT32("x-test-raster-band-pixels", SGIOdysseyState,
+                       raster_band_pixels, 0),
     DEFINE_PROP_LINK("fabric", SGIOdysseyState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
 };

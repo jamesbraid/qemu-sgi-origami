@@ -499,6 +499,8 @@ struct SGIOdysseyState {
     bool mesa_unavailable;
     /* Host-only: GL draws may run in bands of rows (x-raster-bands). */
     bool raster_bands;
+    /* Host-only qtest band threshold (x-test-raster-band-pixels). */
+    uint32_t raster_band_pixels;
     /* Read-only x-mesa-* properties; host diagnostics, never migrated. */
     OdysseyMesaCounts mesa_counts;
     bool gl_in_prim;
