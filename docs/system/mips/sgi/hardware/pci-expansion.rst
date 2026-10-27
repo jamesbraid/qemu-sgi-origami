@@ -185,20 +185,25 @@ builds it as ``sgi-pci-shoehorn``.
        ``030-1275-002`` revision B (also ``030-1275-004`` revision A),
        copyright 1997, with one Burndy card-edge connector for a PCI
        daughter card.
-     - *established*
+     - *observed*
      - :src:`ebay-277925514107-image-1` and
        :src:`ebay-277925514107-image-3`.
-   * - Its converter is a Bridge D, LSI L2A0710, marked SGI part
-       ``099-0125-007``, widget revision 4.
-     - *established*
+   * - Its converter is marked "Bridge Rev D", LSI L2A0710, SGI part
+       ``099-0125-007``.
+     - *observed*
      - :src:`ebay-277925514107-image-5`.
+   * - The converter's widget revision is 4.
+     - *observed*
+     - The ``ASIC BRIDGE Rev 4`` lines in the inventories cited below.
+       That revision 4 is the chip marked Rev D is *inferred*: no source
+       prints the correspondence.
    * - It is a different board type from the shoebox.
      - *software expectation*
      - OpenBSD ``mnode.h``: ``IP27_BRD_PCI3`` "PCI shoehorn".
    * - On an Origin 2000 its record name is ``XTALK_PCI`` with part
        ``030-1275-00x``. The PROM prints ``Found an io Board with nic
        030-1275-00x`` and lists ``XTALK_PCI IO Board`` on a Bridge Rev 4.
-       An owner's listing has two, parts ``030-1275-004`` rev A and
+       A published listing has two, parts ``030-1275-004`` rev A and
        ``030-1275-003`` rev A.
      - *observed*
      - :src:`nekonomicon-16727716` and
@@ -281,7 +286,7 @@ given. The chip registers are the IOC3's (:doc:`ioc3`).
    * - A "CadDuo" PCI keyboard and mouse card served as a second seat's
        input in an Origin 2000.
      - *observed*
-     - An owner's report, :src:`nekonomicon-5749`.
+     - A forum report, :src:`nekonomicon-5749`.
    * - The card's IOC3 has Ethernet, keyboard and mouse, and no serial
        ports, clock or parallel port.
      - *software expectation*
@@ -341,7 +346,7 @@ record uses the layout every SGI record shares (:doc:`bridge`):
      - ten spaces and ``030-1155-``
    * - 30-31
      - check
-     - computed from the barcode
+     - inverted CRC-16 over bytes 0-29, low byte first
    * - 32-37
      - dash number
      - three spaces and ``002``
@@ -356,7 +361,7 @@ record uses the layout every SGI record shares (:doc:`bridge`):
      - ``PCI_ENET`` and six spaces
    * - 62-63
      - check
-     - computed
+     - inverted CRC-16 over bytes 32-61, low byte first
 
 The part, revision and name are *observed*. The padding and the barcode are
 an *approximation*. Memory past byte 63 reads unprogrammed.
@@ -374,7 +379,8 @@ Origin 300 PCI expansion module
 The module adds six PCI buses to an Origin 300 over NUMAlink. QEMU builds
 it as ``sgi-origin300-pci-expansion-module``. The type is not
 user-creatable. The ``origin300`` machine builds it from its
-``origin300-pci-expansion`` topology (:doc:`/system/mips/sgi/sn`). Page
+``origin300-pci-expansion`` and ``origin300-numalink-pci-expansion``
+topologies (:doc:`/system/mips/sgi/sn`). Page
 numbers below are printed pages.
 
 .. list-table::
@@ -484,7 +490,9 @@ Slot width and speed
 
 Each head's PCI speed field is 1, which the tests read as a 66 MHz head.
 Both devices of every head request 64-bit data phases. A card without a
-64-bit interface stays 32-bit and runs as a 33 MHz peer. The wide
+64-bit interface stays 32-bit. The model has no bus clock: the speed field
+reads 1 whatever card is fitted, although on hardware a 33 MHz card slows
+its shared bus to 33 MHz (:src:`007-4499-002 pp. 39-41`). The wide
 data-placement rules for the Origin 300 apply to U0 head E only
 (:doc:`xbridge`). The width of the real slots is *unknown*, so wide slots
 are an *approximation* that the module selects.
@@ -516,8 +524,16 @@ discovery record. The model connects the BIC to its compute module with a
 synchronous address-space route. This is an *approximation*. It reproduces
 the guest-visible reads, writes, DMA and interrupt packets between the
 compute node and the six heads. It does not model packet commands,
-credits, ordering, timeouts, retry or the BIC's routing tables. A routed
-connection through a NUMAlink module has no model.
+credits, ordering, timeouts, retry or the BIC's routing tables.
+
+The ``origin300-numalink-pci-expansion`` topology builds the routed
+connection. It joins two Origin 300 compute modules and the expansion
+module through one logical eight-port SN1 router, with the compute modules
+on router ports 1 and 6 and the expansion module on port 4 (:doc:`sn1-router`).
+That cabling is an *approximation*: the manual allows an expansion module
+on ports 2 to 5 and base modules on any port, and the router's diagnostics
+are synthetic. The router L1 refuses compute lifecycle commands, and USB
+to the rack L2 controller and the inter-module reset are not modelled.
 
 A processor reaches the BIC's register block, its I/O space and the views
 of its three XBridges through the node number the machine assigns. A
@@ -619,9 +635,12 @@ Model limits
   from this code.
 - A host keystroke reaches every IOC3 keyboard on a machine, so a Cad Duo
   duplicates the onboard chip's input.
-- The Origin 300 module is a direct, synchronous link to one compute node.
-  It has no routed connection, no packet encoding, no L2 path and no
-  discovery record beyond the identity the machine supplies.
+- In the ``origin300-pci-expansion`` topology the module is a
+  synchronous link to one compute node. In the
+  ``origin300-numalink-pci-expansion`` topology it is reached through one
+  modelled SN1 router (:doc:`sn1-router`). Neither models packet
+  encoding, an L2 path or a discovery record beyond the identity the
+  machine supplies.
 - The module's chip revisions, head pairing, slot width, interrupt map,
   UART, flash, processor registers and power are *approximation* or
   *unknown* as stated above.
@@ -647,8 +666,8 @@ limit and a board fitted by slot name.
 
 ``tests/qtest/sn0-bridge-identity-test.c`` compares the carrier's and the
 shoehorn's Bridge records byte for byte and checks their formatted part,
-name and widget revision. ``tests/qtest/sn0-ioc3-test.c`` checks an add-in
-IOC3 at a free option slot and the independence of two chips' PS/2 ports.
+name and widget revision. ``tests/qtest/sn0-ioc3-test.c`` checks the IOC3's
+register contract, with an add-in IOC3 fitted at a free option slot.
 
 ``tests/qtest/sn1-pci-expansion-module-test.c`` builds the Origin 300
 module alone. It covers the population with no processors or memory, the
@@ -661,6 +680,9 @@ interrupt map with its OR combination, masking and reset, denied traffic,
 the processor-absence and pending-register windows, the UART, the
 configuration storage, main power and migration with its mismatch
 refusals.
+
+``tests/qtest/sgi-sn1-router-test.c`` builds the routed topology with the
+expansion module behind the SN1 router (:doc:`sn1-router`).
 
 ``tests/functional/mips64/test_irix_diag_origin2000_pci_carrier.py`` and
 ``test_irix_diag_origin2000_pci_shoehorn.py`` boot IRIX on an Origin 2000

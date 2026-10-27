@@ -42,8 +42,8 @@ Sources
 - *Origin200 GIGAchannel Upgrade Installation Instructions*,
   :src:`108-0187-001`.
 - Published ``hinv -vm`` inventories: :src:`preterhuman-origin-200` (a
-  one-module and a two-module system), the 2003 owner post
-  :src:`usenet-pigot-3edc9a71`, the 2012 thread *Building an Onyx 200*
+  one-module and a two-module system), a 2003 Usenet post by an Origin 200
+  owner :src:`usenet-pigot-3edc9a71`, the 2012 thread *Building an Onyx 200*
   :src:`nekonomicon-16726704` and a two-module system with a cabinet on
   each module :src:`nekonomicon-16731033`. A 1999 boot log
   :src:`usenet-rasey-384c6090` shows the console lines of a one-module
@@ -88,15 +88,16 @@ Identity
    * - Cabinet interface board
      - 030-1252-001, silkscreen "XBOX XTALK INTERFACE". Board record
        ``XBOX_DUALXTOWN``, revision F in every capture.
-     - *established* :src:`preterhuman-origin-200 hinv -vm`,
+     - *observed* :src:`preterhuman-origin-200 hinv -vm`,
        :src:`usenet-pigot-3edc9a71`, :src:`ordi-spare-030-1252-001`
    * - CPU-side Crosstown board
      - 030-1264-001, "PCA XBOX EXTENSION BOARD O200". Board record
        ``XBOX_EXT`` revision C. The upgrade guide's loopback example prints
        the record as ``2G_MPLN`` revision B.
-     - *established* :src:`108-0187-001 p. 1-2, Table 1-1`,
-       :src:`preterhuman-origin-200 hinv -vm`,
-       :src:`usenet-pigot-3edc9a71`
+     - *established* for the part number and name
+       (:src:`108-0187-001 p. 1-2, Table 1-1`); *observed* for the board
+       record (:src:`preterhuman-origin-200 hinv -vm`,
+       :src:`usenet-pigot-3edc9a71`)
    * - Cabinet midplane
      - 030-1380-002, "PCA XBOX MIDPLANE O200"
      - *inferred* as a part identity: the number comes from seller listings
@@ -109,16 +110,18 @@ Identity
    * - Cabinet Bridge
      - Bridge widget revision 4, printed ``ASIC BRIDGE Rev 4, (widget 8)``.
        The letter this revision corresponds to is not printed anywhere.
-     - *established* :src:`108-0187-001 p. 3-8`,
-       :src:`nekonomicon-16726704`
+     - *established* as printed in the upgrade guide's listing
+       (:src:`108-0187-001 p. 3-8`); *observed* in the 2012 inventory
+       (:src:`nekonomicon-16726704`)
    * - Upgrade kits
      - ``HU-CONNECT-XBOX`` (module hardware) and ``561-CHAS-XBOX`` (two
        ``018-0575-001`` XIO cables and a ``018-0649-001`` grounding cable)
      - *established* :src:`108-0187-001 Table 1-1`
 
 The Crosstown and cabinet records are human-readable fields in ``hinv -vm``,
-not raw one-wire bytes. The owner post adds ``Group ff Capability ffffffff
-Variety ff`` for each record. *Established* in three specimens.
+not raw one-wire bytes. That post adds ``Group ff Capability ffffffff
+Variety ff`` for each record. *Observed* in three systems across two
+sources.
 
 .. _sgi-gigachannel-composition:
 
@@ -142,18 +145,20 @@ Physical composition
        the midplane, two heatsinked ASICs with illegible markings, and link
        and data status LEDs for each of XIO A and XIO B. No Crossbow- or
        Bridge-sized package is visible on it.
-     - *established* :src:`ordi-spare-030-1252-001`,
+     - *observed* :src:`ordi-spare-030-1252-001`. The maintenance guide
+       covers the board's replacement, *established* for its presence
        :src:`007-3709-002 pp. 60-65`
    * - Midplane 030-1380-002
      - The XIO slots, the interface board and the PCI backplane plug into
        it. It carries a voltage regulator with a diagnostic LED.
      - *established* :src:`007-3709-002 pp. 107-123`
    * - Crossbow
-     - In the cabinet. The owner's block diagram places it there, and a
+     - In the cabinet. The Owner's Guide's block diagram places it there, and a
        builder reports the base I/O feed passing "through the
        Gigachannel's XBOW and back".
-     - *established* :src:`007-3708-002 Figure 1-5, p. 7`,
-       :src:`nekonomicon-16726704`. That it sits on the midplane is
+     - *established* for the block diagram
+       (:src:`007-3708-002 Figure 1-5, p. 7`), *observed* for the builder's
+       report (:src:`nekonomicon-16726704`). That it sits on the midplane is
        *inferred* from :src:`007-4222-002 p. 1`
    * - Cabinet Bridge
      - Drawn between the midplane and the PCI backplane.
@@ -165,7 +170,7 @@ Physical composition
      - Four PCI slots, three full-length and one half-length (the one
        nearest the power switch). The rear panel labels them 0 to 3.
      - *established* :src:`007-3708-002 pp. 19-24`,
-       :src:`007-3709-002 p. 23`,
+       :src:`007-3709-002 p. 23`; *observed* for the rear-panel labels
        :src:`ntc-tech-origin-200-cmn-a019 image 06`
    * - XIO slots
      - Five, physical numbers 11 to 15, customer-installable.
@@ -211,13 +216,13 @@ carries which link is *unknown*.
    * - 8
      - Cabinet Bridge, four PCI slots
      - ``io7``, board ``xbox_dualxtown``
-     - *established*: ``PCI_XIO ... Slot io7`` and ``ASIC BRIDGE Rev 4,
-       (widget 8)`` :src:`108-0187-001 p. 3-8`,
-       :src:`nekonomicon-16726704`
+     - *observed*: ``PCI_XIO ... Slot io7`` and ``ASIC BRIDGE Rev 4,
+       (widget 8)`` :src:`nekonomicon-16726704`. The upgrade guide's
+       listing prints the same, *established* :src:`108-0187-001 p. 3-8`
    * - 9
      - The module's IP29 Bridge (base I/O)
      - ``io1``, board ``MotherBoard``
-     - *established* by one capture: ``BASEIO ... Slot io1``, ``ASIC BRIDGE
+     - *observed* in one capture: ``BASEIO ... Slot io1``, ``ASIC BRIDGE
        Rev 4, (widget 9)`` :src:`nekonomicon-16726704`. The upgrade guide's
        example listing disagrees: it shows ``BASEIO ... Slot MotherBoard``
        with ``ASIC BRIDGE Rev 3, (widget 8)`` beside the cabinet's own
@@ -233,7 +238,7 @@ carries which link is *unknown*.
    * - B
      - Optional XIO board
      - ``io2``
-     - *established*: a Fibre Channel XIO board at ``io2`` reports widget 11
+     - *observed*: a Fibre Channel XIO board at ``io2`` reports widget 11
        :src:`nekonomicon-16726704`
    * - C, D, E, F
      - Optional XIO boards
@@ -243,12 +248,12 @@ carries which link is *unknown*.
        ``io3``, ``io4``, ``io5`` and ``io6``. It is selected when the
        machine-type word at physical ``0x10000090`` is nonzero
        :src:`ip27-prom-6.156 widget-to-slot table`. Real boards sit at these
-       names :src:`preterhuman-origin-200`
+       names, *observed* :src:`preterhuman-origin-200`
 
 Physical XIO slots 11 to 15 correspond, as a set, to links B to F and
 positions ``io2`` to ``io6``. The one-to-one mapping is *unknown*.
 
-The cabinet's four PCI slots are labelled 1 to 4 in the owner's block
+The cabinet's four PCI slots are labelled 1 to 4 in the Owner's Guide's block
 diagram :src:`007-3708-002 Figure 1-5` and 0 to 3 on the chassis, and IRIX
 numbers PCI slots from 0 :src:`007-3708-002 p. 135`. That they are Bridge
 devices 0 to 3 is *inferred* from hardware-graph paths of the form
@@ -256,9 +261,9 @@ devices 0 to 3 is *inferred* from hardware-graph paths of the form
 
 In a two-module system with one cabinet on module 1, module 1's base I/O
 moves to ``io1`` behind the Crossbow and module 2's stays directly on its
-Hub. This is *established* for the module-1 case
+Hub. This is *observed* for the module-1 case
 (:src:`preterhuman-origin-200`, :src:`nekonomicon-16726704`). A system with
-a cabinet on each module reports the same layout on each, *established*
+a cabinet on each module reports the same layout on each, *observed*
 :src:`nekonomicon-16731033`. That capture prints no widget numbers, so it
 does not settle the link rows. How IRIX treats a single cabinet on the slave
 module alone is *unknown*.
@@ -274,25 +279,26 @@ Each item is real-hardware output unless it names another source.
   ``/hw/module/1/slot/io7/xbox_dualxtown`` as ``XBOX_DUALXTOWN`` part
   030-1252-001 rev F, and lists ``XBOX_EXT`` part 030-1264-001 rev C beside
   the ``IP29`` record under ``/hw/module/1/slot/io1/MotherBoard``.
-  *Established* in three specimens (:src:`preterhuman-origin-200`,
-  :src:`usenet-pigot-3edc9a71`). The wiring of the one-wire lines is
+  *Observed* in three systems across two sources
+  (:src:`preterhuman-origin-200`, :src:`usenet-pigot-3edc9a71`). The wiring of the one-wire lines is
   *unknown*; see :ref:`sgi-gigachannel-record-wiring`.
 - **Base I/O location.** With a cabinet the base I/O is
   ``/hw/module/1/slot/io1``. A plain Origin 200 reports
-  ``slot/MotherBoard``. *Established* :src:`nekonomicon-16726704`,
+  ``slot/MotherBoard``. *Observed* :src:`nekonomicon-16726704`,
   :src:`usenet-rasey-384c6090`. The upgrade guide's example disagrees (see
   the link table).
 - **Bridge inventory.** The PROM's ``hinv -v`` prints ``PCI_XIO Origin 200
   IO Board, Module 1, Slot io7`` with ``ASIC BRIDGE Rev 4, (widget 8)``,
   and IRIX prints ``Origin PCI XIO board, module 1 slot 7: Revision 4``.
   The Crossbow does not appear as an inventory line in any capture.
-  *Established* :src:`108-0187-001 p. 3-8`, :src:`nekonomicon-16726704`.
+  *Observed* :src:`nekonomicon-16726704`. The upgrade guide's listing
+  prints the PROM lines too, *established* :src:`108-0187-001 p. 3-8`.
 - **I/O PROM load message.** On a GIGAchannel the PROM prints ``Loading
   BASEIO prom from XBOX Flashprom....`` followed by ``DONE``. Origin 2000
   systems print ``Loading BASEIO prom ....``. In the 2012 capture the
   BASEIO PROM that follows reports the build dated Nov 18, 2003, 11:26:28,
   the build that ships as the BaseIO card's flash image, not the build
-  stored inside the node PROM (11:05:48). *Established*
+  stored inside the node PROM (11:05:48). *Observed*
   :src:`nekonomicon-16726704`, :src:`usenet-rasey-384c6090`.
 - **Loopback inventory.** In loopback the PROM inventory matches the
   pre-upgrade one except for the added 030-1264-001 record, with the base
@@ -300,7 +306,10 @@ Each item is real-hardware output unless it names another source.
   *Established* :src:`108-0187-001 pp. 2-9 to 2-11`.
 - **IRIX releases.** IRIX 6.4 needs a patch installed before the hardware,
   and installing the hardware first prevents boot. IRIX 6.5 needs none.
-  *Established* from release metadata. The patch payload was not examined.
+  *Established* by the release note for patch SG0003174 on SGI's
+  *Origin200 GIGAchannel System Disk Patch Supplement* CD, part
+  812-0788-001, which cites SGI document 007-3907-001. No public copy is
+  registered. The patch payload was not examined.
 
 What the stock IP27 PROM 6.156 does (*software expectations*,
 :src:`ip27-prom-6.156`):
@@ -310,8 +319,9 @@ What the stock IP27 PROM 6.156 does (*software expectations*,
   sets it to 1.
 - **Cabinet detection.** On each boot the PROM reads the identification
   word of widget 0 through each node's Hub. It takes a part field of
-  ``0x0000`` (a Crossbow) as the cabinet. It also accepts ``0xd000``, which
-  nothing available identifies. PROM 6.11 accepts ``0x0000`` only. No board
+  ``0x0000`` (a Crossbow) as the cabinet. It also accepts ``0xd000``, the part
+  number of the XBridge crossbar (widget 0, *established* on :doc:`xbridge`).
+  Why an IP27 PROM accepts it is *unknown*. PROM 6.11 accepts ``0x0000`` only. No board
   identity record takes part in the decision.
 - **Load address.** With a cabinet found, the PROM prints the XBOX load
   line and loads the BASEIO PROM from the cabinet Bridge's widget 8 at
@@ -433,7 +443,7 @@ Each kernel message is printed as ``Gigachannel System Controller[<thread>]:
 expectation*. That real hardware sets bit 0 on a blower failure, bit 3 on an
 over-temperature supply, bit 4 when the backup supply takes over and bit 6
 when a redundant supply is fitted is *inferred* from those labels. The
-owner's guide describes a single constant-speed blower whose failure shuts
+Owner's Guide describes a single constant-speed blower whose failure shuts
 the server down and a redundant supply option, which matches the labels but
 describes no interface :src:`007-3708-002 pp. 30-32, 134`. What bits 1, 2
 and 5 report on hardware is *unknown*.
@@ -493,7 +503,7 @@ cabinet would settle them.
 BASEIO PROM flash
 =================
 
-- The image is *established*. A real cabinet's BASEIO PROM banner is the
+- The image is *observed*. A real cabinet's BASEIO PROM banner is the
   build shipped as the BaseIO card's flash image
   :src:`nekonomicon-16726704`. The match is by banner, not by comparing
   bytes.
@@ -516,10 +526,11 @@ A machine fits the part when it is given an image, in either of two ways:
 
 - ``-drive if=none,id=sgi-gigachannel-flash<N>,file=IMAGE,format=raw``
   (``N`` counts cabinets), or the machine's ``io<N>-flash`` store binding.
-  The drive's contents win. Giving both is refused.
+  Giving both a ``-drive`` and an ``io<N>-flash`` binding is refused.
 - The machine's ``io-prom`` option, or the cabinet's ``firmware`` property,
   names an original I/O PROM file. The part then starts out holding that
-  file followed by erased bytes.
+  file followed by erased bytes. A drive's contents take precedence over
+  ``firmware``.
 
 With neither, nothing is fitted. The base chip select then fails as an
 unpopulated address does, with a bus error and a ``LOG_GUEST_ERROR`` line.
@@ -595,8 +606,10 @@ Unknowns
        a ``hinv`` from a cabinet with a redundant supply
    * - Raw one-wire line and bytes of each board record
      - A one-wire bus capture from a real cabinet
-   * - A part number of ``0xd000`` at widget 0
-     - A public specification naming it
+   * - Why PROM 6.156 treats an XBridge crossbar (part ``0xd000``) at
+       widget 0 as a cabinet
+     - A cabinet-side capture or a public description of the PROM's
+       cabinet test
    * - PCI slot to Bridge device and interrupt pin
      - A PROM ``hinv -v`` with cards in several cabinet slots
    * - A single cabinet on the slave module alone, and a converted module
@@ -606,9 +619,6 @@ Unknowns
        ``hinv`` text for a cabinet with a redundant supply
      - A console capture of a cabinet event, or a ``hinv -vm`` from such a
        cabinet
-
-A physical test cannot answer these on the project's SGI systems, an
-Origin 350 and an Octane2. Neither is an Origin 200.
 
 .. _sgi-gigachannel-limits:
 
@@ -629,8 +639,8 @@ Model limits
   the Hub at widget 8, no Crossbow and the ``XBOX_EXT`` record added. The
   model fits the revision C record in loopback, where the guide's example
   shows revision B named ``2G_MPLN``. The load line the PROM prints in
-  loopback is *inferred* from its behaviour in the model, not from a
-  capture.
+  loopback is *unknown*. The model prints the plain ``Loading BASEIO
+  prom`` line.
 - The flash part is the BaseIO card's, as above. The status word answers
   the construction-time property ``system-controller-status``, default 0,
   set with ``-global sgi-gigachannel.system-controller-status=N``. Zero
@@ -680,9 +690,9 @@ card enumerating in each of the four PCI slots and a fifth refused; and the
 ``tests/qtest/sn0-bridge-identity-test.c`` checks the ``XBOX_DUALXTOWN`` and
 ``XBOX_EXT`` record bytes in the cabinet, IP29 and loopback cases.
 ``tests/qtest/sn0-module-domain-test.c`` checks that the cabinet resets and
-loses power with its module. ``tests/qtest/sn0-mscsi-test.c``,
-``tests/qtest/sn0-menet-test.c`` and ``tests/qtest/sn-builder-test.c`` place
-XIO boards in the cabinet's positions.
+loses power with its module. ``tests/qtest/sn0-mscsi-test.c`` and
+``tests/qtest/sn0-menet-test.c`` place XIO boards in the cabinet's
+positions.
 
 ``tests/functional/mips64/test_origin200_gigachannel_prom.py`` boots the
 stock PROM 6.156 on the cabinet topology. With a flash image it checks the
