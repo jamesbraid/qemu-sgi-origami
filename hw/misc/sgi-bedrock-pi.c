@@ -187,10 +187,33 @@ static uint64_t pi_pending0(SGIBedrockPIState *s)
     return s->pending[0] | coherency | (s->uart_irq ? 1ULL << 4 : 0);
 }
 
+/*
+ * A pending register is a polled register, and the next change answers that
+ * poll without the BQL. Its value is composed from several fields that only
+ * change under the BQL: the bank, the coherency-pending words and their mask,
+ * the L1 UART line and the reflected error lines. A reader loading them one
+ * by one without the lock could combine fields from either side of a change,
+ * such as a bank bit already cleared with a coherency bit not yet set, a
+ * value the register never held. So every change composes the whole word
+ * here and publishes it with one release store, and a read is one acquire
+ * load (pi_pending_word()). The PROM passes messages through these bits, so a
+ * processor that sees a bit must also see the memory its sender wrote before
+ * setting it, which the release and acquire pair provides, as the BQL used
+ * to. Every input change is followed by this function under the BQL, reset
+ * and an incoming migration included.
+ */
+static uint64_t pi_pending_word(SGIBedrockPIState *s, unsigned bank)
+{
+    return qatomic_load_acquire(&s->pending_word[bank]);
+}
+
 void sgi_bedrock_pi_recompute(SGIBedrockPIState *s)
 {
     uint64_t pending0 = pi_pending0(s);
     uint64_t pending1 = pi_pending1(s);
+
+    qatomic_store_release(&s->pending_word[0], pending0);
+    qatomic_store_release(&s->pending_word[1], pending1);
 
     for (unsigned cpu = 0; cpu < 2; cpu++) {
         unsigned base = cpu * SGI_BEDROCK_PI_HW_IRQS;
@@ -450,8 +473,7 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
     case PI_CPU_ENABLE_B: return s->cpu_enable[1];
     case PI_PENDING_0:
     case PI_PENDING_1: {
-        uint64_t value = offset == PI_PENDING_0 ? pi_pending0(s)
-                                                : pi_pending1(s);
+        uint64_t value = pi_pending_word(s, offset == PI_PENDING_1);
 
         trace_sgi_bedrock_pi_pending_read(s->interface,
                                           current_cpu ? current_cpu->cpu_index

@@ -60,6 +60,12 @@ struct SGIBedrockPIState {
     uint32_t rq_timeout_scale;
     uint8_t cpu_enable[2];
     uint64_t pending[2];
+    /*
+     * The two pending registers as a reader sees them, composed from
+     * pending[] and the lines folded into it whenever any of them changes
+     * (sgi_bedrock_pi_recompute()). Derived state: not migrated.
+     */
+    uint64_t pending_word[2];
     uint8_t level_source[SGI_BEDROCK_PI_LEVEL_SOURCES];
     int64_t level_rearm_due[SGI_BEDROCK_PI_INTERRUPT_LEVELS];
     QEMUTimer *level_rearm_timer;
