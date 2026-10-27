@@ -2,9 +2,9 @@
 
 .. _sgi-bedrock:
 
-================================================================
+=================================================================
 SGI Bedrock node controller (Origin 300, Fuel, Origin 350 family)
-================================================================
+=================================================================
 
 The Bedrock is the node controller of the Origin 300, Origin 350, Origin
 3000 and Fuel generation, the successor to the Origin 200's Hub. It is a
