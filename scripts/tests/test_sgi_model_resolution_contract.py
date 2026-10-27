@@ -3082,6 +3082,29 @@ class Origin3000BrickTests(unittest.TestCase):
                 "compiled yet"):
             compile_model(self.resolve())
 
+    def test_unrouted_two_chassis_refuses_one_serial_twice(self):
+        # Before this check a repeated serial passed resolution and
+        # compilation on the direct-cabled Origin 300 pair.
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            shutil.copytree(INPUTS, root, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("*.json"))
+            shutil.copy(INPUTS / "system-model.schema.json", root)
+            path = root / "layers/products/origin300-two-chassis.yaml"
+            document = yaml.safe_load(path.read_text())
+            identities = document["layer"]["data"]["machine"]["emulation"][
+                "synthetic_identities"]
+            slave = next(item for item in identities
+                         if item["component"] == "slave-bedrock")
+            slave["serial"] = "0x51454d554e00"
+            path.write_text(yaml.safe_dump(document, sort_keys=False))
+            with self.assertRaisesRegex(
+                    _resolver.ResolutionError,
+                    "synthetic serial 0x51454d554e00 is given to both "
+                    "'master-bedrock' and 'slave-bedrock'"):
+                _resolver.load_system_model(
+                    root / "origin300-two-chassis.yaml")
+
     def test_composition_may_keep_the_product_as_a_reference(self):
         for path in (INPUTS / "origin3200-xbrick.yaml",
                      INPUTS / "origin3200-pbrick.yaml"):

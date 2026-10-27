@@ -1107,6 +1107,50 @@ def validate_synthetic_identities(model: dict[str, Any]) -> None:
         raise ResolutionError(f"missing synthetic identity for '{sorted(missing)[0]}'")
 
 
+def validate_unique_synthetic_serials(model: dict[str, Any]) -> None:
+    """Refuse two components given one synthetic serial, on every fabric.
+
+    The routed check above also refuses a repeat, but runs only on a routed
+    fabric; a direct-cabled pair (two Origin 300 chassis, an Origin 3200's
+    two C-bricks) must not repeat one either. A serial comes from an
+    explicit synthetic identity or from a per-kind base and per-node stride.
+    """
+    emulation = model.get("machine", {}).get("emulation", {})
+    owners: dict[int, str] = {}
+
+    def claim(serial: int, owner: str) -> None:
+        if serial in owners and owners[serial] != owner:
+            raise ResolutionError(
+                f"synthetic serial {serial:#x} is given to both "
+                f"'{owners[serial]}' and '{owner}'")
+        owners[serial] = owner
+
+    for identity in emulation.get("synthetic_identities") or []:
+        if not isinstance(identity, dict):
+            continue
+        literal = identity.get("serial")
+        if (isinstance(literal, str) and
+                re.fullmatch(r"0x[0-9a-f]+(?:_[0-9a-f]+)*", literal)):
+            claim(int(literal.replace("_", ""), 16),
+                  str(identity.get("component")))
+    bases = emulation.get("synthetic_serials")
+    nodes = sum(item.get("kind") == "node-asic"
+                for item in model.get("components", []))
+    if isinstance(bases, dict):
+        for kind, entry in sorted(bases.items()):
+            if not isinstance(entry, dict):
+                continue
+            base, stride = entry.get("base"), entry.get("per_node_stride")
+            if not isinstance(stride, int):
+                continue
+            if isinstance(base, str):
+                base = int(base.replace("_", ""), 16)
+            if not isinstance(base, int):
+                continue
+            for node in range(max(nodes, 1)):
+                claim(base + node * stride, f"{kind} of node {node}")
+
+
 def validate_initial_module_numbers(model: dict[str, Any]) -> None:
     machine = model.get("machine", {})
     emulation = machine.get("emulation", {})
@@ -1596,6 +1640,7 @@ def check_composition(model: dict[str, Any]) -> dict[str, Any]:
     validate_xio_cables(model)
     validate_brick_types(model)
     validate_synthetic_identities(model)
+    validate_unique_synthetic_serials(model)
     validate_initial_module_numbers(model)
     validate_hub_ni_revision_overrides(model)
     validate_board_identity_overrides(model)
