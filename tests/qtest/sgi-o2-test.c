@@ -7906,6 +7906,7 @@ static void test_storage_diagnostic_rejections(void)
     g_autofree char *events = NULL;
     g_autofree char *full_mode = NULL;
     g_autofree char *no_sink_mode = NULL;
+    g_autofree char *fdset_mode = NULL;
     g_autofree char *with_aic_fixture = NULL;
     g_autofree char *with_dma_fixture = NULL;
     QTestState *qts = o2_start_banked();
@@ -7925,6 +7926,8 @@ static void test_storage_diagnostic_rejections(void)
         "diagnostic-lower-pci-byte-identity=on", rom);
     full_mode = g_strdup_printf("%s,storage-diagnostic-event-file=%s",
                                 no_sink_mode, events);
+    fdset_mode = g_strdup_printf(
+        "%s,storage-diagnostic-event-file=/dev/fdset/0", no_sink_mode);
     with_aic_fixture = g_strdup_printf("%s,aic-pci-diagnostic=on",
                                        full_mode);
     with_dma_fixture = g_strdup_printf("%s,mace-bank-dma-fixture=on",
@@ -7937,6 +7940,8 @@ static void test_storage_diagnostic_rejections(void)
                               "requires the complete 1 GiB");
     assert_o2_banked_rejected(no_sink_mode, "1G", "-accel", "qtest",
                               "requires an absolute storage-diagnostic-event-file");
+    assert_o2_banked_rejected(fdset_mode, "1G", "-accel", "qtest",
+                              "storage diagnostic rejects /dev/fdset/ paths");
     assert_o2_banked_rejected(with_aic_fixture, "1G", "-accel", "qtest",
                               "no other PCI diagnostic");
     assert_o2_banked_rejected(with_dma_fixture, "1G", "-accel", "qtest",
