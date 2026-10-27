@@ -4335,13 +4335,23 @@ _IBRICK_IO = {"ibrick-xbridge-bridge-e", "ibrick-xbridge-bridge-f",
               "ibrick-l1"}
 
 
-def _origin3200_fixture(*, ibrick_io: bool = False) -> dict:
+def _origin3200_fixture(*, ibrick_io: bool = False,
+                        name: str = "origin3200") -> dict:
     """The Origin 3200 catalogue entry, resolved.
 
     Without `ibrick_io` the I-brick keeps only its XBridge and crossbar,
     with no L1, so a test of the cable or the bricks reads no PCI head.
     """
-    model = _resolved("origin3200")
+    model = _resolved(name)
+    if name != "origin3200":
+        # A reference variant of the Origin 3200 carries the emulation
+        # policy of the target, with a module number for what it adds.
+        model["machine"]["model_role"] = "emulation-target"
+        model["machine"]["emulation"] = copy.deepcopy(
+            _resolved("origin3200")["machine"]["emulation"])
+        model["machine"]["emulation"]["initial_module_numbers"].append({
+            "component": "dbrick-brick", "number": 17,
+            "reason": "A fixture value; the D-brick's slot is not captured."})
     if not ibrick_io:
         model["components"] = [item for item in model["components"]
                                if item["id"] not in _IBRICK_IO]
@@ -4562,6 +4572,23 @@ class ModuleRecordCompileTests(unittest.TestCase):
                    _render_topology(entry, "origin3200")["modules"]}
         self.assertEqual(emitted["c0-chassis"]["brick-type"], "C")
         self.assertEqual(emitted["ibrick-brick"]["controller"], "absent")
+
+    def test_dbrick_compiles_to_an_empty_module_without_controller(self):
+        from sgi_model.model_emit import _render_topology
+        entry = compile_model(_origin3200_fixture(name="origin3200-dbrick"))
+        modules = {module["id"]: module for module in entry["modules"]}
+        dbrick = modules["dbrick-brick"]
+        self.assertEqual(dbrick["controller"], "absent")
+        self.assertEqual(dbrick["controller_index"], -1)
+        self.assertEqual(dbrick["nodes"], [])
+        self.assertNotIn("io_peers", dbrick)
+        self.assertNotIn("brick_type", dbrick)
+        plain = compile_model(_origin3200_fixture())
+        self.assertEqual([m for m in entry["modules"] if m is not dbrick],
+                         plain["modules"])
+        emitted = {module["id"]: module for module in
+                   _render_topology(entry, "origin3200")["modules"]}
+        self.assertEqual(emitted["dbrick-brick"]["controller"], "absent")
 
     def test_existing_modules_carry_neither_field(self):
         for name in ("origin300-two-chassis", "origin200", "origin2000-rack"):

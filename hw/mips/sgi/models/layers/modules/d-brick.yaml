@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Origin 3000 D-brick: a twelve-bay Fibre Channel JBOD with no L1.
+layer_version: 1
+sources:
+  007-4240-002-dbrick: "007-4240-002 printed pages 155-156 and 167-168: the D-brick is an optional 4U JBOD of twelve dual-ported Fibre Channel disk bays behind two loop resiliency circuit I/O modules, loop A and loop B, whose GBIC input cables to a Fibre Channel adapter in an I-brick or P-brick"
+  007-4240-002-no-l1: "007-4240-002 printed pages 72 and 83: all bricks except D-bricks have L1 controllers, and the D-brick's Fibre Channel link carries no system control signals"
+  007-4264-002-esi: "007-4264-002 printed page 128: the D-brick has no L1; an enclosure system interface and operator panel module's microcontroller monitors and controls it"
+layer:
+  kind: module
+  id: d-brick
+  requires: {architecture: sn1}
+  data:
+    components:
+      - id: brick
+        name: D-brick
+        kind: module
+        controller: absent
+        provenance: vendor-document
+        sources: [007-4240-002-dbrick, 007-4240-002-no-l1, 007-4264-002-esi]
+        notes: >-
+          The brick has no L1, no NUMAlink and no XIO connection, so the
+          model gives it no controller, node or I/O peer. Its disks are
+          scsi-hd devices on the attached adapter's loop, placed into bays
+          by the sgi-dbrick device; the bays, their loop IDs and the
+          disks' names are not catalogue records. The loop A and loop B
+          GBIC inputs are not connectors here, because the catalogue has
+          no Fibre Channel bus for them to attach to; the composition
+          states which adapter loop A is cabled to. Enclosure services
+          and the operator panel are not modelled.
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/dbrick.rst]
