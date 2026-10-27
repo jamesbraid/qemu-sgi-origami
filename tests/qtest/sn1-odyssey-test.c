@@ -1569,6 +1569,52 @@ static void test_command_fifo_lowater_interrupt(void)
 }
 
 /*
+ * A reset lowers the flag level with the flags and enables, quietly: the
+ * destination is reset too, so there is nowhere to send a clearing packet,
+ * and the reset must not try to (it used to, and logged a guest error for
+ * the missing destination). The next edge after it is a rising one and
+ * sends its set packet; a different flag vector after the reset tells that
+ * packet from the one before.
+ */
+static void test_reset_clears_flag_level(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-reset-level-XXXXXX.log", &log_path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d guest_errors -D %s", quoted);
+    qts = board_start(extra);
+
+    flag_dest_program(qts);
+    reg_write(qts, ODSY_INTR_ENABLE_SET, ODSY_INTR_FIFO_LOW_WATER);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
+                    ODSY_TEST_VECTOR | ODSY_HUB_INT_MODIFY_SET);
+
+    qtest_system_reset(qts);
+    flag_dest_program(qts);
+    reg_write(qts, ODSY_ROUTE_VECTORS,
+              (ODSY_TEST_ROUTE_VECTORS & ~0xffu) | (ODSY_TEST_VECTOR + 1));
+    reg_write(qts, ODSY_INTR_ENABLE_SET, ODSY_INTR_FIFO_LOW_WATER);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
+                    (ODSY_TEST_VECTOR + 1) | ODSY_HUB_INT_MODIFY_SET);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_null(strstr(log, "no destination programmed"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
  * Part A's own proof: the packet an edge composes decodes int_dest_upper's
  * vector field and int_dest_lower/int_dest_upper's address exactly as
  * hw/misc/sgi-mgras.c's own fabric contract does, and nothing is sent before
@@ -21614,6 +21660,8 @@ int main(int argc, char **argv)
                    test_lowater_not_raised_while_disabled);
     add_fresh_case("sn1/odyssey/board-status-reports-fifo-ready",
                    test_board_status_reports_fifo_ready);
+    add_fresh_case("sn1/odyssey/reset-clears-flag-level",
+                   test_reset_clears_flag_level);
     add_fresh_case("sn1/odyssey/command-fifo-lowater-interrupt",
                    test_command_fifo_lowater_interrupt);
     add_fresh_case("sn1/odyssey/interrupt-packet-composition",
