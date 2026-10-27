@@ -293,5 +293,14 @@ bool sgi_kona_gl_pixels_pio_offset(const SGIKonaGLPixelLayout *layout,
 bool sgi_kona_gl_pixels_pio_byte(const SGIKonaGLPixelLayout *layout,
                                  const uint32_t *words, size_t nwords,
                                  uint32_t row, uint64_t byte, uint8_t *out);
+/*
+ * Extract n useful row bytes from byte on: what n calls of
+ * sgi_kona_gl_pixels_pio_byte() would, and false whenever any of them
+ * would fail, which may leave out partly written.
+ */
+bool sgi_kona_gl_pixels_pio_bytes(const SGIKonaGLPixelLayout *layout,
+                                  const uint32_t *words, size_t nwords,
+                                  uint32_t row, uint64_t byte, uint8_t *out,
+                                  size_t n);
 
 #endif /* HW_MISC_SGI_KONA_GL_DECODE_H */

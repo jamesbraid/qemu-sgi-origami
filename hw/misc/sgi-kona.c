@@ -11130,6 +11130,7 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
     g_autofree uint32_t *rgba = NULL;
     g_autofree double (*rgba_double)[4] = NULL;
     g_autofree double *depth = NULL;
+    g_autofree uint8_t *line = NULL;
     bool depth_image = u->header[2] == 13;
     bool stencil_image = u->header[2] == 12;
     bool indexed_image = u->header[2] == 11;
@@ -11164,20 +11165,24 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
         scalar && !stencil_image && !index_destination ? !rgba_double : !rgba) {
         goto out;
     }
+    line = g_try_malloc((uint64_t)layout.width * layout.pixel_bytes);
+    if (!line && layout.width && layout.pixel_bytes) {
+        goto out;
+    }
     for (uint32_t row = 0; row < layout.height; row++) {
+        /* A failure anywhere in the row refuses the image, as it would. */
+        if (!sgi_kona_gl_pixels_pio_bytes(&layout, u->words, u->count, row,
+                                          0, line, (uint64_t)layout.width *
+                                          layout.pixel_bytes)) {
+            goto out;
+        }
         for (uint32_t x = 0; x < layout.width; x++) {
             uint32_t source[4] = { 0 };
-            uint64_t at = (uint64_t)x * layout.pixel_bytes;
+            const uint8_t *bytes = line + (uint64_t)x * layout.pixel_bytes;
             uint32_t pixel = row * layout.width + x;
 
             for (uint32_t k = 0; k < layout.pixel_bytes; k++) {
-                uint8_t byte;
-
-                if (!sgi_kona_gl_pixels_pio_byte(&layout, u->words, u->count,
-                                                  row, at + k, &byte)) {
-                    goto out;
-                }
-                source[k / 4] |= (uint32_t)byte << (24 - (k % 4) * 8);
+                source[k / 4] |= (uint32_t)bytes[k] << (24 - (k % 4) * 8);
             }
             if (u->header[3] == 7) {
                 unsigned bit = (x + (u->skip_pixels & 7)) & 7;
