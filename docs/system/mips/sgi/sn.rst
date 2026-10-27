@@ -1188,8 +1188,18 @@ node's Bedrock decodes the chip at the cable's port and at each of the
 chip's heads the node hosts, and nothing at the chip's other Crosstown2
 port. A second node cabled to that port is refused, since whether one
 XBridge serves two hosts at once is unknown, and so are a host also
-cabled to a router, chained crossbars and a cable from a crossbar port
-to a board, none of which this builder makes yet.
+cabled to a router and chained crossbars, neither of which this builder
+makes yet.
+
+An XIO cable from one of the chip's other link ports, 8 to 0xd, reaches
+one XIO board: a card in an X-brick slot, or a board on the I-brick's
+free Crosstown2 port. The board's own attachment names that port and the
+chip's host node, whose Bedrock decodes the board's widget there. The
+builder creates the board as ``/machine/module<M>/<board id>`` in the
+board's own module and joins it to the port with one XIO link once the
+nodes have realized. Only the XIO cards ``pci-carrier``,
+``pci-shoehorn``, ``menet`` and ``mscsi`` are built at such a port; a
+graphics pipe or BaseIO card cabled there is refused.
 
 An XIO port is a QOM interface every chip at one end of an XIO link
 implements -- a Hub's or Bedrock's I/O interface, each Crossbow or XBridge

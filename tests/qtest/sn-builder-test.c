@@ -9243,6 +9243,46 @@ static void test_cbrick_save_restore(void)
     g_rmdir(dir);
 }
 
+/*
+ * An XIO board cabled to a port of an I/O brick's XBridge: port 8, a
+ * Crosstalk port as an X-brick slot uses, or port B, the I-brick's free
+ * Crosstown2 port. The board is built in its own module and joined to
+ * that port by one XIO link; c0, the chip's host, reaches its widget
+ * there, and c1 reaches nothing.
+ */
+static void test_cbrick_board_on_crossbar_port(const void *data)
+{
+    unsigned int port = GPOINTER_TO_UINT(data);
+    const char *module = port == 8 ? "/machine/module2" : "/machine/module3";
+    const char *board = port == 8 ? "xbrick-board" : "port-b-board";
+    g_autofree char *prom = cbrick_blank_prom();
+    g_autofree char *fault = g_strdup_printf("cbrick-board-port-%s",
+                                             port == 8 ? "8" : "b");
+    QTestState *qts = cbrick_start(fault, prom, "");
+    g_autofree char *type = qom_child_type(qts, module, board);
+    uint32_t identity = 0;
+
+    g_assert_cmpstr(type, ==, "sgi-pci-carrier");
+    g_assert_true(cbrick_bedrock_links(qts, "node0", 0xa));
+    g_assert_true(cbrick_bedrock_links(qts, "node0", port));
+    for (unsigned int widget = 0; widget < 16; widget++) {
+        g_assert_false(cbrick_bedrock_links(qts, "node1", widget));
+    }
+
+    /* The board's Bridge answers c0 at the port its cable meets. */
+    g_assert_true(nasid_test_cpu_readl(qts, 0, CBRICK_WIDGET(port) + 4,
+                                       &identity));
+    g_assert_cmphex((identity >> 12) & 0xffff, ==, 0xc002);
+    /* The crossbar itself still answers at its host port. */
+    g_assert_true(nasid_test_cpu_readl(qts, 0, CBRICK_WIDGET(0xa) + 4,
+                                       &identity));
+    g_assert_cmphex((identity >> 12) & 0xffff, ==, 0xd000);
+    g_assert_false(nasid_test_cpu_readl(qts, 1, CBRICK_WIDGET(port) + 4,
+                                        &identity));
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
 typedef struct CbrickRefusalCase {
     const char *machine;
     const char *message;
@@ -9276,9 +9316,21 @@ static const CbrickRefusalCase cbrick_refusal_cases[] = {
     { CBRICK_FIXTURE("chained-crossbars"),
       "XIO cable 'first-to-second': no reviewed contract for chained "
       "crossbars" },
-    { CBRICK_FIXTURE("board-cable"),
-      "XIO cable 'port-b-to-board' to I/O board 'port-b-board' is not built "
-      "yet" },
+    { CBRICK_FIXTURE("board-cabled-twice"),
+      "I/O board 'xbrick-board' carries more than one XIO cable" },
+    { CBRICK_FIXTURE("board-attached-elsewhere"),
+      "XIO cable 'crossbar-to-board' meets I/O board 'xbrick-board' at "
+      "crossbar 'xbrick-xbridge' port 0x8, but the board's XIO attachment "
+      "is not there" },
+    { CBRICK_FIXTURE("board-on-head"),
+      "XIO cable 'crossbar-to-board' meets crossbar 'xbrick-xbridge' at "
+      "port 0xe; a board's cable meets a link port, 0x8 to 0xd" },
+    { CBRICK_FIXTURE("board-uncabled"),
+      "I/O board 'xbrick-board' sits at crossbar 'xbrick-xbridge' port 0x8, "
+      "which no XIO cable reaches" },
+    { CBRICK_FIXTURE("board-preset-unbuilt"),
+      "I/O board 'xbrick-board' is cabled to crossbar 'xbrick-xbridge'; "
+      "preset 'odyssey' is not built on an enclosure crossbar yet" },
     { CBRICK_FIXTURE("onboard-xbridge-node"),
       "node 'c0' has an XBridge on its own board; only an IP35 node takes "
       "an XIO cable" },
@@ -10265,6 +10317,12 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/cbrick/xbridge-in-its-brick/port-b",
                         GUINT_TO_POINTER(0xb),
                         test_cbrick_xbridge_in_its_brick);
+    qtest_add_data_func("sn/builder/cbrick/board-on-crossbar-port/8",
+                        GUINT_TO_POINTER(8),
+                        test_cbrick_board_on_crossbar_port);
+    qtest_add_data_func("sn/builder/cbrick/board-on-crossbar-port/b",
+                        GUINT_TO_POINTER(0xb),
+                        test_cbrick_board_on_crossbar_port);
     qtest_add_func("sn/builder/cbrick/save-restore", test_cbrick_save_restore);
     qtest_add_func("sn/builder/cbrick/io7-head-f", test_cbrick_io7_head_f);
     for (size_t i = 0; i < ARRAY_SIZE(cbrick_refusal_cases); i++) {
