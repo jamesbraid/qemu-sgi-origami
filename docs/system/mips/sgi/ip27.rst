@@ -68,7 +68,7 @@ address where this page states what it does. Those statements are
 *software expectations*: they say what the firmware relies on, not what
 the hardware is.
 
-Captures of real machines, each an owner's posted inventory or console:
+Captures of real machines, each a published inventory or console:
 
 - Origin 2000: a stock PROM 6.156 boot of a three-node module and later
   IRIX listings of it with four (:src:`nekonomicon-16727716`), and a

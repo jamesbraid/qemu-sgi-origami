@@ -1234,7 +1234,7 @@ Console
 board. ``l1-uart`` means the L1 system controller's serial line, which
 the IP35 PROM's console sits behind. The choice names the port the stock
 PROM's own monitor uses on the model. It does not claim which physical
-connector an owner must use. :ref:`sgi-sn-serial-order` gives the order
+connector a user must use. :ref:`sgi-sn-serial-order` gives the order
 of the lines.
 
 .. _sgi-sn-launch-dialogue:
