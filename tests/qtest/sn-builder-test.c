@@ -10945,6 +10945,142 @@ static void test_nbrick_save_restore(void)
     g_rmdir(dir);
 }
 
+/* The V-brick fixture's module, its midplane XBridge and its V12 slot. */
+#define VBRICK_MODULE "/machine/module3"
+#define VBRICK_XBRIDGE VBRICK_MODULE "/xbridge"
+#define VBRICK_V12_PORT 8
+
+/*
+ * An Onyx 3000 with a V-brick: c1's XIO cable meets port A of the
+ * V-brick's midplane XBridge, built in the V-brick's own module, and the
+ * V12 pipe record sits on that chip's Crosstalk port 8. A pipe fitted by
+ * the record's id answers c1 at that widget with the VPro identity, part
+ * 0xc013 and manufacturer 0x23. c0, which hosts the I-brick, decodes no
+ * widget there, and with no pipe fitted the slot stays empty.
+ */
+static void test_vbrick_v12_reached_only_from_its_cbrick(const void *data)
+{
+    bool fitted = GPOINTER_TO_UINT(data);
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = cbrick_start("cbrick-vbrick", prom, fitted ?
+                                   "-device sgi-odyssey,slot=vbrick-v12" :
+                                   "");
+    g_autofree char *chip = qom_child_type(qts, VBRICK_MODULE, "xbridge");
+    g_autofree char *linked = qom_get_str(qts, "/machine/node1", "xbridge");
+    g_autofree char *prefix = qom_get_str(qts, VBRICK_XBRIDGE, "bus-prefix");
+    uint32_t identity = 0;
+
+    g_assert_cmpstr(chip, ==, "sgi-xbridge");
+    g_assert_cmpstr(linked, ==, VBRICK_XBRIDGE);
+    g_assert_cmpstr(prefix, ==, "vbrick-");
+    g_assert_cmpuint(qom_get_uint(qts, VBRICK_XBRIDGE, "host-port"), ==, 0xa);
+    g_assert_true(cbrick_bedrock_links(qts, "node1", 0xa));
+    g_assert_true(cbrick_bedrock_links(qts, "node1", VBRICK_V12_PORT));
+    for (unsigned int widget = 0x8; widget < 16; widget++) {
+        if (widget != 0xa && widget != VBRICK_V12_PORT) {
+            g_assert_false(cbrick_bedrock_links(qts, "node1", widget));
+        }
+    }
+    g_assert_false(cbrick_bedrock_links(qts, "node0", VBRICK_V12_PORT));
+
+    /* The V-brick's crossbar answers c1 at the port its cable meets. */
+    g_assert_true(nasid_test_cpu_readl(qts, 1, CBRICK_WIDGET(0xa) + 4,
+                                       &identity));
+    g_assert_cmphex((identity >> 12) & 0xffff, ==, 0xd000);
+    if (fitted) {
+        g_autofree char *v12 = qom_child_type(qts, VBRICK_MODULE,
+                                              "vbrick-v12");
+
+        g_assert_cmpstr(v12, ==, "sgi-odyssey");
+        g_assert_true(nasid_test_cpu_readl(qts, 1,
+                                           CBRICK_WIDGET(VBRICK_V12_PORT) + 4,
+                                           &identity));
+        g_assert_cmphex((identity >> 12) & 0xffff, ==, 0xc013);
+        g_assert_cmphex((identity >> 1) & 0x7ff, ==, 0x23);
+    } else {
+        /* No widget answers: the XBridge model's empty port reads zero. */
+        g_assert_true(nasid_test_cpu_readl(qts, 1,
+                                           CBRICK_WIDGET(VBRICK_V12_PORT) + 4,
+                                           &identity));
+        g_assert_cmphex(identity, ==, 0);
+    }
+    g_assert_false(nasid_test_cpu_readl(qts, 0,
+                                        CBRICK_WIDGET(VBRICK_V12_PORT) + 4,
+                                        &identity));
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/* The V12's interrupt destination, low word, a plain read-write register. */
+#define VBRICK_V12_INT_DEST_LOWER 0x38
+
+/*
+ * Save and restore the V-brick fixture with its V12 fitted: a value c1
+ * writes to the V12 comes back through c1 on the restored machine.
+ */
+static void test_vbrick_save_restore(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = cbrick_blank_prom();
+    g_autofree char *dir = g_dir_make_tmp("sn-builder-vbrick-migrate-XXXXXX",
+                                          &error);
+    const char *pipe = "-device sgi-odyssey,slot=vbrick-v12";
+    const uint64_t reg = CBRICK_WIDGET(VBRICK_V12_PORT) +
+                         VBRICK_V12_INT_DEST_LOWER;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *from_extra = NULL;
+    g_autofree char *to_extra = NULL;
+    QTestState *from, *to;
+    uint32_t value = 0;
+    uint8_t bytes[4];
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from_extra = g_strdup_printf("-S %s", pipe);
+    to_extra = g_strdup_printf("-S -incoming defer %s", pipe);
+    from = cbrick_start("cbrick-vbrick", prom, from_extra);
+    to = cbrick_start("cbrick-vbrick", prom, to_extra);
+    stl_be_p(bytes, 0x5a5a1234);
+    g_assert_true(qtest_memwrite_cpu(from, 1, reg, bytes, sizeof(bytes)));
+    g_assert_true(nasid_test_cpu_readl(from, 1, reg, &value));
+    g_assert_cmphex(value, ==, 0x5a5a1234);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_true(nasid_test_cpu_readl(to, 1, reg, &value));
+    g_assert_cmphex(value, ==, 0x5a5a1234);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(socket);
+    g_unlink(prom);
+    g_rmdir(dir);
+}
+
+/*
+ * A two-pipe V-brick needs a C-brick per pipe, so a second host on the
+ * midplane XBridge's port B, which the builder refuses while whether one
+ * XBridge serves two hosts is unknown.
+ */
+static void test_vbrick_two_pipes_refused(void)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M",
+        "sn-builder-bedrock-test,activate=on,"
+        "construction-fault=cbrick-vbrick-two-pipes",
+        "-cpu", "R14000", "-smp", "4,sockets=4,cores=1,threads=1",
+        "-m", "256", "-bios", "/dev/null", "-nodefaults",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args, "XBridge 'vbrick-xbridge' takes one host "
+                        "node; node 'c2' on port 0xb would be a second");
+}
+
 typedef struct CbrickRefusalCase {
     const char *machine;
     const char *message;
@@ -11006,7 +11142,7 @@ static const CbrickRefusalCase cbrick_refusal_cases[] = {
       "which no XIO cable reaches" },
     { CBRICK_FIXTURE("board-preset-unbuilt"),
       "I/O board 'xbrick-board' is cabled to crossbar 'xbrick-xbridge'; "
-      "preset 'odyssey' is not built on an enclosure crossbar yet" },
+      "preset 'kona' is not built on an enclosure crossbar yet" },
     { CBRICK_FIXTURE("rbrick-node-port-1"),
       "node 'c1' is cabled to router 'rbrick-router' port 1; it takes a "
       "node only on ports 2, 3, 4, 5" },
@@ -12068,6 +12204,16 @@ int main(int argc, char **argv)
                    test_nbrick_each_node_reaches_its_own_board);
     qtest_add_func("sn/builder/cbrick/nbrick-save-restore",
                    test_nbrick_save_restore);
+    qtest_add_data_func("sn/builder/cbrick/vbrick-v12/fitted",
+                        GUINT_TO_POINTER(true),
+                        test_vbrick_v12_reached_only_from_its_cbrick);
+    qtest_add_data_func("sn/builder/cbrick/vbrick-v12/empty",
+                        GUINT_TO_POINTER(false),
+                        test_vbrick_v12_reached_only_from_its_cbrick);
+    qtest_add_func("sn/builder/cbrick/vbrick-save-restore",
+                   test_vbrick_save_restore);
+    qtest_add_func("sn/builder/cbrick/vbrick-two-pipes-refused",
+                   test_vbrick_two_pipes_refused);
     qtest_add_func("sn/builder/cbrick/save-restore", test_cbrick_save_restore);
     qtest_add_func("sn/builder/cbrick/rbrick-without-l1-management",
                    test_rbrick_router_without_l1_management);

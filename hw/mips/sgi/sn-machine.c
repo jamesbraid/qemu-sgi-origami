@@ -1721,10 +1721,14 @@ static bool sgi_machine_crossbar_host(const SGIModelTopology *t,
 
 /*
  * The presets a crossbar-to-board cable can join: XIO cards that build
- * their own widget and take its link from sgi_machine_attach_xio_card().
- * A graphics pipe is claimed after machine init, and the Origin 2000
- * BaseIO cards bind the console's serial lines and flash, so neither is
- * built at an enclosure crossbar port until a brick contract needs it.
+ * their own widget and take its link from sgi_machine_attach_xio_card(),
+ * and the V-brick's VPro V12, a pipe record that a pipe claims after
+ * machine init (sgi_machine_claim_pipe_record()). The Onyx 3000 owner's
+ * guide (007-4264-002, printed pages 52 and 54) puts the V12 boards
+ * behind the V-brick's own midplane XBridge. The other pipes and the
+ * Origin 2000 BaseIO cards, which bind the console's serial lines and
+ * flash, are not built at an enclosure crossbar port until a brick
+ * contract needs them.
  */
 static bool sgi_machine_enclosure_board_preset(SGIModelIoBoardPreset preset)
 {
@@ -1734,6 +1738,7 @@ static bool sgi_machine_enclosure_board_preset(SGIModelIoBoardPreset preset)
     case SGI_MODEL_IO_BOARD_PRESET_MENET:
     case SGI_MODEL_IO_BOARD_PRESET_MSCSI:
     case SGI_MODEL_IO_BOARD_PRESET_PIC:
+    case SGI_MODEL_IO_BOARD_PRESET_ODYSSEY:
         return true;
     default:
         return false;
@@ -1816,7 +1821,8 @@ static bool sgi_machine_validate_board_cable(
  * build honestly yet: a second host node on one XBridge, since whether
  * one chip serves hosts on A and B at once is unknown; a host cabled to
  * a router, which no Origin 3000 rule covers; and a board whose preset
- * is not an XIO card this builder can join to a crossbar port. A cable
+ * this builder cannot join to a crossbar port
+ * (sgi_machine_enclosure_board_preset()). A cable
  * between two crossbars is checked like any other, then refused when the
  * cables are built (sgi_machine_build_board_cables()).
  */
@@ -3672,9 +3678,10 @@ static void sgi_machine_mark_pipe_records(SGIMachineState *s,
 }
 
 /*
- * The catalogue's name for pipe record @index: its XIO slot label when it
- * is Crossbow-attached, else widget-<N> for the XBridge port it is wired
- * to.
+ * The catalogue's name for pipe record @index: its catalogue id when it
+ * is cabled to an I/O brick's crossbar, as every board there is known;
+ * its XIO slot label when it is Crossbow-attached; else widget-<N> for
+ * the XBridge port it is wired to.
  */
 static char *sgi_machine_pipe_record_slot(SGIMachineState *s,
                                           const SGIModelIoBoard *record,
@@ -3683,6 +3690,9 @@ static char *sgi_machine_pipe_record_slot(SGIMachineState *s,
     const SGIModelXioAttachment *attachment =
         s->pipe_record_attachment[index];
 
+    if (s->enclosure_xbridges && attachment->crossbar_index >= 0) {
+        return g_strdup(record->id);
+    }
     if (attachment->crossbar_index >= 0) {
         return g_strdup(record->label);
     }
@@ -9597,7 +9607,8 @@ static void sgi_machine_done(Notifier *notifier, void *data)
             continue;
         }
         attachment = s->pipe_record_attachment[i];
-        if (attachment->crossbar_index >= 0) {
+        /* An XBridge marks a link present when the widget attaches. */
+        if (!s->enclosure_xbridges && attachment->crossbar_index >= 0) {
             sgi_xbow_mark_widget_alive(
                 s->crossbars[attachment->crossbar_index], attachment->widget,
                 true, &error_fatal);
@@ -9696,10 +9707,12 @@ static void sgi_machine_link_slot(SGIMachineState *s,
 /*
  * A pipe claiming the topology's own pipe record @index (see
  * sgi_machine_pipe_preset()): link it to the record's port, a Crossbow
- * port, a node's XBridge external port or the V-brick XBridge's port 8,
+ * port, a port of an I/O brick's XBridge its cable meets, a node's
+ * XBridge external port or the experimental V-brick XBridge's port 8,
  * and give it the record's module, its name for the board's QOM child and
- * qdev id (io4, graphics-slot, vbrick-v12, as the builder used to) and
- * the identity serials the board's own defaults already carry.
+ * qdev id (io4, graphics-slot, vbrick-v12, as the builder used to, or
+ * the catalogue id on an I/O brick's crossbar) and the identity serials
+ * the board's own defaults already carry.
  */
 static SGIXioLink *sgi_machine_claim_pipe_record(SGIMachineState *s,
                                                  const SGIModelTopology *t,
@@ -9728,6 +9741,19 @@ static SGIXioLink *sgi_machine_claim_pipe_record(SGIMachineState *s,
                           OBJECT(s->vbrick_bridge), 8, board, 0);
         place->widget = 8;
         place->name = g_strdup("vbrick-v12");
+    } else if (s->enclosure_xbridges && attachment->crossbar_index >= 0) {
+        /*
+         * Validation put the record's attachment at the crossbar port its
+         * cable meets, and the hosting node's Bedrock decodes that widget.
+         * The XBridge takes a widget on a link port after it realizes.
+         */
+        sgi_xio_link_init(
+            link, OBJECT(s), link_name,
+            OBJECT(s->enclosure_xbridges[attachment->crossbar_index]),
+            attachment->widget, board, 0);
+        sgi_machine_link_board_pi(s, board, attachment->node_index);
+        place->widget = attachment->widget;
+        place->name = g_strdup(record->id);
     } else if (attachment->crossbar_index >= 0) {
         sgi_xio_link_init(link, OBJECT(s), link_name,
                           OBJECT(s->crossbars[attachment->crossbar_index]),
