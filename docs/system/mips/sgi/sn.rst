@@ -1097,8 +1097,10 @@ I/O, on the node's own Bridge), ``io6`` (the Origin 2000 standard XIO
 board, behind a Crossbow), ``io6g`` (the BaseIO-G, the Onyx2's board),
 ``menet`` and ``mscsi`` (optional XIO boards), ``io8`` (the Origin 300
 IO-8 assembly's PCI population -- a QLogic ISP12160, an IOC3 and a Lucent
-OHCI controller -- placed on the SN1 node's own XBridge head F) and
-``fuel`` (the Fuel's onboard I/O). Any other preset name is refused. IP29's onboard I/O is soldered to the
+OHCI controller -- placed on the SN1 node's own XBridge head F), ``io7``
+(the Origin 3000 I-brick's IOC3, Lucent OHCI and TI TSB12LV22 at head F
+devices 4, 5 and 6, placed as ``/machine/module<M>/io7`` on the I-brick's
+XBridge) and ``fuel`` (the Fuel's onboard I/O). Any other preset name is refused. IP29's onboard I/O is soldered to the
 System Board rather than plugged into a slot, so the Origin 200 node builds
 its ``ip29`` instance directly on its own XIO port, with no board
 wrapper; the Origin 300 node's ``io8`` instance is placed the same way,

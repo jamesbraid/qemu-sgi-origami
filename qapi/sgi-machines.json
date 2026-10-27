@@ -1062,7 +1062,7 @@
 #     @revision and @serial are not presented to the guest
 #
 # @io7: the Origin 3000 I-brick's fixed I/O functions on its XBridge
-#     head F.  The current SN1 builder refuses it
+#     head F: IOC3, USB and IEEE 1394 at devices 4, 5 and 6
 #
 # Since: 11.2
 ##

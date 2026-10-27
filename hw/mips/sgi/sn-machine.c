@@ -1410,9 +1410,9 @@ static bool sgi_machine_ip53_normal_tuple(
 /*
  * Refuse catalogue records this builder cannot build yet, before anything
  * is created: a memory-only node, a module that owns its L1 for its
- * nodes, a module's catalogued L1 brick type and the I-brick's IO7.
- * Building any of them as the nearest existing shape would show the
- * guest hardware the topology does not describe.
+ * nodes and a module's catalogued L1 brick type. Building any of them
+ * as the nearest existing shape would show the guest hardware the
+ * topology does not describe.
  */
 static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
                                                Error **errp)
@@ -1420,7 +1420,6 @@ static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
     const SGIModelNodeList *node;
     const SGIModelModuleList *module;
     const SGIModelControllerList *controller;
-    const SGIModelIoBoardList *board;
 
     for (node = t->nodes; node; node = node->next) {
         const SGIModelNode *n = node->value;
@@ -1454,14 +1453,6 @@ static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
             error_setg(errp, "topology '%s' controller '%s' is owned by its "
                        "module; module-owned controllers are not built yet",
                        t->name, c->id);
-            return false;
-        }
-    }
-    for (board = t->io_boards; board; board = board->next) {
-        if (board->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO7) {
-            error_setg(errp, "topology '%s' I/O board '%s' selects preset "
-                       "'io7', which is not built yet", t->name,
-                       board->value->id);
             return false;
         }
     }
@@ -3681,6 +3672,88 @@ static bool sgi_machine_instantiate_bedrock_io(
 }
 
 /*
+ * The I-brick's IO7, on head F of the XBridge in its own brick: an
+ * sgi-baseio "io7" instance under that brick's module. The serial
+ * line it takes is the next one after the hosting node's L1, as the
+ * IO-8's is; its one serial port takes port A's console and record
+ * lines.
+ */
+static bool sgi_machine_instantiate_io7(
+    SGIMachineState *s, const SGIModelTopology *t,
+    const SGIModelIoBoard *record, unsigned int board_index,
+    const SGIModelXioAttachment *attachment, Error **errp)
+{
+    size_t crossbar_count;
+    g_autofree const SGIModelCrossbar **crossbars =
+        sgi_model_crossbar_array(t->crossbars, &crossbar_count);
+    g_autofree char *module_name = g_strdup_printf(
+        "module%u", crossbars[attachment->crossbar_index]->module_index);
+    Object *module = object_resolve_path_component(OBJECT(s), module_name);
+    DeviceState *xbridge = s->enclosure_xbridges[attachment->crossbar_index];
+    unsigned int node_index = attachment->node_index;
+    DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, node_index);
+    g_autofree char *nvram_name = g_strdup_printf("sgi-nvram%u", node_index);
+    BlockBackend *nvram_blk = nvram_dinfo ? blk_by_legacy_dinfo(nvram_dinfo) :
+                              blk_by_name(nvram_name);
+    const char *nvram, *nvram_clock;
+    DeviceState *io7;
+    Chardev *chr;
+
+    if (attachment->widget != 15) {
+        error_setg(errp, "topology '%s' I/O board '%s' places the IO7 at "
+                   "widget %u; it is on its XBridge's head F, widget 15",
+                   t->name, record->id, attachment->widget);
+        return false;
+    }
+    io7 = qdev_new(TYPE_SGI_BASEIO);
+    object_property_add_child(module, "io7", OBJECT(io7));
+    object_unref(OBJECT(io7));
+    qdev_prop_set_string(io7, "preset", "io7");
+    if (record->system_timekeeper) {
+        const SGIModelSystemTimekeeper *clock = record->system_timekeeper;
+
+        if (clock->kind != SGI_MODEL_SYSTEM_TIMEKEEPER_KIND_M48T35_COMPATIBLE ||
+            !clock->has_year_base || clock->year_base != 1968 ||
+            clock->initial_ip27_fixture) {
+            error_setg(errp, "unsupported fitted system Timekeeper policy");
+            return false;
+        }
+        qdev_prop_set_uint8(io7, "system-timekeeper-kind",
+                            SGI_IOC3_TIMEKEEPER_M48T35);
+        qdev_prop_set_uint32(io7, "system-timekeeper-year-base",
+                             clock->year_base);
+        if (!sgi_machine_nvram_backing(s, t, record, nvram_blk, &nvram,
+                                       &nvram_clock, errp)) {
+            return false;
+        }
+        if (nvram) {
+            qdev_prop_set_string(io7, "nvram-drive", nvram);
+        }
+        if (nvram_clock) {
+            qdev_prop_set_string(io7, "nvram-clock-drive", nvram_clock);
+        }
+    }
+    qdev_prop_set_uint32(io7, "ioc3-subsystem-id",
+                         s->io_config[board_index].ioc3_subsystem_id);
+    if (record->has_ioc3_serial) {
+        qdev_prop_set_uint64(io7, "onewire-serial", record->ioc3_serial);
+    }
+    chr = serial_hd(sgi_sn1_serial_line(node_index, 1));
+    if (chr) {
+        qdev_prop_set_string(io7, "chardev-a", chr->label);
+    }
+    chr = serial_hd(sgi_sn1_serial_line(node_index, 3));
+    if (chr) {
+        qdev_prop_set_string(io7, "record-a", chr->label);
+    }
+    object_property_set_link(OBJECT(io7), "pci-bus",
+                             OBJECT(sgi_xbridge_pci_bus(SGI_XBRIDGE(xbridge),
+                                                        15)),
+                             &error_abort);
+    return qdev_realize(io7, NULL, errp);
+}
+
+/*
  * Build one io_boards entry, wire it to its own XIO position and
  * realize it: IP29's onboard I/O (direct-attach), the Origin 2000
  * BaseIO card (Crossbow-attach) and the Origin 300 IO-8 (a Bedrock
@@ -3717,6 +3790,9 @@ static bool sgi_machine_instantiate_io_board(
     case SGI_MODEL_IO_BOARD_PRESET_FUEL:
         return sgi_machine_instantiate_bedrock_io(s, t, record, board_index,
                                                   attachment, errp);
+    case SGI_MODEL_IO_BOARD_PRESET_IO7:
+        return sgi_machine_instantiate_io7(s, t, record, board_index,
+                                           attachment, errp);
     case SGI_MODEL_IO_BOARD_PRESET_PCI_SHOEHORN:
         return sgi_machine_instantiate_pci_shoehorn(s, record, board_index,
                                                     attachment, errp);
@@ -7474,6 +7550,33 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
         unsigned int found = 0;
         uint64_t value;
 
+        if (board->populated &&
+            board->preset == SGI_MODEL_IO_BOARD_PRESET_IO7) {
+            /*
+             * No capture gives the IO7 functions' revisions or where its
+             * Ethernet address comes from, so a record may name neither.
+             */
+            if (board->pci_functions ||
+                (board->has_mac_source &&
+                 board->mac_source != SGI_MODEL_MAC_SOURCE_NONE)) {
+                error_setg(errp, "topology '%s' board '%s' names IO7 "
+                           "function revisions or a MAC source, which no "
+                           "source gives", t->name, board->id);
+                return false;
+            }
+            if (!sgi_machine_resolve_uint(s, t, SGI_INPUT_IOC3_SUBSYSTEM,
+                    &used, board->has_ioc3_subsystem_id,
+                    board->ioc3_subsystem_id, &value, errp)) {
+                return false;
+            }
+            if (value > UINT16_MAX) {
+                error_setg(errp, "topology '%s' board '%s' has invalid IOC3 "
+                           "identity configuration", t->name, board->id);
+                return false;
+            }
+            s->io_config[i].ioc3_subsystem_id = value;
+            continue;
+        }
         if (!board->populated ||
             (board->preset != SGI_MODEL_IO_BOARD_PRESET_IO8 &&
              board->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL)) {
@@ -8340,7 +8443,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                     return false;
                 }
                 if (attachments[record->attachment]->node_index >= node_count ||
-                    attachments[record->attachment]->crossbar_index >= 0) {
+                    (attachments[record->attachment]->crossbar_index >= 0 &&
+                     record->preset != SGI_MODEL_IO_BOARD_PRESET_IO7) ||
+                    (attachments[record->attachment]->crossbar_index < 0 &&
+                     record->preset == SGI_MODEL_IO_BOARD_PRESET_IO7)) {
                     error_setg(errp, "topology '%s' io board %u has no direct "
                                "Bedrock attachment", t->name, board_index);
                     return false;
