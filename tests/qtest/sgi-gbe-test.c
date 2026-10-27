@@ -553,7 +553,7 @@ static void test_dma_reset_did_cursor(void)
     wr(q, CMAP(512), 0x13579b00);
     wr(q, 0x40004, 0x14006);
     frame(q);
-    wr(q, 0x70000, 31 | 31 << 16);
+    wr(q, 0x70000, 0);
     wr(q, 0x70008, 0x10293800);
     wr(q, 0x78000, 1u << 30);
     wr(q, 0x70004, 1);
@@ -677,7 +677,7 @@ static void test_rgb8_geometry(void)
     g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0);
     g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0x123456);
     /* Cursor remains available outside producer. */
-    wr(q, 0x70000, 31 | 31 << 16);
+    wr(q, 0x70000, 0);
     wr(q, 0x70008, 0x10203000);
     wr(q, 0x78000, 1u << 30);
     wr(q, 0x70004, 1);
@@ -990,7 +990,7 @@ static void test_did_overlay(void)
     wr(q, GMAP(0x10), 0xff000000);
     wr(q, GMAP(0x20), 0x00ee0000);
     wr(q, GMAP(0x30), 0x0000dd00);
-    wr(q, 0x70000, 31 | 31 << 16);
+    wr(q, 0x70000, 0);
     wr(q, 0x70008, 0x10203000);
     wr(q, 0x78000, 1u << 30);
     wr(q, 0x70004, 1);
@@ -1308,7 +1308,7 @@ static void test_netbsd_vertical_phase(void)
     g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x123456);
     wr(q, VT(17), 77 | (uint32_t)(-61 & 4095) << 12);
     wr(q, VT(18), 43 | (uint32_t)(-60 & 4095) << 12);
-    wr(q, 0x70000, 31 | 31 << 16);
+    wr(q, 0x70000, 0);
     wr(q, 0x70008, 0x10203000);
     wr(q, 0x78000, 1u << 30);
     wr(q, 0x70004, 1);
@@ -1328,7 +1328,7 @@ static void test_cursor_boundaries(void)
     wr(q, VT(13), 11 | 78 << 12);
     wr(q, VT(14), 32);
     wr(q, VT(18), 43 | (uint32_t)(-34 & 4095) << 12);
-    wr(q, 0x70000, 31 | 31 << 16);
+    wr(q, 0x70000, 0);
     wr(q, 0x70008, 0x10203000);
     wr(q, 0x7000c, 0x40506000);
     wr(q, 0x70010, 0x70809000);
@@ -1339,9 +1339,9 @@ static void test_cursor_boundaries(void)
     frame(q);
     g_assert_cmphex(screen(q, 32, 32, 16, 0), ==, 0x708090);
     g_assert_cmphex(screen(q, 32, 32, 31, 31), ==, 0x708090);
-    wr(q, 0x70000, 30 | 31 << 16);
+    wr(q, 0x70000, 0xffff);
     g_assert_cmphex(screen(q, 32, 32, 0, 0), ==, 0x405060);
-    wr(q, 0x70000, 0xffff | 31 << 16); /* Entire glyph is left of picture. */
+    wr(q, 0x70000, 0xffe0); /* Entire glyph is left of picture. */
     g_assert_cmphex(screen(q, 32, 32, 0, 0), ==, 0);
     wr(q, 0x70000, 5 | 6 << 16);
     wr(q, 0x70004, 3);
@@ -1349,6 +1349,243 @@ static void test_cursor_boundaries(void)
     g_assert_cmphex(screen(q, 32, 32, 0, 6), ==, 0x102030);
     g_assert_cmphex(screen(q, 32, 32, 0, 0), ==, 0);
     qtest_quit(q);
+}
+
+static const uint32_t projection_colors[] = { 0x123456, 0x789abc, 0xde4f80 };
+static const struct {
+    unsigned x, y, color;
+} projection_markers[] = {
+    { 0, 0, 1 }, { 31, 0, 2 }, { 0, 31, 2 }, { 31, 31, 3 },
+    { 3, 5, 2 }, { 15, 17, 3 }, { 16, 18, 1 }, { 23, 7, 3 },
+};
+
+static void projection_mode(QTestState *q, unsigned w, unsigned h,
+                             unsigned xp, unsigned yp)
+{
+    mode(q);
+    wr(q, VT(0), 0x80000000);
+    wr(q, VT(1), xp | yp << 12);
+    wr(q, VT(4), h << 12);
+    wr(q, VT(15), w << 12);
+    wr(q, VT(16), h << 12);
+    wr(q, VT(13), (w - 21) | (xp - 19) << 12);
+    wr(q, VT(14), h);
+    wr(q, VT(18), (xp - 54) | (-(yp - h) & 4095) << 12);
+    wr(q, WID(0), 3 | 5 << 2);
+    /* A cursor must bypass gamma; disabled plane inputs remain black. */
+    for (unsigned i = 0; i < 256; i++) {
+        wr(q, GMAP(i), 0);
+    }
+}
+
+static void projection_glyph(QTestState *q)
+{
+    uint32_t words[64] = { 0 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(projection_markers); i++) {
+        unsigned x = projection_markers[i].x;
+        unsigned y = projection_markers[i].y;
+
+        words[y * 2 + x / 16] |= projection_markers[i].color <<
+                                (30 - 2 * (x % 16));
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
+        wr(q, 0x78000 + 4 * i, words[i]);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(projection_colors); i++) {
+        wr(q, 0x70008 + 4 * i, projection_colors[i] << 8);
+    }
+}
+
+static uint32_t projection_position(int x, int y)
+{
+    return (uint16_t)x | (uint32_t)(uint16_t)y << 16;
+}
+
+static void projection_check(QTestState *q, unsigned w, unsigned h,
+                              int ox, int oy, bool on, bool crosshair)
+{
+    g_autofree char *dir = g_dir_make_tmp("gbe-projection-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "frame.ppm", NULL);
+    g_autofree char *header = g_strdup_printf("P6\n%u %u\n255\n", w, h);
+    g_autofree char *data = NULL;
+    gsize size;
+    unsigned stride = QEMU_ALIGN_UP(w * 3, 4);
+
+    qtest_qmp_assert_success(q,
+        "{'execute':'screendump','arguments':{'filename':%s}}", path);
+    g_assert_true(g_file_get_contents(path, &data, &size, NULL));
+    g_assert_cmpuint(size, ==, strlen(header) + stride * h);
+    g_assert_cmpmem(data, strlen(header), header, strlen(header));
+    for (unsigned y = 0; y < h; y++) {
+        for (unsigned x = 0; x < w; x++) {
+            const uint8_t *pixel = (uint8_t *)data + strlen(header) +
+                                   y * stride + x * 3;
+            uint32_t actual = pixel[0] << 16 | pixel[1] << 8 | pixel[2];
+            uint32_t expected = 0;
+
+            if (on && crosshair && ((int)x == ox || (int)y == oy)) {
+                expected = projection_colors[0];
+            } else if (on && !crosshair) {
+                for (unsigned i = 0; i < ARRAY_SIZE(projection_markers); i++) {
+                    if ((int)x == ox + (int)projection_markers[i].x &&
+                        (int)y == oy + (int)projection_markers[i].y) {
+                        expected = projection_colors[
+                            projection_markers[i].color - 1];
+                    }
+                }
+            }
+            if (actual != expected) {
+                g_test_message("cursor origin (%d,%d), pixel (%u,%u)",
+                               ox, oy, x, y);
+            }
+            g_assert_cmphex(actual, ==, expected);
+        }
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void projection_delta(QTestState *q, unsigned xp, unsigned yp,
+                              unsigned h, int dx, int dy)
+{
+    wr(q, VT(18), (xp - 54 - dx) |
+        ((uint32_t)(-(int)(yp - h) + dy) & 4095) << 12);
+}
+
+static void test_cursor_projection(void)
+{
+    const struct { unsigned w, h, xp, yp; } modes[] = {
+        { 96, 96, 137, 113 }, { 128, 104, 181, 127 },
+    };
+    const int positions[][2] = {
+        { 0, 0 }, { 31, 31 }, { 64, 80 }, { -31, -31 },
+        { -5, 7 }, { 11, -3 }, { -31, 11 }, { 8, -31 },
+        { -32, 3 }, { 3, -32 }, { 32767, 32767 },
+        { -32768, 0 }, { 0, -32768 }, { -32768, -32768 },
+    };
+    const unsigned hotspots[][2] = { { 0, 0 }, { 3, 5 }, { 31, 31 } };
+    const int deltas[][2] = { { -3, 0 }, { 5, 0 }, { 0, -4 }, { 0, 6 } };
+    QTestState *q = start("");
+
+    for (unsigned m = 0; m < ARRAY_SIZE(modes); m++) {
+        unsigned w = modes[m].w, h = modes[m].h;
+        unsigned xp = modes[m].xp, yp = modes[m].yp;
+
+        projection_mode(q, w, h, xp, yp);
+        if (m) {
+            /* Endpoints equal to the period retain their zero aliases. */
+            wr(q, VT(15), xp | w << 12);
+            wr(q, VT(16), yp | h << 12);
+        }
+        projection_glyph(q);
+        wr(q, 0x70004, 1);
+        for (unsigned i = 0; i < ARRAY_SIZE(positions); i++) {
+            uint32_t value = projection_position(positions[i][0],
+                                                  positions[i][1]);
+            wr(q, 0x70000, value);
+            projection_check(q, w, h, positions[i][0], positions[i][1],
+                             true, false);
+            g_assert_cmphex(rd(q, 0x70000), ==, value);
+        }
+        wr(q, 0x70000, projection_position(w - 1, h - 1));
+        projection_check(q, w, h, w - 1, h - 1, true, false);
+        wr(q, 0x70000, projection_position(w, h));
+        projection_check(q, w, h, w, h, true, false);
+        for (unsigned hot = 0; hot < ARRAY_SIZE(hotspots); hot++) {
+            for (unsigned p = 0; p < 3; p++) {
+                int px = p == 0 ? 4 : p == 1 ? 48 : w - 2;
+                int py = p == 0 ? 6 : p == 1 ? 52 : h - 2;
+                int x = px - (int)hotspots[hot][0];
+                int y = py - (int)hotspots[hot][1];
+
+                wr(q, 0x70000, projection_position(x, y));
+                projection_check(q, w, h, x, y, true, false);
+                g_assert_cmphex(screen(q, w, h, px, py), ==,
+                               projection_colors[hot]);
+            }
+        }
+        wr(q, 0x70000, projection_position(31, 31));
+        for (unsigned d = 0; d < ARRAY_SIZE(deltas); d++) {
+            projection_delta(q, xp, yp, h, deltas[d][0], deltas[d][1]);
+            projection_check(q, w, h, 31 + deltas[d][0], 31 + deltas[d][1],
+                             true, false);
+        }
+        projection_delta(q, xp, yp, h, 3, -2);
+        wr(q, 0x70000, projection_position(7, 9));
+        wr(q, 0x70004, 0);
+        projection_check(q, w, h, 10, 7, false, false);
+        wr(q, 0x70004, 1);
+        projection_check(q, w, h, 10, 7, true, false);
+        wr(q, 0x70004, 3);
+        projection_check(q, w, h, 10, 7, true, true);
+        wr(q, 0x70000, projection_position(-5, 9));
+        projection_check(q, w, h, -2, 7, true, true);
+        wr(q, 0x70004, 2);
+        projection_check(q, w, h, -2, 7, false, true);
+        projection_delta(q, xp, yp, h, 0, 0);
+        wr(q, 0x70000, projection_position(31, 31));
+        wr(q, VT(1), 54 | yp << 12);
+        wr(q, VT(15), 32 << 12);
+        wr(q, 0x70004, 1);
+        projection_check(q, 32, h, 0, 0, false, false);
+    }
+    qtest_quit(q);
+}
+
+static void test_cursor_projection_migration(void)
+{
+    for (unsigned crosshair = 0; crosshair < 2; crosshair++) {
+        g_autofree char *dir =
+            g_dir_make_tmp("gbe-cursor-restore-XXXXXX", NULL);
+        g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+        g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+        QTestState *from = start("");
+        QTestState *to = start("-incoming defer");
+        QTestState *control = start("");
+        QTestState *program[] = { from, control };
+        const unsigned regs[] = { VT(1), VT(4), VT(15), VT(16), VT(18),
+                                  0x70000, 0x70004, 0x70008, 0x7000c,
+                                  0x70010 };
+
+        qtest_irq_intercept_out_named(to, PATH, "sysbus-irq");
+        for (unsigned i = 0; i < ARRAY_SIZE(program); i++) {
+            projection_mode(program[i], 96, 96, 137, 113);
+            projection_glyph(program[i]);
+            projection_delta(program[i], 137, 113, 96, -3, 11);
+            wr(program[i], 0x70000, projection_position(27, -7));
+            wr(program[i], 0x70004, crosshair ? 3 : 1);
+        }
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        sgi_migrate_stopped(from, uri);
+        sgi_wait_migration(to, "completed");
+        for (unsigned i = 0; i < ARRAY_SIZE(regs); i++) {
+            g_assert_cmphex(rd(to, regs[i]), ==, rd(control, regs[i]));
+        }
+        for (unsigned i = 0; i < 64; i++) {
+            g_assert_cmphex(rd(to, 0x78000 + 4 * i), ==,
+                            rd(control, 0x78000 + 4 * i));
+        }
+        projection_check(to, 96, 96, 24, 4, true, crosshair);
+        projection_check(control, 96, 96, 24, 4, true, crosshair);
+        for (unsigned i = 0; i < 4; i++) {
+            g_assert_cmpuint(qtest_get_irq_raise_count(to, i), ==, 0);
+        }
+        qtest_system_reset(to);
+        g_assert_cmphex(rd(to, 0x70000), ==, 0);
+        g_assert_cmphex(rd(to, 0x70004), ==, 0);
+        projection_mode(to, 96, 96, 137, 113);
+        projection_check(to, 96, 96, 0, 0, false, false);
+        for (unsigned i = 0; i < 4; i++) {
+            g_assert_cmpuint(qtest_get_irq_raise_count(to, i), ==, 0);
+        }
+        qtest_quit(from);
+        qtest_quit(to);
+        qtest_quit(control);
+        g_unlink(sock);
+        g_rmdir(dir);
+    }
 }
 
 static void test_fractional_and_changed_clock(void)
@@ -2263,6 +2500,9 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-gbe/netbsd-vertical-phase",
                    test_netbsd_vertical_phase);
     qtest_add_func("/sgi-gbe/cursor-boundaries", test_cursor_boundaries);
+    qtest_add_func("/sgi-gbe/cursor-projection", test_cursor_projection);
+    qtest_add_func("/sgi-gbe/cursor-projection-migration",
+                   test_cursor_projection_migration);
     qtest_add_func("/sgi-gbe/fractional-clock",
                    test_fractional_and_changed_clock);
     qtest_add_func("/sgi-gbe/dma-address/fields", test_dma_address_fields);
