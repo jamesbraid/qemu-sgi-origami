@@ -2060,10 +2060,22 @@ void memory_region_enable_lockless_io(MemoryRegion *mr);
  * TCG normally ends a translation block at any I/O access that is not its
  * last instruction, and re-executes that access as a block of its own, so
  * that the access cannot change what the rest of the block would see. A
- * region whose write handler never changes the memory map, never reads or
- * changes the storing CPU's state, and raises interrupts only as
- * asynchronous events can declare its stores posted. TCG then performs
- * them in place when instruction counting is off. Reads are unaffected.
+ * region may declare its stores posted if its write handler:
+ *
+ * - changes no address space a CPU uses (the storing vCPU would see the
+ *   new map only after its block exits);
+ * - neither reads nor writes any CPU's architectural state;
+ * - never leaves the CPU loop (cpu_exit(), cpu_loop_exit*() or work run
+ *   on a CPU).
+ *
+ * The handler may change interrupt lines: the interrupt is taken at the
+ * next block boundary. RAM it writes is seen by later loads in the same
+ * block, but code already translated is not read again.
+ *
+ * TCG honours the flag only when this region is the terminal section of
+ * the CPU's TLB entry, so a region reached through another region's
+ * handler gains nothing. Stores complete in place only when instruction
+ * counting is off. Loads are unaffected.
  *
  * @mr: the memory region to be updated.
  */
