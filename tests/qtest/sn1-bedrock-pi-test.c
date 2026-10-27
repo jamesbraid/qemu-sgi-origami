@@ -85,6 +85,10 @@
 #define RT_COUNTER 0x30100
 #define RT_MASK ((1ULL << 55) - 1)
 #define RT_TICK_NS 800
+#define GFX_CREDIT(slot) (0x308 + 0x28 * (slot))
+#define GFX_BIAS(slot) (0x310 + 0x28 * (slot))
+#define GFX_INT_COUNT(slot) (0x318 + 0x28 * (slot))
+#define GFX_INT_COMPARE(slot) (0x320 + 0x28 * (slot))
 
 static QTestState *start_processors(unsigned count, const char *extra)
 {
@@ -1268,6 +1272,70 @@ static void test_rt_counter_access_width(void)
     qtest_quit(s);
 }
 
+/*
+ * The graphics interrupt counter (SN1 hubpi.h): it counts while the
+ * credit counter is at or below zero, sends the graphics interrupt,
+ * pending bit 1 + slot, when it reaches the compare and is loaded with the
+ * compare then; it is zeroed when the credit counter rises above the bias
+ * and replaced by a software write. The model counts at the real-time
+ * counter's rate, and only below a nonzero bias, its choices: a slot out
+ * of reset, credits and bias zero, never interrupts.
+ */
+static void test_gfx_interrupt_counter(void)
+{
+    QTestState *s = start("");
+
+    /* Timers run only while the machine does; qtest still owns the clock. */
+    qtest_qmp_assert_success(s, "{ 'execute': 'cont' }");
+    qtest_writeq(s, PI(0, GFX_INT_COMPARE(1)), 100);
+    qtest_clock_step(s, 1000 * RT_TICK_NS);
+    g_assert_cmpuint(qtest_readq(s, PI(0, GFX_INT_COUNT(1))), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)) & 6, ==, 0);
+
+    qtest_writeq(s, PI(0, GFX_BIAS(1)), 5);
+    qtest_writeq(s, PI(0, GFX_INT_COMPARE(1)), 100);
+    qtest_writeq(s, PI(0, GFX_CREDIT(1)), 1);
+    qtest_clock_step(s, 1000 * RT_TICK_NS);
+    g_assert_cmpuint(qtest_readq(s, PI(0, GFX_INT_COUNT(1))), ==, 0);
+
+    /* At zero credits it counts, one per tick. */
+    qtest_writeq(s, PI(0, GFX_CREDIT(1)), 0);
+    qtest_clock_step(s, 40 * RT_TICK_NS);
+    g_assert_cmpuint(qtest_readq(s, PI(0, GFX_INT_COUNT(1))), ==, 40);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)) & 6, ==, 0);
+    qtest_clock_step(s, 60 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)) & 6, ==, 4);
+    g_assert_cmpuint(qtest_readq(s, PI(0, GFX_INT_COUNT(1))), ==, 100);
+
+    /* Loaded with the compare: no second interrupt for a while. */
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 2);
+    qtest_clock_step(s, 1000 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)) & 6, ==, 0);
+
+    /* Software zeroes it, as the kernel's handler does: it counts again. */
+    qtest_writeq(s, PI(0, GFX_INT_COUNT(1)), 0);
+    qtest_clock_step(s, 100 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)) & 6, ==, 4);
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 2);
+
+    /* Credits above the bias zero it and stop it. */
+    qtest_writeq(s, PI(0, GFX_INT_COUNT(1)), 0);
+    qtest_clock_step(s, 30 * RT_TICK_NS);
+    qtest_writeq(s, PI(0, GFX_CREDIT(1)), 6);
+    g_assert_cmpuint(qtest_readq(s, PI(0, GFX_INT_COUNT(1))), ==, 0);
+    qtest_clock_step(s, 1000 * RT_TICK_NS);
+    g_assert_cmpuint(qtest_readq(s, PI(0, GFX_INT_COUNT(1))), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)) & 6, ==, 0);
+
+    /* Slot A is its own: bit 1. */
+    qtest_writeq(s, PI(0, GFX_BIAS(0)), 1);
+    qtest_writeq(s, PI(0, GFX_INT_COMPARE(0)), 10);
+    qtest_writeq(s, PI(0, GFX_CREDIT(0)), 0);
+    qtest_clock_step(s, 10 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)) & 6, ==, 2);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1315,6 +1383,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-pi/migration-counter-phase",
                    test_migration_preserves_counter_phase);
     qtest_add_func("sn1/bedrock-pi/cpu-enable-lines", test_cpu_enable_lines);
+    qtest_add_func("sn1/bedrock-pi/gfx-interrupt-counter",
+                   test_gfx_interrupt_counter);
     qtest_add_func("sn1/bedrock-pi/cpu-enable-migration",
                    test_cpu_enable_migration);
     return g_test_run();

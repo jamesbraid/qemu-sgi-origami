@@ -130,6 +130,36 @@ static void test_starved_once(void)
 }
 
 /* A head sees the mark only while a counted store is being forwarded. */
+/* The interrupt counter's arithmetic, in ticks of the caller's clock. */
+static void test_interrupt_counter(void)
+{
+    SGIPIGfx g;
+
+    sgi_pi_gfx_reset(&g);
+    g.int_compare[0] = 10;
+    /* Zero credits and a zero bias: an idle slot, which does not count. */
+    g_assert_false(sgi_pi_gfx_int_advance(&g, 0, 50));
+    g_assert_cmpuint(sgi_pi_gfx_int_due(&g, 0), ==, UINT64_MAX);
+    g.bias[0] = 5;
+    g.credit[0] = 3;
+    g_assert_false(sgi_pi_gfx_int_advance(&g, 0, 100));
+    g_assert_cmpuint(sgi_pi_gfx_int_due(&g, 0), ==, UINT64_MAX);
+    g.credit[0] = 0;
+    g_assert_false(sgi_pi_gfx_int_advance(&g, 0, 200));
+    g_assert_cmpuint(sgi_pi_gfx_int_due(&g, 0), ==, 210);
+    g_assert_false(sgi_pi_gfx_int_advance(&g, 0, 204));
+    g_assert_cmpuint(g.int_count[0], ==, 4);
+    /* Late: it stops at the compare rather than running past it. */
+    g_assert_true(sgi_pi_gfx_int_advance(&g, 0, 500));
+    g_assert_cmpuint(g.int_count[0], ==, 10);
+    /* From the compare the next interrupt is a whole turn away. */
+    g_assert_cmpuint(sgi_pi_gfx_int_due(&g, 0), ==,
+                     500 + (uint64_t)SGI_PI_GFX_INT_MASK + 1);
+    /* Above the count, the compare wraps through the 26-bit field. */
+    g.int_count[0] = SGI_PI_GFX_INT_MASK;
+    g_assert_cmpuint(sgi_pi_gfx_int_due(&g, 0), ==, 500 + 11);
+}
+
 static void test_store_mark(void)
 {
     bool outer, inner;
@@ -210,6 +240,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-pi-gfx/count-and-return", test_count_and_return);
     g_test_add_func("/sgi-pi-gfx/wrap", test_wrap);
     g_test_add_func("/sgi-pi-gfx/starved-once", test_starved_once);
+    g_test_add_func("/sgi-pi-gfx/interrupt-counter", test_interrupt_counter);
     g_test_add_func("/sgi-pi-gfx/store-mark", test_store_mark);
     g_test_add_func("/sgi-pi-gfx/store-mark-is-one-shot",
                     test_store_mark_is_one_shot);

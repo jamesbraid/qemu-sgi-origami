@@ -444,10 +444,74 @@ static void pi_gfx_stall(SGIBedrockPIState *s, unsigned slot)
         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - start, s->gfx.credit[slot]);
 }
 
+/*
+ * ---- Graphics flow control: the interrupt counter ----
+ *
+ * The SN1 header's rules (the shared block, sgi_pi_gfx_int_advance()):
+ * one count per clock while the credit counter is at zero (and below a
+ * nonzero bias, the model's choice, so an idle slot sends nothing); at
+ * the compare
+ * the graphics interrupt, and the compare loaded into the counter;
+ * zeroed when the credit counter rises above the bias or software writes
+ * it. Which pending bit the counter's interrupt reaches is unknown; the
+ * datasheet's position, inferred from the IRIX handler that zeroes the
+ * counter, is the same bit 1 + slot as the stall's. Which clock it counts
+ * is unknown too: the model counts at the real-time counter's 1.25 MHz,
+ * its choice, so IRIX's compare of 20000 is 16 ms of machine time.
+ */
+#define PI_GFX_INT_TICK_NS      PI_RT_TICK_NS
+
+static void pi_gfx_int_sync(SGIBedrockPIState *s, unsigned slot)
+{
+    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / PI_GFX_INT_TICK_NS;
+    uint64_t due;
+
+    if (sgi_pi_gfx_int_advance(&s->gfx, slot, now)) {
+        trace_sgi_bedrock_pi_gfx_int_compare(s->interface, slot,
+                                             s->gfx.int_compare[slot]);
+        sgi_bedrock_pi_set_pending(s, 0, 1 + slot);
+    }
+    due = sgi_pi_gfx_int_due(&s->gfx, slot);
+    if (due == UINT64_MAX) {
+        timer_del(s->gfx_int_timer[slot]);
+    } else {
+        timer_mod_ns(s->gfx_int_timer[slot],
+                     MIN(due, INT64_MAX / PI_GFX_INT_TICK_NS) *
+                     PI_GFX_INT_TICK_NS);
+    }
+}
+
+static void pi_gfx_int_expire(void *opaque)
+{
+    SGIBedrockPITimerLine *line = opaque;
+
+    pi_gfx_int_sync(line->pi, line->cpu);
+}
+
+/*
+ * Around any change to a slot's credit counter, bias or interrupt
+ * registers: bring the interrupt counter up to now under the old values,
+ * then apply the zero rule and restart it under the new ones.
+ */
+static bool pi_gfx_before(SGIBedrockPIState *s, unsigned slot)
+{
+    pi_gfx_int_sync(s, slot);
+    return s->gfx.credit[slot] > s->gfx.bias[slot];
+}
+
+static void pi_gfx_after(SGIBedrockPIState *s, unsigned slot, bool was_above)
+{
+    if (!was_above && s->gfx.credit[slot] > s->gfx.bias[slot]) {
+        s->gfx.int_count[slot] = 0;
+    }
+    pi_gfx_int_sync(s, slot);
+}
+
 bool sgi_bedrock_pi_gfx_store(SGIBedrockPIState *s, unsigned slot,
                               hwaddr addr)
 {
     SGIPIGfx *g = &s->gfx;
+    bool above;
 
     g_assert(slot < SGI_BEDROCK_PI_PROCESSORS);
     if (!sgi_pi_gfx_covers(g, slot, addr)) {
@@ -460,7 +524,9 @@ bool sgi_bedrock_pi_gfx_store(SGIBedrockPIState *s, unsigned slot,
             return false;
         }
     }
+    above = pi_gfx_before(s, slot);
     sgi_pi_gfx_count_store(g, slot, addr, "sgi-bedrock-pi");
+    pi_gfx_after(s, slot, above);
     if (g->credit[slot] < g->bias[slot]) {
         trace_sgi_bedrock_pi_gfx_below_bias(s->interface, slot,
                                             g->credit[slot], g->bias[slot]);
@@ -473,16 +539,22 @@ bool sgi_bedrock_pi_gfx_store(SGIBedrockPIState *s, unsigned slot,
 void sgi_bedrock_pi_gfx_return(SGIBedrockPIState *s, unsigned slot,
                                uint32_t credits)
 {
+    bool above;
+
     g_assert(slot < SGI_BEDROCK_PI_PROCESSORS);
+    above = pi_gfx_before(s, slot);
     sgi_pi_gfx_add_credits(&s->gfx, slot, credits, "sgi-bedrock-pi");
+    pi_gfx_after(s, slot, above);
     pi_gfx_release_if_above(s, slot);
 }
 
 static void pi_gfx_write(SGIBedrockPIState *s, unsigned n, uint64_t value)
 {
     unsigned slot = n / SGI_PI_GFX_SLOT_REGS;
+    bool above = pi_gfx_before(s, slot);
 
     sgi_pi_gfx_write(&s->gfx, n, value);
+    pi_gfx_after(s, slot, above);
     switch (n % SGI_PI_GFX_SLOT_REGS) {
     case SGI_PI_GFX_CREDIT:
     case SGI_PI_GFX_BIAS:
@@ -590,7 +662,11 @@ static uint64_t pi_read_locked(void *opaque, hwaddr offset, unsigned size)
     unsigned mask = pi_population_mask(s);
 
     if (offset >= SGI_PI_GFX_BASE && offset < PI_GFX_END) {
-        return sgi_pi_gfx_read(&s->gfx, (offset - SGI_PI_GFX_BASE) / 8);
+        unsigned n = (offset - SGI_PI_GFX_BASE) / 8;
+
+        /* The interrupt counter reads live. */
+        pi_gfx_int_sync(s, n / SGI_PI_GFX_SLOT_REGS);
+        return sgi_pi_gfx_read(&s->gfx, n);
     }
     switch (offset) {
     case PI_CPU_PROTECT: return s->cpu_protect;
@@ -1065,6 +1141,8 @@ static void pi_reset_enter(Object *obj, ResetType type)
     memset(s->level_source, 0, sizeof(s->level_source));
     memset(s->level_rearm_due, 0, sizeof(s->level_rearm_due));
     sgi_pi_gfx_reset(&s->gfx);
+    timer_del(s->gfx_int_timer[0]);
+    timer_del(s->gfx_int_timer[1]);
     s->gfx_credit_mode = 0;
     memset(s->cc_pend, 0, sizeof(s->cc_pend));
     s->cc_pend_mask = 0;
@@ -1110,6 +1188,9 @@ static int pi_post_load(void *opaque, int version_id)
                     s->rt_migrate_phase_ns;
     pi_rearm_timers(s);
     sgi_bedrock_pi_recompute(s);
+    for (unsigned slot = 0; slot < SGI_BEDROCK_PI_PROCESSORS; slot++) {
+        pi_gfx_int_sync(s, slot);
+    }
     pi_drive_cpu_enable(s);
     notifier_list_notify(&s->cached_alias_notifiers, s);
     return 0;
@@ -1242,6 +1323,13 @@ static void pi_init(Object *obj)
     s->profile_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, pi_profile_expire, s);
     s->level_rearm_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, pi_level_rearm, s);
     qemu_cond_init(&s->gfx_cond);
+    for (unsigned slot = 0; slot < SGI_BEDROCK_PI_PROCESSORS; slot++) {
+        s->gfx_int_line[slot].pi = s;
+        s->gfx_int_line[slot].cpu = slot;
+        s->gfx_int_timer[slot] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                              pi_gfx_int_expire,
+                                              &s->gfx_int_line[slot]);
+    }
     memory_region_init_io(&s->mmio, obj, &pi_ops, s, TYPE_SGI_BEDROCK_PI,
                           SGI_BEDROCK_PI_SIZE);
     /*
@@ -1270,6 +1358,8 @@ static void pi_finalize(Object *obj)
     timer_free(s->profile_timer);
     timer_free(s->level_rearm_timer);
     qemu_cond_destroy(&s->gfx_cond);
+    timer_free(s->gfx_int_timer[0]);
+    timer_free(s->gfx_int_timer[1]);
 }
 
 static void pi_class_init(ObjectClass *klass, const void *data)
