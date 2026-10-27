@@ -1600,7 +1600,12 @@
       "description": "A router-asic's port capacity and its role in the fabric: a full router, a Star Router carrying one node onto a router port, or a Null Router joining two node network interfaces directly.",
       "properties": {
         "port_count": { "type": "integer", "minimum": 1 },
-        "role": { "enum": ["router", "star", "null"] }
+        "role": { "enum": ["router", "star", "null"] },
+        "node_ports": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1 },
+          "description": "The only ports a node's own network interface may be cabled to, as the enclosure's management wiring requires; absent where the enclosure sets no such rule."
+        }
       }
     },
 

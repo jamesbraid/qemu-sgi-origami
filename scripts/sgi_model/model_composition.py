@@ -966,6 +966,46 @@ def validate_connector_population(model: dict[str, Any]) -> None:
                 raise ResolutionError(f"implemented target has unresolved connector '{cid}'")
 
 
+def validate_router_ports(model: dict[str, Any]) -> None:
+    """A router's node-port rule holds for every cable fitted to it.
+
+    A cable is a fabric bus a router reaches at a `fabric_port` and that
+    something other than a connector also attaches to. When the router
+    names `node_ports`, a node may sit only on one of them; a cable to
+    another router may use any port.
+    """
+    components = {item["id"]: item for item in model.get("components", [])
+                  if isinstance(item, dict) and "id" in item}
+    by_bus: dict[str, list[dict[str, Any]]] = {}
+    for connection in model.get("connections", []):
+        if isinstance(connection, dict):
+            by_bus.setdefault(connection.get("bus"), []).append(connection)
+    for bus in model.get("buses", []):
+        if not isinstance(bus, dict) or bus.get("kind") != "fabric":
+            continue
+        attachments = by_bus.get(bus.get("id"), [])
+        far = [components.get(item.get("component"), {})
+               for item in attachments]
+        for attachment in attachments:
+            router = components.get(attachment.get("component"), {})
+            facts = router.get("router_asic")
+            port = attachment.get("fabric_port")
+            if not isinstance(facts, dict) or type(port) is not int:
+                continue
+            others = [item for item in far
+                      if item is not router and item.get("kind") != "connector"]
+            if not others:
+                continue
+            node_ports = facts.get("node_ports")
+            nodes = [item["id"] for item in others
+                     if item.get("kind") == "node-asic"]
+            if node_ports is not None and nodes and port not in node_ports:
+                raise ResolutionError(
+                    f"node '{nodes[0]}' is cabled to router '{router['id']}' "
+                    f"port {port}; it takes a node only on ports "
+                    f"{', '.join(str(item) for item in node_ports)}")
+
+
 def validate_xio_cables(model: dict[str, Any]) -> None:
     """Each XIO cable joins two XIO connectors that share a bus.
 
@@ -1636,11 +1676,12 @@ def check_composition(model: dict[str, Any]) -> dict[str, Any]:
     The order matches what a resolved model must satisfy end to end: routed
     firmware graphs, reference-model purity, the emulation profile, CPU and
     memory populations, direct references, physical slots, connector
-    population, connector ports, XIO cables, brick types, synthetic
-    identities, initial module numbers, hub NI revision overrides, board
-    identity overrides, and the excluded_components ledger the resolved
-    model itself carries. Each check raises on its own first violation;
-    nothing here collects a list, matching the resolver's fail-fast style.
+    population, connector ports, XIO cables, router node ports, brick
+    types, synthetic identities, initial module numbers, hub NI revision
+    overrides, board identity overrides, and the excluded_components ledger
+    the resolved model itself carries. Each check raises on its own first
+    violation; nothing here collects a list, matching the resolver's
+    fail-fast style.
     """
     if not isinstance(model.get("composition"), dict):
         raise ResolutionError("system model requires composition")
@@ -1654,6 +1695,7 @@ def check_composition(model: dict[str, Any]) -> dict[str, Any]:
     validate_connector_population(model)
     validate_connector_ports(model)
     validate_xio_cables(model)
+    validate_router_ports(model)
     validate_brick_types(model)
     validate_synthetic_identities(model)
     validate_unique_synthetic_serials(model)

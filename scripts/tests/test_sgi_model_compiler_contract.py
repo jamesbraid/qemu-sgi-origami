@@ -4141,6 +4141,41 @@ class Origin300RoutedContractTests(unittest.TestCase):
         self.assertTrue(any("master-route" in p and "exactly two ports" in p
                             for p in problems))
 
+    def test_router_node_ports_reach_the_router_record(self):
+        from sgi_model.model_emit import _render_topology
+        entry = compile_model(self.model())
+        self.assertNotIn("node_ports", entry["routers"][0])
+        self.assertNotIn("node-ports", _render_topology(
+            entry, "origin300-numalink-pci-expansion")["routers"][0])
+        # A rule naming the ports this topology's compute modules use.
+        model = self.model()
+        router = next(c for c in model["components"]
+                      if c["id"] == "router-router")
+        router["router_asic"]["node_ports"] = [6, 1]
+        entry = compile_model(model)
+        self.assertEqual(entry["routers"][0]["node_ports"], [1, 6])
+        self.assertEqual(_render_topology(
+            entry, "origin300-numalink-pci-expansion")["routers"][0][
+                "node-ports"], [1, 6])
+
+    def test_router_node_ports_refuse_a_node_elsewhere(self):
+        from sgi_model.exceptions import ResolutionError
+        from sgi_model.model_composition import validate_router_ports
+        model = self.model()
+        validate_router_ports(model)
+        router = next(c for c in model["components"]
+                      if c["id"] == "router-router")
+        # This topology's compute modules sit on ports 1 and 6, and its
+        # expansion module, which is no node, on port 4.
+        router["router_asic"]["node_ports"] = [4, 6]
+        with self.assertRaisesRegex(
+                ResolutionError,
+                "node 'master-bedrock' is cabled to router 'router-router' "
+                "port 1; it takes a node only on ports 4, 6"):
+            validate_router_ports(model)
+        router["router_asic"]["node_ports"] = [1, 6]
+        validate_router_ports(model)
+
     def test_router_family_and_port_count_must_agree(self):
         for part, ports in [(0xc002, 8), (0x3017, 6)]:
             with self.subTest(part=part, ports=ports):
