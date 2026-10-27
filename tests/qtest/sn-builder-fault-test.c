@@ -1221,8 +1221,6 @@ static void bedrock_test_install_unbuilt_record(const char *record)
     } else if (!strcmp(record, "module-owned-l1")) {
         bedrock_test_controllers[1].has_owner = true;
         bedrock_test_controllers[1].owner = SGI_MODEL_CONTROLLER_OWNER_MODULE;
-    } else if (!strcmp(record, "io7-preset")) {
-        bedrock_test_io_boards[1].preset = SGI_MODEL_IO_BOARD_PRESET_IO7;
     } else {
         g_assert_not_reached();
     }
@@ -1390,6 +1388,19 @@ static void bedrock_test_install_cbrick_descriptor(uint8_t host_port)
         cpu_population_list(&cbrick_test_population, 1));
 }
 
+/* The I-brick's IO7 on head F of the C-brick fixture's XBridge. */
+static void bedrock_test_install_cbrick_io7(void)
+{
+    cbrick_test_io_boards[0] = (SGIModelIoBoard) {
+        .id = (char *)"ibrick-io7", .module_index = 2, .populated = true,
+        .preset = SGI_MODEL_IO_BOARD_PRESET_IO7,
+        .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
+        .has_attachment = true, .attachment = 1,
+        .has_ioc3_subsystem_id = true, .ioc3_subsystem_id = 0xffff,
+    };
+    cbrick_test_publish(3, 1, 2, 1);
+}
+
 /*
  * One change to the C-brick fixture, with its XBridge host on port A,
  * that the builder must refuse. None is a hardware claim.
@@ -1486,6 +1497,13 @@ static bool bedrock_test_install_cbrick_fault(const char *fault)
         cbrick_test_modules[1].controller = SGI_MODEL_MODULE_CONTROLLER_ABSENT;
     } else if (!strcmp(fault, "absent-controller-with-index")) {
         cbrick_test_modules[2].controller_index = 1;
+    } else if (!strcmp(fault, "io7-off-head-f")) {
+        bedrock_test_install_cbrick_io7();
+        cbrick_test_io_boards[0].attachment = 0;
+    } else if (!strcmp(fault, "io7-revisions")) {
+        bedrock_test_install_cbrick_io7();
+        cbrick_test_io_boards[0].pci_functions =
+            bedrock_test_io_boards[0].pci_functions;
     } else if (!strcmp(fault, "revision-mismatch")) {
         cbrick_test_crossbars[0].widget_revision = 3;
     } else {
@@ -1545,6 +1563,9 @@ static void bedrock_test_set_construction_fault(Object *obj,
         bedrock_test_install_cbrick_descriptor(0xa);
     } else if (!strcmp(value, "cbrick-port-b")) {
         bedrock_test_install_cbrick_descriptor(0xb);
+    } else if (!strcmp(value, "cbrick-io7")) {
+        bedrock_test_install_cbrick_descriptor(0xa);
+        bedrock_test_install_cbrick_io7();
     } else if (g_str_has_prefix(value, "cbrick-")) {
         if (!bedrock_test_install_cbrick_fault(value + strlen("cbrick-"))) {
             error_setg(errp, "unknown sn-builder-bedrock-test construction "

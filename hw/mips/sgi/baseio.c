@@ -40,6 +40,24 @@
  *     routing of its own, so every function's interrupt is wired
  *     explicitly, and IOC3's own internal SuperIO real-time event (not a
  *     PCI pin) reaches the head's own pin 0.
+ *   - io7: the Origin 3000 I-brick's IO7 on its XBridge head F
+ *     (108-0240-002 printed page 2-28; 108-0264-004 printed page 2-5:
+ *     IOC3, USB and IEEE 1394). IOC3 at device 4, the Lucent OHCI USB
+ *     controller at device 5 and the TI TSB12LV22 1394 link at device 6,
+ *     as owners' IRIX inventories print them; each keeps its class's
+ *     PCI revision, which no capture gives. The IOC3 carries Ethernet
+ *     and serial port A, the population an IRIX guest expects of this
+ *     board; no board record confirms it. Its subsystem device is the
+ *     explicit unobserved placeholder, as on the io8, and its
+ *     transceiver reuses the io8's DP83843 at MII address 1, an
+ *     approximation: the IP35 PROM addresses MII 1, and the I-brick's
+ *     PHY part is unknown. A Timekeeper is fitted only where the record
+ *     selects the shared compatibility one, since the IO7's
+ *     time-of-day part is not identified. Interrupts follow the default
+ *     head mapping, pin A of device d on head pin d, with the IOC3's
+ *     SuperIO event on pin 0 as on the io8 (inferred; no source
+ *     examines the IO7's wiring). The Fibre Channel card at device 1 is
+ *     not part of the IO7 and is not fitted here.
  *   - menet: the MENET XIO board, Bridge revision 4, board part
  *     "030-0873-003", board revision J, name MENET. Four IOC3s at devices
  *     0-3, revision 1, no Timekeeper: devices 0-2 carry Ethernet, both
@@ -726,6 +744,58 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
     return true;
 }
 
+#define IO7_IOC3_POPULATION (SGI_IOC3_POPULATION_ETHERNET | \
+                             SGI_IOC3_POPULATION_SERIAL_A)
+#define IO7_USB_DEVICE      5
+#define IO7_1394_DEVICE     6
+
+static bool baseio_build_io7(SGIBaseioState *s, Error **errp)
+{
+    DeviceState *chip = baseio_xbridge_chip_from_bus(s->pci_bus);
+    PCIDeviceClass *pc = PCI_DEVICE_CLASS(object_class_by_name(TYPE_SGI_IOC3));
+    PCIDevice *ioc3, *usb, *link;
+
+    ioc3 = baseio_build_ioc3(s, "ioc3", IO8_IOC3_DEVICE, pc->revision,
+                             IO7_IOC3_POPULATION, s->system_timekeeper_kind,
+                             true,
+                             s->ioc3_subsystem_id == UINT32_MAX ?
+                             IO8_IOC3_SUBSYSTEM_ID_NOT_OBSERVED :
+                             s->ioc3_subsystem_id, true,
+                             IO8_IOC3_PHY_ADDR, s->onewire_serial,
+                             s->chardev_a_id, NULL, s->record_a_id, NULL,
+                             errp);
+    if (!ioc3) {
+        return false;
+    }
+    qdev_connect_gpio_out_named(DEVICE(ioc3), "gpio5-reset-request", 0,
+        qdev_get_gpio_in_named(DEVICE(&SGI_IOC3(ioc3)->eth),
+                               "phy-reset", 0));
+    pci_set_word(ioc3->config + PCI_SUBSYSTEM_VENDOR_ID,
+                IO8_IOC3_SUBSYSTEM_VENDOR);
+    pci_set_word(ioc3->config + PCI_SUBSYSTEM_ID,
+                s->ioc3_subsystem_id == UINT32_MAX ?
+                IO8_IOC3_SUBSYSTEM_ID_NOT_OBSERVED : s->ioc3_subsystem_id);
+    baseio_wire_xbridge_intx(chip, IO8_IOC3_DEVICE, IO8_IOC3_DEVICE);
+    qdev_connect_gpio_out(DEVICE(ioc3), 0,
+                          qdev_get_gpio_in_named(chip, "head-f-pin",
+                                                 IO8_IOC3_SUPERIO_PIN));
+
+    usb = pci_new(PCI_DEVFN(IO7_USB_DEVICE, 0), "lucent-ohci");
+    object_property_add_child(OBJECT(s), "usb", OBJECT(usb));
+    if (!pci_realize_and_unref(usb, s->pci_bus, errp)) {
+        return false;
+    }
+    baseio_wire_xbridge_intx(chip, IO7_USB_DEVICE, IO7_USB_DEVICE);
+
+    link = pci_new(PCI_DEVFN(IO7_1394_DEVICE, 0), "tsb12lv22");
+    object_property_add_child(OBJECT(s), "ieee1394", OBJECT(link));
+    if (!pci_realize_and_unref(link, s->pci_bus, errp)) {
+        return false;
+    }
+    baseio_wire_xbridge_intx(chip, IO7_1394_DEVICE, IO7_1394_DEVICE);
+    return true;
+}
+
 #define MENET_IOC3S             4
 #define MENET_IOC3_REVISION     1
 /* IRIX pairs device d with second slot d + 4 for its SuperIO interrupt. */
@@ -915,6 +985,7 @@ static const SGIBaseioPreset sgi_baseio_presets[] = {
       baseio_build_io6g },
     { "io8", { "030-1673-003", 0 }, baseio_build_io8,
       SGI_IOC3_TIMEKEEPER_M48T35, 1968, bedrock_pci_function_types },
+    { "io7", { NULL, 0 }, baseio_build_io7, SGI_IOC3_TIMEKEEPER_M48T35, 1968 },
     { "menet", { "030-0873-003", 4, 'O', "J", "MENET",
                  SGI_BASEIO_XIO_ANY_WIDGET, false },
       baseio_build_menet },
@@ -1024,7 +1095,7 @@ static void baseio_realize(DeviceState *dev, Error **errp)
 
     if (!preset) {
         error_setg(errp, "sgi-baseio: '%s' names no known preset; expected "
-                  "ip29, io6, io6g, io8, menet, mscsi or fuel",
+                  "ip29, io6, io6g, io7, io8, menet, mscsi or fuel",
                   s->preset ? s->preset : "(unset)");
         return;
     }

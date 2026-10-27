@@ -9052,8 +9052,6 @@ static const UnbuiltRecordCase unbuilt_record_cases[] = {
     { "unbuilt-module-owned-l1",
       "controller 'l1-n1' is owned by its module; module-owned "
       "controllers are not built yet" },
-    { "unbuilt-io7-preset",
-      "I/O board 'io8-n1' selects preset 'io7', which is not built yet" },
 };
 
 static void test_unbuilt_record_refused(const void *data)
@@ -9175,7 +9173,41 @@ static void test_cbrick_xbridge_in_its_brick(const void *data)
     g_unlink(prom);
 }
 
-/* Head state on the I-brick's XBridge survives a save and restore. */
+#define CBRICK_CONFIG(widget, device) \
+    (CBRICK_WIDGET(widget) + 0x20000 + ((uint64_t)(device) << 12))
+
+/*
+ * The IO7's functions answer at head F devices 4, 5 and 6 with the
+ * identities the I-brick inventories print, from an sgi-baseio under the
+ * I-brick's module. Nothing else is fitted on either head.
+ */
+static void test_cbrick_io7_head_f(void)
+{
+    static const uint32_t head_f[8] = {
+        UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
+        0x000310a9, 0x580211c1, 0x8009104c, UINT32_MAX,
+    };
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = cbrick_start("cbrick-io7", prom, "");
+    g_autofree char *io7 = qom_child_type(qts, "/machine/module2", "io7");
+    g_autofree char *on_node = qom_child_type(qts, "/machine/node0", "baseio");
+
+    g_assert_cmpstr(io7, ==, "sgi-baseio");
+    g_assert_null(on_node);
+    for (unsigned int device = 0; device < 8; device++) {
+        g_assert_cmphex(qtest_readl(qts, CBRICK_CONFIG(15, device)), ==,
+                        head_f[device]);
+        g_assert_cmphex(qtest_readl(qts, CBRICK_CONFIG(14, device)), ==,
+                        UINT32_MAX);
+    }
+    /* The IOC3's subsystem is the explicit unobserved placeholder. */
+    g_assert_cmphex(qtest_readl(qts, CBRICK_CONFIG(15, 4) + 0x2c), ==,
+                    0xffff10a9);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/* Head state on the I-brick's XBridge and IO7 survives a save and restore. */
 static void test_cbrick_save_restore(void)
 {
     g_autoptr(GError) error = NULL;
@@ -9191,8 +9223,8 @@ static void test_cbrick_save_restore(void)
     g_assert_no_error(error);
     socket = g_build_filename(dir, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
-    from = cbrick_start("cbrick-port-a", prom, "-S");
-    to = cbrick_start("cbrick-port-a", prom, "-S -incoming defer");
+    from = cbrick_start("cbrick-io7", prom, "-S");
+    to = cbrick_start("cbrick-io7", prom, "-S -incoming defer");
 
     qtest_writel(from, enable, 0x30);
     g_assert_cmphex(qtest_readl(from, enable), ==, 0x30);
@@ -9270,6 +9302,12 @@ static const CbrickRefusalCase cbrick_refusal_cases[] = {
       "peer" },
     { CBRICK_FIXTURE("absent-controller-with-index"),
       "module 'ibrick' has controller: absent but controller index 1" },
+    { CBRICK_FIXTURE("io7-off-head-f"),
+      "I/O board 'ibrick-io7' places the IO7 at widget 14; it is on its "
+      "XBridge's head F, widget 15" },
+    { CBRICK_FIXTURE("io7-revisions"),
+      "board 'ibrick-io7' names IO7 function revisions or a MAC source, "
+      "which no source gives" },
     { CBRICK_FIXTURE("revision-mismatch"),
       "crossbar 'ibrick-xbridge' names revision 3; the XBridge model "
       "presents revision 2" },
@@ -10228,6 +10266,7 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(0xb),
                         test_cbrick_xbridge_in_its_brick);
     qtest_add_func("sn/builder/cbrick/save-restore", test_cbrick_save_restore);
+    qtest_add_func("sn/builder/cbrick/io7-head-f", test_cbrick_io7_head_f);
     for (size_t i = 0; i < ARRAY_SIZE(cbrick_refusal_cases); i++) {
         const char *fault = strstr(cbrick_refusal_cases[i].machine,
                                    "construction-fault=") +

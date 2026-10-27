@@ -210,6 +210,7 @@ config SGI_BASEIO
     select QLOGIC_ISP_SCSI_PCI
     select SGI_IOC3
     select USB_OHCI_PCI
+    select TSB12LV22
 
 # The BASEIO PROM flash part a Bridge's external-flash port carries on
 # the Origin 2000 BaseIO card and in the Origin 200 GIGAchannel cabinet.
