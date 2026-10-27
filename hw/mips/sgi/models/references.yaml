@@ -895,6 +895,15 @@ web:
     obtain:
       url: https://nekonomicon.irixnet.org/forum/3/17194/1.html
       sha256: db42979ebd26ff8308dbf54cdec6039eb44c8f847d520e3cb907c119c2455ec2
+  usenet-39b750e0:
+    title: "comp.sys.sgi.hardware, 2000-09-07, HU-* for Octanes (Alexis Cousein, SGI), Message-ID <39B750E0.CA1E23C4@brussels.sgi.com>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<39B750E0.CA1E23C4@brussels.sgi.com>"
   usenet-9uhh6o:
     title: "comp.sys.sgi.hardware, 2001-12-04, Message-ID <9uhh6o$j75@dispatch.concentric.net>"
     publisher: "Usenet"
