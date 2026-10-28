@@ -169,7 +169,7 @@ layer:
     connections:
       - {component: cpu0, bus: sysad0, role: master, provenance: derived, sources: ["007-4480-001 printed page 30"]}
       - {component: bedrock, bus: sysad0, role: endpoint, provenance: public-header, sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"]}
-      - {component: bedrock, bus: crosstalk, role: master, widget: 10, provenance: observed-hardware, sources: ["web:graphica-o350-chimera-notes raw HTML lines 1904 to 1905 and 2029 to 2030"]}
+      - {component: bedrock, bus: crosstalk, role: master, widget: 10, provenance: observed-hardware, sources: ["web:graphica-o350-notes raw HTML lines 1904 to 1905 and 2029 to 2030"]}
       - {component: xbridge-crossbar, bus: crosstalk, role: bridge-upstream, widget: 0, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
       - {component: xbridge-bridge-e, bus: crosstalk, role: bridge-upstream, widget: 14, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
       - {component: xbridge-bridge-f, bus: crosstalk, role: bridge-upstream, widget: 15, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}

@@ -9,6 +9,10 @@ Router: SN0 interconnect router
 Used in :ref:`sgi-ip27` (the Origin 2000 and Onyx2 modules). The Origin
 200 has no Router: its two towers join Hub to Hub.
 
+.. seealso::
+
+   - SN1 router (:doc:`sn1-router`): the NUMAlink counterpart for SN1.
+
 The Router is the six-port switch of the SN0 interconnect. It joins the
 Hubs of a module and, through cables, other modules. SGI's published
 paper names the chip Spider (:src:`galles-spider-1997`). QEMU models it

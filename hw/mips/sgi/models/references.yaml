@@ -679,8 +679,8 @@ web:
     obtain:
       url: https://dmesgd.nycbug.org/index.cgi?do=view&id=8994
       sha256: bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f
-  graphica-o350-chimera-notes:
-    title: "SGI O350 Chimera notes: L1 sessions, Origin 350 and Fuel boots"
+  graphica-o350-notes:
+    title: "SGI Origin 350 notes: L1 sessions, Origin 350 and Fuel boots"
     publisher: "just.graphica.com.au"
     kind: capture
     locator: section

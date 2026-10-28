@@ -7,12 +7,12 @@ Scalable Node (SN0 and SN1) machines: overview
 ==============================================
 
 SGI's Scalable Node machines are cache-coherent NUMA multiprocessors
-built from nodes. Each node is a board with processors, local memory and
+built from :term:`nodes <node>`. Each node is a board with processors, local memory and
 a node controller that joins them to the memory's coherence directory,
-to one XIO port for I/O and to one network port for other nodes. SN0
-uses the Hub node controller and the CrayLink interconnect (*established*,
-:src:`007-3439-002 Figure 2-1`). SN1 uses the Bedrock node controller
-and NUMAlink 3, and describes itself as a distributed shared memory,
+to one :term:`XIO` port for I/O and to one network port for other nodes. :term:`SN0`
+uses the :term:`Hub` node controller and the :term:`CrayLink` interconnect (*established*,
+:src:`007-3439-002 Figure 2-1`). :term:`SN1` uses the :term:`Bedrock` node controller
+and :term:`NUMAlink` 3, and describes itself as a distributed shared memory,
 global-address-space, cache-coherent design (*established*,
 :src:`007-4311-002 p. 9`; :src:`108-0240-002 pp. 2-11 to 2-17`).
 
@@ -42,17 +42,17 @@ Family summary
    :header-rows: 1
 
    * - Product
-     - Generation, platform and node board
+     - Generation, platform and :term:`node board`
      - Interconnect
      - QEMU
    * - Origin 200
-     - SN0, IP27 platform, IP29 system board
+     - SN0, :term:`IP27 <IP number>` platform, IP29 system board
      - one tower, or two joined Hub to Hub by a CrayLink cable
        (*established*, :src:`007-3708-002 pp. 5-6`)
      - ``origin200``
    * - Origin 2000
      - SN0, IP27 platform, IP27 node boards
-     - Routers within and between modules (*established*,
+     - Routers within and between :term:`modules <module>` (*established*,
        :src:`007-3439-002 p. 59`)
      - ``origin2000``, one module
    * - Onyx2
@@ -113,19 +113,19 @@ grows to eight four-processor C-bricks and the Origin 3800 to 128
 equivalent of four C-bricks and one R-brick (*established*,
 :src:`007-4572-001 pp. 1, 3`). The Onyx 3000 is *observed* in one
 published 12-processor inventory (:src:`nekonomicon-16719632`). No QEMU
-machine builds an Origin 3000 brick; :doc:`hardware/bricks` describes
+machine builds an Origin 3000 :term:`brick`; :doc:`hardware/bricks` describes
 each brick and the catalogue layers that record them.
 
 A Hub carries two processors on one processor interface
 (*established*, :src:`007-3439-002 Figure 2-1`). A Bedrock carries up to
 four on two interfaces (*established*, :src:`108-0240-002 p. 2-12`).
-SN0 I/O is a Bridge, behind a Crossbow where the module has one. SN1 I/O
-is an XBridge, or a PIC on the IP53 board. The system controller is the
-ELSC or the module system controller on SN0 and an L1 on SN1. The part
+SN0 I/O is a :term:`Bridge`, behind a :term:`Crossbow` where the module has one. SN1 I/O
+is an :term:`XBridge`, or a :term:`PIC` on the IP53 board. The system controller is the
+:term:`ELSC` or the module system controller on SN0 and an :term:`L1` on SN1. The part
 pages rate and cite each of these.
 
 The Onyx2 is Origin 2000 silicon with graphics: the same IP27 node
-boards, memory and stock PROM, told apart only by the hardware its
+boards, memory and stock :term:`PROM`, told apart only by the hardware its
 topologies fit. The IP53 machines are software profiles of one capture
 or manual each, not qualified models of every configuration of the
 product (:ref:`sgi-ip35-ip53`). The machine classes are in
@@ -498,7 +498,7 @@ Serial line order
 =================
 
 IP27 machines assign serial backends node-major, in one fixed six-line
-block per node. Within a node's block, IOC3 port A comes first (it is
+block per node. Within a node's block, :term:`IOC3` port A comes first (it is
 also the firmware console when this is the console node), then port B,
 then the system controller's AUX port, then the bring-up UART, then the
 two write-only lines that record what each IOC3 port transmitted. The
@@ -518,7 +518,7 @@ boot hands off (:ref:`sgi-l1-console`), then
 four lines of the node's I/O (``sgi_sn1_serial_line()`` in
 ``include/hw/mips/sgi/sn-machine.h``). On the Origin 300 and Fuel those
 are IOC3 port A, port B and the two record lines. On the IP53 machines
-they are the four IOC4 serial ports (:ref:`sgi-ip35-firmware`). A
+they are the four :term:`IOC4` serial ports (:ref:`sgi-ip35-firmware`). A
 one-chassis machine uses lines 0 to 4. ``junk-uart`` has no effect on
 IP35.
 
@@ -558,7 +558,7 @@ bus), ``sgi-pci-carrier`` (the Origin 2000 PCI Carrier Assembly, three
 PCI slots and its own board record), ``sgi-pci-shoehorn`` (a Bridge
 carrying one PCI card), ``sgi-gigachannel`` (the GIGAchannel cabinet's
 own Bridge), ``sgi-kona`` (the InfiniteReality pipe), ``sgi-mgras`` (the
-IMPACT graphics board, whose widget answers XIO directly with no Bridge)
+IMPACT graphics board, whose :term:`widget` answers XIO directly with no Bridge)
 and ``sgi-odyssey`` (the VPro board). Realizing a board builds its own
 widget-facing device, then re-parents the board under
 ``/machine/module<N>`` so ``info qom-tree`` shows it where the hardware

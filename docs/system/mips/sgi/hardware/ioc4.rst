@@ -9,6 +9,10 @@ IOC4: I/O controller
 Used in :ref:`sgi-ip53`: the IO9 base I/O board of the Origin 350, Onyx
 350, Tezro and Onyx 4 host machines (:ref:`sgi-ip53-ioc4`).
 
+.. seealso::
+
+   - IOC3 (:doc:`ioc3`): the base I/O controller of the earlier platforms.
+
 The IOC4 is SGI's PCI I/O controller. One PCI function holds four 16550-compatible
 serial ports with ring DMA, a PS/2 keyboard and mouse controller, one
 ATA/ATAPI channel, general-purpose pins and a byte bus for a timekeeper.

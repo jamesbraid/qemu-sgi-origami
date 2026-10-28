@@ -9,6 +9,13 @@ Hub: node controller
 Used in :ref:`sgi-ip27`: the Origin 200 (IP29 system board) and the
 Origin 2000 and Onyx2 (IP27 node board), one per node.
 
+.. seealso::
+
+   - Bedrock (:doc:`bedrock`): the node controller of the SN1 machines, the
+     successor to the Hub.
+   - HEART (:doc:`heart`): the Octane's processor and memory controller, the
+     IP30 counterpart of the Hub.
+
 The Hub is the node controller of the SN0 machines.
 One Hub per node joins the node's two R10000-family processors, its
 memory and directory, one XIO port and one CrayLink network port

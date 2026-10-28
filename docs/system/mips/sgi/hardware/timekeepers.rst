@@ -10,6 +10,10 @@ Used in :ref:`sgi-ip27` (M48T35), :ref:`sgi-ip35` (M48T35-compatible)
 and :ref:`sgi-ip53` (DS1744-compatible). The DS1742 model is fitted by
 no machine profile.
 
+.. seealso::
+
+   - DS1685 (:doc:`ds1685`): the clock of the Octane and Octane2.
+
 The SGI Origin-family boards keep their wall clock and a block of
 configuration RAM in a byte-wide, battery-backed SRAM with a clock in its
 top eight bytes. The Origin 200 IP29 board carries an M48T35 behind the IOC3

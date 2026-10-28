@@ -9,6 +9,10 @@ DS1685: real-time clock and NVRAM
 Used in :ref:`sgi-ip30`, on the Octane and Octane2 system boards, and
 :ref:`sgi-ip32`, behind the O2's MACE.
 
+.. seealso::
+
+   - Timekeepers (:doc:`timekeepers`): the M48T35, DS1742 and DS1744 clocks of the Origin boards.
+
 The DS1685 is a real-time clock with 242 bytes of battery-backed RAM. On
 the Octane it sits on the IOC3's byte bus
 (:doc:`ioc3`). Linux uses it for the machine's power-off control, an

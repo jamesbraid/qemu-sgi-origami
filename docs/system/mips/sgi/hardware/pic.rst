@@ -10,6 +10,11 @@ Used in :ref:`sgi-ip53` (the Origin 350, Onyx 350, Tezro and Onyx4 host
 machines) and in the Origin 3000 IX- and PX-bricks (:ref:`sgi-bricks`),
 which QEMU describes for reference only.
 
+.. seealso::
+
+   - Bridge (:doc:`bridge`) and XBridge (:doc:`xbridge`): the earlier XIO-
+     to-PCI bridges.
+
 PIC is SGI's XIO-to-PCI-X bridge. One PIC is one XIO widget
 with two bridge heads, each with its own register block and its own PCI
 bus. QEMU models it as ``sgi-pic`` in ``hw/pci-host/sgi-pic.c``, with the

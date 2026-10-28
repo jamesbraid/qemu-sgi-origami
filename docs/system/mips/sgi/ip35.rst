@@ -6,11 +6,11 @@
 IP35: Origin 300 and Fuel
 =========================
 
-IP35 is the software platform of SGI's second Scalable Node generation,
-built around the Bedrock node controller. QEMU models two products on it:
+:term:`IP35 <IP number>` is the software platform of SGI's second Scalable Node generation,
+built around the :term:`Bedrock` node controller. QEMU models two products on it:
 ``origin300`` (board IP45) and ``fuel`` (board IP34). The IP53 board of
 the Origin 350, Onyx 350, Tezro and Onyx4 host has its own page
-(:doc:`ip53`); it shares this page's Bedrock node, address map and PROM.
+(:doc:`ip53`); it shares this page's Bedrock node, address map and :term:`PROM`.
 The machine classes are in ``hw/mips/sgi/sn1.c``. Each node is an
 ``sgi-sn1-node`` (``hw/mips/sgi/sn1-node.c``), and the shared Scalable
 Node builder in ``hw/mips/sgi/sn-machine.c`` assembles the nodes from the
@@ -91,7 +91,7 @@ Published captures:
 - Fuel: an IRIX 6.5.22 console and inventory,
   :src:`tingo-fuel-irix-console`; OpenBSD boots in
   :src:`miod-openbsd-sgi-story`; L1 and PROM sessions in
-  :src:`graphica-o350-chimera-notes`; a repair account,
+  :src:`graphica-o350-notes`; a repair account,
   :src:`sgi-sh-fuel-repair-attempt`; a memory inventory,
   :src:`usenet-slrndfs77l`.
 
@@ -219,7 +219,7 @@ Supported devices
 - BIC on the Origin 300 PCI expansion module: :doc:`hardware/bic`
 - SN1 router: :doc:`hardware/sn1-router`
 - Origin 300 PCI expansion module: :doc:`hardware/pci-expansion`
-- Origin 3000 bricks and the NUMAlink module, as reference compositions
+- Origin 3000 :term:`bricks <brick>` and the :term:`NUMAlink` module, as reference compositions
   only, including the I-brick's TSB12LV22 (:doc:`hardware/tsb12lv22`):
   :doc:`hardware/bricks`
 - R14000 processor: :doc:`hardware/r10000`
@@ -238,9 +238,9 @@ Components and connections
      - Attachment
      - Rating and basis
    * - Bedrock
-     - both processor interfaces; enters the crossbar at widget ``0xa``
+     - both processor interfaces; enters the crossbar at :term:`widget` ``0xa``
      - Origin 300: *approximation*; the model uses ``0xa`` as on the
-       Fuel. Fuel: *observed* (:src:`graphica-o350-chimera-notes`).
+       Fuel. Fuel: *observed* (:src:`graphica-o350-notes`).
        The IP53 entry widget is on :ref:`sgi-ip53-components`
    * - XBridge (Origin 300, Fuel)
      - crossbar at widget 0, PCI heads at widgets 14 (head E) and 15
@@ -328,7 +328,7 @@ also keeps a mask of ``0xf000`` requiring ``0x4000``, so a
 - Flash machine type: the value written into the PROM's configuration
   block. The PROM's Origin 300 rows carry type 1 and its Fuel rows type 2,
   a *software expectation*. A real Fuel's ``flash -f`` session answers 2
-  (:src:`graphica-o350-chimera-notes`), *observed*. :doc:`prom-image`
+  (:src:`graphica-o350-notes`), *observed*. :doc:`prom-image`
   gives the block layout.
 - Bedrock revision 2 at 200 MHz: every published Origin 300 and Fuel
   inventory reports ``HUB`` revision 2, *observed*. The
@@ -345,7 +345,7 @@ values carrying a ``QEMU`` marker, not taken from a real machine.
 Missing devices
 ===============
 
-- The Origin 300 rear XIO connector's graphics enclosure. The connector
+- The Origin 300 rear :term:`XIO` connector's graphics enclosure. The connector
   is modelled empty at crossbar port ``0xb``, an *approximation*.
 - The L2 controller and the NUMAlink module's USB path to it.
 - Origin 3000 C-, I-, P- and X-bricks. The ``origin3200`` composition is
@@ -362,7 +362,7 @@ IP35 physical address map (Origin 300, IP45)
 This is the address map the Origin 300 and Fuel models
 (``hw/mips/sgi/sn1.c`` and ``sn1-node.c``) follow: how an R10000-family
 processor selects a space, how the node number sits in a physical
-address, node memory, the crosstalk windows, the Bedrock's register
+address, node memory, the :term:`crosstalk` windows, the Bedrock's register
 space, the hand-off and reset registers, and the interrupt-send address.
 The IP53 profiles share it. The Bedrock units behind the register space
 are on :doc:`hardware/bedrock`.
@@ -745,7 +745,7 @@ parallel port and 10/100 Ethernet (:src:`007-4480-001 p. 35-38`),
 address 1 (:src:`miod-openbsd-sgi-story`), *observed*, and the model fits
 that transceiver. The guide's lower connector, Serial 1, is IOC3 UART A,
 *inferred* from OpenBSD's port map and a PROM menu captured on that
-connector (:src:`graphica-o350-chimera-notes`).
+connector (:src:`graphica-o350-notes`).
 
 The onboard Ethernet address comes from the L1. Without input it is the
 ``mac`` machine property's placeholder ``08:00:69:12:34:56``, in SGI's
@@ -756,7 +756,7 @@ disagrees with the record is refused. Where a physical Fuel stores this
 record is *unknown*. :doc:`hardware/l1` has the record format.
 
 A photograph of a revision B Fuel board shows a DS1742W, a 2 KiB clock
-part (:src:`graphica-o350-chimera-notes`, board photograph), *observed*.
+part (:src:`graphica-o350-notes`, board photograph), *observed*.
 OpenBSD's ``dsrtc.c`` comment names the same package, a *software
 expectation*. Its decode on the IOC3 byte bus is *unknown*, and OpenBSD calls its own
 mapping a guess. The model fits the flat 32 KiB M48T35-compatible
@@ -1053,7 +1053,7 @@ fitted, and what answers outside the image are *unknown*.
 The console is the L1's serial line, the first ``-serial``. The PROM
 prints through the L1 and its maintenance menu appears there. On the
 Origin 300 and Fuel the next serial lines are IOC3 ports A and B; on the
-IP53 products they are the four IOC4 ports (:ref:`sgi-ip53-firmware`). The PROM keeps its console
+IP53 products they are the four :term:`IOC4` ports (:ref:`sgi-ip53-firmware`). The PROM keeps its console
 choice in the boot flash, so it is firmware state, not a board property.
 
 .. _sgi-ip35-running:

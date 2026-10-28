@@ -6,17 +6,17 @@
 IP27: Origin 200, Origin 2000 and Onyx2
 =======================================
 
-IP27 is the software platform of SGI's first Scalable Node generation,
-built around the Hub node controller. The ``origin200``, ``origin2000``
+:term:`IP27 <IP number>` is the software platform of SGI's first Scalable Node generation,
+built around the :term:`Hub` node controller. The ``origin200``, ``origin2000``
 and ``onyx2`` machines (``hw/mips/sgi/sn-machine.c``, with the node in
 ``hw/mips/sgi/sn0.c``) build it on the shared Scalable Node base
 described in :doc:`sn`. An Origin 200 is one or two IP29 system boards
-in towers. The ``origin2000`` machine builds one Origin 2000 module: one
-to four IP27 node boards joined by Routers, with two Crossbows and twelve
-XIO slots. Real systems join modules (:ref:`sgi-ip27-missing`). An Onyx2 is
+in towers. The ``origin2000`` machine builds one Origin 2000 :term:`module`: one
+to four IP27 :term:`node boards <node board>` joined by Routers, with two :term:`Crossbows <Crossbow>` and twelve
+:term:`XIO` slots. Real systems join modules (:ref:`sgi-ip27-missing`). An Onyx2 is
 the same IP27 silicon with an InfiniteReality graphics pipe, in a
 deskside of its own or a rack built from the Origin 2000 module. Every
-machine boots a stock IP27 PROM that the user supplies.
+machine boots a stock IP27 :term:`PROM` that the user supplies.
 
 This page is the hardware contract the machine models in
 ``hw/mips/sgi/models/`` cite for these products: what is fitted, how it
@@ -131,7 +131,7 @@ Products
        512 MiB
 
 An Origin 200 tower holds one processor module of one or two
-processors, and a two-tower system joins two towers by a CrayLink cable
+processors, and a two-tower system joins two towers by a :term:`CrayLink` cable
 (*established*, :src:`007-3708-002 p. 5`, Table 1-1;
 :src:`007-3708-002 p. 6`, Figure 1-4). The Origin 2000
 module holds up to four node boards of one or two R10000 processors each
@@ -213,7 +213,7 @@ GIGAchannel expansion cabinet
 
 Two Origin 200 topologies fit the cabinet: ``origin200-gigachannel``,
 where the cabinet's Crossbow sits between the Hub and the module's base
-I/O Bridge, and ``origin200-gigachannel-loopback``, the converted module
+I/O :term:`Bridge`, and ``origin200-gigachannel-loopback``, the converted module
 with a loopback cable instead of a cabinet. The cabinet's own I/O is the
 ``sgi-gigachannel`` board, which the machine places and which is not
 ``-device``-creatable. :doc:`hardware/gigachannel` describes both
@@ -403,11 +403,11 @@ The parts these machines build and the pages that describe them:
 
 - Hub node controller: :doc:`hardware/hub`
 - Router (CrayLink switch): :doc:`hardware/router`
-- module system controller (ELSC and MSC) and its PCF8584 interface:
+- module system controller (:term:`ELSC` and MSC) and its PCF8584 interface:
   :doc:`hardware/elsc`
 - base I/O boards (BaseIO, BaseIO-G, the IP29 onboard I/O):
   :doc:`hardware/baseio`
-- IOC3 serial, Ethernet, keyboard and parallel controller:
+- :term:`IOC3` serial, Ethernet, keyboard and parallel controller:
   :doc:`hardware/ioc3`
 - IOC3-bearing XIO boards and the MENET board: :doc:`hardware/ioc3-boards`
 - DP83840A Ethernet transceiver: :doc:`hardware/dp8384x`
@@ -611,7 +611,7 @@ Crossbow through a fixed two-Router vector route, ``0x56`` or ``0x46``
 *software expectation*). On the Star wiring Router port 6 leads straight
 to N3, so that vector reaches a Hub with a route step left over. What a
 real Hub answers is *unknown*, and the model gives no answer: on the
-model the PROM then reports a peer Hub on the Crossbow with no NUMAlink
+model the PROM then reports a peer Hub on the Crossbow with no :term:`NUMAlink`
 connection and stops discovery. A Hub specification, or a boot log from
 a three- or four-node Star deskside, would settle it.
 

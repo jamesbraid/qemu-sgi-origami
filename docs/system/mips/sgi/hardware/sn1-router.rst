@@ -13,6 +13,10 @@ routers too. No cited source names their router ASIC, so that they
 carry this part is *unknown*, and QEMU describes those bricks for
 reference only.
 
+.. seealso::
+
+   - Router (:doc:`router`): the SN0 interconnect router.
+
 The SN1 router is the eight-port NUMAlink switch of the SN1 interconnect.
 In an Origin 300 system two base modules can be cabled to each other
 directly, *established* :src:`007-4499-002 pp. 12, 36, 52`. A larger system joins

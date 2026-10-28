@@ -11,6 +11,11 @@ Used in :ref:`sgi-ip35` (``origin300``, ``fuel``), :ref:`sgi-ip53`
 and in the Origin 3000 C-brick and CX-brick node boards
 (:ref:`sgi-bricks`), which no QEMU machine builds.
 
+.. seealso::
+
+   - Hub (:doc:`hub`): the node controller of the SN0 machines, which the
+     Bedrock succeeds.
+
 The Bedrock is the node controller of SGI's second Scalable Node
 generation, the successor to the Hub (:doc:`hub`). It joins up to four
 processors, node memory and its directory, one crosstalk port and one
@@ -86,7 +91,7 @@ Sources
   :src:`nekonomicon-16726611`; two Fuel inventories,
   :src:`sgi-sh-fuel-repair-attempt` and
   :src:`tingo-fuel-irix-console lines 132-145`; an Origin 350 console,
-  :src:`graphica-o350-chimera-notes`; and an OpenBSD boot of two cabled
+  :src:`graphica-o350-notes`; and an OpenBSD boot of two cabled
   Origin 300s, :src:`marc-openbsd-sgi-139223952727384`.
 
 .. _sgi-bedrock-identity:
@@ -1848,7 +1853,7 @@ port reset. OpenBSD writes local plus link reset (OpenBSD
 the firmware itself, a *software expectation*.
 A published Origin 350 console running PROM 6.210 prints "Resetting the
 system..." after a POD ``reset`` and goes straight to the PROM banner
-(:src:`graphica-o350-chimera-notes`), *observed*. The model therefore
+(:src:`graphica-o350-notes`), *observed*. The model therefore
 restarts the whole machine, an *approximation*: the node's I/O, its L1
 and, on a cabled pair, the other node restart with it. What else a local
 reset reaches on the chip is *unknown*. Because the machine reset

@@ -1,3 +1,7 @@
+.. SPDX-License-Identifier: BSD-3-Clause
+
+.. _sgi-qlogic-isp2200-page:
+
 ============================================
 QLogic ISP2200: Fibre Channel host interface
 ============================================
