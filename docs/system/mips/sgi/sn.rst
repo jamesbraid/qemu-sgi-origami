@@ -74,8 +74,8 @@ Family summary
      - two C-bricks joined LINK to LINK by NUMAlink 3, no R-brick
        (*established*, :src:`007-4240-002 pp. 124-125`;
        :src:`007-4311-002 p. 87`)
-     - ``origin3200`` catalogue entry, a planned target the emulator
-       does not build
+     - ``origin3200`` catalogue entry, built by ``-M origin3000``
+       (:ref:`sgi-sn-origin3200`)
    * - Origin 3400
      - SN1, IP35 platform, C-bricks
      - NUMAlink 3 through R-bricks (*established*,

@@ -121,13 +121,18 @@ The model composes the word from its ``revision``, ``part`` and
      - 1
      - *approximation*: the board leaves the property at its default
        unless it is given a ``bridge-revision`` (:doc:`pci-expansion`).
-   * - Octane and Octane2 IP30 system board
+   * - Octane IP30 system board
      - 15
-     - 1
-     - *approximation*: the machines leave the property at its default.
-       A published Octane capture reads revision 3 (discussed under
-       :ref:`sgi-ip30-components`) and the reference Octane2 reads 4
-       (:ref:`sgi-bridge-measurements`).
+     - 3
+     - *observed*: an OpenBSD boot of a 175 MHz Octane prints "Bridge
+       revision 3" (:src:`miod-openbsd-sgi-story-4 lines 1308-1352`;
+       :ref:`sgi-ip30-components`).
+   * - Octane2 IP30 system board
+     - 15
+     - 4
+     - *established*: the reference Octane2 reads ``0x4c00206d``
+       (:ref:`sgi-bridge-measurements`). The Octane2 machine sets the
+       property from the module's revision.
 
 The model implements one behaviour, the specification's revision D, for
 every revision value.
@@ -1684,8 +1689,7 @@ Model limits
 ============
 
 - One behaviour for every revision; the identification revision is the
-  only difference. The Octanes report revision 1, where the published
-  Octane reads 3 and the reference Octane2 reads 4.
+  only difference.
 - Status reports the strap and PCI mode only. Its outstanding-request
   count and link retry counters always read zero, where the reference
   Octane2 read a count of 2 while serving the read. The ``octane2``

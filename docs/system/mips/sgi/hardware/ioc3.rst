@@ -87,6 +87,8 @@ Sources
 Identity and placement
 ======================
 
+.. _sgi-ioc3-config:
+
 Configuration space
 -------------------
 
@@ -118,14 +120,22 @@ Configuration space
      - BAR 0
      - 1 MiB memory
      - The only BAR.
-   * - ``0x2c``
-     - Subsystem vendor, device
-     - ``0x10a9``, ``subsystem-id``
-     - Default ``0xc303``, the Origin 200 IP29 board.
-   * - ``0x3d``
-     - Interrupt pin
-     - ``1`` (INTA)
-     - The Ethernet line. The SuperIO line is separate board wiring.
+   * - ``0x20-0x3f``
+     - Repeat of ``0x00-0x1f``
+     - the same words
+     - The chip decodes five address bits. A read of ``0x2c`` returns the
+       latency word, so the chip presents no subsystem registers. A read
+       of ``0x3d`` returns the repeated byte of ``0x1d``, zero, so it
+       presents no interrupt pin.
+
+The model repeats the first 32 bytes of configuration space in the next
+32 for every read that lies inside the 64-byte header, *established* for
+the reference Octane2's chip (:ref:`sgi-ioc3-measurements`) and applied to
+every board as chip behaviour. The PCI core still holds an interrupt pin
+of 1 (INTA, the Ethernet line; the SuperIO line is separate board wiring)
+and routes the interrupt from it, so the repeat changes only what a guest
+reads. The dword at ``0x1c`` reads the model's zero, where the reference
+Octane2 reads its BAR 0 value for a reason no public source gives.
 
 PCI revision 1 is *observed* on Origin 200 and Origin 300 systems
 (:src:`dmesgd-8994 ioc0 attach line`,
@@ -142,18 +152,19 @@ implement it and those offsets read zero.
 Board population
 ----------------
 
-The model's subsystem identity selects the functions the board wires up,
-as it does for Linux, which supplies its own id because the chip has no
-subsystem register (:ref:`sgi-ioc3-measurements`).
-With ``population`` unset, the model picks the functions from the
-subsystem id by the table below. The table follows the per-board setup
+The ``subsystem-id`` property selects the functions the board wires up.
+It is the id Linux substitutes from the Bridge's board record, because
+the chip has no subsystem register (:ref:`sgi-ioc3-measurements`). No
+guest reads it from the chip. With ``population`` unset, the model picks
+the functions from the id by the table below. The table follows the per-board setup
 routines of Linux ``drivers/mfd/ioc3.c``, *software expectation*, with
 parallel ports added from the board manuals and OpenBSD's attachment,
 since Linux has no IOC3 parallel driver. The machine presets set the
 population explicitly instead, and not every board presents its Linux
-id: the BaseIO, BaseIO-G and IO-8 chips present ``0xffff``, a model value
-with no hardware counterpart, since the chip has no subsystem register
-(*approximation*; :doc:`baseio`).
+id: the BaseIO, BaseIO-G and IO-8 chips carry ``0xffff`` in the
+property, a model value with no hardware counterpart that no guest can
+read, since the chip has no subsystem register (*approximation*;
+:doc:`baseio`).
 
 .. list-table::
    :header-rows: 1
@@ -219,7 +230,8 @@ All offsets are from BAR 0.
    * - ``0x00000-0x00063``
      - Main control block
      - 32-bit
-     - Always present; ``0x00-0x18`` unimplemented
+     - Always present; ``0x00-0x10`` read the configuration header,
+       ``0x14-0x18`` unimplemented
    * - ``0x00080-0x0009b``
      - Parallel DMA contexts
      - 32-bit
@@ -286,8 +298,17 @@ Main control block
      - Reset
      - Access
      - Notes
-   * - ``0x00-0x18``
-     - Configuration copy and error record
+   * - ``0x00-0x10``
+     - Configuration header
+     - 32
+     - the stored configuration dword
+     - R
+     - Five dwords: identification, command and status, class and
+       revision, latency, BAR 0. They read the same stored words as the
+       configuration reads, so they show the guest's programming of the
+       command, latency and BAR. Writes are dropped with ``LOG_UNIMP``.
+   * - ``0x14-0x18``
+     - PCI error address
      - 32
      - ``0``
      - none
@@ -339,8 +360,8 @@ Main control block
      - Pin control, clear
      - 32
      - ``0``
-     - W1C
-     - A read returns zero with ``LOG_UNIMP``.
+     - R, W1C
+     - A read returns the control word, as ``0x34`` does.
    * - ``0x3c``
      - Pin data
      - 32
@@ -534,13 +555,16 @@ PHY's reset input.
 The ``gpio-input-mask`` and ``gpio-input-values`` properties make chosen
 pins read-only board inputs: a read of pin data or of a pin register
 returns the property's value for those bits, whatever software wrote. The
-Octane machines use this for pin 2, which OpenBSD ``ip30.h`` comments as 1
-on Octane and 0 on Octane2, a *software expectation*. The ``octane``
-machine drives it 1 and ``octane2`` drives it 0. The reference Octane2
-reads 1 (:ref:`sgi-ioc3-octane2-pins`), so the ``octane2`` value differs
-from the one measured board. Writes
+Octane machines use this for the product inputs. OpenBSD ``ip30.h``
+comments pin 2 as 1 on Octane and 0 on Octane2, a *software
+expectation*. The ``octane`` machine drives pin 2 high. The reference
+Octane2 reads pins 2 and 3 high (:ref:`sgi-ioc3-octane2-pins`), and the
+measurement of the modelled product outweighs the driver comment, so
+``octane2`` drives pins 2 and 3 high. Pin 3 on the Octane is unmeasured
+and has no wiring in the model. Whether the inputs are board straps or
+floating pull-ups is *unknown*. Writes
 to pin data store all 32 bits, and the stored word is what reads back
-outside the input mask. Pins 0-1, 3-4 and 8 have no wiring in the model,
+outside the input mask. Pins 0-1, 4 and 8, and pin 3 on the Octane, have no wiring in the model,
 and the edge and level selections in pin control bits 16-19 are stored
 only.
 
@@ -1337,7 +1361,7 @@ after the firmware had initialised the machine:
      - BAR 0 as the firmware programmed it
    * - ``0x14``, ``0x18``
      - 0
-     -
+     - Linux names these the PCI error address
    * - ``0x1c``
      - ``0x00500000``
      - the same value as BAR 0; what the word means is *unknown*
@@ -1356,6 +1380,8 @@ this repeat on this chip; the read at ``0x2c`` returns the ``0x0c`` word.
 The word at ``0x1c`` reads the BAR 0 value on this unit, *established*,
 and what it means is *unknown*. Interrupt pin and line, at ``0x3c``, are
 likewise the repeated ``0x1c`` word, so the pin byte at ``0x3d`` reads zero.
+The model repeats the bytes the same way (:ref:`sgi-ioc3-config`), except
+the word at ``0x1c``, which it reads as zero.
 
 Software does not read the chip for these. Linux never reads the chip's
 ``0x2c``: its Bridge code answers ``0x2c`` from a per-slot table built
@@ -1397,6 +1423,19 @@ load, chip revision 1, PROM monitor after initialisation:
      - Register
      - Value
      - Fields (Linux ``ioc3.h`` names)
+   * - ``0x00``-``0x10``
+     - Configuration header
+     - ``0x000310a9``, ``0x02800146``, ``0xff000001``, ``0x00002800``,
+       ``0x00500000``
+     - the first five dwords of the block read the configuration header,
+       the values the configuration reads return after the PROM's
+       programming; Linux's register layout names them as the head of the
+       same structure
+   * - ``0x14``
+     - PCI error address
+     - ``0x00500010``
+     - Linux names this dword; the record's valid bit reads clear. No
+       public source says what produces the value
    * - ``0x1c``
      - SuperIO interrupt status
      - ``0x60000804``
@@ -1424,6 +1463,10 @@ load, chip revision 1, PROM monitor after initialisation:
      - Pin control
      - ``0x002000f3``
      - pins 0, 1, 4, 5, 6 and 7 outputs; MicroLAN connected to pin 8 (21)
+   * - ``0x38``
+     - Pin control, clear
+     - ``0x002000f3``
+     - the same word as ``0x34``
    * - ``0xf0``
      - MAC control
      - ``0x00201200``
@@ -1474,9 +1517,10 @@ nine pin registers at ``0x40``-``0x60`` read 1, 0, 1, 1, 0, 1, 0, 0, 1,
 the same bits one per register, *established* for this board. With pin
 control ``0x2000f3``, pins 2 and 3 are inputs and pin 8 carries the
 MicroLAN. Pin 2, the input OpenBSD reads to tell Octane from Octane2,
-reads 1. OpenBSD's ``ip30.h`` expects 0 on an Octane2, so on this board
-the comment does not hold and what the pin senses is *unknown*
-(:ref:`sgi-ip30-components`). Pin 5, the PHY reset Linux names, is an
+reads 1, and so does pin 3. OpenBSD's ``ip30.h`` expects 0 on an Octane2,
+so on this board the comment does not hold and what the pins sense, a
+board strap or a floating pull-up, is *unknown* (:ref:`sgi-ip30-components`).
+The ``octane2`` machine drives both inputs high. Pin 5, the PHY reset Linux names, is an
 output held high, out of reset. Pins 0 and 1, the white and red lights
 OpenBSD names, are outputs at 1 and 0.
 
@@ -1510,16 +1554,19 @@ establish a reset state or the parallel controller part.
 Model limits
 ============
 
-- Configuration space presents a full header with subsystem ids and an
-  interrupt pin, where the reference Octane2's chip repeats 32 bytes and
-  reads pin zero (:ref:`sgi-ioc3-measurements`).
-- Pin data and the pin registers view one stored word. On the reference
-  Octane2, pin registers 2 and 3 read 1 (:ref:`sgi-ioc3-octane2-pins`).
+- Configuration space repeats 32 bytes and presents no subsystem
+  registers or interrupt pin, as the reference Octane2's chip does. The
+  word at ``0x1c`` reads zero, where that chip reads its BAR 0 value
+  (:ref:`sgi-ioc3-measurements`).
+- Pin data and the pin registers view one stored word behind the board's
+  input mask. Pin 3 on the Octane is unmeasured and unwired.
 - Chip control bits 21:19 read zero; the reference Octane2 reads 4 there
   at its PROM menu. SuperIO status bits 29 and 30, set on that board, are
   never raised.
-- The PCI error-address record, the configuration copy at ``0x00-0x18``,
-  the interrupt-output alias page, the UART and keyboard configuration
+- The PCI error-address record at ``0x14-0x18`` reads zero, where the
+  reference Octane2 reads ``0x00500010`` at ``0x14``. Writes to the
+  configuration header in the register block are dropped. The
+  interrupt-output alias page, the UART and keyboard configuration
   bytes and the SuperIO clock register file are not modelled. The main
   block logs ``LOG_UNIMP``; the others are holes.
 - Carrier-detect and clear-to-send change sources, the interrupt input
@@ -1570,6 +1617,12 @@ Tests
   and the DP83840A and DP83843 PHYs, with some checks repeated with the
   ICS1890 fitted. ``tests/qtest/ics1890-test.c`` drives the ICS1890
   through this chip's MII registers.
+- ``tests/qtest/octane-test.c`` also covers the Octane2's IOC3: the
+  configuration repeat (``/octane2/ioc3-config-repeats``), the header
+  and pin control clear in the register block
+  (``/octane2/ioc3-register-header``) and the product inputs on both
+  machines (``/octane/ioc3-product-inputs`` and
+  ``/octane2/ioc3-product-inputs``).
 - ``tests/qtest/sn0-ioc3-parallel-test.c``: both parallel register
   blocks, the DMA engine, the status and FIFO flags, the status
   register's bare-connector and ready-printer values on the Origin 200

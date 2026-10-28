@@ -130,6 +130,7 @@ Storage and buses
 
    hardware/qlogic-isp
    hardware/qlogic-isp2200
+   hardware/dbrick
    hardware/aic7880
    hardware/lucent-ohci
    hardware/tsb12lv22

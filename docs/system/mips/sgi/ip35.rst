@@ -241,7 +241,9 @@ Components and connections
      - both processor interfaces; enters the crossbar at :term:`widget` ``0xa``
      - Origin 300: *approximation*; the model uses ``0xa`` as on the
        Fuel. Fuel: *observed* (:src:`graphica-o350-notes`).
-       The IP53 entry widget is on :ref:`sgi-ip53-components`
+       The Bedrock's ``host-widget`` property sets the value, ``0xa`` by
+       default. The IP53 entry widget, ``0xb`` on ``onyx350``, is on
+       :ref:`sgi-ip53-components`
    * - XBridge (Origin 300, Fuel)
      - crossbar at widget 0, PCI heads at widgets 14 (head E) and 15
        (head F)
@@ -348,8 +350,9 @@ Missing devices
 - The Origin 300 rear :term:`XIO` connector's graphics enclosure. The connector
   is modelled empty at crossbar port ``0xb``, an *approximation*.
 - The L2 controller and the NUMAlink module's USB path to it.
-- Origin 3000 C-, I-, P- and X-bricks. The ``origin3200`` composition is
-  a reference model; no machine builds it.
+- The Origin 3000 P-, X- and D-brick compositions and the Cx-brick
+  composition. They are reference models; no machine builds them. The
+  built systems are on :ref:`sgi-bricks`.
 - The Fuel's DS1742W decode and the Origin 300 IO-8's timekeeper part.
   Both boards get an M48T35-compatible stand-in.
 - The IP53 board's missing devices are on :ref:`sgi-ip53-missing`.
@@ -938,7 +941,9 @@ An SN1 router is built as ``/machine/module<M>/router`` beside its
 module's L1 and that L1's UART, whether or not the topology carries the
 L1 management registry the Origin 300 PCI expansion experiment uses, so
 an R-brick needs no I/O peer. Its L1 keeps the type profile above. An
-R-brick's own L1 type is *unknown*.
+R-brick's own L1 type is *unknown*. A router record's ``node-ports``
+lists the only ports a node's cable may use; the builder checks every
+cable against it before any device exists.
 
 .. _sgi-ip35-brick-composition:
 
@@ -947,10 +952,9 @@ Origin 3000 brick compositions
 
 The Origin 3000 servers are built from C-bricks, whose IP35 board
 carries a Bedrock, and separate I/O and router bricks
-(:doc:`hardware/bricks`). No QEMU machine builds them: the Origin 3200
-catalogue entry is a planned target left out of the emulator's
-catalogue. The shared builder already carries the rules a brick
-composition needs, described here.
+(:doc:`hardware/bricks`). ``-M origin3000`` builds the Origin 3200, the
+Origin 3400, the Onyx 3000 and the Onyx 3400 with InfiniteReality3. The
+shared builder's rules for a brick composition are described here.
 
 An Origin 3000 C-brick's IP35 board has no XBridge: an XIO cable joins
 its Bedrock to port A or B of the XBridge in an I/O brick. The builder
@@ -979,8 +983,28 @@ chip's host node, whose Bedrock decodes the board's widget there. The
 builder creates the board as ``/machine/module<M>/<board id>`` in the
 board's own module and joins it to the port with one XIO link once the
 nodes have realized. Only the XIO cards ``pci-carrier``,
-``pci-shoehorn``, ``menet`` and ``mscsi`` are built at such a port. It
-refuses a graphics pipe, a BaseIO card or any other preset cabled there.
+``pci-shoehorn``, ``menet`` and ``mscsi``, the V-brick's VPro V12 and
+the InfiniteReality pipe of a G-brick are built at such a port. The
+builder refuses any other graphics pipe, a BaseIO card or any other
+preset cabled there. A V12 record cabled to a crossbar port is a
+graphics slot named by the record's catalogue id: ``-device
+sgi-odyssey,slot=<id>`` fits the pipe there, it is built in the record's
+module, and the chip's host node reaches it at that port. The V-brick's
+midplane XBridge takes one host, so a two-pipe V-brick, whose second pipe
+needs a second C-brick on the other Crosstown2 port, is refused like any
+second host.
+
+A G-brick pipe record at such a port is a slot, named by the record's
+label, that ``-device sgi-kona,slot=<label>`` claims after machine init,
+as the Onyx2's pipe slot is. The pipe joins the chip's port, sits in its
+G-brick's module as ``/machine/module<M>/<board id>`` and composes its
+packets for the chip's host port, which the crossbar delivers to the
+hosting Bedrock. Each pipe of an N-brick is therefore reached only from
+the C-brick cabled to the same chip. A G-brick pipe on an Origin 3000
+machine is a model arrangement (*approximation*): no Onyx 3000 hardware
+graph or widget listing has been captured, so the widget number at which
+a C-brick sees its pipe and the pipe's identity there are not
+established.
 
 The machine places the I-brick's ``io7`` base I/O instance as
 ``/machine/module<M>/io7``, directly on head F of the XBridge in the
@@ -999,10 +1023,14 @@ A controller with ``owner: module`` is built once as
 ``/machine/module<M>/l1`` and linked into the module's node through the
 node's ``l1`` link, in place of the node's own ``/machine/node<N>/l1``.
 The node configures it exactly as it would its own, so the guest sees
-the same L1. Only a module with one node may own its L1: how several
-Bedrocks reach one L1, as in a CX-brick, and how its serial lines
-number, is *unknown*, so a module-owned L1 shared by several nodes is
-refused.
+the same L1. A module with several nodes may own its L1 only with
+``profile: cx-brick``: the machine builds the :ref:`Cx-brick L1
+<sgi-l1-cxbrick>` itself for one to four IP53 nodes in distinct slots 0
+to 3, and each node adds its own UART window on the link its slot names.
+A node with the memory role is a board without processors. The brick's
+console is the first listed node's L1 serial line. Every other
+module-owned L1 shared by several nodes is refused, because how several
+Bedrocks reach one L1 is *unknown* outside that profile.
 
 .. _sgi-ip35-firmware:
 

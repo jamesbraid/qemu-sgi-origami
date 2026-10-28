@@ -59,7 +59,10 @@ Linux substitutes a PCI subsystem id for the chip, chosen by the part
 prefix in the Bridge's board record, and dispatches on it
 (``drivers/mfd/ioc3.c``, ``pci-xtalk-bridge.c``). The chip has no
 subsystem register of its own, *inferred* (:ref:`sgi-ioc3-measurements`),
-so there is no id of its own to use.
+so there is no id of its own to use. The model matches: its configuration
+space repeats 32 bytes, a guest reading ``0x2c`` gets the latency word,
+and the ``subsystem-id`` property only keys the population the model
+fits.
 OpenBSD reads the board part from the chip's own one-wire bus and tests
 prefixes (``ioc.c``).
 
@@ -185,11 +188,11 @@ Board catalogue
 to populations. It uses the table only when a board leaves the population
 automatic. An id the table does not list gets the Cad Duo population, the
 fall-through Linux uses. The presets set the population explicitly. They
-present ``0xc303`` on the IP29 chip, ``0xc301`` on the MediaIO chip and
+carry ``0xc303`` on the IP29 chip, ``0xc301`` on the MediaIO chip and
 ``0xc305`` and ``0xc306`` on the MENET chips. The BaseIO and BaseIO-G
-chips present ``0xffff``, a model value with no hardware counterpart
-(*approximation*), because the chip has no subsystem register
-(:ref:`sgi-ioc3-measurements`).
+chips carry ``0xffff``, a model value with no hardware counterpart that
+no guest reads (*approximation*), because the chip has no subsystem
+register (:ref:`sgi-ioc3-measurements`).
 
 .. _sgi-ioc3-boards-menet:
 
@@ -267,9 +270,9 @@ rows below are the board's hardware facts.
        6.5.30 kernel does not. No inventory shows one. A real MENET's
        OpenBSD ``dmesg`` would settle it.
    * - What each chip's own PCI subsystem register returns.
-     - The chip has none, *inferred* (:ref:`sgi-ioc3-measurements`). The
-       model's subsystem column is the key that selects the model's
-       population.
+     - The chip has none, *inferred* (:ref:`sgi-ioc3-measurements`), and
+       the model presents none. The ``subsystem-id`` column is the key
+       that selects the model's population.
      - Linux substitutes ``MENET`` and ``MENET4`` ids from the Bridge
        record.
 
@@ -330,13 +333,13 @@ SuperIO interrupt from line B of the card's slot. A stock list names
 the assembly exists, *established*. Line B reaches Bridge pin ``slot ^ 4``,
 *inferred* from the Bridge's general line-B rule, as for the Cad Duo.
 
-The record revision, the model's subsystem id for the chip and the record name beyond
+The record revision, the model's ``subsystem-id`` for the chip and the record name beyond
 OpenBSD's comment are *unknown*. Nothing a guest does depends on them
 beyond the text it prints, since the guests match the part prefix.
 
 ``sgi-pci-shoehorn`` fits the card with ``sio-slot=N`` instead of the
 Cad Duo's ``cad-duo-slot``. Setting both is refused. The card is an
-``sgi-ioc3`` with serial A and B only, subsystem id ``0xffff``, and a
+``sgi-ioc3`` with serial A and B only, ``subsystem-id`` ``0xffff``, and a
 board record on its one-wire bus: part ``030-1657-003``, revision ``A``
 and name ``PCI_SIO_UFC``, all *approximation*. The barcode is a marked
 synthetic placeholder. With no Ethernet there is no station-address part,
@@ -363,9 +366,9 @@ Tests
 ``superio-reaches-hub``. A board in the Origin 200 GIGAchannel cabinet
 runs ``ioc3s-enumerate`` and ``populations``:
 
-- ``ioc3s-enumerate``: IOC3s answer ``0x000310a9`` at devices 0 to 3, with
-  subsystem dwords ``0xc30510a9`` for devices 0 to 2 and ``0xc30610a9``
-  for device 3;
+- ``ioc3s-enumerate``: IOC3s answer ``0x000310a9`` at devices 0 to 3,
+  and each reads the repeated latency word at ``0x2c``, with no subsystem
+  register;
 - ``populations``: every chip has Ethernet and its one-wire part, devices
   0 to 2 have both serial ports, and no chip has a clock, keyboard or
   mouse device, parallel port or board record;
@@ -382,7 +385,7 @@ runs ``ioc3s-enumerate`` and ``populations``:
 record back byte for byte and checks revision 4.
 
 ``tests/qtest/sn0-pci-shoehorn-test.c`` covers the dual-serial card:
-``sio-enumerates`` (IOC3 identity, subsystem ``0xffff``, both serial
+``sio-enumerates`` (IOC3 identity, no subsystem register, both serial
 ports and no Ethernet, keyboard, parallel, clock or station-address
 part), ``sio-board-record`` (the board record is the bus's only part),
 ``sio-serial-interrupt-reaches-hub`` (a serial interrupt raises pin
