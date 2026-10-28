@@ -138,14 +138,22 @@ static void stopped(QTestState *s)
     g_assert_cmpstr(qdict_get_str(status, "status"), ==, "internal-error");
 }
 
-static void mixed_result(QTestState *s)
+static void renderer_status(QTestState *s, unsigned legacy_head)
+{
+    unsigned head = !strcmp(profile, "legacy-software") ? legacy_head : 0;
+
+    g_assert_cmphex(qtest_readl(s, STATUS), ==,
+                    0x1e000000 | head | (head << 6) | (head << 12));
+}
+
+static void mixed_result(QTestState *s, unsigned legacy_head)
 {
     bytes(s, 0x3000, 4080, 0x51);
     bytes(s, 0x3ff0, 16, 0xa6);
     bytes(s, 0x7000, 4096, 0x62);
     bytes(s, 0xb000, 20, 0xa6);
     bytes(s, 0xb014, 4076, 0x73);
-    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    renderer_status(s, legacy_head);
     unchanged_interrupts(s);
 }
 
@@ -196,7 +204,7 @@ static void test_mixed(gconstpointer data)
     pair(s, 0, 1, 0x8000000b, 0xffffffff);
     parameters(s, 0xff0, 0xfff);
     g_assert_cmpint(memtx_writel(s, MTE + 0x838, 0x2013), ==, MEMTX_OK);
-    mixed_result(s);
+    mixed_result(s, 8);
     finish(&f, 1, validity_clear, !validity_clear);
 }
 
@@ -216,7 +224,7 @@ static void test_all_invalid(gconstpointer unused)
     bytes(s, 0x3000, 4096, 0x51);
     bytes(s, 0x7000, 4096, 0x62);
     bytes(s, 0xb000, 4096, 0x73);
-    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    renderer_status(s, 9);
     unchanged_interrupts(s);
     finish(&f, 1, 2, 1);
 }
@@ -277,7 +285,7 @@ static void test_valid(gconstpointer data)
         bytes(s, 0xb000, 20, 0xa6);
         bytes(s, 0xb014, 4076, 0x73);
     }
-    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    renderer_status(s, copy ? 12 : 8);
     unchanged_interrupts(s);
     finish(&f, 0, 0, 0);
 }
@@ -397,7 +405,7 @@ static void test_migration(gconstpointer unused)
     g_assert_cmphex(qtest_readl(to.qts, MTE + 0x40), ==, 0x12345678);
     g_assert_cmphex(qtest_readl(to.qts, MTE + 0x48), ==, 0x87654321);
     g_assert_cmpint(memtx_writel(to.qts, MTE + 0x800, CLEAR_A), ==, MEMTX_OK);
-    mixed_result(to.qts);
+    mixed_result(to.qts, 43);
     finish(&to, 1, 0, 1);
     finish(&from, 0, 0, 0);
 }
