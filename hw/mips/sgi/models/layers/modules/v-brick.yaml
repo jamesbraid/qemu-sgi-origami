@@ -11,6 +11,7 @@ layer:
       - id: brick
         name: V-brick
         kind: module
+        controller: absent
         provenance: vendor-document
         sources: ["007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two InfinitePerformance pipes, each one VPro V12 board taking two of its four board slots, behind a midplane XBridge"]
         notes: >-
@@ -36,6 +37,11 @@ layer:
         kind: crossbar
         hardware_kind: xbridge
         crossbar: {kind: xbridge}
+        identity:
+          widget_revision: 2
+          notes: >-
+            The revision the QEMU XBridge model presents, as for the
+            I-brick. The V-brick's fitted XBridge revision is unknown.
         provenance: vendor-document
         parent: xbridge
         sources: ["108-0240-002 printed pages 2-26 and 2-27: an XBridge's Crosstown2 ports are A (10) and B (11), and 8, 9, C and D are its Crosstalk ports"]
@@ -72,6 +78,66 @@ layer:
             bandwidth; with two pipes, the second pipe's C-brick is.
             Nothing is cabled here in this layer.
         sources: ["007-4264-002 printed pages 54 to 56: rear connectors XIO 11 and XIO 10, Port A and Port B, each cabled to a C-brick", "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstown2 ports A (10) and B (11)"]
+      - id: port-8
+        name: XBridge Crosstalk port 8 connector
+        kind: connector
+        provenance: vendor-document
+        parent: xbridge-crossbar
+        connector:
+          interface: XIO
+          location: midplane
+          occupancy: opaque
+          port: 8
+          notes: >-
+            The link from the XBridge to one V12 board slot. Which port
+            serves which slot is unknown; a composition that fits a V12
+            chooses the port and cables it.
+        sources: ["108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D", "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"]
+      - id: port-9
+        name: XBridge Crosstalk port 9 connector
+        kind: connector
+        provenance: vendor-document
+        parent: xbridge-crossbar
+        connector:
+          interface: XIO
+          location: midplane
+          occupancy: opaque
+          port: 9
+          notes: >-
+            The link from the XBridge to one V12 board slot. Which port
+            serves which slot is unknown; a composition that fits a V12
+            chooses the port and cables it.
+        sources: ["108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D", "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"]
+      - id: port-c
+        name: XBridge Crosstalk port C connector
+        kind: connector
+        provenance: vendor-document
+        parent: xbridge-crossbar
+        connector:
+          interface: XIO
+          location: midplane
+          occupancy: opaque
+          port: 0xc
+          notes: >-
+            The link from the XBridge to one V12 board slot. Which port
+            serves which slot is unknown; a composition that fits a V12
+            chooses the port and cables it.
+        sources: ["108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D", "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"]
+      - id: port-d
+        name: XBridge Crosstalk port D connector
+        kind: connector
+        provenance: vendor-document
+        parent: xbridge-crossbar
+        connector:
+          interface: XIO
+          location: midplane
+          occupancy: opaque
+          port: 0xd
+          notes: >-
+            The link from the XBridge to one V12 board slot. Which port
+            serves which slot is unknown; a composition that fits a V12
+            chooses the port and cables it.
+        sources: ["108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D", "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"]
     buses:
       - id: port-b-xio
         name: XBridge Crosstown2 port B
@@ -113,3 +179,7 @@ layer:
       - {component: xbridge-crossbar, bus: host-port-a-xio, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstown2 ports A (10) and B (11)"], notes: "Host port A, widget 0xA (10 decimal); inferred, see the port-a connector."}
       - {component: port-a, bus: host-port-a-xio, role: endpoint, provenance: vendor-document, sources: ["007-4264-002 printed pages 54 to 56: rear connectors XIO 11 and XIO 10, Port A and Port B, each cabled to a C-brick"]}
       - {component: port-b, bus: port-b-xio, role: endpoint, provenance: vendor-document, sources: ["007-4264-002 printed pages 54 to 56: rear connectors XIO 11 and XIO 10, Port A and Port B, each cabled to a C-brick"]}
+      - {component: port-8, bus: port-8-xio, role: endpoint, provenance: vendor-document, sources: ["007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"]}
+      - {component: port-9, bus: port-9-xio, role: endpoint, provenance: vendor-document, sources: ["007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"]}
+      - {component: port-c, bus: port-c-xio, role: endpoint, provenance: vendor-document, sources: ["007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"]}
+      - {component: port-d, bus: port-d-xio, role: endpoint, provenance: vendor-document, sources: ["007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"]}

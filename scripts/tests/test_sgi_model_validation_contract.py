@@ -1929,8 +1929,8 @@ class Origin3000BrickValidationTests(unittest.TestCase):
                  "end 'ibrick-xbridge' is not a connector"),
                 ("a connector on no XIO bus",
                  ["ibrick-port-b", "c0-link-connector"],
-                 "end 'c0-link-connector' is neither a node II nor a "
-                 "crossbar"),
+                 "end 'c0-link-connector' is neither a node II, a "
+                 "crossbar port nor a board's connector"),
         ):
             with self.subTest(name=name):
                 # The C-brick's LINK (NI) connector is on its NUMAlink

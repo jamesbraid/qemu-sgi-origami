@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "62c46a416d48741e15ffc3a4041f1500afee561ae52d5393e3e70e8e9c551d45"
+    "143b92952ec44ac0dee4b430a7681ca74cd098d2ea6fd9f97ba439267f221e80"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -808,7 +808,7 @@ class FuelTests(unittest.TestCase):
         }
         for topology in catalogue["topologies"]:
             product = topology["product"]
-            if topology["name"] in ("origin3200", "origin3400"):
+            if topology["name"] in ("origin3200", "origin3400", "onyx3000"):
                 # The C-brick's machine-type byte and reset-mode word come
                 # from the PROM's CPU-configuration table row.
                 self.assertEqual(topology["ip35-firmware"], {

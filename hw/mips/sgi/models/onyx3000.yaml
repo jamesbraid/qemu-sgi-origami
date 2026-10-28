@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Onyx 3000 reference composition: two two-processor C-bricks, an I-brick
+# Onyx 3000 reference composition: two four-processor C-bricks, an I-brick
 # and a one-pipe V-brick. Resolve before validation or generation.
 configuration_version: 1
 layers:
@@ -22,6 +22,7 @@ connector_population:
 module_instances:
   - model: layers/modules/c-brick.yaml
     prefix: c0-
+    module_role: MASTER
     parent: rack
     observed_hardware: &cbrick-basis
       mode: projected
@@ -32,6 +33,7 @@ module_instances:
         this C-brick.
   - model: layers/modules/c-brick.yaml
     prefix: c1-
+    module_role: SLAVE
     parent: rack
     observed_hardware: *cbrick-basis
   - model: layers/modules/i-brick.yaml
@@ -55,3 +57,12 @@ module_instances:
       note: >-
         No V-brick inventory or hardware graph has been captured; the
         enclosure follows the owner's guide's block diagram.
+links:
+  # The two C-brick L1s reach each other over the NUMAlink cable
+  # (108-0240-002 printed page 2-47).
+  - kind: l1-peer
+    source: c0-l1
+    target: c1-l1
+  - kind: l1-peer
+    source: c1-l1
+    target: c0-l1

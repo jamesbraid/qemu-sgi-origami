@@ -348,16 +348,22 @@ connector, and each pipe needs a C-brick of its own, besides the one
 that hosts the system I-brick (established, *SGI Onyx 3000 Series
 Graphics System Hardware Owner's Guide*, 007-4264-002, printed pages 8,
 10, 19, 52 to 56). A system holds G-bricks or V-bricks, never both
-(established, printed pages 10 and 21). The ``onyx3000-vbrick``
-reference composition puts the I-brick on the first C-brick and a
-one-pipe V-brick on the second, with the cable on the midplane
-XBridge's port A and the V12 on its Crosstalk port 8. Both ports are
-the composition's choices: which connector is port A, which Crosstalk
+(established, printed pages 10 and 21). The ``onyx3000``
+topology (``-M origin3000,topology=onyx3000``) puts the I-brick on the
+first C-brick and a one-pipe V-brick on the second, with the cable on the
+midplane XBridge's port A and the V12 on its Crosstalk port 8. Both ports
+are the composition's choices: which connector is port A, which Crosstalk
 port serves a slot, and so the V12's widget number, are unknown, and a
 PROM inventory or hardware graph of an Onyx 3000 with a V-brick would
 settle them. The V-brick's L1 is not modelled, since its address and
-identity are unknown. Like the Origin 3200 composition, it has no
-concrete C-brick fit and so does not compile.
+identity are unknown. No source fixes an Onyx 3000 C-brick's processors,
+caches or memory, so each C-brick takes the Origin 3200 C-brick's fit
+(four 400 MHz R12000s with 8 MB caches and 4096 MB); that fit is a model
+choice. The V12 is fitted by default and ``-vga none`` leaves its port
+empty. The stock PROM lists the V12 as a graphics board in the second
+C-brick's module and diagnoses all four processors on each node. IRIX
+6.5.30 boots to a login without the V12 and stops in an early kernel
+assertion with it; the cause is not established.
 
 .. _sgi-sn-family-rbrick:
 

@@ -21,20 +21,45 @@ layer:
   topology:
     min_nodes: 2
     max_nodes: 2
+    # This composition fixes four processors per C-brick, so it is the only
+    # population an emulator built from it would accept.
+    supported_cpu_populations: [[4, 4]]
+    supported_processors:
+      - {part: r12000, clock_mhz: 400, cache_mib: 8}
+    supported_bank_mib_per_node:
+      - [512, 512, 512, 512, 512, 512, 512, 512]
     provenance: vendor-document
     sources: [007-4264-002-cbricks, 007-4240-002-link]
   population:
     nodes: 2
-    cpus_per_node: [2, 2]
-    fitted_memory:
-      status: unknown
-      reason: >-
-        No Onyx 3000 bundle read for this composition fixes the C-bricks'
-        memory; this composition selects none.
-      provenance: vendor-document
-      sources: [007-4311-002-pimm]
+    cpus_per_node: [4, 4]
     provenance: vendor-document
     sources: [007-4311-002-pimm]
+  # Model choice, not a source: no Onyx 3000 bundle read fixes the C-bricks'
+  # processors, caches or memory, so each C-brick takes the fit that the
+  # Origin 3200 inventory reports for its C-brick.
+  cpu_selection:
+    default: {clock_mhz: 400, cache_mib: 8}
+    slots: [cpu0, cpu1, cpu2, cpu3]
+  memory_kits_per_node: [kit-4096-eight-512-banks, kit-4096-eight-512-banks]
+  # The one pipe slot is the V-brick's V12 record, which the pipe fitted
+  # by -device sgi-odyssey,slot=vbrick-v12 claims; the V-brick exists to
+  # hold it, so the machine fits one by default.
+  graphics:
+    max_pipes: 1
+    headless: false
+    headless_refused: "the V-brick exists to hold its V12 pipe"
+    slots:
+      - name: vbrick-v12
+        description: "the V-brick's V12 board on XBridge Crosstalk port 8"
+        placement: {slot: vbrick-v12}
+        default:
+          family: odyssey
+          product: v12
+        families:
+          - family: odyssey
+            products:
+              - {product: v12, fidelity: implemented, pairing: established, assembly: "030-1726"}
   composition_rules:
     counts:
       - {bricks: [c-brick], min: 2}
@@ -52,7 +77,7 @@ layer:
   data:
     machine:
       name: Onyx 3000
-      model_role: reference
+      model_role: emulation-target
       notes: >-
         An Onyx 3000 with one InfinitePerformance (VPro V12) pipe: two
         C-bricks joined LINK (NI) to LINK (NI) with no R-brick, the I-brick
@@ -63,13 +88,164 @@ layer:
         boot I-brick uses and which V-brick connector is port A are
         unknown. Port 8 is this composition's choice among the four
         Crosstalk ports; which port a V12 slot uses, and so the V12's
-        widget number, is unknown. The V-brick and I-brick carry no L1,
-        the C-brick layer carries no L1, memory or clock fit, and so this
-        configuration never compiles. Two C-bricks are the fewest a
+        widget number, is unknown. The V-brick carries no L1, as its
+        address and identity are unknown. The C-bricks take the Origin
+        3200 C-brick's whole fit, four 400 MHz R12000s with 8 MB caches and
+        4096 MB: the C-brick layer holds four processors, and no Onyx 3000
+        source fixes the fit, so it is a model choice and an approximation. Two C-bricks are the fewest a
         one-pipe system holds, one for the pipe and one for the I-brick,
         and the most this unrouted composition joins; a routed Onyx 3000
-        is not described. Two processors per C-brick is the smallest
-        documented C-brick fit, not an asserted Onyx 3000 fit.
+        is not described. The four-processor fit is not an asserted Onyx 3000 fit.
+      emulation:
+        bedrock_nodes:
+          c0-bedrock: &cbrick-bedrock
+            # Product code 0 in bits 15:12 is a C-brick to OpenBSD and the
+            # stock PROM. The low nibble selects the PROM's configuration
+            # row; 2 is the 400 MHz, 8 MB row this fit matches. The other
+            # bits are unknown and read zero.
+            board_id_word: 2
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask: {mode: fitted-banks}
+            provenance: derived
+            sources: ["openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick", "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row"]
+            notes: >-
+              Approximation. Established: product code 0. Chosen: low nibble
+              2, the configuration row of the selected fit; which nibble a
+              physical C-brick presents is unknown, and a register read on a
+              matching board would settle it.
+          c1-bedrock: *cbrick-bedrock
+        l1_controllers:
+          c0-l1: &cbrick-l1
+            profile: cbrick
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            notes: The C-brick profile of the L1 model; its firmware revision is unknown and not carried.
+          c1-l1: *cbrick-l1
+          ibrick-l1:
+            profile: ibrick
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            notes: The I-brick profile of the L1 model, reached from c0's L1 over the XIO cable.
+        io_boards:
+          ibrick-xbridge-bridge-f:
+            ioc3_subsystem_id: 65535
+            mac_source: none
+            # The TSB12LV22 model has no PHY or bus, and its reviewed
+            # register contract keeps it out of product profiles until
+            # those exist; the stock PROM's 1394 probe waits on them.
+            ieee1394_absent: true
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick, hw/misc/tsb12lv22.c]
+            notes: >-
+              The IOC3 subsystem field is the unobserved placeholder, and no
+              source gives where the IO7's Ethernet address comes from. The
+              IEEE 1394 link controller is left out, a stated limitation:
+              its PHY and bus are not modelled.
+        system_timekeepers:
+          ibrick-xbridge-bridge-f:
+            kind: m48t35-compatible
+            year_base: 1968
+            initial_ip27_fixture: false
+            provenance: derived
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"]
+            notes: >-
+              The IO7's time-of-day part is not identified; this is the
+              Origin 300's M48T35-compatible choice, an approximation. IP35
+              software uses the 1968 year convention.
+        # The IP35 flash configuration block's product values: machine type
+        # 0, the C-brick rows' class, and the 400 MHz, 8 MB row's word.
+        ip35_firmware:
+          machine_type: 0
+          cpu_mode_word: 0x5414a785
+          provenance: derived
+          sources: ["firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row and its machine-type byte"]
+          notes: Inferred from the PROM's own table, as the Origin 300's values are; no C-brick flash block has been captured.
+        machine_name: origin3000
+        display_description: SGI Onyx 3000 (IP35), two C-bricks, an I-brick and a V-brick
+        profile: onyx3000
+        lifecycle: implemented
+        # Each C-brick runs the selected fit's 4096 MB only.
+        emulator_constraints:
+          accepted_bank_sizes_mib: [4096]
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - name: CPU reset view
+              address: "0x000_001fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: local Hub-special boot view
+              address: "0x100_18000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: bounded high local Hub-special boot view
+              address: "0x100_1fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: node-zero remote Hub-special boot view
+              address: "0x100_38000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+          second_selection:
+            address: "0x100_1a000000"
+            size: "0x0080_0000"
+          provenance: derived
+          sources: [qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-carrier, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-trampolines, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip35-views]
+          notes: >-
+            The Origin 300's stock IP35 PROM 6.210 payload and views, carried
+            by each C-brick's node; the Origin 3200 inventory reports the same
+            PROM revision. Emulator compatibility policy; no fitted flash part
+            or physical reset decoder is claimed.
+        initial_module_numbers:
+          - component: c0-chassis
+            number: 4
+            reason: >-
+              The first C-brick's slot, U04, where the configuration manual
+              places it (module 001c04).
+          - component: c1-chassis
+            number: 7
+            reason: >-
+              The second C-brick's slot, U07 (module 001c07).
+          - component: ibrick-brick
+            number: 14
+            reason: >-
+              The I-brick's slot, U14, where the configuration manual places
+              it (module 001i14).
+          - component: vbrick-brick
+            number: 10
+            reason: >-
+              A model choice: no source read places the V-brick in the rack,
+              so the number is any unused slot between the C-bricks and the
+              I-brick, and nothing in the model depends on it. The V-brick
+              has no L1 here to report it.
+        synthetic_identities:
+          - component: c0-bedrock
+            serial: "0x51454d554e00"
+            reason: Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.
+          - component: c1-bedrock
+            serial: "0x51454d554e01"
+            reason: Synthetic node identity N1, carrying the "QEMU" marker; not hardware evidence.
+          - component: vbrick-v12
+            serial: "0x51454d554e02"
+            reason: Synthetic V12 identity, carrying the "QEMU" marker; not hardware evidence.
+      harness:
+        console: l1-uart
+        prom_dialogue: ip35-l1-prompt
+        default_cpu_model: R12000
+        # The I-brick's Fibre Channel card's private loop: a boot disk
+        # there is a loop port, named by the launcher's port_wwn and wwn.
+        disk_bus: scsi.0
+        netboot_adapter: ioc3-ethernet
+        default_topology: origin3200
+        supported_guests: [irix]
+        install_media: [netboot]
+        provenance: derived
+        sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-metadata]
     evidence_policy: strict
     components:
       - id: rack
@@ -82,12 +258,29 @@ layer:
         name: VPro V12 graphics board
         kind: board
         hardware_kind: odyssey
+        identity:
+          widget_revision: 10
+          notes: >-
+            The revision the Fuel's measured V12 reports, reused as a model
+            choice; no V-brick V12 has been captured.
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-odyssey]
         provenance: vendor-document
         parent: vbrick-brick
         sources: [007-4264-002-vbrick]
         notes: >-
           The one pipe of a one-pipe V-brick. Which slot pair it fills is
           unknown. Its fitted revision is not captured for a V-brick.
+      - id: vbrick-v12-connector
+        name: VPro V12 XIO connector
+        kind: connector
+        provenance: vendor-document
+        parent: vbrick-v12
+        connector:
+          interface: XIO
+          location: V-brick board slot
+          occupancy: opaque
+          notes: The V12 board's end of its link to the midplane XBridge.
+        sources: [007-4264-002-vbrick]
     buses:
       - id: ni-cable
         name: NUMAlink 3 cable, C-brick 0 LINK (NI) to C-brick 1 LINK (NI)
@@ -104,9 +297,16 @@ layer:
       - component: vbrick-v12
         bus: vbrick-port-8-xio
         role: endpoint
+        widget: 8
+        controlled_by: c1-bedrock
         provenance: vendor-document
         sources: [007-4264-002-vbrick]
         notes: Port 8 is this composition's choice; which Crosstalk port serves a V12 slot is unknown.
+      - component: vbrick-v12-connector
+        bus: vbrick-port-8-xio
+        role: endpoint
+        provenance: vendor-document
+        sources: [007-4264-002-vbrick]
     xio_cables:
       - id: c0-to-ibrick
         ends: [c0-xio-ii-connector, ibrick-port-a]
@@ -118,3 +318,8 @@ layer:
         provenance: vendor-document
         sources: [007-4264-002-direct, 007-4264-002-cabling]
         notes: Which V-brick connector, XIO 10 or XIO 11, is port A is unknown.
+      - id: vbrick-to-v12
+        ends: [vbrick-port-8, vbrick-v12-connector]
+        provenance: vendor-document
+        sources: [007-4264-002-vbrick]
+        notes: Port 8 is this composition's choice; which Crosstalk port serves a V12 slot is unknown.

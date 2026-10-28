@@ -222,12 +222,35 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-odyssey"
+      ],
       "hardware_kind": "odyssey",
       "id": "vbrick-v12",
+      "identity": {
+        "notes": "The revision the Fuel's measured V12 reports, reused as a model choice; no V-brick V12 has been captured.",
+        "widget_revision": 10
+      },
       "kind": "board",
       "name": "VPro V12 graphics board",
       "notes": "The one pipe of a one-pipe V-brick. Which slot pair it fills is unknown. Its fitted revision is not captured for a V-brick.",
       "parent": "vbrick-brick",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two pipes, each one VPro V12 board taking two of its four slots, behind its midplane XBridge"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "V-brick board slot",
+        "notes": "The V12 board's end of its link to the midplane XBridge.",
+        "occupancy": "opaque"
+      },
+      "id": "vbrick-v12-connector",
+      "kind": "connector",
+      "name": "VPro V12 XIO connector",
+      "parent": "vbrick-v12",
       "provenance": "vendor-document",
       "sources": [
         "007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two pipes, each one VPro V12 board taking two of its four slots, behind its midplane XBridge"
@@ -271,6 +294,19 @@
       "description": "Processor A, the first slot of processor interface 0.",
       "hardware_kind": "r12000",
       "id": "c0-cpu0",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c0-chassis",
@@ -288,6 +324,19 @@
       "description": "Processor B, the second slot of processor interface 0.",
       "hardware_kind": "r12000",
       "id": "c0-cpu1",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c0-chassis",
@@ -305,6 +354,19 @@
       "description": "Processor C, the first slot of processor interface 1.",
       "hardware_kind": "r12000",
       "id": "c0-cpu2",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c0-chassis",
@@ -322,6 +384,19 @@
       "description": "Processor D, the second slot of processor interface 1.",
       "hardware_kind": "r12000",
       "id": "c0-cpu3",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c0-chassis",
@@ -440,6 +515,19 @@
       "description": "Processor A, the first slot of processor interface 0.",
       "hardware_kind": "r12000",
       "id": "c1-cpu0",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c1-chassis",
@@ -457,6 +545,19 @@
       "description": "Processor B, the second slot of processor interface 0.",
       "hardware_kind": "r12000",
       "id": "c1-cpu1",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c1-chassis",
@@ -474,6 +575,19 @@
       "description": "Processor C, the first slot of processor interface 1.",
       "hardware_kind": "r12000",
       "id": "c1-cpu2",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c1-chassis",
@@ -491,6 +605,19 @@
       "description": "Processor D, the second slot of processor interface 1.",
       "hardware_kind": "r12000",
       "id": "c1-cpu3",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c1-chassis",
@@ -791,6 +918,7 @@
       ]
     },
     {
+      "controller": "absent",
       "id": "vbrick-brick",
       "kind": "module",
       "name": "V-brick",
@@ -824,6 +952,10 @@
       },
       "hardware_kind": "xbridge",
       "id": "vbrick-xbridge-crossbar",
+      "identity": {
+        "notes": "The revision the QEMU XBridge model presents, as for the I-brick. The V-brick's fitted XBridge revision is unknown.",
+        "widget_revision": 2
+      },
       "kind": "crossbar",
       "name": "XBridge crossbar section",
       "parent": "vbrick-xbridge",
@@ -870,6 +1002,82 @@
         "007-4264-002 printed pages 54 to 56: rear connectors XIO 11 and XIO 10, Port A and Port B, each cabled to a C-brick",
         "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstown2 ports A (10) and B (11)"
       ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "midplane",
+        "notes": "The link from the XBridge to one V12 board slot. Which port serves which slot is unknown; a composition that fits a V12 chooses the port and cables it.",
+        "occupancy": "opaque",
+        "port": 8
+      },
+      "id": "vbrick-port-8",
+      "kind": "connector",
+      "name": "XBridge Crosstalk port 8 connector",
+      "parent": "vbrick-xbridge-crossbar",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D",
+        "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "midplane",
+        "notes": "The link from the XBridge to one V12 board slot. Which port serves which slot is unknown; a composition that fits a V12 chooses the port and cables it.",
+        "occupancy": "opaque",
+        "port": 9
+      },
+      "id": "vbrick-port-9",
+      "kind": "connector",
+      "name": "XBridge Crosstalk port 9 connector",
+      "parent": "vbrick-xbridge-crossbar",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D",
+        "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "midplane",
+        "notes": "The link from the XBridge to one V12 board slot. Which port serves which slot is unknown; a composition that fits a V12 chooses the port and cables it.",
+        "occupancy": "opaque",
+        "port": 12
+      },
+      "id": "vbrick-port-c",
+      "kind": "connector",
+      "name": "XBridge Crosstalk port C connector",
+      "parent": "vbrick-xbridge-crossbar",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D",
+        "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "midplane",
+        "notes": "The link from the XBridge to one V12 board slot. Which port serves which slot is unknown; a composition that fits a V12 chooses the port and cables it.",
+        "occupancy": "opaque",
+        "port": 13
+      },
+      "id": "vbrick-port-d",
+      "kind": "connector",
+      "name": "XBridge Crosstalk port D connector",
+      "parent": "vbrick-xbridge-crossbar",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D",
+        "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"
+      ]
     }
   ],
   "composition": {
@@ -914,16 +1122,23 @@
     "limits": {
       "cpus_per_node": 4,
       "dimms_per_node": 8,
+      "memory_banks_per_node": 8,
       "nodes": 2,
       "provenance": "vendor-document",
       "sources": [
         "108-0240-002 printed page 2-4: two or four processors on one or two PIMMs",
         "108-0240-002 printed pages 2-5 and 2-6: 512 MB to 8 GB in up to eight banks, banks 2n and 2n+1 on DIMM pair n, the two DIMMs of a pair matching, 256 MB, 512 MB and 1 GB DIMMs"
+      ],
+      "supported_bank_sizes_mib": [
+        256,
+        512,
+        1024
       ]
     },
     "module_instances": [
       {
         "model": "layers/modules/c-brick.yaml",
+        "module_role": "MASTER",
         "observed_hardware": {
           "mode": "projected",
           "note": "The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what every published Origin 3000 inventory reports; it is not a capture of this C-brick.",
@@ -936,6 +1151,7 @@
       },
       {
         "model": "layers/modules/c-brick.yaml",
+        "module_role": "SLAVE",
         "observed_hardware": {
           "mode": "projected",
           "note": "The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what every published Origin 3000 inventory reports; it is not a capture of this C-brick.",
@@ -980,17 +1196,39 @@
     "platform": "ip35",
     "population": {
       "cpus_per_node": [
-        2,
-        2
+        4,
+        4
       ],
-      "fitted_memory": {
-        "provenance": "vendor-document",
-        "reason": "No Onyx 3000 bundle read for this composition fixes the C-bricks' memory; this composition selects none.",
-        "sources": [
-          "007-4311-002 printed page 83, section 8.1: a C-brick holds two or four processors, and a two-processor C-brick takes a second two-processor PIMM"
+      "dimms_per_node": [
+        8,
+        8
+      ],
+      "memory_bank_mib_per_node": [
+        [
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512
         ],
-        "status": "unknown"
-      },
+        [
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512
+        ]
+      ],
+      "memory_mib_per_node": [
+        4096,
+        4096
+      ],
       "nodes": 2,
       "provenance": "vendor-document",
       "sources": [
@@ -1005,6 +1243,31 @@
       "sources": [
         "007-4264-002 printed page 19: each InfinitePerformance pipe needs a dedicated C-brick, so a graphics system has at least as many C-bricks as pipes, plus one for the system I-brick",
         "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"
+      ],
+      "supported_bank_mib_per_node": [
+        [
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512
+        ]
+      ],
+      "supported_cpu_populations": [
+        [
+          4,
+          4
+        ]
+      ],
+      "supported_processors": [
+        {
+          "cache_mib": 8,
+          "clock_mhz": 400,
+          "part": "r12000"
+        }
       ]
     }
   },
@@ -1048,7 +1311,18 @@
     {
       "bus": "vbrick-port-8-xio",
       "component": "vbrick-v12",
+      "controlled_by": "c1-bedrock",
       "notes": "Port 8 is this composition's choice; which Crosstalk port serves a V12 slot is unknown.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two pipes, each one VPro V12 board taking two of its four slots, behind its midplane XBridge"
+      ],
+      "widget": 8
+    },
+    {
+      "bus": "vbrick-port-8-xio",
+      "component": "vbrick-v12-connector",
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
@@ -1310,18 +1584,309 @@
       "sources": [
         "007-4264-002 printed pages 54 to 56: rear connectors XIO 11 and XIO 10, Port A and Port B, each cabled to a C-brick"
       ]
+    },
+    {
+      "bus": "vbrick-port-8-xio",
+      "component": "vbrick-port-8",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"
+      ]
+    },
+    {
+      "bus": "vbrick-port-9-xio",
+      "component": "vbrick-port-9",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"
+      ]
+    },
+    {
+      "bus": "vbrick-port-c-xio",
+      "component": "vbrick-port-c",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"
+      ]
+    },
+    {
+      "bus": "vbrick-port-d-xio",
+      "component": "vbrick-port-d",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"
+      ]
     }
   ],
   "evidence_policy": "strict",
   "interrupts": [],
+  "links": [
+    {
+      "kind": "l1-peer",
+      "source": "c0-l1",
+      "target": "c1-l1"
+    },
+    {
+      "kind": "l1-peer",
+      "source": "c1-l1",
+      "target": "c0-l1"
+    }
+  ],
   "machine": {
     "architecture_ip": "IP35",
     "board_ip": "IP35",
+    "emulation": {
+      "bedrock_nodes": {
+        "c0-bedrock": {
+          "board_id_word": 2,
+          "initiator_region": 0,
+          "installed_bank_mask": {
+            "mode": "fitted-banks"
+          },
+          "local_region": 0,
+          "notes": "Approximation. Established: product code 0. Chosen: low nibble 2, the configuration row of the selected fit; which nibble a physical C-brick presents is unknown, and a register read on a matching board would settle it.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick",
+            "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row"
+          ]
+        },
+        "c1-bedrock": {
+          "board_id_word": 2,
+          "initiator_region": 0,
+          "installed_bank_mask": {
+            "mode": "fitted-banks"
+          },
+          "local_region": 0,
+          "notes": "Approximation. Established: product code 0. Chosen: low nibble 2, the configuration row of the selected fit; which nibble a physical C-brick presents is unknown, and a register read on a matching board would settle it.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick",
+            "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row"
+          ]
+        }
+      },
+      "display_description": "SGI Onyx 3000 (IP35), two C-bricks, an I-brick and a V-brick",
+      "emulator_constraints": {
+        "accepted_bank_sizes_mib": [
+          4096
+        ]
+      },
+      "firmware_payload": {
+        "argument": "-bios",
+        "notes": "The Origin 300's stock IP35 PROM 6.210 payload and views, carried by each C-brick's node; the Origin 3200 inventory reports the same PROM revision. Emulator compatibility policy; no fitted flash part or physical reset decoder is claimed.",
+        "path": "firmware/6.5.30/ip35prom.payload.bin",
+        "provenance": "derived",
+        "read_only": true,
+        "second_selection": {
+          "address": "0x100_1a000000",
+          "size": "0x0080_0000"
+        },
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": "0x1686a8",
+        "sources": [
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-carrier",
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-trampolines",
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip35-views"
+        ],
+        "views": [
+          {
+            "address": "0x000_001fc00000",
+            "name": "CPU reset view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          },
+          {
+            "address": "0x100_18000000",
+            "name": "local Hub-special boot view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          },
+          {
+            "address": "0x100_1fc00000",
+            "name": "bounded high local Hub-special boot view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          },
+          {
+            "address": "0x100_38000000",
+            "name": "node-zero remote Hub-special boot view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          }
+        ]
+      },
+      "initial_module_numbers": [
+        {
+          "component": "c0-chassis",
+          "number": 4,
+          "reason": "The first C-brick's slot, U04, where the configuration manual places it (module 001c04)."
+        },
+        {
+          "component": "c1-chassis",
+          "number": 7,
+          "reason": "The second C-brick's slot, U07 (module 001c07)."
+        },
+        {
+          "component": "ibrick-brick",
+          "number": 14,
+          "reason": "The I-brick's slot, U14, where the configuration manual places it (module 001i14)."
+        },
+        {
+          "component": "vbrick-brick",
+          "number": 10,
+          "reason": "A model choice: no source read places the V-brick in the rack, so the number is any unused slot between the C-bricks and the I-brick, and nothing in the model depends on it. The V-brick has no L1 here to report it."
+        }
+      ],
+      "io_boards": {
+        "ibrick-xbridge-bridge-f": {
+          "ieee1394_absent": true,
+          "ioc3_subsystem_id": 65535,
+          "mac_source": "none",
+          "notes": "The IOC3 subsystem field is the unobserved placeholder, and no source gives where the IO7's Ethernet address comes from. The IEEE 1394 link controller is left out, a stated limitation: its PHY and bus are not modelled.",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick",
+            "hw/misc/tsb12lv22.c"
+          ]
+        }
+      },
+      "ip35_firmware": {
+        "cpu_mode_word": 1410639749,
+        "machine_type": 0,
+        "notes": "Inferred from the PROM's own table, as the Origin 300's values are; no C-brick flash block has been captured.",
+        "provenance": "derived",
+        "sources": [
+          "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row and its machine-type byte"
+        ]
+      },
+      "l1_controllers": {
+        "c0-l1": {
+          "notes": "The C-brick profile of the L1 model; its firmware revision is unknown and not carried.",
+          "profile": "cbrick",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+          ]
+        },
+        "c1-l1": {
+          "notes": "The C-brick profile of the L1 model; its firmware revision is unknown and not carried.",
+          "profile": "cbrick",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+          ]
+        },
+        "ibrick-l1": {
+          "notes": "The I-brick profile of the L1 model, reached from c0's L1 over the XIO cable.",
+          "profile": "ibrick",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+          ]
+        }
+      },
+      "lifecycle": "implemented",
+      "machine_name": "origin3000",
+      "profile": "onyx3000",
+      "synthetic_identities": [
+        {
+          "component": "c0-bedrock",
+          "reason": "Synthetic node identity N0, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e00"
+        },
+        {
+          "component": "c1-bedrock",
+          "reason": "Synthetic node identity N1, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e01"
+        },
+        {
+          "component": "vbrick-v12",
+          "reason": "Synthetic V12 identity, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e02"
+        }
+      ],
+      "system_timekeepers": {
+        "ibrick-xbridge-bridge-f": {
+          "initial_ip27_fixture": false,
+          "kind": "m48t35-compatible",
+          "notes": "The IO7's time-of-day part is not identified; this is the Origin 300's M48T35-compatible choice, an approximation. IP35 software uses the 1968 year convention.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"
+          ],
+          "year_base": 1968
+        }
+      }
+    },
     "generation": "SN1",
+    "graphics": {
+      "headless": false,
+      "headless_refused": "the V-brick exists to hold its V12 pipe",
+      "max_pipes": 1,
+      "slots": [
+        {
+          "changeable": false,
+          "default": {
+            "family": "odyssey",
+            "product": "v12",
+            "settings": []
+          },
+          "description": "the V-brick's V12 board on XBridge Crosstalk port 8",
+          "families": [
+            {
+              "device": "sgi-odyssey",
+              "family": "odyssey",
+              "name": "VPro",
+              "products": [
+                {
+                  "assembly": "030-1726",
+                  "description": "second generation, 128 MB board memory",
+                  "fidelity": "implemented",
+                  "name": "VPro V12",
+                  "pairing": "established",
+                  "product": "v12",
+                  "settings": []
+                }
+              ]
+            }
+          ],
+          "name": "vbrick-v12",
+          "placement": [
+            {
+              "name": "slot",
+              "value": "vbrick-v12"
+            }
+          ]
+        }
+      ]
+    },
+    "harness": {
+      "console": "l1-uart",
+      "default_cpu_model": "R12000",
+      "default_topology": "origin3200",
+      "disk_bus": "scsi.0",
+      "install_media": [
+        "netboot"
+      ],
+      "netboot_adapter": "ioc3-ethernet",
+      "prom_dialogue": "ip35-l1-prompt",
+      "provenance": "derived",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-metadata"
+      ],
+      "supported_guests": [
+        "irix"
+      ]
+    },
     "kernel_ip": "IP27",
-    "model_role": "reference",
+    "model_role": "emulation-target",
     "name": "Onyx 3000",
-    "notes": "An Onyx 3000 with one InfinitePerformance (VPro V12) pipe: two C-bricks joined LINK (NI) to LINK (NI) with no R-brick, the I-brick on the first C-brick's XIO (II) connector at its XBridge port A, and a V-brick on the second C-brick's XIO (II) connector at its midplane XBridge's port A, with one V12 board on Crosstalk port 8. The port A choices follow the documented host ports; which port a boot I-brick uses and which V-brick connector is port A are unknown. Port 8 is this composition's choice among the four Crosstalk ports; which port a V12 slot uses, and so the V12's widget number, is unknown. The V-brick and I-brick carry no L1, the C-brick layer carries no L1, memory or clock fit, and so this configuration never compiles. Two C-bricks are the fewest a one-pipe system holds, one for the pipe and one for the I-brick, and the most this unrouted composition joins; a routed Onyx 3000 is not described. Two processors per C-brick is the smallest documented C-brick fit, not an asserted Onyx 3000 fit."
+    "notes": "An Onyx 3000 with one InfinitePerformance (VPro V12) pipe: two C-bricks joined LINK (NI) to LINK (NI) with no R-brick, the I-brick on the first C-brick's XIO (II) connector at its XBridge port A, and a V-brick on the second C-brick's XIO (II) connector at its midplane XBridge's port A, with one V12 board on Crosstalk port 8. The port A choices follow the documented host ports; which port a boot I-brick uses and which V-brick connector is port A are unknown. Port 8 is this composition's choice among the four Crosstalk ports; which port a V12 slot uses, and so the V12's widget number, is unknown. The V-brick carries no L1, as its address and identity are unknown. The C-bricks take the Origin 3200 C-brick's whole fit, four 400 MHz R12000s with 8 MB caches and 4096 MB: the C-brick layer holds four processors, and no Onyx 3000 source fixes the fit, so it is a model choice and an approximation. Two C-bricks are the fewest a one-pipe system holds, one for the pipe and one for the I-brick, and the most this unrouted composition joins; a routed Onyx 3000 is not described. The four-processor fit is not an asserted Onyx 3000 fit."
   },
   "model_version": 1,
   "open_questions": [],
@@ -1435,6 +2000,18 @@
       "sources": [
         "007-4264-002 printed page 8: a C-brick connects directly to a V-brick, and through an I-, X- or N-brick to a G-brick",
         "007-4264-002 printed pages 20 and 54 to 56, Figure 1-7: each V-brick XIO port is cabled to a C-brick XIO connector, and one cable serves a one-pipe V-brick"
+      ]
+    },
+    {
+      "ends": [
+        "vbrick-port-8",
+        "vbrick-v12-connector"
+      ],
+      "id": "vbrick-to-v12",
+      "notes": "Port 8 is this composition's choice; which Crosstalk port serves a V12 slot is unknown.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two pipes, each one VPro V12 board taking two of its four slots, behind its midplane XBridge"
       ]
     }
   ]
