@@ -340,6 +340,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/router.rst"
+      ],
       "hardware_kind": "router",
       "id": "rbrick-router",
       "identity": {
@@ -370,6 +373,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/l1.rst"
+      ],
       "hardware_kind": "l1",
       "id": "rbrick-l1",
       "kind": "system-controller",
@@ -387,6 +393,9 @@
       }
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/sn.rst"
+      ],
       "id": "rbrick-usb-hub",
       "kind": "bus-controller",
       "name": "Router-board USB hub",
@@ -547,6 +556,15 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
       "hardware_kind": "bedrock",
       "id": "c0-bedrock",
       "identity": {
@@ -768,6 +786,15 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
       "hardware_kind": "bedrock",
       "id": "c1-bedrock",
       "identity": {
@@ -989,6 +1016,15 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
       "hardware_kind": "bedrock",
       "id": "c2-bedrock",
       "identity": {
@@ -1210,6 +1246,15 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
       "hardware_kind": "bedrock",
       "id": "c3-bedrock",
       "identity": {
@@ -1449,6 +1494,10 @@
       }
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/xbridge.rst",
+        "qemu:docs/system/mips/sgi/hardware/bridge.rst"
+      ],
       "hardware_kind": "xbridge",
       "id": "ibrick-xbridge",
       "kind": "pci-host-bridge",
@@ -1468,6 +1517,9 @@
       "crossbar": {
         "kind": "xbridge"
       },
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/xbridge.rst"
+      ],
       "hardware_kind": "xbridge",
       "id": "ibrick-xbridge-crossbar",
       "identity": {
@@ -1547,6 +1599,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/qlogic-isp2200.rst"
+      ],
       "hardware_kind": "qlogic-isp2200",
       "id": "ibrick-fibre-channel",
       "identity": {
@@ -1563,6 +1618,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
+      ],
       "hardware_kind": "ioc3",
       "id": "ibrick-ioc3",
       "identity": {
@@ -1605,6 +1663,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/lucent-ohci.rst"
+      ],
       "hardware_kind": "lucent-ohci",
       "id": "ibrick-usb",
       "identity": {
@@ -1621,6 +1682,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/sn.rst"
+      ],
       "hardware_kind": "ti-tsb12lv22",
       "id": "ibrick-firewire",
       "identity": {

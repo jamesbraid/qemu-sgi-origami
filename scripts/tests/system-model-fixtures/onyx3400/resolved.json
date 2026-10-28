@@ -345,6 +345,15 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
       "hardware_kind": "bedrock",
       "id": "c0-bedrock",
       "identity": {
@@ -514,6 +523,15 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
       "hardware_kind": "bedrock",
       "id": "c1-bedrock",
       "identity": {
@@ -683,6 +701,15 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
       "hardware_kind": "bedrock",
       "id": "c2-bedrock",
       "identity": {
@@ -852,6 +879,15 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
       "hardware_kind": "bedrock",
       "id": "c3-bedrock",
       "identity": {
@@ -1039,6 +1075,10 @@
       }
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/xbridge.rst",
+        "qemu:docs/system/mips/sgi/hardware/bridge.rst"
+      ],
       "hardware_kind": "xbridge",
       "id": "ibrick-xbridge",
       "kind": "pci-host-bridge",
@@ -1058,6 +1098,9 @@
       "crossbar": {
         "kind": "xbridge"
       },
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/xbridge.rst"
+      ],
       "hardware_kind": "xbridge",
       "id": "ibrick-xbridge-crossbar",
       "identity": {
@@ -1137,6 +1180,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/qlogic-isp2200.rst"
+      ],
       "hardware_kind": "qlogic-isp2200",
       "id": "ibrick-fibre-channel",
       "identity": {
@@ -1153,6 +1199,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
+      ],
       "hardware_kind": "ioc3",
       "id": "ibrick-ioc3",
       "identity": {
@@ -1195,6 +1244,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/lucent-ohci.rst"
+      ],
       "hardware_kind": "lucent-ohci",
       "id": "ibrick-usb",
       "identity": {
@@ -1211,6 +1263,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/sn.rst"
+      ],
       "hardware_kind": "ti-tsb12lv22",
       "id": "ibrick-firewire",
       "identity": {
@@ -1258,6 +1313,9 @@
       "crossbar": {
         "kind": "xbridge"
       },
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/xbridge.rst"
+      ],
       "hardware_kind": "xbridge",
       "id": "nbrick-xbridge0",
       "identity": {
@@ -1330,6 +1388,9 @@
       "crossbar": {
         "kind": "xbridge"
       },
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/xbridge.rst"
+      ],
       "hardware_kind": "xbridge",
       "id": "nbrick-xbridge1",
       "identity": {
@@ -1402,6 +1463,9 @@
       "crossbar": {
         "kind": "xbridge"
       },
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/xbridge.rst"
+      ],
       "hardware_kind": "xbridge",
       "id": "nbrick-xbridge2",
       "identity": {
@@ -1474,6 +1538,9 @@
       "crossbar": {
         "kind": "xbridge"
       },
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/xbridge.rst"
+      ],
       "hardware_kind": "xbridge",
       "id": "nbrick-xbridge3",
       "identity": {
@@ -1606,6 +1673,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/graphics.rst"
+      ],
       "hardware_kind": "xg",
       "id": "gbrick0-pipe0-xg",
       "identity": {
@@ -1675,6 +1745,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/graphics.rst"
+      ],
       "hardware_kind": "xg",
       "id": "gbrick0-pipe1-xg",
       "identity": {
@@ -1806,6 +1879,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/graphics.rst"
+      ],
       "hardware_kind": "xg",
       "id": "gbrick1-pipe0-xg",
       "identity": {
@@ -1875,6 +1951,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/graphics.rst"
+      ],
       "hardware_kind": "xg",
       "id": "gbrick1-pipe1-xg",
       "identity": {

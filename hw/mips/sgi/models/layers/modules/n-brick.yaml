@@ -36,6 +36,7 @@ layer:
         name: XBridge 0
         kind: crossbar
         hardware_kind: xbridge
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst]
         crossbar: {kind: xbridge}
         identity:
           widget_revision: 2
@@ -86,6 +87,7 @@ layer:
         name: XBridge 1
         kind: crossbar
         hardware_kind: xbridge
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst]
         crossbar: {kind: xbridge}
         identity:
           widget_revision: 2
@@ -136,6 +138,7 @@ layer:
         name: XBridge 2
         kind: crossbar
         hardware_kind: xbridge
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst]
         crossbar: {kind: xbridge}
         identity:
           widget_revision: 2
@@ -186,6 +189,7 @@ layer:
         name: XBridge 3
         kind: crossbar
         hardware_kind: xbridge
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst]
         crossbar: {kind: xbridge}
         identity:
           widget_revision: 2

@@ -18,6 +18,14 @@ layer:
         name: Bedrock
         kind: node-asic
         hardware_kind: bedrock
+        datasheet_contracts:
+          - qemu:docs/system/mips/sgi/ip35.rst
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb
         node_asic: {processor_interfaces: 2, cpus_per_interface: 2}
         identity: {widget_part: "0xc110", widget_mfg: "0x036", hardware_revision: 2, clock_mhz: 200}
         provenance: observed-hardware

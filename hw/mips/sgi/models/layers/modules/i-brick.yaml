@@ -29,6 +29,7 @@ layer:
         name: XBridge
         kind: pci-host-bridge
         hardware_kind: xbridge
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst, qemu:docs/system/mips/sgi/hardware/bridge.rst]
         pci_host_bridge: {heads: 2}
         provenance: vendor-document
         parent: brick
@@ -38,6 +39,7 @@ layer:
         name: XBridge crossbar section
         kind: crossbar
         hardware_kind: xbridge
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst]
         crossbar: {kind: xbridge}
         identity:
           widget_revision: 2
@@ -98,6 +100,7 @@ layer:
         name: QLogic 2200 Fibre Channel
         kind: storage-hba
         hardware_kind: qlogic-isp2200
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/qlogic-isp2200.rst]
         identity: {pci_vendor: "0x1077", pci_device: "0x2200"}
         provenance: observed-hardware
         parent: brick
@@ -105,6 +108,7 @@ layer:
         name: IOC3
         kind: io-controller
         hardware_kind: ioc3
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/ioc3.rst]
         identity: {pci_vendor: "0x10a9", pci_device: "0x0003"}
         provenance: observed-hardware
         parent: brick
@@ -114,6 +118,7 @@ layer:
         name: USB controller (OHCI)
         kind: io-controller
         hardware_kind: lucent-ohci
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/lucent-ohci.rst]
         identity: {pci_vendor: "0x11c1", pci_device: "0x5802"}
         provenance: observed-hardware
         parent: brick
@@ -121,6 +126,7 @@ layer:
         name: TI TSB12LV22 IEEE 1394 OHCI
         kind: io-controller
         hardware_kind: ti-tsb12lv22
+        datasheet_contracts: [qemu:docs/system/mips/sgi/sn.rst]
         identity: {pci_vendor: "0x104c", pci_device: "0x8009"}
         provenance: observed-hardware
         parent: brick

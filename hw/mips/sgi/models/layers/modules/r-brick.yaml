@@ -22,6 +22,7 @@ layer:
         name: SN1 router
         kind: router-asic
         hardware_kind: router
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/router.rst]
         router_asic:
           port_count: 8
           role: router
@@ -41,6 +42,7 @@ layer:
         name: L1 system controller
         kind: system-controller
         hardware_kind: l1
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/l1.rst]
         system_controller: {kind: l1}
         provenance: vendor-document
         parent: brick
@@ -51,6 +53,7 @@ layer:
       - id: usb-hub
         name: Router-board USB hub
         kind: bus-controller
+        datasheet_contracts: [qemu:docs/system/mips/sgi/sn.rst]
         provenance: vendor-document
         parent: brick
         sources: ["108-0240-002 printed page 2-42 and 007-4240-002 printed page 73: a six-port hub: one port to the R-brick's own L1, four through the cables on ports 2 to 5 to the attached C-bricks' L1s, one to the L2"]
