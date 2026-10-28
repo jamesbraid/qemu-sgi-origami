@@ -771,8 +771,8 @@ static void elsc_handle_pwr(SGIElscState *s, ElscRequest *r)
          * cold start and seed a boot-status bit. Answered "ok 1" on the first
          * read after a cold power-on and "ok 0" thereafter. The model clears
          * the latch on read, so only the first caller in a power cycle sees
-         * the 1; this clear-on-read behavior is 6.5.7-derived and unconfirmed
-         * for the 6.5.30 firmware we boot.
+         * the 1; this clear-on-read behavior is unconfirmed for the
+         * 6.5.30 firmware we boot.
          *
          * The latch is per-controller. On the single-module Origin 200 this
          * model targets that is the whole machine. A multi-module machine has
