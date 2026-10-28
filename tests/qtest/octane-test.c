@@ -78,6 +78,7 @@
 #define RAD_PCI_BAR0 0x13000000u
 #define RAD_PCI_ID 0x000510a9u
 #define RAD_REVISION 0xc0u
+#define RAD_PCI_STATUS 0x0480u
 #define BRIDGE_REG(offset) (BRIDGE + (offset) + 4)
 #define SUPERIO_PIN (1u << 4)
 #define RAD_PIN (1u << 3)
@@ -2621,6 +2622,13 @@ static void test_rad_pci_identity(gconstpointer data)
 
     g_assert_cmphex(qtest_readl(qts, CFG(3)), ==, RAD_PCI_ID);
     g_assert_cmphex(qtest_readl(qts, CFG(3) + 8), ==, RAD_REVISION);
+    /*
+     * Status: slow DEVSEL and fast back-to-back capable, as the reference
+     * Octane2's chip reads at 0x1f023004 (0x04800006 after its PROM).
+     */
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 4) >> 16, ==, RAD_PCI_STATUS);
+    qtest_writel(qts, CFG(3) + 4, 0xffff0000);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 4) >> 16, ==, RAD_PCI_STATUS);
     qtest_writel(qts, CFG(3) + 8, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, CFG(3) + 8), ==, RAD_REVISION);
     qtest_writel(qts, CFG(3) + 8, 0);
@@ -2633,7 +2641,8 @@ static void test_rad_pci_identity(gconstpointer data)
     /* Machine reset also reaches PCI bus reset and clears writable config. */
     qtest_system_reset(qts);
     g_assert_cmphex(qtest_readl(qts, CFG(3) + 0x10), ==, 0);
-    g_assert_cmphex(qtest_readl(qts, CFG(3) + 4) & 0xffff, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 4), ==,
+                    (uint32_t)RAD_PCI_STATUS << 16);
     g_assert_cmphex(qtest_readl(qts, CFG(3)), ==, RAD_PCI_ID);
     g_assert_cmphex(qtest_readl(qts, CFG(3) + 8), ==, RAD_REVISION);
     qtest_writel(qts, CFG(3) + 8, 0x04010070);

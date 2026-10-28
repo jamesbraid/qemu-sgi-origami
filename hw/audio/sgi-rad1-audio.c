@@ -2384,6 +2384,12 @@ static void sgi_rad1_octane_realize(PCIDevice *dev, Error **errp)
                                 sgi_rad1_audio_chan_tick, c);
     }
     sgi_rad1_audio_open_out(&s->chan[SGI_RAD1_AUDIO_CH_OUT]);
+    /*
+     * Slow DEVSEL timing and fast back-to-back capable: the reference
+     * Octane2's chip reads Status 0x0480 (PCI Local Bus 2.2 bits 10:9 and 7).
+     */
+    pci_set_word(dev->config + PCI_STATUS,
+                 PCI_STATUS_DEVSEL_SLOW | PCI_STATUS_FAST_BACK);
     memory_region_init_io(&s->bar0, OBJECT(dev), &sgi_rad1_octane_bar0_ops,
                           s, "sgi-rad1-octane.bar0",
                           SGI_RAD1_AUDIO_BAR0_SIZE);
