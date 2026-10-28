@@ -56,6 +56,23 @@ layer:
         provenance: vendor-document
         parent: xbridge
         sources: ["108-0240-002 printed pages 2-26 and 2-27: an XBridge's Crosstown2 ports are A (10) and B (11), and 8, 9, C and D are its Crosstalk ports"]
+      # The XBridge is the same chip as the I-brick's, and every XBridge
+      # answers at both PCI ports, E (14) and F (15), whether or not a card
+      # hangs on them (108-0240-002 printed pages 2-26 to 2-29).
+      - id: xbridge-bridge-e
+        name: XBridge bridge at port 0xe
+        kind: subfunction
+        provenance: vendor-document
+        parent: xbridge
+        description: The PCI head behind widget 14. Nothing is drawn on it in the block diagram.
+        sources: &vbrick-heads ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "007-4264-002 printed page 54, Figure 2-14: no PCI device on the V-brick's XBridge"]
+      - id: xbridge-bridge-f
+        name: XBridge bridge at port 0xf
+        kind: subfunction
+        provenance: vendor-document
+        parent: xbridge
+        description: The PCI head behind widget 15. Nothing is drawn on it in the block diagram.
+        sources: *vbrick-heads
       - id: port-a
         name: Crosstown2 port A connector
         kind: connector
@@ -150,6 +167,13 @@ layer:
             chooses the port and cables it.
         sources: ["108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D", "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"]
     buses:
+      - id: heads-xio
+        name: XBridge crossbar to its PCI heads
+        kind: xio
+        master: xbridge-crossbar
+        provenance: vendor-document
+        sources: *vbrick-heads
+        notes: The crossbar's internal ports E (14) and F (15), one PCI head each, with no card on either.
       - id: port-b-xio
         name: XBridge Crosstown2 port B
         kind: xio
@@ -185,6 +209,8 @@ layer:
         provenance: vendor-document
         sources: ["108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D", "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"]
     connections:
+      - {component: xbridge-bridge-e, bus: heads-xio, role: bridge-upstream, widget: 14, provenance: vendor-document, sources: *vbrick-heads}
+      - {component: xbridge-bridge-f, bus: heads-xio, role: bridge-upstream, widget: 15, provenance: vendor-document, sources: *vbrick-heads}
       # host-port-a-xio is the attached C-brick's XIO bus, which the
       # composition binds with bus_bindings.
       - {component: xbridge-crossbar, bus: host-port-a-xio, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstown2 ports A (10) and B (11)"], notes: "Host port A, widget 0xA (10 decimal); inferred, see the port-a connector."}

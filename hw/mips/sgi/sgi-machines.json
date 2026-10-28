@@ -25362,7 +25362,7 @@
           }
         },
         {
-          "attachment": 2,
+          "attachment": 4,
           "carrier": "machine-placed",
           "id": "vbrick-v12",
           "module-index": 2,
@@ -25653,6 +25653,16 @@
         {
           "crossbar-index": 0,
           "node-index": 0,
+          "widget": 15
+        },
+        {
+          "crossbar-index": 1,
+          "node-index": 1,
+          "widget": 14
+        },
+        {
+          "crossbar-index": 1,
+          "node-index": 1,
           "widget": 15
         },
         {

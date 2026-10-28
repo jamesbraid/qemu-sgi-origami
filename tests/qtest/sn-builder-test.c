@@ -10008,9 +10008,11 @@ static void test_onyx3400_ir_io_brick_l1s(void)
 
 /*
  * The Onyx 3000's V-brick has an L1 of its own, reached from the second
- * C-brick.
+ * C-brick, and its XBridge answers at both PCI heads with nothing on them.
+ * The stock PROM builds the brick's I/O records from the heads, so a head
+ * that decodes to nothing leaves a graphics board with no brick of its own.
  */
-static void test_onyx3000_vbrick_l1(void)
+static void test_onyx3000_vbrick_l1_and_heads(void)
 {
     g_autofree char *prom = NULL;
     g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
@@ -10018,6 +10020,7 @@ static void test_onyx3000_vbrick_l1(void)
     int fd = g_file_open_tmp("sn-builder-onyx3000-prom-XXXXXX", &prom,
                              &error);
     QTestState *qts;
+    uint32_t value = 0;
 
     g_assert_no_error(error);
     g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
@@ -10036,6 +10039,13 @@ static void test_onyx3000_vbrick_l1(void)
         g_assert_cmpstr(c0_profile, ==, "ibrick");
         g_assert_cmpstr(c1_profile, ==, "vbrick");
         g_assert_cmpuint(qom_get_uint(qts, c1_io, "bay"), ==, 10);
+    }
+    /* The V-brick's heads (widgets 14 and 15) answer from the C-brick. */
+    for (unsigned int widget = 14; widget <= 15; widget++) {
+        g_assert_true(nasid_test_cpu_readl(qts, 4,
+                                           CBRICK_WIDGET(widget) + 4,
+                                           &value));
+        g_assert_cmphex(value, !=, UINT32_MAX);
     }
     qtest_quit(qts);
     g_unlink(prom);
@@ -12626,8 +12636,8 @@ int main(int argc, char **argv)
                    test_origin3200_brick_l1s);
     qtest_add_func("sn/builder/origin3400/routed-bricks",
                    test_origin3400_routed_bricks);
-    qtest_add_func("sn/builder/onyx3000/vbrick-l1",
-                   test_onyx3000_vbrick_l1);
+    qtest_add_func("sn/builder/onyx3000/vbrick-l1-and-heads",
+                   test_onyx3000_vbrick_l1_and_heads);
     qtest_add_func("sn/builder/origin3200/io7-without-ieee1394",
                    test_origin3200_io7_without_ieee1394);
     qtest_add_func("sn/builder/origin3200/io7-timekeeper",
