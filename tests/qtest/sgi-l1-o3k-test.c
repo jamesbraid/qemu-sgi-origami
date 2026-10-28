@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * The C-brick and I-brick profiles of the L1 controller. Each case drives
- * the controller through its UART window with the same protocol frames the
- * Origin 300 profile uses; no firmware runs.
+ * The C-brick, I-brick and V-brick profiles of the L1 controller. Each case
+ * drives the controller through its UART window with the same protocol
+ * frames the Origin 300 profile uses; no firmware runs.
  *
  * What these profiles answer is a declared model, not captured controller
  * output: the type letters, the attached-brick numbering and the command
@@ -287,6 +287,10 @@ static void test_identity(void)
     s = start_one("brick-type=ibrick,named=on,rack=4,bay=2,mac=" MAC_PROP);
     expect_identity(s, 0, LOCAL_GENERAL, packed(4, 2), 'I');
     qtest_quit(s);
+
+    s = start_one("brick-type=vbrick,named=on,rack=1,bay=10");
+    expect_identity(s, 0, LOCAL_GENERAL, packed(1, 10), 'V');
+    qtest_quit(s);
 }
 
 static void test_unnamed(void)
@@ -436,6 +440,40 @@ static void test_ibrick_records(void)
     /* Components past the table are absent. */
     length = eeprom(s, 1, LOCAL_GENERAL, 2, 2, 0, 16, reply);
     expect_code(reply, length, -104);
+    qtest_quit(s);
+}
+
+/*
+ * The V-brick's one record is the component the stock PROM asks for; its
+ * contents are synthetic and the component number is read from a traced
+ * run, not from a source. Nothing else is fitted, and a C-brick reaches it
+ * through the attached I/O destination as it reaches an I-brick.
+ */
+static void test_vbrick_records(void)
+{
+    const char *const props[] = {
+        "brick-type=cbrick,named=on,rack=1,bay=7",
+        "brick-type=vbrick,named=on,rack=1,bay=10",
+    };
+    QTestState *s = start_with(2, props, "");
+    uint8_t reply[131];
+    size_t length, data_length;
+
+    link_io(s, 0, 1);
+    for (unsigned area = 1; area <= 2; area++) {
+        length = eeprom(s, 1, LOCAL_GENERAL, 4, area, 0, 64, reply);
+        eeprom_data(reply, length, &data_length);
+        g_assert_cmpuint(data_length, >, 0);
+    }
+    /* The same record through the C-brick's attached I/O destination. */
+    length = eeprom(s, 0, ATTACHED_IO, 4, 2, 0, 64, reply);
+    eeprom_data(reply, length, &data_length);
+    /* The I-brick's components, and anything else, are absent. */
+    for (unsigned component = 0; component < 4; component++) {
+        length = eeprom(s, 1, LOCAL_GENERAL, component, 2, 0, 16, reply);
+        expect_code(reply, length, -104);
+    }
+    expect_identity(s, 0, ATTACHED_IO, packed(1, 10), 'V');
     qtest_quit(s);
 }
 
@@ -1475,6 +1513,8 @@ static void test_realize_refusal(gconstpointer opaque)
         { "brick-type=cbrick,mac=" MAC_PROP, "*mac is for the I-brick*" },
         { "brick-type=ibrick,mac=" MAC_PROP ",dimm-mask=3",
           "*apply to the C-brick*" },
+        { "brick-type=vbrick,mac=" MAC_PROP, "*do not apply to the vbrick*" },
+        { "brick-type=vbrick,dimm-mask=3", "*do not apply to the vbrick*" },
         { "brick-type=ip45,named=on", "*named applies to*" },
         { "brick-type=cbrick,rack=1023", "*rack or bay must be*" },
         { "brick-type=cbrick,partition=65536", "*partition must fit*" },
@@ -1578,6 +1618,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/half-named", test_half_named);
     qtest_add_func("sgi-l1-o3k/retention", test_retention);
     qtest_add_func("sgi-l1-o3k/records/ibrick", test_ibrick_records);
+    qtest_add_func("sgi-l1-o3k/records/vbrick", test_vbrick_records);
     qtest_add_func("sgi-l1-o3k/records/cbrick", test_cbrick_records);
     qtest_add_func("sgi-l1-o3k/records/dimm-numbering", test_dimm_numbering);
     qtest_add_func("sgi-l1-o3k/attached/bricks", test_attached_bricks);

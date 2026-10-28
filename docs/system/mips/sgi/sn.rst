@@ -407,9 +407,10 @@ midplane XBridge's port A and the V12 on its Crosstalk port 8. Both ports
 are the composition's choices: which connector is port A, which Crosstalk
 port serves a slot, and so the V12's widget number, are unknown, and a
 PROM inventory or hardware graph of an Onyx 3000 with a V-brick would
-settle them. The V-brick's L1 is not modelled, since its address and
-identity are unknown. No source fixes an Onyx 3000 C-brick's processors,
-caches or memory, so each C-brick takes the Origin 3200 C-brick's fit
+settle them. The V-brick has an L1 (``brick-type=vbrick``, see
+:ref:`sgi-l1-origin3000`), reached from the C-brick its cable joins; its
+type letter and records are approximations. No source fixes an Onyx 3000
+C-brick's processors, caches or memory, so each C-brick takes the Origin 3200 C-brick's fit
 (four 400 MHz R12000s with 8 MB caches and 4096 MB); that fit is a model
 choice. The V12 is fitted by default and ``-vga none`` leaves its port
 empty. The stock PROM lists the V12 as a graphics board in the second

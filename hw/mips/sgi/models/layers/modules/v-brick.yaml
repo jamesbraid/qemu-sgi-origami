@@ -11,14 +11,23 @@ layer:
       - id: brick
         name: V-brick
         kind: module
-        controller: absent
         provenance: vendor-document
         sources: ["007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two InfinitePerformance pipes, each one VPro V12 board taking two of its four board slots, behind a midplane XBridge"]
-        notes: >-
-          Its L1 brick-type character is unknown, so brick_type stays unset.
-          It has its own L1 (007-4264-002 printed pages 52 and 128 to 129),
-          which this layer does not carry: its address and identity are
-          unknown.
+      - id: l1
+        name: L1 system controller
+        kind: system-controller
+        hardware_kind: l1
+        system_controller: {kind: l1}
+        provenance: vendor-document
+        parent: brick
+        description: >-
+          The V-brick's L1, on its power board. It is modelled like the
+          I-brick's: it knows only the C-brick its XIO cable joins, and that
+          C-brick's L1 reaches it over the same cable. Its brick-type
+          character, address and ID PROM contents are unknown; the model
+          answers with an approximated character and no records.
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+        sources: ["007-4264-002 printed pages 52 and 128 to 129: the V-brick has its own L1, which controls its voltage regulators and reads its ID PROMs"]
       - id: xbridge
         name: XBridge
         kind: pci-host-bridge

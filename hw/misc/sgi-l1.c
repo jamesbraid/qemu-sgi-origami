@@ -32,6 +32,7 @@ enum {
     L1_O3K_CBRICK,
     L1_O3K_IBRICK,
     L1_O3K_CXBRICK,
+    L1_O3K_VBRICK,
 };
 
 /*
@@ -93,6 +94,13 @@ static const SGIL1ProductProfile l1_profiles[] = {
      * brick-type-code supplies one.
      */
     { "cxbrick", 0, 0, 0, true, L1_O3K_CXBRICK },
+    /*
+     * The Onyx 3000 V-brick: a graphics enclosure with its own L1, cabled
+     * to a C-brick like an I-brick. Its type character is a stated
+     * approximation (docs/system/mips/sgi/hardware/l1.rst); it carries no
+     * board records.
+     */
+    { "vbrick", 0x56, 0, 0, false, L1_O3K_VBRICK },
 };
 
 /*
@@ -158,6 +166,17 @@ static bool l1_is_nbrick(const SGIL1State *s)
     return l1_is_ibrick(s) && s->profile->identity == 0x4e;
 }
 
+static bool l1_is_vbrick(const SGIL1State *s)
+{
+    return s->profile && s->profile->o3k == L1_O3K_VBRICK;
+}
+
+/* A brick whose L1 is reached from the one C-brick its XIO cable joins. */
+static bool l1_is_iobrick(const SGIL1State *s)
+{
+    return l1_is_ibrick(s) || l1_is_vbrick(s);
+}
+
 static bool l1_is_cxbrick(const SGIL1State *s)
 {
     return s->profile && s->profile->o3k == L1_O3K_CXBRICK;
@@ -213,8 +232,8 @@ static char *l1_module_name(const SGIL1State *s)
         g_strlcpy(bay, "--", sizeof(bay));
     }
     return g_strdup_printf("%s%c%s", rack,
-                           l1_is_nbrick(s) ? 'n' : l1_is_ibrick(s) ? 'i' : 'c',
-                           bay);
+                           l1_is_nbrick(s) ? 'n' : l1_is_ibrick(s) ? 'i' :
+                           l1_is_vbrick(s) ? 'v' : 'c', bay);
 }
 
 static bool l1_restarting(const SGIL1State *s)
@@ -929,6 +948,7 @@ static void l1_eeprom(SGIL1State *s, SGIL1State *recipient, uint8_t channel,
     SGIL1EEPROM *record;
     uint8_t fields[122];
 
+    trace_sgi_l1_eeprom(s->profile->name, component, area, offset, requested);
     if (args[0] || args[5] || args[10] || args[15]) {
         l1_reply_direct(recipient, channel, -100, 0, NULL, 0);
         return;
@@ -1104,7 +1124,7 @@ static void l1_o3k_attached(SGIL1State *s, SGIL1State *recipient,
         { l1_linked_peer(s), s->c_port, 'C' },
     };
 
-    if (l1_is_ibrick(s)) {
+    if (l1_is_iobrick(s)) {
         l1_iobrick_attached(s, recipient, channel, low_ports);
         return;
     }
@@ -1134,6 +1154,7 @@ static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
 {
     uint8_t fields[40] = { 0 };
 
+    trace_sgi_l1_read_query(s->profile->name, command);
     if (l1_discovery_reference(s)) {
         l1_reference_refuse(s, recipient, channel, 6);
         return true;
@@ -1477,7 +1498,7 @@ static void l1_o3k_config(SGIL1State *s)
     SGIL1ConfigRow rows[3] = { { 0, s } };
     unsigned count = 1;
 
-    if (l1_is_ibrick(s)) {
+    if (l1_is_iobrick(s)) {
         /* The first of an I-brick's C-brick ports. */
         SGIL1State *host = l1_is_nbrick(s) ? NULL : l1_host_of(s, NULL);
 
@@ -1525,6 +1546,7 @@ static void l1_o3k_brick_print(SGIL1State *s)
     l1_printf(s, "rack: %s, slot: %s, partition: %u, type: %c, "
               "source: EEPROM\r\n", rack, bay, s->partition,
               l1_is_ibrick(s) ? (char)s->profile->identity :
+              l1_is_vbrick(s) ? 'V' :
               !l1_is_cxbrick(s) ? 'C' :
               s->brick_type_code ? (char)s->brick_type_code : '?');
 }
@@ -2373,16 +2395,17 @@ static bool l1_forward_to_peer(SGIL1State *s, const uint8_t *p,
     uint32_t key = (address >> 12) & 0xffff;
     uint8_t copy[SGI_L1_FRAME_SIZE];
 
-    if (l1_is_ibrick(s)) {
+    if (l1_is_iobrick(s)) {
         /*
-         * An I-brick knows its C-brick and nothing else; an N-brick has
-         * several and no operator relay to any.
+         * An I-brick or V-brick knows its C-brick and nothing else; an
+         * N-brick has several and no operator relay to any.
          */
         peer = type == 4 || l1_is_nbrick(s) ? NULL : l1_host_of(s, NULL);
     } else if (type == 4) {
         /* The attached I/O brick of a C-brick. */
         peer = l1_is_cbrick(s) ? s->io_peer : NULL;
     }
+    trace_sgi_l1_forward(s->profile->name, address, length, peer != NULL);
     if (!peer || length > sizeof(copy)) {
         return false;
     }
@@ -3532,10 +3555,10 @@ static int l1_post_load(void *opaque, int version_id)
 {
     SGIL1State *s = opaque;
 
-    if ((!s->profile->compute_services && !l1_is_ibrick(s) &&
+    if ((!s->profile->compute_services && !l1_is_iobrick(s) &&
          (s->node_power || s->power_up_pending || s->power_down_pending ||
           s->console_mode || s->escaped)) ||
-        (l1_is_ibrick(s) &&
+        (l1_is_iobrick(s) &&
          (s->power_up_pending || s->power_down_pending ||
           s->console_mode || s->escaped)) ||
         (!s->profile->o3k &&
@@ -4168,6 +4191,21 @@ static bool l1_build_o3k_identity(SGIL1State *s, Error **errp)
 {
     uint8_t mac[6];
 
+    if (l1_is_vbrick(s)) {
+        if (s->node_board_name || s->node_board_part ||
+            s->node_board_revision) {
+            error_setg(errp, "L1 node board identity is for the C-brick "
+                       "profile only");
+            return false;
+        }
+        /*
+         * The stock PROM reads one record from a V-brick, component 4 (traced
+         * on the model); the board behind it and its contents are unknown.
+         */
+        l1_o3k_board(s, 4, "LOGIC", "NOTOBSERVED0", "00", NULL, 'V',
+                     s->identity_index);
+        return true;
+    }
     if (l1_is_ibrick(s)) {
         if (s->node_board_name || s->node_board_part ||
             s->node_board_revision) {
@@ -4353,6 +4391,13 @@ static bool l1_o3k_check(SGIL1State *s, Error **errp)
     }
     if (l1_is_cxbrick(s)) {
         /* Checked above. */
+    } else if (l1_is_vbrick(s)) {
+        if (s->pimm_mask != 3 || s->dimm_mask != 0xff || s->io_port != 1 ||
+            s->c_port != 5 || s->mac) {
+            error_setg(errp, "L1 pimm-mask, dimm-mask, io-port, c-port and "
+                       "mac do not apply to the vbrick profile");
+            return false;
+        }
     } else if (l1_is_ibrick(s)) {
         if (s->pimm_mask != 3 || s->dimm_mask != 0xff || s->io_port != 1 ||
             s->c_port != 5) {
@@ -4608,7 +4653,8 @@ fuel_mac_done:
     if (!s->profile) {
         error_setg(errp, "L1 brick-type must be ip34, ip45, ip35, ip37, "
                    "unknown, pci-expansion, router, "
-                   "vbrick-discovery-reference, cbrick, ibrick or cxbrick");
+                   "vbrick-discovery-reference, cbrick, ibrick, cxbrick "
+                   "or vbrick");
         return;
     }
     if (s->bic_startup && strcmp(s->profile->name, "pci-expansion")) {
@@ -5173,8 +5219,8 @@ static const char *l1_io_peer_fault(const SGIL1State *c,
     if (!l1_is_cbrick(c)) {
         return "L1 io-peer is for the C-brick profile only";
     }
-    if (!l1_is_ibrick(ibrick)) {
-        return "L1 io-peer must name an I-brick or N-brick";
+    if (!l1_is_iobrick(ibrick)) {
+        return "L1 io-peer must name an I-brick, N-brick or V-brick";
     }
     /*
      * The retained system's cabling of a second C-brick is unknown, so an

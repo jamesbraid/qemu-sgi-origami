@@ -268,11 +268,12 @@ Emulator choices
 
 .. _sgi-l1-origin3000:
 
-Origin 3000 C-brick and I-brick profiles
-========================================
+Origin 3000 C-brick, I-brick and V-brick profiles
+=================================================
 
 ``brick-type=cbrick`` and ``brick-type=ibrick`` model the L1 of the Origin
-3000 compute brick and system I/O brick. Each brick has its own controller
+3000 compute brick and system I/O brick; ``brick-type=vbrick`` models the
+Onyx 3000 V-brick's, described after the table. Each brick has its own controller
 with its own rack, slot, type and records (007-4240-002 printed pages 69,
 72, 118 and 128). The profiles reuse this page's request encoding, framing
 and task-6 request codes, which the public Linux and OpenBSD headers name
@@ -342,6 +343,37 @@ captured controller output.
        accepted, not that it is the hardware's. One N-brick controller
        serves all of its C-bricks (N-brick Overview, revision 10/24/01,
        printed page 5) and answers each about its own chip.
+
+The V-brick profile (``brick-type=vbrick``) is reached from the C-brick
+its XIO cable joins, as an I-brick's is, and knows only that C-brick. The
+V-brick has its own L1 (007-4264-002 printed pages 52 and 128 to 129), but
+no source read gives its type letter, address or ID PROM contents:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 12 58
+
+   * - Fact
+     - Rating
+     - Basis
+   * - ``0x0003`` answers the packed rack and bay and the letter ``V``.
+     - approximated
+     - No V-brick L1 capture exists. The stock PROM and the kernel both
+       name a brick that answers ``V`` a graphics brick of the CG kind, and
+       the kernel warns, once per PCI bridge, that the brick type is
+       unknown. Other letters were not compared after the bridges were
+       exposed, and a different letter would change the module and
+       hardware-graph names the guest prints.
+   * - One record at component 4 (a logic board, synthetic), read through
+       both areas.
+     - approximated
+     - The stock PROM asks the V-brick for this component alone, in a traced
+       run; what a fitted L1 holds there is unknown. Other components answer
+       minus 104.
+   * - Operator commands, power and reset are refused as on any brick with
+       no compute services.
+     - approximated
+     - No command output of a V-brick is published.
 
 What the model chooses, and the limit of each choice:
 

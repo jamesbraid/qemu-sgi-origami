@@ -10007,6 +10007,41 @@ static void test_onyx3400_ir_io_brick_l1s(void)
 }
 
 /*
+ * The Onyx 3000's V-brick has an L1 of its own, reached from the second
+ * C-brick.
+ */
+static void test_onyx3000_vbrick_l1(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn-builder-onyx3000-prom-XXXXXX", &prom,
+                             &error);
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M origin3000,topology=onyx3000 -cpu R12000 -smp 8 "
+                      "-m 8192 -bios %s -nodefaults -display none", prom);
+    {
+        g_autofree char *c0_io = qom_get_str(qts, "/machine/node0/l1",
+                                             "io-peer");
+        g_autofree char *c1_io = qom_get_str(qts, "/machine/node1/l1",
+                                             "io-peer");
+        g_autofree char *c0_profile = qom_get_str(qts, c0_io, "brick-type");
+        g_autofree char *c1_profile = qom_get_str(qts, c1_io, "brick-type");
+
+        g_assert_cmpstr(c0_profile, ==, "ibrick");
+        g_assert_cmpstr(c1_profile, ==, "vbrick");
+        g_assert_cmpuint(qom_get_uint(qts, c1_io, "bay"), ==, 10);
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
  * The IO7 answers at head F devices 4 and 5 and, with its IEEE 1394
  * controller left out, not at device 6. Only c0 reaches it.
  */
@@ -12591,6 +12626,8 @@ int main(int argc, char **argv)
                    test_origin3200_brick_l1s);
     qtest_add_func("sn/builder/origin3400/routed-bricks",
                    test_origin3400_routed_bricks);
+    qtest_add_func("sn/builder/onyx3000/vbrick-l1",
+                   test_onyx3000_vbrick_l1);
     qtest_add_func("sn/builder/origin3200/io7-without-ieee1394",
                    test_origin3200_io7_without_ieee1394);
     qtest_add_func("sn/builder/origin3200/io7-timekeeper",

@@ -955,17 +955,34 @@
       ]
     },
     {
-      "controller": "absent",
       "id": "vbrick-brick",
       "kind": "module",
       "name": "V-brick",
-      "notes": "Its L1 brick-type character is unknown, so brick_type stays unset. It has its own L1 (007-4264-002 printed pages 52 and 128 to 129), which this layer does not carry: its address and identity are unknown.",
       "parent": "rack",
       "provenance": "vendor-document",
       "regions": [],
       "sources": [
         "007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two InfinitePerformance pipes, each one VPro V12 board taking two of its four board slots, behind a midplane XBridge"
       ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/l1.rst"
+      ],
+      "description": "The V-brick's L1, on its power board. It is modelled like the I-brick's: it knows only the C-brick its XIO cable joins, and that C-brick's L1 reaches it over the same cable. Its brick-type character, address and ID PROM contents are unknown; the model answers with an approximated character and no records.",
+      "hardware_kind": "l1",
+      "id": "vbrick-l1",
+      "kind": "system-controller",
+      "name": "L1 system controller",
+      "parent": "vbrick-brick",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4264-002 printed pages 52 and 128 to 129: the V-brick has its own L1, which controls its voltage regulators and reads its ID PROMs"
+      ],
+      "system_controller": {
+        "kind": "l1"
+      }
     },
     {
       "datasheet_contracts": [
@@ -1783,7 +1800,7 @@
         {
           "component": "vbrick-brick",
           "number": 10,
-          "reason": "A model choice: no source read places the V-brick in the rack, so the number is any unused slot between the C-bricks and the I-brick, and nothing in the model depends on it. The V-brick has no L1 here to report it."
+          "reason": "A model choice: no source read places the V-brick in the rack, so the number is any unused slot between the C-bricks and the I-brick. The V-brick's L1 reports it as its bay."
         }
       ],
       "io_boards": {
@@ -1828,6 +1845,14 @@
         "ibrick-l1": {
           "notes": "The I-brick profile of the L1 model, reached from c0's L1 over the XIO cable.",
           "profile": "ibrick",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+          ]
+        },
+        "vbrick-l1": {
+          "notes": "The V-brick profile of the L1 model, reached from c1's L1 over the XIO cable. Its type character is an approximation.",
+          "profile": "vbrick",
           "provenance": "derived",
           "sources": [
             "qemu:docs/system/mips/sgi/hardware/l1.rst"

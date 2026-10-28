@@ -1819,7 +1819,7 @@
           "$ref": "#/$defs/initialization-input"
         },
         "profile": {
-          "enum": ["cbrick", "ibrick", "nbrick"]
+          "enum": ["cbrick", "ibrick", "nbrick", "vbrick"]
         },
         "provenance": {
           "$ref": "#/$defs/fact-provenance"

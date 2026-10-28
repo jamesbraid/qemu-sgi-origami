@@ -313,11 +313,13 @@
 #     from the C-brick its XIO cable joins
 # @nbrick: the N-brick's L1, owned by its module and reached from each
 #     C-brick whose XIO cable joins one of its crossbars
+# @vbrick: the V-brick's L1, owned by its module and reached from the
+#     C-brick its XIO cable joins
 #
 # Since: 11.2
 ##
 { 'enum': 'SGIModelL1Profile',
-  'data': ['cbrick', 'ibrick', 'nbrick'] }
+  'data': ['cbrick', 'ibrick', 'nbrick', 'vbrick'] }
 
 ##
 # @SGIModelL1Config:
