@@ -14,6 +14,10 @@ board and the Fuel system board) and the Origin 3000 I-brick's IO7
 no machine fits. :doc:`baseio` and :doc:`ioc3-boards` describe the
 boards.
 
+.. seealso::
+
+   - IOC4 (:doc:`ioc4`): the I/O controller of the IP53 boards' IO9.
+
 The IOC3 is SGI's PCI base I/O controller. One 32-bit PCI device with one
 1 MiB memory BAR holds two 16550 serial ports with ring DMA, a 10/100
 Ethernet MAC with its buffer RAM, a PS/2 keyboard and mouse controller, a

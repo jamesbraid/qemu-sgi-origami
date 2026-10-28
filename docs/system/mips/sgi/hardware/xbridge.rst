@@ -11,6 +11,14 @@ board and the Origin 300 PCI expansion module) and in the Origin 3000
 I-, P- and X-bricks (:ref:`sgi-bricks`), which the catalogue describes
 as reference compositions that no QEMU machine builds.
 
+.. seealso::
+
+   - Bridge (:doc:`bridge`): the earlier XIO-to-PCI bridge, whose
+     style the XBridge's PCI heads follow.
+   - PIC (:doc:`pic`): the XIO-to-PCI-X bridge of the IP53 boards.
+   - Crossbow (:doc:`xbow`): the XIO crossbar whose style the XBridge's
+     crossbar half follows.
+
 The XBridge is the SN1-generation XIO-to-PCI chip: a Crossbow-style
 crossbar fused with two Bridge-style PCI host bridges ("heads"), one PCI
 bus each :src:`xbridge-asic-spec-0.5 p. 17, 44`. An Origin 300 or Fuel

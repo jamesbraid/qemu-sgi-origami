@@ -6,16 +6,16 @@
 IP53: Origin 350, Onyx 350, Tezro and Onyx4
 ===========================================
 
-IP53 is the node board of SGI's Origin 350, Onyx 350 and Tezro, and the
+:term:`IP53 <IP number>` is the :term:`node board` of SGI's Origin 350, Onyx 350 and Tezro, and the
 board the Onyx4 host path stands on. It is an IP35-platform board: a
-Bedrock node controller, a PIC instead of the XBridge, and an IO9 PCI
-board carrying IOC4, an ISP12160 SCSI controller and a BCM5701
+:term:`Bedrock` node controller, a :term:`PIC` instead of the :term:`XBridge`, and an IO9 PCI
+board carrying :term:`IOC4`, an ISP12160 SCSI controller and a BCM5701
 Ethernet controller. QEMU models four products on it, ``origin350``,
 ``onyx350``, ``tezro`` and ``onyx4-host``
 (``hw/mips/sgi/sn1.c``). Each node is an ``sgi-sn1-node``
 (``hw/mips/sgi/sn1-node.c``), and the shared Scalable Node builder in
 ``hw/mips/sgi/sn-machine.c`` assembles the nodes from the compiled
-catalogue (:doc:`sn`). Every machine boots the stock IP35 PROM that the
+catalogue (:doc:`sn`). Every machine boots the stock IP35 :term:`PROM` that the
 user supplies (:ref:`sgi-ip53-firmware`). This page is the hardware
 contract the IP53 model layers in ``hw/mips/sgi/models/`` cite: what
 each product fits, how it is wired, and where the emulator chose a value
@@ -66,9 +66,9 @@ Published captures:
 
 - Origin 350: :src:`nekonomicon-16724207` and
   :src:`nekonomicon-16729141`.
-- Onyx 350: one module of a multi-module system,
+- Onyx 350: one :term:`module` of a multi-module system,
   :src:`graphica-onyx350-hinv`, and a PROM trace of an Onyx 350 module in
-  :src:`graphica-o350-chimera-notes`.
+  :src:`graphica-o350-notes`.
 - Tezro: a 700 MHz four-processor inventory captioned as a deskside,
   :src:`graphica-tezro-hinv`; an 800 MHz four-processor inventory,
   :src:`irixnet-post-26015`; a 1 GHz PROM transcript,
@@ -173,7 +173,7 @@ total. The bank positions are model choices unless stated.
        (:src:`graphica-tezro-hinv`)
 
 The Origin 350 has eight DIMM slots as four pairs of 512 MB or 1 GB
-DIMMs, 1 to 8 GB, and a NUMAlink module takes a system to 4 to 32
+DIMMs, 1 to 8 GB, and a :term:`NUMAlink` module takes a system to 4 to 32
 processors (:src:`007-4566-001 p. 69`; :src:`007-4566-001 p. 114, 116`),
 *established*. Larger and unequal populations are not offered. The
 Bedrock's memory banks are described on :doc:`hardware/bedrock`.
@@ -195,7 +195,7 @@ Supported devices
 - BCM5701 Ethernet on IO9: :doc:`hardware/bcm570x`
 - QLogic ISP12160 SCSI on IO9: :doc:`hardware/qlogic-isp`
 - DS1744 timekeeper: :doc:`hardware/timekeepers`
-- Origin 3000 bricks, as reference compositions only, including the
+- Origin 3000 :term:`bricks <brick>`, as reference compositions only, including the
   IP53 module layers: :doc:`hardware/bricks`
 - R16000 processor: :doc:`hardware/r10000`
 - VPro graphics: :doc:`hardware/odyssey` and :doc:`hardware/graphics`
@@ -212,9 +212,9 @@ Components and connections
      - Attachment
      - Rating and basis
    * - Bedrock
-     - both processor interfaces; enters the crossbar at widget ``0xa``
+     - both processor interfaces; enters the crossbar at :term:`widget` ``0xa``
      - *observed* at ``0xb`` in an Onyx 350 trace
-       (:src:`graphica-o350-chimera-notes lines 949-952`), and the model
+       (:src:`graphica-o350-notes lines 949-952`), and the model
        uses ``0xa``, an *approximation*
    * - PIC
      - one at widget 15; on ``tezro-tower-multi``, two, at widgets 11
@@ -279,7 +279,7 @@ them: ``board-id-word``, ``l1-type-code``, ``l1-revision`` and
   ``Q`` (:src:`ip35-prom-6.210`), a *software expectation*. A published
   POD session on a real Onyx 350 graphics module with a VPro board prints
   the graphics-module class and then installs the graphics console
-  (:src:`graphica-o350-chimera-notes`), *observed*, so the Onyx 350
+  (:src:`graphica-o350-notes`), *observed*, so the Onyx 350
   profile reports ``8``, *inferred*. ``0x37`` on the Origin 350 and the
   Onyx 4 host is a choice. No captured L1 type reply exists for any of
   them, *unknown*. No published L1 image labels type ``8`` in its
@@ -317,7 +317,7 @@ Address map
 ===========
 
 The IP53 profiles use the Bedrock address map of :ref:`sgi-ip35-address-map`:
-the processor-side spaces, node memory, the crosstalk windows, the
+the processor-side spaces, node memory, the :term:`crosstalk` windows, the
 Bedrock register space, the hand-off and reset registers and the
 interrupt-send address. The Bedrock units behind the register space are
 on :doc:`hardware/bedrock`.
@@ -423,7 +423,7 @@ population, also an *approximation*.
 The Bedrock's entry widget on an Origin 350 server is *unknown*. A
 published PROM trace from an Onyx 350 module of the same IP53 board
 attaches the Bedrock at widget ``0xb``
-(:src:`graphica-o350-chimera-notes lines 949-952`), *observed*. The model
+(:src:`graphica-o350-notes lines 949-952`), *observed*. The model
 uses ``0xa`` (``SN1_XBRIDGE_HOST_PORT``), an *approximation* that
 disagrees with that trace. The profile names no netboot adapter.
 
@@ -473,7 +473,7 @@ revision 2 at 200 MHz, 8 GiB in eight logical 1 GiB banks, a
 ``2U_INT_53`` carrier ``030-1809-006`` revision D at widget 15 and IO9
 ``030-1771-006`` revision A, *observed*. A published PROM trace of an
 Onyx 350 module attaches the Bedrock at widget ``0xb``
-(:src:`graphica-o350-chimera-notes lines 949-952`), *observed*. The
+(:src:`graphica-o350-notes lines 949-952`), *observed*. The
 model enters at ``0xa``, an *approximation* that disagrees with it. The capture does not show the
 module booting alone, and it reports PROM 6.211 where the model runs
 6.210. The guide describes the base module's factory disk, four-port USB
@@ -488,7 +488,7 @@ Tezro tower and rack
 
 The tower guide allows one, two or four processors with 4 MB of cache
 and places IO9 at bus 1, slot 1. The two- and four-processor board has a
-second XIO connector for an optional board; the one-processor board has
+second :term:`XIO` connector for an optional board; the one-processor board has
 one (:src:`007-4564-001 p. 26-30, 38`). The rack guide gives the same
 processor choices and 8 or 16 GiB in one or two enclosures
 (:src:`007-4643-003 p. 21-32`). All *established*.
@@ -598,7 +598,7 @@ the Origin 350, Onyx 350 and Onyx 4 host profiles and 66,666,667 Hz on
 the Tezro profiles, all choices; the board straps are *unknown*. The L1
 console and the four IOC4 serial ports are separate endpoints, as the
 Onyx 350 and Onyx 4 guides describe. :doc:`hardware/ioc4` describes the
-model, including how its serial ring DMA differs from IOC3's.
+model, including how its serial ring DMA differs from :term:`IOC3`'s.
 
 .. _sgi-ip53-bcm570x:
 

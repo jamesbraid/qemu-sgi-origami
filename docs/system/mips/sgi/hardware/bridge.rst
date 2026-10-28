@@ -11,6 +11,13 @@ Used in :ref:`sgi-ip27` (the Origin 200 IP29 system board, the Origin
 option boards) and :ref:`sgi-ip30` (the Octane and Octane2 system
 board).
 
+.. seealso::
+
+   - XBridge (:doc:`xbridge`): the SN1 XIO-to-PCI chip.
+   - PIC (:doc:`pic`): the XIO-to-PCI-X bridge of the IP53 boards.
+   - Crossbow (:doc:`xbow`): the XIO crossbar that Bridge widgets sit behind
+     where a module has one.
+
 Bridge is SGI's XIO-to-PCI bridge. One side is an XIO widget with the
 common widget register block at the bottom of 16 MB of widget space. The
 other side is a PCI host bridge with eight device slots, a configuration

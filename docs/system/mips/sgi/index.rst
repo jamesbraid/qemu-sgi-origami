@@ -25,7 +25,7 @@ established
 observed
   reported by a published capture of a real machine;
 software expectation
-  what public drivers, the IRIX kernel or the stock PROM do or rely on,
+  what public drivers, the IRIX kernel or the stock :term:`PROM` do or rely on,
   which shows what software needs, not what the hardware is;
 inferred
   follows from established facts by a stated step;
@@ -41,7 +41,7 @@ hardware does.
 Machines
 --------
 
-The Scalable Node overview covers what the SN0 and SN1 machines share;
+The Scalable Node overview covers what the :term:`SN0` and :term:`SN1` machines share;
 each platform page covers its own products.
 
 .. toctree::
@@ -164,3 +164,11 @@ References
    :maxdepth: 1
 
    references
+
+Glossary
+--------
+
+.. toctree::
+   :maxdepth: 1
+
+   glossary

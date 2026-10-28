@@ -19,9 +19,12 @@ R-brick (``modules/r-brick.yaml``), the X-brick (``modules/x-brick.yaml``)
 and the NUMAlink module (``modules/numalink-module.yaml``). The V-brick has
 a machine-builder preset and a controller profile but no layer. The other
 six bricks have no code at all and are described here as reference only.
-No QEMU machine builds any brick: the catalogue compositions that hold
-bricks are reference models, which the compiler refuses to compile. Facts
-are rated as described in :ref:`sgi-ratings`.
+No QEMU machine builds any brick. The Origin 3200 compositions
+(``origin3200`` and its P-brick and X-brick variants) are planned emulation
+targets: the catalogue describes them but the emulator does not build them
+yet. The other compositions that hold bricks are hardware-only reference
+models, which the compiler refuses to compile. Facts are rated as described
+in :ref:`sgi-ratings`.
 
 .. list-table::
    :header-rows: 1
@@ -31,7 +34,7 @@ are rated as described in :ref:`sgi-ratings`.
      - Catalogue
    * - C-brick
      - Compute node (one Bedrock)
-     - Layer, reference composition
+     - Layer, planned composition
    * - CX-brick
      - Up to four compute nodes and a router
      - Reference only
@@ -43,7 +46,7 @@ are rated as described in :ref:`sgi-ratings`.
      - Reference only
    * - I-brick
      - Base I/O (XBridge, PCI, IO7)
-     - Layer, reference composition
+     - Layer, planned composition
    * - IX-brick
      - Base I/O (three PICs, PCI-X, IO9)
      - Reference only
@@ -52,7 +55,7 @@ are rated as described in :ref:`sgi-ratings`.
      - Reference only
    * - P-brick
      - PCI expansion (three XBridges)
-     - Layer, reference composition
+     - Layer, planned composition
    * - PX-brick
      - PCI-X expansion (three PICs)
      - Reference only
@@ -64,7 +67,7 @@ are rated as described in :ref:`sgi-ratings`.
      - Builder preset and L1 profile, no layer, no topology
    * - X-brick
      - Legacy XIO expansion (one XBridge)
-     - Layer, reference composition
+     - Layer, planned composition
    * - NUMAlink module
      - Eight-port router for Origin 300 base modules
      - Layer, reference composition
@@ -548,7 +551,7 @@ module has the same three-XBridge wiring but a Bedrock interface card and
 a NUMAlink connector, and is not the P-brick.
 
 Catalogue: the ``p-brick`` layer and the ``origin3200-pbrick``
-reference composition, described below. The nearest built device is the
+planned composition, described below. The nearest built device is the
 Origin 300 expansion module in :doc:`pci-expansion`, on :doc:`xbridge`.
 
 .. _sgi-sn-family-pbrick:
@@ -716,7 +719,7 @@ board (*established*, :src:`007-4240-002 p. 154`;
 connector is port A (the guides conflict), the XBridge revision, and the
 per-board widget identities are *unknown*.
 
-Catalogue: the ``x-brick`` layer and the ``origin3200-xbrick`` reference
+Catalogue: the ``x-brick`` layer and the ``origin3200-xbrick`` planned
 composition, described below.
 
 .. _sgi-sn-family-xbrick:
@@ -798,17 +801,18 @@ Model limits
 ============
 
 - No machine builds a brick. ``origin3200.yaml`` (two C-bricks and an
-  I-brick), its P-brick and X-brick variants and
-  ``origin300-numalink-module.yaml`` are reference models, and
-  the compiler stops with an error naming ``model_role 'reference'``. The
+  I-brick) and its P-brick and X-brick variants are planned emulation
+  targets: they compile, but the emulator does not build them yet and the
   machine list does not offer them.
+  ``origin300-numalink-module.yaml`` is a reference model, and the compiler
+  stops with an error naming ``model_role 'reference'``.
 - The CX-, D-, G-, IX-, N-, PX- and V-bricks have no layer. The
   composition rules can name ``g-brick``, ``n-brick`` and ``v-brick``
   alongside the layers that exist. A rule that names a brick with no layer
   counts zero of it, so a misspelled id in a maximum, exclusion or
   requirement rule passes silently.
 - The ``origin3200-pbrick`` and ``origin3200-xbrick`` compositions are
-  reference models like ``origin3200``. The builder refuses the P-brick's
+  planned emulation targets like ``origin3200``. The builder refuses the P-brick's
   four chip-to-chip links.
 - The model validator accepts an L1 brick-type character only for the two
   boards a source establishes, ``C`` (IP35) and ``4`` (IP45). An I-, P-,

@@ -9,6 +9,10 @@ ELSC: module system controller
 Used in :ref:`sgi-ip27`: one per Origin 200, Origin 2000 and Onyx2
 module.
 
+.. seealso::
+
+   - L1 (:doc:`l1`): the system controller of the SN1 machines.
+
 The module system controller (MSC, also called the ELSC, the entry-level
 system controller) is a microcontroller that manages power, reset, the
 front panel and an alternate console for one module. The Origin 200 has

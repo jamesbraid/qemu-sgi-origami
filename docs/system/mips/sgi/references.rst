@@ -443,10 +443,10 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``graphica-irix-flash-1m``
    *flash(1M) manual page, IRIX 6.5.30 (Graphica mirror)*. Silicon Graphics. Manual, cited by section. `<https://help.graphica.com.au/irix-6.5.30/man/1M/flash>`__ SHA-256 ``86fbccd16bd18fe42fc5c63e1bf26737c517a6d6cc8bff4f84d6e2bb4003082c``. Public web page; may be quoted.
 
-.. _sgi-ref-graphica-o350-chimera-notes:
+.. _sgi-ref-graphica-o350-notes:
 
-``graphica-o350-chimera-notes``
-   *SGI O350 Chimera notes: L1 sessions, Origin 350 and Fuel boots*. just.graphica.com.au. Capture, cited by section. `<https://just.graphica.com.au/tips/sgi-o350-chimera-notes/>`__ SHA-256 ``a839d88fdd9703e8d5ed03c290282d144c9339302cddbfc7d1912a0e04e77f44``. Public web page; may be quoted.
+``graphica-o350-notes``
+   *SGI Origin 350 notes: L1 sessions, Origin 350 and Fuel boots*. just.graphica.com.au. Capture, cited by section. `<https://just.graphica.com.au/tips/sgi-o350-chimera-notes/>`__ SHA-256 ``a839d88fdd9703e8d5ed03c290282d144c9339302cddbfc7d1912a0e04e77f44``. Public web page; may be quoted.
 
 .. _sgi-ref-graphica-onyx350-hinv:
 

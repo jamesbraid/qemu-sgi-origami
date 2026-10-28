@@ -7,8 +7,8 @@ IP30: Octane and Octane2
 ========================
 
 The ``octane`` and ``octane2`` machines (``hw/mips/sgi/octane.c``) each
-build one IP30 board with one processor, a serial console and the
-onboard I/O, booting a stock IP30 PROM that the user supplies. Each fits
+build one :term:`IP30 <IP number>` board with one processor, a serial console and the
+onboard I/O, booting a stock IP30 :term:`PROM` that the user supplies. Each fits
 a default graphics pipe, which ``-vga none`` leaves out and a graphics
 ``-device`` replaces (:ref:`sgi-ip30-graphics`); the boards themselves
 are outside this page. This page is the hardware contract
@@ -46,7 +46,7 @@ Public software:
 - OpenBSD/sgi port, the-machine-hall/openbsd-sgi branch
   ``sgi-is-alive-at-7.9`` at ``2df91d80c104636deeef8124252ddd5951b55fbf``:
   ``sys/arch/sgi/sgi/ip30.h`` lines 19-55 (memory base, widget numbers,
-  IOC3 slot, GPIO wiring, PROM apertures), ``sys/arch/sgi/sgi/ip30_machdep.c``
+  :term:`IOC3` slot, GPIO wiring, PROM apertures), ``sys/arch/sgi/sgi/ip30_machdep.c``
   lines 163-202 and 262-266 (early console, product classification,
   widget windows), ``sys/arch/sgi/xbow/xbowdevs`` (widget part and
   manufacturer codes), ``sys/dev/onewire/onewiredevs`` lines 29-33 and
@@ -208,7 +208,7 @@ the PROM's probe, and the density codes the PROM then writes, are on
 Topology and population
 -----------------------
 
-Each product has one node (the IP30 board), one processor and no
+Each product has one :term:`node` (the IP30 board), one processor and no
 fabric. Dual-processor Octanes exist (Technical Report page 7-1) but are
 not modelled; the
 capacity notes restrict both machines to the single-processor profile.
@@ -261,7 +261,7 @@ Components and connections
      - onboard PCI devices 0 and 1, function 0
      - *observed* in the OpenBSD capture (ISP1020 revision 5);
        *established* for the Octane2, whose inventory reports QL1040B
-       parts, whose hardware graph places them at devices 0 and 1
+       parts, whose :term:`hardware graph` places them at devices 0 and 1
        (:ref:`sgi-measured-octane2-hinv`,
        :ref:`sgi-measured-octane2-graph`) and whose configuration headers
        read ``0x1077:0x1020``, PCI revision 5, interrupt pin A
@@ -365,7 +365,7 @@ The architecture layer records the selector as a two-bit processor
 attribute in virtual-address bits 58:57, giving four spaces. The
 R10000 family drives such an uncached attribute beside the address,
 and the public SN0 header (Linux ``arch/mips/include/asm/mach-ip27/spaces.h``)
-documents its use on Hub systems. That HEART decodes it the same way is
+documents its use on :term:`Hub` systems. That HEART decodes it the same way is
 *inferred* from the shared processor family, not *established*; no public
 HEART specification describes it.
 

@@ -37,7 +37,7 @@ Sources
 - The IRIX 6.5.30 ``flash(1M)`` manual page, :src:`graphica-irix-flash-1m`,
   for how SGI updates processor and I/O PROMs.
 - A published Fuel ``flash -f``
-  session, :src:`graphica-o350-chimera-notes flash -f session`, for
+  session, :src:`graphica-o350-notes flash -f session`, for
   machine-type codes.
 - The *Origin200 Owner's Guide*, :src:`007-3415-003 p. 12-13`, for the
   PCI option slot numbers.
@@ -555,7 +555,7 @@ a bound store on an IP53 profile, whose block is authored with the store.
 
 - Machine type 2 for Fuel: a published Fuel ``flash -f`` session prompts
   ``Enter machine type (0)SN1 (1)SN10 (2)SN11 (3)SN12`` and the user
-  enters 2 (:src:`graphica-o350-chimera-notes flash -f session`),
+  enters 2 (:src:`graphica-o350-notes flash -f session`),
   *observed*. The stock PROM's CPU-configuration table carries 2 on its
   Fuel rows and 1 on its Origin 300 rows (:src:`ip35-prom-6.210
   CPU-configuration table`), a *software expectation*. Origin 300's 1 is

@@ -12,6 +12,10 @@ module (:doc:`pci-expansion`) and NUMAlink module
 (:ref:`sgi-bricks-numalink-module`), and the Origin 3000 bricks
 (:ref:`sgi-bricks`), which QEMU describes for reference only.
 
+.. seealso::
+
+   - ELSC (:doc:`elsc`): the module system controller of the SN0 machines.
+
 The L1 is the per-chassis system controller of SN1 systems. It runs
 from standby power, keeps the chassis identity, watches fans, supplies and temperatures, drives node power, reset and NMI, and
 carries the operator console. The node's Bedrock reaches it through a
@@ -81,7 +85,7 @@ Sources
   :src:`marc-openbsd-sgi-139223952727384`; a two-chassis Origin 300
   ``cfg`` listing, :src:`nekonomicon-17314`; an Origin 350 L1 log,
   :src:`nekonomicon-16729141`; Origin 350 and Fuel L1 sessions,
-  :src:`graphica-o350-chimera-notes`; Fuel ``l1cmd`` output,
+  :src:`graphica-o350-notes`; Fuel ``l1cmd`` output,
   :src:`tingo-fuel-irix-console`.
 
 .. _sgi-l1-role:
@@ -851,7 +855,7 @@ and input goes to the system :src:`007-4365-002 p. 41`, *established*.
 
 The texts are those real firmware prints: two spaces before the brick
 id, ``<CTRL_T>`` with an underscore, ``returning`` after an escape
-(:src:`graphica-o350-chimera-notes lines 1792, 2030`), *observed*. The
+(:src:`graphica-o350-notes lines 1792, 2030`), *observed*. The
 manuals print ``re-entering`` and ``<CTRL-T>``
 :src:`007-4365-002 p. 41`. The designation after the id is ``CPU0`` to
 ``CPU3`` or ``console`` for subchannel 4.

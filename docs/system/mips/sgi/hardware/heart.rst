@@ -8,6 +8,11 @@ HEART: processor and memory controller
 
 Used in :ref:`sgi-ip30`, on the Octane and Octane2 system board.
 
+.. seealso::
+
+   - Hub (:doc:`hub`): the SN0 node controller, which joins a
+     node's processors and memory to XIO as HEART does for the Octane.
+
 HEART is the processor, memory and I/O controller of the IP30 board. It
 sits between the processor, the SDRAM
 banks and the Crossbow crossbar (:src:`octane-technical-report p. 2-15`),
