@@ -1003,6 +1003,28 @@ static void test_octane2_ioc3_register_header(void)
     qtest_quit(qts);
 }
 
+/*
+ * The reference Octane2 reads general-purpose inputs 2 and 3 high in both
+ * the pin data register (0x12d includes bits 2 and 3) and the pin registers
+ * (gppr2 and gppr3 are 1). OpenBSD expects input 2 high on an Octane too.
+ */
+static void test_ioc3_product_inputs(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+
+    qtest_writel(qts, CFG(2) + 0x10, 0x500000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x146);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x10011005);
+
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x48), ==, 1);
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x3c) & (1u << 2), ==, 1u << 2);
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x4c), ==, octane2 ? 1 : 0);
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x3c) & (1u << 3), ==,
+                    octane2 ? 1u << 3 : 0);
+    qtest_quit(qts);
+}
+
 static void test_octane_ethernet(void)
 {
     test_octane_ioc3_ethernet(false);
@@ -5195,6 +5217,10 @@ int main(int argc, char **argv)
                    test_memory_population_rejections);
     qtest_add_func("/octane2/ioc3-config-repeats",
                    test_octane2_ioc3_config_repeats);
+    qtest_add_data_func("/octane/ioc3-product-inputs", GINT_TO_POINTER(0),
+                        test_ioc3_product_inputs);
+    qtest_add_data_func("/octane2/ioc3-product-inputs", GINT_TO_POINTER(1),
+                        test_ioc3_product_inputs);
     qtest_add_func("/octane2/ioc3-register-header",
                    test_octane2_ioc3_register_header);
     qtest_add_func("/octane2/ioc3-ethernet", test_octane2_ethernet);
