@@ -48,8 +48,6 @@ typedef struct {
 
 #define PCI_SUBSYSTEM       0x2c
 #define IOC3_ID_PAIR        0x000310a9u
-#define MENET_SUBSYSTEM     0xc30510a9u
-#define MENET4_SUBSYSTEM    0xc30610a9u
 
 /* The SuperIO block and serial port A's 16550, in the chip's window. */
 #define INT_STATUS(c, d)     (IOC3_WINDOW(c, d) + 0x1c)
@@ -131,8 +129,10 @@ static void test_ioc3s_enumerate(const void *data)
 
     for (d = 0; d < MENET_IOC3S; d++) {
         g_assert_cmphex(qtest_readl(qts, CFG(c, d)), ==, IOC3_ID_PAIR);
+        /* No subsystem register: 0x2c repeats the 0x0c word. */
+        qtest_writel(qts, CFG(c, d) + 0x0c, 0x2800);
         g_assert_cmphex(qtest_readl(qts, CFG(c, d) + PCI_SUBSYSTEM), ==,
-                        d < 3 ? MENET_SUBSYSTEM : MENET4_SUBSYSTEM);
+                        0x2800);
     }
     qtest_quit(qts);
 }

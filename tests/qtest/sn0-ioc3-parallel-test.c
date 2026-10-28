@@ -47,8 +47,6 @@
 #define TEST_IOC3_PCI_MMIO 0x18000000u
 
 #define PCI_SUBSYSTEM    0x2c
-#define SUBSYSTEM_SGI    0x10a9u  /* the vendor half, the same on every board */
-#define SUBSYSTEM(id)    (((uint32_t)(id) << 16) | SUBSYSTEM_SGI)
 
 static void sn0_ioc3_attach(QTestState *qts)
 {
@@ -1448,9 +1446,10 @@ static void test_a_board_fits_the_port_or_does_not(const void *data)
 
     test_ioc3_attach(qts);
 
-    /* The identifier a guest dispatches on, before what it selects. */
+    /* The chip has no subsystem register: 0x2c repeats the 0x0c word. */
+    qtest_writel(qts, CFG0(TEST_IOC3_DEVICE) + 0x0c, 0x2800);
     g_assert_cmphex(qtest_readl(qts, CFG0(TEST_IOC3_DEVICE) + PCI_SUBSYSTEM),
-                    ==, SUBSYSTEM(board->subsystem_id));
+                    ==, 0x2800);
 
     qtest_writeb(qts, TEST_IOC3_BASE + 0x20150, 0x5a);
     g_assert_cmpint(qtest_readb(qts, TEST_IOC3_BASE + 0x20150) == 0x5a,
