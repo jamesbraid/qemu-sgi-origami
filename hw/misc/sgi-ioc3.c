@@ -516,6 +516,10 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
         return (sgi_ioc3_pin_data(s) >> pin) & 1;
     }
 
+    if (addr <= SGI_IOC3_HEADER_LAST && (addr & 3) == 0) {
+        return pci_get_long(PCI_DEVICE(s)->config + addr);
+    }
+
     switch (addr) {
     case SGI_IOC3_INT_STATUS:
         sgi_ioc_sdma_catch_up(&s->sdma_engine);
@@ -541,6 +545,8 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_IOC3_MICROLAN_CONTROL:
         return s->microlan_control;
     case SGI_IOC3_PIN_CONTROL_SET:
+    case SGI_IOC3_PIN_CONTROL_CLR:
+        /* Both aliases read the control word. */
         return s->pin_control;
     case SGI_IOC3_PIN_DATA:
         return sgi_ioc3_pin_data(s);
