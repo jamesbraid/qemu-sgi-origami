@@ -441,8 +441,14 @@
 #
 # @ip35: the Origin 3000 C-brick's IP35 board, whose Bedrock has no
 #     XBridge of its own and reaches I/O over an XIO cable
+#
+# @ip53-cx: the Origin 3900 Cx-brick's IP53 node board, which like the
+#     IP35 board has no XBridge of its own and reaches I/O over an XIO
+#     cable, but carries R16000 processors.  It has none of the Origin
+#     350 IP53's PIC, IO9 or runtime profile.
 ##
-{ 'enum': 'SGIModelBoardKind', 'data': ['ip45', 'ip34', 'ip53', 'ip35'] }
+{ 'enum': 'SGIModelBoardKind',
+  'data': ['ip45', 'ip34', 'ip53', 'ip35', 'ip53-cx'] }
 
 ##
 # @SGIModelNodeRole:

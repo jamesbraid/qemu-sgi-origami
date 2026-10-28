@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "924bba9342a20b599502f45d1d48b4d98ce127ffaca17e2ac1181a8ef69cfb28"
+    "76d2ecca51da6bad4c856d5814b790ad07e7ec5c454fb4233afdd862f2deb7d8"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -815,6 +815,12 @@ class FuelTests(unittest.TestCase):
                 self.assertEqual(topology["ip35-firmware"], {
                     "machine-type": 0,
                     "cpu-mode-word": 0x5414a785})
+                continue
+            if topology["name"] == "origin3900":
+                # The Cx-brick reuses the Origin 350's IP53 firmware word.
+                self.assertEqual(topology["ip35-firmware"], {
+                    "machine-type": 0,
+                    "cpu-mode-word": ip53_words["origin350"]})
                 continue
             if product not in ("origin300", "fuel", "origin350",
                                "onyx350", "tezro", "onyx4-host"):

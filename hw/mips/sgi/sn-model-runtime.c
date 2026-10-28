@@ -129,20 +129,28 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
         const SGIModelRouter *r = router->value;
         const SGIModelModule *module;
         const SGIModelController *controller;
+        bool cx;
 
         if (r->part != 0x3017 || r->revision != 1 || r->chip_inputs ||
             r->module_index >= modules) {
             goto unsupported;
         }
         module = SGI_MODEL_NTH(t->modules, r->module_index);
-        if (module->nodes || module->io_peers ||
-            module->controller_index < 0 ||
+        if (module->io_peers || module->controller_index < 0 ||
             module->controller_index >= controllers) {
             goto unsupported;
         }
         controller = SGI_MODEL_NTH(t->controllers, module->controller_index);
-        if (controller->kind != SGI_MODEL_CONTROLLER_KIND_L1 ||
-            controller->module_index != r->module_index || controller->l1) {
+        /*
+         * A Cx-brick's router sits in the brick with its nodes, and its one
+         * L1 is the brick's; any other router has a brick of its own.
+         */
+        cx = controller->has_profile &&
+             controller->profile == SGI_MODEL_MODULE_L1_PROFILE_CX_BRICK;
+        if ((module->nodes && !cx) ||
+            controller->kind != SGI_MODEL_CONTROLLER_KIND_L1 ||
+            controller->module_index != r->module_index ||
+            (controller->l1 && !cx)) {
             goto unsupported;
         }
         for (const SGIModelRouterList *other = t->routers; other != router;

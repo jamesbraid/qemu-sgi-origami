@@ -10052,6 +10052,48 @@ static void test_onyx3000_vbrick_l1_and_heads(void)
 }
 
 /*
+ * The catalogue's Origin 3900: one Cx-brick whose four IP53 node boards
+ * share one L1 that serves each on its own link, an I-brick on node board
+ * 0's XIO cable, and R16000 processors on every board. The brick is named
+ * 001c07, its boards take slots 7 to 10, and the L1 reaches the I-brick.
+ */
+static void test_origin3900_cx_brick(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn-builder-origin3900-prom-XXXXXX", &prom,
+                             &error);
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M origin3000,topology=origin3900 -cpu R16000 "
+                      "-smp 16 -m 8192 -bios %s -nodefaults -display none",
+                      prom);
+    {
+        g_autofree char *profile = qom_get_str(qts, "/machine/module0/l1",
+                                               "brick-type");
+        g_autofree char *io_peer = qom_get_str(qts, "/machine/module0/l1",
+                                               "io-peer");
+        g_autofree char *io_profile = qom_get_str(qts, io_peer, "brick-type");
+
+        g_assert_cmpstr(profile, ==, "cxbrick");
+        g_assert_cmpuint(qom_get_uint(qts, "/machine/module0/l1", "bay"), ==,
+                         7);
+        g_assert_cmpuint(qom_get_uint(qts, "/machine/module0/l1", "boards"),
+                         ==, 0xf);
+        g_assert_cmpuint(qom_get_uint(qts, "/machine/module0/l1",
+                                      "brick-type-code"), ==, 0x43);
+        g_assert_cmpstr(io_profile, ==, "ibrick");
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
  * The IO7 answers at head F devices 4 and 5 and, with its IEEE 1394
  * controller left out, not at device 6. Only c0 reaches it.
  */
@@ -11628,11 +11670,11 @@ static const CbrickRefusalCase cbrick_refusal_cases[] = {
       "pipe 'port-b-board' on crossbar 'ibrick-xbridge' has no slot label "
       "for a pipe to claim" },
     { CBRICK_FIXTURE("onboard-xbridge-node"),
-      "node 'c0' has an XBridge on its own board; only an IP35 node takes "
-      "an XIO cable" },
+      "node 'c0' has an XBridge on its own board; only an IP35 or Cx-brick "
+      "node takes an XIO cable" },
     { CBRICK_FIXTURE("io8-on-host"),
-      "IP35 node 'c0' has an XIO attachment on its own board; an IP35 board "
-      "has no XBridge" },
+      "node 'c0' has an XIO attachment on its own board; an IP35 or "
+      "Cx-brick board has no XBridge" },
     { CBRICK_FIXTURE("option-intx-on-host"),
       "IP35 node 'c0' selects an option INTx map; an IP35 board has no "
       "option slots" },
@@ -12638,6 +12680,8 @@ int main(int argc, char **argv)
                    test_origin3400_routed_bricks);
     qtest_add_func("sn/builder/onyx3000/vbrick-l1-and-heads",
                    test_onyx3000_vbrick_l1_and_heads);
+    qtest_add_func("sn/builder/origin3900/cx-brick",
+                   test_origin3900_cx_brick);
     qtest_add_func("sn/builder/origin3200/io7-without-ieee1394",
                    test_origin3200_io7_without_ieee1394);
     qtest_add_func("sn/builder/origin3200/io7-timekeeper",

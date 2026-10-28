@@ -1908,6 +1908,10 @@
         "owner": {
           "enum": ["node", "module"],
           "description": "Which object the controller belongs to: each node of the module as its own (node, the default, as on an Origin 300), or the module once for all of its nodes."
+        },
+        "profile": {
+          "enum": ["cx-brick"],
+          "description": "The product profile of a module-owned L1 that serves several nodes: the Origin 3900 Cx-brick's one L1 for up to four IP53 node boards."
         }
       }
     },

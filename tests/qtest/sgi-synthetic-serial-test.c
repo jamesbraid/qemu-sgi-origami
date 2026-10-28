@@ -82,6 +82,7 @@ static const TopologyExtra topology_extras[] = {
      */
     { "origin3200", "", .unmarked = true },
     { "origin3400", "", .unmarked = true },
+    { "origin3900", "", .unmarked = true },
     /* The Origin 3200's bricks again, with a V12 beside them. */
     { "onyx3000", "", .unmarked = true },
 };

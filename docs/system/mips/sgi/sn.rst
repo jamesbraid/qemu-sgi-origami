@@ -552,19 +552,25 @@ Cx-bricks* (007-4426-001, printed pages xi, 3, 6 and 18) covers the
 Origin 3900 and gives a partition of one Cx-brick with an I- or
 IX-brick.
 
-The ``cx-brick`` layer and the ``origin3900`` reference composition
-record these facts: one module with four Bedrock nodes, an eight-port
-router linked to each node over a midplane link, and each node's XIO
-connector on its own Bedrock's ``xio-ii`` bus. The product accepts zero
-or four processors per node and at least one node with processors.
-The composition cables an I-brick to node board 0's XIO connector at
-its port A, a choice of the composition. It is a reference only and
-never compiles, because these are unknown: which router port each node
-board and each connector uses, the brick's NASIDs and widget numbers,
-the L1's type character and the processors' clock and part. The builder
-can build the brick's one L1 for hand-built topologies through the
-controller's ``profile: cx-brick``; the composition does not yet carry
-that record.
+The ``cx-brick`` layer and the ``origin3900`` composition record these
+facts: one module with four Bedrock nodes, an eight-port router linked to
+each node over a midplane link, and each node's XIO connector on its own
+Bedrock's ``xio-ii`` bus. The composition cables an I-brick to node board
+0's XIO connector at its port A, a choice of the composition.
+
+``-M origin3000,topology=origin3900 -cpu R16000`` runs it. Nothing a source
+read gives fixes the Cx-brick's processors, node-board part, router ports,
+NASIDs, widget numbers or type character, so each node board is fitted as
+the Origin 350's IP53 is (four 700 MHz R16000 processors with 8 MB caches
+and 2048 MB), node board *n* takes router port *n*\ +2, the L1 reports the
+C-brick's type character, and board *n*'s link reports the brick's slot
+plus *n* with a serial of its own, because the stock PROM tells nodes apart
+by those. Each is a stated approximation in the Cx-brick datasheet. The
+node board has its own board kind, ``ip53-cx``: like the C-brick's IP35 board
+it has no XBridge and takes an XIO cable, and like the Origin 350's IP53 it
+carries R16000 processors, but it has none of the Origin 350's PIC, IO9 or
+runtime profile. With the stock IP35 PROM 6.210 payload the model reports 4
+nodes, 16 CPUs, 8192 MB and 1 router and passes the PROM diagnostics.
 
 .. _sgi-sn-family-origin350:
 

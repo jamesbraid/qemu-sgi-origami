@@ -14,8 +14,13 @@ static const char * const sgi_sn1_r14000_cpu_types[] = {
     NULL,
 };
 
-static const char * const sgi_sn1_r12000_cpu_types[] = {
+/*
+ * The Origin 3000 takes the C-brick's R12000, and the Origin 3900's Cx-brick
+ * node boards fit an R16000.
+ */
+static const char * const sgi_sn1_origin3000_cpu_types[] = {
     MIPS_CPU_TYPE_NAME("R12000"),
+    MIPS_CPU_TYPE_NAME("R16000"),
     NULL,
 };
 
@@ -47,7 +52,11 @@ static void sn1_machine_class_init(ObjectClass *oc, const void *data)
     mc->desc = t->description;
     mc->valid_cpu_types = ip53 ? sgi_sn1_r16000_cpu_types :
                           g_str_equal(product, "origin3000") ?
-                          sgi_sn1_r12000_cpu_types : sgi_sn1_r14000_cpu_types;
+                          sgi_sn1_origin3000_cpu_types :
+                          sgi_sn1_r14000_cpu_types;
+    if (g_str_equal(product, "origin3000")) {
+        mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R12000");
+    }
     mc->default_cpus = sgi_machine_topology_default_cpus(t);
     mc->min_cpus = sgi_machine_product_min_cpus(product);
     mc->max_cpus = sgi_machine_product_max_cpus(product);

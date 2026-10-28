@@ -162,6 +162,11 @@ SGI manuals, service documents and papers, cited by document number.
 ``007-4643-003``
    *Silicon Graphics Tezro Visual Workstation Hardware User's Guide Rackmount Configuration*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4643-003/pdf/007-4643-003.pdf>`__ Published; may be quoted.
 
+.. _sgi-ref-documents-007-4653-001:
+
+``007-4653-001``
+   *SGI Origin 3900 Server User's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4653-001/pdf/007-4653-001.pdf>`__ Published; may be quoted.
+
 .. _sgi-ref-documents-108-0151-001:
 
 ``108-0151-001``
