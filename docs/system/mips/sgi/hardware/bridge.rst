@@ -64,7 +64,7 @@ Sources
 - Published inventories: :src:`nekonomicon-16726704`,
   :src:`irixnet-post-32252`, :src:`usenet-95oo9r` and
   :src:`usenet-3a23907e`.
-- One read taken on the reference Octane2 (:ref:`sgi-bridge-measurements`).
+- Two reads taken on the reference Octane2 (:ref:`sgi-bridge-measurements`).
 
 .. _sgi-bridge-identity:
 
@@ -114,8 +114,9 @@ The model composes the word from its ``revision``, ``part`` and
      - 15
      - 1
      - *approximation*: the machines leave the property at its default.
-       The published Octane capture is discussed under
-       :ref:`sgi-ip30-components`.
+       A published Octane capture reads revision 3 (discussed under
+       :ref:`sgi-ip30-components`) and the reference Octane2 reads 4
+       (:ref:`sgi-bridge-measurements`).
 
 The model implements one behaviour, the specification's revision D, for
 every revision value.
@@ -1211,10 +1212,9 @@ between identical builds.
 Measurements
 ============
 
-One read has reached a Bridge window on a physical machine: on the
-:ref:`sgi-measured-octane2`, IP30 board revision B, in the PROM Command
-Monitor after the firmware had initialised the machine. The Bridge
-revision of that board was not read.
+Two reads have reached a Bridge window on a physical machine, both on
+the :ref:`sgi-measured-octane2`, IP30 board revision B, in the PROM
+Command Monitor after the firmware had initialised the machine.
 
 .. list-table::
    :header-rows: 1
@@ -1225,15 +1225,26 @@ revision of that board was not read.
      - Region
      - Revision
      - When
+   * - ``0x1f000004`` (widget 15, offset ``0x04``)
+     - 32
+     - ``0x4c00206d``
+     - Widget identification
+     - 4
+     - PROM monitor, after initialisation
    * - ``0x1fe00000`` (widget 15, offset ``0xe00000``)
      - 16
      - ``0xffff``
      - Flash window, second 2 MB select
-     - unknown
+     - 4
      - PROM monitor, after initialisation
 
-The transcript is on the IP30 page
-(:ref:`alternate aperture <sgi-ip30-octane2-alt-flash>`). The read shows
+The identification read was ``dump -w -x 0xffffffffbf000004#1``,
+returning ``0x4c00206d``: revision 4, part ``0xc002``, manufacturer
+``0x036`` (*established*). It shows the silicon revision of this board's
+Bridge only; other Octane2 boards may differ.
+
+The flash transcript is on the IP30 page
+(:ref:`alternate aperture <sgi-ip30-octane2-alt-flash>`). That read shows
 that on that board the second select answers a 16-bit read with ``0xffff``
 and no exception. It does not show whether a part is fitted there, the
 strap value, other offsets or widths, or what a write does.
@@ -1244,7 +1255,8 @@ Model limits
 ============
 
 - One behaviour for every revision; the identification revision is the
-  only difference. The Octanes report revision 1.
+  only difference. The Octanes report revision 1, where the published
+  Octane reads 3 and the reference Octane2 reads 4.
 - GIO mode, the external SSRAM table, the read response buffers,
   arbitration, prefetch, write gathering, the virtual-device split, the
   bus and request time-outs and the link layer are not modelled; their
