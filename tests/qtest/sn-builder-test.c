@@ -9914,6 +9914,46 @@ static void test_origin3200_brick_l1s(void)
 }
 
 /*
+ * The catalogue's Origin 3400: four C-bricks on the ports of one R-brick,
+ * and an I-brick on c0's XIO cable. Each C-brick runs its own L1, and the
+ * R-brick's router is built; the PROM's discovery reaches all of them.
+ */
+static void test_origin3400_routed_bricks(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn-builder-origin3400-prom-XXXXXX", &prom,
+                             &error);
+    QTestState *qts;
+    static const unsigned int bays[] = { 4, 7, 10, 13 };
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M origin3000,topology=origin3400 -cpu R12000 "
+                      "-smp 16 -m 16384 -bios %s -nodefaults -display none",
+                      prom);
+    for (size_t i = 0; i < ARRAY_SIZE(bays); i++) {
+        g_autofree char *path = g_strdup_printf("/machine/node%zu/l1", i);
+        g_autofree char *profile = qom_get_str(qts, path, "brick-type");
+
+        g_assert_cmpstr(profile, ==, "cbrick");
+        g_assert_cmpuint(qom_get_uint(qts, path, "bay"), ==, bays[i]);
+    }
+    {
+        g_autofree char *io_peer = qom_get_str(qts, "/machine/node0/l1",
+                                               "io-peer");
+        g_autofree char *io_profile = qom_get_str(qts, io_peer, "brick-type");
+
+        g_assert_cmpstr(io_profile, ==, "ibrick");
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
  * The IO7 answers at head F devices 4 and 5 and, with its IEEE 1394
  * controller left out, not at device 6. Only c0 reaches it.
  */
@@ -11492,9 +11532,6 @@ static const CbrickRefusalCase cbrick_refusal_cases[] = {
     { CBRICK_FIXTURE("onboard-xbridge-node"),
       "node 'c0' has an XBridge on its own board; only an IP35 node takes "
       "an XIO cable" },
-    { CBRICK_FIXTURE("routed-host"),
-      "node 'c0' hosts XBridge 'ibrick-xbridge' and is cabled to a router; "
-      "there is no Origin 3000 rule for a routed host yet" },
     { CBRICK_FIXTURE("io8-on-host"),
       "IP35 node 'c0' has an XIO attachment on its own board; an IP35 board "
       "has no XBridge" },
@@ -12499,6 +12536,8 @@ int main(int argc, char **argv)
                         test_cbrick_board_on_crossbar_port);
     qtest_add_func("sn/builder/origin3200/brick-l1s",
                    test_origin3200_brick_l1s);
+    qtest_add_func("sn/builder/origin3400/routed-bricks",
+                   test_origin3400_routed_bricks);
     qtest_add_func("sn/builder/origin3200/io7-without-ieee1394",
                    test_origin3200_io7_without_ieee1394);
     qtest_add_func("sn/builder/origin3200/io7-timekeeper",

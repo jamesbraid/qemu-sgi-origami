@@ -3524,7 +3524,7 @@ class Origin3400RoutedTests(unittest.TestCase):
         self.assertEqual(
             [(item["id"], item["ends"]) for item in model["xio_cables"]],
             [("c0-to-ibrick", ["c0-xio-ii-connector", "ibrick-port-a"])])
-        self.assertEqual(model["machine"]["model_role"], "reference")
+        self.assertEqual(model["machine"]["model_role"], "emulation-target")
 
     def move_cbrick(self, model, brick, port):
         old = f"rbrick-port-{brick + 2}-cable"
@@ -3588,10 +3588,25 @@ class Origin3400RoutedTests(unittest.TestCase):
                     f"product 'origin3400' {message}"):
                 check("origin3400", rules, bricks)
 
-    def test_origin3400_never_compiles(self):
-        from sgi_model.model_compile import CompileError, compile_model
-        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
-            compile_model(self.resolve())
+    def test_origin3400_compiles_to_four_routed_nodes(self):
+        from sgi_model.model_compile import compile_model
+        topology = compile_model(self.resolve())
+        self.assertEqual(topology["name"], "origin3400")
+        self.assertEqual(len(topology["nodes"]), 4)
+        self.assertEqual(len(topology["routers"]), 1)
+        self.assertEqual(topology["routers"][0]["node_ports"], [2, 3, 4, 5])
+
+    def test_routed_target_assigns_no_module_roles(self):
+        model = _resolver._read_yaml(self.ORIGIN3400, "model")
+        model["module_instances"][1]["module_role"] = "MASTER"
+        with tempfile.TemporaryDirectory() as root:
+            shutil.copytree(INPUTS, root, dirs_exist_ok=True)
+            path = pathlib.Path(root) / "origin3400.yaml"
+            path.write_text(yaml.safe_dump(model))
+            with self.assertRaisesRegex(
+                    _resolver.ResolutionError,
+                    "routed target must not assign firmware graph module roles"):
+                _resolver.load_system_model(path)
 
 
 class Onyx3000VbrickTests(unittest.TestCase):

@@ -385,15 +385,20 @@ takes a node only on ports 2, 3, 4, 5". A cable to another router may
 use any port. The layer sets no L1 brick-type character, since no
 reviewed L1 contract gives the R-brick's.
 
-The ``origin3400`` reference composition is the guide's 8- to
-16-processor interconnect drawn with one R-brick (007-4311-002 printed
-page 55): four C-bricks on ports 2 to 5 and an I-brick on the first
-C-brick's ``XIO (II)`` connector at XBridge port A. Its composition
-rules follow Appendix B (printed page 89): one to eight C-bricks, one
-or two R-bricks and at least one I-brick among at most eight I/O
-bricks. Every Origin 3400 bundle ships two R-bricks (printed pages
-76-78), which this composition does not show. It never compiles: the
-C-brick layer has no fitted memory, processor clock or L1 yet.
+The ``origin3400`` composition is the guide's 8- to 16-processor
+interconnect drawn with one R-brick (007-4311-002 printed page 55): four
+C-bricks on ports 2 to 5 and an I-brick on the first C-brick's
+``XIO (II)`` connector at XBridge port A. Its composition rules follow
+Appendix B (printed page 89): one to eight C-bricks, one or two R-bricks
+and at least one I-brick among at most eight I/O bricks. Every Origin 3400
+bundle ships two R-bricks (printed pages 76-78), which this composition
+does not show. It is an emulation target. Each C-brick takes the Origin
+3200 fit: four 400 MHz R12000 processors with 8 MB secondary caches and
+4096 MB in eight 512 MB banks. The bundles ship C-bricks without memory
+and the customer chooses the DIMMs, so the memory is a model choice, as
+are the brick slot numbers (the guide places no brick of this system in a
+slot) and the synthetic identities. Being routed, the composition assigns
+no master or slave role to a C-brick.
 
 Stated limitations of a routed Origin 3000 build. The L2 controller,
 which a rack holding an R-brick requires (007-4311-002 printed page
