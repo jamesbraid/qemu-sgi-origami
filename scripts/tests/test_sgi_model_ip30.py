@@ -55,12 +55,14 @@ class IP30CatalogueTests(unittest.TestCase):
              "initial": "zero"},
             {"name": "nvram0-clock", "size": 24, "read-only": False,
              "initial": "zero"}])
-        # The topology's flash is the same 1 MiB part the store backs.
+        # The topology's flash is the same 1 MiB part the store backs. The
+        # reference Octane2's Bridge status read shows the flash strap set
+        # and the boot part on chip select 1.
         topology = next(t for t in catalogue["topologies"]
                         if t["name"] == "octane2")
         self.assertEqual(topology["nodes"][0]["flash"],
                          {"kind": "operator-prom", "size": 1048576,
-                          "select": False, "strap": False})
+                          "select": True, "strap": True})
         # Board values with catalogue defaults are machine properties; the
         # processor part's are -cpu properties.
         self.assertEqual(offering["overrides"], [

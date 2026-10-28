@@ -80,16 +80,17 @@ layer:
         display_description: SGI Octane2 (IP30)
         lifecycle: implemented
         profile: serial
-        # The fitted part, its select and the strap are unknown (docs/system/mips/sgi/ip30.rst,
-        # Boot flash wiring). Select 0 with the strap low is
-        # the compatibility default every launch has used.
+        # The reference Octane2's Bridge status reads 0x62: the strap is 1, so
+        # chip select 1 is the boot select at 0xc00000 (docs/system/mips/sgi/ip30.rst,
+        # Boot flash wiring). The fitted part itself is unknown.
         boot_flash_wiring:
-          select: false
-          strap: false
-          provenance: unsourced
+          select: true
+          strap: true
+          provenance: observed-hardware
           sources:
           - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-flash-wiring
-          notes: Unknown wiring; the compatibility default, not a measured board.
+          - qemu:docs/system/mips/sgi/hardware/bridge.rst
+          notes: Strap 1 with the boot part on chip select 1, read from the reference Octane2's Bridge status; the part is unknown.
         system_timekeepers:
           ip30-board:
             kind: ds1685

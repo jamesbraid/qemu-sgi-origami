@@ -2047,6 +2047,29 @@ static void test_flash_and_pci(void)
     qtest_quit(qts);
 }
 
+/*
+ * The reference Octane2's Bridge status reads 0x62 at 0x1f00000c in the
+ * PROM monitor: the flash strap (bit 6) and PCI mode (bit 5) set. Its
+ * outstanding-read count of 2 was the chip's live count while it served
+ * that read; this model completes every read before the next access, so
+ * the count reads zero. The boot part answers at the window base
+ * (0xc00000) on both machines.
+ */
+static void test_bridge_status_strap(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x008)), ==,
+                    octane2 ? 0x60 : 0x20);
+    g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x008)), ==,
+                    octane2 ? 0x60 : 0x20);
+    g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
+    qtest_quit(qts);
+}
+
 static void test_alternate_flash(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
@@ -4891,8 +4914,15 @@ static void test_flash_wiring_defaults(void)
         node = qobject_to(QDict, qlist_peek(qdict_get_qlist(topology,
                                                             "nodes")));
         flash = qdict_get_qdict(node, "flash");
-        g_assert_false(qdict_get_bool(flash, "select"));
-        g_assert_false(qdict_get_bool(flash, "strap"));
+        /*
+         * The reference Octane2's Bridge strap reads 1, so its boot part
+         * on chip select 1 answers at the window base (0xc00000). The
+         * Octane's wiring is unknown.
+         */
+        g_assert_cmpint(qdict_get_bool(flash, "select"), ==,
+                        g_str_equal(product, "octane2"));
+        g_assert_cmpint(qdict_get_bool(flash, "strap"), ==,
+                        g_str_equal(product, "octane2"));
         found++;
     }
     g_assert_cmpuint(found, ==, 2);
@@ -6158,6 +6188,10 @@ int main(int argc, char **argv)
     qtest_add_func("/octane2/heart-widget-status",
                    test_octane2_heart_widget_status);
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
+    qtest_add_data_func("/octane/bridge-status-strap", GINT_TO_POINTER(0),
+                        test_bridge_status_strap);
+    qtest_add_data_func("/octane2/bridge-status-strap", GINT_TO_POINTER(1),
+                        test_bridge_status_strap);
     qtest_add_data_func("/octane/alternate-flash", GINT_TO_POINTER(0),
                         test_alternate_flash);
     qtest_add_data_func("/octane2/alternate-flash", GINT_TO_POINTER(1),
