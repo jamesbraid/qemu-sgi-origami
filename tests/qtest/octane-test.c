@@ -1627,9 +1627,17 @@ static void test_heart_widget_control(void)
     g_assert_cmphex(word, ==, 0);
     g_assert_cmpuint(memtx_writel(qts, HEART_WIDGET + 0x24, 0x3ca596f0),
                      ==, MEMTX_OK);
-    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 0x24), ==, 0x3ca596f0);
+    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 0x24), ==, 0x3ca592f0);
     g_assert_cmphex(qtest_readl(qts, ATTR0 + HEART_WIDGET + 0x24), ==,
-                    0x3ca596f0);
+                    0x3ca592f0);
+    /*
+     * Bits 11:10 clear the link retry counters and read back zero. The
+     * PROM writes 0x4c08 on the model; the reference Octane2 reads 0x4218
+     * at 0x18000024 afterwards, with both bits clear.
+     */
+    g_assert_cmpuint(memtx_writel(qts, HEART_WIDGET + 0x24, 0x4c08), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 0x24), ==, 0x4008);
     qtest_system_reset(qts);
     g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 0x24), ==, 0);
     qtest_quit(qts);
@@ -1675,6 +1683,7 @@ static void test_heart_diagnostic_storage(gconstpointer data)
     QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
     const uint64_t flow_a = 0xa51923456789abc3ULL;
     const uint64_t flow_b = 0x5a96fedcba76543cULL;
+    const uint64_t compare_reset = octane2 ? 0xffffff : 0;
     uint64_t wide, count;
     uint32_t word;
 
@@ -1683,7 +1692,7 @@ static void test_heart_diagnostic_storage(gconstpointer data)
     g_assert_cmphex(qtest_readq(qts, HEART + 0x50), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEART + 0x58), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEART + 0xb0), ==, 0);
-    g_assert_cmphex(qtest_readq(qts, HEART + 0x30000), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x30000), ==, compare_reset);
 
     qtest_writel(qts, HEART_WIDGET + 0x2c, 0x12345678);
     g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x28), ==, 0x12345678);
@@ -1758,7 +1767,7 @@ static void test_heart_diagnostic_storage(gconstpointer data)
     g_assert_cmphex(qtest_readq(qts, HEART + 0x50), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEART + 0x58), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEART + 0xb0), ==, 0);
-    g_assert_cmphex(qtest_readq(qts, HEART + 0x30000), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x30000), ==, compare_reset);
     g_assert_cmphex(qtest_readq(qts, HEART + 0x10030), ==, 0);
     qtest_quit(qts);
 }
@@ -1971,6 +1980,42 @@ static void test_octane_bridge_link_reset(void)
     qtest_clock_step(qts, 20);
     g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x080)), ==, reset_value);
     g_assert_cmphex(qtest_readl(qts, BRIDGE + 4), ==, 0x3c00206d);
+    qtest_quit(qts);
+}
+
+/*
+ * Words the reference Octane2's HEART revision F returned in the PROM
+ * monitor, after firmware initialisation in a session in which IRIX had
+ * also run: status 0x8118 at 0x0ff00080 (big-endian bit 8 and the unnamed
+ * bit 15), the three request limits in mode 0xe92000000203fdff at
+ * 0x0ff00000 reading 4, compare 0xffffff at 0x0ff30000, and zero from a
+ * 64-bit read of widget 0x10. The model's PROM preserves the limits and
+ * never writes compare, so treating those two as reset values is inferred.
+ * The Octane's revision 4 is unmeasured; it keeps the big-endian bit
+ * (inferred) and zero mode and compare.
+ */
+static void test_heart_measured_words(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+    uint64_t wide;
+
+    for (int pass = 0; pass < 2; pass++) {
+        g_assert_cmphex(qtest_readq(qts, HEART + 0x80), ==,
+                        octane2 ? 0x8118 : 0x118);
+        g_assert_cmphex(qtest_readq(qts, HEART), ==,
+                        octane2 ? 0x0920000000000000ULL : 0);
+        g_assert_cmphex(qtest_readq(qts, HEART + 0x30000), ==,
+                        octane2 ? 0xffffff : 0);
+        g_assert_cmpuint(memtx_readq(qts, HEART_WIDGET + 0x10, &wide), ==,
+                         MEMTX_OK);
+        g_assert_cmphex(wide, ==, 0);
+        qtest_writeq(qts, HEART, 0);
+        qtest_writeq(qts, HEART + 0x30000, 0x123);
+        g_assert_cmphex(qtest_readq(qts, HEART), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, HEART + 0x30000), ==, 0x123);
+        qtest_system_reset(qts);
+    }
     qtest_quit(qts);
 }
 
@@ -5968,7 +6013,7 @@ static void test_migration_state(void)
     g_assert_cmphex(qtest_readw(to, MPCONF + 0x14), ==, 0xa5b6);
 
     g_assert_cmphex(qtest_readl(to, HEART + 0x20), ==, WIDE);
-    g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x24), ==, 0x3ca596f0);
+    g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x24), ==, 0x3ca592f0);
     g_assert_cmphex(qtest_readq(to, HEART_WIDGET + 0x28), ==, 0xa5c37e19);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x2c), ==, 0xa5c37e19);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x44), ==, 0);
@@ -6192,6 +6237,10 @@ int main(int argc, char **argv)
                         test_bridge_status_strap);
     qtest_add_data_func("/octane2/bridge-status-strap", GINT_TO_POINTER(1),
                         test_bridge_status_strap);
+    qtest_add_data_func("/octane/heart-measured-words", GINT_TO_POINTER(0),
+                        test_heart_measured_words);
+    qtest_add_data_func("/octane2/heart-measured-words", GINT_TO_POINTER(1),
+                        test_heart_measured_words);
     qtest_add_data_func("/octane/alternate-flash", GINT_TO_POINTER(0),
                         test_alternate_flash);
     qtest_add_data_func("/octane2/alternate-flash", GINT_TO_POINTER(1),
