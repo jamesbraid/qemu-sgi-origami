@@ -392,27 +392,86 @@ static void test_source_reset(gconstpointer data)
     }
 }
 
+static void assert_counter_views(QTestState *s, uint32_t expected)
+{
+    uint32_t word;
+
+    g_assert_cmpint(memtx_readl(s, BASE + 0x3c, &word), ==, MEMTX_OK);
+    g_assert_cmphex(word, ==, expected);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x38), ==, expected);
+}
+
 static void test_counter(void)
 {
     QTestState *s = start_profile(true, "");
 
     qtest_irq_intercept_out_named(s, CRIME_PATH, "cpu-ip");
+    assert_counter_views(s, 0);
     qtest_writeq(s, BASE + 0x38, 0xa1b2c3d4fffffffeULL);
-    g_assert_cmphex(qtest_readq(s, BASE + 0x38), ==, 0xfffffffe);
+    assert_counter_views(s, 0xfffffffe);
     qtest_clock_step(s, 15);
-    g_assert_cmphex(qtest_readq(s, BASE + 0x38), ==, 0xfffffffe);
-    qtest_clock_step(s, 16);
-    g_assert_cmphex(qtest_readq(s, BASE + 0x38), ==, 0);
+    assert_counter_views(s, 0xfffffffe);
+    qtest_clock_step(s, 1);
+    assert_counter_views(s, 0xffffffff);
+    qtest_clock_step(s, 15);
+    assert_counter_views(s, 0);
     qtest_writeq(s, BASE + 0x38, 0xfedcba9865341278ULL);
     g_usleep(1000);
-    g_assert_cmphex(qtest_readq(s, BASE + 0x38), ==, 0x65341278);
+    assert_counter_views(s, 0x65341278);
     qtest_clock_step(s, 1000000000);
-    g_assert_cmphex(qtest_readq(s, BASE + 0x38), ==, 0x65341278 + 66666666);
+    assert_counter_views(s, 0x692d5322);
     g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 0);
     assert_outputs(s, 0);
     qtest_system_reset(s);
-    g_assert_cmphex(qtest_readq(s, BASE + 0x38), ==, 0);
+    assert_counter_views(s, 0);
+    qtest_clock_step(s, 1000000000);
+    assert_counter_views(s, 66666666);
     qtest_quit(s);
+}
+
+static void test_counter_access(void)
+{
+    const struct { unsigned offset, size; } reads[] = {
+        { 0x38, 1 }, { 0x38, 2 }, { 0x38, 4 },
+        { 0x3c, 1 }, { 0x3c, 2 }, { 0x3c, 8 },
+        { 0x39, 4 }, { 0x3d, 4 }, { 0x39, 8 }, { 0x3b, 2 },
+        { 0x34, 4 },
+    };
+    const struct { unsigned offset, size; } writes[] = {
+        { 0x38, 1 }, { 0x38, 2 }, { 0x38, 4 },
+        { 0x3c, 1 }, { 0x3c, 2 }, { 0x3c, 4 }, { 0x3c, 8 },
+        { 0x39, 4 }, { 0x3d, 4 }, { 0x39, 8 }, { 0x3b, 2 },
+    };
+
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        QTestState *s = start_profile(legacy, "");
+        uint64_t value;
+        uint32_t word;
+
+        qtest_writeq(s, BASE + 0x38, 0x12345678);
+        if (!legacy) {
+            g_assert_cmpint(memtx_readl(s, BASE + 0x3c, &word),
+                            !=, MEMTX_OK);
+        }
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+        for (unsigned i = 0; i < ARRAY_SIZE(reads); i++) {
+            g_assert_cmpint(memtx_read(s, BASE + reads[i].offset, &value,
+                                       reads[i].size), !=, MEMTX_OK);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x38), ==, 0x12345678);
+        }
+        for (unsigned i = 0; i < ARRAY_SIZE(writes); i++) {
+            g_assert_cmpint(memtx_write(s, BASE + writes[i].offset, 0,
+                                        writes[i].size), !=, MEMTX_OK);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x38), ==, 0x12345678);
+        }
+        if (legacy) {
+            assert_stopped(s);
+            assert_counter_views(s, 0x12345678);
+        }
+        qtest_clock_step(s, 16);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x38), ==, 0x12345679);
+        qtest_quit(s);
+    }
 }
 
 static void test_migration(gconstpointer data)
@@ -457,12 +516,18 @@ static void test_migration(gconstpointer data)
     g_assert_cmphex(qtest_readq(to, BASE + 0x28), ==, hardware);
     g_assert_cmphex(qtest_readq(to, BASE + 0x20), ==, 1U << software_bit);
     g_assert_cmphex(qtest_readq(to, BASE + 0x38), ==, 0xfffffffe);
+    if (legacy) {
+        assert_counter_views(to, 0xfffffffe);
+    }
     g_assert_cmphex(qtest_readq(to, 0x40000500), ==, 0x88776655aabbccddULL);
     g_assert_cmphex(qtest_readq(to, BASE + 0x18), ==,
                     functional ? UINT32_MAX : 0);
     assert_outputs(to, functional ? (legacy ? 1 : 0xb) : 0);
     qtest_clock_step(to, 1);
     g_assert_cmphex(qtest_readq(to, BASE + 0x38), ==, 0xffffffff);
+    if (legacy) {
+        assert_counter_views(to, 0xffffffff);
+    }
     qtest_writeq(to, BASE + 0x18, hardware | (1U << software_bit));
     assert_outputs(to, legacy ? 1 : 0xb);
     qtest_writeq(to, BASE + 0x28, 0);
@@ -2871,6 +2936,7 @@ int main(int argc, char **argv)
     add_case("sgi/crime/renderer/no-generated-irq",
                    test_renderer_no_generated_irq);
     add_case("sgi/crime/legacy/counter", test_counter);
+    add_case("sgi/crime/legacy/counter-access", test_counter_access);
     add_data_case("sgi/crime/legacy/migration",
                         GINT_TO_POINTER(1), test_migration);
     add_data_case("sgi/crime/default/migration-sources",
