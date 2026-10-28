@@ -681,7 +681,7 @@ static bool crime_render_mode(uint32_t mode, unsigned *bank, unsigned *bytes,
     unsigned pixel_type = (mode >> 4) & 15;
     unsigned pixel_depth = (mode >> 2) & 3;
 
-    *bank = mode >> 10;
+    *bank = (mode >> 10) & 7;
     if ((*bank >= 3 && *bank != 4 && *bank != 5) || (mode & 3)) {
         return false;
     }
@@ -916,6 +916,288 @@ static bool crime_render_alpha_pass(uint32_t color, uint32_t test)
     }
 }
 
+typedef struct CrimeColorMode {
+    unsigned bank, bytes, format;
+    uint32_t mask;
+} CrimeColorMode;
+
+typedef struct CrimeColorPixel {
+    uint64_t source[4], destination[4];
+    uint32_t mask, result;
+} CrimeColorPixel;
+
+typedef struct CrimeColorByte {
+    uint64_t identity;
+    bool enabled;
+} CrimeColorByte;
+
+static bool crime_color_mode(uint32_t value, CrimeColorMode *mode)
+{
+    unsigned depth = (value >> 2) & 3;
+    unsigned type = (value >> 4) & 15;
+
+    mode->bank = (value >> 10) & 7;
+    if ((value & 3) || (mode->bank >= 3 && mode->bank != 4 &&
+                              mode->bank != 5) ||
+        ((value >> 8) & 3) != depth) {
+        return false;
+    }
+    if (type == 1 && depth == 0) {
+        mode->format = 0;
+    } else if (type == 2 && depth == 1) {
+        mode->format = 1;
+    } else if (type == 2 && depth == 2) {
+        mode->format = 2;
+    } else if (type == 1 && depth == 2) {
+        mode->format = 3;
+    } else {
+        return false;
+    }
+    mode->bytes = 1U << depth;
+    mode->mask = mode->format == 3 ? 0xffffff00U :
+                 UINT32_MAX >> (32 - 8 * mode->bytes);
+    return true;
+}
+
+static uint32_t crime_color_convert(uint32_t value, unsigned source,
+                                     unsigned destination)
+{
+    unsigned r, g, b, a = 255;
+
+    if (source == 0) {
+        r = value >> 5;
+        g = (value >> 2) & 7;
+        b = value & 3;
+        r = (r << 5) | (r << 2) | (r >> 1);
+        g = (g << 5) | (g << 2) | (g >> 1);
+        b *= 0x55;
+    } else if (source == 1) {
+        r = (value >> 10) & 31;
+        g = (value >> 5) & 31;
+        b = value & 31;
+        r = (r << 3) | (r >> 2);
+        g = (g << 3) | (g >> 2);
+        b = (b << 3) | (b >> 2);
+        a = value & 0x8000 ? 255 : 0;
+    } else {
+        r = value >> 24;
+        g = (value >> 16) & 255;
+        b = (value >> 8) & 255;
+        if (source == 2) {
+            a = value & 255;
+        }
+    }
+    switch (destination) {
+    case 0:
+        return ((r >> 5) << 5) | ((g >> 5) << 2) | (b >> 6);
+    case 1:
+        return ((a >> 7) << 15) | ((r >> 3) << 10) |
+               ((g >> 3) << 5) | (b >> 3);
+    default:
+        return (r << 24) | (g << 16) | (b << 8) |
+               (destination == 2 ? a : 0);
+    }
+}
+
+static int crime_color_compare(const void *a, const void *b)
+{
+    const CrimeColorByte *x = a, *y = b;
+
+    return (x->identity > y->identity) - (x->identity < y->identity);
+}
+
+static bool crime_color_envelope(uint64_t first, uint64_t pitch,
+                                  unsigned width, unsigned height,
+                                  unsigned bytes)
+{
+    uint64_t last = first + (height - 1) * pitch + (uint64_t)width * bytes - 1;
+
+    return last <= UINT32_MAX && (last >> 12) - (first >> 12) < 32;
+}
+
+static MemTxResult crime_render_color(SGICrimeState *s, hwaddr offset,
+                                       const uint64_t *p,
+                                       const CrimeRenderGeometry *geometry)
+{
+    CrimeColorMode src, dst;
+    CrimeRenderClip scissor = crime_render_clip(p[0x48 / 4]), screen[5];
+    uint32_t draw = p[0x18 / 4], clip = p[0x10 / 4];
+    unsigned width = geometry->width, height = geometry->samples / width;
+    unsigned screen_count = 0, count = 0, operation;
+    unsigned sx = p[0xa0 / 4] >> 16, sy = p[0xa0 / 4] & 0xffff;
+    uint64_t source_pitch = 0, destination_pitch;
+    g_autofree CrimeColorPixel *pixels = NULL;
+    g_autoptr(GArray) sources =
+        g_array_new(false, false, sizeof(CrimeColorByte));
+    g_autoptr(GArray) destinations =
+        g_array_new(false, false, sizeof(CrimeColorByte));
+
+    if (!crime_color_mode(p[0], &src) || !crime_color_mode(p[8 / 4], &dst) ||
+        (src.bank < 4 && dst.bank < 4) || (draw & ~0x3002f8U) ||
+        geometry->opcode != 3 || (clip & ~0x3ffU) ||
+        ((clip & 31) & ~((clip >> 5) & 31))) {
+        return crime_transfer_fail(offset, "unsupported color transfer");
+    }
+    operation = draw & 0x200 ? p[0x1b0 / 4] : 3;
+    if (operation > 15) {
+        return crime_transfer_fail(offset,
+                                       "unsupported color raster operation");
+    }
+    for (unsigned n = 0; n < 5; n++) {
+        if (clip & (1U << (5 + n))) {
+            screen[screen_count] = crime_render_clip(p[(0x20 + 8 * n) / 4]);
+            if (screen[screen_count].xmin > screen[screen_count].xmax ||
+                screen[screen_count].ymin > screen[screen_count].ymax) {
+                return crime_transfer_fail(offset, "invalid color screen mask");
+            }
+            screen_count++;
+        }
+    }
+    if (screen_count > 1 || ((draw & 0x100000) &&
+        (scissor.xmin > scissor.xmax || scissor.ymin > scissor.ymax))) {
+        return crime_transfer_fail(offset, "unsupported color clipping");
+    }
+    if (src.bank >= 4) {
+        if (p[0xa8 / 4] != src.bytes || p[0xac / 4] < src.bytes ||
+            p[0xac / 4] >= 0x10000000) {
+            return crime_transfer_fail(offset, "unsupported color source step");
+        }
+        source_pitch = (uint64_t)(width - 1) * src.bytes + p[0xac / 4];
+        if (!crime_color_envelope(p[0xa0 / 4], source_pitch, width, height,
+                                  src.bytes)) {
+            return crime_transfer_fail(offset, "invalid color source envelope");
+        }
+    } else if (sx >= 2048 || sy >= 2048 || sx + width > 2048 ||
+               sy + height > 2048 || p[0xa8 / 4] != 1 || p[0xac / 4] != 1) {
+        return crime_transfer_fail(offset, "invalid color tiled source");
+    }
+    destination_pitch = (uint64_t)width * dst.bytes;
+    if (dst.bank >= 4 && (p[0xb4 / 4] != dst.bytes ||
+        !crime_color_envelope(p[0xb0 / 4], destination_pitch, width, height,
+                              dst.bytes))) {
+        return crime_transfer_fail(offset,
+                                       "invalid color destination envelope");
+    }
+    pixels = g_new(CrimeColorPixel, geometry->samples);
+    for (unsigned i = 0; i < geometry->samples; i++) {
+        CrimeColorPixel *pixel = &pixels[count];
+        uint64_t source = p[0xa0 / 4] + (i / width) * source_pitch +
+                          (uint64_t)(i % width) * src.bytes;
+        uint64_t destination = p[0xb0 / 4] + (uint64_t)i * dst.bytes;
+        uint32_t mask = dst.mask & (draw & 0x80 ? p[0x1b8 / 4] : UINT32_MAX);
+        int x, y;
+        bool screen_pass = !screen_count;
+
+        crime_render_sample(geometry, i, &x, &y);
+        for (unsigned n = 0; n < screen_count; n++) {
+            screen_pass |= crime_render_inside(&screen[n], x, y) ==
+                           !!(clip & 31);
+        }
+        if (!screen_pass || ((draw & 0x100000) &&
+            !crime_render_inside(&scissor, x, y))) {
+            continue;
+        }
+        for (unsigned b = 0; b < dst.bytes; b++) {
+            unsigned lane = (dst.bank >= 4 ? destination + b :
+                             (uint64_t)x * dst.bytes + b) & 3;
+            if (!(draw & (1U << (6 - lane)))) {
+                mask &= ~(0xffU << (8 * (dst.bytes - 1 - b)));
+            }
+        }
+        if (!mask) {
+            continue;
+        }
+        pixel->mask = mask;
+        for (unsigned endpoint = 0; endpoint < 2; endpoint++) {
+            const CrimeColorMode *mode = endpoint ? &dst : &src;
+            for (unsigned b = 0; b < mode->bytes; b++) {
+                CrimeColorByte byte = { 0 };
+                uint64_t *physical = endpoint ? &pixel->destination[b] :
+                                                &pixel->source[b];
+                CrimeRenderTranslation translation;
+                if (mode->bank >= 4) {
+                    translation = crime_render_linear(s, mode->bank,
+                        (endpoint ? destination : source) + b,
+                        physical, &byte.identity);
+                } else {
+                    unsigned tx = endpoint ? x : sx + x -
+                        MIN(geometry->x0, geometry->x1);
+                    unsigned ty = endpoint ? y : sy + y -
+                        MIN(geometry->y0, geometry->y1);
+                    translation = crime_framebuffer_translate(s, mode->bank,
+                        (uint64_t)tx * mode->bytes + b, ty, 1,
+                        physical, &byte.identity);
+                }
+                if (translation != CRIME_RENDER_MAPPED) {
+                    return crime_transfer_fail(offset, "invalid color mapping");
+                }
+                byte.enabled = endpoint &&
+                    ((mask >> (8 * (mode->bytes - 1 - b))) & 255);
+                g_array_append_val(endpoint ? destinations : sources, byte);
+            }
+        }
+        count++;
+    }
+    g_array_sort(destinations, crime_color_compare);
+    for (unsigned i = 1; i < destinations->len; i++) {
+        CrimeColorByte *a = &g_array_index(destinations, CrimeColorByte, i - 1);
+        CrimeColorByte *b = &g_array_index(destinations, CrimeColorByte, i);
+        if (a->identity == b->identity && a->enabled && b->enabled) {
+            return crime_transfer_fail(offset, "color destination aliases");
+        }
+    }
+    for (unsigned i = 0; i < sources->len; i++) {
+        if (bsearch(&g_array_index(sources, CrimeColorByte, i),
+                    destinations->data, destinations->len,
+                    sizeof(CrimeColorByte), crime_color_compare)) {
+            return crime_transfer_fail(offset,
+                                       "color source overlaps destination");
+        }
+    }
+    /* The BQL keeps ordinary RAM mappings stable through staging and commit. */
+    for (unsigned i = 0; i < count; i++) {
+        CrimeColorPixel *pixel = &pixels[i];
+        uint8_t source_data[4], destination_data[4];
+        uint32_t source, destination;
+        for (unsigned b = 0; b < src.bytes; b++) {
+            if (address_space_read(&address_space_memory, pixel->source[b],
+                MEMTXATTRS_UNSPECIFIED, &source_data[b], 1) != MEMTX_OK) {
+                return crime_transfer_fail(offset,
+                                       "validated color source failed");
+            }
+        }
+        for (unsigned b = 0; b < dst.bytes; b++) {
+            if (address_space_read(&address_space_memory, pixel->destination[b],
+                MEMTXATTRS_UNSPECIFIED, &destination_data[b], 1) != MEMTX_OK) {
+                return crime_transfer_fail(offset,
+                                           "validated color destination failed");
+            }
+        }
+        source = crime_color_convert(crime_render_load_pixel(source_data,
+                                     src.bytes), src.format, dst.format);
+        destination = crime_render_load_pixel(destination_data, dst.bytes);
+        pixel->result = (destination & ~pixel->mask) |
+                       (crime_render_rop(operation, source, destination) &
+                        pixel->mask);
+    }
+    for (unsigned i = 0; i < count; i++) {
+        CrimeColorPixel *pixel = &pixels[i];
+        uint8_t data[4];
+        crime_render_store_pixel(data, dst.bytes, pixel->result);
+        for (unsigned b = 0; b < dst.bytes; b++) {
+            if ((pixel->mask >> (8 * (dst.bytes - 1 - b))) & 255) {
+                if (address_space_write(&address_space_memory,
+                    pixel->destination[b], MEMTXATTRS_UNSPECIFIED,
+                    &data[b], 1) != MEMTX_OK) {
+                    return crime_transfer_fail(offset,
+                                               "validated color write failed");
+                }
+            }
+        }
+    }
+    return MEMTX_OK;
+}
+
 static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                                            unsigned index, uint64_t value,
                                            unsigned words)
@@ -944,6 +1226,19 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     draw = p[0x18 / 4];
     clip = p[0x10 / 4];
     copy = draw & 0x200000;
+    for (unsigned role = 0; role < 2; role++) {
+        uint32_t raw = p[role ? 8 / 4 : 0];
+        uint32_t ignored = raw & 0xffffe000U;
+
+        if ((role || copy) && ignored &&
+            !(s->render_mode_reported & (1U << role))) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-crime: %s buffer mode raw 0x%08x "
+                          "ignores reserved upper bits 0x%08x\n",
+                          role ? "destination" : "source", raw, ignored);
+            s->render_mode_reported |= 1U << role;
+        }
+    }
     alpha = draw & 0x800;
     if (alpha && (p[0x198 / 4] & ~0x7ffULL)) {
         return crime_transfer_fail(offset, "unsupported alpha comparison");
@@ -951,7 +1246,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     triangle = (p[0x60 / 4] >> 24) == 2;
     if ((draw & ~(triangle ? 0x5a02f8U : 0x3e0af8U)) ||
         (triangle ? (!(draw & 0x400000) ||
-                      (p[0x8 / 4] & ~0xc00ULL) != 0x228) :
+                      (p[0x8 / 4] & 0x3ffU) != 0x228) :
                     (p[0x50 / 4] ||
                      (copy ? p[0x58 / 4] != 0 :
                              (p[0x58 / 4] & 0x80008000U)))) ||
@@ -964,7 +1259,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                                (int)(p[0x58 / 4] & 0xffff);
     stipple = (geometry.opcode == 1 && (draw & 0x80000)) ||
               (geometry.opcode == 3 && (draw & 0x40000));
-    if (alpha && (copy || stipple || (p[0x8 / 4] & ~0xc00ULL) != 0x228)) {
+    if (alpha && (copy || stipple || (p[0x8 / 4] & 0x3ffU) != 0x228)) {
         return crime_transfer_fail(offset, "unsupported alpha primitive");
     }
     if (copy && (geometry.opcode != 3 || stipple)) {
@@ -981,6 +1276,21 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
             repeat > max_repeat) {
             return crime_transfer_fail(offset, "invalid stipple mode");
         }
+    }
+    if (copy && ((p[0] | p[8 / 4]) & 0xf0) &&
+        (((p[0] >> 10) & 7) >= 4 || ((p[8 / 4] >> 10) & 7) >= 4)) {
+        if (words && (index == 0xb0 / 4 || index == 0xb4 / 4) &&
+            ((p[8 / 4] >> 10) & 7) < 4) {
+            return crime_transfer_fail(offset,
+                                       "destination START requires download");
+        }
+        result = crime_render_color(s, offset, p, &geometry);
+        if (result == MEMTX_OK) {
+            for (unsigned i = 0; i < words; i++) {
+                s->render.parameter[index + i] = p[index + i];
+            }
+        }
+        return result;
     }
     if (!crime_render_mode(p[0x8 / 4], &destination_bank, &bytes, &stride)) {
         return crime_transfer_fail(offset, "unsupported destination mode");
@@ -2167,6 +2477,7 @@ static void crime_reset_enter(Object *obj, ResetType type)
     memset(&s->transfer, 0, sizeof(s->transfer));
     memset(&s->render, 0, sizeof(s->render));
     s->healthy_memory_reported = false;
+    s->render_mode_reported = 0;
     s->latched = 0;
     s->cpu_error_status = 0;
     s->cpu_error_address = 0;
@@ -2259,6 +2570,7 @@ static int crime_post_load(void *opaque, int version_id)
     s->ecc_replacement = s->incoming_ecc_replacement;
     s->render = s->incoming_render;
     s->healthy_memory_reported = false;
+    s->render_mode_reported = 0;
     s->timer_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     crime_update_irq(s);
     return 0;

@@ -1011,7 +1011,7 @@ static void test_atomic_commands(void)
 {
     QTestState *s = start();
     const unsigned malformed[] = {
-        0xc00, 0x100, 0x001, 0x300, 0x224, 0x2000,
+        0xc00, 0x100, 0x001, 0x300, 0x224, 0x1c00,
     };
     uint8_t bytes[16];
 
@@ -4338,7 +4338,7 @@ static void test_indexed_word_failure(void)
         "-device sgi-crime-test-fixture,id=inject,"
         "crime=/machine/peripheral/crime");
     const uint32_t bad_modes[] = { 0x100, 0x201, 0x204, 0x210, 0x300,
-                                   0xe00, 0x80000200 };
+                                   0xe00, 0x80000210 };
 
     qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
     for (unsigned n = 0; n < 54; n++) {
@@ -4763,6 +4763,615 @@ static void test_transfer_upload_regression(void)
             }
             g_assert_cmphex(pixel_read(s, pixel_address(0, x, y, 4), 4), ==,
                             expected);
+        }
+    }
+    qtest_quit(s);
+}
+
+static const struct {
+    unsigned mode, bytes;
+    uint32_t source, converted[4];
+} color_formats[] = {
+    { 0x010, 1, 0xb5, { 0xb5, 0xdaca, 0xb6b655ff, 0xb6b65500 } },
+    { 0x124, 2, 0xd2a7, { 0xb4, 0xd2a7, 0xa5ad39ff, 0xa5ad3900 } },
+    { 0x228, 4, 0x935dc17e, { 0x8b, 0x4978, 0x935dc17e, 0x935dc100 } },
+    { 0x218, 4, 0xa9537bc1, { 0xa9, 0xd54f, 0xa9537bff, 0xa9537b00 } },
+};
+
+static uint64_t color_linear(unsigned bank, uint32_t address)
+{
+    return 0x400000 + bank * 0x40000 +
+           ((address >> 12) & 31) * 0x2000 + (address & 0xfff);
+}
+
+static void color_bytes(QTestState *s, bool write, unsigned bank,
+                        uint32_t address, unsigned bytes, uint32_t *value)
+{
+    uint8_t data[4];
+
+    stl_be_p(data, *value);
+    for (unsigned b = 0; b < bytes; b++) {
+        uint64_t physical = color_linear(bank, address + b);
+        if (write) {
+            qtest_writeb(s, physical, data[4 - bytes + b]);
+        } else {
+            data[4 - bytes + b] = qtest_readb(s, physical);
+        }
+    }
+    if (!write) {
+        *value = bytes == 1 ? data[3] : bytes == 2 ?
+                 lduw_be_p(data + 2) : ldl_be_p(data);
+    }
+}
+
+static void color_format_cases(uint32_t source_upper,
+                                uint32_t destination_upper)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned bank = 0; bank < 2; bank++) {
+        for (unsigned word = 0; word < 16; word++) {
+            uint32_t page = 0x400 + bank * 0x40 + word * 4;
+            qtest_writeq(s, RE + 0x1700 + bank * 128 + word * 8,
+                         ((uint64_t)(0x80000000U | page) << 32) |
+                         (0x80000000U | (page + 2)));
+        }
+    }
+    for (unsigned direction = 0; direction < 3; direction++) {
+        for (unsigned bank = 0; bank < 3; bank++) {
+            for (unsigned sf = 0; sf < 4; sf++) {
+                for (unsigned df = 0; df < 4; df++) {
+                    unsigned sb = color_formats[sf].bytes;
+                    unsigned db = color_formats[df].bytes;
+                    unsigned linear = bank & 1;
+                    unsigned tx = 512 / (direction == 1 ? sb : db) - 1;
+                    uint32_t source = color_formats[sf].source;
+                    uint32_t old = 0x56789abc, actual = 0;
+                    uint32_t expected = color_formats[sf].converted[df];
+                    uint32_t width_mask = UINT32_MAX >> (32 - db * 8);
+                    unsigned source_bank = direction == 1 ? bank : 4 + linear;
+                    unsigned dest_bank = direction == 0 ? bank : 4 + !linear;
+
+                    if (df == 3) {
+                        expected |= old & 0xff;
+                    }
+                    setup(s, color_formats[df].mode, true);
+                    uint32_t source_mode = (source_bank << 10) |
+                        color_formats[sf].mode | source_upper;
+                    uint32_t destination_mode = (dest_bank << 10) |
+                        color_formats[df].mode | destination_upper;
+                    qtest_writel(s, DE, source_mode);
+                    qtest_writel(s, DE + 8, destination_mode);
+                    g_assert_cmphex(qtest_readl(s, DE), ==, source_mode);
+                    g_assert_cmphex(qtest_readl(s, DE + 8), ==,
+                                    destination_mode);
+                    qtest_writel(s, DE + 0x70, xy(tx, 127));
+                    qtest_writel(s, DE + 0x74, xy(tx + 2, 128));
+                    qtest_writel(s, DE + 0xa0, direction == 1 ?
+                                 xy(tx, 127) : 0x1fff);
+                    qtest_writel(s, DE + 0xa8, direction == 1 ? 1 : sb);
+                    qtest_writel(s, DE + 0xac, direction == 1 ? 1 : sb + 3);
+                    qtest_writel(s, DE + 0xb0, 0x1fff);
+                    qtest_writel(s, DE + 0xb4, db);
+                    if (direction == 1) {
+                        map_region(s, bank, sb, tx - 1, 126, tx + 3, 129);
+                    } else if (direction == 0) {
+                        map_region(s, bank, db, tx - 1, 126, tx + 3, 129);
+                    }
+                    for (unsigned i = 0; i < 6; i++) {
+                        if (direction == 1) {
+                            pixel_write(s, pixel_address(bank, tx + i % 3,
+                                        127 + i / 3, sb), sb, source);
+                        } else {
+                            color_bytes(s, true, linear,
+                                        0x1fff + i * sb + (i / 3) * 3,
+                                        sb, &source);
+                        }
+                        if (direction == 0) {
+                            pixel_write(s, pixel_address(bank, tx + i % 3,
+                                        127 + i / 3, db), db, old);
+                        } else {
+                            color_bytes(s, true, !linear, 0x1fff + i * db,
+                                        db, &old);
+                        }
+                    }
+                    g_test_message("direction %u bank %u format %u -> %u",
+                                   direction, bank, sf, df);
+                    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==,
+                                    MEMTX_OK);
+                    g_assert_cmphex(qtest_readl(s, DE), ==, source_mode);
+                    g_assert_cmphex(qtest_readl(s, DE + 8), ==,
+                                    destination_mode);
+                    for (unsigned i = 0; i < 6; i++) {
+                        if (direction == 0) {
+                            actual = pixel_read(s, pixel_address(bank,
+                                tx + i % 3, 127 + i / 3, db), db);
+                        } else {
+                            color_bytes(s, false, !linear, 0x1fff + i * db,
+                                        db, &actual);
+                        }
+                        g_assert_cmphex(actual, ==, expected & width_mask);
+                    }
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_color_formats(void)
+{
+    color_format_cases(0, 0);
+}
+
+static void test_buffer_modes_color(void)
+{
+    static const uint32_t upper[] = {
+        0x80000000U, 0x2000, 0xaaaaa000U, 0xffffe000U,
+    };
+
+    for (unsigned pattern = 0; pattern < ARRAY_SIZE(upper); pattern++) {
+        for (unsigned role = 1; role <= 3; role++) {
+            color_format_cases(role & 1 ? upper[pattern] : 0,
+                               role & 2 ? upper[pattern] : 0);
+        }
+    }
+}
+
+static void color_map_linear(QTestState *s)
+{
+    for (unsigned bank = 0; bank < 2; bank++) {
+        for (unsigned word = 0; word < 16; word++) {
+            uint32_t page = 0x400 + bank * 0x40 + word * 4;
+            qtest_writeq(s, RE + 0x1700 + bank * 128 + word * 8,
+                         ((uint64_t)(0x80000000U | page) << 32) |
+                         (0x80000000U | (page + 2)));
+        }
+    }
+}
+
+static void color_linear_setup(QTestState *s, unsigned sf, unsigned df,
+                                uint32_t source, uint32_t destination,
+                                unsigned width, unsigned height)
+{
+    color_map_linear(s);
+    setup(s, color_formats[df].mode | 0x1400, true);
+    qtest_writel(s, DE, color_formats[sf].mode | 0x1000);
+    qtest_writel(s, DE + 0x70, xy(7, 13));
+    qtest_writel(s, DE + 0x74, xy(6 + width, 12 + height));
+    qtest_writel(s, DE + 0xa0, source);
+    qtest_writel(s, DE + 0xa8, color_formats[sf].bytes);
+    qtest_writel(s, DE + 0xac, color_formats[sf].bytes);
+    qtest_writel(s, DE + 0xb0, destination);
+    qtest_writel(s, DE + 0xb4, color_formats[df].bytes);
+}
+
+static void test_color_rops_masks(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned sf = 0; sf < 4; sf++) {
+        for (unsigned df = 0; df < 4; df++) {
+            unsigned sb = color_formats[sf].bytes, db = color_formats[df].bytes;
+            uint32_t source = color_formats[sf].source, old = 0x56789abc;
+            uint32_t meaningful = df == 3 ? 0xffffff00 :
+                                  UINT32_MAX >> (32 - db * 8);
+            for (unsigned op = 0; op < 16; op++) {
+                for (unsigned lane = 0; lane < 5; lane++) {
+                    uint32_t mask = meaningful & 0xa55a6996;
+                    uint32_t actual = 0, expected;
+                    uint32_t enables = lane == 4 ? 0x78 : 1U << (6 - lane);
+                    color_linear_setup(s, sf, df, 0x1fff, 0x1fff, 1, 1);
+                    qtest_writel(s, DE + 0x18, 0x200280 | enables);
+                    qtest_writel(s, DE + 0x1b0, op);
+                    qtest_writel(s, DE + 0x1b8, 0xa55a6996);
+                    color_bytes(s, true, 0, 0x1fff, sb, &source);
+                    color_bytes(s, true, 1, 0x1fff, db, &old);
+                    qtest_writeb(s, color_linear(1, 0x1ffe), 0x6d);
+                    qtest_writeb(s, color_linear(1, 0x1fff + db), 0xe3);
+                    for (unsigned b = 0; b < db; b++) {
+                        if (!(enables & (1U << (6 - ((0x1fff + b) & 3))))) {
+                            mask &= ~(0xffU << (8 * (db - 1 - b)));
+                        }
+                    }
+                    expected = (old & ~mask) |
+                        (rop_result(op, color_formats[sf].converted[df], old,
+                                    db * 8) & mask);
+                    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==,
+                                    MEMTX_OK);
+                    color_bytes(s, false, 1, 0x1fff, db, &actual);
+                    g_assert_cmphex(actual, ==,
+                                   expected & (UINT32_MAX >> (32 - db * 8)));
+                    g_assert_cmphex(qtest_readb(s, color_linear(1, 0x1ffe)), ==,
+                                    0x6d);
+                    g_assert_cmphex(qtest_readb(s,
+                                    color_linear(1, 0x1fff + db)),
+                                    ==, 0xe3);
+                }
+            }
+        }
+    }
+    /* A disabled ROP and plane mask must ignore their retained parameters. */
+    color_linear_setup(s, 3, 2, 0x1fff, 0x1fff, 1, 1);
+    qtest_writel(s, DE + 0x18, 0x200078);
+    qtest_writel(s, DE + 0x1b0, 0xffffffff);
+    qtest_writel(s, DE + 0x1b8, 0);
+    uint32_t source = 0x12345600, old = 0;
+    color_bytes(s, true, 0, 0x1fff, 4, &source);
+    color_bytes(s, true, 1, 0x1fff, 4, &old);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    color_bytes(s, false, 1, 0x1fff, 4, &old);
+    g_assert_cmphex(old, ==, 0x123456ff);
+    qtest_quit(s);
+}
+
+static void test_color_geometry(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned sf = 0; sf < 4; sf++) {
+        unsigned df = (sf + 1) % 4;
+        unsigned sb = color_formats[sf].bytes, db = color_formats[df].bytes;
+        for (unsigned direction = 0; direction < 4; direction++) {
+            color_linear_setup(s, sf, df, 0x1ffff, 0x1ffff, 3, 2);
+            qtest_writel(s, DE + 0x60, 0x03000000 | direction << 16);
+            qtest_writel(s, DE + 0x70, xy(direction & 1 ? 9 : 7,
+                                         direction & 2 ? 13 : 14));
+            qtest_writel(s, DE + 0x74, xy(direction & 1 ? 7 : 9,
+                                         direction & 2 ? 14 : 13));
+            qtest_writel(s, DE + 0xac, sb + 3);
+            qtest_writel(s, DE + 0x18, 0x3002f8);
+            qtest_writeq(s, DE + 0x48, bounds(8, 13, 10, 15));
+            for (unsigned i = 0; i < 6; i++) {
+                uint32_t source = i & 1 ? 0 : color_formats[sf].source;
+                uint32_t old = 0x56789abc;
+                color_bytes(s, true, 0, 0x1ffff + i * sb + (i / 3) * 3,
+                            sb, &source);
+                color_bytes(s, true, 1, 0x1ffff + i * db, db, &old);
+            }
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            for (unsigned i = 0; i < 6; i++) {
+                unsigned x = direction & 1 ? 9 - i % 3 : 7 + i % 3;
+                uint32_t expected = 0x56789abc, actual = 0;
+                if (x >= 8) {
+                    expected = i & 1 ? (df == 2 && sf != 1 ? 255 :
+                                        df == 1 && sf != 1 ? 0x8000 : 0) :
+                               color_formats[sf].converted[df];
+                    if (df == 3) {
+                        expected |= 0xbc;
+                    }
+                }
+                color_bytes(s, false, 1, 0x1ffff + i * db, db, &actual);
+                g_assert_cmphex(actual, ==,
+                               expected & (UINT32_MAX >> (32 - db * 8)));
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_color_failures(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-color-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned fault = 0; fault < 23; fault++) {
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+        uint32_t source = 0x1234567a, old = 0x56789abc;
+        color_linear_setup(s, 3, 2, 0x1ff0, 0x1ff0, 3, 2);
+        for (unsigned i = 0; i < 6; i++) {
+            color_bytes(s, true, 0, 0x1ff0 + 4 * i, 4, &source);
+            color_bytes(s, true, 1, 0x1ff0 + 4 * i, 4, &old);
+        }
+        switch (fault) {
+        case 0:
+            qtest_writel(s, DE, 0x1238);
+            break;
+        case 1:
+            qtest_writel(s, DE, 0x1318);
+            break;
+        case 2:
+            qtest_writel(s, DE, 0x1219);
+            break;
+        case 3:
+            qtest_writel(s, DE + 8, 0x162a);
+            break;
+        case 4:
+            qtest_writel(s, DE, 0x80001238);
+            break;
+        case 5:
+            qtest_writel(s, DE + 0xa8, 1);
+            break;
+        case 6:
+            qtest_writel(s, DE + 0xac, 3);
+            break;
+        case 7:
+            qtest_writel(s, DE + 0xb4, 1);
+            break;
+        case 8:
+            qtest_writel(s, DE + 0xac, 0x10000000);
+            break;
+        case 9:
+            qtest_writel(s, DE + 0xa0, 0xfffffffe);
+            break;
+        case 10:
+            qtest_writel(s, DE + 0xb0, 0xfffffffe);
+            break;
+        case 11:
+            qtest_writel(s, DE + 0xac, 32 * 4096);
+            break;
+        case 12:
+            qtest_writeq(s, RE + 0x1708, 0x0000000080000406ULL);
+            break;
+        case 13:
+            qtest_writeq(s, RE + 0x1788, 0x0000000080000446ULL);
+            break;
+        case 14:
+            qtest_writeq(s, RE + 0x1708, 0x8000400080000406ULL);
+            break;
+        case 15:
+            qtest_writeq(s, RE + 0x1780, qtest_readq(s, RE + 0x1700));
+            qtest_writeq(s, RE + 0x1788, qtest_readq(s, RE + 0x1708));
+            break;
+        case 16:
+            qtest_writel(s, DE + 0x18, 0x2002f8);
+            qtest_writel(s, DE + 0x1b0, 16);
+            break;
+        case 17:
+            qtest_writel(s, DE + 0x18, 0x2003f8);
+            break;
+        case 18:
+            qtest_writel(s, DE + 0x18, 0x3002f8);
+            qtest_writeq(s, DE + 0x48, bounds(0, 0, 0, 0));
+            qtest_writel(s, DE + 0xa0, 0xfffffffe);
+            break;
+        case 19:
+            qtest_writel(s, DE + 0x18, 0x200280);
+            qtest_writel(s, DE + 0x1b8, 0);
+            qtest_writel(s, DE + 0xb0, 0xfffffffe);
+            break;
+        case 20:
+        case 21:
+            qtest_writel(s, DE + 0x1b0, fault == 20 ? 0 : 5);
+            qtest_writeq(s, RE + 0x1708, 0x0000000080000406ULL);
+            break;
+        case 22:
+            qtest_writeq(s, RE + 0x1788, 0x8000044280000446ULL);
+            qtest_writel(s, DE + 0xb0, 0x1ffc);
+            qtest_writel(s, DE + 0x74, xy(9, 355));
+            break;
+        }
+        save_paired_renderer(s, path, before);
+        g_test_message("color rejection %u", fault);
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, 0xdeadbeef), ==,
+                        MEMTX_ERROR);
+        save_paired_renderer(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        for (unsigned i = 0; i < 6; i++) {
+            uint32_t actual = 0;
+            color_bytes(s, false, 1, 0x1ff0 + 4 * i, 4, &actual);
+            if (fault != 15) {
+                g_assert_cmphex(actual, ==, old);
+            }
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_color_starts_accesses(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned sf = 0; sf < 4; sf++) {
+        unsigned df = (sf + 1) % 4;
+        for (unsigned form = 0; form < 5; form++) {
+            unsigned sb = color_formats[sf].bytes, db = color_formats[df].bytes;
+            uint32_t source = color_formats[sf].source, old = 0x56789abc;
+            uint32_t actual = 0, expected;
+            color_linear_setup(s, sf, df, 0x1fff, 0x1fff, 1, 1);
+            qtest_writel(s, DE + 0x1b0, 6);
+            color_bytes(s, true, 0, 0x1fff, sb, &source);
+            color_bytes(s, true, 1, 0x1fff, db, &old);
+            color_bytes(s, false, 1, 0x1fff, db, &actual);
+            g_assert_cmphex(actual, ==, old & (UINT32_MAX >> (32 - 8 * db)));
+            switch (form) {
+            case 0:
+                qtest_writel(s, DE + 0xa0, 0);
+                g_assert_cmpint(memtx_writel(s, DE + 0x8a0, 0x1fff), ==,
+                                MEMTX_OK);
+                break;
+            case 1:
+                qtest_writel(s, DE + 0xb0, 0);
+                g_assert_cmpint(memtx_writel(s, DE + 0x8b0, 0x1fff), ==,
+                                MEMTX_OK);
+                break;
+            case 2:
+                qtest_writel(s, DE + 0xa8, 0);
+                qtest_writel(s, DE + 0xac, 0);
+                g_assert_cmpint(memtx_writeq(s, DE + 0x8a8,
+                                             ((uint64_t)sb << 32) | sb), ==,
+                                MEMTX_OK);
+                break;
+            case 3:
+                qtest_writel(s, DE + 0xb4, 0);
+                g_assert_cmpint(memtx_writel(s, DE + 0x8b4, db), ==,
+                                MEMTX_OK);
+                break;
+            default:
+                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+                break;
+            }
+            expected = old ^ color_formats[sf].converted[df];
+            if (df == 3) {
+                expected = (expected & 0xffffff00) | (old & 255);
+            }
+            color_bytes(s, false, 1, 0x1fff, db, &actual);
+            g_assert_cmphex(actual, ==,
+                           expected & (UINT32_MAX >> (32 - 8 * db)));
+        }
+    }
+    /* Clipped and masked pixels do not consume otherwise invalid mappings. */
+    for (unsigned masked = 0; masked < 2; masked++) {
+        color_linear_setup(s, 3, 2, 0x1fff, 0x1fff, 3, 2);
+        qtest_writeq(s, RE + 0x1708, 0);
+        if (masked) {
+            qtest_writel(s, DE + 0x1b8, 0);
+        } else {
+            qtest_writel(s, DE + 0x18, 0x3002f8);
+            qtest_writeq(s, DE + 0x48, bounds(0, 0, 0, 0));
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    }
+    qtest_quit(s);
+}
+
+static void test_color_ram_views(void)
+{
+    QTestState *s = start_profile_ram("legacy-software", true, true, false, "");
+    const unsigned views[] = { 0, 0x40000, 0x80000 };
+
+    for (unsigned bank = 0; bank < 8; bank++) {
+        qtest_writeq(s, CRIME + 0x208 + bank * 8, 0x100 | (bank * 4));
+    }
+    for (unsigned view = 0; view < ARRAY_SIZE(views); view++) {
+        uint32_t source = 0xa9537b00, old = 0x56789abc, actual = 0;
+        uint64_t tlb[32];
+        color_linear_setup(s, 3, 2, 0x1fff, 0x1fff, 1, 1);
+        color_bytes(s, true, 0, 0x1fff, 4, &source);
+        color_bytes(s, true, 1, 0x1fff, 4, &old);
+        qtest_writeq(s, RE + 0x1700,
+                     0x8000040000000000ULL | 0x80000402U | views[view]);
+        qtest_writeq(s, RE + 0x1708,
+                     ((uint64_t)(0x80000404U | views[view]) << 32));
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        color_bytes(s, false, 1, 0x1fff, 4, &actual);
+        g_assert_cmphex(actual, ==, 0xa9537bff);
+        qtest_writeq(s, RE + 0x1780, 0x8000040080000402ULL);
+        qtest_writeq(s, RE + 0x1788, 0x8000040400000000ULL);
+        for (unsigned word = 0; word < ARRAY_SIZE(tlb); word++) {
+            tlb[word] = qtest_readq(s, RE + 0x1700 + word * 8);
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, 0xdeadbeef), ==,
+                        MEMTX_ERROR);
+        for (unsigned word = 0; word < ARRAY_SIZE(tlb); word++) {
+            g_assert_cmphex(qtest_readq(s, RE + 0x1700 + word * 8), ==,
+                            tlb[word]);
+        }
+        color_bytes(s, false, 0, 0x1fff, 4, &actual);
+        g_assert_cmphex(actual, ==, source);
+    }
+    for (unsigned bank = 1; bank < 8; bank++) {
+        uint64_t boundary = 0x40000000ULL + (uint64_t)bank * 0x08000000;
+        uint32_t page = boundary >> 12;
+        uint32_t old = 0x56789abc;
+        uint8_t source[] = { 0xa9, 0x53, 0x7b, 0x12 };
+        color_linear_setup(s, 3, 2, 0x1fff, 0x1fff, 1, 1);
+        color_bytes(s, true, 1, 0x1fff, 4, &old);
+        qtest_writeq(s, RE + 0x1700,
+                     0x8000040000000000ULL | 0x80000000U | (page - 1));
+        qtest_writeq(s, RE + 0x1708, (uint64_t)(0x80000000U | page) << 32);
+        qtest_memwrite(s, boundary - 1, source, sizeof(source));
+        for (unsigned fault = 0; fault < 2; fault++) {
+            uint32_t actual = 0;
+            qtest_writeq(s, CRIME + 0x208 + bank * 8,
+                         fault ? bank * 4 : 0x100);
+            g_assert_cmpint(memtx_writel(s, DE + 0x8d0, 0xdeadbeef), ==,
+                            MEMTX_ERROR);
+            qtest_writeq(s, CRIME + 0x208 + bank * 8, 0x100 | bank * 4);
+            color_bytes(s, false, 1, 0x1fff, 4, &actual);
+            g_assert_cmphex(actual, ==, old);
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        uint32_t actual = 0;
+        color_bytes(s, false, 1, 0x1fff, 4, &actual);
+        g_assert_cmphex(actual, ==, 0xa9537bff);
+    }
+    qtest_quit(s);
+}
+
+static void test_color_components(void)
+{
+    static const struct {
+        unsigned source_format, destination_format;
+        uint32_t source, expected;
+    } cases[] = {
+        { 0, 2, 0xe0, 0xff0000ff },
+        { 0, 2, 0x1c, 0x00ff00ff },
+        { 0, 2, 0x03, 0x0000ffff },
+        { 0, 2, 0xff, 0xffffffff },
+        { 1, 2, 0x52a7, 0xa5ad3900 },
+        { 1, 2, 0xd2a7, 0xa5ad39ff },
+        { 2, 1, 0x0102037f, 0x0000 },
+        { 2, 1, 0x01020380, 0x8000 },
+        { 3, 2, 0x12345600, 0x123456ff },
+        { 3, 2, 0x123456ff, 0x123456ff },
+    };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        unsigned sf = cases[i].source_format, df = cases[i].destination_format;
+        uint32_t source = cases[i].source, old = 0xa5a5a5a5;
+        color_linear_setup(s, sf, df, 0x1fff, 0x1fff, 1, 1);
+        color_bytes(s, true, 0, 0x1fff, color_formats[sf].bytes, &source);
+        color_bytes(s, true, 1, 0x1fff, color_formats[df].bytes, &old);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        color_bytes(s, false, 1, 0x1fff, color_formats[df].bytes, &old);
+        g_assert_cmphex(old, ==, cases[i].expected);
+    }
+    qtest_quit(s);
+}
+
+static void test_color_tiled_traversal(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned download = 0; download < 2; download++) {
+        for (unsigned direction = 0; direction < 4; direction++) {
+            color_linear_setup(s, 3, 2, 0x1fff, 0x1fff, 3, 2);
+            qtest_writel(s, DE + (download ? 0 : 8), download ? 0x218 : 0x228);
+            qtest_writel(s, DE + 0x60, 0x03000000 | direction << 16);
+            qtest_writel(s, DE + 0x70, xy(direction & 1 ? 129 : 127,
+                                         direction & 2 ? 127 : 128));
+            qtest_writel(s, DE + 0x74, xy(direction & 1 ? 127 : 129,
+                                         direction & 2 ? 128 : 127));
+            if (download) {
+                qtest_writel(s, DE + 0xa0, xy(127, 127));
+                qtest_writel(s, DE + 0xa8, 1);
+                qtest_writel(s, DE + 0xac, 1);
+            }
+            map_region(s, 0, 4, 126, 126, 130, 129);
+            for (unsigned i = 0; i < 6; i++) {
+                uint32_t value = 0x12345600 + i * 0x11030729;
+                uint32_t old = 0x56789abc;
+                if (download) {
+                    pixel_write(s, pixel_address(0, 127 + i % 3,
+                                                127 + i / 3, 4), 4, value);
+                    color_bytes(s, true, 1, 0x1fff + 4 * i, 4, &old);
+                } else {
+                    color_bytes(s, true, 0, 0x1fff + 4 * i, 4, &value);
+                    pixel_write(s, pixel_address(0, 127 + i % 3,
+                                                127 + i / 3, 4), 4, old);
+                }
+            }
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            for (unsigned i = 0; i < 6; i++) {
+                unsigned x = direction & 1 ? 2 - i % 3 : i % 3;
+                unsigned y = direction & 2 ? i / 3 : 1 - i / 3;
+                unsigned source = download ? y * 3 + x : i;
+                uint32_t expected = (0x12345600 + source * 0x11030729) |
+                                    0xff;
+                uint32_t actual = 0;
+                if (download) {
+                    color_bytes(s, false, 1, 0x1fff + 4 * i, 4, &actual);
+                } else {
+                    actual = pixel_read(s, pixel_address(0, 127 + x,
+                                                         127 + y, 4), 4);
+                }
+                g_assert_cmphex(actual, ==, expected);
+            }
         }
     }
     qtest_quit(s);
@@ -5321,7 +5930,7 @@ static void test_transfer_semantics(gconstpointer data)
             c.p[source] |= 0x10;
             break;
         case 5:
-            c.p[destination] |= 1U << 31;
+            c.p[destination] |= 0x30;
             break;
         case 6:
             c.p[0x18 / 4] |= 1;
@@ -5819,7 +6428,8 @@ static void test_transfer_accesses(void)
 
 static void test_transfer_migration(gconstpointer data)
 {
-    bool download = GPOINTER_TO_UINT(data);
+    bool download = GPOINTER_TO_UINT(data) & 1;
+    bool upper = GPOINTER_TO_UINT(data) & 2;
     g_autofree char *dir =
         g_dir_make_tmp("crime-transfer-migrate-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "state", NULL);
@@ -5833,6 +6443,10 @@ static void test_transfer_migration(gconstpointer data)
         DeTransfer c = de_transfer_default(download, linear + 1, linear, 4, 1);
         uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
 
+        if (upper) {
+            c.p[0] |= 0xaaaaa000U;
+            c.p[8 / 4] |= 0xffffe000U;
+        }
         c.p[0x18 / 4] |= 1U << 20;
         c.p[0x48 / 4] = bounds(c.gx + 1, c.gy, c.gx + 3, c.gy + 2);
         c.p[0x1b0 / 4] = 6;
@@ -6080,6 +6694,154 @@ static void test_ordinary_origins(void)
     qtest_quit(s);
 }
 
+
+static void test_buffer_modes_indexed(void)
+{
+    static const uint32_t upper[] = {
+        0, 0x80000000U, 0x2000, 0xaaaaa000U, 0xffffe000U,
+    };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned download = 0; download < 2; download++) {
+        for (unsigned bank = 0; bank < 3; bank++) {
+            for (unsigned linear = 0; linear < 2; linear++) {
+                for (unsigned pattern = 0; pattern < ARRAY_SIZE(upper);
+                     pattern++) {
+                    for (unsigned role = 1; role <= 3; role++) {
+                        DeTransfer c = de_transfer_default(download, bank,
+                                                           linear, 4, 2);
+                        c.p[0] |= role & 1 ? upper[pattern] : 0;
+                        c.p[8 / 4] |= role & 2 ? upper[pattern] : 0;
+                        de_transfer_run(s, &c);
+                        g_assert_cmphex(qtest_readl(s, DE), ==, c.p[0]);
+                        g_assert_cmphex(qtest_readl(s, DE + 8), ==, c.p[8 / 4]);
+                    }
+                }
+            }
+        }
+    }
+    DeTransfer actual = de_transfer_default(false, 0, 1, 4, 2);
+    actual.p[8 / 4] = 0x80000200;
+    actual.p[0x18 / 4] = 0x200208;
+    de_transfer_prepare(s, &actual);
+    g_assert_cmpint(memtx_writel(s, DE + 0x8a0, actual.address), ==, MEMTX_OK);
+    de_transfer_memory(s, &actual, false, 1);
+    g_assert_cmphex(qtest_readl(s, DE), ==, 0x1400);
+    g_assert_cmphex(qtest_readl(s, DE + 8), ==, 0x80000200);
+    qtest_quit(s);
+}
+
+static void test_buffer_modes_transactions(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-buffer-state-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    for (unsigned role = 0; role < 2; role++) {
+        for (unsigned pattern = 0; pattern < 2; pattern++) {
+            uint32_t upper = pattern ? 0xffffe000U : 0;
+            const uint32_t bad_source[] = {
+                0xc00, 0x1800, 0x1c00, 0x1200, 0x1004,
+                0x1030, 0x1001, 0x1002, 0x130c,
+            };
+            const uint32_t bad_destination[] = {
+                0xc00, 0x1800, 0x1c00, 0x100, 0x210,
+                0x204, 0x201, 0x202, 0x230,
+            };
+            for (unsigned fault = 0; fault < ARRAY_SIZE(bad_source); fault++) {
+                DeTransfer c = de_transfer_default(false, 0, 1, 4, 2);
+                c.p[0] |= upper;
+                c.p[8 / 4] |= upper;
+                de_transfer_prepare(s, &c);
+                uint32_t value = upper | (role ? bad_destination[fault] :
+                                                bad_source[fault]);
+                de_transfer_failure(s, &c, path, DE + 0x800 + role * 8,
+                                    value, 4);
+                g_assert_cmphex(qtest_readl(s, DE), ==, c.p[0]);
+                g_assert_cmphex(qtest_readl(s, DE + 8), ==, c.p[8 / 4]);
+            }
+        }
+        for (unsigned fault = 0; fault < 3; fault++) {
+            DeTransfer c = de_transfer_default(false, 0, 1, 4, 2);
+            c.p[0] |= 0xaaaaa000U;
+            c.p[8 / 4] |= 0xffffe000U;
+            de_transfer_prepare(s, &c);
+            if (!fault) {
+                de_transfer_entry(s, 1, 2, 0);
+            } else if (fault == 1) {
+                qtest_writel(s, DE + 0x74, xy(2048, 128));
+            } else {
+                de_transfer_entry(s, 1, 1, 0x8000003f);
+            }
+            de_transfer_failure(s, &c, path, DE + 0x800 + role * 8,
+                                c.p[role ? 8 / 4 : 0], 4);
+        }
+    }
+    for (unsigned download = 0; download < 2; download++) {
+        for (unsigned role = 0; role < 2; role++) {
+            DeTransfer c = de_transfer_default(download, 0, 1, 4, 2);
+            uint32_t raw = c.p[role ? 8 / 4 : 0] | 0xffffe000U;
+            c.p[0x1b0 / 4] = 6;
+            de_transfer_prepare(s, &c);
+            g_assert_cmpint(memtx_writel(s, DE + 0x800 + role * 8, raw), ==,
+                            MEMTX_OK);
+            de_transfer_memory(s, &c, false, 1);
+            g_assert_cmphex(qtest_readl(s, DE + role * 8), ==, raw);
+        }
+    }
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readl(s, DE), ==, 0);
+    g_assert_cmphex(qtest_readl(s, DE + 8), ==, 0);
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+    test_transfer_migration(GUINT_TO_POINTER(2));
+    test_transfer_migration(GUINT_TO_POINTER(3));
+}
+
+static void test_buffer_modes_diagnostics(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-buffer-log-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "diagnostics", NULL);
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *extra = g_strdup_printf("-D %s", quoted);
+    g_autofree char *contents = NULL;
+    QTestState *s = start_profile_ram("legacy-software", false, true, false,
+                                     extra);
+
+    tile(s, 0, 0, 3);
+    setup(s, 0x200, false);
+    qtest_writel(s, DE, 0xfffff400U);
+    qtest_writel(s, DE + 8, 0x2200);
+    qtest_writel(s, DE + 0x70, xy(1, 0));
+    qtest_writel(s, DE + 0x74, xy(1, 0));
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    DeTransfer c = de_transfer_default(false, 0, 1, 4, 2);
+    c.p[0] |= 0xaaaaa000U;
+    c.p[8 / 4] |= 0x80000000U;
+    de_transfer_prepare(s, &c);
+    for (unsigned i = 0; i < 20; i++) {
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    }
+    assert_idle(s);
+    qtest_quit(s);
+    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+    g_assert_nonnull(strstr(contents,
+        "destination buffer mode raw 0x00002200 ignores reserved upper bits "
+        "0x00002000"));
+    g_assert_nonnull(strstr(contents,
+        "source buffer mode raw 0xaaaab400 ignores reserved upper bits "
+        "0xaaaaa000"));
+    g_assert_null(strstr(contents, "source buffer mode raw 0xfffff400"));
+    unsigned observations = 0;
+    for (const char *p = contents; (p = strstr(p, "buffer mode raw")); p++) {
+        observations++;
+    }
+    g_assert_cmpuint(observations, ==, 2);
+    g_unlink(path);
+    g_rmdir(dir);
+}
 
 static void test_ordinary_logic(void)
 {
@@ -9214,6 +9976,31 @@ static void test_ifb_invalid_stream(void)
     g_rmdir(dir);
 }
 
+static void test_buffer_modes_primitives(void)
+{
+    const uint32_t upper[] = { 0x80000000U, 0x2000, 0xaaaaa000U, 0xffffe000U };
+    QTestState *s = start();
+
+    for (unsigned pattern = 0; pattern < ARRAY_SIZE(upper); pattern++) {
+        for (unsigned bank = 0; bank < 3; bank++) {
+            Shape a = alpha_shape();
+            a.bank = bank;
+            alpha_prepare(s, &a, 0x700);
+            qtest_writel(s, DE + 8, upper[pattern] | (bank << 10) | 0x228);
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            g_autofree uint32_t *expected = alpha_expected(&a, true);
+            shape_memory(s, &a, expected);
+            Shape t = triangle_prepare(s, bank, 0, 0);
+            triangle_vertices(s, triangle_integer, NULL, true);
+            qtest_writel(s, DE + 8, upper[pattern] | (bank << 10) | 0x228);
+            g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==,
+                            MEMTX_OK);
+            triangle_pixels(s, &t, triangle_ten, TRIANGLE_COLOR, 3, UINT32_MAX);
+        }
+    }
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     take_group_paths(&argc, argv);
@@ -9303,6 +10090,25 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(1), test_transfer_masks);
     add_data_case("sgi/crime/render/transfer/download/clipping",
                   GUINT_TO_POINTER(1), test_transfer_clipping);
+    add_case("sgi/crime/render/buffer-modes/indexed",
+             test_buffer_modes_indexed);
+    add_case("sgi/crime/render/buffer-modes/color", test_buffer_modes_color);
+    add_case("sgi/crime/render/buffer-modes/transactions",
+             test_buffer_modes_transactions);
+    add_case("sgi/crime/render/buffer-modes/diagnostics",
+             test_buffer_modes_diagnostics);
+    add_case("sgi/crime/render/buffer-modes/primitives",
+             test_buffer_modes_primitives);
+    add_case("sgi/crime/render/color/components", test_color_components);
+    add_case("sgi/crime/render/color/tiled-traversal",
+             test_color_tiled_traversal);
+    add_case("sgi/crime/render/color/formats", test_color_formats);
+    add_case("sgi/crime/render/color/rops-masks", test_color_rops_masks);
+    add_case("sgi/crime/render/color/geometry", test_color_geometry);
+    add_case("sgi/crime/render/color/failures", test_color_failures);
+    add_case("sgi/crime/render/color/starts-accesses",
+             test_color_starts_accesses);
+    add_case("sgi/crime/render/color/ram-views", test_color_ram_views);
     add_case("sgi/crime/render/transfer/upload-regression",
              test_transfer_upload_regression);
     add_case("sgi/crime/render/indexed-word/clip-slot-shapes",
