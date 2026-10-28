@@ -207,7 +207,7 @@ static uint32_t ppm_pixel(const uint8_t *pixels, unsigned x, unsigned line)
     return (p[0] << 16) | (p[1] << 8) | p[2];
 }
 
-/* One command as kona.so stores it: first word in the slot, rest data. */
+/* One command as the KONA X module stores it: word 0 in the slot, rest data. */
 static void x_command(QTestState *s, uint32_t token, const uint32_t *args,
                       unsigned argc)
 {
@@ -407,7 +407,7 @@ static void test_packing4_help_glyph(void)
     assert_in_step(qts);
 }
 
-/* A colour byte widened to twelve bits, as kona.so widens it. */
+/* A colour byte widened to twelve bits, as the KONA X module widens it. */
 static uint32_t widen(uint32_t byte)
 {
     return byte << 4 | byte >> 4;
@@ -494,13 +494,13 @@ static uint32_t widen10(uint32_t c)
 }
 
 /*
- * A 30-bit TrueColor window, as nedit's windows draw: konal.so's GC
- * builder gives cfg 0 for every builder, ifmt 9 and op 0x64001 for
- * fills and ifmt 0, op 1 for the geometry builder, with each 10-bit
- * component widened as c << 2 | c >> 8. A box fills with the colour's top
- * eight bits a component, and a glyph in the 30-bit glyph form, op
- * 0x64001 and ifmt 0, paints its set bits. A model that deferred cfg 0
- * left nedit's window black, with no text.
+ * A 30-bit TrueColor window, as nedit's windows draw: the KONA X driver
+ * module's GC builder gives cfg 0 for every builder, ifmt 9 and op 0x64001 for
+ * fills and ifmt 0, op 1 for the geometry builder, with each 10-bit component
+ * widened as c << 2 | c >> 8. A box fills with the colour's top eight bits a
+ * component, and a glyph in the 30-bit glyph form, op 0x64001 and ifmt 0,
+ * paints its set bits. A model that deferred cfg 0 left nedit's window black,
+ * with no text.
  */
 static void test_rgb30_box_and_glyph(void)
 {
@@ -1053,8 +1053,9 @@ static void test_bitmap_clipped(void)
 
 /*
  * The label's scissor from the run, 0x12d 240, 295, 72, 32, frames as one
- * four-word command both as kona.so stores it and as plain words: its
- * second word, 295, is 0x127, which must not open a command of its own.
+ * four-word command both as the KONA X driver module stores it and as plain
+ * words: its second word, 295, is 0x127, which must not open a command of its
+ * own.
  */
 static void test_scissor_frames(void)
 {
@@ -1537,9 +1538,9 @@ static void test_spans_arrow_plain_words(void)
 }
 
 /*
- * A span with count 1 in the address form, as kona.so stores it, takes
- * its count in the slot; the plain words after it are its point and width
- * and open no textport packet. A count that does not match the token is
+ * A span with count 1 in the address form, as the KONA X driver module stores
+ * it, takes its count in the slot; the plain words after it are its point and
+ * width and open no textport packet. A count that does not match the token is
  * dropped: a 0x157 whose count is 1 paints nothing and is logged.
  */
 static void test_spans_count(void)

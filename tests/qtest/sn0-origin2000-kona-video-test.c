@@ -189,8 +189,8 @@ static uint32_t kona_gamma(QTestState *s, uint32_t addr)
 }
 
 /*
- * One video command as kona.so's sender stores it: the number at the
- * token's slot, then each data word and the checksum at the data slot.
+ * One video command as the KONA X driver module's sender stores it: the number
+ * at the token's slot, then each data word and the checksum at the data slot.
  */
 static void video_command(QTestState *s, uint32_t command,
                           const uint32_t *data, unsigned count,

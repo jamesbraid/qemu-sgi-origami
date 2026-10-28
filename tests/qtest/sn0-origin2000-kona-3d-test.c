@@ -5203,13 +5203,13 @@ static void kona_tex_gen(QTestState *s, uint32_t coord, uint32_t pname,
 }
 
 /*
- * glTexGen reaches the pipe as 0x14 with the coordinate, the pname and
- * the mode as an integer or the plane as four floats (n32 libGLcore,
- * IRIX 6.5.30). OBJECT_LINEAR planes giving s = 0.25 and t = 0.75 pick
- * the 2x2 texture's blue texel whatever the vertex texture coordinate.
- * The projection puts the probe at eye (0.25, 0.25), where the default
- * eye planes give s = t = 0.25 and the red texel, so dropping the
- * command shows red. Disabling generation goes back to the coordinate.
+ * glTexGen reaches the pipe as 0x14 with the coordinate, the pname and the mode
+ * as an integer or the plane as four floats (the n32 GL client library, IRIX
+ * 6.5.30). OBJECT_LINEAR planes giving s = 0.25 and t = 0.75 pick the 2x2
+ * texture's blue texel whatever the vertex texture coordinate. The projection
+ * puts the probe at eye (0.25, 0.25), where the default eye planes give s = t =
+ * 0.25 and the red texel, so dropping the command shows red. Disabling
+ * generation goes back to the coordinate.
  */
 static void test_texture_generation(void)
 {

@@ -711,9 +711,9 @@ static void test_colour_map_low_bits_dropped(void)
 
 /*
  * Video command 0x3c, TempBlankAllChannels, as the IRIX 6.5.30 X server's
- * screen saver sends it (its screen blank in konal.so): the command number
- * at the video token's slot, one data word, 1 to blank and 0 to unblank,
- * then the checksum, the number plus the data word.
+ * screen saver sends it (its screen blank in the KONA X driver module): the
+ * command number at the video token's slot, one data word, 1 to blank and 0 to
+ * unblank, then the checksum, the number plus the data word.
  */
 static void kona_temp_blank(QTestState *s, uint32_t blank)
 {
@@ -972,7 +972,7 @@ static void test_channels_show_their_rectangles(void)
  * sampled up, nearest pixel: a 320x240 rectangle at (640, 0) on a 640x480
  * format shows the blue point (700, 23) as output pixels (120, 46) to
  * (121, 47). Drawing after the load repaints the channel's lines: a point
- * at (641, 1) appears at (2, 2). ChannelBlanking shows the channel black
+ * at (641, 1) appears at (2, 2). Channel blanking shows the channel black
  * and leaves channel 0 alone; DisableChannel stops it, so its console
  * has no mode, and channel 0 keeps showing.
  */

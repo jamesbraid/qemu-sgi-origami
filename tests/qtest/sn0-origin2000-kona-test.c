@@ -1529,7 +1529,7 @@ static void test_board_part_invalid_is_rejected(void)
 /*
  * REG_NIC (+0x9c) is the kernel driver's own offset onto the identical
  * one-wire chain REG_ONEWIRE (+0x98) carries, established by the driver's
- * attach routine's call into nic.o's generic one-wire NIC driver -- not a
+ * attach routine's call into the generic one-wire NIC driver -- not a
  * second, independent chain. The most direct proof is register-level: a
  * slot issued through one offset must read back through the other with no
  * further pulse, since both drive and observe the identical onewire_reg
