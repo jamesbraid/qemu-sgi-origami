@@ -567,18 +567,18 @@
 #define ODSY_DID_MAIN_SHIFT 3
 #define ODSY_DID_OVERLAY_MASK 0x7
 /*
- * The overlay. The id byte's bits 2:0 are an overlay drawable id, the
- * overlay counterpart of the main id in bits 7:3: the X server's id-plane
- * write sends id << 3 under plane mask 0xf8 for a main id and the id itself
- * under mask 0x07 for an overlay id, and keeps eight overlay entries beside
- * its main ones (ESTABLISHED, the IRIX 6.5.30 X server's odyssey.so). The
- * overlay pixels are a second byte of the same 0x1017 id-plane destination:
- * the X server clears them with drawing mask 0xc and plane mask 0xff, where
- * its id writes use drawing mask 0x3 (ESTABLISHED, same object), and an
- * overlay GL context draws to that destination with mask 0xc (OBSERVED,
- * flight). INFERRED: that mask 0xc selects an overlay pixel byte rather than
- * a second id byte -- it is the only reading under which flight's overlay
- * drawing and the X server's ids coexist.
+ * The overlay. The id byte's bits 2:0 are an overlay drawable id, the overlay
+ * counterpart of the main id in bits 7:3: the X server's id-plane write sends
+ * id << 3 under plane mask 0xf8 for a main id and the id itself under mask 0x07
+ * for an overlay id, and keeps eight overlay entries beside its main ones
+ * (ESTABLISHED, the IRIX 6.5.30 X server's VPro X driver module). The overlay
+ * pixels are a second byte of the same 0x1017 id-plane destination: the X
+ * server clears them with drawing mask 0xc and plane mask 0xff, where its id
+ * writes use drawing mask 0x3 (ESTABLISHED, same object), and an overlay GL
+ * context draws to that destination with mask 0xc (OBSERVED, flight). INFERRED:
+ * that mask 0xc selects an overlay pixel byte rather than a second id byte --
+ * it is the only reading under which flight's overlay drawing and the X
+ * server's ids coexist.
  *
  * Each overlay id has a display-mode word at backend entry 0x2920 + id
  * (OBSERVED: flight writes 0xb1 to 0x2922 and 0x2925, then loads colormap
@@ -602,15 +602,15 @@
 #define ODSY_DRAW_WORD_STATE 0x80000000u
 /*
  * Main id 0 is an ordinary drawable id and shows through 0x2900, its own
- * display mode. From disassembly of the IRIX 6.5.30 X server's odyssey.so
- * (ESTABLISHED as software behaviour): its free-id search walks the id
- * table from entry 0. In model runs (OBSERVED) the server gives ids 0 to 3
- * the modes 0x4b5f00 to 0x4b5f30, colormap groups 16 to 19, and loads a
- * window's colormap into the group its id names: searchbook's StaticColor
- * windows took id 3 and group 19 in a fresh session, and id 0 and group 16
- * after 107 other programs had left group 19 holding another colormap. That
- * the board reads mode 0 for id 0 is INFERRED: it is the only reading under
- * which the server's second assignment shows its colours.
+ * display mode. From disassembly of the IRIX 6.5.30 X server's VPro X driver
+ * module (ESTABLISHED as software behaviour): its free-id search walks the id
+ * table from entry 0. In model runs (OBSERVED) the server gives ids 0 to 3 the
+ * modes 0x4b5f00 to 0x4b5f30, colormap groups 16 to 19, and loads a window's
+ * colormap into the group its id names: searchbook's StaticColor windows took
+ * id 3 and group 19 in a fresh session, and id 0 and group 16 after 107 other
+ * programs had left group 19 holding another colormap. That the board reads
+ * mode 0 for id 0 is INFERRED: it is the only reading under which the server's
+ * second assignment shows its colours.
  */
 /* The colour plane word of an index pixel: the index, low 12 bits (model). */
 #define ODSY_INDEX_MASK 0xfff
@@ -1407,7 +1407,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 /*
  * glTexCoord1i to 4i: the word, then each coordinate as a signed 32-bit
  * integer (the short forms sign-extend into the same words). ESTABLISHED
- * from the IRIX 6.5.30 IP30 n32 libGLcore's glTexCoord1i to 4i and 1s to
+ * from the IRIX 6.5.30 GL client library's glTexCoord1i to 4i and 1s to
  * 4s. That the board takes them as the integer's value, unscaled, as
  * OpenGL specifies for texture coordinates, is INFERRED. The kernel's
  * context restore replays the current coordinate as 0xc380c41e, and the
@@ -1606,12 +1606,12 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_REG_PLANE_MASK 0x1023  /* 4 operands: plane write mask << 12 */
 #define ODSY_DEST_ID_PLANES 0x20080080 /* 0x1017 third word: write id planes */
 /*
- * Two bits of the 0x1017 third word that the X server changes from one draw
- * to the next for the same buffer, so they do not name the buffer. From
- * disassembly of the IRIX 6.5.30 X server's odyssey.so (ESTABLISHED as
- * software behaviour): its solid rectangle fill sets bit 29 exactly when the
- * GC function is GXclear, GXcopy, GXcopyInverted or GXset -- the four that
- * do not read the destination -- and its glyph and stipple routines send the
+ * Two bits of the 0x1017 third word that the X server changes from one draw to
+ * the next for the same buffer, so they do not name the buffer. From
+ * disassembly of the IRIX 6.5.30 X server's VPro X driver module (ESTABLISHED
+ * as software behaviour): its solid rectangle fill sets bit 29 exactly when the
+ * GC function is GXclear, GXcopy, GXcopyInverted or GXset -- the four that do
+ * not read the destination -- and its glyph and stipple routines send the
  * cached word without it; after a select whose third word is 0 it sends the
  * word again with bit 23 set, then 0x0019. So 4Dwm's overlay menus draw their
  * text with 0x00080080 at the id-plane base where the plane clear used
@@ -7496,7 +7496,7 @@ static bool odyssey_prog_in_window(uint32_t a)
  * resident. The IRIX 6.5.30 library picks a precompiled program from a
  * 24-record table by a 64-bit feature key and assembles a list only when
  * no record covers the context (ESTABLISHED: the table's entries and keys
- * read from the IP30 n32 libGLcore.so, and record 3's selection by
+ * read from the GL client library, and record 3's selection by
  * light.c in a capture). Each key below has lighting on, the infinite
  * viewer and only directional lights, and no fragment lighting; a key
  * covers every context whose features are a subset of it, so the texture,
@@ -7536,7 +7536,7 @@ static bool odyssey_gl_lit_record(const uint32_t e[3])
  * class 0x27 and 0x40 words, and when b >= 0x738 rebases each address
  * a >= b to a - b + 0x738. When b is lower, nothing is rebased and the
  * window gets the image from 0x738 (record 13, whose 0x73b runs there).
- * ESTABLISHED from the IP30 n32 libGLcore.so's program selection and upload
+ * ESTABLISHED from the GL client library's program selection and upload
  * and from glfalls' upload, which matches the shipped image at record 23's
  * base. Rebased entries do not identify a record -- records 17, 18 and 19
  * all arrive as 738 75b 77d -- so a record is recognised only when its
@@ -8515,27 +8515,27 @@ static void odyssey_gl_plot(SGIOdysseyState *s, int64_t x, int64_t y)
 }
 
 /*
- * One line segment. The DDX pushes an X span (x, y, w) as the vertices (x,
- * y), (x + w, y) for a solid span and in the reverse order for a stippled
- * one, and both are right only if a line paints the pixels whose centres lie
- * strictly between its endpoints along the major axis -- [min, max) --
- * whichever way it runs (INFERRED from the two DDX routines; the same is what
- * lets the X server's line routine add a one-pixel stub to draw a polyline's
- * last point). Along the major axis pixel i is painted at the minor-axis
- * position of its centre, rounded down. With the stipple enabled (0x0404 bits
- * 3 and 4) the k-th covered pixel from the first vertex, k = 1 next to it, is
- * painted only where bit (k & 31) of the 0x0c48 pattern is set, and where it
- * is clear, with 0x0404 bit 17 set, in the 0x0c21 constant colour
- * (odyssey_pattern_background()), when 0x0c21's factors are ONE, ZERO. The
- * X server's stippled-span and dashed-line routines write no 0x043f, so its
- * shape is whatever an earlier fill left; they set bit 17 and send 0x0c21 =
- * ONE, ZERO, background exactly for FillOpaqueStippled spans and
- * LineDoubleDash lines, the two forms whose clear bits X paints in the
- * background (ESTABLISHED as software behaviour from the IRIX 6.5.30
- * odyssey.so). 4Dwm's icon faces and floors are such spans. Requiring ONE,
- * ZERO keeps a GL client's blended integer stippled line, bit 17 with its
- * own factors, from painting clear bits. That the board then paints the
- * clear bits in the constant colour is INFERRED as for the opaque quads.
+ * One line segment. The DDX pushes an X span (x, y, w) as the vertices (x, y),
+ * (x + w, y) for a solid span and in the reverse order for a stippled one, and
+ * both are right only if a line paints the pixels whose centres lie strictly
+ * between its endpoints along the major axis -- [min, max) -- whichever way it
+ * runs (INFERRED from the two DDX routines; the same is what lets the X
+ * server's line routine add a one-pixel stub to draw a polyline's last point).
+ * Along the major axis pixel i is painted at the minor-axis position of its
+ * centre, rounded down. With the stipple enabled (0x0404 bits 3 and 4) the k-th
+ * covered pixel from the first vertex, k = 1 next to it, is painted only where
+ * bit (k & 31) of the 0x0c48 pattern is set, and where it is clear, with 0x0404
+ * bit 17 set, in the 0x0c21 constant colour (odyssey_pattern_background()),
+ * when 0x0c21's factors are ONE, ZERO. The X server's stippled-span and
+ * dashed-line routines write no 0x043f, so its shape is whatever an earlier
+ * fill left; they set bit 17 and send 0x0c21 = ONE, ZERO, background exactly
+ * for FillOpaqueStippled spans and LineDoubleDash lines, the two forms whose
+ * clear bits X paints in the background (ESTABLISHED as software behaviour from
+ * the IRIX 6.5.30 VPro X driver module). 4Dwm's icon faces and floors are
+ * such spans. Requiring ONE, ZERO keeps a GL client's blended integer stippled
+ * line, bit 17 with its own factors, from painting clear bits. That the board
+ * then paints the clear bits in the constant colour is INFERRED as for the
+ * opaque quads.
  */
 static void odyssey_gl_segment_pixel(SGIOdysseyState *s, int64_t x, int64_t y,
                                      bool clear)
@@ -9165,7 +9165,7 @@ done:
  * top to bottom as under a pixel zoom of -1. Only this exact word 4 is
  * taken.
  *
- * ESTABLISHED from disassembly of the IRIX 6.5.30 IP30 n32 libGLcore.so,
+ * ESTABLISHED from disassembly of the IRIX 6.5.30 GL client library,
  * whose image DMA to the drawable builds this header: word 4 bit 31 comes
  * from the draw buffer, bits 27:24 and 23:20 from a mode table indexed by
  * two words of the destination's description, bits 19:16 from a third,
@@ -9892,7 +9892,7 @@ enum {
  * The raster-position query. The GL library sends 0x4c0 + kind with the same
  * count, 0x0a5a fence and sequence as the current-value query (kind 0); kind
  * 3 is the one glRasterPos's update sends. ESTABLISHED from the IRIX 6.5.30
- * IP30 n32 libGLcore.so: after kind 3 completes the library copies the
+ * the GL client library: after kind 3 completes the library copies the
  * record at query base + 0x93c into the raster colour in an RGBA context, or
  * the one at + 0x928 in a colour-index context (the context byte the library
  * also tests in its logic-op and enable paths, read as RGBA mode: INFERRED),
