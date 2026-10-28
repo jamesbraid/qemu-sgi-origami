@@ -627,6 +627,7 @@ def index_graph(model: dict) -> dict:
     # the enclosure crossbar its cable reaches.
     pipe_attachments = []
     xio_slots = []
+    pipe_ports: dict[str, tuple[str, int]] = {}
     seen_widgets: set[tuple[int, int]] = set()
     for bus in model["buses"]:
         if bus["kind"] != "xio":
@@ -736,6 +737,33 @@ def index_graph(model: dict) -> dict:
                     io_boards[io_index[cid]]["widget"] = widget
                     board_order.append(cid)
                 continue
+            if (component.get("hardware_kind") == "xg"
+                    and master in enclosure_crossbars
+                    and "widget" not in attachment):
+                # A G-brick pipe cabled to a free port of an I/O brick's
+                # crossbar: it answers at that port, and the one node whose
+                # cable reaches the crossbar hosts it.
+                ports = [
+                    components[item["component"]]["connector"]["port"]
+                    for item in _connections_for_bus(model, bus["id"])
+                    if components[item["component"]].get("kind") == "connector"
+                    and components[item["component"]].get("parent") == master
+                    and components[item["component"]]["connector"].get("port")
+                    is not None]
+                hosts = sorted(enclosure_crossbars[master])
+                if len(ports) != 1 or len(hosts) != 1:
+                    raise CompileError(
+                        f"pipe '{cid}' on crossbar '{master}' needs one "
+                        "cabled port and one host node")
+                host_board = next(item["board_id"] for item in nodes
+                                  if item["id"] == hosts[0])
+                attachment = {**attachment, "widget": ports[0],
+                              "controlled_by": host_board}
+                pipe_ports[cid] = (master, ports[0])
+                # The record's label, which the machine requires on a pipe cabled to a
+                # crossbar; a `-device sgi-kona,slot=` names the board's id.
+                io_boards[io_index[cid]]["label"] = _board_ancestor(
+                    components, component)["id"]
             if "widget" not in attachment:
                 if cid in occupied:
                     raise CompileError(
@@ -798,6 +826,8 @@ def index_graph(model: dict) -> dict:
                     f"XIO attachment '{cid}' is neither an I/O board, "
                     "a node's own host port nor an unpopulated slot"
                 )
+    pipe_keys = {(crossbar_index[crossbar], port)
+                 for crossbar, port in pipe_ports.values()}
     for record in [*xio_attachments, *xio_slots]:
         if record["crossbar_index"] < 0:
             continue
@@ -813,6 +843,8 @@ def index_graph(model: dict) -> dict:
             # A graphics pipe cabled to a V-brick's XBridge: an I/O board
             # on that chip's Crosstalk port, built with the node its
             # cable reaches.
+            continue
+        if (record["crossbar_index"], record["widget"]) in pipe_keys:
             continue
         raise CompileError(
             f"XIO attachments on enclosure crossbar '{crossbar}' are not "
@@ -848,7 +880,7 @@ def index_graph(model: dict) -> dict:
         "pic_host_ids": pic_host_ids,
         "descriptor_host_ids": descriptor_host_ids,
         "io_boards": io_boards, "xio_attachments": xio_attachments,
-        "xio_slots": xio_slots, "links": links,
+        "xio_slots": xio_slots, "links": links, "pipe_ports": pipe_ports,
         "xio_cables": xio_cables, "enclosure_crossbars": enclosure_crossbars,
         "brick_xbridges": brick_xbridges,
         "modules": [{"id": module_id, "index": index} for module_id, index in module_order],
@@ -3574,6 +3606,17 @@ def compile_model(model: dict) -> dict:
     }
     if io_peers:
         topology["io_peers"] = io_peers
+    # A G-brick pipe's cable ends on its board, whose place in the emitted
+    # list is known only now that the brick heads' boards precede it.
+    emitted = {item["id"]: index for index, item in enumerate(io_boards)}
+    for xg_id, (crossbar_id, port) in sorted(graph["pipe_ports"].items()):
+        board = _board_ancestor(components, components[xg_id])
+        xio_cables.append({"name": f"{xg_id}-cable", "ends": [
+            {"kind": "CROSSBAR",
+             "index": next(i for i, item in enumerate(crossbars)
+                           if item["id"] == crossbar_id),
+             "port": port},
+            {"kind": "IO_BOARD", "index": emitted[board["id"]]}]})
     if xio_cables:
         topology["xio_cables"] = xio_cables
     assemblies = _compile_io_assemblies(model, components, io_peers, modules, controllers)
