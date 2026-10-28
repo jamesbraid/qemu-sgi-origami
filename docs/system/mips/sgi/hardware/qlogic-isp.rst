@@ -14,7 +14,7 @@ covers three of them and the tape drive that sits behind them.
 - The ISP1040, a single-channel SCSI adapter, is the disk and CD-ROM
   controller of the Octane and Octane2 (IP30 board), the Origin 200 and the
   Origin 2000 BaseIO and MSCSI boards. QEMU models it as
-  ``qlogic-isp1040``, PCI revision 5, the ISP1040C.
+  ``qlogic-isp1040``, PCI revision 5.
 - The ISP12160, a dual-channel SCSI adapter, is the controller of the
   Origin 300 and Fuel IO8 boards, the Origin 350 IO9 board and the PCI
   carriers. QEMU models it as ``qlogic-isp12160``, PCI revision 6.
@@ -186,7 +186,12 @@ the ISP1020 to the ISP1040C, and the revision byte selects the part.
 OpenBSD reads the byte and programs the adapter clock from it: 40 MHz
 below revision 2 and 60 MHz from revision 2 up (*software expectation*). A
 model that reported revision 2 would be driven at the right clock and
-misnamed to every guest. The model reports 5 for the ISP1040C.
+misnamed to every guest. The model reports 5. The reference Octane2's
+two adapters return PCI revision 5 (:ref:`sgi-qlogic-isp-measurements`),
+*established* for those parts, and IRIX names them ``QL1040B (rev.
+2)``. The Linux numbering below would call PCI revision 5 the ISP1040C,
+so the part name for revision 5 is *unknown*; the revision byte is what
+the model and the drivers use.
 
 Linux reads a second revision, the low four bits of bus configuration 0.
 The family numbers it one above the PCI byte: 1 for the ISP1020, 2 for
@@ -212,7 +217,12 @@ PCI configuration
 BAR 0 is a 0x100-byte I/O window and BAR 1 a 0x100-byte 32-bit memory
 window. BAR 1 is an alias of BAR 0, so one register file answers behind
 both. OpenBSD tries the memory window first and falls back to I/O, so both
-must decode (*software expectation*). Interrupt pin is A.
+must decode (*software expectation*). Interrupt pin is A. On the
+reference Octane2 both ISP1040 headers show BAR 0 as I/O, BAR 1 as 32-bit
+memory, interrupt pin A and no subsystem identity, *established* for
+those parts (:ref:`sgi-qlogic-isp-measurements`). The same headers show an
+expansion ROM base register at ``0x30``, which the firmware gave a base
+with decode disabled; the model has none and reads zero there.
 
 The Status word at reset reads medium DEVSEL timing, ``0x0200``, on the
 ISP1040. The reset value matters. The stock IRIX single-CPU miniroot reads
@@ -222,9 +232,14 @@ expects ``0x02000000``: Command 0 and Status ``0x0200``. A model that
 presents a zero Status half fails the I/O slot (*software expectation*,
 observed on the model). No public QLogic document gives a reset
 value for this register. DEVSEL timing as the meaning of Status bits 10:9
-is *established* by :src:`pci-local-bus-2.2`. That the real
-chip resets to ``0x0200`` is *unknown*, and a raw configuration read of the
-real part would settle it. The error latches in Status are the PCI core's
+is *established* by :src:`pci-local-bus-2.2`. The reference Octane2's two
+adapters read Status ``0x0200`` after their firmware had set Command
+``0x0006`` (:ref:`sgi-qlogic-isp-measurements`), *established* for that
+point in the boot. DEVSEL timing is a read-only field, so that the chip
+also resets to ``0x0200`` is *inferred*; a read taken before any firmware
+runs would settle it. The same firmware wrote ``0x40`` to the cache line
+size and the Latency Timer and both read back, so the real part's Latency
+Timer is writable, where the model keeps it read-only on the ISP1040. The error latches in Status are the PCI core's
 write-one-to-clear bits, and nothing in the model sets them.
 
 The ISP12160 differs in these ways.
@@ -1344,8 +1359,23 @@ density, medium-loaded flag and removal lock.
 Measurements
 ============
 
-No register of any of these parts has been read on a physical machine. The
-reference Octane2 supplied two software reports.
+The reference Octane2 (:ref:`sgi-measured-octane2`) gave two software
+reports and two configuration headers. The headers were read in the PROM
+Command Monitor after the firmware had initialised the machine, through
+the Bridge's type 0 configuration window, as sixteen 32-bit loads each:
+
+.. code-block:: text
+
+   >> dump -w -x 0xffffffffbf020000#16
+   0xffffffffbf020000:   10201077    2000006    1000005       4040
+   0xffffffffbf020010:     200001     200000          0          0
+   0xffffffffbf020020:          0          0          0          0
+   0xffffffffbf020030:     210000          0          0        100
+   >> dump -w -x 0xffffffffbf021000#16
+   0xffffffffbf021000:   10201077    2000006    1000005       4040
+   0xffffffffbf021010:     400001     400000          0          0
+   0xffffffffbf021020:          0          0          0          0
+   0xffffffffbf021030:     410000          0          0        100
 
 .. list-table::
    :header-rows: 1
@@ -1354,6 +1384,10 @@ reference Octane2 supplied two software reports.
      - Value
      - Chip revision
      - When
+   * - Configuration ``0x00``-``0x3f``, Bridge devices 0 and 1, 32-bit
+     - as above
+     - PCI revision 5, IRIX name ``QL1040B (rev. 2)``
+     - PROM monitor, after initialisation
    * - Hardware inventory SCSI line
      - two integral ``QL1040B`` controllers, revision 2
      - ISP1040, IRIX name ``rev. 2``
@@ -1364,12 +1398,54 @@ reference Octane2 supplied two software reports.
      - not reported
      - Running IRIX 6.5.30m, read-only listing
 
-Both are inventory reads (:ref:`sgi-measured-octane2-hinv`,
-:ref:`sgi-measured-octane2-graph`). They establish that the reference
-Octane2 carries two QL1040B controllers at PCI devices 0 and 1 and that the
-disk is target 1 on controller 0. They do not establish a PCI revision byte
-or any register value. They do not say which drive bay holds the disk. The
-``rev. 2`` is IRIX's sub-version label, not the PCI revision byte.
+The two headers differ only in their base addresses. Decoded:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Offset
+     - Value (device 0)
+     - Fields
+   * - ``0x00``
+     - ``0x10201077``
+     - vendor ``0x1077``, device ``0x1020``
+   * - ``0x04``
+     - ``0x02000006``
+     - Status ``0x0200``, medium DEVSEL; Command ``0x0006``, memory space
+       and bus master
+   * - ``0x08``
+     - ``0x01000005``
+     - class ``0x010000``, SCSI bus controller; revision 5
+   * - ``0x0c``
+     - ``0x00004040``
+     - Latency Timer ``0x40``, cache line size ``0x40``, header type 0,
+       no BIST
+   * - ``0x10``
+     - ``0x00200001``
+     - BAR 0, I/O space at ``0x200000`` (device 1: ``0x400000``)
+   * - ``0x14``
+     - ``0x00200000``
+     - BAR 1, 32-bit memory at ``0x200000`` (device 1: ``0x400000``)
+   * - ``0x18``-``0x2c``
+     - ``0``
+     - no further BARs, no subsystem identity
+   * - ``0x30``
+     - ``0x00210000``
+     - expansion ROM base ``0x210000`` (device 1: ``0x410000``), decode
+       disabled
+   * - ``0x3c``
+     - ``0x00000100``
+     - interrupt pin A, interrupt line 0, minimum grant and maximum
+       latency 0
+
+The identity, class, revision, Status, BAR layout, expansion ROM base
+register and interrupt pin are *established* for these two parts. The
+Command, cache line, Latency Timer and base values are what this
+machine's firmware wrote, so they show that those fields are writable on
+the real part. No value here is a reset value. The inventory and graph
+add that the disk is target 1 on controller 0, at PCI device 0; they do
+not say which drive bay holds it. The ``rev. 2`` is IRIX's sub-version
+label, not the PCI revision byte.
 
 .. _sgi-qlogic-isp-limits:
 
@@ -1394,7 +1470,11 @@ Model limits
   they appear above.
 - No ISP1040 vendor programming manual exists, so its register contract is
   weaker than that of a part with a vendor register table. Its PCI
-  revision of 5 is *observed* on Origin 200 captures. The value 6 in bus
+  revision of 5 is *observed* on Origin 200 captures and *established* on
+  the reference Octane2.
+- The ISP1040's Latency Timer is read-only and it has no expansion ROM
+  base register, where the reference Octane2's parts take a Latency Timer
+  write and implement the ROM base register. The value 6 in bus
   configuration 0 is *inferred* from the family numbering and has not been
   read from hardware.
 - The tape models no real DDS mechanics (helical scan, compression

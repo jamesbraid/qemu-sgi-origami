@@ -261,9 +261,11 @@ Components and connections
      - onboard PCI devices 0 and 1, function 0
      - *observed* in the OpenBSD capture (ISP1020 revision 5);
        *established* for the Octane2, whose inventory reports QL1040B
-       parts and whose hardware graph places them at devices 0 and 1
+       parts, whose hardware graph places them at devices 0 and 1
        (:ref:`sgi-measured-octane2-hinv`,
-       :ref:`sgi-measured-octane2-graph`)
+       :ref:`sgi-measured-octane2-graph`) and whose configuration headers
+       read ``0x1077:0x1020``, PCI revision 5, interrupt pin A
+       (:ref:`measured <sgi-qlogic-isp-measurements>`)
    * - IOC3
      - onboard PCI device 2, function 0
      - *established*: OpenBSD ``ip30.h`` (``IP30_IOC_SLOTNO``), Linux
@@ -272,16 +274,19 @@ Components and connections
      - onboard PCI device 3, function 0, identity ``10a9:0005``
      - *observed* for the captured Octane (revision ``0xc0``);
        *established* for the reference Octane2, whose PROM-monitor read of
-       configuration register ``0x08`` returned class ``0x000000`` and
-       revision ``0xc0`` (:ref:`measured <sgi-rad1-octane2-config>`). Its
-       inventory's ``12.0`` is not a PCI revision byte.
+       its configuration header returned class ``0x000000``, revision
+       ``0xc0`` and no interrupt pin (:ref:`measured
+       <sgi-rad1-octane2-config>`). Its inventory's ``12.0`` is not a PCI
+       revision byte.
    * - DS1685-family clock
      - behind IOC3
      - *observed*: the OpenBSD capture reports a DS1687
    * - Expansion Bridge for four PCI slots
      - not built
      - *established* that it exists (Technical Report printed page 2-19);
-       its widget number is *unknown*
+       its widget number is *unknown*. The reference Octane2 has none:
+       its Crossbow reports links alive only at widgets 8, 11 and 15
+       (:ref:`measured <sgi-xbow-measurements>`)
 
 The machines model buses ``sysad``, ``xio`` (mastered by Crossbow) and
 one onboard ``pci`` bus mastered by the Bridge, matching the table.
@@ -302,18 +307,27 @@ layers):
   (:ref:`measured <sgi-xbow-octane2-id>`) beside an inventory revision of
   1.4 (*established*). Bridge revision 4, from a PROM-monitor read of its
   identification word ``0x4c00206d``
-  (:ref:`measured <sgi-bridge-measurements>`), *established*.
+  (:ref:`measured <sgi-bridge-measurements>`), *established*; the Bridge
+  specification letters revision 4 as D (:src:`bridge-asic-spec-4.0 p.
+  19`).
 
 The machines do not pass a Bridge revision to the Bridge, so on both
 the chip reports its default, revision 1 (see
 :doc:`hardware/bridge`). This is a model inconsistency, listed under
 :ref:`sgi-ip30-unknowns`.
 
-IOC3 general-purpose input 2 tells the two products apart in software:
-OpenBSD reads it as 1 for Octane and 0 for Octane2 (``ip30.h``,
-``IP30_GPIO_CLASSIC``; ``ip30_machdep.c`` lines 193-202). The model
-drives it high on ``octane`` and low on ``octane2``. This is a *software
-expectation* of a public driver; the electrical wiring is *unknown*.
+IOC3 general-purpose pin 2 is read by OpenBSD to tell the two products
+apart. ``ip30.h`` comments it as 1 for the classic Octane and 0 for the
+Octane2 (``IP30_GPIO_CLASSIC``), and ``ip30_machdep.c`` lines 193-202
+read pin register 2, IOC3 offset ``0x48``, and name the machine Octane
+when it is nonzero, a *software expectation*. Mainline Linux does not
+read the pin. The reference Octane2, board ``030-1467-001`` revision B,
+reads 1 in pin register 2 and bit 2 set in the pin data register at
+``0x3c`` after PROM start-up (:ref:`measured <sgi-ioc3-octane2-pins>`),
+*established* for that board. OpenBSD's rule would name it an Octane, so
+the comment does not hold for this board, and what the pin senses is
+*unknown*. The model drives the pin high on ``octane`` and low on
+``octane2``, which differs from the measured board.
 
 .. _sgi-ip30-address-map:
 
@@ -448,7 +462,10 @@ Missing devices
 - The expansion Bridge and its four PCI slots. Its widget number is
   *unknown*, so no slot is offered.
 - The front-panel LEDs on IOC3 general-purpose pins; writes reach no
-  device.
+  device. OpenBSD names pins 0 and 1 the white and red lights
+  (``ip30.h``), a *software expectation*. The reference Octane2 runs
+  both pins as outputs, pin 0 high and pin 1 low, at the PROM menu
+  (:ref:`sgi-ioc3-octane2-pins`).
 
 .. _sgi-ip30-firmware:
 
@@ -463,53 +480,67 @@ as ``node0-flash``. ``-kernel`` is refused.
 Boot flash wiring
 -----------------
 
-This is an open question. What is known:
+What is known:
 
 - The Bridge ASIC provides two 2 MiB flash regions, at widget offsets
-  ``0xc00000`` and ``0xe00000``, and a strap input chooses which chip
-  select appears at the lower region (*established* for the ASIC by the
-  Bridge specification, cited on :doc:`/system/mips/sgi/hardware/bridge`).
+  ``0xc00000`` and ``0xe00000``. A strap pin, read back as status bit 6,
+  chooses which chip select answers at the lower region: 0 for chip
+  select 0, 1 for chip select 1 (*established* for the ASIC,
+  :src:`bridge-asic-spec-4.0 p. 20 and 115`). Its target parts are 256K
+  or 512K 16-bit words.
 - OpenBSD names the same two apertures (``ip30.h`` lines 49-55).
 - Two IP30 board families exist, ``030-0887`` and ``030-1467`` (the
   inventories; the SGIStuff page describes the board change). Neither
   source identifies a flash part.
-- On the :ref:`sgi-measured-octane2`, one 16-bit PROM Command Monitor
-  read of the alternate aperture returned ``0xffff`` (*established*, one
-  word only; see below).
+- On the :ref:`sgi-measured-octane2`, board ``030-1467-001`` revision B,
+  the Bridge status word reads ``0x62``: the strap is 1, so chip select 1
+  is the boot select at ``0xc00000`` and chip select 0 the alternate at
+  ``0xe00000`` (*established* for that board,
+  :ref:`sgi-bridge-octane2-status`).
+- On the same board the boot select returns the same words 1 MiB in as at
+  its start and all ones at the top of both halves (*established* at
+  those offsets). That it repeats every 1 MiB, so the part decodes
+  1 MiB, is *inferred* (:ref:`sgi-bridge-octane2-flash`).
+- The alternate select returns all ones to 16- and 32-bit reads at four
+  places across its 2 MiB, with no exception (*established* at those
+  offsets).
 
-Unknown: the fitted flash part and its capacity, which Bridge select it
-sits on, the strap value, the upper address wiring and protection pins,
-and what the rest of the alternate aperture returns. A public service
-drawing or a readable board photograph identifying the flash package,
-followed by that part's manual, would settle the part; the select and
-strap need a board schematic or measurement.
+Unknown: the flash part number and command set, whether a part sits on
+the alternate select, the protection pins, and all of these on the
+``030-0887`` board. A public service drawing or a readable board
+photograph identifying the flash package, followed by that part's manual,
+would settle the part.
 
-The model's choices, all approximations:
+The model's choices:
 
 - ``flash-select`` false and ``flash-strap`` false in both product
   layers (``boot_flash_wiring``): the boot flash on select 0, strapped
-  to boot from it. This is the value every launch has used, not a
-  measurement. The machine properties of the same names override it.
-- A 1 MiB array (``firmware_bytes``), sized from a candidate part's
-  datasheet, implemented with QEMU's Intel-command-set ``pflash_cfi01``
-  and compatibility identifiers. The fitted part is *unknown*, so the
-  size is not a hardware claim.
+  to boot from it. Address for address this places the part where the
+  reference Octane2 has it, but the model's Bridge status reads bit 6
+  clear (``0x20``) where that board reads it set. On the ``octane``
+  layer it is an *approximation*. The machine properties of the same
+  names override it.
+- A 1 MiB array (``firmware_bytes``), implemented with QEMU's
+  Intel-command-set ``pflash_cfi01`` and compatibility identifiers,
+  repeating across the 2 MiB select. The size and the repeat match the
+  reference Octane2's boot select. The command set and identifiers are
+  an *approximation*: the fitted part is *unknown*.
 - Only one select has a part. A read of the other select fails as an
   unpopulated widget address does and logs a guest error, so the model
-  does not reproduce the measured ``0xffff`` below.
+  does not reproduce the measured all-ones reads.
 
 .. _sgi-ip30-octane2-alt-flash:
 
-The measured read, at physical ``0x1fe00000`` (Bridge widget 15 offset
-``0xe00000``):
+The first read of the alternate select, at physical ``0x1fe00000``
+(Bridge widget 15 offset ``0xe00000``):
 
 .. code-block:: text
 
    >> dump -h -x 0xffffffffbfe00000#1
    0xffffffffbfe00000:   ffff
 
-It names no fitted part and says nothing about the other bytes of the
-aperture.
+The other reads of both selects are under :ref:`sgi-bridge-octane2-flash`.
+None of them names a fitted part.
 
 .. _sgi-ip30-storage:
 
@@ -611,7 +642,7 @@ driver write.
 Open questions
 ==============
 
-- The flash part, select, strap and alternate-aperture contents
+- The flash part and whether the alternate select holds one
   (:ref:`sgi-ip30-flash-wiring`).
 - R12000 reset mode word and cache block size (:doc:`hardware/r10000`).
 - HEART's density decoding and its response to the PROM's probe of a
@@ -620,6 +651,14 @@ Open questions
   :doc:`hardware/heart`).
 - The model's Bridge reporting revision 1 where the Octane reads 3 and
   the reference Octane2 reads 4.
-- The expansion Bridge's widget number.
+- The expansion Bridge's widget number. The reference Octane2 has none
+  fitted.
 - Interrupt wiring from the onboard PCI functions to Bridge inputs; no
-  public source establishes it, and this page does not state it.
+  public source establishes it, and this page does not state it. The
+  reference Octane2's PROM leaves Bridge pins 6 and 7 enabled, sending
+  HEART bits 41 and 57 (:ref:`sgi-bridge-octane2-interrupts`); that is
+  firmware state, not wiring.
+- What IOC3 pin 2 senses: it reads 1 on the reference Octane2, against
+  OpenBSD's comment (:ref:`sgi-ip30-components`).
+- What the kernel's hardware graph entry for Bridge device 4 is
+  (:ref:`sgi-measured-octane2-graph`).

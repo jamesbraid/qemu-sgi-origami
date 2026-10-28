@@ -109,8 +109,14 @@ slot on a big-endian host; this page uses the aligned offset.
      - Widget 0 status
      - Error summary; all bits default to zero. Reading the clearing
        alias at 0x0050 returns the value and negates the register
-       access, crosstalk and connection time-out bits.
-     - established, spec PDF pages 73 and 88
+       access, crosstalk and connection time-out bits. On revision 5,
+       bits 9:6 report the port the read arrived on; the model fills
+       them only for the PIC's internal Crossbow, so on the Octanes they
+       read zero.
+     - established, spec PDF pages 73 and 88; bits 9:6 established by
+       :src:`xbridge-asic-spec-0.5 p. 75` and by the measured Octane2,
+       which reads ``0x200`` from widget 8
+       (:ref:`sgi-xbow-measurements`)
    * - 0x0010, 0x0018
      - Error address upper, lower
      - Hold bits 47:32 and 31:0 of the address of the first failed
@@ -153,14 +159,17 @@ slot on a big-endian host; this page uses the aligned offset.
        a stated default of link 8; bits 19:0 count.
      - established, spec PDF pages 91-92. The model resets the
        register to 0x00800000 (bit 23 set); the specification marks
-       bit 23 reserved and gives no such value, so that reset word is
-       unknown and counting itself is not modelled.
+       bit 23 reserved and gives no such value. The measured Octane2
+       reads 0x00800000 in both counters after PROM start-up, so the
+       model's word matches revision 5 at that point; whether it is
+       the reset value is unknown. Counting itself is not modelled.
    * - 0x0070
      - NIC
      - Readable and writable; the MicroLAN controller behind it is
        listed as not functional, so the model keeps the register but
        drives no one-wire bus.
-     - established, spec PDF pages 92-93
+     - established, spec PDF pages 92-93. The model resets it to 2,
+       which the measured Octane2 reads after PROM start-up.
    * - 0x0078
      - Widget 0 reset fence
      - Revision 5 and later. Eight-bit mask: bit *n* lets a warm reset
@@ -178,9 +187,11 @@ slot on a big-endian host; this page uses the aligned offset.
      - Revision 5 and later. One eight-bit mask per link, with the same
        bit meaning for that link as destination. These are separate from
        the per-link register sets below.
-     - *established* for the widget 11 link fence on the measured
-       Octane2; the other links are *inferred* from the same layout
-       (:src:`xbridge-asic-spec-0.5 p. 57`)
+     - *established* for all eight links on the measured Octane2,
+       where links 8 and 15 read ``0xf7`` and links 9 to 14 ``0xff``
+       after PROM start-up (:ref:`sgi-xbow-measurements`); bit meaning
+       from :src:`xbridge-asic-spec-0.5 p. 57`, *inferred* for
+       revision 5
    * - 0x00c0, 0x00c8
      - Resource lock, lock clear
      - Revision 5 and later. A write to ``0x00c0`` is stored only while
@@ -246,7 +257,11 @@ failure-mode set, which is where a port with no widget attached sits);
 up (alive set); failed after coming up (max-retry set). This is
 established by the specification's link error description (PDF
 pages 65-69). It is what a guest reads to decide whether anything is
-plugged in.
+plugged in. The measured Octane2's five empty ports sit in the second
+state and its three fitted ports in the third
+(:ref:`sgi-xbow-octane2-links`). The empty ports also read the 8-bit
+mode bit set, and four of them show receive errors and retry counts,
+which the model does not reproduce.
 
 .. _sgi-xbow-measurements:
 
@@ -255,35 +270,210 @@ Measurements
 
 These reads come from the :ref:`sgi-measured-octane2`, in the PROM Command
 Monitor after the firmware had initialised the machine. The chip reports
-revision code 5; the inventory prints ASIC revision 1.4.
+revision code 5; the inventory prints ASIC revision 1.4. Each read is one
+32-bit load at the register's offset plus four, physical ``0x10000000``
+plus the offset, issued by the processor through HEART at widget 8, for
+example:
+
+.. code-block:: text
+
+   >> dump -w -x 0xffffffffb000000c#1
+   0xffffffffb000000c:        200
+   >> dump -w -x 0xffffffffb0000114#1
+   0xffffffffb0000114:   80000000
+
+None of these is a cold-reset value of the chip.
 
 .. _sgi-xbow-octane2-id:
+
+Widget 0 registers
+------------------
 
 .. list-table::
    :header-rows: 1
 
-   * - Read
+   * - Offset
      - Width
      - Value
+     - Register
      - When
      - What it shows
-   * - Widget 0 identification, physical ``0x10000004``
-     - 32-bit
+   * - ``0x0000``
+     - 32
      - ``0x50000001``
+     - Identification
      - PROM monitor
      - Revision code 5 in bits 31:28.
-   * - Widget 0 fence ``0x0078`` and the widget 11 link fence
-     - 32-bit
-     - bit 3 clear in both
+   * - ``0x0008``
+     - 32
+     - ``0x00000200``
+     - Widget 0 status
      - PROM monitor
-     - The fences exist on revision 5.
-   * - Resource lock ``0x00c0``
-     - 32-bit
-     - zero
+     - Bits 9:6 hold 8, the port the read arrived on; no error bit set.
+   * - ``0x0010``, ``0x0018``
+     - 32
+     - ``0``, ``0``
+     - Error address upper, lower
+     - PROM monitor
+     - Nothing logged.
+   * - ``0x0020``
+     - 32
+     - ``0x00000024``
+     - Widget 0 control
+     - PROM monitor
+     - Register-access (5) and crosstalk (2) error interrupts enabled,
+       connection time-out (1) not.
+   * - ``0x0028``
+     - 32
+     - ``0x000fffff``
+     - Packet timeout
+     - PROM monitor
+     - The specification default.
+   * - ``0x0030``, ``0x0038``
+     - 32
+     - ``0x3a080000``, ``0x00000080``
+     - Interrupt destination upper, lower
+     - PROM monitor
+     - Vector ``0x3a`` (58) to widget 8, address ``0x80``.
+   * - ``0x0040``
+     - 32
+     - ``0``
+     - Error command word
+     - PROM monitor
+     - Nothing logged.
+   * - ``0x0048``
+     - 32
+     - ``0x03ff1810``
+     - LLP control
+     - PROM monitor
+     - The specification defaults.
+   * - ``0x0058``
+     - 32
+     - ``0x00000002``
+     - Arbitration reload
+     - PROM monitor
+     - The specification default.
+   * - ``0x0060``, ``0x0068``
+     - 32
+     - ``0x00800000``, ``0x00800000``
+     - Performance counters A, B
+     - PROM monitor
+     - Bit 23 set, select and count zero.
+   * - ``0x0070``
+     - 32
+     - ``0x00000002``
+     - NIC
+     - PROM monitor
+     -
+   * - ``0x0078``
+     - 32
+     - ``0xf7``
+     - Widget 0 reset fence
+     - PROM monitor
+     - Bit 3, port 11, clear.
+   * - ``0x0080`` + 8 × (*w* − 8)
+     - 32
+     - ``0xf7`` for links 8 and 15, ``0xff`` for links 9 to 14
+     - Per-link reset fences
+     - PROM monitor
+     - All eight decode on revision 5.
+   * - ``0x00c0``
+     - 32
+     - ``0``
+     - Resource lock
      - PROM monitor after power-on
      - The lock exists on revision 5 and starts released.
 
-None of these is a cold-reset value of the chip.
+Bits 9:6 of the status word are reserved in the revision 12.0
+specification (PDF page 89). The XBridge specification's Crossbow 2.0
+half defines them as the port a read of the register arrived on
+(:src:`xbridge-asic-spec-0.5 p. 75`), and the value 8 is HEART's port,
+so the field is *established* on revision 5 for reads from widget 8. The
+interrupt destination sends Crossbow errors to HEART bit 58, the bit
+OpenBSD and Linux name the Crossbow error. The firmware's fences block a
+warm reset from port 11, the V12, at widget 0, at HEART (link 8) and at
+the Bridge (link 15), and leave the four empty ports' fences open.
+
+.. _sgi-xbow-octane2-links:
+
+Per-link registers
+------------------
+
+Link status at +0x10, auxiliary status at +0x38 and link control at
++0x08, each read as 32 bits:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Link
+     - Fitted
+     - Status
+     - Auxiliary status
+     - Control
+   * - 8
+     - HEART
+     - ``0x80000000``
+     - ``0x00000020``
+     - ``0x001301e2``
+   * - 9
+     - none
+     - ``0x00000020``
+     - ``0x00000050``
+     - ``0x80080000``
+   * - 10 (``0xa``)
+     - none
+     - ``0x000000b0``
+     - ``0xd9000050``
+     - ``0x80080000``
+   * - 11 (``0xb``)
+     - V12
+     - ``0x80000000``
+     - ``0x00000020``
+     - ``0x001301e2``
+   * - 12 (``0xc``)
+     - none
+     - ``0x000000b0``
+     - ``0x22000050``
+     - ``0x80080000``
+   * - 13 (``0xd``)
+     - none
+     - ``0x000000b0``
+     - ``0x31000050``
+     - ``0x80080000``
+   * - 14 (``0xe``)
+     - none
+     - ``0x000000b0``
+     - ``0x6c000050``
+     - ``0x80080000``
+   * - 15 (``0xf``)
+     - Bridge
+     - ``0x80000000``
+     - ``0x00000030``
+     - ``0x000f01e2``
+
+Decoded against the specification's link tables (PDF pages 77-81):
+
+- Links 8, 11 and 15 are alive with no error bit set. Their auxiliary
+  status sets widget present (bit 5). HEART and the V12 run 16-bit links
+  (bit 4 clear) and the Bridge an 8-bit link (bit 4 set), though no link
+  control word sets the force-8-bit bit (24).
+- Links 9, 10 and 12 to 14 have no widget: widget present is clear and
+  link failure mode (bit 6) is set, with maximum transmitter retry
+  (status bit 5), the state the specification gives a port with no
+  widget. Their auxiliary bit 4 reads 1. Links 10 and 12 to 14 also show
+  LLP receiver errors (status bit 4), a receive error counter overflow
+  (bit 7) and nonzero receive retry counts in auxiliary bits 31:24; link
+  9 shows neither.
+- The firmware gave the three fitted links widget credit 4, 4 and 3
+  (bits 22:18) and enabled the illegal-destination, overallocation,
+  bandwidth, counter-overflow, maximum-retry and maximum-request-timeout
+  interrupts. It left the empty links at the default credit of 2 with
+  only the link-alive interrupt (bit 31) enabled.
+
+These establish, for this board at PROM time, that one revision 5
+Crossbow uses widgets 8, 11 and 15 and no other port, and that no
+expansion Bridge is fitted. They do not identify which port an expansion
+Bridge would use.
 
 .. _sgi-xbow-model-choices:
 

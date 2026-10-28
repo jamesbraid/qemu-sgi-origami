@@ -552,6 +552,23 @@ Measurements
      - R12000 3.5
      - running IRIX 6.5.30m
      - :ref:`sgi-measured-octane2` (:ref:`sgi-measured-octane2-hinv`)
+   * - PROM Command Monitor ``hinv -v``
+     - ``360 Mhz R12000, with FPU``; 32 KiB primary instruction and data
+       caches; 2 MiB secondary cache
+     - R12000, revision not printed
+     - PROM menu, before IRIX loaded
+     - :ref:`sgi-measured-octane2` (:ref:`sgi-measured-octane2-hinv`)
+   * - ``hinv -mvv`` FPU line
+     - ``MIPS R12010 Floating Point Chip Revision: 0.0``
+     - R12000 3.5
+     - running IRIX 6.5.30m
+     - :ref:`sgi-measured-octane2`
+   * - ``sysconf``
+     - ``PROCESSORS R12000 3.5``, ``NUM_PROCESSORS 1``; no cache line or
+       block size printed
+     - R12000 3.5
+     - running IRIX 6.5.30m
+     - :ref:`sgi-measured-octane2`
    * - Kernel's recorded CPU identity word
      - ``0x00000e35``
      - R12000 3.5
@@ -568,10 +585,12 @@ Measurements
      - running IRIX
      - published Octane, :src:`usenet-3be33f04`
 
-The inventory establishes the Octane2's speed, revision and cache size.
-The two identity words are what that kernel recorded, not reads of CP0
-PRId or CP1 register 0, and no read was taken at reset. None of these
-establishes the reset mode word, the secondary block size, the die
+The inventories establish the Octane2's speed, revision and cache
+sizes; the PROM and the kernel agree on them. The two identity words are
+what that kernel recorded, not reads of CP0 PRId or CP1 register 0, and
+no read was taken at reset. ``sysconf`` reports no cache block size.
+None of
+these establishes the reset mode word, the secondary block size, the die
 variant or any revision's errata.
 
 .. _sgi-r10000-r14000:

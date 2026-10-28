@@ -12,9 +12,7 @@ models revision 3 as ``hw/net/ics1890.c``. The ``octane`` and ``octane2``
 machines select it on the onboard IOC3 with ``phy-ics1890=on`` at MII
 address 1; other boards keep their own PHY (:doc:`ioc3`).
 
-Facts below are rated *established* (the manufacturer's datasheet),
-*observed* (a published capture), *inferred* or *approximation* (a model
-choice where the datasheet leaves the behaviour open).
+Facts are rated as described in :ref:`sgi-ratings`.
 
 .. _sgi-ics1890-sources:
 
@@ -29,6 +27,8 @@ Sources
   revision 3. The 2019 log comes from a HEART F, Bridge D board.
 - Linux ``drivers/net/ethernet/sgi/ioc3-eth.c`` and OpenBSD
   ``sys/dev/mii/icsphy.c`` and ``icsphyreg.h``, as software expectations.
+- The IOC3 MII registers read on the reference Octane2
+  (:ref:`sgi-ics1890-measurements`).
 
 Identity and address
 ====================
@@ -38,9 +38,14 @@ The datasheet's identity tables give words ``0x0015`` and ``0xf423``; model
 :src:`ics1890-rev-g p. 23-24`, *established*. The three boot logs decode to
 the same words at address 1, *observed* on Octanes from 2005 and 2019
 (:src:`lore-seufer-octane-2005 PHY probe`,
-:src:`lore-kinard-octane-2019 attached dmesg`). That the Octane2 board QEMU
-models carries the same part at the same address is *inferred* from the
-newer capture; no revision-matched measurement of that board exists.
+:src:`lore-kinard-octane-2019 attached dmesg`). On the reference Octane2,
+board ``030-1467-001`` revision B, the PROM's last MII transaction read
+register 1 at address 1 and got ``0x7809``
+(:ref:`sgi-ics1890-measurements`), so a PHY answers at address 1 on that
+board, *established*. That word is the ICS1890's status reset value with
+the link down, but any 10/100 PHY that can negotiate and has no link
+reads the same, so that the part is an ICS1890 is still *inferred* from
+the 2019 capture; its identity registers were not read.
 
 The chip answers only its strapped five-bit address and implements registers
 0-6 and 16-19 :src:`ics1890-rev-g p. 17`. The model answers address 1. At
@@ -218,6 +223,52 @@ the table. The datasheet's own cross-references put Quick Poll speed at bit
 15 :src:`ics1890-rev-g p. 35`; the register tables, the public drivers and
 the model use bits 15, 4 and 13.
 
+.. _sgi-ics1890-measurements:
+
+Measurements
+============
+
+The reference Octane2 (:ref:`sgi-measured-octane2`) was read through the
+IOC3's MII registers in the PROM Command Monitor after the firmware had
+initialised the machine. No PHY register was written or read directly.
+
+.. code-block:: text
+
+   >> dump -w -x 0xffffffffbf600148#2
+   0xffffffffbf600148:         21       7809
+
+.. list-table::
+   :header-rows: 1
+
+   * - Address
+     - Width
+     - Value
+     - Register
+     - Part revision
+     - When
+   * - ``0x1f600148``, IOC3 ``0x148``
+     - 32
+     - ``0x21``
+     - IOC3 MII control
+     - not read
+     - PROM monitor, after initialisation
+   * - ``0x1f60014c``, IOC3 ``0x14c``
+     - 32
+     - ``0x7809``
+     - IOC3 MII read data
+     - not read
+     - PROM monitor, after initialisation
+
+MII control ``0x21`` decodes under Linux ``ioc3.h`` as register 1 in bits
+4:0, PHY address 1 in bits 9:5 and busy clear. The read data is that
+register's value: BMSR ``0x7809``, 100BASE-TX and 10BASE-T at both
+duplexes, negotiation ability and extended capability, with link status,
+negotiation complete and every fault bit clear. The kernel booted
+afterwards warned ``ef0: link fail - check ethernet cable``. This
+establishes the PHY address and that the link was down at that moment.
+It does not establish the part, its revision, its straps or any other
+register.
+
 .. _sgi-ics1890-limits:
 
 Model limits
@@ -225,7 +276,8 @@ Model limits
 
 - The two mode straps, node mode and software-configuration priority, are
   model choices; the board's real strapping is unmeasured. They give
-  extended control 2 the value ``0x4001``.
+  extended control 2 the value ``0x4001``. The address strap, 1, matches
+  the reference Octane2.
 - Reserved bits whose read value the datasheet leaves open read zero,
   except extended-control bit 4, which reads one in every state and cannot
   be written. The stock IP30 diagnostic expects that one. Together with
