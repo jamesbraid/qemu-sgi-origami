@@ -37,10 +37,16 @@ layer:
         kind: crossbar
         hardware_kind: xbridge
         crossbar: {kind: xbridge}
+        identity:
+          widget_revision: 2
+          notes: >-
+            The revision the QEMU XBridge model presents, as the I-brick's
+            chip does. The N-brick's fitted XBridge revision is unknown; a
+            widget scan of a real N-brick would settle it.
         provenance: vendor-document
         parent: chip-board0
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
-        notes: No PCI heads or Crosstalk ports are in use. The chip's revision line is not established.
+        notes: No PCI heads or Crosstalk ports are in use. The chip's revision line is not established; the identity block records the model's choice.
       - id: c-brick-0
         name: C-brick 0 connector
         kind: connector
@@ -81,10 +87,16 @@ layer:
         kind: crossbar
         hardware_kind: xbridge
         crossbar: {kind: xbridge}
+        identity:
+          widget_revision: 2
+          notes: >-
+            The revision the QEMU XBridge model presents, as the I-brick's
+            chip does. The N-brick's fitted XBridge revision is unknown; a
+            widget scan of a real N-brick would settle it.
         provenance: vendor-document
         parent: chip-board1
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
-        notes: No PCI heads or Crosstalk ports are in use. The chip's revision line is not established.
+        notes: No PCI heads or Crosstalk ports are in use. The chip's revision line is not established; the identity block records the model's choice.
       - id: c-brick-1
         name: C-brick 1 connector
         kind: connector
@@ -125,10 +137,16 @@ layer:
         kind: crossbar
         hardware_kind: xbridge
         crossbar: {kind: xbridge}
+        identity:
+          widget_revision: 2
+          notes: >-
+            The revision the QEMU XBridge model presents, as the I-brick's
+            chip does. The N-brick's fitted XBridge revision is unknown; a
+            widget scan of a real N-brick would settle it.
         provenance: vendor-document
         parent: chip-board2
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
-        notes: No PCI heads or Crosstalk ports are in use. The chip's revision line is not established.
+        notes: No PCI heads or Crosstalk ports are in use. The chip's revision line is not established; the identity block records the model's choice.
       - id: c-brick-2
         name: C-brick 2 connector
         kind: connector
@@ -169,10 +187,16 @@ layer:
         kind: crossbar
         hardware_kind: xbridge
         crossbar: {kind: xbridge}
+        identity:
+          widget_revision: 2
+          notes: >-
+            The revision the QEMU XBridge model presents, as the I-brick's
+            chip does. The N-brick's fitted XBridge revision is unknown; a
+            widget scan of a real N-brick would settle it.
         provenance: vendor-document
         parent: chip-board3
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
-        notes: No PCI heads or Crosstalk ports are in use. The chip's revision line is not established.
+        notes: No PCI heads or Crosstalk ports are in use. The chip's revision line is not established; the identity block records the model's choice.
       - id: c-brick-3
         name: C-brick 3 connector
         kind: connector
