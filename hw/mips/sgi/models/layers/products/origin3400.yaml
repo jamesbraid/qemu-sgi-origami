@@ -17,20 +17,25 @@ layer:
   topology:
     min_nodes: 1
     max_nodes: 8
+    # This composition fixes the selected fit, four processors in each of
+    # four C-bricks, so it is the only population an emulator built from
+    # it would accept.
+    supported_cpu_populations: [[4, 4, 4, 4]]
+    supported_processors:
+      - {part: r12000, clock_mhz: 400, cache_mib: 8}
+    supported_bank_mib_per_node:
+      - [512, 512, 512, 512, 512, 512, 512, 512]
     provenance: vendor-document
-    sources: [007-4311-002-3400]
+    sources: [007-4311-002-3400, 007-4311-002-one-router]
   population:
     nodes: 4
     cpus_per_node: [4, 4, 4, 4]
-    fitted_memory:
-      status: unknown
-      reason: >-
-        Every Origin 3400 bundle ships its C-bricks without memory and the
-        customer selects DIMMs; this composition selects none.
-      provenance: vendor-document
-      sources: [007-4311-002-bundles]
     provenance: vendor-document
     sources: [007-4311-002-one-router, 007-4311-002-3400]
+  cpu_selection:
+    default: {clock_mhz: 400, cache_mib: 8}
+    slots: [cpu0, cpu1, cpu2, cpu3]
+  memory_kits_per_node: [kit-4096-eight-512-banks, kit-4096-eight-512-banks, kit-4096-eight-512-banks, kit-4096-eight-512-banks]
   composition_rules:
     counts:
       - {bricks: [c-brick], min: 1, max: 8}
@@ -45,7 +50,7 @@ layer:
   data:
     machine:
       name: Origin 3400
-      model_role: reference
+      model_role: emulation-target
       notes: >-
         An Origin 3400 of 16 processors drawn with one R-brick, as the
         technical configuration guide's 8- to 16-processor interconnect
@@ -58,9 +63,156 @@ layer:
         controller, which the guide requires beside an R-brick, is not
         modelled, nor is the R-brick's USB hub traffic to the C-brick L1s;
         running without them is a stated limitation, not a claim that the
-        hardware does. The C-brick layer carries one two-processor
-        interface, no L1 and no memory or clock fit, so this configuration
-        does not yet describe a fitted C-brick and never compiles.
+        hardware does. Each C-brick is fitted as the Origin 3200's is, four
+        400 MHz R12000s with 8 MB secondary caches and 4096 MB in eight
+        512 MB banks; the bundles ship C-bricks without memory, so the
+        memory is a model choice. The router answers the model's synthetic
+        diagnostics, which no hardware record settles. The stock PROM's
+        discovery prints one failed vector read and a bad link on each node
+        before it finds the router; the cause is not diagnosed.
+      emulation:
+        bedrock_nodes:
+          c0-bedrock: &cbrick-bedrock
+            # Product code 0 in bits 15:12 is a C-brick to OpenBSD and the
+            # stock PROM. The low nibble selects the PROM's configuration
+            # row; 2 is the 400 MHz, 8 MB row this fit matches. The other
+            # bits are unknown and read zero.
+            board_id_word: 2
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask: {mode: fitted-banks}
+            provenance: derived
+            sources: ["openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick", "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row"]
+            notes: >-
+              Approximation. Established: product code 0. Chosen: low nibble
+              2, the configuration row of the selected fit; which nibble a
+              physical C-brick presents is unknown, and a register read on a
+              matching board would settle it.
+          c1-bedrock: *cbrick-bedrock
+          c2-bedrock: *cbrick-bedrock
+          c3-bedrock: *cbrick-bedrock
+        l1_controllers:
+          c0-l1: &cbrick-l1
+            profile: cbrick
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            notes: The C-brick profile of the L1 model; its firmware revision is unknown and not carried.
+          c1-l1: *cbrick-l1
+          c2-l1: *cbrick-l1
+          c3-l1: *cbrick-l1
+          ibrick-l1:
+            profile: ibrick
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            notes: The I-brick profile of the L1 model, reached from c0's L1 over the XIO cable.
+        io_boards:
+          ibrick-xbridge-bridge-f:
+            ioc3_subsystem_id: 65535
+            mac_source: none
+            # The TSB12LV22 model has no PHY or bus, and its reviewed
+            # register contract keeps it out of product profiles until
+            # those exist; the stock PROM's 1394 probe waits on them.
+            ieee1394_absent: true
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick, hw/misc/tsb12lv22.c]
+            notes: >-
+              The IOC3 subsystem field is the unobserved placeholder, and no
+              source gives where the IO7's Ethernet address comes from. The
+              IEEE 1394 link controller is left out, a stated limitation:
+              its PHY and bus are not modelled.
+        system_timekeepers:
+          ibrick-xbridge-bridge-f:
+            kind: m48t35-compatible
+            year_base: 1968
+            initial_ip27_fixture: false
+            provenance: derived
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"]
+            notes: >-
+              The IO7's time-of-day part is not identified; this is the
+              Origin 300's M48T35-compatible choice, an approximation. IP35
+              software uses the 1968 year convention.
+        # The IP35 flash configuration block's product values: machine type
+        # 0, the C-brick rows' class, and the 400 MHz, 8 MB row's word.
+        ip35_firmware:
+          machine_type: 0
+          cpu_mode_word: 0x5414a785
+          provenance: derived
+          sources: ["firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row and its machine-type byte"]
+          notes: Inferred from the PROM's own table, as the Origin 300's values are; no C-brick flash block has been captured.
+        # The router answers the model's synthetic diagnostics, which no
+        # hardware record settles.
+        synthetic_router_diagnostics: true
+        machine_name: origin3000
+        display_description: SGI Origin 3400 (IP35), four C-bricks on an R-brick and an I-brick
+        profile: origin3400
+        lifecycle: implemented
+        # Each C-brick runs the selected fit's 4096 MB only.
+        emulator_constraints:
+          accepted_bank_sizes_mib: [4096]
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - name: CPU reset view
+              address: "0x000_001fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: local Hub-special boot view
+              address: "0x100_18000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: bounded high local Hub-special boot view
+              address: "0x100_1fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: node-zero remote Hub-special boot view
+              address: "0x100_38000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+          second_selection:
+            address: "0x100_1a000000"
+            size: "0x0080_0000"
+          provenance: derived
+          sources: [qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-carrier, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-trampolines, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip35-views]
+          notes: >-
+            The Origin 300's stock IP35 PROM 6.210 payload and views, carried
+            by each C-brick's node; the Origin 3200 inventory reports the same
+            PROM revision. Emulator compatibility policy; no fitted flash part
+            or physical reset decoder is claimed.
+        initial_module_numbers:
+          # No reviewed source places the 3400's bricks in rack slots, so
+          # these numbers are model choices; they only need to be distinct.
+          - {component: c0-chassis, number: 4, reason: "Model choice: the Origin 3200's first C-brick slot, U04."}
+          - {component: c1-chassis, number: 7, reason: "Model choice: the Origin 3200's second C-brick slot, U07."}
+          - {component: c2-chassis, number: 10, reason: "Model choice: a distinct slot for the third C-brick."}
+          - {component: c3-chassis, number: 13, reason: "Model choice: a distinct slot for the fourth C-brick."}
+          - {component: ibrick-brick, number: 16, reason: "Model choice: a distinct slot for the I-brick."}
+          - {component: rbrick-brick, number: 20, reason: "Model choice: a distinct slot for the R-brick."}
+        synthetic_identities:
+          - component: c0-bedrock
+            serial: "0x51454d554e00"
+            reason: Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.
+          - component: c1-bedrock
+            serial: "0x51454d554e01"
+            reason: Synthetic node identity N1, carrying the "QEMU" marker; not hardware evidence.
+          - component: c2-bedrock
+            serial: "0x51454d554e02"
+            reason: Synthetic node identity N2, carrying the "QEMU" marker; not hardware evidence.
+          - component: c3-bedrock
+            serial: "0x51454d554e03"
+            reason: Synthetic node identity N3, carrying the "QEMU" marker; not hardware evidence.
+          - component: ibrick-xbridge
+            serial: "0x51454d555800"
+            reason: Synthetic I-brick XBridge identity; no physical barcode is claimed.
+          - component: ibrick-ioc3
+            serial: "0x5e7454d55000"
+            reason: Synthetic I-brick IOC3 identity; no physical barcode is claimed.
+          - component: rbrick-router
+            serial: "0x51454d555200"
+            reason: Synthetic router descriptor identity; no physical barcode is claimed.
     evidence_policy: strict
     components:
       - id: rack

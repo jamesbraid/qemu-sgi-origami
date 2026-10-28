@@ -572,6 +572,19 @@
       "description": "Processor A, the first slot of processor interface 0.",
       "hardware_kind": "r12000",
       "id": "c0-cpu0",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c0-chassis",
@@ -589,6 +602,19 @@
       "description": "Processor B, the second slot of processor interface 0.",
       "hardware_kind": "r12000",
       "id": "c0-cpu1",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c0-chassis",
@@ -606,6 +632,19 @@
       "description": "Processor C, the first slot of processor interface 1.",
       "hardware_kind": "r12000",
       "id": "c0-cpu2",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c0-chassis",
@@ -623,6 +662,19 @@
       "description": "Processor D, the second slot of processor interface 1.",
       "hardware_kind": "r12000",
       "id": "c0-cpu3",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c0-chassis",
@@ -741,6 +793,19 @@
       "description": "Processor A, the first slot of processor interface 0.",
       "hardware_kind": "r12000",
       "id": "c1-cpu0",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c1-chassis",
@@ -758,6 +823,19 @@
       "description": "Processor B, the second slot of processor interface 0.",
       "hardware_kind": "r12000",
       "id": "c1-cpu1",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c1-chassis",
@@ -775,6 +853,19 @@
       "description": "Processor C, the first slot of processor interface 1.",
       "hardware_kind": "r12000",
       "id": "c1-cpu2",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c1-chassis",
@@ -792,6 +883,19 @@
       "description": "Processor D, the second slot of processor interface 1.",
       "hardware_kind": "r12000",
       "id": "c1-cpu3",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c1-chassis",
@@ -910,6 +1014,19 @@
       "description": "Processor A, the first slot of processor interface 0.",
       "hardware_kind": "r12000",
       "id": "c2-cpu0",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c2-chassis",
@@ -927,6 +1044,19 @@
       "description": "Processor B, the second slot of processor interface 0.",
       "hardware_kind": "r12000",
       "id": "c2-cpu1",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c2-chassis",
@@ -944,6 +1074,19 @@
       "description": "Processor C, the first slot of processor interface 1.",
       "hardware_kind": "r12000",
       "id": "c2-cpu2",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c2-chassis",
@@ -961,6 +1104,19 @@
       "description": "Processor D, the second slot of processor interface 1.",
       "hardware_kind": "r12000",
       "id": "c2-cpu3",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c2-chassis",
@@ -1079,6 +1235,19 @@
       "description": "Processor A, the first slot of processor interface 0.",
       "hardware_kind": "r12000",
       "id": "c3-cpu0",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c3-chassis",
@@ -1096,6 +1265,19 @@
       "description": "Processor B, the second slot of processor interface 0.",
       "hardware_kind": "r12000",
       "id": "c3-cpu1",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c3-chassis",
@@ -1113,6 +1295,19 @@
       "description": "Processor C, the first slot of processor interface 1.",
       "hardware_kind": "r12000",
       "id": "c3-cpu2",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c3-chassis",
@@ -1130,6 +1325,19 @@
       "description": "Processor D, the second slot of processor interface 1.",
       "hardware_kind": "r12000",
       "id": "c3-cpu3",
+      "identity": {
+        "cache_clock_mhz": 266,
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "fpu_identification": "0x0935",
+        "processor_identification": "0x0e35",
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 400
+          }
+        ]
+      },
       "kind": "cpu",
       "name": "R12000",
       "parent": "c3-chassis",
@@ -1513,6 +1721,78 @@
         "sources": [
           "007-4311-002 printed pages 36 and 55: four C-bricks on one R-brick, each on port 2, 3, 4 or 5"
         ]
+      },
+      {
+        "component": "rbrick-port-1",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "Port 1 carries no cable in a single-router system; it joins another R-brick, and this composition has one.",
+        "sources": [
+          "007-4311-002 printed pages 36 and 55: the 8- to 16-processor interconnect uses router ports 2 to 5 only"
+        ]
+      },
+      {
+        "component": "rbrick-port-6",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "Port 6 carries no cable in a single-router system; it joins another R-brick, and this composition has one.",
+        "sources": [
+          "007-4311-002 printed pages 36 and 55: the 8- to 16-processor interconnect uses router ports 2 to 5 only"
+        ]
+      },
+      {
+        "component": "rbrick-port-7",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "Port 7 carries no cable in a single-router system; it joins another R-brick, and this composition has one.",
+        "sources": [
+          "007-4311-002 printed pages 36 and 55: the 8- to 16-processor interconnect uses router ports 2 to 5 only"
+        ]
+      },
+      {
+        "component": "rbrick-port-8",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "Port 8 carries no cable in a single-router system; it joins another R-brick, and this composition has one.",
+        "sources": [
+          "007-4311-002 printed pages 36 and 55: the 8- to 16-processor interconnect uses router ports 2 to 5 only"
+        ]
+      },
+      {
+        "component": "c1-xio-ii-connector",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "This composition fits one I/O brick, on C-brick 0.",
+        "sources": [
+          "007-4311-002 printed pages 55 and 89: one I-brick on the first C-brick's XIO (II) connector"
+        ]
+      },
+      {
+        "component": "c2-xio-ii-connector",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "This composition fits one I/O brick, on C-brick 0.",
+        "sources": [
+          "007-4311-002 printed pages 55 and 89: one I-brick on the first C-brick's XIO (II) connector"
+        ]
+      },
+      {
+        "component": "c3-xio-ii-connector",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "This composition fits one I/O brick, on C-brick 0.",
+        "sources": [
+          "007-4311-002 printed pages 55 and 89: one I-brick on the first C-brick's XIO (II) connector"
+        ]
+      },
+      {
+        "component": "ibrick-port-b",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "The I-brick's port B is left uncabled; one cable to C-brick 0 is fitted.",
+        "sources": [
+          "108-0240-002 printed pages 2-28 and 2-29: I-brick ports A and B go to compute nodes"
+        ]
       }
     ],
     "layers": [
@@ -1532,11 +1812,17 @@
     "limits": {
       "cpus_per_node": 4,
       "dimms_per_node": 8,
+      "memory_banks_per_node": 8,
       "nodes": 8,
       "provenance": "vendor-document",
       "sources": [
         "108-0240-002 printed page 2-4: two or four processors on one or two PIMMs",
         "108-0240-002 printed pages 2-5 and 2-6: 512 MB to 8 GB in up to eight banks, banks 2n and 2n+1 on DIMM pair n, the two DIMMs of a pair matching, 256 MB, 512 MB and 1 GB DIMMs"
+      ],
+      "supported_bank_sizes_mib": [
+        256,
+        512,
+        1024
       ]
     },
     "module_instances": [
@@ -1617,14 +1903,60 @@
         4,
         4
       ],
-      "fitted_memory": {
-        "provenance": "vendor-document",
-        "reason": "Every Origin 3400 bundle ships its C-bricks without memory and the customer selects DIMMs; this composition selects none.",
-        "sources": [
-          "007-4311-002 printed pages 76 to 78: every Origin 3400 bundle ships four-processor C-bricks without memory, two R-bricks, one I-brick and one L2 controller"
+      "dimms_per_node": [
+        8,
+        8,
+        8,
+        8
+      ],
+      "memory_bank_mib_per_node": [
+        [
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512
         ],
-        "status": "unknown"
-      },
+        [
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512
+        ],
+        [
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512
+        ],
+        [
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512
+        ]
+      ],
+      "memory_mib_per_node": [
+        4096,
+        4096,
+        4096,
+        4096
+      ],
       "nodes": 4,
       "provenance": "vendor-document",
       "sources": [
@@ -1638,7 +1970,35 @@
       "min_nodes": 1,
       "provenance": "vendor-document",
       "sources": [
-        "007-4311-002 printed page 89, Appendix B: an Origin 3400 has one to eight four-processor C-bricks, at least one I-brick and at most eight I/O bricks, at most two R-bricks, in a tall rack"
+        "007-4311-002 printed page 89, Appendix B: an Origin 3400 has one to eight four-processor C-bricks, at least one I-brick and at most eight I/O bricks, at most two R-bricks, in a tall rack",
+        "007-4311-002 printed page 55, section 5.1: the 8- to 16-processor interconnect is four C-bricks cabled to one R-brick, labelled 19, with four cables in one rack"
+      ],
+      "supported_bank_mib_per_node": [
+        [
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512,
+          512
+        ]
+      ],
+      "supported_cpu_populations": [
+        [
+          4,
+          4,
+          4,
+          4
+        ]
+      ],
+      "supported_processors": [
+        {
+          "cache_mib": 8,
+          "clock_mhz": 400,
+          "part": "r12000"
+        }
       ]
     }
   },
@@ -2242,11 +2602,270 @@
   "machine": {
     "architecture_ip": "IP35",
     "board_ip": "IP35",
+    "emulation": {
+      "bedrock_nodes": {
+        "c0-bedrock": {
+          "board_id_word": 2,
+          "initiator_region": 0,
+          "installed_bank_mask": {
+            "mode": "fitted-banks"
+          },
+          "local_region": 0,
+          "notes": "Approximation. Established: product code 0. Chosen: low nibble 2, the configuration row of the selected fit; which nibble a physical C-brick presents is unknown, and a register read on a matching board would settle it.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick",
+            "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row"
+          ]
+        },
+        "c1-bedrock": {
+          "board_id_word": 2,
+          "initiator_region": 0,
+          "installed_bank_mask": {
+            "mode": "fitted-banks"
+          },
+          "local_region": 0,
+          "notes": "Approximation. Established: product code 0. Chosen: low nibble 2, the configuration row of the selected fit; which nibble a physical C-brick presents is unknown, and a register read on a matching board would settle it.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick",
+            "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row"
+          ]
+        },
+        "c2-bedrock": {
+          "board_id_word": 2,
+          "initiator_region": 0,
+          "installed_bank_mask": {
+            "mode": "fitted-banks"
+          },
+          "local_region": 0,
+          "notes": "Approximation. Established: product code 0. Chosen: low nibble 2, the configuration row of the selected fit; which nibble a physical C-brick presents is unknown, and a register read on a matching board would settle it.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick",
+            "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row"
+          ]
+        },
+        "c3-bedrock": {
+          "board_id_word": 2,
+          "initiator_region": 0,
+          "installed_bank_mask": {
+            "mode": "fitted-banks"
+          },
+          "local_region": 0,
+          "notes": "Approximation. Established: product code 0. Chosen: low nibble 2, the configuration row of the selected fit; which nibble a physical C-brick presents is unknown, and a register read on a matching board would settle it.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick",
+            "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row"
+          ]
+        }
+      },
+      "display_description": "SGI Origin 3400 (IP35), four C-bricks on an R-brick and an I-brick",
+      "emulator_constraints": {
+        "accepted_bank_sizes_mib": [
+          4096
+        ]
+      },
+      "firmware_payload": {
+        "argument": "-bios",
+        "notes": "The Origin 300's stock IP35 PROM 6.210 payload and views, carried by each C-brick's node; the Origin 3200 inventory reports the same PROM revision. Emulator compatibility policy; no fitted flash part or physical reset decoder is claimed.",
+        "path": "firmware/6.5.30/ip35prom.payload.bin",
+        "provenance": "derived",
+        "read_only": true,
+        "second_selection": {
+          "address": "0x100_1a000000",
+          "size": "0x0080_0000"
+        },
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": "0x1686a8",
+        "sources": [
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-carrier",
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-trampolines",
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip35-views"
+        ],
+        "views": [
+          {
+            "address": "0x000_001fc00000",
+            "name": "CPU reset view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          },
+          {
+            "address": "0x100_18000000",
+            "name": "local Hub-special boot view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          },
+          {
+            "address": "0x100_1fc00000",
+            "name": "bounded high local Hub-special boot view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          },
+          {
+            "address": "0x100_38000000",
+            "name": "node-zero remote Hub-special boot view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          }
+        ]
+      },
+      "initial_module_numbers": [
+        {
+          "component": "c0-chassis",
+          "number": 4,
+          "reason": "Model choice: the Origin 3200's first C-brick slot, U04."
+        },
+        {
+          "component": "c1-chassis",
+          "number": 7,
+          "reason": "Model choice: the Origin 3200's second C-brick slot, U07."
+        },
+        {
+          "component": "c2-chassis",
+          "number": 10,
+          "reason": "Model choice: a distinct slot for the third C-brick."
+        },
+        {
+          "component": "c3-chassis",
+          "number": 13,
+          "reason": "Model choice: a distinct slot for the fourth C-brick."
+        },
+        {
+          "component": "ibrick-brick",
+          "number": 16,
+          "reason": "Model choice: a distinct slot for the I-brick."
+        },
+        {
+          "component": "rbrick-brick",
+          "number": 20,
+          "reason": "Model choice: a distinct slot for the R-brick."
+        }
+      ],
+      "io_boards": {
+        "ibrick-xbridge-bridge-f": {
+          "ieee1394_absent": true,
+          "ioc3_subsystem_id": 65535,
+          "mac_source": "none",
+          "notes": "The IOC3 subsystem field is the unobserved placeholder, and no source gives where the IO7's Ethernet address comes from. The IEEE 1394 link controller is left out, a stated limitation: its PHY and bus are not modelled.",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick",
+            "hw/misc/tsb12lv22.c"
+          ]
+        }
+      },
+      "ip35_firmware": {
+        "cpu_mode_word": 1410639749,
+        "machine_type": 0,
+        "notes": "Inferred from the PROM's own table, as the Origin 300's values are; no C-brick flash block has been captured.",
+        "provenance": "derived",
+        "sources": [
+          "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row and its machine-type byte"
+        ]
+      },
+      "l1_controllers": {
+        "c0-l1": {
+          "notes": "The C-brick profile of the L1 model; its firmware revision is unknown and not carried.",
+          "profile": "cbrick",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+          ]
+        },
+        "c1-l1": {
+          "notes": "The C-brick profile of the L1 model; its firmware revision is unknown and not carried.",
+          "profile": "cbrick",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+          ]
+        },
+        "c2-l1": {
+          "notes": "The C-brick profile of the L1 model; its firmware revision is unknown and not carried.",
+          "profile": "cbrick",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+          ]
+        },
+        "c3-l1": {
+          "notes": "The C-brick profile of the L1 model; its firmware revision is unknown and not carried.",
+          "profile": "cbrick",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+          ]
+        },
+        "ibrick-l1": {
+          "notes": "The I-brick profile of the L1 model, reached from c0's L1 over the XIO cable.",
+          "profile": "ibrick",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+          ]
+        }
+      },
+      "lifecycle": "implemented",
+      "machine_name": "origin3000",
+      "profile": "origin3400",
+      "synthetic_identities": [
+        {
+          "component": "c0-bedrock",
+          "reason": "Synthetic node identity N0, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e00"
+        },
+        {
+          "component": "c1-bedrock",
+          "reason": "Synthetic node identity N1, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e01"
+        },
+        {
+          "component": "c2-bedrock",
+          "reason": "Synthetic node identity N2, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e02"
+        },
+        {
+          "component": "c3-bedrock",
+          "reason": "Synthetic node identity N3, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e03"
+        },
+        {
+          "component": "ibrick-xbridge",
+          "reason": "Synthetic I-brick XBridge identity; no physical barcode is claimed.",
+          "serial": "0x51454d555800"
+        },
+        {
+          "component": "ibrick-ioc3",
+          "reason": "Synthetic I-brick IOC3 identity; no physical barcode is claimed.",
+          "serial": "0x5e7454d55000"
+        },
+        {
+          "component": "rbrick-router",
+          "reason": "Synthetic router descriptor identity; no physical barcode is claimed.",
+          "serial": "0x51454d555200"
+        }
+      ],
+      "synthetic_router_diagnostics": true,
+      "system_timekeepers": {
+        "ibrick-xbridge-bridge-f": {
+          "initial_ip27_fixture": false,
+          "kind": "m48t35-compatible",
+          "notes": "The IO7's time-of-day part is not identified; this is the Origin 300's M48T35-compatible choice, an approximation. IP35 software uses the 1968 year convention.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"
+          ],
+          "year_base": 1968
+        }
+      }
+    },
     "generation": "SN1",
     "kernel_ip": "IP27",
-    "model_role": "reference",
+    "model_role": "emulation-target",
     "name": "Origin 3400",
-    "notes": "An Origin 3400 of 16 processors drawn with one R-brick, as the technical configuration guide's 8- to 16-processor interconnect draws it: four four-processor C-bricks on router ports 2 to 5 and an I-brick on the first C-brick's XIO (II) connector at its XBridge port A. The bundles ship a second R-brick, which this composition does not show. The R-brick presents all eight ports: an Origin 3400 R-brick ships with two of them switched off, and which two and how is not established by any source this tree cites. The rack's L2 controller, which the guide requires beside an R-brick, is not modelled, nor is the R-brick's USB hub traffic to the C-brick L1s; running without them is a stated limitation, not a claim that the hardware does. The C-brick layer carries one two-processor interface, no L1 and no memory or clock fit, so this configuration does not yet describe a fitted C-brick and never compiles."
+    "notes": "An Origin 3400 of 16 processors drawn with one R-brick, as the technical configuration guide's 8- to 16-processor interconnect draws it: four four-processor C-bricks on router ports 2 to 5 and an I-brick on the first C-brick's XIO (II) connector at its XBridge port A. The bundles ship a second R-brick, which this composition does not show. The R-brick presents all eight ports: an Origin 3400 R-brick ships with two of them switched off, and which two and how is not established by any source this tree cites. The rack's L2 controller, which the guide requires beside an R-brick, is not modelled, nor is the R-brick's USB hub traffic to the C-brick L1s; running without them is a stated limitation, not a claim that the hardware does. Each C-brick is fitted as the Origin 3200's is, four 400 MHz R12000s with 8 MB secondary caches and 4096 MB in eight 512 MB banks; the bundles ship C-bricks without memory, so the memory is a model choice. The router answers the model's synthetic diagnostics, which no hardware record settles. The stock PROM's discovery prints one failed vector read and a bad link on each node before it finds the router; the cause is not diagnosed."
   },
   "model_version": 1,
   "open_questions": [],

@@ -77,10 +77,11 @@ static const TopologyExtra topology_extras[] = {
       STORAGE_BINDING, true },
     { "origin300-pci-expansion", STORAGE_BINDING, true },
     /*
-     * The Origin 3200's bricks carry no one-wire part and their L1
+     * The Origin 3000 bricks carry no one-wire part and their L1
      * profiles synthesize their records, so nothing here is marked.
      */
     { "origin3200", "", .unmarked = true },
+    { "origin3400", "", .unmarked = true },
 };
 
 typedef struct MachineCase {

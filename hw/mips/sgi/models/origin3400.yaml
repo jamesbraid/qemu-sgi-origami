@@ -55,6 +55,46 @@ connector_population:
     reason: C-brick 3 on R-brick port 5, one of the four ports a C-brick may use.
     provenance: vendor-document
     sources: ["007-4311-002 printed pages 36 and 55: four C-bricks on one R-brick, each on port 2, 3, 4 or 5"]
+  - component: rbrick-port-1
+    occupancy: empty
+    reason: Port 1 carries no cable in a single-router system; it joins another R-brick, and this composition has one.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 36 and 55: the 8- to 16-processor interconnect uses router ports 2 to 5 only"]
+  - component: rbrick-port-6
+    occupancy: empty
+    reason: Port 6 carries no cable in a single-router system; it joins another R-brick, and this composition has one.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 36 and 55: the 8- to 16-processor interconnect uses router ports 2 to 5 only"]
+  - component: rbrick-port-7
+    occupancy: empty
+    reason: Port 7 carries no cable in a single-router system; it joins another R-brick, and this composition has one.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 36 and 55: the 8- to 16-processor interconnect uses router ports 2 to 5 only"]
+  - component: rbrick-port-8
+    occupancy: empty
+    reason: Port 8 carries no cable in a single-router system; it joins another R-brick, and this composition has one.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 36 and 55: the 8- to 16-processor interconnect uses router ports 2 to 5 only"]
+  - component: c1-xio-ii-connector
+    occupancy: empty
+    reason: This composition fits one I/O brick, on C-brick 0.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 55 and 89: one I-brick on the first C-brick's XIO (II) connector"]
+  - component: c2-xio-ii-connector
+    occupancy: empty
+    reason: This composition fits one I/O brick, on C-brick 0.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 55 and 89: one I-brick on the first C-brick's XIO (II) connector"]
+  - component: c3-xio-ii-connector
+    occupancy: empty
+    reason: This composition fits one I/O brick, on C-brick 0.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 55 and 89: one I-brick on the first C-brick's XIO (II) connector"]
+  - component: ibrick-port-b
+    occupancy: empty
+    reason: The I-brick's port B is left uncabled; one cable to C-brick 0 is fitted.
+    provenance: vendor-document
+    sources: ["108-0240-002 printed pages 2-28 and 2-29: I-brick ports A and B go to compute nodes"]
 module_instances:
   - model: layers/modules/r-brick.yaml
     prefix: rbrick-
