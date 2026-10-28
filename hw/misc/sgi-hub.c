@@ -2774,7 +2774,7 @@ static const char *const sgi_hub_led_progress[0x61] = {
     [0x52] = "initializing I/O devices",
     [0x53] = "locating the console device",
     [0x54] = "console device located",
-    [0x55] = NULL, /* reserved (source marks this value avoid-use) */
+    [0x55] = NULL, /* reserved (avoid-use) */
     [0x56] = "I/O device initialization complete",
     [0x57] = "the Hub's error-status registers have been saved off",
     [0x58] = "the Hub's error-status registers have been cleared",
@@ -2788,7 +2788,7 @@ static const char *const sgi_hub_led_progress[0x61] = {
     [0x60] = "I2C bus reset complete",
 };
 
-/* Firmware's failure codes, 0x81-0xb5, from the same source. */
+/* Firmware's failure codes, 0x81-0xb5. */
 static const char *const sgi_hub_led_failure[0xb6 - 0x81] = {
     [0x00] = "floating-point unit failed self-test", /* 0x81 */
     [0x01] = "restarting after failure", /* 0x82 */
@@ -2835,7 +2835,7 @@ static const char *const sgi_hub_led_failure[0xb6 - 0x81] = {
     [0x26] = "low-level fabric protocol failed after reset", /* 0xa7 */
     [0x27] = "low-level fabric protocol never came up after reset", /* 0xa8 */
     [0x28] = "no good local memory found", /* 0xa9 */
-    [0x29] = NULL, /* 0xaa: reserved (source marks this value avoid-use) */
+    [0x29] = NULL, /* 0xaa: reserved (avoid-use) */
     /* 0xab */
     [0x2a] = "surveying the rest of the interconnect fabric did not succeed",
     [0x2b] = "node-id calculation failed", /* 0xac */
