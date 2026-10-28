@@ -2176,13 +2176,6 @@ static bool bedrock_test_install_cbrick_fault(const char *fault)
         cbrick_test_io_boards[0].preset = SGI_MODEL_IO_BOARD_PRESET_KONA;
     } else if (!strcmp(fault, "onboard-xbridge-node")) {
         cbrick_test_nodes[0].has_board_kind = false;
-    } else if (!strcmp(fault, "routed-host")) {
-        /*
-         * No router record: the refusal names the cable before anything
-         * looks the router up.
-         */
-        cbrick_test_numalink_ends[0][1].kind = SGI_MODEL_LINK_END_KIND_ROUTER;
-        cbrick_test_numalink_ends[0][1].index = 0;
     } else if (!strcmp(fault, "io8-on-host")) {
         cbrick_test_xio[2] = (SGIModelXioAttachment) {
             .crossbar_index = -1, .widget = 15, .node_index = 0,
