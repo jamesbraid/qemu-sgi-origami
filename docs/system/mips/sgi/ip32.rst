@@ -2,124 +2,128 @@
 
 .. _sgi-ip32:
 
-SGI O2 (IP32)
+================
+SGI IP32: O2
+================
+
+The O2 is a Silicon Graphics entry workstation. A published hardware
+page dates it to 1996 as the successor of the Indy and names its chips
+as CRIME, MACE and GBE (:src:`bukosek-sgi-o2 Architecture`), *observed*.
+It keeps memory, graphics and I/O data in one pool of main memory
+(:src:`o2-technical-report p. 4`), *established*. The CRIME 1.5 specification
+gives CRIME's roles (:src:`sgi-crime-1.5-spec Table 3-1, PDF p. 48`),
+*established*.
+
+The technical report lists the R5000 and R10000
+(:src:`o2-technical-report Table 2-1`), *established*. The same
+hardware page lists five processor families, RM5271 (RM5200 family),
+R5000, RM7000, R10000 and R12000 (:src:`bukosek-sgi-o2 Processor
+options`), *observed*. No bootable O2 machine exists. Facts are rated as
+described in :ref:`sgi-ratings`.
+
+.. _sgi-ip32-current:
+
+Current model
 =============
 
-The ``o2`` machine selects a bounded functional O2 configuration. It keeps
-firmware, platform identity and initial flash protection state as caller
-inputs. Experimental register checks use the same machine.
+QEMU provides one O2 machine, ``o2-test`` (``hw/mips/sgi/o2.c``). It is a
+synthetic register test profile that gives the qtests of the O2 chips a
+board to run on. It is not a machine that boots an operating system, and
+no functional test boots one on it. By default it fits:
 
-.. _sgi-ip32-processor:
+- one R10000 at a fixed 195 MHz, the only processor it accepts;
+- 64 MiB of RAM, with 128 MiB or, in the eight-bank profile, 1 GiB as
+  options;
+- CRIME, the MACE host bridge with its two serial ports and real-time
+  clock, and the MACE Ethernet MAC with no PHY;
+- two AIC-7880 SCSI controllers at PCI device 1 and 2.
 
-Processor selection
--------------------
-
-The selected processor is one big-endian R10000SC at 195 MHz with 1 MiB
-secondary cache. The catalogued module is 030-1247-001. The reset word
-``0x00198603`` and Config0 ``0x6c198603`` select the existing functional
-64-byte secondary-block policy. These are model choices, not measured
-module straps. Cache-data visibility is disabled. CPU memory and DMA use
-QEMU's coherent RAM.
-
-The January 1999 *Remanufactured O2 Visual Workstation Product Guide*,
-number 1065, PDF pages 4 and 12, lists one R10000 with 1 MiB secondary cache
-and a memory range of 64 MB to 1 GB. The selected 195 MHz module and its
-reset behavior are bounded selections, rather than a claim about every O2.
-
-.. _sgi-ip32-memory:
-
-Memory selection
-----------------
-
-This configuration accepts exactly 1 GiB, represented by eight logical
-128 MiB CRIME banks. The existing reset low-RAM response and temporary
-boot-RAM routing remain functional approximations. They do not establish
-socket-to-register wiring, physical cache visibility or ECC behavior.
-
-The *O2 Workstation Hardware Reference Guide*, 007-3275-003, printed pages
-28--31, describes four equal-capacity DIMM pairs and requires sockets 1
-and 2 to be populated. The *CRIME 1.5 Specification*, revision 0.3,
-PDF pages 135--138 and 149--154, describes the controller's external banks
-and controls. DIMM socket pairs and CRIME logical banks are distinct.
-The catalogue's eight DIMMs and eight-bank arithmetic describe only this
-selected capacity.
+GBE, the boot flash and the PHY are options. Each chip's page describes
+the device, what the profile does with it and how it is tested.
 
 .. _sgi-ip32-components:
 
-Fixed component selection
--------------------------
+Components
+==========
 
-The processor connects to CRIME through its system interface. The machine
-always constructs MACE, two serial ports, RTC, PS/2, Ethernet and audio,
-one GBE display controller, two onboard AIC-7880 functions and the selected
-ICS1890-compatible PHY at MDIO address 8. The existing legacy CRIME
-interface, rendering and memory transfer, Misc Control word compatibility
-and Ethernet low-RAM DMA compatibility are selected functional policies.
-They do not identify fitted ASIC revisions.
+.. list-table::
+   :header-rows: 1
 
-The *CRIME 1.5 Specification*, revision 0.3, PDF pages 47--52 and 150--152,
-and *MACE I/O ASIC Specification* 2.0, printed pages 133 and 157--165,
-describe the address and PCI interfaces. Existing public driver expectations
-inform the functional model, rather than proving physical byte placement.
-The two AIC functions retain independent interrupts and the ordinary native
-PCI path. Storage diagnostics and their event sink are disabled.
+   * - Part
+     - Role
+     - Page
+   * - CRIME
+     - Memory controller, processor interface, interrupt controller and
+       rendering engine
+     - :doc:`hardware/crime`
+   * - MACE
+     - I/O bridge: PCI host, serial, keyboard, timers, audio interface
+     - :doc:`hardware/mace`
+   * - MACE Ethernet (MAC-110)
+     - 10/100 Mb/s MAC inside MACE
+     - :doc:`hardware/mace-ethernet`
+   * - ICS1890
+     - Ethernet PHY the profile can attach
+     - :doc:`hardware/ics1890`
+   * - GBE
+     - Display back end
+     - :doc:`hardware/gbe`
+   * - AD1843
+     - Audio codec behind MACE
+     - :doc:`hardware/ad1843`
+   * - AIC-7880
+     - SCSI controller
+     - :doc:`hardware/aic7880`
+   * - AT29C040A
+     - Boot flash
+     - :doc:`hardware/at29c040a`
+   * - DS1685
+     - Real-time clock (DS1687 on the board)
+     - :doc:`hardware/ds1685`
+   * - R10000
+     - Processor
+     - :doc:`hardware/r10000`
 
-Firmware and platform inputs
-----------------------------
+.. _sgi-ip32-published:
 
-The selected AT29C040A-compatible writable flash requires a complete
-512 KiB image at offset zero and explicit initial protection and boot-block
-lock states. The existing flash and RTC backends retain persistence and
-failure behavior. Their preparation belongs to the ``ip32`` launch recipe,
-so the catalogue does not advertise generic Scalable Node flash stores.
+Published machines
+==================
 
-Supply the 48-bit test serial, 128 EPROM bytes, seven status bytes and
-password-clear input explicitly. They are caller-provisioned identity,
-not a factory image or a source for an Ethernet address. Ethernet uses
-its separately supplied station address.
+Three published sources show real O2s. Each is rated *observed*.
 
-.. _sgi-ip32-o2plus:
+- An OpenBSD 5.2 boot report of an O2 with a 195 MHz R10000 revision 2.7
+  and a 1024 KB secondary cache (:src:`dmesgd-2432 cpu0`). It shows CRIME
+  revision 10.1, a MACE PCI bridge revision 1, the MAC-110 revision 1
+  with a DP83840 PHY at MII address 8, an AD1843 revision 1 and GBE
+  revision 1.
+- A NetBSD 9.99.31 boot report of an O2 with an R12000
+  (:src:`dmesgd-5290 cpu0`). It shows a CRIME ID of ``0x1000000000a1``
+  (NetBSD prints it in decimal, 17592186044577, converted here),
+  a MACE PCI bridge revision 1 and a DP83840 PHY at MII address 8.
+- A published hardware inventory of an O2 with a 300 MHz R5000-family
+  processor (:src:`bukosek-sgi-o2 My O2`).
 
-O2+ processor selection
------------------------
+The profile's defaults differ from these. These are model limits:
 
-The sole ``o2`` machine also accepts ``variant=o2plus``, selecting one
-400 MHz R12000 family CPU with 2 MiB L2 and the same 1 GiB expansion fit.
-This changes the CPU module selection, not the board connections. It does
-not admit the published 512 MB starting population or the RM7000A product.
-The existing catalogue configuration name ``o2plus`` selects this offering.
+.. list-table::
+   :header-rows: 1
 
-``-cpu R12000`` alone is enough: the board fits the module's part,
-PRId ``0x00000e35``, FPU identification ``0x00000900`` and reset mode
-word ``0x011a8603``, which selects a 2 MiB secondary cache with 16-word
-blocks. It refuses a ``-cpu`` value that differs. The resulting Config0 is
-``0x6d1a8603``.
-PRId revision and FPU identity are compatibility selections, not measured
-O2+ values. The reset word chooses legal mode fields and 64-byte secondary
-blocks. It is not a module reset-ROM capture. The published R12000A name
-does not establish those missing silicon and strap values.
-
-SGI's announcement *SGI Introduces New Value-Rich Silicon Graphics O2+
-Visual Workstation* (August 14, 2001) specifies the 400 MHz R12000A,
-2 MB L2 and 512 MB starting memory, with a 256 MB--1 GB line-wide range.
-The *Silicon Graphics O2+ Workstation Hardware Reference Guide*,
-007-4486-001, printed pages 3--4, distinguishes the processor families.
-NEC's *VR10000 Series User's Manual*, fourth edition, U10278EJ4V0UM00,
-PDF pages 180--182, 230 and 358, supplies the selected legal mode fields.
-The expansion capacity is represented here as exactly 1 GiB.
-
-All existing peripheral, native storage, caller identity, writable flash,
-coherent-memory and temporary boot-RAM policies remain selected with their
-stated limitations. R12000A-specific ECC syndrome behavior, pipeline timing
-and speculative-store simulation remain unqualified. Initial execution uses
-managed instruction counting at shift 3 and nominal 400 MHz. Same-variant
-PROM, installation, installed boot and interaction evidence is still required.
-
-Limitations
------------
-
-Initial guest qualification uses managed instruction counting at shift 3,
-at nominal 195 MHz. Host-paced identity and networking remain known
-limitations. The catalogue does not establish a completed guest installation,
-audio, broader OpenGL, complete diagnostics, physical timing or O2+ guest acceptance.
-The existing migration refusal remains in force.
+   * - Item
+     - Published machines
+     - ``o2-test`` default
+   * - CRIME ID low byte
+     - ``0xa1``
+     - ``0xb1``, the value in the CRIME 1.5 specification
+       (``crime-profile=legacy-software`` returns ``0xa1``)
+   * - Ethernet PHY
+     - DP83840 at MII address 8
+     - none; an ICS1890 is an option
+   * - R10000 revision
+     - 2.7
+     - 2.6
+   * - Processors
+     - R5000, RM5271, RM7000, R10000 and R12000 modules
+     - R10000 at 195 MHz only
+   * - Parallel port
+     - fitted
+     - absent

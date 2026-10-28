@@ -49,8 +49,10 @@ The slots each machine offers are on :ref:`sgi-ip30-graphics` and
 :ref:`sgi-sn-graphics-pipes`. The pipe's chassis wiring is on
 :ref:`sgi-onyx2`.
 
-No register specification of the three SGI families is public. Almost all
-of each board's register and rendering behaviour is an *approximation*
+The O2's display controller, GBE, is not one of these boards and has
+its own page (:ref:`sgi-gbe`). No register specification of the three SGI
+board families above is public. Almost all of each of their
+register and rendering behaviour is an *approximation*
 built from public drivers, published inventories and the behaviour of the
 stock software, as the board pages state.
 

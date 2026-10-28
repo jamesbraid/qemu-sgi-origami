@@ -1,0 +1,224 @@
+.. SPDX-License-Identifier: BSD-3-Clause
+
+.. _sgi-aic7880:
+
+======================================
+Adaptec AIC-7880 SCSI controller (O2)
+======================================
+
+The AIC-7880 is Adaptec's single-chip PCI SCSI host adapter with Ultra
+(20 MHz) SCSI. The O2 has two on the MACE PCI bridge, at PCI devices 1 and
+2, each with its own SCSI bus. They carry the internal disk and CD-ROM
+(:doc:`mace`). QEMU models the part as ``aic7880`` in
+``hw/scsi/aic7880.c``, and the O2 test profile (:doc:`../ip32`) fits two.
+
+Facts are rated as described in :ref:`sgi-ratings`.
+
+No document about the AIC-7880 itself is public in the sources used here.
+The register addresses, the reset values and the PCI layout come from the
+data book of its predecessor, the AIC-7870, and from the Linux driver, which
+supports both parts. A fact taken from the AIC-7870 is *inferred* for the
+AIC-7880 unless this page says it was seen on an AIC-7880.
+
+.. _sgi-aic7880-sources:
+
+Sources
+=======
+
+- The AIC-7870 data book, :src:`adaptec-aic-7870-data-book`. Page numbers
+  below are PDF pages. The book never mentions the AIC-7880.
+- Linux ``drivers/scsi/aic7xxx/aic7xxx.reg`` and ``aic7xxx_pci.h``, and
+  ``arch/mips/pci/ops-mace.c``, at ``db2ddb871435``, as software
+  expectations.
+- The OpenBSD report of an O2, :src:`dmesgd-2432 ahc0`, and the NetBSD report
+  of an O2 with an R12000, :src:`dmesgd-5290 ahc0`.
+- A published hardware inventory of an O2, :src:`bukosek-sgi-o2 My O2`.
+
+.. _sgi-aic7880-identity:
+
+Identity
+========
+
+The PCI vendor ID is ``0x9004`` (Adaptec) and the device ID is ``0x8078``.
+Linux lists ``0x8078`` as the AIC-7880 (``aic7xxx_pci.h``), *software
+expectation*. The inventory shows two "Integral SCSI controller" entries
+reading "Version ADAPTEC 7880" and PCI adapters with vendor ``0x9004`` and
+device ``0x8078`` in slots 1 and 2 (:src:`bukosek-sgi-o2 My O2`), *observed*.
+Both captures show the controllers at PCI device 1 and 2, with interrupts 8
+and 9 on the CRIME input numbering
+(:src:`dmesgd-2432 ahc0`, :src:`dmesgd-5290 ahc0`), *observed*.
+
+The OpenBSD report prints revision ``0x00`` for both
+(:src:`dmesgd-2432 ahc0`), *observed*. The model reads revision 0. It sets
+no subsystem IDs, so they read zero, an *approximation*: no source reports
+them. The class code is SCSI controller
+(:src:`adaptec-aic-7870-data-book p. 114`), and the interrupt pin is INTA
+(:src:`adaptec-aic-7870-data-book p. 62, 124`), as on the AIC-7870.
+
+The NetBSD report shows "Ultra Wide Channel A, SCSI Id=0, 16/253 SCBs",
+no SEEPROM and "left over BIOS settings" for each controller
+(:src:`dmesgd-5290 ahc0`), *observed*. The OpenBSD report shows the same
+chips negotiating 16-bit synchronous transfers at 20 MHz with an offset of
+8 to one disk (:src:`dmesgd-2432 ahc0`), *observed*.
+
+PCI configuration
+=================
+
+Base address 0 is a 256-byte I/O window, reset 1, with bits 31:8
+writable. Base address 1 is a memory window, reset 0, whose address bits
+move in 4096-byte steps with the 256-byte register file repeating inside
+the 4 KiB range :src:`adaptec-aic-7870-data-book p. 119-120`, *established*
+for the AIC-7870 and *inferred* for the AIC-7880. The model registers a
+256-byte I/O BAR and a 4 KiB memory BAR, always, and the register file
+repeats every 256 bytes inside the memory window.
+
+On the AIC-7870, COMMAND bits 0, 1, 2, 4, 6 and 8 are writable and the
+others read zero :src:`adaptec-aic-7870-data-book p. 109-110`. The model
+uses QEMU's generic PCI mask plus parity error response: bits 0, 1, 2, 6, 8
+and 10 are writable, so bit 4 is not and bit 10 is, *approximation*.
+The MACE bridge further refuses COMMAND writes outside I/O enable,
+memory enable, bus master and parity error response
+(:ref:`sgi-mace-pci`).
+
+Linux ORs ``0x1000`` into any four-byte read of configuration register ``0x40``
+on the two onboard controllers, with the comment that the Ultra bit was never
+set for the onboard SCSI chips (``ops-mace.c``), *software expectation*. The
+model has no such fix-up. Register ``0x40`` reads zero.
+
+Register map
+============
+
+The register file is 256 bytes, accessed one byte at a time. The model's
+addresses match the Linux ``aic7xxx.reg`` file. The addresses in the
+data book's tables 3-1 to 3-7 agree
+:src:`adaptec-aic-7870-data-book p. 58-63`, *established* for the
+AIC-7870. Linux uses the same addresses for the AIC-7880, *software
+expectation*.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Offset
+     - Registers
+     - Notes
+   * - ``0x00``-``0x1f``
+     - SCSI block: SCSISEQ, SXFRCTL0/1, SCSISIGI/SCSISIGO (``0x03``),
+       SCSIRATE, SCSIID, SCSIDATL, STCNT, SSTAT0/1, SIMODE0/1, SCSIBUSL,
+       SHADDR, SBLKCTL
+     - Reset zero, except SBLKCTL (below).
+   * - ``0x20``-``0x5f``
+     - Scratch RAM, 64 bytes
+     - Used by the sequencer program.
+   * - ``0x60``-``0x6f``
+     - Sequencer: SEQCTL, SEQRAM, SEQADDR0/1, ACCUM, SINDEX, DINDEX,
+       BRKADDR0/1, ALLONES, ALLZEROS, FLAGS, SINDIR, DINDIR, FUNCTION1,
+       STACK
+     - SEQCTL resets to ``0x90`` and BRKADDR1 to ``0x80``.
+   * - ``0x84``-``0x9f``
+     - Host block: DSCOMMAND0 (``0x84``), DSPCISTATUS (``0x86``), HCNTRL,
+       HADDR (``0x88``), HCNT (``0x8c``), SCBPTR, INTSTAT, CLRINT/ERROR
+       (``0x92``), DFCNTRL, DFSTATUS, DFDAT, SCBCNT, QINFIFO, QINCNT,
+       QOUTFIFO, QOUTCNT
+     - HCNTRL resets to ``0x05`` (paused, chip reset), DFSTATUS to
+       ``0x21``.
+   * - ``0xa0``-``0xbf``
+     - SCB array page, 32 bytes
+     - Sixteen pages, selected by SCBPTR.
+
+The reset values for SEQCTL, BRKADDR1, HCNTRL and DFSTATUS are the data
+book's initial values :src:`adaptec-aic-7870-data-book p. 60-61`,
+*established* for the AIC-7870. The data book gives SBLKCTL a reset that
+depends on the WIDEPS# strap. The model resets it to ``0xc2``, with wide
+selection set, an *approximation*: the board's strap is unknown. Linux
+calls the register at ``0x84`` DSCOMMAND0; the book calls it DSCOMMAND.
+
+An access to a register the model does not implement logs ``LOG_UNIMP``.
+A read returns ``0xff``. Either access pauses the sequencer, sets the error
+state and raises the host interrupt, so a guest sees a stopped chip rather
+than a silent success.
+
+Sequencer
+=========
+
+The AIC-7870 sequencer runs from 512 words of 29-bit microcode RAM
+(:src:`adaptec-aic-7870-data-book p. 4`), *established*, which the driver
+loads through SEQCTL and SEQRAM. The model holds 512 instructions of four
+bytes and runs the program the driver uploads, using the instruction format
+and opcodes of the Linux assembler (``aicasm_insformat.h``), *software
+expectation*. The call stack has four entries and is read through the STACK
+register, two bytes per entry, low byte first
+:src:`adaptec-aic-7870-data-book p. 105`, *established* for the AIC-7870.
+
+By default the sequencer runs without modelled time: it executes up to 256
+instructions in a burst after each guest access or SCSI event. With the
+``x-sequencer-clocked`` property it executes one instruction per cycle of
+125 ns, or 100 ns when SEQCTL FASTMODE is set. The data book gives a
+sequencer clock of 8 or 10 MHz, selected by FASTMODE, from a nominal 40 MHz
+input clock (:src:`adaptec-aic-7870-data-book p. 4, 48, 53, 98`),
+*established* for the
+AIC-7870. The AIC-7880's clock and timing are *unknown*, so both modes are
+an *approximation*. The O2 test profile does not set ``x-sequencer-clocked``.
+
+SCSI behaviour
+==============
+
+The model is an initiator. It runs one SCSI command at a time over a
+QEMU SCSI bus with up to 16 targets and 8 logical units per target and no
+tagged queueing. Selection addresses targets 0-15 when SBLKCTL selects the
+wide connection, and 0-7 otherwise. Data moves by DMA through the data FIFO
+and by byte-wise host access to DFDAT. Both read and write phases run as
+asynchronous narrow transfers. A data phase with a nonzero synchronous
+offset or wide transfer programmed in SCSIRATE sets the error state, an
+*approximation* rather than a statement about the chip.
+
+Interrupts raise INTA when the host interrupt enable is set, the chip is not
+powered down and PCI bus master is enabled. INTSTAT carries the
+sequencer, SCSI, break and error causes. The machine wires the two
+controllers to MACE PCI interrupt inputs 0 and 1, which reach CRIME
+slots 8 and 9 (:doc:`mace`).
+
+Measurements
+============
+
+No register of this part has been read on a physical machine for this
+project. Published captures are listed under Identity.
+
+.. _sgi-aic7880-limits:
+
+Model limits
+============
+
+- The reset values, the BAR sizes and the sequencer clock come from the
+  AIC-7870 and are provisional for the AIC-7880.
+- One command at a time. Initiator mode only.
+- Asynchronous, narrow data transfers only, though the real controllers
+  negotiate wide and synchronous transfers (Identity).
+- No tagged queueing, target mode, SEEPROM, option ROM, SCAM, or
+  synchronous or wide negotiation.
+- The ``external-scb-ram``, ``external-scb-size`` and
+  ``external-scb-width`` properties model external SCB memory of 1, 2, 4
+  or 8 KiB with 8 or 9 data bits. The O2 test profile does not set them.
+- Configuration register ``0x40`` reads zero. The model has no counterpart
+  of the Ultra bit Linux ORs in on the O2.
+- The O2 test profile accepts at most one SCSI disk or CD-ROM, at logical
+  unit 0 and target 0 to 6, across both controllers.
+- ``o2-pci-diagnostic`` (QTest only) and ``o2-storage-diagnostic`` (reports
+  every DMA to the machine) are test hooks, not hardware features.
+- Revision and subsystem IDs are a model choice. An unsupported register
+  access pauses the chip as described above.
+- Migration works only between identical builds. A save while a command is
+  in flight or a DMA is active is refused.
+
+Tests
+=====
+
+``tests/qtest/aic7880-test.c`` is the controller's own test, with more
+than 300 cases and a 300 s timeout. Its names show the areas: PCI
+identity (``pci-identity``), command DMA, the function registers, SCB
+pointers and aliases, external SCB RAM, wide selection, the PCI status
+register, host DMA and FIFO thresholds, and the sibling policy
+(``o2-sibling-policy-default``, ``o2-sibling-bar-repeats-last-slice``).
+``tests/qtest/sgi-o2-test.c`` covers the O2 view of the controllers:
+``o2/mace-pci-functional/unused-aic-config`` (configuration registers and
+BARs), ``o2/aic-pci-diagnostic``, ``o2/storage-pio-aic-hcntrl`` and the
+``o2/default-aic-*`` DMA cases against 64 MiB, 128 MiB and 1 GiB of RAM.
