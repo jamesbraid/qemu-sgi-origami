@@ -1025,7 +1025,7 @@ static MemTxResult tigon_publish_stats(TigonState *s, uint64_t addr)
      * seven of the field, so placing the address at the field's start instead
      * makes it print the address short by its first two octets followed by
      * two zeroes: 0:12:34:56:0:0 for a card at 52:54:00:12:34:56, observed on
-     * run irix-20260913T170938-bf92af.
+     * a guest run.
      */
     tigon_stats_put32(image, TI_STAT_IF_PHYS_ADDRESS,
                       ((uint32_t)s->station_addr.a[0] << 8) |
