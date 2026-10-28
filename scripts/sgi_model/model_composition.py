@@ -1014,8 +1014,9 @@ def validate_router_ports(model: dict[str, Any]) -> None:
 def validate_xio_cables(model: dict[str, Any]) -> None:
     """Each XIO cable joins two XIO connectors that share a bus.
 
-    An end is a node II, a connector on a bus a node ASIC masters, or a
-    crossbar port, a connector naming its XBridge port. Two node IIs
+    An end is a node II, a connector on a bus a node ASIC masters, a
+    crossbar port, a connector naming its XBridge port, or a board's own
+    connector. Two node IIs
     cannot be cabled together, and a connector takes one cable. The
     shared bus ties the cable to the graph the bus bindings built, so the
     two records cannot disagree about what is attached.
@@ -1057,10 +1058,13 @@ def validate_xio_cables(model: dict[str, Any]) -> None:
             elif any(components.get(buses[bus].get("master"), {}).get("kind")
                      == "node-asic" for bus in attached.get(end, ())):
                 kinds.append("node")
+            elif components.get(connector.get("parent"), {}).get(
+                    "kind") == "board":
+                kinds.append("board")
             else:
                 raise ResolutionError(
-                    f"XIO cable '{cid}' end '{end}' is neither a node II nor "
-                    "a crossbar port")
+                    f"XIO cable '{cid}' end '{end}' is neither a node II, "
+                    "a crossbar port nor a board's connector")
         if kinds == ["node", "node"]:
             raise ResolutionError(f"XIO cable '{cid}' joins two node IIs")
         for end in ends:

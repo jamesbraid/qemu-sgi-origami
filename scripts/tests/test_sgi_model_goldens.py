@@ -45,7 +45,7 @@ CONFIGURATIONS = {
     "origin3400": "origin3400.yaml",
     "onyx2-rack": "onyx2-rack.yaml",
     "onyx2-deskside": "onyx2-deskside.yaml",
-    "onyx3000-vbrick": "onyx3000-vbrick.yaml",
+    "onyx3000": "onyx3000.yaml",
     "onyx3400": "onyx3400.yaml",
 }
 

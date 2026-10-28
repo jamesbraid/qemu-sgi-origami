@@ -3612,7 +3612,7 @@ class Origin3400RoutedTests(unittest.TestCase):
 class Onyx3000VbrickTests(unittest.TestCase):
     """The Onyx 3000 with a one-pipe V-brick on its second C-brick."""
 
-    ONYX3000 = INPUTS / "onyx3000-vbrick.yaml"
+    ONYX3000 = INPUTS / "onyx3000.yaml"
 
     def resolve(self):
         return _resolver.load_system_model(self.ONYX3000)
@@ -3631,7 +3631,8 @@ class Onyx3000VbrickTests(unittest.TestCase):
         self.assertEqual(
             [(item["id"], item["ends"]) for item in model["xio_cables"]],
             [("c0-to-ibrick", ["c0-xio-ii-connector", "ibrick-port-a"]),
-             ("c1-to-vbrick", ["c1-xio-ii-connector", "vbrick-port-a"])])
+             ("c1-to-vbrick", ["c1-xio-ii-connector", "vbrick-port-a"]),
+             ("vbrick-to-v12", ["vbrick-port-8", "vbrick-v12-connector"])])
         attachments = {(item["component"], item["bus"], item["role"])
                        for item in model["connections"]}
         self.assertIn(("vbrick-xbridge-crossbar", "c1-xio-ii",
@@ -3695,7 +3696,7 @@ class Onyx3000VbrickTests(unittest.TestCase):
                               "kind": "module",
                               "provenance": "derived"}]}}},
                 sort_keys=False))
-            path = root / "onyx3000-vbrick.yaml"
+            path = root / "onyx3000.yaml"
             composition = yaml.safe_load(path.read_text())
             composition["module_instances"].append(
                 {"model": "layers/modules/g-brick.yaml", "prefix": "gbrick-",
@@ -3706,11 +3707,27 @@ class Onyx3000VbrickTests(unittest.TestCase):
                     "together"):
                 _resolver.resolve_system_model(path, composition)
 
-    def test_onyx3000_never_compiles(self):
-        from sgi_model.model_compile import CompileError, compile_model
-        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
-            compile_model(self.resolve())
-
+    def test_onyx3000_compiles_the_v12_on_the_vbrick_crossbar(self):
+        from sgi_model.model_compile import compile_model
+        entry = compile_model(self.resolve())
+        boards = entry["io_boards"]
+        v12 = next(index for index, board in enumerate(boards)
+                   if board["id"] == "vbrick-v12")
+        self.assertEqual(boards[v12]["board_kind"], "ODYSSEY")
+        crossbar = next(index for index, item in enumerate(entry["crossbars"])
+                        if item["id"] == "vbrick-xbridge-crossbar")
+        # The V12 answers the second C-brick at the chosen Crosstalk port,
+        # and a cable joins that port to the board.
+        self.assertIn({"crossbar_index": crossbar, "widget": 8,
+                       "node_index": 1, "decoded_widget_mask": 0,
+                       "discovery_widget": 0},
+                      entry["xio_attachments"])
+        cable = next(item for item in entry["xio_cables"]
+                     if item["name"] == "vbrick-to-v12")
+        self.assertEqual(
+            cable["ends"],
+            [{"kind": "CROSSBAR", "index": crossbar, "port": 8},
+             {"kind": "IO_BOARD", "index": v12}])
 
 
 class Onyx3400GraphicsBrickTests(unittest.TestCase):

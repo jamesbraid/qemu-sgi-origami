@@ -413,6 +413,10 @@ def _xio_cable_ends(model: dict, components: dict[str, dict],
                 ends.append({"kind": "crossbar", "id": connector["parent"],
                              "port": port})
                 continue
+            parent = components.get(connector.get("parent"), {})
+            if parent.get("kind") == "board":
+                ends.append({"kind": "io-board", "id": parent["id"]})
+                continue
             masters = {buses[item["bus"]].get("master")
                        for item in model["connections"]
                        if item["component"] == end
@@ -619,6 +623,9 @@ def index_graph(model: dict) -> dict:
     # host port on the crossbar it is wired to, per the reviewed YAML's
     # XIO buses.
     xio_attachments = []
+    # Attachments of graphics pipe boards: a V-brick's V12 is compiled on
+    # the enclosure crossbar its cable reaches.
+    pipe_attachments = []
     xio_slots = []
     seen_widgets: set[tuple[int, int]] = set()
     for bus in model["buses"]:
@@ -772,6 +779,8 @@ def index_graph(model: dict) -> dict:
                     "node_index": controller_index,
                     "decoded_widget_mask": 0, "discovery_widget": 0,
                 })
+                if components[board].get("hardware_kind") == "odyssey":
+                    pipe_attachments.append(xio_attachments[-1])
             elif component.get("kind") == "connector":
                 controller = attachment.get("controlled_by")
                 controller_index = node_index_by_board.get(controller)
@@ -800,6 +809,11 @@ def index_graph(model: dict) -> dict:
             raise CompileError(
                 f"XIO attachment on enclosure crossbar '{crossbar}' names "
                 f"node '{node['id']}', which no XIO cable joins to it")
+        if any(record is item for item in pipe_attachments):
+            # A graphics pipe cabled to a V-brick's XBridge: an I/O board
+            # on that chip's Crosstalk port, built with the node its
+            # cable reaches.
+            continue
         raise CompileError(
             f"XIO attachments on enclosure crossbar '{crossbar}' are not "
             "compiled yet")
@@ -3083,6 +3097,10 @@ def _compile_xio_cables(model: dict, graph: dict, nodes: list[dict],
         for end in cable["ends"]:
             if end["kind"] == "node":
                 ends.append({"kind": "NODE", "index": node_index[end["id"]]})
+            elif end["kind"] == "io-board":
+                # Resolved to the board's catalogue position once the
+                # I/O boards are compiled.
+                ends.append({"kind": "IO_BOARD", "board": end["id"]})
             else:
                 ends.append({"kind": "CROSSBAR",
                              "index": crossbar_index[end["id"]],
@@ -3525,6 +3543,16 @@ def compile_model(model: dict) -> dict:
     node_populations = _compile_node_populations(
         model, graph, nodes, io_boards, xio_attachments, xio_slots,
         supported_cpu_populations)
+
+    board_ids = [board["id"] for board in io_boards]
+    for cable in xio_cables:
+        for end in cable["ends"]:
+            if "board" in end:
+                if end["board"] not in board_ids:
+                    raise CompileError(
+                        f"XIO cable '{cable['name']}' ends on '{end['board']}', "
+                        "which is not an I/O board")
+                end["index"] = board_ids.index(end.pop("board"))
 
     topology = {
         "name": model["composition"]["product"],

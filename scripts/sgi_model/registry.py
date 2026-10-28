@@ -24,6 +24,7 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin300-two-chassis", "origin200-gigachannel", "onyx2-rack",
     "origin3200",
     "origin3400",
+    "onyx3000",
     "onyx2-deskside",
     "origin300-numalink-pci-expansion",
     "origin300-pci-expansion",
