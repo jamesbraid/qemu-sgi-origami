@@ -244,7 +244,7 @@ Both drivers read ``0x30`` twice about 10 µs apart and print "RAD UST
 not incrementing" if it advanced by fewer than 3, *software expectation*.
 That ``0x30`` counts time is *inferred*; its period, reset value and
 wrap are *unknown*. On the reference Octane2 it reads zero and does not
-advance over about 5 s at the PROM menu, before any driver has run
+advance over several seconds at the PROM menu, before any driver has run
 (:ref:`sgi-rad1-octane2-ust`), *established* for that chip at that
 point.
 
@@ -638,7 +638,7 @@ it with its monitor output.
      - see below
      - ``0xc0``
      - PROM monitor, after PROM start-up
-   * - ``0x1f700030``, BAR0 ``0x30``, twice about 5 s apart
+   * - ``0x1f700030``, BAR0 ``0x30``, twice, several seconds apart
      - 32-bit
      - ``0``, ``0``
      - ``0xc0``
@@ -709,8 +709,8 @@ UST counter at the PROM
    0xffffffffbf700030:          0
 
 The two reads of BAR0 ``0x30``, through Bridge device window 3 at the
-BAR's PCI address ``0x600000``, were about 5 s apart
-(:ref:`sgi-measured-octane2-counter`). Both returned zero, so at the PROM
+BAR's PCI address ``0x600000``, were several seconds apart, within about 8 s by the
+HEART counter (:ref:`sgi-measured-octane2-counter`). Both returned zero, so at the PROM
 menu the Octane UST counter holds zero and does not advance, *established*
 for this chip at that point. That it stays stopped until a driver
 enables it is *inferred*; that zero is its power-up value, rather than a

@@ -52,8 +52,9 @@ The three guests choose from different inputs.
 
 Linux substitutes a PCI subsystem id for the chip, chosen by the part
 prefix in the Bridge's board record, and dispatches on it
-(``drivers/mfd/ioc3.c``, ``pci-xtalk-bridge.c``). It does not use the id
-the chip itself returns.
+(``drivers/mfd/ioc3.c``, ``pci-xtalk-bridge.c``). The chip has no
+subsystem register of its own, *inferred* (:ref:`sgi-ioc3-measurements`),
+so there is no id of its own to use.
 OpenBSD reads the board part from the chip's own one-wire bus and tests
 prefixes (``ioc.c``).
 
@@ -181,8 +182,9 @@ automatic. An id the table does not list gets the Cad Duo population, the
 fall-through Linux uses. The presets set the population explicitly. They
 present ``0xc303`` on the IP29 chip, ``0xc301`` on the MediaIO chip and
 ``0xc305`` and ``0xc306`` on the MENET chips. The BaseIO and BaseIO-G
-chips present ``0xffff``, the placeholder for an unobserved value. What the physical MENET chips return in their
-own subsystem register is *unknown* (see above).
+chips present ``0xffff``, a model value with no hardware counterpart
+(*approximation*), because the chip has no subsystem register
+(:ref:`sgi-ioc3-measurements`).
 
 .. _sgi-ioc3-boards-menet:
 
@@ -260,7 +262,9 @@ rows below are the board's hardware facts.
        6.5.30 kernel does not. No inventory shows one. A real MENET's
        OpenBSD ``dmesg`` would settle it.
    * - What each chip's own PCI subsystem register returns.
-     - *unknown*
+     - The chip has none, *inferred* (:ref:`sgi-ioc3-measurements`). The
+       model's subsystem column is the key that selects the model's
+       population.
      - Linux substitutes ``MENET`` and ``MENET4`` ids from the Bridge
        record.
 
@@ -321,7 +325,7 @@ SuperIO interrupt from line B of the card's slot. A stock list names
 the assembly exists, *established*. Line B reaches Bridge pin ``slot ^ 4``,
 *inferred* from the Bridge's general line-B rule, as for the Cad Duo.
 
-The record revision, the chip's subsystem id and the record name beyond
+The record revision, the model's subsystem id for the chip and the record name beyond
 OpenBSD's comment are *unknown*. Nothing a guest does depends on them
 beyond the text it prints, since the guests match the part prefix.
 

@@ -56,8 +56,8 @@ Register reads used the PROM Command Monitor's ``dump`` command after the
 firmware had initialised the machine and stopped at its menu, so no value
 is a reset value. A ``dump -w`` read is one aligned 32-bit load and a
 ``dump -d`` read one aligned 64-bit load, through the uncached processor
-segments. No command wrote a register. IRIX commands ran as root in a
-network shell or at the serial console, after a normal boot from the
+segments. No command wrote a register. IRIX commands ran as root at the
+serial console, after a normal boot from the
 same PROM. Each session's full output was kept, except where a part page
 says only the value was reported. Commands and values are reproduced
 exactly. Board barcodes, Laser IDs, serial numbers, the system
@@ -183,8 +183,8 @@ therefore PCI device 0, SCSI target 1, LUN 0 as the kernel names it. This
 is kernel bookkeeping, not an electrical measurement.
 
 ``ls -l /hw/node/xtalk`` lists widgets ``0``, ``8``, ``11`` and ``15``.
-Widget 8 holds a ``heart`` link to ``/hw/node`` and widget 11 an ``odsy``
-node. ``/hw/node/xtalk/15/pci`` lists device directories ``0`` to ``4``
+Widget 8 holds a ``heart`` link to ``/hw/node`` and widget 11 the graphics
+widget's node. ``/hw/node/xtalk/15/pci`` lists device directories ``0`` to ``4``
 beside ``controller``, ``direct``, ``io`` and ``mem`` nodes. Devices 0 to 3
 match the four PCI functions the inventory names. The inventory names no
 function at device 4 and the listing of that directory's contents was not
@@ -214,7 +214,8 @@ Timed reads
 
 Two reads were timed against a host clock. The HEART counter advanced
 375,407,256 ticks over 30.03 s of host time, 12.5012 MHz
-(:ref:`sgi-heart-octane2-counter`). The two RAD1 UST reads were about
-5 s apart (:ref:`sgi-rad1-octane2-ust`). Both intervals were bounded by
-the keystrokes that sent the commands, which limits the counter rate to
+(:ref:`sgi-heart-octane2-counter`). The two RAD1 UST reads were several
+seconds apart, within about 8 s by the HEART counter
+(:ref:`sgi-rad1-octane2-ust`). The timed interval was bounded by the
+keystrokes that sent the commands, which limits the counter rate to
 about 0.1%.
