@@ -24,7 +24,8 @@ Each family's model covers its topologies, CPUs, memory sizes and boards.
   [Spec](docs/system/mips/sgi/ip35.rst), [Bedrock](docs/system/mips/sgi/hardware/bedrock.rst).
 - **Origin 350, Onyx 350, Tezro, Onyx4** (IP53): Boots IRIX 6.5 with VPro graphics.
   [Spec](docs/system/mips/sgi/ip53.rst).
-- **O2** (IP32): WIP - boots IRIX 6.5.
+- **O2** (IP32): WIP - the CRIME, MACE, GBE and AIC-7880 chips are modelled; there is no bootable machine yet.
+  [Spec](docs/system/mips/sgi/ip32.rst).
 
 Graphics boards are IMPACT (MGRAS), InfiniteReality (KONA), VPro (Odyssey)
 and the PsiTech RAD4. The [graphics spec](docs/system/mips/sgi/hardware/graphics.rst) says
