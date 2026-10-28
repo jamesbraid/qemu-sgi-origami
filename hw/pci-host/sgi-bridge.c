@@ -1018,11 +1018,9 @@ static uint64_t sgi_bridge_read(void *opaque, hwaddr addr, unsigned size)
 
 /*
  * The older text layout: `;Part:` and the part number from byte 11. Linux
- * finds its part number there, but IRIX reads the page at fixed offsets and
- * prints the barcode as "?Part?" and the revision and name as NUL, the page
- * is a fixed-offset binary record, not the text IRIX expects. Boards whose
- * barcode, revision and name are not yet known still use it: a bare PCI
- * expansion board given no board name (board-pci-expansion.c). The IO-8's
+ * finds its part number there. Boards whose barcode, revision and name are
+ * not yet known still use it: a bare PCI expansion board given no board name
+ * (board-pci-expansion.c). The IO-8's
  * XBridge keeps its own copy of this layout in sgi-xbridge.c. A board with a
  * board name set uses the record sgi_bridge_onewire_build_record() stores
  * instead.
@@ -1055,9 +1053,8 @@ static const char sgi_bridge_onewire_image[NIC_ROM_SIZE] = {
 #define NIC_RECORD_NAME_LEN      14
 
 /*
- * The formatter IRIX shows these fields through substitutes '?' for ':' and
- * ';', and a NUL shows as '.' or '_', so a field is printable ASCII other
- * than those two.
+ * ':' and ';' delimit fields in the text form, so a field is printable ASCII
+ * other than those two.
  */
 static const char *sgi_bridge_record_field_error(const char *field,
                                                  size_t width)
@@ -1096,8 +1093,8 @@ static bool sgi_bridge_board_record_check(const SGIBridgeBoardRecord *record,
     }
     /*
      * OpenBSD's reader rejects a record whose part, bytes 21-29 and 35-37,
-     * holds anything but digits and dashes; that also keeps out the ':' the
-     * formatter IRIX prints it through would change.
+     * holds anything but digits and dashes; that also keeps out the ':'
+     * delimiter.
      */
     if (strspn(record->part, "0123456789-") != strlen(record->part)) {
         error_setg(errp, "the I/O bridge board part in a board record must "
@@ -2238,16 +2235,15 @@ static void sgi_bridge_reset_exit(Object *obj, ResetType type)
 
 /*
  * The crossbar's per-link reset, arriving. Revision D feeds the link-layer
- * block's received link-reset output into its core-logic reset, and IRIX
- * treats Bridge core programming as lost across the pulse: it saves the
- * widget control and link configuration registers, has the crossbar reset the
- * link, restores those two and rebuilds the rest. This model answers that by
- * taking the whole core as lost, the register file, the translation entries
- * and the latched error back to their power-up values, the control register's
- * four bus-reset bits included, which this chip only stores. The bounded IRIX
- * read does not prove the reset or retention state of any individual
- * register, and that boundary is open, so this is a whole-core answer to
- * whole-core evidence rather than a register-by-register account.
+ * block's received link-reset output into its core-logic reset, and the IRIX
+ * kernel treats the Bridge's core programming as lost across the pulse. This
+ * model answers that by taking the whole core as lost, the register file, the
+ * translation entries and the latched error back to their power-up values,
+ * the control register's four bus-reset bits included, which this chip only
+ * stores. The available evidence does not prove the reset or retention state
+ * of any individual register, and that boundary is open, so this is a
+ * whole-core answer to whole-core evidence rather than a register-by-register
+ * account.
  *
  * Two things deliberately stay. The interrupt pins keep their levels: the
  * devices holding them are not in this reset, and a level cleared here would
