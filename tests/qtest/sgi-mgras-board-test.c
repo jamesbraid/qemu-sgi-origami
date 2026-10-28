@@ -1002,11 +1002,11 @@ static void test_dac_gamma_curve_applies_to_scanout(void)
 }
 
 /*
- * The IRIX 6.5.30 X server's screen saver (its screen-blank routine in
- * impactsr.so) blanks by writing 0 to DAC register 4, the pixel mask,
- * through the byte ports, and unblanks by writing 0xff there. A traced
- * desktop session makes exactly those two writes when its saver fires
- * and when the pointer next moves.
+ * The IRIX 6.5.30 X server's screen saver (its screen-blank routine in the
+ * IMPACT X driver module) blanks by writing 0 to DAC register 4, the pixel
+ * mask, through the byte ports, and unblanks by writing 0xff there. A traced
+ * desktop session makes exactly those two writes when its saver fires and when
+ * the pointer next moves.
  */
 static void test_dac_pixel_mask_blanks_scanout(void)
 {

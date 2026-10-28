@@ -3983,11 +3983,11 @@ static void test_gl_eviction_buffer_on_another_node(void)
 }
 
 /*
- * The X server's host read through the raster engine's data port
- * (the pixel-read routine in the IRIX 6.5.30 impactsr.so): raster registers by
- * 8-byte direct commands on the main port, an IR_ALIAS execute, then each
- * 8-byte unit read as 0x02d1c0 and 0x02c1c4. The box is in hardware rows,
- * counted up from the bottom of the screen.
+ * The X server's host read through the raster engine's data port (the
+ * pixel-read routine in the IRIX 6.5.30 IMPACT X driver module): raster
+ * registers by 8-byte direct commands on the main port, an IR_ALIAS execute,
+ * then each 8-byte unit read as 0x02d1c0 and 0x02c1c4. The box is in hardware
+ * rows, counted up from the bottom of the screen.
  */
 #define REG_RE_DATA_HI        MGRAS_REG(0x02d1c0)
 #define REG_RE_DATA_LO        MGRAS_REG(0x02c1c4)

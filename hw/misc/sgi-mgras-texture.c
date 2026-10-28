@@ -276,19 +276,18 @@
 #define MGRAS_TEX_TABLE          0x0000ec10
 
 /*
- * TRAM. The IRIX 6.5.30 IP27 kernel manages each TRAM path as 256 blocks
- * of 16 KiB and gives each GL context a run of them, set on the board as
- * the 0xeb04 base (the kernel driver's texture-space arithmetic in
- * mgras.a, established). The client places each level at a block of its
- * own run, sized by the kept format: in traced runs an RGBA4 level took
- * two bytes a texel (perfly's 256 by 128 one four blocks and its 256 by
- * 256 one eight) and RGB8 and RGBA8 levels four (ivview's 512 by 512 RGBA
- * level 0 64 blocks, its 128 by 128 RGB level 0 four), with a block
- * between a large level and the next for its border. The kernel's own
- * save reads a block back as 64 rows of 64 locations at four bytes a
- * location (0xe50c's row count 0x40 and a 16 KiB DMA, format word
- * 0x400080), and the client's read of an RGB texture takes three bytes a
- * location (format 0x400070, 12 KiB for 64 rows): established as the
+ * TRAM. The IRIX 6.5.30 IP27 kernel manages each TRAM path as 256 blocks of 16
+ * KiB and gives each GL context a run of them, set on the board as the 0xeb04
+ * base (the kernel driver's texture-space arithmetic in the kernel graphics
+ * driver, established). The client places each level at a block of its own run,
+ * sized by the kept format: in traced runs an RGBA4 level took two bytes a
+ * texel (perfly's 256 by 128 one four blocks and its 256 by 256 one eight) and
+ * RGB8 and RGBA8 levels four (ivview's 512 by 512 RGBA level 0 64 blocks, its
+ * 128 by 128 RGB level 0 four), with a block between a large level and the next
+ * for its border. The kernel's own save reads a block back as 64 rows of 64
+ * locations at four bytes a location (0xe50c's row count 0x40 and a 16 KiB DMA,
+ * format word 0x400080), and the client's read of an RGB texture takes three
+ * bytes a location (format 0x400070, 12 KiB for 64 rows): established as the
  * words of a traced IRIX guest run.
  *
  * The model keeps the 4 MiB as those 32-bit words, 64 to a row and 64
@@ -324,7 +323,7 @@
  * (the report's 48-bit texels); no traced program kept one.
  *
  * TRAM save and restore, established from the kernel's texture I/O code
- * (a member of mgras.a, SHA-256 5cd14335...) and from the traced
+ * (in the kernel graphics driver, SHA-256 5cd14335...) and from the traced
  * words. When a new context's run overlaps another's, the kernel writes
  * base 0 and saves each of the other's blocks: as 0x7f08 register pairs
  * TXSIZE 0xd6d6 (a 64 by 8,192 shape), TXLOD 0, TXCLAMPSIZE 0x80000,

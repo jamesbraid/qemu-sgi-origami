@@ -152,7 +152,7 @@
  * The raster clip rectangle. The X server draws a primitive once for each
  * box of its window's clip list: before each pass it loads the box into
  * 0x147 and 0x148 and 0x11 into 0x14f, and after the last it loads 0 into
- * 0x14f (the point routine in the IRIX 6.5.30 impactsr.so). From its
+ * 0x14f (the point routine in the IRIX 6.5.30 IMPACT X driver module). From its
  * arithmetic on the X box (x1, y1) to (x2, y2), end exclusive:
  *
  *   0x147 = x1 << 16 | (x2 - 1)
@@ -315,7 +315,7 @@
  * window's visible region with a clip ID: rectangle fills with DRBPOINTERS
  * 0x90240 (the main-plane pointer word), COLORMASKMSBS 0xff,
  * COLORMASKLSBSA/B 0, PP1FILLMODE 0x142600 and the ID in FILLCOLOR_R. Its
- * fill routine (in impactsr.so) sends FILLCOLOR_R as the ID
+ * fill routine (in the IMPACT X driver module) sends FILLCOLOR_R as the ID
  * when the ID is at most 3 and 0 otherwise, so an ID has two bits; that
  * they sit in COLORMASKMSBS bits 1:0 is inferred (the overlay form enables
  * bits 6:4 and its erase bits 7:4). The fill's logic-op field is 0, so the
@@ -2027,22 +2027,21 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
 }
 
 /*
- * Host reads through the raster engine's data port. The IRIX 6.5.30 X
- * server's pixel-read routine (impactsr.so, SHA-256 726dc1e25b71...)
- * reads a box this way; a captured run caught it 214 times
- * while oglsnoop showed the pixel under the pointer, two pixels each
- * time (the first at seq 4088838). Established from that
- * listing and the trace: the server waits for 0x02c578 bit 8, writes
- * CONFIG (0x112) 0xca4, XYWIN 0, PIXCMD (0x160) 2, PP1FILLMODE 0x500, the
- * colour masks, DRBPOINTERS 0x90240, the box in BLOCKXYSTARTI and
- * BLOCKXYENDI, XFRSIZE (0x153) and XFRCOUNTERS (0x158) as height << 16 |
- * width, XFRMODE (0x159) 0x8000, FILLMODE 0x800000, IR_ALIAS 0x18,
- * XFRCONTROL (0x102) 0xa and GLINE_XSTARTF 1, executes IR_ALIAS, and then
- * reads the data as 8-byte units, each 0x02d1c0 and then 0x02c1c4,
- * storing the first word before the second; it then writes XFRCONTROL 0
- * and restores CONFIG and XYWIN. Its DMA reads write XFRCONTROL 8 instead,
- * and are kicked through the descriptors. The register names are OpenBSD
- * impactreg.h's and gxemul's impactsr-bsd.h's.
+ * Host reads through the raster engine's data port. The IRIX 6.5.30 X server's
+ * pixel-read routine (the IMPACT X driver module, SHA-256 726dc1e25b71...)
+ * reads a box this way; a captured run caught it 214 times while oglsnoop
+ * showed the pixel under the pointer, two pixels each time (the first at seq
+ * 4088838). Established from that listing and the trace: the server waits for
+ * 0x02c578 bit 8, writes CONFIG (0x112) 0xca4, XYWIN 0, PIXCMD (0x160) 2,
+ * PP1FILLMODE 0x500, the colour masks, DRBPOINTERS 0x90240, the box in
+ * BLOCKXYSTARTI and BLOCKXYENDI, XFRSIZE (0x153) and XFRCOUNTERS (0x158) as
+ * height << 16 | width, XFRMODE (0x159) 0x8000, FILLMODE 0x800000, IR_ALIAS
+ * 0x18, XFRCONTROL (0x102) 0xa and GLINE_XSTARTF 1, executes IR_ALIAS, and then
+ * reads the data as 8-byte units, each 0x02d1c0 and then 0x02c1c4, storing the
+ * first word before the second; it then writes XFRCONTROL 0 and restores CONFIG
+ * and XYWIN. Its DMA reads write XFRCONTROL 8 instead, and are kicked through
+ * the descriptors. The register names are OpenBSD impactreg.h's and gxemul's
+ * impactsr-bsd.h's.
  *
  * Inferred: that XFRCONTROL bit 1 selects the data port, the only bit the
  * two read forms differ in, and bit 3 the read, since the server's
@@ -3111,7 +3110,7 @@ static void mgras_raster_dma_eram_write(SGIMgrasState *s, uint32_t kick_byte)
  * A transfer to the GE, carrying the image of the loaded context's pixel
  * draw (sgi-mgras-gl.c, mgras_gl_pixels_start()). The OpenGL client kicks
  * it with (slot << 1) | 0xa1 (the DMA setup routine in the IRIX 6.5.30
- * IP27GR532 libGLcore.so): 0xa7 for slot 3 in every capture
+ * the GL client library): 0xa7 for slot 3 in every capture
  * of ipaste, imgview and i3dm (a captured run), where the
  * X server's transfers into the raster engine are 0xb1 to 0xbf. The model
  * reads bit 4 clear as the GE's port only with a draw waiting, inferred
@@ -3248,8 +3247,8 @@ bool sgi_mgras_raster_dma_copy(SGIMgrasState *s, uint32_t kick_byte,
 
 /*
  * The HQ page-list form, as the OpenGL client's TRAM restore sends it
- * (its texture-load-from-save routine in the IRIX 6.5.30 IP27GR532
- * libGLcore.so): 0x00080010 with four words, X.Org's pg_list0
+ * (its texture-load-from-save routine in the IRIX 6.5.30 GL
+ * client library): 0x00080010 with four words, X.Org's pg_list0
  * to pg_list3, holding up to eight 16-bit entries high half first, the
  * last with bit 15 set; pg_offset (register 5), pg_widtha (8), register
  * 9 and pg_linecnt (7) 1, with pg_width (4) 0x1000 sent before. In a
@@ -3391,7 +3390,7 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
  * which covers the first of the list's 14 pool pages, and nothing else
  * reached the board before glFlush. So the rest of the list can only be
  * reached from the pool. Each range there begins with a header the
- * client's range-header routine (libGLcore.so IP27GR532, SHA-256 626d6d94...)
+ * client's range-header routine (the GL client library, SHA-256 626d6d94...)
  * writes from the range's type, and the same run's fetch
  * records (sgi_mgras_dma_chunk, seq 7576884 and 7576887) show the board
  * reading exactly these words at the execute:

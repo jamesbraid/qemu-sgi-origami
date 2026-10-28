@@ -99,7 +99,7 @@
 #define MGRAS_GL_DRAW_BUFFER     0x0000490c
 #define MGRAS_GL_DEPTH_TEST      0x00006604
 /*
- * glScissor: the scissor routine in the IRIX 6.5.30 IP27GR532 libGLcore.so
+ * glScissor: the scissor routine in the IRIX 6.5.30 GL client library
  * (SHA-256 626d6d94...) rejects a negative width or height and writes
  * 0x3910 and x, width - 1, y, height - 1. glEnable and glDisable of
  * GL_SCISSOR_TEST write 0x6e04 and 1 or 0 (the enable routine for
@@ -125,7 +125,7 @@
 #define MGRAS_GL_ALPHA_TEST      0x00006404
 #define MGRAS_GL_ALPHA_REF_MAX   4095
 /*
- * The stencil test, from the IRIX 6.5.30 IP27GR532 libGLcore.so's
+ * The stencil test, from the IRIX 6.5.30 GL client library's
  * emitters, established from the listing:
  *
  * - glStencilFunc: 0x410c, the function less GL_NEVER, the reference
@@ -325,8 +325,8 @@ static const uint16_t mgras_gl_stencil_ops[] = {
     SGI_GL_KEEP, 0, SGI_GL_REPLACE, SGI_GL_INCR, SGI_GL_DECR, SGI_GL_INVERT,
 };
 /*
- * glDepthRange: the depth-range routine in the IRIX 6.5.30 IP27GR532
- * libGLcore.so (SHA-256 626d6d94...) writes 0x4808 and near and far
+ * glDepthRange: the depth-range routine in the IRIX 6.5.30 GL
+ * client library (SHA-256 626d6d94...) writes 0x4808 and near and far
  * converted to single floats, unclamped, outside glBegin/glEnd.
  */
 #define MGRAS_GL_DEPTH_RANGE     0x00004808
@@ -338,7 +338,7 @@ static const uint16_t mgras_gl_stencil_ops[] = {
  */
 #define MGRAS_GL_DITHER          0x00006704
 /*
- * Polygon culling, from the IRIX 6.5.30 IP27GR532 libGLcore.so (SHA-256
+ * Polygon culling, from the IRIX 6.5.30 GL client library (SHA-256
  * 626d6d94...), established from the listing:
  *
  * - glCullFace: the cull-face routine accepts a mode from 0x404 to 0x408
@@ -370,7 +370,7 @@ static const uint16_t mgras_gl_stencil_ops[] = {
 /*
  * The context setup's texture-only defaults, consumed without a log line
  * while they carry the default: 0xec10 from the texture-memory initialization
- * routine in the IRIX 6.5.30 IP27GR532 libGLcore.so, 32 per context
+ * routine in the IRIX 6.5.30 GL client library, 32 per context
  * setup, loading the detail-texture function table glDetailTexFuncSGIS sets.
  * Its words are two HQ-table words, 0xc52 and 0xc78 from the hq3_revB_HQ4.u
  * table, the raster register 0x194 and one table value; the setup's values are
@@ -442,7 +442,7 @@ enum {
 #define MGRAS_GL_NORMAL3F        0x0000070c
 /*
  * The other glNormal3 forms, from their emitters in the IRIX 6.5.30
- * IP27GR532 libGLcore.so (SHA-256 626d6d94...), each the components as the
+ * the GL client library (SHA-256 626d6d94...), each the components as the
  * application passed them, established from the listing:
  *
  * - glNormal3d and 3dv: 0x12000718 and three doubles, each one 64-bit
@@ -468,7 +468,7 @@ enum {
 #define MGRAS_GL_RASTER_POS3F    0x2000380c
 /*
  * The class-0x3800 forms, three integers, and glTexCoord2f, from their
- * emitters in the IRIX 6.5.30 IP27GR532 libGLcore.so (SHA-256
+ * emitters in the IRIX 6.5.30 GL client library (SHA-256
  * 626d6d94...), each the header and then the components as the
  * application passed them, established from the listing:
  *
@@ -498,7 +498,7 @@ enum {
 #define MGRAS_GL_EDGE_FLAG_FALSE 0x00001000
 
 /*
- * Colour-index mode, from the IRIX 6.5.30 IP27GR532 libGLcore.so's own
+ * Colour-index mode, from the IRIX 6.5.30 GL client library's own
  * code (SHA-256 626d6d94...). The context setup calls
  * the colour-index initializer for each colour buffer when the
  * visual is a colour-index one and another initializer otherwise; the
@@ -713,8 +713,8 @@ enum {
  * inferred from the matching values; the model reads them from the image
  * and keeps them out of the 2D register file.
  *
- * The kernel's clip validation routine (IRIX 6.5.30 mgras.a member mgras.o,
- * SHA-256 6a65e70d3cdc...) writes words 2 to 15
+ * The kernel's clip validation routine (in the IRIX 6.5.30 kernel graphics
+ * driver, SHA-256 6a65e70d3cdc...) writes words 2 to 15
  * from the window and its visible rectangles, bottom-up and inclusive,
  * each as first << 16 | last. Established from that listing:
  *
@@ -767,7 +767,7 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
 #define MGRAS_GL_IMAGE_BANKS     16
 
 /*
- * Lighting, from the IRIX 6.5.30 IP27GR532 libGLcore.so's emitters: glLightfv
+ * Lighting, from the IRIX 6.5.30 GL client library's emitters: glLightfv
  * writes a header per parameter, the light's number (light - GL_LIGHT0) and
  * the parameter's floats, the application's values untransformed;
  * glLightModelfv writes the ambient's red, green and blue and not its alpha,
@@ -838,8 +838,8 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
 /*
  * IRIS GL's colour and normal rule: a vertex whose colour came after the
  * last normal is not lit (SGI's OpenGL Porting Guide, 007-1797-030,
- * appendix B, "Color/normal flag"). The IRIX 6.5.30 IP27GR532
- * libGLcore.so (SHA-256 626d6d94...) leaves it to the board. Its
+ * appendix B, "Color/normal flag"). The IRIX 6.5.30 GL client
+ * library (SHA-256 626d6d94...) leaves it to the board. Its
  * glIglooInterfaceSGIX, established from the listing:
  *
  * - GL_IGLOO_COLORNORMAL_SGIX (0x81a1) with a nonzero parameter sets
@@ -874,8 +874,8 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
  * gl-iris-colour-after-normal-is-unlit.
  */
 /*
- * Texture coordinate generation, from the IRIX 6.5.30 IP27GR532
- * libGLcore.so's glTexGenfv, established from the listing:
+ * Texture coordinate generation, from the IRIX 6.5.30 GL client
+ * library's glTexGenfv, established from the listing:
  *
  * - GL_TEXTURE_GEN_MODE writes 0x5a0c, the coordinate (GL_S to GL_Q,
  *   0x2000 to 0x2003), 0x2500 and the mode's enumerant as an integer;
@@ -1258,7 +1258,7 @@ static SGIGLContext *mgras_gl(SGIMgrasState *s)
  */
 /*
  * The overlay planes as a colour target, a bit beside the bank and slot
- * bits. The IRIX 6.5.30 IP27GR532 libGLcore.so's draw-buffer routine
+ * bits. The IRIX 6.5.30 GL client library's draw-buffer routine
  * sends 0x48 as the triple's first word
  * for GL_FRONT, and for GL_BACK on a shallow visual (a deep visual's
  * GL_BACK sends 4 first), and 0x43 for GL_FRONT_AND_BACK, when a flag in
@@ -1266,7 +1266,7 @@ static SGIGLContext *mgras_gl(SGIMgrasState *s)
  * from that listing. SceneViewer's logo context, the only context of that
  * program's overlay scene graph (SoXtRenderArea::setOverlaySceneGraph on
  * a level-1 colour-index visual; it sets glViewport(0, 0, 80, 80) and
- * draws index 1 lines), sends 0x48 (run irix-20261023T080205-6dc9ca), and
+ * draws index 1 lines), sends 0x48, and
  * the other programs that send it, ivview and pointblank, also draw in
  * the overlay. That bit 6 names the overlay planes is inferred from those
  * observations; what bits 3:0 add beside it is unknown, and the model
@@ -1620,7 +1620,7 @@ static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
  * Context eviction. The IRIX 6.5.30 kernel keeps each GL context in GE
  * external RAM (ERAM) at the address its context image carries in word 0,
  * and moves contexts between ERAM and a host buffer when it needs room.
- * Established from mgras.o in the IRIX 6.5.30 IP27 mgras.a (SHA-256
+ * Established from the IRIX 6.5.30 kernel graphics driver (SHA-256
  * 6a65e70d3cdc...): the ERAM read routine builds a DMA read
  * descriptor, kicks it and then writes 0xfc08 with the ERAM address and a
  * word count, then 0x0100; the ERAM write routine sends the
@@ -1978,7 +1978,7 @@ typedef enum MgrasGLQueryPacking {
  * the HQ microcode file's symbol table, so the index is an address the
  * board's program gives for that piece of GL state. The notes list each
  * glGet caller's index and what it does with the word, established from
- * the IRIX 6.5.30 IP27GR532 libGLcore.so; the values below are the
+ * the IRIX 6.5.30 GL client library; the values below are the
  * hq3_revB_HQ4.u column. That the board answers with its copy of the
  * state OpenGL 1.2.1 has glGet return is inferred from how the client
  * uses each word, and the model answers the loaded context's.
@@ -2151,7 +2151,7 @@ static bool mgras_gl_client_form_query(SGIMgrasState *s, uint32_t index,
  * GL_MODELVIEW_STACK_DEPTH and GL_PROJECTION_STACK_DEPTH. The glGet routine
  * queries index 0x83 (a1 0) and 0x922 (a1 1)
  * and returns ((answer - base) >> 4) + 1, the base a symbol-table word
- * for each stack (from the IRIX 6.5.30 IP27GR532 libGLcore.so). Those
+ * for each stack (from the IRIX 6.5.30 GL client library). Those
  * words, in /usr/gfx/ucode/MGRAS/hq3_revB_HQ4.u (SHA-256
  * a696e9772a876ed02378111e80a01270161cb4ad8fc39355f40fe96d1fcdb062), are
  * 0x925 for the modelview stack and 0xb25 for the projection stack; the
@@ -2300,7 +2300,7 @@ static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
  * colour mask the client tests the answer's bits 0 to 3 in turn as red, green,
  * blue and alpha; for the index mask it returns the answer ANDed with
  * (1 << n) - 1, n a context word holding the index's bits. Established
- * from the IRIX 6.5.30 IP27GR532 libGLcore.so. That the board keeps one
+ * from the IRIX 6.5.30 GL client library. That the board keeps one
  * write-mask word for both is inferred from the shared index. In
  * colour-index mode the model answers glIndexMask's mask, and in RGBA mode
  * glColorMask's channels in the bits 0x3b04 sends them in. 0x32c is
@@ -3253,17 +3253,15 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
  * makes the drawing visible. Each bank keeps its own format tag.
  */
 /*
- * Clip IDs. When a window has no visible rectangle the kernel can give
- * (five or more), its clip validation routine (in the IRIX 6.5.30
- * mgras.o) binds the whole window as rectangle 0, mode 1, and, when the
- * window has a clip ID, sets bit 4 + ID of image word 4 (computed as
- * (x & 3) | (y & 3) << 2 | 1 << (4 + ID)). The same word goes to the
- * kernel's shadow of raster register 0x17b, which the X server sets to
- * 0xc00 for its own
- * drawing. The X server tags the window's visible region with that ID
- * first (sgi-mgras-raster.c, mgras_fill_clip_id()): twilight's window got
- * ID 1 over exactly its visible boxes and word 4 0x20 (run
- * irix-20261019T134838-e753a2).
+ * Clip IDs. When a window has no visible rectangle the kernel can give (five or
+ * more), its clip validation routine (in the IRIX 6.5.30 kernel graphics
+ * driver) binds the whole window as rectangle 0, mode 1, and, when the window
+ * has a clip ID, sets bit 4 + ID of image word 4 (computed as (x & 3) | (y & 3)
+ * << 2 | 1 << (4 + ID)). The same word goes to the kernel's shadow of raster
+ * register 0x17b, which the X server sets to 0xc00 for its own drawing. The X
+ * server tags the window's visible region with that ID first
+ * (sgi-mgras-raster.c, mgras_fill_clip_id()): twilight's window got ID 1 over
+ * exactly its visible boxes and word 4 0x20.
  *
  * Inferred: a fragment of a context whose word 4 has any of bits 7:4 set
  * belongs to the window only where the pixel's clip ID selects one of
@@ -4276,8 +4274,8 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
 
 /*
  * Pixel image transfers: glDrawPixels, and IRIS GL's lrectwrite and
- * rectwrite, which the IRIX 6.5.30 IGLOO libgl.so sends the same way.
- * The client (the pixel send routine in IP27GR532 libGLcore.so, SHA-256
+ * rectwrite, which the IRIX 6.5.30 IGLOO GL library sends the same way.
+ * The client (the pixel send routine in the GL client library, SHA-256
  * 626d6d94...) does not send the image's format to the board.
  * It builds a program for the GE out of routines, loads each routine's
  * parameters into GE memory with 0x80 and 0xcd packets, sends 0x8d20 and
@@ -4348,7 +4346,7 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
  * imgview's 68 pixels of three on the SI, 50 and 0 for mandel's 100
  * indices, and 48 and 48 for imgview's 128 pixels of three on the SSI
  * (inferred from those; they are two words of the library's tile
- * descriptor in the IP27GR564 listing, which sets bit 4 of 0x8d20's last
+ * descriptor in the 64-bit library's listing, which sets bit 4 of 0x8d20's last
  * word when the second is 0). Why the SSI's client splits a row in two
  * is not known: the image bytes are whole rows. A colour-index image's
  * bytes a
