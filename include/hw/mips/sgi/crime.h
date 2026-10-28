@@ -41,6 +41,9 @@ typedef struct CrimeRenderState {
     uint64_t tlb[192];
     uint64_t parameter[128];
     uint64_t texture[28];
+    uint64_t ifb_data[64];
+    uint64_t ifb_address[64];
+    uint8_t ifb_head;
 } CrimeRenderState;
 
 struct SGICrimeState {

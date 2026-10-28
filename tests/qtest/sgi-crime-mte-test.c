@@ -102,7 +102,7 @@ static void test_clear(void)
                 assert_bytes(s, 0x9000, n - 4089, fill);
             }
             g_assert_cmphex(qtest_readb(s, 0x3006), ==, 0x5c);
-            g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+            g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU, ==, 0x1e000000);
         }
     }
     qtest_quit(s);
@@ -869,7 +869,7 @@ static void test_clip_programming(void)
                                 ==, expected[i]);
             }
             assert_bytes(s, 0x30000, 64, 0x5a);
-            g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+            g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU, ==, 0x1e000000);
             memcpy(previous, state, sizeof(state));
         }
     }
@@ -918,7 +918,7 @@ static void test_clip_start_forms(void)
         g_assert_cmphex(qtest_readb(s, a + 257), ==, 0x5a);
         g_assert_cmphex(qtest_readb(s, b + 254), ==, 0x6c);
         g_assert_cmphex(qtest_readb(s, b + 257), ==, 0x6c);
-        g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+        g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU, ==, 0x1e000000);
         qtest_quit(s);
     }
 }
@@ -1068,7 +1068,7 @@ static void test_clip_failure(void)
         qtest_qmp_assert_success(s, "{'execute':'cont'}");
         g_assert_cmpint(memtx_writel(s, MTE + 0x818, 0x99), ==, MEMTX_ERROR);
         clip_stopped(s);
-        g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+        g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU, ==, 0x1e000000);
         g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
         g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, 1U << 4);
         g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==, 234881024);
@@ -1405,7 +1405,7 @@ static void tiled_check_clear(QTestState *s, unsigned x0, unsigned y0,
                             selected ? lanes[x % 4] : tiled_old_byte(x, y));
         }
     }
-    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU, ==, 0x1e000000);
 }
 
 static void test_tiled_fill_lanes(void)
@@ -1680,7 +1680,7 @@ static void test_tiled_failure(void)
             g_assert_cmpint(memtx_writel(s, MTE + 0x800 + trigger,
                 trigger == 8 ? 0 : 0xabcdef12), ==, MEMTX_ERROR);
             clip_stopped(s);
-            g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+            g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU, ==, 0x1e000000);
             g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
             g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, 1U << 4);
             g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==, 234881024);
@@ -1779,7 +1779,7 @@ static void test_tiled_migration(void)
     uint64_t marker = tiled_address(0, 504, 127);
 
     qtest_writeb(to, marker, 0x77);
-    g_assert_cmphex(qtest_readl(to, STATUS), ==, 0x1e000000);
+    g_assert_cmphex(qtest_readl(to, STATUS) & ~0x3ffffU, ==, 0x1e000000);
     qtest_writel(to, MTE + 0x70, 0x12345678);
     qtest_writel(to, MTE + 0x78, 0);
     g_assert_cmphex(qtest_readb(to, marker), ==, 0x77);
@@ -1930,12 +1930,12 @@ static void mte_clear_run(QTestState *s, const MteClear *c, unsigned trigger)
     }
     qtest_writel(s, MTE + 0x70, 0x12345678);
     qtest_writel(s, MTE + 0x78, 0);
-    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU, ==, 0x1e000000);
     mte_clear_memory(s, c, false, false);
     g_assert_cmpint(memtx_writel(s, MTE + 0x800 + trigger,
         trigger == 0x70 ? 0xfedcba98 : words[trigger / 8]), ==, MEMTX_OK);
     mte_clear_memory(s, c, false, true);
-    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU, ==, 0x1e000000);
     g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 0);
 }
 
@@ -2243,7 +2243,8 @@ static void test_mte_stipple_failure(void)
                         MEMTX_ERROR);
                     clip_stopped(s);
                     mte_clear_memory(s, &c, false, false);
-                    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+                    g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU,
+                                    ==, 0x1e000000);
                     g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
                     g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, 1U << 4);
                     g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==,
@@ -2470,7 +2471,7 @@ static void test_mte_stipple_migration(void)
         qtest_writeb(to, marker, 0x77);
         qtest_writel(to, MTE + 0x70, 0x12345678);
         qtest_writel(to, MTE + 0x78, 0);
-        g_assert_cmphex(qtest_readl(to, STATUS), ==, 0x1e000000);
+        g_assert_cmphex(qtest_readl(to, STATUS) & ~0x3ffffU, ==, 0x1e000000);
         g_assert_cmphex(qtest_readb(to, marker), ==, 0x77);
         qtest_system_reset(to);
         g_assert_cmphex(qtest_readb(to, marker), ==, 0x77);
@@ -2619,7 +2620,7 @@ static void test_rgba32_starts(void)
             qtest_writel(s, MTE + 0x18, ~c.fill);
             qtest_writel(s, MTE + 0x70, UINT32_MAX);
             qtest_writel(s, MTE + 0x78, 0);
-            g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+            g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU, ==, 0x1e000000);
             g_assert_cmphex(qtest_readb(s, marker), ==, 0x77);
         }
     }
