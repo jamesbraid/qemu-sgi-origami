@@ -52,7 +52,8 @@ static QTestState *start_o2(const char *image, const char *machine_extra,
                             const char *qemu_extra)
 {
     return qtest_initf(
-        "-M o2-test,password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
+        "-M o2,register-test-profile=on,"
+        "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
         "rom-pad-byte=255%s -cpu R10000 -m 64M -nic none "
         MEMTX_TEST_DEVICE " %s",
         image, machine_extra, qemu_extra);
@@ -1189,10 +1190,12 @@ static void test_invalid_configuration(void)
             "sgi-o2-rom,id=rom,flash-size=524288,image=%s,image-offset=0,"
             "pad-byte=255,at29c040a-protection=disabled", path);
         g_autofree char *machine_missing = g_strdup_printf(
-            "o2-test,password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
+            "o2,register-test-profile=on,"
+            "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
             "rom-pad-byte=255,rom-at29c040a=on", path);
         g_autofree char *machine_implicit = g_strdup_printf(
-            "o2-test,password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
+            "o2,register-test-profile=on,"
+            "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
             "rom-pad-byte=255,rom-at29c040a-protection=disabled", path);
 
         expect_startup_error(missing_state, "requires protection");
@@ -1405,7 +1408,8 @@ static void backing_startup_error(const char *seed, const char *array_drive,
                                    const char *message)
 {
     g_autofree char *machine = g_strdup_printf(
-        "o2-test,password-clear-input=0,rom-image=%s,rom-size=524288,"
+        "o2,register-test-profile=on,"
+        "password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=255%s", seed,
         selected ? ",rom-at29c040a=on,rom-at29c040a-protection=disabled,"
                    "rom-at29c040a-lower-lock=unlocked,"
@@ -1424,7 +1428,7 @@ static void backing_startup_error(const char *seed, const char *array_drive,
         args[n++] = state_drive;
     }
     args[n] = NULL;
-    assert_launch_rejected(args, message);
+    assert_qtest_launch_rejected(args, message);
 }
 
 static void test_at29_backing_validation(void)

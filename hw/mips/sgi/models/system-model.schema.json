@@ -199,7 +199,7 @@
       ],
       "properties": {
         "name": { "type": "string", "description": "Canonical machine name in prose, e.g. 'Origin 200'." },
-        "generation": { "enum": ["SN0", "SN1", "IP30"] },
+        "generation": { "enum": ["SN0", "SN1", "IP30", "IP32"] },
         "board_ip": { "type": "string", "description": "Physical module IP number, e.g. IP29." },
         "architecture_ip": { "type": "string", "description": "Platform family IP number, e.g. IP27." },
         "kernel_ip": { "type": "string", "description": "Software platform IP number selected by this configuration, e.g. IP27 or IP30." },
@@ -844,7 +844,7 @@
             "firmware_bytes": { "type": "integer", "minimum": 1 },
             "default_cpu_model": { "type": "string", "minLength": 1, "description": "The -cpu argument a launcher passes when none is given, e.g. R10000." },
             "smdk": { "$ref": "#/$defs/smdk-recipe" },
-            "launch_recipe": { "enum": ["ip53-discovery"], "description": "Optional offering launch preparation. Emitted only when authored." },
+            "launch_recipe": { "enum": ["ip53-discovery", "ip32"], "description": "Optional offering launch preparation. Emitted only when authored." },
             "requires_per_node_flash": { "type": "boolean", "description": "Whether this product requires a separate boot flash for each node." },
             "has_managed_boot_flash": { "type": "boolean", "description": "Whether the launcher manages a boot-flash payload for this product." },
             "operator_firmware": { "type": "boolean", "description": "Whether this profile uses caller-selected firmware as an operator input." },
@@ -861,7 +861,7 @@
                 }
               }
             },
-            "console": { "enum": ["ioc3-serial-a", "l1-uart", "ip53-ioc4"], "description": "The console port the stock PROM's own command monitor and dialogue use." },
+            "console": { "enum": ["ioc3-serial-a", "l1-uart", "ip53-ioc4", "mace-serial-a"], "description": "The console port the stock PROM's own command monitor and dialogue use." },
             "ioc3_serial_ports": {
               "type": "array",
               "uniqueItems": true,

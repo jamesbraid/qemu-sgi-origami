@@ -622,7 +622,8 @@ static void test_migration(void)
 
 static void test_board_route(void)
 {
-    QTestState *s = qtest_init("-M o2-test -m 64M -nodefaults");
+    QTestState *s = qtest_init("-M o2,register-test-profile=on "
+        "-m 64M -nodefaults");
 
     qtest_irq_intercept_out_named(s, "/machine/crime", "cpu-ip");
     qtest_writeq(s, IMASK, KIRQ | MIRQ | KPOLL | MPOLL);
@@ -712,7 +713,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/mace-ps2/irq-poll", test_irq_poll);
     qtest_add_func("/sgi/mace-ps2/irq-matrix", test_irq_matrix);
     qtest_add_func("/sgi/mace-ps2/migration", test_migration);
-    if (qtest_has_machine("o2-test")) {
+    if (qtest_has_machine("o2")) {
         qtest_add_func("/sgi/mace-ps2/board-route", test_board_route);
     }
     qtest_add_func("/sgi/mace-ps2/frames", test_frames);

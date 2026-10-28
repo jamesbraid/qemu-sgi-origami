@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: BSD-3-Clause
+layer_version: 1
+layer:
+  kind: architecture
+  id: ip32
+  contract: {generation: IP32, architecture_ip: IP32, kernel_ip: IP32}
+  data:
+    model_version: 1
+    evidence_policy: strict
+    space_selection:
+      mechanism: not-traced
+      notes: The product uses the existing processor and CRIME address-space implementation.
+    processors:
+    - part: r10000
+      variants: [{clock_mhz: 195, cache_mib: 1}]
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-processor"]
+    address_spaces:
+    - id: physical
+      name: IP32 physical address space
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]

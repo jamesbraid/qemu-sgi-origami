@@ -1,0 +1,138 @@
+# SPDX-License-Identifier: BSD-3-Clause
+layer_version: 1
+layer:
+  kind: module
+  id: o2-module
+  requires: {architecture: ip32, assembly: ip32}
+  data:
+    components:
+    - id: ip32-board
+      name: O2 system board
+      kind: board
+      hardware_kind: ip32
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    - id: cpu0
+      name: R10000 processor
+      kind: cpu
+      parent: ip32-board
+      hardware_kind: r10000
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-processor"]
+    - id: crime
+      name: CRIME memory and graphics controller
+      kind: node-asic
+      parent: ip32-board
+      hardware_kind: crime
+      node_asic: {processor_interfaces: 1, cpus_per_interface: 1}
+      datasheet_contracts: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    - id: mace
+      name: MACE I/O controller
+      kind: io-controller
+      parent: ip32-board
+      hardware_kind: mace
+      datasheet_contracts: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    - id: gbe
+      name: GBE display controller
+      kind: io-controller
+      parent: ip32-board
+      hardware_kind: gbe
+      datasheet_contracts: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    - id: aic0
+      name: Internal AIC-7880
+      kind: storage-hba
+      parent: mace
+      hardware_kind: aic7880
+      datasheet_contracts: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    - id: aic1
+      name: External AIC-7880
+      kind: storage-hba
+      parent: mace
+      hardware_kind: aic7880
+      datasheet_contracts: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    - id: rtc
+      name: Real-time clock
+      kind: rtc
+      parent: mace
+      hardware_kind: ds1685
+      datasheet_contracts: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    - id: flash
+      name: Boot flash
+      kind: flash
+      parent: mace
+      hardware_kind: at29c040a
+      datasheet_contracts: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    - id: phy
+      name: Ethernet PHY
+      kind: subfunction
+      parent: mace
+      hardware_kind: ics1890
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    - id: serial-a
+      name: Serial port A
+      kind: subfunction
+      parent: mace
+      hardware_kind: ns16550
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    - id: serial-b
+      name: Serial port B
+      kind: subfunction
+      parent: mace
+      hardware_kind: ns16550
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    - id: ethernet
+      name: Ethernet MAC
+      kind: subfunction
+      parent: mace
+      hardware_kind: mace-ethernet
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    - id: ps2
+      name: Keyboard and mouse
+      kind: subfunction
+      parent: mace
+      hardware_kind: mace-ps2
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    - id: audio
+      name: Audio interface
+      kind: subfunction
+      parent: mace
+      hardware_kind: mace-audio
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    buses:
+    - id: sysad
+      name: Processor system interface
+      kind: sysad
+      master: cpu0
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    connections:
+    - component: cpu0
+      bus: sysad
+      role: master
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]
+    - component: crime
+      bus: sysad
+      role: endpoint
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-components"]

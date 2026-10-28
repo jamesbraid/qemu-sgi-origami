@@ -3,6 +3,7 @@
 """Supported product names and their authored model inputs."""
 
 PRODUCT_MODELS = {
+    "o2": "o2",
     "fuel": "fuel",
     "origin200": "origin200",
     "origin2000": "origin2000-rack",
@@ -18,6 +19,7 @@ PRODUCT_MODELS = {
 }
 PRODUCT_NAMES = tuple(PRODUCT_MODELS)
 IMPLEMENTED_TOPOLOGIES = (
+    "o2",
     "fuel",
     "octane", "octane2", "origin200", "origin200-dual", "origin2000-rack", "origin300",
     "origin2000-deskside", "origin200-gigachannel-loopback",

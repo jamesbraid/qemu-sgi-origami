@@ -31,7 +31,7 @@ static char *id_image_file(void)
 static QTestState *id_machine_start(const char *image)
 {
     return qtest_initf(
-        "-M o2-test,identity-diagnostic=on,"
+        "-m 64M -M o2,register-test-profile=on,identity-diagnostic=on,"
         "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
         "identity-status=0123456789abcd -nic none", image);
 }
@@ -209,7 +209,8 @@ static void test_machine_read_rom(void)
         0x09, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0x81
     };
     g_autofree char *image = id_image_file();
-    QTestState *qts = qtest_init("-M o2-test -nic none");
+    QTestState *qts = qtest_init("-m 64M -M o2,register-test-profile=on "
+        "-nic none");
     g_autoptr(QDict) default_mode = qtest_qmp(qts,
         "{'execute':'qom-get','arguments':{'path':'/machine',"
         "'property':'identity-diagnostic'}}");
@@ -245,7 +246,8 @@ static void test_misc_word_protocol(void)
     const uint64_t station_reg = UINT64_C(0x1f2800a0);
     g_autofree char *image = id_image_file();
     QTestState *qts = qtest_initf(
-        MEMTX_TEST_DEVICE "-M o2-test,identity-diagnostic=on,"
+        MEMTX_TEST_DEVICE "-m 64M -M o2,register-test-profile=on,"
+        "identity-diagnostic=on,"
         "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
         "identity-status=0123456789abcd,mace-misc-word-pio=on "
         "-nic none", image);
@@ -302,29 +304,31 @@ static void assert_machine_rejected(const char *machine,
         NULL
     };
 
-    assert_launch_rejected(args, reason);
+    assert_qtest_launch_rejected(args, reason);
 }
 
 static void test_machine_options(void)
 {
     g_autofree char *image = id_image_file();
     g_autofree char *without_enable = g_strdup_printf(
-        "o2-test,identity-test-serial=1032547698ba,"
+        "o2,register-test-profile=on,identity-test-serial=1032547698ba,"
         "identity-eprom-file=%s,identity-status=0123456789abcd", image);
     g_autofree char *without_serial = g_strdup_printf(
-        "o2-test,identity-diagnostic=on,identity-eprom-file=%s,"
+        "o2,register-test-profile=on,"
+        "identity-diagnostic=on,identity-eprom-file=%s,"
         "identity-status=0123456789abcd", image);
     g_autofree char *invalid_image = g_strdup_printf(
-        "o2-test,identity-diagnostic=on,"
+        "o2,register-test-profile=on,identity-diagnostic=on,"
         "identity-test-serial=1032547698ba,"
         "identity-eprom-file=%s,identity-status=0123456789abcd", image);
     uint8_t short_image[127] = { 0 };
 
     assert_machine_rejected(without_enable,
                             "identity inputs require identity-diagnostic=on");
-    assert_machine_rejected("o2-test,identity-diagnostic=on",
+    assert_machine_rejected("o2,register-test-profile=on,"
+        "identity-diagnostic=on",
                             "identity diagnostic requires");
-    assert_machine_rejected("o2-test,mace-misc-word-pio=on",
+    assert_machine_rejected("o2,register-test-profile=on,mace-misc-word-pio=on",
                             "requires identity-diagnostic=on");
     assert_machine_rejected(without_serial,
                             "identity diagnostic requires");
@@ -372,7 +376,8 @@ static void test_machine_memory_reset_and_mac(void)
 static void test_machine_migration_boundary(void)
 {
     g_autofree char *image = id_image_file();
-    QTestState *qts = qtest_init("-M o2-test -nic none");
+    QTestState *qts = qtest_init("-m 64M -M o2,register-test-profile=on "
+        "-nic none");
 
     {
         g_autoptr(QDict) control = qtest_qmp(qts,
@@ -407,7 +412,8 @@ static void test_misc_word_pio_default_off(void)
 {
     g_autofree char *image = id_image_file();
     QTestState *qts = qtest_initf(
-        MEMTX_TEST_DEVICE "-M o2-test,identity-diagnostic=on,"
+        MEMTX_TEST_DEVICE "-m 64M -M o2,register-test-profile=on,"
+        "identity-diagnostic=on,"
         "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
         "identity-status=0123456789abcd -nic none", image);
     g_autoptr(QDict) option = qtest_qmp(qts,
@@ -447,7 +453,9 @@ static void test_identity_diagnostic_disabled(void)
     static const int64_t read_low_ns[8] = {
         15800, 15589, 16111, 15830, 14798, 14848, 14948, 15570
     };
-    QTestState *qts = qtest_init(MEMTX_TEST_DEVICE "-M o2-test -nic none");
+    QTestState *qts = qtest_init(MEMTX_TEST_DEVICE
+                               "-m 64M -M o2,register-test-profile=on "
+        "-nic none");
 
     qtest_writeq(qts, ID_REG, ID_RELEASE);
     qtest_clock_step(qts, 500000);
@@ -501,7 +509,8 @@ static void test_misc_word_reset_timing(void)
     };
     g_autofree char *image = id_image_file();
     QTestState *qts = qtest_initf(
-        MEMTX_TEST_DEVICE "-M o2-test,identity-diagnostic=on,"
+        MEMTX_TEST_DEVICE "-m 64M -M o2,register-test-profile=on,"
+        "identity-diagnostic=on,"
         "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
         "identity-status=0123456789abcd,mace-misc-word-pio=on "
         "-nic none", image);
@@ -535,7 +544,8 @@ static void test_misc_word_presence_without_timer_service(void)
 {
     g_autofree char *image = id_image_file();
     QTestState *qts = qtest_initf(
-        MEMTX_TEST_DEVICE "-M o2-test,identity-diagnostic=on,"
+        MEMTX_TEST_DEVICE "-m 64M -M o2,register-test-profile=on,"
+        "identity-diagnostic=on,"
         "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
         "identity-status=0123456789abcd,mace-misc-word-pio=on "
         "-nic none", image);
@@ -566,7 +576,8 @@ static void test_misc_word_session_without_timer_service(void)
 {
     g_autofree char *image = id_image_file();
     QTestState *qts = qtest_initf(
-        MEMTX_TEST_DEVICE "-M o2-test,identity-diagnostic=on,"
+        MEMTX_TEST_DEVICE "-m 64M -M o2,register-test-profile=on,"
+        "identity-diagnostic=on,"
         "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
         "identity-status=0123456789abcd,mace-misc-word-pio=on "
         "-nic none", image);
@@ -605,7 +616,8 @@ static void test_misc_word_pio_selected(void)
     uint16_t half;
     uint8_t byte;
     QTestState *qts = qtest_initf(
-        MEMTX_TEST_DEVICE "-M o2-test,password-clear-input=1,"
+        MEMTX_TEST_DEVICE "-m 64M -M o2,register-test-profile=on,"
+        "password-clear-input=1,"
         "identity-diagnostic=on,"
         "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
         "identity-status=0123456789abcd,mace-misc-word-pio=on "

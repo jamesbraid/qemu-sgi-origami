@@ -16,6 +16,7 @@ chip or board each, with the evidence behind every modelled behaviour.
    sn
    ip27
    ip30
+   ip32
    ip35
    prom-image
    references

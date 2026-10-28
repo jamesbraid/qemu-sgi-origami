@@ -234,13 +234,14 @@ static void test_migration(void)
 static void test_requires_qtest_server(void)
 {
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "o2-test,crime-profile=legacy-software,"
+        qtest_qemu_binary(NULL), "-M", "o2,register-test-profile=on,"
+        "crime-profile=legacy-software,"
         "bank-profile=8x128m-synthetic", "-m", "1G", "-cpu", "R10000",
         "-display", "none", "-nodefaults", "-S", "-qmp", "stdio",
         "-device", "sgi-crime-test-fixture,crime=/machine/crime", NULL,
     };
 
-    assert_launch_rejected(args, "requires a qtest server");
+    assert_qtest_launch_rejected(args, "requires a qtest server");
 }
 
 int main(int argc, char **argv)

@@ -3402,6 +3402,9 @@ def compile_model(model: dict) -> dict:
             "has committed to emulating"
         )
     generation = machine.get("generation")
+    if generation == "IP32":
+        from .model_ip32 import compile_ip32
+        return compile_ip32(model)
     if generation not in ("SN0", "SN1", "IP30"):
         raise CompileError(
             f"generation '{generation}' is not supported by this compiler yet "

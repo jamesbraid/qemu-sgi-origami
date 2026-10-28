@@ -121,7 +121,7 @@ static void run_case(gconstpointer opaque)
     }
     build_image(image);
     path = sn0_image_write(image, "o2-r10k-scache-reset");
-    qts = qtest_initf("-M o2-test,password-clear-input=0,"
+    qts = qtest_initf("-M o2,register-test-profile=on,password-clear-input=0,"
                       "rom-image=%s,rom-size=524288,"
                       "rom-offset=0,rom-pad-byte=238 "
                       "-cpu %s -m 64M -nodefaults "

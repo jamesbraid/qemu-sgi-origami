@@ -54,4 +54,23 @@ static inline void assert_launch_rejected(const char *const args[],
     g_assert_nonnull(strstr(error_output, message));
 }
 
+/* A refused register fixture still needs its accelerator selected. */
+static inline void assert_qtest_launch_rejected(const char *const args[],
+                                                const char *message)
+{
+    g_autoptr(GPtrArray) launch = g_ptr_array_new();
+    bool accelerator = false;
+
+    for (unsigned i = 0; args[i]; i++) {
+        accelerator |= g_str_equal(args[i], "-accel");
+        g_ptr_array_add(launch, (void *)args[i]);
+    }
+    if (!accelerator) {
+        g_ptr_array_add(launch, (void *)"-accel");
+        g_ptr_array_add(launch, (void *)"qtest");
+    }
+    g_ptr_array_add(launch, NULL);
+    assert_launch_rejected((const char *const *)launch->pdata, message);
+}
+
 #endif /* SGI_LAUNCH_H */
