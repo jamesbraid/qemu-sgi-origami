@@ -1,0 +1,245 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Onyx 3400 with InfiniteReality3: the brick set of 007-4264-002 Figure 1-10
+# (four C-bricks, an I-brick, an N-brick and two G-bricks) as an emulation
+# target. It differs from onyx3400.yaml in carrying one R-brick, and in
+# cabling three pipes through the N-brick and none to the I-brick's port B,
+# which the stock PROM cannot yet start with a pipe on it; the product layer
+# has the reasons. Resolve before validation or generation.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip35.yaml
+  - layers/products/onyx3400-ir.yaml
+connector_population:
+  - component: c0-link-connector
+    occupancy: cabled
+    peer: rbrick-port-2
+    reason: C-brick 0 on R-brick port 2, one of the four ports a C-brick may use.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 36 and 55: four C-bricks on one R-brick, each on port 2, 3, 4 or 5"]
+  - component: rbrick-port-2
+    occupancy: cabled
+    peer: c0-link-connector
+    reason: C-brick 0 on R-brick port 2, one of the four ports a C-brick may use.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 36 and 55: four C-bricks on one R-brick, each on port 2, 3, 4 or 5"]
+  - component: c1-link-connector
+    occupancy: cabled
+    peer: rbrick-port-3
+    reason: C-brick 1 on R-brick port 3, one of the four ports a C-brick may use.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 36 and 55: four C-bricks on one R-brick, each on port 2, 3, 4 or 5"]
+  - component: rbrick-port-3
+    occupancy: cabled
+    peer: c1-link-connector
+    reason: C-brick 1 on R-brick port 3, one of the four ports a C-brick may use.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 36 and 55: four C-bricks on one R-brick, each on port 2, 3, 4 or 5"]
+  - component: c2-link-connector
+    occupancy: cabled
+    peer: rbrick-port-4
+    reason: C-brick 2 on R-brick port 4, one of the four ports a C-brick may use.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 36 and 55: four C-bricks on one R-brick, each on port 2, 3, 4 or 5"]
+  - component: rbrick-port-4
+    occupancy: cabled
+    peer: c2-link-connector
+    reason: C-brick 2 on R-brick port 4, one of the four ports a C-brick may use.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 36 and 55: four C-bricks on one R-brick, each on port 2, 3, 4 or 5"]
+  - component: c3-link-connector
+    occupancy: cabled
+    peer: rbrick-port-5
+    reason: C-brick 3 on R-brick port 5, one of the four ports a C-brick may use.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 36 and 55: four C-bricks on one R-brick, each on port 2, 3, 4 or 5"]
+  - component: rbrick-port-5
+    occupancy: cabled
+    peer: c3-link-connector
+    reason: C-brick 3 on R-brick port 5, one of the four ports a C-brick may use.
+    provenance: vendor-document
+    sources: ["007-4311-002 printed pages 36 and 55: four C-bricks on one R-brick, each on port 2, 3, 4 or 5"]
+  - component: rbrick-port-1
+    occupancy: empty
+    reason: This composition has one R-brick and no router-to-router link; the second R-brick of Figure 1-10 is not shown.
+    provenance: derived
+    sources: ["007-4264-002 printed page 27, Figure 1-10: an Onyx 3400 with two R-bricks"]
+  - component: rbrick-port-6
+    occupancy: empty
+    reason: This composition has one R-brick and no router-to-router link; the second R-brick of Figure 1-10 is not shown.
+    provenance: derived
+    sources: ["007-4264-002 printed page 27, Figure 1-10: an Onyx 3400 with two R-bricks"]
+  - component: rbrick-port-7
+    occupancy: empty
+    reason: This composition has one R-brick and no router-to-router link; the second R-brick of Figure 1-10 is not shown.
+    provenance: derived
+    sources: ["007-4264-002 printed page 27, Figure 1-10: an Onyx 3400 with two R-bricks"]
+  - component: rbrick-port-8
+    occupancy: empty
+    reason: This composition has one R-brick and no router-to-router link; the second R-brick of Figure 1-10 is not shown.
+    provenance: derived
+    sources: ["007-4264-002 printed page 27, Figure 1-10: an Onyx 3400 with two R-bricks"]
+  - component: c0-xio-ii-connector
+    occupancy: cabled
+    peer: ibrick-port-a
+    reason: The Figure 1-10 cable between c0-xio-ii-connector and ibrick-port-a; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I/O brick"]
+  - component: ibrick-port-a
+    occupancy: cabled
+    peer: c0-xio-ii-connector
+    reason: The Figure 1-10 cable between c0-xio-ii-connector and ibrick-port-a; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I/O brick"]
+  - component: c1-xio-ii-connector
+    occupancy: cabled
+    peer: nbrick-c-brick-0
+    reason: The Figure 1-10 cable between c1-xio-ii-connector and nbrick-c-brick-0; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 60: N-brick connectors C-brick 0 to 3 go to C-brick XIO (II) connectors"]
+  - component: nbrick-c-brick-0
+    occupancy: cabled
+    peer: c1-xio-ii-connector
+    reason: The Figure 1-10 cable between c1-xio-ii-connector and nbrick-c-brick-0; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 60: N-brick connectors C-brick 0 to 3 go to C-brick XIO (II) connectors"]
+  - component: c2-xio-ii-connector
+    occupancy: cabled
+    peer: nbrick-c-brick-1
+    reason: The Figure 1-10 cable between c2-xio-ii-connector and nbrick-c-brick-1; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 60: N-brick connectors C-brick 0 to 3 go to C-brick XIO (II) connectors"]
+  - component: nbrick-c-brick-1
+    occupancy: cabled
+    peer: c2-xio-ii-connector
+    reason: The Figure 1-10 cable between c2-xio-ii-connector and nbrick-c-brick-1; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 60: N-brick connectors C-brick 0 to 3 go to C-brick XIO (II) connectors"]
+  - component: c3-xio-ii-connector
+    occupancy: cabled
+    peer: nbrick-c-brick-2
+    reason: The Figure 1-10 cable between c3-xio-ii-connector and nbrick-c-brick-2; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 60: N-brick connectors C-brick 0 to 3 go to C-brick XIO (II) connectors"]
+  - component: nbrick-c-brick-2
+    occupancy: cabled
+    peer: c3-xio-ii-connector
+    reason: The Figure 1-10 cable between c3-xio-ii-connector and nbrick-c-brick-2; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 60: N-brick connectors C-brick 0 to 3 go to C-brick XIO (II) connectors"]
+  - component: nbrick-c-brick-3
+    occupancy: empty
+    reason: Figure 1-10 uses three of the N-brick's four connector pairs.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 27, Figure 1-10: an N-brick serving C-bricks 1 to 3"]
+  - component: nbrick-graphics-pipe-3
+    occupancy: empty
+    reason: Figure 1-10 uses three of the N-brick's four connector pairs.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 27, Figure 1-10: an N-brick serving C-bricks 1 to 3"]
+  - component: nbrick-graphics-pipe-0
+    occupancy: cabled
+    peer: gbrick0-ktown2-top
+    reason: The cable between nbrick-graphics-pipe-0 and gbrick0-ktown2-top; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 60: N-brick connectors Graphics pipe 0 to 3 go to G-brick Ktown2 connectors"]
+  - component: gbrick0-ktown2-top
+    occupancy: cabled
+    peer: nbrick-graphics-pipe-0
+    reason: The cable between nbrick-graphics-pipe-0 and gbrick0-ktown2-top; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 60: N-brick connectors Graphics pipe 0 to 3 go to G-brick Ktown2 connectors"]
+  - component: nbrick-graphics-pipe-1
+    occupancy: cabled
+    peer: gbrick0-ktown2-bottom
+    reason: The cable between nbrick-graphics-pipe-1 and gbrick0-ktown2-bottom; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 60: N-brick connectors Graphics pipe 0 to 3 go to G-brick Ktown2 connectors"]
+  - component: gbrick0-ktown2-bottom
+    occupancy: cabled
+    peer: nbrick-graphics-pipe-1
+    reason: The cable between nbrick-graphics-pipe-1 and gbrick0-ktown2-bottom; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 60: N-brick connectors Graphics pipe 0 to 3 go to G-brick Ktown2 connectors"]
+  - component: nbrick-graphics-pipe-2
+    occupancy: cabled
+    peer: gbrick1-ktown2-top
+    reason: The cable between nbrick-graphics-pipe-2 and gbrick1-ktown2-top; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 60: N-brick connectors Graphics pipe 0 to 3 go to G-brick Ktown2 connectors"]
+  - component: gbrick1-ktown2-top
+    occupancy: cabled
+    peer: nbrick-graphics-pipe-2
+    reason: The cable between nbrick-graphics-pipe-2 and gbrick1-ktown2-top; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 60: N-brick connectors Graphics pipe 0 to 3 go to G-brick Ktown2 connectors"]
+  - component: ibrick-port-b
+    occupancy: empty
+    reason: The I-brick's second host port carries no pipe cable here; see the machine notes.
+    provenance: derived
+    sources: ["007-4264-002 printed page 27, Figure 1-10: an Onyx 3400 with an I-brick, an N-brick and two G-bricks"]
+  - component: gbrick1-ktown2-bottom
+    occupancy: empty
+    reason: G-brick 1 holds one pipe in this composition; see the machine notes.
+    provenance: derived
+    sources: ["007-4264-002 printed page 27, Figure 1-10: an Onyx 3400 with an I-brick, an N-brick and two G-bricks"]
+module_instances:
+  - model: layers/modules/r-brick.yaml
+    prefix: rbrick-
+    parent: rack
+  - model: layers/modules/c-brick.yaml
+    prefix: c0-
+    parent: rack
+    observed_hardware: &cbrick-basis
+      mode: projected
+      sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock]
+      note: >-
+        The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what
+        every published Origin 3000 inventory reports; it is not a capture of
+        this C-brick.
+  - model: layers/modules/c-brick.yaml
+    prefix: c1-
+    parent: rack
+    observed_hardware: *cbrick-basis
+  - model: layers/modules/c-brick.yaml
+    prefix: c2-
+    parent: rack
+    observed_hardware: *cbrick-basis
+  - model: layers/modules/c-brick.yaml
+    prefix: c3-
+    parent: rack
+    observed_hardware: *cbrick-basis
+  - model: layers/modules/i-brick.yaml
+    prefix: ibrick-
+    parent: rack
+    bus_bindings: {host-port-a-xio: c0-xio-ii}
+    observed_hardware:
+      mode: direct
+      sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]
+      note: >-
+        The IO7 device identities are the closure record's own three
+        independent owners' IRIX inventories, reused directly for this
+        reference I-brick rather than a distinct capture of this exact set.
+  - model: layers/modules/n-brick.yaml
+    prefix: nbrick-
+    parent: rack
+  - model: layers/modules/g-brick.yaml
+    prefix: gbrick0-
+    parent: graphics-rack
+    bus_bindings: {pipe0-xio: nbrick-graphics-pipe-0-xio, pipe1-xio: nbrick-graphics-pipe-1-xio}
+  - model: layers/modules/g-brick-ir3-pipe.yaml
+    prefix: gbrick0-pipe0-
+    parent: gbrick0-chassis
+    bus_bindings: {upstream: nbrick-graphics-pipe-0-xio}
+  - model: layers/modules/g-brick-ir3-pipe.yaml
+    prefix: gbrick0-pipe1-
+    parent: gbrick0-chassis
+    bus_bindings: {upstream: nbrick-graphics-pipe-1-xio}
+  - model: layers/modules/g-brick.yaml
+    prefix: gbrick1-
+    parent: graphics-rack
+    bus_bindings: {pipe0-xio: nbrick-graphics-pipe-2-xio, pipe1-xio: nbrick-graphics-pipe-3-xio}
+  - model: layers/modules/g-brick-ir3-pipe.yaml
+    prefix: gbrick1-pipe0-
+    parent: gbrick1-chassis
+    bus_bindings: {upstream: nbrick-graphics-pipe-2-xio}
