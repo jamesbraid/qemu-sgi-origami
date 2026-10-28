@@ -47,7 +47,7 @@
  * texture-read rectangle copy the shipped
  * IRIX kernel driver performs; the constant-colour point and rectangle
  * fills both textports draw with (the IO6
- * PROM's console=g textport and the kernel's rad1_tport.o plot every glyph
+ * PROM's console=g textport and the kernel's textport code plot every glyph
  * pixel as a point primitive and every box
  * as a rectangle primitive, colour from FBWriteData under LogicalOpMode's
  * UseConstantFBWriteData, or from
@@ -208,7 +208,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  * and (b)
  * branches on it directly to decide
  * whether attach continues toward
- * `pciio_intr_alloc`/`hwgraph_char_device_add` at all. Before this offset was
+ * interrupt allocation and device-node creation at all. Before this offset was
  * modeled, an unhandled read here fell through to the Control & Status
  * block's default handler and returned 0,
  * which the attach routine reads as false and aborts attach on. This directly
@@ -496,7 +496,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  * PROM textport initialiser agrees, writing dY = 0x10000 (1.0) and zero
  * dXDom/dXSub once at mode set, and the point
  * renders put Y<<16 in StartY. Neither textport renders a trapezoid; only the
- * kernel driver (rad1drv.o) does, in its framebuffer fill.
+ * kernel driver does, in its framebuffer fill.
  */
 #define RAD1_REG_START_X_DOM        0x8000
 #define RAD1_REG_D_X_DOM            0x8008
@@ -545,7 +545,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  * drivers/video/fbdev/pm2fb.c's own use of this register is confined to
  * pm2fb_imageblit()'s monochrome-glyph
  * BIT_MASK_PATTERN path, which neither IRIX textport uses: the IO6 PROM
- * textport and the kernel's rad1_tport.o
+ * textport and the kernel's textport
  * bitmap routine plot one point primitive per set glyph bit (StartXDom,
  * StartY, Render), see
  * rad1_do_point_render().
@@ -578,7 +578,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  * 231) is set. It is not in the public
  * Linux include/video/permedia2.h list. Both textports draw every text pixel
  * and box this way: the PROM textport
- * and the kernel's rad1_tport.o bitmap, point and box-fill routines
+ * and the kernel's textport bitmap, point and box-fill routines
  * each set bit 5 in 0x8828, write the
  * colour here, render, then clear bit 5. The values used (0xf0f0f0
  * background, 0x606070 text) are the textport's
@@ -592,7 +592,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  * page 41, "Block Writes"): the value a
  * FastFillEnable Render writes to every pixel. Both textport initialisers
  * zero it together with FBWriteData before
- * their full-screen FastFill clear (the PROM textport and rad1_tpinit.o's
+ * their full-screen FastFill clear (the PROM textport and the kernel's
  * board initialisation).
  */
 #define RAD1_REG_FB_BLOCK_COLOR     0x8ac8
@@ -652,7 +652,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  *
  * Bit 31 is deliberately left in place by RAD1_TEXBASE_ADDR_MASK (it only
  * clears bit 30): a system-memory address
- * the driver computes through IRIX's pciio_dmatrans_addr() carries the
+ * the driver computes through IRIX's PCI DMA translation carries the
  * Bridge's own PCI_DMA_DIRECT
  * address-space-selector bit as part of the same 32-bit value, and
  * pci_dma_read()/pci_dma_write() need that bit
@@ -1139,7 +1139,7 @@ static void rad1_put_pixel(PsitechRad1State *s, int32_t x, int32_t y,
  * format of every rasterizer coordinate). This is how both textports draw
  * text: one point per set glyph bit, colour
  * from FBWriteData, as both the PROM textport and the kernel driver's
- * rad1_tport.o bitmap routine do. Completion
+ * textport bitmap routine do. Completion
  * signaling is simplified exactly as rad1_do_render()'s, see
  * RAD1_INT_KNOWN_MASK.
  */

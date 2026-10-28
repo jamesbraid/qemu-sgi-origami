@@ -832,7 +832,7 @@ static void test_render_rectangle_fill_negative_origin(void)
  * FastFill (manual page 41, "Block Writes") writes FBBlockColor to every
  * pixel regardless of FBWriteData. Both textport
  * initialisers issue it for full-screen clear (0x11c29fc4-0x11c29ff8, and
- * rad1_tpinit.o's board initialisation).
+ * the kernel's board initialisation).
  */
 static void test_render_fastfill_uses_block_color(void)
 {
@@ -882,7 +882,7 @@ static void test_render_fill_without_colour_source(void)
  * StartXDom/StartXSub/StartY and their deltas being 16.16 fixed point (manual
  * page 70, "5.3.14 Registers"; Count on page 73). dY = 1.0 is exactly what
  * the PROM textport initialiser writes at mode set (0x11c16110); only the
- * kernel driver's framebuffer fill (rad1drv.o) renders a trapezoid.
+ * kernel driver's framebuffer fill renders a trapezoid.
  */
 static void test_render_trapezoid_spans(void)
 {
