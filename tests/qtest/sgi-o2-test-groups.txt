@@ -146,3 +146,5 @@ board /mips64/o2/product-performance-32
 board /mips64/o2/product-performance-64
 board /mips64/o2/o2plus-performance-io
 board /mips64/o2/o2plus-performance-eret
+board /mips64/o2/config-k0/r10000
+board /mips64/o2/config-k0/r12000

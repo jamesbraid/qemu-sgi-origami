@@ -8583,6 +8583,100 @@ static void test_o2plus_performance_eret(void)
     check_product_performance_io(true, false, true);
 }
 
+static void check_product_k0_transition(bool plus)
+{
+    O2ProductTest t = { 0 };
+    g_autofree SN0Image *p = g_new0(SN0Image, 1);
+    g_autofree uint8_t *rom = g_malloc0(512 * KiB);
+    QTestState *qts;
+    SgiWait wait;
+
+    o2_product_prepare(&t);
+    if (plus) {
+        o2_product_select_plus(&t);
+    }
+    sn0_emit_li(p, SN0_R_T0, 0x00400000);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_li(p, 29, 0x80008000); /* Keep the existing private view active. */
+    sn0_emit_li(p, SN0_R_S0, 0xa0003000);
+    sn0_emit_mfc0(p, SN0_R_T0, 16);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x14));
+    sn0_emit_li(p, SN0_R_S1, 0x80000040);
+    sn0_emit_li(p, SN0_R_S2, 0xa0000040);
+    sn0_emit(p, mips_lw(SN0_R_T0, SN0_R_S1, 0));
+    sn0_emit_li(p, SN0_R_T0, 0x55667788);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S1, 0));
+    sn0_emit(p, mips_lw(SN0_R_T0, SN0_R_S1, 0));
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0));
+    sn0_emit(p, mips_lw(SN0_R_T0, SN0_R_S2, 0));
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x10));
+    sn0_emit_li(p, SN0_R_T0, 0xaabbccdd);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S2, 0));
+    sn0_emit_li(p, SN0_R_T0, 0x24681357);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S2, 0xfc0));
+    sn0_emit(p, mips_sync());
+    sn0_emit_mfc0(p, SN0_R_T0, 16);
+    sn0_emit_li(p, SN0_R_T1, 0xfffffff8);
+    sn0_emit(p, mips_and(SN0_R_T0, SN0_R_T0, SN0_R_T1));
+    sn0_emit(p, mips_ori(SN0_R_T0, SN0_R_T0, 5));
+    sn0_emit_mtc0(p, SN0_R_T0, 16);
+    sn0_emit_mfc0(p, SN0_R_T0, 16);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 12));
+    sn0_emit(p, mips_lw(SN0_R_T0, SN0_R_S1, 0));
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 4));
+    /* The second page was not primed before changing Config.K0. */
+    sn0_emit(p, mips_lw(SN0_R_T0, SN0_R_S1, 0xfc0));
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 8));
+    sn0_emit_li(p, SN0_R_T0, 1);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x3c));
+    sn0_emit_park(p);
+    memcpy(rom, p->bytes, p->pos);
+    g_assert_true(g_file_set_contents(t.rom, (char *)rom, 512 * KiB, NULL));
+    qts = qtest_initf("-M %s -cpu %s -nodefaults -S "
+        "-accel tcg,thread=single -icount shift=3,align=off,sleep=off "
+        "-rtc clock=vm", t.machine, plus ? O2PLUS_CPU : "R10000");
+    for (unsigned pass = 0; pass < 2; pass++) {
+        uint32_t primed, fresh;
+
+        if (pass) {
+            qtest_system_reset(qts);
+        }
+        qtest_writel(qts, 0x40, 0x11223344);
+        qtest_writel(qts, 0x1000, 0x13572468);
+        qtest_memset(qts, RAM_FULL + 0x3000, 0, 64);
+        qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+        sgi_wait_start(&wait, "Config.K0 transition after reset %u", pass);
+        while (!qtest_readl(qts, RAM_FULL + 0x303c)) {
+            sgi_wait_pause(&wait, 1000);
+        }
+        qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+        primed = qtest_readl(qts, RAM_FULL + 0x3004);
+        fresh = qtest_readl(qts, RAM_FULL + 0x3008);
+        g_test_message("primed page 0x%08x, fresh page 0x%08x", primed, fresh);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3000), ==, 0x55667788);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3010), ==, 0x11223344);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3014) & 7, ==, 3);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x300c), ==,
+                        plus ? 0x6d1a8605 : 0x6c198605);
+        g_assert_cmphex(primed, ==, 0xaabbccdd);
+        g_assert_cmphex(fresh, ==, 0x24681357);
+        g_assert_cmphex(qtest_readl(qts, 0x40), ==, 0xaabbccdd);
+        g_assert_cmphex(qtest_readl(qts, 0x1000), ==, 0x24681357);
+    }
+    qtest_quit(qts);
+    o2_product_cleanup(&t);
+}
+
+static void test_product_k0_transition(void)
+{
+    check_product_k0_transition(false);
+}
+
+static void test_o2plus_k0_transition(void)
+{
+    check_product_k0_transition(true);
+}
+
 static void test_o2plus_configuration(void)
 {
     static const struct {
@@ -9066,6 +9160,8 @@ int main(int argc, char **argv)
     add_case("o2/banked-approx-migration",
                    test_banked_approx_migration);
     add_case("o2/o2plus-cpu", test_o2plus_cpu);
+    add_case("o2/config-k0/r10000", test_product_k0_transition);
+    add_case("o2/config-k0/r12000", test_o2plus_k0_transition);
     add_case("o2/o2plus-performance-counter", test_o2plus_performance_counter);
     add_case("o2/product-performance-32", test_product_performance_32);
     add_case("o2/product-performance-64", test_product_performance_64);
