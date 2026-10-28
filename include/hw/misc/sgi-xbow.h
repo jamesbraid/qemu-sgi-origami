@@ -128,6 +128,7 @@ struct SGIXbowState {
     uint16_t links_present_prop;
     uint16_t startup_links_alive_prop;
     uint16_t link_reset_restore_alive_prop;
+    uint16_t eight_bit_links_prop;
 
     /*
      * Link masks. Attachment is board wiring. The startup mask is the
@@ -138,6 +139,11 @@ struct SGIXbowState {
     uint8_t link_present;
     uint8_t link_startup;
     uint8_t link_reset_restore_alive_mask;
+    /*
+     * Board wiring: links whose widget has only an 8-bit link interface,
+     * so the link comes up 8-bit whatever the Crossbow's force control says.
+     */
+    uint8_t link_eight_bit_only;
     uint8_t link_alive;
 
     uint8_t link_initializing;
@@ -147,6 +153,13 @@ struct SGIXbowState {
     uint8_t link_reset_restore_alive;
     bool interrupt_asserted;
     bool status_source_field;
+    /*
+     * A port with no widget reads the 8-bit width bit beside failure mode in
+     * its auxiliary status. Measured only on the standalone revision 5
+     * Crossbow of the reference Octane2 (0x50 at every empty port), so the
+     * machine that fits that chip opts in.
+     */
+    bool empty_port_eight_bit;
 
     /*
      * Reset fences (revision 5, "Crossbow 2.0", and later only): one mask
@@ -226,6 +239,7 @@ MemoryRegion *sgi_xbow_packet_ingress(SGIXbowState *s, unsigned int widget);
 
 /* Enable the PIC-owned source field before realization. */
 bool sgi_xbow_enable_status_source_field(SGIXbowState *s, Error **errp);
+bool sgi_xbow_enable_empty_port_eight_bit(SGIXbowState *s, Error **errp);
 
 /*
  * Supply one or both initialized faces before realization. A packet-only

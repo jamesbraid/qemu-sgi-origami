@@ -777,6 +777,18 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     qdev_prop_set_uint16(xbow, "links-present", links);
     qdev_prop_set_uint16(xbow, "startup-links-alive", links);
     qdev_prop_set_uint16(xbow, "link-reset-restore-alive", links);
+    /* The Bridge has only an 8-bit Crosstalk link (Bridge spec 4.0 p. 4). */
+    qdev_prop_set_uint16(xbow, "eight-bit-links", BIT(15));
+    /*
+     * Crossbow 2.0 (revision 5) reports in widget 0 status bits 9:6 the
+     * port a read of it arrived on; the reference Octane2 reads 8 there.
+     * Its empty ports also read the 8-bit width beside failure mode.
+     */
+    if (s->model->crossbars->value->widget_revision >= 5 &&
+        (!sgi_xbow_enable_status_source_field(crossbow, errp) ||
+         !sgi_xbow_enable_empty_port_eight_bit(crossbow, errp))) {
+        return false;
+    }
     if (!sgi_xbow_attach_endpoint(crossbow, 8,
             sgi_xio_port_cpu_face(OBJECT(heart), 0),
             sgi_xio_port_packet_face(OBJECT(heart), 0), errp) ||
