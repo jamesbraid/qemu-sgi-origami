@@ -848,8 +848,9 @@ static void test_fuel_pci(const void *data)
 
     g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 1)), ==, 0x12161077);
     g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 4)), ==, 0x000310a9);
-    g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 4) + 0x2c), ==,
-                    0xc30a10a9);
+    /* No subsystem register: 0x2c repeats the 0x0c word. */
+    qtest_writel(qts, PCI_CONFIG(15, 4) + 0x0c, 0x2800);
+    g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 4) + 0x2c), ==, 0x2800);
     g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(14, 1)), ==, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(14, 4)), ==, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 5)), ==, 0x580211c1);

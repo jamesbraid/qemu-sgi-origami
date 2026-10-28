@@ -206,6 +206,21 @@ static const MemoryRegionOps sgi_ioc3_pci_bar_ops = {
     .impl.max_access_size = 4,
 };
 
+/*
+ * The chip decodes five configuration address bits: dwords 0x20-0x3f repeat
+ * 0x00-0x1f. The repeat hides the subsystem dword at 0x2c and the interrupt
+ * pin byte at 0x3d from a guest, while the PCI core keeps routing the
+ * chip's INTA from the stored pin.
+ */
+static uint32_t sgi_ioc3_config_read(PCIDevice *dev, uint32_t addr, int len)
+{
+    if (addr >= SGI_IOC3_CONFIG_DECODED &&
+        addr + len <= PCI_CONFIG_HEADER_SIZE) {
+        addr &= SGI_IOC3_CONFIG_DECODED - 1;
+    }
+    return pci_default_read_config(dev, addr, len);
+}
+
 static void sgi_ioc3_update_irq(SGIIOC3State *s)
 {
     qemu_set_irq(s->superio_irq, !!(s->int_status & s->int_enable));
@@ -1235,13 +1250,6 @@ static void sgi_ioc3_build(PCIDevice *dev, Error **errp)
         return;
     }
 
-    /*
-     * The board identity, over the class-wide default the PCI core has
-     * already written. A guest reads the subsystem dword to decide which
-     * sub-devices the board wires up, so it has to answer per instance.
-     */
-    pci_set_word(dev->config + PCI_SUBSYSTEM_ID, s->subsystem_id);
-
     dev->config[PCI_INTERRUPT_PIN] = 0x01;
 
     /* IRIX's configuration diagnostic fails the slot on a zero Status. */
@@ -1810,13 +1818,12 @@ static void sgi_ioc3_class_init(ObjectClass *oc, const void *data)
     dc->desc = "SGI IOC3 base I/O controller";
 
     pc->realize = sgi_ioc3_realize;
+    pc->config_read = sgi_ioc3_config_read;
     pc->exit = sgi_ioc3_exit;
     pc->vendor_id = SGI_IOC3_VENDOR_ID;
     pc->device_id = SGI_IOC3_DEVICE_ID;
     pc->revision = SGI_IOC3_REVISION;
     pc->class_id = SGI_IOC3_CLASS_ID;
-    pc->subsystem_vendor_id = SGI_IOC3_VENDOR_ID;
-    pc->subsystem_id = SGI_IOC3_SUBSYSTEM_ID;
     rc->phases.hold = sgi_ioc3_reset_hold;
     dc->vmsd = &vmstate_sgi_ioc3;
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);

@@ -99,6 +99,12 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_SIO_UFC_BOARD_NAME     "PCI_SIO_UFC"
 #define SGI_IOC3_SUBSYS_SIO_UFC_UNCAPTURED 0xFFFF
 
+/*
+ * The chip has no subsystem register: its configuration space repeats the
+ * first 32 bytes (see sgi_ioc3_config_read()). The "subsystem-id" property is
+ * the id Linux substitutes from the Bridge's board record, kept as the key
+ * that picks a board's population here; no guest reads it from the chip.
+ */
 #define SGI_IOC3_SUBSYSTEM_ID   SGI_IOC3_SUBSYS_IP29_SYSBOARD
 
 #define SGI_IOC3_BAR_SIZE       (1 * MiB)
@@ -112,6 +118,9 @@ struct SGIIOC3BusState {
  * The SuperIO interrupt pair has no ethernet bit; that block drives the
  * PCI pin. The enable mask has set and clear write aliases.
  */
+/* Configuration bytes the chip decodes; the rest of the 64 repeat them. */
+#define SGI_IOC3_CONFIG_DECODED 0x20
+
 #define SGI_IOC3_INT_STATUS     0x1c
 #define SGI_IOC3_INT_ENABLE_SET 0x20
 #define SGI_IOC3_INT_ENABLE_CLR 0x24

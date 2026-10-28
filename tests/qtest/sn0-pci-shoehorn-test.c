@@ -87,8 +87,6 @@ typedef struct {
 /* The Cad Duo (sgi-ioc3) PCI identity: SGI 0x10a9, IOC3 0x0003. */
 #define PCI_SUBSYSTEM       0x2c
 #define CAD_DUO_ID_PAIR     0x000310a9u
-/* subsystem id 0xffff (uncaptured) */
-#define CAD_DUO_SUBSYSTEM   0xffff10a9u
 
 /* IOC3 registers in the chip's own MMIO window (no +REG_DATA skew). */
 #define CD_INT_STATUS(c)     (CAD_DUO_WINDOW(c) + 0x1c)
@@ -291,8 +289,9 @@ static void test_cad_duo_enumerates(const void *data)
     QTestState *qts = qtest_init(c->args);
 
     g_assert_cmphex(qtest_readl(qts, CFG0(c)), ==, CAD_DUO_ID_PAIR);
-    g_assert_cmphex(qtest_readl(qts, CFG0(c) + PCI_SUBSYSTEM), ==,
-                    CAD_DUO_SUBSYSTEM);
+    /* No subsystem register: 0x2c repeats the 0x0c word. */
+    qtest_writel(qts, CFG0(c) + 0x0c, 0x2800);
+    g_assert_cmphex(qtest_readl(qts, CFG0(c) + PCI_SUBSYSTEM), ==, 0x2800);
     qtest_quit(qts);
 }
 
@@ -574,8 +573,8 @@ static void test_sio_enumerates(const void *data)
     size_t i;
 
     g_assert_cmphex(qtest_readl(qts, CFG0(c)), ==, CAD_DUO_ID_PAIR);
-    g_assert_cmphex(qtest_readl(qts, CFG0(c) + PCI_SUBSYSTEM), ==,
-                    CAD_DUO_SUBSYSTEM);
+    qtest_writel(qts, CFG0(c) + 0x0c, 0x2800);
+    g_assert_cmphex(qtest_readl(qts, CFG0(c) + PCI_SUBSYSTEM), ==, 0x2800);
     for (i = 0; i < ARRAY_SIZE(absent); i++) {
         g_autofree char *path = g_strdup_printf(
             "/machine/module0/io4/sio-ufc/%s", absent[i]);

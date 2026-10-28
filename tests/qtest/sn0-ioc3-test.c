@@ -6023,50 +6023,29 @@ static void test_pci_status_reset_value(const void *data)
 }
 
 /*
- * The board this chip is fitted to, which a guest learns from the subsystem
- * dword at config offset 0x2c. Mainline Linux's IOC3 driver dispatches on it
- * and registers a different set of sub-devices for each board
- * (drivers/mfd/ioc3.c, v7.2-rc7, commit db2ddb8), so the identifier is the
- * whole of what selects a population.
+ * The chip has no subsystem register. Its 64 configuration bytes repeat the
+ * first 32, as read from an Octane2's onboard IOC3, so a guest reading 0x2c
+ * gets the latency word and learns nothing about the board. Mainline Linux
+ * takes the board identifier from its Bridge driver's own table instead
+ * (arch/mips/pci/pci-xtalk-bridge.c, v7.2-rc7, commit db2ddb8), and the
+ * "subsystem-id" property here only keys which population the model fits.
  */
 #define PCI_SUBSYSTEM    0x2c
-#define SUBSYSTEM_SGI    0x10a9u  /* the vendor half, the same on every board */
-#define SUBSYSTEM(id)    (((uint32_t)(id) << 16) | SUBSYSTEM_SGI)
 
-static void test_the_default_board_is_the_system_board(const void *data)
+static void assert_no_subsystem_register(QTestState *qts, unsigned int device)
+{
+    qtest_writel(qts, CFG0(device) + PCI_CACHE_LINE_SIZE, 0x2800);
+    g_assert_cmphex(qtest_readl(qts, CFG0(device) + PCI_SUBSYSTEM), ==,
+                    qtest_readl(qts, CFG0(device) + PCI_CACHE_LINE_SIZE));
+    g_assert_cmphex(qtest_readl(qts, CFG0(device) + PCI_SUBSYSTEM), ==,
+                    0x2800);
+}
+
+static void test_the_chip_has_no_subsystem_register(const void *data)
 {
     ioc3_reset();
 
-    /*
-     * Asserted as the whole dword rather than its top half: the driver
-     * matches all 32 bits, so a model with the vendor half wrong falls
-     * through to the catch-all population with nothing else looking amiss.
-     */
-    g_assert_cmphex(qtest_readl(qts, CFG0(PCI_IOC3_DEVICE) + PCI_SUBSYSTEM),
-                    ==, SUBSYSTEM(0xc303));
-}
-
-static void test_bare_device_keeps_system_board_default(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200 "
-                                 "-device sgi-ioc3,addr=3");
-
-    g_assert_cmphex(qtest_readl(qts, CFG0(3) + PCI_SUBSYSTEM), ==,
-                    SUBSYSTEM(0xc303));
-
-    qtest_quit(qts);
-}
-
-static void test_the_board_is_a_property(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200 "
-                                 "-device sgi-ioc3,id=test-ioc3,addr=3,"
-                                 "subsystem-id=0xc305");
-
-    g_assert_cmphex(qtest_readl(qts, CFG0(TEST_IOC3_DEVICE) + PCI_SUBSYSTEM),
-                    ==, SUBSYSTEM(0xc305));
-
-    qtest_quit(qts);
+    assert_no_subsystem_register(qts, PCI_IOC3_DEVICE);
 }
 
 /*
@@ -6273,8 +6252,7 @@ static void test_an_explicit_population_is_independent_of_identity(
         "population=0x23,timekeeper-kind=1");
 
     test_ioc3_attach(qts);
-    g_assert_cmphex(qtest_readl(qts, CFG0(TEST_IOC3_DEVICE) + PCI_SUBSYSTEM),
-                    ==, SUBSYSTEM(0xc306));
+    assert_no_subsystem_register(qts, TEST_IOC3_DEVICE);
     assert_ioc3_population(qts, true, true, false, false, false, true,
                            "rtc");
 
@@ -6480,9 +6458,7 @@ static void test_a_board_fits_its_own_sub_devices(const void *data)
 
     test_ioc3_attach(qts);
 
-    /* The identifier a guest dispatches on, before what it selects. */
-    g_assert_cmphex(qtest_readl(qts, CFG0(TEST_IOC3_DEVICE) + PCI_SUBSYSTEM),
-                    ==, SUBSYSTEM(board->subsystem_id));
+    assert_no_subsystem_register(qts, TEST_IOC3_DEVICE);
 
     g_assert_cmpint(ethernet_is_fitted(qts, TEST_IOC3_BASE), ==, board->eth);
     g_assert_cmpint(one_wire_part_is_fitted(qts, TEST_IOC3_BASE), ==,
@@ -6543,8 +6519,7 @@ static void test_the_addin_card_answers_at_a_free_option_slot(const void *data)
 
     addin_ioc3_attach(qts);
 
-    g_assert_cmphex(qtest_readl(qts, CFG0(ADDIN_IOC3_DEVICE) + PCI_SUBSYSTEM),
-                    ==, SUBSYSTEM(0xffff));
+    assert_no_subsystem_register(qts, ADDIN_IOC3_DEVICE);
 
     /* The CAD DUO population: Ethernet, one-wire and PS/2, nothing else. */
     g_assert_cmpint(ethernet_is_fitted(qts, ADDIN_IOC3_BASE), ==, true);
@@ -6630,12 +6605,8 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("sn0/ioc3/pci-status-reset-value", NULL,
                         test_pci_status_reset_value);
-    qtest_add_data_func("sn0/ioc3/default-board-is-the-system-board", NULL,
-                        test_the_default_board_is_the_system_board);
-    qtest_add_data_func("sn0/ioc3/bare-added-device-keeps-default", NULL,
-                        test_bare_device_keeps_system_board_default);
-    qtest_add_data_func("sn0/ioc3/board-is-a-property", NULL,
-                        test_the_board_is_a_property);
+    qtest_add_data_func("sn0/ioc3/no-subsystem-register", NULL,
+                        test_the_chip_has_no_subsystem_register);
     qtest_add_data_func("sn0/ioc3/population-is-instance-data", NULL,
                         test_an_explicit_population_is_independent_of_identity);
     qtest_add_data_func("sn0/ioc3/population-selects-other-children", NULL,

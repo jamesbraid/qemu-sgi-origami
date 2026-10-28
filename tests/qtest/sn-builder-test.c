@@ -9227,9 +9227,10 @@ static void test_cbrick_io7_head_f(void)
         g_assert_cmphex(qtest_readl(qts, CBRICK_CONFIG(14, device)), ==,
                         UINT32_MAX);
     }
-    /* The IOC3's subsystem is the explicit unobserved placeholder. */
+    /* No subsystem register: 0x2c repeats the 0x0c word. */
+    qtest_writel(qts, CBRICK_CONFIG(15, 4) + 0x0c, 0x2800);
     g_assert_cmphex(qtest_readl(qts, CBRICK_CONFIG(15, 4) + 0x2c), ==,
-                    0xffff10a9);
+                    0x2800);
     qtest_quit(qts);
     g_unlink(prom);
 }

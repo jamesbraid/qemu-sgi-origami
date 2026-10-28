@@ -908,7 +908,6 @@ static void test_octane_ioc3_ethernet(bool octane2)
     uint64_t found[3], ethernet = 0;
 
     g_assert_cmphex(qtest_readl(qts, CFG(2)), ==, 0x000310a9);
-    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x2c), ==, 0xc30410a9);
     qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
     qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
     qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
@@ -938,6 +937,43 @@ static void test_octane_ioc3_ethernet(bool octane2)
     qtest_quit(qts);
 }
 
+
+/*
+ * The reference Octane2's PROM Command Monitor reads the onboard IOC3's
+ * type 0 configuration space as 32 bytes repeated: dwords 0x20-0x3f repeat
+ * 0x00-0x1f, so there is no subsystem register at 0x2c and the interrupt pin
+ * byte at 0x3d is part of the repeat. The PROM's own programming (BAR0
+ * 0x500000, latency timer 0x28, command 0x146) is replayed here. The dword at
+ * 0x1c reads the BAR0 value on that machine, for a reason no public source
+ * gives, so it is not asserted.
+ */
+static void test_octane2_ioc3_config_repeats(void)
+{
+    QTestState *qts = octane2_start_args("");
+    unsigned int off;
+
+    qtest_writel(qts, CFG(2) + 0x10, 0x500000);
+    qtest_writel(qts, CFG(2) + 0x0c, 0x2800);
+    qtest_writel(qts, CFG(2) + 0x04, 0x146);
+
+    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x00), ==, 0x000310a9);
+    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x04), ==, 0x02800146);
+    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x08), ==, 0xff000001);
+    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x0c), ==, 0x00002800);
+    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x10), ==, 0x00500000);
+    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x14), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x18), ==, 0);
+
+    for (off = 0x20; off < 0x40; off += 4) {
+        g_assert_cmphex(qtest_readl(qts, CFG(2) + off), ==,
+                        qtest_readl(qts, CFG(2) + (off & 0x1f)));
+    }
+    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x2c), ==, 0x00002800);
+    g_assert_cmphex(qtest_readb(qts, CFG(2) + 0x3d), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x3c) & 0xffff, ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_octane_ethernet(void)
 {
     test_octane_ioc3_ethernet(false);
@@ -948,7 +984,6 @@ static void test_ioc3_parallel(gconstpointer data)
     bool octane2 = GPOINTER_TO_INT(data);
     QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
 
-    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x2c), ==, 0xc30410a9);
     qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
     qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
     qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
@@ -5129,6 +5164,8 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/memory-populations", test_memory_populations);
     qtest_add_func("/octane/memory-population-rejections",
                    test_memory_population_rejections);
+    qtest_add_func("/octane2/ioc3-config-repeats",
+                   test_octane2_ioc3_config_repeats);
     qtest_add_func("/octane2/ioc3-ethernet", test_octane2_ethernet);
     qtest_add_func("/octane/ioc3-ethernet", test_octane_ethernet);
     qtest_add_data_func("/octane/mac", GINT_TO_POINTER(0), test_octane_mac);

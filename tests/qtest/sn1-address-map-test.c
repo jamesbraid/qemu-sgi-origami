@@ -1495,8 +1495,10 @@ static void test_io8_ioc3_attachment(const void *data)
 
     g_assert_cmphex(io8_ioc3_config_readl(qts, 0x00), ==, 0x000310a9);
     g_assert_cmphex(io8_ioc3_config_readl(qts, 0x08), ==, 0xff000001);
-    g_assert_cmphex(io8_ioc3_config_readl(qts, 0x2c), ==, 0xffff10a9);
-    g_assert_cmphex((io8_ioc3_config_readl(qts, 0x3c) >> 8) & 0xff, ==, 1);
+    /* The chip decodes 32 bytes: 0x2c and 0x3c repeat 0x0c and 0x1c. */
+    io8_ioc3_config_writel(qts, 0x0c, 0x2800);
+    g_assert_cmphex(io8_ioc3_config_readl(qts, 0x2c), ==, 0x2800);
+    g_assert_cmphex((io8_ioc3_config_readl(qts, 0x3c) >> 8) & 0xff, ==, 0);
 
     g_assert_cmphex(qtest_readl(qts, IO_WIDGET(0xe) + 0x24000), ==,
                     0xffffffff);

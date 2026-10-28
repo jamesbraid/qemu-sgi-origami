@@ -45,8 +45,6 @@
 #define BRIDGE_DEV_SWAP (1u << 13)
 #define BRIDGE_DEV_64BIT (1u << 22)
 #define PCI_SUBSYSTEM 0x2c
-#define SUBSYSTEM_SGI 0x10a9u
-#define SUBSYSTEM(id) (((uint32_t)(id) << 16) | SUBSYSTEM_SGI)
 
 #define IOC3_DEVICE 2
 #define IOC3_MMIO 0x10000000u
@@ -750,9 +748,11 @@ static void test_mio_ioc3_subsystem_id(void)
     QTestState *qts = start_module_io6g();
 
     program_module(qts);
+    /* No subsystem register: 0x2c repeats the 0x0c word. */
+    baseio_window_write(qts, BRIDGE_CFG0(MIO_IOC3_DEVICE) + 0x0c, 0x2800);
     g_assert_cmphex(baseio_window_read(qts, BRIDGE_CFG0(MIO_IOC3_DEVICE) +
                                        PCI_SUBSYSTEM),
-                    ==, SUBSYSTEM(0xc301));
+                    ==, 0x2800);
 }
 
 /*
