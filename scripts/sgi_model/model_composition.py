@@ -922,8 +922,12 @@ def validate_connector_population(model: dict[str, Any]) -> None:
                     f"cabled connector '{cid}' needs a reciprocal "
                     "matching peer")
             shared = buses.get(cid, set()) & buses.get(peer, set())
-            if not any(bus["id"] in shared and bus.get("kind") == "fabric"
-                       and bus.get("link", {}).get("kind") == "cable"
+            # A NUMAlink cable is a fabric bus of its own; an XIO cable is
+            # the XIO bus both connectors sit on.
+            if not any(bus["id"] in shared and (
+                    (bus.get("kind") == "fabric"
+                     and bus.get("link", {}).get("kind") == "cable")
+                    or bus.get("kind") == "xio")
                        for bus in model.get("buses", [])):
                 raise ResolutionError(
                     f"cabled connectors '{cid}' and '{peer}' share no "
