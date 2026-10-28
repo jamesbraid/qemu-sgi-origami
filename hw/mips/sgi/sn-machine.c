@@ -2141,36 +2141,6 @@ static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
             return false;
         }
     }
-    for (i = 0; i < crossbar_count; i++) {
-        const SGIModelCableList *cable;
-
-        if (host[i] < 0) {
-            continue;
-        }
-        for (cable = t->cables; cable; cable = cable->next) {
-            const SGIModelLinkEndList *ends = cable->value->ends;
-
-            if (QAPI_LIST_LENGTH(ends) != 2) {
-                continue;
-            }
-            for (unsigned int side = 0; side < 2; side++) {
-                const SGIModelLinkEnd *own = side ? ends->next->value :
-                                                    ends->value;
-                const SGIModelLinkEnd *peer = side ? ends->value :
-                                                     ends->next->value;
-
-                if (own->kind == SGI_MODEL_LINK_END_KIND_NODE &&
-                    own->index == host[i] &&
-                    peer->kind == SGI_MODEL_LINK_END_KIND_ROUTER) {
-                    error_setg(errp, "topology '%s' node '%s' hosts XBridge "
-                               "'%s' and is cabled to a router; there is no "
-                               "Origin 3000 rule for a routed host yet",
-                               t->name, nodes[host[i]]->id, crossbars[i]->id);
-                    return false;
-                }
-            }
-        }
-    }
     for (i = 0; t->xio_cables && i < board_count; i++) {
         if (boards[i]->populated &&
             boards[i]->preset == SGI_MODEL_IO_BOARD_PRESET_VBRICK) {
