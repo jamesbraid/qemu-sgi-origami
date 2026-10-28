@@ -562,6 +562,15 @@ web:
     obtain:
       url: https://web.archive.org/web/20190915061518id_/https://datasheets.maximintegrated.com/en/ds/DS1685-DS1687.pdf
       sha256: 015f7d582af99da5b5e3da2a41b7fdbd3b66f94929aa538671f9e8bdd3ce6c83
+  maxim-ds2502-datasheet:
+    title: "DS2502 1Kb Add-Only Memory, data sheet 19-5075"
+    publisher: "Maxim Integrated"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: http://web.archive.org/web/2026id_/https://www.analog.com/media/en/technical-documentation/data-sheets/DS2502.pdf
+      sha256: edd35b1347b5a304088c23b3f9438c341d3a9a060dacc2d40de3f04aad452087
   octane-technical-report:
     title: "OCTANE Technical Report"
     publisher: Silicon Graphics
