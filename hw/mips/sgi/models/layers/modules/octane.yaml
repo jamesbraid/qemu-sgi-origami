@@ -71,7 +71,7 @@ layer:
       hardware_kind: bridge
       identity:
         widget_revision: 3
-        notes: Existing emulator compatibility choice; not a measured Octane2 Bridge revision.
+        notes: Read as "Bridge revision 3" in an OpenBSD boot of a 175 MHz Octane (Miod Vallat, OpenBSD/sgi story part 4).
       pci_host_bridge:
         heads: 1
     - id: isp1040-internal

@@ -1779,6 +1779,30 @@ static void test_heart_identity(gconstpointer data)
     qtest_quit(qts);
 }
 
+/*
+ * The Bridge identification word carries the silicon revision in bits 31:28.
+ * The 175 MHz Octane's OpenBSD capture reads "Bridge revision 3". The
+ * reference Octane2's PROM Command Monitor read the word as 0x4c00206d,
+ * revision 4.
+ */
+static void test_octane_bridge_identity(void)
+{
+    QTestState *qts = octane_start();
+    uint32_t value;
+
+    g_assert_cmpuint(memtx_readl(qts, BRIDGE + 4, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0x3c00206d);
+    qtest_system_reset(qts);
+    g_assert_cmpuint(memtx_readl(qts, BRIDGE + 4, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0x3c00206d);
+    qtest_quit(qts);
+
+    qts = octane2_start_args("");
+    g_assert_cmpuint(memtx_readl(qts, BRIDGE + 4, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0x4c00206d);
+    qtest_quit(qts);
+}
+
 static void test_octane2_heart_widget_status(void)
 {
     QTestState *qts = octane2_start_args("");
@@ -5084,6 +5108,7 @@ int main(int argc, char **argv)
     g_assert_cmpint(write(fd, bytes, sizeof(bytes)), ==, sizeof(bytes));
     close(fd);
     qtest_add_func("/octane/widgets-and-memory", test_widgets_and_memory);
+    qtest_add_func("/octane/bridge-identity", test_octane_bridge_identity);
     qtest_add_func("/octane/xbow-fence-lock-errors",
                    test_octane_fence_lock_errors);
     qtest_add_data_func("/octane/cpu-clock", GINT_TO_POINTER(0),

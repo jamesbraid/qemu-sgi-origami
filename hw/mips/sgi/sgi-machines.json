@@ -21304,6 +21304,7 @@
                 "serial": 89358092030720
               }
             ],
+            "bridge-widget-revision": 3,
             "gpio-classic": true,
             "widget-id-64": 1275072621,
             "widget-revision": 4,
@@ -21799,7 +21800,7 @@
           "part": "030-1467-001",
           "populated": true,
           "preset": "ip30",
-          "revision": 3,
+          "revision": 4,
           "serial": 89358092029440,
           "system-timekeeper": {
             "initial-ip27-fixture": false,
@@ -21994,6 +21995,7 @@
                 "serial": 89358092030720
               }
             ],
+            "bridge-widget-revision": 4,
             "gpio-classic": false,
             "widget-id-64": 1811943533,
             "widget-revision": 6,
