@@ -3831,5 +3831,37 @@ class Onyx3400GraphicsBrickTests(unittest.TestCase):
             compile_model(self.resolve())
 
 
+class Onyx3400IrTargetTests(unittest.TestCase):
+    """The Onyx 3400 with InfiniteReality3 emulation target."""
+
+    def test_compiles_three_cabled_pipe_slots_and_one_router(self):
+        from sgi_model.model_compile import compile_model
+        topology = compile_model(
+            _resolver.load_system_model(INPUTS / "onyx3400-ir.yaml"))
+        pipes = [board for board in topology["io_boards"]
+                 if board["board_kind"] == "KONA"]
+        self.assertEqual(len(pipes), 3)
+        self.assertEqual({board["label"] for board in pipes},
+                         {board["id"] for board in pipes})
+        # Each pipe's cable ends on its board, after the I-brick's own.
+        board_ends = [cable["ends"][1] for cable in topology["xio_cables"]
+                      if cable["ends"][1]["kind"] == "IO_BOARD"]
+        self.assertEqual(len(board_ends), 3)
+        for end in board_ends:
+            self.assertEqual(
+                topology["io_boards"][end["index"]]["board_kind"], "KONA")
+        self.assertEqual(len(topology["routers"]), 1)
+        self.assertEqual(len(topology["nodes"]), 4)
+
+    def test_no_pipe_is_cabled_to_the_ibrick(self):
+        model = _resolver.load_system_model(INPUTS / "onyx3400-ir.yaml")
+        buses = {item["id"]: item for item in model["buses"]}
+        for item in model["connections"]:
+            if item["component"].endswith("-xg"):
+                self.assertNotEqual(item["bus"], "ibrick-port-b-xio")
+                self.assertTrue(buses[item["bus"]]["master"].startswith(
+                    "nbrick-xbridge"))
+
+
 if __name__ == "__main__":
     unittest.main()

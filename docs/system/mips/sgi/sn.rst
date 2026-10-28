@@ -213,6 +213,59 @@ IOC3 carries the Origin 300's M48T35-compatible Timekeeper as a
 compatibility choice, with blank storage on every start; head E's PCI
 slots are empty; the I-brick's XBridge revision is the model's.
 
+.. _sgi-sn-onyx3400-ir:
+
+Onyx 3400 with InfiniteReality3 machine
+---------------------------------------
+
+``-M origin3000,topology=onyx3400-ir`` builds the Figure 1-10 brick set of
+the Onyx 3000 graphics guide (007-4264-002 printed page 27) as a
+catalogue entry, ``onyx3400-ir``; the ``onyx3400`` composition stays the
+reference of the same brick set. It has four C-bricks on ports 2 to 5 of
+one R-brick, an I-brick on c0's ``XIO (II)`` connector, an N-brick whose
+first three chips carry c1 to c3, and two G-bricks. It has 16 R12000s, four per
+C-brick, and 16384 MB. The stock PROM 6.210 finds 4 nodes, 16 CPUs and
+one router, and its diagnostics summary reads ``ALL DIAGS PASSED``.
+Its ``hinv -v`` lists the four node boards, the I-brick's two heads and
+the router, and an XBow for the I-brick and for the N-brick chips of
+c10 and c13, but none for c07's.
+
+Choices the sources do not settle, each a model choice:
+
+* One R-brick, not Figure 1-10's two. The routed Origin 3400 drawing of
+  the technical configuration guide (007-4311-002 printed page 55) has
+  one, with the C-bricks on ports 2 to 5. The R-brick presents all
+  eight ports, and its L2 controller and USB hub traffic to the C-brick
+  L1s are not modelled. The C-brick L1s are not peers of each other.
+* The C-bricks are fitted like the Origin 3200's: four 400 MHz R12000s
+  with 8 MB caches and 4096 MB. The C-brick layer carries both PIMMs
+  unconditionally, so Figure 1-10's two-processor C-bricks are not
+  expressible.
+* The N-brick's XBridge presents the revision the model's XBridge
+  presents, as the I-brick's does.
+* Module numbers of the bricks.
+
+Stated limitations:
+
+* Three pipes, not four. A pipe cabled to a free port of the I-brick's
+  XBridge makes the PROM of the C-brick that hosts that chip print
+  ``iobrick_attached_modids failed``; on the I-brick that C-brick is
+  the global master, which then finds no base I/O. What an I/O brick's
+  port B presents to that query when a graphics pipe is cabled to it is
+  not established, so I-brick port B is left uncabled. G-brick 0 holds
+  two pipes and G-brick 1 one, on the N-brick's three pipe ports.
+* The graphics contract builds one pipe at once, so the machine offers
+  the four pipe slots and fits at most one ``sgi-kona``. The stock PROM
+  inventory lists no pipe with one fitted.
+* The C-bricks cabled to the N-brick print ``Unexpected I/O brick type``
+  at start: the N-brick has no L1 model, and what an N-brick answers to
+  the attached-brick request is not known. They still join the PROM's
+  node count.
+* The router's ports 1, 6, 7 and 8 are uncabled, and the PROM prints
+  ``discover_object: vector read 0x2 LRI failed`` and ``erect_fences``
+  messages and an EEPROM vector read error against the router.
+* IRIX has not been booted on this topology.
+
 .. _sgi-sn-family-ibrick:
 
 I-brick host ports and base I/O
