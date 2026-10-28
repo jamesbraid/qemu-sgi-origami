@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "e2612fdc23271c9af437a52b2fab789bd06c1983f23020ea47eecec08bdde129"
+    "0e49cbc0e7e9a1fc8beff0fa9ba0845417c3124dfc298f10d10f751a8be36754"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -209,9 +209,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 130)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 41)
-        self.assertEqual(len(layers), 87)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 135)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 42)
+        self.assertEqual(len(layers), 91)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -436,6 +436,13 @@ class StorageTests(unittest.TestCase):
                 processor = ("" if offering["processor"]["id"] ==
                              self.default_processor(offering["topology"])
                              else f",processor={offering['processor']['id']}")
+                if offering.get("launch-recipe") == "ip32":
+                    self.assertEqual(offering["machine-options"], "o2")
+                    self.assertEqual(offering["storage"], [])
+                    self.assertEqual(offering["firmware"]["kind"], "ip32-prom")
+                    self.assertEqual(offering["init-inputs"], [{
+                        "name": "boot-prom", "kind": "ip32-prom", "required": True}])
+                    continue
                 self.assertEqual(
                     offering["machine-options"],
                     f"{offering['product']},topology={offering['topology']}"
@@ -504,7 +511,7 @@ class StorageTests(unittest.TestCase):
                 else {"zero"}
                 if offering["topology"] in ds1744_topologies
                 else set()
-                if offering.get("launch-recipe") == "ip53-discovery"
+                if offering.get("launch-recipe") in ("ip53-discovery", "ip32")
                 else {"zero"})
             with self.subTest(options=offering["machine-options"]):
                 self.assertEqual(nvram, expected)
@@ -576,7 +583,8 @@ class StorageTests(unittest.TestCase):
         topologies = {item["name"]: item
                       for item in self.catalogue["topologies"]}
         models = {"ioc3": ("ioc3-ethernet", "sgi-ioc3-eth", "ef"),
-                  "bcm5701": ("bcm5701-ethernet", "bcm570x", "tg")}
+                  "bcm5701": ("bcm5701-ethernet", "bcm570x", "tg"),
+                  "mace": ("mace-ethernet", "sgi-mace-eth", "ec")}
         for offering in self.catalogue["offerings"]:
             listed = [function["kind"]
                       for board in topologies[offering["topology"]]

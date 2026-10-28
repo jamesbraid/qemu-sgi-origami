@@ -194,6 +194,120 @@
       "topology": "fuel"
     },
     {
+      "console": "mace-serial-a",
+      "consoles": [
+        {
+          "argument": "-serial chardev:mace_a",
+          "kind": "console",
+          "launcher-name": "mace-a",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:mace_b",
+          "kind": "second-port",
+          "launcher-name": "mace-b",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        1
+      ],
+      "default-cpu-model": "R10000",
+      "default-topology": "o2",
+      "dimms-per-node": [
+        8
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "O2 functional profile",
+      "firmware": {
+        "argument": "rom-image=",
+        "kind": "ip32-prom",
+        "per-node-flash": false,
+        "size": 524288
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [
+        "identity-test-serial",
+        "identity-eprom-file",
+        "identity-status",
+        "password-clear-input"
+      ],
+      "init-inputs": [
+        {
+          "kind": "ip32-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "disk-image",
+        "netboot"
+      ],
+      "launch-recipe": "ip32",
+      "machine-options": "o2",
+      "memory-per-node-mib": {
+        "accepted": [
+          1024
+        ],
+        "default": 1024
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "mace-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "ec0",
+          "kind": "mace-ethernet",
+          "mac": {
+            "derived": false
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-mace-eth",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [],
+      "processor": {
+        "cache-mib": 1,
+        "clock-hz": 195000000,
+        "id": "cpu0",
+        "part": "R10000"
+      },
+      "product": "o2",
+      "prom-dialogue": "none",
+      "resources": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [],
+          "type": "scsi"
+        }
+      ],
+      "smp": 1,
+      "storage": [],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "o2"
+    },
+    {
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -22183,6 +22297,78 @@
           "widget": 13
         }
       ],
+      "xio-slots": []
+    },
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [],
+      "crossbars": [],
+      "description": "SGI O2 (IP32)",
+      "generation": "ip32",
+      "io-boards": [],
+      "junk-uart": -1,
+      "machine-default": true,
+      "modules": [],
+      "name": "o2",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "inferred",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                1
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            1024
+          ],
+          "asic-kind": "crime",
+          "bank-mib": [
+            128,
+            128,
+            128,
+            128,
+            128,
+            128,
+            128,
+            128
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-mib": 1,
+                "clock-hz": 195000000,
+                "id": "cpu0",
+                "kind": "R10000",
+                "mode-bits": 1672707
+              },
+              "interface": 0,
+              "slot": 0
+            }
+          ],
+          "flash": {
+            "kind": "operator-prom",
+            "size": 524288
+          },
+          "id": "crime",
+          "slave-role": false
+        }
+      ],
+      "product": "o2",
+      "routers": [],
+      "xio-attachments": [],
       "xio-slots": []
     },
     {

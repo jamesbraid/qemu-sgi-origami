@@ -754,7 +754,8 @@ static void test_translated_code(void)
 {
     bool legacy = !strcmp(selected_profile, "legacy-software");
     QTestState *s = qtest_initf(MEMTX_TEST_DEVICE
-        "-M o2-test,crime-profile=%s,functional-memory-transfer=on%s "
+        "-M o2,register-test-profile=on,"
+        "crime-profile=%s,functional-memory-transfer=on%s "
         "-cpu R10000 -m %s -nodefaults -accel tcg,thread=single -S "
         "-device loader,addr=0xffffffffa0001000,cpu-num=0", selected_profile,
         legacy ? ",bank-profile=8x128m-synthetic,reset-low-ram-approx=on" : "",

@@ -35,12 +35,14 @@
 #
 # @heart: the IP30 HEART controller
 #
+# @crime: the IP32 CRIME memory and graphics controller
+#
 # @bedrock: the SN1 (IP35) Bedrock
 #
 # Since: 11.2
 ##
 { 'enum': 'SGIModelAsicKind',
-  'data': ['hub', 'bedrock', 'heart'] }
+  'data': ['hub', 'bedrock', 'heart', 'crime'] }
 
 ##
 # @SGIModelProcessor:
@@ -471,9 +473,11 @@
 #
 # @id: catalogue id of this node
 #
-# @module-index: position in the topology's @modules list
+# @module-index: position in the topology's @modules list, absent
+#     for a standalone board without a module
 #
-# @slot: physical slot number within that module
+# @slot: physical slot number within that module, absent when
+#     @module-index is absent
 #
 # @hub-slot-bits: what the module's midplane drives on this node
 #     slot's Hub slot-identity pins, where it differs from the
@@ -527,8 +531,8 @@
 ##
 { 'struct': 'SGIModelNode',
   'data': { 'id': 'str',
-            'module-index': 'uint32',
-            'slot': 'uint32',
+            '*module-index': 'uint32',
+            '*slot': 'uint32',
             '*hub-slot-bits': 'uint8',
             'asic-kind': 'SGIModelAsicKind',
             '*board-kind': 'SGIModelBoardKind',
@@ -1560,18 +1564,20 @@
 ##
 # @SGIModelGeneration:
 #
-# Which Scalable Node generation a topology's node boards belong to.
+# Which platform generation a topology's boards belong to.
 #
 # @sn0: SN0 (IP27/IP29 Hub-family boards)
 #
 # @ip30: IP30 HEART-family boards
+#
+# @ip32: IP32 CRIME-based O2 board
 #
 # @sn1: SN1 (IP35 Bedrock-family boards)
 #
 # Since: 11.2
 ##
 { 'enum': 'SGIModelGeneration',
-  'data': ['sn0', 'sn1', 'ip30'] }
+  'data': ['sn0', 'sn1', 'ip30', 'ip32'] }
 
 ##
 # @SGIModelIp27FirmwareConfig:
@@ -2171,10 +2177,12 @@
 #
 # @ip53-discovery: explicitly authored IP53 discovery-launch inputs
 #
+# @ip32: explicit O2 firmware, platform identity and persistent stores
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelLaunchRecipe',
-  'data': [ 'ip53-discovery' ] }
+  'data': [ 'ip53-discovery', 'ip32' ] }
 
 ##
 # @SGIModelFirmware:
@@ -2210,13 +2218,15 @@
 #
 # @ip30-prom: an IP30 PROM (Octane)
 #
+# @ip32-prom: an IP32 PROM (O2)
+#
 # @io6-prom: a BASEIO PROM, the image an IO6 or GIGAchannel I/O
 #     flash holds
 #
 # Since: 11.2
 ##
 { 'enum': 'SGIModelInitInputKind',
-  'data': ['ip27-prom', 'ip35-prom', 'ip30-prom', 'io6-prom'] }
+  'data': ['ip27-prom', 'ip35-prom', 'ip30-prom', 'ip32-prom', 'io6-prom'] }
 
 ##
 # @SGIModelInitInput:

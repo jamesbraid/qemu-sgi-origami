@@ -1376,7 +1376,7 @@ static void test_rom_canary(void)
     g_assert_true(g_file_set_contents(path, (const char *)image,
                                       sizeof(image), NULL));
     s = qtest_initf(MEMTX_TEST_DEVICE
-        "-M o2-test,crime-profile=legacy-software,"
+        "-M o2,register-test-profile=on,crime-profile=legacy-software,"
         "bank-profile=8x128m-synthetic,reset-low-ram-approx=on,"
         "functional-memory-transfer=on,prom-private-window=on,"
         "prom-sb64-reset=on,prom-id-word=on,gbe11-registers=on,"
@@ -9358,7 +9358,7 @@ int main(int argc, char **argv)
     add_case("sgi/crime/render/unselected-profile",
                    test_unselected_profile);
     add_case("sgi/crime/render/coordinate-limit", test_coordinate_limit);
-    if (qtest_has_machine("o2-test")) {
+    if (qtest_has_machine("o2")) {
         add_case("sgi/crime/render/rom-canary", test_rom_canary);
     }
     add_case("sgi/crime/render/wide-slot", test_wide_slot);

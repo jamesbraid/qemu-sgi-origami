@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Copyright (c) 2026 James Braid */
 /*
- * Synthetic O2 (IP32) register and wiring test profile.
- * This machine pairs catalogued O2 module 030-1247-001 (195 MHz R10000)
- * with 64 or 128 MiB diagnostic RAM, or an explicit synthetic 1 GiB
- * eight-bank fit. Reset straps and fitted DIMM mapping are unknown.
- * It has no fitted flash or product catalogue offering. An opt-in storage
- * diagnostic uses a synthetic PCI byte view, not fitted hardware behavior.
- * Serial A accepts an explicit host backend; flash write control is
- * unavailable, and migration has not been qualified for this profile.
+ * O2 (IP32) functional product with QTest register fixtures.
+ * The product selects one 195 MHz R10000 with 1 MiB L2 and 1 GiB RAM.
+ * Coherent memory, reset geometry, boot-RAM routing and native PCI byte
+ * mapping retain the documented functional approximations. Fitted reset
+ * straps and DIMM mapping remain unknown. Firmware, flash protection,
+ * platform identity and password-clear inputs are supplied by the caller.
+ * QTest alone admits diagnostic populations and optional test devices.
+ * Eight-bank machine migration is unsupported.
  */
 #include "qemu/osdep.h"
 #include <glib/gstdio.h>
@@ -102,6 +102,8 @@ typedef struct O2MachineState {
     bool vmstate_registered;
     bool rom_at29c040a;
     bool banked_ram;
+    bool product;
+    bool test_properties_set;
     bool reset_low_ram_approx;
     bool empty_renderer_status;
     bool functional_memory_transfer;
@@ -171,7 +173,7 @@ static void o2_storage_event_fail(O2MachineState *s)
         return;
     }
     s->storage_event_failed = true;
-    error_report("o2-test storage diagnostic event write failed: %s",
+    error_report("o2 storage diagnostic event write failed: %s",
                  g_strerror(errno));
     qemu_system_vmstop_request_prepare();
     qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
@@ -245,10 +247,10 @@ static void o2_storage_exit(Notifier *notifier, void *data)
             if (complete_offset >= 0 &&
                 (ftruncate(s->storage_event_fd, complete_offset) < 0 ||
                  qemu_fdatasync(s->storage_event_fd) < 0)) {
-                error_report("o2-test cannot remove incomplete storage "
+                error_report("o2 cannot remove incomplete storage "
                              "completion record: %s", g_strerror(errno));
             }
-            error_report("o2-test storage diagnostic final event write "
+            error_report("o2 storage diagnostic final event write "
                          "failed: %s", g_strerror(write_errno));
             close(s->storage_event_fd);
             s->storage_event_fd = -1;
@@ -262,7 +264,7 @@ static void o2_storage_exit(Notifier *notifier, void *data)
 }
 
 static const VMStateDescription vmstate_o2_banked = {
-    .name = "o2-test/eight-bank-profile",
+    .name = "o2/eight-bank-profile",
     .unmigratable = true,
 };
 
@@ -277,13 +279,14 @@ static void o2_set_bank_profile(Object *obj, const char *value, Error **errp)
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "bank-profile cannot change once the machine "
                          "is built");
         return;
     }
     if (strcmp(value, "8x128m-synthetic")) {
-        error_setg(errp, "o2-test supports only bank-profile=8x128m-synthetic");
+        error_setg(errp, "o2 supports only bank-profile=8x128m-synthetic");
         return;
     }
     s->banked_ram = true;
@@ -299,6 +302,7 @@ static void o2_set_reset_low_ram_approx(Object *obj, bool value,
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "reset-low-ram-approx cannot change once the "
                          "machine is built");
@@ -318,6 +322,7 @@ static void o2_set_crime_profile(Object *obj, const char *value, Error **errp)
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "crime-profile cannot change once the machine "
                    "is built");
@@ -340,6 +345,7 @@ static void o2_set_functional_memory_transfer(Object *obj, bool value,
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "functional-memory-transfer cannot change once the "
                    "machine is initialized");
@@ -358,6 +364,7 @@ static void o2_set_empty_renderer_status(Object *obj, bool value,
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "empty-renderer-status cannot change once the "
                          "machine is built");
@@ -375,6 +382,7 @@ static void o2_set_prom_private_window(Object *obj, bool value, Error **errp)
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "prom-private-window cannot change once the "
                          "machine is built");
@@ -392,6 +400,7 @@ static void o2_set_prom_sb64_reset(Object *obj, bool value, Error **errp)
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "prom-sb64-reset cannot change once the "
                          "machine is built");
@@ -409,6 +418,7 @@ static void o2_set_gbe11_registers(Object *obj, bool value, Error **errp)
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "gbe11-registers cannot change once the "
                          "machine is built");
@@ -459,6 +469,7 @@ static void o2_set_gbe_one_tile_diagnostic(Object *obj, bool value,
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "gbe-one-tile-diagnostic cannot change once the "
                          "machine is built");
@@ -476,6 +487,7 @@ static void o2_set_aic_pci_diagnostic(Object *obj, bool value, Error **errp)
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "aic-pci-diagnostic cannot change once the "
                          "machine is built");
@@ -496,6 +508,7 @@ static void o2_set_diagnostic_lower_pci_byte_identity(Object *obj,
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "diagnostic-lower-pci-byte-identity cannot change "
                          "once the machine is built");
@@ -514,6 +527,7 @@ static void o2_set_storage_event_file(Object *obj, const char *value,
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "storage-diagnostic-event-file cannot change "
                          "once the machine is built");
@@ -533,6 +547,7 @@ static void o2_set_storage_event_short_write(Object *obj, bool value,
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (!qtest_enabled() || !s->diagnostic_lower_pci_byte_identity) {
         error_setg(errp, "storage event short-write injection requires "
                          "the QTest storage diagnostic");
@@ -551,6 +566,7 @@ static void o2_set_storage_event_final_sync_fail(Object *obj, bool value,
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (!qtest_enabled() || !s->diagnostic_lower_pci_byte_identity) {
         error_setg(errp, "storage final-sync injection requires "
                          "the QTest storage diagnostic");
@@ -569,6 +585,7 @@ static void o2_set_mace_bank_dma_fixture(Object *obj, bool value,
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "mace-bank-dma-fixture cannot change once the "
                          "machine is built");
@@ -586,6 +603,7 @@ static void o2_set_identity_diagnostic(Object *obj, bool value, Error **errp)
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "identity-diagnostic cannot change once the "
                          "machine is built");
@@ -603,6 +621,7 @@ static void o2_set_mace_misc_word_pio(Object *obj, bool value, Error **errp)
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "mace-misc-word-pio cannot change once the "
                          "machine is built");
@@ -621,6 +640,7 @@ static void o2_set_mace_eth_low_dma_compat(Object *obj, bool value,
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "mace-eth-low-dma-compat cannot change once the "
                          "machine is built");
@@ -718,6 +738,7 @@ static void o2_set_prom_id_word(Object *obj, bool value, Error **errp)
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "prom-id-word cannot change once the "
                          "machine is built");
@@ -1108,7 +1129,7 @@ static void o2_machine_init_done(Notifier *notifier, void *data)
                                   &population);
     if (population.unexpected ||
         population.count != 2 + !!s->mace_bank_dma_fixture) {
-        error_report("o2-test does not support attached PCI devices");
+        error_report("o2 does not support attached PCI devices");
         exit(1);
     }
     if (s->aic_pci_diagnostic || s->mace_bank_dma_fixture) {
@@ -1118,8 +1139,8 @@ static void o2_machine_init_done(Notifier *notifier, void *data)
         }
         if (targets) {
             error_report(s->mace_bank_dma_fixture ?
-                         "o2-test MACE bank DMA fixture rejects SCSI targets" :
-                         "o2-test AIC PCI diagnostic rejects SCSI targets");
+                         "o2 MACE bank DMA fixture rejects SCSI targets" :
+                         "o2 AIC PCI diagnostic rejects SCSI targets");
             exit(1);
         }
     } else if (s->diagnostic_lower_pci_byte_identity) {
@@ -1129,7 +1150,7 @@ static void o2_machine_init_done(Notifier *notifier, void *data)
                                &storage_targets);
         }
         if (storage_targets.count > 1 || storage_targets.unsupported) {
-            error_report("o2-test storage diagnostic accepts one SCSI "
+            error_report("o2 storage diagnostic accepts one SCSI "
                          "CD or disk at LUN 0, target 0-6");
             exit(1);
         }
@@ -1137,7 +1158,7 @@ static void o2_machine_init_done(Notifier *notifier, void *data)
             s->storage_target = storage_targets.target;
             object_ref(OBJECT(s->storage_target));
             error_setg(&s->storage_target_unplug_blocker,
-                       "o2-test storage diagnostic target cannot be "
+                       "o2 storage diagnostic target cannot be "
                        "unplugged");
             qdev_add_unplug_blocker(s->storage_target,
                                     s->storage_target_unplug_blocker);
@@ -1152,9 +1173,17 @@ static void o2_machine_init_done(Notifier *notifier, void *data)
                                &storage_targets);
         }
         if (storage_targets.count > 1 || storage_targets.unsupported) {
-            error_report("o2-test accepts one SCSI CD or disk at LUN 0, "
+            error_report("o2 accepts one SCSI CD or disk at LUN 0, "
                          "target 0-6");
             exit(1);
+        }
+        if (s->product && storage_targets.target) {
+            s->storage_target = storage_targets.target;
+            object_ref(OBJECT(s->storage_target));
+            error_setg(&s->storage_target_unplug_blocker,
+                       "o2 does not support SCSI target unplug");
+            qdev_add_unplug_blocker(s->storage_target,
+                                    s->storage_target_unplug_blocker);
         }
     }
 }
@@ -1167,7 +1196,7 @@ static char *o2_get_rom_image(Object *obj, Error **errp)
 static bool o2_rom_settings_locked(O2MachineState *s, Error **errp)
 {
     if (s->banked_ram && phase_check(PHASE_MACHINE_INITIALIZED)) {
-        error_setg(errp, "o2-test eight-bank ROM settings cannot change "
+        error_setg(errp, "o2 eight-bank ROM settings cannot change "
                          "once the machine is built");
         return true;
     }
@@ -1194,6 +1223,7 @@ static void o2_set_rom_at29c040a(Object *obj, bool value, Error **errp)
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "rom-at29c040a cannot change after O2 initialization");
         return;
@@ -1322,6 +1352,7 @@ static void o2_set_phy_ics1890(Object *obj, bool value, Error **errp)
 {
     O2MachineState *s = (O2MachineState *)obj;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "phy-ics1890 cannot change after O2 initialization");
         return;
@@ -1343,6 +1374,7 @@ static void o2_set_phy_address(Object *obj, Visitor *v, const char *name,
     O2MachineState *s = (O2MachineState *)obj;
     uint8_t value;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "phy-address cannot change after O2 initialization");
         return;
@@ -1365,6 +1397,35 @@ static void o2_instance_init(Object *obj)
     s->rom_pad_byte = UINT16_MAX;
     s->phy_address = UINT8_MAX;
     s->storage_event_fd = -1;
+}
+
+static void o2_add_test_properties(Object *obj);
+
+static void o2_product_instance_init(Object *obj)
+{
+    O2MachineState *s = (O2MachineState *)obj;
+
+    o2_instance_init(obj);
+    s->product = true;
+    o2_add_test_properties(obj);
+}
+
+static void o2_apply_product_defaults(O2MachineState *s)
+{
+    s->banked_ram = true;
+    s->reset_low_ram_approx = true;
+    s->functional_memory_transfer = true;
+    s->legacy_crime_software = true;
+    s->prom_private_window = true;
+    s->prom_sb64_reset = true;
+    s->prom_id_word = true;
+    s->gbe11_registers = true;
+    s->rom_at29c040a = true;
+    s->identity_diagnostic = true;
+    s->mace_misc_word_pio = true;
+    s->mace_eth_low_dma_compat = true;
+    s->phy_ics1890 = true;
+    s->phy_address = 8;
 }
 
 static void o2_instance_finalize(Object *obj)
@@ -1429,17 +1490,76 @@ static void o2_init(MachineState *machine)
     DeviceState *rom;
     Error *err = NULL;
     GStatBuf image_stat;
-    bool renderer_status = s->empty_renderer_status ||
-                           s->functional_memory_transfer;
+    bool renderer_status;
+
+    if (s->product) {
+        o2_apply_product_defaults(s);
+    }
+    renderer_status = s->empty_renderer_status || s->functional_memory_transfer;
+
+    if (!s->product && !qtest_enabled() && !qtest_driver()) {
+        error_report("register-test-profile requires QTest");
+        exit(1);
+    }
+    if (s->product && s->test_properties_set) {
+        error_report("o2 diagnostic properties require register-test-profile "
+                     "and QTest");
+        exit(1);
+    }
+    if (s->product) {
+        static const char *const test_properties[] = {
+            "rom-at29c040a",
+            "bank-profile",
+            "reset-low-ram-approx",
+            "crime-profile",
+            "functional-memory-transfer",
+            "empty-renderer-status",
+            "prom-private-window",
+            "prom-sb64-reset",
+            "gbe11-registers",
+            "gbe-one-tile-diagnostic",
+            "phy-ics1890",
+            "phy-address",
+            "aic-pci-diagnostic",
+            "diagnostic-lower-pci-byte-identity",
+            "storage-diagnostic-event-file",
+            "x-test-storage-event-short-write",
+            "x-test-storage-final-sync-fail",
+            "mace-bank-dma-fixture",
+            "identity-diagnostic",
+            "mace-misc-word-pio",
+            "mace-eth-low-dma-compat",
+            "prom-id-word",
+        };
+
+        for (unsigned i = 0; i < ARRAY_SIZE(test_properties); i++) {
+            object_property_del(OBJECT(machine), test_properties[i]);
+        }
+        if (machine->ram_size != O2_RAM_BANKED_SIZE) {
+            error_report("o2 requires exactly 1 GiB of RAM");
+            exit(1);
+        }
+        if (!s->rom_image || !s->password_clear_input ||
+            !s->identity_test_serial || !s->identity_eprom_file ||
+            !s->identity_status) {
+            error_report("o2 requires explicit ROM, identity and "
+                         "password-clear inputs");
+            exit(1);
+        }
+        if (s->rom_size != 512 * KiB || s->rom_offset != 0) {
+            error_report("o2 requires a complete 512 KiB ROM at offset zero");
+            exit(1);
+        }
+    }
 
     if (s->legacy_crime_software &&
         (!s->banked_ram || machine->ram_size != O2_RAM_BANKED_SIZE)) {
-        error_report("o2-test legacy-software requires the 1 GiB "
+        error_report("o2 legacy-software requires the 1 GiB "
                      "eight-bank synthetic population");
         exit(1);
     }
     if (s->legacy_crime_software && s->mace_bank_dma_fixture) {
-        error_report("o2-test legacy-software does not admit an extra PCI "
+        error_report("o2 legacy-software does not admit an extra PCI "
                      "DMA fixture");
         exit(1);
     }
@@ -1448,26 +1568,26 @@ static void o2_init(MachineState *machine)
          !s->prom_sb64_reset || !s->prom_id_word || !s->gbe11_registers ||
          !renderer_status || !s->rom_size || s->rom_offset == UINT32_MAX ||
          s->rom_pad_byte == UINT16_MAX)) {
-        error_report("o2-test legacy-software ROM requires the complete "
+        error_report("o2 legacy-software ROM requires the complete "
                      "explicit processor, renderer, display and ROM settings");
         exit(1);
     }
     if (!s->identity_diagnostic &&
         (s->identity_test_serial || s->identity_eprom_file ||
          s->identity_status)) {
-        error_report("o2-test identity inputs require "
+        error_report("o2 identity inputs require "
                      "identity-diagnostic=on");
         exit(1);
     }
     if (s->mace_misc_word_pio && !s->identity_diagnostic) {
-        error_report("o2-test mace-misc-word-pio requires "
+        error_report("o2 mace-misc-word-pio requires "
                      "identity-diagnostic=on");
         exit(1);
     }
     if (s->identity_diagnostic &&
         (!s->identity_test_serial || !s->identity_eprom_file ||
          !s->identity_status)) {
-        error_report("o2-test identity diagnostic requires "
+        error_report("o2 identity diagnostic requires "
                      "identity-test-serial, identity-eprom-file and "
                      "identity-status");
         exit(1);
@@ -1482,7 +1602,7 @@ static void o2_init(MachineState *machine)
          s->rom_pad_byte == UINT16_MAX ||
          s->aic_pci_diagnostic || s->mace_bank_dma_fixture ||
          (!qtest_enabled() && !tcg_enabled()))) {
-        error_report("o2-test diagnostic-lower-pci-byte-identity requires "
+        error_report("o2 diagnostic-lower-pci-byte-identity requires "
                      "the complete 1 GiB eight-bank PROM diagnostic, TCG "
                      "or QTest, and no other PCI diagnostic");
         exit(1);
@@ -1490,12 +1610,12 @@ static void o2_init(MachineState *machine)
     if (s->diagnostic_lower_pci_byte_identity) {
         if (!s->storage_event_file ||
             !g_path_is_absolute(s->storage_event_file)) {
-            error_report("o2-test storage diagnostic requires an absolute "
+            error_report("o2 storage diagnostic requires an absolute "
                          "storage-diagnostic-event-file path");
             exit(1);
         }
         if (g_str_has_prefix(s->storage_event_file, "/dev/fdset/")) {
-            error_report("o2-test storage diagnostic rejects "
+            error_report("o2 storage diagnostic rejects "
                          "/dev/fdset/ paths");
             exit(1);
         }
@@ -1503,13 +1623,13 @@ static void o2_init(MachineState *machine)
                                          O_WRONLY | O_EXCL | O_BINARY,
                                          0600, NULL);
         if (s->storage_event_fd < 0) {
-            error_report("o2-test cannot create storage diagnostic event "
+            error_report("o2 cannot create storage diagnostic event "
                          "file '%s': %s", s->storage_event_file,
                          g_strerror(errno));
             exit(1);
         }
     } else if (s->storage_event_file) {
-        error_report("o2-test storage-diagnostic-event-file requires "
+        error_report("o2 storage-diagnostic-event-file requires "
                      "diagnostic-lower-pci-byte-identity=on");
         exit(1);
     }
@@ -1518,14 +1638,14 @@ static void o2_init(MachineState *machine)
         (!qtest_enabled() || !s->banked_ram ||
          machine->ram_size != O2_RAM_BANKED_SIZE || s->rom_image ||
          s->aic_pci_diagnostic)) {
-        error_report("o2-test mace-bank-dma-fixture requires QTest, the "
+        error_report("o2 mace-bank-dma-fixture requires QTest, the "
                      "1 GiB eight-bank profile and no ROM or AIC diagnostic");
         exit(1);
     }
 
     if (s->mace_eth_low_dma_compat &&
         (!s->banked_ram || machine->ram_size != O2_RAM_BANKED_SIZE)) {
-        error_report("o2-test mace-eth-low-dma-compat requires the "
+        error_report("o2 mace-eth-low-dma-compat requires the "
                      "1 GiB eight-bank profile");
         exit(1);
     }
@@ -1535,35 +1655,35 @@ static void o2_init(MachineState *machine)
          s->banked_ram || s->rom_image || s->rom_size ||
          s->rom_offset != UINT32_MAX ||
          s->rom_pad_byte != UINT16_MAX)) {
-        error_report("o2-test aic-pci-diagnostic requires QTest, 64 MiB "
+        error_report("o2 aic-pci-diagnostic requires QTest, 64 MiB "
                      "RAM and no ROM image");
         exit(1);
     }
 
     if (s->reset_low_ram_approx && !s->banked_ram) {
-        error_report("o2-test reset-low-ram-approx requires "
+        error_report("o2 reset-low-ram-approx requires "
                      "bank-profile=8x128m-synthetic");
         exit(1);
     }
     if (s->empty_renderer_status && s->functional_memory_transfer) {
-        error_report("o2-test functional-memory-transfer conflicts with "
+        error_report("o2 functional-memory-transfer conflicts with "
                      "empty-renderer-status");
         exit(1);
     }
     if (s->empty_renderer_status && !s->banked_ram) {
-        error_report("o2-test empty-renderer-status requires "
+        error_report("o2 empty-renderer-status requires "
                      "bank-profile=8x128m-synthetic");
         exit(1);
     }
     if (s->empty_renderer_status && !s->reset_low_ram_approx) {
-        error_report("o2-test empty-renderer-status requires "
+        error_report("o2 empty-renderer-status requires "
                      "reset-low-ram-approx=on");
         exit(1);
     }
     if (s->prom_private_window &&
         (!s->banked_ram || !s->reset_low_ram_approx ||
          !renderer_status)) {
-        error_report("o2-test prom-private-window requires the 1 GiB "
+        error_report("o2 prom-private-window requires the 1 GiB "
                      "eight-bank profile, reset-low-ram-approx=on and "
                      "either empty-renderer-status=on or "
                      "functional-memory-transfer=on");
@@ -1576,7 +1696,7 @@ static void o2_init(MachineState *machine)
          !s->gbe11_registers || !s->rom_image || !s->rom_size ||
          s->rom_offset == UINT32_MAX ||
          s->rom_pad_byte == UINT16_MAX)) {
-        error_report("o2-test prom-id-word requires the 1 GiB "
+        error_report("o2 prom-id-word requires the 1 GiB "
                      "eight-bank PROM diagnostic with reset-low-ram-approx=on, "
                      "either empty-renderer-status=on or "
                      "functional-memory-transfer=on, prom-private-window=on, "
@@ -1585,7 +1705,7 @@ static void o2_init(MachineState *machine)
         exit(1);
     }
     if (s->gbe_external_ttl_hz && !s->gbe11_registers) {
-        error_report("o2-test gbe-external-ttl-hz requires gbe11-registers=on");
+        error_report("o2 gbe-external-ttl-hz requires gbe11-registers=on");
         exit(1);
     }
     if (s->gbe11_registers &&
@@ -1594,7 +1714,7 @@ static void o2_init(MachineState *machine)
          !s->prom_sb64_reset || !s->rom_image || !s->rom_size ||
          s->rom_offset == UINT32_MAX ||
          s->rom_pad_byte == UINT16_MAX)) {
-        error_report("o2-test gbe11-registers requires the 1 GiB "
+        error_report("o2 gbe11-registers requires the 1 GiB "
                      "eight-bank PROM diagnostic with reset-low-ram-approx=on, "
                      "either empty-renderer-status=on or "
                      "functional-memory-transfer=on, prom-private-window=on, "
@@ -1602,7 +1722,7 @@ static void o2_init(MachineState *machine)
         exit(1);
     }
     if (s->gbe_one_tile_diagnostic) {
-        error_report("o2-test gbe-one-tile-diagnostic is superseded by "
+        error_report("o2 gbe-one-tile-diagnostic is superseded by "
                      "the programmed display selected by gbe11-registers");
         exit(1);
     }
@@ -1612,7 +1732,7 @@ static void o2_init(MachineState *machine)
          !s->rom_image || !s->rom_size ||
          s->rom_offset == UINT32_MAX ||
          s->rom_pad_byte == UINT16_MAX)) {
-        error_report("o2-test prom-sb64-reset requires the 1 GiB "
+        error_report("o2 prom-sb64-reset requires the 1 GiB "
                      "eight-bank profile, reset-low-ram-approx=on, "
                      "either empty-renderer-status=on or "
                      "functional-memory-transfer=on, prom-private-window=on "
@@ -1621,60 +1741,60 @@ static void o2_init(MachineState *machine)
     }
     if (s->banked_ram) {
         if (machine->ram_size != O2_RAM_BANKED_SIZE) {
-            error_report("o2-test eight-bank profile requires 1 GiB of RAM");
+            error_report("o2 eight-bank profile requires 1 GiB of RAM");
             exit(1);
         }
     } else if (machine->ram_size != O2_RAM_SIZE &&
                machine->ram_size != O2_RAM_OPTIONAL_SIZE) {
-        error_report("o2-test requires 64 or 128 MiB of RAM");
+        error_report("o2 requires 64 or 128 MiB of RAM");
         exit(1);
     }
     if (machine->ram_slots || machine->maxram_size != machine->ram_size) {
-        error_report("o2-test does not support memory slots or extra RAM");
+        error_report("o2 does not support memory slots or extra RAM");
         exit(1);
     }
     if (machine->smp.cpus != 1) {
-        error_report("o2-test requires one CPU");
+        error_report("o2 requires one CPU");
         exit(1);
     }
     if (machine->usb) {
-        error_report("o2-test does not support USB devices");
+        error_report("o2 does not support USB devices");
         exit(1);
     }
     if (serial_hd(1)) {
-        error_report("o2-test supports only one host serial backend");
+        error_report("o2 supports only one host serial backend");
         exit(1);
     }
     if (machine->firmware) {
-        error_report("o2-test does not support -bios");
+        error_report("o2 does not support -bios");
         exit(1);
     }
     if (machine->kernel_filename) {
-        error_report("o2-test does not support -kernel");
+        error_report("o2 does not support -kernel");
         exit(1);
     }
     if (machine->initrd_filename) {
-        error_report("o2-test does not support -initrd");
+        error_report("o2 does not support -initrd");
         exit(1);
     }
     if (machine->kernel_cmdline && machine->kernel_cmdline[0]) {
-        error_report("o2-test does not support -append");
+        error_report("o2 does not support -append");
         exit(1);
     }
     if (s->banked_ram && s->rom_image && !s->reset_low_ram_approx) {
-        error_report("o2-test eight-bank profile does not support ROM images");
+        error_report("o2 eight-bank profile does not support ROM images");
         exit(1);
     }
     if ((blk_by_name("o2flash") || blk_by_name("o2flash-state")) &&
         !s->rom_at29c040a) {
-        error_report("o2-test flash backends require rom-at29c040a=on");
+        error_report("o2 flash backends require rom-at29c040a=on");
         exit(1);
     }
     if (s->rom_at29c040a &&
         (!s->rom_image || s->rom_size != 512 * KiB || s->rom_offset != 0 ||
          !s->rom_at29_protection || !s->rom_at29_lower_lock ||
          !s->rom_at29_upper_lock)) {
-        error_report("o2-test rom-at29c040a requires a full 512 KiB ROM "
+        error_report("o2 rom-at29c040a requires a full 512 KiB ROM "
                      "image at offset zero and explicit protection and "
                      "boot-block lock states");
         exit(1);
@@ -1682,29 +1802,29 @@ static void o2_init(MachineState *machine)
     if (!s->rom_at29c040a &&
         (s->rom_at29_protection || s->rom_at29_lower_lock ||
          s->rom_at29_upper_lock)) {
-        error_report("o2-test AT29C040A states require rom-at29c040a=on");
+        error_report("o2 AT29C040A states require rom-at29c040a=on");
         exit(1);
     }
     if (!s->rom_image && (s->rom_size || s->rom_offset != UINT32_MAX ||
                           s->rom_pad_byte != UINT16_MAX)) {
-        error_report("o2-test ROM settings require rom-image");
+        error_report("o2 ROM settings require rom-image");
         exit(1);
     }
     if (s->rom_image && (!s->rom_size || s->rom_offset == UINT32_MAX ||
                          s->rom_pad_byte == UINT16_MAX)) {
-        error_report("o2-test ROM requires rom-size, rom-offset and "
+        error_report("o2 ROM requires rom-size, rom-offset and "
                      "rom-pad-byte");
         exit(1);
     }
     if (s->reset_low_ram_approx && s->rom_image &&
         g_stat(s->rom_image, &image_stat) == 0 &&
         !S_ISREG(image_stat.st_mode)) {
-        error_report("o2-test ROM image must be a regular file");
+        error_report("o2 ROM image must be a regular file");
         exit(1);
     }
     if (s->banked_ram) {
         if (vmstate_register_any(NULL, &vmstate_o2_banked, s) < 0) {
-            error_report("o2-test cannot register eight-bank migration state");
+            error_report("o2 cannot register eight-bank migration state");
             exit(1);
         }
         s->vmstate_registered = true;
@@ -1742,7 +1862,7 @@ static void o2_init(MachineState *machine)
     cpu_dev = qdev_new(machine->cpu_type);
     if (object_property_get_bool(OBJECT(cpu_dev),
                                  "cache-data-visibility", &error_fatal)) {
-        error_report("o2-test requires cache-data-visibility=off");
+        error_report("o2 requires cache-data-visibility=off");
         exit(1);
     }
     qdev_connect_clock_in(cpu_dev, "clk-in", cpuclk);
@@ -1750,7 +1870,7 @@ static void o2_init(MachineState *machine)
                              &error_fatal);
     if (s->prom_sb64_reset) {
         if (MIPS_CPU(cpu_dev)->r10k_profile->reset_mode_set) {
-            error_report("o2-test prom-sb64-reset rejects CPU reset-mode");
+            error_report("o2 prom-sb64-reset rejects CPU reset-mode");
             exit(1);
         }
         object_property_set_uint(OBJECT(cpu_dev), "reset-mode",
@@ -1863,7 +1983,7 @@ static void o2_init(MachineState *machine)
     }
 
     if (s->rom_image && !s->password_clear_input) {
-        error_report("o2-test rom-image requires password-clear-input=0|1; "
+        error_report("o2 rom-image requires password-clear-input=0|1; "
                      "the fitted board input is unknown");
         exit(1);
     }
@@ -2018,9 +2138,15 @@ static bool o2_hotplug_allowed(MachineState *machine, DeviceState *dev,
 {
     O2MachineState *s = (O2MachineState *)machine;
 
+    if (s->product &&
+        (object_dynamic_cast(OBJECT(dev), TYPE_PCI_DEVICE) ||
+         object_dynamic_cast(OBJECT(dev), TYPE_SCSI_DEVICE))) {
+        error_setg(errp, "o2 does not support PCI or SCSI hotplug");
+        return false;
+    }
     if (s->legacy_crime_software &&
         object_dynamic_cast(OBJECT(dev), TYPE_PCI_DEVICE)) {
-        error_setg(errp, "o2-test legacy-software rejects PCI hotplug");
+        error_setg(errp, "o2 legacy-software rejects PCI hotplug");
         return false;
     }
     if (((s->aic_pci_diagnostic || s->mace_bank_dma_fixture ||
@@ -2029,7 +2155,7 @@ static bool o2_hotplug_allowed(MachineState *machine, DeviceState *dev,
         ((s->aic_pci_diagnostic || s->mace_bank_dma_fixture ||
           s->diagnostic_lower_pci_byte_identity) &&
          object_dynamic_cast(OBJECT(dev), TYPE_SCSI_DEVICE))) {
-        error_setg(errp, "o2-test %s rejects PCI and SCSI hotplug",
+        error_setg(errp, "o2 %s rejects PCI and SCSI hotplug",
                    s->aic_pci_diagnostic ? "AIC PCI diagnostic" :
                    s->diagnostic_lower_pci_byte_identity ?
                    "storage diagnostic" : "MACE bank DMA fixture");
@@ -2038,6 +2164,92 @@ static bool o2_hotplug_allowed(MachineState *machine, DeviceState *dev,
     return true;
 }
 
+static void o2_add_test_properties(Object *obj)
+{
+    object_property_add_bool(obj, "rom-at29c040a",
+                             o2_get_rom_at29c040a,
+                             o2_set_rom_at29c040a);
+    object_property_add_str(obj, "bank-profile", o2_get_bank_profile,
+                            o2_set_bank_profile);
+    object_property_add_bool(obj, "reset-low-ram-approx",
+                             o2_get_reset_low_ram_approx,
+                             o2_set_reset_low_ram_approx);
+    object_property_add_str(obj, "crime-profile", o2_get_crime_profile,
+                            o2_set_crime_profile);
+    object_property_add_bool(obj, "functional-memory-transfer",
+                             o2_get_functional_memory_transfer,
+                             o2_set_functional_memory_transfer);
+    object_property_add_bool(obj, "empty-renderer-status",
+                             o2_get_empty_renderer_status,
+                             o2_set_empty_renderer_status);
+    object_property_add_bool(obj, "prom-private-window",
+                             o2_get_prom_private_window,
+                             o2_set_prom_private_window);
+    object_property_add_bool(obj, "prom-sb64-reset",
+                             o2_get_prom_sb64_reset,
+                             o2_set_prom_sb64_reset);
+    object_property_add_bool(obj, "gbe11-registers",
+                             o2_get_gbe11_registers,
+                             o2_set_gbe11_registers);
+    object_property_add_bool(obj, "gbe-one-tile-diagnostic",
+                             o2_get_gbe_one_tile_diagnostic,
+                             o2_set_gbe_one_tile_diagnostic);
+    object_property_add_bool(obj, "phy-ics1890",
+                             o2_get_phy_ics1890, o2_set_phy_ics1890);
+    object_property_add(obj, "phy-address", "uint8",
+                        o2_get_phy_address, o2_set_phy_address,
+                        NULL, NULL);
+    object_property_add_bool(obj, "aic-pci-diagnostic",
+                             o2_get_aic_pci_diagnostic,
+                             o2_set_aic_pci_diagnostic);
+    object_property_add_bool(
+        obj, "diagnostic-lower-pci-byte-identity",
+        o2_get_diagnostic_lower_pci_byte_identity,
+        o2_set_diagnostic_lower_pci_byte_identity);
+    object_property_add_str(obj, "storage-diagnostic-event-file",
+                            o2_get_storage_event_file,
+                            o2_set_storage_event_file);
+    object_property_add_bool(obj, "x-test-storage-event-short-write",
+                             o2_get_storage_event_short_write,
+                             o2_set_storage_event_short_write);
+    object_property_add_bool(obj, "x-test-storage-final-sync-fail",
+                             o2_get_storage_event_final_sync_fail,
+                             o2_set_storage_event_final_sync_fail);
+    object_property_add_bool(obj, "mace-bank-dma-fixture",
+                             o2_get_mace_bank_dma_fixture,
+                             o2_set_mace_bank_dma_fixture);
+    object_property_add_bool(obj, "identity-diagnostic",
+                             o2_get_identity_diagnostic,
+                             o2_set_identity_diagnostic);
+    object_property_add_bool(obj, "mace-misc-word-pio",
+                             o2_get_mace_misc_word_pio,
+                             o2_set_mace_misc_word_pio);
+    object_property_add_bool(obj, "mace-eth-low-dma-compat",
+                             o2_get_mace_eth_low_dma_compat,
+                             o2_set_mace_eth_low_dma_compat);
+    object_property_add_bool(obj, "prom-id-word",
+                             o2_get_prom_id_word,
+                             o2_set_prom_id_word);
+}
+
+static bool o2_get_register_test_profile(Object *obj, Error **errp)
+{
+    return !((O2MachineState *)obj)->product;
+}
+
+static void o2_set_register_test_profile(Object *obj, bool value, Error **errp)
+{
+    O2MachineState *s = (O2MachineState *)obj;
+
+    if (phase_check(PHASE_MACHINE_INITIALIZED) || !s->product || !value) {
+        error_setg(errp, "register-test-profile can only be selected once "
+                   "before the machine is built");
+        return;
+    }
+    s->product = false;
+}
+
+
 static void o2_class_init(ObjectClass *oc, const void *data)
 {
     static const char * const cpu_types[] = {
@@ -2045,11 +2257,11 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     };
     MachineClass *mc = MACHINE_CLASS(oc);
 
+    object_class_property_add_bool(oc, "register-test-profile",
+                                   o2_get_register_test_profile,
+                                   o2_set_register_test_profile);
     object_class_property_add_str(oc, "rom-image", o2_get_rom_image,
                                   o2_set_rom_image);
-    object_class_property_add_bool(oc, "rom-at29c040a",
-                                   o2_get_rom_at29c040a,
-                                   o2_set_rom_at29c040a);
     object_class_property_add_str(oc, "rom-at29c040a-protection",
                                   o2_get_rom_at29_protection,
                                   o2_set_rom_at29_protection);
@@ -2059,68 +2271,11 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "rom-at29c040a-upper-lock",
                                   o2_get_rom_at29_upper_lock,
                                   o2_set_rom_at29_upper_lock);
-    object_class_property_add_str(oc, "bank-profile", o2_get_bank_profile,
-                                  o2_set_bank_profile);
-    object_class_property_add_bool(oc, "reset-low-ram-approx",
-                                   o2_get_reset_low_ram_approx,
-                                   o2_set_reset_low_ram_approx);
-    object_class_property_add_str(oc, "crime-profile", o2_get_crime_profile,
-                                  o2_set_crime_profile);
-    object_class_property_add_bool(oc, "functional-memory-transfer",
-                                   o2_get_functional_memory_transfer,
-                                   o2_set_functional_memory_transfer);
-    object_class_property_add_bool(oc, "empty-renderer-status",
-                                   o2_get_empty_renderer_status,
-                                   o2_set_empty_renderer_status);
-    object_class_property_add_bool(oc, "prom-private-window",
-                                   o2_get_prom_private_window,
-                                   o2_set_prom_private_window);
-    object_class_property_add_bool(oc, "prom-sb64-reset",
-                                   o2_get_prom_sb64_reset,
-                                   o2_set_prom_sb64_reset);
-    object_class_property_add_bool(oc, "gbe11-registers",
-                                   o2_get_gbe11_registers,
-                                   o2_set_gbe11_registers);
     object_class_property_add(oc, "gbe-external-ttl-hz", "uint64",
                               o2_get_gbe_external_ttl_hz,
                               o2_set_gbe_external_ttl_hz, NULL, NULL);
     object_class_property_set_description(oc, "gbe-external-ttl-hz",
         "Caller-selected diagnostic TTL clock in Hz (0: absent)");
-    object_class_property_add_bool(oc, "gbe-one-tile-diagnostic",
-                                   o2_get_gbe_one_tile_diagnostic,
-                                   o2_set_gbe_one_tile_diagnostic);
-    object_class_property_add_bool(oc, "phy-ics1890",
-                                   o2_get_phy_ics1890, o2_set_phy_ics1890);
-    object_class_property_add(oc, "phy-address", "uint8",
-                              o2_get_phy_address, o2_set_phy_address,
-                              NULL, NULL);
-    object_class_property_add_bool(oc, "aic-pci-diagnostic",
-                                   o2_get_aic_pci_diagnostic,
-                                   o2_set_aic_pci_diagnostic);
-    object_class_property_add_bool(oc, "diagnostic-lower-pci-byte-identity",
-                                   o2_get_diagnostic_lower_pci_byte_identity,
-                                   o2_set_diagnostic_lower_pci_byte_identity);
-    object_class_property_add_str(oc, "storage-diagnostic-event-file",
-                                  o2_get_storage_event_file,
-                                  o2_set_storage_event_file);
-    object_class_property_add_bool(oc, "x-test-storage-event-short-write",
-                                   o2_get_storage_event_short_write,
-                                   o2_set_storage_event_short_write);
-    object_class_property_add_bool(oc, "x-test-storage-final-sync-fail",
-                                   o2_get_storage_event_final_sync_fail,
-                                   o2_set_storage_event_final_sync_fail);
-    object_class_property_add_bool(oc, "mace-bank-dma-fixture",
-                                   o2_get_mace_bank_dma_fixture,
-                                   o2_set_mace_bank_dma_fixture);
-    object_class_property_add_bool(oc, "identity-diagnostic",
-                                   o2_get_identity_diagnostic,
-                                   o2_set_identity_diagnostic);
-    object_class_property_add_bool(oc, "mace-misc-word-pio",
-                                   o2_get_mace_misc_word_pio,
-                                   o2_set_mace_misc_word_pio);
-    object_class_property_add_bool(oc, "mace-eth-low-dma-compat",
-                                   o2_get_mace_eth_low_dma_compat,
-                                   o2_set_mace_eth_low_dma_compat);
     object_class_property_add_str(oc, "identity-test-serial",
                                   o2_get_identity_test_serial,
                                   o2_set_identity_test_serial);
@@ -2136,9 +2291,6 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "identity-status",
                                   o2_get_identity_status,
                                   o2_set_identity_status);
-    object_class_property_add_bool(oc, "prom-id-word",
-                                   o2_get_prom_id_word,
-                                   o2_set_prom_id_word);
     object_class_property_add(oc, "cpu-clock-hz", "uint64",
                               o2_get_cpu_clock_hz, NULL, NULL, NULL);
     object_class_property_add(oc, "rom-size", "uint32",
@@ -2150,7 +2302,7 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     object_class_property_add(oc, "rom-pad-byte", "uint16",
                               o2_get_rom_pad_byte, o2_set_rom_pad_byte,
                               NULL, NULL);
-    mc->desc = "O2 (IP32) synthetic register test profile";
+    mc->desc = "SGI O2 (IP32), R10000 195 MHz";
     mc->init = o2_init;
     mc->reset = o2_reset;
     mc->hotplug_allowed = o2_hotplug_allowed;
@@ -2158,7 +2310,7 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     mc->default_cpu_type = cpu_types[0];
     mc->default_cpus = 1;
     mc->max_cpus = 1;
-    mc->default_ram_size = O2_RAM_SIZE;
+    mc->default_ram_size = O2_RAM_BANKED_SIZE;
     mc->default_ram_id = "o2.ram";
     mc->default_nic = "sgi-mace-eth";
     mc->default_display = "none";
@@ -2169,11 +2321,11 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     mc->auto_create_sdcard = false;
 }
 
-static const TypeInfo o2_machine_type = {
-    .name = MACHINE_TYPE_NAME("o2-test"),
+static const TypeInfo o2_product_machine_type = {
+    .name = MACHINE_TYPE_NAME("o2"),
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(O2MachineState),
-    .instance_init = o2_instance_init,
+    .instance_init = o2_product_instance_init,
     .instance_finalize = o2_instance_finalize,
     .class_init = o2_class_init,
 };
@@ -2188,7 +2340,7 @@ static void o2_machine_register(void)
     };
 
     type_register_static(&private_router_type);
-    type_register_static(&o2_machine_type);
+    type_register_static(&o2_product_machine_type);
 }
 
 type_init(o2_machine_register)

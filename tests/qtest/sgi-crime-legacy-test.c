@@ -589,7 +589,7 @@ static void test_migration(gconstpointer data)
 static void test_clock_interrupt_independence(void)
 {
     QTestState *s = qtest_init(MEMTX_TEST_DEVICE
-        "-M o2-test,crime-profile=legacy-software,"
+        "-M o2,register-test-profile=on,crime-profile=legacy-software,"
         "bank-profile=8x128m-synthetic,reset-low-ram-approx=on "
         "-cpu R10000 -m 1G -nodefaults -accel tcg,thread=single -S "
         "-device loader,addr=0xffffffffa0001000,cpu-num=0");
@@ -662,12 +662,13 @@ static void reject_machine(const char *machine, const char *ram,
         args[n++] = value;
     }
     args[n] = NULL;
-    assert_launch_rejected(args, reason);
+    assert_qtest_launch_rejected(args, reason);
 }
 
 static void test_machine_admission(void)
 {
-    const char *selected = "o2-test,crime-profile=legacy-software,"
+    const char *selected = "o2,register-test-profile=on,"
+        "crime-profile=legacy-software,"
                            "bank-profile=8x128m-synthetic";
     const char *choices[] = {
         "empty-renderer-status", "functional-memory-transfer"
@@ -678,9 +679,11 @@ static void test_machine_admission(void)
     g_autofree char *partial = NULL;
     const char image[] = { 0, 0, 0, 0 };
 
-    reject_machine("o2-test,crime-profile=unknown", "64M", "R10000",
+    reject_machine("o2,register-test-profile=on,"
+        "crime-profile=unknown", "64M", "R10000",
                    NULL, NULL, "crime-profile");
-    reject_machine("o2-test,crime-profile=legacy-software", "64M", "R10000",
+    reject_machine("o2,register-test-profile=on,"
+        "crime-profile=legacy-software", "64M", "R10000",
                    NULL, NULL, "legacy-software requires");
     reject_machine(selected, "128M", "R10000", NULL, NULL,
                    "legacy-software requires");
@@ -1147,7 +1150,7 @@ static void test_bank_word_cpu(void)
         return;
     }
     s = qtest_init(MEMTX_TEST_DEVICE
-        "-M o2-test,crime-profile=legacy-software,"
+        "-M o2,register-test-profile=on,crime-profile=legacy-software,"
         "bank-profile=8x128m-synthetic,reset-low-ram-approx=on "
         "-cpu R10000 -m 1G -nodefaults -accel tcg,thread=single -S "
         "-device loader,addr=0xffffffffa0001000,cpu-num=0");
@@ -2233,7 +2236,7 @@ static void test_renderer_cpu(gconstpointer data)
     g_autofree char *path = g_build_filename(directory, "device.txt", NULL);
     g_autofree char *contents = NULL;
     QTestState *s = qtest_initf(MEMTX_TEST_DEVICE
-        "-M o2-test,crime-profile=legacy-software,"
+        "-M o2,register-test-profile=on,crime-profile=legacy-software,"
         "bank-profile=8x128m-synthetic,reset-low-ram-approx=on,"
         "functional-memory-transfer=on -cpu R10000 -m 1G -nodefaults "
         "-accel tcg,thread=single -S -d unimp,guest_errors -D %s "

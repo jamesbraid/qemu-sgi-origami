@@ -2350,7 +2350,7 @@ static void test_dma_address_migration(void)
 static QTestState *start_board(const char *image, bool legacy)
 {
     QTestState *q = qtest_initf(
-        "-M o2-test,bank-profile=8x128m-synthetic,"
+        "-M o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "crime-profile=%s,reset-low-ram-approx=on,"
         "functional-memory-transfer=on,prom-private-window=on,"
         "prom-sb64-reset=on,gbe11-registers=on,prom-id-word=on,"

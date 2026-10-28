@@ -45,7 +45,8 @@ static AudioFixture fixture_start_config(const char *extra, bool o2)
     g_assert_cmpint(t.fd, >=, 0);
     g_assert_cmpint(ftruncate(t.fd, o2 ? 1ULL << 30 : 64 * 1024), ==, 0);
     if (o2) {
-        t.qts = qtest_initf("-M o2-test,bank-profile=8x128m-synthetic,"
+        t.qts = qtest_initf("-M o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
             "crime-profile=1.5,memory-backend=ram -m 1G -cpu R10000 "
             "-nodefaults -object memory-backend-file,id=ram,size=1G,"
             "mem-path=%s,share=on %s", t.ram, extra);

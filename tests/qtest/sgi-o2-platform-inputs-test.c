@@ -26,7 +26,8 @@ static uint8_t rtc_read(QTestState *s, unsigned index)
 
 static QTestState *o2_start(const char *extra)
 {
-    return qtest_initf("-M o2-test,password-clear-input=1 -m 64M "
+    return qtest_initf("-M o2,register-test-profile=on,"
+        "password-clear-input=1 -m 64M "
                        "-nodefaults -rtc base=2024-01-01T00:00:00,clock=vm %s",
                        extra);
 }
@@ -88,7 +89,8 @@ static QTestState *o2_store_start(const char *data, const char *clock,
     g_autofree char *args = g_strdup_printf(
         "-drive if=none,id=nvram0,file=%s,format=raw "
         "-drive if=none,id=nvram0-clock,file=%s,format=raw "
-        "-M o2-test,password-clear-input=1 -m 64M -nodefaults "
+        "-M o2,register-test-profile=on,"
+        "password-clear-input=1 -m 64M -nodefaults "
         "-rtc base=%s,clock=vm", data, clock, base);
 
     return qtest_init(args);
@@ -189,37 +191,39 @@ static void test_refused_inputs(void)
     g_autofree char *args = NULL;
     char bytes[1024] = { 0 };
 
-    assert_start_rejected("-M o2-test,password-clear-input=2 -m 64M",
+    assert_start_rejected("-M o2,register-test-profile=on,"
+        "password-clear-input=2 -m 64M",
                           "password-clear-input must be 0 or 1");
-    assert_start_rejected("-M o2-test,rom-image=unused,rom-size=524288,"
+    assert_start_rejected("-M o2,register-test-profile=on,"
+        "rom-image=unused,rom-size=524288,"
                           "rom-offset=0,rom-pad-byte=238 -m 64M",
                           "requires password-clear-input");
     assert_start_rejected("-M none -cpu R10000 "
                           "-device sgi-mace,drive=missing",
                           "can't find value 'missing'");
     g_assert_true(g_file_set_contents(clock, bytes, 24, NULL));
-    args = g_strdup_printf("-M o2-test -m 64M "
+    args = g_strdup_printf("-M o2,register-test-profile=on -m 64M "
         "-drive if=none,id=nvram0-clock,file=%s,format=raw", clock);
     assert_start_rejected(args, "clock-drive requires drive");
     g_clear_pointer(&args, g_free);
     g_assert_true(g_file_set_contents(data, bytes, sizeof(bytes), NULL));
-    args = g_strdup_printf("-M o2-test -m 64M "
+    args = g_strdup_printf("-M o2,register-test-profile=on -m 64M "
         "-drive if=none,id=nvram0,file=%s,format=raw", data);
     assert_start_rejected(args, "requires exactly 512");
     g_clear_pointer(&args, g_free);
     g_assert_true(g_file_set_contents(data, bytes, 512, NULL));
     g_assert_true(g_file_set_contents(clock, bytes, 0, NULL));
-    args = g_strdup_printf("-M o2-test -m 64M "
+    args = g_strdup_printf("-M o2,register-test-profile=on -m 64M "
         "-drive if=none,id=nvram0,file=%s,format=raw "
         "-drive if=none,id=nvram0-clock,file=%s,format=raw", data, clock);
     assert_start_rejected(args, "requires at least 24");
     g_clear_pointer(&args, g_free);
-    args = g_strdup_printf("-M o2-test -m 64M "
+    args = g_strdup_printf("-M o2,register-test-profile=on -m 64M "
         "-drive if=none,id=nvram0,file=%s,format=raw,readonly=on", data);
     assert_start_rejected(args, "read-only");
     g_clear_pointer(&args, g_free);
     g_assert_true(g_file_set_contents(clock, bytes, 24, NULL));
-    args = g_strdup_printf("-M o2-test -m 64M "
+    args = g_strdup_printf("-M o2,register-test-profile=on -m 64M "
         "-drive if=none,id=nvram0,file=%s,format=raw "
         "-drive if=none,id=nvram0-clock,file=%s,format=raw,readonly=on",
         data, clock);

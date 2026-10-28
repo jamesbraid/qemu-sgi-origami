@@ -53,7 +53,8 @@ static SerialFixture fixture_start_config(const char *extra,
     }
     if (o2) {
         t.qts = qtest_initf(
-            "-M o2-test,bank-profile=8x128m-synthetic,crime-profile=%s,"
+            "-M o2,register-test-profile=on,"
+            "bank-profile=8x128m-synthetic,crime-profile=%s,"
             "memory-backend=dma,mace-eth-low-dma-compat=on -m 1G "
             "-cpu R10000 -nodefaults %s "
             "-object memory-backend-file,id=dma,size=1G,mem-path=%s,share=on "
@@ -643,11 +644,12 @@ static void test_low_ethernet_alias_isolation(void)
     QTestState *s;
     uint8_t block[32] = { 0 };
 
-    if (!qtest_has_machine("o2-test")) {
+    if (!qtest_has_machine("o2")) {
         g_test_skip("O2 test machine is unavailable");
         return;
     }
-    s = qtest_init("-M o2-test,bank-profile=8x128m-synthetic,"
+    s = qtest_init("-M o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                               "mace-eth-low-dma-compat=on -m 1G -cpu R10000 "
                               "-nodefaults");
 
@@ -1118,7 +1120,7 @@ static void test_ring_address_classes(void)
     };
     static const uint32_t classes[] = { 0, 0x40000000, 0x80000000 };
 
-    if (!qtest_has_machine("o2-test")) {
+    if (!qtest_has_machine("o2")) {
         g_test_skip("O2 test machine is unavailable");
         return;
     }
@@ -1204,7 +1206,7 @@ static void test_ring_address_faults(void)
         0, 0x40000000, 0x80000000, 0xc0000000, 0xffff8000,
     };
 
-    if (!qtest_has_machine("o2-test")) {
+    if (!qtest_has_machine("o2")) {
         g_test_skip("O2 test machine is unavailable");
         return;
     }
@@ -1265,7 +1267,7 @@ static void test_ring_address_faults(void)
 
 static void test_low_ring_wrap(void)
 {
-    if (!qtest_has_machine("o2-test")) {
+    if (!qtest_has_machine("o2")) {
         g_test_skip("O2 test machine is unavailable");
         return;
     }

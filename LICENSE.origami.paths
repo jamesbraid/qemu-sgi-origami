@@ -964,3 +964,11 @@ tests/qtest/sgi-mace-ps2-test.c
 hw/mips/sgi/mace.c
 hw/mips/sgi/mace-timer.h
 include/hw/mips/sgi/mace.h
+docs/system/mips/sgi/ip32.rst
+hw/mips/sgi/models/o2.yaml
+hw/mips/sgi/models/layers/architectures/ip32.yaml
+hw/mips/sgi/models/layers/assemblies/ip32.yaml
+hw/mips/sgi/models/layers/modules/o2.yaml
+hw/mips/sgi/models/layers/products/o2.yaml
+scripts/sgi_model/model_ip32.py
+scripts/tests/test_sgi_model_ip32.py

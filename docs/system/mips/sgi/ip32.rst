@@ -1,0 +1,88 @@
+.. SPDX-License-Identifier: BSD-3-Clause
+
+.. _sgi-ip32:
+
+SGI O2 (IP32)
+=============
+
+The ``o2`` machine selects a bounded functional O2 configuration. It keeps
+firmware, platform identity and initial flash protection state as caller
+inputs. Experimental register checks use the same machine.
+
+.. _sgi-ip32-processor:
+
+Processor selection
+-------------------
+
+The selected processor is one big-endian R10000SC at 195 MHz with 1 MiB
+secondary cache. The catalogued module is 030-1247-001. The reset word
+``0x00198603`` and Config0 ``0x6c198603`` select the existing functional
+64-byte secondary-block policy. These are model choices, not measured
+module straps. Cache-data visibility is disabled. CPU memory and DMA use
+QEMU's coherent RAM.
+
+The January 1999 *Remanufactured O2 Visual Workstation Product Guide*,
+number 1065, PDF pages 4 and 12, lists one R10000 with 1 MiB secondary cache
+and a memory range of 64 MB to 1 GB. The selected 195 MHz module and its
+reset behavior are bounded selections, rather than a claim about every O2.
+
+.. _sgi-ip32-memory:
+
+Memory selection
+----------------
+
+This configuration accepts exactly 1 GiB, represented by eight logical
+128 MiB CRIME banks. The existing reset low-RAM response and temporary
+boot-RAM routing remain functional approximations. They do not establish
+socket-to-register wiring, physical cache visibility or ECC behavior.
+
+The *O2 Workstation Hardware Reference Guide*, 007-3275-003, printed pages
+28--31, describes four equal-capacity DIMM pairs and requires sockets 1
+and 2 to be populated. The *CRIME 1.5 Specification*, revision 0.3,
+PDF pages 135--138 and 149--154, describes the controller's external banks
+and controls. DIMM socket pairs and CRIME logical banks are distinct.
+The catalogue's eight DIMMs and eight-bank arithmetic describe only this
+selected capacity.
+
+.. _sgi-ip32-components:
+
+Fixed component selection
+-------------------------
+
+The processor connects to CRIME through its system interface. The machine
+always constructs MACE, two serial ports, RTC, PS/2, Ethernet and audio,
+one GBE display controller, two onboard AIC-7880 functions and the selected
+ICS1890-compatible PHY at MDIO address 8. The existing legacy CRIME
+interface, rendering and memory transfer, Misc Control word compatibility
+and Ethernet low-RAM DMA compatibility are selected functional policies.
+They do not identify fitted ASIC revisions.
+
+The *CRIME 1.5 Specification*, revision 0.3, PDF pages 47--52 and 150--152,
+and *MACE I/O ASIC Specification* 2.0, printed pages 133 and 157--165,
+describe the address and PCI interfaces. Existing public driver expectations
+inform the functional model, rather than proving physical byte placement.
+The two AIC functions retain independent interrupts and the ordinary native
+PCI path. Storage diagnostics and their event sink are disabled.
+
+Firmware and platform inputs
+----------------------------
+
+The selected AT29C040A-compatible writable flash requires a complete
+512 KiB image at offset zero and explicit initial protection and boot-block
+lock states. The existing flash and RTC backends retain persistence and
+failure behavior. Their preparation belongs to the ``ip32`` launch recipe,
+so the catalogue does not advertise generic Scalable Node flash stores.
+
+Supply the 48-bit test serial, 128 EPROM bytes, seven status bytes and
+password-clear input explicitly. They are caller-provisioned identity,
+not a factory image or a source for an Ethernet address. Ethernet uses
+its separately supplied station address.
+
+Limitations
+-----------
+
+Initial guest qualification uses managed instruction counting at shift 3,
+at nominal 195 MHz. Host-paced identity and networking remain known
+limitations. The catalogue does not establish a completed guest installation,
+audio, broader OpenGL, complete diagnostics, physical timing or O2+ support.
+The existing migration refusal remains in force.

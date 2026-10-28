@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: BSD-3-Clause
+layer_version: 1
+layer:
+  kind: assembly
+  id: ip32
+  platform: ip32
+  requires: {architecture: ip32}
+  contract: {board_ip: IP32}
+  capacity:
+    cpu_slots_per_node: 1
+    dimm_slots_per_node: 8
+    memory_banks_per_node: 8
+    dimms_per_bank: 1
+    supported_bank_sizes_mib: [128]
+    provenance: derived
+    sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-memory"]
+    notes: The eight logical decoder banks are a model selection, not socket-to-bank wiring.
+  memory_kits:
+  - id: selected-1g
+    dimms: 8
+    dimm_mib: 128
+    banks: [128, 128, 128, 128, 128, 128, 128, 128]
+    provenance: derived
+    sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-memory"]

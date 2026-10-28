@@ -110,6 +110,14 @@ def _flash(raw: dict) -> dict:
 
 
 def _node(raw: dict) -> dict:
+    if raw["asic_kind"] == "CRIME":
+        return {
+            "id": raw["id"], "asic-kind": "crime",
+            "cpu-slots": _kebab_keys(raw["cpu_slots"]),
+            "bank-mib": raw["bank_mib"],
+            "accepted-memory-mib": raw["accepted_memory_mib"],
+            "flash": _flash(raw["flash"]), "slave-role": False,
+        }
     if raw["asic_kind"] == "HEART":
         return {
             "id": raw["id"], "module-index": raw["module_index"],
@@ -499,7 +507,10 @@ _IO_FLASH_BYTES = 0x100000
 # include/hw/misc/sgi-bedrock-flash.h's SGI_BEDROCK_FLASH_SIZE.
 _EXPANSION_FLASH_BYTES = 16 * 1024 * 1024
 _IO_FLASH_BOARD_KINDS = {"BASEIO", "BASEIO_G", "GIGACHANNEL"}
-_BOOT_PROM_KINDS = {"SN0": "ip27-prom", "SN1": "ip35-prom", "IP30": "ip30-prom"}
+_BOOT_PROM_KINDS = {
+    "SN0": "ip27-prom", "SN1": "ip35-prom",
+    "IP30": "ip30-prom", "IP32": "ip32-prom",
+}
 
 
 def _scsi_adapters_for(topology: dict) -> list[dict]:
@@ -508,6 +519,10 @@ def _scsi_adapters_for(topology: dict) -> list[dict]:
     already sort PCI functions into. `bus` follows QEMU's own generic-SCSI
     numbering, one bus per host adapter instantiated.
     """
+    if topology["generation"] == "IP32":
+        return [{"type": "scsi", "bus": f"scsi.{index}",
+                 "targets": list(range(7)) if index == 0 else []}
+                for index in range(2)]
     adapters = []
     for board in topology["io_boards"]:
         for function in board["pci"]:
@@ -534,6 +549,13 @@ def _sn1_serial_line(node_index: int, line: int) -> int:
 
 def _consoles_for(topology: dict, harness: dict) -> list[dict]:
     """Named serial endpoints exposed by the product's launch policy."""
+    if topology["generation"] == "IP32":
+        return [
+            {"kind": "console", "node": 0, "argument": "-serial chardev:mace_a",
+             "launcher-name": "mace-a"},
+            {"kind": "second-port", "node": 0, "argument": "-serial chardev:mace_b",
+             "launcher-name": "mace-b"},
+        ]
     if topology["generation"] == "IP30":
         return [
             {"kind": "console", "node": 0, "argument": "-serial chardev:ioc3_a"},
@@ -722,6 +744,11 @@ def _networks_for(topology: dict) -> list[dict]:
     is the default a single-NIC launch wires; the others may be left
     without a backend.
     """
+    if topology["generation"] == "IP32":
+        return [{"kind": "mace-ethernet", "argument": "-netdev ...,id=net0",
+                 "nic-model": "sgi-mace-eth", "nic-mac-option": "macaddr",
+                 "index": 0, "interface": "ec0", "default": True,
+                 "required": False, "mac": {"derived": False}}]
     networks = []
     per_kind: dict[str, int] = {}
     for board in topology["io_boards"]:
@@ -871,6 +898,9 @@ def _storage_for(topology: dict, harness: dict, product: dict,
     Timekeeper image or zeroes.
     """
     generation = topology["generation"]
+    if generation == "IP32":
+        # The IP32 recipe uses the existing flash and RTC backends directly.
+        return []
     storage = []
     for position, node in enumerate(fitted):
         if generation == "SN1":
@@ -1046,6 +1076,8 @@ def _overrides(topology: dict, part: str) -> list[dict]:
     launch override, and where: a `-M` property, or a `-cpu` property of
     its processor part @part. The machine refuses a board override its
     configuration does not bind, so each is listed only where one is."""
+    if topology["generation"] == "IP32":
+        return []
     machine = ["mac"]
     if any(node["asic_kind"] == "BEDROCK" for node in topology["nodes"]):
         machine += ["board-id-word", "bedrock-revision"]
@@ -1073,6 +1105,8 @@ def _machine_options(machine_name: str, topology: dict, nodes: int,
     """The `-M` value selecting one offering: product, topology and node
     count, the same three for every machine, and the processor module
     where it is not the topology's default."""
+    if topology["generation"] == "IP32":
+        return machine_name
     options = f"{machine_name},topology={topology['name']},nodes={nodes}"
     return options if processor is None else f"{options},processor={processor}"
 
@@ -1238,8 +1272,10 @@ def _offerings_for(model: dict, topology: dict,
         )
     scsi_adapters = _scsi_adapters_for(topology)
     launch_recipe = launch_harness.get("launch_recipe")
-    if launch_recipe not in (None, "ip53-discovery"):
+    if launch_recipe not in (None, "ip53-discovery", "ip32"):
         raise ValueError(f"unsupported offering launch recipe {launch_recipe!r}")
+    if (launch_recipe == "ip32") != (topology["generation"] == "IP32"):
+        raise ValueError("IP32 requires its own launch recipe")
     if launch_recipe is None and (
             "console_records" in launch_harness or
             model_harness.get("console") == "ip53-ioc4" or
@@ -1254,9 +1290,9 @@ def _offerings_for(model: dict, topology: dict,
         )
     networks = _networks_for(topology)
     firmware = {
-        "kind": {"SN0": "ip27-prom", "SN1": "ip35-prom", "IP30": "ip30-prom"}[
-            topology["generation"]],
-        "argument": product["firmware_argument"],
+        "kind": _BOOT_PROM_KINDS[topology["generation"]],
+        "argument": ("rom-image=" if topology["generation"] == "IP32"
+                     else product["firmware_argument"]),
         "asset": product["firmware_asset"],
         "size": node["flash"]["size"],
         "sha256": product["firmware_sha256"],
@@ -1323,7 +1359,7 @@ def _offerings_for(model: dict, topology: dict,
                            not normal_ip53) else {}),
                 },
                 **({"firmware": firmware}
-                   if launch_recipe == "ip53-discovery" else {}),
+                   if launch_recipe in ("ip53-discovery", "ip32") else {}),
                 "init-inputs": init_inputs,
                 "storage": storage,
                 "resources": resources,

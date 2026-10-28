@@ -42,7 +42,8 @@
 
 static void test_register_reset_and_alias(void)
 {
-    QTestState *qts = qtest_init("-M o2-test -nic none");
+    QTestState *qts = qtest_init("-m 64M -M o2,register-test-profile=on "
+        "-nic none");
 
     g_assert_cmphex(qtest_readq(qts, ETH_BASE + MAC_CONTROL), ==,
                     UINT64_C(0x20000001));
@@ -55,7 +56,8 @@ static void test_register_reset_and_alias(void)
 
 static void test_selected_word_control_mdio(void)
 {
-    QTestState *qts = qtest_init("-M o2-test,phy-ics1890=on,phy-address=8 "
+    QTestState *qts = qtest_init("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                                  "-nic none");
 
     g_assert_cmphex(qtest_readl(qts, ETH_BASE + MAC_CONTROL + 4), ==,
@@ -106,7 +108,8 @@ static void test_selected_word_control_mdio(void)
 
 static void test_interrupt_request_port(void)
 {
-    QTestState *qts = qtest_init("-M o2-test -nic none");
+    QTestState *qts = qtest_init("-m 64M -M o2,register-test-profile=on "
+        "-nic none");
 
     qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
     qtest_writeq(qts, CRIME_ENABLE, UINT64_C(0x000fffff));
@@ -158,7 +161,8 @@ static void test_interrupt_request_preserves_normal_baseline(void)
 {
     const uint64_t rx_active = (1U << 15) | (1U << 9) | (1U << 4);
     const uint64_t rx_masked = (1U << 15) | (1U << 4);
-    QTestState *qts = qtest_init("-M o2-test -nic none");
+    QTestState *qts = qtest_init("-m 64M -M o2,register-test-profile=on "
+        "-nic none");
 
     qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
     qtest_writeq(qts, CRIME_ENABLE, 8);
@@ -198,7 +202,8 @@ static void test_interrupt_request_preserves_normal_baseline(void)
 
 static void test_selected_word_status_ack(void)
 {
-    QTestState *qts = qtest_init("-M o2-test -nic none");
+    QTestState *qts = qtest_init("-m 64M -M o2,register-test-profile=on "
+        "-nic none");
 
     qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
     qtest_writeq(qts, CRIME_ENABLE, 0);
@@ -225,7 +230,8 @@ static void test_selected_word_status_ack(void)
 
 static void test_selected_pointer_fifo_pio(void)
 {
-    QTestState *qts = qtest_init("-M o2-test -nic none");
+    QTestState *qts = qtest_init("-m 64M -M o2,register-test-profile=on "
+        "-nic none");
 
     qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 1U << 2);
     qtest_writew(qts, ETH_BASE + TX_POINTER + 6, 0x57);
@@ -258,7 +264,8 @@ static void test_tx_pointer_readback(void)
     g_autofree char *dir = g_dir_make_tmp("mace-tx-pointer-XXXXXX", NULL);
     g_autofree char *log_path = g_build_filename(dir, "qemu.log", NULL);
     g_autofree char *log_text = NULL;
-    QTestState *qts = qtest_initf("-M o2-test -nic none -d unimp -D %s",
+    QTestState *qts = qtest_initf("-m 64M -M o2,register-test-profile=on "
+        "-nic none -d unimp -D %s",
                                   log_path);
 
     g_assert_cmphex(qtest_readq(qts, ETH_BASE + TX_POINTER), ==, 0);
@@ -309,7 +316,8 @@ static void test_tx_pointer_readback(void)
 
 static void test_selected_fifo_generation(void)
 {
-    QTestState *qts = qtest_init("-M o2-test -nic none");
+    QTestState *qts = qtest_init("-m 64M -M o2,register-test-profile=on "
+        "-nic none");
 
     for (unsigned i = 0; i < 16; i++) {
         qtest_writel(qts, ETH_BASE + RX_FIFO_PORT + 4 + (i % 2) * 0xf8,
@@ -338,7 +346,8 @@ static void test_selected_width_refusals(void)
     g_autofree char *dir = g_dir_make_tmp("mace-eth-word-XXXXXX", NULL);
     g_autofree char *log_path = g_build_filename(dir, "qemu.log", NULL);
     g_autofree char *log_text = NULL;
-    QTestState *qts = qtest_initf("-M o2-test -nic none -d unimp -D %s",
+    QTestState *qts = qtest_initf("-m 64M -M o2,register-test-profile=on "
+        "-nic none -d unimp -D %s",
                                   log_path);
 
     qtest_writeq(qts, ETH_BASE + STATION, UINT64_C(0x02a14c7395e6));
@@ -421,12 +430,14 @@ static void mdio_write(QTestState *qts, unsigned phy, unsigned reg,
 
 static void test_mdio_selected_address(void)
 {
-    QTestState *qts = qtest_init("-M o2-test -nic none");
+    QTestState *qts = qtest_init("-m 64M -M o2,register-test-profile=on "
+        "-nic none");
 
     g_assert_cmphex(mdio_read(qts, 8, 2), ==, 0xffff);
     qtest_quit(qts);
 
-    qts = qtest_init("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_init("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                      "-nic none");
     g_assert_cmphex(mdio_read(qts, 8, 2), ==, 0x0015);
     g_assert_cmphex(mdio_read(qts, 8, 3), ==, 0xf423);
@@ -437,7 +448,8 @@ static void test_mdio_selected_address(void)
     g_assert_cmphex(mdio_read(qts, 8, 0), ==, 0x2100);
     qtest_quit(qts);
 
-    qts = qtest_init("-M o2-test,phy-ics1890=on,phy-address=0 -nic none");
+    qts = qtest_init("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=0 -nic none");
     g_assert_cmphex(mdio_read(qts, 0, 0), ==, 0x3400);
     g_assert_cmphex(mdio_read(qts, 1, 2), ==, 0xffff);
     qtest_quit(qts);
@@ -473,7 +485,8 @@ static void test_tx_inline_raw(void)
     }
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth,"
                       "mac=02:a1:4c:73:95:e6", sv[1]);
     g_assert_cmphex(qtest_readq(qts, ETH_BASE + 0x58), ==, 0);
@@ -504,7 +517,8 @@ static void test_tx_inline_raw(void)
                     UINT64_C(0x800000000080003c));
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, dest_sv), ==, 0);
-    to = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 -S "
+    to = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 -S "
                      "-incoming defer "
                      "-nic socket,id=n0,fd=%d,model=sgi-mace-eth,"
                      "mac=02:a1:4c:73:95:e6", dest_sv[1]);
@@ -549,7 +563,8 @@ static void test_interrupt_request_mixed_state_migration(void)
     }
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    from = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    from = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                        "-nic socket,id=n0,fd=%d,model=sgi-mace-eth,"
                        "mac=02:a1:4c:73:95:e6", sv[1]);
     qtest_writeq(from, CRIME_ENABLE, (1U << 3) | (1U << 4) | (1U << 5));
@@ -584,7 +599,8 @@ static void test_interrupt_request_mixed_state_migration(void)
     g_assert_cmphex(qtest_readq(from, ETH_BASE + 0x58), ==, tx_vector);
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, dest_sv), ==, 0);
-    to = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 -S "
+    to = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 -S "
                      "-incoming defer "
                      "-nic socket,id=n0,fd=%d,model=sgi-mace-eth,"
                      "mac=02:a1:4c:73:95:e6", dest_sv[1]);
@@ -637,8 +653,10 @@ static void test_interrupt_request_low_normal_migration(void)
     g_autofree char *dir = g_dir_make_tmp("mace-low-normal-XXXXXX", NULL);
     g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
     g_autofree char *uri = g_strdup_printf("unix:%s", socket);
-    QTestState *from = qtest_init("-M o2-test -nic none");
-    QTestState *to = qtest_init("-M o2-test -nic none -incoming defer");
+    QTestState *from = qtest_init("-m 64M -M o2,register-test-profile=on "
+        "-nic none");
+    QTestState *to = qtest_init("-m 64M -M o2,register-test-profile=on "
+        "-nic none -incoming defer");
 
     qtest_irq_intercept_out_named(to, "/machine/crime", "cpu-ip");
     qtest_writeq(from, CRIME_ENABLE, 0x38);
@@ -701,7 +719,8 @@ static void test_tx_concat_cross_page(void)
     }
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth,"
                       "mac=02:a1:4c:73:95:e6", sv[1]);
     qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
@@ -782,7 +801,8 @@ static void test_tx_two_concat_and_hole(void)
     memcpy(entry + 56, frame, 72);
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
     qtest_writeq(qts, CRIME_ENABLE, 8);
@@ -892,7 +912,8 @@ static QTestState *rx_interval_start(int sv[2], unsigned count, bool gather)
     QTestState *qts;
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     mdio_write(qts, 8, 0, 0x2100);
     qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 3U << 5);
@@ -1037,7 +1058,8 @@ static void test_rx_interval_migration(void)
 
             g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, dest_sv),
                             ==, 0);
-            to = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 -S "
+            to = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+            "phy-ics1890=on,phy-address=8 -S "
                              "-nic socket,id=n0,fd=%d,model=sgi-mace-eth "
                              "-incoming defer", dest_sv[1]);
             socket_send_frame(sv[0], frame, sizeof(frame));
@@ -1183,7 +1205,8 @@ static void test_rx_checksum_vectors(void)
         frame[i] = i;
     }
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     mdio_write(qts, 8, 0, 0x2100);
     qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 3U << 5);
@@ -1256,7 +1279,8 @@ static void test_rx_filter_and_raw_dma(void)
     memset(broadcast, 0xff, 6);
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth,"
                       "mac=02:a1:4c:73:95:e6 -d unimp -D %s",
                       sv[1], log_path);
@@ -1329,7 +1353,8 @@ static void test_rx_fifo_dma_wrap(void)
 
     memset(old_buffer, 0xa5, sizeof(old_buffer));
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
     mdio_write(qts, 8, 0, 0x2100);
@@ -1503,7 +1528,8 @@ static QTestState *rx_progress_start(int sv[2])
     QTestState *qts;
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     rx_progress_assert(qts, 0, 0, 0, 0);
     for (unsigned slot = 0; slot < 16; slot++) {
@@ -1625,7 +1651,8 @@ static void test_rx_progress_migration(void)
         qtest_memread(from, RX_PROGRESS_BASE + slot * 4096, before[slot], 128);
     }
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, dest_sv), ==, 0);
-    to = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 -S "
+    to = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 -S "
                      "-nic socket,id=n0,fd=%d,model=sgi-mace-eth "
                      "-incoming defer", dest_sv[1]);
     qtest_qmp_assert_success(from, "{'execute':'stop'}");
@@ -1670,7 +1697,8 @@ static void test_rx_sustained_fifo_replenish(void)
 
     memset(old_buffer, 0xa5, sizeof(old_buffer));
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth,"
                       "mac=02:a1:4c:73:95:e6 -d guest_errors -D %s",
                       sv[1], log_path);
@@ -1740,7 +1768,8 @@ static QTestState *start_rx_full_fifo(int sv[2], bool dma_enabled,
 
     memset(old_buffer, 0xa5, sizeof(old_buffer));
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth,"
                       "mac=02:a1:4c:73:95:e6 -d guest_errors -D %s",
                       sv[1], log_path);
@@ -2054,7 +2083,8 @@ static void test_unfitted_crime_bank(void)
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     g_assert_cmpint(setsockopt(sv[0], SOL_SOCKET, SO_RCVTIMEO,
                                &timeout, sizeof(timeout)), ==, 0);
-    qts = qtest_initf("-M o2-test,bank-profile=8x128m-synthetic,"
+    qts = qtest_initf("-M o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                       "phy-ics1890=on,phy-address=8 -m 1G "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth "
                       "-d guest_errors -D %s", sv[1], tx_log);
@@ -2083,7 +2113,8 @@ static void test_unfitted_crime_bank(void)
     close(sv[1]);
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M o2-test,bank-profile=8x128m-synthetic,"
+    qts = qtest_initf("-M o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                       "phy-ics1890=on,phy-address=8 -m 1G "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth "
                       "-d guest_errors,unimp -D %s", sv[1], rx_log);
@@ -2156,7 +2187,8 @@ static void test_no_ecc_dma_alias(void)
     memset(old_buffer, 0xa5, sizeof(old_buffer));
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     mdio_write(qts, 8, 0, 0x2100);
     qtest_memwrite(qts, descriptor, command, sizeof(command));
@@ -2223,7 +2255,8 @@ static void test_low_dma_default_failure(void)
     low_dma_descriptor(entry, 0x21);
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    qts = qtest_initf("-M o2-test,bank-profile=8x128m-synthetic,"
+    qts = qtest_initf("-M o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                       "phy-ics1890=on,phy-address=8 -m 1G "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth "
                       "-d guest_errors -D %s", sv[1], log_path);
@@ -2296,7 +2329,8 @@ static void test_low_dma_shared_ram(void)
     memset(guard, 0xa5, sizeof(guard));
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    qts = qtest_initf("-M o2-test,bank-profile=8x128m-synthetic,"
+    qts = qtest_initf("-M o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                       "mace-eth-low-dma-compat=on,phy-ics1890=on,"
                       "phy-address=8 -m 1G "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
@@ -2380,7 +2414,8 @@ static void test_low_dma_holes(void)
     memcpy(frame, (uint8_t[]) { 0x02, 0xa1, 0x4c, 0x73, 0x95, 0xe6 }, 6);
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    qts = qtest_initf("-M o2-test,bank-profile=8x128m-synthetic,"
+    qts = qtest_initf("-M o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                       "mace-eth-low-dma-compat=on,phy-ics1890=on,"
                       "phy-address=8 -m 1G "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth "
@@ -2472,7 +2507,8 @@ static void test_link_transition_irq(void)
     int sv[2];
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
     mdio_write(qts, 8, 0, 0x2100);
@@ -2507,7 +2543,8 @@ static void test_unlisted_widths_and_reset(void)
     g_autofree char *dir = g_dir_make_tmp("mace-eth-width-XXXXXX", NULL);
     g_autofree char *log_path = g_build_filename(dir, "qemu.log", NULL);
     g_autofree char *log_text = NULL;
-    QTestState *qts = qtest_initf("-M o2-test -nic none -d unimp "
+    QTestState *qts = qtest_initf("-m 64M -M o2,register-test-profile=on "
+        "-nic none -d unimp "
                                   "-D %s", log_path);
 
     qtest_writeq(qts, ETH_BASE + STATION, UINT64_C(0x02a14c7395e6));
@@ -2544,7 +2581,8 @@ static void test_rx_fifo_underflow(void)
     memset(frame, 0x5a, sizeof(frame));
     memcpy(frame, (uint8_t[]) { 0x02, 0xa1, 0x4c, 0x73, 0x95, 0xe6 }, 6);
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
     mdio_write(qts, 8, 0, 0x2100);
@@ -2691,7 +2729,8 @@ static void test_control_aliases(void)
     g_autofree char *dir = g_dir_make_tmp("mace-eth-filter-XXXXXX", NULL);
     g_autofree char *log_path = g_build_filename(dir, "qemu.log", NULL);
     g_autofree char *log_text = NULL;
-    QTestState *qts = qtest_initf("-M o2-test -nic none -d unimp "
+    QTestState *qts = qtest_initf("-m 64M -M o2,register-test-profile=on "
+        "-nic none -d unimp "
                                   "-D %s", log_path);
 
     qtest_writeq(qts, ETH_BASE + TX_INT_ALIAS, 1);
@@ -2741,7 +2780,8 @@ static void test_tx_ring_wrap(void)
     }
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     mdio_write(qts, 8, 0, 0x2100);
     memset(guard, 0xa5, sizeof(guard));
@@ -2816,7 +2856,8 @@ static void test_tx_pointer_combinations(void)
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     mdio_write(qts, 8, 0, 0x2100);
     qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
@@ -2877,7 +2918,8 @@ static void test_all_ring_reinitialization(void)
 
             g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
             socket_timeout(sv[0]);
-            qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+            qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+            "phy-ics1890=on,phy-address=8 "
                               "-nic socket,id=n0,fd=%d,model=sgi-mace-eth",
                               sv[1]);
             mdio_write(qts, 8, 0, 0x2100);
@@ -2968,7 +3010,8 @@ static void test_tx_all_ring_sizes(void)
 
         g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
         socket_timeout(sv[0]);
-        qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+        qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                           "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
         mdio_write(qts, 8, 0, 0x2100);
         qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
@@ -3020,7 +3063,8 @@ static void test_tx_reserved_descriptor(void)
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     mdio_write(qts, 8, 0, 0x2100);
     memset(descriptor, 0x37, sizeof(descriptor));
@@ -3546,7 +3590,8 @@ static void test_tx_pointer_outside_ring(void)
     int sv[2];
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth "
                       "-d unimp,guest_errors -D %s", sv[1], log_path);
     mdio_write(qts, 8, 0, 0x2100);
@@ -3613,7 +3658,8 @@ static QTestState *start_tx_after_frames(int sv[2], unsigned completed)
     g_assert_cmpuint(completed, <=, 63);
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     mdio_write(qts, 8, 0, 0x2100);
     qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
@@ -3887,7 +3933,8 @@ static void test_mac_reset_held_migration(void)
     mac_reset_stage(control);
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, dest_sv), ==, 0);
     socket_timeout(dest_sv[0]);
-    to = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 -incoming defer "
+    to = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 -incoming defer "
                      "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", dest_sv[1]);
     /* Migration announcements bypass the MAC completion path. */
     qtest_qmp_assert_success(to,
@@ -4194,7 +4241,8 @@ static void test_tx_sustained_ring(void)
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     mdio_write(qts, 8, 0, 0x2100);
     memset(guard, 0xa5, sizeof(guard));
@@ -4332,7 +4380,8 @@ static void test_tx_large_ring(unsigned size_bits)
     }
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     mdio_write(qts, 8, 0, 0x2100);
     qtest_memwrite(qts, base - sizeof(guard), guard, sizeof(guard));
@@ -4405,7 +4454,8 @@ static void test_queued_packets_after_phy_negotiation(void)
            (uint8_t[]) { 0x02, 0xa1, 0x4c, 0x73, 0x95, 0xe6 }, 6);
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     socket_timeout(sv[0]);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
     qtest_writeq(qts, CRIME_ENABLE, 8);
@@ -4469,7 +4519,8 @@ static void test_queued_tx_irq_after_phy_negotiation(void)
         frame[i] = i * 13 + 1;
     }
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
     qtest_writeq(qts, CRIME_ENABLE, 8);
@@ -4503,7 +4554,8 @@ static void test_tx_empty_reassert(void)
     int sv[2];
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+    qts = qtest_initf("-m 64M -M o2,register-test-profile=on,"
+        "phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
     qtest_writeq(qts, CRIME_ENABLE, 8);
@@ -4907,7 +4959,8 @@ static void test_rx_threshold_legacy_machine(void)
     QTestState *qts;
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M o2-test,bank-profile=8x128m-synthetic,"
+    qts = qtest_initf("-M o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                       "crime-profile=legacy-software,phy-ics1890=on,"
                       "phy-address=8 -m 1G "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);

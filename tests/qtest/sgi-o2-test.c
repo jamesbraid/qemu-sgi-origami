@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Copyright (c) 2026 James Braid */
-/* Synthetic O2 wiring profile; no board population or firmware is implied. */
+/* O2 product composition and synthetic wiring tests. */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "qemu/units.h"
@@ -52,14 +52,16 @@ typedef struct O2StorageTest {
 static QTestState *o2_start(void)
 {
     return qtest_initf(MEMTX_TEST_DEVICE
-                       "-M o2-test -cpu R10000 -m 64M -nodefaults "
+                       "-M o2,register-test-profile=on "
+                       "-cpu R10000 -m 64M -nodefaults "
                        "-accel tcg,thread=single -S");
 }
 
 static QTestState *o2_start_banked(void)
 {
     return qtest_initf(MEMTX_TEST_DEVICE
-                       "-M o2-test,bank-profile=8x128m-synthetic "
+                       "-M o2,register-test-profile=on,"
+                       "bank-profile=8x128m-synthetic "
                        "-cpu R10000 -m 1G -nodefaults "
                        "-accel tcg,thread=single -S");
 }
@@ -67,7 +69,8 @@ static QTestState *o2_start_banked(void)
 static QTestState *o2_start_banked_approx(void)
 {
     return qtest_initf(MEMTX_TEST_DEVICE
-                       "-M o2-test,bank-profile=8x128m-synthetic,"
+                       "-M o2,register-test-profile=on,"
+                       "bank-profile=8x128m-synthetic,"
                        "reset-low-ram-approx=on "
                        "-cpu R10000 -m 1G -nodefaults "
                        "-accel tcg,thread=single -S");
@@ -76,7 +79,8 @@ static QTestState *o2_start_banked_approx(void)
 static QTestState *o2_start_empty_renderer_status(void)
 {
     return qtest_initf(MEMTX_TEST_DEVICE
-                       "-M o2-test,bank-profile=8x128m-synthetic,"
+                       "-M o2,register-test-profile=on,"
+                       "bank-profile=8x128m-synthetic,"
                        "reset-low-ram-approx=on,empty-renderer-status=on "
                        "-cpu R10000 -m 1G -nodefaults "
                        "-accel tcg,thread=single -S");
@@ -192,7 +196,8 @@ static void test_banked_approx_bank_one_cpu_error(void)
     dir = g_dir_make_tmp("o2-bank-one-cpu-XXXXXX", NULL);
     log = g_build_filename(dir, "qemu.log", NULL);
     qts = qtest_initf(MEMTX_TEST_DEVICE
-                      "-M o2-test,bank-profile=8x128m-synthetic,"
+                      "-M o2,register-test-profile=on,"
+                      "bank-profile=8x128m-synthetic,"
                       "reset-low-ram-approx=on -cpu R10000 -m 1G "
                       "-nodefaults -accel tcg,thread=single -S "
                       "-d guest_errors -D %s "
@@ -284,7 +289,8 @@ static void test_banked_approx_uncached_ram(void)
         return;
     }
     qts = qtest_initf(MEMTX_TEST_DEVICE
-                      "-M o2-test,bank-profile=8x128m-synthetic,"
+                      "-M o2,register-test-profile=on,"
+                      "bank-profile=8x128m-synthetic,"
                       "reset-low-ram-approx=on "
                       "-cpu R10000 -m 1G -nodefaults "
                       "-accel tcg,thread=single -S "
@@ -501,7 +507,7 @@ static void test_banked_migration(void)
     g_assert_nonnull(error);
     if (!strstr(qdict_get_str(error, "desc"),
                 "State blocked by non-migratable device "
-                "'o2-test/eight-bank-profile'")) {
+                "'o2/eight-bank-profile'")) {
         g_error("unexpected migration error: %s",
                 qdict_get_str(error, "desc"));
     }
@@ -525,7 +531,8 @@ static void test_banked_incoming_migration(void)
     g_assert_cmpint(close(fd), ==, 0);
     uri = g_strdup_printf("file:%s", path);
     qts = qtest_initf(MEMTX_TEST_DEVICE
-                      "-M o2-test,bank-profile=8x128m-synthetic "
+                      "-M o2,register-test-profile=on,"
+                      "bank-profile=8x128m-synthetic "
                       "-cpu R10000 -m 1G -nodefaults "
                       "-accel tcg,thread=single -S -incoming defer");
     qtest_qmp_assert_success(qts,
@@ -543,7 +550,7 @@ static void test_banked_incoming_migration(void)
 
             if (!reason ||
                 !strstr(reason, "State blocked by non-migratable device "
-                                "'o2-test/eight-bank-profile'")) {
+                                "'o2/eight-bank-profile'")) {
                 g_error("incoming migration bypassed O2 state guard: %s",
                         reason ?: "(no error description)");
             }
@@ -612,7 +619,7 @@ static void test_ram_aliases(void)
 static void test_ram_128m_aliases(void)
 {
     QTestState *qts = qtest_initf(MEMTX_TEST_DEVICE
-        "-M o2-test -cpu R10000 -m 128M -nodefaults "
+        "-M o2,register-test-profile=on -cpu R10000 -m 128M -nodefaults "
         "-accel tcg,thread=single -S");
     const uint64_t bases[] = { 0, RAM_FULL, RAM_NO_ECC };
     uint64_t value;
@@ -780,7 +787,8 @@ static void test_rom_aliases(void)
     g_autofree char *dir = g_dir_make_tmp("o2-rom-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "synthetic.bin", NULL);
     g_autofree char *machine = g_strdup_printf(
-        "o2-test,password-clear-input=0,rom-image=%s,rom-size=%u,rom-offset=256,rom-pad-byte=238",
+        "o2,register-test-profile=on,"
+        "password-clear-input=0,rom-image=%s,rom-size=%u,rom-offset=256,rom-pad-byte=238",
         path, capacity);
     QTestState *qts;
 
@@ -828,7 +836,7 @@ static void test_banked_approx_rom_aliases(void)
         const uint32_t capacity = cases[c].capacity;
         const uint32_t offset = cases[c].offset;
         g_autofree char *machine = g_strdup_printf(
-            "o2-test,bank-profile=8x128m-synthetic,"
+            "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
             "reset-low-ram-approx=on,password-clear-input=0,rom-image=%s,rom-size=%u,"
             "rom-offset=%u,rom-pad-byte=238", path, capacity, offset);
         QTestState *qts = qtest_initf(MEMTX_TEST_DEVICE
@@ -884,7 +892,7 @@ static void test_banked_approx_rom_first_fetch(void)
     g_assert_true(g_file_set_contents(path, (const char *)image,
                                       sizeof(image), NULL));
     machine = g_strdup_printf(
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", path);
     qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m 1G "
@@ -926,7 +934,8 @@ static void test_cpu_reset_restarts_rom(void)
     g_assert_true(g_file_set_contents(path, (const char *)image,
                                       sizeof(image), NULL));
     machine = g_strdup_printf(
-        "o2-test,password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
+        "o2,register-test-profile=on,"
+        "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
         "rom-pad-byte=238", path);
     qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m 64M "
                       "-nodefaults -accel tcg,thread=single -S", machine);
@@ -957,7 +966,7 @@ static void assert_private_window_migration_blocked(QTestState *qts)
 
     g_assert_nonnull(error);
     g_assert_nonnull(strstr(qdict_get_str(error, "desc"),
-                            "o2-test/eight-bank-profile"));
+                            "o2/eight-bank-profile"));
 }
 
 static void run_private_window_backing_isolation(uint16_t offset, bool remap)
@@ -1008,7 +1017,7 @@ static void run_private_window_backing_isolation(uint16_t offset, bool remap)
     g_assert_true(g_file_set_contents(path, (const char *)image,
                                       sizeof(image), NULL));
     machine = g_strdup_printf(
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", path);
@@ -1240,7 +1249,7 @@ static void test_private_window_other_cache_algorithms(void)
     g_assert_true(g_file_set_contents(path, (const char *)code.bytes,
                                       code.pos, NULL));
     machine = g_strdup_printf(
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", path);
@@ -1349,7 +1358,7 @@ static void run_private_window_missed_rom_trigger(bool wait_for_poll)
     g_assert_true(g_file_set_contents(path, (const char *)rom.bytes,
                                       rom.pos, NULL));
     machine = g_strdup_printf(
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", path);
@@ -1475,7 +1484,7 @@ static void test_private_window_low_fetch_report(void)
     g_assert_true(g_file_set_contents(path, (const char *)rom.bytes,
                                       rom.pos, NULL));
     machine = g_strdup_printf(
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", path);
@@ -1623,7 +1632,7 @@ static void test_private_window_uncached_low_fetch_release(void)
     g_assert_true(g_file_set_contents(path, (const char *)rom.bytes,
                                       rom.pos, NULL));
     machine = g_strdup_printf(
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", path);
@@ -1801,7 +1810,7 @@ static void run_private_window_guest_copy(bool omit_boundary, bool high_sp)
     g_assert_true(g_file_set_contents(path, (const char *)code.bytes,
                                       code.pos, NULL));
     machine = g_strdup_printf(
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", path);
@@ -1940,7 +1949,8 @@ static void test_coherent_ram(void)
         g_test_skip("TCG is unavailable");
         return;
     }
-    qts = qtest_initf("-M o2-test -cpu R10000 -m 64M -nodefaults "
+    qts = qtest_initf("-M o2,register-test-profile=on "
+        "-cpu R10000 -m 64M -nodefaults "
                       "-accel tcg,thread=single -S "
                       "-device loader,addr=0xffffffffa0002000,cpu-num=0");
     for (unsigned i = 0; i < G_N_ELEMENTS(instructions); i++) {
@@ -1986,7 +1996,7 @@ static void run_uncached_mmio(unsigned cca, unsigned uc)
     g_assert_true(g_file_set_contents(path, (const char *)rom.bytes,
                                       rom.pos, NULL));
     qts = qtest_initf(MEMTX_TEST_DEVICE
-        "-M o2-test,bank-profile=8x128m-synthetic,"
+        "-M o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "crime-profile=legacy-software,reset-low-ram-approx=on,"
         "functional-memory-transfer=on,prom-private-window=on,"
         "prom-sb64-reset=on,gbe11-registers=on,prom-id-word=on,"
@@ -2086,7 +2096,8 @@ static void test_uncached_window(void)
         return;
     }
     qts = qtest_initf(MEMTX_TEST_DEVICE
-                      "-M o2-test -cpu R10000 -m 64M -nodefaults "
+                      "-M o2,register-test-profile=on "
+                      "-cpu R10000 -m 64M -nodefaults "
                       "-accel tcg,thread=single -S "
                       "-device loader,addr=0xffffffffa0002000,cpu-num=0");
     sn0_emit_mtc0(&trampoline, SN0_R_ZERO, SN0_CP0_INDEX);
@@ -2157,7 +2168,8 @@ static void test_uncached_128m_boundary(void)
         return;
     }
     qts = qtest_initf(MEMTX_TEST_DEVICE
-                      "-M o2-test -cpu R10000 -m 128M -nodefaults "
+                      "-M o2,register-test-profile=on "
+                      "-cpu R10000 -m 128M -nodefaults "
                       "-accel tcg,thread=single -S "
                       "-device loader,addr=0xffffffffa0002000,cpu-num=0");
     sn0_emit_mtc0(&trampoline, SN0_R_ZERO, SN0_CP0_INDEX);
@@ -2224,8 +2236,9 @@ static void assert_banked_ram_mapping(QTestState *qts, bool mapped)
 static void test_banked_uncached_window_with_profile(bool approx)
 {
     const char *machine = approx ?
-        "o2-test,bank-profile=8x128m-synthetic,reset-low-ram-approx=on" :
-        "o2-test,bank-profile=8x128m-synthetic";
+        "o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,reset-low-ram-approx=on" :
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic";
     const uint64_t entry = RAM_FULL + 0x2000;
     const uint64_t target = RAM_FULL + 0x80;
     const uint64_t data = RAM_FULL + RAM_BANK_SIZE + 0x1000;
@@ -2419,7 +2432,7 @@ static void test_prom_sb64_reset(void)
                                       sizeof(image), NULL));
     for (unsigned selected = 0; selected < 2; selected++) {
         g_autofree char *machine = g_strdup_printf(
-            "o2-test,bank-profile=8x128m-synthetic,"
+            "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
             "reset-low-ram-approx=on,empty-renderer-status=on,"
             "prom-private-window=on,%spassword-clear-input=0,rom-image=%s,rom-size=524288,"
             "rom-offset=0,rom-pad-byte=238",
@@ -2475,7 +2488,8 @@ static void test_prom_sb64_reset(void)
 
 static void test_serial_a(void)
 {
-    const char *args = "-M o2-test -cpu R10000 -m 64M -nodefaults "
+    const char *args = "-M o2,register-test-profile=on "
+        "-cpu R10000 -m 64M -nodefaults "
                        "-accel tcg,thread=single -S";
     const uint8_t sent = 'A';
     uint8_t received;
@@ -2526,7 +2540,7 @@ static void assert_o2_rejected(const char *option, const char *value,
 
     args[n++] = qtest_qemu_binary(NULL);
     args[n++] = "-M";
-    args[n++] = "o2-test";
+    args[n++] = "o2,register-test-profile=on";
     args[n++] = "-m";
     args[n++] = g_str_equal(option, "-m") ? value : "64M";
     args[n++] = "-display";
@@ -2541,7 +2555,7 @@ static void assert_o2_rejected(const char *option, const char *value,
     }
     args[n] = NULL;
 
-    assert_launch_rejected(args, message);
+    assert_qtest_launch_rejected(args, message);
 }
 
 static void assert_o2_banked_rejected(const char *machine, const char *ram,
@@ -2567,23 +2581,26 @@ static void assert_o2_banked_rejected(const char *machine, const char *ram,
         args[n++] = value;
     }
     args[n] = NULL;
-    assert_launch_rejected(args, message);
+    assert_qtest_launch_rejected(args, message);
 }
 
 static void test_banked_configuration(void)
 {
-    const char *banked = "o2-test,bank-profile=8x128m-synthetic";
+    const char *banked = "o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic";
 
-    assert_o2_rejected("-m", "1G", "o2-test requires 64 or 128 MiB");
+    assert_o2_rejected("-m", "1G", "o2 requires 64 or 128 MiB");
     assert_o2_banked_rejected(banked, "128M", NULL, NULL,
                               "eight-bank profile requires 1 GiB");
     assert_o2_banked_rejected(banked, "1G,slots=1,maxmem=2G", NULL, NULL,
                               "does not support memory slots");
-    assert_o2_banked_rejected("o2-test,bank-profile=unknown", "1G",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "bank-profile=unknown", "1G",
                               NULL, NULL,
                               "supports only bank-profile=8x128m-synthetic");
     assert_o2_banked_rejected(
-        "o2-test,bank-profile=8x128m-synthetic,password-clear-input=0,rom-image=unused",
+        "o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,password-clear-input=0,rom-image=unused",
         "1G", NULL, NULL, "does not support ROM images");
     assert_o2_banked_rejected(banked, "1G", "-bios", "unused",
                               "does not support -bios");
@@ -2600,18 +2617,22 @@ static void test_banked_configuration(void)
 
 static void test_banked_approx_configuration(void)
 {
-    const char *approx = "o2-test,bank-profile=8x128m-synthetic,"
+    const char *approx = "o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                          "reset-low-ram-approx=on";
 
-    assert_o2_banked_rejected("o2-test,reset-low-ram-approx=on", "64M",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "reset-low-ram-approx=on", "64M",
                               NULL, NULL,
                               "reset-low-ram-approx requires "
                               "bank-profile=8x128m-synthetic");
-    assert_o2_banked_rejected("o2-test,reset-low-ram-approx=on", "128M",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "reset-low-ram-approx=on", "128M",
                               NULL, NULL,
                               "reset-low-ram-approx requires "
                               "bank-profile=8x128m-synthetic");
-    assert_o2_banked_rejected("o2-test,reset-low-ram-approx=on", "1G",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "reset-low-ram-approx=on", "1G",
                               NULL, NULL,
                               "reset-low-ram-approx requires "
                               "bank-profile=8x128m-synthetic");
@@ -2623,15 +2644,18 @@ static void test_banked_approx_configuration(void)
 
 static void test_empty_renderer_configuration(void)
 {
-    assert_o2_banked_rejected("o2-test,empty-renderer-status=on",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "empty-renderer-status=on",
                               "64M", NULL, NULL,
                               "empty-renderer-status requires "
                               "bank-profile=8x128m-synthetic");
-    assert_o2_banked_rejected("o2-test,bank-profile=8x128m-synthetic,"
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                               "empty-renderer-status=on", "1G", NULL, NULL,
                               "empty-renderer-status requires "
                               "reset-low-ram-approx=on");
-    assert_o2_banked_rejected("o2-test,bank-profile=8x128m-synthetic,"
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                               "reset-low-ram-approx=on,"
                               "empty-renderer-status=on", "128M", NULL, NULL,
                               "eight-bank profile requires 1 GiB");
@@ -2646,16 +2670,19 @@ static void test_functional_transfer_configuration(void)
         "empty-renderer-status", "functional-memory-transfer"
     };
 
-    assert_o2_banked_rejected("o2-test,bank-profile=8x128m-synthetic,"
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "functional-memory-transfer=on", "1G", NULL, NULL, "conflicts with");
-    assert_o2_banked_rejected("o2-test,bank-profile=8x128m-synthetic,"
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,prom-private-window=on", "1G", NULL, NULL,
         "prom-private-window requires");
     g_assert_true(g_file_set_contents(path, image, sizeof(image), NULL));
     for (unsigned i = 0; i < ARRAY_SIZE(choices); i++) {
         g_autofree char *selected = g_strdup_printf(
-            "o2-test,bank-profile=8x128m-synthetic,reset-low-ram-approx=on,"
+            "o2,register-test-profile=on,"
+            "bank-profile=8x128m-synthetic,reset-low-ram-approx=on,"
             "%s=on,prom-private-window=on,prom-sb64-reset=on,"
             "gbe11-registers=on,prom-id-word=on,password-clear-input=0,rom-image=%s,"
             "rom-size=524288,rom-offset=0,rom-pad-byte=238", choices[i], path);
@@ -2695,7 +2722,7 @@ static void test_functional_transfer_configuration(void)
 static void test_private_window_configuration(void)
 {
     const char *selected =
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on";
     QTestState *qts;
@@ -2703,15 +2730,18 @@ static void test_private_window_configuration(void)
     g_autoptr(QDict) set = NULL;
     g_autoptr(QDict) default_get = NULL;
 
-    assert_o2_banked_rejected("o2-test,prom-private-window=on", "64M",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "prom-private-window=on", "64M",
                               NULL, NULL,
                               "prom-private-window requires the 1 GiB "
                               "eight-bank profile");
-    assert_o2_banked_rejected("o2-test,bank-profile=8x128m-synthetic,"
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                               "prom-private-window=on", "1G", NULL, NULL,
                               "prom-private-window requires the 1 GiB "
                               "eight-bank profile");
-    assert_o2_banked_rejected("o2-test,bank-profile=8x128m-synthetic,"
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                               "reset-low-ram-approx=on,"
                               "prom-private-window=on", "1G", NULL, NULL,
                               "empty-renderer-status=on");
@@ -2766,7 +2796,7 @@ static uint64_t o2_clock_property(QTestState *qts, const char *path,
 static QTestState *o2_clock_start(const char *path, uint64_t hz)
 {
     return qtest_initf(
-        "-M o2-test,bank-profile=8x128m-synthetic,"
+        "-M o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,functional-memory-transfer=on,"
         "prom-private-window=on,prom-sb64-reset=on,gbe11-registers=on,"
         "password-clear-input=0,rom-image=%s,rom-size=524288,"
@@ -2849,7 +2879,8 @@ static void test_gbe_external_ttl_board(void)
 
 static void test_gbe_external_ttl_configuration(void)
 {
-    assert_o2_banked_rejected("o2-test,gbe-external-ttl-hz=23000000",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "gbe-external-ttl-hz=23000000",
                               "64M", NULL, NULL, "requires gbe11-registers");
     const char *invalid[] = {
         "-1", "1.5", "1000000001", "18446744073709551616",
@@ -2857,13 +2888,14 @@ static void test_gbe_external_ttl_configuration(void)
 
     for (unsigned i = 0; i < ARRAY_SIZE(invalid); i++) {
         g_autofree char *machine = g_strdup_printf(
-            "o2-test,gbe-external-ttl-hz=%s", invalid[i]);
+            "o2,register-test-profile=on,gbe-external-ttl-hz=%s", invalid[i]);
 
         assert_o2_banked_rejected(machine, "64M", NULL, NULL,
                                   "gbe-external-ttl-hz");
     }
     QTestState *qts = qtest_init(
-        "-M o2-test,gbe-external-ttl-hz=0 -m 64M -nodefaults");
+        "-M o2,register-test-profile=on,"
+        "gbe-external-ttl-hz=0 -m 64M -nodefaults");
     g_assert_cmpuint(o2_clock_property(qts, "/machine",
                      "gbe-external-ttl-hz"), ==, 0);
     qtest_quit(qts);
@@ -2937,7 +2969,7 @@ static void test_gbe_external_ttl_migration(void)
         "external-ttl-hz=20000000,ram=/objects/ram/ram[0]",
         "-incoming", file_uri, "-qmp", "stdio", NULL,
     };
-    assert_launch_rejected(args,
+    assert_qtest_launch_rejected(args,
         "device 'sgi-o2-gbe': 1312d00 != 15ef3c0");
     qtest_quit(from);
     qtest_quit(control);
@@ -2967,7 +2999,7 @@ static void test_gbe11_registers(void)
 
     g_assert_true(g_file_set_contents(path, image, sizeof(image), NULL));
     base = g_strdup_printf(
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,"
         "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238",
@@ -3075,7 +3107,7 @@ static void test_prom_id_word(void)
     g_assert_true(g_file_set_contents(path, (const char *)image,
                                       sizeof(image), NULL));
     base = g_strdup_printf(
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,gbe11-registers=on,"
         "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238",
@@ -3137,17 +3169,18 @@ static void test_prom_id_word_configuration(void)
 {
     static const char image[] = { 0, 0, 0, 0 };
     static const char * const incomplete[] = {
-        "o2-test,prom-id-word=on",
-        "o2-test,bank-profile=8x128m-synthetic,prom-id-word=on",
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,prom-id-word=on",
+        "o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,prom-id-word=on",
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,prom-id-word=on",
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-id-word=on",
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-id-word=on",
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,"
         "prom-id-word=on",
@@ -3163,7 +3196,7 @@ static void test_prom_id_word_configuration(void)
                                   NULL, NULL, "prom-id-word requires");
     }
     partial_rom = g_strdup_printf(
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,gbe11-registers=on,"
         "prom-id-word=on,password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0",
@@ -3190,17 +3223,18 @@ static void test_gbe11_registers_configuration(void)
 {
     static const char image[] = { 0, 0, 0, 0 };
     static const char * const incomplete[] = {
-        "o2-test,gbe11-registers=on",
-        "o2-test,bank-profile=8x128m-synthetic,gbe11-registers=on",
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,gbe11-registers=on",
+        "o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,gbe11-registers=on",
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,gbe11-registers=on",
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "gbe11-registers=on",
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,gbe11-registers=on",
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,gbe11-registers=on",
     };
@@ -3215,7 +3249,7 @@ static void test_gbe11_registers_configuration(void)
                                   NULL, NULL, "gbe11-registers requires");
     }
     partial_rom = g_strdup_printf(
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,gbe11-registers=on,"
         "password-clear-input=0,rom-image=%s,rom-size=524288,"
@@ -3241,7 +3275,7 @@ static void test_prom_sb64_reset_configuration(void)
 {
     static const char image[] = { 0, 0, 0, 0 };
     const char *base =
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on";
     g_autofree char *dir = g_dir_make_tmp("o2-sb64-reject-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "synthetic.bin", NULL);
@@ -3259,7 +3293,8 @@ static void test_prom_sb64_reset_configuration(void)
         "%s,prom-private-window=on,prom-sb64-reset=on,"
         "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238",
         base, path);
-    assert_o2_banked_rejected("o2-test,prom-sb64-reset=on", "64M",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "prom-sb64-reset=on", "64M",
                               NULL, NULL,
                               "prom-sb64-reset requires");
     assert_o2_banked_rejected(without_private, "1G", NULL, NULL,
@@ -3285,7 +3320,8 @@ static void test_prom_sb64_reset_configuration(void)
 static void test_banked_approx_rom_rejected(void)
 {
     static const char image[] = { 0x12, 0x34, 0x56, 0x78 };
-    const char *approx = "o2-test,bank-profile=8x128m-synthetic,"
+    const char *approx = "o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                          "reset-low-ram-approx=on";
     g_autofree char *dir = g_dir_make_tmp("o2-approx-not-rom-XXXXXX",
                                           NULL);
@@ -3304,17 +3340,19 @@ static void test_banked_approx_rom_rejected(void)
         "rom-pad-byte=256", approx, path);
 
     g_assert_true(g_file_set_contents(path, image, sizeof(image), NULL));
-    assert_o2_banked_rejected("o2-test,bank-profile=8x128m-synthetic,"
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                               "reset-low-ram-approx=on,rom-size=524288",
                               "1G", NULL, NULL,
-                              "o2-test ROM settings require rom-image");
-    assert_o2_banked_rejected("o2-test,bank-profile=8x128m-synthetic,"
+                              "o2 ROM settings require rom-image");
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,"
                               "reset-low-ram-approx=on,password-clear-input=0,rom-image=unused",
                               "1G", NULL, NULL,
-                              "o2-test ROM requires rom-size, rom-offset "
+                              "o2 ROM requires rom-size, rom-offset "
                               "and rom-pad-byte");
     assert_o2_banked_rejected(nonregular, "1G", NULL, NULL,
-                              "o2-test ROM image must be a regular file");
+                              "o2 ROM image must be a regular file");
     assert_o2_banked_rejected(too_large, "1G", NULL, NULL,
                               "does not fit at offset");
     assert_o2_banked_rejected(bad_capacity, "1G", NULL, NULL,
@@ -3501,47 +3539,52 @@ static void test_banked_approx_migration(void)
 static void test_configuration(void)
 {
     const char *usb[] = {
-        qtest_qemu_binary(NULL), "-M", "o2-test,usb=on", "-m", "64M",
+        qtest_qemu_binary(NULL), "-M", "o2,register-test-profile=on,"
+        "usb=on", "-m", "64M",
         "-nodefaults", "-display", "none", "-S", "-qmp", "stdio", NULL,
     };
     const char *pci[] = {
-        qtest_qemu_binary(NULL), "-M", "o2-test", "-m", "64M",
+        qtest_qemu_binary(NULL), "-M", "o2,register-test-profile=on",
+        "-m", "64M",
         "-nodefaults", "-display", "none", "-S", "-qmp", "stdio",
         "-device", "e1000,bus=mace.0,addr=1", NULL,
     };
     const char *second_serial[] = {
-        qtest_qemu_binary(NULL), "-M", "o2-test", "-m", "64M",
+        qtest_qemu_binary(NULL), "-M", "o2,register-test-profile=on",
+        "-m", "64M",
         "-nodefaults", "-display", "none", "-S", "-qmp", "stdio",
         "-serial", "null", "-serial", "null", NULL,
     };
     const char *rom_without_image[] = {
-        qtest_qemu_binary(NULL), "-M", "o2-test,rom-size=524288", "-m",
+        qtest_qemu_binary(NULL), "-M", "o2,register-test-profile=on,"
+        "rom-size=524288", "-m",
         "64M", "-nodefaults", "-display", "none", "-S", "-qmp", "stdio",
         NULL,
     };
     const char *rom_without_layout[] = {
         qtest_qemu_binary(NULL), "-M",
-        "o2-test,password-clear-input=0,rom-image=unused", "-m",
+        "o2,register-test-profile=on,"
+        "password-clear-input=0,rom-image=unused", "-m",
         "64M", "-nodefaults", "-display", "none", "-S", "-qmp", "stdio",
         NULL,
     };
 
-    assert_o2_rejected("-m", "32M", "o2-test requires 64 or 128 MiB");
-    assert_o2_rejected("-m", "256M", "o2-test requires 64 or 128 MiB");
+    assert_o2_rejected("-m", "32M", "o2 requires 64 or 128 MiB");
+    assert_o2_rejected("-m", "256M", "o2 requires 64 or 128 MiB");
     assert_o2_rejected("-m", "64M,slots=1,maxmem=128M",
-                       "o2-test does not support memory slots");
+                       "o2 does not support memory slots");
     assert_o2_rejected("-cpu", "R12000", "Invalid CPU model: R12000");
     assert_o2_rejected("-smp", "2", "max CPUs");
-    assert_o2_rejected("-kernel", "unused", "o2-test does not support -kernel");
-    assert_o2_rejected("-bios", "unused", "o2-test does not support -bios");
-    assert_launch_rejected(usb, "o2-test does not support USB devices");
-    assert_launch_rejected(pci, "slot 1 function 0 not available");
-    assert_launch_rejected(second_serial,
-                           "o2-test supports only one host serial backend");
-    assert_launch_rejected(rom_without_image,
-                           "o2-test ROM settings require rom-image");
-    assert_launch_rejected(rom_without_layout,
-                           "o2-test ROM requires rom-size, rom-offset and "
+    assert_o2_rejected("-kernel", "unused", "o2 does not support -kernel");
+    assert_o2_rejected("-bios", "unused", "o2 does not support -bios");
+    assert_qtest_launch_rejected(usb, "o2 does not support USB devices");
+    assert_qtest_launch_rejected(pci, "slot 1 function 0 not available");
+    assert_qtest_launch_rejected(second_serial,
+                           "o2 supports only one host serial backend");
+    assert_qtest_launch_rejected(rom_without_image,
+                           "o2 ROM settings require rom-image");
+    assert_qtest_launch_rejected(rom_without_layout,
+                           "o2 ROM requires rom-size, rom-offset and "
                            "rom-pad-byte");
 }
 
@@ -3553,14 +3596,15 @@ static void test_gbe_one_tile_retired(void)
 
     g_assert_true(g_file_set_contents(image, "\0", 1, NULL));
     selected = g_strdup_printf(
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,gbe11-registers=on,"
         "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
         "rom-pad-byte=238,gbe-one-tile-diagnostic=on", image);
     assert_o2_banked_rejected(selected, "1G", NULL, NULL,
                               "gbe-one-tile-diagnostic is superseded");
-    assert_o2_banked_rejected("o2-test,gbe-one-tile-diagnostic=on", "64M",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "gbe-one-tile-diagnostic=on", "64M",
                               NULL, NULL,
                               "gbe-one-tile-diagnostic is superseded");
     g_assert_cmpint(unlink(image), ==, 0);
@@ -3701,21 +3745,29 @@ static unsigned o2_aic_bus_level(QTestState *qts)
     return qdict_get_int(reply, "return");
 }
 
-static void o2_aic_assert_irqs(QTestState *qts, unsigned bus,
-                                unsigned delivered, bool cpu)
+static void o2_aic_assert_irqs_on_pin(QTestState *qts, unsigned bus,
+                                       unsigned delivered, bool cpu,
+                                       unsigned cpu_pin)
 {
     uint64_t hardware;
 
     g_assert_cmphex(o2_aic_bus_level(qts) & 3, ==, bus);
     g_assert_cmpint(memtx_readq(qts, CRIME + 0x28, &hardware), ==, MEMTX_OK);
     g_assert_cmphex((hardware >> 8) & 3, ==, delivered);
-    g_assert_cmpint(qtest_get_irq(qts, 1), ==, cpu);
+    g_assert_cmpint(qtest_get_irq(qts, cpu_pin), ==, cpu);
+}
+
+static void o2_aic_assert_irqs(QTestState *qts, unsigned bus,
+                                unsigned delivered, bool cpu)
+{
+    o2_aic_assert_irqs_on_pin(qts, bus, delivered, cpu, 1);
 }
 
 static void test_aic_pci_diagnostic(void)
 {
     QTestState *qts = qtest_init(MEMTX_TEST_DEVICE
-        "-M o2-test,aic-pci-diagnostic=on -cpu R10000 -m 64M "
+        "-M o2,register-test-profile=on,"
+        "aic-pci-diagnostic=on -cpu R10000 -m 64M "
         "-nodefaults -accel qtest");
     uint8_t byte;
     uint64_t irq;
@@ -3873,7 +3925,8 @@ static void test_aic_pci_diagnostic(void)
 static void test_aic_pci_low_dma_policy_off(void)
 {
     QTestState *qts = qtest_init(MEMTX_TEST_DEVICE
-        "-M o2-test,aic-pci-diagnostic=on -cpu R10000 -m 64M "
+        "-M o2,register-test-profile=on,"
+        "aic-pci-diagnostic=on -cpu R10000 -m 64M "
         "-nodefaults -accel qtest");
     uint8_t guarded[32], after[32], write_guard[288], write_after[288];
 
@@ -3929,17 +3982,18 @@ static void test_mace_low_dma_option_scope(void)
     };
     QTestState *qts;
 
-    assert_launch_rejected(direct_mace,
+    assert_qtest_launch_rejected(direct_mace,
                            "requires the O2 decoded 1 GiB RAM container");
-    assert_o2_banked_rejected("o2-test,mace-eth-low-dma-compat=on",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "mace-eth-low-dma-compat=on",
                               "64M", "-accel", "qtest",
                               "requires the 1 GiB eight-bank profile");
     assert_o2_banked_rejected(
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "mace-eth-low-dma-compat=on", "128M", "-accel", "qtest",
         "requires the 1 GiB eight-bank profile");
     qts = qtest_init(MEMTX_TEST_DEVICE
-        "-M o2-test,bank-profile=8x128m-synthetic,"
+        "-M o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "mace-eth-low-dma-compat=on -cpu R10000 -m 1G "
         "-nodefaults -accel qtest -S");
     g_assert_true(qtest_qom_get_bool(qts, "/machine",
@@ -3952,13 +4006,15 @@ static void test_mace_low_dma_option_scope(void)
 static void test_aic_pci_diagnostic_rejections(void)
 {
     const char *extra_pci[] = {
-        qtest_qemu_binary(NULL), "-M", "o2-test,aic-pci-diagnostic=on",
+        qtest_qemu_binary(NULL), "-M", "o2,register-test-profile=on,"
+        "aic-pci-diagnostic=on",
         "-m", "64M", "-cpu", "R10000", "-accel", "qtest",
         "-nodefaults", "-display", "none", "-qmp", "stdio",
         "-device", "lsi53c895a,bus=mace.0,addr=3", NULL,
     };
     const char *extra_scsi[] = {
-        qtest_qemu_binary(NULL), "-M", "o2-test,aic-pci-diagnostic=on",
+        qtest_qemu_binary(NULL), "-M", "o2,register-test-profile=on,"
+        "aic-pci-diagnostic=on",
         "-m", "64M", "-cpu", "R10000", "-accel", "qtest",
         "-nodefaults", "-display", "none", "-qmp", "stdio",
         "-device", "scsi-cd,bus=aic0.0,scsi-id=0", NULL,
@@ -3973,23 +4029,29 @@ static void test_aic_pci_diagnostic_rejections(void)
     g_assert_cmphex(qtest_readl(qts, MACE_PCI + 4) & (1u << 31), ==, 0);
     qtest_quit(qts);
 
-    assert_o2_banked_rejected("o2-test,aic-pci-diagnostic=on", "128M",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "aic-pci-diagnostic=on", "128M",
                               "-accel", "qtest", "requires QTest, 64 MiB");
-    assert_o2_banked_rejected("o2-test,aic-pci-diagnostic=on", "1G",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "aic-pci-diagnostic=on", "1G",
                               "-accel", "qtest", "requires QTest, 64 MiB");
-    assert_o2_banked_rejected("o2-test,aic-pci-diagnostic=on", "64M",
-                              "-accel", "tcg", "requires QTest, 64 MiB");
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "aic-pci-diagnostic=on", "64M",
+                              "-accel", "tcg",
+                              "register-test-profile requires QTest");
     assert_o2_banked_rejected(
-        "o2-test,aic-pci-diagnostic=on,password-clear-input=0,"
+        "o2,register-test-profile=on,"
+        "aic-pci-diagnostic=on,password-clear-input=0,"
         "rom-image=unused", "64M",
         "-accel", "qtest", "requires QTest, 64 MiB RAM and no ROM");
     assert_o2_banked_rejected("origin200,aic-pci-diagnostic=on", "64M",
                               "-accel", "qtest", "aic-pci-diagnostic");
-    assert_launch_rejected(extra_pci, "does not support attached PCI");
-    assert_launch_rejected(extra_scsi, "rejects SCSI targets");
+    assert_qtest_launch_rejected(extra_pci, "does not support attached PCI");
+    assert_qtest_launch_rejected(extra_scsi, "rejects SCSI targets");
 
     qts = qtest_init(MEMTX_TEST_DEVICE
-        "-M o2-test,aic-pci-diagnostic=on -cpu R10000 -m 64M "
+        "-M o2,register-test-profile=on,"
+        "aic-pci-diagnostic=on -cpu R10000 -m 64M "
         "-nodefaults -accel qtest");
     reply = qtest_qmp(qts,
         "{'execute':'device_add','arguments':{'driver':'lsi53c895a',"
@@ -4047,7 +4109,7 @@ static uint32_t o2_mace_card_fill(QTestState *qts, uint64_t address,
 static QTestState *o2_mace_banked_dma_start(void)
 {
     return qtest_init(MEMTX_TEST_DEVICE
-        "-M o2-test,bank-profile=8x128m-synthetic,"
+        "-M o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,mace-bank-dma-fixture=on "
         "-cpu R10000 -m 1G -nodefaults -accel qtest -S");
 }
@@ -4376,9 +4438,9 @@ static void test_mace_banked_dma_fixture(void)
         "{'execute':'migrate','arguments':{'uri':'unix:/nonexistent'}}");
     g_assert_nonnull(strstr(qdict_get_str(qdict_get_qdict(migrate, "error"),
                                          "desc"),
-                            "o2-test/eight-bank-profile"));
+                            "o2/eight-bank-profile"));
     save_reply = qtest_hmp(qts, "savevm mace-bank-dma");
-    g_assert_nonnull(strstr(save_reply, "o2-test/eight-bank-profile"));
+    g_assert_nonnull(strstr(save_reply, "o2/eight-bank-profile"));
     qtest_quit(qts);
 }
 
@@ -4435,27 +4497,30 @@ static void test_mace_banked_dma_fixture_rejections(void)
 {
     const char *extra_card[] = {
         qtest_qemu_binary(NULL), "-M",
-        "o2-test,bank-profile=8x128m-synthetic,mace-bank-dma-fixture=on",
+        "o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,mace-bank-dma-fixture=on",
         "-m", "1G", "-accel", "qtest", "-S", "-nodefaults",
         "-display", "none", "-qmp", "stdio", "-device",
         "sgi-bridge-dma-test,bus=mace.0,addr=2", NULL,
     };
     const char *default_card[] = {
         qtest_qemu_binary(NULL), "-M",
-        "o2-test,bank-profile=8x128m-synthetic", "-m", "1G",
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic", "-m", "1G",
         "-accel", "qtest", "-S", "-nodefaults", "-display", "none",
         "-qmp", "stdio", "-device",
         "sgi-bridge-dma-test,bus=mace.0,addr=3", NULL,
     };
     const char *scsi_target[] = {
         qtest_qemu_binary(NULL), "-M",
-        "o2-test,bank-profile=8x128m-synthetic,mace-bank-dma-fixture=on",
+        "o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,mace-bank-dma-fixture=on",
         "-m", "1G", "-accel", "qtest", "-S", "-nodefaults",
         "-display", "none", "-qmp", "stdio", "-device",
         "scsi-cd,bus=aic0.0,scsi-id=0", NULL,
     };
     QTestState *qts = qtest_init(MEMTX_TEST_DEVICE
-        "-M o2-test,bank-profile=8x128m-synthetic -cpu R10000 "
+        "-M o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic -cpu R10000 "
         "-m 1G -nodefaults -accel qtest -S");
     g_autoptr(QDict) mace = NULL;
     g_autoptr(QDict) crime = NULL;
@@ -4474,7 +4539,8 @@ static void test_mace_banked_dma_fixture_rejections(void)
     qtest_quit(qts);
 
     qts = qtest_init(MEMTX_TEST_DEVICE
-        "-M o2-test -cpu R10000 -m 128M -nodefaults -accel qtest -S");
+        "-M o2,register-test-profile=on "
+        "-cpu R10000 -m 128M -nodefaults -accel qtest -S");
     qobject_unref(mace);
     qobject_unref(crime);
     mace = NULL;
@@ -4489,26 +4555,31 @@ static void test_mace_banked_dma_fixture_rejections(void)
                     qdict_get_str(crime, "return"));
     qtest_quit(qts);
 
-    assert_o2_banked_rejected("o2-test,mace-bank-dma-fixture=on", "64M",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "mace-bank-dma-fixture=on", "64M",
                               "-accel", "qtest", "requires QTest");
-    assert_o2_banked_rejected("o2-test,mace-bank-dma-fixture=on", "128M",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "mace-bank-dma-fixture=on", "128M",
                               "-accel", "qtest", "requires QTest");
-    assert_o2_banked_rejected("o2-test,mace-bank-dma-fixture=on", "1G",
+    assert_o2_banked_rejected("o2,register-test-profile=on,"
+        "mace-bank-dma-fixture=on", "1G",
                               "-accel", "qtest", "requires QTest");
     assert_o2_banked_rejected(
-        "o2-test,bank-profile=8x128m-synthetic,mace-bank-dma-fixture=on",
+        "o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,mace-bank-dma-fixture=on",
         "1G", "-accel", "tcg", "requires QTest");
     assert_o2_banked_rejected(
-        "o2-test,bank-profile=8x128m-synthetic,mace-bank-dma-fixture=on,"
+        "o2,register-test-profile=on,"
+        "bank-profile=8x128m-synthetic,mace-bank-dma-fixture=on,"
         "password-clear-input=0,rom-image=unused", "1G", "-accel", "qtest",
         "no ROM");
-    assert_launch_rejected(default_card, "does not support attached PCI");
-    assert_launch_rejected(extra_card, "slot 2 function 0 not available");
-    assert_launch_rejected(scsi_target,
+    assert_qtest_launch_rejected(default_card, "does not support attached PCI");
+    assert_qtest_launch_rejected(extra_card, "slot 2 function 0 not available");
+    assert_qtest_launch_rejected(scsi_target,
                            "MACE bank DMA fixture rejects SCSI targets");
 
     qts = qtest_init(MEMTX_TEST_DEVICE
-        "-M o2-test,bank-profile=8x128m-synthetic,"
+        "-M o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "mace-bank-dma-fixture=on -cpu R10000 -m 1G "
         "-nodefaults -accel qtest -S");
     hotplug = qtest_qmp(qts,
@@ -4553,7 +4624,7 @@ static O2StorageTest o2_storage_start_accel_full(bool disk,
     g_assert_true(g_file_set_contents(t.rom, (const char *)rom,
                                       sizeof(rom), NULL));
     t.qts = qtest_initf(MEMTX_TEST_DEVICE
-        "-M o2-test,bank-profile=8x128m-synthetic,"
+        "-M o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,"
         "gbe11-registers=on,prom-id-word=on,"
@@ -5236,7 +5307,8 @@ static void test_storage_high_id_selection_timeout(void)
     for (unsigned permutation = 0; permutation < 2; permutation++) {
         for (unsigned setting = 0; setting < 4; setting++) {
             QTestState *qts = qtest_init(MEMTX_TEST_DEVICE
-                "-M o2-test -cpu R10000 -m 64M -nodefaults -nic none "
+                "-M o2,register-test-profile=on "
+                "-cpu R10000 -m 64M -nodefaults -nic none "
                 "-accel qtest -S "
                 "-device scsi-cd,bus=aic0.0,scsi-id=0");
             int64_t interval = 256000000LL >> setting;
@@ -5923,9 +5995,9 @@ static void test_storage_diagnostic_apertures(void)
         "{'execute':'migrate','arguments':{'uri':'unix:/nonexistent'}}");
     g_assert_nonnull(strstr(qdict_get_str(qdict_get_qdict(migrate, "error"),
                                          "desc"),
-                            "o2-test/eight-bank-profile"));
+                            "o2/eight-bank-profile"));
     save_reply = qtest_hmp(t.qts, "savevm o2-storage");
-    g_assert_nonnull(strstr(save_reply, "o2-test/eight-bank-profile"));
+    g_assert_nonnull(strstr(save_reply, "o2/eight-bank-profile"));
     events = o2_storage_stop(&t);
     g_assert_cmpstr(events, ==,
                     "{\"type\":\"complete\",\"attempts\":0,"
@@ -6090,33 +6162,8 @@ static void test_low_ethernet_dma_preserves_aic_pci(void)
     g_assert_cmpstr(write_off, ==, write_on);
 }
 
-static void check_default_o2_aic(const char *memory, bool full_profile)
+static void check_o2_native_aic(QTestState *qts, unsigned cpu_pin)
 {
-    static const uint8_t rom[] = { 0, 0, 0, 0 };
-    g_autofree char *dir = NULL;
-    g_autofree char *rom_path = NULL;
-    g_autofree char *machine = NULL;
-    QTestState *qts;
-
-    if (full_profile) {
-        dir = g_dir_make_tmp("o2-default-aic-XXXXXX", NULL);
-        g_assert_nonnull(dir);
-        rom_path = g_build_filename(dir, "synthetic-rom", NULL);
-        g_assert_true(g_file_set_contents(rom_path, (const char *)rom,
-                                          sizeof(rom), NULL));
-        machine = g_strdup_printf(
-            "o2-test,bank-profile=8x128m-synthetic,"
-            "reset-low-ram-approx=on,empty-renderer-status=on,"
-            "prom-private-window=on,prom-sb64-reset=on,"
-            "gbe11-registers=on,prom-id-word=on,"
-            "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238",
-            rom_path);
-    } else {
-        machine = g_strdup("o2-test");
-    }
-    qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m %s "
-                      "-nodefaults -accel qtest -S -nic none",
-                      machine, memory);
     g_assert_cmphex(o2_aic_config_read(qts, 1, 0), ==, 0x80789004);
     g_assert_cmphex(o2_aic_config_read(qts, 2, 0), ==, 0x80789004);
     g_assert_cmphex(o2_aic_config_read(qts, 3, 0), ==, UINT32_MAX);
@@ -6137,17 +6184,47 @@ static void check_default_o2_aic(const char *memory, bool full_profile)
     qtest_writel(qts, MACE_PCI + 8, 3);
     qtest_writeq(qts, CRIME + 0x18, 3ULL << 8);
     qtest_writeb(qts, o2_storage_aic_slot(1, 0x87), 0x16);
-    o2_aic_assert_irqs(qts, 1, 1, true);
+    o2_aic_assert_irqs_on_pin(qts, 1, 1, true, cpu_pin);
     o2_aic_config_write(qts, 1, 4, 0);
-    o2_aic_assert_irqs(qts, 0, 0, false);
+    o2_aic_assert_irqs_on_pin(qts, 0, 0, false, cpu_pin);
     o2_aic_config_write(qts, 1, 4, 0x46);
-    o2_aic_assert_irqs(qts, 1, 1, true);
+    o2_aic_assert_irqs_on_pin(qts, 1, 1, true, cpu_pin);
     qtest_writeb(qts, o2_storage_aic_slot(2, 0x87), 0x16);
-    o2_aic_assert_irqs(qts, 3, 3, true);
+    o2_aic_assert_irqs_on_pin(qts, 3, 3, true, cpu_pin);
     qtest_writeb(qts, o2_storage_aic_slot(1, 0x87), 0x06);
-    o2_aic_assert_irqs(qts, 2, 2, true);
+    o2_aic_assert_irqs_on_pin(qts, 2, 2, true, cpu_pin);
     qtest_writeb(qts, o2_storage_aic_slot(2, 0x87), 0x06);
-    o2_aic_assert_irqs(qts, 0, 0, false);
+    o2_aic_assert_irqs_on_pin(qts, 0, 0, false, cpu_pin);
+}
+
+static void check_default_o2_aic(const char *memory, bool full_profile)
+{
+    static const uint8_t rom[] = { 0, 0, 0, 0 };
+    g_autofree char *dir = NULL;
+    g_autofree char *rom_path = NULL;
+    g_autofree char *machine = NULL;
+    QTestState *qts;
+
+    if (full_profile) {
+        dir = g_dir_make_tmp("o2-default-aic-XXXXXX", NULL);
+        g_assert_nonnull(dir);
+        rom_path = g_build_filename(dir, "synthetic-rom", NULL);
+        g_assert_true(g_file_set_contents(rom_path, (const char *)rom,
+                                          sizeof(rom), NULL));
+        machine = g_strdup_printf(
+            "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
+            "reset-low-ram-approx=on,empty-renderer-status=on,"
+            "prom-private-window=on,prom-sb64-reset=on,"
+            "gbe11-registers=on,prom-id-word=on,"
+            "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238",
+            rom_path);
+    } else {
+        machine = g_strdup("o2,register-test-profile=on");
+    }
+    qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m %s "
+                      "-nodefaults -accel qtest -S -nic none",
+                      machine, memory);
+    check_o2_native_aic(qts, 1);
     qtest_quit(qts);
     if (full_profile) {
         g_assert_cmpint(g_unlink(rom_path), ==, 0);
@@ -6277,7 +6354,7 @@ static void test_full_identity_ethernet_aic(void)
     g_assert_cmpint(setsockopt(sv[0], SOL_SOCKET, SO_RCVTIMEO,
                                &timeout, sizeof(timeout)), ==, 0);
     qts = qtest_initf(MEMTX_TEST_DEVICE
-        "-M o2-test,bank-profile=8x128m-synthetic,"
+        "-M o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,"
         "gbe11-registers=on,prom-id-word=on,"
@@ -7893,7 +7970,8 @@ static void test_storage_second_segment_dma_failure(void)
 
 static void test_storage_diagnostic_rejections(void)
 {
-    const char *mode = "o2-test,diagnostic-lower-pci-byte-identity=on";
+    const char *mode = "o2,register-test-profile=on,"
+        "diagnostic-lower-pci-byte-identity=on";
     const uint8_t rom_bytes[] = { 0, 0, 0, 0 };
     const char *direct_mace[] = {
         qtest_qemu_binary(NULL), "-M", "none", "-m", "1G",
@@ -7918,7 +7996,7 @@ static void test_storage_diagnostic_rejections(void)
     g_assert_true(g_file_set_contents(rom, (const char *)rom_bytes,
                                       sizeof(rom_bytes), NULL));
     no_sink_mode = g_strdup_printf(
-        "o2-test,bank-profile=8x128m-synthetic,"
+        "o2,register-test-profile=on,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,"
         "gbe11-registers=on,prom-id-word=on,"
@@ -7946,7 +8024,7 @@ static void test_storage_diagnostic_rejections(void)
                               "no other PCI diagnostic");
     assert_o2_banked_rejected(with_dma_fixture, "1G", "-accel", "qtest",
                               "no other PCI diagnostic");
-    assert_launch_rejected(direct_mace,
+    assert_qtest_launch_rejected(direct_mace,
                            "requires the O2 decoded RAM view");
     g_assert_true(g_file_set_contents(events, "old", 3, NULL));
     assert_o2_banked_rejected(full_mode, "1G", "-accel", "qtest",
@@ -7970,7 +8048,7 @@ static void test_storage_diagnostic_rejections(void)
             NULL,
         };
 
-        assert_launch_rejected(two_targets,
+        assert_qtest_launch_rejected(two_targets,
                                "accepts one SCSI CD or disk");
     }
     g_assert_cmpint(g_unlink(events), ==, 0);
@@ -7984,7 +8062,7 @@ static void test_storage_diagnostic_rejections(void)
             NULL,
         };
 
-        assert_launch_rejected(wide_target,
+        assert_qtest_launch_rejected(wide_target,
                                "accepts one SCSI CD or disk");
     }
     g_assert_cmpint(g_unlink(events), ==, 0);
@@ -7998,12 +8076,266 @@ static void test_storage_diagnostic_rejections(void)
             NULL,
         };
 
-        assert_launch_rejected(other_lun,
+        assert_qtest_launch_rejected(other_lun,
                                "accepts one SCSI CD or disk");
     }
     g_assert_cmpint(g_unlink(events), ==, 0);
     g_assert_cmpint(g_unlink(rom), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+typedef struct O2ProductTest {
+    char *dir;
+    char *rom;
+    char *identity;
+    char *machine;
+} O2ProductTest;
+
+static void o2_product_prepare(O2ProductTest *t)
+{
+    g_autofree uint8_t *rom = g_malloc0(512 * KiB);
+    uint8_t identity[128];
+
+    t->dir = g_dir_make_tmp("o2-product-XXXXXX", NULL);
+    g_assert_nonnull(t->dir);
+    t->rom = g_build_filename(t->dir, "synthetic-rom", NULL);
+    t->identity = g_build_filename(t->dir, "synthetic-identity", NULL);
+    for (unsigned i = 0; i < sizeof(identity); i++) {
+        identity[i] = (i * 37) ^ 0xa5;
+    }
+    rom[0] = 0x5a;
+    rom[512 * KiB - 1] = 0xa5;
+    g_assert_true(g_file_set_contents(t->rom, (char *)rom, 512 * KiB, NULL));
+    g_assert_true(g_file_set_contents(t->identity, (char *)identity,
+                                      sizeof(identity), NULL));
+    t->machine = g_strdup_printf(
+        "o2,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238,"
+        "rom-at29c040a-protection=disabled,"
+        "rom-at29c040a-lower-lock=unlocked,"
+        "rom-at29c040a-upper-lock=unlocked,"
+        "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
+        "identity-status=0123456789abcd,password-clear-input=0",
+        t->rom, t->identity);
+}
+
+static void o2_product_cleanup(O2ProductTest *t)
+{
+    g_assert_cmpint(g_unlink(t->rom), ==, 0);
+    g_assert_cmpint(g_unlink(t->identity), ==, 0);
+    g_assert_cmpint(g_rmdir(t->dir), ==, 0);
+    g_free(t->machine);
+    g_free(t->identity);
+    g_free(t->rom);
+    g_free(t->dir);
+}
+
+static QTestState *o2_product_start(O2ProductTest *t)
+{
+    return qtest_initf(MEMTX_TEST_DEVICE "-M %s -nodefaults "
+                       "-accel tcg,thread=single -S", t->machine);
+}
+
+static void test_product_composition(void)
+{
+    static const char *const children[] = {
+        "/machine/gbe", "/machine/mace/rtc", "/machine/mace/ps2",
+        "/machine/mace/eth", "/machine/mace/identity", "/machine/rom",
+    };
+    O2ProductTest t = { 0 };
+    QTestState *qts;
+
+    o2_product_prepare(&t);
+    qts = o2_product_start(&t);
+    for (unsigned pass = 0; pass < 2; pass++) {
+        g_autoptr(QDict) memory = NULL;
+
+        if (pass) {
+            qtest_system_reset(qts);
+        }
+        g_assert_cmphex(o2_config0(qts), ==, 0x6c198603);
+        g_assert_cmpuint(o2_clock_property(qts, "/machine", "cpu-clock-hz"),
+                         ==, 195000000);
+        memory = qtest_qmp(qts,
+            "{'execute':'query-memory-size-summary'}");
+
+        g_assert_cmpuint(qdict_get_int(qdict_get_qdict(memory, "return"),
+                                      "base-memory"), ==, GiB);
+        for (unsigned i = 0; i < ARRAY_SIZE(children); i++) {
+            g_assert_true(qtest_qom_get_bool(qts, children[i], "realized"));
+        }
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x14), ==, 0x666);
+        g_assert_cmphex(o2_aic_config_read(qts, 1, 0), ==, 0x80789004);
+        g_assert_cmphex(o2_aic_config_read(qts, 2, 0), ==, 0x80789004);
+        g_assert_true(qtest_qom_get_bool(qts, "/machine/mace",
+                                         "pci-native-word-swap"));
+        g_assert_false(qtest_qom_get_bool(qts, "/machine/mace",
+                                          "o2-storage-diagnostic"));
+        g_assert_cmpuint(o2_clock_property(qts, "/machine/mace",
+                                          "phy-address"), ==, 8);
+        for (unsigned alias = 0; alias < 8; alias++) {
+            g_assert_cmphex(qtest_readb(qts, 0x1fc00000 + alias * 512 * KiB),
+                            ==, 0x5a);
+            g_assert_cmphex(qtest_readb(qts, 0x1fc00000 +
+                                       (alias + 1) * 512 * KiB - 1),
+                            ==, 0xa5);
+        }
+        if (pass) {
+            g_assert_cmphex(qtest_readb(qts, 0x1f3a2000), ==, 0x7c);
+        }
+        qtest_writeb(qts, 0x1f3a2000, 0x7c);
+        o2_program_banks(qts);
+        qtest_writeb(qts, RAM_FULL + GiB - 1, 0x69);
+        g_assert_cmphex(qtest_readb(qts, RAM_NO_ECC + GiB - 1), ==, 0x69);
+        g_assert_cmphex(qtest_readb(qts, RAM_HIGH + 512 * MiB - 1), ==, 0x69);
+    }
+    qtest_quit(qts);
+    o2_product_cleanup(&t);
+}
+
+static void test_product_native_pci(void)
+{
+    const uint32_t offset = RAM_BANK_SIZE - 8;
+    O2ProductTest t = { 0 };
+    QTestState *qts;
+    uint8_t ram[16], after[16];
+
+    o2_product_prepare(&t);
+    qts = o2_product_start(&t);
+    check_o2_native_aic(qts, 0);
+    o2_program_banks(qts);
+    for (unsigned i = 0; i < sizeof(ram); i++) {
+        ram[i] = 0x30 + i;
+    }
+    qtest_memwrite(qts, RAM_FULL + offset, ram, sizeof(ram));
+    for (unsigned slot = 1; slot <= 2; slot++) {
+        for (unsigned native = 0; native < 2; native++) {
+            uint32_t addr = offset + 5 + (native ? RAM_FULL : 0);
+
+            qtest_writeb(qts, o2_storage_aic_slot(slot, 0x93), 0x04);
+            for (unsigned i = 0; i < 4; i++) {
+                qtest_writeb(qts, o2_storage_aic_slot(slot, 0x88 + i),
+                              addr >> (i * 8));
+            }
+            qtest_writeb(qts, o2_storage_aic_slot(slot, 0x8c), 7);
+            qtest_writeb(qts, o2_storage_aic_slot(slot, 0x8d), 0);
+            qtest_writeb(qts, o2_storage_aic_slot(slot, 0x8e), 0);
+            qtest_writeb(qts, o2_storage_aic_slot(slot, 0x93), 0x0d);
+            g_assert_cmphex(qtest_readb(qts,
+                o2_storage_aic_slot(slot, 0x92)) & 0x40, ==, 0);
+            g_assert_cmphex(qtest_readb(qts,
+                o2_storage_aic_slot(slot, 0x94)) & 8, ==, 8);
+            for (unsigned i = 0; i < 7; i++) {
+                g_assert_cmphex(qtest_readb(qts,
+                    o2_storage_aic_slot(slot, 0x99)), ==,
+                    ram[native ? (5 + i) ^ 3 : 5 + i]);
+            }
+            qtest_memread(qts, RAM_FULL + offset, after, sizeof(after));
+            g_assert_cmpmem(after, sizeof(after), ram, sizeof(ram));
+            qtest_writeb(qts, o2_storage_aic_slot(slot, 0x93), 0x04);
+            for (unsigned i = 0; i < 7; i++) {
+                qtest_writeb(qts, o2_storage_aic_slot(slot, 0x99), 0x80 + i);
+            }
+            for (unsigned i = 0; i < 4; i++) {
+                qtest_writeb(qts, o2_storage_aic_slot(slot, 0x88 + i),
+                              addr >> (i * 8));
+            }
+            qtest_writeb(qts, o2_storage_aic_slot(slot, 0x8c), 7);
+            qtest_writeb(qts, o2_storage_aic_slot(slot, 0x93), 0x0a);
+            g_assert_cmphex(qtest_readb(qts,
+                o2_storage_aic_slot(slot, 0x92)) & 0x40, ==, 0);
+            for (unsigned i = 0; i < 7; i++) {
+                ram[native ? (5 + i) ^ 3 : 5 + i] = 0x80 + i;
+            }
+            qtest_memread(qts, RAM_FULL + offset, after, sizeof(after));
+            g_assert_cmpmem(after, sizeof(after), ram, sizeof(ram));
+        }
+    }
+    qtest_quit(qts);
+    o2_product_cleanup(&t);
+}
+
+static void test_product_configuration(void)
+{
+    static const char *const diagnostic[] = {
+        "gbe11-registers=off", "bank-profile=8x128m-synthetic",
+        "aic-pci-diagnostic=on", "identity-diagnostic=off",
+        "diagnostic-lower-pci-byte-identity=on",
+    };
+    O2ProductTest t = { 0 };
+    QTestState *qts;
+    g_autoptr(QDict) add = NULL;
+    g_autoptr(QDict) migrate = NULL;
+
+    o2_product_prepare(&t);
+    assert_o2_banked_rejected("o2", "1G", NULL, NULL,
+                              "requires explicit ROM, identity");
+    assert_o2_banked_rejected(t.machine, "128M", NULL, NULL,
+                              "requires exactly 1 GiB");
+    assert_o2_banked_rejected(t.machine, "1G", "-cpu", "R12000",
+                              "Invalid CPU model: R12000");
+    assert_o2_banked_rejected(t.machine, "1G", "-cpu",
+                              "R10000,cache-data-visibility=on",
+                              "requires cache-data-visibility=off");
+    assert_o2_banked_rejected(t.machine, "1G", "-cpu",
+                              "R10000,reset-mode=0x198603",
+                              "rejects CPU reset-mode");
+    assert_o2_banked_rejected(t.machine, "1G", "-device",
+                              "e1000,bus=mace.0,addr=3",
+                              "does not support attached PCI devices");
+    for (unsigned i = 0; i < ARRAY_SIZE(diagnostic); i++) {
+        g_autofree char *machine = g_strdup_printf("%s,%s", t.machine,
+                                                   diagnostic[i]);
+
+        assert_o2_banked_rejected(machine, "1G", NULL, NULL,
+                                  "diagnostic properties require");
+    }
+    {
+        const char *fixture[] = {
+            qtest_qemu_binary(NULL), "-M", "o2,register-test-profile=on",
+            "-m", "64M", "-nodefaults", "-display", "none", "-S",
+            "-qmp", "stdio", NULL,
+        };
+
+        assert_launch_rejected(fixture, "register-test-profile requires QTest");
+    }
+    qts = o2_product_start(&t);
+    {
+        g_autoptr(QDict) diagnostic_reply = qtest_qmp(qts,
+            "{'execute':'qom-get','arguments':{'path':'/machine',"
+            "'property':'bank-profile'}}");
+        g_autoptr(QDict) change = qtest_qmp(qts,
+            "{'execute':'qom-set','arguments':{'path':'/machine',"
+            "'property':'register-test-profile','value':true}}");
+        g_autoptr(QDict) machines = qtest_qmp(qts,
+            "{'execute':'query-machines'}");
+        QList *list = qdict_get_qlist(machines, "return");
+        const QListEntry *entry;
+        unsigned count = 0;
+
+        g_assert_nonnull(qdict_get_qdict(diagnostic_reply, "error"));
+        g_assert_nonnull(qdict_get_qdict(change, "error"));
+        QLIST_FOREACH_ENTRY(list, entry) {
+            QDict *machine = qobject_to(QDict, qlist_entry_obj(entry));
+            const char *name = qdict_get_str(machine, "name");
+
+            if (g_str_has_prefix(name, "o2")) {
+                g_assert_cmpstr(name, ==, "o2");
+                count++;
+            }
+        }
+        g_assert_cmpuint(count, ==, 1);
+    }
+    add = qtest_qmp(qts,
+        "{'execute':'device_add','arguments':{'driver':'scsi-cd',"
+        "'id':'extra','bus':'aic0.0','scsi-id':0}}");
+    g_assert_nonnull(qdict_get_qdict(add, "error"));
+    g_assert_cmphex(o2_aic_config_read(qts, 1, 0), ==, 0x80789004);
+    g_assert_cmphex(o2_aic_config_read(qts, 2, 0), ==, 0x80789004);
+    migrate = qtest_qmp(qts,
+        "{'execute':'migrate','arguments':{'uri':'file:/dev/null'}}");
+    g_assert_nonnull(qdict_get_qdict(migrate, "error"));
+    qtest_quit(qts);
+    o2_product_cleanup(&t);
 }
 
 /* Use the native Meson groups while retaining one TAP plan per process. */
@@ -8272,5 +8604,8 @@ int main(int argc, char **argv)
                    test_banked_approx_child_immutable);
     add_case("o2/banked-approx-migration",
                    test_banked_approx_migration);
+    add_case("o2/product-composition", test_product_composition);
+    add_case("o2/product-native-pci", test_product_native_pci);
+    add_case("o2/product-configuration", test_product_configuration);
     return g_test_run();
 }

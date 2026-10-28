@@ -132,3 +132,6 @@ dma /mips64/o2/storage-diagnostic-window-ends
 dma /mips64/o2/storage-diagnostic-bank-crossing
 dma /mips64/o2/storage-diagnostic-full-transfer-crossing
 dma /mips64/o2/storage-second-segment-dma-failure
+board /mips64/o2/product-composition
+dma /mips64/o2/product-native-pci
+board /mips64/o2/product-configuration
