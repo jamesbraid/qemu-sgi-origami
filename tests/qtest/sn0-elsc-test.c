@@ -1805,7 +1805,7 @@ static void test_info_elsc_dump_shows_queued_input(const void *data)
  * a cold start (firmware command contract). The
  * controller answers "ok 1" on the first read in a power cycle and "ok 0"
  * afterwards, clearing the latch on read. (The clear-on-read one-shot is
- * from the 6.5.7 driver and unverified on 6.5.30.)
+ * unverified on 6.5.30.)
  */
 static void test_pwr_query_reports_cold_power_on(const void *data)
 {
@@ -2292,7 +2292,7 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
  * channel. Acquiring a free cell reads back "ok 0"; a caller polls until it
  * reads 0 (was free) or its own byte. ASCII '0' releases. (Literal-byte
  * round-trip; the ambiguous "hex" description is flagged for the source
- * owner, and the pre-write value is 6.5.7-derived, unverified on 6.5.30.)
+ * owner, and the pre-write value is unverified on 6.5.30.)
  */
 static void test_tas_lock_cell(const void *data)
 {

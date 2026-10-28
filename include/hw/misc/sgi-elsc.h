@@ -366,8 +366,7 @@ struct SGIElscState {
      * Cold power-on latch, read once by "pwr q". Set when the controller
      * first powers up (realize), never re-armed by a warm reset, and cleared
      * when read, so only the first query in a power cycle sees it. The
-     * clear-on-read one-shot is from the 6.5.7 driver and is unverified on
-     * 6.5.30.
+     * clear-on-read one-shot is unverified on 6.5.30.
      */
     bool cold_power_on;
 
