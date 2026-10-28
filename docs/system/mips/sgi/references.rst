@@ -583,6 +583,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``maxim-ds1685-ds1687-rev-10-12``
    *DS1685/DS1687 3V/5V Real-Time Clocks, document 19-5215, revision 10/12*. Maxim Integrated. Part datasheet, cited by page. `<https://web.archive.org/web/20190915061518id_/https://datasheets.maximintegrated.com/en/ds/DS1685-DS1687.pdf>`__ SHA-256 ``015f7d582af99da5b5e3da2a41b7fdbd3b66f94929aa538671f9e8bdd3ce6c83``. Published; may be quoted.
 
+.. _sgi-ref-maxim-ds2502-datasheet:
+
+``maxim-ds2502-datasheet``
+   *DS2502 1Kb Add-Only Memory, data sheet 19-5075*. Maxim Integrated. Part datasheet, cited by page. `<http://web.archive.org/web/2026id_/https://www.analog.com/media/en/technical-documentation/data-sheets/DS2502.pdf>`__ SHA-256 ``edd35b1347b5a304088c23b3f9438c341d3a9a060dacc2d40de3f04aad452087``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-microchip-93c46:
 
 ``microchip-93c46``
