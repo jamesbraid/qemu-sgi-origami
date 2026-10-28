@@ -242,10 +242,29 @@ each node uses, how the nodes appear in a hardware inventory, node
 numbering, the processor clock and the node board part number are
 *unknown*. A CX-brick inventory would settle them.
 
-Catalogue: reference only. The IP53 layers in ``assemblies/ip53.yaml`` and
-``modules/ip53-origin350-module.yaml`` describe the Origin 350 module and
-do not transfer: that module has two or four processors, a PIC at widget
-15 and an IO9, and the CX node board has none of these.
+.. _sgi-sn-family-cxbrick:
+
+The *Partitioning Guide for Systems That Contain Cx-bricks* covers the
+Origin 3900 and gives a partition of one CX-brick with an I- or IX-brick
+(*established*, :src:`007-4426-001 pp. xi, 3, 6, 18`).
+
+Catalogue: the ``cx-brick`` layer and the ``origin3900`` reference
+composition. They record one module with four Bedrock nodes, an
+eight-port router linked to each node over a midplane link, and each
+node's XIO connector on its own Bedrock's ``xio-ii`` bus. The product
+accepts zero or four processors per node and at least one node with
+processors. The composition cables an I-brick to node board 0's XIO
+connector at its port A, a choice of the composition (*approximation*).
+It is a reference only and never compiles, because which router port each
+node board and each connector uses, the brick's NASIDs and widget
+numbers, the L1's type character and the processors' clock and part are
+*unknown*. The builder can build the brick's one L1 for hand-built
+topologies through the controller's ``profile: cx-brick``
+(:ref:`sgi-l1-cxbrick`); the composition does not yet carry that record.
+The Origin 350 layers in
+``assemblies/ip53.yaml`` and ``modules/ip53-origin350-module.yaml`` do not
+transfer: that module has two or four processors, a PIC at widget 15 and
+an IO9, and the CX node board has none of these.
 
 .. _sgi-bricks-dbrick:
 
