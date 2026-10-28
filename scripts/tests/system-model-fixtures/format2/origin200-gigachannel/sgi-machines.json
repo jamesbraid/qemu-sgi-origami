@@ -1595,7 +1595,7 @@
           "id": "base-hub",
           "identity": {
             "i2c-controller": true,
-            "ni-revision": 3,
+            "ni-revision": 5,
             "serial": 89358092029440,
             "system-controller": true,
             "widget-revision": 1

@@ -362,6 +362,7 @@
         "qemu:docs/system/mips/sgi/hardware/hub.rst"
       ],
       "description": "The node controller. Memory controller, directory-coherence engine, interrupt controller, XIO port and fabric port in one chip. The processor interface is the face it turns towards the node's two R10000s.",
+      "hardware_kind": "hub",
       "id": "base-hub",
       "identity": {
         "clock_hz": 90000000,

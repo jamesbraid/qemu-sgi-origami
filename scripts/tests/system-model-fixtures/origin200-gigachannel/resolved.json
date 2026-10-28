@@ -880,6 +880,7 @@
         "qemu:docs/system/mips/sgi/hardware/hub.rst"
       ],
       "description": "The node controller. Memory controller, directory-coherence engine, interrupt controller, XIO port and fabric port in one chip. The processor interface is the face it turns towards the node's two R10000s.",
+      "hardware_kind": "hub",
       "id": "base-hub",
       "identity": {
         "clock_hz": 90000000,
@@ -2610,6 +2611,13 @@
           2048
         ]
       },
+      "hub_ni_revision_overrides": [
+        {
+          "component": "base-hub",
+          "ni_revision": 5,
+          "reason": "A real GIGAchannel Origin 200 with SI+TRAM, Daniel Gerard's comp.sys.sgi.marketplace post of 4 August 2005 (<1123184831.096208.266500@f14g2000cwb.googlegroups.com>), prints \"HUB in Module 1/Slot 1: Revision 5\". The IRIX SI Viz attach declines the head on a master Hub below 2.3 (code 5), so the node-board module's code 3 left IMPACT unconfigured after an install. Loopback and plain Origin 200 products keep code 3."
+        }
+      ],
       "lifecycle": "implemented",
       "machine_name": "origin200",
       "profile": "gigachannel",

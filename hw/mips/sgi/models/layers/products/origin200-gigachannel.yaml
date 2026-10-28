@@ -99,6 +99,17 @@ layer:
           # other processor clock: bank 0 up to 256 MiB unless 2048 MiB needs
           # a 512 MiB one, the rest up to 512.
           accepted_bank_sizes_mib_with_256mb_banks: [64, 128, 192, 256, 320, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024, 1088, 1152, 1216, 1280, 1344, 1408, 1536, 1600, 1664, 1792, 2048]
+        hub_ni_revision_overrides:
+        - component: base-hub
+          ni_revision: 5
+          reason: >-
+            A real GIGAchannel Origin 200 with SI+TRAM, Daniel Gerard's
+            comp.sys.sgi.marketplace post of 4 August 2005
+            (<1123184831.096208.266500@f14g2000cwb.googlegroups.com>), prints
+            "HUB in Module 1/Slot 1: Revision 5". The IRIX SI Viz attach
+            declines the head on a master Hub below 2.3 (code 5), so the
+            node-board module's code 3 left IMPACT unconfigured after an
+            install. Loopback and plain Origin 200 products keep code 3.
         synthetic_identities:
           - component: base-hub
             serial: "0x51454d554e00"
