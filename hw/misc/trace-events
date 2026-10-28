@@ -778,6 +778,9 @@ sgi_command_port_unsupported(unsigned int port_id, uint32_t word) "port %u unsup
 
 # sgi-l1.c
 sgi_l1_bic_startup_operation(unsigned int position, uint8_t bus, uint8_t address, uint8_t command, uint8_t value, bool completed) "position=%u bus=%u address=0x%02x command=0x%02x value=0x%02x completed=%d"
+sgi_l1_forward(const char *profile, uint32_t address, unsigned int length, bool routed) "profile=%s address=0x%08x len=%u routed=%d"
+sgi_l1_eeprom(const char *profile, uint32_t component, uint32_t area, uint32_t offset, uint32_t requested) "profile=%s component=%u area=%u offset=%u requested=%u"
+sgi_l1_read_query(const char *profile, uint16_t command) "profile=%s command=0x%04x"
 sgi_l1_o300_frame(bool reply, unsigned int transport, unsigned int length, const char *hex) "reply=%d transport=%u len=%u hex=%s"
 
 # DMA-only Hub buffers and the scalar packet fallback

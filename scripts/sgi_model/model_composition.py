@@ -1536,7 +1536,8 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
             elif section == "l1_controllers" and "profile" in entry:
                 # An Origin 3000 brick profile owns its type letter, and
                 # its controller firmware revision is unknown.
-                if entry["profile"] not in {"cbrick", "ibrick", "nbrick"}:
+                if entry["profile"] not in {"cbrick", "ibrick", "nbrick",
+                                            "vbrick"}:
                     raise ResolutionError(
                         f"'{cid}' names unsupported L1 profile "
                         f"'{entry['profile']}'")

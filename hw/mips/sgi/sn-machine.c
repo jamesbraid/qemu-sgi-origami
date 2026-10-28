@@ -6439,14 +6439,15 @@ static unsigned int sgi_machine_pipe_brick_number(
 }
 
 /*
- * Each I/O brick's L1, an I-brick's or an N-brick's: a controller of the
- * brick's own module, reached from the L1 of every C-brick whose XIO cable
- * ends on that module's crossbars. An I-brick has one such C-brick, an
- * N-brick up to four. The link between them is an in-process call with no
- * wire format. The I-brick's record its L1 serves carries the IO7's
- * station address. A C-brick whose chip has a graphics pipe on its other
- * port also learns the pipe's G-brick, which its I/O brick's attached-brick
- * reply names.
+ * Each I/O brick's L1, an I-brick's, an N-brick's or a V-brick's: a controller
+ * of the brick's own module, reached from the L1 of every C-brick whose XIO
+ * cable ends on that module's crossbars. An I-brick or V-brick has one such
+ * C-brick, an N-brick up to four. The link between them is an in-process
+ * call with no wire format. The I-brick's record its L1 serves carries the
+ * IO7's station address; a V-brick's and an N-brick's L1 serve no such
+ * record. A C-brick whose chip has a graphics pipe on its other port also
+ * learns the pipe's G-brick, which its I/O brick's attached-brick reply
+ * names.
  */
 static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
     const SGIModelTopology *t, Error **errp)
@@ -6473,13 +6474,16 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
         unsigned int board_index = 0;
         bool found_board = false;
         bool nbrick;
+        bool vbrick;
 
         if (!s->l1_config || !s->l1_config[index].has_profile ||
             (s->l1_config[index].profile != SGI_MODEL_L1_PROFILE_IBRICK &&
-             s->l1_config[index].profile != SGI_MODEL_L1_PROFILE_NBRICK)) {
+             s->l1_config[index].profile != SGI_MODEL_L1_PROFILE_NBRICK &&
+             s->l1_config[index].profile != SGI_MODEL_L1_PROFILE_VBRICK)) {
             continue;
         }
         nbrick = s->l1_config[index].profile == SGI_MODEL_L1_PROFILE_NBRICK;
+        vbrick = s->l1_config[index].profile == SGI_MODEL_L1_PROFILE_VBRICK;
         if (controller->module_index >= module_count) {
             error_setg(errp, "I/O brick L1 '%s' names an absent module",
                        controller->id);
@@ -6519,15 +6523,15 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
                        "its brick", controller->id);
             return false;
         }
-        for (const SGIModelIoBoardList *board = t->io_boards; board;
-             board = board->next, board_index++) {
-            if (board->value->module_index == controller->module_index &&
-                board->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO7) {
-                found_board = true;
-                break;
+        if (!vbrick && !nbrick) {
+            for (const SGIModelIoBoardList *board = t->io_boards; board;
+                 board = board->next, board_index++) {
+                if (board->value->module_index == controller->module_index &&
+                    board->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO7) {
+                    found_board = true;
+                    break;
+                }
             }
-        }
-        if (!nbrick) {
             if (!found_board) {
                 error_setg(errp, "I-brick L1 '%s' has no IO7 in its brick",
                            controller->id);
@@ -6544,7 +6548,8 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
             object_resolve_path_component(OBJECT(s), module_name), "l1",
             OBJECT(l1));
         object_unref(OBJECT(l1));
-        qdev_prop_set_string(l1, "brick-type", nbrick ? "nbrick" : "ibrick");
+        qdev_prop_set_string(l1, "brick-type",
+                             nbrick ? "nbrick" : vbrick ? "vbrick" : "ibrick");
         if (mac) {
             qdev_prop_set_string(l1, "mac", mac);
         }

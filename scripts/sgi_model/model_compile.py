@@ -3460,12 +3460,12 @@ def compile_model(model: dict) -> dict:
                 raise CompileError(
                     f"Bedrock '{node['id']}' has no configured L1 controller")
             used_l1.add(controllers[controller]["id"])
-        # An I-brick's L1 belongs to a module with no node; its C-brick's
-        # L1 reaches it over the XIO cable instead.
+        # An I-brick's or V-brick's L1 belongs to a module with no node; its
+        # C-brick's L1 reaches it over the XIO cable instead.
         configured_l1 = {
             cid for cid, entry in machine.get("emulation", {}).get(
                 "l1_controllers", {}).items()
-            if entry.get("profile") not in {"ibrick", "nbrick"}}
+            if entry.get("profile") not in {"ibrick", "nbrick", "vbrick"}}
         unused_l1 = configured_l1 - used_l1
         if unused_l1:
             raise CompileError(

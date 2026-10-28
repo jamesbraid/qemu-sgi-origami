@@ -25275,6 +25275,14 @@
             "profile": "ibrick"
           },
           "module-index": 3
+        },
+        {
+          "id": "vbrick-l1",
+          "kind": "l1",
+          "l1": {
+            "profile": "vbrick"
+          },
+          "module-index": 2
         }
       ],
       "crossbars": [
@@ -25403,8 +25411,7 @@
           "serial": ""
         },
         {
-          "controller": "absent",
-          "controller-index": -1,
+          "controller-index": 3,
           "id": "vbrick-brick",
           "initial-module-number": 10,
           "nodes": [],
