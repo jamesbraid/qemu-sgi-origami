@@ -192,6 +192,23 @@ class ExportTests(unittest.TestCase):
                 f"{name} Hub(s) {baseline_hubs} should stay at the unoverridden "
                 "general baseline")
 
+    def test_origin200_gigachannel_hub_reports_ni_revision_5(self):
+        """The GIGAchannel Origin 200 selects Hub NI revision 5 (Hub 2.3).
+
+        A real GIGAchannel Origin 200 carrying SI+TRAM reports Hub revision
+        5, and the IRIX SI Viz attach declines the head on a lower master
+        Hub, so the default 3 left IMPACT unconfigured after install.
+        """
+        outputs = render_qemu_inputs(INPUTS, machines=("origin200",))
+        catalogue = json.loads(outputs["hw/mips/sgi/sgi-machines.json"])
+        topologies = {topology["name"]: topology for topology in catalogue["topologies"]}
+
+        hubs = {
+            node["id"]: node["identity"]["ni-revision"]
+            for node in topologies["origin200-gigachannel"]["nodes"]
+        }
+        self.assertEqual(hubs, {"base-hub": 5})
+
 
 if __name__ == "__main__":
     unittest.main()

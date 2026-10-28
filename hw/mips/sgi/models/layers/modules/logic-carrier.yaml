@@ -390,6 +390,7 @@ layer:
       - id: hub
         name: Hub
         kind: node-asic
+        hardware_kind: hub
         provenance: observed-hardware
         parent: ip29-system-board
         aliases: ["SN0 Hub"]
