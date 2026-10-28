@@ -2027,3 +2027,16 @@ firmware:
       image: payload
       sha256: 0c969f9e98c73826495dc37bff685b3403e248993ba92194a288333d9d42b2f4
       container_sha256: c355c542554a41b23b69dca4c201c566e8352e8f9fb870d2365c74cdd8ab0c0f
+  ip32-prom-4.18:
+    title: "IP32 PROM"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "O2 (IP32) system board"
+    version: "4.18"
+    banner: "4.18, built Tue Oct 22 10:58:00 PDT 2002"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5.30 installation media, Overlays 2, subsystem ip32prom.sw.prom, ip32prom.image (431,872 bytes)"
+      image: payload
+      sha256: 11230c353cb14fcc50ede286df228e169e32fc9e5a2206276ae29c259fafb23c

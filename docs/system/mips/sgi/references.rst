@@ -1153,6 +1153,11 @@ Stock firmware, cited as ``firmware:<id>`` and identified by version and SHA-256
 ``ip30-prom-4.17``
    *IP30 PROM*. Silicon Graphics. Firmware, cited by address. For Octane and Octane2 IP30 system boards. Version 4.17. Banner ``PROM Monitor SGI Version 6.5 Rev 4.17 IP30 Jan 20, 2004 - 64 Bit``. Found on IRIX 6.5.30 installation media. Hashed as the payload image. SHA-256 ``ee4722ca6f9b821ffadf156346c4d69bf5be71fc4b911cee75e36a1f51a49972``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-ip32-prom-4-18:
+
+``ip32-prom-4.18``
+   *IP32 PROM*. Silicon Graphics. Firmware, cited by address. For O2 (IP32) system board. Version 4.18. Banner ``4.18, built Tue Oct 22 10:58:00 PDT 2002``. Found on IRIX 6.5.30 installation media, Overlays 2, subsystem ip32prom.sw.prom, ip32prom.image (431,872 bytes). Hashed as the payload image. SHA-256 ``11230c353cb14fcc50ede286df228e169e32fc9e5a2206276ae29c259fafb23c``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-ip35-prom-6-210:
 
 ``ip35-prom-6.210``
