@@ -38,6 +38,11 @@ Code citations name one of these trees, a commit and a path.
 ``linux-mips``
    Linux/MIPS tree, including the abandoned linux-2.4 branch. `<https://git.kernel.org/pub/scm/linux/kernel/git/ralf/linux.git>`__
 
+.. _sgi-ref-netbsd:
+
+``netbsd``
+   NetBSD source, mainline. `<https://github.com/NetBSD/src.git>`__ Browse: `<https://github.com/NetBSD/src>`__
+
 .. _sgi-ref-openbsd-sgi:
 
 ``openbsd-sgi``
@@ -62,6 +67,11 @@ SGI manuals, service documents and papers, cited by document number.
 
 ``007-2597-001``
    *MIPS IV Instruction Set, Revision 3.2*. MIPS Technologies. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/2000/007-2597-001/pdf/007-2597-001.pdf>`__ Published; may be quoted.
+
+.. _sgi-ref-007-3275-003:
+
+``007-3275-003``
+   *O2 Workstation Hardware Reference Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/3000/007-3275-003/pdf/007-3275-003.pdf>`__ SHA-256 ``65e260baa1657f1278624cc9abbfa96fca4e739f1c4151bb79e31e398e3648bc``. Published; may be quoted.
 
 .. _sgi-ref-007-3415-003:
 
@@ -243,6 +253,11 @@ SGI manuals, service documents and papers, cited by document number.
 ``007-4669-003``
    *SGI 10-Gigabit Ethernet Network Adapter User's Guide*. Silicon Graphics. Manual, cited by section. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4669-003/pdf/007-4669-003.pdf>`__ SHA-256 ``2683bdb7438480a3f369b46011d047c13ff3cace6f193efe48ce87fe1700c7fa``. Published; may be quoted.
 
+.. _sgi-ref-099-0123-003:
+
+``099-0123-003``
+   *VICE Design Specification, 1997-04-17*. Silicon Graphics. Asic spec, cited by page. `<https://bukosek.si/hardware/collection/sgi-o2/o2-VICE-spec.pdf>`__ SHA-256 ``c67e6ec6655b3682b3eaa2cb973236764d8c37ff03defa85eb3ebc6eaddaf804``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-108-0132-002:
 
 ``108-0132-002``
@@ -313,6 +328,16 @@ Web sources
 
 Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
+.. _sgi-ref-ad1843-rev0:
+
+``ad1843-rev0``
+   *AD1843 Serial-Port 16-Bit SoundComm Codec, data sheet revision 0, 1996*. Analog Devices. Part datasheet, cited by page. `<https://www.datasheetarchive.com/pdf/download/distributors/Datasheets-4/DSA-74205.pdf?h=76cac9f50214965a1aa03d1e44fb3d80%3Acbb3ec26b22ee6008aef4d8e063c9a1132527122729a20036b%3A1e0d096d800dd12f5c10dc27bb6e6424>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-adaptec-aic-7870-data-book:
+
+``adaptec-aic-7870-data-book``
+   *AIC-7870 PCI Bus Master Single-Chip SCSI Host Adapter Data Book*. Adaptec. Part datasheet, cited by page. `<https://bitsavers.org/pdf/adaptec/asic/AIC-7870_Data_Book.pdf>`__ SHA-256 ``7f7d155bd5f6290766a4c27bbb18082e879288a01005c349128ede091e1218a5``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-alteon-tigon-pci-controller-rev-1-04:
 
 ``alteon-tigon-pci-controller-rev-1.04``
@@ -327,6 +352,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``analog-ds1744-rev-6-13``
    *DS1744/DS1744P Y2K-Compliant, Nonvolatile Timekeeping RAMs, document 19-5502, revision 6/13*. Analog Devices (Maxim Integrated). Part datasheet, cited by page. `<https://www.analog.com/media/en/technical-documentation/data-sheets/DS1744-DS1744P.pdf>`__ Archived copy: `<https://web.archive.org/web/2024id_/https://www.analog.com/media/en/technical-documentation/data-sheets/DS1744-DS1744P.pdf>`__ SHA-256 ``885e2325c7bb3c7c0e5760af73a216739ef0cf951abae9374b407137e98482a1``. Published; may be quoted.
+
+.. _sgi-ref-atmel-at29c040a-0333i:
+
+``atmel-at29c040a-0333i``
+   *AT29C040A 4-Megabit (512K x 8) 5-volt Only 256 Byte Sector Flash, rev 0333I-FLASH-05/02*. Atmel. Part datasheet, cited by page. `<https://media.digikey.com/pdf/Data%20Sheets/Atmel%20PDFs/AT29C040A.pdf>`__ SHA-256 ``7ab4ab1a1f0ab72b9b868464a53df8dea64dbeadda2d56a676d6beef7e7c92a7``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-bridge-asic-spec-4-0:
 
@@ -343,6 +373,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``bukosek-octane-motherboard-front``
    *Octane IP30 motherboard, front (Andrej Bukosek's collection)*. Andrej Bukosek. Photo, cited by region. `<https://bukosek.si/hardware/collection/sgi-octane/img/octane_motherboard_front.jpg>`__ SHA-256 ``f171a375de6d1dad9294960d6b6edc1d268d378db2a298141c8bc33edb935299``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-bukosek-sgi-o2:
+
+``bukosek-sgi-o2``
+   *SGI O2, Andrej Bukosek's hardware collection page, with hinv -mvv and gfxinfo*. Andrej Bukosek. Web post, cited by section. `<https://bukosek.si/hardware/collection/sgi-o2.html>`__ SHA-256 ``17c68ad183dc3522db5b77f28f868895e1ada70d43c8b31e743be7ee9c6a2622``. Public web page; may be quoted.
+
 .. _sgi-ref-bukosek-sgi-octane:
 
 ``bukosek-sgi-octane``
@@ -357,6 +392,16 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``crossbow-asic-spec-12.0``
    *Crossbow (XBow) ASIC Specification, Revision 12.0*. Silicon Graphics. Asic spec, cited by page. `<https://www.mrynet.com/FTP/Hardware/sgi/SGI_Crossbow_ASIC_Specification-Revision_12.0-19961018.pdf>`__ SHA-256 ``899b7dcf35733a069b1336056e47548dab6502381b6f1ec31c02c0adea50ec94``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-dmesgd-2432:
+
+``dmesgd-2432``
+   *OpenBSD 5.2 dmesg of a real O2 (R10000, 195 MHz), dmesgd entry 2432*. NYC\*BUG dmesgd. Capture, cited by line. `<https://dmesgd.nycbug.org/index.cgi?do=view&id=2432>`__ SHA-256 ``cd6f993f0cb5a53162d88a6a826c61ef93341cc0bf683ba206e7f3fbe68c775e``. Public web page; may be quoted.
+
+.. _sgi-ref-dmesgd-5290:
+
+``dmesgd-5290``
+   *NetBSD 9.99.31 dmesg of a real O2 (R12000), dmesgd entry 5290*. NYC\*BUG dmesgd. Capture, cited by line. `<https://dmesgd.nycbug.org/index.cgi?do=view&id=5290>`__ SHA-256 ``9ccceae98ed0985cc10833bd99b0d9800fd67bd36e6b1a1ffbaf9bb5ca70642e``. Public web page; may be quoted.
 
 .. _sgi-ref-dmesgd-8994:
 
@@ -738,6 +783,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``nxp-um10204-rev7``
    *UM10204 I2C-bus specification and user manual, revision 7.0*. NXP Semiconductors. Manual, cited by page. `<https://www.nxp.com/docs/en/user-guide/UM10204.pdf>`__ Archived copy: `<https://web.archive.org/web/20241231054059id_/https://www.nxp.com/docs/en/user-guide/UM10204.pdf>`__ SHA-256 ``dc91f00f65584e06ef36e26c93bf9d91a95fb3c8a1830a9223e53caf678b36af``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-o2-technical-report:
+
+``o2-technical-report``
+   *O2 Technical Report, version 1.0, October 1997*. Silicon Graphics. Paper, cited by page. `<https://bukosek.si/hardware/collection/sgi-o2/o2-tech-report.pdf>`__ SHA-256 ``c0fad6ac1e1c982454c3b867c719bd6e62ef171cd0caa46f04ff2afc42c714ee``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-octane-technical-report:
 
 ``octane-technical-report``
@@ -837,6 +887,26 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``r10000-users-manual-2.0``
    *MIPS R10000 Microprocessor User's Manual, Version 2.0*. MIPS Technologies. Part datasheet, cited by page. `<https://nekofiles.irixnet.org/Documents/doc/R10000/User_Manual/t5.ver.2.0.book.pdf>`__ SHA-256 ``6023b060b52e136cc3bda8a4ed348b3eb9a99d7947f2390eedf775d431213006``. Published; may be quoted.
+
+.. _sgi-ref-sgi-crime-1-5-spec:
+
+``sgi-crime-1.5-spec``
+   *CRIME 1.5 Specification, revision 0.3, 1997-06-02*. Silicon Graphics. Asic spec, cited by page. `<https://bukosek.si/hardware/collection/sgi-o2/o2-CRIME-spec.pdf>`__ SHA-256 ``5420aa06a28f0a696e79512b03bf7cc9ebd5f0bbcd432ac2c79daaa9bf48c925``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-sgi-gbe-1-1-spec:
+
+``sgi-gbe-1.1-spec``
+   *GBE ASIC spec for REV1.1, 1996-07-18*. Silicon Graphics. Asic spec, cited by page. `<https://bukosek.si/hardware/collection/sgi-o2/o2-GBE-spec.pdf>`__ SHA-256 ``cc9e14e1a70d03eabd35ef27aa96a810c4c17840ecedb7a6bf9883cef3a527e7``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-sgi-mace-2-0-spec:
+
+``sgi-mace-2.0-spec``
+   *MACE I/O ASIC Specification, chip revision 2.0, 1996-07-16*. Silicon Graphics. Asic spec, cited by page. `<https://bukosek.si/hardware/collection/sgi-o2/o2-MACE-spec.pdf>`__ SHA-256 ``ecbb68807837ee71dffe6296331f6477f7b0990a4d459f9ec4e6e0d15cd748aa``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-sgi-o2-product-guide-1065:
+
+``sgi-o2-product-guide-1065``
+   *Remanufactured O2 Visual Workstation Product Guide, 1065 (1/99)*. Silicon Graphics. Paper, cited by page. `<https://www.theflatnet.de/pub/sgi/hw/o2.pdf>`__ SHA-256 ``779fb999e9369478b3874620ca7410dab76b798245d456461b5d69f545d72890``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-sgi-pca-numbers:
 

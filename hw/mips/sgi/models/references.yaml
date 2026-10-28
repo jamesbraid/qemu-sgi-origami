@@ -41,6 +41,10 @@ trees:
       The url is a git bundle of the whole repository kept by the Internet
       Archive in the Linux/MIPS bundle set of 2024-02-09. Clone it with
       git clone, then check out the cited commit.
+  netbsd:
+    title: "NetBSD source, mainline"
+    url: https://github.com/NetBSD/src.git
+    browse: https://github.com/NetBSD/src
 
 documents:
   007-3439-002:
@@ -493,6 +497,24 @@ documents:
     obtain:
       url: https://techpubs.jurassic.nl/library/manuals/3000/007-3415-003/pdf/007-3415-003.pdf
       sha256: 6ade2d090ed409eade39537f12cc963aca1d32408d6c351df616f547b016456b
+  007-3275-003:
+    title: "O2 Workstation Hardware Reference Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3275-003/pdf/007-3275-003.pdf
+      sha256: 65e260baa1657f1278624cc9abbfa96fca4e739f1c4151bb79e31e398e3648bc
+  099-0123-003:
+    title: "VICE Design Specification, 1997-04-17"
+    publisher: Silicon Graphics
+    kind: asic-spec
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://bukosek.si/hardware/collection/sgi-o2/o2-VICE-spec.pdf
+      sha256: c67e6ec6655b3682b3eaa2cb973236764d8c37ff03defa85eb3ebc6eaddaf804
 
 web:
   nekonomicon-16719032:
@@ -1833,6 +1855,109 @@ web:
     obtain:
       url: null
       message_id: "<hVH0d.2092$%O5.195@trnddc07>"
+  sgi-crime-1.5-spec:
+    title: "CRIME 1.5 Specification, revision 0.3, 1997-06-02"
+    publisher: Silicon Graphics
+    kind: asic-spec
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://bukosek.si/hardware/collection/sgi-o2/o2-CRIME-spec.pdf
+      sha256: 5420aa06a28f0a696e79512b03bf7cc9ebd5f0bbcd432ac2c79daaa9bf48c925
+  sgi-mace-2.0-spec:
+    title: "MACE I/O ASIC Specification, chip revision 2.0, 1996-07-16"
+    publisher: Silicon Graphics
+    kind: asic-spec
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://bukosek.si/hardware/collection/sgi-o2/o2-MACE-spec.pdf
+      sha256: ecbb68807837ee71dffe6296331f6477f7b0990a4d459f9ec4e6e0d15cd748aa
+  sgi-gbe-1.1-spec:
+    title: "GBE ASIC spec for REV1.1, 1996-07-18"
+    publisher: Silicon Graphics
+    kind: asic-spec
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://bukosek.si/hardware/collection/sgi-o2/o2-GBE-spec.pdf
+      sha256: cc9e14e1a70d03eabd35ef27aa96a810c4c17840ecedb7a6bf9883cef3a527e7
+  o2-technical-report:
+    title: "O2 Technical Report, version 1.0, October 1997"
+    publisher: Silicon Graphics
+    kind: paper
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://bukosek.si/hardware/collection/sgi-o2/o2-tech-report.pdf
+      sha256: c0fad6ac1e1c982454c3b867c719bd6e62ef171cd0caa46f04ff2afc42c714ee
+  sgi-o2-product-guide-1065:
+    title: "Remanufactured O2 Visual Workstation Product Guide, 1065 (1/99)"
+    publisher: Silicon Graphics
+    kind: paper
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.theflatnet.de/pub/sgi/hw/o2.pdf
+      sha256: 779fb999e9369478b3874620ca7410dab76b798245d456461b5d69f545d72890
+  bukosek-sgi-o2:
+    title: "SGI O2, Andrej Bukosek's hardware collection page, with hinv -mvv and gfxinfo"
+    publisher: "Andrej Bukosek"
+    kind: web-post
+    locator: section
+    rights: public-web
+    obtain:
+      url: https://bukosek.si/hardware/collection/sgi-o2.html
+      sha256: 17c68ad183dc3522db5b77f28f868895e1ada70d43c8b31e743be7ee9c6a2622
+  dmesgd-2432:
+    title: "OpenBSD 5.2 dmesg of a real O2 (R10000, 195 MHz), dmesgd entry 2432"
+    publisher: "NYC*BUG dmesgd"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: https://dmesgd.nycbug.org/index.cgi?do=view&id=2432
+      sha256: cd6f993f0cb5a53162d88a6a826c61ef93341cc0bf683ba206e7f3fbe68c775e
+  dmesgd-5290:
+    title: "NetBSD 9.99.31 dmesg of a real O2 (R12000), dmesgd entry 5290"
+    publisher: "NYC*BUG dmesgd"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: https://dmesgd.nycbug.org/index.cgi?do=view&id=5290
+      sha256: 9ccceae98ed0985cc10833bd99b0d9800fd67bd36e6b1a1ffbaf9bb5ca70642e
+  ad1843-rev0:
+    title: "AD1843 Serial-Port 16-Bit SoundComm Codec, data sheet revision 0, 1996"
+    publisher: "Analog Devices"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      # The host regenerates the PDF on each download: same text, three
+      # bytes differ, so no stable sha256. Library copy:
+      # 9262e4a95a9c4e2dd07ab08d67c723150253716ab3ada573409c2726c5e34a38.
+      url: https://www.datasheetarchive.com/pdf/download/distributors/Datasheets-4/DSA-74205.pdf?h=76cac9f50214965a1aa03d1e44fb3d80%3Acbb3ec26b22ee6008aef4d8e063c9a1132527122729a20036b%3A1e0d096d800dd12f5c10dc27bb6e6424
+  adaptec-aic-7870-data-book:
+    title: "AIC-7870 PCI Bus Master Single-Chip SCSI Host Adapter Data Book"
+    publisher: "Adaptec"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      # Library hash; bitsavers answered 403 to a plain fetch on
+      # 2026-10-27, so the url was not re-verified.
+      url: https://bitsavers.org/pdf/adaptec/asic/AIC-7870_Data_Book.pdf
+      sha256: 7f7d155bd5f6290766a4c27bbb18082e879288a01005c349128ede091e1218a5
+  atmel-at29c040a-0333i:
+    title: "AT29C040A 4-Megabit (512K x 8) 5-volt Only 256 Byte Sector Flash, rev 0333I-FLASH-05/02"
+    publisher: "Atmel"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://media.digikey.com/pdf/Data%20Sheets/Atmel%20PDFs/AT29C040A.pdf
+      sha256: 7ab4ab1a1f0ab72b9b868464a53df8dea64dbeadda2d56a676d6beef7e7c92a7
 
 firmware:
   ip27-prom-6.156:
