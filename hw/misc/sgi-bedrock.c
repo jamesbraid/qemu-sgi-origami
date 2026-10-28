@@ -1388,6 +1388,7 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
         s->l1_uart_as_initialized = true;
     }
     qdev_prop_set_uint8(DEVICE(&s->io), "revision", s->revision);
+    qdev_prop_set_uint8(DEVICE(&s->io), "host-widget", s->host_widget);
     qdev_prop_set_uint8(DEVICE(&s->io), "local-region", s->local_region);
     qdev_prop_set_uint16(DEVICE(&s->io), "inbound-widget-mask",
                          s->inbound_widget_mask);
@@ -1649,6 +1650,7 @@ static const Property bedrock_properties[] = {
     DEFINE_PROP_UINT32("processor-slot-order", SGIBedrockState,
                        processor_slot_order, SGI_BEDROCK_SLOT_ORDER_BY_SLOT),
     DEFINE_PROP_UINT8("revision", SGIBedrockState, revision, 2),
+    DEFINE_PROP_UINT8("host-widget", SGIBedrockState, host_widget, 0xa),
     DEFINE_PROP_UINT8("local-region", SGIBedrockState, local_region, 0),
     DEFINE_PROP_UINT8("installed-bank-mask", SGIBedrockState,
                       installed_memory_bank_mask, UINT8_MAX),

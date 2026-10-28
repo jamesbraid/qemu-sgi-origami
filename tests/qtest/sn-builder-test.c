@@ -4958,6 +4958,38 @@ static void test_ip53_previous_direct64_migration(void)
     g_rmdir(dir);
 }
 
+/*
+ * The Bedrock's crossbar entry port, read from its widget control. A
+ * published PROM trace of a four-processor Onyx 350 module prints it
+ * attached as widget 0xb; an Origin 350 server has no published trace and
+ * Tezro and Fuel traces print 0xa.
+ */
+static void ip53_check_host_widget(IP53RuntimeTestFixture *fixture,
+                                   uint64_t expect)
+{
+    uint64_t control = 0;
+
+    g_assert_true(nasid_test_cpu_readq(fixture->qts, 0,
+                                       IP53_IO_SPACE + UINT64_C(0x1400020),
+                                       &control));
+    g_assert_cmphex(control & 0xf, ==, expect);
+    ip53_runtime_test_stop(fixture);
+}
+
+static void test_ip53_onyx350_host_widget(void)
+{
+    ip53_check_host_widget(ip53_onyx350_runtime_test_start(NULL), 0xb);
+}
+
+static void test_ip53_other_products_host_widget(void)
+{
+    ip53_check_host_widget(ip53_runtime_test_start(
+        "origin350,ip53-experimental=on", NULL), 0xa);
+    ip53_check_host_widget(ip53_runtime_test_start_with_binary_profile(
+        NULL, "tezro,topology=tezro-tower-multi,ip53-experimental=on", NULL,
+        "4", "4G", "0x009bad85"), 0xa);
+}
+
 static void test_ip53_widget_zero_pxbow_identity(void)
 {
     IP53RuntimeTestFixture *fixture = ip53_runtime_test_start(
@@ -10552,6 +10584,10 @@ int main(int argc, char **argv)
                    test_ip53_io9_endpoint_interrupt_routes);
     qtest_add_func("sn/builder/ip53-l1-reported-type",
                    test_ip53_l1_reported_type);
+    qtest_add_func("sn/builder/ip53-onyx350-host-widget",
+                   test_ip53_onyx350_host_widget);
+    qtest_add_func("sn/builder/ip53-other-products-host-widget",
+                   test_ip53_other_products_host_widget);
     qtest_add_func("sn/builder/ip53-widget-zero-pxbow-identity",
                    test_ip53_widget_zero_pxbow_identity);
     qtest_add_func("sn/builder/ip53-widget-zero-status-source",

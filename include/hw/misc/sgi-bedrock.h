@@ -101,6 +101,8 @@ struct SGIBedrockState {
     /* Resolved from the order above: the vCPU in each slot, -1 if empty. */
     int slot_cpu_index[SGI_BEDROCK_PROCESSORS];
     uint8_t revision;
+    /* Crossbar port the node enters at, passed to the I/O interface. */
+    uint8_t host_widget;
     uint8_t local_region;
     uint8_t installed_memory_bank_mask;
     uint16_t installed_memory_bank_mib[8];

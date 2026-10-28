@@ -322,6 +322,17 @@ static void test_dma_link_required(void)
     qtest_quit(s);
 }
 
+static void test_host_widget_property(void)
+{
+    QTestState *s = io_start("-global sgi-bedrock-io.host-widget=11");
+
+    g_assert_cmphex(qtest_readq(s, REG_BASE + WIDGET_CONTROL) & 0xf, ==, 0xb);
+    qtest_writeq(s, REG_BASE + WIDGET_CONTROL, 0);
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + WIDGET_CONTROL) & 0xf, ==, 0xb);
+    qtest_quit(s);
+}
+
 static void test_identity_and_registers(void)
 {
     QTestState *s = io_start("");
@@ -1462,6 +1473,7 @@ int main(int argc, char **argv)
                    test_dma_link_required);
     qtest_add_func("sn1/bedrock-io/identity-registers",
                    test_identity_and_registers);
+    qtest_add_func("sn1/bedrock-io/host-widget", test_host_widget_property);
     qtest_add_func("sn1/bedrock-io/widget-status",
                    test_widget_status);
     qtest_add_func("sn1/bedrock-io/dropped-writes",
