@@ -2,9 +2,9 @@
 
 .. _sgi-ip32:
 
-================
-SGI IP32: O2
-================
+========
+IP32: O2
+========
 
 The O2 is a Silicon Graphics entry workstation. A published hardware
 page dates it to 1996 as the successor of the Indy and names its chips

@@ -1594,6 +1594,7 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick",
         "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
       ]
     },
@@ -1604,6 +1605,7 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick",
         "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
       ]
     },
@@ -1614,6 +1616,7 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick",
         "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
       ]
     },
@@ -1624,6 +1627,7 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick",
         "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
       ]
     },

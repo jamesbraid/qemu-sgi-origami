@@ -2,9 +2,9 @@
 
 .. _sgi-ip27:
 
-===========================================
-SGI IP27: Origin 200, Origin 2000 and Onyx2
-===========================================
+=======================================
+IP27: Origin 200, Origin 2000 and Onyx2
+=======================================
 
 IP27 is the software platform of SGI's first Scalable Node generation,
 built around the Hub node controller. The ``origin200``, ``origin2000``
@@ -206,7 +206,22 @@ configuration: a snapshot restores only into the same value. The
 general rules for ``topology=``, ``-smp`` and ``-m`` are on
 :ref:`sgi-sn-topology`.
 
+.. _sgi-sn-gigachannel:
+
+GIGAchannel expansion cabinet
+-----------------------------
+
+Two Origin 200 topologies fit the cabinet: ``origin200-gigachannel``,
+where the cabinet's Crossbow sits between the Hub and the module's base
+I/O Bridge, and ``origin200-gigachannel-loopback``, the converted module
+with a loopback cable instead of a cabinet. The cabinet's own I/O is the
+``sgi-gigachannel`` board, which the machine places and which is not
+``-device``-creatable. :doc:`hardware/gigachannel` describes both
+topologies, the board, its BASEIO PROM flash and its status word.
+
 .. _sgi-ip27-processors:
+
+.. _sgi-sn-origin200-processors:
 
 Processor modules
 -----------------
@@ -773,6 +788,21 @@ the processors' Config stops every processor with boot-progress code
 ``0xb4`` before the console opens. The model's processor reset
 configuration must therefore equal the flash word, and a stock PROM boot
 is the discriminating test.
+
+.. _sgi-sn-family-origin2000-xpress:
+
+Two-module racks and Xpress links
+---------------------------------
+
+A rack holds two modules. Within and between modules, Link 1 runs
+vertically between the upper and lower Routers of the same letter, and
+Link 2 is the Xpress link, which must cross. Xpress links are only used
+in systems of 16 or 32 processors (*established*,
+:src:`007-3439-002 p. 59`). No source cited here draws the full
+cable-by-cable wiring, and which SGI document does is *unknown*. The
+``origin2000-two-module-xpress`` layer records the link rule as a
+reference configuration. No machine builds it, and its fitted memory is
+a model choice (*approximation*).
 
 .. _sgi-onyx2:
 
@@ -1468,6 +1498,75 @@ Whether ``rst`` reaches the Routers, Crossbows and XIO boards, whether it
 gives the processors a cold or a soft entry, and which Hub error
 registers survive it are *unknown*; the model resets every part and gives
 the cold entry.
+
+.. _sgi-ip27-power-implementation:
+
+How the model sequences module power
+------------------------------------
+
+The cold start of a module runs from a bottom half and not from the
+controller's own timer. It stops the module's processors with work queued
+on each of them and does not wait. The last completion schedules the rest
+of the start (the parts' reset and the processors' release) as a bottom
+half, so the start never blocks on a processor thread and runs under
+record and replay, where that thread needs a lock the main loop holds. A
+processor that runs no guest code, in a paused machine or under qtest, is
+stopped on the spot, and a start with no running processor to wait for
+goes on at once. The start is owed until that bottom half has run, so a
+start owed when a migration stream was taken, including one still
+waiting for its processors, is part of that stream and is carried out
+once the destination runs.
+
+The module start also resets every Crossbow the module's nodes reach and
+the boards behind them. Whether a module reset reaches the Crossbows and
+XIO boards on hardware is *unknown*. A midplane schematic or a register
+capture across a module reset would settle it. The stock IP27 PROM sends
+a warm reset down each XIO link on every cold entry (*software
+expectation*), and a Crossbow treats one as a power-on reset of its core
+(*established*, :src:`crossbow-asic-spec-12.0 pp. 132-133`). The firmware
+therefore resets them either way. The model resets them at module start
+as well, because the PROM's warm reset does not reach a Bridge's PCI
+side, and the stock PROM cannot read a Bridge that kept a running
+kernel's PCI setup.
+
+While a module is off its ports read disabled to their peers, the state a
+cable marked down already has. A peer Hub reads link-up zero with the
+down reason clear, which Linux ``hubni.h`` defines as a link that failed
+(*software expectation*). Treating a lost peer as failed and not as never
+reset is an *approximation*. A peer Router reads the port not working.
+Whether a Router port facing a lost peer reads reset-failed is *unknown*,
+and the model leaves it clear. Power returning brings the links up
+through the normal flood after the module's parts have reset and before
+its processors run. An off module keeps its register state until the
+reset that comes first at power-up.
+
+Power state is derived from the controllers' power, which migrates, so
+none of it does. It is applied when a machine starts running and after
+the machine's own reset, and by the machine's migrated section, which
+loads after every device, so a load shows the right gating even while
+the destination is paused.
+
+The Hub's I2C adapter window is the one register window that keeps
+answering while its module is off, and only from the off module's own
+view. A peer module's access to it fails like the rest of the Hub. The
+adapter is a Hub register window, and the Hub is in the module's switched
+power domain (*established* for the Origin 200,
+:src:`007-3708-002 p. 97`, and for the Origin 2000 rails,
+:src:`007-3456-003 p. 113`). On hardware the adapter is therefore off
+with the module and no host could use it (*inferred*). Keeping it
+answering is an *approximation*. It keeps the host side of the standby
+controller reachable over the module's own bus, which the controller
+tests and the Origin 200 controller's grants rely on. In the
+model an operator reaches an off Origin 2000 module's controller through
+its serial line, and an off Origin 200 slave's through its master. The
+slave has no connector of its own, and a ``pwr u`` the master accepts
+while it is itself off powers the master up, whose forward then starts
+the slave (:ref:`sgi-elsc-master-slave`). A ``pwr u`` sent to a master
+that is already on has nothing to power up and forwards nothing, so the
+model has no way to start only the slave from a peer's bus. No topology
+with more than one Origin 2000 module is built, so the several-module
+Origin 2000 path is the same code as the Origin 200 pair's and is only
+exercised there.
 
 .. _sgi-ip27-cache:
 

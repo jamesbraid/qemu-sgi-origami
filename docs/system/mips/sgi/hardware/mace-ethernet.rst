@@ -2,18 +2,19 @@
 
 .. _sgi-mace-ethernet:
 
-==========================================
-MACE Ethernet MAC (MAC-110, O2)
-==========================================
+===================================
+MACE Ethernet: MAC-110 Ethernet MAC
+===================================
 
+Used in :ref:`sgi-ip32` (O2).
 The MAC-110 is the 10/100 Mb/s Ethernet MAC inside the MACE I/O ASIC of
 the O2 (:doc:`mace`). It reaches an external PHY over a two-wire
 management bus (:src:`sgi-mace-2.0-spec p. 76`) and moves frames by DMA
 from a transmit ring and into receive buffers
 (:src:`sgi-mace-2.0-spec p. 70`), *established*. QEMU
 models it as ``sgi-mace-eth`` in ``hw/net/sgi-mace-eth.c``, a child of
-``sgi-mace`` mapped at MACE offset ``0x280000``. The only machine that
-fits it is the O2 test profile (:ref:`sgi-ip32`). Facts are rated as
+``sgi-mace`` mapped at MACE offset ``0x280000``. The O2 test profile
+(:ref:`sgi-ip32`) fits it. Facts are rated as
 described in :ref:`sgi-ratings`.
 
 .. _sgi-mace-ethernet-sources:

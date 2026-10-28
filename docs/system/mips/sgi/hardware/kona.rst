@@ -2,9 +2,15 @@
 
 .. _sgi-kona:
 
-=====================================================
-InfiniteReality graphics pipe (KONA, IR2, IR2E, IR3)
-=====================================================
+===============================
+InfiniteReality: graphics pipes
+===============================
+
+Used in :ref:`sgi-ip27` (Onyx2). The Onyx 3000 G-brick holds
+InfiniteReality3 and InfiniteReality4 pipes (*established*,
+:src:`007-4264-002 pp. 39-43`); it is described on :ref:`sgi-bricks`,
+and no machine builds it. The model covers the InfiniteReality2,
+InfiniteReality2E and InfiniteReality3 products.
 
 InfiniteReality is the graphics pipe of the Onyx2 deskside and rack. A pipe
 is a set of boards: a geometry board whose XIO-to-graphics ASIC (XG) ends

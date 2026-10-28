@@ -2,9 +2,12 @@
 
 .. _sgi-elsc:
 
-==========================================================
-SGI module system controller and its PCF8584 I2C interface
-==========================================================
+==============================
+ELSC: module system controller
+==============================
+
+Used in :ref:`sgi-ip27`: one per Origin 200, Origin 2000 and Onyx2
+module.
 
 The module system controller (MSC, also called the ELSC, the entry-level
 system controller) is a microcontroller that manages power, reset, the
@@ -617,8 +620,7 @@ Removing power resets and halts that module's processors with their
 Hub's processor enable clear, while the virtual clock and the rest of the
 machine run on. When power returns the machine sets the cold-power latch
 and cold-starts that module and no other. What an unpowered module's
-parts do is described on :doc:`/system/mips/sgi/sn`, "Module power and
-reset".
+parts do is described on :ref:`sgi-ip27-power-implementation`.
 
 When a module loses power and every module is then off with nothing to
 bring one back (no power-cycle countdown, no watchdog that will cycle a

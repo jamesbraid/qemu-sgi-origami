@@ -2,9 +2,9 @@
 
 .. _sgi-ip53:
 
-=================================================
-SGI IP53: Origin 350, Onyx 350, Tezro and Onyx4
-=================================================
+===========================================
+IP53: Origin 350, Onyx 350, Tezro and Onyx4
+===========================================
 
 IP53 is the node board of SGI's Origin 350, Onyx 350 and Tezro, and the
 board the Onyx4 host path stands on. It is an IP35-platform board: a
@@ -400,6 +400,8 @@ revision C on ``origin350`` and ``IP53_4CPU``, ``030-2013-001``, revision
 D on ``onyx350``. The others serve none. No capture supplies raw EEPROM
 bytes.
 
+.. _sgi-sn-family-origin350:
+
 .. _sgi-ip35-origin350:
 
 Origin 350
@@ -424,6 +426,39 @@ attaches the Bedrock at widget ``0xb``
 (:src:`graphica-o350-chimera-notes lines 949-952`), *observed*. The model
 uses ``0xa`` (``SN1_XBRIDGE_HOST_PORT``), an *approximation* that
 disagrees with that trace. The profile names no netboot adapter.
+
+The ``origin350`` machine is a one-node software profile, an emulation
+target with explicit model choices, not a claim that its memory,
+firmware seed, PIC setup or board wiring reproduce a measured machine.
+The hardware facts its layers cite, beyond those above:
+
+- Each DIMM pair feeds a pair of banks, and 4 MB of secondary cache per
+  processor is the guide's figure (*established*,
+  :src:`007-4566-001 pp. 69, 114, 116`).
+- The Bedrock's NUMAlink 3 port is one external LINK connector, empty
+  in a one-module system (*established*, :src:`007-4566-001 p. 69`).
+  Revision 2 at 200 MHz is *observed* in one inventory
+  (:src:`nekonomicon-16729141`).
+- The L2 controller is present only with a NUMAlink module
+  (*established*, :src:`007-4566-001 pp. 68-75`).
+- The PIC has two PCI-X heads on one widget, the second head's
+  registers ``0x800000`` above the first (*software expectation*:
+  OpenBSD ``sys/arch/sgi/xbow/xbridgereg.h`` lines 24-28 and
+  ``xbowdevs``, part ``0xd102``, second head ``0xd112``, manufacturer
+  ``0x024``, at ``2df91d80c104636deeef8124252ddd5951b55fbf``). Widget
+  15 is *observed* in one inventory (:src:`nekonomicon-16724207`).
+- The IO9 card is in the lowermost slot, on bus 1 (*established*,
+  :src:`007-4566-001 p. 69`). The IOC4 ``10a9:100a`` is at configuration
+  device 1, the ISP12160 ``1077:1216`` revision 6 at 3 and the BCM5701
+  ``14e4:1645`` at 4 (*observed* in every captured IP53 inventory;
+  :ref:`sgi-ip35-ip53-io9`). PIC's configuration devices are its
+  internal slots plus one (OpenBSD ``xbridge.c``), so the PCI ids IRIX
+  prints are OpenBSD's devices plus one (*inferred*).
+
+The Origin 350's widget identity words for Bedrock and PIC are
+*unknown*. The Onyx 350 trace above comes from an IP53 graphics module
+with four processors and 8 GiB. That an Origin 350 server board enters
+at the same widget is *inferred* from the shared IP53 board.
 
 .. _sgi-ip35-onyx350:
 

@@ -2,10 +2,11 @@
 
 .. _sgi-crime:
 
-=========================================================
-CRIME memory controller and rendering engine (O2)
-=========================================================
+=============================================
+CRIME: memory controller and rendering engine
+=============================================
 
+Used in :ref:`sgi-ip32` (O2).
 CRIME (CPU, Rendering, Interconnect and Memory Engine) is the O2 system
 ASIC. It joins the processor to main memory, collects the interrupts of
 MACE, GBE, VICE and its own units, keeps a timer and a watchdog, and
@@ -13,8 +14,8 @@ contains the rendering engine that draws into main memory
 (:src:`sgi-crime-1.5-spec PDF p. 13`; interrupts on PDF p. 106, timers
 on PDF p. 112-119, address map on PDF p. 47-52). QEMU models it as
 ``sgi-crime`` in ``hw/mips/sgi/crime.c``, with state in
-``include/hw/mips/sgi/crime.h``. The only machine that fits it is the
-O2 test profile (:doc:`../ip32`), a synthetic register test profile.
+``include/hw/mips/sgi/crime.h``. The O2 test profile (:doc:`../ip32`),
+a synthetic register test profile, fits it.
 
 The model follows the CRIME 1.5 specification. A second profile,
 ``legacy-software``, presents the identity published O2 captures show

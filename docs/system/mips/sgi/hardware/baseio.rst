@@ -2,9 +2,15 @@
 
 .. _sgi-baseio:
 
-==============================================================
-SGI base I/O boards (BaseIO, BaseIO-G, IP29, IO-8 and Fuel)
-==============================================================
+===========================================================
+Base I/O boards: IP29, BaseIO, BaseIO-G, IO7, IO-8 and Fuel
+===========================================================
+
+Used in :ref:`sgi-ip27` (the Origin 200 IP29 board and the Origin 2000
+and Onyx2 BaseIO and BaseIO-G cards), :ref:`sgi-ip35` (the Origin 300
+IO-8 and the Fuel system board) and the Origin 3000 I-brick
+(:ref:`sgi-bricks`, reference only). The IP53 machines' IO9 is not one of
+these presets (:ref:`sgi-ip35-ip53-io9`).
 
 Every SGI Origin and Onyx2 family machine carries its console, boot
 disk and Ethernet on a small set of PCI devices behind an XIO-to-PCI

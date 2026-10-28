@@ -2,14 +2,18 @@
 
 .. _sgi-dp8384x:
 
-==============================================================
-DP83840A and DP83843 Ethernet transceivers (Origin 200, 300)
-==============================================================
+===========================================
+DP83840A and DP83843: Ethernet transceivers
+===========================================
 
-The National Semiconductor DP83840A is the 10/100 Mb/s Ethernet
-transceiver on the Origin 200 and Origin 2000 base I/O boards. The
-DP83843 PHYTER is the transceiver on the Origin 300 IO-8 board and, in
-the model, on Fuel. Both sit behind the IOC3's MII management registers
+Used in :ref:`sgi-ip27` (the DP83840A, on the Origin 200 and Origin 2000
+base I/O boards) and :ref:`sgi-ip35` (the DP83843, on the Origin 300 IO-8
+board and, in the model, on Fuel). QEMU's Origin 3000 I-brick preset,
+which no machine fits, also takes the DP83843 (:ref:`sgi-bricks-ibrick`).
+:doc:`baseio` lists the boards.
+
+The National Semiconductor DP83840A and the DP83843 PHYTER are 10/100 Mb/s
+Ethernet transceivers. Both sit behind the IOC3's MII management registers
 (:doc:`ioc3`) and are reached only through them. QEMU models both as one
 type, ``dp83840``, in ``hw/net/dp83840.c`` and
 ``include/hw/net/dp83840.h``. The ``dp83843`` property selects the

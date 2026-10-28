@@ -2,12 +2,14 @@
 
 .. _sgi-hub:
 
-=====================================================
-Hub node controller (Origin 200, Origin 2000, Onyx2)
-=====================================================
+=====================
+Hub: node controller
+=====================
 
-The Hub is the node controller of the SN0 machines: the Origin 200
-(IP29 system board) and the Origin 2000 and Onyx2 (IP27 node board).
+Used in :ref:`sgi-ip27`: the Origin 200 (IP29 system board) and the
+Origin 2000 and Onyx2 (IP27 node board), one per node.
+
+The Hub is the node controller of the SN0 machines.
 One Hub per node joins the node's two R10000-family processors, its
 memory and directory, one XIO port and one CrayLink network port
 (:src:`007-3439-002 Figure 2-1`). QEMU models it as ``sgi-hub`` in
@@ -769,7 +771,7 @@ link reset, bit 0 resets the whole Hub). In the model:
   *software expectations*. In the model either ends in a whole-machine
   restart. The
   standby system controllers keep their state, so the PROM sees a warm
-  start (:doc:`/system/mips/sgi/sn`, "Module power and reset").
+  start (:ref:`sgi-ip27-power-implementation`).
 - Bit 1 alone resets the network link (:ref:`sgi-hub-link-reset`). A
   restart supersedes it.
 - Bit 7 without bit 0 logs ``LOG_UNIMP`` and does nothing. No supported

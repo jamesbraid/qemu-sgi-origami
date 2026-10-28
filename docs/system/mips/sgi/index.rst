@@ -38,6 +38,12 @@ unknown
 A model run shows what the model does. It is never evidence of what the
 hardware does.
 
+Machines
+--------
+
+The Scalable Node overview covers what the SN0 and SN1 machines share;
+each platform page covers its own products.
+
 .. toctree::
    :maxdepth: 1
 
@@ -48,15 +54,113 @@ hardware does.
    ip35
    ip53
    measured-machines
-   prom-image
-   vocabulary
-   references
 
-Hardware
+Firmware
 --------
 
 .. toctree::
    :maxdepth: 1
-   :glob:
 
-   hardware/*
+   prom-image
+
+Hardware
+--------
+
+Each page describes one chip, board or product family and links the
+platforms that use it.
+
+Processors and system ASICs
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. toctree::
+   :maxdepth: 1
+
+   hardware/heart
+   hardware/hub
+   hardware/bedrock
+   hardware/xbow
+   hardware/bridge
+   hardware/xbridge
+   hardware/pic
+   hardware/router
+   hardware/sn1-router
+   hardware/crime
+   hardware/r10000
+
+I/O and system control
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. toctree::
+   :maxdepth: 1
+
+   hardware/ioc3
+   hardware/ioc4
+   hardware/mace
+   hardware/baseio
+   hardware/ioc3-boards
+   hardware/mscsi
+   hardware/pci-expansion
+   hardware/gigachannel
+   hardware/bic
+   hardware/bricks
+   hardware/l1
+   hardware/elsc
+   hardware/timekeepers
+   hardware/ds1685
+   hardware/at29c040a
+
+Network
+~~~~~~~
+
+.. toctree::
+   :maxdepth: 1
+
+   hardware/tigon
+   hardware/xframe
+   hardware/bcm570x
+   hardware/mace-ethernet
+   hardware/dp8384x
+   hardware/ics1890
+
+Storage and buses
+~~~~~~~~~~~~~~~~~
+
+.. toctree::
+   :maxdepth: 1
+
+   hardware/qlogic-isp
+   hardware/qlogic-isp2200
+   hardware/aic7880
+   hardware/lucent-ohci
+   hardware/tsb12lv22
+
+Graphics
+~~~~~~~~
+
+.. toctree::
+   :maxdepth: 1
+
+   hardware/graphics
+   hardware/mgras
+   hardware/odyssey
+   hardware/kona
+   hardware/gbe
+   hardware/psitech-rad1
+   hardware/psitech-rad4
+
+Audio
+~~~~~
+
+.. toctree::
+   :maxdepth: 1
+
+   hardware/rad1-audio
+   hardware/ad1843
+
+References
+----------
+
+.. toctree::
+   :maxdepth: 1
+
+   references

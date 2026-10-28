@@ -2,9 +2,9 @@
 
 .. _sgi-prom-image-ratings:
 
-======================================
-SGI PROM images and node boot firmware
-======================================
+==================================
+PROM images and node boot firmware
+==================================
 
 Every SGI machine in this family boots a stock SGI PROM: the IP27 PROM on
 the Origin 200, Origin 2000 and Onyx2, the IP35 PROM on the Origin 300,

@@ -2,9 +2,15 @@
 
 .. _sgi-xframe:
 
-===========================================================
-Neterion Xframe 10-gigabit Ethernet adapter (PCI and PCI-X)
-===========================================================
+============================================
+Neterion Xframe: 10-gigabit Ethernet adapter
+============================================
+
+Used in :ref:`sgi-ip53` (Origin 350, Onyx 350 and Tezro) and the Origin
+3000 and Onyx 3000 bricks (:ref:`sgi-bricks`), the SGI systems its
+manual lists (:src:`007-4669-003 Supported systems`, *established*). It
+is an add-in card that no machine fits by default. The tests run it on
+:ref:`sgi-ip27`'s ``origin200``, which the manual does not list.
 
 The Xframe is Neterion's 10 Gb/s Ethernet controller, sold earlier under
 the S2io name, on PCI and PCI-X add-in cards. SGI sold one such card as

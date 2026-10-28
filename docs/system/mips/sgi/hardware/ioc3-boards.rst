@@ -2,13 +2,18 @@
 
 .. _sgi-ioc3-boards:
 
-===========================================
-IOC3-bearing I/O boards and the MENET board
-===========================================
+==============================================
+IOC3 boards: IOC3-bearing I/O boards and MENET
+==============================================
+
+Used in :ref:`sgi-ip27` (the IP29, BaseIO, BaseIO-G and MENET boards and
+the dual-serial PCI card), :ref:`sgi-ip30` (the Octane system board),
+:ref:`sgi-ip35` (the Origin 300 IO-8 and the Fuel system board) and the
+Origin 3000 I-brick (:ref:`sgi-bricks`, reference only).
 
 SGI fitted one IOC3 chip to many boards, and each board wires up a
 different subset of its functions (:doc:`ioc3`). This page lists the
-boards that carry an IOC3 in the ``sgi-sn`` machines, says how a guest
+boards that carry an IOC3, says how a guest
 decides what each chip fits, and specifies two boards that have no page of
 their own: the MENET XIO board, with a Bridge and four IOC3s that give a
 module four Fast Ethernet ports and six serial ports, and SGI's

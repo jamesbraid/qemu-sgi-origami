@@ -2,12 +2,14 @@
 
 .. _sgi-heart:
 
-=================================================
-HEART processor and memory controller (Octane)
-=================================================
+======================================
+HEART: processor and memory controller
+======================================
 
-HEART is the processor, memory and I/O controller of the Octane and
-Octane2 IP30 system board. It sits between the processor, the SDRAM
+Used in :ref:`sgi-ip30`, on the Octane and Octane2 system board.
+
+HEART is the processor, memory and I/O controller of the IP30 board. It
+sits between the processor, the SDRAM
 banks and the Crossbow crossbar (:src:`octane-technical-report p. 2-15`),
 where it is widget 8 (:src:`miod-openbsd-sgi-story-4 lines 1308-1352`).
 QEMU models it as

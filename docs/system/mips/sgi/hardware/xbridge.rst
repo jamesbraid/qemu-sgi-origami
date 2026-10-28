@@ -2,16 +2,20 @@
 
 .. _sgi-xbridge:
 
-==================================
-XBridge XIO-to-PCI bridge (SN1)
-==================================
+==========================
+XBridge: XIO-to-PCI bridge
+==========================
+
+Used in :ref:`sgi-ip35` (the Origin 300 IO-8 assembly, the Fuel system
+board and the Origin 300 PCI expansion module) and in the Origin 3000
+I-, P- and X-bricks (:ref:`sgi-bricks`), which the catalogue describes
+as reference compositions that no QEMU machine builds.
 
 The XBridge is the SN1-generation XIO-to-PCI chip: a Crossbow-style
 crossbar fused with two Bridge-style PCI host bridges ("heads"), one PCI
-bus each :src:`xbridge-asic-spec-0.5 p. 17, 44`. The Origin 300 IO-8
-assembly carries one between the Bedrock and its PCI buses, the Fuel
-board carries the same part, and the Origin 300 PCI expansion module
-carries three. QEMU models it in three types:
+bus each :src:`xbridge-asic-spec-0.5 p. 17, 44`. An Origin 300 or Fuel
+node has one between the Bedrock and its PCI buses, and the Origin 300
+PCI expansion module has three. QEMU models it in three types:
 
 - ``sgi-xbridge-head`` in ``hw/pci-host/sgi-xbridge.c``: one PCI head,
   with its register file, configuration and device windows, the PCI

@@ -2,10 +2,11 @@
 
 .. _sgi-at29c040a:
 
-=================================
-AT29C040A boot flash (O2 PROM)
-=================================
+=====================
+AT29C040A: boot flash
+=====================
 
+Used in :ref:`sgi-ip32` (O2), as the boot PROM.
 The AT29C040A is a 4 Mbit (512K x 8) 5 V flash memory from Atmel with
 256-byte sectors. The MACE I/O ASIC of the O2 decodes a 4 MiB window for
 the boot ROM, and its feature list names an "Atmel 512Kx8 Flash-ROM" as

@@ -60,7 +60,7 @@ variants:
         parent: rack
         observed_hardware:
           mode: projected
-          sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock]
+          sources: [qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock]
           note: >-
             The Bedrock identity, revision 2 at 200 MHz, is what every
             published Origin 3000 and Origin 350 inventory reports; no inventory
@@ -71,7 +71,7 @@ variants:
         bus_bindings: {host-port-a-xio: cx0-node0-xio-ii}
         observed_hardware:
           mode: direct
-          sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]
+          sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick]
           note: >-
             The IO7 device identities are the closure record's own three
             independent owners' IRIX inventories, reused directly for this
@@ -86,7 +86,7 @@ variants:
         parent: rack
         observed_hardware:
           mode: projected
-          sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock]
+          sources: [qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock]
           note: >-
             The Bedrock identity, revision 2 at 200 MHz, is what every
             published Origin 3000 and Origin 350 inventory reports; no inventory
@@ -97,7 +97,7 @@ variants:
         bus_bindings: {host-port-a-xio: cx0-node0-xio-ii}
         observed_hardware:
           mode: direct
-          sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]
+          sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick]
           note: >-
             The IO7 device identities are the closure record's own three
             independent owners' IRIX inventories, reused directly for this

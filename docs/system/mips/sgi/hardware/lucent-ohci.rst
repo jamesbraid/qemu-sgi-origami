@@ -2,19 +2,22 @@
 
 .. _sgi-lucent-ohci:
 
-===========================================================
-AT&T/Lucent 11c1:5802 two-port OHCI controller (IO-8, Fuel)
-===========================================================
+===============================================
+AT&T/Lucent 11c1:5802: USB OHCI host controller
+===============================================
 
-The Origin 300 IO-8 board and the Fuel system board carry a two-port USB
-host controller that enumerates as PCI ``11c1:5802``, revision ``0x10``.
-The same identity appears in published I-brick inventories
-(:ref:`sgi-sn-family-ibrick`). QEMU models it as the ``lucent-ohci`` type
+Used in :ref:`sgi-ip35`, on the Origin 300 IO-8 board and the Fuel
+system board, and in the Origin 3000 I-brick (:ref:`sgi-bricks-ibrick`),
+whose published inventories show the same identity, *observed*. QEMU
+builds the I-brick's as part of a base I/O preset that no machine fits.
+
+The part is a two-port USB host controller that enumerates as PCI
+``11c1:5802``, revision ``0x10``. QEMU models it as the ``lucent-ohci`` type
 (``hw/usb/lucent-ohci.c``), a subtype of the generic ``pci-ohci`` wrapper.
 The transfer engine, the register file and most reset values are QEMU's own
 OHCI core (``hw/usb/hcd-ohci.c``). This page covers only what the subtype
 changes: the PCI identity, the two ports, a few reset words and the
-root-hub power switching. The Origin 300 and Fuel base I/O models create one
+root-hub power switching. The Origin 300, Fuel and I-brick base I/O models create one
 at PCI device 5 (``hw/mips/sgi/baseio.c``). Facts are rated as described in
 :ref:`sgi-ratings`.
 

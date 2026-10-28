@@ -2,14 +2,16 @@
 
 .. _sgi-bcm570x:
 
-==================================================
-Broadcom BCM5701 Gigabit Ethernet controller (IO9)
-==================================================
+=============================================
+Broadcom BCM5701: Gigabit Ethernet controller
+=============================================
+
+Used in :ref:`sgi-ip53`: the IO9 board of the Origin 350, Onyx 350,
+Tezro and Onyx 4 host machines carries one at PCI device 4 behind the
+PIC.
 
 The BCM5701 is a single-port, 10/100/1000 Mb/s PCI Ethernet MAC with an
-integrated copper PHY. The IO9 board of the IP53 machines (Origin 350,
-Onyx 350, Tezro, and the Onyx4 host profile) carries one at PCI device 4
-behind the PIC. QEMU models the MAC as ``hw/net/bcm570x.c`` (QOM type
+integrated copper PHY. QEMU models the MAC as ``hw/net/bcm570x.c`` (QOM type
 ``bcm570x``, selected by ``model=bcm5701``) and the PHY as
 ``hw/net/bcm570x_phy.c``, a child object of the MAC. The same type with
 ``model=bcm5704`` is a dual-port BCM5704; this page covers the BCM5701

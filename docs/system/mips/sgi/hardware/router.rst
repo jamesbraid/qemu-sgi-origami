@@ -2,13 +2,17 @@
 
 .. _sgi-router:
 
-===================================
-SGI Router (Spider) CrayLink switch
-===================================
+===============================
+Router: SN0 interconnect router
+===============================
 
-The Router is the six-port switch that joins the Hubs of an Origin 2000
-or Onyx2 module and, through cables, other modules. SGI's papers call
-the chip Spider. QEMU models it as the ``sgi-router`` type in
+Used in :ref:`sgi-ip27` (the Origin 2000 and Onyx2 modules). The Origin
+200 has no Router: its two towers join Hub to Hub.
+
+The Router is the six-port switch of the SN0 interconnect. It joins the
+Hubs of a module and, through cables, other modules. SGI's published
+paper names the chip Spider (:src:`galles-spider-1997`). QEMU models it
+as the ``sgi-router`` type in
 ``hw/misc/sgi-router.c``, with the interface in
 ``include/hw/misc/sgi-router.h``. The type is not user creatable. The
 SN0 machine builder in ``hw/mips/sgi/sn-machine.c`` creates one per

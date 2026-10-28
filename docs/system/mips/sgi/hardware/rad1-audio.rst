@@ -2,21 +2,23 @@
 
 .. _sgi-rad1-audio:
 
-===========================
-RAD1 audio controller
-===========================
+======================
+RAD1: audio controller
+======================
 
-RAD1 is SGI's PCI audio controller, PCI identity ``10a9:0005``. It is
-onboard on the Octane and Octane2 system board, at device 3 of the onboard
-Bridge, and on the MediaIO daughtercard of the Origin 2000 and Onyx2
-BaseIO-G, at device 7 of that board's Bridge. It moves audio between
-host-memory rings and the analog, AES3 and ADAT interfaces, and reports
-progress through a status ring in host memory. QEMU models it in
-``hw/audio/sgi-rad1-audio.c`` as two types: ``sgi-rad1-audio`` for MediaIO,
-PCI revision ``0x70``, and ``sgi-rad1-octane`` for the Octane, PCI revision
-``0xc0``. The two share the register layout and engines but accept
-different access sets. It is unrelated to the PsiTech RAD1 graphics card,
-which has its own model and page.
+Used in :ref:`sgi-ip30` (Octane, Octane2, onboard) and :ref:`sgi-ip27`
+(Origin 2000 and Onyx2, on the BaseIO-G's MediaIO daughtercard). RAD1 is
+SGI's PCI audio controller, PCI identity ``10a9:0005``. It is onboard on
+the Octane and Octane2 system board, at device 3 of the onboard Bridge,
+and on the MediaIO daughtercard of the Origin 2000 and Onyx2 BaseIO-G, at
+device 7 of that board's Bridge. It moves audio between host-memory rings
+and the analog, AES3 and ADAT interfaces, and reports progress through a
+status ring in host memory. QEMU models it in
+``hw/audio/sgi-rad1-audio.c`` as two types: ``sgi-rad1-audio`` for
+MediaIO, PCI revision ``0x70``, and ``sgi-rad1-octane`` for the Octane,
+PCI revision ``0xc0``. The two share the register layout and engines but
+accept different access sets. It is unrelated to the PsiTech RAD1 graphics
+card, which has its own model and page.
 
 No published register specification for this chip has been found. Facts
 below are rated *established* (a cited manual or a measurement of an
