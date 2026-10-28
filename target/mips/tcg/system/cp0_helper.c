@@ -1355,7 +1355,7 @@ void helper_mtc0_config0(CPUMIPSState *env, target_ulong arg1)
     uint32_t old = env->CP0_Config0;
 
     env->CP0_Config0 = (env->CP0_Config0 & preserve) | (arg1 & 0x00000007);
-    if (!strcmp(env->cpu_model->name, "R10000") && old != env->CP0_Config0) {
+    if (env->r10k && old != env->CP0_Config0) {
         cpu_mips_tlb_flush(env);
     }
 }

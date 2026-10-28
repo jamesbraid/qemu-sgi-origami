@@ -251,10 +251,10 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
         }
 #endif
     } else if (address < KSEG1_BASE) {
-        /* R10000 has Config.K0, not a writable segment control register. */
+        /* The R10000 family uses Config.K0 rather than segment control. */
         uint16_t segctl = env->CP0_SegCtl1 >> 16;
 
-        if (!strcmp(env->cpu_model->name, "R10000")) {
+        if (env->r10k) {
             segctl = deposit32(segctl, CP0SC_C, 3, env->CP0_Config0 & 7);
         }
         ret = get_segctl_physical_address(env, physical, prot, real_address,
