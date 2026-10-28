@@ -508,9 +508,6 @@ static unsigned display_id(SGIO2GBEState *s, unsigned raster_x,
     }
     last = -1;
     unsigned limit = (offset & ~511u) + 512;
-    unsigned found = 0;
-    bool selected = false;
-    /* Validate the terminator even if the requested X precedes it. */
     for (; offset + 2 <= limit; offset += 2) {
         if (!did_read(s, offset, 2, &entry)) {
             return 0;
@@ -519,12 +516,8 @@ static unsigned display_id(SGIO2GBEState *s, unsigned raster_x,
         if (end <= last) {
             goto malformed;
         }
-        if (!selected && x <= end) {
-            found = entry >> 11;
-            selected = true;
-        }
-        if (end == 2047) {
-            return found;
+        if (x <= end) {
+            return entry >> 11;
         }
         last = end;
     }

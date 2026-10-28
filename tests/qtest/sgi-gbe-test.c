@@ -1417,12 +1417,109 @@ static void test_descriptor_cache(void)
     qtest_quit(q);
 }
 
+static void test_did_prefix(void)
+{
+    const unsigned x[] = { 16, 31, 32, 63, 64 };
+    const uint32_t expected[][5] = {
+        { 0xabcdef, 0xabcdef, 0x123456, 0x123456, 0x123456 },
+        { 0xabcdef, 0xabcdef, 0x765432, 0x765432, 0x123456 },
+    };
+    QTestState *q = start("");
+    uint8_t table[518] = { 0 };
+
+    mode(q);
+    palette(q);
+    wr(q, WID(0), 3);
+    wr(q, WID(1), 3 | 1 << 5);
+    wr(q, WID(2), 3 | 2 << 5);
+    wr(q, CMAP(0), 0x12345600);
+    wr(q, CMAP(256), 0xabcdef00);
+    wr(q, CMAP(512), 0x76543200);
+    wr(q, VT(16), 1 << 12);
+    stl_be_p(table, 2047 | 1 << 19);
+    stw_be_p(table + 512, 31 | 1 << 11);
+    wr(q, 0x40004, 0x14006);
+    wr(q, VT(0), 0);
+    for (unsigned tail = 0; tail < ARRAY_SIZE(expected); tail++) {
+        /* Neither tail has a terminator; the first also fails to advance. */
+        stw_be_p(table + 514, (tail ? 63 : 31) | 2 << 11);
+        qtest_memwrite(q, 0x60000, table, sizeof(table));
+        for (unsigned i = 0; i < ARRAY_SIZE(x); i++) {
+            wr(q, VT(15), x[i] | (x[i] + 1) << 12);
+            frame(q);
+            g_assert_cmphex(screen(q, 1, 1, 0, 0), ==, expected[tail][i]);
+        }
+    }
+    qtest_quit(q);
+}
+
+static void test_did_prefix_final_halfword(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("gbe-did-prefix-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "reads.trace", NULL);
+    g_autofree char *trace = NULL;
+    g_auto(GStrv) lines = NULL;
+    QTestState *q = qtest_initf(
+        "-M none -cpu R10000 -display none "
+        "-device memory-transaction-test,id=memtx,fault-memory=on "
+        "-device sgi-o2-gbe,id=gbe,functional-display=on,"
+        "ram=/machine/peripheral/memtx/test-memory[0] "
+        "-trace enable=memory_region_ops_read,file=%s", path);
+    uint8_t entry[4];
+    unsigned reads = 0;
+
+    qtest_sysbus_mmio_map(q, PATH, 0, BASE);
+    mode(q);
+    palette(q);
+    wr(q, WID(0), 3);
+    wr(q, WID(1), 3 | 1 << 5);
+    wr(q, CMAP(0), 0x12345600);
+    wr(q, CMAP(256), 0xabcdef00);
+    wr(q, VT(15), 16 | 17 << 12);
+    wr(q, VT(16), 1 << 12);
+    stl_be_p(entry, 2047 | 255 << 11 | 1 << 19);
+    qtest_memwrite(q, 0x100000000ULL, entry, 4);
+    stw_be_p(entry, 31 | 1 << 11);
+    qtest_memwrite(q, 0x1000003feULL, entry, 2);
+    /* A reader crossing the block would find a different valid DID. */
+    stw_be_p(entry, 2047 | 2 << 11);
+    qtest_memwrite(q, 0x100000400ULL, entry, 2);
+    wr(q, 0x40004, 0x14000);
+    wr(q, VT(0), 0);
+    frame(q);
+    g_assert_cmphex(screen(q, 1, 1, 0, 0), ==, 0xabcdef);
+    qtest_quit(q);
+    g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+    lines = g_strsplit(trace, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        uint64_t address, value;
+        unsigned size;
+        const char *fields;
+
+        if (!strstr(lines[i], "name 'fault-memory-io'")) {
+            continue;
+        }
+        fields = strstr(lines[i], "addr 0x");
+        g_assert_nonnull(fields);
+        g_assert_cmpint(sscanf(fields, "addr 0x%" SCNx64 " value 0x%" SCNx64
+                              " size %u", &address, &value, &size), ==, 3);
+        g_assert_cmpuint(reads, <, 2);
+        g_assert_cmphex(address, ==, reads ? 0x1000003feULL : 0x100000000ULL);
+        g_assert_cmpuint(size, ==, reads ? 2 : 4);
+        reads++;
+    }
+    g_assert_cmpuint(reads, ==, 2);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 static void test_did_boundary_malformed(void)
 {
     QTestState *q = start("");
     uint8_t entry[4];
     setup(q);
     pixel(q, 0, 1);
+    pixel(q, 11 * 4, 1);
     wr(q, WID(0), 3);
     wr(q, WID(1), 3 | 1 << 5);
     wr(q, CMAP(1), 0x12345600);
@@ -1434,15 +1531,20 @@ static void test_did_boundary_malformed(void)
     wr(q, 0x40004, 0x14006);
     frame(q);
     g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0xabcdef);
-    /* A missing terminator must not read beyond this 512-byte sub-block. */
+    /* A matching prefix survives; an unmatched X still exhausts the block. */
     stw_be_p(entry, 10 | 1 << 11);
     qtest_memwrite(q, 0x6fffe, entry, 2);
+    wr(q, VT(15), 1 << 12);
+    wr(q, VT(16), 1 << 12);
     frame(q);
-    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x123456);
+    g_assert_cmphex(screen(q, 1, 1, 0, 0), ==, 0xabcdef);
+    wr(q, VT(15), 11 | 12 << 12);
+    frame(q);
+    g_assert_cmphex(screen(q, 1, 1, 0, 0), ==, 0x123456);
     /* The next frame retries an invalid physical DID base without wrapping. */
     wr(q, 0x40004, 0x14400);
     frame(q);
-    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x123456);
+    g_assert_cmphex(screen(q, 1, 1, 0, 0), ==, 0x123456);
     qtest_quit(q);
 }
 
@@ -2703,6 +2805,9 @@ int main(int argc, char **argv)
                    test_did_overlapping_cache);
     qtest_add_func("/sgi-gbe/clock-pin-phase", test_clock_pin_phase);
     qtest_add_func("/sgi-gbe/descriptor-cache", test_descriptor_cache);
+    qtest_add_func("/sgi-gbe/did-prefix", test_did_prefix);
+    qtest_add_func("/sgi-gbe/did-prefix-final-halfword",
+                   test_did_prefix_final_halfword);
     qtest_add_func("/sgi-gbe/did-boundary-malformed",
                    test_did_boundary_malformed);
     qtest_add_func("/sgi-gbe/wrapped-producer", test_wrapped_producer);
