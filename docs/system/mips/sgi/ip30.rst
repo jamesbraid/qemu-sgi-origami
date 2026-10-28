@@ -525,9 +525,10 @@ The model's choices:
   repeating across the 2 MiB select. The size and the repeat match the
   reference Octane2's boot select. The command set and identifiers are
   an *approximation*: the fitted part is *unknown*.
-- Only one select has a part. A read of the other select fails as an
-  unpopulated widget address does and logs a guest error, so the model
-  does not reproduce the measured all-ones reads.
+- Only one select has a part. A read of the other select completes with
+  all ones, as the reference Octane2 measured, and a write to it fails
+  (the Bridge's ``flash-empty-reads-high`` property, set on both
+  machines).
 
 .. _sgi-ip30-octane2-alt-flash:
 

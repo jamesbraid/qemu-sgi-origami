@@ -1086,7 +1086,11 @@ What the model fits:
   instead and also refuses a 16-bit write at an odd address. How the chip
   reports a refused write is *unknown*.
 - A select with no part fails the transaction and logs
-  ``LOG_GUEST_ERROR``. The reference Octane2's alternate select, chip
+  ``LOG_GUEST_ERROR``, unless the board sets ``flash-empty-reads-high``.
+  Then a read of the empty select completes with ``0xff`` in every byte
+  lane and logs nothing, and a write still fails; the ``octane`` and
+  ``octane2`` machines set it (*approximation* beyond the measured reads
+  below). The reference Octane2's alternate select, chip
   select 0 on that board, returns all ones to 16- and 32-bit reads at
   four places across its 2 MB with no exception
   (:ref:`sgi-bridge-octane2-flash`). Whether a part is fitted there is
@@ -1719,9 +1723,10 @@ Model limits
   logging ``LOG_UNIMP``. Accesses of the wrong width, and undecoded widget
   ranges, fail the transaction. A non-zero store or a read at ``0x19c``
   fails and logs ``LOG_UNIMP``.
-- A flash select with no part fails the transaction, where the reference
-  Octane2 returned all ones at its alternate select. On the ``octane2``
-  machine the same read takes a bus error.
+- A flash select with no part fails the transaction on the Origin
+  boards. The Octanes' Bridge reads it as all ones, matching the
+  reference Octane2, but the reads span only the sampled offsets and
+  widths, and what a write does is *unknown*; the model fails writes.
 - An inbound link reset releases the core at once.
 - The one-wire part has no write or status-programming commands, and slot
   timing is decoded from fixed thresholds.
