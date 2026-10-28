@@ -213,6 +213,7 @@ struct SGIBridgeState {
     hwaddr flash_offset;
     SGIBridgeFlashBoundary flash_edge[2];
     bool flash_select;
+    bool flash_empty_reads_high;
     bool flash_reject_invalid_writes;
 
     /* Configuration space window, type 0 only: no PCI-to-PCI bridge here. */

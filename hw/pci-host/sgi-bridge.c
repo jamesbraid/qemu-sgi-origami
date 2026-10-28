@@ -1383,8 +1383,9 @@ static const MemoryRegionOps sgi_bridge_ssram_ops = {
  * and a part repeats across its chip select above the address lines it
  * decodes. A chip select with nothing on it, including the whole window on a
  * Bridge with no part fitted, fails the way an unpopulated widget address
- * does. Returns the part the window offset selects and the offset within its
- * chip select.
+ * does, unless the board says an empty select reads high (see
+ * flash_empty_reads_high). Returns the part the window offset selects and the
+ * offset within its chip select.
  */
 static MemoryRegion *sgi_bridge_flash_part(SGIBridgeState *s, hwaddr addr,
                                            bool is_write, hwaddr *offset)
@@ -1395,6 +1396,9 @@ static MemoryRegion *sgi_bridge_flash_part(SGIBridgeState *s, hwaddr addr,
     if (part) {
         *offset = addr % BRIDGE_FLASH_SELECT_SIZE;
         return part;
+    }
+    if (s->flash_empty_reads_high && !is_write) {
+        return NULL;
     }
     qemu_log_mask(LOG_GUEST_ERROR,
                   "sgi-bridge: flash %s at window offset 0x%" HWADDR_PRIx
@@ -1425,7 +1429,12 @@ static MemTxResult sgi_bridge_flash_read(void *opaque, hwaddr addr,
 
         part = sgi_bridge_flash_part(s, addr + i, false, &offset);
         if (!part) {
-            return MEMTX_DECODE_ERROR;
+            if (!s->flash_empty_reads_high) {
+                return MEMTX_DECODE_ERROR;
+            }
+            /* Nothing drives the data lines of an empty select. */
+            result = (result << 8) | 0xff;
+            continue;
         }
         part_size = memory_region_size(part);
         byte = offset % part_size;
@@ -2596,6 +2605,13 @@ static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_LINK("flash-select1", SGIBridgeState, flash_select1,
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_BOOL("flash-select", SGIBridgeState, flash_select, false),
+    /*
+     * A read of a chip select with nothing on it completes with all ones
+     * rather than failing; writes to it still fail. Set by boards whose
+     * empty select was measured that way.
+     */
+    DEFINE_PROP_BOOL("flash-empty-reads-high", SGIBridgeState,
+                     flash_empty_reads_high, false),
     DEFINE_PROP_BOOL("flash-reject-invalid-writes", SGIBridgeState,
                      flash_reject_invalid_writes, false),
     /*
