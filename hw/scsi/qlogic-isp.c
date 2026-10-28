@@ -3500,6 +3500,11 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .cfg1_write_mask = ISP_BUS_CFG1_WRITE_MASK,
       .flat_ram_transfers = true,
       .missing_target_timeout = true,
+      /*
+       * The reference Octane2's parts latch 0x40; that every bit is
+       * writable, as on the ISP12160, is an approximation.
+       */
+      .latency_wmask = 0xff,
       .fw_version = { 1, 0, 0 } },
     { .name = TYPE_QLOGIC_ISP12160,
       .desc = "QLogic ISP12160 dual-channel SCSI host adapter",

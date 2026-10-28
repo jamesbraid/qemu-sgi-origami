@@ -250,6 +250,22 @@ static void test_identity(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
+ * The ISP1040 takes a Latency Timer write. The reference Octane2's two
+ * parts read 0x00004040 at configuration 0x0c after its PROM wrote 0x40 to
+ * the timer. That shows only that 0x40 latches; which other bits do is
+ * unknown.
+ */
+static void test_latency_timer(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+
+    g_assert_cmphex(qpci_config_readb(dev, PCI_LATENCY_TIMER), ==, 0);
+    qpci_config_writeb(dev, PCI_LATENCY_TIMER, 0x40);
+    g_assert_cmphex(qpci_config_readb(dev, PCI_LATENCY_TIMER), ==, 0x40);
+}
+
+/*
  * Both BARs reach the same window of 16-bit registers. The two identity
  * words prove the stride: adjacent offsets, different values, so a coarser
  * decode returns the same value from both.
@@ -3444,6 +3460,8 @@ static void qlogic_isp_register_nodes(void)
     qos_node_produces("qlogic-isp1040", "pci-device");
 
     qos_add_test("identity", "qlogic-isp1040", test_identity, NULL);
+    qos_add_test("latency-timer", "qlogic-isp1040", test_latency_timer,
+                 NULL);
     qos_add_test("window", "qlogic-isp1040", test_window, NULL);
     qos_add_test("bus-cfg0-revision", "qlogic-isp1040",
                  test_bus_cfg0_revision, NULL);
