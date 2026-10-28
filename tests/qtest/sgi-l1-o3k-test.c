@@ -571,6 +571,101 @@ static void test_attached_bricks(void)
     qtest_quit(s);
 }
 
+static void set_gfx_bay(QTestState *s, unsigned owner, unsigned bay)
+{
+    g_autofree char *path = g_strdup_printf(DEVICES "l1c%u", owner);
+
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':%s,'property':"
+        "'io-gfx-bay','value':%u}}", path, bay);
+}
+
+/*
+ * An I/O brick lists the C-brick that asks and, when that C-brick's chip has
+ * a graphics brick on its other port, the G-brick, as the C-brick's own reply
+ * lists a brick. The same request through the C-brick's attached I/O address
+ * reaches it. Without a graphics brick the unknown-request code stays.
+ */
+static void test_ibrick_attached_graphics(void)
+{
+    const char *const props[] = {
+        "brick-type=cbrick,named=on,rack=1,bay=4",
+        "brick-type=ibrick,named=on,rack=1,bay=16,mac=" MAC_PROP,
+        "brick-type=ibrick,named=on,rack=1,bay=17,mac=" MAC_PROP,
+        "brick-type=cbrick,named=on,rack=1,bay=7",
+    };
+    QTestState *s = start_with(4, props, "");
+    uint8_t reply[131];
+    size_t length;
+    uint32_t listed[8] = { packed(1, 4), 'C', packed(1, 25), 'G', 0, 0, 0, 0 };
+    uint32_t high[4] = { 0 };
+
+    link_io(s, 0, 1);
+    link_io(s, 3, 2);
+    /* No graphics brick yet: the I-brick has nothing to list. */
+    length = rpc(s, 1, LOCAL_GENERAL, 0xc, NULL, 0, 0, reply);
+    expect_code(reply, length, -101);
+    set_gfx_bay(s, 0, 25);
+    length = rpc(s, 1, LOCAL_GENERAL, 0xc, NULL, 0, 0, reply);
+    expect_pairs(reply, length, 8, listed);
+    length = rpc(s, 1, LOCAL_GENERAL, 0xd, NULL, 0, 0, reply);
+    expect_pairs(reply, length, 4, high);
+    length = rpc(s, 0, ATTACHED_IO, 0xc, NULL, 0, 0, reply);
+    expect_pairs(reply, length, 8, listed);
+    /* Another I-brick whose C-brick has none answers as before. */
+    length = rpc(s, 2, LOCAL_GENERAL, 0xc, NULL, 0, 0, reply);
+    expect_code(reply, length, -101);
+    qtest_quit(s);
+}
+
+/*
+ * The N-brick's one controller serves every C-brick cabled to it, reports
+ * its own type letter, and answers each C-brick about that C-brick's own
+ * chip.
+ */
+static void test_nbrick_attached_graphics(void)
+{
+    const char *const props[] = {
+        "brick-type=nbrick,named=on,rack=1,bay=22",
+        "brick-type=cbrick,named=on,rack=1,bay=7",
+        "brick-type=cbrick,named=on,rack=1,bay=10",
+        "brick-type=cbrick,named=on,rack=1,bay=13",
+    };
+    QTestState *s = start_with(4, props, "");
+    uint8_t reply[131];
+    size_t length;
+    uint32_t first[8] = { packed(1, 7), 'C', packed(1, 25), 'G', 0, 0, 0, 0 };
+    uint32_t second[8] = { packed(1, 10), 'C', packed(1, 28), 'G',
+                           0, 0, 0, 0 };
+
+    link_io(s, 1, 0);
+    link_io(s, 2, 0);
+    link_io(s, 3, 0);
+    set_gfx_bay(s, 1, 25);
+    set_gfx_bay(s, 2, 28);
+    expect_identity(s, 1, ATTACHED_IO, packed(1, 22), 'N');
+    expect_identity(s, 3, ATTACHED_IO, packed(1, 22), 'N');
+    length = rpc(s, 1, ATTACHED_IO, 0xc, NULL, 0, 0, reply);
+    expect_pairs(reply, length, 8, first);
+    length = rpc(s, 2, ATTACHED_IO, 0xc, NULL, 0, 0, reply);
+    expect_pairs(reply, length, 8, second);
+    /* A C-brick whose chip has no pipe gets the unknown-request code. */
+    length = rpc(s, 3, ATTACHED_IO, 0xc, NULL, 0, 0, reply);
+    expect_code(reply, length, -101);
+    expect_command(s, 0, "config", "0: 001n22\n");
+    qtest_quit(s);
+
+    /* An I-brick takes one C-brick; an N-brick takes no mac. */
+    s = start_with(3, (const char *const[]) {
+        "brick-type=ibrick,named=on,rack=1,bay=16,mac=" MAC_PROP,
+        "brick-type=cbrick,named=on,rack=1,bay=7",
+        "brick-type=cbrick,named=on,rack=1,bay=10",
+    }, "");
+    link_io(s, 1, 0);
+    g_assert_true(qom_link_refused(s, 2, "io-peer", DEVICES "l1c0"));
+    qtest_quit(s);
+}
+
 static void test_attached_port_numbering(void)
 {
     const char *const props[] = {
@@ -1486,6 +1581,10 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/records/cbrick", test_cbrick_records);
     qtest_add_func("sgi-l1-o3k/records/dimm-numbering", test_dimm_numbering);
     qtest_add_func("sgi-l1-o3k/attached/bricks", test_attached_bricks);
+    qtest_add_func("sgi-l1-o3k/attached/ibrick-graphics",
+                   test_ibrick_attached_graphics);
+    qtest_add_func("sgi-l1-o3k/attached/nbrick-graphics",
+                   test_nbrick_attached_graphics);
     qtest_add_func("sgi-l1-o3k/attached/ports", test_attached_port_numbering);
     qtest_add_func("sgi-l1-o3k/attached/unnamed", test_unnamed_attachment);
     qtest_add_func("sgi-l1-o3k/attached/type-four", test_type_four_requests);

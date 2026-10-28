@@ -272,6 +272,11 @@ struct SGIL1State {
     uint32_t dimm_mask;
     uint32_t io_port;
     uint32_t c_port;
+    /*
+     * cbrick: the slot number of the graphics brick on its I/O brick's
+     * other Crosstown2 port, 0 for none. Set when the machine is built.
+     */
+    uint32_t io_gfx_bay;
     uint32_t node_position;
     uint8_t port_field;
     /*
