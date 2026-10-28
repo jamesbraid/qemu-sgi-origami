@@ -311,11 +311,13 @@
 # @cbrick: the compute brick's L1, owned by its node
 # @ibrick: the system I/O brick's L1, owned by its module and reached
 #     from the C-brick its XIO cable joins
+# @nbrick: the N-brick's L1, owned by its module and reached from each
+#     C-brick whose XIO cable joins one of its crossbars
 #
 # Since: 11.2
 ##
 { 'enum': 'SGIModelL1Profile',
-  'data': ['cbrick', 'ibrick'] }
+  'data': ['cbrick', 'ibrick', 'nbrick'] }
 
 ##
 # @SGIModelL1Config:

@@ -9955,6 +9955,58 @@ static void test_origin3400_routed_bricks(void)
 }
 
 /*
+ * The catalogue's Onyx 3400 with InfiniteReality3: four C-bricks, an I-brick
+ * on c0 and an N-brick on c1 to c3. Each I/O brick has a controller that
+ * every C-brick cabled to it reaches, and each C-brick whose chip has a
+ * pipe on its other port carries that pipe's G-brick slot number (25 for
+ * G-brick 0, 28 for G-brick 1), which its I/O brick's attached-brick reply
+ * names. All four pipes are cabled: the I-brick's second port carries pipe
+ * 0 of G-brick 0 and the N-brick's chips the other three.
+ */
+static void test_onyx3400_ir_io_brick_l1s(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn-builder-onyx3400-ir-prom-XXXXXX", &prom,
+                             &error);
+    QTestState *qts;
+    static const unsigned int gfx_bays[] = { 25, 25, 28, 28 };
+    g_autofree char *c0_io = NULL, *c1_io = NULL, *c2_io = NULL,
+                    *c3_io = NULL;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M origin3000,topology=onyx3400-ir -cpu R12000 "
+                      "-smp 16 -m 16384 -bios %s -nodefaults -display none",
+                      prom);
+    for (size_t i = 0; i < ARRAY_SIZE(gfx_bays); i++) {
+        g_autofree char *path = g_strdup_printf("/machine/node%zu/l1", i);
+
+        g_assert_cmpuint(qom_get_uint(qts, path, "io-gfx-bay"), ==,
+                         gfx_bays[i]);
+    }
+    c0_io = qom_get_str(qts, "/machine/node0/l1", "io-peer");
+    c1_io = qom_get_str(qts, "/machine/node1/l1", "io-peer");
+    c2_io = qom_get_str(qts, "/machine/node2/l1", "io-peer");
+    c3_io = qom_get_str(qts, "/machine/node3/l1", "io-peer");
+    {
+        g_autofree char *ibrick = qom_get_str(qts, c0_io, "brick-type");
+        g_autofree char *nbrick = qom_get_str(qts, c1_io, "brick-type");
+
+        g_assert_cmpstr(ibrick, ==, "ibrick");
+        g_assert_cmpstr(nbrick, ==, "nbrick");
+    }
+    g_assert_cmpstr(c1_io, !=, c0_io);
+    g_assert_cmpstr(c2_io, ==, c1_io);
+    g_assert_cmpstr(c3_io, ==, c1_io);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
  * The IO7 answers at head F devices 4 and 5 and, with its IEEE 1394
  * controller left out, not at device 6. Only c0 reaches it.
  */
@@ -12578,6 +12630,8 @@ int main(int argc, char **argv)
                    test_vbrick_two_pipes_refused);
     qtest_add_func("sn/builder/cbrick/gbrick-pipes-on-nbrick",
                    test_gbrick_pipes_on_nbrick);
+    qtest_add_func("sn/builder/onyx3400-ir-io-brick-l1s",
+                   test_onyx3400_ir_io_brick_l1s);
     qtest_add_func("sn/builder/cbrick/gbrick-save-restore",
                    test_gbrick_save_restore);
     for (unsigned int k = 0; k < 4; k++) {

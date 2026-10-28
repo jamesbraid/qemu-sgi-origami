@@ -3796,7 +3796,11 @@ class Onyx3400GraphicsBrickTests(unittest.TestCase):
         self.assertFalse([cid for cid, item in components.items()
                           if cid.startswith("nbrick-") and
                           item["kind"] == "pci-host-bridge"])
-        self.assertEqual(components["nbrick-brick"]["controller"], "absent")
+        # One L1 hears all four C-bricks (N-brick Overview printed page 5).
+        self.assertEqual(
+            [cid for cid, item in components.items()
+             if cid.startswith("nbrick-") and
+             item["kind"] == "system-controller"], ["nbrick-l1"])
         ports = {cid: components[cid]["connector"]["port"]
                  for cid in components if cid.startswith("nbrick-c-brick-")
                  or cid.startswith("nbrick-graphics-pipe-")
@@ -3834,33 +3838,48 @@ class Onyx3400GraphicsBrickTests(unittest.TestCase):
 class Onyx3400IrTargetTests(unittest.TestCase):
     """The Onyx 3400 with InfiniteReality3 emulation target."""
 
-    def test_compiles_three_cabled_pipe_slots_and_one_router(self):
+    def test_compiles_four_cabled_pipe_slots_and_one_router(self):
         from sgi_model.model_compile import compile_model
         topology = compile_model(
             _resolver.load_system_model(INPUTS / "onyx3400-ir.yaml"))
         pipes = [board for board in topology["io_boards"]
                  if board["board_kind"] == "KONA"]
-        self.assertEqual(len(pipes), 3)
+        self.assertEqual(len(pipes), 4)
         self.assertEqual({board["label"] for board in pipes},
                          {board["id"] for board in pipes})
         # Each pipe's cable ends on its board, after the I-brick's own.
         board_ends = [cable["ends"][1] for cable in topology["xio_cables"]
                       if cable["ends"][1]["kind"] == "IO_BOARD"]
-        self.assertEqual(len(board_ends), 3)
+        self.assertEqual(len(board_ends), 4)
         for end in board_ends:
             self.assertEqual(
                 topology["io_boards"][end["index"]]["board_kind"], "KONA")
         self.assertEqual(len(topology["routers"]), 1)
         self.assertEqual(len(topology["nodes"]), 4)
 
-    def test_no_pipe_is_cabled_to_the_ibrick(self):
+    def test_the_ibrick_serves_pipe_zero_and_the_nbrick_the_rest(self):
         model = _resolver.load_system_model(INPUTS / "onyx3400-ir.yaml")
         buses = {item["id"]: item for item in model["buses"]}
-        for item in model["connections"]:
-            if item["component"].endswith("-xg"):
-                self.assertNotEqual(item["bus"], "ibrick-port-b-xio")
-                self.assertTrue(buses[item["bus"]]["master"].startswith(
-                    "nbrick-xbridge"))
+        on = {item["component"]: item["bus"] for item in model["connections"]
+              if item["component"].endswith("-xg")}
+        self.assertEqual(on, {
+            "gbrick0-pipe0-xg": "ibrick-port-b-xio",
+            "gbrick0-pipe1-xg": "nbrick-graphics-pipe-0-xio",
+            "gbrick1-pipe0-xg": "nbrick-graphics-pipe-1-xio",
+            "gbrick1-pipe1-xg": "nbrick-graphics-pipe-2-xio"})
+        self.assertEqual(buses["ibrick-port-b-xio"]["master"],
+                         "ibrick-xbridge-crossbar")
+
+    def test_both_io_bricks_have_a_controller_the_cbricks_reach(self):
+        from sgi_model.model_compile import compile_model
+        topology = compile_model(
+            _resolver.load_system_model(INPUTS / "onyx3400-ir.yaml"))
+        profiles = {entry["id"]: entry["l1"]["profile"]
+                    for entry in topology["controllers"]
+                    if entry.get("l1", {}).get("profile") in ("ibrick",
+                                                              "nbrick")}
+        self.assertEqual(profiles, {"ibrick-l1": "ibrick",
+                                    "nbrick-l1": "nbrick"})
 
 
 if __name__ == "__main__":

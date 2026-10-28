@@ -5,9 +5,8 @@
 # puts the C-brick on A and the pipe on B on every chip, as the I-brick
 # layer puts its C-brick on A. That connector C-brick n pairs with Graphics
 # pipe n through chip n is inferred from the four numbered pairs, not
-# printed. The real brick's L1 hears any of the four C-bricks, which no
-# controller record of this catalogue can describe, so the model gives the
-# brick no controller.
+# printed. The real brick's L1 hears any of the four C-bricks, so the
+# C-bricks' L1s reach one controller, as each C-brick's reaches its I-brick's.
 layer_version: 1
 layer:
   kind: module
@@ -18,13 +17,24 @@ layer:
       - id: brick
         name: N-brick
         kind: module
-        controller: absent
         provenance: vendor-document
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed page 5: the N-brick L1 hears any of the four C-bricks, no one designated master"]
         notes: >-
-          The 2U connector brick of an InfiniteReality system. Its L1, fans,
-          LEDs and power board are not modelled. No brick-type character is
+          The 2U connector brick of an InfiniteReality system. Its fans, LEDs
+          and power board are not modelled. No brick-type character is
           established for its L1.
+      - id: l1
+        name: L1 system controller
+        kind: system-controller
+        hardware_kind: l1
+        system_controller: {kind: l1}
+        provenance: vendor-document
+        parent: brick
+        description: >-
+          The N-brick's L1. It hears each C-brick cabled to the brick, and
+          those C-bricks' L1s reach it over their XIO cables.
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+        sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed page 5: the N-brick L1 hears any of the four C-bricks, no one designated master"]
       - id: chip-board0
         name: XBridge board 0
         kind: board
