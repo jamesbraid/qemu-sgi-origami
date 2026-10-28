@@ -23,6 +23,7 @@ layer:
         name: XBridge
         kind: pci-host-bridge
         hardware_kind: xbridge
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst, qemu:docs/system/mips/sgi/hardware/bridge.rst]
         pci_host_bridge: {heads: 2}
         provenance: vendor-document
         parent: brick
@@ -36,6 +37,7 @@ layer:
         name: XBridge crossbar section
         kind: crossbar
         hardware_kind: xbridge
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst]
         crossbar: {kind: xbridge}
         identity:
           widget_revision: 2

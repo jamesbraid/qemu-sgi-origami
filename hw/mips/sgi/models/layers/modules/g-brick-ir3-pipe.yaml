@@ -28,6 +28,7 @@ layer:
         name: XIO-to-graphics ASIC (XG)
         kind: io-controller
         hardware_kind: xg
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/graphics.rst]
         parent: pipe
         provenance: derived
         identity:
