@@ -584,7 +584,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -614,7 +614,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -644,7 +644,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -674,7 +674,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -704,7 +704,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -814,7 +814,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -844,7 +844,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -874,7 +874,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -904,7 +904,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -934,7 +934,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -1044,7 +1044,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -1074,7 +1074,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -1104,7 +1104,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -1134,7 +1134,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -1164,7 +1164,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -1274,7 +1274,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -1304,7 +1304,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -1334,7 +1334,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -1364,7 +1364,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -1394,7 +1394,7 @@
         "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
         "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
         "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
       ]
     },
     {
@@ -1615,7 +1615,7 @@
       "provenance": "observed-hardware",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     },
     {
@@ -1634,7 +1634,7 @@
       "provenance": "observed-hardware",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     },
     {
@@ -1679,7 +1679,7 @@
       "provenance": "observed-hardware",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     },
     {
@@ -1699,7 +1699,7 @@
       "provenance": "observed-hardware",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     }
   ],
@@ -1902,7 +1902,7 @@
           "mode": "projected",
           "note": "The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what every published Origin 3000 inventory reports; it is not a capture of this C-brick.",
           "sources": [
-            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+            "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
           ]
         },
         "parent": "rack",
@@ -1914,7 +1914,7 @@
           "mode": "projected",
           "note": "The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what every published Origin 3000 inventory reports; it is not a capture of this C-brick.",
           "sources": [
-            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+            "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
           ]
         },
         "parent": "rack",
@@ -1926,7 +1926,7 @@
           "mode": "projected",
           "note": "The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what every published Origin 3000 inventory reports; it is not a capture of this C-brick.",
           "sources": [
-            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+            "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
           ]
         },
         "parent": "rack",
@@ -1938,7 +1938,7 @@
           "mode": "projected",
           "note": "The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what every published Origin 3000 inventory reports; it is not a capture of this C-brick.",
           "sources": [
-            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+            "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
           ]
         },
         "parent": "rack",
@@ -1953,7 +1953,7 @@
           "mode": "direct",
           "note": "The IO7 device identities are the closure record's own three independent owners' IRIX inventories, reused directly for this reference I-brick rather than a distinct capture of this exact set.",
           "sources": [
-            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+            "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
           ]
         },
         "parent": "rack",
@@ -2599,8 +2599,7 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     },
     {
@@ -2610,8 +2609,7 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     },
     {
@@ -2621,8 +2619,7 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     },
     {
@@ -2632,8 +2629,7 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     },
     {
@@ -2820,7 +2816,7 @@
           "notes": "The IOC3 subsystem field is the unobserved placeholder, and no source gives where the IO7's Ethernet address comes from. The IEEE 1394 link controller is left out, a stated limitation: its PHY and bus are not modelled.",
           "provenance": "derived",
           "sources": [
-            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick",
+            "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick",
             "hw/misc/tsb12lv22.c"
           ]
         }

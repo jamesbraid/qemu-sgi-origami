@@ -79,8 +79,12 @@ function device 1. The machine models place it at device 1. That this
 is the same slot is *inferred* from the two drivers' configuration
 window arithmetic; the IO9 connector wiring itself is *unknown*.
 
-The model's other configuration values are *approximations*: class word
-``0x00ff`` (base class ``0x00``, subclass ``0xff``), interrupt pin 1
+The model reports PCI class ``0x0b4000``: base class ``0x0b``, subclass
+``0x40``, programming interface ``0x00``. Linux's IOC4 core driver binds
+by an exact 24-bit class match, and its device table lists vendor SGI,
+device IOC4, any subsystem, class ``0x0b4000`` with mask ``0xffffff``
+(Linux v2.6.30 ``drivers/misc/ioc4.c``), a *software expectation*. The
+model's other configuration values are *approximations*: interrupt pin 1
 (INTA) and one 1 MiB 32-bit memory BAR, sized so the byte-bus select at
 ``0x80000`` falls inside it. On IP53 boards the ``pci-status-compat``
 property sets PCI Status to ``0x0220`` at realize and at every reset.
@@ -590,8 +594,9 @@ Model limits
 - Register widths other than those listed fail with
   ``LOG_GUEST_ERROR``: QEMU fails the PCI transaction and the host
   bridge path decides what the processor sees.
-- Reset values, timing, the BAR size, class code and interrupt pin are
-  model choices, not measurements of a revision ``0x53`` part.
+- Reset values, timing, the BAR size and interrupt pin are model
+  choices, not measurements of a revision ``0x53`` part. The class code is
+  the one Linux's driver matches, not a read from a part.
 - The PS/2 ports always have a keyboard and mouse attached.
 
 .. _sgi-ioc4-tests:

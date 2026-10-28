@@ -987,8 +987,9 @@ I/O interface
 The I/O interface is the Bedrock's crosstalk port. It turns a device's
 DMA request into the internal crossbar's format, forwards it to memory
 and holds the two block-transfer engines (:src:`108-0240-002 p. 2-16`),
-*established*. On every machine here it connects to an XBridge's host
-port 0xa (:doc:`xbridge`). Processor I/O-space accesses leave through
+*established*. It connects to an XBridge's host
+port 0xa (:doc:`xbridge`), and the ``host-widget`` property sets the value
+the widget control register reads (below). Processor I/O-space accesses leave through
 it; the inbound side takes DMA and interrupt packets from the widgets.
 
 .. list-table::
@@ -1016,7 +1017,7 @@ it; the inbound side takes DMA and interrupt packets from the widgets.
    * - ``0x400020``
      - widget control
      - 23
-     - ``0xa``
+     - ``host-widget`` (default ``0xa``)
      - read/write
      - Bits 3:0 the Bedrock's own crossbar port; bit 17 direct connect.
    * - ``0x400100``
@@ -1158,8 +1159,16 @@ link enabled, null timeout 3, maximum retry ``0x3ff``, maximum burst
 node built without a crosstalk peer reads bit 13 clear and no write can
 set it, *inferred*. Writes keep the defined bits.
 
-Widget control bits 3:0 read ``0xa``, the crossbar port where the
-Bedrock enters its XBridge. The out-of-tree port reads them as the port
+Widget control bits 3:0 reset to the ``host-widget`` property, ``0xa``
+unless the board sets another value, and a reset restores it. The
+property is the crossbar port where the Bedrock enters its XBridge. The
+value must be below 16. The ``onyx350`` machine sets ``0xb``, which a
+published PROM trace of a four-processor IP53 module prints as the
+Bedrock's attachment widget (*observed*; that the module is an Onyx 350
+is *inferred*). A Fuel trace and a Tezro deskside session print ``0xa``,
+and no Origin 350 server trace is published, so the other IP35 and IP53
+products use ``0xa``. The property changes the register only: the
+XBridge the node builds stays wired to port ``0xa``. The out-of-tree port reads the field as the port
 to skip when walking the crossbar, a *software expectation*. Bit 17
 reads 0 at reset: every consumer then assumes a crossbar, not a directly
 attached widget. Whether any IP35 PROM sets it is *unknown*.

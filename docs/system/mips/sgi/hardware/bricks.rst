@@ -12,19 +12,21 @@ cables. This page covers the C-, CX-, D-, G-, I-, IX-, N-, P-, PX-, R-,
 V- and X-bricks and the Origin 300 NUMAlink module: what each is, what it
 holds, how it connects, and how much of it the model catalogue builds. The
 catalogue is the set of YAML layers under ``hw/mips/sgi/models/layers/``
-and the compiler in ``scripts/sgi_model/``. Six bricks have a module
-layer there: the C-brick (``modules/c-brick.yaml``), the I-brick
-(``modules/i-brick.yaml``), the P-brick (``modules/p-brick.yaml``), the
-R-brick (``modules/r-brick.yaml``), the X-brick (``modules/x-brick.yaml``)
-and the NUMAlink module (``modules/numalink-module.yaml``). The V-brick has
-a machine-builder preset and a controller profile but no layer. The other
-six bricks have no code at all and are described here as reference only.
-No QEMU machine builds any brick. The Origin 3200 compositions
-(``origin3200`` and its P-brick and X-brick variants) are planned emulation
-targets: the catalogue describes them but the emulator does not build them
-yet. The other compositions that hold bricks are hardware-only reference
-models, which the compiler refuses to compile. Facts are rated as described
-in :ref:`sgi-ratings`.
+and the compiler in ``scripts/sgi_model/``. Ten bricks have a
+module layer there: the C-brick (``modules/c-brick.yaml``), CX-brick,
+D-brick, G-brick with its pipe, I-brick, N-brick, P-brick, R-brick,
+V-brick and X-brick, and so does the NUMAlink module
+(``modules/numalink-module.yaml``). The IX- and PX-brick have no layer.
+The machine builder builds both as PIC enclosures
+(:ref:`sgi-sn-family-ixpx`).
+
+``-M origin3000`` builds four catalogued systems: the Origin 3200
+(:ref:`sgi-sn-origin3200`), the Origin 3400 with four C-bricks on one
+R-brick, the Onyx 3000 with a V-brick (:ref:`sgi-sn-family-vbrick`) and
+the Onyx 3400 with InfiniteReality3 (:ref:`sgi-sn-onyx3400-ir`). The
+other compositions that hold bricks are hardware-only reference models,
+which the compiler refuses to compile. Facts are rated as described in
+:ref:`sgi-ratings`.
 
 .. list-table::
    :header-rows: 1
@@ -34,40 +36,40 @@ in :ref:`sgi-ratings`.
      - Catalogue
    * - C-brick
      - Compute node (one Bedrock)
-     - Layer, planned composition
+     - Layer, built in four systems
    * - CX-brick
      - Up to four compute nodes and a router
-     - Reference only
+     - Layer, reference composition, L1 profile
    * - D-brick
      - Fibre Channel disk enclosure
-     - Reference only
+     - Layer, reference composition
    * - G-brick
      - InfiniteReality graphics enclosure
-     - Reference only
+     - Layer, built in the Onyx 3400 with InfiniteReality3
    * - I-brick
      - Base I/O (XBridge, PCI, IO7)
-     - Layer, planned composition
+     - Layer, built
    * - IX-brick
      - Base I/O (three PICs, PCI-X, IO9)
-     - Reference only
+     - Builder PIC enclosure, no layer
    * - N-brick
      - Passive C-brick to graphics pipe connector
-     - Reference only
+     - Layer, built in the Onyx 3400 with InfiniteReality3
    * - P-brick
      - PCI expansion (three XBridges)
-     - Layer, planned composition
+     - Layer, reference composition
    * - PX-brick
      - PCI-X expansion (three PICs)
-     - Reference only
+     - Builder PIC enclosure, no layer
    * - R-brick
      - Eight-port NUMAlink router
-     - Layer, in no composition
+     - Layer, built in two systems
    * - V-brick
      - VPro graphics enclosure
-     - Builder preset and L1 profile, no layer, no topology
+     - Layer, built in the Onyx 3000
    * - X-brick
      - Legacy XIO expansion (one XBridge)
-     - Layer, planned composition
+     - Layer, reference composition
    * - NUMAlink module
      - Eight-port router for Origin 300 base modules
      - Layer, reference composition
@@ -204,9 +206,9 @@ R12000-family CPU components, eight DIMM slots as one memory component, one
 ``SysAD`` bus and one ``XIO (II)`` connector with its ``xio-ii`` bus. The
 layer asserts no CPU clock or cache size. The processors are placed on the
 SysAD bus of processor interface 0 only, so the layer shows two of the four
-possible CPUs. The layer has no ``LINK (NI)`` connector: the Origin 3200
-composition joins the two Bedrocks directly on a ``ni-cable`` bus. The layer
-holds no L1 component and no memory fit. The widget part and manufacturer
+possible CPUs. The layer has the ``LINK (NI)`` connector, which a
+composition joins to another C-brick or to an R-brick port, and an L1
+component. It holds no memory fit. The widget part and manufacturer
 are software expectations, not reads from a C-brick, so the Bedrock identity
 is an *approximation*.
 
@@ -233,11 +235,113 @@ each C-brick at the fit a posted Origin 3200 inventory reports
 (*observed*, :src:`nekonomicon-16723604`): four 400 MHz R12000s with
 8 MB secondary caches on two PIMMs and 4096 MB in eight 512 MB banks.
 Resolution refuses any other processor or bank population for that
-product. The entry is a planned target, left out of the emulator's
-catalogue. The C-brick layer has no L1, and the R12000's FPU
-identification and reset-mode word on this board and the C-brick's full
-board-identification word are *unknown*. How the shared builder joins a
-C-brick to an I/O brick's XBridge is on :ref:`sgi-ip35-brick-composition`.
+product. How the shared builder joins a C-brick to an I/O brick's XBridge
+is on :ref:`sgi-ip35-brick-composition`.
+
+The entry is the ``origin3000`` machine, topology ``origin3200``. Its
+C-brick values the sources do not settle are model choices:
+
+* The board-identification word is ``0x2``. Product code 0 in bits 15:12
+  is a C-brick (*established*, OpenBSD ``ip27.h``). The low nibble 2
+  selects the stock IP35 PROM 6.210's configuration row for a 400 MHz,
+  8 MB fit, and the other bits read zero (*approximation*: no C-brick
+  has been read).
+* The flash configuration block carries machine type 0 and that row's
+  word ``0x5414a785``. Each processor's reset mode is the word's low 25
+  bits (*approximation*, as the Origin 300's R14000 values are taken
+  from its own row).
+* The FPU identification is ``0x0935``, from the R12010 revision 3.5 the
+  inventory prints (*inferred*).
+* The L1 is the ``cbrick`` profile, named by its slot: 001c04 and
+  001c07. The two C-brick L1s are peers over the NUMAlink cable.
+* With no XIO cable, a C-brick's II link reads down (*inferred*, as the
+  Bedrock II model already takes it).
+
+.. _sgi-sn-origin3200:
+
+Origin 3200 machine
+-------------------
+
+``-M origin3000`` builds two C-bricks joined LINK (NI) to LINK (NI) and
+an I-brick on c0's ``XIO (II)`` connector at XBridge port A, with 8
+R12000s (``-cpu R12000 -smp 8``) and 8192 MB. The I-brick's XBridge is
+``/machine/module2/xbridge``. Its heads E and F are widgets 14 and 15 of
+c0, and its IO7 is ``/machine/module2/io7`` on head F. The I-brick's L1
+is ``/machine/module2/l1``, the ``ibrick`` profile named 001i14, reached
+from c0's L1 over the XIO cable as an in-process call. It holds the
+IO7's Ethernet address, the machine's ``mac``. The I-brick's Fibre
+Channel card is ``/machine/module2/io7/fibre-channel``, a
+``qlogic-isp2200`` at head F device 1 with its pin A on head pin 1. Its
+private loop is the SCSI bus ``scsi.0``, the boot disk bus. Each disk
+there is a loop port at the loop ID its ``scsi-id`` gives and needs the
+``port_wwn`` and ``wwn`` names that port has, which the launcher
+chooses.
+
+Model limits:
+
+* No internal FC disk is built with the machine. Disks join the loop
+  only as the launcher attaches them, and which of the brick's two drive
+  bays a disk stands for is *unknown*.
+* The IO7's IEEE 1394 link controller is left out, because its model has
+  no PHY or bus and the stock PROM's probe waits on them.
+* The IO7's time-of-day part is unidentified, so its IOC3 carries the
+  Origin 300's M48T35-compatible Timekeeper as a compatibility choice
+  (*approximation*), with blank storage on every start.
+* Head E's PCI slots are empty. The I-brick's XBridge revision is the
+  model's.
+
+.. _sgi-sn-onyx3400-ir:
+
+Onyx 3400 with InfiniteReality3 machine
+---------------------------------------
+
+``-M origin3000,topology=onyx3400-ir`` builds the Figure 1-10 brick set
+of the Onyx 3000 graphics guide (:src:`007-4264-002 p. 27`) as a
+catalogue entry, ``onyx3400-ir``. The ``onyx3400`` composition stays the
+reference of the same brick set. The machine has four C-bricks on ports
+2 to 5 of one R-brick, an I-brick on c0's ``XIO (II)`` connector, an
+N-brick whose first three chips carry c1 to c3, and two G-bricks. It has
+16 R12000s, four per C-brick, and 16384 MB. The stock PROM 6.210 finds 4
+nodes, 16 CPUs and one router, and its diagnostics summary reads ``ALL
+DIAGS PASSED``. Its ``hinv -v`` lists the four node boards, the
+I-brick's two heads and the router, and an XBow for the I-brick and for
+the N-brick chips of c10 and c13, but none for c07's.
+
+Choices the sources do not settle, each an *approximation*:
+
+* One R-brick, not Figure 1-10's two. The routed Origin 3400 drawing of
+  the technical configuration guide (:src:`007-4311-002 p. 55`) has one,
+  with the C-bricks on ports 2 to 5. The R-brick presents all eight
+  ports, and its L2 controller and USB hub traffic to the C-brick L1s
+  are not modelled. The C-brick L1s are not peers of each other.
+* The C-bricks are fitted like the Origin 3200's: four 400 MHz R12000s
+  with 8 MB caches and 4096 MB. The C-brick layer carries both PIMMs
+  unconditionally, so Figure 1-10's two-processor C-bricks are not
+  expressible.
+* The N-brick's XBridge presents the revision the model's XBridge
+  presents, as the I-brick's does.
+* Module numbers of the bricks.
+
+Model limits:
+
+* Three pipes, not four. A pipe cabled to a free port of the I-brick's
+  XBridge makes the PROM of the C-brick that hosts that chip print
+  ``iobrick_attached_modids failed``; on the I-brick that C-brick is the
+  global master, which then finds no base I/O. What an I/O brick's port
+  B presents to that query when a graphics pipe is cabled to it is not
+  established, so I-brick port B is left uncabled. G-brick 0 holds two
+  pipes and G-brick 1 one, on the N-brick's three pipe ports.
+* The graphics contract builds one pipe at once, so the machine offers
+  the four pipe slots and fits at most one ``sgi-kona``. The stock PROM
+  inventory lists no pipe with one fitted.
+* The C-bricks cabled to the N-brick print ``Unexpected I/O brick type``
+  at start: the N-brick has no L1 model, and what an N-brick answers to
+  the attached-brick request is *unknown*. They still join the PROM's
+  node count.
+* The router's ports 1, 6, 7 and 8 are uncabled, and the PROM prints
+  ``discover_object: vector read 0x2 LRI failed`` and ``erect_fences``
+  messages and an EEPROM vector read error against the router.
+* IRIX has not been booted on this topology.
 
 .. _sgi-bricks-cxbrick:
 
@@ -330,8 +434,11 @@ power, cooling and temperature over an I2C bus (*established*,
 :src:`007-4240-002 p. 163`). No public IRIX document says a guest queries
 the ESI.
 
-Catalogue: reference only. The host side of the loop is the QLogic
-ISP2200 adapter (:doc:`qlogic-isp2200`).
+Catalogue: the ``d-brick`` layer, a twelve-bay Fibre Channel enclosure
+with no L1, and the ``origin3200-dbrick`` composition, which is a
+reference because the Fibre Channel cable to the D-brick is stated and
+not built. The device is on :doc:`dbrick`. The host side of the loop is
+the QLogic ISP2200 adapter (:doc:`qlogic-isp2200`).
 
 .. _sgi-bricks-gbrick:
 
@@ -364,10 +471,13 @@ Connections:
 Two guides disagree on three G-brick L1 duties: voltage margining,
 temperature monitoring and ID PROM reads. Those are *unknown*.
 
-Catalogue: reference only. The InfiniteReality pipe itself exists as the
-``sgi-kona`` device (:doc:`kona`) and attaches only in an Onyx2
-Crossbow slot. No Ktown2, G-brick chassis, second pipe or Crosstown2
-attachment exists.
+Catalogue: the ``g-brick`` layer, with the Ktown2 board and its two
+Crosstown2 connectors, and ``g-brick-ir3-pipe``, one pipe with a GE16-4,
+one RM10 and a DG5-2. The Ktown2 is a link extender with no widget
+identity a host can read, so the pipe's XG ASIC is the widget on the I/O
+brick's bus. The InfiniteReality pipe itself is the ``sgi-kona`` device
+(:doc:`kona`). The Onyx 3400 with InfiniteReality3 builds two G-bricks
+cabled through the N-brick (:ref:`sgi-sn-onyx3400-ir`).
 
 .. _sgi-bricks-ibrick:
 
@@ -487,9 +597,9 @@ brick. Widget numbers of the PICs, PCI device numbers per slot, and the
 PIC revisions are *unknown*. An inventory of a standalone IX-brick would
 settle them.
 
-Catalogue: reference only. The PIC (:doc:`pic`), IOC4 (:doc:`ioc4`) and
-BCM5701 (:doc:`bcm570x`) are modelled for the Origin 350 but not placed in
-a three-PIC enclosure.
+Catalogue: no layer. The machine builder builds the enclosure from the PIC
+(:doc:`pic`), IOC4 (:doc:`ioc4`) and BCM5701 (:doc:`bcm570x`)
+(:ref:`sgi-sn-family-ixpx`).
 
 .. _sgi-bricks-nbrick:
 
@@ -516,9 +626,14 @@ never probes behind it (``xbow.c``). The link speed, the fan count (text
 says two, the figure shows three) and how the L1 reaches four C-bricks are
 *unknown*.
 
-Catalogue: reference only. A model of the N-brick would carry an L1 and no
-widget, register window or board record, and a write to any address in a
-supposed window would have to fault visibly.
+Catalogue: the ``n-brick`` layer holds four XBridges, one per board,
+each joining one C-brick connector to one graphics pipe connector, with
+no PCI and no XIO slots. The layer puts the C-brick on port A and the
+pipe on port B of every chip, as the I-brick layer puts its C-brick on A
+(*approximation*; which port faces the C-brick is *unknown*). The
+real brick's L1 hears any of the four C-bricks, which no controller
+record can describe, so the model gives the brick no L1. The Onyx 3400
+with InfiniteReality3 builds it (:ref:`sgi-sn-onyx3400-ir`).
 
 .. _sgi-bricks-pbrick:
 
@@ -551,7 +666,7 @@ module has the same three-XBridge wiring but a Bedrock interface card and
 a NUMAlink connector, and is not the P-brick.
 
 Catalogue: the ``p-brick`` layer and the ``origin3200-pbrick``
-planned composition, described below. The nearest built device is the
+reference composition, described below. The nearest built device is the
 Origin 300 expansion module in :doc:`pci-expansion`, on :doc:`xbridge`.
 
 .. _sgi-sn-family-pbrick:
@@ -600,7 +715,49 @@ How many links join the middle PIC to each other PIC, the PIC widget
 numbers, head offsets and slot wiring are *unknown*. The Origin 350 PIC
 contract does not transfer to this three-PIC enclosure.
 
-Catalogue: reference only.
+.. _sgi-sn-family-ixpx:
+
+IX-brick and PX-brick PIC enclosures
+------------------------------------
+
+Catalogue: no layer; the machine builder builds both enclosures.
+
+Both bricks hold three PICs. The middle one serves buses 3 and 4, meets
+the two Crosstown2 connectors on its ports A and B, and joins the lower
+PIC (buses 1 and 2) and the upper PIC (buses 5 and 6) by one link each
+(*established*, :src:`007-4604-001` Figure 2 and :src:`007-4605-001`
+Figure 2). The model builds the middle PIC's integrated PXBOW as the
+enclosure crossbar, with the host on port 0xa, the lower PIC on 0xc,
+the upper on 0xd and the middle PIC's own heads on 0xf. Links present,
+alive at startup and restored by a link reset are those four. That port
+reading follows the XBridge port letters as hex digits and the public
+Linux Altix brick table (*approximation*, not a measured board). Every
+PIO, DMA and interrupt packet crosses the crossbar: no PIC has a direct
+Bedrock peer. Each packet enters at its PIC's port and reaches the
+Bedrock as a packet from that widget, so the Bedrock's inbound access
+register governs it per PIC. Interrupt packets go to the host port the
+cable meets, with the level in destination bits 63:48.
+
+All six heads run ``pic-rev3-enclosure-experimental``: the PIC register
+layout at revision 3, configuration device 0 reserved, the direct 32-bit
+DMA window and the ``DIR_MAP`` field rule, and none of the IP53
+compatibility behaviours (no held-input reassertion, no IP35 PROM reset
+values or masks, no 32-bit control writes, no direct64 decode). Head 0
+drives the lower-numbered bus. INTA of configuration device *d* drives
+interrupt input *d* - 1; INTB to INTD reach no input and are logged. A
+failed DMA send is logged by the PIC from its own result.
+
+Model limits:
+
+* Only single attachment is built: a cable to port 0xb, a cable from an
+  Origin 350 compute module and a board on any other crossbar port are
+  refused.
+* Neither brick has an L1, and no on-board device is fitted. The
+  IX-brick's IO9 waits on contracts for its IOC4 port presence, its
+  QLogic part and its BCM5701 identity, so its bus 1 slot 1 is empty and
+  logged as such.
+* No catalogued machine builds either brick yet, because no reviewed
+  configuration attaches one to a C-brick. The builder test builds them.
 
 .. _sgi-bricks-rbrick:
 
@@ -636,14 +793,46 @@ with L1 commands and a 48-hour authenticator (*established*,
 controller makes the ASIC refuse two ports is *unknown*.
 
 Catalogue: ``modules/r-brick.yaml``. It describes the chassis, one SN1
-router component with eight ports, connectors for ports 1 and 3 to 8, a
-fabric bus for each, and one open ``c-brick-cable`` bus that a
-composition binds to a cable. It does not model the disabled-port variant.
-The layer has no component for port 2, so seven of the eight connectors
-exist (*approximation*: nothing in the layer's sources removes port 2).
-No composition holds an R-brick: the Origin 3200 forbids one, and a
-resolver test instances the layer alone. The SN1 router device that the
-Origin 300 routed topology builds is described in :doc:`sn1-router`.
+router component with eight ports, an L1 and a USB hub, the eight port
+connectors, each with a cable bus a composition attaches the far end to,
+and a fabric bus for each. The router's ``node_ports`` names ports 2 to 5.
+Resolution refuses a node cabled to any other port, and the builder
+refuses such a cable in a topology it is handed, with the message "node
+'<id>' is cabled to router '<id>' port <n>; it takes a node only on
+ports 2, 3, 4, 5". A cable to another router may use any port. The layer
+sets no L1 brick-type character, since no reviewed L1 contract gives the
+R-brick's. It does not model the disabled-port variant. The SN1 router
+device that the Origin 300 routed topology builds is described in
+:doc:`sn1-router`.
+
+The ``origin3400`` composition is the guide's 8- to 16-processor
+interconnect drawn with one R-brick (:src:`007-4311-002 p. 55`): four
+C-bricks on ports 2 to 5 and an I-brick on the first C-brick's
+``XIO (II)`` connector at XBridge port A. Its composition rules follow
+Appendix B (p. 89): one to eight C-bricks, one or two R-bricks and at
+least one I-brick among at most eight I/O bricks. Every Origin 3400
+bundle ships two R-bricks (pp. 76-78), which this composition does not
+show. It is an emulation target. Each C-brick takes the Origin 3200 fit:
+four 400 MHz R12000 processors with 8 MB secondary caches and 4096 MB in
+eight 512 MB banks. The bundles ship C-bricks without memory and the
+customer chooses the DIMMs, so the memory is a model choice
+(*approximation*), as are the brick slot numbers (the guide places no
+brick of this system in a slot) and the synthetic identities. Being
+routed, the composition assigns no master or slave role to a C-brick. The
+Origin 3200 forbids an R-brick.
+
+Model limits of a routed Origin 3000 build:
+
+* The L2 controller, which a rack holding an R-brick requires
+  (:src:`007-4311-002 p. 42`), is not modelled, nor is the R-brick's USB
+  hub traffic to the C-brick L1s. Running without them is a limit, not a
+  claim that the hardware does.
+* The router presents all eight ports, not the six an Origin 3400
+  enables.
+* Its forwarding is the routed Origin 300 experiment's
+  (:doc:`sn1-router`), which no R-brick register contract confirms. The
+  table shapes, the destination ID mapping and whether an entry names an
+  absolute port or a turn are *unknown*.
 
 .. _sgi-bricks-vbrick:
 
@@ -676,21 +865,34 @@ No V-brick has been measured or inventoried. The board revision, the V12
 widget number and the link rate (800 MB/s here, 1.2 GB/s for the same
 chip's other cabling) are *unknown*.
 
-Catalogue: no layer and no topology. The machine builder keeps a
-``vbrick`` I/O board preset (``qapi/sgi-machines.json``,
-``hw/mips/sgi/sn-machine.c``). When a topology names the preset on a node's
-XBridge external port ``0xb``, the builder adds a second ``sgi-xbridge``
-as the enclosure, links it to the node over a cable object, and projects
-that chip's widget 8 (the V12 slot) and widget 0 (its crossbar) into the
-first and second 8 MiB of the node's widget ``0xb`` window
-(``sgi_xbridge_project_vbrick_pio()``). That split is a QEMU address
-choice, not a hardware route (*approximation*). The V12 is the topology's
-pipe slot, claimed by a pipe ``-device``. The builder also adds an
-``sgi-l1`` with brick type ``vbrick-discovery-reference``, which carries no
-identity and refuses identity, EEPROM, environment and lifecycle queries
-(``LOG_UNIMP``). No shipped topology uses any of this. SGI paired the
-V-brick only with Origin 3000 and Onyx 3000 compute bricks (*established*,
-:src:`007-4264-002 pp. 8, 10`).
+Catalogue: the ``v-brick`` layer, a midplane XBridge between the two
+rear XIO ports and four V12 board slots; the composition places the V12
+boards. :ref:`sgi-sn-family-vbrick` describes the Onyx 3000 that builds
+it.
+
+.. _sgi-sn-family-vbrick:
+
+Onyx 3000 V-brick machine
+-------------------------
+
+The ``onyx3000`` topology (``-M origin3000,topology=onyx3000``) puts the
+I-brick on the first C-brick and a one-pipe V-brick on the second, with
+the cable on the midplane XBridge's port A and the V12 on its Crosstalk
+port 8. Both ports are the composition's choices (*approximation*).
+Which connector is port A, which Crosstalk port serves a slot, and so
+the V12's widget number, are *unknown*, and a PROM inventory or hardware
+graph of an Onyx 3000 with a V-brick would settle them. The V-brick's L1
+is not modelled, since its address and identity are unknown. No source
+fixes an Onyx 3000 C-brick's processors, caches or memory, so each
+C-brick takes the Origin 3200 C-brick's fit (four 400 MHz R12000s with 8
+MB caches and 4096 MB), a model choice. The V12 is fitted by default and
+``-vga none`` leaves its port empty. The stock PROM lists the V12 as a
+graphics board in the second C-brick's module and diagnoses all four
+processors on each node. IRIX 6.5.30 boots to a login without the V12
+and stops in an early kernel assertion with it; the cause is not
+established. A two-pipe V-brick, whose second pipe needs a second
+C-brick on the other Crosstown2 port, is refused: the midplane XBridge
+takes one host (:ref:`sgi-ip35-brick-composition`).
 
 .. _sgi-bricks-xbrick:
 
@@ -719,7 +921,7 @@ board (*established*, :src:`007-4240-002 p. 154`;
 connector is port A (the guides conflict), the XBridge revision, and the
 per-board widget identities are *unknown*.
 
-Catalogue: the ``x-brick`` layer and the ``origin3200-xbrick`` planned
+Catalogue: the ``x-brick`` layer and the ``origin3200-xbrick`` reference
 composition, described below.
 
 .. _sgi-sn-family-xbrick:
@@ -800,20 +1002,17 @@ published inventories.
 Model limits
 ============
 
-- No machine builds a brick. ``origin3200.yaml`` (two C-bricks and an
-  I-brick) and its P-brick and X-brick variants are planned emulation
-  targets: they compile, but the emulator does not build them yet and the
-  machine list does not offer them.
-  ``origin300-numalink-module.yaml`` is a reference model, and the compiler
-  stops with an error naming ``model_role 'reference'``.
-- The CX-, D-, G-, IX-, N-, PX- and V-bricks have no layer. The
-  composition rules can name ``g-brick``, ``n-brick`` and ``v-brick``
+- The Origin 3200, Origin 3400, Onyx 3000 and Onyx 3400 with
+  InfiniteReality3 are built. ``origin300-numalink-module.yaml``,
+  ``origin3900.yaml``, ``onyx3400.yaml`` and the Origin 3200 P-brick,
+  X-brick and D-brick compositions are reference models, and the compiler
+  stops with an error naming ``model_role 'reference'``. The builder
+  refuses the P-brick's four chip-to-chip links.
+- The IX- and PX-brick have no layer. The composition rules can name
+  ``p-brick``, ``x-brick``, ``g-brick``, ``n-brick`` and ``v-brick``
   alongside the layers that exist. A rule that names a brick with no layer
   counts zero of it, so a misspelled id in a maximum, exclusion or
   requirement rule passes silently.
-- The ``origin3200-pbrick`` and ``origin3200-xbrick`` compositions are
-  planned emulation targets like ``origin3200``. The builder refuses the P-brick's
-  four chip-to-chip links.
 - The model validator accepts an L1 brick-type character only for the two
   boards a source establishes, ``C`` (IP35) and ``4`` (IP45). An I-, P-,
   R- or other brick cannot yet carry one.
@@ -821,13 +1020,10 @@ Model limits
   register map, reset value, link timing or interrupt route for any brick.
   Router tables, Crosstown2 speed selection and L1 requests for bricks
   other than the node boards are not modelled.
-- The C-brick layer lacks the ``LINK (NI)`` connector, an L1 and a memory
-  fit. The R-brick layer lacks port 2. The I-brick layer attaches only
+- The C-brick layer holds no memory fit. The I-brick layer attaches only
   host port A.
-- The builder's V-brick preset is unreachable from any shipped topology.
-- A guest request to a part that does not exist gets no brick-specific
-  answer. The V-brick controller profile logs ``LOG_UNIMP`` for each
-  refused task.
+- The V-brick and N-brick have no L1. A guest request to a part that does
+  not exist gets no brick-specific answer.
 
 .. _sgi-bricks-tests:
 

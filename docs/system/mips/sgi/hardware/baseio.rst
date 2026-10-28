@@ -92,8 +92,9 @@ board, so an inventory from the model never reads as a real unit.
        ``IP29``. Two ISP1040 at devices 0 and 1 (PCI revision 5). One
        IOC3 at device 2 (revision 1) with Ethernet, both serial ports,
        keyboard and mouse, parallel port, one-wire identity part and an
-       M48T35-compatible Timekeeper. The model's IOC3 subsystem id is its
-       "IP29 System Board" key.
+       M48T35-compatible Timekeeper. The IOC3's ``subsystem-id`` property is
+       its "IP29 System Board" key; a guest does not read it from the
+       chip.
    * - ``io6``
      - Origin 2000 BaseIO, built by ``sgi-xio-baseio``. XIO widget 8
        only, slot ``io1`` only.
@@ -101,9 +102,9 @@ board, so an inventory from the model never reads as a real unit.
        ``BASEIO``. ISP1040 at devices 0 and 1 (revision 5). IOC3 at
        device 2 (revision 1) with Ethernet, both serial ports, one-wire
        identity part and Timekeeper; no keyboard, mouse or parallel
-       port. IOC3 subsystem id ``0xffff``, a model value with no hardware
-       counterpart because the chip has no subsystem register
-       (*approximation*). BASEIO
+       port. IOC3 ``subsystem-id`` ``0xffff``, a model value with no hardware
+       counterpart that no guest can read, because the chip has no
+       subsystem register (*approximation*). BASEIO
        PROM flash on the Bridge's flash port.
    * - ``io6g``
      - Onyx2 BaseIO-G with MediaIO, built by ``sgi-xio-baseio``. XIO
@@ -111,7 +112,7 @@ board, so an inventory from the model never reads as a real unit.
      - Bridge revision 4, record ``030-0734-002`` revision N, name
        ``BASEIO``, plus a second record ``030-0880-003`` revision G, name
        ``MIO``. The ``io6`` devices, with keyboard and mouse added to the
-       device 2 IOC3. A second IOC3 at device 6 (MediaIO, subsystem id
+       device 2 IOC3. A second IOC3 at device 6 (MediaIO, ``subsystem-id``
        ``0xc301``) with both serial ports, keyboard and mouse and a
        parallel port, but no Ethernet, clock or one-wire identity part.
        The RAD1 audio ASIC at device 7 (:doc:`rad1-audio`). BASEIO PROM
@@ -384,10 +385,11 @@ choices:
 
 - The IO-8's ISP12160 and OHCI subsystem identities are *unknown* and
   read ``0xffff``. The IOC3 has no subsystem register of its own,
-  *inferred*, so its ``0xffff`` subsystem device is a model value with no
-  hardware counterpart (*approximation*). The IOC3 subsystem vendor is
-  ``0x10a9``. The Fuel needs the carrier to supply
-  the IOC3 subsystem id and refuses a value above sixteen bits.
+  *inferred*, and its configuration space repeats 32 bytes, so a guest
+  reads no subsystem device from it. The ``subsystem-id`` ``0xffff`` is a
+  model value with no hardware counterpart that only keys the
+  population (*approximation*). The Fuel needs the carrier to supply the
+  IOC3 ``subsystem-id`` and refuses a value above sixteen bits.
 - Both presets put a National Semiconductor DP83843 PHY at MII address 1
   on the IOC3, where the Origin 200 and 2000 boards use a DP83840A at
   address 31 (:doc:`ioc3`). On the IO-8 the IOC3's GPIO 5 resets the PHY.
@@ -446,7 +448,7 @@ attach host backends to the IOC3s it builds.
        carrier before it builds its chip. They default from the preset.
    * - ``onewire-serial``, ``ioc3-mac``, ``ioc3-subsystem-id``
      - The IOC3 one-wire part serial, the board Ethernet address, and
-       the IOC3 PCI subsystem device.
+       the IOC3 ``subsystem-id`` property, which keys its population.
    * - ``chardev-a``, ``chardev-b``, ``record-a``, ``record-b``
      - Host backends for the onboard IOC3's two serial ports and their
        recording lines.
@@ -576,8 +578,8 @@ Model limits
 - How a one-letter revision sits in its four-byte record field is a model
   choice that reproduces the published inventory output. A raw dump of a
   real board's record would settle it.
-- The IOC3 ``0xffff`` subsystem ids are model values with no hardware
-  counterpart (*approximation*); the ISP12160 and OHCI ``0xffff`` ids and
+- The IOC3 ``0xffff`` ``subsystem-id`` values are model values with no
+  hardware counterpart, read by no guest (*approximation*); the ISP12160 and OHCI ``0xffff`` ids and
   the IO-8 board part are placeholders, not captured values. The flash part identity and the blank-flash
   contents are described under :ref:`sgi-baseio-flash`.
 - ``sgi-baseio`` and ``sgi-xio-baseio`` have no registers and no

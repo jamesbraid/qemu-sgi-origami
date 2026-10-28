@@ -1435,7 +1435,7 @@
           "notes": "The IOC3 subsystem field is the unobserved placeholder, and no source gives where the IO7's Ethernet address comes from. The IEEE 1394 link controller is left out, a stated limitation: its PHY and bus are not modelled.",
           "provenance": "derived",
           "sources": [
-            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick",
+            "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick",
             "hw/misc/tsb12lv22.c"
           ]
         }

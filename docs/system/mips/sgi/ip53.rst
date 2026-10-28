@@ -212,10 +212,14 @@ Components and connections
      - Attachment
      - Rating and basis
    * - Bedrock
-     - both processor interfaces; enters the crossbar at :term:`widget` ``0xa``
-     - *observed* at ``0xb`` in an Onyx 350 trace
-       (:src:`graphica-o350-notes lines 949-952`), and the model
-       uses ``0xa``, an *approximation*
+     - both processor interfaces; enters the crossbar at :term:`widget`
+       ``0xa``, or ``0xb`` on ``onyx350``
+     - *observed* at ``0xb`` in a published PROM trace of a
+       four-processor IP53 module
+       (:src:`graphica-o350-notes lines 949-952`). That the module is an
+       Onyx 350 is *inferred* from its graphics blade type and VPro
+       sensor. ``onyx350`` reports ``0xb``; the other IP53 products
+       report ``0xa``, an *approximation*
    * - PIC
      - one at widget 15; on ``tezro-tower-multi``, two, at widgets 11
        and 15
@@ -421,11 +425,14 @@ are the catalogue's choice, an *approximation*; the cache fitted to each
 processor option is *unknown*. Its 2 GiB in two banks is not a captured
 population, also an *approximation*.
 The Bedrock's entry widget on an Origin 350 server is *unknown*. A
-published PROM trace from an Onyx 350 module of the same IP53 board
-attaches the Bedrock at widget ``0xb``
-(:src:`graphica-o350-notes lines 949-952`), *observed*. The model
-uses ``0xa`` (``SN1_XBRIDGE_HOST_PORT``), an *approximation* that
-disagrees with that trace. The profile names no netboot adapter.
+published PROM trace from a four-processor IP53 module attaches the
+Bedrock at widget ``0xb`` (:src:`graphica-o350-notes lines 949-952`),
+*observed*. The module reads as an Onyx 350 graphics blade (*inferred*),
+and the split may follow the blade type rather than the product, so an
+Origin 350 with graphics could also use ``0xb``. No Origin 350 trace is
+published. The ``origin350`` profile reports ``0xa``, an *approximation*
+that may disagree with the hardware. The profile names no netboot
+adapter.
 
 The ``origin350`` machine is a one-node software profile, an emulation
 target with explicit model choices, not a claim that its memory,
@@ -471,10 +478,15 @@ other modules. The capture reports board ``IP53_4CPU`` ``030-2013-001``
 revision D, four 800 MHz R16000 revision 3.0 with 8 MiB caches, Bedrock
 revision 2 at 200 MHz, 8 GiB in eight logical 1 GiB banks, a
 ``2U_INT_53`` carrier ``030-1809-006`` revision D at widget 15 and IO9
-``030-1771-006`` revision A, *observed*. A published PROM trace of an
-Onyx 350 module attaches the Bedrock at widget ``0xb``
-(:src:`graphica-o350-notes lines 949-952`), *observed*. The
-model enters at ``0xa``, an *approximation* that disagrees with it. The capture does not show the
+``030-1771-006`` revision A, *observed*. A published PROM trace of a
+four-processor IP53 module attaches the Bedrock at widget ``0xb``
+(:src:`graphica-o350-notes lines 949-952`), *observed*, and reads as an
+Onyx 350 graphics blade (*inferred*). The profile sets the Bedrock's
+``host-widget`` property to ``0xb`` so the widget control register reads
+that value. This sets the register only. The XBridge stays wired to
+port ``0xa`` (``SN1_XBRIDGE_HOST_PORT``), an *approximation* where the
+trace puts the entry at ``0xb``; the stock PROM and IRIX 6.5.30 run with
+it, which shows compatibility only. The capture does not show the
 module booting alone, and it reports PROM 6.211 where the model runs
 6.210. The guide describes the base module's factory disk, four-port USB
 card, IO9 and serial daughtercard (:src:`007-4632-001 p. 47, 50, 53`),

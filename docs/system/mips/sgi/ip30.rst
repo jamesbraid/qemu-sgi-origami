@@ -256,7 +256,8 @@ Components and connections
    * - Onboard Bridge
      - Crossbow widget 15
      - *established*: OpenBSD ``ip30.h`` (``IP30_BRIDGE_WIDGET``); the
-       OpenBSD capture finds the Bridge at widget 15
+       OpenBSD capture finds the Bridge at widget 15 and prints "Bridge
+       revision 3"
    * - Two QLogic SCSI controllers
      - onboard PCI devices 0 and 1, function 0
      - *observed* in the OpenBSD capture (ISP1020 revision 5);
@@ -311,10 +312,9 @@ layers):
   specification letters revision 4 as D (:src:`bridge-asic-spec-4.0 p.
   19`).
 
-The machines do not pass a Bridge revision to the Bridge, so on both
-the chip reports its default, revision 1 (see
-:doc:`hardware/bridge`). This is a model inconsistency, listed under
-:ref:`sgi-ip30-unknowns`.
+The machine hands the module's Bridge revision to the Bridge, so
+``octane`` reports revision 3 and ``octane2`` revision 4 in the Bridge
+identification word (:doc:`hardware/bridge`).
 
 IOC3 general-purpose pin 2 is read by OpenBSD to tell the two products
 apart. ``ip30.h`` comments it as 1 for the classic Octane and 0 for the
@@ -326,8 +326,20 @@ reads 1 in pin register 2 and bit 2 set in the pin data register at
 ``0x3c`` after PROM start-up (:ref:`measured <sgi-ioc3-octane2-pins>`); pin register 3
 also reads 1. This is *established* for that board. OpenBSD's rule would name it an Octane, so
 the comment does not hold for this board, and what the pin senses is
-*unknown*. The model drives the pin high on ``octane`` and low on
-``octane2``, which differs from the measured board.
+*unknown*. The measurement of the modelled product outweighs the driver
+comment, so ``octane2`` drives IOC3 inputs 2 and 3 high, as the
+reference board reads them. ``octane`` drives input 2 high, per
+OpenBSD, and leaves input 3 unwired because it is unmeasured. Whether the
+inputs are board straps or floating pull-ups is *unknown*. OpenBSD will
+name the ``octane2`` machine an Octane, as it would the reference unit if
+it samples the same pin.
+
+The onboard IOC3 repeats its first 32 configuration bytes in the next 32,
+as the reference Octane2's chip does, so a guest reads no subsystem
+registers and no interrupt pin from it; Linux takes the board id from its
+Bridge table instead (:doc:`hardware/ioc3`). The first five dwords of its
+register block read the configuration header, and pin control clear reads
+the control word.
 
 .. _sgi-ip30-address-map:
 
@@ -650,8 +662,6 @@ Open questions
   smaller bank, the reset values of the bank descriptors, and the
   bank-number to descriptor-index mapping (:ref:`sgi-ip30-memory`,
   :doc:`hardware/heart`).
-- The model's Bridge reporting revision 1 where the Octane reads 3 and
-  the reference Octane2 reads 4.
 - The expansion Bridge's widget number. The reference Octane2 has none
   fitted.
 - Interrupt wiring from the onboard PCI functions to Bridge inputs; no
@@ -659,7 +669,7 @@ Open questions
   reference Octane2's PROM leaves Bridge pins 6 and 7 enabled, sending
   HEART bits 41 and 57 (:ref:`sgi-bridge-octane2-interrupts`); that is
   firmware state, not wiring.
-- What IOC3 pin 2 senses: it reads 1 on the reference Octane2, against
-  OpenBSD's comment (:ref:`sgi-ip30-components`).
+- What IOC3 inputs 2 and 3 sense: both read 1 on the reference Octane2,
+  against OpenBSD's comment for pin 2 (:ref:`sgi-ip30-components`).
 - What the kernel's hardware graph entry for Bridge device 4 is
   (:ref:`sgi-measured-octane2-graph`).

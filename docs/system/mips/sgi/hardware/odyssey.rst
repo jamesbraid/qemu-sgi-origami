@@ -9,8 +9,8 @@ VPro: graphics boards
 Used in :ref:`sgi-ip30` (Octane2, and the Octane on request),
 :ref:`sgi-ip35` (Fuel) and :ref:`sgi-ip53` (Onyx 350, Tezro). The Onyx
 3000 V-brick holds V12 boards (*established*, :src:`007-4264-002 p. 10`);
-it is described on :ref:`sgi-bricks`, and no machine builds it. VPro is
-the graphics family SGI sold as V6, V8, V10 and V12. SGI's upgrade guide
+it is described on :ref:`sgi-bricks`, and the Onyx 3000 builds it
+(:ref:`sgi-sn-family-vbrick`). VPro is the graphics family SGI sold as V6, V8, V10 and V12. SGI's upgrade guide
 fits it to both the Octane and the Octane2, given Crossbow 1.4 and the ER
 power supply (:src:`007-4210-003 preface`), *established*. Published
 inventories name Octane V6, V8, V10 and V12 boards and a Fuel V10,
