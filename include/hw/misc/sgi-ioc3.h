@@ -118,6 +118,8 @@ struct SGIIOC3BusState {
  * The SuperIO interrupt pair has no ethernet bit; that block drives the
  * PCI pin. The enable mask has set and clear write aliases.
  */
+/* The register block opens with the five configuration header dwords. */
+#define SGI_IOC3_HEADER_LAST    0x10
 /* Configuration bytes the chip decodes; the rest of the 64 repeat them. */
 #define SGI_IOC3_CONFIG_DECODED 0x20
 

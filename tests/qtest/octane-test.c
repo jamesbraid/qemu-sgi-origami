@@ -974,6 +974,35 @@ static void test_octane2_ioc3_config_repeats(void)
     qtest_quit(qts);
 }
 
+/*
+ * The first five dwords of the register block at BAR0 are the configuration
+ * header, which the same Command Monitor reads back as 0x310a9, 0x2800146,
+ * 0xff000001, 0x2800 and 0x500000. Pin control clear reads the control word,
+ * as the Command Monitor reads 0x2000f3 at both 0x34 and 0x38.
+ */
+static void test_octane2_ioc3_register_header(void)
+{
+    QTestState *qts = octane2_start_args("");
+    unsigned int off;
+
+    qtest_writel(qts, CFG(2) + 0x10, 0x500000);
+    qtest_writel(qts, CFG(2) + 0x0c, 0x2800);
+    qtest_writel(qts, CFG(2) + 0x04, 0x146);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x10011005);
+
+    for (off = 0; off <= 0x10; off += 4) {
+        g_assert_cmphex(qtest_readl(qts, IOC3 + off), ==,
+                        qtest_readl(qts, CFG(2) + off));
+    }
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x04), ==, 0x02800146);
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x10), ==, 0x00500000);
+
+    qtest_writel(qts, IOC3_PIN_CONTROL_SET, 0x2000f3);
+    g_assert_cmphex(qtest_readl(qts, IOC3_PIN_CONTROL_SET), ==, 0x2000f3);
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x38), ==, 0x2000f3);
+    qtest_quit(qts);
+}
+
 static void test_octane_ethernet(void)
 {
     test_octane_ioc3_ethernet(false);
@@ -5166,6 +5195,8 @@ int main(int argc, char **argv)
                    test_memory_population_rejections);
     qtest_add_func("/octane2/ioc3-config-repeats",
                    test_octane2_ioc3_config_repeats);
+    qtest_add_func("/octane2/ioc3-register-header",
+                   test_octane2_ioc3_register_header);
     qtest_add_func("/octane2/ioc3-ethernet", test_octane2_ethernet);
     qtest_add_func("/octane/ioc3-ethernet", test_octane_ethernet);
     qtest_add_data_func("/octane/mac", GINT_TO_POINTER(0), test_octane_mac);
