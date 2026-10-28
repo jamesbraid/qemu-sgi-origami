@@ -1573,7 +1573,7 @@ static void test_rx_progress_reset(void)
     for (unsigned mode = 0; mode < 4; mode++) {
         int sv[2];
         QTestState *qts = rx_progress_start(sv);
-        unsigned sequence = mode == 0 ? 0 : 17;
+        unsigned sequence = 0;
 
         for (unsigned done = 1; done <= 17; done++) {
             rx_progress_complete(qts, sv[0], done, done - 1, done - 1);
@@ -1591,7 +1591,7 @@ static void test_rx_progress_reset(void)
             qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 1);
             qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
             if (mode == 2) {
-                rx_progress_assert(qts, 17, 33, 16, 17);
+                rx_progress_assert(qts, 0, 0, 0, 0);
                 qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
             }
         }
@@ -1801,8 +1801,7 @@ static void test_rx_full_fifo_reinitialization(unsigned mode)
     if (mode == 1) {
         qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 1);
         qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
-        g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==,
-                        UINT64_C(0x150510));
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==, 0);
         qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
     } else {
         qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
@@ -1834,7 +1833,7 @@ static void test_rx_full_fifo_reinitialization(unsigned mode)
         uint64_t address = RX_REINIT_NEW_BASE + i * 0x1000;
         uint8_t expected_status[8] = {
             0x80, 0, 0, 0,
-            (((mode == 2 ? 0 : 5) + i) << 3) | 0x04,
+            (i << 3) | 0x04,
             0, 0, 64
         };
 
@@ -1883,45 +1882,36 @@ static void test_rx_reinit_already_disabled(void)
 
 static void test_rx_reinit_after_rx_progress(void)
 {
-    static const uint8_t expected_status[8] = {
-        0x80, 0, 0, 0, (5 << 3) | 0x04, 0, 0, 64
-    };
-    uint8_t old_snapshot[21][128], frame[60], status[8], landed[60];
+    uint8_t old[21][128], frame[60], guard[128], after[128];
     g_autofree char *dir = g_dir_make_tmp("mace-rx-reinit-progress-XXXXXX",
                                            NULL);
-    g_autofree char *log_path = g_build_filename(dir, "qemu.log", NULL);
-    g_autofree char *log_text = NULL;
+    g_autofree char *log = g_build_filename(dir, "qemu.log", NULL);
     int sv[2];
-    QTestState *qts = start_rx_full_fifo(sv, true, log_path, old_snapshot);
+    QTestState *qts = start_rx_full_fifo(sv, true, log, old);
 
     qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 1);
     qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
-    g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==,
-                    UINT64_C(0x150510));
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + DMA_CONTROL), ==, 0);
+    memset(guard, 0xa5, sizeof(guard));
+    qtest_memwrite(qts, RX_REINIT_NEW_BASE, guard, sizeof(guard));
+    qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RX_REINIT_NEW_BASE);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==, 0x10001);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, (1U << 15) | (4U << 12));
     rx_sequence_frame(frame, 25);
     socket_send_frame(sv[0], frame, sizeof(frame));
-    wait_fifo_count(qts, 15);
-    qtest_memread(qts, RX_REINIT_OLD_BASE + 5 * 0x1000,
-                  status, sizeof(status));
-    g_assert_cmpmem(status, 2, expected_status, 2);
-    g_assert_cmpmem(status + 4, 4, expected_status + 4, 4);
-    qtest_memread(qts, RX_REINIT_OLD_BASE + 5 * 0x1000 + 34,
-                  landed, sizeof(landed));
-    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
-
-    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
-    g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==, 0);
-    for (unsigned i = 0; i < 16; i++) {
-        qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT,
-                     RX_REINIT_NEW_BASE + i * 0x1000);
+    wait_fifo_count(qts, 0);
+    g_assert_cmpuint((eth_status(qts, RX_REINIT_NEW_BASE) >> 27) & 31, ==, 0);
+    qtest_memread(qts, RX_REINIT_NEW_BASE, after, sizeof(after));
+    g_assert_cmpmem(after + 34, sizeof(frame), frame, sizeof(frame));
+    for (unsigned i = 0; i < 21; i++) {
+        qtest_memread(qts, RX_REINIT_OLD_BASE + i * 4096, after, sizeof(after));
+        g_assert_cmpmem(after, sizeof(after), old[i], sizeof(old[i]));
     }
-    g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==,
-                    UINT64_C(0x100010));
     qtest_quit(qts);
-    g_assert_true(g_file_get_contents(log_path, &log_text, NULL, NULL));
-    g_assert_null(strstr(log_text, "RX address FIFO overrun"));
-    g_assert_cmpint(g_remove(log_path), ==, 0);
-    g_assert_cmpint(g_rmdir(dir), ==, 0);
+    g_unlink(log);
+    g_rmdir(dir);
     close(sv[0]);
     close(sv[1]);
 }
@@ -1936,10 +1926,10 @@ static void test_rx_reinit_core_only(void)
 
     qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 1);
     g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==,
-                    UINT64_C(0x150510));
+                    0);
     qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
     g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==,
-                    UINT64_C(0x150510));
+                    0);
     qtest_quit(qts);
     g_remove(log_path);
     g_rmdir(dir);
@@ -1947,7 +1937,7 @@ static void test_rx_reinit_core_only(void)
     close(sv[1]);
 }
 
-static void test_rx_reinit_reenable_discards_pulse(void)
+static void test_rx_reinit_reenable_keeps_posts(void)
 {
     uint8_t old_snapshot[21][128];
     g_autofree char *dir = g_dir_make_tmp("mace-rx-reenable-XXXXXX", NULL);
@@ -1957,10 +1947,11 @@ static void test_rx_reinit_reenable_discards_pulse(void)
 
     qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 1);
     qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
+    qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RX_REINIT_NEW_BASE);
     qtest_writeq(qts, ETH_BASE + DMA_CONTROL, (1U << 15) | (4U << 12));
     qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
     g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==,
-                    UINT64_C(0x150510));
+                    UINT64_C(0x10001));
     qtest_quit(qts);
     g_assert_cmpint(g_remove(log_path), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
@@ -2644,6 +2635,7 @@ static void test_rx_reinit_pending_migrates(void)
         QTestState *to = mace_standalone_start("-incoming defer");
 
         qtest_writeq(from, ETH_BASE + MAC_CONTROL, 0);
+        qtest_writeq(from, ETH_BASE + MAC_CONTROL, 0);
         for (unsigned i = 0; i < 16; i++) {
             qtest_writeq(from, ETH_BASE + RX_FIFO_PORT,
                          RX_REINIT_OLD_BASE + i * 0x1000);
@@ -2665,7 +2657,7 @@ static void test_rx_reinit_pending_migrates(void)
             qtest_writeq(from, ETH_BASE + MAC_CONTROL, 0);
         }
         g_assert_cmphex(qtest_readq(from, ETH_BASE + RX_FIFO_INFO), ==,
-                        UINT64_C(0x150510));
+                        mode == 1 ? 0 : UINT64_C(0x150510));
 
         qtest_qmp_assert_success(to,
             "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
@@ -2673,7 +2665,7 @@ static void test_rx_reinit_pending_migrates(void)
         sgi_wait_migration(to, "completed");
         qtest_qmp_assert_success(to, "{'execute':'cont'}");
         g_assert_cmphex(qtest_readq(to, ETH_BASE + RX_FIFO_INFO), ==,
-                        UINT64_C(0x150510));
+                        mode == 1 ? 0 : UINT64_C(0x150510));
         if (mode != 1) {
             qtest_writeq(to, ETH_BASE + MAC_CONTROL, 1);
             qtest_writeq(to, ETH_BASE + MAC_CONTROL, 0);
@@ -3310,8 +3302,7 @@ static void test_rx_dma_faults(void)
         qtest_writeq(qts, ETH_BASE + DMA_CONTROL, (1U << 15) | (4U << 12));
         g_assert_false(qtest_readq(qts, ETH_BASE + DMA_CONTROL) & (1U << 15));
         qtest_writeq(qts, ETH_BASE + INT_STATUS, 0xff);
-        g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_PORT), ==,
-                        RAM_FULL + 0x8000);
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_PORT), ==, 0);
         qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0x7000);
         qtest_writeq(qts, ETH_BASE + DMA_CONTROL, (1U << 15) | (4U << 12));
         g_assert_false(qtest_readq(qts, ETH_BASE + DMA_CONTROL) & (1U << 15));
@@ -3346,7 +3337,7 @@ static void test_rx_dma_faults(void)
         g_assert_true(eth_status(qts, FAULT_MEMORY + 0x1000) &
                       (UINT64_C(1) << 63));
         g_assert_cmpuint((eth_status(qts, FAULT_MEMORY + 0x1000) >> 27) & 31,
-                         ==, phase == 2 ? 0 : 1);
+                         ==, 0);
         qtest_quit(qts);
         close(sv[0]);
         close(sv[1]);
@@ -3443,6 +3434,34 @@ static void test_tx_status_fault(void)
     fault_set(qts, "fault-mode", 0);
     qtest_writeq(qts, ETH_BASE + INT_STATUS, 8);
     qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 3);
+    g_assert_cmpint(recv(sv[0], got, sizeof(got), MSG_DONTWAIT), ==, -1);
+    g_assert_cmpint(errno, ==, EAGAIN);
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 1);
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
+    qtest_writeq(qts, ETH_BASE + TX_BASE, RAM_FULL + 0x2000);
+    qtest_writeq(qts, ETH_BASE + TX_POINTER, 1);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 3);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + TX_POINTER), ==, 1);
+    g_assert_cmpint(recv(sv[0], got, sizeof(got), MSG_DONTWAIT), ==, -1);
+    g_assert_cmpint(errno, ==, EAGAIN);
+
+    /* Automatic DMA zero at MAC reset is not the required guest stop. */
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 1);
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
+    qtest_writeq(qts, ETH_BASE + TX_BASE, RAM_FULL + 0x2000);
+    memset(frame, 0x5b, sizeof(frame));
+    memcpy(descriptor + 68, frame, sizeof(frame));
+    qtest_memwrite(qts, FAULT_MEMORY + 0x2000, descriptor, sizeof(descriptor));
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 3);
+    qtest_writeq(qts, ETH_BASE + TX_POINTER, 1);
+    g_assert_cmpint(recv(sv[0], &length, 4, MSG_WAITALL), ==, 4);
+    g_assert_cmpuint(ntohl(length), ==, sizeof(frame));
+    g_assert_cmpint(recv(sv[0], got, sizeof(got), MSG_WAITALL), ==,
+                    sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), frame, sizeof(frame));
+    g_assert_cmphex(eth_status(qts, FAULT_MEMORY + 0x2000), ==,
+                    UINT64_C(0x800000000080003c));
     g_assert_cmpint(recv(sv[0], got, sizeof(got), MSG_DONTWAIT), ==, -1);
     g_assert_cmpint(errno, ==, EAGAIN);
     qtest_quit(qts);
@@ -3617,6 +3636,318 @@ static QTestState *start_tx_after_frames(int sv[2], unsigned completed)
     return qts;
 }
 
+#define MAC_RESET_MODE UINT64_C(0x01234560)
+
+static QTestState *mac_reset_seed(int sv[2], unsigned ring,
+                                 uint8_t old[16][512])
+{
+    QTestState *qts = start_tx_after_frames(sv, 1);
+    uint8_t guard[512], frame[60];
+    unsigned dma = (ring << 2) | (1U << 15) | (1U << 9) |
+                   (1U << 10) | (4U << 12) | (7U << 4) | 3;
+
+    memset(guard, 0x59, sizeof(guard));
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, MAC_RESET_MODE);
+    qtest_writeq(qts, ETH_BASE + STATION, UINT64_C(0x02a14c7395e6));
+    qtest_writeq(qts, ETH_BASE + STATION_SECONDARY, UINT64_C(0x023456789abc));
+    qtest_writeq(qts, ETH_BASE + MULTICAST_MASK, UINT64_C(0x8123456789abcdef));
+    for (unsigned i = 0; i < 16; i++) {
+        qtest_memwrite(qts, RX_REINIT_OLD_BASE + i * 4096,
+                       guard, sizeof(guard));
+        qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT,
+                     RX_REINIT_OLD_BASE + i * 4096);
+    }
+    for (unsigned i = 0; i < 16; i++) {
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_PORT), ==,
+                        RX_REINIT_OLD_BASE + i * 4096);
+    }
+    for (unsigned i = 0; i < 8; i++) {
+        qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT,
+                     RX_REINIT_OLD_BASE + i * 4096);
+    }
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, dma);
+    for (unsigned i = 0; i < 3; i++) {
+        rx_sequence_frame(frame, i);
+        socket_send_frame(sv[0], frame, sizeof(frame));
+        wait_fifo_count(qts, 7 - i);
+    }
+    qtest_writeq(qts, ETH_BASE + RX_DELAY, 2);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, dma | (1U << 11));
+    rx_sequence_frame(frame, 3);
+    socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_rx_status(qts, RX_REINIT_OLD_BASE + 3 * 4096);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==, 0x181305);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + TX_POINTER), ==, 0x10001);
+    g_assert_cmpuint((qtest_readq(qts, ETH_BASE + INT_STATUS) >> 25) & 31,
+                     ==, 4);
+    for (unsigned i = 0; i < 16; i++) {
+        qtest_memread(qts, RX_REINIT_OLD_BASE + i * 4096,
+                      old[i], sizeof(old[i]));
+    }
+    qtest_writeq(qts, ETH_BASE + MDIO_ADDRESS, (8U << 5) | 2);
+    qtest_writeq(qts, ETH_BASE + MDIO_READ, 0);
+    return qts;
+}
+
+static void mac_reset_fields(QTestState *qts)
+{
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + DMA_CONTROL), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_DELAY), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + TX_POINTER), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + TX_POINTER + 8), ==, 0);
+    for (unsigned i = 0; i < 3; i++) {
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO + 8 * i),
+                        ==, 0);
+    }
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + TX_BASE), ==,
+                    RAM_FULL + 0x40000);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + STATION), ==,
+                    UINT64_C(0x02a14c7395e6));
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + STATION_SECONDARY), ==,
+                    UINT64_C(0x023456789abc));
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + MULTICAST_MASK), ==,
+                    UINT64_C(0x8123456789abcdef));
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + 0x58), ==,
+                    UINT64_C(0x800000000080003c));
+}
+
+static void mac_reset_old_ram(QTestState *qts, const uint8_t old[16][512])
+{
+    uint8_t after[512];
+
+    for (unsigned i = 0; i < 16; i++) {
+        qtest_memread(qts, RX_REINIT_OLD_BASE + i * 4096, after, sizeof(after));
+        g_assert_cmpmem(after, sizeof(after), old[i], sizeof(old[i]));
+    }
+}
+
+static void test_mac_reset_epoch(void)
+{
+    for (unsigned ring = 0; ring < 4; ring++) {
+        for (unsigned word = 0; word < 2; word++) {
+            uint8_t old[16][512], guard[512], after[512];
+            uint8_t tx[128], tx_after[128];
+            uint8_t frame[60];
+            unsigned count = word ? 5 : 16;
+            int sv[2];
+            QTestState *qts = mac_reset_seed(sv, ring, old);
+            uint64_t dma = qtest_readq(qts, ETH_BASE + DMA_CONTROL);
+            uint64_t status = qtest_readq(qts, ETH_BASE + INT_STATUS);
+            uint64_t mdio = qtest_readq(qts, ETH_BASE + MDIO_DATA);
+            uint64_t raises;
+
+            qtest_memread(qts, RAM_FULL + 0x40000, tx, sizeof(tx));
+            qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
+            qtest_writeq(qts, CRIME_ENABLE, 0x28);
+            qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00280020));
+            raises = qtest_get_irq_raise_count(qts, 0);
+            g_assert_cmpuint(raises, >, 0);
+            qtest_writeb(qts, ETH_BASE + MAC_CONTROL + 7, 1);
+            qtest_writew(qts, ETH_BASE + MAC_CONTROL + 6, 1);
+            qtest_writel(qts, ETH_BASE + MAC_CONTROL, 1);
+            qtest_writeq(qts, ETH_BASE + MAC_CONTROL + 1, UINT64_MAX);
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + MAC_CONTROL), ==,
+                            MAC_RESET_MODE | (1U << 29));
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + DMA_CONTROL), ==, dma);
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS),
+                            ==, status);
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==,
+                            0x181305);
+            if (word) {
+                qtest_writel(qts, ETH_BASE + MAC_CONTROL + 4,
+                             MAC_RESET_MODE | 1);
+            } else {
+                qtest_writeq(qts, ETH_BASE + MAC_CONTROL, MAC_RESET_MODE | 1);
+            }
+            mac_reset_fields(qts);
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + MDIO_DATA), ==, mdio);
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + MDIO_ADDRESS),
+                            ==, 0x102);
+            g_assert_cmphex(qtest_readq(qts, CRIME_STATUS) & 0x38, ==, 0x20);
+            g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, raises);
+            qtest_clock_step(qts, 100000);
+            mac_reset_fields(qts);
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + MDIO_DATA), ==, 0x15);
+            mac_reset_old_ram(qts, old);
+            qtest_memread(qts, RAM_FULL + 0x40000, tx_after, sizeof(tx_after));
+            g_assert_cmpmem(tx_after, sizeof(tx_after), tx, sizeof(tx));
+            qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00080008));
+            qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RX_REINIT_NEW_BASE);
+            qtest_writeq(qts, ETH_BASE + RX_DELAY, 3);
+            qtest_writeq(qts, ETH_BASE + MAC_CONTROL, MAC_RESET_MODE | 1);
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO),
+                            ==, 0x10001);
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_DELAY), ==, 3);
+            qtest_writeq(qts, ETH_BASE + MAC_CONTROL, MAC_RESET_MODE);
+            qtest_writeq(qts, ETH_BASE + MAC_CONTROL, MAC_RESET_MODE);
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO),
+                            ==, 0x10001);
+            g_assert_cmphex(qtest_readq(qts, CRIME_STATUS) & 0x38, ==, 0x28);
+            qtest_writeq(qts, ETH_BASE + MAC_CONTROL, MAC_RESET_MODE | 1);
+            mac_reset_fields(qts);
+            g_assert_cmphex(qtest_readq(qts, CRIME_STATUS) & 0x38, ==, 0x28);
+            qtest_writeq(qts, ETH_BASE + MAC_CONTROL, MAC_RESET_MODE);
+
+            memset(guard, 0x59, sizeof(guard));
+            for (unsigned i = 0; i < count; i++) {
+                qtest_memwrite(qts, RX_REINIT_NEW_BASE + i * 4096,
+                               guard, sizeof(guard));
+                qtest_writel(qts, ETH_BASE + RX_FIFO_PORT + (i % 16) * 8 + 4,
+                             RX_REINIT_NEW_BASE + i * 4096);
+            }
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==,
+                            count == 16 ? 0x100010 : 0x50005);
+            /* Finishing fault recovery must preserve the new posts. */
+            qtest_writeq(qts, ETH_BASE + DMA_CONTROL, ring << 2);
+            g_assert_cmpuint(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO) & 31,
+                             ==, count);
+            qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
+                         (ring << 2) | (1U << 15) | (1U << 9) |
+                         (4U << 12) | (count << 4));
+            for (unsigned i = 0; i < 2; i++) {
+                uint64_t address = RX_REINIT_NEW_BASE + i * 4096;
+                uint64_t expected = (UINT64_C(1) << 63) |
+                    ((uint64_t)rx_progress_vectors[4 + i].checksum << 32) |
+                    ((uint64_t)i << 27) | (1U << 26) | 64;
+
+                rx_sequence_frame(frame, 4 + i);
+                socket_send_frame(sv[0], frame, sizeof(frame));
+                wait_fifo_count(qts, count - i - 1);
+                g_assert_cmphex(eth_status(qts, address), ==, expected);
+                qtest_memread(qts, address, after, sizeof(after));
+                g_assert_cmpmem(after + 34, sizeof(frame),
+                                frame, sizeof(frame));
+                g_assert_cmpmem(after + 94, 4,
+                                rx_progress_vectors[4 + i].fcs, 4);
+            }
+            qtest_memread(qts, RX_REINIT_NEW_BASE + 2 * 4096,
+                          after, sizeof(after));
+            g_assert_cmpmem(after, sizeof(after), guard, sizeof(guard));
+            mac_reset_old_ram(qts, old);
+            expect_no_tx_frame(sv[0]);
+            qtest_quit(qts);
+            close(sv[0]);
+            close(sv[1]);
+        }
+    }
+}
+
+static void mac_reset_stage(QTestState *qts)
+{
+    uint8_t entry[128] = { 0 }, frame[60], guard[128];
+
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, MAC_RESET_MODE | 1);
+    mac_reset_fields(qts);
+    memset(guard, 0x59, sizeof(guard));
+    for (unsigned i = 0; i < 4; i++) {
+        qtest_memwrite(qts, RX_REINIT_NEW_BASE + i * 4096,
+                       guard, sizeof(guard));
+        qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT,
+                     RX_REINIT_NEW_BASE + i * 4096);
+    }
+    qtest_writeq(qts, ETH_BASE + RX_DELAY, 3);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
+                 (2U << 2) | (1U << 15) | (1U << 9) |
+                 (4U << 12) | (4U << 4) | 3);
+    store_be64(entry, (1U << 24) | (68U << 16) | 59);
+    tx_sequence_frame(frame, 701);
+    memcpy(entry + 68, frame, sizeof(frame));
+    qtest_memwrite(qts, RAM_FULL + 0x40000, entry, sizeof(entry));
+    qtest_writeq(qts, ETH_BASE + TX_POINTER, 1);
+    qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00280028));
+    qtest_writeq(qts, CRIME_ENABLE, 0x28);
+}
+
+static void mac_reset_check_staged(QTestState *qts)
+{
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==, 0x40004);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_DELAY), ==, 3);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + DMA_CONTROL), ==, 0xc24b);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + TX_POINTER), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, CRIME_STATUS) & 0x38, ==, 0x28);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + 0x58), ==,
+                    UINT64_C(0x800000000080003c));
+}
+
+static void test_mac_reset_held_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("mace-mac-held-XXXXXX", NULL);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    uint8_t old[16][512], control_old[16][512], fresh[60], rx[60], after[128];
+    int sv[2], control_sv[2], dest_sv[2];
+    QTestState *from = mac_reset_seed(sv, 2, old);
+    QTestState *control = mac_reset_seed(control_sv, 2, control_old);
+    QTestState *to;
+
+    mac_reset_stage(from);
+    mac_reset_stage(control);
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, dest_sv), ==, 0);
+    socket_timeout(dest_sv[0]);
+    to = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 -incoming defer "
+                     "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", dest_sv[1]);
+    /* Migration announcements bypass the MAC completion path. */
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-set-parameters',"
+        "'arguments':{'announce-rounds':0}}");
+    qtest_irq_intercept_out_named(to, "/machine/crime", "cpu-ip");
+    qtest_qmp_assert_success(from, "{'execute':'stop'}");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    for (unsigned copy = 0; copy < 2; copy++) {
+        QTestState *qts = copy ? to : control;
+        int fd = copy ? dest_sv[0] : control_sv[0];
+        uint64_t raises;
+
+        mac_reset_check_staged(qts);
+        qtest_clock_step(qts, 100000);
+        mac_reset_check_staged(qts);
+        mac_reset_old_ram(qts, copy ? old : control_old);
+        qtest_writeq(qts, ETH_BASE + MAC_CONTROL, MAC_RESET_MODE | 1);
+        mac_reset_check_staged(qts);
+        qtest_writeq(qts, ETH_BASE + MAC_CONTROL, MAC_RESET_MODE);
+        mac_reset_check_staged(qts);
+        expect_no_tx_frame(fd);
+        raises = copy ? qtest_get_irq_raise_count(qts, 0) : 0;
+        qtest_writeq(qts, ETH_BASE + TX_POINTER, 1);
+        tx_sequence_frame(fresh, 701);
+        expect_tx_frame(fd, fresh);
+        expect_no_tx_frame(fd);
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + TX_POINTER), ==, 0x10001);
+        rx_sequence_frame(rx, 6);
+        socket_send_frame(fd, rx, sizeof(rx));
+        wait_fifo_count(qts, 3);
+        g_assert_cmpuint((eth_status(qts, RX_REINIT_NEW_BASE) >> 27) & 31,
+                         ==, 0);
+        qtest_memread(qts, RX_REINIT_NEW_BASE, after, sizeof(after));
+        g_assert_cmpmem(after + 34, sizeof(rx), rx, sizeof(rx));
+        g_assert_cmpmem(after + 94, 4, rx_progress_vectors[6].fcs, 4);
+        mac_reset_old_ram(qts, copy ? old : control_old);
+        if (copy) {
+            g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, raises);
+        }
+    }
+    g_assert_cmphex(qtest_readq(to, ETH_BASE + INT_STATUS), ==,
+                    qtest_readq(control, ETH_BASE + INT_STATUS));
+    qtest_quit(to);
+    qtest_quit(from);
+    qtest_quit(control);
+    close(sv[0]);
+    close(sv[1]);
+    close(dest_sv[0]);
+    close(dest_sv[1]);
+    close(control_sv[0]);
+    close(control_sv[1]);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
 static void test_interrupt_request_device_resets(void)
 {
     int sv[2];
@@ -3666,15 +3997,15 @@ static void test_interrupt_request_device_resets(void)
     close(sv[1]);
 }
 
-static void test_tx_mac_reset_keeps_queue(void)
+static void test_tx_mac_reset_clears_queue(void)
 {
     int sv[2];
     QTestState *qts = start_tx_after_frames(sv, 1);
 
     qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 1);
-    g_assert_cmphex(tx_pointer_aliases(qts), ==, UINT64_C(0x10001));
+    g_assert_cmphex(tx_pointer_aliases(qts), ==, 0);
     qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
-    g_assert_cmphex(tx_pointer_aliases(qts), ==, UINT64_C(0x10001));
+    g_assert_cmphex(tx_pointer_aliases(qts), ==, 0);
     g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0x1a, ==, 0);
     expect_no_tx_frame(sv[0]);
     qtest_quit(qts);
@@ -3835,7 +4166,7 @@ static void test_tx_reinitialization_migrates(void)
         qtest_qmp_assert_success(to, "{'execute':'cont'}");
         g_assert_cmphex(tx_pointer_aliases(to), ==, 1);
         qtest_writeq(to, ETH_BASE + DMA_CONTROL, 2);
-        g_assert_cmphex(tx_pointer_aliases(to), ==, 0);
+        g_assert_cmphex(tx_pointer_aliases(to), ==, 1);
         qtest_quit(to);
         qtest_quit(from);
         g_unlink(socket);
@@ -5032,6 +5363,10 @@ int main(int argc, char **argv)
                    test_standalone_request_refusal);
     qtest_add_func("/sgi/mace/ethernet/tx-payload-read-fault",
                    test_tx_payload_read_fault);
+    qtest_add_func("/sgi/mace/ethernet/mac-reset-held-migration",
+                   test_mac_reset_held_migration);
+    qtest_add_func("/sgi/mace/ethernet/mac-reset-epoch",
+                   test_mac_reset_epoch);
     qtest_add_func("/sgi/mace/ethernet/interrupt-request-device-resets",
                    test_interrupt_request_device_resets);
     qtest_add_func("/sgi/mace/ethernet/tx-status-fault",
@@ -5105,8 +5440,8 @@ int main(int argc, char **argv)
                    test_rx_reinit_already_disabled);
     qtest_add_func("/sgi/mace/ethernet/rx-reinit-core-only",
                    test_rx_reinit_core_only);
-    qtest_add_func("/sgi/mace/ethernet/rx-reinit-reenable-discards-pulse",
-                   test_rx_reinit_reenable_discards_pulse);
+    qtest_add_func("/sgi/mace/ethernet/rx-reinit-reenable-keeps-posts",
+                   test_rx_reinit_reenable_keeps_posts);
     qtest_add_func("/sgi/mace/ethernet/rx-reinit-dma-only",
                    test_rx_reinit_dma_only);
     qtest_add_func("/sgi/mace/ethernet/rx-reinit-other-ring-size",
@@ -5139,8 +5474,8 @@ int main(int argc, char **argv)
                    test_tx_ring_wrap);
     qtest_add_func("/sgi/mace/ethernet/tx-pointer-outside-ring",
                    test_tx_pointer_outside_ring);
-    qtest_add_func("/sgi/mace/ethernet/tx-mac-reset-keeps-queue",
-                   test_tx_mac_reset_keeps_queue);
+    qtest_add_func("/sgi/mace/ethernet/tx-mac-reset-clears-queue",
+                   test_tx_mac_reset_clears_queue);
     qtest_add_func("/sgi/mace/ethernet/tx-dma-disable-keeps-queue",
                    test_tx_dma_disable_keeps_queue);
     qtest_add_func("/sgi/mace/ethernet/tx-driver-reinitialization",

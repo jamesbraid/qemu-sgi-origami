@@ -215,6 +215,23 @@ static uint32_t sgi_mace_eth_fifo_info(SGIMACEEthState *s)
            ((uint32_t)s->rx_read << 8) | s->rx_count;
 }
 
+static void sgi_mace_eth_mac_reset(SGIMACEEthState *s)
+{
+    s->dma_control = 0;
+    s->int_status = 0;
+    s->rx_delay = 0;
+    sgi_mace_eth_rx_cancel(s);
+    s->tx_read = 0;
+    s->tx_write = 0;
+    s->rx_count = 0;
+    s->rx_read = 0;
+    s->rx_write = 0;
+    s->rx_sequence = 0;
+    s->rx_read_generation = false;
+    s->rx_write_generation = false;
+    qemu_bh_cancel(s->flush_bh);
+}
+
 static void sgi_mace_eth_rx_reinit_finish(SGIMACEEthState *s)
 {
     if ((s->rx_reinit_seen & (MACE_ETH_RX_REINIT_DMA_OFF |
@@ -222,15 +239,7 @@ static void sgi_mace_eth_rx_reinit_finish(SGIMACEEthState *s)
         (MACE_ETH_RX_REINIT_DMA_OFF | MACE_ETH_RX_REINIT_MAC_PULSED)) {
         return;
     }
-    sgi_mace_eth_rx_cancel(s);
     s->rx_stopped = false;
-    s->rx_count = 0;
-    s->rx_read = 0;
-    s->rx_write = 0;
-    s->rx_read_generation = false;
-    s->rx_write_generation = false;
-    sgi_mace_eth_rx_retire(s);
-    sgi_mace_eth_update_irq(s);
     s->rx_reinit_seen = 0;
 }
 
@@ -693,26 +702,39 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
             return;
         }
         switch (reg) {
-        case MACE_ETH_MAC_CONTROL:
-            if (value & MACE_ETH_MAC_RESET) {
-                s->tx_reinit_seen |= MACE_ETH_TX_REINIT_RESET;
-                s->rx_reinit_seen |= MACE_ETH_RX_REINIT_MAC_HELD;
-            } else if (s->rx_reinit_seen & MACE_ETH_RX_REINIT_MAC_HELD) {
-                s->rx_reinit_seen &= ~MACE_ETH_RX_REINIT_MAC_HELD;
-                s->rx_reinit_seen |= MACE_ETH_RX_REINIT_MAC_PULSED;
-            }
+        case MACE_ETH_MAC_CONTROL: {
+            bool was_reset = s->mac_control & MACE_ETH_MAC_RESET;
+            bool reset = value & MACE_ETH_MAC_RESET;
+
             s->mac_control = MACE_ETH_REVISION | (value & 0x1fffffff);
-            if (!(value & MACE_ETH_MAC_RESET)) {
-                sgi_mace_eth_rx_reinit_finish(s);
+            if (reset && !was_reset) {
+                sgi_mace_eth_mac_reset(s);
+                s->tx_reinit_seen |= MACE_ETH_TX_REINIT_RESET;
+                s->rx_reinit_seen = (s->rx_reinit_seen &
+                                     MACE_ETH_RX_REINIT_DMA_OFF) |
+                                    MACE_ETH_RX_REINIT_MAC_HELD;
+            } else if (was_reset && !reset) {
+                if (s->rx_reinit_seen & MACE_ETH_RX_REINIT_MAC_HELD) {
+                    s->rx_reinit_seen &= ~MACE_ETH_RX_REINIT_MAC_HELD;
+                    s->rx_reinit_seen |= MACE_ETH_RX_REINIT_MAC_PULSED;
+                    sgi_mace_eth_rx_reinit_finish(s);
+                }
+                /* Release preserves staged work until an ordinary trigger. */
+                qemu_bh_cancel(s->flush_bh);
             }
             if (value & (MACE_ETH_MAC_LOOPBACK | MACE_ETH_MAC_SIA)) {
                 qemu_log_mask(LOG_UNIMP,
                               "sgi-mace-eth: MAC loopback/SIA is unsupported\n");
             }
-            sgi_mace_eth_tx_run(s);
-            sgi_mace_eth_update_irq(s);
-            sgi_mace_eth_schedule_flush(s);
+            if (reset && !was_reset) {
+                sgi_mace_eth_update_irq(s);
+            } else if (!reset && !was_reset) {
+                sgi_mace_eth_tx_run(s);
+                sgi_mace_eth_update_irq(s);
+                sgi_mace_eth_schedule_flush(s);
+            }
             return;
+        }
         case MACE_ETH_DMA_CONTROL: {
             bool rx_enable_requested = value & MACE_ETH_RX_ENABLE;
 
@@ -736,8 +758,6 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
                 if (s->tx_reinit_seen == MACE_ETH_TX_REINIT_READY &&
                     !(s->mac_control & MACE_ETH_MAC_RESET)) {
                     s->tx_stopped = false;
-                    s->tx_read = 0;
-                    s->tx_write = 0;
                 }
                 s->tx_reinit_seen = 0;
             }
@@ -854,14 +874,30 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
                   offset, size, value);
 }
 
+static bool sgi_mace_eth_valid_access(void *opaque, hwaddr offset,
+                                       unsigned size, bool write,
+                                       MemTxAttrs attrs)
+{
+    if (!(offset & (size - 1))) {
+        return true;
+    }
+    qemu_log_mask(LOG_UNIMP, "sgi-mace-eth: unsupported %s at 0x%"
+                  HWADDR_PRIx " size %u\n", write ? "write" : "read",
+                  offset, size);
+    return false;
+}
+
 static const MemoryRegionOps sgi_mace_eth_ops = {
     .read = sgi_mace_eth_read,
     .write = sgi_mace_eth_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
+    .valid.unaligned = true,
+    .valid.accepts = sgi_mace_eth_valid_access,
     .impl.min_access_size = 1,
     .impl.max_access_size = 8,
+    .impl.unaligned = true,
 };
 
 static void sgi_mace_eth_reset_hold(Object *obj, ResetType type)
