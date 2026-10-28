@@ -35,6 +35,13 @@ enum {
 };
 
 /*
+ * The attached-brick ports an I-brick lists its C-brick and its graphics
+ * brick at. Neither is published; the model's numbering.
+ */
+#define L1_IBRICK_HOST_PORT 1
+#define L1_IBRICK_GRAPHICS_PORT 2
+
+/*
  * How long a controller that has been told to restart answers no peer. The
  * guides print the "no response from" line but give no figure, only "for a
  * while", so the duration alone is the model's choice.
@@ -73,6 +80,13 @@ static const SGIL1ProductProfile l1_profiles[] = {
      */
     { "cbrick", 0x43, 0, 0, true, L1_O3K_CBRICK },
     { "ibrick", 0x49, 0, 0, false, L1_O3K_IBRICK },
+    /*
+     * The N-brick's L1. It answers as an I/O brick does, one for the
+     * several C-bricks cabled to it. Its type letter is a candidate only:
+     * the L1 command set lists 'n' for the brick (007-4240-002 page 235)
+     * but no capture shows what it reports.
+     */
+    { "nbrick", 0x4e, 0, 0, false, L1_O3K_IBRICK },
     /*
      * The Origin 3900 and Onyx 3000 Cx-brick: one L1 for one to four IP53
      * node boards. Its type character is unknown, so it has no default;
@@ -138,6 +152,12 @@ static bool l1_is_ibrick(const SGIL1State *s)
     return s->profile->o3k == L1_O3K_IBRICK;
 }
 
+/* The N-brick shares the I/O brick profile and several C-bricks share it. */
+static bool l1_is_nbrick(const SGIL1State *s)
+{
+    return l1_is_ibrick(s) && s->profile->identity == 0x4e;
+}
+
 static bool l1_is_cxbrick(const SGIL1State *s)
 {
     return s->profile && s->profile->o3k == L1_O3K_CXBRICK;
@@ -192,7 +212,9 @@ static char *l1_module_name(const SGIL1State *s)
     } else {
         g_strlcpy(bay, "--", sizeof(bay));
     }
-    return g_strdup_printf("%s%c%s", rack, l1_is_ibrick(s) ? 'i' : 'c', bay);
+    return g_strdup_printf("%s%c%s", rack,
+                           l1_is_nbrick(s) ? 'n' : l1_is_ibrick(s) ? 'i' : 'c',
+                           bay);
 }
 
 static bool l1_restarting(const SGIL1State *s)
@@ -1021,6 +1043,50 @@ static void l1_reference_refuse(SGIL1State *s, SGIL1State *recipient,
  * on the numbering. An attached brick without a name appears as absent: what
  * a real controller returns for one is unknown.
  */
+static void l1_o3k_attached_put(uint8_t *fields, unsigned slot,
+                                uint32_t rack, uint32_t bay, uint8_t letter)
+{
+    fields[10 * slot] = 0;
+    stl_be_p(fields + 10 * slot + 1, (rack << 6) | bay);
+    fields[10 * slot + 5] = 0;
+    stl_be_p(fields + 10 * slot + 6, letter);
+}
+
+/*
+ * The same request on an I/O brick whose requesting C-brick has a graphics
+ * brick on the other Crosstown2 port of its crossbar. The stock PROM's
+ * crossbar arbitration asks the I/O brick which bricks sit on it once that
+ * port is alive, and gives up on the I/O brick if the reply is an error.
+ * What a real I/O brick answers is not published (approximation): the
+ * model lists the requesting C-brick at port 1 and the graphics brick at
+ * port 2, each as the C-brick's reply lists a brick, and leaves the other
+ * ports empty. An I/O brick whose C-brick has no graphics brick keeps the
+ * unknown-request code.
+ */
+static void l1_iobrick_attached(SGIL1State *s, SGIL1State *recipient,
+                                uint8_t channel, bool low_ports)
+{
+    SGIL1State *host = s->reply_to ? s->reply_to : l1_host_of(s, NULL);
+    uint8_t fields[40] = { 0 };
+
+    if (!host || !host->io_gfx_bay || !l1_named(host)) {
+        /* No source says what an I/O brick answers. */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: attached-brick request unavailable on the "
+                      "%s profile\n", s->profile->name);
+        l1_reply_direct(recipient, channel, -101, 0, NULL, 0);
+        return;
+    }
+    if (low_ports) {
+        l1_o3k_attached_put(fields, L1_IBRICK_HOST_PORT - 1,
+                            host->rack, host->bay, 'C');
+        l1_o3k_attached_put(fields, L1_IBRICK_GRAPHICS_PORT - 1,
+                            host->rack, host->io_gfx_bay, 'G');
+    }
+    l1_reply_direct(recipient, channel, 0, low_ports ? 8 : 4, fields,
+                    low_ports ? 40 : 20);
+}
+
 static void l1_o3k_attached(SGIL1State *s, SGIL1State *recipient,
                             uint8_t channel, bool low_ports)
 {
@@ -1039,11 +1105,7 @@ static void l1_o3k_attached(SGIL1State *s, SGIL1State *recipient,
     };
 
     if (l1_is_ibrick(s)) {
-        /* No source says what an I-brick answers. */
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-l1: attached-brick request unavailable on the "
-                      "ibrick profile\n");
-        l1_reply_direct(recipient, channel, -101, 0, NULL, 0);
+        l1_iobrick_attached(s, recipient, channel, low_ports);
         return;
     }
     for (unsigned i = 0; i < ARRAY_SIZE(cables); i++) {
@@ -1057,11 +1119,8 @@ static void l1_o3k_attached(SGIL1State *s, SGIL1State *recipient,
         }
         for (unsigned slot = 0; slot < slots; slot++) {
             if (ports[slot] == cables[i].port) {
-                fields[10 * slot] = 0;
-                stl_be_p(fields + 10 * slot + 1,
-                         (cables[i].brick->rack << 6) | cables[i].brick->bay);
-                fields[10 * slot + 5] = 0;
-                stl_be_p(fields + 10 * slot + 6, cables[i].letter);
+                l1_o3k_attached_put(fields, slot, cables[i].brick->rack,
+                                    cables[i].brick->bay, cables[i].letter);
             }
         }
     }
@@ -1420,7 +1479,7 @@ static void l1_o3k_config(SGIL1State *s)
 
     if (l1_is_ibrick(s)) {
         /* The first of an I-brick's C-brick ports. */
-        SGIL1State *host = l1_host_of(s, NULL);
+        SGIL1State *host = l1_is_nbrick(s) ? NULL : l1_host_of(s, NULL);
 
         if (host) {
             rows[count++] = (SGIL1ConfigRow) { 1, host };
@@ -1465,7 +1524,7 @@ static void l1_o3k_brick_print(SGIL1State *s)
     /* A Cx-brick's letter is unknown unless supplied; "?" is the guide's. */
     l1_printf(s, "rack: %s, slot: %s, partition: %u, type: %c, "
               "source: EEPROM\r\n", rack, bay, s->partition,
-              l1_is_ibrick(s) ? 'I' :
+              l1_is_ibrick(s) ? (char)s->profile->identity :
               !l1_is_cxbrick(s) ? 'C' :
               s->brick_type_code ? (char)s->brick_type_code : '?');
 }
@@ -2315,8 +2374,11 @@ static bool l1_forward_to_peer(SGIL1State *s, const uint8_t *p,
     uint8_t copy[SGI_L1_FRAME_SIZE];
 
     if (l1_is_ibrick(s)) {
-        /* An I-brick knows its C-brick and nothing else. */
-        peer = type == 4 ? NULL : l1_host_of(s, NULL);
+        /*
+         * An I-brick knows its C-brick and nothing else; an N-brick has
+         * several and no operator relay to any.
+         */
+        peer = type == 4 || l1_is_nbrick(s) ? NULL : l1_host_of(s, NULL);
     } else if (type == 4) {
         /* The attached I/O brick of a C-brick. */
         peer = l1_is_cbrick(s) ? s->io_peer : NULL;
@@ -3730,6 +3792,7 @@ static const VMStateDescription vmstate_l1 = {
         VMSTATE_INT64(restart_until, SGIL1State),
         VMSTATE_UINT32_EQUAL(io_port, SGIL1State),
         VMSTATE_UINT32_EQUAL(c_port, SGIL1State),
+        VMSTATE_UINT32(io_gfx_bay, SGIL1State),
         VMSTATE_UINT32_EQUAL(cx_boards, SGIL1State),
         VMSTATE_UINT32_EQUAL(cx_compute, SGIL1State),
         VMSTATE_UINT8_ARRAY(cx_port_field, SGIL1State, SGI_L1_CX_BOARDS),
@@ -4112,6 +4175,14 @@ static bool l1_build_o3k_identity(SGIL1State *s, Error **errp)
                        "profile only");
             return false;
         }
+        if (l1_is_nbrick(s)) {
+            /* A power board and a logic board; no base I/O, so no address. */
+            l1_o3k_board(s, 0, "POWER", "NOTOBSERVED0", "00", NULL, 'S',
+                         s->identity_index);
+            l1_o3k_board(s, 1, "LOGIC", "NOTOBSERVED0", "00", NULL, 'N',
+                         s->identity_index);
+            return true;
+        }
         if (net_parse_macaddr(mac, s->mac) < 0 ||
             !memcmp(mac, "\0\0\0\0\0\0", 6) || (mac[0] & 1)) {
             error_setg(errp, "L1 mac must be a nonzero unicast address");
@@ -4289,8 +4360,10 @@ static bool l1_o3k_check(SGIL1State *s, Error **errp)
                        "apply to the C-brick profile only");
             return false;
         }
-        if (!s->mac) {
-            error_setg(errp, "L1 I-brick profile needs a mac");
+        if (l1_is_nbrick(s) ? s->mac != NULL : s->mac == NULL) {
+            error_setg(errp, l1_is_nbrick(s) ?
+                       "L1 N-brick profile takes no mac" :
+                       "L1 I-brick profile needs a mac");
             return false;
         }
     } else {
@@ -5101,14 +5174,15 @@ static const char *l1_io_peer_fault(const SGIL1State *c,
         return "L1 io-peer is for the C-brick profile only";
     }
     if (!l1_is_ibrick(ibrick)) {
-        return "L1 io-peer must name an I-brick";
+        return "L1 io-peer must name an I-brick or N-brick";
     }
     /*
      * The retained system's cabling of a second C-brick is unknown, so an
-     * I-brick takes one. A configuration that names two is refused where
-     * the second cable is made, or at realize when it was made earlier.
+     * I-brick takes one; an N-brick has a connector for each of four. A
+     * configuration that names two is refused where the second cable is
+     * made, or at realize when it was made earlier.
      */
-    if (l1_host_of(ibrick, c)) {
+    if (!l1_is_nbrick(ibrick) && l1_host_of(ibrick, c)) {
         return "L1 I-brick takes one C-brick";
     }
     return NULL;
@@ -5229,6 +5303,12 @@ static void l1_init(Object *obj)
                              l1_peer_check, 0);
     object_property_add_link(obj, "io-peer", TYPE_SGI_L1,
                              (Object **)&s->io_peer, l1_io_peer_check, 0);
+    /*
+     * The graphics brick on the I/O brick's other Crosstown2 port, set with
+     * the io-peer link once the machine knows both.
+     */
+    object_property_add_uint32_ptr(obj, "io-gfx-bay", &s->io_gfx_bay,
+                                   OBJ_PROP_FLAG_READWRITE);
 }
 
 static void l1_class_init(ObjectClass *klass, const void *data)

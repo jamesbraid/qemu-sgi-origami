@@ -321,8 +321,27 @@ captured controller output.
      - unknown
      - The guides number it differently by edition (007-3938-001 printed
        page 41, 007-4240-002 printed pages 105-106), so ``io-port`` and
-       ``c-port`` configure it. An I-brick answers ``0x000c`` and
-       ``0x000d`` with the unknown-request code.
+       ``c-port`` configure it. An I-brick or N-brick answers ``0x000c``
+       and ``0x000d`` with the unknown-request code unless its C-brick's
+       chip has a graphics brick (next row).
+   * - What an I-brick or N-brick lists in ``0x000c`` when a graphics
+       brick sits on the other Crosstown2 port of the C-brick's chip, and
+       its type letters.
+     - approximated
+     - The stock PROM 6.210 sends ``0x000c`` to the attached I/O address
+       from its crossbar arbitration once that port is alive and drops the
+       I/O brick when the reply is an error (a run on the model, which
+       shows the software's expectation, not a hardware reply). The model
+       answers with the C-brick that asked at port 1 and the G-brick at
+       port 2, in the C-brick's own reply shape, with letters ``C`` and
+       ``G``. Which ports and letters a real brick uses, and what the
+       stock PROM does with the G-brick entry, are unknown. The N-brick
+       profile reports ``N``, a candidate from the command set's brick
+       type list (007-4240-002 printed page 235); the PROM stops printing
+       ``Unexpected I/O brick type`` for it, which shows the letter is
+       accepted, not that it is the hardware's. One N-brick controller
+       serves all of its C-bricks (N-brick Overview, revision 10/24/01,
+       printed page 5) and answers each about its own chip.
 
 What the model chooses, and the limit of each choice:
 
@@ -337,11 +356,12 @@ What the model chooses, and the limit of each choice:
   format, baud rate or detection. A C-brick has two links: ``peer`` for the
   other C-brick and ``io-peer`` for its I-brick. Both are checked against the
   two profiles: a C-brick pairs only with a C-brick, and ``io-peer`` joins a
-  C-brick to an I-brick. The check holds whether the link is given with the
-  device (it runs when the device realizes) or set afterwards (it runs when
-  the link is set). An I-brick takes one C-brick: the fitted system's cabling
+  C-brick to an I-brick or N-brick. The check holds whether the link is
+  given with the device (it runs when the device realizes) or set afterwards
+  (it runs when the link is set). An I-brick takes one C-brick: the fitted system's cabling
   of a second is unknown, so a second is refused with an error, and the first
-  link stays. After ``reboot_l1`` a brick answers no peer for one second of
+  link stays. An N-brick takes several; the model does not count its
+  connectors. After ``reboot_l1`` a brick answers no peer for one second of
   virtual time.
 - ``power`` and ``reset`` on an I-brick act on that brick only; a C-brick
   keeps the single-node power and reset behaviour above. ``*`` runs a
