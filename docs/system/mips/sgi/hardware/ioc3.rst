@@ -2,17 +2,23 @@
 
 .. _sgi-ioc3:
 
-============================
-SGI IOC3 base I/O controller
-============================
+====================
+IOC3: I/O controller
+====================
+
+Used in :ref:`sgi-ip27` (the Origin 200 IP29 board, the Origin 2000 and
+Onyx2 BaseIO and MediaIO boards and the MENET card), :ref:`sgi-ip30` (the
+Octane and Octane2 system board), :ref:`sgi-ip35` (the Origin 300 IO-8
+board and the Fuel system board) and the Origin 3000 I-brick's IO7
+(:ref:`sgi-bricks-ibrick`), which QEMU builds as a base I/O preset that
+no machine fits. :doc:`baseio` and :doc:`ioc3-boards` describe the
+boards.
 
 The IOC3 is SGI's PCI base I/O controller. One 32-bit PCI device with one
 1 MiB memory BAR holds two 16550 serial ports with ring DMA, a 10/100
 Ethernet MAC with its buffer RAM, a PS/2 keyboard and mouse controller, a
 parallel port, general-purpose pins, a one-wire bus and a byte bus for a
-clock part. The Origin 200 IP29 board, the Origin 2000 and Onyx2 BaseIO
-and MediaIO boards, the Octane IP30 board, the Origin 300 IO-8 board and
-several add-in cards carry it, each wiring a different subset
+clock part. Each board wires a different subset
 (:doc:`ioc3-boards`). QEMU models PCI revision 1 as ``sgi-ioc3`` in
 ``hw/misc/sgi-ioc3.c``, with child devices ``sgi-ioc3-eth``
 (``hw/net/sgi-ioc3-eth.c``), ``sgi-ioc3-kbc``

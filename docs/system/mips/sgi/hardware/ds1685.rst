@@ -2,12 +2,15 @@
 
 .. _sgi-ds1685:
 
-=====================================================
-DS1685 real-time clock and NVRAM (Octane clock)
-=====================================================
+=================================
+DS1685: real-time clock and NVRAM
+=================================
 
-The DS1685 is the real-time clock with 242 bytes of battery-backed RAM on
-the Octane and Octane2 system boards. It sits on the IOC3's byte bus
+Used in :ref:`sgi-ip30`, on the Octane and Octane2 system boards, and
+:ref:`sgi-ip32`, behind the O2's MACE.
+
+The DS1685 is a real-time clock with 242 bytes of battery-backed RAM. On
+the Octane it sits on the IOC3's byte bus
 (:doc:`ioc3`). Linux uses it for the machine's power-off control, an
 *inferred* board function. A published
 Octane boot log reports a DS1687, the same die sealed with its crystal and

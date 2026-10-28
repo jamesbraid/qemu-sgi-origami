@@ -94,8 +94,7 @@ Sources
   :src:`007-4498-002`, for the NUMAlink module, and the router service
   procedures :src:`108-0301-001` for the R-brick's port switch.
 - Published IRIX hardware inventories of three Origin 3000 class machines,
-  cited through :ref:`sgi-sn-family-ibrick` and
-  :ref:`sgi-sn-family-bedrock`. No inventory of a CX-, D-, G-, IX-, N-, P-,
+  cited in :ref:`sgi-sn-family-ibrick` and on :ref:`sgi-sn-family-bedrock`. No inventory of a CX-, D-, G-, IX-, N-, P-,
   PX-, V- or X-brick is published, so every statement about those bricks
   is a product description.
 - Public driver source as software expectations: Linux
@@ -207,6 +206,35 @@ composition joins the two Bedrocks directly on a ``ni-cable`` bus. The layer
 holds no L1 component and no memory fit. The widget part and manufacturer
 are software expectations, not reads from a C-brick, so the Bedrock identity
 is an *approximation*.
+
+.. _sgi-sn-family-origin3000-cbrick:
+
+C-brick in the catalogue
+------------------------
+
+The C-brick has no crossbar of its own. Its Bedrock reaches I/O through
+a Crosstown2 port into an I-, P- or X-brick's XBridge, whose crossbar
+section does the switching (*established*, :src:`108-0240-002 p. 2-26`).
+It has one rear ``XIO (II)`` connector, which joins it to an I-, P- or
+X-brick (*established*, :src:`007-4240-002 p. 124`). The layer's
+C-brick buses, one SysAD per processor interface and the ``xio-ii`` bus
+from the Bedrock to that connector, follow from this. Which port of the
+far brick's XBridge the cable reaches is the composition's choice, not
+the C-brick's.
+
+The eight DIMM slots form four pairs. Banks 2n and 2n+1 sit on pair n
+and both DIMMs of a pair match, so the two banks of a pair are fitted
+alike; pairs may differ (*established*,
+:src:`108-0240-002 pp. 2-5, 2-6`). The Origin 3200 catalogue entry fixes
+each C-brick at the fit a posted Origin 3200 inventory reports
+(*observed*, :src:`nekonomicon-16723604`): four 400 MHz R12000s with
+8 MB secondary caches on two PIMMs and 4096 MB in eight 512 MB banks.
+Resolution refuses any other processor or bank population for that
+product. The entry is a planned target, left out of the emulator's
+catalogue. The C-brick layer has no L1, and the R12000's FPU
+identification and reset-mode word on this board and the C-brick's full
+board-identification word are *unknown*. How the shared builder joins a
+C-brick to an I/O brick's XBridge is on :ref:`sgi-ip35-brick-composition`.
 
 .. _sgi-bricks-cxbrick:
 
@@ -357,7 +385,7 @@ the 1394 controller (*established*, :src:`007-4240-002 p. 130`). Published
 inventories of an Onyx 3000, an Origin 3200 and an Origin 3400 print the
 same base I/O bus with a QLogic 2200 Fibre Channel function at PCI slot 1,
 the IOC3 at 4, the USB controller at 5 and the 1394 controller at 6
-(*observed*; the table is in :ref:`sgi-sn-family-ibrick`). The bus is
+(*observed*; the table is in :ref:`sgi-sn-family-ibrick` below). The bus is
 ``xtalk/15`` in those inventories, so head F is widget 15 and head E widget
 14 (*inferred* from the block diagram).
 
@@ -387,6 +415,41 @@ and left uncabled. The component types are the ones modelled elsewhere:
 :doc:`ioc3`, :doc:`lucent-ohci`, :doc:`tsb12lv22`, :doc:`qlogic-isp2200`
 and :doc:`xbridge`. The I-brick's own L1, real-time interrupt connectors
 and CD-ROM are not described.
+
+.. _sgi-sn-family-ibrick:
+
+Base I/O bus in published inventories
+-------------------------------------
+
+Inventories of an Onyx 3000, an Origin 3200 and an Origin 3400 print the
+same base I/O bus at ``/hw/module/<c>/Ibrick/xtalk/15`` (*observed*,
+three identified machines; :src:`nekonomicon-16719632`,
+:src:`nekonomicon-16723604` and :src:`nekonomicon-16720581`):
+
+.. list-table::
+   :header-rows: 1
+
+   * - PCI slot
+     - Device
+     - PCI identity
+   * - 1
+     - QLogic 2200 Fibre Channel
+     - ``1077:2200``
+   * - 4
+     - IOC3
+     - ``10a9:0003``
+   * - 5
+     - Lucent USB OHCI
+     - ``11c1:5802``
+   * - 6
+     - TI TSB12LV22 IEEE 1394 OHCI
+     - ``104c:8009``
+
+They report I-brick board ``030-1557-007`` at revisions A, D and F, and
+a second Fibre Channel function at ``xtalk/14/pci/1``. Widget 15 is port
+F and widget 14 port E, matching the block diagram (*inferred*). The
+``io7`` preset of ``sgi-baseio`` (:doc:`baseio`) carries the IOC3, USB
+and IEEE 1394 devices at head F devices 4, 5 and 6.
 
 .. _sgi-bricks-ixbrick:
 
@@ -565,7 +628,8 @@ repeat router (above 256). Origin 3400 R-bricks ship with ports 7 and 8
 disabled, a setting kept in the controller's non-volatile memory and changed
 with L1 commands and a 48-hour authenticator (*established*,
 :src:`108-0301-001 pp. 3-2, 3-3, 3-7 to 3-10`;
-:src:`007-4311-002 pp. 36-37`; :src:`108-0240-002 p. 2-20`). How the
+:src:`007-4311-002 pp. 36-37`; :src:`108-0266-001 pp. 40-41`;
+:src:`108-0240-002 p. 2-20`). How the
 controller makes the ASIC refuse two ports is *unknown*.
 
 Catalogue: ``modules/r-brick.yaml``. It describes the chassis, one SN1

@@ -2,13 +2,15 @@
 
 .. _sgi-xbow:
 
-================================
-SGI Crossbow XIO crossbar (XBow)
-================================
+======================
+Crossbow: XIO crossbar
+======================
 
-Crossbow is the eight-link crossbar of the Origin 2000 and Onyx2
-modules, of the Origin 200 GIGAchannel cabinet and of the Octane and
-Octane2 system boards. It routes packets
+Used in :ref:`sgi-ip27` (the Origin 2000 and Onyx2 modules and the
+Origin 200 GIGAchannel cabinet) and :ref:`sgi-ip30` (the Octane and
+Octane2 system boards).
+
+Crossbow is SGI's eight-link XIO crossbar. It routes packets
 between the host links and the I/O widgets by destination widget number
 and answers, itself, as logical widget 0. QEMU models it in
 ``hw/misc/sgi-xbow.c``. This page is the contract the machine models in

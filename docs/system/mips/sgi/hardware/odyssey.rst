@@ -2,26 +2,30 @@
 
 .. _sgi-odyssey:
 
-==========================
-VPro graphics (Odyssey)
-==========================
+=====================
+VPro: graphics boards
+=====================
 
-VPro is the graphics family SGI sold as V6, V8, V10 and V12. SGI's
-upgrade guide fits it to both the Octane and the Octane2, given Crossbow
-1.4 and the ER power supply (:src:`007-4210-003 preface`),
-*established*. Published inventories name Octane V6, V8, V10 and V12
-boards and a Fuel V10, *observed* (:ref:`sgi-odyssey-identity`). The
-model places it in the Octane2, Fuel, Tezro and Onyx 350 machines, and
-in the Octane only on request (:ref:`sgi-odyssey-placement`). Each board is one XIO widget whose
+Used in :ref:`sgi-ip30` (Octane2, and the Octane on request),
+:ref:`sgi-ip35` (Fuel) and :ref:`sgi-ip53` (Onyx 350, Tezro). The Onyx
+3000 V-brick holds V12 boards (*established*, :src:`007-4264-002 p. 10`);
+it is described on :ref:`sgi-bricks`, and no machine builds it. VPro is
+the graphics family SGI sold as V6, V8, V10 and V12. SGI's upgrade guide
+fits it to both the Octane and the Octane2, given Crossbow 1.4 and the ER
+power supply (:src:`007-4210-003 preface`), *established*. Published
+inventories name Octane V6, V8, V10 and V12 boards and a Fuel V10,
+*observed* (:ref:`sgi-odyssey-identity`). The model places it in the
+Octane2, Fuel, Tezro and Onyx 350 machines, and in the Octane only on
+request (:ref:`sgi-odyssey-placement`). Each board is one XIO widget whose
 graphics engine gfxinfo calls BUZZ and whose display back end it calls
 PB&J. QEMU models the board as ``sgi-odyssey`` in
 ``hw/misc/sgi-odyssey.c``, with the optional Mesa drawing path in
-``hw/misc/sgi-odyssey-native-mesa.c``. No register specification of
-any VPro board is public. The model is a functional profile built from
-the public OpenBSD console driver, published inventories of real boards
-and the behaviour of the shipped IRIX 6.5.30 kernel, X server and GL
-library. It describes no particular ASIC stepping. The graphics overview
-keeps a short summary (:ref:`sgi-graphics-odyssey`).
+``hw/misc/sgi-odyssey-native-mesa.c``. No register specification of any
+VPro board is public. The model is a functional profile built from the
+public OpenBSD console driver, published inventories of real boards and
+the behaviour of the shipped IRIX 6.5.30 kernel, X server and GL library.
+It describes no particular ASIC stepping. The graphics overview keeps a
+short summary (:ref:`sgi-graphics-odyssey`).
 
 Facts are rated as described in :ref:`sgi-ratings`. Most register
 behaviour here is *approximation* or *software expectation*: it shows

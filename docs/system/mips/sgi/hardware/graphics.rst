@@ -2,17 +2,19 @@
 
 .. _sgi-graphics:
 
-==============================================================
-SGI graphics boards: IMPACT, VPro, InfiniteReality, PsiTech
-==============================================================
+==========================================================
+Graphics boards: IMPACT, VPro, InfiniteReality and PsiTech
+==========================================================
 
-Four kinds of graphics board are modelled. Three are SGI XIO widgets that
-answer the crosstalk widget identity register directly, with no Bridge or
-PCI bus between the board and the XIO link. The fourth is a pair of
-third-party PCI cards. Each board has its own page with the register map,
-behaviour, model limits and tests. This page says which board goes in
-which machine and keeps the widget identity table the machine pages cite.
-Facts are rated as described in :ref:`sgi-ratings`.
+Used in :ref:`sgi-ip27` (Origin 200, Origin 2000, Onyx2), :ref:`sgi-ip30`
+(Octane, Octane2), :ref:`sgi-ip35` (Fuel) and :ref:`sgi-ip53` (Onyx 350,
+Tezro). Four kinds of graphics board are modelled. Three are SGI XIO
+widgets that answer the crosstalk widget identity register directly, with
+no Bridge or PCI bus between the board and the XIO link. The fourth is a
+pair of third-party PCI cards. Each board has its own page with the
+register map, behaviour, model limits and tests. This page says which
+board goes in which machine and keeps the widget identity table the
+machine pages cite. Facts are rated as described in :ref:`sgi-ratings`.
 
 .. list-table::
    :header-rows: 1

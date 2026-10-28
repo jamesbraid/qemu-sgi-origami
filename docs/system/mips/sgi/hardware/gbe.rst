@@ -2,10 +2,11 @@
 
 .. _sgi-gbe:
 
-==========================================
-GBE display back end (O2)
-==========================================
+=====================
+GBE: display back end
+=====================
 
+Used in :ref:`sgi-ip32` (O2).
 GBE is the display controller of the O2. It reads the frame buffer, the
 overlay and a table of per-pixel display modes from main memory through
 CRIME, turns them into a 24-bit pixel stream with a colour map, a gamma

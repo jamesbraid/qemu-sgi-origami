@@ -2,16 +2,19 @@
 
 .. _sgi-tsb12lv22:
 
-=======================================================
-TI TSB12LV22 IEEE 1394 OHCI link controller (I-brick)
-=======================================================
+============================================
+TI TSB12LV22: IEEE 1394 OHCI link controller
+============================================
+
+Used in the Origin 3000 and Onyx 3000 I-brick: published IRIX
+inventories list it at PCI slot 6 of the base I/O bus
+(:ref:`sgi-bricks-ibrick`), *observed*. QEMU's ``io7`` base I/O preset
+creates one there, but no machine fits that preset (:doc:`baseio`).
 
 The TSB12LV22 is Texas Instruments' PCI-to-1394 link controller, an IEEE
-1394 OpenHCI 1.00 part with the PCI identity ``104c:8009``. Published
-IRIX inventories of the Onyx 3000 and Origin 3000 I-brick list it at PCI
-slot 6 of the base I/O bus (:ref:`sgi-sn-family-ibrick`), *observed*. QEMU models revision 01 as
-``hw/misc/tsb12lv22.c``, the ``tsb12lv22`` type, a standalone register model.
-No SGI machine model instantiates it. It can be added to any PCI bus with
+1394 OpenHCI 1.00 part with the PCI identity ``104c:8009``. QEMU models
+revision 01 as ``hw/misc/tsb12lv22.c``, the ``tsb12lv22`` type, a
+standalone register model. It can be added to any PCI bus with
 ``-device tsb12lv22``. Facts are rated as described in :ref:`sgi-ratings`.
 
 The model has no PHY, no 1394 bus, no configuration ROM, no DMA engine and

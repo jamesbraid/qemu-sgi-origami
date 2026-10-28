@@ -2,18 +2,21 @@
 
 .. _sgi-bridge:
 
-=============================
-SGI Bridge XIO-to-PCI bridge
-=============================
+=========================
+Bridge: XIO-to-PCI bridge
+=========================
+
+Used in :ref:`sgi-ip27` (the Origin 200 IP29 system board, the Origin
+2000 and Onyx2 BaseIO card, the GIGAchannel cabinet and the XIO PCI
+option boards) and :ref:`sgi-ip30` (the Octane and Octane2 system
+board).
 
 Bridge is SGI's XIO-to-PCI bridge. One side is an XIO widget with the
 common widget register block at the bottom of 16 MB of widget space. The
 other side is a PCI host bridge with eight device slots, a configuration
 window, a programmed-I/O window per slot, an eight-pin interrupt
 controller and an address translator for transfers a device initiates.
-It is the base I/O bridge of the Origin 200 IP29 system board and of the
-Octane and Octane2 IP30 system board, and the bridge on the Origin 2000
-and Onyx2 BaseIO card and on several XIO and PCI option boards. QEMU
+QEMU
 models it as ``sgi-bridge`` in ``hw/pci-host/sgi-bridge.c``, with DMA
 byte placement in ``hw/pci-host/sgi-dma-placement.c`` (shared with
 :doc:`xbridge`) and the programmed-I/O forwarding hop in

@@ -2,18 +2,20 @@
 
 .. _sgi-mgras:
 
-======================================
-IMPACT graphics boards (MGRAS)
-======================================
+=======================
+IMPACT: graphics boards
+=======================
 
-IMPACT is SGI's XIO graphics family for the Octane and the Origin 2000,
-Origin 200 and Onyx2, sold as SI, SI with texture, SSI and MXI and later
-as the E-series ESI, ESI with texture, ESSI and EMXI. Each board presents
-one XIO widget, built around the HQ4 host interface, with one or two
-GE11 or GE12 geometry engines, one or two RE4 raster engines, two PP1
-pixel processors per raster engine, and on the textured boards one TE1
-texture engine and its TRAM per raster engine. QEMU models the family as
-``sgi-mgras`` in ``hw/misc/sgi-mgras.c``, with the raster engine and DMA in
+Used in :ref:`sgi-ip30` (Octane, Octane2) and :ref:`sgi-ip27` (Origin
+2000, and the Origin 200 with its GIGAchannel cabinet). IMPACT is SGI's
+XIO graphics family for the Octane and the Origin 2000, Origin 200 and
+Onyx2, sold as SI, SI with texture, SSI and MXI and later as the E-series
+ESI, ESI with texture, ESSI and EMXI. Each board presents one XIO widget,
+built around the HQ4 host interface, with one or two GE11 or GE12 geometry
+engines, one or two RE4 raster engines, two PP1 pixel processors per
+raster engine, and on the textured boards one TE1 texture engine and its
+TRAM per raster engine. QEMU models the family as ``sgi-mgras`` in
+``hw/misc/sgi-mgras.c``, with the raster engine and DMA in
 ``sgi-mgras-raster.c``, scanout in ``sgi-mgras-display.c``, texture in
 ``sgi-mgras-texture.c`` and the OpenGL command subset in
 ``sgi-mgras-gl.c``; ``hw/display/sgi/`` holds the scanout, display-list
@@ -21,8 +23,8 @@ work and DMA code it shares with the other SGI graphics heads. The
 ``product`` property picks the board; the default is ``si``. The
 ``octane``, ``octane2``, ``origin2000-deskside``, ``origin2000-rack`` and
 ``origin200-gigachannel`` topologies offer it in their graphics slots
-(:ref:`sgi-ip30-graphics`, :ref:`sgi-sn-graphics-pipes`), and the
-overview of all three graphics families is :ref:`sgi-graphics`.
+(:ref:`sgi-ip30-graphics`, :ref:`sgi-sn-graphics-pipes`), and the overview
+of all three graphics families is :ref:`sgi-graphics`.
 
 Facts are rated as described in :ref:`sgi-ratings`. No IMPACT register
 specification is public. The model is a functional profile: it gives the

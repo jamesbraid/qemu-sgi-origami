@@ -1,21 +1,139 @@
-================================
-SGI Scalable Node family machine
-================================
+.. SPDX-License-Identifier: BSD-3-Clause
 
-SGI's Scalable Node machines come in two generations. SN0 is built from
-the Hub node controller and covers the IP27 platform: the Origin 200,
-Origin 2000 and Onyx2 (:doc:`ip27`). SN1 is built from the Bedrock node
-controller and covers the IP35 platform: the Origin 300, Fuel, Origin
-350, Onyx 350, Tezro and Onyx 4 host (:doc:`ip35`). QEMU builds both from
-one machine base, ``sgi-sn`` (``TYPE_SGI_SN_MACHINE``,
-``hw/mips/sgi/sn-machine.c``). This page describes what the two
-generations share: the address model and PROM format, the catalogue that
-decides which boards a machine fits, how boards and graphics pipes are
-composed, the firmware and storage a launch supplies, the serial-line
-order and the launch metadata. Machine-specific content is on the
-platform pages and on the part pages listed under :ref:`sgi-sn-devices`.
+.. _sgi-sn:
+
+==============================================
+Scalable Node (SN0 and SN1) machines: overview
+==============================================
+
+SGI's Scalable Node machines are cache-coherent NUMA multiprocessors
+built from nodes. Each node is a board with processors, local memory and
+a node controller that joins them to the memory's coherence directory,
+to one XIO port for I/O and to one network port for other nodes. SN0
+uses the Hub node controller and the CrayLink interconnect (*established*,
+:src:`007-3439-002 Figure 2-1`). SN1 uses the Bedrock node controller
+and NUMAlink 3, and describes itself as a distributed shared memory,
+global-address-space, cache-coherent design (*established*,
+:src:`007-4311-002 p. 9`; :src:`108-0240-002 pp. 2-11 to 2-17`).
+
+QEMU builds both generations from one machine base, ``sgi-sn``
+(``TYPE_SGI_SN_MACHINE``, ``hw/mips/sgi/sn-machine.c``). This page
+covers what the generations share and the mechanisms the base gives
+every product: the catalogue, topology and population rules, graphics
+pipes, firmware and writable storage, the serial-line order, board
+devices and launch metadata. Each platform's products, wiring and limits
+are on its own page: :ref:`sgi-ip27`, :ref:`sgi-ip35` and
+:ref:`sgi-ip53`. Chips and boards are on the part pages listed under
+:ref:`sgi-sn-devices`.
 
 Facts are rated as described in :ref:`sgi-ratings`.
+
+.. _sgi-sn-product-family:
+
+Product family
+==============
+
+.. _sgi-sn-family-table:
+
+Family summary
+--------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Product
+     - Generation, platform and node board
+     - Interconnect
+     - QEMU
+   * - Origin 200
+     - SN0, IP27 platform, IP29 system board
+     - one tower, or two joined Hub to Hub by a CrayLink cable
+       (*established*, :src:`007-3708-002 pp. 5-6`)
+     - ``origin200``
+   * - Origin 2000
+     - SN0, IP27 platform, IP27 node boards
+     - Routers within and between modules (*established*,
+       :src:`007-3439-002 p. 59`)
+     - ``origin2000``, one module
+   * - Onyx2
+     - SN0, IP27 platform, IP27 node boards
+     - as the Origin 2000
+     - ``onyx2``, one module
+   * - Origin 300
+     - SN1, IP35 platform, IP45 board
+     - NUMAlink 3, LINK to LINK for two modules or through a NUMAlink
+       module (*established*, :src:`007-4365-002 p. 38`;
+       :src:`007-4498-002 pp. 10-11`)
+     - ``origin300``
+   * - Fuel
+     - SN1, IP35 platform, IP34 board
+     - none in the model, one node
+     - ``fuel``
+   * - Origin 3200
+     - SN1, IP35 platform, C-brick (IP35 board)
+     - two C-bricks joined LINK to LINK by NUMAlink 3, no R-brick
+       (*established*, :src:`007-4240-002 pp. 124-125`;
+       :src:`007-4311-002 p. 87`)
+     - ``origin3200`` catalogue entry, a planned target the emulator
+       does not build
+   * - Origin 3400
+     - SN1, IP35 platform, C-bricks
+     - NUMAlink 3 through R-bricks (*established*,
+       :src:`007-4311-002 pp. 76-78`)
+     - none
+   * - Origin 3800
+     - SN1, IP35 platform, C-bricks
+     - NUMAlink 3 through R-bricks (*established*,
+       :src:`007-4311-002 pp. 79-80`)
+     - none
+   * - Onyx 3000
+     - SN1, IP35 platform, C-bricks with G-brick or V-brick graphics
+       (*established*, :src:`007-4264-002 pp. 8, 10`)
+     - as the Origin 3000 servers
+     - none
+   * - Origin 3900, Onyx 3900
+     - SN1, CX-brick with one to four IP53 node boards
+       (*established*, :src:`007-4426-001 p. xi`;
+       :src:`007-4572-001 pp. 1, 3`)
+     - NUMAlink 3 through the CX-brick's own router board
+       (*established*, :src:`007-4572-001 pp. 4-5`)
+     - ``origin3900`` reference composition for the Origin 3900, never
+       compiled
+   * - Origin 350, Onyx 350, Tezro, Onyx4
+     - SN1, IP35 platform, IP53 board
+     - NUMAlink 3 on one LINK connector, and a NUMAlink module for more
+       than two modules (*established*, :src:`007-4566-001 p. 69`)
+     - ``origin350``, ``onyx350``, ``tezro``, ``onyx4-host``
+
+The Origin 3000 series sizes are 2 to 8 processors in a short rack for
+the Origin 3200, 4 to 32 for the Origin 3400 and 16 to 512 for the
+Origin 3800 (*established*, :src:`007-4311-002 p. 10`). The Origin 3400
+grows to eight four-processor C-bricks and the Origin 3800 to 128
+(*established*, :src:`007-4311-002 p. 83`). A CX-brick holds the
+equivalent of four C-bricks and one R-brick (*established*,
+:src:`007-4572-001 pp. 1, 3`). The Onyx 3000 is *observed* in one
+published 12-processor inventory (:src:`nekonomicon-16719632`). No QEMU
+machine builds an Origin 3000 brick; :doc:`hardware/bricks` describes
+each brick and the catalogue layers that record them.
+
+A Hub carries two processors on one processor interface
+(*established*, :src:`007-3439-002 Figure 2-1`). A Bedrock carries up to
+four on two interfaces (*established*, :src:`108-0240-002 p. 2-12`).
+SN0 I/O is a Bridge, behind a Crossbow where the module has one. SN1 I/O
+is an XBridge, or a PIC on the IP53 board. The system controller is the
+ELSC or the module system controller on SN0 and an L1 on SN1. The part
+pages rate and cite each of these.
+
+The Onyx2 is Origin 2000 silicon with graphics: the same IP27 node
+boards, memory and stock PROM, told apart only by the hardware its
+topologies fit. The IP53 machines are software profiles of one capture
+or manual each, not qualified models of every configuration of the
+product (:ref:`sgi-ip35-ip53`). The machine classes are in
+``hw/mips/sgi/sn-machine.c`` with the SN0 node in ``hw/mips/sgi/sn0.c``,
+and in ``hw/mips/sgi/sn1.c`` with the SN1 node in
+``hw/mips/sgi/sn1-node.c``. Every class parents ``sgi-sn`` and takes the
+same ``topology=`` contract and compiled catalogue. Only the node device
+is generation-specific.
 
 .. _sgi-sn-shared-model:
 
@@ -51,498 +169,6 @@ sections:
 
 A topology is a wiring. An offering is a launchable choice of one
 topology and one population of it. The machine never reads an offering.
-
-.. _sgi-sn-product-family:
-
-Product family
-==============
-
-.. _sgi-sn-family-table:
-
-Family summary
---------------
-
-.. list-table::
-   :header-rows: 1
-
-   * - Machine
-     - Platform and node board
-     - Node controller
-     - Source
-   * - ``origin200``
-     - IP27 platform, IP29 system board
-     - Hub
-     - ``hw/mips/sgi/sn-machine.c``, node in ``hw/mips/sgi/sn0.c``
-   * - ``origin2000``, ``onyx2``
-     - IP27 platform, IP27 node boards
-     - Hub
-     - as ``origin200``
-   * - ``origin300``
-     - IP35 platform, IP45 board
-     - Bedrock
-     - ``hw/mips/sgi/sn1.c``, node in ``hw/mips/sgi/sn1-node.c``
-   * - ``fuel``
-     - IP35 platform, IP34 board
-     - Bedrock
-     - as ``origin300``
-   * - ``origin350``, ``onyx350``, ``tezro``, ``onyx4-host``
-     - IP35 platform, IP53 board
-     - Bedrock
-     - as ``origin300``
-
-The Onyx2 is Origin 2000 silicon with graphics: the same IP27 node
-boards, memory and stock PROM, told apart only by the hardware its
-topologies fit. The IP53 machines are software profiles of one capture
-or manual each, not qualified models of every configuration of the
-product (:ref:`sgi-ip35-ip53`). The IP35 and IP53 machine classes parent
-``sgi-sn`` like the IP27 ones and take the same ``topology=`` contract
-and compiled catalogue. Only the node device is product-specific.
-
-A Hub carries two processors on one processor interface
-(*established*, :src:`007-3439-002 Figure 2-1`). A Bedrock carries up to
-four on two interfaces (*established*, :src:`108-0240-002 p. 2-12`).
-The node controller pages are :doc:`hardware/hub` and
-:doc:`hardware/bedrock`. IP27 I/O is a Bridge, behind a Crossbow where
-the module has one. IP35 I/O is an XBridge, or a PIC on the IP53 board
-(:doc:`hardware/bridge`, :doc:`hardware/xbow`, :doc:`hardware/xbridge`,
-:doc:`hardware/pic`). The system controller is the ELSC or the module
-system controller on IP27 (:doc:`hardware/elsc`) and an L1 over a UART
-on IP35 (:doc:`hardware/l1`). Those pages rate and cite each part.
-
-The subsections below hold the brick and product facts that the model
-catalogue cites on this page. The platform pages and :doc:`hardware/bricks`
-own the rest of each product's description.
-
-.. _sgi-sn-family-origin2000-xpress:
-
-Origin 2000 two-module racks and Xpress links
----------------------------------------------
-
-A rack holds two modules. Within and between modules, Link 1 runs
-vertically between the upper and lower Routers of the same letter, and
-Link 2 is the Xpress link, which must cross. Xpress links are only used
-in systems of 16 or 32 processors (*established*,
-:src:`007-3439-002 p. 59`). No source cited here draws the full
-cable-by-cable wiring, and which SGI document does is *unknown*. The
-``origin2000-two-module-xpress`` layer records the link rule as a
-reference configuration. No machine builds it, and its fitted memory is
-a model choice (*approximation*).
-
-.. _sgi-sn-family-origin3000-cbrick:
-
-Origin 3000 C-brick
--------------------
-
-The C-brick has no crossbar of its own. Its Bedrock reaches I/O through
-a Crosstown2 port into an I-, P- or X-brick's XBridge, whose crossbar
-section does the switching (*established*, :src:`108-0240-002 p. 2-26`).
-It has one rear ``XIO (II)`` connector, which joins it to an I-, P- or
-X-brick (*established*, :src:`007-4240-002 p. 124`). The layer's
-C-brick buses, one SysAD per processor interface and the ``xio-ii`` bus
-from the Bedrock to that connector, follow from this. Which port of the
-far brick's XBridge the cable reaches is the composition's choice, not
-the C-brick's. The processors, DIMM banks and cabling are on
-:ref:`sgi-bricks-cbrick`.
-
-The eight DIMM slots form four pairs. Banks 2n and 2n+1 sit on pair n
-and both DIMMs of a pair match, so the two banks of a pair are fitted
-alike; pairs may differ (:src:`108-0240-002 pp. 2-5, 2-6`),
-*established*. The Origin 3200 catalogue entry fixes each C-brick at the fit
-a posted Origin 3200 inventory (:src:`nekonomicon-16723604`, *observed*)
-reports, four 400 MHz R12000s with 8 MB secondary caches on two PIMMs
-and 4096 MB in eight 512 MB banks, and resolution refuses any other
-processor or bank population for that product.
-
-The entry is the ``origin3000`` machine, topology ``origin3200``. Its
-C-brick values the sources do not settle are model choices:
-
-* The board-identification word is ``0x2``. Product code 0 in bits 15:12
-  is a C-brick (*established*, OpenBSD ``ip27.h``). The low nibble 2
-  selects the stock IP35 PROM 6.210's configuration row for a 400 MHz,
-  8 MB fit, and the other bits read zero (*approximation*: no C-brick
-  has been read).
-* The flash configuration block carries machine type 0 and that row's
-  word ``0x5414a785``. Each processor's reset mode is the word's low 25
-  bits (*approximation*, as the Origin 300's R14000 values are taken
-  from its own row).
-* The FPU identification is ``0x0935``, from the R12010 revision 3.5 the
-  inventory prints (*inferred*).
-* The L1 is the ``cbrick`` profile, named by its slot: 001c04 and
-  001c07. The two C-brick L1s are peers over the NUMAlink cable.
-* With no XIO cable, a C-brick's II link reads down (*inferred*, as the
-  Bedrock II model already takes it).
-
-.. _sgi-sn-origin3200:
-
-Origin 3200 machine
-~~~~~~~~~~~~~~~~~~~
-
-``-M origin3000`` builds two C-bricks joined LINK (NI) to LINK (NI) and
-an I-brick on c0's ``XIO (II)`` connector at XBridge port A, with 8
-R12000s (``-cpu R12000 -smp 8``) and 8192 MB. The I-brick's XBridge is
-``/machine/module2/xbridge``. Its heads E and F are widgets 14 and 15 of
-c0, and its IO7 is ``/machine/module2/io7`` on head F. The I-brick's L1
-is ``/machine/module2/l1``, the ``ibrick`` profile named 001i14, reached
-from c0's L1 over the XIO cable as an in-process call. It holds the
-IO7's Ethernet address, the machine's ``mac``. The I-brick's Fibre
-Channel card is ``/machine/module2/io7/fibre-channel``, a
-``qlogic-isp2200`` at head F device 1 with its pin A on head pin 1. Its
-private loop is the SCSI bus ``scsi.0``, the boot disk bus. Each disk
-there is a loop port at the loop ID its ``scsi-id`` gives and needs the
-``port_wwn`` and ``wwn`` names that port has, which the launcher
-chooses.
-
-Model limits:
-
-* No internal FC disk is built with the machine. Disks join the loop
-  only as the launcher attaches them, and which of the brick's two drive
-  bays a disk stands for is *unknown*.
-* The IO7's IEEE 1394 link controller is left out, because its model has
-  no PHY or bus and the stock PROM's probe waits on them.
-* The IO7's time-of-day part is unidentified, so its IOC3 carries the
-  Origin 300's M48T35-compatible Timekeeper as a compatibility choice
-  (*approximation*), with blank storage on every start.
-* Head E's PCI slots are empty. The I-brick's XBridge revision is the
-  model's.
-
-.. _sgi-sn-onyx3400-ir:
-
-Onyx 3400 with InfiniteReality3 machine
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-``-M origin3000,topology=onyx3400-ir`` builds the Figure 1-10 brick set
-of the Onyx 3000 graphics guide (:src:`007-4264-002 p. 27`) as a
-catalogue entry, ``onyx3400-ir``. The ``onyx3400`` composition stays the
-reference of the same brick set. The machine has four C-bricks on ports
-2 to 5 of one R-brick, an I-brick on c0's ``XIO (II)`` connector, an
-N-brick whose first three chips carry c1 to c3, and two G-bricks. It has
-16 R12000s, four per C-brick, and 16384 MB. The stock PROM 6.210 finds 4
-nodes, 16 CPUs and one router, and its diagnostics summary reads ``ALL
-DIAGS PASSED``. Its ``hinv -v`` lists the four node boards, the
-I-brick's two heads and the router, and an XBow for the I-brick and for
-the N-brick chips of c10 and c13, but none for c07's.
-
-Choices the sources do not settle, each an *approximation*:
-
-* One R-brick, not Figure 1-10's two. The routed Origin 3400 drawing of
-  the technical configuration guide (:src:`007-4311-002 p. 55`) has one,
-  with the C-bricks on ports 2 to 5. The R-brick presents all eight
-  ports, and its L2 controller and USB hub traffic to the C-brick L1s
-  are not modelled. The C-brick L1s are not peers of each other.
-* The C-bricks are fitted like the Origin 3200's: four 400 MHz R12000s
-  with 8 MB caches and 4096 MB. The C-brick layer carries both PIMMs
-  unconditionally, so Figure 1-10's two-processor C-bricks are not
-  expressible.
-* The N-brick's XBridge presents the revision the model's XBridge
-  presents, as the I-brick's does.
-* Module numbers of the bricks.
-
-Model limits:
-
-* Three pipes, not four. A pipe cabled to a free port of the I-brick's
-  XBridge makes the PROM of the C-brick that hosts that chip print
-  ``iobrick_attached_modids failed``; on the I-brick that C-brick is the
-  global master, which then finds no base I/O. What an I/O brick's port
-  B presents to that query when a graphics pipe is cabled to it is not
-  established, so I-brick port B is left uncabled. G-brick 0 holds two
-  pipes and G-brick 1 one, on the N-brick's three pipe ports.
-* The graphics contract builds one pipe at once, so the machine offers
-  the four pipe slots and fits at most one ``sgi-kona``. The stock PROM
-  inventory lists no pipe with one fitted.
-* The C-bricks cabled to the N-brick print ``Unexpected I/O brick type``
-  at start: the N-brick has no L1 model, and what an N-brick answers to
-  the attached-brick request is *unknown*. They still join the PROM's
-  node count.
-* The router's ports 1, 6, 7 and 8 are uncabled, and the PROM prints
-  ``discover_object: vector read 0x2 LRI failed`` and ``erect_fences``
-  messages and an EEPROM vector read error against the router.
-* IRIX has not been booted on this topology.
-
-.. _sgi-sn-family-ibrick:
-
-I-brick host ports and base I/O
--------------------------------
-
-The XBridge in an I-brick has ports A (widget 10) and B (widget 11) for
-compute nodes, port E for bus 2 and port F for bus 1 with the IO7
-devices (*established*, :src:`108-0240-002 pp. 2-26 to 2-29`;
-:ref:`sgi-bricks-ibrick`).
-
-Inventories of an Onyx 3000, an Origin 3200 and an Origin 3400 print the
-same base I/O bus at ``/hw/module/<c>/Ibrick/xtalk/15`` (*observed*,
-three identified machines; :src:`nekonomicon-16719632`,
-:src:`nekonomicon-16723604` and :src:`nekonomicon-16720581`):
-
-.. list-table::
-   :header-rows: 1
-
-   * - PCI slot
-     - Device
-     - PCI identity
-   * - 1
-     - QLogic 2200 Fibre Channel
-     - ``1077:2200``
-   * - 4
-     - IOC3
-     - ``10a9:0003``
-   * - 5
-     - Lucent USB OHCI
-     - ``11c1:5802``
-   * - 6
-     - TI TSB12LV22 IEEE 1394 OHCI
-     - ``104c:8009``
-
-They report I-brick board ``030-1557-007`` at revisions A, D and F, and
-a second Fibre Channel function at ``xtalk/14/pci/1``. Widget 15 is port
-F and widget 14 port E, matching the block diagram (*inferred*).
-*Unknown*: the I-brick XBridge revision, and which host port a booting
-I-brick uses. A verbose Origin 3000 PROM boot would settle both, and
-none is published.
-
-The X-brick and P-brick are on :doc:`hardware/bricks`.
-
-.. _sgi-sn-family-ixpx:
-
-IX-brick and PX-brick PIC enclosures
-------------------------------------
-
-Both bricks hold three PICs. The middle one serves buses 3 and 4, meets
-the two Crosstown2 connectors on its ports A and B, and joins the lower
-PIC (buses 1 and 2) and the upper PIC (buses 5 and 6) by one link each
-(*established*, :src:`007-4604-001` Figure 2 and :src:`007-4605-001`
-Figure 2). The model builds the middle PIC's integrated PXBOW as the
-enclosure crossbar, with the host on port 0xa, the lower PIC on 0xc,
-the upper on 0xd and the middle PIC's own heads on 0xf. Links present,
-alive at startup and restored by a link reset are those four. That port
-reading follows the XBridge port letters as hex digits and the public
-Linux Altix brick table (*approximation*, not a measured board). Every
-PIO, DMA and interrupt packet crosses the crossbar: no PIC has a direct
-Bedrock peer. Each packet enters at its PIC's port and reaches the
-Bedrock as a packet from that widget, so the Bedrock's inbound access
-register governs it per PIC. Interrupt packets go to the host port the
-cable meets, with the level in destination bits 63:48.
-
-All six heads run ``pic-rev3-enclosure-experimental``: the PIC register
-layout at revision 3, configuration device 0 reserved, the direct 32-bit
-DMA window and the ``DIR_MAP`` field rule, and none of the IP53
-compatibility behaviours (no held-input reassertion, no IP35 PROM reset
-values or masks, no 32-bit control writes, no direct64 decode). Head 0
-drives the lower-numbered bus. INTA of configuration device *d* drives
-interrupt input *d* - 1; INTB to INTD reach no input and are logged. A
-failed DMA send is logged by the PIC from its own result.
-
-Model limits:
-
-* Only single attachment is built: a cable to port 0xb, a cable from an
-  Origin 350 compute module and a board on any other crossbar port are
-  refused.
-* Neither brick has an L1, and no on-board device is fitted. The
-  IX-brick's IO9 waits on contracts for its IOC4 port presence, its
-  QLogic part and its BCM5701 identity, so its bus 1 slot 1 is empty and
-  logged as such.
-* No catalogued machine builds either brick yet, because no reviewed
-  configuration attaches one to a C-brick. The builder test builds them.
-
-.. _sgi-sn-family-vbrick:
-
-Onyx 3000 V-brick
------------------
-
-A V-brick holds one or two InfinitePerformance pipes, each one VPro V12
-board taking two of four board slots, behind an XBridge on its
-midplane. Its two rear XIO ports each cable to a C-brick's ``XIO (II)``
-connector, and each pipe needs a C-brick of its own, besides the one
-that hosts the system I-brick (*established*, *SGI Onyx 3000 Series
-Graphics System Hardware Owner's Guide*, :src:`007-4264-002 pp. 8, 10,
-19, 52-56`). A system holds G-bricks or V-bricks, never both
-(*established*, :src:`007-4264-002 pp. 10, 21`). The enclosure is on
-:ref:`sgi-bricks`.
-
-The ``onyx3000`` topology (``-M origin3000,topology=onyx3000``) puts the
-I-brick on the first C-brick and a one-pipe V-brick on the second, with
-the cable on the midplane XBridge's port A and the V12 on its Crosstalk
-port 8. Both ports are the composition's choices (*approximation*).
-Which connector is port A, which Crosstalk port serves a slot, and so
-the V12's widget number, are *unknown*, and a PROM inventory or hardware
-graph of an Onyx 3000 with a V-brick would settle them. The V-brick's L1
-is not modelled, since its address and identity are unknown. No source
-fixes an Onyx 3000 C-brick's processors, caches or memory, so each
-C-brick takes the Origin 3200 C-brick's fit (four 400 MHz R12000s with 8
-MB caches and 4096 MB), a model choice. The V12 is fitted by default and
-``-vga none`` leaves its port empty. The stock PROM lists the V12 as a
-graphics board in the second C-brick's module and diagnoses all four
-processors on each node. IRIX 6.5.30 boots to a login without the V12
-and stops in an early kernel assertion with it; the cause is not
-established.
-
-.. _sgi-sn-family-rbrick:
-
-R-brick and NUMAlink module ports
----------------------------------
-
-The R-brick router has eight ports, 1 to 8, lettered A to H. A C-brick
-connects only to port 2, 3, 4 or 5, since only those cables carry the
-USB signals that reach its L1. Router-to-router links normally use 1, 6,
-7 and 8 but may use any port (*established*, :src:`007-4311-002 pp.
-36-37`; *SGI Origin 3000 Series Owner's Guide*, :src:`007-4240-002 p.
-196`). An Origin 3400 R-brick ships with two of its ports disabled
-(:src:`108-0240-002 p. 2-20`). Which two, and how, no source cited here
-establishes (*unknown*). No SGI document cited here names the router
-ASIC itself (*unknown*; :ref:`sgi-bricks`).
-
-The ``r-brick`` model layer is the enclosure: the router, its L1 and USB
-hub, and the eight port connectors, each with a cable bus a composition
-attaches the far end to. The router's ``node_ports`` names ports 2 to 5.
-Resolution refuses a node cabled to any other port, and the builder
-refuses such a cable in a topology it is handed, with the message "node
-'<id>' is cabled to router '<id>' port <n>; it takes a node only on
-ports 2, 3, 4, 5". A cable to another router may use any port. The layer
-sets no L1 brick-type character, since no reviewed L1 contract gives the
-R-brick's.
-
-The ``origin3400`` composition is the guide's 8- to 16-processor
-interconnect drawn with one R-brick (:src:`007-4311-002 p. 55`): four
-C-bricks on ports 2 to 5 and an I-brick on the first C-brick's
-``XIO (II)`` connector at XBridge port A. Its composition rules follow
-Appendix B (p. 89): one to eight C-bricks, one or two R-bricks and at
-least one I-brick among at most eight I/O bricks. Every Origin 3400
-bundle ships two R-bricks (pp. 76-78), which this composition does not
-show. It is an emulation target. Each C-brick takes the Origin 3200 fit:
-four 400 MHz R12000 processors with 8 MB secondary caches and 4096 MB in
-eight 512 MB banks. The bundles ship C-bricks without memory and the
-customer chooses the DIMMs, so the memory is a model choice
-(*approximation*), as are the brick slot numbers (the guide places no
-brick of this system in a slot) and the synthetic identities. Being
-routed, the composition assigns no master or slave role to a C-brick.
-
-Model limits of a routed Origin 3000 build:
-
-* The L2 controller, which a rack holding an R-brick requires
-  (:src:`007-4311-002 p. 42`), is not modelled, nor is the R-brick's USB
-  hub traffic to the C-brick L1s. Running without them is a limit, not a
-  claim that the hardware does.
-* The router presents all eight ports, not the six an Origin 3400
-  enables.
-* Its forwarding is the routed Origin 300 experiment's (below), which no
-  R-brick register contract confirms. The table shapes, the destination
-  ID mapping and whether an entry names an absolute port or a turn are
-  *unknown*.
-
-The Origin 300 NUMAlink module is a different product. Published
-inventories report its router board as another revision of the R-brick
-board's part family; whether the two carry the same router ASIC revision
-is *unknown*. Ports 1, 6, 7 and 8 take base modules only. Ports 2 to 5 take base or PCI expansion modules
-and carry USB to the L2 controller (*established*,
-:src:`007-4498-002 pp. 4, 10-11, 16, 93-98`). In the tall rack
-(figure 4-2) the cabling runs:
-
-.. list-table::
-   :header-rows: 1
-
-   * - Base module position
-     - U28
-     - U26
-     - U24
-     - U22
-     - U18
-     - U16
-     - U14
-     - U12
-   * - NUMAlink module port
-     - 3
-     - 2
-     - 1
-     - 8
-     - 7
-     - 6
-     - 5
-     - 4
-
-The mapping is *established* from the manual's figure. A live
-six-chassis rack whose modules at U12, U14, U18, U22 and U24 reported
-active ports 1, 4, 5, 7 and 8 agrees with it (*observed*,
-:src:`nekonomicon-16727514`). The layer's eight router-port buses carry
-these port numbers.
-
-The routed Origin 300 topology selects one logical eight-port SN1 router
-(:doc:`hardware/sn1-router`). The public Linux v2.5.0 tree
-(``linux-history:381ab1f538162eb985c9244aa7d56e54315881ab``) names router
-chip identity ``0x3017`` in ``include/asm-ia64/sn/sn1/bedrock.h`` lines
-19-20 and defines the router status fields in
-``include/asm-ia64/sn/sn1/router.h`` (*software expectation*). A
-published six-chassis Origin 300 inventory reports router revision 1
-(:src:`nekonomicon-16727514 lines 390-409 and 1860-1869`). The model
-selects chip revision one by inference from that software report
-(*inferred*). Neither the inventory nor the manuals measure the fitted
-silicon or establish how many router ASICs the enclosure holds. Chip
-inputs of zero are an emulator choice (*approximation*).
-
-The router's L1 type is ``0x52`` (``R``), a software profile and not a
-measured controller reply (*approximation*). Linux v2.5.0
-``include/asm-ia64/sn/ksys/l1.h`` line 266 assigns uppercase ``R`` to
-that code. Its ``arch/ia64/sn/io/l1_command.c`` lines 413-436 normalise
-uppercase types for module names, and lines 1031-1074 identify the
-router module independently of the returned type (*software
-expectation*). The NUMAlink module guide establishes a separate L1
-controller (:src:`007-4498-002 pp. 14, 96, 130`) but gives no raw type
-response. A binary type-query capture from a matching controller would
-settle that byte. The module, its ports and the routed topology are on
-:ref:`sgi-bricks-numalink-module` and :ref:`sgi-ip35-numalink`.
-
-.. _sgi-sn-family-origin350:
-
-Origin 350 compute module
--------------------------
-
-The ``origin350`` machine is a one-node software profile. It is an
-emulation target with explicit model choices, not a claim that its
-memory, firmware seed, PIC setup or board wiring reproduce a measured
-machine (:ref:`sgi-ip35-origin350`). The hardware facts the layers cite
-are:
-
-- Two or four R16000, 4 MB of secondary cache each, and eight DIMM slots
-  in four pairs, each pair feeding a pair of banks, 1 to 8 GB
-  (*established*, :src:`007-4566-001 pp. 69, 114, 116`).
-- One Bedrock, with NUMAlink 3 on one external LINK connector that is
-  empty in a one-module system (*established*, :src:`007-4566-001 p.
-  69`). Revision 2 at 200 MHz is *observed* in one Origin 350 inventory
-  (:src:`nekonomicon-16729141`).
-- An L1 controller with a display, and an L2 only with a NUMAlink module
-  (*established*, :src:`007-4566-001 pp. 68-75`).
-- A PIC with two PCI-X heads on one widget, the second head's registers
-  ``0x800000`` above the first (*software expectation*: OpenBSD
-  ``sys/arch/sgi/xbow/xbridgereg.h`` lines 24-28 and ``xbowdevs``, part
-  ``0xd102``, second head ``0xd112``, manufacturer ``0x024``, at
-  ``2df91d80c104636deeef8124252ddd5951b55fbf``). Widget 15 is *observed*
-  in one Origin 350 inventory (:src:`nekonomicon-16724207`).
-- The IO9 card in the lowermost slot, on bus 1 (*established*,
-  :src:`007-4566-001 p. 69`). The IOC4 ``10a9:100a`` is at configuration
-  device 1, the ISP12160 ``1077:1216`` revision 6 at 3 and the BCM5701
-  ``14e4:1645`` at 4 (*observed* in every captured IP53 inventory;
-  :ref:`sgi-ip35-ip53-io9`). PIC's configuration devices are its
-  internal slots plus one (OpenBSD ``xbridge.c``), so the PCI ids IRIX
-  prints are OpenBSD's devices plus one (*inferred*).
-
-The Origin 350's widget identity words for Bedrock and PIC are
-*unknown*. One published PROM trace from an Onyx 350 module (an IP53
-graphics blade with four processors and 8 GiB) attaches the Bedrock at
-widget ``0xb`` (:src:`graphica-o350-chimera-notes lines 949-952`),
-*observed*. No trace from an Origin 350 server is published, and that the
-server board enters at the same widget is *inferred* from the shared IP53
-board. The model enters the crossbar at widget ``0xa``
-(``SN1_XBRIDGE_HOST_PORT`` in ``hw/mips/sgi/sn1-node.c``), an
-*approximation* that disagrees with the observed trace.
-
-.. _sgi-sn-family-bedrock:
-
-Bedrock revisions
------------------
-
-Every published IRIX inventory of an Origin 300, Origin 3000, Origin
-350, Fuel or Onyx 4 reports the Bedrock, printed as ``HUB``, at revision
-2, 200 MHz (*observed*, many machines). No capture shows another
-revision. The raw register value behind the revision field IRIX prints
-is *unknown*.
 
 .. _sgi-sn-topology:
 
@@ -622,24 +248,9 @@ the shared builder.
 
 The accepted node counts, populations and memory sizes of each product
 are on the platform pages: :ref:`sgi-ip27-topologies`,
-:ref:`sgi-ip27-memory`, :ref:`sgi-ip35-products`,
+:ref:`sgi-ip27-processors`, :ref:`sgi-ip27-memory`, :ref:`sgi-ip35-products`,
 :ref:`sgi-ip35-memory`, :ref:`sgi-ip53-products` and
 :ref:`sgi-ip53-memory`.
-
-.. _sgi-sn-origin200-processors:
-
-Origin 200 processor options
-----------------------------
-
-``processor=`` selects the processor module every node of an
-``origin200`` topology fits, by catalogue id. ``-cpu`` defaults to the
-module's part and must name it when given. ``query-sgi-machines`` lists
-each topology's choices as ``processor-options``. The four modules, the
-inventories that establish each one's clock, cache, tap and chip
-revision, the mode word the machine writes into each node's flash
-configuration block, and the model limits on Hub revision and existing
-flash are on :ref:`sgi-ip27-processors`. The bank layout each module
-allows is on :ref:`sgi-ip27-memory`.
 
 .. _sgi-sn-graphics-pipes:
 
@@ -807,23 +418,11 @@ skipped when ``-bios`` is copied in. At least one of ``-bios`` or a bound
 flash per node is required. The one exception is a qtest machine that
 builds no flash-backed node.
 
-The two generations differ when no image is given:
-
-- On IP27, absent an image, the machine still builds a working reset
-  vector. A default template answers the flash's command interface with a
-  spin-in-place loop, a plausible configuration block and a factory-fresh
-  environment log, the shape a real chip ships pre-formatted in rather
-  than merely erased. The machine patches five fields into any block
-  that carries the IP27 configuration magic: the module's mode word and
-  clock, and the product's two flash timings and machine-type word.
-  Every other field and the block's byte sum are kept, with the checksum
-  field adjusted to hold the sum. The product values come from the topology's
-  ``ip27-firmware`` record in ``query-sgi-machines``
-  (:ref:`sgi-prom-image-ip27-values`).
-- On IP35, no template exists. Every node needs a real image or a bound
-  flash, and the PROM's writes to a flash that is only filled from
-  ``-bios`` do not persist. :ref:`sgi-ip35-firmware` describes the effect
-  and :ref:`sgi-prom-image-ip35-views` the views the model maps.
+The generations differ when no image is given. An SN0 node with no image
+starts from a template the machine patches with the product's values
+(:ref:`sgi-ip27-firmware`, :ref:`sgi-prom-image-ip27-values`). An SN1
+node has no template: every node needs a real image or a bound flash
+(:ref:`sgi-ip35-firmware`, :ref:`sgi-prom-image-ip35-views`).
 
 .. _sgi-sn-storage:
 
@@ -942,16 +541,13 @@ Base I/O is one device, ``sgi-baseio`` (``hw/mips/sgi/baseio.c``), with
 a preset per shipped board design rather than a separate class each:
 ``ip29``, ``io6``, ``io6g``, ``menet``, ``mscsi``, ``io8``, ``io7`` and
 ``fuel``. ``io7`` is the Origin 3000 I-brick's IOC3, Lucent OHCI
-controller and TI TSB12LV22 IEEE 1394 link at head F devices 4, 5 and 6
-(*observed*; :ref:`sgi-sn-family-ibrick`). Any other preset name is
-refused. :doc:`hardware/baseio` describes the
+controller and TI TSB12LV22 IEEE 1394 link (:ref:`sgi-sn-family-ibrick`).
+Any other preset name is refused. :doc:`hardware/baseio` describes the
 presets. The Origin 200's IP29 onboard I/O is soldered to the System
 Board rather than plugged into a slot, so the Origin 200 node builds its
 ``ip29`` instance directly on its own XIO port, with no board wrapper.
 The Origin 300 node's ``io8`` instance is placed the same way, directly
-on its XBridge head, not through a board class. The machine places the
-I-brick's ``io7`` instance as ``/machine/module<M>/io7``, directly on head
-F of the XBridge in the I-brick's module, also with no board class.
+on its XBridge head, not through a board class.
 
 ``sgi-xio-board`` (``hw/mips/sgi/xio-board.c``) is the abstract base for
 a removable XIO board: the unit that plugs into one of a module's XIO
@@ -1007,10 +603,6 @@ QEMU's child-bus idiom, ``<id>.0``: a card goes into the carrier in IO2
 with ``bus=io2.0``, and ``screendump device=io3`` names an SI board in
 IO3.
 
-A catalogue node record carries ``hub-slot-bits`` where its midplane
-differs from the eight-processor module's, and the builder hands the Hub
-the result as its ``slot-bits`` property (:ref:`sgi-onyx2-node-slot-codes`).
-
 A Crossbow needs every endpoint present at startup attached before its
 own realize builds the routes between them, so the builder links the
 topology's own boards before realizing each Crossbow. A board fitted at
@@ -1022,86 +614,11 @@ Crossbow on the node. The ``origin200`` node places its one Base I/O
 instance directly on its XIO port, and the ``origin300`` node on its
 XBridge head, as above.
 
-An Origin 3000 C-brick's IP35 board has no XBridge: an XIO cable joins
-its Bedrock to port A or B of the XBridge in an I/O brick. The builder
-creates that chip as ``/machine/module<M>/xbridge``, or ``xbridge0`` to
-``xbridge3`` where a module holds several, as the N-brick's four chips do.
-It gives the chip the cable's port as its host port and its module's
-catalogue id as its bus prefix, and hands it to the cabled node through
-the node's ``xbridge`` link. The node joins and realizes it as an
-Origin 300 node does its own. The node's Bedrock decodes the chip at the
-cable's port and at each of the chip's heads the node hosts, and nothing
-at the chip's other Crosstown2 port.
-
-The builder refuses a second host node on one XBridge, because the model
-takes one host port and whether one chip serves hosts on A and B at once
-is *unknown*. It refuses a host that is also cabled to a router, for which
-it has no rule. It checks a cable between two crossbars, such as the
-P-brick's links from its first chip to each of the others, like any other
-cable and then refuses it while the cables are built. No source cited
-here gives the downstream chips' mode (*unknown*;
-:ref:`sgi-sn-family-pbrick`).
-
-An XIO cable from one of the chip's other link ports, 8 to 0xd, reaches
-one XIO board: a card in an X-brick slot, or a board on the I-brick's
-free Crosstown2 port. The board's own attachment names that port and the
-chip's host node, whose Bedrock decodes the board's widget there. The
-builder creates the board as ``/machine/module<M>/<board id>`` in the
-board's own module and joins it to the port with one XIO link once the
-nodes have realized. Only the XIO cards ``pci-carrier``,
-``pci-shoehorn``, ``menet`` and ``mscsi``, the V-brick's VPro V12 and
-the InfiniteReality pipe of a G-brick are built at such a port; any
-other graphics pipe, a BaseIO card or any other preset cabled there is
-refused. A V12
-record cabled to a crossbar port is a graphics slot named by the
-record's catalogue id: ``-device sgi-odyssey,slot=<id>`` fits the pipe
-there, it is built in the record's module, and the chip's host node
-reaches it at that port. The V-brick's midplane XBridge takes one host,
-so a two-pipe V-brick, whose second pipe needs a second C-brick on the
-other Crosstown2 port, is refused like any second host.
-
-A G-brick pipe record at such a port is a slot, named by the record's
-label, that ``-device sgi-kona,slot=<label>`` claims after machine init,
-as the Onyx2's pipe slot is. The pipe joins the chip's port, sits in its
-G-brick's module as ``/machine/module<M>/<board id>`` and composes its
-packets for the chip's host port, which the crossbar delivers to the
-hosting Bedrock. Each pipe of an N-brick is therefore reached only from
-the C-brick cabled to the same chip. A G-brick pipe on an Origin 3000
-machine is a model arrangement (*approximation*): no Onyx 3000 hardware
-graph or widget listing has been captured, so the widget number at which
-a C-brick sees its pipe and the pipe's identity there are not
-established.
-
-An SN1 router is built as ``/machine/module<M>/router`` beside its
-module's L1 and that L1's UART, whether or not the topology carries the
-L1 management registry the Origin 300 PCI expansion experiment uses, so
-an R-brick needs no I/O peer. Its L1 keeps the routed Origin 300
-experiment's type profile described under :ref:`sgi-sn-family-rbrick`;
-an R-brick's own L1 type is *unknown*. A router record's ``node-ports``
-lists the only ports a node's cable may use; the builder checks every
-cable against it before any device exists.
-
-A node with ``role: memory`` is a Bedrock with memory banks and no
-processor, the shape of the Cx-brick's zero-processor board. It realizes
-with no CPUs, its boot flash image left as supplied, and answers other
-nodes' memory traffic once they have configured and numbered it, as the
-firmware reaches a peer through its vector engine. It cannot be the
-console node, and a population that fits it a processor is refused.
-Whether such a board carries boot flash is *unknown*, so the builder still
-requires one.
-
-A controller with ``owner: module`` is built once as
-``/machine/module<M>/l1`` and linked into the module's node through the
-node's ``l1`` link, in place of the node's own ``/machine/node<N>/l1``.
-The node configures it exactly as it would its own, so the guest sees
-the same L1. A module with several nodes may own its L1 only with
-``profile: cx-brick``: the machine builds the :ref:`Cx-brick L1
-<sgi-l1-cxbrick>` itself for one to four IP53 nodes in distinct slots 0
-to 3, and each node adds its own UART window on the link its slot names.
-A node with the memory role is a board without processors. The brick's
-console is the first listed node's L1 serial line. Every other
-module-owned L1 shared by several nodes is refused, because how several
-Bedrocks reach one L1 is *unknown* outside that profile.
+An Origin 3000 C-brick has no XBridge of its own. How the builder joins
+it to an I/O brick's XBridge, which XIO boards it builds at a cabled
+port, and the memory-only node and module-owned L1 a CX-brick needs are
+on :ref:`sgi-ip35-brick-composition`. The SN0 deskside's per-node slot
+codes are on :ref:`sgi-onyx2-node-slot-codes`.
 
 An XIO port is a QOM interface every chip at one end of an XIO link
 implements: a Hub's or Bedrock's I/O interface, each Crossbow or XBridge
@@ -1118,89 +635,15 @@ widget-addressed fabric, the destination widget in bits 51:48 and the
 
 Migration is supported only between identical builds.
 
-.. _sgi-sn-gigachannel:
-
-GIGAchannel expansion cabinet
------------------------------
-
-Two Origin 200 topologies fit the cabinet: ``origin200-gigachannel``,
-where the cabinet's Crossbow sits between the Hub and the module's base
-I/O Bridge, and ``origin200-gigachannel-loopback``, the converted module
-with a loopback cable instead of a cabinet. The cabinet's own I/O is the
-``sgi-gigachannel`` board, which the machine places and which is not
-``-device``-creatable. :doc:`hardware/gigachannel` describes both
-topologies, the board, its BASEIO PROM flash and its status word.
-
 Module power and reset
 ======================
 
-The IP27 machines connect each module controller's power and reset
-outputs to the module's parts, and :ref:`sgi-ip27-power` describes what
-the model does. These implementation details are not repeated there.
-
-The cold start of a module runs from a bottom half and not from the
-controller's own timer. It stops the module's processors with work queued
-on each of them and does not wait. The last completion schedules the rest
-of the start (the parts' reset and the processors' release) as a bottom
-half, so the start never blocks on a processor thread and runs under
-record and replay, where that thread needs a lock the main loop holds. A
-processor that runs no guest code, in a paused machine or under qtest, is
-stopped on the spot, and a start with no running processor to wait for
-goes on at once. The start is owed until that bottom half has run, so a
-start owed when a migration stream was taken, including one still
-waiting for its processors, is part of that stream and is carried out
-once the destination runs.
-
-The module start also resets every Crossbow the module's nodes reach and
-the boards behind them. Whether a module reset reaches the Crossbows and
-XIO boards on hardware is *unknown*. A midplane schematic or a register
-capture across a module reset would settle it. The stock IP27 PROM sends
-a warm reset down each XIO link on every cold entry (*software
-expectation*), and a Crossbow treats one as a power-on reset of its core
-(*established*, :src:`crossbow-asic-spec-12.0 pp. 132-133`). The firmware
-therefore resets them either way. The model resets them at module start
-as well, because the PROM's warm reset does not reach a Bridge's PCI
-side, and the stock PROM cannot read a Bridge that kept a running
-kernel's PCI setup.
-
-While a module is off its ports read disabled to their peers, the state a
-cable marked down already has. A peer Hub reads link-up zero with the
-down reason clear, which Linux ``hubni.h`` defines as a link that failed
-(*software expectation*). Treating a lost peer as failed and not as never
-reset is an *approximation*. A peer Router reads the port not working.
-Whether a Router port facing a lost peer reads reset-failed is *unknown*,
-and the model leaves it clear. Power returning brings the links up
-through the normal flood after the module's parts have reset and before
-its processors run. An off module keeps its register state until the
-reset that comes first at power-up.
-
-Power state is derived from the controllers' power, which migrates, so
-none of it does. It is applied when a machine starts running and after
-the machine's own reset, and by the machine's migrated section, which
-loads after every device, so a load shows the right gating even while
-the destination is paused.
-
-The Hub's I2C adapter window is the one register window that keeps
-answering while its module is off, and only from the off module's own
-view. A peer module's access to it fails like the rest of the Hub. The
-adapter is a Hub register window, and the Hub is in the module's switched
-power domain (*established* for the Origin 200,
-:src:`007-3708-002 p. 97`, and for the Origin 2000 rails,
-:src:`007-3456-003 p. 113`). On hardware the adapter is therefore off
-with the module and no host could use it (*inferred*). Keeping it
-answering is an *approximation*. It keeps the host side of the standby
-controller reachable over the module's own bus, which the controller
-tests and the Origin 200 controller's grants rely on. In the
-model an operator reaches an off Origin 2000 module's controller through
-its serial line, and an off Origin 200 slave's through its master. The
-slave has no connector of its own, and a ``pwr u`` the master accepts
-while it is itself off powers the master up, whose forward then starts
-the slave (:ref:`sgi-elsc-master-slave`). A ``pwr u`` sent to a master
-that is already on has nothing to power up and forwards nothing, so the
-model has no way to start only the slave from a peer's bus. No topology
-with more than one Origin 2000 module is built, so the several-module
-Origin 2000 path is the same code as the Origin 200 pair's and is only
-exercised there.
+Each module's system controller switches the module's power and reset.
+On SN0 the machine connects each controller's outputs to the module's
+parts. :ref:`sgi-ip27-power` describes the domains and what the model
+does, and :ref:`sgi-ip27-power-implementation` how the model sequences
+a module start, what an off module's peers see, and how power state
+migrates. On SN1 the L1 owns power and reset (:doc:`hardware/l1`).
 
 .. _sgi-sn-launch-metadata:
 
@@ -1309,24 +752,6 @@ switches. These are model inputs that replace synthetic defaults. The
 machine's own identity values are marked synthetic and are not taken
 from any real machine.
 
-.. _sgi-sn-fuel-interrupts:
-
-Fuel onboard interrupt routing
-==============================
-
-The ``fuel`` machine wires the four interrupt sources on its widget-15
-XBridge head (head F) to head F inputs 1, 0, 4 and 5. The routing is an
-*approximation* of board wiring, and the physical traces on any Fuel
-board revision are *unknown*. :ref:`sgi-ip35-fuel-interrupts` has the
-table, the evidence, the path to the Bedrock and the tests.
-
-.. _sgi-sn-fuel-interrupts-evidence:
-
-Evidence
---------
-
-The evidence for the routing is on :ref:`sgi-ip35-fuel-interrupts`.
-
 .. _sgi-sn-devices:
 
 Devices
@@ -1336,11 +761,16 @@ The node ASICs, bridges, controllers and I/O chips this family builds
 from have their own pages: :doc:`/system/mips/sgi/hardware/hub`,
 :doc:`/system/mips/sgi/hardware/bedrock`,
 :doc:`/system/mips/sgi/hardware/bridge`,
+:doc:`/system/mips/sgi/hardware/xbow`,
 :doc:`/system/mips/sgi/hardware/xbridge`,
+:doc:`/system/mips/sgi/hardware/pic`,
 :doc:`/system/mips/sgi/hardware/elsc`,
 :doc:`/system/mips/sgi/hardware/l1`,
 :doc:`/system/mips/sgi/hardware/router`,
 :doc:`/system/mips/sgi/hardware/sn1-router`,
 :doc:`/system/mips/sgi/hardware/ioc3`,
-:doc:`/system/mips/sgi/hardware/qlogic-isp` and
-:doc:`/system/mips/sgi/hardware/gigachannel`.
+:doc:`/system/mips/sgi/hardware/ioc4`,
+:doc:`/system/mips/sgi/hardware/baseio`,
+:doc:`/system/mips/sgi/hardware/qlogic-isp`,
+:doc:`/system/mips/sgi/hardware/gigachannel` and
+:doc:`/system/mips/sgi/hardware/bricks`.

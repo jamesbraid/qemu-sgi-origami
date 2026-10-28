@@ -2,24 +2,23 @@
 
 .. _sgi-psitech-rad4:
 
-==============================================
-PsiTech RAD4 and RAD4-KM PCI graphics heads
-==============================================
+============================================
+PsiTech RAD4 and RAD4-KM: PCI graphics heads
+============================================
 
-The PsiTech RAD4 is a third-party PCI graphics card for SGI systems: an
-8 MB framebuffer behind a PLX PCI 9060-compatible bus interface, with an
-RGB561-compatible RAMDAC, *inferred* from the driver's register use. The
-RAD4-KM is the same product line with keyboard and mouse connectors on
-the card. PsiTech's owner's guide puts the RAD4 in
-the Origin 200 and the RAD4-KM in the Origin 2000, which has no keyboard
-or mouse port of its own
-(:src:`psitech-rad4-owners-guide-1.3 Description`). QEMU models both as one
-PCI type, ``psitech-rad4`` in ``hw/display/psitech-rad4.c``, selected by
-``product=rad4`` or
+Used in :ref:`sgi-ip27` (Origin 200; the RAD4-KM's Origin 2000 placement
+is not offered). The PsiTech RAD4 is a third-party PCI graphics card for
+SGI systems: an 8 MB framebuffer behind a PLX PCI 9060-compatible bus
+interface, with an RGB561-compatible RAMDAC, *inferred* from the driver's
+register use. The RAD4-KM is the same product line with keyboard and mouse
+connectors on the card. PsiTech's owner's guide puts the RAD4 in the
+Origin 200 and the RAD4-KM in the Origin 2000, which has no keyboard or
+mouse port of its own (:src:`psitech-rad4-owners-guide-1.3 Description`).
+QEMU models both as one PCI type, ``psitech-rad4`` in
+``hw/display/psitech-rad4.c``, selected by ``product=rad4`` or
 ``product=rad4-km``. The RAD4-KM keyboard and mouse controller is a child
 device, ``psitech-rad4-km`` in ``hw/input/psitech-rad4-km.c``. QEMU offers
-the card on the Origin 200 topologies only
-(:ref:`sgi-sn-graphics-pipes`).
+the card on the Origin 200 topologies only (:ref:`sgi-sn-graphics-pipes`).
 
 The model is a functional profile for one software stack: PsiTech's RAD4
 release 1.3k for IRIX 6.5, its kernel driver and its standalone X server,

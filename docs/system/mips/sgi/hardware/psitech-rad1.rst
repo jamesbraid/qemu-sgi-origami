@@ -2,17 +2,18 @@
 
 .. _sgi-psitech-rad1:
 
-===================================
-PsiTech RAD1 PCI graphics card
-===================================
+===============================
+PsiTech RAD1: PCI graphics card
+===============================
 
-The PsiTech RAD1 is a third-party PCI graphics card for the Origin 200,
-built on the TI/3Dlabs TVP4020 (Permedia 2) with 8 MB of SGRAM
-(:src:`psitech-rad1-ds-1099 p. 1`) and the chip's own integrated RAMDAC
-(:src:`ti-tvp4020-programmers-reference p. 304`). It has no separate
-bus bridge or RAMDAC, unlike the :doc:`psitech-rad4`. It is unrelated to
-SGI's RAD1 audio controller (:doc:`rad1-audio`). QEMU models it as
-``psitech-rad1`` in ``hw/display/psitech-rad1.c``.
+Used in :ref:`sgi-ip27` (Origin 200). The PsiTech RAD1 is a third-party
+PCI graphics card for the Origin 200, built on the TI/3Dlabs TVP4020
+(Permedia 2) with 8 MB of SGRAM (:src:`psitech-rad1-ds-1099 p. 1`) and the
+chip's own integrated RAMDAC (:src:`ti-tvp4020-programmers-reference p.
+304`). It has no separate bus bridge or RAMDAC, unlike the
+:doc:`psitech-rad4`. It is unrelated to SGI's RAD1 audio controller
+(:doc:`rad1-audio`). QEMU models it as ``psitech-rad1`` in
+``hw/display/psitech-rad1.c``.
 
 The model is a functional profile for the software that drives the card
 in IRIX 6.5.30: the PsiTech RAD1 kernel driver and the IO6 PROM's graphics

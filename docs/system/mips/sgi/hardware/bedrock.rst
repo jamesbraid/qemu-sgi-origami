@@ -2,16 +2,19 @@
 
 .. _sgi-bedrock:
 
-=================================================================
-SGI Bedrock node controller (Origin 300, Fuel, Origin 350 family)
-=================================================================
+========================
+Bedrock: node controller
+========================
+
+Used in :ref:`sgi-ip35` (``origin300``, ``fuel``), :ref:`sgi-ip53`
+(``origin350``, ``onyx350``, ``tezro``, ``onyx4-host``), one per node,
+and in the Origin 3000 C-brick and CX-brick node boards
+(:ref:`sgi-bricks`), which no QEMU machine builds.
 
 The Bedrock is the node controller of SGI's second Scalable Node
-generation, the successor to the Origin 200's Hub (:doc:`hub`). It joins
-up to four processors, node memory and its directory, one crosstalk port
-and one NUMAlink 3 port. Every machine on :doc:`/system/mips/sgi/ip35`
-and :doc:`/system/mips/sgi/ip53` carries one per node: ``origin300``,
-``fuel``, ``origin350``, ``onyx350``, ``tezro`` and ``onyx4-host``. QEMU models it as
+generation, the successor to the Hub (:doc:`hub`). It joins up to four
+processors, node memory and its directory, one crosstalk port and one
+NUMAlink 3 port (*established*, :src:`108-0240-002 pp. 2-11 to 2-17`). QEMU models it as
 ``sgi-bedrock`` in ``hw/misc/sgi-bedrock.c``, a parent that composes
 seven unit devices: two processor interfaces (``sgi-bedrock-pi.c``),
 the memory and directory interface (``sgi-bedrock-md.c``), the I/O
@@ -178,6 +181,18 @@ interface 1, an *approximation*; no source states the decode, and a
 read of the CPU number through both forms from a processor on
 interface 1 would settle it. The node-named form always reaches the
 interface the offset names.
+
+.. _sgi-sn-family-bedrock:
+
+Revisions in published inventories
+-----------------------------------
+
+Every published IRIX inventory of an Origin 300, Origin 3000, Origin
+350, Fuel or Onyx 4 reports the Bedrock, printed as ``HUB``, at revision
+2, 200 MHz (*observed*, many machines, among them
+:src:`nekonomicon-16723604`, :src:`nekonomicon-16720581` and
+:src:`nekonomicon-16729141`). No capture shows another revision. The raw
+register value behind the revision field IRIX prints is *unknown*.
 
 .. _sgi-bedrock-pi:
 

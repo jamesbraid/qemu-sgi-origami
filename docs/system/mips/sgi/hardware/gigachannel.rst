@@ -2,9 +2,12 @@
 
 .. _sgi-gigachannel:
 
-=====================================================
-SGI Origin 200 GIGAchannel expansion cabinet (XBOX)
-=====================================================
+==================================
+GIGAchannel: XIO expansion cabinet
+==================================
+
+Used in :ref:`sgi-ip27` (the Origin 200, ``origin200-gigachannel`` and
+``origin200-gigachannel-loopback`` topologies).
 
 The GIGAchannel is a separate I/O cabinet for the Origin 200. It holds one
 Crossbow, one Bridge with four PCI slots and five XIO slots. Two XIO cables

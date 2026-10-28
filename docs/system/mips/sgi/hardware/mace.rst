@@ -2,10 +2,11 @@
 
 .. _sgi-mace:
 
-=======================================
-MACE I/O ASIC (O2)
-=======================================
+====================
+MACE: I/O controller
+====================
 
+Used in :ref:`sgi-ip32` (O2).
 MACE is the I/O ASIC of the O2. It holds the PCI host bridge, the Fast
 Ethernet MAC, and a peripheral controller that carries the audio
 interface, the serial-port DMA channels, the PS/2 keyboard and mouse
@@ -18,8 +19,8 @@ models chip revision 2.0 as the PCI host bridge ``sgi-mace`` in
 ``hw/mips/sgi/mace-id.c`` and the audio interface in
 ``hw/mips/sgi/mace-audio.c``. The Ethernet MAC is a child device on its
 own page (:doc:`mace-ethernet`), the clock is the DS1685 model
-(:doc:`ds1685`) and the codec is on :doc:`ad1843`. The only machine that
-fits MACE is the O2 test profile (:ref:`sgi-ip32`).
+(:doc:`ds1685`) and the codec is on :doc:`ad1843`. The O2 test profile
+(:ref:`sgi-ip32`) fits MACE.
 
 Facts are rated as described in :ref:`sgi-ratings`.
 

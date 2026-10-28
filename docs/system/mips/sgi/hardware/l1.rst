@@ -2,19 +2,22 @@
 
 .. _sgi-l1:
 
-===============================================================
-SGI L1 system controller (Origin 300, Fuel, Origin 350 family)
-===============================================================
+=====================
+L1: system controller
+=====================
 
-The L1 is the per-chassis system controller of the Origin 300, the Fuel
-and the Origin 350 family (Origin 350, Onyx 350, Tezro and the Onyx 4
-host). It runs from standby power, keeps the chassis identity, watches
-fans, supplies and temperatures, drives node power, reset and NMI, and
+Used in :ref:`sgi-ip35` (Origin 300 and Fuel), :ref:`sgi-ip53` (Origin
+350, Onyx 350, Tezro and the Onyx4 host), the Origin 300 PCI expansion
+module (:doc:`pci-expansion`) and NUMAlink module
+(:ref:`sgi-bricks-numalink-module`), and the Origin 3000 bricks
+(:ref:`sgi-bricks`), which QEMU describes for reference only.
+
+The L1 is the per-chassis system controller of SN1 systems. It runs
+from standby power, keeps the chassis identity, watches fans, supplies and temperatures, drives node power, reset and NMI, and
 carries the operator console. The node's Bedrock reaches it through a
 16550-style UART and a framed request and response protocol, which the
 IP35 PROM, IRIX and the public kernels use to read board records, write
-the display and pass console text. The same controller sits in NUMAlink
-router modules and the Origin 300 PCI expansion module.
+the display and pass console text.
 
 QEMU models the node-facing side as two objects in
 ``hw/misc/sgi-l1.c``: ``sgi-l1``, the controller (frame parser, request

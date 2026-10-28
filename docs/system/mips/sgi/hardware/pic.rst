@@ -2,13 +2,15 @@
 
 .. _sgi-pic:
 
-=====================================
-PIC PCI-X bridge (Origin 350 family)
-=====================================
+=================
+PIC: PCI-X bridge
+=================
 
-PIC is the XIO-to-PCI-X bridge of the IP53 node board family: the Origin
-350, Onyx 350 and Tezro, and the Onyx4 host, which QEMU builds on the
-same board. One PIC is one XIO widget
+Used in :ref:`sgi-ip53` (the Origin 350, Onyx 350, Tezro and Onyx4 host
+machines) and in the Origin 3000 IX- and PX-bricks (:ref:`sgi-bricks`),
+which QEMU describes for reference only.
+
+PIC is SGI's XIO-to-PCI-X bridge. One PIC is one XIO widget
 with two bridge heads, each with its own register block and its own PCI
 bus. QEMU models it as ``sgi-pic`` in ``hw/pci-host/sgi-pic.c``, with the
 two heads as internal ``sgi-pic-head`` children. The model reports PIC

@@ -3,8 +3,13 @@
 .. _sgi-r10000:
 
 =========================
-R10000-family processors
+R10000 family: processors
 =========================
+
+Used in :ref:`sgi-ip27` (R10000 and R12000), :ref:`sgi-ip30` (R10000
+and R12000), :ref:`sgi-ip35` (R14000), :ref:`sgi-ip53` (R16000) and the
+Origin 3000 C-brick (:ref:`sgi-bricks`, R12000 and R14000, reference
+only).
 
 The R10000, R12000, R14000 and R16000 are the 64-bit MIPS IV processors
 of SGI's Octane, Origin and Onyx machines. QEMU models them as the

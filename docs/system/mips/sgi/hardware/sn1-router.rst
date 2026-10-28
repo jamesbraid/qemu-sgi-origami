@@ -2,13 +2,20 @@
 
 .. _sgi-sn1-router:
 
-========================================
-SN1 router (eight-port NUMAlink switch)
-========================================
+===========================
+SN1 router: NUMAlink router
+===========================
 
-The SN1 router is the eight-port NUMAlink switch of the Origin 300
-NUMAlink module. Two base modules can be cabled to each other directly,
-*established* :src:`007-4499-002 pp. 12, 36, 52`. A larger system joins
+Used in :ref:`sgi-ip35` (the Origin 300 NUMAlink module, in the
+``origin300-numalink-pci-expansion`` topology). The Origin 3000 R-brick
+and CX-brick router board (:ref:`sgi-bricks`) are eight-port NUMAlink
+routers too. No cited source names their router ASIC, so that they
+carry this part is *unknown*, and QEMU describes those bricks for
+reference only.
+
+The SN1 router is the eight-port NUMAlink switch of the SN1 interconnect.
+In an Origin 300 system two base modules can be cabled to each other
+directly, *established* :src:`007-4499-002 pp. 12, 36, 52`. A larger system joins
 two to eight base modules and up to four PCI expansion modules through
 the NUMAlink module's eight ports, *established*
 :src:`007-4498-002 pp. 2, 10, 93, 98`. QEMU's one routed topology uses

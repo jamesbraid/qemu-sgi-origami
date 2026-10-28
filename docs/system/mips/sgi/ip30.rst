@@ -2,9 +2,9 @@
 
 .. _sgi-ip30:
 
-============================
-SGI IP30: Octane and Octane2
-============================
+========================
+IP30: Octane and Octane2
+========================
 
 The ``octane`` and ``octane2`` machines (``hw/mips/sgi/octane.c``) each
 build one IP30 board with one processor, a serial console and the

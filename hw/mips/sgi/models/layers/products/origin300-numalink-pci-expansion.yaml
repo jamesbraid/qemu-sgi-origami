@@ -404,12 +404,12 @@ layer:
         hardware_revision: 1
         chip_inputs: 0
       datasheet_contracts:
-      - qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-rbrick
+      - qemu:docs/system/mips/sgi/ip35.rst#sgi-sn-family-rbrick
       provenance: derived
       sources:
       - 'linux-history:381ab1f538162eb985c9244aa7d56e54315881ab include/asm-ia64/sn/sn1/bedrock.h lines 19-20: router chip identity 0x3017'
       - 'web:nekonomicon-16727514 lines 390-409 and 1860-1869: software-reported router Revision 1'
-      - qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-rbrick
+      - qemu:docs/system/mips/sgi/ip35.rst#sgi-sn-family-rbrick
       notes: Chip revision one is an inference from the software-reported revision, not a measurement
         of fitted silicon. Zero chip inputs are an emulator configuration policy.
     - id: router-l1
@@ -422,7 +422,7 @@ layer:
       provenance: derived
       sources:
       - 'linux-history:381ab1f538162eb985c9244aa7d56e54315881ab include/asm-ia64/sn/ksys/l1.h line 266: router type R (0x52)'
-      - qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-rbrick
+      - qemu:docs/system/mips/sgi/ip35.rst#sgi-sn-family-rbrick
       notes: Explicit noncompute router controller profile through its own UART, with no firmware revision selected.
       datasheet_contracts:
       - qemu:docs/system/mips/sgi/hardware/l1.rst#sgi-l1-role

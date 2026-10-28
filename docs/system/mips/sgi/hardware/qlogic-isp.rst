@@ -2,9 +2,14 @@
 
 .. _sgi-qlogic-isp:
 
-========================================================
-QLogic ISP1040, ISP12160 and ISP2200 adapters, SCSI tape
-========================================================
+=====================================================================
+QLogic ISP1040, ISP12160 and ISP2200: SCSI and Fibre Channel adapters
+=====================================================================
+
+Used in :ref:`sgi-ip27`, :ref:`sgi-ip30`, :ref:`sgi-ip35` and
+:ref:`sgi-ip53` on the base I/O boards (:doc:`baseio`) and on the MSCSI
+board (:doc:`mscsi`), and in the Origin 3000 I-brick
+(:ref:`sgi-bricks-ibrick`), whose published inventories show an ISP2200.
 
 The QLogic ISP parts are intelligent host adapters. The host builds whole
 commands in memory rings, a mailbox interface carries everything else, and

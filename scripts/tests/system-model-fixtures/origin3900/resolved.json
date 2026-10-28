@@ -1459,7 +1459,7 @@
       "provenance": "observed-hardware",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     },
     {
@@ -1478,7 +1478,7 @@
       "provenance": "observed-hardware",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     },
     {
@@ -1523,7 +1523,7 @@
       "provenance": "observed-hardware",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     },
     {
@@ -1543,7 +1543,7 @@
       "provenance": "observed-hardware",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     }
   ],
@@ -1665,7 +1665,7 @@
           "mode": "projected",
           "note": "The Bedrock identity, revision 2 at 200 MHz, is what every published Origin 3000 and Origin 350 inventory reports; no inventory of a Cx-brick exists, so it is not a capture of this brick.",
           "sources": [
-            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+            "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
           ]
         },
         "parent": "rack",
@@ -1680,7 +1680,7 @@
           "mode": "direct",
           "note": "The IO7 device identities are the closure record's own three independent owners' IRIX inventories, reused directly for this reference I-brick rather than a distinct capture of this exact set.",
           "sources": [
-            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+            "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
           ]
         },
         "parent": "rack",
@@ -2218,7 +2218,7 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     },
     {
@@ -2228,7 +2228,7 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     },
     {
@@ -2238,7 +2238,7 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     },
     {
@@ -2248,7 +2248,7 @@
       "provenance": "observed-hardware",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
       ]
     },
     {

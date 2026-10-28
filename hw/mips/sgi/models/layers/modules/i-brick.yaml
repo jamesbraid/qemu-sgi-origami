@@ -153,10 +153,10 @@ layer:
       - {component: xbridge-bridge-e, bus: heads-xio, role: bridge-upstream, widget: 14, provenance: vendor-document, sources: *ibrick-heads}
       - {component: xbridge-bridge-f, bus: heads-xio, role: bridge-upstream, widget: 15, provenance: vendor-document, sources: *ibrick-heads}
       - {component: xbridge-bridge-f, bus: io7-bus, role: bridge-downstream, provenance: vendor-document, sources: *ibrick-heads}
-      - {component: fibre-channel, bus: io7-bus, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
-      - {component: ioc3, bus: io7-bus, role: endpoint, pci_device: 4, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
-      - {component: usb, bus: io7-bus, role: endpoint, pci_device: 5, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
-      - {component: firewire, bus: io7-bus, role: endpoint, pci_device: 6, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
+      - {component: fibre-channel, bus: io7-bus, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick]}
+      - {component: ioc3, bus: io7-bus, role: endpoint, pci_device: 4, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick]}
+      - {component: usb, bus: io7-bus, role: endpoint, pci_device: 5, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick]}
+      - {component: firewire, bus: io7-bus, role: endpoint, pci_device: 6, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick]}
       # host-port-a-xio is the attached C-brick's XIO bus, which the
       # composition binds with bus_bindings. Port A is the documented
       # compute-node port this layer uses; which port a boot I-brick uses

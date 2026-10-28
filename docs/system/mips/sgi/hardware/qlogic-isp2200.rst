@@ -1,8 +1,12 @@
-.. SPDX-License-Identifier: BSD-3-Clause
+============================================
+QLogic ISP2200: Fibre Channel host interface
+============================================
 
-===========================================
-QLogic ISP2200 Fibre Channel host interface
-===========================================
+Used in the Origin 3000 and Onyx 3000 I-brick, where published
+inventories show one at slot 1 of the base I/O bus
+(:ref:`sgi-bricks-ibrick`, *observed*), and as the host side of a D-brick
+(:ref:`sgi-bricks-dbrick`). No QEMU machine or base I/O preset fits one.
+It is an add-in card placed with ``-device qlogic-isp2200``.
 
 The ISP2200 is a single-chip Fibre Channel host adapter: an on-chip
 RISC processor running downloaded firmware, a Fibre Channel protocol

@@ -2,9 +2,12 @@
 
 .. _sgi-bic:
 
-=========================================================
-BIC board interface (Origin 300 PCI expansion module)
-=========================================================
+=====================================
+BIC: expansion module board interface
+=====================================
+
+Used in :ref:`sgi-ip35`: the Origin 300 PCI expansion module
+(:doc:`pci-expansion`).
 
 The PCI expansion module of the Origin 300 carries one Bedrock interface
 card, the BIC. The card holds a Bedrock ASIC. Its network interface

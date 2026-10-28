@@ -2,9 +2,13 @@
 
 .. _sgi-timekeepers:
 
-===============================================================
-Battery-backed timekeepers (M48T35, DS1742 and DS1744)
-===============================================================
+=====================================================
+M48T35, DS1742 and DS1744: battery-backed timekeepers
+=====================================================
+
+Used in :ref:`sgi-ip27` (M48T35), :ref:`sgi-ip35` (M48T35-compatible)
+and :ref:`sgi-ip53` (DS1744-compatible). The DS1742 model is fitted by
+no machine profile.
 
 The SGI Origin-family boards keep their wall clock and a block of
 configuration RAM in a byte-wide, battery-backed SRAM with a clock in its

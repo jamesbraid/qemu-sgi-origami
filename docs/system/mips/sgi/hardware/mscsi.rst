@@ -2,13 +2,15 @@
 
 .. _sgi-mscsi:
 
-================================
-SGI MSCSI four-channel XIO board
-================================
+==================================
+MSCSI: four-channel SCSI XIO board
+==================================
 
-The MSCSI is SGI's XIO SCSI board for the Origin family: one Bridge with
-four QLogic ISP1040 SCSI controllers on its PCI bus. It fits an XIO slot of
-an Origin 2000 or Onyx2 module and of an Origin 200 GIGAchannel cabinet.
+Used in :ref:`sgi-ip27`: an XIO slot of an Origin 2000 or Onyx2 module
+or of an Origin 200 GIGAchannel cabinet (:doc:`gigachannel`).
+
+The MSCSI is SGI's XIO SCSI board: one Bridge with four QLogic ISP1040
+SCSI controllers on its PCI bus.
 QEMU builds it as the ``mscsi`` preset of ``sgi-xio-baseio``
 (``hw/mips/sgi/baseio.c`` and ``hw/mips/sgi/xio-baseio.c``), placed in an
 empty XIO slot. The board has no registers of its own. The Bridge's

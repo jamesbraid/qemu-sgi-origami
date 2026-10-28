@@ -2,10 +2,11 @@
 
 .. _sgi-aic7880:
 
-======================================
-Adaptec AIC-7880 SCSI controller (O2)
-======================================
+=================================
+Adaptec AIC-7880: SCSI controller
+=================================
 
+Used in :ref:`sgi-ip32` (O2).
 The AIC-7880 is Adaptec's single-chip PCI SCSI host adapter with Ultra
 (20 MHz) SCSI. The O2 has two on the MACE PCI bridge, at PCI devices 1 and
 2, each with its own SCSI bus. They carry the internal disk and CD-ROM

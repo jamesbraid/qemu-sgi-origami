@@ -2,10 +2,11 @@
 
 .. _sgi-ad1843:
 
-=====================================
-AD1843 audio codec (O2 audio)
-=====================================
+===================
+AD1843: audio codec
+===================
 
+Used in :ref:`sgi-ip32` (O2).
 The AD1843 is a 16-bit stereo SoundComm codec from Analog Devices. The
 O2 uses one, wired to the audio interface of the MACE I/O ASIC over a
 serial TDM link. QEMU has no separate codec device. The codec is part of

@@ -2,9 +2,9 @@
 
 .. _sgi-ip35:
 
-=============================
-SGI IP35: Origin 300 and Fuel
-=============================
+=========================
+IP35: Origin 300 and Fuel
+=========================
 
 IP35 is the software platform of SGI's second Scalable Node generation,
 built around the Bedrock node controller. QEMU models two products on it:
@@ -764,6 +764,10 @@ timekeeper the Origin 300 uses, an *approximation*.
 
 .. _sgi-ip35-fuel-interrupts:
 
+.. _sgi-sn-fuel-interrupts:
+
+.. _sgi-sn-fuel-interrupts-evidence:
+
 Onboard interrupt routing
 -------------------------
 
@@ -865,6 +869,140 @@ eight-port router family with chip identifier ``0x3017``, which ties to
 this module only by *inference*. The ``origin300-numalink-module``
 composition that records the full rack is a reference model;
 :doc:`hardware/bricks` gives its tall-rack cabling.
+
+.. _sgi-sn-family-rbrick:
+
+NUMAlink module ports and router identity
+-----------------------------------------
+
+The NUMAlink module uses the R-brick's router board (:ref:`sgi-bricks-rbrick`).
+Ports 1, 6, 7 and 8 take base modules only. Ports 2 to 5 take base or
+PCI expansion modules and carry USB to the L2 controller (*established*,
+:src:`007-4498-002 pp. 4, 10-11, 16, 93-98`). In the tall rack
+(figure 4-2) the cabling runs:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Base module position
+     - U28
+     - U26
+     - U24
+     - U22
+     - U18
+     - U16
+     - U14
+     - U12
+   * - NUMAlink module port
+     - 3
+     - 2
+     - 1
+     - 8
+     - 7
+     - 6
+     - 5
+     - 4
+
+The mapping is *established* from the manual's figure. A live
+six-chassis rack whose modules at U12, U14, U18, U22 and U24 reported
+active ports 1, 4, 5, 7 and 8 agrees with it (*observed*,
+:src:`nekonomicon-16727514`). The layer's eight router-port buses carry
+these port numbers.
+
+The routed Origin 300 topology selects one logical eight-port SN1 router
+(:doc:`hardware/sn1-router`). The public Linux v2.5.0 tree
+(``linux-history:381ab1f538162eb985c9244aa7d56e54315881ab``) names router
+chip identity ``0x3017`` in ``include/asm-ia64/sn/sn1/bedrock.h`` lines
+19-20 and defines the router status fields in
+``include/asm-ia64/sn/sn1/router.h`` (*software expectation*). A
+published six-chassis Origin 300 inventory reports router revision 1
+(:src:`nekonomicon-16727514 lines 390-409 and 1860-1869`). The model
+selects chip revision one by inference from that software report
+(*inferred*). Neither the inventory nor the manuals measure the fitted
+silicon or establish how many router ASICs the enclosure holds. Chip
+inputs of zero are an emulator choice (*approximation*).
+
+The router's L1 type is ``0x52`` (``R``), a software profile and not a
+measured controller reply (*approximation*). Linux v2.5.0
+``include/asm-ia64/sn/ksys/l1.h`` line 266 assigns uppercase ``R`` to
+that code. Its ``arch/ia64/sn/io/l1_command.c`` lines 413-436 normalise
+uppercase types for module names, and lines 1031-1074 identify the
+router module independently of the returned type (*software
+expectation*). The NUMAlink module guide establishes a separate L1
+controller (:src:`007-4498-002 pp. 14, 96, 130`) but gives no raw type
+response. A binary type-query capture from a matching controller would
+settle that byte. The module's enclosure and connectors are on
+:ref:`sgi-bricks-numalink-module`.
+
+An SN1 router is built as ``/machine/module<M>/router`` beside its
+module's L1 and that L1's UART, whether or not the topology carries the
+L1 management registry the Origin 300 PCI expansion experiment uses, so
+an R-brick needs no I/O peer. Its L1 keeps the type profile above. An
+R-brick's own L1 type is *unknown*.
+
+.. _sgi-ip35-brick-composition:
+
+Origin 3000 brick compositions
+==============================
+
+The Origin 3000 servers are built from C-bricks, whose IP35 board
+carries a Bedrock, and separate I/O and router bricks
+(:doc:`hardware/bricks`). No QEMU machine builds them: the Origin 3200
+catalogue entry is a planned target left out of the emulator's
+catalogue. The shared builder already carries the rules a brick
+composition needs, described here.
+
+An Origin 3000 C-brick's IP35 board has no XBridge: an XIO cable joins
+its Bedrock to port A or B of the XBridge in an I/O brick. The builder
+creates that chip as ``/machine/module<M>/xbridge``, or ``xbridge0`` to
+``xbridge3`` where a module holds several, as the N-brick's four chips do.
+It gives the chip the cable's port as its host port and its module's
+catalogue id as its bus prefix, and hands it to the cabled node through
+the node's ``xbridge`` link. The node joins and realizes it as an
+Origin 300 node does its own. The node's Bedrock decodes the chip at the
+cable's port and at each of the chip's heads the node hosts, and nothing
+at the chip's other Crosstown2 port.
+
+The builder refuses a second host node on one XBridge, because the model
+takes one host port and whether one chip serves hosts on A and B at once
+is *unknown*. It refuses a host that is also cabled to a router, for which
+it has no rule. It checks a cable between two crossbars, such as the
+P-brick's links from its first chip to each of the others, like any other
+cable and then refuses it while the cables are built. No source cited
+here gives the downstream chips' mode (*unknown*;
+:ref:`sgi-sn-family-pbrick`).
+
+An XIO cable from one of the chip's other link ports, 8 to 0xd, reaches
+one XIO board: a card in an X-brick slot, or a board on the I-brick's
+free Crosstown2 port. The board's own attachment names that port and the
+chip's host node, whose Bedrock decodes the board's widget there. The
+builder creates the board as ``/machine/module<M>/<board id>`` in the
+board's own module and joins it to the port with one XIO link once the
+nodes have realized. Only the XIO cards ``pci-carrier``,
+``pci-shoehorn``, ``menet`` and ``mscsi`` are built at such a port. It
+refuses a graphics pipe, a BaseIO card or any other preset cabled there.
+
+The machine places the I-brick's ``io7`` base I/O instance as
+``/machine/module<M>/io7``, directly on head F of the XBridge in the
+I-brick's module, with no board class (:ref:`sgi-sn-family-ibrick`).
+
+A node with ``role: memory`` is a Bedrock with memory banks and no
+processor, the shape of the CX-brick's zero-processor board. It realizes
+with no CPUs, its boot flash image left as supplied, and answers other
+nodes' memory traffic once they have configured and numbered it, as the
+firmware reaches a peer through its vector engine. It cannot be the
+console node, and a population that fits it a processor is refused.
+Whether such a board carries boot flash is *unknown*, so the builder still
+requires one.
+
+A controller with ``owner: module`` is built once as
+``/machine/module<M>/l1`` and linked into the module's node through the
+node's ``l1`` link, in place of the node's own ``/machine/node<N>/l1``.
+The node configures it exactly as it would its own, so the guest sees
+the same L1. Only a module with one node may own its L1: how several
+Bedrocks reach one L1, as in a CX-brick, and how its serial lines
+number, is *unknown*, so a module-owned L1 shared by several nodes is
+refused.
 
 .. _sgi-ip35-firmware:
 
