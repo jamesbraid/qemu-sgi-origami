@@ -67,9 +67,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 
 /*
  * RAD4-KM, PCI identity 12d1:0105: a distinct PsiTech product that shares
- * RAD4's own rad4pci driver and hwgraph
- * subtree. Only the PCI identity and the guest-visible attach outcome are
- * established for it; this device answers
+ * RAD4's own PCI driver and its
+ * hardware-graph subtree. Only the PCI identity and the guest-visible
+ * attach outcome are established for it; this device answers
  * that identity with plain RAD4's own register layout below, an explicitly
  * disclosed approximation, not an
  * independently established RAD4-KM register contract. See the file header

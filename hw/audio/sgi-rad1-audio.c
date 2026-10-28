@@ -5,8 +5,8 @@
  * the audio channels' streaming engine:
  * analog input and output (channel types 0 and 1), AES3 input and output (2
  * and 3) and ADAT input and output (4 and
- * 5). IRIX's rad_dd.o programs a documented set of BAR0 offsets during
- * its subsystem start, gated by the board mode it
+ * 5). The IRIX audio kernel driver programs a documented set of BAR0
+ * offsets during its subsystem start, gated by the board mode it
  * reads from the PCI revision byte (see the header), so this model needs no
  * mode-selection logic of its own. It accepts whatever the guest's
  * mode-driven dispatch writes and answers with

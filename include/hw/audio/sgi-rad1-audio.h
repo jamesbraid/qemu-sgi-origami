@@ -2,7 +2,7 @@
 /* SGI MediaIO RAD1 audio register and device definitions. */
 /*
  * The MediaIO daughtercard's audio device: one PCI BAR carrying the register
- * file IRIX's rad_dd.o programs during attach.
+ * file the IRIX audio kernel driver programs during attach.
  */
 
 #ifndef HW_AUDIO_SGI_RAD1_AUDIO_H
@@ -24,7 +24,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  * creates its subsystem and keeps the revision byte's two nibbles as the
  * board mode (high nibble) and a sub-revision (low nibble). Mode 7 selects
  * the MediaIO paths (the MediaIO mux-select write and the mode-7 branches of
- * the subsystem start and halt routines), 0xd the RADICAL card's, 0xc a third
+ * the subsystem start and halt routines), 0xd the RAD audio card's, 0xc a third
  * board's; a revision of 0 leaves the driver on none of them. hinv on a real
  * BaseIO-G prints the two nibbles as "RAD revision 7.0".
  *
@@ -38,13 +38,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 
 /*
  * BAR0: the register file, 0x2000 bytes. The driver's attach routine maps
- * exactly one PCI window, pciio_piotrans_addr(conn, 0, space 8, offset 0,
- * size 0x2000), and the Bridge driver reads spaces 8..13 as BARs 0..5; the
+ * exactly one PCI window, requested as space 8, offset 0, size 0x2000, and
+ * the Bridge driver reads spaces 8..13 as BARs 0..5; the
  * driver keeps the result as the base every later register access goes
  * through. The Bridge refuses a direct translation whose request runs past
  * the BAR, so a smaller BAR0 leaves that base NULL and IRIX panics in the
  * subsystem start's first register write. The attach routine's other
- * pciio_piotrans_addr asks for space 7, size 0x20: that is PCI configuration
+ * window request asks for space 7, size 0x20: that is PCI configuration
  * space, not a second BAR. Most of the window past the highest documented
  * offset remains unestablished.
  */
