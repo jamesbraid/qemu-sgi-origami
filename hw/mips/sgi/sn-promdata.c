@@ -13,7 +13,7 @@
 
 /*
  * IP27 PROM software boot status uses FPR 0, not a hardware register. Bit 1
- * marks cache-as-RAM in the IRIX 6.5.7 PROM.
+ * marks cache-as-RAM in the stock PROM.
  */
 #define SN_PROM_BOOT_STATUS_CACHE_AS_RAM (1U << 1)
 
