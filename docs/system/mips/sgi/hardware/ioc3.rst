@@ -10,8 +10,8 @@ Used in :ref:`sgi-ip27` (the Origin 200 IP29 board, the Origin 2000 and
 Onyx2 BaseIO and MediaIO boards and the MENET card), :ref:`sgi-ip30` (the
 Octane and Octane2 system board), :ref:`sgi-ip35` (the Origin 300 IO-8
 board and the Fuel system board) and the Origin 3000 I-brick's IO7
-(:ref:`sgi-bricks-ibrick`), which QEMU builds as a base I/O preset that
-no machine fits. :doc:`baseio` and :doc:`ioc3-boards` describe the
+(:ref:`sgi-bricks-ibrick`), which QEMU builds as a base I/O preset on
+the Origin 3000 machines that carry an I-brick. :doc:`baseio` and :doc:`ioc3-boards` describe the
 boards.
 
 .. seealso::

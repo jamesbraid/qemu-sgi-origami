@@ -9,7 +9,8 @@ AT&T/Lucent 11c1:5802: USB OHCI host controller
 Used in :ref:`sgi-ip35`, on the Origin 300 IO-8 board and the Fuel
 system board, and in the Origin 3000 I-brick (:ref:`sgi-bricks-ibrick`),
 whose published inventories show the same identity, *observed*. QEMU
-builds the I-brick's as part of a base I/O preset that no machine fits.
+builds the I-brick's with the ``io7`` base I/O preset on the Origin 3000
+machines whose catalogue entries carry an I-brick (:doc:`baseio`).
 
 The part is a two-port USB host controller that enumerates as PCI
 ``11c1:5802``, revision ``0x10``. QEMU models it as the ``lucent-ohci`` type
