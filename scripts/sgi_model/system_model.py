@@ -884,6 +884,8 @@ def _merge_module_instances(
         for component in resolved.get("components", [])
         if isinstance(component, dict)
     )
+    unroled: list[int] = []
+    carries_router = False
     seen_ids: dict[str, set[str]] = {}
     for field in ("components", "buses", "interrupts", "open_questions",
                   "xio_cables"):
@@ -987,9 +989,9 @@ def _merge_module_instances(
         instance_nodes += node_count
         if (population is not None and node_count and
                 declaration.get("module_role") not in {"MASTER", "SLAVE"}):
-            raise ResolutionError(
-                f"module instance {index} requires module_role MASTER or SLAVE"
-            )
+            unroled.append(index)
+        carries_router |= any(component.get("kind") == "router-asic"
+                              for component in graph["components"])
         for placeholder, target in sorted((bus_bindings or {}).items()):
             if target not in {bus.get("id") for bus in resolved.get("buses", [])}:
                 raise ResolutionError(
@@ -1026,6 +1028,12 @@ def _merge_module_instances(
                     seen_ids[field].add(ident)
             current.extend(values)
         metadata.append(copy.deepcopy(declaration))
+    # A routed target assigns no firmware graph roles, and a router may
+    # arrive in any module instance, after the node bricks cabled to it.
+    if unroled and not carries_router:
+        raise ResolutionError(
+            f"module instance {unroled[0]} requires module_role MASTER or SLAVE"
+        )
     # A brick set the product refuses is named as such, before the node
     # count it also breaks.
     if rules is not None and bricks is not None:
@@ -1242,6 +1250,9 @@ def resolve_system_model(
             raise ResolutionError("configuration xio_cables must be a list")
         resolved.setdefault("xio_cables", []).extend(
             copy.deepcopy(composition["xio_cables"]))
+    routed = routed or (
+        machine.get("model_role") == "emulation-target" and
+        model_composition._fabric_topology(resolved) == "router")
     if routed and any("module_role" in item for item in module_instances):
         raise ResolutionError("routed target must not assign firmware graph module roles")
     exclusions = model_composition.component_exclusions([
