@@ -100,8 +100,8 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     { SGI_KONA_CMD_SELECT_FEED_START, 6 },
     { SGI_KONA_CMD_SELECT_FEED_FINISH, 2 },
     /*
-     * The display-list packets, each count read at its libGLcore sender.
-     * 0x170 and 0x171 count their n only; the n pairs follow.
+     * The display-list packets, each count read at its GL client library
+     * sender. 0x170 and 0x171 count their n only; the n pairs follow.
      */
     { SGI_KONA_CMD_LIST_CALL, 2 },
     { SGI_KONA_CMD_LIST_CALL_POOL, 2 },
@@ -253,7 +253,7 @@ const unsigned sgi_kona_command_num_tokens =
     ARRAY_SIZE(sgi_kona_command_tokens);
 
 /*
- * Each count was read at the GL call's sender in libGLcore and is
+ * Each count was read at the GL call's sender in the GL client library and is
  * established unless its comment says otherwise. Four commands carry more
  * words than their count, which sgi-kona.c consumes after the packet: the
  * texture table's data, the polygon stipple's rows, the pop-lights words

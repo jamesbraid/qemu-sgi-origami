@@ -212,7 +212,7 @@ static uint32_t ppm_pixel(const uint8_t *pixels, unsigned x, unsigned line)
     return (p[0] << 16) | (p[1] << 8) | p[2];
 }
 
-/* One command as kona.so stores it: first word in the slot, rest data. */
+/* One command as the KONA X module stores it: word 0 in the slot, rest data. */
 static void x_command(QTestState *s, uint32_t token, const uint32_t *args,
                       unsigned argc)
 {

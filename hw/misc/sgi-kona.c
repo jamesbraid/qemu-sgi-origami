@@ -582,7 +582,7 @@ void sgi_kona_fb_store_direct(SGIKonaState *s, int x, int y, uint32_t word)
  * shared scanout composes the cursor afterwards, uncorrected) are
  * unknown.
  *
- * Each channel shows through the map ChannelGammaMap gave it: map 0 is
+ * Each channel shows through the map the gamma-map command gave it: map 0 is
  * this table, the only one the model holds, since the board answers
  * GetBoardConfig's word 4 with 0 and the X server then keeps one gamma
  * map; SGI_KONA_GAMMA_MAP_LINEAR, which the X server sends for a map it
@@ -2421,7 +2421,7 @@ static void sgi_kona_context_deactivate(SGIKonaState *s, uint32_t index)
  * which matches no real configuration (see sgi_kona_answer_config()).
  *
  * The products are named as IRIX's hinv names an Onyx2 pipe. The driver's
- * attach routine (in the 6.5.30 IP27 kona.a) reads two words through
+ * attach routine (in the 6.5.30 kernel graphics driver) reads two words through
  * the indirect port at +0x8003c0/+0x8003d0: after selecting 0x8800, a low
  * two bits of 1 makes the pipe an InfiniteReality3 (board set 5) and 2 an
  * InfiniteReality4 (board set 6); after selecting 0xb00, bit 10 makes it a
@@ -2522,9 +2522,9 @@ static const SGIKonaGeometry sgi_kona_ge16_4 = {
 };
 
 /*
- * RM7: the deskside capture's part and board word, the two-GE owner's
- * name and revision. RM9: the rack capture's board (configmon names it
- * RM9, revision E) and board word. gfxinfo names an RM9 only by that name,
+ * RM7: the deskside capture's part and board word, the two-GE owner's name and
+ * revision. RM9: the rack capture's board (the stock configuration tool names
+ * it RM9, revision E) and board word. gfxinfo names an RM9 only by that name,
  * right-justified in the record.
  */
 static const SGIKonaRaster sgi_kona_rm7 = {
@@ -2551,7 +2551,8 @@ static const SGIKonaTexture sgi_kona_tm_256 = {
 };
 
 /*
- * The rack capture's GVO option, configmon revision B, and the code gfxinfo
+ * The rack capture's GVO option, revision B in the stock
+ * configuration tool, and the code gfxinfo
  * prints "GVO option detected" for. The option's identity only: the model
  * has no GVO video output.
  */
@@ -2829,7 +2830,8 @@ static void sgi_kona_identity_record(SGIXioBoardState *board,
         record->revision = c->geometry->board.revision;
     } else if (part->record == &sgi_kona_ktown_record) {
         /*
-         * The rack capture's Ktown: hinv and configmon name it KTOWN,
+         * The rack capture's Ktown: hinv and the stock configuration tool
+         * name it KTOWN,
          * rev F.
          */
         record->name = "KTOWN";
@@ -3153,14 +3155,13 @@ static void sgi_kona_answer_config(SGIKonaState *s)
 }
 
 /*
- * The flash EEPROM operation, SGI_KONA_CMD_EEPROM ("The flash EEPROM
- * operation, 0x1ec, and ireeprom" in the command grammar datasheet). The
- * operation number arrives as the command's one framed word; the words
- * each operation takes after it come here. Established from the pipe's
- * ARM handler: a write takes a type, an offset for the boot image only,
- * a count and the data; a read an offset and a byte length; op 3 the
- * reply buffer; ops 4 and 5 one unused word; op 6 none; any other number
- * nothing more.
+ * The flash EEPROM operation, SGI_KONA_CMD_EEPROM ("The flash EEPROM operation,
+ * 0x1ec, and the EEPROM programming tool" in the command grammar datasheet).
+ * The operation number arrives as the command's one framed word; the words each
+ * operation takes after it come here. Established from the pipe's ARM handler:
+ * a write takes a type, an offset for the boot image only, a count and the
+ * data; a read an offset and a byte length; op 3 the reply buffer; ops 4 and 5
+ * one unused word; op 6 none; any other number nothing more.
  */
 #define SGI_KONA_FLASH_OP_WRITE        1
 #define SGI_KONA_FLASH_OP_READ         2
@@ -3577,10 +3578,10 @@ static bool sgi_kona_video_names_channel(uint32_t command)
 }
 
 /*
- * The data words of a Get's reply, from the channels' state; every word
- * not set here is zero. The layouts are those the 6.5.30 X server's video
- * initialiser in konal.so and its channel routines read, from the
- * command grammar datasheet's display channel section:
+ * The data words of a Get's reply, from the channels' state; every word not set
+ * here is zero. The layouts are those the 6.5.30 X server's video initialiser
+ * in the KONA X driver module and its channel routines read, from the command
+ * grammar datasheet's display channel section:
  *
  * - GetBoardConfig: version 1, the board mask (bit n: physical channel n
  *   exists), option mask 0, options code 0 (no option board), flag 0.
@@ -3591,7 +3592,7 @@ static bool sgi_kona_video_names_channel(uint32_t command)
  *   where a pipe takes them from is unknown, and the model sends none,
  *   as the real Onyx2 rack capture's channel 0 shows ("0 pixels, 0
  *   lines").
- * - GetChannelBlanking: word 0 whether ChannelBlanking blanks it.
+ * - GetChannelBlanking: word 0 whether the blanking command blanks it.
  * - GetResize: words 0-3 the input rectangle (x, the top row counted from
  *   the bottom of the managed area, width, height), 4-7 the rectangle a
  *   resize may pan over, 8-11 the steps a resize moves in, 12-13 the
@@ -3691,11 +3692,11 @@ static void sgi_kona_video_reply(SGIKonaState *s,
 }
 
 /*
- * TempBlankAllChannels, video command 0x3c: one data word, nonzero to blank
- * the display and 0 to show it again. The IRIX 6.5.30 X server's screen
- * saver is the sender (its screen-blank routine in konal.so passes its
- * blank flag, 1 or 0, as the word); a traced desktop session sends 1 when
- * the saver fires and 0 at the next pointer motion or key press.
+ * TempBlankAllChannels, video command 0x3c: one data word, nonzero to blank the
+ * display and 0 to show it again. The IRIX 6.5.30 X server's screen saver is
+ * the sender (its screen-blank routine in the KONA X driver module passes its
+ * blank flag, 1 or 0, as the word); a traced desktop session sends 1 when the
+ * saver fires and 0 at the next pointer motion or key press.
  *
  * Inferred from the command's name in the server's video command table:
  * a blanked display shows every pixel black, and the framebuffer, colour
@@ -3713,10 +3714,10 @@ static void sgi_kona_video_temp_blank(SGIKonaState *s, uint32_t blank)
 }
 
 /*
- * The channel setters, as the 6.5.30 X server's combination load in
- * konal.so and its channel requests send them; the command grammar
- * datasheet's display channel section gives each word's source. Word 0 of
- * every one is the physical channel, the board mask's bit number.
+ * The channel setters, as the 6.5.30 X server's combination load in the KONA X
+ * driver module and its channel requests send them; the command grammar
+ * datasheet's display channel section gives each word's source. Word 0 of every
+ * one is the physical channel, the board mask's bit number.
  *
  * - DisableChannel [channel]: the channel stops; its console shows no
  *   mode, and it holds no format until the next LoadFormat.
@@ -3727,14 +3728,14 @@ static void sgi_kona_video_temp_blank(SGIKonaState *s, uint32_t blank)
  *   channel that holds a format; otherwise it changes nothing.
  * - Resize [channel, x, top row from the bottom, width, height, 1,
  *   flicker, 0]: the input rectangle.
- * - ChannelBlanking [channel, blank]: nonzero shows the channel black.
- * - ChannelGammaMap [channel, map]: the gamma map the channel shows
+ * - Channel blanking [channel, blank]: nonzero shows the channel black.
+ * - Channel gamma map [channel, map]: the gamma map the channel shows
  *   through.
  * - CursorPriority [channel, priority], Vampire [channel, source, ...]:
  *   kept for GetChannelConfig's word 18 and GetVampire's word 0.
  *
  * Inferred: the load sends DisableChannel for every channel, then each
- * enabled channel's LoadFormat, Resize and ChannelBlanking [channel, 0],
+ * enabled channel's LoadFormat, Resize and channel blanking [channel, 0],
  * then two EnableChannel passes, [channel, on, 0] then [channel, 0, own
  * timing]; it sends the master channel's as [1, 1, 0] and [1, 0, own]
  * whatever channel the master is. Word 1 cannot be the channel's state,
@@ -3992,10 +3993,10 @@ static void sgi_kona_color_map_word(SGIKonaState *s, uint32_t word)
 /*
  * 0x12f, X load gamma: a gamma-RAM start address, a count n, then n entries,
  * each a 16-bit table value stored as a zero-extended word (established from
- * kona.so's sender). The command port frames the first two words; the
- * entries follow here and land in s->gamma, one address per entry from the
- * start address. The table is stored for the scanout to apply later; the
- * framebuffer is still shown as stored.
+ * the KONA X driver module's sender). The command port frames the first two
+ * words; the entries follow here and land in s->gamma, one address per entry
+ * from the start address. The table is stored for the scanout to apply later;
+ * the framebuffer is still shown as stored.
  *
  * Approximated: the table layout. The sender establishes the start
  * addresses a type-0 gamma block sends, 0, 0x1000 and 0x2000 for
@@ -4346,13 +4347,12 @@ static void sgi_kona_gl_get_error(SGIKonaState *s)
 }
 
 /*
- * The GL client's 0x3b 0 and 0x3d 0, the current-attribute and
- * raster-position queries. libGLcore's two senders (n32 6.5.30) pass
- * the selector to the client library's special-query routine, wait for
- * word 0 of the return page, and return a pointer into the words from
- * byte 8 by the pname asked for; the library's glGet descriptors read
- * every one of those words as a binary32. So the layouts
- * below are established from the reader:
+ * The GL client's 0x3b 0 and 0x3d 0, the current-attribute and raster-position
+ * queries. The GL client library's two senders (n32 6.5.30) pass the selector
+ * to the client library's special-query routine, wait for word 0 of the return
+ * page, and return a pointer into the words from byte 8 by the pname asked for;
+ * the library's glGet descriptors read every one of those words as a binary32.
+ * So the layouts below are established from the reader:
  *
  *   0x3b: current RGBA (+0x00), index (+0x10), normal xyz (+0x14),
  *         texture STRQ (+0x20), and one word for pname 0xb43 (+0x30);
@@ -4459,16 +4459,15 @@ static const SGIRasterRules sgi_kona_gl_rules = {
  * A buffer configuration for an overlay visual: level 1, colour index
  * of 2, 4 or 8 bits, single-buffered, nothing else.
  *
- * Established: the IRIX 6.5.30 n32 libGLcore.so's configuration routine
- * sends the context's level as the first word, and
- * SceneViewer's logo context sent 1 0 8 0 0 0 0 0 0 0 (run
- * irix-20261023T111222-0467d9), whose window the kernel then placed with
- * display ID 0x44, an overlay ID. Inferred: that level 1 draws into the
- * overlay planes the X server's overlay visuals use, the planes at the
- * same level; the 2-, 4- and 8-bit sizes are those visuals' depths
- * (konavis.so's small visual table). Only 8 bits has been seen from a GL
- * client. A double-buffered overlay, an RGB one and level 2 (the popup
- * planes) are not modelled: such a context draws nothing.
+ * Established: the IRIX 6.5.30 n32 GL client library's configuration routine
+ * sends the context's level as the first word, and SceneViewer's logo context
+ * sent 1 0 8 0 0 0 0 0 0 0, whose window the
+ * kernel then placed with display ID 0x44, an overlay ID. Inferred: that level
+ * 1 draws into the overlay planes the X server's overlay visuals use, the
+ * planes at the same level; the 2-, 4- and 8-bit sizes are those visuals'
+ * depths (the KONA X driver module's small visual table). Only 8 bits has been
+ * seen from a GL client. A double-buffered overlay, an RGB one and level 2 (the
+ * popup planes) are not modelled: such a context draws nothing.
  */
 static bool sgi_kona_gl_overlay_config(const uint32_t *v)
 {
@@ -6814,12 +6813,12 @@ static void sgi_kona_gl_finish(SGIKonaState *s, uint32_t wait)
  * IRIS GL's colour and normal rule: a vertex whose colour came after the
  * last normal is not lit (SGI's OpenGL Porting Guide, 007-1797-030,
  * appendix B, "Color/normal flag"). The IRIX 6.5.30 n32 IP27KONA
- * libGLcore.so (SHA-256 1639e2c6...352f) leaves it to the pipe: its
+ * the GL client library (SHA-256 1639e2c6...352f) leaves it to the pipe: its
  * glIglooInterfaceSGIX sends GL_IGLOO_COLORNORMAL_SGIX as 0x1be and
  * GL_IGLOO_LMC_COLOR_SGIX as 0x113, each with the caller's parameter word, and
  * keeps no state of its own (established from the listing). Inferred: the rule
  * holds while the last colour-normal word is nonzero and the last LMC colour
- * word is 1, the values for which the IP27GR532 MGRAS library of the same
+ * word is 1, the values for which the MGRAS GL library of the same
  * release turns the rule on.
  *
  * While the rule holds and lighting is enabled in an RGBA context, the
@@ -9014,19 +9013,18 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
 #define SGI_KONA_TEXTURE_COPIED_STORAGE 0x30
 
 /*
- * 0x52, a texel readback: before the library gives a
- * resident texture's pipe memory to another, it copies the texture to host
- * memory with this command inside a select-feed bracket, and loads the
- * copy back later with 0x174 when the texture is used again. Its words,
- * from the reader's descriptor in libGLcore: 0 the target, 1 and 2 the
- * width and height, 3 and 4 the format and type the copy is written in,
- * 5 the copy's storage code, 7 to 12 the region's first and last texel,
- * 14 the geometry word and 16 and 17 the two bank addresses a texel load
- * names the texture's destination by (load header words 16, 18 and 19).
- * Established from the library and a guest trace: a 1024x1024 texture
- * stored as 0x30 was read back as format 7, type 3, copy storage 0x28,
- * and loaded back with those same three codes. Outside a bracket the
- * library waits on the return page.
+ * 0x52, a texel readback: before the library gives a resident texture's pipe
+ * memory to another, it copies the texture to host memory with this command
+ * inside a select-feed bracket, and loads the copy back later with 0x174 when
+ * the texture is used again. Its words, from the reader's descriptor in the GL
+ * client library: 0 the target, 1 and 2 the width and height, 3 and 4 the
+ * format and type the copy is written in, 5 the copy's storage code, 7 to 12
+ * the region's first and last texel, 14 the geometry word and 16 and 17 the two
+ * bank addresses a texel load names the texture's destination by (load header
+ * words 16, 18 and 19). Established from the library and a guest trace: a
+ * 1024x1024 texture stored as 0x30 was read back as format 7, type 3, copy
+ * storage 0x28, and loaded back with those same three codes. Outside a bracket
+ * the library waits on the return page.
  *
  * Inferred: bit 28 of word 13 is the bank a load's word 17 bit 3 names.
  * Words 13 and 15 come from the texture's bind: word 13 is the third word
@@ -15482,14 +15480,14 @@ static bool sgi_kona_x_read_gc(const uint32_t *gc, bool rgb)
 }
 
 /*
- * The frame-buffer word read: konal.so's frame-buffer word GC for plane
- * selector 1 (cfg 0x1008, op 0x68001, addr 1, ifmt 0xa), with setup mode 2,
- * packing 2 and 2 and shift 0, one 32-bit word a pixel. Its caller, under
- * the X server's display read, takes a colour-index main pixel's index from
- * the word's top bits: index = word >> (32 - depth). The model's X index is
- * a left-justified 16-bit value, so the word is that value shifted left 16.
- * What the pipe puts in bits 15:0 is unknown; the caller reads bits 15:8
- * only for an alpha it is asked for, and the model leaves them zero.
+ * The frame-buffer word read: the KONA X driver module's frame-buffer word GC
+ * for plane selector 1 (cfg 0x1008, op 0x68001, addr 1, ifmt 0xa), with setup
+ * mode 2, packing 2 and 2 and shift 0, one 32-bit word a pixel. Its caller,
+ * under the X server's display read, takes a colour-index main pixel's index
+ * from the word's top bits: index = word >> (32 - depth). The model's X index
+ * is a left-justified 16-bit value, so the word is that value shifted left 16.
+ * What the pipe puts in bits 15:0 is unknown; the caller reads bits 15:8 only
+ * for an alpha it is asked for, and the model leaves them zero.
  *
  * Plane selectors 0, 1 and 2 (op (s << 18) | 0x28001, addr s) are
  * answered per pixel by sgi_kona_x_read_fb_word(). For a TrueColor
@@ -15507,7 +15505,7 @@ static bool sgi_kona_x_read_gc(const uint32_t *gc, bool rgb)
  */
 static bool sgi_kona_x_read_fb_word_gc(const uint32_t *gc)
 {
-    /* Selector s: op (s << 18) | 0x28001 and addr s (konal.so's GC). */
+    /* Selector s: op (s << 18) | 0x28001 and addr s (the X module's GC). */
     for (uint32_t sel = 0; sel <= 3; sel++) {
         const uint32_t form[] = {
             0x1008, (sel << 18) | 0x28001, sel, 6, 0xa, 1, 1,
@@ -15521,9 +15519,9 @@ static bool sgi_kona_x_read_fb_word_gc(const uint32_t *gc)
 }
 
 /*
- * The frame-buffer word for plane selector `sel` over a pixel the model
- * holds with tag `tag` and stored word `word`, or false where the model
- * has no answer. From the frame-buffer word reader in konal.so, which
+ * The frame-buffer word for plane selector `sel` over a pixel the model holds
+ * with tag `tag` and stored word `word`, or false where the model has no
+ * answer. From the frame-buffer word reader in the KONA X driver module, which
  * picks the selector and the decoding from the window's format word
  * (established for the reader, not for the pipe):
  *
@@ -15784,14 +15782,13 @@ static void sgi_kona_x_pixel_read(SGIKonaState *s, const uint32_t *args)
 #define SGI_KONA_X_PACK_OPAQUE_BITMAP 5
 
 /*
- * The bits per pixel of a write's data, from the setup's source-packing
- * word, or 0 where it is not known. Inferred from kona.so's 8-, 16- and
- * 32-bit source packing tables, which hold 0, 1, 2 at index 0: 0, 1 and 2
- * are 8, 16 and 32 bits. 4 is the glyph senders' constant, and the
- * greeter's glyph writes are established to be 1-bit rows (20 words for a
- * 32 by 20 image spelling "Help"). 5 is the opaque one-bit image sender's,
- * inferred to be one bit a pixel as well. See sgi_kona_x_bitmap_index() for
- * what their bits paint.
+ * The bits per pixel of a write's data, from the setup's source-packing word,
+ * or 0 where it is not known. Inferred from the KONA X driver module's 8-, 16-
+ * and 32-bit source packing tables, which hold 0, 1, 2 at index 0: 0, 1 and 2
+ * are 8, 16 and 32 bits. 4 is the glyph senders' constant, and the greeter's
+ * glyph writes are established to be 1-bit rows (20 words for a 32 by 20 image
+ * spelling "Help"). 5 is the opaque one-bit image sender's, inferred to be one
+ * bit a pixel as well. See sgi_kona_x_bitmap_index() for what their bits paint.
  */
 static uint32_t sgi_kona_x_pixel_bpp(uint32_t src_pack)
 {
@@ -15924,20 +15921,20 @@ static void sgi_kona_x_write_clear(SGIKonaState *s)
 }
 
 /*
- * A glyph write (source packing 4) into a 24-bit TrueColor window:
- * kona.so's GC parser, for that format, widens each colour byte to twelve
- * bits as b << 4 | b >> 4 and stores word 0 as 0xfff0 with the blue value's
- * top four bits and word 1 as its low eight bits, then green, then red:
- * blue[11:8] in word 0 bits 3:0, blue[7:0] in word 1 bits 31:24, green in
- * 23:12 and red in 11:0 (established from the code). That a set bit paints
- * that colour and a clear bit nothing, as in a colour-index window, is
- * inferred. Rewrite the pair into the colour-word form the solid fills use,
- * with alpha all ones, so the shared decoder reads it.
+ * A glyph write (source packing 4) into a 24-bit TrueColor window: the KONA X
+ * driver module's GC parser, for that format, widens each colour byte to twelve
+ * bits as b << 4 | b >> 4 and stores word 0 as 0xfff0 with the blue value's top
+ * four bits and word 1 as its low eight bits, then green, then red: blue[11:8]
+ * in word 0 bits 3:0, blue[7:0] in word 1 bits 31:24, green in 23:12 and red in
+ * 11:0 (established from the code). That a set bit paints that colour and a
+ * clear bit nothing, as in a colour-index window, is inferred. Rewrite the pair
+ * into the colour-word form the solid fills use, with alpha all ones, so the
+ * shared decoder reads it.
  *
- * A 30-bit TrueColor window's glyphs come with cfg 0 and op 0x64001, and
- * konal.so's GC parser stores the same layout with each 10-bit component
- * widened as c << 2 | c >> 8 (established from the code); the rewritten
- * pair then carries ifmt 9, the 30-bit form.
+ * A 30-bit TrueColor window's glyphs come with cfg 0 and op 0x64001, and the
+ * KONA X driver module's GC parser stores the same layout with each 10-bit
+ * component widened as c << 2 | c >> 8 (established from the code); the
+ * rewritten pair then carries ifmt 9, the 30-bit form.
  */
 static bool sgi_kona_x_rgb_glyph_gc(uint32_t *raw)
 {
@@ -17641,9 +17638,9 @@ static const SGICommandPortOps sgi_kona_kernel_ops = {
 #define SGI_KONA_GL_OVERLAY_LEVEL 1
 
 /*
- * The index sizes a level-1 visual's buffer configuration can carry in
- * its fourth word: konavis.so's level-1 visuals are PseudoColor of depth
- * 2, 4 and 8 and TrueColor of depth 15, whose index size is 0.
+ * The index sizes a level-1 visual's buffer configuration can carry in its
+ * fourth word: the KONA X driver module's level-1 visuals are PseudoColor of
+ * depth 2, 4 and 8 and TrueColor of depth 15, whose index size is 0.
  */
 static bool sgi_kona_gl_level1_index_size(uint32_t word)
 {
@@ -17681,28 +17678,26 @@ static bool sgi_kona_gl_level1_index_size(uint32_t word)
  * command number, and takes a stray word whose low half is a GL
  * selector as that command.
  *
- * Level 1, an overlay visual, is told apart by looking two words further
- * on. Both readings of 1 1 occur: SceneViewer's overlay context sent the
- * configuration 1 1 0 8 and seven more words (run
- * irix-20261023T111222-0467d9), and the IRIX 6.5.30 kernel's unblank
- * routine sends textport command 1 as 1 1 0 (in kona_tport.o), which it
- * may do once a graphics client detaches, perhaps with a context still
- * current in the model. The configuration's fourth word is the visual's
- * index size: konavis.so's visual tables hold level-1 visuals of depth 2,
- * 4 and 8 (PseudoColor) and 15 (TrueColor, index size 0), and nothing
- * else at level 1. What follows the kernel's 1 1 0 is not so bounded:
- * its next textport packet opens with the sync word, but kernel commands
- * such as 0x1f8 share the same port. So while a context is current,
- * 1 1 a b is the configuration 1 a b ... only when b is 0, 2, 4 or 8;
- * any other b ends the textport's command 1 with argument a and is then
- * read afresh. With no context current 1 1 is the textport's at once, as
- * before. Approximated: a command 1 with nothing after it waits for the
- * next word; the model draws nothing for command 1, so only its credit
- * is late; and a kernel 1 1 0 followed, while a context is current, by a
- * word of 0, 2, 4 or 8 from outside the textport would be misread as a
- * configuration. How the pipe itself tells the grammars apart is
- * unknown. Level 2 stays read as the textport's command 2, which the
- * kernel's textport colour setter sends.
+ * Level 1, an overlay visual, is told apart by looking two words further on.
+ * Both readings of 1 1 occur: SceneViewer's overlay context sent the
+ * configuration 1 1 0 8 and seven more words,
+ * and the IRIX 6.5.30 kernel's unblank routine sends textport command 1 as 1 1
+ * 0 (in the kernel textport code), which it may do once a graphics client
+ * detaches, perhaps with a context still current in the model. The
+ * configuration's fourth word is the visual's index size: the KONA X driver
+ * module's visual tables hold level-1 visuals of depth 2, 4 and 8 (PseudoColor)
+ * and 15 (TrueColor, index size 0), and nothing else at level 1. What follows
+ * the kernel's 1 1 0 is not so bounded: its next textport packet opens with the
+ * sync word, but kernel commands such as 0x1f8 share the same port. So while a
+ * context is current, 1 1 a b is the configuration 1 a b ... only when b is 0,
+ * 2, 4 or 8; any other b ends the textport's command 1 with argument a and is
+ * then read afresh. With no context current 1 1 is the textport's at once, as
+ * before. Approximated: a command 1 with nothing after it waits for the next
+ * word; the model draws nothing for command 1, so only its credit is late; and
+ * a kernel 1 1 0 followed, while a context is current, by a word of 0, 2, 4 or
+ * 8 from outside the textport would be misread as a configuration. How the pipe
+ * itself tells the grammars apart is unknown. Level 2 stays read as the
+ * textport's command 2, which the kernel's textport colour setter sends.
  */
 static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
 {
@@ -18368,15 +18363,14 @@ void sgi_kona_command_word(SGIKonaState *s, uint32_t word)
 }
 
 /*
- * A store to the command page at `offset`. Offset 0 and the data slot,
- * offset 0xc, both carry a plain word: the next argument of a command
- * still collecting arguments, otherwise a token (or the textport's sync
- * word). The kernel and gfxinit send every token that way, and so does
- * the X server the stock guest runs, whose konal.so writes each token as
- * a plain word (0x129, 0x12a, 0x136 and 0x138 among them). A store at
- * 0xc + 0x20 * t opens token t with the stored value as its first
- * argument, the way the alternative module kona.so sends its commands;
- * the stock guest does not load it. Without
+ * A store to the command page at `offset`. Offset 0 and the data slot, offset
+ * 0xc, both carry a plain word: the next argument of a command still collecting
+ * arguments, otherwise a token (or the textport's sync word). The kernel and
+ * gfxinit send every token that way, and so does the X server the stock guest
+ * runs, whose KONA X driver module writes each token as a plain word (0x129,
+ * 0x12a, 0x136 and 0x138 among them). A store at 0xc + 0x20 * t opens token t
+ * with the stored value as its first argument, the way the alternative KONA X
+ * driver module sends its commands; the stock guest does not load it. Without
  * the privileged bit a slot store first settles a suspended or saved user
  * command, as a plain word does (sgi_kona_user_input()).
  *
@@ -19081,18 +19075,18 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
 }
 
 /*
- * An 8-byte access. kona.so's bulk data helpers store aligned pairs of data
- * words as one doubleword at the command page's offset 0, most significant
- * word first, and odd words as 4-byte stores at the data slot (the stores
- * are established, that the pipe takes them as two data words inferred).
+ * An 8-byte access. The KONA X driver module's bulk data helpers store aligned
+ * pairs of data words as one doubleword at the command page's offset 0, most
+ * significant word first, and odd words as 4-byte stores at the data slot (the
+ * stores are established, that the pipe takes them as two data words inferred).
  * Such a store delivers the high word, then the low word, each exactly as a
  * 4-byte store at offset 0.
  *
- * Approximated: a doubleword at offset 0 can also open a command with its
- * high word, which the helpers never make it do, and no evidence says how
- * the pipe treats one. The doubleword data qtest (A:B inside an open
- * load counts as A then B) checks the split; a guest run whose X
- * server reaches those helpers would check it in use.
+ * Approximated: a doubleword at offset 0 can also open a command with its high
+ * word, which the helpers never make it do, and no evidence says how the pipe
+ * treats one. The doubleword data qtest (A:B inside an open load counts as A
+ * then B) checks the split; a guest run whose X server reaches those helpers
+ * would check it in use.
  *
  * The register file itself is word-sized. Any other 8-byte access is
  * split into two 4-byte accesses at the address and the address plus 4,

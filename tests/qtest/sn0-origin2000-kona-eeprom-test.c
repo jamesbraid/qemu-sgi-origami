@@ -2,15 +2,15 @@
 /*
  * SGI KONA flash EEPROM operation qtests.
  *
- * The pipe's flash holds its boot image, a video combination and a
- * 48-byte header. IRIX's ireeprom reads and programs it with command
- * 0x1ec, an operation number and that operation's words, and reads the
- * pipe's answer from a reply buffer: word 0 goes non-zero last, word 1 is
- * a word count and the data follows. The PROM and the kernel read the
- * same header through the indirect port at internal 0x87ff00. The
- * contract is the command grammar datasheet's "The flash EEPROM
- * operation, 0x1ec, and ireeprom". Each case fails on a model without the
- * behaviour for the reason its comment gives.
+ * The pipe's flash holds its boot image, a video combination and a 48-byte
+ * header. IRIX's EEPROM programming tool reads and programs it with command
+ * 0x1ec, an operation number and that operation's words, and reads the pipe's
+ * answer from a reply buffer: word 0 goes non-zero last, word 1 is a word count
+ * and the data follows. The PROM and the kernel read the same header through
+ * the indirect port at internal 0x87ff00. The contract is the command grammar
+ * datasheet's "The flash EEPROM operation, 0x1ec, and the EEPROM programming
+ * tool". Each case fails on a model without the behaviour for the reason its
+ * comment gives.
  *
  * The fixture is sn0-origin2000-kona-bringup-test.c's: KONA as a -device
  * at the empty slot IO4, crossbow0's widget 11, with its fabric writes
@@ -97,9 +97,9 @@ static void guest_clear(QTestState *s, uint64_t addr, size_t len)
 }
 
 /*
- * ireeprom's unmanaged-path reply buffer: 0x1ec 3, the page word with the
- * host-physical bit and the offset word as ioctl 0x2774 op 9 returns
- * them, and the buffer length.
+ * the EEPROM programming tool's unmanaged-path reply buffer: 0x1ec 3, the page
+ * word with the host-physical bit and the offset word as ioctl 0x2774 op 9
+ * returns them, and the buffer length.
  */
 static void reply_buffer(QTestState *s, uint64_t addr)
 {
@@ -154,11 +154,11 @@ static void assert_command_page_in_step(QTestState *s)
 }
 
 /*
- * ireeprom's check, 0x1ec 4 0, answers count 1 and a non-zero status in
- * the buffer 0x1ec 3 named, at its byte offset: ireeprom polls word 0 and
- * then needs word 2 non-zero, and without it prints "graphics not
- * responding". Fails on a model that does not frame 0x1ec, does not post,
- * or drops the offset's low 12 bits as 0x1f2 does on the pipe.
+ * the EEPROM programming tool's check, 0x1ec 4 0, answers count 1 and a
+ * non-zero status in the buffer 0x1ec 3 named, at its byte offset: the EEPROM
+ * programming tool polls word 0 and then needs word 2 non-zero, and without it
+ * prints "graphics not responding". Fails on a model that does not frame 0x1ec,
+ * does not post, or drops the offset's low 12 bits as 0x1f2 does on the pipe.
  */
 static void test_check_answers_at_offset(void)
 {
@@ -211,10 +211,10 @@ static void test_default_header(void)
 }
 
 /*
- * ireeprom's header write, 0x1ec 1 2 12 and twelve words: status 1, and
- * the words read back through op 2 and through the indirect port at
- * 0x87ff00, so a header written with state 3 is what the PROM's check
- * sees on the next boot.
+ * the EEPROM programming tool's header write, 0x1ec 1 2 12 and twelve words:
+ * status 1, and the words read back through op 2 and through the indirect port
+ * at 0x87ff00, so a header written with state 3 is what the PROM's check sees
+ * on the next boot.
  */
 static void test_header_write_reaches_port(void)
 {

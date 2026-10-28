@@ -290,10 +290,10 @@ static void kona_command(QTestState *s, uint32_t token, const uint32_t *args,
 }
 
 /*
- * X load GC with colour index `index` packed into fg_h as depth 8 packs
- * it, index << 12, and the rest of the words the stock guest's first load
- * carried ("The initialisation box and the box packing"), sent as kona.so
- * stores it: word 0 in the token's slot.
+ * X load GC with colour index `index` packed into fg_h as depth 8 packs it,
+ * index << 12, and the rest of the words the stock guest's first load carried
+ * ("The initialisation box and the box packing"), sent as the KONA X driver
+ * module stores it: word 0 in the token's slot.
  */
 static void load_gc(QTestState *s, uint32_t index)
 {
@@ -457,10 +457,10 @@ static void test_box6(void)
 /*
  * A run of data tokens ending in an X box draws every box in it, as the X
  * server's solid box fill sends the remainder of its boxes: two boxes in X
- * data4, then the last in X box. Each data token is checked the same way
- * with the count the grammar gives: data2 one box, data6 three, data8 four
- * and data10 five, before an X box. The data words are sent as kona.so
- * stores them, the first in the token's slot.
+ * data4, then the last in X box. Each data token is checked the same way with
+ * the count the grammar gives: data2 one box, data6 three, data8 four and
+ * data10 five, before an X box. The data words are sent as the KONA X driver
+ * module stores them, the first in the token's slot.
  */
 static void test_data_run_ending_in_box(void)
 {

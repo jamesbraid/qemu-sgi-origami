@@ -2980,10 +2980,10 @@ static void test_raster_query_answer(void)
 }
 
 /*
- * The current-attribute query 0x3b takes one word and answers thirteen
- * binary32 words from byte 8: the current RGBA glColor3f set, the index,
- * the normal, texture STRQ, and a word for pname 0xb43, whose meaning is
- * unknown and which the model answers 0. libGLcore sends glGetFloatv of
+ * The current-attribute query 0x3b takes one word and answers thirteen binary32
+ * words from byte 8: the current RGBA glColor3f set, the index, the normal,
+ * texture STRQ, and a word for pname 0xb43, whose meaning is unknown and which
+ * the model answers 0. The GL client library sends glGetFloatv of
  * GL_CURRENT_COLOR this way, not as the 0x4c glGet.
  */
 static void test_current_query_answer(void)
@@ -3289,17 +3289,16 @@ static void test_tex_table_usage_framed(void)
 }
 
 /*
- * IRIS GL's IGLOO library calls glIglooInterfaceSGIX, which libGLcore
- * sends as one selector and one word: 0x112 IRIS GL mode, 0x113 LMC
- * colour, 0x1be colour-normal, 0x1c9 tmesh mode and 0x1a9 swap-tmesh.
- * The first seven commands below are those an IRIS GL atlantis sent after
- * its make-current; 0x1a9 and 0x1c9 come from the same sender. Unframed,
- * 0x112 is dropped, its 1 opens a ten-word buffer configuration that
- * swallows the commands after it, and the client's later query is lost.
- * Framed, nothing is dropped, no buffer configuration is seen and the
- * colour, index and enable after them frame whole. The model keeps
- * colour-normal and LMC colour for IRIS GL's colour and normal rule and
- * consumes the other three.
+ * IRIS GL's IGLOO library calls glIglooInterfaceSGIX, which the GL client
+ * library sends as one selector and one word: 0x112 IRIS GL mode, 0x113 LMC
+ * colour, 0x1be colour-normal, 0x1c9 tmesh mode and 0x1a9 swap-tmesh. The first
+ * seven commands below are those an IRIS GL atlantis sent after its
+ * make-current; 0x1a9 and 0x1c9 come from the same sender. Unframed, 0x112 is
+ * dropped, its 1 opens a ten-word buffer configuration that swallows the
+ * commands after it, and the client's later query is lost. Framed, nothing is
+ * dropped, no buffer configuration is seen and the colour, index and enable
+ * after them frame whole. The model keeps colour-normal and LMC colour for IRIS
+ * GL's colour and normal rule and consumes the other three.
  */
 static void test_igloo_interface_framed(void)
 {

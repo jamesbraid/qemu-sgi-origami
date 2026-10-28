@@ -68,8 +68,9 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GET_CONFIG     0x1e9
 #define SGI_KONA_CMD_DISPLAY_MODE   0x1e6
 /*
- * The flash EEPROM operation, from ireeprom: the operation number, then
- * that operation's words, framed by sgi-kona.c (see SGI_KONA_FLASH_BASE).
+ * The flash EEPROM operation, from the EEPROM programming tool: the operation
+ * number, then that operation's words, framed by sgi-kona.c (see
+ * SGI_KONA_FLASH_BASE).
  */
 #define SGI_KONA_CMD_EEPROM         0x1ec
 /*
@@ -143,12 +144,12 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_LIST_CALLS_MAX       8
 #define SGI_KONA_LIST_CALLS_POOL_MAX  4
 /*
- * The GL client's commands, which libGLcore writes to its doorbell and
- * which reach the command page with no +0xc00108 bracket. They are framed
- * by sgi_kona_gl_tokens[] on a port of their own (see
- * sgi_kona_textport_push() in sgi-kona.c). Each count is the words after
- * the selector word as the senders write them, a double counting two.
- * The descriptions paraphrase the pipe's command names.
+ * The GL client's commands, which the GL client library writes to its doorbell
+ * and which reach the command page with no +0xc00108 bracket. They are framed
+ * by sgi_kona_gl_tokens[] on a port of their own (see sgi_kona_textport_push()
+ * in sgi-kona.c). Each count is the words after the selector word as the
+ * senders write them, a double counting two. The descriptions paraphrase the
+ * pipe's command names.
  *
  * The make-current state: active texture takes a unit; post-texture scale
  * and bias a unit and three words of the texture object; the texture
@@ -518,7 +519,7 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 /*
  * glIglooInterfaceSGIX, which IRIS GL's IGLOO library calls to set IRIS GL
  * behaviour, sends one selector and one word for each of five parameters
- * (established from libGLcore's glIglooInterfaceSGIX): IRIS GL
+ * (established from the GL client library's glIglooInterfaceSGIX): IRIS GL
  * mode 0x81a2 as 0x112, LMC colour 0x81a3 as 0x113, colour-normal 0x81a1
  * as 0x1be and tmesh mode 0x81a4 as 0x1c9, each with the caller's first
  * parameter word, and swap-tmesh 0x81a0 as 0x1a9 and a literal 0. Full
@@ -535,7 +536,7 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 /*
  * glTexGen in every form sends 0x14 and nine words: the coordinate, the
  * parameter name and seven value words, the unused ones zero (established
- * from libGLcore's glTexGen senders). A mode goes as one integer
+ * from the GL client library's glTexGen senders). A mode goes as one integer
  * word; an object or eye plane as four floats; the two SGIX parameters
  * 0x81f6 and 0x81f7 as seven floats. The mode and the two planes go to
  * the shared GL's texture coordinate generation; the SGIS point and line
@@ -545,7 +546,7 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_GL_TEX_GEN_WORDS   9
 /*
  * The glRasterPos forms other than the float ones above, each sent as
- * the caller's components (established from libGLcore's glRasterPos
+ * the caller's components (established from the GL client library's glRasterPos
  * senders): a double as two words, an integer or
  * short as one sign-extended word.
  */
@@ -659,7 +660,7 @@ extern const unsigned sgi_kona_command_num_tokens;
 
 /*
  * The GL client's buffer configuration, sent by its first make-current
- * before any texture state (established from libGLcore's senders):
+ * before any texture state (established from the GL client library's senders):
  * buffer configuration 1 and ten words, pack 2 and one word, read-buffer
  * configuration 4 and ten words, and 0x114 and one word before the
  * read-buffer configuration when the read drawable's first word is 3.
@@ -704,25 +705,24 @@ extern const SGICommandPortSelector sgi_kona_gl_tokens[];
 extern const unsigned sgi_kona_gl_num_tokens;
 
 /*
- * The video commands the X server sends the display generator through
- * token SGI_KONA_CMD_VIDEO: all 93 numbers of kona.so's command-name
+ * The video commands the X server sends the display generator through token
+ * SGI_KONA_CMD_VIDEO: all 93 numbers of the KONA X driver module's command-name
  * table, 0 to 0x5c, in order, so entry c is command c. On the wire a video
  * command is the token, the command number (the token's one argument in
  * sgi_kona_command_tokens[]), its data words, then a checksum: the command
  * number plus the data words, modulo 2^32. Nothing on the wire carries the
  * length.
  *
- * data_words is the count found at the X server's send sites,
- * a property of the senders read rather than of the command (one
- * pass-through sender can send other lengths), or
- * SGI_KONA_VIDEO_DATA_UNKNOWN where no sender was found. reply_id and
- * reply_bytes are the reply the X server waits for, from kona.so's
- * 32-entry reply-name and reply-size tables; SGI_KONA_VIDEO_NO_REPLY marks
- * a command whose name is not a reply name. Each row's comment gives the
- * grammar's basis: "sender and wait" (a send site directly followed by a
- * wait for that id and size, the rule checked at every such pair),
- * "sender" (send sites, no wait) or "tables only" (no sender found; the
- * reply id is inferred from the name match alone).
+ * data_words is the count found at the X server's send sites, a property of the
+ * senders read rather than of the command (one pass-through sender can send
+ * other lengths), or SGI_KONA_VIDEO_DATA_UNKNOWN where no sender was found.
+ * reply_id and reply_bytes are the reply the X server waits for, from the KONA
+ * X driver module's 32-entry reply-name and reply-size tables;
+ * SGI_KONA_VIDEO_NO_REPLY marks a command whose name is not a reply name. Each
+ * row's comment gives the grammar's basis: "sender and wait" (a send site
+ * directly followed by a wait for that id and size, the rule checked at every
+ * such pair), "sender" (send sites, no wait) or "tables only" (no sender found;
+ * the reply id is inferred from the name match alone).
  */
 #define SGI_KONA_VIDEO_NO_REPLY        UINT32_MAX
 #define SGI_KONA_VIDEO_DATA_UNKNOWN    UINT32_MAX
@@ -765,7 +765,10 @@ typedef struct SGIKonaVideoCommand {
 extern const SGIKonaVideoCommand sgi_kona_video_commands[];
 extern const unsigned sgi_kona_video_num_commands;
 
-/* kona.so's reply-size table: reply id i carries entry i bytes of data. */
+/*
+ * The KONA X driver module's reply-size table: reply id i carries entry i
+ * bytes of data.
+ */
 extern const uint32_t sgi_kona_video_reply_sizes[SGI_KONA_VIDEO_REPLY_IDS];
 
 #endif /* HW_MISC_SGI_KONA_PORTS_H */

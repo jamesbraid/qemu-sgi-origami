@@ -736,17 +736,17 @@ typedef struct SGIKonaPendingSwap {
 #define SGI_KONA_PORT_WRITE_NEXT 0x8003f8
 
 /*
- * The pipe's flash EEPROM, which IRIX's ireeprom programs with
- * SGI_KONA_CMD_EEPROM ("The flash EEPROM operation, 0x1ec, and ireeprom"
- * in the command grammar datasheet). 512 KiB, inferred from the erase
- * length and the header's place in the last 256-byte group: the boot
- * image from offset 0, the video combination at SGI_KONA_FLASH_COMBO
- * behind its marker and word count, and a twelve-word header at
- * SGI_KONA_FLASH_HEADER whose word 7 is the state the PROM and kernel
- * accept only as 2. The indirect port reads it big-endian at internal
- * SGI_KONA_FLASH_BASE plus the flash offset (inferred: the PROM's header
- * address is that sum); the ARM's own byte-wide programming accesses are
- * not modelled, so host writes there are dropped.
+ * The pipe's flash EEPROM, which IRIX's EEPROM programming tool programs with
+ * SGI_KONA_CMD_EEPROM ("The flash EEPROM operation, 0x1ec, and the EEPROM
+ * programming tool" in the command grammar datasheet). 512 KiB, inferred from
+ * the erase length and the header's place in the last 256-byte group: the boot
+ * image from offset 0, the video combination at SGI_KONA_FLASH_COMBO behind its
+ * marker and word count, and a twelve-word header at SGI_KONA_FLASH_HEADER
+ * whose word 7 is the state the PROM and kernel accept only as 2. The indirect
+ * port reads it big-endian at internal SGI_KONA_FLASH_BASE plus the flash
+ * offset (inferred: the PROM's header address is that sum); the ARM's own
+ * byte-wide programming accesses are not modelled, so host writes there are
+ * dropped.
  *
  * Approximated: no factory image was ever captured, so the model starts
  * the flash zero with header state 2. It keeps its contents across
@@ -769,8 +769,8 @@ typedef struct SGIKonaPendingSwap {
 /* The largest count op 1 accepts; a larger one fails before its data. */
 #define SGI_KONA_FLASH_MAX_WORDS    0x7ffb
 /*
- * The longest reply the model posts, in bytes from word 0: the 16 KiB
- * buffer both of ireeprom's paths name. What the pipe does past the
+ * The longest reply the model posts, in bytes from word 0: the 16 KiB buffer
+ * both of the EEPROM programming tool's paths name. What the pipe does past the
  * buffer it was given is unknown.
  */
 #define SGI_KONA_FLASH_REPLY_MAX    0x4000
@@ -789,9 +789,9 @@ typedef struct SGIKonaPendingSwap {
 
 /*
  * Internal address the loader writes 1 before its first data word and 0
- * after its last (established from a trace). kpm's register table names
- * it the input control unit's control register, bit 0 ARM access, so the
- * reading is that bit 0 opens the ARM's memory to host writes (inferred
+ * after its last (established from a trace). A stock tool's register table
+ * names it the input control unit's control register, bit 0 ARM access, so
+ * the reading is that bit 0 opens the ARM's memory to host writes (inferred
  * from that table, not from a hardware description). Stored with no
  * behaviour. Its 1-to-0 edge is where the model traces the load record
  * below.
@@ -828,9 +828,9 @@ typedef struct SGIKonaPendingSwap {
 #define SGI_KONA_ACTIVITY_BUS (1u << 2)
 
 /*
- * Written 5 and 1 by the loader after the load, never read. kpm's
- * register table names +0x8003b0 a 4-bit transaction FIFO high-water mark
- * and +0x800328 ARM unstall; both names are inferred from that table.
+ * Written 5 and 1 by the loader after the load, never read. A stock tool's
+ * register table names +0x8003b0 a 4-bit transaction FIFO high-water mark and
+ * +0x800328 ARM unstall; both names are inferred from that table.
  * Stored and traced, no behaviour: in particular the model does not wait
  * for the unstall before answering commands.
  */
@@ -967,7 +967,7 @@ typedef enum SGIKonaBitmapState {
  */
 #define SGI_KONA_GAMMA_COMPONENTS        3
 #define SGI_KONA_GAMMA_COMPONENT_ENTRIES 0x1000
-/* ChannelGammaMap's map for a linear ramp ("Linear Gamma being used"). */
+/* The gamma-map command's map for a linear ramp ("Linear Gamma being used"). */
 #define SGI_KONA_GAMMA_MAP_LINEAR        0xfffffffe
 #define SGI_KONA_GAMMA_ENTRIES \
     (SGI_KONA_GAMMA_COMPONENTS * SGI_KONA_GAMMA_COMPONENT_ENTRIES)
@@ -1025,15 +1025,14 @@ typedef enum SGIKonaBitmapState {
 #define SGI_KONA_FB_HEIGHT 1024
 
 /*
- * Display channels: the most a display generator drives (the 030-1087-001
- * board reports eight), and what each shows. A channel shows the input
- * rectangle of the managed area (the framebuffer) at its format's active
- * size; see sgi_kona_channel_view() for the mapping and what is inferred.
- * input_y counts rows from the bottom of the managed area to the
- * rectangle's top row, as GetResize's word 1 and Resize's word 2 do.
- * blanked is ChannelBlanking's, gamma_map ChannelGammaMap's, source the
- * channel Vampire names and cursor_priority CursorPriority's; see the
- * video setters in sgi-kona.c.
+ * Display channels: the most a display generator drives (the 030-1087-001 board
+ * reports eight), and what each shows. A channel shows the input rectangle of
+ * the managed area (the framebuffer) at its format's active size; see
+ * sgi_kona_channel_view() for the mapping and what is inferred. input_y counts
+ * rows from the bottom of the managed area to the rectangle's top row, as
+ * GetResize's word 1 and Resize's word 2 do. blanked is the blanking command's,
+ * gamma_map the gamma-map command's, source the channel Vampire names and
+ * cursor_priority CursorPriority's; see the video setters in sgi-kona.c.
  */
 #define SGI_KONA_MAX_CHANNELS 8
 
