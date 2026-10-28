@@ -100,6 +100,7 @@ struct SGICrimeState {
     bool functional_memory_transfer;
     bool transfer_state_received;
     bool healthy_memory_reported;
+    uint8_t render_mode_reported;
     bool render_state_received;
     CrimeRenderState render;
     CrimeRenderState incoming_render;

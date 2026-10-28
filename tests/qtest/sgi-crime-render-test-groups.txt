@@ -149,3 +149,16 @@ ifb-restore /mips64/sgi/crime/render/ifb/restore
 ifb-migration /mips64/sgi/crime/render/ifb/migration
 ifb-profiles /mips64/sgi/crime/render/ifb/profiles
 ifb-invalid-stream /mips64/sgi/crime/render/ifb/invalid-stream
+color /mips64/sgi/crime/render/color/formats
+color /mips64/sgi/crime/render/color/rops-masks
+color /mips64/sgi/crime/render/color/geometry
+color /mips64/sgi/crime/render/color/failures
+color /mips64/sgi/crime/render/color/starts-accesses
+color /mips64/sgi/crime/render/color/ram-views
+color /mips64/sgi/crime/render/color/components
+color /mips64/sgi/crime/render/color/tiled-traversal
+buffer-modes /mips64/sgi/crime/render/buffer-modes/indexed
+buffer-modes /mips64/sgi/crime/render/buffer-modes/color
+buffer-modes /mips64/sgi/crime/render/buffer-modes/transactions
+buffer-modes /mips64/sgi/crime/render/buffer-modes/diagnostics
+buffer-modes /mips64/sgi/crime/render/buffer-modes/primitives
