@@ -750,6 +750,8 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
         return false;
     }
     qdev_prop_set_bit(bridge, "flash-select", s->flash_strap);
+    /* The Octane2's empty second select read 0xffff, not a bus error. */
+    qdev_prop_set_bit(bridge, "flash-empty-reads-high", true);
     qdev_prop_set_bit(bridge, "flash-reject-invalid-writes", true);
     if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
         return false;

@@ -1824,8 +1824,10 @@ static void test_flash_and_pci(void)
     g_assert_cmphex(qtest_readq(qts, FLASH + 1), ==,
                     0x345678ffffffffffULL);
     g_assert_cmphex(qtest_readl(qts, FLASH + MiB), ==, 0x12345678);
+    /* Bytes on the empty select float high, as the measured read does. */
     g_assert_cmpuint(memtx_readq(qts, FLASH + FLASH_SELECT_SIZE - 7,
-                                    &last), ==, MEMTX_DECODE_ERROR);
+                                    &last), ==, MEMTX_OK);
+    g_assert_cmphex(last, ==, UINT64_C(0xffffffffffffffff));
     g_assert_cmpuint(memtx_writew(qts, FLASH, 0x90), ==, MEMTX_ERROR);
     g_assert_cmpuint(memtx_readl(qts, FLASH, &value), ==, MEMTX_OK);
     g_assert_cmphex(value, ==, 0x12345678);
@@ -1856,8 +1858,20 @@ static void test_alternate_flash(gconstpointer data)
     QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
     uint16_t word;
 
+    uint32_t wide;
+
+    /*
+     * The Octane2's PROM Command Monitor read 0xffff here, with nothing
+     * on the second chip select to drive the data lines.
+     */
     g_assert_cmpuint(memtx_readw(qts, FLASH + FLASH_SELECT_SIZE, &word),
-                     ==, MEMTX_DECODE_ERROR);
+                     ==, MEMTX_OK);
+    g_assert_cmphex(word, ==, 0xffff);
+    g_assert_cmphex(qtest_readb(qts, FLASH + FLASH_SELECT_SIZE + 1), ==,
+                    0xff);
+    g_assert_cmpuint(memtx_readl(qts, FLASH + FLASH_SELECT_SIZE + 0x1000,
+                                 &wide), ==, MEMTX_OK);
+    g_assert_cmphex(wide, ==, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
     qtest_writel(qts, BRIDGE_REG(0x020), FLASH_WRITE_EN);
     g_assert_cmpuint(memtx_writew(qts, FLASH + FLASH_SELECT_SIZE, 0x90),
@@ -1872,13 +1886,15 @@ static void test_flash_bios_strap(void)
     uint32_t word;
     uint64_t wide;
 
-    g_assert_cmpuint(memtx_readl(qts, FLASH, &word), ==, MEMTX_DECODE_ERROR);
+    g_assert_cmpuint(memtx_readl(qts, FLASH, &word), ==, MEMTX_OK);
+    g_assert_cmphex(word, ==, 0xffffffff);
     g_assert_cmpuint(memtx_readl(qts, FLASH + FLASH_SELECT_SIZE, &word), ==,
                      MEMTX_OK);
     g_assert_cmphex(word, ==, 0x12345678);
-    /* Crossing into a fitted select does not complete an absent-select read. */
+    /* Crossing from the empty select into the fitted one: ones, then data. */
     g_assert_cmpuint(memtx_readq(qts, FLASH + FLASH_SELECT_SIZE - 4, &wide),
-                     ==, MEMTX_DECODE_ERROR);
+                     ==, MEMTX_OK);
+    g_assert_cmphex(wide, ==, UINT64_C(0xffffffff12345678));
     qtest_quit(qts);
 }
 
@@ -1915,16 +1931,19 @@ static void test_flash(gconstpointer data)
     stw_be_p(image + 64 * KiB, 0xabcd);
     g_assert_true(g_file_set_contents(path, image, MiB, NULL));
     qts = octane_start_flash(path, select, strap);
-    g_assert_cmpuint(memtx_readw(qts, absent, &word), ==,
-                     MEMTX_DECODE_ERROR);
+    g_assert_cmpuint(memtx_readw(qts, absent, &word), ==, MEMTX_OK);
+    g_assert_cmphex(word, ==, 0xffff);
     g_assert_cmpuint(memtx_readw(qts, base, &word), ==, MEMTX_OK);
     g_assert_cmphex(word, ==, 0x1234);
     g_assert_cmphex(qtest_readb(qts, base), ==, 0x12);
     g_assert_cmphex(qtest_readl(qts, base), ==, 0x1234ffff);
     g_assert_cmphex(qtest_readq(qts, base), ==,
                     UINT64_C(0x1234ffffffffffff));
+    /* Across the two selects: the empty one reads high, the part its data. */
     g_assert_cmpuint(memtx_readq(qts, FLASH + FLASH_SELECT_SIZE - 4,
-                                    &wide), ==, MEMTX_DECODE_ERROR);
+                                    &wide), ==, MEMTX_OK);
+    g_assert_cmphex(wide, ==, lower ? UINT64_C(0xffffffffffffffff) :
+                                      UINT64_C(0xffffffff1234ffff));
     g_assert_cmphex(qtest_readw(qts, base + MiB), ==, 0x1234);
     g_assert_cmpuint(memtx_readq(qts, base + MiB - 4, &wide), ==, MEMTX_OK);
     g_assert_cmphex(wide, ==, UINT64_C(0xffffffff1234ffff));

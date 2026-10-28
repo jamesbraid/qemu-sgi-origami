@@ -336,7 +336,9 @@ which one answers at the window base, and the control register's
 write-enable bit gating writes. Unlike the external SSRAM window,
 an unfitted flash port decodes as an error rather than completing --
 the specification ties the flash port to a fitted part, where the
-SSRAM port stays wired regardless. A fitted part answers reads of
+SSRAM port stays wired regardless. The Octane2 board is the exception: a read of its empty second
+chip select returns all ones, as measured, and a write to it still fails
+(``flash-empty-reads-high``). A fitted part answers reads of
 any XIO size, repeating its sixteen-bit words across the
 access; writes complete at sixteen bits only, on account of the
 parts' differing command sequences, and are logged and dropped,
