@@ -78,11 +78,47 @@ password-clear input explicitly. They are caller-provisioned identity,
 not a factory image or a source for an Ethernet address. Ethernet uses
 its separately supplied station address.
 
+.. _sgi-ip32-o2plus:
+
+O2+ processor selection
+-----------------------
+
+The sole ``o2`` machine also accepts ``variant=o2plus``, selecting one
+400 MHz R12000 family CPU with 2 MiB L2 and the same 1 GiB expansion fit.
+This changes the CPU module selection, not the board connections. It does
+not admit the published 512 MB starting population or the RM7000A product.
+The existing catalogue configuration name ``o2plus`` selects this offering.
+
+Supply ``-cpu R12000`` with all five inputs before realization:
+``r12000-prid=0x00000e35``, ``r12000-fpu-id=0x00000900``,
+``r12000-reset-mode=0x011a8603``, ``r12000-scache-bytes=2097152`` and
+``r12000-scache-block-words=16``. The resulting Config0 is ``0x6d1a8603``.
+PRId revision and FPU identity are compatibility selections, not measured
+O2+ values. The reset word chooses legal mode fields and 64-byte secondary
+blocks. It is not a module reset-ROM capture. The published R12000A name
+does not establish those missing silicon and strap values.
+
+SGI's announcement *SGI Introduces New Value-Rich Silicon Graphics O2+
+Visual Workstation* (August 14, 2001) specifies the 400 MHz R12000A,
+2 MB L2 and 512 MB starting memory, with a 256 MB--1 GB line-wide range.
+The *Silicon Graphics O2+ Workstation Hardware Reference Guide*,
+007-4486-001, printed pages 3--4, distinguishes the processor families.
+NEC's *VR10000 Series User's Manual*, fourth edition, U10278EJ4V0UM00,
+PDF pages 180--182, 230 and 358, supplies the selected legal mode fields.
+The expansion capacity is represented here as exactly 1 GiB.
+
+All existing peripheral, native storage, caller identity, writable flash,
+coherent-memory and temporary boot-RAM policies remain selected with their
+stated limitations. R12000A-specific ECC syndrome behavior, pipeline timing
+and speculative-store simulation remain unqualified. Initial execution uses
+managed instruction counting at shift 3 and nominal 400 MHz. Same-variant
+PROM, installation, installed boot and interaction evidence is still required.
+
 Limitations
 -----------
 
 Initial guest qualification uses managed instruction counting at shift 3,
 at nominal 195 MHz. Host-paced identity and networking remain known
 limitations. The catalogue does not establish a completed guest installation,
-audio, broader OpenGL, complete diagnostics, physical timing or O2+ support.
+audio, broader OpenGL, complete diagnostics, physical timing or O2+ guest acceptance.
 The existing migration refusal remains in force.

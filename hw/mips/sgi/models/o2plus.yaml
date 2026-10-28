@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: BSD-3-Clause
+configuration_version: 1
+layers:
+- layers/architectures/ip32.yaml
+- layers/assemblies/ip32.yaml
+- layers/modules/o2plus.yaml
+- layers/products/o2plus.yaml

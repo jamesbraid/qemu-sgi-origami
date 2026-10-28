@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "0e49cbc0e7e9a1fc8beff0fa9ba0845417c3124dfc298f10d10f751a8be36754"
+    "df17b7b19f065c0efb2fa1f409142814f938b5682cf822d71d440b01cb7b8e9f"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -209,9 +209,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 135)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 42)
-        self.assertEqual(len(layers), 91)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 138)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 43)
+        self.assertEqual(len(layers), 93)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -437,7 +437,9 @@ class StorageTests(unittest.TestCase):
                              self.default_processor(offering["topology"])
                              else f",processor={offering['processor']['id']}")
                 if offering.get("launch-recipe") == "ip32":
-                    self.assertEqual(offering["machine-options"], "o2")
+                    self.assertEqual(offering["machine-options"],
+                                     "o2" if offering["topology"] == "o2"
+                                     else "o2,variant=o2plus")
                     self.assertEqual(offering["storage"], [])
                     self.assertEqual(offering["firmware"]["kind"], "ip32-prom")
                     self.assertEqual(offering["init-inputs"], [{

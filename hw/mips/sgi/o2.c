@@ -2,7 +2,8 @@
 /* Copyright (c) 2026 James Braid */
 /*
  * O2 (IP32) functional product with QTest register fixtures.
- * The product selects one 195 MHz R10000 with 1 MiB L2 and 1 GiB RAM.
+ * Product variants select a 195 MHz R10000 or 400 MHz R12000, with
+ * 1 or 2 MiB L2 respectively and 1 GiB RAM.
  * Coherent memory, reset geometry, boot-RAM routing and native PCI byte
  * mapping retain the documented functional approximations. Fitted reset
  * straps and DIMM mapping remain unknown. Firmware, flash protection,
@@ -103,6 +104,7 @@ typedef struct O2MachineState {
     bool rom_at29c040a;
     bool banked_ram;
     bool product;
+    bool o2plus;
     bool test_properties_set;
     bool reset_low_ram_approx;
     bool empty_renderer_status;
@@ -1498,6 +1500,17 @@ static void o2_init(MachineState *machine)
     }
     renderer_status = s->empty_renderer_status || s->functional_memory_transfer;
 
+    if (s->o2plus && !s->product) {
+        error_report("o2plus does not support register-test-profile");
+        exit(1);
+    }
+    if (strcmp(machine->cpu_type, s->o2plus ? MIPS_CPU_TYPE_NAME("R12000") :
+                                            MIPS_CPU_TYPE_NAME("R10000"))) {
+        error_report("Invalid CPU model: %s; %s requires %s",
+                     machine->cpu_type, s->o2plus ? "o2plus" : "o2",
+                     s->o2plus ? "R12000" : "R10000");
+        exit(1);
+    }
     if (!s->product && !qtest_enabled() && !qtest_driver()) {
         error_report("register-test-profile requires QTest");
         exit(1);
@@ -1847,7 +1860,7 @@ static void o2_init(MachineState *machine)
 
     /* Catalogued speed; external SysClk and reset straps are unknown. */
     cpuclk = clock_new(OBJECT(machine), "cpu-refclk");
-    clock_set_hz(cpuclk, 195 * 1000 * 1000);
+    clock_set_hz(cpuclk, (s->o2plus ? 400 : 195) * 1000 * 1000);
     s->cpuclk = cpuclk;
     memory_region_init(&s->cpu_uncached, OBJECT(machine),
                        "o2.cpu-uncached", UINT64_MAX);
@@ -1862,6 +1875,32 @@ static void o2_init(MachineState *machine)
                                 1ULL << MIPS_UNCACHED_WINDOW_SHIFT,
                                 &s->cpu_uncached_physical);
     cpu_dev = qdev_new(machine->cpu_type);
+    if (s->o2plus) {
+        static const struct {
+            const char *property;
+            uint32_t value;
+        } inputs[] = {
+            { "r12000-prid", 0xe35 },
+            { "r12000-fpu-id", 0x900 },
+            { "r12000-reset-mode", 0x011a8603 },
+            { "r12000-scache-bytes", 2 * MiB },
+            { "r12000-scache-block-words", 16 },
+        };
+
+        for (unsigned i = 0; i < ARRAY_SIZE(inputs); i++) {
+            if (object_property_get_uint(OBJECT(cpu_dev), inputs[i].property,
+                                         &error_fatal) != inputs[i].value) {
+                error_report("o2plus requires %s=0x%x", inputs[i].property,
+                             inputs[i].value);
+                exit(1);
+            }
+        }
+        if (!object_property_get_bool(OBJECT(cpu_dev), "big-endian",
+                                      &error_fatal)) {
+            error_report("o2plus requires a big-endian CPU");
+            exit(1);
+        }
+    }
     if (object_property_get_bool(OBJECT(cpu_dev),
                                  "cache-data-visibility", &error_fatal)) {
         error_report("o2 requires cache-data-visibility=off");
@@ -1870,7 +1909,7 @@ static void o2_init(MachineState *machine)
     qdev_connect_clock_in(cpu_dev, "clk-in", cpuclk);
     object_property_set_bool(OBJECT(cpu_dev), "big-endian", true,
                              &error_fatal);
-    if (s->prom_sb64_reset) {
+    if (s->prom_sb64_reset && !s->o2plus) {
         if (MIPS_CPU(cpu_dev)->r10k_profile->reset_mode_set) {
             error_report("o2 prom-sb64-reset rejects CPU reset-mode");
             exit(1);
@@ -2237,6 +2276,26 @@ static void o2_add_test_properties(Object *obj)
                              o2_set_prom_id_word);
 }
 
+static char *o2_get_variant(Object *obj, Error **errp)
+{
+    return g_strdup(((O2MachineState *)obj)->o2plus ? "o2plus" : "o2");
+}
+
+static void o2_set_variant(Object *obj, const char *value, Error **errp)
+{
+    O2MachineState *s = (O2MachineState *)obj;
+
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp, "variant cannot change once the machine is built");
+        return;
+    }
+    if (strcmp(value, "o2") && strcmp(value, "o2plus")) {
+        error_setg(errp, "variant must be o2 or o2plus");
+        return;
+    }
+    s->o2plus = !strcmp(value, "o2plus");
+}
+
 static bool o2_get_register_test_profile(Object *obj, Error **errp)
 {
     return !((O2MachineState *)obj)->product;
@@ -2258,10 +2317,12 @@ static void o2_set_register_test_profile(Object *obj, bool value, Error **errp)
 static void o2_class_init(ObjectClass *oc, const void *data)
 {
     static const char * const cpu_types[] = {
-        MIPS_CPU_TYPE_NAME("R10000"), NULL,
+        MIPS_CPU_TYPE_NAME("R10000"), MIPS_CPU_TYPE_NAME("R12000"), NULL,
     };
     MachineClass *mc = MACHINE_CLASS(oc);
 
+    object_class_property_add_str(oc, "variant", o2_get_variant,
+                                  o2_set_variant);
     object_class_property_add_bool(oc, "register-test-profile",
                                    o2_get_register_test_profile,
                                    o2_set_register_test_profile);
