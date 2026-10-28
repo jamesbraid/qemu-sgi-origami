@@ -2019,6 +2019,33 @@ static void test_heart_measured_words(gconstpointer data)
     qtest_quit(qts);
 }
 
+/*
+ * The reference Octane2's Crossbow, revision 5, read in the PROM monitor
+ * through HEART at widget 8: widget 0 status 0x200 at 0x1000000c, bits 9:6
+ * naming port 8; auxiliary status 0x20 for HEART (link 8), 0x30 for the
+ * Bridge (link 15, the Bridge's 8-bit link) and 0x50 for each empty port.
+ * Revision 4 reserves the status field, and its empty ports are unmeasured
+ * and keep reporting failure mode alone.
+ */
+static void test_crossbow_measured_links(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+
+    for (int pass = 0; pass < 2; pass++) {
+        g_assert_cmphex(qtest_readl(qts, XBOW + 0x0c), ==,
+                        octane2 ? 0x200 : 0);
+        g_assert_cmphex(qtest_readl(qts, XBOW + 0x13c), ==, 0x20);
+        for (unsigned link = 1; link < 7; link++) {
+            g_assert_cmphex(qtest_readl(qts, XBOW + 0x13c + link * 0x40),
+                            ==, octane2 ? 0x50 : 0x40);
+        }
+        g_assert_cmphex(qtest_readl(qts, XBOW + 0x13c + 7 * 0x40), ==, 0x30);
+        qtest_system_reset(qts);
+    }
+    qtest_quit(qts);
+}
+
 static void test_octane2_heart_widget_status(void)
 {
     QTestState *qts = octane2_start_args("");
@@ -6241,6 +6268,10 @@ int main(int argc, char **argv)
                         test_heart_measured_words);
     qtest_add_data_func("/octane2/heart-measured-words", GINT_TO_POINTER(1),
                         test_heart_measured_words);
+    qtest_add_data_func("/octane/crossbow-measured-links",
+                        GINT_TO_POINTER(0), test_crossbow_measured_links);
+    qtest_add_data_func("/octane2/crossbow-measured-links",
+                        GINT_TO_POINTER(1), test_crossbow_measured_links);
     qtest_add_data_func("/octane/alternate-flash", GINT_TO_POINTER(0),
                         test_alternate_flash);
     qtest_add_data_func("/octane2/alternate-flash", GINT_TO_POINTER(1),

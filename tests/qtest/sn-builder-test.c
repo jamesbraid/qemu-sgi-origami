@@ -5360,6 +5360,22 @@ static void test_ip53_widget_zero_pxbow_identity(void)
                                  "link-reset-restore-alive"), ==, 0x8400);
     g_assert_cmpuint(qom_get_uint(fixture->qts, pxbow, "links-alive"), ==,
                      0x8400);
+    /*
+     * The empty ports report failure mode alone. The 8-bit width bit an
+     * empty port of the Octane2's standalone revision 5 Crossbow reads is
+     * unmeasured on this crossbar.
+     */
+    for (unsigned int widget = 8; widget < 15; widget++) {
+        uint32_t aux = 0;
+
+        if (widget == 10) {
+            continue;
+        }
+        g_assert_true(nasid_test_cpu_readl(fixture->qts, 0,
+                                           IP53_IO_SPACE + 0x13c +
+                                           (widget - 8) * 0x40, &aux));
+        g_assert_cmphex(aux, ==, 0x40);
+    }
     g_assert_true(nasid_test_cpu_readq(fixture->qts, 0, pic_widget,
                                        &pic_head0));
     g_assert_true(nasid_test_cpu_readq(fixture->qts, 0,

@@ -63,9 +63,10 @@
  * XBOW_FENCE, then one per link at XBOW_LINK_FENCE_BASE and stride. Fence
  * existence on this revision, and that an accepted warm reset leaves a
  * programmed fence as it was rather than restoring it, are both measured on
- * the owner's Octane2: the PROM's own fenced-reset sequence leaves bit 3
- * clear at XBOW_FENCE and at the widget-11 link fence after the reset it
- * gates (PROM Command Monitor reads, 2026-10-02). The same page names a
+ * the reference Octane2: after the PROM's fenced-reset sequence, XBOW_FENCE
+ * and the link fences of HEART (link 8) and the Bridge (link 15) read 0xf7,
+ * bit 3 (port 11, the V12) clear, and the other link fences read 0xff (PROM
+ * Command Monitor reads, 2026-10-27). The same page names a
  * second Crossbow 2.0 addition, a resource lock, acquired at XBOW_LOCK and
  * released at XBOW_LOCK_CLEAR; that it exists on this revision and reads
  * zero after power-on is also measured there. The specification does not
@@ -273,6 +274,18 @@ static uint32_t sgi_xbow_link_status(const SGIXbowState *s, unsigned int link)
 }
 
 /*
+ * The link negotiates the narrower of the two ends' widths as it comes out
+ * of reset (Crossbow specification, PDF page 23): 8-bit when the force
+ * control asks for it or when the widget has only an 8-bit interface.
+ */
+static bool sgi_xbow_comes_up_eight_bit(const SGIXbowState *s,
+                                        unsigned int link)
+{
+    return (s->link_control[link] & XBOW_LINK_EIGHT_BIT_FORCE) ||
+           (s->link_eight_bit_only & BIT(link));
+}
+
+/*
  * Attachment is reported whether or not the link ever trained. Failure mode
  * separates a port that never came out of reset from one that came up and
  * then failed, and says nothing while the port is alive or initializing.
@@ -294,6 +307,9 @@ static uint32_t sgi_xbow_link_aux(const SGIXbowState *s, unsigned int link)
     } else if (!(s->link_initializing & BIT(link)) &&
                !(s->link_came_up & BIT(link))) {
         value |= XBOW_AUX_FAILURE_MODE;
+        if (s->empty_port_eight_bit && !sgi_xbow_present(s, link)) {
+            value |= XBOW_AUX_EIGHT_BIT;
+        }
     }
     return value;
 }
@@ -671,8 +687,7 @@ static void sgi_xbow_link_reset_expire(void *opaque)
             s->link_alive |= bit;
             s->link_came_up |= bit;
             s->link_event[context->link] |= XBOW_LINK_ALIVE;
-            if (s->link_control[context->link] &
-                XBOW_LINK_EIGHT_BIT_FORCE) {
+            if (sgi_xbow_comes_up_eight_bit(s, context->link)) {
                 s->link_eight_bit |= bit;
             }
         }
@@ -1387,6 +1402,17 @@ bool sgi_xbow_enable_status_source_field(SGIXbowState *s, Error **errp)
     return true;
 }
 
+bool sgi_xbow_enable_empty_port_eight_bit(SGIXbowState *s, Error **errp)
+{
+    if (DEVICE(s)->realized || s->empty_port_eight_bit) {
+        error_setg(errp, "Crossbow empty-port width report must be enabled "
+                   "once before realization");
+        return false;
+    }
+    s->empty_port_eight_bit = true;
+    return true;
+}
+
 bool sgi_xbow_attach_endpoint(SGIXbowState *s, unsigned int widget,
                               MemoryRegion *cpu_face, MemoryRegion *packet_face,
                               Error **errp)
@@ -1498,7 +1524,7 @@ bool sgi_xbow_mark_widget_alive(SGIXbowState *s, unsigned int widget,
     s->link_alive |= BIT(link);
     s->link_came_up |= BIT(link);
     s->link_event[link] |= XBOW_LINK_ALIVE;
-    if (s->link_control[link] & XBOW_LINK_EIGHT_BIT_FORCE) {
+    if (sgi_xbow_comes_up_eight_bit(s, link)) {
         s->link_eight_bit |= BIT(link);
     } else {
         s->link_eight_bit &= ~BIT(link);
@@ -1635,7 +1661,7 @@ static void sgi_xbow_set_links_alive(Object *obj, Visitor *v, const char *name,
         if (sgi_xbow_alive(s, link)) {
             s->link_came_up |= BIT(link);
             s->link_event[link] |= XBOW_LINK_ALIVE;
-            if (s->link_control[link] & XBOW_LINK_EIGHT_BIT_FORCE) {
+            if (sgi_xbow_comes_up_eight_bit(s, link)) {
                 s->link_eight_bit |= BIT(link);
             } else {
                 s->link_eight_bit &= ~BIT(link);
@@ -1705,7 +1731,8 @@ static void sgi_xbow_reset_enter(Object *obj, ResetType type)
     s->link_initializing = 0;
     s->link_alive = s->link_startup;
     s->link_came_up = s->link_startup;
-    s->link_eight_bit = 0;
+    /* Every link control resets with the force clear (below). */
+    s->link_eight_bit = s->link_startup & s->link_eight_bit_only;
     s->warm_reset_quiet_until = 0;
 
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
@@ -1845,7 +1872,7 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
         return;
     }
     if ((s->links_present_prop | s->startup_links_alive_prop |
-         s->link_reset_restore_alive_prop) &
+         s->link_reset_restore_alive_prop | s->eight_bit_links_prop) &
         ~XBOW_WIDGET_MASK) {
         error_setg(errp, "a crossbar link mask names widgets 8 through 15, "
                          "so only bits 15:8 may be set");
@@ -1859,6 +1886,10 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
     if (s->link_reset_restore_alive_prop & ~s->links_present_prop) {
         error_setg(errp, "a crossbar link with reset recovery must also be "
                          "populated");
+        return;
+    }
+    if (s->eight_bit_links_prop & ~s->links_present_prop) {
+        error_setg(errp, "an 8-bit crossbar link must also be populated");
         return;
     }
     if (s->revision > 0xf || s->identity_revision > 0xf ||
@@ -1893,6 +1924,7 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
     s->link_startup = sgi_xbow_links_of(s->startup_links_alive_prop);
     s->link_reset_restore_alive_mask =
         sgi_xbow_links_of(s->link_reset_restore_alive_prop);
+    s->link_eight_bit_only = sgi_xbow_links_of(s->eight_bit_links_prop);
 
     memory_region_init_io(&s->regs, OBJECT(dev), &sgi_xbow_ops, s,
                           "sgi-xbow.regs", s->span);
@@ -2203,6 +2235,8 @@ static const Property sgi_xbow_properties[] = {
                        startup_links_alive_prop, 0),
     DEFINE_PROP_UINT16("link-reset-restore-alive", SGIXbowState,
                        link_reset_restore_alive_prop, 0),
+    DEFINE_PROP_UINT16("eight-bit-links", SGIXbowState,
+                       eight_bit_links_prop, 0),
 };
 
 static void sgi_xbow_instance_init(Object *obj)
