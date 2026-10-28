@@ -260,6 +260,8 @@ static R10KCp0Result gen_perf_mfc0(DisasContext *ctx, TCGv arg, int sel,
     if ((sel & 1) == 0) {
         gen_r10k_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[sel]));
     } else {
+        /* Cycle counters read the virtual clock. */
+        translator_io_start(&ctx->base);
         gen_helper_mfc0_r10k_performance(arg, tcg_env, tcg_constant_i32(sel));
     }
     return R10K_CP0_DONE;
