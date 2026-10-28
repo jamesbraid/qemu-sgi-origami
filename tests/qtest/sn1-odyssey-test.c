@@ -805,9 +805,10 @@ static uint32_t odsy_shown(QTestState *qts, uint32_t x, uint32_t y)
  * over the three ranges, in all three ten-bit channels) and drawable did's
  * display mode set to an RGB mode (group 26, the gamma table): what a guest
  * loads before any RGB pixel is visible. Out of reset the lookup RAM is
- * zero and the screen black.
+ * zero and the screen black. The mode is the X server's for its 24-bit
+ * TrueColor visual, which shows every bit of each channel byte.
  */
-#define ODSY_DISPMODE_RGB 0x004b59a6u
+#define ODSY_DISPMODE_RGB 0x005215a6u
 #define ODSY_BACKEND_HDR(index, count) \
     (0x30000000u | ((uint32_t)(index) << 14) | (count))
 
@@ -11577,6 +11578,62 @@ static void test_scanout_rgb_through_gamma(void)
     board_quit(qts);
 }
 
+/*
+ * A narrow TrueColor visual's display mode shows only the top bits of each
+ * channel byte, repeated to full scale: under the 12-bit visual's mode a
+ * window filled with 0x50 0x80 0xa0 shows what the 24-bit mode shows for
+ * 0x55 0x88 0xaa, the colour its client means by those bytes, and under the
+ * 15-bit visual's mode what it shows for 0x52 0x84 0xa5. The planes keep the
+ * bytes drawn.
+ */
+#define ODSY_DISPMODE_RGB12 0x004b59a6u
+#define ODSY_DISPMODE_RGB15 0x009657a7u
+
+static void narrow_fill(QTestState *qts, uint32_t did, uint32_t r,
+                        uint32_t g, uint32_t b, uint32_t x0)
+{
+    id_plane_write(qts, did, 0xf8, x0, 100, x0 + 16, 116);
+    cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    cmd_push(qts, 0x2000);
+    cmd_push(qts, 0x50);
+    cmd_push(qts, 0x20006950);
+    cmd_push(qts, 0);
+    rgb_fill(qts, r, g, b, x0, 100, x0 + 16, 116);
+}
+
+static void test_scanout_rgb_narrow_visuals(void)
+{
+    static const uint32_t passthrough[] = { 1, 6, 7 };
+    QTestState *qts = board_start("");
+    uint32_t wide;
+    size_t i;
+
+    display_identity(qts, 8);
+    display_identity(qts, 9);
+    display_identity(qts, 10);
+    narrow_fill(qts, 8, 0x50, 0x80, 0xa0, 100);
+    narrow_fill(qts, 9, 0x55, 0x88, 0xaa, 200);
+    narrow_fill(qts, 10, 0x52, 0x84, 0xa5, 300);
+    wide = odsy_shown(qts, 108, 108);
+    g_assert_cmphex(wide, !=, odsy_shown(qts, 208, 108));
+    g_assert_cmphex(wide, !=, odsy_shown(qts, 308, 108));
+
+    dispmode_write(qts, 8, ODSY_DISPMODE_RGB12);
+    g_assert_cmphex(odsy_shown(qts, 108, 108), ==, odsy_shown(qts, 208, 108));
+    g_assert_cmphex(odsy_test_pixel(qts, 108, 108), ==, 0x5080a0ffu);
+
+    dispmode_write(qts, 8, ODSY_DISPMODE_RGB15);
+    g_assert_cmphex(odsy_shown(qts, 108, 108), ==, odsy_shown(qts, 308, 108));
+
+    /* A 30-bit field (1 or 6) or one no visual uses shows the byte drawn. */
+    for (i = 0; i < G_N_ELEMENTS(passthrough); i++) {
+        dispmode_write(qts, 8, (ODSY_DISPMODE_RGB12 & ~(7u << 9)) |
+                               (passthrough[i] << 9));
+        g_assert_cmphex(odsy_shown(qts, 108, 108), ==, wide);
+    }
+    board_quit(qts);
+}
+
 /* Paint first, program the drawable and colormap after: the colour shows. */
 static void test_scanout_paint_order(void)
 {
@@ -22070,6 +22127,8 @@ int main(int argc, char **argv)
              test_scanout_display_mode_recolours);
     add_case("sn1/odyssey/scanout-rgb-through-gamma",
              test_scanout_rgb_through_gamma);
+    add_case("sn1/odyssey/scanout-rgb-narrow-visuals",
+             test_scanout_rgb_narrow_visuals);
     add_case("sn1/odyssey/scanout-paint-order",
              test_scanout_paint_order);
     add_case("sn1/odyssey/cursor/glyph-and-plane",
