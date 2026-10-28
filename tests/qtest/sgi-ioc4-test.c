@@ -2453,7 +2453,8 @@ static void test_identity_and_reset(void)
     unsigned n;
 
     g_assert_cmphex(qtest_readl(qts, CFG), ==, 0x100a10a9);
-    g_assert_cmphex(qtest_readl(qts, CFG + 8), ==, 0x00ff0053);
+    /* Class 0x0b4000, the class Linux's IOC4 drivers match. */
+    g_assert_cmphex(qtest_readl(qts, CFG + 8), ==, 0x0b400053);
     g_assert_cmphex(qtest_readl(qts, CFG + 0x3c) & 0xff00, ==, 0x0100);
     qtest_writel(qts, CFG + 0x10, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, CFG + 0x10), ==, 0xfff00000);

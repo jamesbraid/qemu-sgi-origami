@@ -896,7 +896,7 @@ static void sgi_ioc4_class_init(ObjectClass *klass, const void *data)
     pc->vendor_id = 0x10a9;
     pc->device_id = 0x100a;
     pc->revision = 0x53;
-    pc->class_id = PCI_CLASS_OTHERS;
+    pc->class_id = PCI_CLASS_PROCESSOR_CO;
     dc->vmsd = &vmstate_ioc4;
     device_class_set_props(dc, sgi_ioc4_properties);
     resettable_class_set_parent_phases(rc, NULL, sgi_ioc4_reset_hold, NULL,
