@@ -9945,6 +9945,26 @@ static void test_origin3200_io7_without_ieee1394(void)
 }
 
 /*
+ * The IO7's IOC3 carries the Origin 300's M48T35-compatible Timekeeper.
+ * Without a time-of-day part the guest reads the epoch and its
+ * start-up scripts stall on the 1969 date.
+ */
+static void test_origin3200_io7_timekeeper(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts = origin3200_start(&prom);
+    g_autofree char *rtc = qom_child_type(qts,
+                                          "/machine/module2/io7/ioc3",
+                                          "rtc");
+
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module2/io7/ioc3",
+                                  "timekeeper-kind"), ==, 1);
+    g_assert_cmpstr(rtc, ==, "m48t35");
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
  * The I-brick's Fibre Channel card, outside the IO7, at head F device 1
  * where both retained inventories print it. Its register window is the
  * head's second 2 MiB slot window; halfword accesses flip PCI offset bits
@@ -12481,6 +12501,8 @@ int main(int argc, char **argv)
                    test_origin3200_brick_l1s);
     qtest_add_func("sn/builder/origin3200/io7-without-ieee1394",
                    test_origin3200_io7_without_ieee1394);
+    qtest_add_func("sn/builder/origin3200/io7-timekeeper",
+                   test_origin3200_io7_timekeeper);
     qtest_add_func("sn/builder/origin3200/fibre-channel-doubleword-dma",
                    test_origin3200_fibre_channel_doubleword_dma);
     qtest_add_func("sn/builder/origin3200/fibre-channel-card",

@@ -53,9 +53,11 @@
  *     approximation: the IP35 PROM addresses MII 1, and the I-brick's
  *     PHY part is unknown. A Timekeeper is fitted only where the record
  *     selects the shared compatibility one, since the IO7's
- *     time-of-day part is not identified. Interrupts follow the default
- *     head mapping, pin A of device d on head pin d, with the IOC3's
- *     SuperIO event on pin 0 as on the io8 (inferred; no source
+ *     time-of-day part is not identified; the Origin 3200 record selects
+ *     it, because a guest with no clock starts at the epoch and its
+ *     installer restart then never resets the machine. Interrupts
+ *     follow the default head mapping, pin A of device d on head pin
+ *     d, with the IOC3's SuperIO event on pin 0 as on the io8 (inferred; no source
  *     examines the IO7's wiring). The Fibre Channel card at device 1 is
  *     not part of the IO7, but shares its head: where the record fits
  *     it, a QLogic ISP2200 sits at device 1, where owners' inventories

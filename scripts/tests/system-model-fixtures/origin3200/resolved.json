@@ -1452,7 +1452,19 @@
           "reason": "Synthetic node identity N1, carrying the \"QEMU\" marker; not hardware evidence.",
           "serial": "0x51454d554e01"
         }
-      ]
+      ],
+      "system_timekeepers": {
+        "ibrick-xbridge-bridge-f": {
+          "initial_ip27_fixture": false,
+          "kind": "m48t35-compatible",
+          "notes": "The IO7's time-of-day part is not identified; this is the Origin 300's M48T35-compatible choice, an approximation. IP35 software uses the 1968 year convention.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"
+          ],
+          "year_base": 1968
+        }
+      }
     },
     "generation": "SN1",
     "harness": {
