@@ -960,9 +960,14 @@ def validate_connector_population(model: dict[str, Any]) -> None:
     if (machine.get("model_role") == "emulation-target" and
             machine.get("emulation", {}).get("lifecycle") == "implemented" and
             _fabric_topology(model) == "router"):
+        # An XIO cable resolves both of its ends: it names the connector and
+        # the brick whose port it joins, so no population entry adds to it.
+        cabled = {end for cable in model.get("xio_cables", [])
+                  for end in cable.get("ends", [])}
         for cid, component in components.items():
             if (component.get("kind") == "connector" and
-                    component["connector"]["occupancy"] == "opaque" and cid not in selected):
+                    component["connector"]["occupancy"] == "opaque" and
+                    cid not in selected and cid not in cabled):
                 raise ResolutionError(f"implemented target has unresolved connector '{cid}'")
 
 
