@@ -30,9 +30,8 @@
 #define RECORD_SERIAL_MASK   MAKE_64BIT_MASK(0, 48)
 
 /*
- * The formatter IRIX shows these fields through substitutes '?' for ':' and
- * ';', and a NUL shows as '.' or '_', so a field is printable ASCII other
- * than those two.
+ * ':' and ';' delimit fields in the text form, so a field is printable ASCII
+ * other than those two.
  */
 static const char *sgi_board_record_field_error(const char *field,
                                                 size_t width)
