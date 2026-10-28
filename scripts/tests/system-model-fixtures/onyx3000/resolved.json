@@ -155,6 +155,18 @@
       ]
     },
     {
+      "id": "vbrick-heads-xio",
+      "kind": "xio",
+      "master": "vbrick-xbridge-crossbar",
+      "name": "XBridge crossbar to its PCI heads",
+      "notes": "The crossbar's internal ports E (14) and F (15), one PCI head each, with no card on either.",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F",
+        "007-4264-002 printed page 54, Figure 2-14: no PCI device on the V-brick's XBridge"
+      ]
+    },
+    {
       "id": "vbrick-port-b-xio",
       "kind": "xio",
       "master": "vbrick-xbridge-crossbar",
@@ -1027,6 +1039,32 @@
       ]
     },
     {
+      "description": "The PCI head behind widget 14. Nothing is drawn on it in the block diagram.",
+      "id": "vbrick-xbridge-bridge-e",
+      "kind": "subfunction",
+      "name": "XBridge bridge at port 0xe",
+      "parent": "vbrick-xbridge",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F",
+        "007-4264-002 printed page 54, Figure 2-14: no PCI device on the V-brick's XBridge"
+      ]
+    },
+    {
+      "description": "The PCI head behind widget 15. Nothing is drawn on it in the block diagram.",
+      "id": "vbrick-xbridge-bridge-f",
+      "kind": "subfunction",
+      "name": "XBridge bridge at port 0xf",
+      "parent": "vbrick-xbridge",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F",
+        "007-4264-002 printed page 54, Figure 2-14: no PCI device on the V-brick's XBridge"
+      ]
+    },
+    {
       "connector": {
         "interface": "Crosstown2",
         "location": "rear panel",
@@ -1616,6 +1654,28 @@
       "sources": [
         "108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes"
       ]
+    },
+    {
+      "bus": "vbrick-heads-xio",
+      "component": "vbrick-xbridge-bridge-e",
+      "provenance": "vendor-document",
+      "role": "bridge-upstream",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F",
+        "007-4264-002 printed page 54, Figure 2-14: no PCI device on the V-brick's XBridge"
+      ],
+      "widget": 14
+    },
+    {
+      "bus": "vbrick-heads-xio",
+      "component": "vbrick-xbridge-bridge-f",
+      "provenance": "vendor-document",
+      "role": "bridge-upstream",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F",
+        "007-4264-002 printed page 54, Figure 2-14: no PCI device on the V-brick's XBridge"
+      ],
+      "widget": 15
     },
     {
       "bus": "c1-xio-ii",

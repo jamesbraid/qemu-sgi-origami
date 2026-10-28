@@ -409,14 +409,17 @@ port serves a slot, and so the V12's widget number, are unknown, and a
 PROM inventory or hardware graph of an Onyx 3000 with a V-brick would
 settle them. The V-brick has an L1 (``brick-type=vbrick``, see
 :ref:`sgi-l1-origin3000`), reached from the C-brick its cable joins; its
-type letter and records are approximations. No source fixes an Onyx 3000
-C-brick's processors, caches or memory, so each C-brick takes the Origin 3200 C-brick's fit
+type letter and records are approximations, and its XBridge answers at both
+PCI heads (widgets 14 and 15) with nothing on them, as every XBridge does.
+No source fixes an Onyx 3000 C-brick's processors, caches or memory, so each C-brick takes the Origin 3200 C-brick's fit
 (four 400 MHz R12000s with 8 MB caches and 4096 MB); that fit is a model
 choice. The V12 is fitted by default and ``-vga none`` leaves its port
 empty. The stock PROM lists the V12 as a graphics board in the second
-C-brick's module and diagnoses all four processors on each node. IRIX
-6.5.30 boots to a login without the V12 and stops in an early kernel
-assertion with it; the cause is not established.
+C-brick's module, builds the V-brick's I/O records from its heads and
+diagnoses all four processors on each node. It prints a warning that the
+link to the V-brick runs at 400 MHz where it expects 600 MHz; the model keeps
+the guide's 800 MB/s port rate. IRIX 6.5.30 boots to a login with the V12
+fitted.
 
 .. _sgi-sn-family-rbrick:
 
