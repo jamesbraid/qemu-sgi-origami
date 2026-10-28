@@ -365,7 +365,12 @@ Interrupts
 The chip has two interrupt outputs. The Ethernet block drives PCI INTA.
 Everything else funnels through the SuperIO interrupt status register and
 leaves on a second line that the board wires to a Bridge interrupt pin,
-pin 3 on the Origin 200. OpenBSD establishes separate Ethernet and
+pin 3 on the Origin 200. On the Octane, Linux maps the second line to
+Bridge pin 4 (``bridge_setup_ip30_sysboard()`` in
+``arch/mips/pci/pci-xtalk-bridge.c``) and OpenBSD to the first device
+number with no function, also 4 on that board (``xbridge_intr_map()`` in
+``sys/arch/sgi/xbow/xbridge.c``), *software expectation*; the ``octane``
+and ``octane2`` machines wire it to Bridge input 4. OpenBSD establishes separate Ethernet and
 SuperIO handlers (:src:`dmesgd-8994 ioc0 attach lines` prints
 ``ethernet irq 2`` and ``superio irq 3``), *observed*. The model drives
 the SuperIO line from ``status & enable``, recomputed on every write to
@@ -516,8 +521,11 @@ PHY's reset input.
 The ``gpio-input-mask`` and ``gpio-input-values`` properties make chosen
 pins read-only board inputs: a read of pin data or of a pin register
 returns the property's value for those bits, whatever software wrote. The
-Octane machines use this for pin 2, which reads 1 on Octane and 0 on
-Octane2 according to OpenBSD ``ip30.h``, *software expectation*. Writes
+Octane machines use this for pin 2, which OpenBSD ``ip30.h`` comments as 1
+on Octane and 0 on Octane2, a *software expectation*. The ``octane``
+machine drives it 1 and ``octane2`` drives it 0. The reference Octane2
+reads 1 (:ref:`sgi-ioc3-octane2-pins`), so the ``octane2`` value differs
+from the one measured board. Writes
 to pin data store all 32 bits, and the stored word is what reads back
 outside the input mask. Pins 0-1, 3-4 and 8 have no wiring in the model,
 and the edge and level selections in pin control bits 16-19 are stored
@@ -1281,9 +1289,181 @@ depth, refuses the stream.
 Measurements
 ============
 
-No IOC3 register has been read on an identified physical machine. The
-reference Octane2 (:ref:`sgi-measured-octane2`) reported its onboard IOC3
-functions in its hardware inventory (:ref:`sgi-measured-octane2-hinv`):
+On the reference Octane2 (:ref:`sgi-measured-octane2`), the PROM Command
+Monitor read the onboard IOC3's PCI configuration header, Bridge device 2,
+after the firmware had initialised the machine:
+
+.. code-block:: text
+
+   >> dump -w -x 0xffffffffbf022000#16
+   0xffffffffbf022000:      310a9    2800146   ff000001       2800
+   0xffffffffbf022010:     500000          0          0     500000
+   0xffffffffbf022020:      310a9    2800146   ff000001       2800
+   0xffffffffbf022030:     500000          0          0     500000
+
+.. list-table::
+   :header-rows: 1
+
+   * - Offset
+     - Value
+     - Fields
+   * - ``0x00``
+     - ``0x000310a9``
+     - vendor ``0x10a9``, device ``0x0003``
+   * - ``0x04``
+     - ``0x02800146``
+     - status ``0x0280``, command ``0x0146``
+   * - ``0x08``
+     - ``0xff000001``
+     - class ``0xff0000``, revision 1
+   * - ``0x0c``
+     - ``0x00002800``
+     - latency timer ``0x28``, header type 0
+   * - ``0x10``
+     - ``0x00500000``
+     - BAR 0 as the firmware programmed it
+   * - ``0x14``, ``0x18``
+     - 0
+     -
+   * - ``0x1c``
+     - ``0x00500000``
+     -
+   * - ``0x20``-``0x3f``
+     - the words at ``0x00``-``0x1f`` again
+     -
+
+The identity, class, revision and Status values are *established* for
+this chip revision. Configuration space repeats every 32 bytes, so the
+chip has no separate subsystem vendor and subsystem ID registers: a read
+at ``0x2c`` returns the ``0x0c`` word. The command, latency and BAR
+values are what this machine's firmware wrote, not reset values.
+
+The words at ``0x2c`` and ``0x3c`` show what the model gets wrong here:
+the model presents a subsystem vendor and ID at ``0x2c`` and interrupt
+pin A at ``0x3d``, where this chip returns the repeated ``0x0c`` and
+``0x1c`` words, so its interrupt pin byte reads zero. Linux supplies the
+subsystem ID in its own configuration accessor
+(``arch/mips/pci/pci-xtalk-bridge.c``), which agrees with the chip
+having none.
+
+.. _sgi-ioc3-octane2-registers:
+
+Register block
+--------------
+
+The PROM Command Monitor also read the register block through Bridge
+device window 2
+(physical ``0x1f600000``, the BAR at PCI ``0x500000``), each word a 32-bit
+load, chip revision 1, PROM monitor after initialisation:
+
+.. code-block:: text
+
+   >> dump -w -x 0xffffffffbf60001c#2
+   0xffffffffbf60001c:   60000804          0
+   >> dump -w -x 0xffffffffbf600028#3
+   0xffffffffbf600028:     678000          0          3
+   >> dump -w -x 0xffffffffbf600034#1
+   0xffffffffbf600034:     2000f3
+   >> dump -w -x 0xffffffffbf6000f0#3
+   0xffffffffbf6000f0:     201200          0          0
+   >> dump -w -x 0xffffffffbf600130#1
+   0xffffffffbf600130:   80000000
+   >> dump -w -x 0xffffffffbf600148#2
+   0xffffffffbf600148:         21       7809
+
+.. list-table::
+   :header-rows: 1
+
+   * - Offset
+     - Register
+     - Value
+     - Fields (Linux ``ioc3.h`` names)
+   * - ``0x1c``
+     - SuperIO interrupt status
+     - ``0x60000804``
+     - receive high water on ports A (2) and B (11); bits 29 and 30, which
+       no public source names
+   * - ``0x20``
+     - SuperIO interrupt enable
+     - ``0``
+     - no source enabled
+   * - ``0x28``
+     - Chip control
+     - ``0x00678000``
+     - byte-bus strobe length ``0xf`` (18:15); arbiter field (21:19) 4,
+       which Linux names the parallel port; arbiter idle (22) set; both
+       serial poll addresses zero
+   * - ``0x2c``
+     - Interrupt output
+     - ``0``
+     - mode 0, output low
+   * - ``0x30``
+     - MicroLAN control
+     - ``0x3``
+     - slot done (1), wire high (0)
+   * - ``0x34``
+     - Pin control
+     - ``0x002000f3``
+     - pins 0, 1, 4, 5, 6 and 7 outputs; MicroLAN connected to pin 8 (21)
+   * - ``0xf0``
+     - MAC control
+     - ``0x00201200``
+     - buffer-RAM parity check (9), large buffer RAM (12), arbiter idle
+       (21); transmit and receive off
+   * - ``0xf4``, ``0xf8``
+     - Ethernet interrupt status, enable
+     - ``0``, ``0``
+     -
+   * - ``0x130``
+     - Transmit consume
+     - ``0x80000000``
+     - idle (31), index 0
+   * - ``0x148``
+     - MII control
+     - ``0x21``
+     - register 1, PHY address 1, not busy
+   * - ``0x14c``
+     - MII read data
+     - ``0x7809``
+     - the PHY's status register
+
+These are what the firmware left, not reset values. The arbiter idle bits
+in chip control and MAC control read set with no DMA running, as the
+model reads them. The firmware set the large-buffer bit, so it treats the
+board as fitting 128 KB of Ethernet buffer RAM, a *software expectation*.
+The last MII transaction the firmware made was a read of register 1 at
+PHY address 1, which returned ``0x7809`` with the link down; the kernel
+booted afterwards warned ``ef0: link fail - check ethernet cable``
+(:ref:`sgi-ics1890-measurements`).
+
+.. _sgi-ioc3-octane2-pins:
+
+Pins
+----
+
+.. code-block:: text
+
+   >> dump -w -x 0xffffffffbf60003c#10
+   0xffffffffbf60003c:        12d          1          0          1
+   0xffffffffbf60004c:          1          0          1          0
+   0xffffffffbf60005c:          0          1
+
+Pin data at ``0x3c`` reads ``0x12d``, pins 0, 2, 3, 5 and 8 high. The
+nine pin registers at ``0x40``-``0x60`` read 1, 0, 1, 1, 0, 1, 0, 0, 1,
+the same bits one per register, *established* for this board. With pin
+control ``0x2000f3``, pins 2 and 3 are inputs and pin 8 carries the
+MicroLAN. Pin 2, the input OpenBSD reads to tell Octane from Octane2,
+reads 1. OpenBSD's ``ip30.h`` expects 0 on an Octane2, so on this board
+the comment does not hold and what the pin senses is *unknown*
+(:ref:`sgi-ip30-components`). Pin 5, the PHY reset Linux names, is an
+output held high, out of reset. Pins 0 and 1, the white and red lights
+OpenBSD names, are outputs at 1 and 0.
+
+Inventory
+---------
+
+The same machine reported its onboard IOC3 functions in its hardware
+inventory (:ref:`sgi-measured-octane2-hinv`):
 
 .. list-table::
    :header-rows: 1
@@ -1302,14 +1482,19 @@ functions in its hardware inventory (:ref:`sgi-measured-octane2-hinv`):
 
 This establishes that the board fits both serial ports, the parallel port
 and Ethernet, which the ``octane2`` population matches. It does not
-establish any register value, reset state, PCI revision, parallel
-controller part or PHY.
+establish a reset state or the parallel controller part.
 
 .. _sgi-ioc3-limits:
 
 Model limits
 ============
 
+- Configuration space presents a subsystem identity at ``0x2c`` and
+  interrupt pin A, where the reference Octane2's chip repeats its first
+  32 bytes and reads pin zero (:ref:`sgi-ioc3-measurements`).
+- Chip control bits 21:19 read zero; the reference Octane2 reads 4 there
+  at its PROM menu. SuperIO status bits 29 and 30, set on that board, are
+  never raised.
 - The PCI error-address record, the configuration copy at ``0x00-0x18``,
   the interrupt-output alias page, the UART and keyboard configuration
   bytes and the SuperIO clock register file are not modelled. The main

@@ -64,7 +64,8 @@ Sources
 - Published inventories: :src:`nekonomicon-16726704`,
   :src:`irixnet-post-32252`, :src:`usenet-95oo9r` and
   :src:`usenet-3a23907e`.
-- Two reads taken on the reference Octane2 (:ref:`sgi-bridge-measurements`).
+- Register and flash window reads taken on the reference Octane2
+  (:ref:`sgi-bridge-measurements`).
 
 .. _sgi-bridge-identity:
 
@@ -244,13 +245,15 @@ model's choice where the specification gives none, an *approximation*.
      - read-only
      - Bit 5 reads one for PCI mode. Bit 6 is the flash-select strap, the
        ``flash-select`` property. Retry counters and the
-       outstanding-request count read zero.
+       outstanding-request count read zero. The reference Octane2 reads
+       ``0x62`` (:ref:`sgi-bridge-octane2-status`).
    * - ``0x010``, ``0x018``
      - Error address upper, lower
      - 32
      - ``0``; model
      - read-only
-     - Never written by the model.
+     - Never written by the model. Hardware keeps the last logged
+       address (:ref:`sgi-bridge-octane2-errors`).
    * - ``0x020``
      - Control
      - 32
@@ -598,8 +601,11 @@ The specification gives no power-up value for the window base. The model
 resets slots 0 and 1 to base 2\ *n* and slots 2 to 7 to *n* + 2, so the
 default windows lie end to end from PCI address zero. The reset values
 are ``0x18001000``, ``0x18001002`` and ``0x18001004`` to ``0x18001009``.
-The base is an *approximation*. Bits 31:29 read zero and are not
-writable.
+The base is an *approximation*. The reference Octane2 reads slots 4 to 7,
+which hold no function, as ``0x18001006`` to ``0x18001009`` after its
+firmware has run, the model's values, but whether the firmware wrote them
+is not shown (:ref:`sgi-bridge-octane2-devices`). Bits 31:29 read zero
+and are not writable.
 
 .. _sgi-bridge-config:
 
@@ -1014,10 +1020,16 @@ whose fields are a device, a buffer and 48 address bits
 Which device number the chip records for a cycle it mastered itself is
 *unknown*: the specification names the field the device number of the PCI
 master (Table 27), and the Bridge is the master of such a cycle. The model
-stores the addressed slot, an *approximation*.
+stores the addressed slot, an *approximation*. The reference Octane2 held a
+PCI error record inside the IOC3's BAR with device field 0, but the event
+that made it is not known (:ref:`sgi-bridge-octane2-errors`).
 
 The error address registers at ``0x010`` and ``0x018``, the error command
-words and the SSRAM parity register always read zero.
+words and the SSRAM parity register always read zero. On hardware the
+error address registers keep the last logged value until the group is
+cleared and enabled (:src:`bridge-asic-spec-4.0 p. 20`), and the
+reference Octane2 read ``0x00cc1100`` at ``0x018`` with no error latched
+(:ref:`sgi-bridge-octane2-errors`).
 
 .. _sgi-bridge-flash:
 
@@ -1052,8 +1064,11 @@ What the model fits:
   ``0xc00000`` and select 1 at ``0xe00000``; set swaps them.
 - A read of 1 to 8 bytes returns the part's bytes in address order, each
   16-bit word read as one chip cycle. A part smaller than 2 MB repeats
-  across its select, an *approximation*: how a board wires the upper
-  address lines is *unknown*.
+  across its select. The reference Octane2's 1 MiB boot select repeats
+  this way at every sampled offset (:ref:`sgi-bridge-octane2-flash`),
+  *inferred* for its whole range. How other boards wire the upper
+  address lines is *unknown*, so for them the repeat is an
+  *approximation*.
 - A 16-bit write with control bit 31 set reaches the part. A write of any
   other width, or any write with bit 31 clear, does not reach it and logs
   ``LOG_GUEST_ERROR``. By default the write still completes. A board that
@@ -1061,9 +1076,11 @@ What the model fits:
   instead and also refuses a 16-bit write at an odd address. How the chip
   reports a refused write is *unknown*.
 - A select with no part fails the transaction and logs
-  ``LOG_GUEST_ERROR``. What an unpopulated select returns on hardware is
-  *unknown*; the one read of the Octane2's second select returned
-  ``0xffff`` (:ref:`sgi-bridge-measurements`).
+  ``LOG_GUEST_ERROR``. The reference Octane2's alternate select, chip
+  select 0 on that board, returns all ones to 16- and 32-bit reads at
+  four places across its 2 MB with no exception
+  (:ref:`sgi-bridge-octane2-flash`). Whether a part is fitted there is
+  *unknown*, so what an unpopulated select returns is *unknown* too.
 
 The IP27 PROM loads the BASEIO PROM from the BaseIO card's flash, a
 *software expectation* (:src:`ip27-prom-6.156`). It sets control bit 31,
@@ -1212,9 +1229,370 @@ between identical builds.
 Measurements
 ============
 
-Two reads have reached a Bridge window on a physical machine, both on
-the :ref:`sgi-measured-octane2`, IP30 board revision B, in the PROM
-Command Monitor after the firmware had initialised the machine.
+These reads come from the :ref:`sgi-measured-octane2`, IP30 board
+revision B, whose Bridge at widget 15 reports revision 4. The
+specification letters revisions from 1 as A, so 4 is D, the silicon it
+describes (:src:`bridge-asic-spec-4.0 p. 19`, Table 7). Every read was
+taken in the PROM Command Monitor after the firmware had initialised the
+machine, so none is a reset value. Each register read is one 32-bit load
+at the slot offset plus four, physical ``0x1f000000`` plus the widget
+offset.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Address
+     - Width
+     - Value
+     - Register
+     - Revision
+     - When
+   * - ``0x1f000004``
+     - 32
+     - ``0x4c00206d``
+     - Identification
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f00000c``
+     - 32
+     - ``0x00000062``
+     - Status
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f000014``, ``0x1f00001c``
+     - 32
+     - ``0``, ``0x00cc1100``
+     - Error address upper, lower
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f000024``
+     - 32
+     - ``0x7f2043ff``
+     - Control
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f00002c``
+     - 32
+     - ``0x000fffff``
+     - Request time-out
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f000034``, ``0x1f00003c``
+     - 32
+     - ``0x00080000``, ``0x00000080``
+     - Interrupt destination upper, lower
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f00004c``
+     - 32
+     - ``0x03ff1810``
+     - Link configuration
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f000084``
+     - 32
+     - ``0x00800000``
+     - Direct map
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f0000c4``
+     - 32
+     - ``0x00010000``
+     - PCI/GIO time-out
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f0000d4``, ``0x1f0000dc``
+     - 32
+     - ``0``, ``0x00520178``
+     - PCI error address upper, lower
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f000104``
+     - 32
+     - ``0``
+     - Interrupt status
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f00010c``
+     - 32
+     - ``0x7fcbffc0``
+     - Interrupt enable
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f00011c``, ``0x1f000124``
+     - 32
+     - ``0``, ``0``
+     - Interrupt mode, interrupt device
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f00012c``
+     - 32
+     - ``0x00000039``
+     - Host error field
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f000134``-``0x1f00015c``
+     - 32
+     - ``0`` each
+     - Interrupt host address, pins 0-5
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f000164``, ``0x1f00016c``
+     - 32
+     - ``0x00000029``, ``0x00000039``
+     - Interrupt host address, pins 6 and 7
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1f000204``-``0x1f00023c``
+     - 32
+     - see below
+     - Device(0) to Device(7)
+     - 4
+     - PROM monitor, after initialisation
+   * - ``0x1fc00000``-``0x1fffffff``
+     - 16 and 32
+     - see :ref:`sgi-bridge-octane2-flash`
+     - Flash window, both selects
+     - 4
+     - PROM monitor, after initialisation
+
+Each read was a command of this form, one register at a time; the
+monitor prints the word without leading zeros:
+
+.. code-block:: text
+
+   >> dump -w -x 0xffffffffbf000004#1
+   0xffffffffbf000004:   4c00206d
+   >> dump -w -x 0xffffffffbf00000c#1
+   0xffffffffbf00000c:         62
+   >> dump -w -x 0xffffffffbf000024#1
+   0xffffffffbf000024:   7f2043ff
+
+The interrupt status word read zero, so no pin was asserted and no error
+was latched while these reads ran.
+
+.. _sgi-bridge-octane2-status:
+
+Identification, status and control
+----------------------------------
+
+The identification word decodes as revision 4, part ``0xc002`` and
+manufacturer ``0x036``, *established* for this board's Bridge only;
+other Octane2 boards may differ.
+
+Status ``0x62`` decodes against the specification's status table
+(:src:`bridge-asic-spec-4.0 p. 20`, Table 8): bit 6, the strapped flash
+select, is 1, so chip select 1 answers at ``0xc00000``; bit 5 is 1, PCI
+mode; the outstanding-read count in bits 4:0 is 2; both link retry
+counters in bits 31:16 are zero. The strap value and PCI mode are
+*established* for this board. The count of 2 is what the chip reported
+while serving the monitor's read, so it shows that the field is live,
+not what it holds at idle.
+
+Control ``0x7f2043ff`` decodes against Linux ``bridge.h`` and the
+specification's control table (:src:`bridge-asic-spec-4.0 p. 21-23`,
+Table 11):
+
+.. list-table::
+   :header-rows: 1
+
+   * - Bits
+     - Value
+     - Reset
+     - Meaning
+   * - 31
+     - 0
+     - 0
+     - Flash writes disabled
+   * - 30:28
+     - ``0x7``
+     - ``0x7``
+     - 50, 40 and 33 MHz clock outputs on
+   * - 27:24
+     - ``0xf``
+     - ``0xf``
+     - PCI reset outputs
+   * - 23, 22
+     - 0, 0
+     - 0, 0
+     - No I/O or memory swap outside the device windows
+   * - 21
+     - 1
+     - 0
+     - 16 KB translation pages
+   * - 20:17
+     - 0
+     - 0
+     - SSRAM parity off; SSRAM size field 0
+   * - 15:12
+     - 4
+     - 3
+     - Crossbar credit
+   * - 9
+     - 1
+     - 1
+     - Big-endian system
+   * - 8:4
+     - ``0x1f``
+     - ``0x1f``
+     - Maximum outstanding transactions
+   * - 3:0
+     - ``0xf``
+     - ``0xf``
+     - Widget number 15
+
+Bit 21 and the credit of 4 are firmware choices; the other fields hold
+their specification reset values. The SSRAM size field reads 0. With a
+flash part on the port this says nothing about an SSRAM.
+
+The direct map reads ``0x00800000``: widget 8, offset 0 and the
+add-512 MB bit clear, the value both public drivers write and the model's
+PROM was seen writing (:ref:`sgi-heart-dma`). The request time-out
+``0x000fffff``, link configuration ``0x03ff1810`` and PCI/GIO time-out
+``0x00010000`` are the specification's reset values, so the firmware
+either left them or wrote them back.
+
+.. _sgi-bridge-octane2-devices:
+
+Device registers
+----------------
+
+.. code-block:: text
+
+   >> dump -w -x 0xffffffffbf000204#1
+   0xffffffffbf000204:   100d1002
+   >> dump -w -x 0xffffffffbf00020c#1
+   0xffffffffbf00020c:   100d1004
+   >> dump -w -x 0xffffffffbf000214#1
+   0xffffffffbf000214:   10011005
+   >> dump -w -x 0xffffffffbf00021c#1
+   0xffffffffbf00021c:   10011006
+   >> dump -w -x 0xffffffffbf000224#1
+   0xffffffffbf000224:   18001006
+   >> dump -w -x 0xffffffffbf00022c#1
+   0xffffffffbf00022c:   18001007
+   >> dump -w -x 0xffffffffbf000234#1
+   0xffffffffbf000234:   18001008
+   >> dump -w -x 0xffffffffbf00023c#1
+   0xffffffffbf00023c:   18001009
+
+.. list-table::
+   :header-rows: 1
+
+   * - Slot
+     - Value
+     - Function
+     - Fields set
+     - Window
+   * - 0
+     - ``0x100d1002``
+     - QL1040B
+     - error lock (28), direct-DMA byte swap (19), prefetch (18),
+       coherent (16), memory space (12)
+     - PCI memory ``0x00200000``
+   * - 1
+     - ``0x100d1004``
+     - QL1040B
+     - as slot 0
+     - PCI memory ``0x00400000``
+   * - 2
+     - ``0x10011005``
+     - IOC3
+     - error lock, coherent, memory space
+     - PCI memory ``0x00500000``
+   * - 3
+     - ``0x10011006``
+     - RAD1
+     - error lock, coherent, memory space
+     - PCI memory ``0x00600000``
+   * - 4 to 7
+     - ``0x18001006`` to ``0x18001009``
+     - none
+     - error lock, page-cross check (27), memory space
+     - PCI memory ``0x00600000`` to ``0x00900000``
+
+Each base matches the BAR the firmware gave the function in that slot
+(:ref:`sgi-qlogic-isp-measurements`, :ref:`sgi-ioc3-measurements`,
+:ref:`sgi-rad1-measurements`). No slot has the 64-bit device bit (22),
+the programmed-I/O swap bit (13) or the translated-DMA swap bit (20)
+set, so the firmware runs every slot as a 32-bit device with swap-clear
+programmed I/O. The firmware cleared the page-cross check on the four
+fitted slots. Slots 4 to 7 read exactly the values the model resets them
+to. Whether those are the chip's power-up values or values the firmware
+wrote is not shown, so the window-base reset stays an *approximation*.
+
+.. _sgi-bridge-octane2-interrupts:
+
+Interrupt programming
+---------------------
+
+The firmware left pins 6 and 7 enabled and every other pin disabled
+(enable bits 7:0 are ``0xc0``). Pin 6 sends interrupt number ``0x29``
+(41) and pin 7 ``0x39`` (57). Bits 17:8 of both host address words are
+zero, so each packet goes to the address the widget interrupt
+destination pair names: widget 8, XIO address ``0x80``, HEART's
+interrupt destination (:ref:`sgi-heart-interrupts`). The host error
+field also holds ``0x39``, so the Bridge's own errors and pin 7 raise the
+same HEART bit. OpenBSD names HEART bit 41 the power switch and bit 57
+the widget 15 error (``xheartreg.h``); Linux names 57 the same way
+(``heart.h``). Mode and device registers read zero: no pin sends a lower
+packet when it falls. Error enables in bits 31:8 are all set except bits
+18, 20 and 21, the link transmit-retry and receive check-bit and
+sequence-number errors (Linux ``bridge.h`` names).
+
+These are what this firmware programmed, *established* as register
+contents. They are software state, not board wiring. What drives pins 6
+and 7 is not shown by them. That pin 6 carries the timekeeper's
+interrupt, which OpenBSD clears through the clock for the power button,
+is *inferred* (:doc:`ds1685`).
+
+.. _sgi-bridge-octane2-errors:
+
+Error capture at idle
+---------------------
+
+Interrupt status read zero, yet the error address lower register held
+``0x00cc1100`` and the PCI error lower register ``0x00520178``, with zero
+upper halves. The specification says the error address registers hold
+the last logged value until the group is cleared and enabled
+(:src:`bridge-asic-spec-4.0 p. 20`, Table 9), which this agrees with;
+the PCI error registers kept a value the same way. ``0x00cc1100`` lies in this Bridge's own flash window, offset
+``0x0c1100`` into the boot select. ``0x00520178`` lies in the IOC3's
+memory BAR at offset ``0x20178``, the serial port A register file. Which
+events left these records is *unknown*. The PCI error upper word's device
+field, bits 18:16, reads 0, not the IOC3's slot 2. If that record came
+from a programmed-I/O cycle the Bridge mastered toward the IOC3, the chip
+records 0 rather than the addressed slot for its own cycles, but the
+event is not known, so the field's rule stays *unknown*
+(:ref:`sgi-bridge-errors`).
+
+.. _sgi-bridge-octane2-flash:
+
+Flash selects
+-------------
+
+.. code-block:: text
+
+   >> dump -w -x 0xffffffffbfc00000#4
+   0xffffffffbfc00000:    bf000f0          0    bf000f8          0
+   >> dump -w -x 0xffffffffbfd00000#4
+   0xffffffffbfd00000:    bf000f0          0    bf000f8          0
+   >> dump -w -x 0xffffffffbfcffff0#4
+   0xffffffffbfcffff0:   ffffffff   ffffffff   ffffffff   ffffffff
+   >> dump -w -x 0xffffffffbfdffff0#4
+   0xffffffffbfdffff0:   ffffffff   ffffffff   ffffffff   ffffffff
+   >> dump -w -x 0xffffffffbfc80000#4
+   0xffffffffbfc80000:   dfb10008    3e00008   67bd0030   1000fff8
+   >> dump -h -x 0xffffffffbfe00000#1
+   0xffffffffbfe00000:   ffff
+   >> dump -w -x 0xffffffffbfe80000#4
+   0xffffffffbfe80000:   ffffffff   ffffffff   ffffffff   ffffffff
+   >> dump -w -x 0xffffffffbff00000#4
+   0xffffffffbff00000:   ffffffff   ffffffff   ffffffff   ffffffff
+
+The ``0xffffffffbfe00000`` region was also read as ``dump -w -x
+0xffffffffbfe00000#8`` and ``dump -w -x 0xffffffffbffffff0#4``, all
+``0xffffffff``. Every read completed without an exception.
 
 .. list-table::
    :header-rows: 1
@@ -1223,31 +1601,51 @@ Command Monitor after the firmware had initialised the machine.
      - Width
      - Value
      - Region
-     - Revision
-     - When
-   * - ``0x1f000004`` (widget 15, offset ``0x04``)
+   * - ``0x1fc00000``-``0x1fc0000f``
      - 32
-     - ``0x4c00206d``
-     - Widget identification
-     - 4
-     - PROM monitor, after initialisation
-   * - ``0x1fe00000`` (widget 15, offset ``0xe00000``)
+     - ``0x0bf000f0``, ``0``, ``0x0bf000f8``, ``0``
+     - Boot select (chip select 1), start
+   * - ``0x1fd00000``-``0x1fd0000f``
+     - 32
+     - the same four words
+     - Boot select, 1 MiB in
+   * - ``0x1fcffff0``-``0x1fcfffff``
+     - 32
+     - ``0xffffffff`` each
+     - Boot select, last 16 bytes of the first MiB
+   * - ``0x1fdffff0``-``0x1fdfffff``
+     - 32
+     - ``0xffffffff`` each
+     - Boot select, last 16 bytes
+   * - ``0x1fc80000``-``0x1fc8000f``
+     - 32
+     - ``0xdfb10008``, ``0x03e00008``, ``0x67bd0030``, ``0x1000fff8``
+     - Boot select, 512 KiB in
+   * - ``0x1fe00000``
      - 16
      - ``0xffff``
-     - Flash window, second 2 MB select
-     - 4
-     - PROM monitor, after initialisation
+     - Alternate select (chip select 0), start
+   * - ``0x1fe00000``-``0x1fe0001f``, ``0x1fe80000``-``0x1fe8000f``,
+       ``0x1ff00000``-``0x1ff0000f``, ``0x1ffffff0``-``0x1fffffff``
+     - 32
+     - ``0xffffffff`` each
+     - Alternate select, four places across its 2 MB
 
-The identification read was ``dump -w -x 0xffffffffbf000004#1``,
-returning ``0x4c00206d``: revision 4, part ``0xc002``, manufacturer
-``0x036`` (*established*). It shows the silicon revision of this board's
-Bridge only; other Octane2 boards may differ.
+With status bit 6 set, chip select 1 is the boot select at ``0xc00000``
+and chip select 0 the alternate at ``0xe00000`` on this board,
+*established*. The boot select returns the same words 1 MiB in as at its
+start, and all ones at the top of both halves, *established* at those
+offsets. That the select repeats every 1 MiB throughout, so the fitted
+part decodes 1 MiB, is *inferred* from these samples. It matches the
+specification's 512K by 16 target part (:src:`bridge-asic-spec-4.0 p.
+115`), and it cannot separate a 1 MiB part from a 2 MiB part with its top
+address line unconnected. The words at 512 KiB are inside the 682448-byte
+primary image the same machine's ``flash -V`` reports
+(:ref:`sgi-measured-octane2-prom`).
 
-The flash transcript is on the IP30 page
-(:ref:`alternate aperture <sgi-ip30-octane2-alt-flash>`). That read shows
-that on that board the second select answers a 16-bit read with ``0xffff``
-and no exception. It does not show whether a part is fitted there, the
-strap value, other offsets or widths, or what a write does.
+The alternate select reads all ones at every sampled offset and width
+with no exception. Whether a part is fitted there, erased or absent, is
+*unknown*, as is what a write there does.
 
 .. _sgi-bridge-limits:
 
@@ -1257,6 +1655,13 @@ Model limits
 - One behaviour for every revision; the identification revision is the
   only difference. The Octanes report revision 1, where the published
   Octane reads 3 and the reference Octane2 reads 4.
+- Status reports the strap and PCI mode only. Its outstanding-request
+  count and link retry counters always read zero, where the reference
+  Octane2 read a count of 2 while serving the read. The ``octane2``
+  machine leaves the strap clear, where that board reads it set
+  (:ref:`sgi-bridge-octane2-status`).
+- The error address registers never record anything, where hardware
+  keeps the last logged address.
 - GIO mode, the external SSRAM table, the read response buffers,
   arbitration, prefetch, write gathering, the virtual-device split, the
   bus and request time-outs and the link layer are not modelled; their
@@ -1288,7 +1693,7 @@ Model limits
   ranges, fail the transaction. A non-zero store or a read at ``0x19c``
   fails and logs ``LOG_UNIMP``.
 - A flash select with no part fails the transaction, where the reference
-  Octane2 returned ``0xffff`` at its second select. On the ``octane2``
+  Octane2 returned all ones at its alternate select. On the ``octane2``
   machine the same read takes a bus error.
 - An inbound link reset releases the core at once.
 - The one-wire part has no write or status-programming commands, and slot

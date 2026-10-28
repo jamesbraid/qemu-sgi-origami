@@ -319,9 +319,13 @@ sees no interrupt from it. Linux asks the Bridge for interrupt pin 6
 through slot 6 for the clock, and its power-button path takes a kickstart
 off that line. OpenBSD takes the Octane power button from a HEART interrupt
 and uses the clock only to read and clear ``KF``. Neither is evidence about
-the board wiring. Where the board routes the clock's ``IRQ`` pin is
-*unknown*; a board schematic, or firmware seen programming the Bridge
-interrupt registers, would settle it.
+the board wiring. The reference Octane2's PROM leaves Bridge pin 6
+enabled and aimed at HEART bit 41, the bit OpenBSD takes for the power
+button, and pin 7 at bit 57 (:ref:`sgi-bridge-octane2-interrupts`). That
+the clock's ``IRQ`` reaches Bridge pin 6 on that board is therefore
+*inferred* from the firmware's programming and both drivers. It is still
+not a wiring measurement; a board schematic, or the pin 6 level followed
+through a kickstart, would settle it.
 
 Power control
 =============
@@ -411,7 +415,9 @@ the SMI stack and the extended-RAM data slot zero.
 
 What the PROM or an operating system keeps in the 242 bytes is *unknown*.
 Linux exposes them as an unstructured nvmem device and the public sources
-give no firmware layout.
+give no firmware layout. The reference Octane2's PROM environment names
+the variables the firmware keeps (:ref:`sgi-ds1685-measurements`), but
+not which of them live in this part or at which offsets.
 
 Fresh image
 -----------
@@ -493,11 +499,15 @@ number is the byte offset divided by 256. The O2's MACE ASIC maps it at its
 offset ``0x3a0000`` and connects the interrupt output. The Octane does not
 use it.
 
+.. _sgi-ds1685-measurements:
+
 Measurements
 ============
 
-No register of this part has been read on a physical machine for this
-project. The only observation is a published boot log.
+No register of this part has been read on a physical machine. The part
+needs an address-port write before every data read, so it was not read
+on the reference Octane2. Two observations bear on it: a published boot
+log and the reference Octane2's PROM environment.
 
 .. list-table::
    :header-rows: 1
@@ -517,6 +527,19 @@ The log establishes that a DS1687-family part is present on a 175 MHz Octane
 and that OpenBSD's driver attached to it. It does not establish any
 register value, the chip revision, the NVRAM contents, the interrupt route or
 that an Octane2 carries the same package.
+
+On the :ref:`sgi-measured-octane2`, the PROM Command Monitor's
+``printenv`` listed ``AutoLoad``, ``console``, ``diskless``, ``keybd``,
+``dbaud``, ``volume``, ``sgilogo``, ``autopower``, ``boottune``,
+``ConsoleOut``, ``ConsoleIn``, ``cpufreq`` (``360``),
+``SystemPartition``, ``OSLoadPartition``, ``OSLoadFilename`` and
+``OSLoader``, besides the Ethernet and network addresses, whose values
+are left out here. Running IRIX, ``nvram`` with no arguments printed a
+longer list of names, most with empty values. The non-empty ones were
+the PROM's list without ``autopower`` and ``boottune``, plus ``root``,
+``showconfig``, ``OSLoadOptions`` and ``kernname``. These are firmware and kernel views of the
+environment. They do not show which variables the DS1685's 242 bytes
+hold, in what layout, or that the clock holds any of them.
 
 Model limits
 ============

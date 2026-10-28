@@ -59,8 +59,9 @@ Sources
 - The same software run on the model, recorded with QEMU's
   ``sgi_odyssey_mmio`` trace event: what the guest sent the model, not
   what a board does.
-- The reference Octane2's inventory
-  (:ref:`sgi-measured-octane2-hinv`).
+- The reference Octane2's inventory and gfxinfo listing
+  (:ref:`sgi-measured-octane2-hinv`) and three register reads of its V12
+  (:ref:`sgi-odyssey-measurements`).
 
 .. _sgi-odyssey-identity:
 
@@ -73,7 +74,10 @@ and Linux ``xwidget.h`` (:ref:`sgi-graphics-widget-identities`). The
 identity names the family. It does not select V6, V8, V10 or V12. The
 model builds the word as revision in bits 31:28, part in bits 27:12,
 manufacturer in bits 11:1 and bit 0 set, so a V12 reads ``0xac013047``.
-Bit 0 set is an *approximation*.
+The reference Octane2's V12 reads exactly that word
+(:ref:`sgi-odyssey-measurements`), so bit 0 set and revision 10 are
+*established* for that board. For the other products bit 0 set remains
+an *approximation*.
 
 The IRIX 6.5.30 kernel turns widget revisions 1 to 3 into a BUZZ A part
 and 9 to 15 into a BUZZ B part, and rejects 0 and 4 to 8. gfxinfo prints
@@ -135,13 +139,16 @@ size, bank count, back-end version and identity record together:
      - 1
      - ``ODY128VERSIONB``
      - B.1, PB&J 1, 128 MB, four banks and CAS latency 3 *observed*
-       (:src:`usenet-1154846834`).
+       (:src:`usenet-1154846834`); revision 10, the memory word and the
+       gfxinfo values *established* on the reference Octane2
+       (:ref:`sgi-odyssey-measurements`).
 
 gfxinfo prints a fixed ``Banks: 2, CAS latency: 3`` line for any 32 MB
 board and does not read those fields, so the 32 MB boards' two banks
 are *inferred*. Every product is CAS latency 3. Whether every board
 of one product shares a revision is *unknown*; each product's revision
-is a model choice within its generation (*approximation*).
+is a model choice within its generation (*approximation*), and for the
+V12 it matches the one measured board.
 The identity records name the Octane boards. Fuel and Tezro boards are
 other assemblies, and the model answers the Octane name on them too
 (*approximation*).
@@ -302,7 +309,8 @@ every other register takes aligned 32-bit accesses only.
      - 32
      - ``0x10030000``
      - read-only
-     - Constant: enabled, empty, below low water.
+     - Constant: enabled, empty, below low water. A measured idle V12
+       reads ``0x00034080`` (:ref:`sgi-odyssey-measurements`).
    * - ``0x106c``
      - Memory configuration
      - 32
@@ -417,7 +425,10 @@ clear as two, and bit 28 set as CAS latency 2 and clear as 3, a
 *software expectation*. The model composes the word from the
 properties and also sets bit 24, a constant whose meaning is *unknown*
 (*approximation*). The low bits read zero, which OpenBSD reads as an
-idle data engine. The V12 word is ``0xa1000000``.
+idle data engine. The V12 word is ``0xa1000000``. The reference
+Octane2's V12 reads that word, bit 24 included, at its PROM menu
+(:ref:`sgi-odyssey-measurements`), *established* for that board; bit
+24's meaning is still *unknown*.
 
 .. _sgi-odyssey-interrupts:
 
@@ -792,10 +803,68 @@ on both sides. Migration works only between identical builds.
 Measurements
 ============
 
-The reference Octane2 reports a V12 board at widget 11 in its hardware
-inventory (:ref:`sgi-measured-octane2-hinv`). No register of that board
-was read for this page, so no value in the register map is a
-measurement.
+The reference Octane2 (:ref:`sgi-measured-octane2`) reports a V12 board,
+``ODY128VERSIONB``, part ``030-1611-001`` revision C, at widget 11 in its
+hardware inventory (:ref:`sgi-measured-octane2-hinv`). Three of its
+registers were read in the PROM Command Monitor after the firmware had
+initialised the machine and the board, through the short window at
+physical ``0x1b000000``:
+
+.. code-block:: text
+
+   >> dump -w -x 0xffffffffbb000004#1
+   0xffffffffbb000004:   ac013047
+   >> dump -w -x 0xffffffffbb00106c#1
+   0xffffffffbb00106c:   a1000000
+   >> dump -w -x 0xffffffffbb001064#1
+   0xffffffffbb001064:      34080
+
+.. list-table::
+   :header-rows: 1
+
+   * - Address
+     - Width
+     - Value
+     - Register
+     - Board revision
+     - When
+   * - ``0x1b000004``
+     - 32
+     - ``0xac013047``
+     - Widget identification
+     - widget revision 10, BUZZ B.1
+     - PROM monitor, after initialisation
+   * - ``0x1b00106c``
+     - 32
+     - ``0xa1000000``
+     - Memory configuration
+     - widget revision 10, BUZZ B.1
+     - PROM monitor, after initialisation
+   * - ``0x1b001064``
+     - 32
+     - ``0x00034080``
+     - Command FIFO status
+     - widget revision 10, BUZZ B.1
+     - PROM monitor, after initialisation
+
+The identification word decodes as revision 10, part ``0xc013``,
+manufacturer ``0x023`` and bit 0 set, the word the model builds for
+``v12``. The memory word decodes, under the IRIX 6.5.30 kernel's reading
+above, as 128 MB (bits 31:30 = 2), four banks (bit 29) and CAS latency 3
+(bit 28 clear), with bit 24 set and the low bits zero; it is the word the
+model builds for ``v12``. Running IRIX, ``gfxinfo -vv`` printed BUZZ
+version B.1, PB&J version 1, 128 MB, four banks and CAS latency 3 for
+the same board. All of these are *established* for this board.
+
+The command FIFO status reads ``0x00034080``: bits 17, 16, 14 and 7.
+OpenBSD's threshold bits are ``0x20000`` set and ``0x8000`` clear. The
+model's ``0x10030000`` shares bits 17 and 16 but sets bit 28, which the
+model treats as the FIFO enable, and lacks bits 14 and 7. The read was
+taken at the PROM menu, before any IRIX driver ran, so whether the board
+sets bit 28 once a kernel has started it is not shown. What bits 14 and
+7 mean is *unknown*.
+
+None of these is a reset value.
 
 .. _sgi-odyssey-limits:
 
@@ -814,7 +883,8 @@ Model limits
   and error registers read zero.
 - Command status is constant and the low-water flag is raised after
   every store; FIFO occupancy, back-pressure and execution time are not
-  modelled.
+  modelled. The constant differs from the ``0x00034080`` a measured idle
+  V12 returns.
 - The self-test register answers only one exact store sequence.
 - Interrupt delivery reuses the IMPACT destination decode, and routed
   sources send set packets only.

@@ -196,8 +196,9 @@ the same board.
      - *established*, with an open conflict
      - :src:`nekonomicon-17194 hinv -v`; :src:`007-3454-005 p. 27`;
        :src:`007-3439-002 Fig. 2-25, p. 69`
-   * - The model fits an ISP1040C-compatible part, PCI revision 5. No
-       identification of the package SGI fitted is known.
+   * - The model fits a part reporting PCI revision 5, the value the
+       reference Octane2's onboard QL1040B parts read. Which ISP1040
+       package revision 5 names is *unknown*.
      - *approximation*
      - :doc:`qlogic-isp`
    * - The external real-time interrupt input reaches the Bridge

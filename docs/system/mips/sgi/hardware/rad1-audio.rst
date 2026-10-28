@@ -102,6 +102,8 @@ write reads back ``0xffffe000``. Both drivers map exactly ``0x2000`` bytes
 of BAR0 and a separate ``0x20`` bytes of configuration space, *software
 expectation*: a smaller BAR leaves IRIX without a register base. The
 physical BAR size is *unknown*. Neither type requests an interrupt pin.
+The reference Octane2's RAD1 reads interrupt pin 0, *established* for
+the Octane chip (:ref:`sgi-rad1-octane2-config`).
 
 .. _sgi-rad1-register-map:
 
@@ -241,7 +243,10 @@ UST counter and control
 Both drivers read ``0x30`` twice about 10 µs apart and print "RAD UST
 not incrementing" if it advanced by fewer than 3, *software expectation*.
 That ``0x30`` counts time is *inferred*; its period, reset value and
-wrap are *unknown*.
+wrap are *unknown*. On the reference Octane2 it reads zero and does not
+advance over about 5 s at the PROM menu, before any driver has run
+(:ref:`sgi-rad1-octane2-ust`), *established* for that chip at that
+point.
 
 On MediaIO the driver never writes a start command, so the counter is
 *inferred* to run from reset. The model counts one tick per 800 ns of
@@ -257,7 +262,9 @@ count and leaves it stopped. Any other value, a lone ``0x0a``, a read of
 tick per 960 ns of virtual time, keeping the fractional remainder and
 wrapping at 32 bits. The 960 ns period follows the fixed divisor the
 Octane driver uses to scale UST; the reset state and the effect of each
-value are *approximations*. Reads never advance either counter.
+value are *approximations*. The stopped zero count the model starts in
+matches what the reference Octane2 reads at its PROM menu. Reads never
+advance either counter.
 
 .. _sgi-rad1-positions:
 
@@ -548,8 +555,10 @@ Interrupts
 Neither type raises an interrupt or requests an interrupt pin. The
 drivers poll registers and the status ring and register no data or
 status interrupt; the Octane driver's imports include no interrupt
-registration, *software expectation*. Whether the silicon can interrupt
-is *unknown*. Bridge, Crossbow and HEART report transport errors as
+registration, *software expectation*. The reference Octane2's RAD1
+requests no interrupt pin in its configuration header
+(:ref:`sgi-rad1-octane2-config`), *established* for that chip. Whether
+the silicon can interrupt by another route is *unknown*. Bridge, Crossbow and HEART report transport errors as
 their own pages describe.
 
 DMA and byte order
@@ -600,9 +609,10 @@ Measurements
 ============
 
 These reads come from the :ref:`sgi-measured-octane2` in the PROM Command
-Monitor, before IRIX loaded. No read is a reset value. The configuration
-word read has its full monitor output below. The BAR0 read was reported
-as a value only, without the monitor output.
+Monitor, after the firmware had initialised the machine and before IRIX
+loaded. No read is a reset value. The single read of configuration
+``0x10`` was reported as a value only; the full header read below repeats
+it with its monitor output.
 
 .. list-table::
    :header-rows: 1
@@ -623,31 +633,88 @@ as a value only, without the monitor output.
      - ``0x00600000``
      - ``0xc0``
      - PROM monitor, after PROM start-up
+   * - ``0x1f023000``-``0x1f02303f``, the whole configuration header
+     - 32-bit
+     - see below
+     - ``0xc0``
+     - PROM monitor, after PROM start-up
+   * - ``0x1f700030``, BAR0 ``0x30``, twice about 5 s apart
+     - 32-bit
+     - ``0``, ``0``
+     - ``0xc0``
+     - PROM monitor, after PROM start-up
 
 .. _sgi-rad1-octane2-config:
 
-Configuration class and revision
---------------------------------
+Configuration header
+--------------------
 
 .. code-block:: text
 
    >> dump -w -x 0x900000001f023008#1
    0x900000001f023008:         c0
+   >> dump -w -x 0xffffffffbf023000#16
+   0xffffffffbf023000:      510a9    4800006         c0          0
+   0xffffffffbf023010:     600000          0          0          0
+   0xffffffffbf023020:          0          0          0          0
+   0xffffffffbf023030:          0          0          0          0
 
-An aligned 32-bit read of Bridge device 3, function 0, configuration
-register ``0x08`` (not BAR0 memory), on IP30 revision B with HEART
-revision F. The word gives PCI class ``0x000000`` and revision ``0xc0``,
-and the same machine's inventory prints "RAD audio revision 12.0". It
-does not show cold reset or write masks.
+.. list-table::
+   :header-rows: 1
 
-Configuration BAR0
-------------------
+   * - Offset
+     - Value
+     - Fields
+   * - ``0x00``
+     - ``0x000510a9``
+     - vendor ``0x10a9``, device ``0x0005``
+   * - ``0x04``
+     - ``0x04800006``
+     - Status ``0x0480``, slow DEVSEL timing and fast back-to-back
+       capable; Command ``0x0006``, memory space and bus master
+   * - ``0x08``
+     - ``0x000000c0``
+     - class ``0x000000``, revision ``0xc0``
+   * - ``0x0c``
+     - ``0``
+     - cache line size, Latency Timer, header type 0, no BIST
+   * - ``0x10``
+     - ``0x00600000``
+     - BAR0, 32-bit memory at ``0x600000``
+   * - ``0x14``-``0x3f``
+     - ``0``
+     - no further BARs, no subsystem identity, no expansion ROM, interrupt
+       pin 0 and line 0
 
-The reference Octane2 returned ``600000`` for ``dump -w -x
-0x900000001f023010#1``, a read of configuration register ``0x10``. Only the
-value was reported, not the monitor output. It is the base the PROM had
-assigned to BAR0, not a sizing response and not a register inside BAR0, so
-it says nothing about the BAR's size.
+Aligned 32-bit reads of Bridge device 3, function 0, on IP30 revision B
+with HEART revision F. The identity, class, revision, Status and
+interrupt pin are *established* for this chip: the function requests no
+interrupt pin, and its Status reports slow DEVSEL timing and fast
+back-to-back capability (bits 10:9 and 7, :src:`pci-local-bus-2.2`). The
+same machine's inventory prints "RAD audio revision 12.0". Command and
+BAR0 are what the firmware wrote. BAR0 is the base the PROM had
+assigned, not a sizing response, so it says nothing about the BAR's
+size. The header shows neither cold reset nor write masks.
+
+.. _sgi-rad1-octane2-ust:
+
+UST counter at the PROM
+-----------------------
+
+.. code-block:: text
+
+   >> dump -w -x 0xffffffffbf700030#1
+   0xffffffffbf700030:          0
+   >> dump -w -x 0xffffffffbf700030#1
+   0xffffffffbf700030:          0
+
+The two reads of BAR0 ``0x30``, through Bridge device window 3 at the
+BAR's PCI address ``0x600000``, were about 5 s apart
+(:ref:`sgi-measured-octane2-counter`). Both returned zero, so at the PROM
+menu the Octane UST counter holds zero and does not advance, *established*
+for this chip at that point. That it stays stopped until a driver
+enables it is *inferred*; that zero is its power-up value, rather than a
+value the PROM left, is not shown.
 
 .. _sgi-rad1-limits:
 
@@ -655,9 +722,12 @@ Model limits
 ============
 
 - Every stored register's readback, every reset value, the BAR size, the
-  MediaIO class code and the PCI status bits are model choices. The
-  MediaIO type reports medium DEVSEL timing and fast back-to-back
-  capability; the Octane type reports neither. No source gives either.
+  MediaIO class code and the MediaIO PCI status bits are model choices.
+  The MediaIO type reports medium DEVSEL timing and fast back-to-back
+  capability; no source gives either. The Octane type reports neither,
+  where the reference Octane2's chip reads Status ``0x0480``, slow DEVSEL
+  timing and fast back-to-back capable
+  (:ref:`sgi-rad1-octane2-config`).
 - Mute, gain, clock-generator rates, PLL lock, external clocks, analog
   input selection and the serial word have no effect.
 - The Octane runs no AES3 or ADAT audio channel, no ADAT-input subcode
