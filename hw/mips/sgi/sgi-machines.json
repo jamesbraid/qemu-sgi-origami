@@ -19276,6 +19276,18 @@
           "name": "node1-flash",
           "read-only": false,
           "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -33412,7 +33424,12 @@
           "module-index": 2,
           "other-identity-parts": [],
           "populated": true,
-          "preset": "io7"
+          "preset": "io7",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "m48t35-compatible",
+            "year-base": 1968
+          }
         }
       ],
       "ip35-firmware": {

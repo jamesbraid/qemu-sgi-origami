@@ -111,6 +111,17 @@ layer:
               source gives where the IO7's Ethernet address comes from. The
               IEEE 1394 link controller is left out, a stated limitation:
               its PHY and bus are not modelled.
+        system_timekeepers:
+          ibrick-xbridge-bridge-f:
+            kind: m48t35-compatible
+            year_base: 1968
+            initial_ip27_fixture: false
+            provenance: derived
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"]
+            notes: >-
+              The IO7's time-of-day part is not identified; this is the
+              Origin 300's M48T35-compatible choice, an approximation. IP35
+              software uses the 1968 year convention.
         # The IP35 flash configuration block's product values: machine type
         # 0, the C-brick rows' class, and the 400 MHz, 8 MB row's word.
         ip35_firmware:

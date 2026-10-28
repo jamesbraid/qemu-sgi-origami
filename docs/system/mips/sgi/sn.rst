@@ -208,9 +208,10 @@ disks join the loop only as the launcher attaches them, and which of
 the brick's two drive bays a disk stands for is unknown. The IO7's
 IEEE 1394 link controller
 is left out, because its model has no PHY or bus and the stock PROM's
-probe waits on them; the IO7 has no Timekeeper, its part being
-unidentified; head E's PCI slots are empty; the I-brick's XBridge
-revision is the model's.
+probe waits on them; the IO7's time-of-day part is unidentified, so its
+IOC3 carries the Origin 300's M48T35-compatible Timekeeper as a
+compatibility choice, with blank storage on every start; head E's PCI
+slots are empty; the I-brick's XBridge revision is the model's.
 
 .. _sgi-sn-family-ibrick:
 
