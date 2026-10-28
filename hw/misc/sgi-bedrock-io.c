@@ -1165,7 +1165,7 @@ static void ii_reset_enter(Object *obj, ResetType type)
 {
     SGIBedrockIOState *s = SGI_BEDROCK_IO(obj);
 
-    s->widget_control = 0xa;
+    s->widget_control = s->host_widget;
     s->local_protect = UINT64_MAX;
     s->outbound_access = UINT64_MAX;
     s->inbound_access = UINT64_MAX;
@@ -1321,6 +1321,7 @@ static const Property ii_properties[] = {
     DEFINE_PROP_UINT8("local-region", SGIBedrockIOState, local_region, 0),
     DEFINE_PROP_UINT8("node-number", SGIBedrockIOState, node_number, 0),
     DEFINE_PROP_UINT8("revision", SGIBedrockIOState, revision, 1),
+    DEFINE_PROP_UINT8("host-widget", SGIBedrockIOState, host_widget, 0xa),
     /*
      * Default to the two widget numbers an XBridge presents to its host port
      * (0xe and 0xf: hw/pci-host/sgi-xbridge.c
@@ -1387,6 +1388,10 @@ static void ii_realize(DeviceState *dev, Error **errp)
     }
     if (s->node_number >= 128) {
         error_setg(errp, "node-number must be below 128");
+        return;
+    }
+    if (s->host_widget >= 16) {
+        error_setg(errp, "host-widget must be below 16");
         return;
     }
     if (s->revision >= 16) {

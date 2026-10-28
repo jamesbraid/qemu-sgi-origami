@@ -2511,6 +2511,15 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     }
     qdev_prop_set_uint32(node->bedrock, "cpu-enable-initial-mask", grant);
     qdev_prop_set_uint8(node->bedrock, "revision", node->bedrock_revision);
+    /*
+     * A published PROM trace of a four-processor Onyx 350 module prints the
+     * Bedrock attached as widget 0xb; Fuel, Origin 300 and Tezro traces print
+     * 0xa. No Origin 350 server trace exists, so only the Onyx 350 moves.
+     */
+    if (node->ip53_assembly_validated &&
+        !g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product, "onyx350")) {
+        qdev_prop_set_uint8(node->bedrock, "host-widget", 0xb);
+    }
     qdev_prop_set_uint8(node->bedrock, "local-region", node->local_region);
     qdev_prop_set_uint8(node->bedrock, "initiator-region",
                         node->initiator_region);

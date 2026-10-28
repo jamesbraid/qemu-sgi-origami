@@ -58,6 +58,8 @@ struct SGIBedrockIOState {
     uint8_t local_region;
     uint8_t node_number;
     uint8_t revision;
+    /* Crossbar port the Bedrock enters at; resets IIO_WCR bits 3:0. */
+    uint8_t host_widget;
     /*
      * The I/O interface of the node that carries a given number, when that is
      * another node this one reaches; see sgi_bedrock_io_set_claimant().
