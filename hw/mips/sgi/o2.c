@@ -1761,8 +1761,9 @@ static void o2_init(MachineState *machine)
         error_report("o2 does not support USB devices");
         exit(1);
     }
-    if (serial_hd(1)) {
-        error_report("o2 supports only one host serial backend");
+    if (serial_hd(s->product ? 2 : 1)) {
+        error_report("o2 supports only %s host serial backend%s",
+                     s->product ? "two" : "one", s->product ? "s" : "");
         exit(1);
     }
     if (machine->firmware) {
@@ -2033,6 +2034,9 @@ static void o2_init(MachineState *machine)
                         OBJECT(machine->ram), &error_fatal);
     if (serial_hd(0)) {
         qdev_prop_set_chr(mace, "chardev-a", serial_hd(0));
+    }
+    if (s->product && serial_hd(1)) {
+        qdev_prop_set_chr(mace, "chardev-b", serial_hd(1));
     }
     if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(mace), &err)) {
         error_report_err(err);

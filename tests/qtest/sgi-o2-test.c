@@ -8254,6 +8254,44 @@ static void test_product_native_pci(void)
     o2_product_cleanup(&t);
 }
 
+static void test_product_serial_backends(void)
+{
+    O2ProductTest t = { 0 };
+    QTestState *qts;
+
+    o2_product_prepare(&t);
+    qts = qtest_initf("-M %s -nodefaults -S "
+        "-chardev null,id=port-a -serial chardev:port-a "
+        "-chardev null,id=port-b -serial chardev:port-b", t.machine);
+    qtest_writeq(qts, MACE_PERIPH, 0);
+    for (unsigned port = 0; port < 2; port++) {
+        g_autofree char *property = g_strdup_printf("chardev-%c", 'a' + port);
+        g_autofree char *backend = g_strdup_printf("port-%c", 'a' + port);
+        g_autoptr(QDict) reply = qtest_qmp(qts,
+            "{'execute':'qom-get','arguments':{'path':'/machine/mace',"
+            "'property':%s}}", property);
+
+        g_assert_cmpstr(qdict_get_str(reply, "return"), ==, backend);
+        qtest_writeb(qts, MACE_UART_A + port * 0x8000 + 0x700, 0x5a + port);
+    }
+    for (unsigned port = 0; port < 2; port++) {
+        g_assert_cmphex(qtest_readb(qts,
+            MACE_UART_A + port * 0x8000 + 0x700), ==, 0x5a + port);
+    }
+    qtest_quit(qts);
+    {
+        const char *third[] = {
+            qtest_qemu_binary(NULL), "-M", t.machine, "-nodefaults",
+            "-display", "none", "-S", "-qmp", "stdio", "-serial", "null",
+            "-serial", "null", "-serial", "null", NULL,
+        };
+
+        assert_qtest_launch_rejected(third,
+                                     "o2 supports only two host serial backends");
+    }
+    o2_product_cleanup(&t);
+}
+
 static void test_product_configuration(void)
 {
     static const char *const diagnostic[] = {
@@ -8604,6 +8642,7 @@ int main(int argc, char **argv)
                    test_banked_approx_child_immutable);
     add_case("o2/banked-approx-migration",
                    test_banked_approx_migration);
+    add_case("o2/product-serial-backends", test_product_serial_backends);
     add_case("o2/product-composition", test_product_composition);
     add_case("o2/product-native-pci", test_product_native_pci);
     add_case("o2/product-configuration", test_product_configuration);
