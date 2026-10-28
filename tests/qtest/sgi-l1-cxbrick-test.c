@@ -282,9 +282,10 @@ static void expect_keystroke(CxRig *rig, unsigned board, uint8_t subchannel,
 }
 
 /*
- * Every board's window answers the identity requests with the brick's one
- * rack and slot, and the type the test supplied. The reply goes back on the
- * window that asked; the others stay empty.
+ * Every board's window answers the identity requests with the brick's slot
+ * plus its board number, since the stock PROM refuses two modules at one
+ * slot, and the type the test supplied. The reply goes back on the window
+ * that asked; the others stay empty.
  */
 static void test_identity(void)
 {
@@ -297,12 +298,12 @@ static void test_identity(void)
         length = rpc(&rig, board, LOCAL_GENERAL, 3, NULL, 0, 0, reply);
         g_assert_cmpuint(length, ==, 16);
         expect_code(&reply[0], length, 0);
-        g_assert_cmphex(ldl_be_p(reply + 7), ==, (1 << 6) | 7);
+        g_assert_cmphex(ldl_be_p(reply + 7), ==, (1 << 6) | (7 + board));
         g_assert_cmphex(ldl_be_p(reply + 12), ==, 67);
         length = rpc(&rig, board, LOCAL_GENERAL, 2, NULL, 0, 0, reply);
         g_assert_cmpuint(length, ==, 11);
         expect_code(reply, length, 0);
-        g_assert_cmphex(ldl_be_p(reply + 7), ==, (1 << 6) | 7);
+        g_assert_cmphex(ldl_be_p(reply + 7), ==, (1 << 6) | (7 + board));
     }
     rig_stop(&rig);
 
@@ -319,6 +320,55 @@ static void test_identity(void)
     expect_command(&rig, 0, "brick",
                    "rack: ---, slot: --, partition: 0, type: ?, "
                    "source: EEPROM\n");
+    rig_stop(&rig);
+}
+
+/*
+ * Each board's serial request is answered with the brick's serial and the
+ * board number, so a PROM that tells nodes apart by that serial finds four
+ * (an approximation; no source says what a Cx-brick returns).
+ */
+static void test_board_serials(void)
+{
+    CxRig rig;
+    uint8_t reply[131];
+
+    rig_start(&rig, NAMED ",brick-serial=CXTEST", 0xf, false, "");
+    for (unsigned board = 0; board < 4; board++) {
+        g_autofree char *expected = g_strdup_printf("CXTEST.%u", board);
+        size_t length = rpc(&rig, board, LOCAL_GENERAL, 4, NULL, 0, 0, reply);
+
+        expect_code(reply, length, 0);
+        g_assert_cmpstr((const char *)reply + 7, ==, expected);
+    }
+    rig_stop(&rig);
+}
+
+/*
+ * A Cx-brick's L1 reaches one I-brick: the attached I/O brick request is
+ * the I-brick's own to answer, in the C-brick's request form (an
+ * approximation; the addressing of a Cx-brick's four I/O ports is unknown).
+ */
+static void test_io_peer(void)
+{
+    CxRig rig;
+    uint8_t reply[131];
+    size_t length;
+    QDict *response;
+
+    rig_start(&rig, TYPED, 0xf, false,
+              "-device sgi-l1,id=ib,brick-type=ibrick,named=on,rack=1,bay=16,"
+              "mac=02:ab:10:00:00:01");
+    response = qtest_qmp(rig.qts,
+        "{'execute':'qom-set','arguments':{'path':'" L1 "',"
+        "'property':'io-peer','value':'/machine/peripheral/ib'}}");
+    g_assert_false(qdict_haskey(response, "error"));
+    qobject_unref(response);
+    length = rpc(&rig, 0, ATTACHED_IO, 3, NULL, 0, 0, reply);
+    g_assert_cmpuint(length, ==, 16);
+    expect_code(reply, length, 0);
+    g_assert_cmphex(ldl_be_p(reply + 7), ==, (1 << 6) | 16);
+    g_assert_cmphex(ldl_be_p(reply + 12), ==, 'I');
     rig_stop(&rig);
 }
 
@@ -769,6 +819,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sgi-l1-cxbrick/identity", test_identity);
+    qtest_add_func("sgi-l1-cxbrick/board-serials", test_board_serials);
+    qtest_add_func("sgi-l1-cxbrick/io-peer", test_io_peer);
     qtest_add_func("sgi-l1-cxbrick/reply-routing", test_reply_routing);
     qtest_add_func("sgi-l1-cxbrick/positions", test_positions);
     qtest_add_func("sgi-l1-cxbrick/request-grades", test_request_grades);

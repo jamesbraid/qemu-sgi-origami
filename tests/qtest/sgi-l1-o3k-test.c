@@ -1386,7 +1386,7 @@ static const char *const link_base[] = {
 
 #define NOT_C_BRICK "*peer of a C-brick must be another C-brick*"
 #define NOT_AN_IBRICK "*io-peer must name an I-brick*"
-#define C_BRICK_ONLY "*io-peer is for the C-brick profile only*"
+#define C_BRICK_ONLY "*io-peer is for the C-brick and Cx-brick profiles only*"
 
 #define LATE(props) "-device sgi-l1,id=x," props
 #define HOST(id) "-device sgi-l1,id=" id ",brick-type=cbrick," \

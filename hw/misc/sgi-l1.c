@@ -194,6 +194,19 @@ static unsigned l1_link(const SGIL1State *s)
     return s->cx_serving ? s->cx_link : s->cx_console_board;
 }
 
+/*
+ * The slot a Cx-brick board link reports. The stock PROM refuses two modules
+ * at one rack and slot, so each board answers with the brick's slot plus its
+ * board number; no source states how a real Cx-brick numbers its boards. The
+ * one lead is a newsgroup post naming processors 1.9.c and 1.17.a of a
+ * 64-processor Origin 3900, slots that fit boards numbered from their
+ * brick's slot, which does not settle the order (an approximation).
+ */
+static unsigned l1_cx_board_slot(const SGIL1State *s)
+{
+    return s->bay + (s->cx_serving ? s->cx_link : 0);
+}
+
 static bool l1_cx_compute_board(const SGIL1State *s, unsigned board)
 {
     return board < SGI_L1_CX_BOARDS && (s->cx_compute & (1u << board));
@@ -1176,7 +1189,8 @@ static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
             l1_router_error_to(recipient, channel);
             return true;
         }
-        stl_be_p(fields + 1, (s->rack << 6) | s->bay);
+        stl_be_p(fields + 1, (s->rack << 6) |
+                 (l1_is_cxbrick(s) ? l1_cx_board_slot(s) : s->bay));
         stl_be_p(fields + 6, l1_brick_type_character(s));
         l1_reply_direct(recipient, channel, 0, 2, fields, 10);
         return true;
@@ -1185,7 +1199,13 @@ static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
             l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
         } else {
             fields[0] = 1;
-            pstrcpy((char *)fields + 1, sizeof(fields) - 1, s->brick_serial);
+            if (l1_is_cxbrick(s)) {
+                snprintf((char *)fields + 1, sizeof(fields) - 1, "%s.%u",
+                         s->brick_serial, s->cx_link);
+            } else {
+                pstrcpy((char *)fields + 1, sizeof(fields) - 1,
+                        s->brick_serial);
+            }
             l1_reply_direct(recipient, channel, 0, 1, fields,
                              2 + strlen((char *)fields + 1));
         }
@@ -2052,6 +2072,15 @@ static bool l1_local(SGIL1State *s, uint32_t address)
     uint32_t key = address >> 12;
 
     /* A controller with no rack or slot answers only the broadcast key. */
+    if (l1_named(s) && l1_is_cxbrick(s)) {
+        /* A Cx-brick answers for each fitted board's slot. */
+        for (unsigned board = 0; board < SGI_L1_CX_BOARDS; board++) {
+            if (l1_cx_fitted_board(s, board) &&
+                key == ((s->rack << 6) | (s->bay + board))) {
+                return true;
+            }
+        }
+    }
     return (l1_named(s) && key == ((s->rack << 6) | s->bay)) || key == 0xffff;
 }
 
@@ -2402,8 +2431,12 @@ static bool l1_forward_to_peer(SGIL1State *s, const uint8_t *p,
          */
         peer = type == 4 || l1_is_nbrick(s) ? NULL : l1_host_of(s, NULL);
     } else if (type == 4) {
-        /* The attached I/O brick of a C-brick. */
-        peer = l1_is_cbrick(s) ? s->io_peer : NULL;
+        /*
+         * The attached I/O brick of a C-brick, or of a Cx-brick, whose
+         * addressing of its four I/O ports is unknown: the one I-brick
+         * answers the C-brick's request form (an approximation).
+         */
+        peer = l1_is_cbrick(s) || l1_is_cxbrick(s) ? s->io_peer : NULL;
     }
     trace_sgi_l1_forward(s->profile->name, address, length, peer != NULL);
     if (!peer || length > sizeof(copy)) {
@@ -3229,7 +3262,8 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
     }
     case 2:
         fields[0] = 0;
-        stl_be_p(fields + 1, (s->rack << 6) | s->bay);
+        stl_be_p(fields + 1, (s->rack << 6) |
+                 (l1_is_cxbrick(s) ? l1_cx_board_slot(s) : s->bay));
         field_count = 1;
         field_length = 5;
         break;
@@ -4150,11 +4184,12 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
 static void l1_o3k_board(SGIL1State *s, unsigned component,
                          const char *name, const char *part,
                          const char *revision, const uint8_t *mac,
-                         char letter, unsigned index)
+                         char letter, unsigned index,
+                         const SGIL1CPUContext *cpu_context)
 {
     l1_build_chassis_area(&s->records[component]);
     l1_build_board_area(&s->records[16 + component], name, part, revision,
-                        mac, letter, index, NULL);
+                        mac, letter, index, cpu_context);
 }
 
 /*
@@ -4203,7 +4238,7 @@ static bool l1_build_o3k_identity(SGIL1State *s, Error **errp)
          * on the model); the board behind it and its contents are unknown.
          */
         l1_o3k_board(s, 4, "LOGIC", "NOTOBSERVED0", "00", NULL, 'V',
-                     s->identity_index);
+                     s->identity_index, NULL);
         return true;
     }
     if (l1_is_ibrick(s)) {
@@ -4216,9 +4251,9 @@ static bool l1_build_o3k_identity(SGIL1State *s, Error **errp)
         if (l1_is_nbrick(s)) {
             /* A power board and a logic board; no base I/O, so no address. */
             l1_o3k_board(s, 0, "POWER", "NOTOBSERVED0", "00", NULL, 'S',
-                         s->identity_index);
+                         s->identity_index, NULL);
             l1_o3k_board(s, 1, "LOGIC", "NOTOBSERVED0", "00", NULL, 'N',
-                         s->identity_index);
+                         s->identity_index, NULL);
             return true;
         }
         if (net_parse_macaddr(mac, s->mac) < 0 ||
@@ -4227,9 +4262,9 @@ static bool l1_build_o3k_identity(SGIL1State *s, Error **errp)
             return false;
         }
         l1_o3k_board(s, 0, "POWER", "NOTOBSERVED0", "00", NULL, 'S',
-                     s->identity_index);
+                     s->identity_index, NULL);
         l1_o3k_board(s, 1, "LOGIC", "NOTOBSERVED0", "00", mac, 'I',
-                     s->identity_index);
+                     s->identity_index, NULL);
         memcpy(s->board_mac, mac, sizeof(s->board_mac));
         s->board_mac_valid = true;
         return true;
@@ -4262,6 +4297,12 @@ static bool l1_build_o3k_identity(SGIL1State *s, Error **errp)
          * board and power entry module records are not modeled: their
          * layout is unknown.
          */
+        SGIL1CPUContext cpu_context = {
+            .mode_word = s->cpu_mode_word,
+            .cpu_mhz = s->cpu_clock_hz / 1000000,
+            .hub_mhz = s->hub_clock_hz / 1000000,
+        };
+
         for (unsigned board = 0; board < SGI_L1_CX_BOARDS; board++) {
             if (!l1_cx_fitted_board(s, board)) {
                 continue;
@@ -4272,18 +4313,19 @@ static bool l1_build_o3k_identity(SGIL1State *s, Error **errp)
                                               "NOTOBSERVED0",
                          s->node_board_revision ? s->node_board_revision :
                                                   "00",
-                         NULL, 'N', s->identity_index * 4 + board);
+                         NULL, 'N', s->identity_index * 4 + board,
+                         s->cpu_context_present ? &cpu_context : NULL);
         }
         return true;
     }
     l1_o3k_board(s, 0, s->node_board_name ? s->node_board_name : "NODE",
                  s->node_board_part ? s->node_board_part : "NOTOBSERVED0",
                  s->node_board_revision ? s->node_board_revision : "00",
-                 NULL, 'N', s->identity_index);
+                 NULL, 'N', s->identity_index, NULL);
     for (unsigned pimm = 0; pimm < 2; pimm++) {
         if (s->pimm_mask & (1u << pimm)) {
             l1_o3k_board(s, 1 + pimm, "PIMM", "NOTOBSERVED0", "00", NULL,
-                         'D', s->identity_index * 2 + pimm);
+                         'D', s->identity_index * 2 + pimm, NULL);
         }
     }
     for (unsigned dimm = 0; dimm < 8; dimm++) {
@@ -4379,10 +4421,11 @@ static bool l1_o3k_check(SGIL1State *s, Error **errp)
         error_setg(errp, "L1 Origin 3000 profiles take no record files");
         return false;
     }
-    if (s->cpu_context_present || s->cpu_mode_word || s->cpu_clock_hz ||
-        s->hub_clock_hz) {
-        error_setg(errp, "L1 CPU context applies to the Origin 300 profiles "
-                   "only");
+    if (!l1_is_cxbrick(s) &&
+        (s->cpu_context_present || s->cpu_mode_word || s->cpu_clock_hz ||
+         s->hub_clock_hz)) {
+        error_setg(errp, "L1 CPU context applies to the Origin 300 and "
+                   "cxbrick profiles only");
         return false;
     }
     if (s->partition > 0xffff) {
@@ -5216,8 +5259,8 @@ static const char *l1_peer_fault(const SGIL1State *a, const SGIL1State *b)
 static const char *l1_io_peer_fault(const SGIL1State *c,
                                     const SGIL1State *ibrick)
 {
-    if (!l1_is_cbrick(c)) {
-        return "L1 io-peer is for the C-brick profile only";
+    if (!l1_is_cbrick(c) && !l1_is_cxbrick(c)) {
+        return "L1 io-peer is for the C-brick and Cx-brick profiles only";
     }
     if (!l1_is_iobrick(ibrick)) {
         return "L1 io-peer must name an I-brick, N-brick or V-brick";

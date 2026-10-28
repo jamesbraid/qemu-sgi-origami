@@ -566,11 +566,20 @@ What the model chooses, and the limit of each choice:
   processors are wired to them.
 - Board ``n``'s window reads board ``n``'s synthetic node board record at
   component 0; every other component answers minus 104. The DIMM, router
-  board and power entry module records are not modelled.
+  board and power entry module records are not modelled. With
+  ``cpu-context-present`` each board's record carries the CPU context the
+  Origin 350's carries, which the stock PROM compares with its flash.
+- Board ``n``'s window answers the identity requests with the brick's slot
+  plus ``n``, and the serial request with the brick's serial and ``.n``,
+  because the stock PROM refuses two modules at one slot and tells hubs apart
+  by the serial. No source says how a Cx-brick numbers its boards or what it
+  returns; this is an approximation.
 - The brick has no default type character: ``0x0003`` answers minus 104
   until ``brick-type-code`` supplies one, and ``brick`` prints the type as
   ``?``. The firmware revision is unknown, so ``revision-*`` is refused.
-- Peer links are refused. The I/O bricks on the XIO ports, the neighbouring
-  Cx-brick, the L2 and the ``iia`` to ``iid``, ``nia`` and ``nib`` commands
-  are not modelled; an attached-brick destination answers the router's error
-  reply and the commands are reported as unknown.
+- A neighbouring Cx-brick link is refused. The L2, the neighbouring Cx-brick
+  and the ``iia`` to ``iid``, ``nia`` and ``nib`` commands are not modelled.
+  One I-brick may be named as ``io-peer``: the attached I/O brick request
+  then goes to it in the C-brick's request form, because the addressing of a
+  Cx-brick's four I/O ports is unknown. Without a peer an attached-brick
+  destination answers the router's error reply.
