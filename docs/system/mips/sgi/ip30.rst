@@ -300,12 +300,12 @@ layers):
   with its inventory's HEART revision F (*established*). Crossbow revision
   5, from a PROM-monitor read of its identification word ``0x50000001``
   (:ref:`measured <sgi-xbow-octane2-id>`) beside an inventory revision of
-  1.4 (*established*). Bridge revision 3 is an *approximation*: the
-  inventory does not report the Octane2 Bridge revision, and the value is
-  carried over from the earlier Octane.
+  1.4 (*established*). Bridge revision 4, from a PROM-monitor read of its
+  identification word ``0x4c00206d``
+  (:ref:`measured <sgi-bridge-measurements>`), *established*.
 
-The machines do not yet pass the catalogue's Bridge revision to the
-Bridge, so on both the chip reports its default, revision 1 (see
+The machines do not pass a Bridge revision to the Bridge, so on both
+the chip reports its default, revision 1 (see
 :doc:`hardware/bridge`). This is a model inconsistency, listed under
 :ref:`sgi-ip30-unknowns`.
 
@@ -618,8 +618,8 @@ Open questions
   smaller bank, the reset values of the bank descriptors, and the
   bank-number to descriptor-index mapping (:ref:`sgi-ip30-memory`,
   :doc:`hardware/heart`).
-- The Octane2 Bridge silicon revision, and the model's Bridge reporting
-  revision 1 where the catalogue records 3.
+- The model's Bridge reporting revision 1 where the Octane reads 3 and
+  the reference Octane2 reads 4.
 - The expansion Bridge's widget number.
 - Interrupt wiring from the onboard PCI functions to Bridge inputs; no
   public source establishes it, and this page does not state it.

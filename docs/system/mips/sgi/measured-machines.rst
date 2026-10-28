@@ -40,8 +40,8 @@ The register reads are on these pages:
 - the processor and FPU identity words the kernel recorded in its
   hardware inventory, reported from a user-space
   inventory query without a transcript: :ref:`sgi-r10000-measurements`
-- the Bridge's alternate flash aperture:
-  :ref:`alternate aperture <sgi-ip30-octane2-alt-flash>`
+- the Bridge's identification word and alternate flash aperture:
+  :ref:`sgi-bridge-measurements`
 
 .. _sgi-measured-octane2-hinv:
 
