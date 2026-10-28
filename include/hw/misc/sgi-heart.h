@@ -12,6 +12,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIHeartState, SGI_HEART)
 
 #define HEART_BANKS 4
 #define HEART_MAX_UNITS 64
+#define HEART_SDRAM_BASE_SIZE 0x4000
+/* SysBus MMIO indices, in the order heart_init() registers them. */
+#define HEART_MMIO_SDRAM_BASE 3
 
 struct SGIHeartState {
     SysBusDevice parent_obj;
@@ -26,6 +29,10 @@ struct SGIHeartState {
     MemoryRegion views[HEART_BANKS][HEART_MAX_UNITS];
     MemoryRegion packet_views[HEART_BANKS][HEART_MAX_UNITS];
     MemoryRegion packet_guards[HEART_BANKS * 2];
+    /* The first 16 KiB of SDRAM, whichever bank holds 0x20000000. */
+    MemoryRegion sdram_base;
+    MemoryRegion sdram_base_views[HEART_BANKS];
+    bool sdram_base_mapped[HEART_BANKS];
     bool packet_guard_mapped[HEART_BANKS * 2];
     uint64_t capacity[HEART_BANKS];
     uint8_t widget_revision;

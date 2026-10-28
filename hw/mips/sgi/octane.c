@@ -68,13 +68,11 @@
 #define OCTANE_BANK_UNIT (32 * MiB)
 #define OCTANE_PHYSICAL_SPAN (1ULL << 40)
 #define OCTANE_ATTR0_BASE (1ULL << 40)
-#define OCTANE_LOW_RAM_SIZE 0x4000
 #define OCTANE_HIGH_GUARD_BASE 0x20000000ULL
 #define OCTANE_HIGH_GUARD_SIZE 0x4000
 
 typedef struct OctaneMachineState {
     MachineState parent;
-    MemoryRegion low_ram;
     MemoryRegion high_guard;
     uint64_t bank_size[HEART_BANKS];
     /* Which bank<N>-size properties the launch set, one bit per bank. */
@@ -358,8 +356,6 @@ static void octane_reset(MachineState *machine, ResetType type)
     CPUState *cpu;
 
     qemu_devices_reset(type);
-    memset(memory_region_get_ram_ptr(&s->low_ram), 0, OCTANE_LOW_RAM_SIZE);
-    memory_region_set_dirty(&s->low_ram, 0, OCTANE_LOW_RAM_SIZE);
     /* Synthetic machine setup; the PROM may replace these descriptors. */
     for (unsigned bank = 0; bank < HEART_BANKS; bank++) {
         uint64_t capacity = s->bank_size[bank];
@@ -682,12 +678,6 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     memory_region_init(physical, OBJECT(machine), "octane.physical",
                        OCTANE_PHYSICAL_SPAN);
     memory_region_add_subregion(system, 0, physical);
-    /* Functional storage approximation for the full 16 KiB low window. */
-    if (!memory_region_init_ram(&s->low_ram, NULL, "octane.low-ram",
-                                OCTANE_LOW_RAM_SIZE, errp)) {
-        return false;
-    }
-    memory_region_add_subregion(physical, 0, &s->low_ram);
     memory_region_init_alias(attr0, OBJECT(machine), "octane.attr0",
                              physical, 0, OCTANE_PHYSICAL_SPAN);
     memory_region_add_subregion(system, OCTANE_ATTR0_BASE, attr0);
@@ -719,6 +709,17 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     /* Override every bank view while leaving the rest of SDRAM mapped. */
     memory_region_add_subregion_overlap(physical, OCTANE_HIGH_GUARD_BASE,
                                         &s->high_guard, HEART_BANKS + 1);
+    /*
+     * Physical 0 to 16 KiB is the first 16 KiB of SDRAM, the memory HEART
+     * places at 0x20000000, and the processor reaches those bytes only
+     * here: the guard above faults the high address. HEART builds the window
+     * from the bank views, so it follows the bank descriptors and is RAM
+     * for TCG. Reset leaves it alone and it adds no migration state
+     * (docs/datasheets/ip30-machine.md).
+     */
+    memory_region_add_subregion(
+        physical, 0,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(heart), HEART_MMIO_SDRAM_BASE));
     memory_region_add_subregion(
         physical, OCTANE_HEART_REGS,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(heart), 0));
