@@ -9,7 +9,8 @@ TI TSB12LV22: IEEE 1394 OHCI link controller
 Used in the Origin 3000 and Onyx 3000 I-brick: published IRIX
 inventories list it at PCI slot 6 of the base I/O bus
 (:ref:`sgi-bricks-ibrick`), *observed*. QEMU's ``io7`` base I/O preset
-creates one there, but no machine fits that preset (:doc:`baseio`).
+creates one there, on the Origin 3000 machines whose catalogue entries
+carry an I-brick (:doc:`baseio`).
 
 The TSB12LV22 is Texas Instruments' PCI-to-1394 link controller, an IEEE
 1394 OpenHCI 1.00 part with the PCI identity ``104c:8009``. QEMU models

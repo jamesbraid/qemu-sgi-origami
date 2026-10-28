@@ -9,7 +9,8 @@ DP83840A and DP83843: Ethernet transceivers
 Used in :ref:`sgi-ip27` (the DP83840A, on the Origin 200 and Origin 2000
 base I/O boards) and :ref:`sgi-ip35` (the DP83843, on the Origin 300 IO-8
 board and, in the model, on Fuel). QEMU's Origin 3000 I-brick preset,
-which no machine fits, also takes the DP83843 (:ref:`sgi-bricks-ibrick`).
+built on the Origin 3000 machines that carry an I-brick, also takes the
+DP83843 (:ref:`sgi-bricks-ibrick`).
 :doc:`baseio` lists the boards.
 
 The National Semiconductor DP83840A and the DP83843 PHYTER are 10/100 Mb/s
