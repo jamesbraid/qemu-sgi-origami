@@ -30,11 +30,11 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_XMAP_ENTRIES 32
 
 /*
- * Uploaded program state is retained. Its protocol is unsupported.
- * Established from the GE11 microcode download routine (IRIX 6.5.30
- * mgras_init.o): the kernel loads GE 0 through slot B's ports and GE 1 through
- * slot A's, setting 0x011000 bits 5:4 to 2 and 3 for them. A one-GE board uses
- * slot B alone.
+ * Uploaded program state is retained. Its protocol is unsupported. Established
+ * from the GE11 microcode download routine (IRIX 6.5.30 kernel graphics
+ * driver): the kernel loads GE 0 through slot B's ports and GE 1 through slot
+ * A's, setting 0x011000 bits 5:4 to 2 and 3 for them. A one-GE board uses slot
+ * B alone.
  */
 #define SGI_MGRAS_GE_WORDS (59392 * 3)
 #define SGI_MGRAS_GE_SLOT_A 0
@@ -128,17 +128,15 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 
 /*
  * The DAC's pixel mask. The IRIX 6.5.30 X server's screen saver (its
- * screen-blank routine in impactsr.so) blanks the display by writing 0
- * here and unblanks it by writing 0xff, and SGI's IDE DAC reset programs
- * 0xff.
- * Inferred, as for a common RAMDAC pixel read mask: the scanout ANDs each
- * 8-bit colour component with the mask before the gamma table, so 0 shows
- * gamma entry 0, black under every table IRIX loads. The model resets it
+ * screen-blank routine in the IMPACT X driver module) blanks the display by
+ * writing 0 here and unblanks it by writing 0xff, and SGI's IDE DAC reset
+ * programs 0xff. Inferred, as for a common RAMDAC pixel read mask: the scanout
+ * ANDs each 8-bit colour component with the mask before the gamma table, so 0
+ * shows gamma entry 0, black under every table IRIX loads. The model resets it
  * to 0xff so a display the guest has not programmed shows its pixels. The
- * cursor's ink, which the model already passes through the gamma table,
- * is masked too; its fixed white outline is not. The part is unidentified;
- * its power-up value, what other masks do, and what reaches the cursor
- * are unknown.
+ * cursor's ink, which the model already passes through the gamma table, is
+ * masked too; its fixed white outline is not. The part is unidentified; its
+ * power-up value, what other masks do, and what reaches the cursor are unknown.
  */
 #define SGI_MGRAS_DAC_REG_PIXEL_MASK 0x0400
 

@@ -33,15 +33,15 @@
 
 
 /*
- * An XMAP main mode whose low field is 3 shows a 12-bit colour index;
- * every other indexed mode shows the pixel's low eight bits. The IRIX
- * 6.5.30 X server offers 12-plane PseudoColor visuals with 4096 colour-map
- * entries (xdpyinfo, as on a real Indigo2 IMPACT's server). It gives such a
- * window display ID 8 and that ID's mode 0x403, places the ID's colour map
- * at CMAP entries 0 to 4095 (the colour-map group table in impactsr.so),
- * and loads the window's map there one selector an entry (a captured run).
- * Its 8-bit IDs 0 to 7 have modes 0x601 to 0x6e1, low field 1. That the
- * low field names the depth is inferred; its width is unknown.
+ * An XMAP main mode whose low field is 3 shows a 12-bit colour index; every
+ * other indexed mode shows the pixel's low eight bits. The IRIX 6.5.30 X server
+ * offers 12-plane PseudoColor visuals with 4096 colour-map entries (xdpyinfo,
+ * as on a real Indigo2 IMPACT's server). It gives such a window display ID 8
+ * and that ID's mode 0x403, places the ID's colour map at CMAP entries 0 to
+ * 4095 (the colour-map group table in the IMPACT X driver module), and loads
+ * the window's map there one selector an entry (a captured run). Its 8-bit IDs
+ * 0 to 7 have modes 0x601 to 0x6e1, low field 1. That the low field names the
+ * depth is inferred; its width is unknown.
  */
 #define MGRAS_XMAP_MODE_FORMAT 0x1f
 #define MGRAS_XMAP_MODE_CI12   0x03
@@ -73,7 +73,7 @@ static uint32_t mgras_cmap_rgb(SGIMgrasState *s, uint8_t visual,
 
 /*
  * The IRIX desktop session's DDX loads a post-CMAP gamma-correction
- * table into the DAC after login. The shipped impactsr.so's dynamic
+ * table into the DAC after login. The shipped IMPACT X driver module's dynamic
  * symbol table names a gamma-ramp load routine and a DAC
  * programming routine as the responsible code; see the header comment above
  * SGI_MGRAS_DAC_LUT_INDEX in sgi-mgras.h for the captured load protocol. Apply

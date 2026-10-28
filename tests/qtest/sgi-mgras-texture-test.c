@@ -27,7 +27,7 @@ static QTestState *tex_sb_file_migrate_and_restart(QTestState *from,
 
 
 /*
- * The class-0x3800 forms and glTexCoord2f, as the IRIX 6.5.30 IP27GR532
+ * The class-0x3800 forms and glTexCoord2f, as the IRIX 6.5.30 GL
  * client sends them: glVertex3i (0x3800000c) draws where glVertex3f of
  * the same values would, glRasterPos3i (0x3800380c) sets the raster
  * position with its z, window depth 0 for z 1 under glOrtho's -1 to 1,
@@ -175,7 +175,7 @@ static void test_gl_native_texcoord_contexts(void)
 
 /*
  * One-engine texture on SI+T (hw/misc/sgi-mgras-texture.c), in the words
- * the IRIX 6.5.30 IP27GR532 client sent when ivview loaded and drew one
+ * the IRIX 6.5.30 GL client sent when ivview loaded and drew one
  * textured quad. Raster register records
  * are 0x7c08, the record and word counts, and an inline block of
  * (register, value, shadow) triples padded to an even count with a stale
@@ -4622,7 +4622,7 @@ static void test_mxi_texbase_both_rows(gconstpointer data)
 
 /*
  * TRAM's save and restore, in the words the IRIX 6.5.30 IP27 kernel and
- * IP27GR532 client sent in a captured run (sgi-mgras-texture.c, "TRAM"):
+ * GL client sent in a captured run (sgi-mgras-texture.c, "TRAM"):
  * the kernel saves a block as 64 rows of 64 words, 16 KiB through one DMA
  * row, kicked 0xbd from DMA-map slot 2 after 0xe50c (rows, format, 0x400d)
  * and the 0xf200 sync request, and restores it after 0xe300 and a 0xd80c
@@ -5153,7 +5153,7 @@ static void tram_tl_mipmap(QTestState *t, uint32_t block)
 
 /*
  * The client's own save and restore of a texture its manager evicts, as
- * the IP27GR532 client sent them for an RGB texture in a captured run:
+ * the GL client sent them for an RGB texture in a captured run:
  * the read through the kernel (0xe50c, format 0x400070) takes three bytes
  * a location, 12 KiB for a block's 64 rows, and holds the level's RGB
  * bytes in order; a texture loaded over it replaces it; and the restore,

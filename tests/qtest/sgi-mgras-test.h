@@ -773,7 +773,7 @@ static inline void mgras_load_vga_timing(QTestState *q)
 
 /*
  * The OpenGL client's own words on the main port, as the IRIX 6.5.30
- * IP27GR532 libGLcore.so frames them: glViewport 0x3310,
+ * the GL client library frames them: glViewport 0x3310,
  * glClearColor 0xba10, glClear's colour token 0x1500,
  * glShadeModel 0x4704, glColor3f 0x2000020c, glBegin and
  * glEnd for GL_TRIANGLES 0x1a00 and 0x2400, glVertex2f 0x40000008 and
@@ -1372,7 +1372,7 @@ static inline void gl_texcoord_context_check(QTestState *s)
 }
 
 /*
- * glBitmap, as the IRIX 6.5.30 IP27GR532 client's bitmap routine forms
+ * glBitmap, as the IRIX 6.5.30 GL client's bitmap routine forms
  * it for a small image: 0x9420, a flags word, the width and height, xorig,
  * yorig, xmove and ymove as floats and the image's length in words; then
  * an inline data block of the image's bytes in memory order, its offset
@@ -1416,9 +1416,9 @@ static inline void gl_bitmap_image(QTestState *qts, const uint32_t *words,
 }
 
 /*
- * The colour-index client's words (the IRIX 6.5.30 IP27GR532
- * libGLcore.so): the colour-index initializer sends 0x0a04 with the visual's
- * index bits, 8 in gr_osview's context setup, and the RGB initializer 0x0900.
+ * The colour-index client's words (the IRIX 6.5.30 GL client
+ * library): the colour-index initializer sends 0x0a04 with the visual's index
+ * bits, 8 in gr_osview's context setup, and the RGB initializer 0x0900.
  * glIndexs is 0x19000202 with the short in bits 31:16, glIndexi 0x18000204,
  * glIndexf 0x00000204, glIndexMask 0x3d04 and glClearIndex 0xbd04 with the
  * index as a float.
@@ -1471,7 +1471,7 @@ static inline void gl_colour_index_back_buffer(QTestState *qts)
 }
 
 /*
- * Pixel image transfers as the IRIX 6.5.30 IP27GR532 client sends them
+ * Pixel image transfers as the IRIX 6.5.30 GL client sends them
  * (hw/misc/sgi-mgras-gl.c, mgras_gl_pixels_start()): GE parameter loads,
  * header 0x8000 or 0xcd00 with the byte length 0x20 + 4 * (a + b) and a
  * seven-word head before two lists; the program at 0x13b, the unpack
@@ -1968,7 +1968,7 @@ static inline void mgras_public_rect(QTestState *s, unsigned x, unsigned y,
 
 /*
  * The context image's clip words, as the IRIX 6.5.30 kernel's
- * clip validation routine in mgras.o writes them: word
+ * clip validation routine writes them: word
  * 3 is (mode << 4) | enables, and enable bit i selects rectangle i, whose
  * columns and rows are words 11 and 12, 9 and 10, 7 and 8 or 5 and 6,
  * each first << 16 | last counted from the bottom-left of the screen. A
