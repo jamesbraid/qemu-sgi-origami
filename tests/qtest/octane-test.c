@@ -4465,6 +4465,20 @@ static void test_low_window_skips_ecc_generation(gconstpointer data)
     qtest_quit(qts);
 }
 
+/* An ECC mode adds overlays at 0x20000000 that must not unhide the guard. */
+static void test_high_guard_survives_ecc_generation(void)
+{
+    QTestState *qts = octane_start();
+    uint8_t byte;
+
+    qtest_writeq(qts, HEART, (1ULL << 15) | 1 | (1ULL << 19) | (1ULL << 20));
+    g_assert_cmpuint(memtx_writeb(qts, HIGH_RAM, 0xff), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_readb(qts, HIGH_GUARD, &byte), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_readb(qts, HIGH_GUARD + 0x3fff, &byte), !=,
+                     MEMTX_OK);
+    qtest_quit(qts);
+}
+
 static uint16_t octane_isp_init_queue(QTestState *qts, uint16_t command,
                                       uint32_t pci_address)
 {
@@ -5381,6 +5395,8 @@ int main(int argc, char **argv)
         qtest_add_data_func(path, GINT_TO_POINTER(octane2),
                             test_low_window_skips_ecc_generation);
     }
+    qtest_add_func("/octane/high-guard-survives-ecc-generation",
+                   test_high_guard_survives_ecc_generation);
     qtest_add_func("/octane2/scsi-target1-read",
                    test_octane2_scsi_target1_read);
     qtest_add_func("/octane/uncached-attribute-zero",

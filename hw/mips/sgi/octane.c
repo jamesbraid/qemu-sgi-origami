@@ -716,9 +716,12 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     memory_region_init_io(&s->high_guard, OBJECT(machine),
                           &octane_high_guard_ops, s, "octane.high-guard",
                           OCTANE_HIGH_GUARD_SIZE);
-    /* Override every bank view while leaving the rest of SDRAM mapped. */
+    /*
+     * Override every bank view and every ECC overlay (HEART_BANKS + 1)
+     * while leaving the rest of SDRAM mapped.
+     */
     memory_region_add_subregion_overlap(physical, OCTANE_HIGH_GUARD_BASE,
-                                        &s->high_guard, HEART_BANKS + 1);
+                                        &s->high_guard, HEART_BANKS + 3);
     /*
      * Physical 0 to 16 KiB is the first 16 KiB of SDRAM, the memory HEART
      * places at 0x20000000, and the processor reaches those bytes only
