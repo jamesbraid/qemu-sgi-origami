@@ -136,3 +136,4 @@ board /mips64/o2/product-composition
 dma /mips64/o2/product-native-pci
 board /mips64/o2/product-configuration
 board /mips64/o2/product-serial-backends
+board /mips64/o2/product-external-ttl

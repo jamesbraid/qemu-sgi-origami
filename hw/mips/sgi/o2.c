@@ -1420,6 +1420,7 @@ static void o2_apply_product_defaults(O2MachineState *s)
     s->prom_sb64_reset = true;
     s->prom_id_word = true;
     s->gbe11_registers = true;
+    s->gbe_external_ttl_hz = 20000000;
     s->rom_at29c040a = true;
     s->identity_diagnostic = true;
     s->mace_misc_word_pio = true;

@@ -8254,6 +8254,37 @@ static void test_product_native_pci(void)
     o2_product_cleanup(&t);
 }
 
+static void test_product_external_ttl(void)
+{
+    O2ProductTest t = { 0 };
+    QTestState *qts;
+
+    o2_product_prepare(&t);
+    qts = qtest_initf("-M %s -nodefaults -S", t.machine);
+    for (unsigned pass = 0; pass < 2; pass++) {
+        if (pass) {
+            qtest_system_reset(qts);
+        }
+        g_assert_cmpuint(o2_clock_property(qts, "/machine",
+                         "gbe-external-ttl-hz"), ==, 20000000);
+        g_assert_cmpuint(o2_clock_property(qts, "/machine/gbe",
+                         "external-ttl-hz"), ==, 20000000);
+        qtest_writel(qts, GBE + GBE_VT_1, 97 | 67 << 12);
+        qtest_writel(qts, GBE + 4, 3 | 3u << 14 | 1u << 20);
+        qtest_clock_step(qts, 100);
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x10000), ==, 1u << 31);
+        qtest_writel(qts, GBE + 0x10000, 0);
+        qtest_clock_step(qts, 49);
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x10000), ==, 0);
+        qtest_clock_step(qts, 1);
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x10000), ==, 1);
+        qtest_clock_step(qts, 1000);
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x10000), ==, 21);
+    }
+    qtest_quit(qts);
+    o2_product_cleanup(&t);
+}
+
 static void test_product_serial_backends(void)
 {
     O2ProductTest t = { 0 };
@@ -8642,6 +8673,7 @@ int main(int argc, char **argv)
                    test_banked_approx_child_immutable);
     add_case("o2/banked-approx-migration",
                    test_banked_approx_migration);
+    add_case("o2/product-external-ttl", test_product_external_ttl);
     add_case("o2/product-serial-backends", test_product_serial_backends);
     add_case("o2/product-composition", test_product_composition);
     add_case("o2/product-native-pci", test_product_native_pci);
