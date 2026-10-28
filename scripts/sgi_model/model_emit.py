@@ -1106,7 +1106,8 @@ def _machine_options(machine_name: str, topology: dict, nodes: int,
     count, the same three for every machine, and the processor module
     where it is not the topology's default."""
     if topology["generation"] == "IP32":
-        return machine_name
+        return (machine_name if topology["name"] == "o2"
+                else f"{machine_name},variant={topology['name']}")
     options = f"{machine_name},topology={topology['name']},nodes={nodes}"
     return options if processor is None else f"{options},processor={processor}"
 

@@ -8084,11 +8084,16 @@ static void test_storage_diagnostic_rejections(void)
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
+#define O2PLUS_CPU "R12000,r12000-prid=0xe35,r12000-fpu-id=0x900," \
+    "r12000-reset-mode=0x11a8603,r12000-scache-bytes=2097152," \
+    "r12000-scache-block-words=16"
+
 typedef struct O2ProductTest {
     char *dir;
     char *rom;
     char *identity;
     char *machine;
+    bool plus;
 } O2ProductTest;
 
 static void o2_product_prepare(O2ProductTest *t)
@@ -8118,6 +8123,15 @@ static void o2_product_prepare(O2ProductTest *t)
         t->rom, t->identity);
 }
 
+static void o2_product_select_plus(O2ProductTest *t)
+{
+    char *machine = g_strdup_printf("%s,variant=o2plus", t->machine);
+
+    g_free(t->machine);
+    t->machine = machine;
+    t->plus = true;
+}
+
 static void o2_product_cleanup(O2ProductTest *t)
 {
     g_assert_cmpint(g_unlink(t->rom), ==, 0);
@@ -8131,11 +8145,12 @@ static void o2_product_cleanup(O2ProductTest *t)
 
 static QTestState *o2_product_start(O2ProductTest *t)
 {
-    return qtest_initf(MEMTX_TEST_DEVICE "-M %s -nodefaults "
-                       "-accel tcg,thread=single -S", t->machine);
+    return qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu %s -nodefaults "
+                       "-accel tcg,thread=single -S", t->machine,
+                       t->plus ? O2PLUS_CPU : "R10000");
 }
 
-static void test_product_composition(void)
+static void check_product_composition(bool plus)
 {
     static const char *const children[] = {
         "/machine/gbe", "/machine/mace/rtc", "/machine/mace/ps2",
@@ -8145,6 +8160,9 @@ static void test_product_composition(void)
     QTestState *qts;
 
     o2_product_prepare(&t);
+    if (plus) {
+        o2_product_select_plus(&t);
+    }
     qts = o2_product_start(&t);
     for (unsigned pass = 0; pass < 2; pass++) {
         g_autoptr(QDict) memory = NULL;
@@ -8152,9 +8170,11 @@ static void test_product_composition(void)
         if (pass) {
             qtest_system_reset(qts);
         }
-        g_assert_cmphex(o2_config0(qts), ==, 0x6c198603);
+        g_assert_cmphex(o2_config0(qts), ==, plus ? 0x6d1a8603 : 0x6c198603);
         g_assert_cmpuint(o2_clock_property(qts, "/machine", "cpu-clock-hz"),
-                         ==, 195000000);
+                         ==, plus ? 400000000 : 195000000);
+        g_assert_cmpuint(o2_clock_property(qts, "/machine/gbe",
+                         "external-ttl-hz"), ==, 20000000);
         memory = qtest_qmp(qts,
             "{'execute':'query-memory-size-summary'}");
 
@@ -8192,7 +8212,17 @@ static void test_product_composition(void)
     o2_product_cleanup(&t);
 }
 
-static void test_product_native_pci(void)
+static void test_product_composition(void)
+{
+    check_product_composition(false);
+}
+
+static void test_o2plus_composition(void)
+{
+    check_product_composition(true);
+}
+
+static void check_product_native_pci(bool plus)
 {
     const uint32_t offset = RAM_BANK_SIZE - 8;
     O2ProductTest t = { 0 };
@@ -8200,6 +8230,9 @@ static void test_product_native_pci(void)
     uint8_t ram[16], after[16];
 
     o2_product_prepare(&t);
+    if (plus) {
+        o2_product_select_plus(&t);
+    }
     qts = o2_product_start(&t);
     check_o2_native_aic(qts, 0);
     o2_program_banks(qts);
@@ -8249,6 +8282,207 @@ static void test_product_native_pci(void)
             qtest_memread(qts, RAM_FULL + offset, after, sizeof(after));
             g_assert_cmpmem(after, sizeof(after), ram, sizeof(ram));
         }
+    }
+    qtest_quit(qts);
+    o2_product_cleanup(&t);
+}
+
+static void test_product_native_pci(void)
+{
+    check_product_native_pci(false);
+}
+
+static void test_o2plus_native_pci(void)
+{
+    check_product_native_pci(true);
+}
+
+static void o2plus_cpu_image(O2ProductTest *t, bool performance)
+{
+    static const uint64_t addresses[] = {
+        UINT64_C(0xffffffff800fffc0),
+        UINT64_C(0xffffffff8007ffc0),
+        UINT64_C(0xffffffff800fff80),
+    };
+    static const uint32_t tags[] = { 0x5a5a4c00, 0x2a5a0c00, 0x3b3b0c00 };
+    g_autofree SN0Image *p = g_new0(SN0Image, 1);
+    g_autofree uint8_t *rom = g_malloc0(512 * KiB);
+    unsigned loop, branch;
+
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL | (1u << 29));
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_li(p, SN0_R_S0, 0xa0003000);
+    sn0_emit_mfc0(p, SN0_R_T0, 15);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0));
+    sn0_emit(p, 0x44480000); /* cfc1 t0, fcr0 */
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 4));
+    sn0_emit_mfc0(p, SN0_R_T0, 16);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 8));
+    sn0_emit_mtc0(p, 0, 29);
+    /* These collide under either a 1 MiB capacity or 128-byte blocks. */
+    for (unsigned i = 0; i < ARRAY_SIZE(addresses); i++) {
+        sn0_emit_li64(p, SN0_R_S1, addresses[i]);
+        sn0_emit_li(p, SN0_R_T0, tags[i]);
+        sn0_emit_mtc0(p, SN0_R_T0, 28);
+        sn0_emit(p, mips_cache(0x0b, SN0_R_S1, 0));
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(addresses); i++) {
+        sn0_emit_li64(p, SN0_R_S1, addresses[i]);
+        sn0_emit(p, mips_cache(0x07, SN0_R_S1, 0));
+        sn0_emit_mfc0(p, SN0_R_T0, 28);
+        sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x10 + i * 4));
+    }
+    sn0_emit_mtc0(p, 0, 9);
+    sn0_emit_li(p, SN0_R_T0, 100000);
+    sn0_emit_mtc0(p, SN0_R_T0, 11);
+    if (performance) {
+        sn0_emit_li(p, SN0_R_T0, 2); /* Kernel cycle event, counter 0. */
+        sn0_emit_mtc0(p, SN0_R_T0, 25);
+        sn0_emit(p, mips_mtc0(0, 25) | 1);
+    }
+    loop = p->pos;
+    sn0_emit_mfc0(p, SN0_R_T0, 9);
+    sn0_emit_mfc0(p, SN0_R_T1, 13);
+    sn0_emit(p, mips_andi(SN0_R_T1, SN0_R_T1, 0x8000));
+    branch = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_T1, 0);
+    sn0_patch_branch(p, branch, loop);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x20));
+    sn0_emit(p, mips_sw(SN0_R_T1, SN0_R_S0, 0x24));
+    if (performance) {
+        sn0_emit(p, mips_mfc0(SN0_R_T0, 25) | 1);
+        sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x28));
+        sn0_emit_mtc0(p, 0, 25);
+    }
+    sn0_emit_mtc0(p, 0, 11);
+    sn0_emit_mfc0(p, SN0_R_T0, 13);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x2c));
+    sn0_emit_li(p, SN0_R_T0, 1);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x3c));
+    sn0_emit_park(p);
+    g_assert_cmpuint(p->pos, <, 0x380);
+    p->pos = 0x380;
+    sn0_emit_li(p, SN0_R_S0, 0xa0003000);
+    sn0_emit_li(p, SN0_R_T0, 1);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x38));
+    sn0_emit_park(p);
+    memcpy(rom, p->bytes, p->pos);
+    g_assert_true(g_file_set_contents(t->rom, (char *)rom, 512 * KiB, NULL));
+}
+
+static void check_o2plus_cpu(bool performance)
+{
+    O2ProductTest t = { 0 };
+    QTestState *qts;
+    SgiWait wait;
+
+    o2_product_prepare(&t);
+    o2_product_select_plus(&t);
+    o2plus_cpu_image(&t, performance);
+    /* Active cycle-counter access currently rejects icount clock reads. */
+    qts = qtest_initf("-M %s -cpu %s -nodefaults -S "
+        "-accel tcg,thread=single %s", t.machine, O2PLUS_CPU,
+        performance ? "" : "-icount shift=3,align=off,sleep=off -rtc clock=vm");
+    for (unsigned pass = 0; pass < 2; pass++) {
+        uint32_t count;
+
+        if (pass) {
+            qtest_system_reset(qts);
+        }
+        qtest_memset(qts, RAM_FULL + 0x3000, 0, 64);
+        qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+        sgi_wait_start(&wait, "O2+ processor register reads after reset %u",
+                       pass);
+        while (!qtest_readl(qts, RAM_FULL + 0x303c)) {
+            g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3038), ==, 0);
+            sgi_wait_pause(&wait, 1000);
+        }
+        qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3000), ==, 0xe35);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3004), ==, 0x900);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3008), ==, 0x6d1a8603);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3010), ==, 0x5a5a4c00);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3014), ==, 0x2a5a0c00);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3018), ==, 0x3b3b0c00);
+        count = qtest_readl(qts, RAM_FULL + 0x3020);
+        g_assert_cmpuint(count, >=, 100000);
+        if (performance) {
+            g_assert_cmpuint(qtest_readl(qts, RAM_FULL + 0x3028), >, 0);
+        }
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3024), ==, 0x8000);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x302c) & 0x8000, ==, 0);
+    }
+    qtest_quit(qts);
+    o2_product_cleanup(&t);
+}
+
+static void test_o2plus_cpu(void)
+{
+    check_o2plus_cpu(false);
+}
+
+static void test_o2plus_performance_counter(void)
+{
+    check_o2plus_cpu(true);
+}
+
+static void test_o2plus_configuration(void)
+{
+    static const struct {
+        const char *override;
+        const char *reason;
+    } invalid[] = {
+        { "r12000-prid=0xe24", "requires r12000-prid" },
+        { "r12000-fpu-id=0x901", "requires r12000-fpu-id" },
+        { "r12000-reset-mode=0x11aa603", "requires r12000-reset-mode" },
+        { "r12000-scache-bytes=1048576", "requires r12000-scache-bytes" },
+        { "r12000-scache-block-words=32",
+          "requires r12000-scache-block-words" },
+        { "big-endian=off", "requires a big-endian CPU" },
+        { "cache-data-visibility=on", "requires cache-data-visibility=off" },
+    };
+    O2ProductTest t = { 0 };
+    QTestState *qts;
+
+    o2_product_prepare(&t);
+    assert_o2_banked_rejected("o2,variant=unsupported", "1G", "-cpu",
+                              O2PLUS_CPU, "variant must be o2 or o2plus");
+    assert_o2_banked_rejected(t.machine, "1G", "-cpu", O2PLUS_CPU,
+                              "o2 requires R10000");
+    o2_product_select_plus(&t);
+    assert_o2_banked_rejected(t.machine, "1G", NULL, NULL,
+                              "o2plus requires R12000");
+    assert_o2_banked_rejected(t.machine, "1G", "-cpu", "R12000",
+                              "requires r12000-prid");
+    assert_o2_banked_rejected(t.machine, "512M", "-cpu", O2PLUS_CPU,
+                              "requires exactly 1 GiB");
+    for (unsigned i = 0; i < ARRAY_SIZE(invalid); i++) {
+        g_autofree char *cpu = g_strdup_printf("%s,%s", O2PLUS_CPU,
+                                               invalid[i].override);
+
+        assert_o2_banked_rejected(t.machine, "1G", "-cpu", cpu,
+                                  invalid[i].reason);
+    }
+    {
+        g_autofree char *fixture = g_strdup_printf(
+            "%s,register-test-profile=on", t.machine);
+        const char *card[] = {
+            qtest_qemu_binary(NULL), "-M", t.machine, "-cpu", O2PLUS_CPU,
+            "-m", "1G", "-nodefaults", "-display", "none", "-S", "-qmp",
+            "stdio", "-device", "e1000,bus=mace.0,addr=3", NULL,
+        };
+
+        assert_o2_banked_rejected(fixture, "1G", "-cpu", O2PLUS_CPU,
+                                  "does not support register-test-profile");
+        assert_qtest_launch_rejected(card,
+                                     "does not support attached PCI devices");
+    }
+    qts = o2_product_start(&t);
+    {
+        g_autoptr(QDict) change = qtest_qmp(qts,
+            "{'execute':'qom-set','arguments':{'path':'/machine',"
+            "'property':'variant','value':'o2'}}");
+
+        g_assert_nonnull(qdict_get_qdict(change, "error"));
     }
     qtest_quit(qts);
     o2_product_cleanup(&t);
@@ -8673,6 +8907,11 @@ int main(int argc, char **argv)
                    test_banked_approx_child_immutable);
     add_case("o2/banked-approx-migration",
                    test_banked_approx_migration);
+    add_case("o2/o2plus-cpu", test_o2plus_cpu);
+    add_case("o2/o2plus-performance-counter", test_o2plus_performance_counter);
+    add_case("o2/o2plus-configuration", test_o2plus_configuration);
+    add_case("o2/o2plus-composition", test_o2plus_composition);
+    add_case("o2/o2plus-native-pci", test_o2plus_native_pci);
     add_case("o2/product-external-ttl", test_product_external_ttl);
     add_case("o2/product-serial-backends", test_product_serial_backends);
     add_case("o2/product-composition", test_product_composition);

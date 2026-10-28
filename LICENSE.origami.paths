@@ -972,3 +972,6 @@ hw/mips/sgi/models/layers/modules/o2.yaml
 hw/mips/sgi/models/layers/products/o2.yaml
 scripts/sgi_model/model_ip32.py
 scripts/tests/test_sgi_model_ip32.py
+hw/mips/sgi/models/o2plus.yaml
+hw/mips/sgi/models/layers/modules/o2plus.yaml
+hw/mips/sgi/models/layers/products/o2plus.yaml

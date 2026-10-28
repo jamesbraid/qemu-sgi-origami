@@ -15,6 +15,15 @@ layer:
       variants: [{clock_mhz: 195, cache_mib: 1}]
       provenance: derived
       sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-processor"]
+    - part: r12000
+      variants:
+      - clock_mhz: 400
+        cache_mib: 2
+        processor_identification: '0x00000e35'
+        fpu_identification: '0x00000900'
+        reset_mode_bits: '0x011a8603'
+      provenance: derived
+      sources: ["qemu:docs/system/mips/sgi/ip32.rst#sgi-ip32-o2plus"]
     address_spaces:
     - id: physical
       name: IP32 physical address space

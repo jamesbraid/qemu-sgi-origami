@@ -137,3 +137,8 @@ dma /mips64/o2/product-native-pci
 board /mips64/o2/product-configuration
 board /mips64/o2/product-serial-backends
 board /mips64/o2/product-external-ttl
+board /mips64/o2/o2plus-composition
+dma /mips64/o2/o2plus-native-pci
+board /mips64/o2/o2plus-cpu
+board /mips64/o2/o2plus-configuration
+board /mips64/o2/o2plus-performance-counter
