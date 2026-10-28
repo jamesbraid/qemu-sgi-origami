@@ -49,6 +49,44 @@
 #define HEART_ECC_KEY(word) ((word) & ~7ULL)
 #define HEART_ECC_PENDING (1ULL << 63)
 
+/* Revision F: the revision the reference Octane2's words come from. */
+#define HEART_REVISION_F 6
+
+/*
+ * Processor status: widget number 8, processor 0 active and the big-endian
+ * bit, under the Linux heart.h names. The reference Octane2's revision F
+ * reads 0x8118 at PROM time. It also sets bit 15, which no public source
+ * names, so only revision F sets it here. The big-endian bit is set on every
+ * revision: every IP30 runs big-endian, but revision 4 is unmeasured, so
+ * that it reads the bit there is inferred.
+ */
+#define HEART_STATUS_WIDGET 8
+#define HEART_STATUS_PROC0_ACTIVE (1ULL << 4)
+#define HEART_STATUS_BIG_ENDIAN (1ULL << 8)
+#define HEART_STATUS_REV_F_BIT15 (1ULL << 15)
+
+/*
+ * The reference Octane2's revision F reads 4 in each of the three request
+ * limits of mode: maximum processor requests (59:57), I/O requests (56:54)
+ * and pending I/O requests (53:51). It reads compare as 0xffffff. Both were
+ * read after firmware initialisation, in a session in which IRIX had also
+ * run. On the model the PROM's mode writes all preserve the limits and it
+ * never writes compare, so treating both as reset values is inferred; a
+ * kernel left running before the reads could also have written them.
+ */
+#define HEART_MODE_RESET_F ((4ULL << 57) | (4ULL << 54) | (4ULL << 51))
+
+#define HEART_COMPARE_MASK 0xffffff
+#define HEART_COMPARE_RESET_F HEART_COMPARE_MASK
+
+/*
+ * Widget control bits 11:10 clear the receive and transmit link retry
+ * counters (Linux xwidget.h) and read back zero, as the same bits of the
+ * Bridge's control register do. The model's PROM writes 0x4c08 here and
+ * the reference Octane2 reads both bits clear afterwards.
+ */
+#define HEART_WIDGET_CONTROL_RETRY_CLEAR 0x00000c00U
+
 static void heart_ecc_map(SGIHeartState *s);
 static bool heart_ecc_dma_allowed(SGIHeartState *s, hwaddr address,
                                   unsigned size, bool write);
@@ -146,7 +184,13 @@ static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
         *value = 0;
         return MEMTX_OK;
     }
-    if (size == 8 && (offset == 0x60 || offset == 0x70 ||
+    /*
+     * A 64-bit read at 0x10 spans the error upper address word. It reads
+     * zero on the reference Octane2's revision F, as the 32-bit view at 0x14
+     * does on every revision here; that revision 4 answers it the same way
+     * is inferred.
+     */
+    if (size == 8 && (offset == 0x10 || offset == 0x60 || offset == 0x70 ||
                       offset == 0x78 || offset == 0x90)) {
         *value = 0;
         return MEMTX_OK;
@@ -168,7 +212,7 @@ static MemTxResult heart_widget_write(void *opaque, hwaddr offset,
     SGIHeartState *s = opaque;
 
     if (offset == 0x24 && size == 4) {
-        s->widget_control = value;
+        s->widget_control = value & ~HEART_WIDGET_CONTROL_RETRY_CLEAR;
         return MEMTX_OK;
     }
     if ((offset == 0x28 && size == 8) ||
@@ -819,6 +863,17 @@ static void heart_map_all(SGIHeartState *s)
     memory_region_transaction_commit();
 }
 
+static uint64_t heart_status(SGIHeartState *s)
+{
+    uint64_t status = HEART_STATUS_WIDGET | HEART_STATUS_PROC0_ACTIVE |
+                      HEART_STATUS_BIG_ENDIAN;
+
+    if (s->widget_revision == HEART_REVISION_F) {
+        status |= HEART_STATUS_REV_F_BIT15;
+    }
+    return status;
+}
+
 static uint64_t heart_read(void *opaque, hwaddr offset, unsigned size)
 {
     SGIHeartState *s = opaque;
@@ -860,7 +915,7 @@ static uint64_t heart_read(void *opaque, hwaddr offset, unsigned size)
         case 0x18: return s->mem_req_arb;
         case 0x50: return s->flow_cell[0];
         case 0x58: return s->flow_cell[1];
-        case 0x80: return 0x18;
+        case 0x80: return heart_status(s);
         case 0x98: return s->ecc_address;
         case 0xa0: return s->ecc_data;
         case 0x10040: return s->ecc_cause;
@@ -961,7 +1016,7 @@ static MemTxResult heart_write(void *opaque, hwaddr offset, uint64_t value,
             s->clock_divider = value;
             return MEMTX_OK;
         case 0x30000:
-            s->compare = value & 0xffffff;
+            s->compare = value & HEART_COMPARE_MASK;
             return MEMTX_OK;
         case 0x10000 ... 0x10018:
             if (!(offset & 7)) {
@@ -1015,13 +1070,14 @@ static void heart_reset_enter(Object *obj, ResetType type)
     s->ecc_cause = 0;
     s->ecc_address = 0;
     s->ecc_data = 0;
-    s->mode = 0;
+    s->mode = s->widget_revision == HEART_REVISION_F ? HEART_MODE_RESET_F : 0;
     s->sdram_mode = 0;
     s->mem_refresh = 0;
     s->mem_req_arb = 0;
     memset(s->flow_cell, 0, sizeof(s->flow_cell));
     s->clock_divider = 0;
-    s->compare = 0;
+    s->compare = s->widget_revision == HEART_REVISION_F ?
+                 HEART_COMPARE_RESET_F : 0;
     memset(s->descriptor, 0, sizeof(s->descriptor));
     memset(s->mask, 0, sizeof(s->mask));
     s->pending = 0;

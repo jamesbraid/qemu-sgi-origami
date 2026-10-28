@@ -1164,7 +1164,8 @@ static void test_widget_control(void)
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, 0xa5c3f00f);
     g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x24, 0x5a3c0ff0),
                      ==, MEMTX_OK);
-    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, 0x5a3c0ff0);
+    /* Bits 11:10 are the retry-counter clears and read back zero. */
+    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, 0x5a3c03f0);
     word = qtest_readl(s, HEART_WIDGET + 0x24);
     word = (word & ~0x00ff0000U) | 0x00420000U;
     g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x24, word), ==,
@@ -1191,7 +1192,7 @@ static void test_widget_control(void)
                      MEMTX_ERROR);
     g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x28, UINT32_MAX),
                      ==, MEMTX_ERROR);
-    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, 0x5a420ff0);
+    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, 0x5a4203f0);
 
     qtest_system_reset(s);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, 0);
@@ -1513,7 +1514,43 @@ static void test_processor_status(void)
 
     g_assert_cmphex(status & 0xf, ==, 8);
     g_assert_cmphex(status & 0x10, ==, 0x10);
-    g_assert_cmphex(status, ==, 0x18);
+    g_assert_cmphex(status, ==, 0x118);
+    qtest_quit(s);
+
+    /*
+     * Revision F adds bit 15, which no public source names: the reference
+     * Octane2 reads 0x8118.
+     */
+    s = heart_start_revision(128, 6, "");
+    g_assert_cmphex(qtest_readq(s, HEART_STATUS), ==, 0x8118);
+    qtest_quit(s);
+}
+
+/*
+ * Revision F resets the three request-limit fields of mode to 4 and compare
+ * to 0xffffff. The reference Octane2 read those values after firmware
+ * initialisation in a session in which IRIX had also run; that they are
+ * reset values is inferred from a PROM that preserves the fields and never
+ * writes compare. Revision 4 is unmeasured and keeps zero.
+ */
+static void test_revision_f_reset_words(void)
+{
+    QTestState *s = heart_start_revision(128, 6, "");
+
+    g_assert_cmphex(qtest_readq(s, HEART_REGS), ==, 0x0920000000000000ULL);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x30000), ==, 0xffffff);
+    qtest_writeq(s, HEART_REGS, 0x200810ULL);
+    qtest_writeq(s, HEART_REGS + 0x30000, 0x1234);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS), ==, 0x200810ULL);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x30000), ==, 0x1234);
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(s, HEART_REGS), ==, 0x0920000000000000ULL);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x30000), ==, 0xffffff);
+    qtest_quit(s);
+
+    s = heart_start(128, "");
+    g_assert_cmphex(qtest_readq(s, HEART_REGS), ==, 0);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x30000), ==, 0);
     qtest_quit(s);
 }
 
@@ -1559,7 +1596,7 @@ static void test_reset(void)
     }
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, 0);
     g_assert_false(qtest_get_irq(s, 1));
-    g_assert_cmphex(qtest_readq(s, HEART_STATUS), ==, 0x18);
+    g_assert_cmphex(qtest_readq(s, HEART_STATUS), ==, 0x118);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x50000), ==, 0);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x20000), ==, 0);
     g_assert_cmpuint(memtx_readq(s, PROBE_RAM, &value), ==,
@@ -1620,13 +1657,13 @@ static void test_migration(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
     sgi_wait_migration(to, "completed");
-    g_assert_cmphex(qtest_readq(to, HEART_STATUS), ==, 0x18);
+    g_assert_cmphex(qtest_readq(to, HEART_STATUS), ==, 0x118);
     g_assert_cmphex(qtest_readl(to, HEART_ONEWIRE_LO) & 3, ==, 0);
     qtest_clock_step(to, 464999);
     g_assert_cmphex(qtest_readl(to, HEART_ONEWIRE_LO) & 3, ==, 0);
     qtest_clock_step(to, 1);
     g_assert_cmphex(qtest_readl(to, HEART_ONEWIRE_LO) & 3, ==, 3);
-    g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x24), ==, 0x5a420ff0);
+    g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x24), ==, 0x5a4203f0);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x2c), ==, 0x12345678);
     g_assert_cmphex(qtest_readq(to, HEART_WIDGET + 0x28), ==, 0x12345678);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x44), ==, 0);
@@ -2079,6 +2116,8 @@ int main(int argc, char **argv)
     g_test_add_func("/heart/high-interrupt-levels",
                     test_high_interrupt_levels);
     g_test_add_func("/heart/processor-status", test_processor_status);
+    g_test_add_func("/heart/revision-f-reset-words",
+                    test_revision_f_reset_words);
     g_test_add_func("/heart/reset", test_reset);
     g_test_add_func("/heart/migration", test_migration);
     g_test_add_func("/heart/onewire-empty", test_onewire_empty);
