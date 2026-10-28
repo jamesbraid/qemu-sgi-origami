@@ -2,9 +2,10 @@
 /*
  * SGI IOC3/IOC4 serial ring DMA engine.
  *
- * Both chips put the same engine in front of each 16550-compatible UART:
- * seven 32-bit registers per port, rings of eight-byte entries in host
- * memory, and a 64-bit ring base shared by a pair of ports. The chip owns its
+ * Both chips put the same engine in front of each 16550-compatible UART
+ * (on IOC4 only when its experimental serial DMA is enabled): seven 32-bit
+ * registers per port, rings of eight-byte entries in host memory, and a
+ * 64-bit ring base shared by a pair of ports. The chip owns its
  * register window, its interrupt status words and the UART instances; this
  * object owns the per-port registers, the rings and the timers.
  */

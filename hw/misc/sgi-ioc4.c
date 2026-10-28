@@ -4,7 +4,8 @@
  * The four byte-wide 16550A ports and their local interrupt controller are
  * modeled. The IP53 profile also selects serial ring DMA, through the engine
  * shared with IOC3 in hw/char/sgi-ioc-serial-dma.c, ATA register readback and
- * a byte-bus clock alias. PS/2 input is optional; GPIO is absent.
+ * a byte-bus clock alias. The PS/2 keyboard and mouse controller is always
+ * present with both ports attached; GPIO is absent.
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
