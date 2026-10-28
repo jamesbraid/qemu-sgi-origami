@@ -1,0 +1,193 @@
+.. SPDX-License-Identifier: BSD-3-Clause
+
+.. _sgi-at29c040a:
+
+=================================
+AT29C040A boot flash (O2 PROM)
+=================================
+
+The AT29C040A is a 4 Mbit (512K x 8) 5 V flash memory from Atmel with
+256-byte sectors. The MACE I/O ASIC of the O2 decodes a 4 MiB window for
+the boot ROM, and its feature list names an "Atmel 512Kx8 Flash-ROM" as
+the board's flash :src:`sgi-mace-2.0-spec p. 8`, *established*. The
+AT29C040A is the Atmel part of that size.
+
+QEMU models the ROM window and the AT29C040A programming interface as
+``sgi-o2-rom`` in ``hw/mips/sgi/o2-rom.c``. The device exists only on the
+O2 test profile (:doc:`../ip32`) and only when the profile is given a ROM
+image. The window is a plain read-only image by default. The AT29C040A
+programming model is an option.
+
+Facts are rated as described in :ref:`sgi-ratings`.
+
+.. _sgi-at29c040a-sources:
+
+Sources
+=======
+
+- The AT29C040A data sheet, revision 0333I, :src:`atmel-at29c040a-0333i`.
+  Page numbers below are its printed pages.
+- The MACE specification, for the flash window and the write-enable bit:
+  :src:`sgi-mace-2.0-spec p. 8, 124, 133`.
+- A published hardware inventory of an O2 that reports "FLASH PROM
+  version 4.18" (:src:`bukosek-sgi-o2 My O2`).
+
+Identity and placement
+======================
+
+The MACE specification says the flash interface supports parts from
+512 KiB to 2 MiB and that a smaller part is aliased through the whole
+4 MiB window :src:`sgi-mace-2.0-spec p. 133`, *established*. Software may
+read one to eight bytes at a time and may write one byte at a time. The
+model keeps both rules: it accepts reads of 1 to 8 bytes, repeats a
+512 KiB, 1 MiB or 2 MiB image across the window, and refuses a multi-byte
+write with ``LOG_UNIMP`` and a bus error.
+
+The 4 MB system ROM window starts at physical ``0x1fc00000`` and MACE
+answers it :src:`sgi-crime-1.5-spec Table 3-1, PDF p. 48`, *established*.
+The model maps it there. The board's fitted flash part
+is *unknown* beyond the vendor and organisation. The AT29C040A matches
+both, and its data sheet gives a 512K x 8 organisation
+:src:`atmel-at29c040a-0333i p. 1`. The part's identification codes are
+manufacturer ``0x1f`` and device ``0xa4`` :src:`atmel-at29c040a-0333i p. 5`.
+The hardware inventory above reports the PROM version only. It does not
+name the part.
+
+Write enable
+============
+
+Bit 0 of the MACE flash and NIC control register enables writes to the flash.
+It resets to 0, and while it is clear "write operations go into the bit bucket"
+:src:`sgi-mace-2.0-spec p. 124, 133`, *established*. The model connects that
+bit to the ROM's ``flash-write-enable`` input. The model first refuses a
+multi-byte write with ``LOG_UNIMP`` and a bus error, whatever the bit says, an
+*approximation*; the specification sends every write to the bit bucket while
+the bit is clear. A single-byte write while the bit is clear is dropped and
+succeeds. A ROM reset clears the enable.
+
+Without the AT29C040A option, a write with the enable set logs
+``LOG_UNIMP`` and takes a bus error, so the ROM stays read-only
+(*approximation*).
+
+Programming model
+=================
+
+The ``rom-at29c040a`` machine option selects the AT29C040A model. It
+requires a 512 KiB image at offset zero, and the protection state and both
+boot-block lock states must be given. The sections below describe that
+model.
+
+Sectors and byte load
+---------------------
+
+The part has 2048 sectors of 256 bytes. A program cycle erases the sector
+and writes the latched data. The host loads bytes in any order. Each new
+byte must start within 150 µs of the previous one, or the load period ends
+and the internal write begins :src:`atmel-at29c040a-0333i p. 1-2, 9`,
+*established*. The write cycle takes at most 10 ms
+:src:`atmel-at29c040a-0333i p. 9`, *established*.
+
+The model matches those numbers in virtual time. The first byte opens a
+sector. Each further byte restarts a 150 µs timer and must stay inside the
+sector. A byte outside it abandons the load and logs ``LOG_UNIMP`` with a
+bus error. With protection off, a program cycle needs no command prefix. When
+the 150 µs timer expires, or when the 256th distinct byte arrives, the part
+turns busy. The write completes 10 ms after the last byte loaded. It
+always takes the full 10 ms, an *approximation*: the data sheet gives 10 ms
+as a maximum.
+
+Bytes of the sector that were not loaded are written as ``0xff``. The data
+sheet is inconsistent here. It says unloaded bytes "will be erased to read
+FFH" in the device description (:src:`atmel-at29c040a-0333i p. 2`), and
+calls them "indeterminate" in the waveform notes and requires all 256 bytes
+to be loaded (:src:`atmel-at29c040a-0333i p. 9-10`). The model picks
+``0xff``, an *approximation*.
+
+Polling
+-------
+
+While busy, a read of the last byte loaded returns the complement of its bit 7
+(DATA polling), and any read toggles bit 6 (toggle bit)
+:src:`atmel-at29c040a-0333i p. 3`, *established*. The model does both and
+returns true data when the cycle ends. Reads of other addresses return the
+stored bytes with bit 6 toggling. A write during the busy period is refused
+with ``LOG_UNIMP`` and a bus error. The data sheet does not say what a
+write does there.
+
+Software data protection
+------------------------
+
+The shipped part has protection off. The three-byte command ``0xaa`` to
+``0x5555``, ``0x55`` to ``0x2aaa`` and ``0xa0`` to ``0x5555``, followed by a
+sector load, enables protection when the cycle ends. Once protection is on,
+every program cycle needs the same prefix, and power transitions do not
+clear it :src:`atmel-at29c040a-0333i p. 3, 10`, *established*. A write to
+the device without the prefix starts the write timer, stores nothing, and
+turns reads into polling for the duration of tWC
+:src:`atmel-at29c040a-0333i p. 3`.
+
+The model implements this. Each prefix byte must arrive within 150 µs of
+the last, as the data sheet requires of all command bytes
+(:src:`atmel-at29c040a-0333i p. 3`). A wrong address or data byte ends the
+sequence with ``LOG_UNIMP`` and a bus error. The protection bit is part of
+the option settings and persists across reset.
+
+Boot block lockout
+------------------
+
+The first and last 16 KiB are boot blocks with an independent lockout.
+Once set, the data in a locked block cannot be erased or programmed
+:src:`atmel-at29c040a-0333i p. 4`, *established*. The model takes the two
+lock states as settings. A program or protected-poll cycle that starts in a
+locked block logs ``LOG_UNIMP`` and takes a bus error. The seven-byte
+command that sets a lockout is not implemented, so the locks cannot change
+at run time.
+
+Persistence
+-----------
+
+With the machine's ``o2flash`` and ``o2flash-state`` block backends, the
+model reads its array and settings from the backing files and writes each
+completed sector and the settings through to them. The array backend must
+be exactly 512 KiB, the state backend exactly 512 bytes, and the state must
+match a digest of the array. Neither may use snapshot or no-flush modes. A
+backend write failure stops the VM and refuses further programming. This
+persistence is a model facility with no counterpart on the part,
+*approximation*.
+
+Measurements
+============
+
+No register of this part has been read on a physical machine for this
+project. The published inventory is a capture of one O2, not a read of the
+flash.
+
+.. _sgi-at29c040a-limits:
+
+Model limits
+============
+
+- Software product identification, the six-byte chip erase, the command
+  that disables software data protection and the seven-byte boot-block
+  lockout command are not implemented. The third byte of any command other
+  than the enable prefix logs ``LOG_UNIMP`` and takes a bus error.
+- Only single-byte writes are accepted, as on the MACE interface.
+- A program cycle always takes 10 ms and a load gap always expires at
+  150 µs. The part's timing varies with temperature and voltage.
+- The ROM image's size, offset and padding are test selections. They do not
+  describe the contents of a real O2's flash or its layout.
+- Which flash part the boards carry is unknown beyond the vendor and
+  organisation, and the board's real protection and lockout settings are
+  unknown.
+- While a program cycle runs, or while a prefix is half sent, migration is
+  refused. A persistent backing blocks migration and snapshots. Migration
+  works only between identical builds.
+
+Tests
+=====
+
+``tests/qtest/sgi-o2-rom-test.c`` has 30 cases. They cover the aliases and
+image placement, write protection and the MACE-driven write enable, sector
+programming and the busy state, the 150 µs load deadline, protection and the
+prefix, locked boot blocks, command address and data checks, partial loads,
+migration and its refusals, the backing files and their validation.
