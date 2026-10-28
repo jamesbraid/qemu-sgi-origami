@@ -1839,6 +1839,10 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
     if (s->functional_memory_transfer && offset >= 0x1000000) {
         return crime_transfer_read(s, offset, value, size);
     }
+    if (s->legacy_software && offset == 0x003c && size == 4) {
+        *value = crime_timer_value(s);
+        return MEMTX_OK;
+    }
     if (s->empty_renderer_status && offset == CRIME_RENDER_STATUS &&
         size == 4) {
         *value = CRIME_EMPTY_RENDER_STATUS;
