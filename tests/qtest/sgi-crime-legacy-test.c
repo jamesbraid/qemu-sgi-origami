@@ -1295,7 +1295,8 @@ static void assert_renderer_bounds(QTestState *s)
         g_assert_cmphex(qtest_readb(s, 0x3000 + i),
                         ==, i >= 7 && i <= 15 ? 0x6b : 0x5a);
     }
-    g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000), ==, 0x1e000000);
+    g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000) & ~0x3ffffU,
+                    ==, 0x1e000000);
 }
 
 static const unsigned ifb_parameters[] = {
@@ -1341,7 +1342,8 @@ static void assert_ifb_state(QTestState *s, bool executed)
                    0x8123456789abcdefULL);
     g_assert_cmphex(qtest_readq(s, 0x30400), ==,
                    executed ? 0x1122335655667788ULL : 0x1122335a55667788ULL);
-    g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000), ==, 0x1e000000);
+    g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000) & ~0x3ffffU,
+                    ==, 0x1e000000);
 }
 
 static void test_renderer_no_generated_irq(void)
@@ -1356,7 +1358,8 @@ static void test_renderer_no_generated_irq(void)
     for (unsigned operation = 0; operation < 6; operation++) {
         switch (operation) {
         case 0:
-            g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000), ==, 0x1e000000);
+            g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000) & ~0x3ffffU,
+                            ==, 0x1e000000);
             break;
         case 1:
             g_assert_cmpint(memtx_writel(s, RENDERER + 0x400, 0xa6c319e7),
@@ -1484,7 +1487,8 @@ static void test_opaque_renderer_write(gconstpointer data)
             g_assert_cmpint(memtx_readl(s, RENDERER +
                 (status_bank ? 0x4000 : 0x400), &value),
                             ==, MEMTX_OK);
-            g_assert_cmphex(value, ==, status_bank ? 0x1e000000 : 0);
+            g_assert_cmphex(value & (status_bank ? ~0x3ffffU : UINT32_MAX),
+                            ==, status_bank ? 0x1e000000 : 0);
             assert_run_status(s, "running");
             assert_ifb_state(s, phase);
         }
@@ -1581,12 +1585,14 @@ static void test_status_bank_profiles(void)
             bool admitted = legacy && functional;
 
             qtest_qmp_assert_success(s, "{'execute':'cont'}");
-            g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000), ==, 0x1e000000);
+            g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000) & ~0x3ffffU,
+                            ==, 0x1e000000);
             g_assert_cmpint(memtx_writel(s, RENDERER + 0x4008, 0xa6c319e7),
                             ==, admitted ? MEMTX_OK : MEMTX_ERROR);
             assert_run_status(s, !admitted && (legacy || functional) ?
                               "internal-error" : "running");
-            g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000), ==, 0x1e000000);
+            g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000) & ~0x3ffffU,
+                            ==, 0x1e000000);
             qtest_quit(s);
         }
     }
@@ -1601,10 +1607,10 @@ static void test_ifb_refusal(void)
         { { 0x400, 1, false }, false }, { { 0x400, 2, false }, false },
         { { 0x400, 8, false }, false }, { { 0x401, 4, false }, false },
         { { 0x402, 4, false }, false }, { { 0x3ff, 2, false }, false },
-        { { 0x3fc, 8, false }, false }, { { 0x3fc, 4, false }, false },
+        { { 0x3fc, 8, false }, false },
         { { 0x404, 4, false }, false }, { { 0x408, 4, false }, false },
-        { { 0x40c, 4, false }, false }, { { 0x000, 8, false }, false },
-        { { 0x200, 8, false }, false }, { { 0x4008, 4, false }, true },
+        { { 0x40c, 4, false }, false },
+        { { 0x4008, 4, false }, true },
         { { 0x4000, 8, false }, true },
         { { 0x400, 1, true }, true }, { { 0x400, 2, true }, true },
         { { 0x401, 4, true }, true }, { { 0x400, 8, true }, true },

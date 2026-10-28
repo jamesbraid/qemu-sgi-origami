@@ -1451,11 +1451,61 @@ static MemTxResult crime_renderer_unsupported(SGICrimeState *s, hwaddr offset,
                                "unsupported transfer register read");
 }
 
+static MemTxResult crime_ifb_access(SGICrimeState *s, hwaddr offset,
+                                    uint64_t *value, unsigned size, bool write)
+{
+    uint64_t *word;
+    unsigned index;
+
+    if ((size != 4 && size != 8) || (offset & (size - 1)) ||
+        offset < 0x1000000 || offset + size > 0x1000400) {
+        return crime_renderer_unsupported(s, offset, size, write,
+                                           write ? *value : 0);
+    }
+    index = (offset - 0x1000000) / 8;
+    word = index < 64 ? &s->render.ifb_data[index] :
+                        &s->render.ifb_address[index - 64];
+    if (write) {
+        if (size == 8) {
+            *word = *value;
+        } else {
+            unsigned shift = offset & 4 ? 0 : 32;
+            uint64_t mask = (uint64_t)UINT32_MAX << shift;
+
+            *word = (*word & ~mask) | ((uint64_t)(uint32_t)*value << shift);
+        }
+    } else {
+        *value = size == 8 ? *word :
+                 offset & 4 ? (uint32_t)*word : *word >> 32;
+    }
+    return MEMTX_OK;
+}
+
+static void crime_ifb_record(SGICrimeState *s, hwaddr offset,
+                             uint64_t value, unsigned size)
+{
+    unsigned head = s->render.ifb_head;
+    unsigned width = size == 8 ? 3 : offset & 4 ? 1 : 2;
+    uint32_t header = ((offset & 0x7f8) >> 3) |
+                      (((offset >> 12) & 7) << 8) | (width << 11) |
+                      (!!(offset & 0x800) << 13);
+
+    g_assert(size == 4 || size == 8);
+    s->render.ifb_data[head] = size == 8 ? value :
+        (uint64_t)(uint32_t)value << (offset & 4 ? 0 : 32);
+    s->render.ifb_address[head] = (uint64_t)header << 32;
+    s->render.ifb_head = (head + 1) & 63;
+}
+
 static MemTxResult crime_transfer_read(SGICrimeState *s, hwaddr offset,
                                        uint64_t *value, unsigned size)
 {
     unsigned index;
 
+    if (s->legacy_software &&
+        crime_renderer_touches(offset, size, 0x1000000, 0x400)) {
+        return crime_ifb_access(s, offset, value, size, false);
+    }
     if (s->legacy_software && offset == 0x1000400 && size == 4) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-crime: undefined interface-buffer diagnostic "
@@ -1473,7 +1523,9 @@ static MemTxResult crime_transfer_read(SGICrimeState *s, hwaddr offset,
         return MEMTX_OK;
     }
     if (offset == CRIME_RENDER_STATUS && size == 4) {
-        *value = CRIME_EMPTY_RENDER_STATUS;
+        unsigned head = s->legacy_software ? s->render.ifb_head : 0;
+
+        *value = CRIME_EMPTY_RENDER_STATUS | head | (head << 6) | (head << 12);
         return MEMTX_OK;
     }
     if (offset >= CRIME_TRANSFER && offset < CRIME_TRANSFER + 0x50 &&
@@ -1491,6 +1543,10 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
 {
     unsigned index;
 
+    if (s->legacy_software &&
+        crime_renderer_touches(offset, size, 0x1000000, 0x400)) {
+        return crime_ifb_access(s, offset, &value, size, true);
+    }
     if (s->legacy_software) {
         const CrimeRenderRegister *reg =
             crime_render_register(offset - 0x1002800);
@@ -1899,7 +1955,13 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
     SGICrimeState *s = opaque;
 
     if (s->functional_memory_transfer && offset >= 0x1000000) {
-        return crime_transfer_write(s, offset, value, size);
+        MemTxResult result = crime_transfer_write(s, offset, value, size);
+
+        if (result == MEMTX_OK && s->legacy_software &&
+            offset >= 0x1001000 && offset < 0x1004000) {
+            crime_ifb_record(s, offset - 0x1000000, value, size);
+        }
+        return result;
     }
     if (size != 8 || offset & 7) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -2310,6 +2372,14 @@ static int crime_render_post_load(void *opaque, int version_id)
             return -EINVAL;
         }
     }
+    if (incoming->ifb_head >= 64 || (!active && incoming->ifb_head)) {
+        return -EINVAL;
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(incoming->ifb_data); i++) {
+        if (!active && (incoming->ifb_data[i] || incoming->ifb_address[i])) {
+            return -EINVAL;
+        }
+    }
     s->render_state_received = true;
     return 0;
 }
@@ -2324,6 +2394,9 @@ static const VMStateDescription vmstate_crime_render = {
         VMSTATE_UINT64_ARRAY(incoming_render.tlb, SGICrimeState, 192),
         VMSTATE_UINT64_ARRAY(incoming_render.parameter, SGICrimeState, 128),
         VMSTATE_UINT64_ARRAY(incoming_render.texture, SGICrimeState, 28),
+        VMSTATE_UINT64_ARRAY(incoming_render.ifb_data, SGICrimeState, 64),
+        VMSTATE_UINT64_ARRAY(incoming_render.ifb_address, SGICrimeState, 64),
+        VMSTATE_UINT8(incoming_render.ifb_head, SGICrimeState),
         VMSTATE_END_OF_LIST()
     },
 };

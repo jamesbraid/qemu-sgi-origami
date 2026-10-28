@@ -102,7 +102,7 @@ static void test_fill(void)
     g_assert_cmphex(ldl_be_p(bytes), ==, 0x5c5c5c5c);
     g_assert_cmphex(ldl_be_p(bytes + 4), ==, 0x1234abcd);
     g_assert_cmphex(ldl_be_p(bytes + 8), ==, 0x5c5c5c5c);
-    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU, ==, 0x1e000000);
     qtest_quit(s);
 }
 
@@ -178,7 +178,7 @@ static void assert_stopped(QTestState *s)
 
 static void assert_idle(QTestState *s)
 {
-    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU, ==, 0x1e000000);
     g_assert_cmphex(qtest_readq(s, CRIME + 0x10), ==, 0);
 }
 
@@ -1174,7 +1174,7 @@ static void test_unsupported(void)
     g_assert_cmphex(qtest_readq(s, RE + 0x1000), ==, 0x8003000000000000ULL);
     g_assert_cmphex(qtest_readl(s, DE + 0x70), ==, 0);
     g_assert_cmphex(qtest_readl(s, DE + 0x74), ==, 0);
-    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU, ==, 0x1e000000);
     for (unsigned i = 0; i < 16; i++) {
         g_assert_cmphex(qtest_readb(s, 0x30000 + i), ==, 0x5a);
     }
@@ -3028,7 +3028,7 @@ static unsigned validity_run(ValidityLog *v, Shape *c, uint16_t entries[256])
     g_assert_cmphex(qtest_readq(v->q, CRIME + 0x258), ==, address);
     g_assert_cmphex(qtest_readq(v->q, CRIME + 0x10), ==, 1U << 4);
     g_assert_cmphex(qtest_readq(v->q, CRIME + 0x18), ==, 1U << 4);
-    g_assert_cmphex(qtest_readl(v->q, STATUS), ==, 0x1e000000);
+    g_assert_cmphex(qtest_readl(v->q, STATUS) & ~0x3ffffU, ==, 0x1e000000);
     g_assert_cmphex(qtest_readl(v->q, DE + 0xc0), ==, c->stipple_mode);
     g_assert_cmphex(qtest_readl(v->q, DE + 0xc4), ==, c->pattern);
     return count;
@@ -3460,7 +3460,7 @@ static void test_validity_retirement(void)
     for (unsigned i = 0; i < 4; i++) {
         qtest_writel(v.q, DE + 0x1f0, 0x12345678 + i);
         qtest_writel(v.q, DE + 0x1f8, 0);
-        g_assert_cmphex(qtest_readl(v.q, STATUS), ==, 0x1e000000);
+        g_assert_cmphex(qtest_readl(v.q, STATUS) & ~0x3ffffU, ==, 0x1e000000);
         shape_memory(v.q, &c, expected);
     }
     count = 0;
@@ -7763,7 +7763,7 @@ static void test_triangle_packet(void)
     triangle_pixels(s, &c, triangle_ten, TRIANGLE_COLOR, 6, UINT32_MAX);
     qtest_writel(s, DE + 0x1f0, UINT32_MAX);
     qtest_writel(s, DE + 0x1f8, 0);
-    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU, ==, 0x1e000000);
     g_assert_cmphex(qtest_readq(s, CRIME + 0x10), ==, 1U << 4);
     triangle_irq_levels(s, 1);
     triangle_pixels(s, &c, triangle_ten, TRIANGLE_COLOR, 6, UINT32_MAX);
@@ -8519,6 +8519,460 @@ static void test_gl_restore_word(void)
     g_rmdir(dir);
 }
 
+typedef struct IfbSnapshot {
+    uint8_t ram[1024];
+    uint32_t status;
+} IfbSnapshot;
+
+static void ifb_snapshot(QTestState *s, IfbSnapshot *state)
+{
+    qtest_memread(s, RE, state->ram, sizeof(state->ram));
+    state->status = qtest_readl(s, STATUS);
+}
+
+static void ifb_head(QTestState *s, unsigned head)
+{
+    uint32_t status = qtest_readl(s, STATUS);
+
+    g_assert_cmphex(status & ~0x3ffffU, ==, 0x1e000000);
+    g_assert_cmphex(status & 63, ==, head);
+    g_assert_cmphex((status >> 6) & 63, ==, head);
+    g_assert_cmphex((status >> 12) & 63, ==, head);
+}
+
+static unsigned ifb_next(QTestState *s)
+{
+    unsigned head = qtest_readl(s, STATUS) & 63;
+
+    ifb_head(s, head);
+    return head;
+}
+
+static void ifb_entry(QTestState *s, unsigned index,
+                      uint64_t address, uint64_t data)
+{
+    g_assert_cmphex(qtest_readq(s, RE + 8 * index), ==, data);
+    g_assert_cmphex(qtest_readq(s, RE + 0x200 + 8 * index), ==, address);
+}
+
+static void test_ifb_ram(void)
+{
+    QTestState *s = triangle_start("");
+
+    ifb_head(s, 0);
+    for (unsigned bank = 0; bank < 2; bank++) {
+        for (unsigned index = 0; index < 64; index++) {
+            uint64_t address = RE + bank * 512 + index * 8;
+            uint64_t pattern = 0x123456789abcdef0ULL ^
+                               ((uint64_t)(bank * 64 + index) << 40);
+            uint32_t high = 0xa13579bdU ^ (bank * 64 + index);
+            uint32_t low = 0x6e2c4a80U ^ (bank * 64 + index);
+            uint32_t actual;
+
+            g_assert_cmpint(memtx_writeq(s, address, pattern), ==, MEMTX_OK);
+            g_assert_cmphex(qtest_readq(s, address), ==, pattern);
+            g_assert_cmpint(memtx_readl(s, address, &actual), ==, MEMTX_OK);
+            g_assert_cmphex(actual, ==, pattern >> 32);
+            g_assert_cmpint(memtx_readl(s, address + 4, &actual), ==, MEMTX_OK);
+            g_assert_cmphex(actual, ==, (uint32_t)pattern);
+            g_assert_cmpint(memtx_writel(s, address, high), ==, MEMTX_OK);
+            g_assert_cmphex(qtest_readq(s, address), ==,
+                            (uint64_t)high << 32 | (uint32_t)pattern);
+            g_assert_cmpint(memtx_writel(s, address + 4, low), ==, MEMTX_OK);
+            g_assert_cmphex(qtest_readq(s, address), ==,
+                            (uint64_t)high << 32 | low);
+            ifb_head(s, 0);
+        }
+    }
+    for (unsigned index = 0; index < 128; index++) {
+        uint64_t expected = (uint64_t)(0xa13579bdU ^ index) << 32 |
+                            (0x6e2c4a80U ^ index);
+
+        g_assert_cmphex(qtest_readq(s, RE + index * 8), ==, expected);
+    }
+    triangle_irq_levels(s, 1);
+    qtest_quit(s);
+}
+
+static void test_ifb_transactions(void)
+{
+    /* Literal headers exercise independent known bus/address classes. */
+    static const struct {
+        unsigned offset, size;
+        uint64_t value, header, data;
+    } writes[] = {
+        { 0x1000, 8, 0x1122334455667788ULL, 0x1900,
+          0x1122334455667788ULL },
+        { 0x2084, 4, 0x89abcdef, 0x0a10, 0x89abcdef },
+        { 0x2008, 8, 0x0000022811223344ULL, 0x1a01,
+          0x0000022811223344ULL },
+        { 0x2070, 8, 0x0102030405060708ULL, 0x1a0e,
+          0x0102030405060708ULL },
+        { 0x2020, 8, 0x8899aabbccddeeffULL, 0x1a04,
+          0x8899aabbccddeeffULL },
+        { 0x2134, 4, 0x13579bdf, 0x0a26, 0x13579bdf },
+        { 0x3008, 4, 0xdeadbeef, 0x1301, 0xdeadbeef00000000ULL },
+        { 0x3048, 4, 1, 0x1309, 0x0000000100000000ULL },
+        { 0x21f0, 4, 0x76543210, 0x123e, 0x7654321000000000ULL },
+        { 0x21f8, 4, 0, 0x123f, 0 },
+        { 0x3070, 4, 0x10203040, 0x130e, 0x1020304000000000ULL },
+        { 0x3078, 4, 0, 0x130f, 0 },
+    };
+    QTestState *s = triangle_start("");
+    IfbSnapshot before, after;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(writes); i++) {
+        qtest_writeq(s, RE + i * 8, 0xf00dface87654321ULL);
+        qtest_writeq(s, RE + 0x200 + i * 8, UINT64_MAX);
+        ifb_head(s, i);
+        g_assert_cmpint(memtx_write(s, RE + writes[i].offset,
+                                    writes[i].value, writes[i].size),
+                        ==, MEMTX_OK);
+        ifb_entry(s, i, writes[i].header << 32, writes[i].data);
+        ifb_head(s, i + 1);
+    }
+    tile(s, 0, 0, 3);
+    qtest_writel(s, MTE, 0);
+    qtest_writel(s, MTE + 8, UINT32_MAX);
+    qtest_writel(s, MTE + 0x18, 0x11223344);
+    qtest_writel(s, MTE + 0x48, 1);
+    qtest_writel(s, MTE + 0x30, xy(0, 0));
+    {
+        unsigned head = ifb_next(s);
+
+        g_assert_cmpint(memtx_writel(s, MTE + 0x838, xy(3, 0)),
+                        ==, MEMTX_OK);
+        ifb_entry(s, head, 0x330700000000ULL, 0x0003000000000000ULL);
+        ifb_head(s, (head + 1) % 64);
+        g_assert_cmphex(qtest_readl(s, 0x30000), ==, 0x11223344);
+        qtest_writel(s, MTE + 8, 0);
+        head = ifb_next(s);
+        g_assert_cmpint(memtx_writel(s, MTE + 0x810, 0x89abcdef),
+                        ==, MEMTX_OK);
+        ifb_entry(s, head, 0x330200000000ULL, 0x89abcdef00000000ULL);
+        ifb_head(s, (head + 1) % 64);
+        g_assert_cmphex(qtest_readl(s, 0x30000), ==, 0x11223344);
+    }
+    tile(s, 0, 0, 0x7fff);
+    ifb_snapshot(s, &before);
+    g_assert_cmpint(memtx_writel(s, MTE + 0x838, xy(3, 0)),
+                    ==, MEMTX_ERROR);
+    ifb_snapshot(s, &after);
+    g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
+    g_assert_cmphex(qtest_readl(s, 0x30000), ==, 0x11223344);
+    {
+        unsigned head = ifb_next(s);
+
+        for (unsigned n = 0; n < 2; n++) {
+            qtest_writel(s, DE + 0xd0, 0x01020304);
+            ifb_entry(s, (head + n) % 64, 0x121a00000000ULL,
+                       0x0102030400000000ULL);
+            ifb_head(s, (head + n + 1) % 64);
+        }
+    }
+    ifb_snapshot(s, &before);
+    g_assert_cmphex(qtest_readl(s, DE + 8), ==, 0x228);
+    g_assert_cmpint(memtx_writel(s, RE + 0x400, UINT32_MAX), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(s, RE + 0x400), ==, 0);
+    g_assert_cmpint(memtx_writel(s, STATUS + 8, 0x12345678), ==, MEMTX_OK);
+    qtest_writeq(s, CRIME + 0x18, 1U << 4);
+    g_assert_cmpint(memtx_writel(s, RE + 0x1000, 1), !=, MEMTX_OK);
+    g_assert_cmpint(memtx_writel(s, DE + 0x20, 1), !=, MEMTX_OK);
+    g_assert_cmpint(memtx_writel(s, DE + 0x1f8, 1), !=, MEMTX_OK);
+    g_assert_cmpint(memtx_writel(s, RE + 0x408, 0), !=, MEMTX_OK);
+    ifb_snapshot(s, &after);
+    g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
+    triangle_irq_levels(s, 1);
+    qtest_quit(s);
+}
+
+static void ifb_varied_write(QTestState *s, unsigned n)
+{
+    switch (n % 4) {
+    case 0:
+        qtest_writel(s, DE + 0xd0, 0x54000000U + n);
+        break;
+    case 1:
+        qtest_writel(s, DE + 0x84, 0x65000000U + n);
+        break;
+    case 2:
+        qtest_writeq(s, RE + 0x1008, 0x1122334455000000ULL | n);
+        break;
+    case 3:
+        qtest_writel(s, MTE + 8, 0x87000000U + n);
+        break;
+    }
+}
+
+static void test_ifb_wrap(void)
+{
+    QTestState *s = triangle_start("");
+
+    for (unsigned n = 0; n < 64; n++) {
+        qtest_writel(s, DE + 0xd0, 0x11000000U + n);
+        ifb_head(s, (n + 1) % 64);
+    }
+    for (unsigned n = 0; n < 64; n++) {
+        ifb_entry(s, n, 0x121a00000000ULL,
+                   (uint64_t)(0x11000000U + n) << 32);
+    }
+    qtest_system_reset(s);
+    ifb_head(s, 0);
+    for (unsigned n = 0; n < 64; n++) {
+        ifb_entry(s, n, 0, 0);
+    }
+    for (unsigned n = 0; n < 200; n++) {
+        ifb_varied_write(s, n);
+    }
+    ifb_head(s, 8);
+    for (unsigned slot = 0; slot < 64; slot++) {
+        unsigned n = slot < 8 ? 192 + slot : 128 + slot;
+        uint64_t header = 0, data = 0;
+
+        switch (n % 4) {
+        case 0:
+            header = 0x121a;
+            data = (uint64_t)(0x54000000U + n) << 32;
+            break;
+        case 1:
+            header = 0x0a10;
+            data = 0x65000000U + n;
+            break;
+        case 2:
+            header = 0x1901;
+            data = 0x1122334455000000ULL | n;
+            break;
+        case 3:
+            header = 0x1301;
+            data = (uint64_t)(0x87000000U + n) << 32;
+            break;
+        }
+        ifb_entry(s, slot, header << 32, data);
+    }
+    qtest_quit(s);
+}
+
+static void ifb_refusal(QTestState *s, const Shape *c, const char *path,
+                        uint64_t address, unsigned size, bool write)
+{
+    const unsigned status[] = { 0x10, 0x18, 0x40, 0x48, 0x250, 0x258 };
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS], saved[6], value;
+    IfbSnapshot old_ifb, new_ifb;
+    unsigned irq = 0;
+
+    save_paired_renderer(s, path, before);
+    ifb_snapshot(s, &old_ifb);
+    for (unsigned i = 0; i < ARRAY_SIZE(status); i++) {
+        saved[i] = qtest_readq(s, CRIME + status[i]);
+    }
+    for (unsigned i = 0; i < 5; i++) {
+        irq |= qtest_get_irq(s, i) << i;
+    }
+    g_assert_cmpint(write ? memtx_write(s, address, UINT64_MAX, size) :
+                    memtx_read(s, address, &value, size), !=, MEMTX_OK);
+    ifb_snapshot(s, &new_ifb);
+    g_assert_cmpmem(&old_ifb, sizeof(old_ifb), &new_ifb, sizeof(new_ifb));
+    for (unsigned i = 0; i < ARRAY_SIZE(status); i++) {
+        g_assert_cmphex(qtest_readq(s, CRIME + status[i]), ==, saved[i]);
+    }
+    for (unsigned i = 0; i < 5; i++) {
+        g_assert_cmpint(qtest_get_irq(s, i), ==, !!(irq & (1U << i)));
+    }
+    triangle_pixels(s, c, triangle_empty, 0, 3, UINT32_MAX);
+    save_paired_renderer(s, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+}
+
+static void test_ifb_atomic(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-ifb-atomic-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    const struct { unsigned offset, size; } bad[] = {
+        {0, 1}, {0x200, 2}, {1, 4}, {4, 8}, {0x1fc, 8},
+        {0x3fc, 8}, {0x3fd, 4}, {0x404, 4}, {0x408, 4}, {0x800, 8},
+    };
+    QTestState *s = triangle_start("");
+    Shape c = triangle_prepare(s, 0, 0, 0);
+    unsigned head;
+    IfbSnapshot before, after;
+
+    triangle_vertices(s, triangle_integer, NULL, true);
+    head = ifb_next(s);
+    qtest_writeq(s, RE + 0x200, 0x321a00000000ULL);
+    qtest_writeq(s, RE, (uint64_t)TRIANGLE_COLOR << 32);
+    ifb_head(s, head);
+    triangle_pixels(s, &c, triangle_empty, 0, 3, UINT32_MAX);
+    for (unsigned n = 0; n < ARRAY_SIZE(bad); n++) {
+        ifb_refusal(s, &c, path, RE + bad[n].offset, bad[n].size, true);
+        ifb_refusal(s, &c, path, RE + bad[n].offset, bad[n].size, false);
+    }
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x200);
+    qtest_writel(s, DE + 0x1b0, 6);
+    head = ifb_next(s);
+    g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==, MEMTX_OK);
+    ifb_entry(s, head, 0x321a00000000ULL, (uint64_t)TRIANGLE_COLOR << 32);
+    ifb_head(s, (head + 1) % 64);
+    triangle_pixels(s, &c, triangle_ten, TRIANGLE_COLOR, 6, UINT32_MAX);
+    shape_memory(s, &c, NULL);
+    head = ifb_next(s);
+    g_assert_cmpint(memtx_writeq(s, DE + 0x870, 0x1122334455667788ULL),
+                    ==, MEMTX_OK);
+    ifb_entry(s, head, 0x3a0e00000000ULL, 0x1122334455667788ULL);
+    ifb_head(s, (head + 1) % 64);
+    triangle_pixels(s, &c, triangle_ten, TRIANGLE_COLOR, 6, UINT32_MAX);
+    c = triangle_prepare(s, 0, 125, 125);
+    {
+        const int vertex[3][2] = {
+            {126 * 64, 126 * 64}, {130 * 64, 126 * 64},
+            {126 * 64, 130 * 64},
+        };
+
+        triangle_vertices(s, vertex, NULL, true);
+    }
+    tile(s, 0, 16, 0x7fff);
+    ifb_snapshot(s, &before);
+    triangle_failure(s, &c, path, DE + 0x8d0, 0xfeedbeef, 4);
+    ifb_snapshot(s, &after);
+    g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
+    triangle_irq_levels(s, 1);
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_ifb_restore(void)
+{
+    QTestState *s = triangle_start("");
+    Shape c = triangle_prepare(s, 0, 0, 0);
+    uint64_t payload;
+    unsigned marked, head;
+
+    triangle_vertices(s, triangle_integer, NULL, true);
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x200);
+    qtest_writel(s, DE + 0x1b0, 6);
+    marked = ifb_next(s);
+    qtest_writel(s, DE + 0x8d0, TRIANGLE_COLOR);
+    qtest_writel(s, DE + 0xd0, 0xaabbccdd);
+    qtest_writel(s, DE + 0x84, triangle_raw(64));
+    ifb_entry(s, marked, 0x321a00000000ULL,
+               (uint64_t)TRIANGLE_COLOR << 32);
+    ifb_entry(s, (marked + 1) % 64, 0x121a00000000ULL,
+               0xaabbccdd00000000ULL);
+    ifb_entry(s, (marked + 2) % 64, 0x0a1000000000ULL, triangle_raw(64));
+    head = ifb_next(s);
+    shape_memory(s, &c, NULL);
+    payload = qtest_readq(s, RE + marked * 8);
+    qtest_writel(s, DE + 0xd0, payload >> 32);
+    ifb_entry(s, head, 0x121a00000000ULL, payload);
+    ifb_head(s, (head + 1) % 64);
+    triangle_pixels(s, &c, triangle_empty, 0, 3, UINT32_MAX);
+    head = ifb_next(s);
+    qtest_writel(s, DE + 0x9f0, 0xabcdef01);
+    ifb_entry(s, head, 0x323e00000000ULL, 0xabcdef0100000000ULL);
+    ifb_head(s, (head + 1) % 64);
+    triangle_pixels(s, &c, triangle_ten, TRIANGLE_COLOR, 6, UINT32_MAX);
+    triangle_irq_levels(s, 1);
+    qtest_quit(s);
+}
+
+static void test_ifb_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-ifb-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *from = triangle_start("");
+    QTestState *to = triangle_start("-incoming defer");
+    uint64_t words[RENDER_WORDS];
+    IfbSnapshot before, after;
+
+    for (unsigned n = 0; n < 97; n++) {
+        ifb_varied_write(from, n);
+    }
+    qtest_writeq(from, RE + 0x3f8, 0xfedcba9876543210ULL);
+    qtest_writeq(from, RE + 0x18, 0x1020304050607080ULL);
+    ifb_snapshot(from, &before);
+    save_paired_renderer(from, path, words);
+    ifb_snapshot(from, &after);
+    g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    ifb_snapshot(to, &after);
+    g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
+    ifb_varied_write(from, 97);
+    ifb_varied_write(to, 97);
+    ifb_snapshot(from, &before);
+    ifb_snapshot(to, &after);
+    g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
+    ifb_head(to, 34);
+    qtest_system_reset(to);
+    ifb_head(to, 0);
+    for (unsigned n = 0; n < 64; n++) {
+        ifb_entry(to, n, 0, 0);
+    }
+    triangle_irq_levels(to, 0);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(sock);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_ifb_profiles(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        QTestState *s = start_profile(legacy ? "legacy-software" : "1.5",
+                                      false, !legacy, "");
+        uint64_t value;
+
+        g_assert_cmpint(memtx_writeq(s, RE, UINT64_MAX), !=, MEMTX_OK);
+        g_assert_cmpint(memtx_readq(s, RE + 0x3f8, &value), !=, MEMTX_OK);
+        if (!legacy) {
+            qtest_writeq(s, RE + 0x1700, 0x8000000380000009ULL);
+            qtest_writel(s, MTE + 8, UINT32_MAX);
+            ifb_head(s, 0);
+        }
+        qtest_quit(s);
+    }
+}
+
+static void test_ifb_invalid_stream(void)
+{
+    const char name[] = "sgi-crime/renderer";
+    g_autofree char *dir = g_dir_make_tmp("crime-ifb-invalid-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *incoming = g_strdup_printf("exec:cat %s", quoted);
+    g_autofree char *stream = NULL;
+    QTestState *from = triangle_start("");
+    QTestState *to = triangle_start("-incoming defer");
+    uint64_t words[RENDER_WORDS];
+    gsize length;
+    char *state;
+
+    qtest_writel(from, DE + 0xd0, 0x12345678);
+    save_paired_renderer(from, path, words);
+    g_assert_true(g_file_get_contents(path, &stream, &length, NULL));
+    state = memmem(stream, length, name, sizeof(name) - 1);
+    g_assert_nonnull(state);
+    state += sizeof(name) - 1;
+    g_assert_cmpuint(length - (state - stream), >=, 4 + 476 * 8 + 1);
+    g_assert_cmphex((uint8_t)state[4 + 476 * 8], ==, 1);
+    state[4 + 476 * 8] = 64;
+    g_assert_true(g_file_set_contents(path, stream, length, NULL));
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s,'exit-on-error':false}}",
+        incoming);
+    sgi_wait_migration(to, "failed");
+    ifb_head(to, 0);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     take_group_paths(&argc, argv);
@@ -8747,5 +9201,14 @@ int main(int argc, char **argv)
              test_gl_window_coordinates);
     add_case("sgi/crime/render/gl-window/clipping", test_gl_window_clipping);
     add_case("sgi/crime/render/gl-window/restore-word", test_gl_restore_word);
+    add_case("sgi/crime/render/ifb/ram", test_ifb_ram);
+    add_case("sgi/crime/render/ifb/transactions", test_ifb_transactions);
+    add_case("sgi/crime/render/ifb/wrap", test_ifb_wrap);
+    add_case("sgi/crime/render/ifb/atomic", test_ifb_atomic);
+    add_case("sgi/crime/render/ifb/restore", test_ifb_restore);
+    add_case("sgi/crime/render/ifb/migration", test_ifb_migration);
+    add_case("sgi/crime/render/ifb/profiles", test_ifb_profiles);
+    add_case("sgi/crime/render/ifb/invalid-stream",
+             test_ifb_invalid_stream);
     return g_test_run();
 }
