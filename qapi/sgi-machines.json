@@ -238,6 +238,8 @@
 #
 # @gpio-classic: IOC3's board-wired classic-product input
 #
+# @bridge-widget-revision: onboard Bridge silicon revision
+#
 # @board-records: virtual identities of the fitted boards
 #
 # Since: 11.2
@@ -245,6 +247,7 @@
 { 'struct': 'SGIModelHeartIdentity',
   'data': { 'widget-revision': 'uint8', 'widget-id-64': 'uint64',
             'widget-status-f-measured': 'bool', 'gpio-classic': 'bool',
+            'bridge-widget-revision': 'uint8',
             'board-records': ['SGIModelBoardRecord'] } }
 
 ##

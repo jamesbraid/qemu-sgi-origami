@@ -749,6 +749,8 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
                                   OBJECT(firmware), errp)) {
         return false;
     }
+    qdev_prop_set_uint32(bridge, "revision",
+                         s->node->heart->bridge_widget_revision);
     qdev_prop_set_bit(bridge, "flash-select", s->flash_strap);
     /* The Octane2's empty second select read 0xffff, not a bus error. */
     qdev_prop_set_bit(bridge, "flash-empty-reads-high", true);
