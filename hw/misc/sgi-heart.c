@@ -767,6 +767,18 @@ static void heart_map_bank(SGIHeartState *s, unsigned bank)
     unsigned units = (d >> 16 & 0x3f) + 1;
 
     memory_region_transaction_begin();
+    if (s->sdram_base_mapped[bank]) {
+        memory_region_del_subregion(&s->sdram_base,
+                                    &s->sdram_base_views[bank]);
+        s->sdram_base_mapped[bank] = false;
+    }
+    if ((d & 0x80000000U) && base == HEART_RAM_BASE) {
+        /* Same precedence among banks as the views mapped below. */
+        memory_region_add_subregion_overlap(&s->sdram_base, 0,
+                                            &s->sdram_base_views[bank],
+                                            bank + 1);
+        s->sdram_base_mapped[bank] = true;
+    }
     for (unsigned unit = 0; unit < HEART_MAX_UNITS; unit++) {
         if (s->mapped[bank][unit]) {
             memory_region_del_subregion(memory, &s->views[bank][unit]);
@@ -1156,6 +1168,12 @@ static void heart_realize(DeviceState *dev, Error **errp)
                 packet_name, capacity ? &s->views[bank][unit] : &s->packet_ram,
                 0, HEART_UNIT);
         }
+        g_autofree char *base_name =
+            g_strdup_printf("heart.sdram-base-bank%u", bank);
+
+        memory_region_init_alias(&s->sdram_base_views[bank], OBJECT(dev),
+                                 base_name, &s->views[bank][0], 0,
+                                 HEART_SDRAM_BASE_SIZE);
     }
 }
 
@@ -1200,6 +1218,10 @@ static void heart_init(Object *obj)
                                  &s->packet_ram, 0, 16);
     }
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->packet);
+    /* Not mapped by HEART: the board places it where the processor sees it. */
+    memory_region_init(&s->sdram_base, obj, "heart.sdram-base",
+                       HEART_SDRAM_BASE_SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->sdram_base);
     qdev_init_gpio_out_named(DEVICE(obj), s->processor, "processor", 5);
     s->onewire_bus = onewire_create_bus(DEVICE(obj), "onewire");
     s->onewire_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,

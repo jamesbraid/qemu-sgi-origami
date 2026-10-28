@@ -1730,16 +1730,18 @@ static void test_low_ram(gconstpointer data)
     g_assert_cmphex(wide, ==, 0x1122334455667788ULL);
     g_assert_cmphex(qtest_readw(qts, MPCONF + 0x14), ==, 0x5a6b);
 
+    /* The window is RAM, so a reset leaves what the guest wrote. */
     for (uint64_t addr = 0; addr < LOW_RAM_SIZE; addr += 8) {
-        g_assert_cmpuint(memtx_writeq(qts, addr, UINT64_MAX), ==,
-                         MEMTX_OK);
+        g_assert_cmpuint(memtx_writeq(qts, addr, ~addr), ==, MEMTX_OK);
     }
     qtest_system_reset(qts);
     for (uint64_t addr = 0; addr < LOW_RAM_SIZE; addr += 8) {
         g_assert_cmpuint(memtx_readq(qts, addr, &wide), ==, MEMTX_OK);
-        g_assert_cmphex(wide, ==, 0);
+        g_assert_cmphex(wide, ==, ~addr);
     }
-    g_assert_cmphex(qtest_readb(qts, 0x3fff), ==, 0);
+    /* The processor still cannot reach those bytes at their own address. */
+    g_assert_cmpuint(memtx_readq(qts, HIGH_GUARD + 0x3ff8, &wide), !=,
+                     MEMTX_OK);
     qtest_quit(qts);
 }
 
@@ -4256,6 +4258,84 @@ static void test_scsi_dma_to_heart_ram(void)
     qtest_quit(qts);
 }
 
+/*
+ * The window's bytes are the first 16 KiB of SDRAM: a bus master that
+ * addresses SDRAM at 0x20000000 sees what the processor stored at zero,
+ * and the processor sees what the bus master stored. What a physical bus
+ * master reaches there is unknown; this checks the model's path only.
+ */
+static void test_low_window_shares_sdram_base(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+    const uint8_t pattern[8] = { 0x10, 0x21, 0x32, 0x43,
+                                 0x54, 0x65, 0x76, 0x87 };
+    const uint8_t clear[8] = { 0 };
+    uint8_t seen[sizeof(pattern)];
+
+    qtest_writel(qts, CFG(0) + 0x14, 0x10000000);
+    qtest_writel(qts, CFG(0) + 0x04, 0x00000006);
+    qtest_writel(qts, BRIDGE + 0x200 + 4, 0x1100);
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+
+    /* Processor store at 0x3ff8, bus master read of SDRAM offset 0x3ff8. */
+    qtest_memwrite(qts, 0x3ff8, pattern, sizeof(pattern));
+    qtest_memwrite(qts, 0x100, clear, sizeof(clear));
+    g_assert_cmphex(octane_isp_ram_transfer(qts, 1, 0xa0003ff8), ==,
+                    ISP_MBOX_COMPLETE);
+    /* Bus master store at SDRAM offset 0x100, processor read at 0x100. */
+    g_assert_cmphex(octane_isp_ram_transfer(qts, 3, 0xa0000100), ==,
+                    ISP_MBOX_COMPLETE);
+    qtest_memread(qts, 0x100, seen, sizeof(seen));
+    g_assert_cmpmem(seen, sizeof(seen), pattern, sizeof(pattern));
+    /*
+     * Unchanged and unmeasured: the DMA view's guard around the bank edge
+     * sends the first eight bytes through the processor view, which faults.
+     */
+    g_assert_cmphex(octane_isp_ram_transfer(qts, 1, 0xa0000000), ==,
+                    ISP_MBOX_HOST_ERROR);
+    qtest_quit(qts);
+}
+
+/* The window is whatever SDRAM sits at 0x20000000, not a fixed bank. */
+static void test_low_window_follows_bank_descriptor(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+    uint8_t byte;
+
+    g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==,
+                    octane2 ? OCTANE2_BANK0 : BANK0);
+    g_assert_cmpuint(memtx_writeb(qts, 0x10, 0x5c), ==, MEMTX_OK);
+    qtest_writel(qts, HEART + 0x20, (octane2 ? OCTANE2_BANK0 : BANK0) + 1);
+    g_assert_cmpuint(memtx_readb(qts, 0x10, &byte), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_readb(qts, 0x3fff, &byte), !=, MEMTX_OK);
+    qtest_writel(qts, HEART + 0x20, octane2 ? OCTANE2_BANK0 : BANK0);
+    g_assert_cmpuint(memtx_readb(qts, 0x10, &byte), ==, MEMTX_OK);
+    g_assert_cmphex(byte, ==, 0x5c);
+    qtest_quit(qts);
+}
+
+/*
+ * ECC generation checks processor accesses to SDRAM at 0x20000000 and up.
+ * The low window aliases the bank views below those checks, so it sees none
+ * of them. Whether the hardware's window is checked is unknown.
+ */
+static void test_low_window_skips_ecc_generation(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+    uint8_t byte;
+
+    qtest_writeq(qts, HEART, (1ULL << 15) | 1 | (1ULL << 19) | (1ULL << 20));
+    g_assert_cmpuint(memtx_writeb(qts, HIGH_RAM, 0xff), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_writeb(qts, 0x10, 0x6d), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readb(qts, 0x10, &byte), ==, MEMTX_OK);
+    g_assert_cmphex(byte, ==, 0x6d);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030), ==, 0);
+    qtest_quit(qts);
+}
+
 static uint16_t octane_isp_init_queue(QTestState *qts, uint16_t command,
                                       uint32_t pci_address)
 {
@@ -4779,7 +4859,6 @@ static void test_migration_state(void)
 {
     uint8_t low_pattern[LOW_RAM_SIZE];
     uint8_t low_seen[LOW_RAM_SIZE];
-    uint8_t low_zero[LOW_RAM_SIZE] = { 0 };
     g_autofree char *directory = NULL;
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
@@ -4918,7 +4997,9 @@ static void test_migration_state(void)
     g_assert_cmphex(qtest_readq(to, HEART + 0xb0), ==, 0);
     g_assert_cmphex(qtest_readq(to, HEART + 0x30000), ==, 0);
     qtest_memread(to, 0, low_seen, sizeof(low_seen));
-    g_assert_cmpmem(low_seen, sizeof(low_seen), low_zero, sizeof(low_zero));
+    /* The window is SDRAM, so a reset keeps the migrated bytes. */
+    g_assert_cmpmem(low_seen, sizeof(low_seen), low_pattern,
+                    sizeof(low_pattern));
 
     qtest_quit(to);
     qtest_quit(from);
@@ -4961,11 +5042,10 @@ static void test_octane2_low_ram_migration(void)
     g_assert_cmpuint(memtx_readb(to, LOW_RAM_SIZE - 1, &byte), ==,
                      MEMTX_OK);
     g_assert_cmphex(byte, ==, pattern[LOW_RAM_SIZE - 1]);
+    /* The window is SDRAM, so a reset keeps the migrated bytes. */
     qtest_system_reset(to);
     qtest_memread(to, 0, seen, sizeof(seen));
-    for (unsigned i = 0; i < sizeof(seen); i++) {
-        g_assert_cmphex(seen[i], ==, 0);
-    }
+    g_assert_cmpmem(seen, sizeof(seen), pattern, sizeof(pattern));
     qtest_quit(to);
     qtest_quit(from);
     if (g_file_test(socket, G_FILE_TEST_EXISTS)) {
@@ -5146,6 +5226,23 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/pci-bar-separation", test_pci_bar_separation);
     qtest_add_func("/octane/scsi-dma-to-heart-ram",
                    test_scsi_dma_to_heart_ram);
+    for (int octane2 = 0; octane2 < 2; octane2++) {
+        const char *machine = octane2 ? "/octane2" : "/octane";
+        g_autofree char *path;
+
+        path = g_strdup_printf("%s/low-window-shares-sdram-base", machine);
+        qtest_add_data_func(path, GINT_TO_POINTER(octane2),
+                            test_low_window_shares_sdram_base);
+        g_free(path);
+        path = g_strdup_printf("%s/low-window-follows-bank-descriptor",
+                               machine);
+        qtest_add_data_func(path, GINT_TO_POINTER(octane2),
+                            test_low_window_follows_bank_descriptor);
+        g_free(path);
+        path = g_strdup_printf("%s/low-window-skips-ecc-generation", machine);
+        qtest_add_data_func(path, GINT_TO_POINTER(octane2),
+                            test_low_window_skips_ecc_generation);
+    }
     qtest_add_func("/octane2/scsi-target1-read",
                    test_octane2_scsi_target1_read);
     qtest_add_func("/octane/uncached-attribute-zero",
