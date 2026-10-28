@@ -532,6 +532,23 @@
 #define ODSY_DISPMODE_COUNT 32
 #define ODSY_DISPMODE_GROUP_SHIFT 4
 #define ODSY_DISPMODE_GROUP_MASK 0x1f
+/*
+ * Bits 11:9 of an RGB display mode follow the visual's channel width. In a
+ * model run the IRIX 6.5.30 X server gave windows on its TrueColor visuals
+ * these modes (OBSERVED, single- and double-buffered variants alike):
+ * depth 12 (4 bits a channel) 0x4b59a6 and 0x9659a7, field 4; depth 15
+ * (5 bits) 0x4b57a6 and 0x9657a7, field 3; depth 24 0x5215a6 and 0x9655a6,
+ * field 2; depth 30 0x5213a6 and 0x9653a6, field 1, or 0x600da6 and
+ * 0xa40da6, field 6. INFERRED: that the board shows only a narrow visual's
+ * top bits of each channel, as its pixel holds no more. A GL client on the
+ * 12-bit visual sends one colour as the float nibble * 0x111 / 4096 in one
+ * draw and as the byte nibble << 4 in another, and only this reading shows
+ * the two alike.
+ */
+#define ODSY_DISPMODE_WIDTH_SHIFT 9
+#define ODSY_DISPMODE_WIDTH_MASK 0x7
+#define ODSY_DISPMODE_WIDTH_4 4
+#define ODSY_DISPMODE_WIDTH_5 3
 
 /*
  * Colour resolution at scanout. The plane keeps what the guest drew; the
@@ -3588,6 +3605,24 @@ static uint32_t odyssey_display_group(SGIOdysseyState *s, uint32_t main_id)
 }
 
 /*
+ * The red, green and blue bytes of plane word w (0xRRGGBBAA) as RGB display
+ * mode `mode` shows them: a 4- or 5-bit visual's channel keeps its top bits,
+ * repeated down to fill the byte as a full-scale value. The planes keep the
+ * byte drawn; how the board itself stores a narrow pixel is UNKNOWN.
+ */
+static uint32_t odyssey_display_channel(uint32_t mode, uint32_t c)
+{
+    switch ((mode >> ODSY_DISPMODE_WIDTH_SHIFT) & ODSY_DISPMODE_WIDTH_MASK) {
+    case ODSY_DISPMODE_WIDTH_4:
+        return (c & 0xf0) | (c >> 4);
+    case ODSY_DISPMODE_WIDTH_5:
+        return (c & 0xf8) | (c >> 5);
+    default:
+        return c;
+    }
+}
+
+/*
  * Resolve the colour buffers at scanout. Per pixel: the id plane's main
  * drawable (bits 7:3) selects the buffer shown, by its ODSY_DISPLAYED_BUFFER
  * bit, and display mode 0x2900 + id, whose bits 8:4 are the group. INFERRED:
@@ -3627,10 +3662,17 @@ static void odyssey_resolve_row(void *opaque, unsigned y, uint32_t *dst)
             continue;
         }
         if (group >= ODSY_GAMMA_GROUP) {
-            dst[x] = odyssey_gamma(s, word >> 24, ODSY_LUT_RED_SHIFT) << 16 |
-                     odyssey_gamma(s, (word >> 16) & 0xff,
+            uint32_t mode = s->dispmode[main_id];
+
+            dst[x] = odyssey_gamma(s, odyssey_display_channel(mode,
+                                                              word >> 24),
+                                   ODSY_LUT_RED_SHIFT) << 16 |
+                     odyssey_gamma(s, odyssey_display_channel(mode,
+                                          (word >> 16) & 0xff),
                                    ODSY_LUT_GREEN_SHIFT) << 8 |
-                     odyssey_gamma(s, (word >> 8) & 0xff, ODSY_LUT_BLUE_SHIFT);
+                     odyssey_gamma(s, odyssey_display_channel(mode,
+                                          (word >> 8) & 0xff),
+                                   ODSY_LUT_BLUE_SHIFT);
             continue;
         }
         if (group == ODSY_CMAP_UNVERIFIED_GROUP &&

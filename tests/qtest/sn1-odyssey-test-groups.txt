@@ -39,6 +39,7 @@ board /mips64/sn1/odyssey/framebuffer-pixel-accessor-bounds
 board /mips64/sn1/odyssey/scanout-wipe-repaint-reload
 board /mips64/sn1/odyssey/scanout-display-mode-recolours
 board /mips64/sn1/odyssey/scanout-rgb-through-gamma
+board /mips64/sn1/odyssey/scanout-rgb-narrow-visuals
 board /mips64/sn1/odyssey/scanout-paint-order
 cursor /mips64/sn1/odyssey/cursor
 board /mips64/sn1/odyssey/backend-colormap-word-stream
