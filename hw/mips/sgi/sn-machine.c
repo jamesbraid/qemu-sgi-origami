@@ -6414,41 +6414,80 @@ static bool sgi_machine_build_l1_peer_links(SGIMachineState *s,
 }
 
 /*
- * Each I-brick's L1: a controller of the brick's own module, reached from
- * the L1 of the C-brick whose XIO cable ends on that module's crossbar.
- * The link between them is an in-process call with no wire format. The
- * brick record its L1 serves carries the IO7's station address.
+ * The slot number of the G-brick whose pipe sits on @crossbar_index, the
+ * crossbar an I/O brick's XIO cable ends on, or 0 for none. The I/O brick's
+ * L1 lists that G-brick in its attached-brick reply.
+ */
+static unsigned int sgi_machine_pipe_brick_number(
+    SGIMachineState *s, size_t crossbar_index,
+    const SGIModelModule **modules, size_t module_count,
+    const SGIModelIoBoard **boards, size_t board_count)
+{
+    for (size_t pipe = 0; s->pipe_record && pipe < board_count; pipe++) {
+        const SGIModelXioAttachment *where = s->pipe_record_attachment[pipe];
+
+        if (!s->pipe_record[pipe] || !where ||
+            boards[pipe]->preset != SGI_MODEL_IO_BOARD_PRESET_KONA ||
+            where->crossbar_index < 0 ||
+            (size_t)where->crossbar_index != crossbar_index ||
+            boards[pipe]->module_index >= module_count) {
+            continue;
+        }
+        return modules[boards[pipe]->module_index]->initial_module_number;
+    }
+    return 0;
+}
+
+/*
+ * Each I/O brick's L1, an I-brick's or an N-brick's: a controller of the
+ * brick's own module, reached from the L1 of every C-brick whose XIO cable
+ * ends on that module's crossbars. An I-brick has one such C-brick, an
+ * N-brick up to four. The link between them is an in-process call with no
+ * wire format. The I-brick's record its L1 serves carries the IO7's
+ * station address. A C-brick whose chip has a graphics pipe on its other
+ * port also learns the pipe's G-brick, which its I/O brick's attached-brick
+ * reply names.
  */
 static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
     const SGIModelTopology *t, Error **errp)
 {
     g_autofree const SGIModelModule **modules = NULL;
     g_autofree const SGIModelCrossbar **crossbars = NULL;
-    size_t module_count, crossbar_count;
+    g_autofree const SGIModelIoBoard **boards = NULL;
+    size_t module_count, crossbar_count, board_count;
     unsigned int index = 0;
 
     modules = sgi_model_module_array(t->modules, &module_count);
     crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
+    boards = sgi_model_io_board_array(t->io_boards, &board_count);
     for (const SGIModelControllerList *entry = t->controllers; entry;
          entry = entry->next, index++) {
         const SGIModelController *controller = entry->value;
         const SGIModelModule *module;
         g_autofree char *module_name = NULL;
         g_autofree char *mac = NULL;
-        DeviceState *l1, *host = NULL;
+        g_autofree DeviceState **hosts = NULL;
+        g_autofree unsigned int *gfx_bays = NULL;
+        DeviceState *l1;
+        unsigned int host_count = 0;
         unsigned int board_index = 0;
         bool found_board = false;
+        bool nbrick;
 
         if (!s->l1_config || !s->l1_config[index].has_profile ||
-            s->l1_config[index].profile != SGI_MODEL_L1_PROFILE_IBRICK) {
+            (s->l1_config[index].profile != SGI_MODEL_L1_PROFILE_IBRICK &&
+             s->l1_config[index].profile != SGI_MODEL_L1_PROFILE_NBRICK)) {
             continue;
         }
+        nbrick = s->l1_config[index].profile == SGI_MODEL_L1_PROFILE_NBRICK;
         if (controller->module_index >= module_count) {
-            error_setg(errp, "I-brick L1 '%s' names an absent module",
+            error_setg(errp, "I/O brick L1 '%s' names an absent module",
                        controller->id);
             return false;
         }
         module = modules[controller->module_index];
+        hosts = g_new0(DeviceState *, s->num_nodes);
+        gfx_bays = g_new0(unsigned int, s->num_nodes);
         for (const SGIModelXioCableList *cable = t->xio_cables; cable;
              cable = cable->next) {
             const SGIModelXioEndList *ends = cable->value->ends;
@@ -6464,16 +6503,20 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
                     controller->module_index) {
                 continue;
             }
-            if (host || node_end->index >= s->num_nodes) {
-                error_setg(errp, "I-brick L1 '%s' takes exactly one C-brick",
-                           controller->id);
+            if ((host_count && !nbrick) || node_end->index >= s->num_nodes) {
+                error_setg(errp, "I/O brick L1 '%s' takes exactly one "
+                           "C-brick", controller->id);
                 return false;
             }
-            host = SN1_NODE(s->bedrock_nodes[node_end->index])->l1;
+            hosts[host_count] = DEVICE(SN1_NODE(
+                s->bedrock_nodes[node_end->index])->l1);
+            gfx_bays[host_count++] = sgi_machine_pipe_brick_number(
+                s, bar_end->index, modules, module_count, boards,
+                board_count);
         }
-        if (!host) {
-            error_setg(errp, "I-brick L1 '%s' has no C-brick cabled to its "
-                       "brick", controller->id);
+        if (!host_count) {
+            error_setg(errp, "I/O brick L1 '%s' has no C-brick cabled to "
+                       "its brick", controller->id);
             return false;
         }
         for (const SGIModelIoBoardList *board = t->io_boards; board;
@@ -6484,14 +6527,16 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
                 break;
             }
         }
-        if (!found_board) {
-            error_setg(errp, "I-brick L1 '%s' has no IO7 in its brick",
-                       controller->id);
-            return false;
-        }
-        mac = sgi_machine_onboard_mac(s, t, board_index, errp);
-        if (!mac) {
-            return false;
+        if (!nbrick) {
+            if (!found_board) {
+                error_setg(errp, "I-brick L1 '%s' has no IO7 in its brick",
+                           controller->id);
+                return false;
+            }
+            mac = sgi_machine_onboard_mac(s, t, board_index, errp);
+            if (!mac) {
+                return false;
+            }
         }
         module_name = g_strdup_printf("module%u", controller->module_index);
         l1 = qdev_new(TYPE_SGI_L1);
@@ -6499,16 +6544,27 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
             object_resolve_path_component(OBJECT(s), module_name), "l1",
             OBJECT(l1));
         object_unref(OBJECT(l1));
-        qdev_prop_set_string(l1, "brick-type", "ibrick");
-        qdev_prop_set_string(l1, "mac", mac);
+        qdev_prop_set_string(l1, "brick-type", nbrick ? "nbrick" : "ibrick");
+        if (mac) {
+            qdev_prop_set_string(l1, "mac", mac);
+        }
         if (module->initial_module_number) {
             qdev_prop_set_uint32(l1, "bay", module->initial_module_number);
             qdev_prop_set_bit(l1, "named", true);
         }
-        if (!qdev_realize(l1, NULL, errp) ||
-            !object_property_set_link(OBJECT(host), "io-peer", OBJECT(l1),
-                                      errp)) {
+        if (!qdev_realize(l1, NULL, errp)) {
             return false;
+        }
+        for (unsigned int host = 0; host < host_count; host++) {
+            if (gfx_bays[host] &&
+                !object_property_set_uint(OBJECT(hosts[host]), "io-gfx-bay",
+                                          gfx_bays[host], errp)) {
+                return false;
+            }
+            if (!object_property_set_link(OBJECT(hosts[host]), "io-peer",
+                                          OBJECT(l1), errp)) {
+                return false;
+            }
         }
         qemu_register_resettable(OBJECT(l1));
     }

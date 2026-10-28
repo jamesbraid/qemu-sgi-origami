@@ -1283,11 +1283,10 @@
       ]
     },
     {
-      "controller": "absent",
       "id": "nbrick-brick",
       "kind": "module",
       "name": "N-brick",
-      "notes": "The 2U connector brick of an InfiniteReality system. Its L1, fans, LEDs and power board are not modelled. No brick-type character is established for its L1.",
+      "notes": "The 2U connector brick of an InfiniteReality system. Its fans, LEDs and power board are not modelled. No brick-type character is established for its L1.",
       "parent": "rack",
       "provenance": "vendor-document",
       "regions": [],
@@ -1295,6 +1294,26 @@
         "007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors",
         "N-brick Overview, revision 10/24/01, printed page 5: the N-brick L1 hears any of the four C-bricks, no one designated master"
       ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/l1.rst"
+      ],
+      "description": "The N-brick's L1. It hears each C-brick cabled to the brick, and those C-bricks' L1s reach it over their XIO cables.",
+      "hardware_kind": "l1",
+      "id": "nbrick-l1",
+      "kind": "system-controller",
+      "name": "L1 system controller",
+      "parent": "nbrick-brick",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors",
+        "N-brick Overview, revision 10/24/01, printed page 5: the N-brick L1 hears any of the four C-bricks, no one designated master"
+      ],
+      "system_controller": {
+        "kind": "l1"
+      }
     },
     {
       "id": "nbrick-chip-board0",

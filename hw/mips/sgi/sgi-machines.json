@@ -25810,6 +25810,14 @@
           "module-index": 7
         },
         {
+          "id": "nbrick-l1",
+          "kind": "l1",
+          "l1": {
+            "profile": "nbrick"
+          },
+          "module-index": 8
+        },
+        {
           "id": "rbrick-l1",
           "kind": "l1",
           "module-index": 4
@@ -25876,7 +25884,7 @@
                 }
               ]
             },
-            "description": "G-brick 0 pipe 0, cabled to N-brick graphics pipe 0",
+            "description": "G-brick 0 pipe 0, cabled to I-brick port B",
             "families": [
               {
                 "device": "sgi-kona",
@@ -25998,7 +26006,7 @@
           },
           {
             "changeable": false,
-            "description": "G-brick 0 pipe 1, cabled to N-brick graphics pipe 1",
+            "description": "G-brick 0 pipe 1, cabled to N-brick graphics pipe 0",
             "families": [
               {
                 "device": "sgi-kona",
@@ -26120,7 +26128,7 @@
           },
           {
             "changeable": false,
-            "description": "G-brick 1 pipe 0, cabled to N-brick graphics pipe 2",
+            "description": "G-brick 1 pipe 0, cabled to N-brick graphics pipe 1",
             "families": [
               {
                 "device": "sgi-kona",
@@ -26239,6 +26247,128 @@
                 "reason": "the G-brick pipe layer is an InfiniteReality3 pipe, and no other revision is modelled for the G-brick"
               }
             ]
+          },
+          {
+            "changeable": false,
+            "description": "G-brick 1 pipe 1, cabled to N-brick graphics pipe 2",
+            "families": [
+              {
+                "device": "sgi-kona",
+                "family": "kona",
+                "name": "InfiniteReality",
+                "products": [
+                  {
+                    "assembly": "030-1398-001",
+                    "description": "GE16-4 geometry board, RM10 raster managers (RM9 in configmon), 256 MB texture per RM",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "no Onyx 3000 hardware graph or widget listing is captured, so the widget a C-brick sees its pipe at and the pipe's identity there are inferred from the Onyx2 pipe's"
+                    ],
+                    "name": "InfiniteReality3",
+                    "pairing": "inferred",
+                    "product": "ir3",
+                    "settings": [
+                      {
+                        "changeable": false,
+                        "default": "ge16-4",
+                        "description": "geometry board",
+                        "name": "geometry",
+                        "values": [
+                          {
+                            "description": "GE16-4, four geometry engines",
+                            "evidence": "030-1398-001",
+                            "value": "ge16-4"
+                          }
+                        ]
+                      },
+                      {
+                        "changeable": false,
+                        "default": "rm9",
+                        "description": "raster-manager board",
+                        "name": "rm-type",
+                        "values": [
+                          {
+                            "description": "RM9; gfxinfo names the InfiniteReality3 board RM10",
+                            "evidence": "030-1402-001",
+                            "value": "rm9"
+                          }
+                        ]
+                      },
+                      {
+                        "changeable": false,
+                        "default": "1",
+                        "description": "raster-manager boards in the pipe",
+                        "name": "rm-count",
+                        "values": [
+                          {
+                            "description": "one raster manager",
+                            "value": "1"
+                          },
+                          {
+                            "description": "two raster managers",
+                            "value": "2"
+                          },
+                          {
+                            "description": "four raster managers",
+                            "value": "4"
+                          }
+                        ]
+                      },
+                      {
+                        "changeable": false,
+                        "default": "256",
+                        "description": "texture memory on each raster manager, in MB",
+                        "name": "texture-mb",
+                        "values": [
+                          {
+                            "description": "256 MB",
+                            "evidence": "030-1588-001",
+                            "value": "256"
+                          }
+                        ]
+                      },
+                      {
+                        "changeable": false,
+                        "default": "dg5-2",
+                        "description": "display generator board",
+                        "name": "display",
+                        "values": [
+                          {
+                            "description": "DG5-2, 2 channels",
+                            "evidence": "030-1055-001",
+                            "value": "dg5-2"
+                          },
+                          {
+                            "description": "DG5-8, 8 channels",
+                            "evidence": "030-1087-001",
+                            "value": "dg5-8"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "name": "gbrick1-pipe1-pipe",
+            "placement": [
+              {
+                "name": "slot",
+                "value": "gbrick1-pipe1-pipe"
+              }
+            ],
+            "refusals": [
+              {
+                "family": "kona",
+                "product": "ir2",
+                "reason": "the G-brick pipe layer is an InfiniteReality3 pipe, and no other revision is modelled for the G-brick"
+              },
+              {
+                "family": "kona",
+                "product": "ir2e",
+                "reason": "the G-brick pipe layer is an InfiniteReality3 pipe, and no other revision is modelled for the G-brick"
+              }
+            ]
           }
         ]
       },
@@ -26299,6 +26429,19 @@
           "preset": "kona",
           "revision": 0,
           "serial": 89358092029446
+        },
+        {
+          "attachment": 5,
+          "carrier": "xio-slot",
+          "id": "gbrick1-pipe1-pipe",
+          "label": "gbrick1-pipe1-pipe",
+          "module-index": 6,
+          "other-identity-parts": [],
+          "part": "030-1398-001",
+          "populated": true,
+          "preset": "kona",
+          "revision": 0,
+          "serial": 89358092029447
         }
       ],
       "ip35-firmware": {
@@ -26348,7 +26491,7 @@
           "serial": ""
         },
         {
-          "controller-index": 5,
+          "controller-index": 6,
           "id": "rbrick-brick",
           "initial-module-number": 19,
           "nodes": [],
@@ -26378,8 +26521,7 @@
           "serial": ""
         },
         {
-          "controller": "absent",
-          "controller-index": -1,
+          "controller-index": 5,
           "id": "nbrick-brick",
           "initial-module-number": 22,
           "nodes": [],
@@ -26834,6 +26976,11 @@
           "widget": 15
         },
         {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 11
+        },
+        {
           "crossbar-index": 1,
           "node-index": 1,
           "widget": 11
@@ -26909,7 +27056,7 @@
         {
           "ends": [
             {
-              "index": 1,
+              "index": 0,
               "kind": "crossbar",
               "port": 11
             },
@@ -26923,7 +27070,7 @@
         {
           "ends": [
             {
-              "index": 2,
+              "index": 1,
               "kind": "crossbar",
               "port": 11
             },
@@ -26937,7 +27084,7 @@
         {
           "ends": [
             {
-              "index": 3,
+              "index": 2,
               "kind": "crossbar",
               "port": 11
             },
@@ -26947,6 +27094,20 @@
             }
           ],
           "name": "gbrick1-pipe0-xg-cable"
+        },
+        {
+          "ends": [
+            {
+              "index": 3,
+              "kind": "crossbar",
+              "port": 11
+            },
+            {
+              "index": 4,
+              "kind": "io-board"
+            }
+          ],
+          "name": "gbrick1-pipe1-xg-cable"
         }
       ],
       "xio-slots": []

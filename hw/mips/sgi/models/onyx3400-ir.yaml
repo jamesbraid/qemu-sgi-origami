@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Onyx 3400 with InfiniteReality3: the brick set of 007-4264-002 Figure 1-10
 # (four C-bricks, an I-brick, an N-brick and two G-bricks) as an emulation
-# target. It differs from onyx3400.yaml in carrying one R-brick, and in
-# cabling three pipes through the N-brick and none to the I-brick's port B,
-# which the stock PROM cannot yet start with a pipe on it; the product layer
-# has the reasons. Resolve before validation or generation.
+# target. It differs from onyx3400.yaml in carrying one R-brick; the product
+# layer has the reasons. Resolve before validation or generation.
 configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
@@ -137,52 +135,54 @@ connector_population:
     reason: Figure 1-10 uses three of the N-brick's four connector pairs.
     provenance: vendor-document
     sources: ["007-4264-002 printed page 27, Figure 1-10: an N-brick serving C-bricks 1 to 3"]
-  - component: nbrick-graphics-pipe-0
+  - component: ibrick-port-b
     occupancy: cabled
     peer: gbrick0-ktown2-top
-    reason: The cable between nbrick-graphics-pipe-0 and gbrick0-ktown2-top; which end pairs with which is this composition's choice.
+    reason: The cable between ibrick-port-b and gbrick0-ktown2-top; the I-brick serves the fourth pipe, and which G-brick pipe it serves is this composition's choice.
     provenance: vendor-document
-    sources: ["007-4264-002 printed page 60: N-brick connectors Graphics pipe 0 to 3 go to G-brick Ktown2 connectors"]
+    sources: ["007-4264-002 printed pages 8 and 62: an I-brick port connects to a C-brick, G-brick or V-brick"]
   - component: gbrick0-ktown2-top
     occupancy: cabled
-    peer: nbrick-graphics-pipe-0
-    reason: The cable between nbrick-graphics-pipe-0 and gbrick0-ktown2-top; which end pairs with which is this composition's choice.
+    peer: ibrick-port-b
+    reason: The cable between ibrick-port-b and gbrick0-ktown2-top; the I-brick serves the fourth pipe, and which G-brick pipe it serves is this composition's choice.
     provenance: vendor-document
-    sources: ["007-4264-002 printed page 60: N-brick connectors Graphics pipe 0 to 3 go to G-brick Ktown2 connectors"]
-  - component: nbrick-graphics-pipe-1
+    sources: ["007-4264-002 printed pages 8 and 62: an I-brick port connects to a C-brick, G-brick or V-brick"]
+  - component: nbrick-graphics-pipe-0
     occupancy: cabled
     peer: gbrick0-ktown2-bottom
-    reason: The cable between nbrick-graphics-pipe-1 and gbrick0-ktown2-bottom; which end pairs with which is this composition's choice.
+    reason: The cable between nbrick-graphics-pipe-0 and gbrick0-ktown2-bottom; which end pairs with which is this composition's choice.
     provenance: vendor-document
     sources: ["007-4264-002 printed page 60: N-brick connectors Graphics pipe 0 to 3 go to G-brick Ktown2 connectors"]
   - component: gbrick0-ktown2-bottom
     occupancy: cabled
-    peer: nbrick-graphics-pipe-1
-    reason: The cable between nbrick-graphics-pipe-1 and gbrick0-ktown2-bottom; which end pairs with which is this composition's choice.
+    peer: nbrick-graphics-pipe-0
+    reason: The cable between nbrick-graphics-pipe-0 and gbrick0-ktown2-bottom; which end pairs with which is this composition's choice.
     provenance: vendor-document
     sources: ["007-4264-002 printed page 60: N-brick connectors Graphics pipe 0 to 3 go to G-brick Ktown2 connectors"]
-  - component: nbrick-graphics-pipe-2
+  - component: nbrick-graphics-pipe-1
     occupancy: cabled
     peer: gbrick1-ktown2-top
-    reason: The cable between nbrick-graphics-pipe-2 and gbrick1-ktown2-top; which end pairs with which is this composition's choice.
+    reason: The cable between nbrick-graphics-pipe-1 and gbrick1-ktown2-top; which end pairs with which is this composition's choice.
     provenance: vendor-document
     sources: ["007-4264-002 printed page 60: N-brick connectors Graphics pipe 0 to 3 go to G-brick Ktown2 connectors"]
   - component: gbrick1-ktown2-top
     occupancy: cabled
-    peer: nbrick-graphics-pipe-2
-    reason: The cable between nbrick-graphics-pipe-2 and gbrick1-ktown2-top; which end pairs with which is this composition's choice.
+    peer: nbrick-graphics-pipe-1
+    reason: The cable between nbrick-graphics-pipe-1 and gbrick1-ktown2-top; which end pairs with which is this composition's choice.
     provenance: vendor-document
     sources: ["007-4264-002 printed page 60: N-brick connectors Graphics pipe 0 to 3 go to G-brick Ktown2 connectors"]
-  - component: ibrick-port-b
-    occupancy: empty
-    reason: The I-brick's second host port carries no pipe cable here; see the machine notes.
-    provenance: derived
-    sources: ["007-4264-002 printed page 27, Figure 1-10: an Onyx 3400 with an I-brick, an N-brick and two G-bricks"]
+  - component: nbrick-graphics-pipe-2
+    occupancy: cabled
+    peer: gbrick1-ktown2-bottom
+    reason: The cable between nbrick-graphics-pipe-2 and gbrick1-ktown2-bottom; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 60: N-brick connectors Graphics pipe 0 to 3 go to G-brick Ktown2 connectors"]
   - component: gbrick1-ktown2-bottom
-    occupancy: empty
-    reason: G-brick 1 holds one pipe in this composition; see the machine notes.
-    provenance: derived
-    sources: ["007-4264-002 printed page 27, Figure 1-10: an Onyx 3400 with an I-brick, an N-brick and two G-bricks"]
+    occupancy: cabled
+    peer: nbrick-graphics-pipe-2
+    reason: The cable between nbrick-graphics-pipe-2 and gbrick1-ktown2-bottom; which end pairs with which is this composition's choice.
+    provenance: vendor-document
+    sources: ["007-4264-002 printed page 60: N-brick connectors Graphics pipe 0 to 3 go to G-brick Ktown2 connectors"]
 module_instances:
   - model: layers/modules/r-brick.yaml
     prefix: rbrick-
@@ -226,20 +226,24 @@ module_instances:
   - model: layers/modules/g-brick.yaml
     prefix: gbrick0-
     parent: graphics-rack
-    bus_bindings: {pipe0-xio: nbrick-graphics-pipe-0-xio, pipe1-xio: nbrick-graphics-pipe-1-xio}
+    bus_bindings: {pipe0-xio: ibrick-port-b-xio, pipe1-xio: nbrick-graphics-pipe-0-xio}
   - model: layers/modules/g-brick-ir3-pipe.yaml
     prefix: gbrick0-pipe0-
     parent: gbrick0-chassis
-    bus_bindings: {upstream: nbrick-graphics-pipe-0-xio}
+    bus_bindings: {upstream: ibrick-port-b-xio}
   - model: layers/modules/g-brick-ir3-pipe.yaml
     prefix: gbrick0-pipe1-
     parent: gbrick0-chassis
-    bus_bindings: {upstream: nbrick-graphics-pipe-1-xio}
+    bus_bindings: {upstream: nbrick-graphics-pipe-0-xio}
   - model: layers/modules/g-brick.yaml
     prefix: gbrick1-
     parent: graphics-rack
-    bus_bindings: {pipe0-xio: nbrick-graphics-pipe-2-xio, pipe1-xio: nbrick-graphics-pipe-3-xio}
+    bus_bindings: {pipe0-xio: nbrick-graphics-pipe-1-xio, pipe1-xio: nbrick-graphics-pipe-2-xio}
   - model: layers/modules/g-brick-ir3-pipe.yaml
     prefix: gbrick1-pipe0-
+    parent: gbrick1-chassis
+    bus_bindings: {upstream: nbrick-graphics-pipe-1-xio}
+  - model: layers/modules/g-brick-ir3-pipe.yaml
+    prefix: gbrick1-pipe1-
     parent: gbrick1-chassis
     bus_bindings: {upstream: nbrick-graphics-pipe-2-xio}

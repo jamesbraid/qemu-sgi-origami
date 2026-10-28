@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Onyx 3400 with InfiniteReality3 as an emulation target: C-bricks on one
-# R-brick, an I-brick, and three G-brick pipes reached through an N-brick.
+# R-brick, an I-brick, and four G-brick pipes, one on the I-brick's second port
+# and three through an N-brick.
 # The reference composition of the same brick set is onyx3400.yaml.
 layer_version: 1
 sources:
@@ -46,14 +47,14 @@ layer:
   # The four InfiniteReality3 pipes of the two G-bricks, each a slot named by
   # the label its cable gives it (docs/system/mips/sgi/sn.rst, Graphics pipes).
   # The graphics contract builds at most one pipe at once, so the machine
-  # fits the first by default and refuses a second.
+  # fits the first (the I-brick's) by default and refuses a second.
   graphics:
     max_pipes: 1
     headless: false
     headless_refused: "an Onyx 3400 with InfiniteReality is sold with G-bricks; a system with none is an Origin 3400, so use origin3400"
     slots:
       - name: gbrick0-pipe0-pipe
-        description: "G-brick 0 pipe 0, cabled to N-brick graphics pipe 0"
+        description: "G-brick 0 pipe 0, cabled to I-brick port B"
         placement: {slot: gbrick0-pipe0-pipe}
         default:
           family: kona
@@ -82,7 +83,7 @@ layer:
             product: ir2e
             reason: "the G-brick pipe layer is an InfiniteReality3 pipe, and no other revision is modelled for the G-brick"
       - name: gbrick0-pipe1-pipe
-        description: "G-brick 0 pipe 1, cabled to N-brick graphics pipe 1"
+        description: "G-brick 0 pipe 1, cabled to N-brick graphics pipe 0"
         placement: {slot: gbrick0-pipe1-pipe}
         families:
           - family: kona
@@ -107,8 +108,33 @@ layer:
             product: ir2e
             reason: "the G-brick pipe layer is an InfiniteReality3 pipe, and no other revision is modelled for the G-brick"
       - name: gbrick1-pipe0-pipe
-        description: "G-brick 1 pipe 0, cabled to N-brick graphics pipe 2"
+        description: "G-brick 1 pipe 0, cabled to N-brick graphics pipe 1"
         placement: {slot: gbrick1-pipe0-pipe}
+        families:
+          - family: kona
+            products:
+              - product: ir3
+                fidelity: approximated
+                limitations:
+                  - "no Onyx 3000 hardware graph or widget listing is captured, so the widget a C-brick sees its pipe at and the pipe's identity there are inferred from the Onyx2 pipe's"
+                pairing: inferred
+                assembly: "030-1398-001"
+                settings:
+                  geometry: {values: [ge16-4]}
+                  rm-type: {values: [rm9]}
+                  rm-count: {values: ["1", "2", "4"], default: "1"}
+                  texture-mb: {values: ["256"]}
+                  display: {values: [dg5-2, dg5-8], default: dg5-2}
+        refusals:
+          - family: kona
+            product: ir2
+            reason: "the G-brick pipe layer is an InfiniteReality3 pipe, and no other revision is modelled for the G-brick"
+          - family: kona
+            product: ir2e
+            reason: "the G-brick pipe layer is an InfiniteReality3 pipe, and no other revision is modelled for the G-brick"
+      - name: gbrick1-pipe1-pipe
+        description: "G-brick 1 pipe 1, cabled to N-brick graphics pipe 2"
+        placement: {slot: gbrick1-pipe1-pipe}
         families:
           - family: kona
             products:
@@ -160,22 +186,22 @@ layer:
         Origin 3400 (007-4311-002 printed page 55). The R-brick presents
         all eight ports, and the L2 controller is left out. C-brick 0 cables
         to I-brick port A and C-bricks 1 to 3 to N-brick connectors C-brick 0
-        to 2, but I-brick port B is left uncabled and N-brick Graphics pipe 0
-        to 2 serve pipe 0 and 1 of G-brick 0 and pipe 0 of G-brick 1, three
-        pipes where the figure has four: the stock PROM 6.210 prints
-        "iobrick_attached_modids failed" on a C-brick whose I/O brick has a
-        pipe cabled to it, and on the global master that leaves it without
-        base I/O. What a crossbar port presents to that query when a pipe is
-        cabled to it is not established. Which C-brick, connector pair and
-        pipe a real system pairs is not documented either. The
+        to 2. I-brick port B serves pipe 0 of G-brick 0, and N-brick Graphics
+        pipe 0 to 2 serve pipe 1 of G-brick 0 and both pipes of G-brick 1:
+        four pipes, as the figure shows. Which C-brick, connector pair and pipe a
+        real system pairs is not documented, and neither are the attached-brick
+        replies of the I-brick and N-brick controllers the stock PROM needs
+        once a pipe's port is alive: they are approximations (the L1 notes in
+        docs/system/mips/sgi/hardware/l1.rst). The
         Ktown2-to-I/O-brick hop is described by the shared XIO bus. Each
         C-brick is fitted as the Origin 3200's posted inventory reports:
         four 400 MHz R12000s with 8 MB caches and 4096 MB. No source gives
         this system's fit, so the processor part, clock, cache and memory are
         a model choice; the C-brick layer carries both PIMMs
         unconditionally, so the reference's two-processor C-bricks are not
-        expressible. The N-brick and G-bricks carry no L1, so no controller
-        is described for them.
+        expressible. The G-bricks carry no L1, so no controller is described
+        for them; the N-brick's is, with a type letter that is a candidate
+        only.
       emulation:
         bedrock_nodes:
           c0-bedrock: &cbrick-bedrock
@@ -206,6 +232,11 @@ layer:
           c1-l1: *cbrick-l1
           c2-l1: *cbrick-l1
           c3-l1: *cbrick-l1
+          nbrick-l1:
+            profile: nbrick
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            notes: The N-brick profile of the L1 model, reached from the L1 of each C-brick cabled to the brick. Its type letter is a candidate.
           ibrick-l1:
             profile: ibrick
             provenance: derived
@@ -295,6 +326,9 @@ layer:
           - component: gbrick1-pipe0-pipe
             part: "030-1398-001"
             reason: "The GE16-4 geometry board's part in the Onyx2 rack capture (web:nekonomicon-16285). No Onyx 3000 part number is captured, so this pipe carries the same board's part, an approximation."
+          - component: gbrick1-pipe1-pipe
+            part: "030-1398-001"
+            reason: "The GE16-4 geometry board's part in the Onyx2 rack capture (web:nekonomicon-16285). No Onyx 3000 part number is captured, so this pipe carries the same board's part, an approximation."
         initial_module_numbers:
           - component: c0-chassis
             number: 4
@@ -345,6 +379,9 @@ layer:
           - component: gbrick1-pipe0-xg
             serial: "0x51454d554e06"
             reason: Synthetic graphics widget identity 2, carrying the "QEMU" marker; not hardware evidence.
+          - component: gbrick1-pipe1-xg
+            serial: "0x51454d554e07"
+            reason: Synthetic graphics widget identity 3, carrying the "QEMU" marker; not hardware evidence.
           - component: ibrick-ioc3
             serial: "0x51454d554e10"
             reason: Synthetic identity for this component, carrying the "QEMU" marker; not hardware evidence.

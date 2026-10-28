@@ -226,9 +226,13 @@ one R-brick, an I-brick on c0's ``XIO (II)`` connector, an N-brick whose
 first three chips carry c1 to c3, and two G-bricks. It has 16 R12000s, four per
 C-brick, and 16384 MB. The stock PROM 6.210 finds 4 nodes, 16 CPUs and
 one router, and its diagnostics summary reads ``ALL DIAGS PASSED``.
-Its ``hinv -v`` lists the four node boards, the I-brick's two heads and
-the router, and an XBow for the I-brick and for the N-brick chips of
-c10 and c13, but none for c07's.
+Its ``hinv -v`` lists the four node boards, the I-brick's two heads, the
+router, an XBow for each C-brick and, for the pipe that is fitted, a
+``KONA Graphics Board`` under the module of the C-brick that reaches it.
+
+All four pipes are cabled: the I-brick's second port (port B) carries pipe 0
+of G-brick 0, and the N-brick's first three chips carry pipe 1 of G-brick 0
+and both pipes of G-brick 1. The N-brick's fourth connector pair is empty.
 
 Choices the sources do not settle, each a model choice:
 
@@ -244,27 +248,22 @@ Choices the sources do not settle, each a model choice:
 * The N-brick's XBridge presents the revision the model's XBridge
   presents, as the I-brick's does.
 * Module numbers of the bricks.
+* The I-brick and N-brick controllers' attached-brick replies, and the
+  N-brick's type letter; see the L1 notes (:ref:`sgi-l1-model`).
 
 Stated limitations:
 
-* Three pipes, not four. A pipe cabled to a free port of the I-brick's
-  XBridge makes the PROM of the C-brick that hosts that chip print
-  ``iobrick_attached_modids failed``; on the I-brick that C-brick is
-  the global master, which then finds no base I/O. What an I/O brick's
-  port B presents to that query when a graphics pipe is cabled to it is
-  not established, so I-brick port B is left uncabled. G-brick 0 holds
-  two pipes and G-brick 1 one, on the N-brick's three pipe ports.
 * The graphics contract builds one pipe at once, so the machine offers
-  the four pipe slots and fits at most one ``sgi-kona``. The stock PROM
-  inventory lists no pipe with one fitted.
-* The C-bricks cabled to the N-brick print ``Unexpected I/O brick type``
-  at start: the N-brick has no L1 model, and what an N-brick answers to
-  the attached-brick request is not known. They still join the PROM's
-  node count.
+  the four pipe slots and fits at most one ``sgi-kona``; the first,
+  I-brick port B's, is the default. Each C-brick's L1 knows its chip's
+  G-brick whether or not a pipe is fitted.
+* The N-brick's chips have no PCI heads, so the PROM's start on the
+  C-bricks cabled to it prints ``xtalk_init resulted in an exception`` and
+  ``Reading link e`` and ``Reading link f`` failures before it continues;
+  those C-bricks still join the PROM's node count and inventory.
 * The router's ports 1, 6, 7 and 8 are uncabled, and the PROM prints
   ``discover_object: vector read 0x2 LRI failed`` and ``erect_fences``
   messages and an EEPROM vector read error against the router.
-* IRIX has not been booted on this topology.
 
 .. _sgi-sn-family-ibrick:
 
