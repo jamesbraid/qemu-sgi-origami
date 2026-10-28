@@ -1797,12 +1797,25 @@ static bool sn1_node_pointer_present(void *opaque, uint16_t pointer)
 }
 
 static bool sn1_node_is_ip35(const SN1NodeState *node);
+static bool sn1_node_is_cx(const SN1NodeState *node);
+
+/*
+ * Whether this node's processors are the experimental R16000 model: an
+ * Origin 350-style IP53 board under an authorized runtime profile, or a
+ * Cx-brick node board, which has no such profile.
+ */
+static bool sn1_node_uses_r16000(const SN1NodeState *node,
+                                 MachineState *machine)
+{
+    return sn1_node_is_cx(node) ||
+        (node->ip53_assembly_validated &&
+         sgi_machine_ip53_experiment_authorized(machine));
+}
 
 static bool sn1_node_validate_processors(SN1NodeState *node,
                                         MachineState *machine, Error **errp)
 {
-    bool r16000 = node->ip53_assembly_validated &&
-        sgi_machine_ip53_experiment_authorized(machine);
+    bool r16000 = sn1_node_uses_r16000(node, machine);
 
     if (r16000) {
         bool onyx350 = g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product,
@@ -1915,8 +1928,7 @@ static bool sn1_node_create_cpus(SN1NodeState *node, MachineState *machine,
             g_strdup_printf("sn1.node%u.cpu%u.memory", node->nasid, i);
         const SGIModelProcessor *processor =
             sn1_cpu_processor(node->model_node, i);
-        bool r16000 = node->ip53_assembly_validated &&
-            sgi_machine_ip53_experiment_authorized(machine);
+        bool r16000 = sn1_node_uses_r16000(node, machine);
         DeviceState *cpu_dev = qdev_new(machine->cpu_type);
         MIPSCPU *cpu = MIPS_CPU(cpu_dev);
 
@@ -2178,10 +2190,21 @@ static void sn1_option_intx_connect(SN1NodeState *node)
     }
 }
 
-static bool sn1_node_is_ip35(const SN1NodeState *node)
+static bool sn1_node_is_cx(const SN1NodeState *node)
 {
     return node->model_node && node->model_node->has_board_kind &&
-           node->model_node->board_kind == SGI_MODEL_BOARD_KIND_IP35;
+           node->model_node->board_kind == SGI_MODEL_BOARD_KIND_IP53_CX;
+}
+
+/*
+ * A board whose Bedrock has no XBridge of its own and reaches I/O over an
+ * XIO cable: the C-brick's IP35 board, or a Cx-brick's IP53 node board.
+ */
+static bool sn1_node_is_ip35(const SN1NodeState *node)
+{
+    return sn1_node_is_cx(node) ||
+           (node->model_node && node->model_node->has_board_kind &&
+            node->model_node->board_kind == SGI_MODEL_BOARD_KIND_IP35);
 }
 
 static bool sn1_node_create_ip45_xbridge(SN1NodeState *node, Error **errp)

@@ -24,6 +24,7 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin300-two-chassis", "origin200-gigachannel", "onyx2-rack",
     "origin3200",
     "origin3400",
+    "origin3900",
     "onyx3000",
     "onyx3400-ir",
     "onyx2-deskside",

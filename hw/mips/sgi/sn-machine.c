@@ -1496,7 +1496,8 @@ static bool sgi_machine_validate_cx_l1(const SGIModelTopology *t,
                                 nodes[entry->value] : NULL;
 
         if (!n || !n->has_board_kind ||
-            n->board_kind != SGI_MODEL_BOARD_KIND_IP53) {
+            (n->board_kind != SGI_MODEL_BOARD_KIND_IP53 &&
+             n->board_kind != SGI_MODEL_BOARD_KIND_IP53_CX)) {
             error_setg(errp, "topology '%s' controller '%s' is a Cx-brick "
                        "L1; module '%s' lists a node that is not an IP53 "
                        "board", t->name, c->id, m->id);
@@ -1750,6 +1751,19 @@ static bool sgi_machine_node_is_ip35(const SGIModelNode *node)
 {
     return node->has_board_kind &&
            node->board_kind == SGI_MODEL_BOARD_KIND_IP35;
+}
+
+/* A Cx-brick's IP53 node board: cabled I/O like an IP35 board's. */
+static bool sgi_machine_node_is_cx(const SGIModelNode *node)
+{
+    return node->has_board_kind &&
+           node->board_kind == SGI_MODEL_BOARD_KIND_IP53_CX;
+}
+
+/* A board whose Bedrock has no XBridge of its own and takes an XIO cable. */
+static bool sgi_machine_node_is_cabled(const SGIModelNode *node)
+{
+    return sgi_machine_node_is_ip35(node) || sgi_machine_node_is_cx(node);
 }
 
 /* The node an enclosure crossbar's XIO cable comes from, and its port. */
@@ -2019,10 +2033,10 @@ static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
                     return false;
                 }
             }
-            if (!sgi_machine_node_is_ip35(node)) {
+            if (!sgi_machine_node_is_cabled(node)) {
                 error_setg(errp, "topology '%s' node '%s' has an XBridge on "
-                           "its own board; only an IP35 node takes an XIO "
-                           "cable", t->name, node->id);
+                           "its own board; only an IP35 or Cx-brick node "
+                           "takes an XIO cable", t->name, node->id);
                 return false;
             }
             if (peer_end->port != 0xa && peer_end->port != 0xb) {
@@ -2090,10 +2104,11 @@ static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
 
         if (a->crossbar_index < 0) {
             if (a->node_index < node_count &&
-                sgi_machine_node_is_ip35(nodes[a->node_index])) {
-                error_setg(errp, "topology '%s' IP35 node '%s' has an XIO "
-                           "attachment on its own board; an IP35 board has "
-                           "no XBridge", t->name, nodes[a->node_index]->id);
+                sgi_machine_node_is_cabled(nodes[a->node_index])) {
+                error_setg(errp, "topology '%s' node '%s' has an XIO "
+                           "attachment on its own board; an IP35 or "
+                           "Cx-brick board has no XBridge", t->name,
+                           nodes[a->node_index]->id);
                 return false;
             }
             continue;
@@ -4469,10 +4484,13 @@ static bool sgi_machine_create_enclosure_xbridges(SGIMachineState *s,
  * Configure and realize a Cx-brick's L1 for its fitted boards, then hand
  * it to each node on the link its slot names. The brick's one console is
  * the serial line of the module's first node; the other nodes' L1 lines
- * stay unused. No type character is set: the Cx-brick's is unknown.
+ * stay unused. The Cx-brick's type character is unknown, so the L1 reports
+ * one only when the catalogue's controller record supplies it, as a stated
+ * approximation.
  */
 static bool sgi_machine_supply_cx_l1(SGIMachineState *s,
                                      const SGIModelTopology *t,
+                                     const SGIModelController *c,
                                      const SGIModelModule *m,
                                      DeviceState *l1, Error **errp)
 {
@@ -4492,8 +4510,24 @@ static bool sgi_machine_supply_cx_l1(SGIMachineState *s,
         }
     }
     qdev_prop_set_string(l1, "brick-type", "cxbrick");
+    if (c->l1 && c->l1->has_reported_type) {
+        qdev_prop_set_uint32(l1, "brick-type-code", c->l1->reported_type);
+    }
+    if (m->initial_module_number) {
+        qdev_prop_set_uint32(l1, "bay", m->initial_module_number);
+        qdev_prop_set_bit(l1, "named", true);
+    }
     qdev_prop_set_uint32(l1, "boards", boards);
     qdev_prop_set_uint32(l1, "compute-boards", compute);
+    if (c->l1 && c->l1->cpu_context) {
+        qdev_prop_set_bit(l1, "cpu-context-present", true);
+        qdev_prop_set_uint32(l1, "cpu-mode-word",
+                             c->l1->cpu_context->cpu_mode_word);
+        qdev_prop_set_uint64(l1, "cpu-clock-hz",
+                             c->l1->cpu_context->cpu_clock_hz);
+        qdev_prop_set_uint64(l1, "hub-clock-hz",
+                             c->l1->cpu_context->hub_clock_hz);
+    }
     sgi_machine_set_module_serial(s, m->controller_index, l1);
     console = serial_hd(sgi_sn1_serial_line(m->nodes->value, 0));
     if (console) {
@@ -4546,7 +4580,7 @@ static bool sgi_machine_supply_module_l1s(SGIMachineState *s,
         object_property_add_child(container, "l1", OBJECT(l1));
         object_unref(OBJECT(l1));
         if (sgi_machine_controller_cx(c)) {
-            if (!sgi_machine_supply_cx_l1(s, t, m, l1, errp)) {
+            if (!sgi_machine_supply_cx_l1(s, t, c, m, l1, errp)) {
                 return false;
             }
             continue;
@@ -7188,23 +7222,56 @@ static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
         Object *module = object_resolve_path_component(OBJECT(s), name);
         unsigned owner = model_module->controller_index;
         DeviceState *l1, *uart, *router;
+        size_t record_count;
+        g_autofree const SGIModelController **controller_records =
+            sgi_model_controller_array(t->controllers, &record_count);
+        bool cx_brick = owner < record_count &&
+            sgi_machine_controller_cx(controller_records[owner]);
 
-        if (!module || owner >= s->controller_count || s->controllers[owner]) {
-            error_setg(errp, "SN1 router needs a unique module L1 controller");
-            return false;
+        if (cx_brick && s->controllers[owner]) {
+            /*
+             * A Cx-brick's router sits on its one L1's board, and the stock
+             * PROM reads the router's identity through the router's UART
+             * window, which no source describes for a Cx-brick. Approximate
+             * it with a router-profile L1 behind the window, sharing the
+             * brick's serial and taking the slot after its four boards' (the
+             * PROM refuses two modules at one slot). It is not
+             * a second controller of the brick: it is not listed among the
+             * topology's controllers and no node reaches it.
+             */
+            l1 = qdev_new(TYPE_SGI_L1);
+            object_property_add_child(module, "router-l1", OBJECT(l1));
+            sgi_machine_set_module_serial(s, owner, l1);
+            qdev_prop_set_string(l1, "brick-type", "router");
+            qdev_prop_set_uint32(l1, "brick-type-code", 0x52);
+            qdev_prop_set_uint32(l1, "bay",
+                                 model_module->initial_module_number +
+                                 SGI_L1_CX_BOARDS);
+            if (!qdev_realize(l1, NULL, errp)) {
+                return false;
+            }
+            qemu_register_resettable(OBJECT(l1));
+        } else {
+            if (!module || owner >= s->controller_count ||
+                s->controllers[owner]) {
+                error_setg(errp,
+                           "SN1 router needs a unique module L1 controller");
+                return false;
+            }
+            l1 = qdev_new(TYPE_SGI_L1);
+            object_property_add_child(module, "l1", OBJECT(l1));
+            s->controllers[owner] = l1;
+            sgi_machine_set_module_serial(s, owner, l1);
+            qdev_prop_set_string(l1, "brick-type", "router");
+            qdev_prop_set_uint32(l1, "brick-type-code", 0x52);
+            qdev_prop_set_uint32(l1, "bay",
+                                 model_module->initial_module_number);
+            if (!qdev_realize(l1, NULL, errp)) {
+                return false;
+            }
+            qemu_register_resettable(OBJECT(l1));
+            s->controller_reset_registered[owner] = true;
         }
-        l1 = qdev_new(TYPE_SGI_L1);
-        object_property_add_child(module, "l1", OBJECT(l1));
-        s->controllers[owner] = l1;
-        sgi_machine_set_module_serial(s, owner, l1);
-        qdev_prop_set_string(l1, "brick-type", "router");
-        qdev_prop_set_uint32(l1, "brick-type-code", 0x52);
-        qdev_prop_set_uint32(l1, "bay", model_module->initial_module_number);
-        if (!qdev_realize(l1, NULL, errp)) {
-            return false;
-        }
-        qemu_register_resettable(OBJECT(l1));
-        s->controller_reset_registered[owner] = true;
         uart = qdev_new(TYPE_SGI_L1_UART);
         object_property_add_child(module, "l1-uart", OBJECT(uart));
         object_property_set_link(OBJECT(uart), "controller", OBJECT(l1),
@@ -8466,7 +8533,8 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
                 }
             }
             if (!node->has_board_kind ||
-                node->board_kind != SGI_MODEL_BOARD_KIND_IP53 ||
+                (node->board_kind != SGI_MODEL_BOARD_KIND_IP53 &&
+                 node->board_kind != SGI_MODEL_BOARD_KIND_IP53_CX) ||
                 !t->ip35_firmware ||
                 context->cpu_mode_word != t->ip35_firmware->cpu_mode_word ||
                 !processor || !processor->has_mode_bits ||
@@ -9120,7 +9188,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             bool found_board = false;
             bool ip53 = nodes[node_index]->has_board_kind &&
                 nodes[node_index]->board_kind == SGI_MODEL_BOARD_KIND_IP53;
-            bool ip35 = sgi_machine_node_is_ip35(nodes[node_index]);
+            bool ip35 = sgi_machine_node_is_cabled(nodes[node_index]);
 
             /*
              * Widget zero is the crossbar's own local view; the rest come

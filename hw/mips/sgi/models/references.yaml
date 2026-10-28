@@ -219,6 +219,14 @@ documents:
     rights: published
     obtain:
       url: https://techpubs.jurassic.nl/library/manuals/4000/007-4634-002/pdf/007-4634-002.pdf
+  007-4653-001:
+    title: "SGI Origin 3900 Server User's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4653-001/pdf/007-4653-001.pdf
   007-4643-003:
     title: "Silicon Graphics Tezro Visual Workstation Hardware User's Guide Rackmount Configuration"
     publisher: Silicon Graphics

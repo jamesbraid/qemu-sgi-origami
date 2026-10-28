@@ -1,15 +1,63 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Origin 3900 reference composition: one Cx-brick and an I-brick. Resolve
-# before validation or generation.
+# Origin 3900 composition: one Cx-brick and an I-brick. Resolve before
+# validation or generation.
 configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip53.yaml
   - layers/products/origin3900.yaml
+connector_population:
+  - component: cx0-numalink-a
+    occupancy: empty
+    reason: A single Cx-brick system cables nothing to NUMAlink Port A; the ports join another Cx-brick or an R-brick.
+    provenance: vendor-document
+    sources: ["007-4653-001 printed pages 46 and 47: the smallest Origin 3900 is one Cx-brick, with no R-brick"]
+  - component: cx0-numalink-h
+    occupancy: empty
+    reason: A single Cx-brick system cables nothing to NUMAlink Port H; the ports join another Cx-brick or an R-brick.
+    provenance: vendor-document
+    sources: ["007-4653-001 printed pages 46 and 47: the smallest Origin 3900 is one Cx-brick, with no R-brick"]
+  - component: cx0-numalink-g
+    occupancy: empty
+    reason: A single Cx-brick system cables nothing to NUMAlink Port G; the ports join another Cx-brick or an R-brick.
+    provenance: vendor-document
+    sources: ["007-4653-001 printed pages 46 and 47: the smallest Origin 3900 is one Cx-brick, with no R-brick"]
+  - component: cx0-numalink-f
+    occupancy: empty
+    reason: A single Cx-brick system cables nothing to NUMAlink Port F; the ports join another Cx-brick or an R-brick.
+    provenance: vendor-document
+    sources: ["007-4653-001 printed pages 46 and 47: the smallest Origin 3900 is one Cx-brick, with no R-brick"]
+  - component: cx0-xio-1-connector
+    occupancy: empty
+    reason: This composition fits one I/O brick, on node board 0.
+    provenance: vendor-document
+    sources: ["007-4572-001 printed pages 2 and 14: a Cx-brick attaches up to four I/O bricks"]
+  - component: cx0-xio-2-connector
+    occupancy: empty
+    reason: This composition fits one I/O brick, on node board 0.
+    provenance: vendor-document
+    sources: ["007-4572-001 printed pages 2 and 14: a Cx-brick attaches up to four I/O bricks"]
+  - component: cx0-xio-3-connector
+    occupancy: empty
+    reason: This composition fits one I/O brick, on node board 0.
+    provenance: vendor-document
+    sources: ["007-4572-001 printed pages 2 and 14: a Cx-brick attaches up to four I/O bricks"]
+  - component: ibrick-port-b
+    occupancy: empty
+    reason: The I-brick's port B is left uncabled; one cable to node board 0 is fitted.
+    provenance: vendor-document
+    sources: ["108-0240-002 printed pages 2-28 and 2-29: I-brick ports A and B go to compute nodes"]
 module_instances:
   - model: layers/modules/cx-brick.yaml
     prefix: cx0-
     parent: rack
+    observed_hardware:
+      mode: projected
+      sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock]
+      note: >-
+        The Bedrock identity, revision 2 at 200 MHz, is what every
+        published Origin 3000 and Origin 350 inventory reports; no inventory
+        of a Cx-brick exists, so it is not a capture of this brick.
   - model: layers/modules/i-brick.yaml
     prefix: ibrick-
     parent: rack

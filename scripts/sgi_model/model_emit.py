@@ -139,7 +139,7 @@ def _node(raw: dict) -> dict:
         node["option-intx-map"] = raw["option_intx_map"].copy()
     if "bedrock" in raw:
         node["bedrock"] = _kebab_keys(raw["bedrock"])
-    if raw.get("board_kind") in ("ip53", "ip35"):
+    if raw.get("board_kind") in ("ip53", "ip35", "ip53-cx"):
         node["board-kind"] = raw["board_kind"]
     return node
 
@@ -359,6 +359,8 @@ def _controller(raw: dict) -> dict:
         controller["l1"] = _kebab_keys(raw["l1"])
     if "owner" in raw:
         controller["owner"] = raw["owner"]
+    if "profile" in raw:
+        controller["profile"] = raw["profile"]
     return controller
 
 
@@ -1340,7 +1342,12 @@ def _offerings_for(model: dict, topology: dict,
                 **diagnostic,
                 "supported-guests": list(harness["supported_guests"]),
                 "install-media": list(harness["install_media"]),
-                "default-cpu-model": (harness["default_cpu_model"]
+                # A topology of a shared product may fit another part than
+                # the product's default topology does (the Origin 3900's
+                # R16000 against the Origin 3200's R12000).
+                "default-cpu-model": (model_harness.get(
+                                          "default_cpu_model",
+                                          harness["default_cpu_model"])
                                       if choice["default"]
                                       else assembly["kind"]),
                 "synthesized-firmware-toggle": harness.get(

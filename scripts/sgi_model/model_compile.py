@@ -1114,7 +1114,12 @@ def _processor(model: dict, cpu: dict) -> dict:
             "tezro-rack": (
                 "tezro", 700, 0x009bad85,
                 "tezro-rack-serial-compat"),
+            # A Cx-brick node board takes the Origin 350's fit, an
+            # approximation its datasheet states; it has no PIC and no
+            # discovery launch recipe.
+            "origin3900": ("origin3000", 700, 0x009cad85, "origin3900"),
         }.get(product)
+        cx_brick = product == "origin3900"
         origin350_projection = (
             product == "origin350"
             and model.get("machine", {}).get("emulation", {}).get(
@@ -1126,12 +1131,13 @@ def _processor(model: dict, cpu: dict) -> dict:
                 or (not origin350_projection and
                     model.get("machine", {}).get("emulation", {}).get(
                         "profile") != profile[3])
-                or (not origin350_projection and
+                or (not origin350_projection and not cx_brick and
                     model.get("machine", {}).get("harness", {}).get(
                         "launch_recipe") != "ip53-discovery")):
             raise CompileError(
-                "R16000 is supported for only the Origin 350 IP53 experiment "
-                "or an explicitly selected compatibility profile"
+                "R16000 is supported for only the Origin 350 IP53 experiment, "
+                "a Cx-brick node board or an explicitly selected "
+                "compatibility profile"
             )
         clock_mhz = _integer(identity, "clock_mhz", f"CPU '{cpu['id']}'", 32)
         cache_mib = _integer(identity, "cache_mib", f"CPU '{cpu['id']}'", 16)
@@ -1542,7 +1548,7 @@ def _node_identity(model: dict, components: dict[str, dict], node: dict,
     ni_field, widget_field = _ASIC_IDENTITY_REVISION_FIELDS[asic_kind]
     revisions = {}
     clock_hz = None
-    if asic_kind == "bedrock" and board_kind == "ip53":
+    if asic_kind == "bedrock" and board_kind in ("ip53", "ip53-cx"):
         clock_mhz = identity.get("clock_mhz")
         if type(clock_mhz) is not int or clock_mhz <= 0:
             raise CompileError(
@@ -1723,7 +1729,11 @@ def _bedrock_io_configuration(model: dict, board: dict) -> dict:
     return configured
 
 
-_BEDROCK_BOARD_KINDS = {"ip45", "ip34", "ip53"}
+_BEDROCK_BOARD_KINDS = {"ip45", "ip34", "ip53", "ip53-cx"}
+
+# Boards whose Bedrock has no XBridge of its own and reaches I/O over an
+# XIO cable: the C-brick's and the Cx-brick's.
+_CABLED_BOARD_KINDS = {"ip35", "ip53-cx"}
 
 
 def _bedrock_board_kind(components: dict[str, dict], node: dict,
@@ -3102,7 +3112,7 @@ def _compile_xio_cables(model: dict, graph: dict, nodes: list[dict],
     crossbar_index = {item["id"]: index for index, item in enumerate(crossbars)}
     cabled = graph["enclosure_crossbars"]
     for entry, node in zip(graph["nodes"], nodes, strict=True):
-        ip35 = node.get("board_kind") == "ip35"
+        ip35 = node.get("board_kind") in _CABLED_BOARD_KINDS
         reached = {crossbar for crossbar, owners in cabled.items()
                    if entry["id"] in owners}
         if reached and not ip35:
@@ -3206,6 +3216,16 @@ def _compile_controllers(model: dict, components: dict[str, dict],
         addresses = controller_addresses.get(kind, {})
         if system_controller.get("owner") == "module":
             configuration["owner"] = "module"
+        if "profile" in system_controller:
+            if system_controller["profile"] != "cx-brick":
+                raise CompileError(
+                    f"controller '{component['id']}' names unsupported "
+                    f"profile '{system_controller['profile']}'")
+            if system_controller.get("owner") != "module":
+                raise CompileError(
+                    f"controller '{component['id']}' has a module profile "
+                    "but is not owned by its module")
+            configuration["profile"] = system_controller["profile"]
         result.append({
             "id": component["id"],
             "kind": kinds[kind],
@@ -3501,7 +3521,7 @@ def compile_model(model: dict) -> dict:
                 # shared io-board/xio-attachment compilers below read.
                 io_boards, xio_attachments = [], []
                 for index, entry in enumerate(graph["nodes"]):
-                    if nodes[index].get("board_kind") == "ip35":
+                    if nodes[index].get("board_kind") in _CABLED_BOARD_KINDS:
                         # Its I/O is in the brick its XIO cable reaches.
                         continue
                     boards, attachments = _compile_bedrock_io_boards(
@@ -3711,12 +3731,19 @@ def _attach_ip53_l1_cpu_context(model: dict, nodes: list[dict],
     firmware = model.get("machine", {}).get("firmware_config", {})
     if (not isinstance(firmware, dict) or
             "processor_firmware_word" not in firmware):
-        return
+        # A Cx-brick has no firmware_config; its flash word is its
+        # product's own ip35_firmware, which its L1's record must match.
+        flash = model.get("machine", {}).get("emulation", {}).get(
+            "ip35_firmware")
+        if (not nodes or not isinstance(flash, dict) or
+                any(node.get("board_kind") != "ip53-cx" for node in nodes)):
+            return
+        firmware = {"processor_firmware_word": flash["cpu_mode_word"]}
 
     word = _integer(firmware, "processor_firmware_word",
                     "machine.firmware_config", 32)
     for node in nodes:
-        if node.get("board_kind") != "ip53":
+        if node.get("board_kind") not in ("ip53", "ip53-cx"):
             raise CompileError(
                 "processor_firmware_word requires an IP53 Bedrock node")
         assembly = next((slot["assembly"] for slot in node["cpu_slots"]

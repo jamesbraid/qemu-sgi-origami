@@ -278,10 +278,12 @@ static void test_launch(const void *opaque)
      * A processor that lists required properties is an opt-in experiment:
      * the catalogue names the -cpu properties a launch must choose but
      * gives no values, so QEMU must refuse a launch made without them,
-     * asking for the experiment's opt-in.
+     * asking for the experiment's opt-in. The Origin 3900's Cx-brick node
+     * board sets its R16000 properties itself, so that product asks for none.
      */
     bool opt_in = qdict_haskey(qdict_get_qdict(o, "processor"),
-                               "required-properties");
+                               "required-properties") &&
+                  !g_str_equal(qdict_get_str(o, "product"), "origin3000");
     /*
      * An Origin 2000 with a pipe needs a keyboard for its X server, which
      * only the BaseIO-G's MediaIO carries: the catalogue launch must
