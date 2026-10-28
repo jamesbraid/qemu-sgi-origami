@@ -1385,9 +1385,10 @@ Status ``0x62`` decodes against the specification's status table
 select, is 1, so chip select 1 answers at ``0xc00000``; bit 5 is 1, PCI
 mode; the outstanding-read count in bits 4:0 is 2; both link retry
 counters in bits 31:16 are zero. The strap value and PCI mode are
-*established* for this board. The count of 2 is what the chip reported
-while serving the monitor's read, so it shows that the field is live,
-not what it holds at idle.
+*established* for this board. The field read 2 at the moment of the
+monitor's read. That it is a live count, not a fixed value, is *inferred*
+from the monitor's read being itself an outstanding request; one sample
+cannot separate the two.
 
 Control ``0x7f2043ff`` decodes against Linux ``bridge.h`` and the
 specification's control table (:src:`bridge-asic-spec-4.0 p. 21-23`,
@@ -1420,14 +1421,26 @@ Table 11):
      - 1
      - 0
      - 16 KB translation pages
-   * - 20:17
+   * - 20:19
      - 0
      - 0
-     - SSRAM parity off; SSRAM size field 0
+     - SSRAM parity checking off
+   * - 18:17
+     - 0
+     - 0
+     - SSRAM size field 0
+   * - 16
+     - 0
+     - 0
+     - Force bad LLP packet off
    * - 15:12
      - 4
      - 3
      - Crossbar credit
+   * - 11:10
+     - 0
+     - 0
+     - Clear LLP counters not asserted
    * - 9
      - 1
      - 1
@@ -1441,8 +1454,10 @@ Table 11):
      - ``0xf``
      - Widget number 15
 
-Bit 21 and the credit of 4 are firmware choices; the other fields hold
-their specification reset values. The SSRAM size field reads 0. With a
+Bit 21 and the credit of 4 differ from the specification's reset values
+and the other fields match them. That the firmware wrote bit 21 and the
+credit is *inferred*: the read is of the state after firmware
+initialisation. The SSRAM size field reads 0. With a
 flash part on the port this says nothing about an SSRAM.
 
 The direct map reads ``0x00800000``: widget 8, offset 0 and the
@@ -1511,13 +1526,13 @@ Device registers
      - error lock, page-cross check (27), memory space
      - PCI memory ``0x00600000`` to ``0x00900000``
 
-Each base matches the BAR the firmware gave the function in that slot
+Each base matches the BAR the function in that slot reads
 (:ref:`sgi-qlogic-isp-measurements`, :ref:`sgi-ioc3-measurements`,
 :ref:`sgi-rad1-measurements`). No slot has the 64-bit device bit (22),
 the programmed-I/O swap bit (13) or the translated-DMA swap bit (20)
 set, so the firmware runs every slot as a 32-bit device with swap-clear
-programmed I/O. The firmware cleared the page-cross check on the four
-fitted slots. Slots 4 to 7 read exactly the values the model resets them
+programmed I/O. The page-cross check disable bit (27) is clear on the four
+fitted slots, so the check is enabled there, and set on slots 4 to 7. Slots 4 to 7 read exactly the values the model resets them
 to. Whether those are the chip's power-up values or values the firmware
 wrote is not shown, so the window-base reset stays an *approximation*.
 
@@ -1526,8 +1541,9 @@ wrote is not shown, so the window-base reset stays an *approximation*.
 Interrupt programming
 ---------------------
 
-The firmware left pins 6 and 7 enabled and every other pin disabled
-(enable bits 7:0 are ``0xc0``). Pin 6 sends interrupt number ``0x29``
+Pins 6 and 7 are enabled and every other pin is disabled
+(enable bits 7:0 are ``0xc0``); that the firmware set this is *inferred*
+from the read being taken after initialisation. Pin 6 sends interrupt number ``0x29``
 (41) and pin 7 ``0x39`` (57). Bits 17:8 of both host address words are
 zero, so each packet goes to the address the widget interrupt
 destination pair names: widget 8, XIO address ``0x80``, HEART's
@@ -1536,12 +1552,13 @@ field also holds ``0x39``, so the Bridge's own errors and pin 7 raise the
 same HEART bit. OpenBSD names HEART bit 41 the power switch and bit 57
 the widget 15 error (``xheartreg.h``); Linux names 57 the same way
 (``heart.h``). Mode and device registers read zero: no pin sends a lower
-packet when it falls. Error enables in bits 31:8 are all set except bits
+packet when it falls. Error enables in bits 30:8 are all set except bits
 18, 20 and 21, the link transmit-retry and receive check-bit and
-sequence-number errors (Linux ``bridge.h`` names).
+sequence-number errors (Linux ``bridge.h`` names). Bit 31, the
+multiple-error flag, has no enable and reads clear.
 
-These are what this firmware programmed, *established* as register
-contents. They are software state, not board wiring. What drives pins 6
+These are the register contents after firmware initialisation,
+*established*; that the firmware programmed them is *inferred*. They are software state, not board wiring. What drives pins 6
 and 7 is not shown by them. That pin 6 carries the timekeeper's
 interrupt, which OpenBSD clears through the clock for the power button,
 is *inferred* (:doc:`ds1685`).

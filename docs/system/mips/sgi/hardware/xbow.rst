@@ -113,10 +113,10 @@ slot on a big-endian host; this page uses the aligned offset.
        bits 9:6 report the port the read arrived on; the model fills
        them only for the PIC's internal Crossbow, so on the Octanes they
        read zero.
-     - established, spec PDF pages 73 and 88; bits 9:6 established by
-       :src:`xbridge-asic-spec-0.5 p. 75` and by the measured Octane2,
-       which reads ``0x200`` from widget 8
-       (:ref:`sgi-xbow-measurements`)
+     - established, spec PDF pages 73 and 88; bits 9:6 *inferred* for
+       revision 5 from :src:`xbridge-asic-spec-0.5 p. 75`, a different
+       chip's specification, and one read of ``0x200`` from widget 8 on
+       the measured Octane2 (:ref:`sgi-xbow-measurements`)
    * - 0x0010, 0x0018
      - Error address upper, lower
      - Hold bits 47:32 and 31:0 of the address of the first failed
@@ -309,7 +309,8 @@ Widget 0 registers
      - ``0x00000200``
      - Widget 0 status
      - PROM monitor
-     - Bits 9:6 hold 8, the port the read arrived on; no error bit set.
+     - Bits 9:6 hold 8, the number of the port the read came from;
+       no error bit set.
    * - ``0x0010``, ``0x0018``
      - 32
      - ``0``, ``0``
@@ -387,12 +388,15 @@ Widget 0 registers
 Bits 9:6 of the status word are reserved in the revision 12.0
 specification (PDF page 89). The XBridge specification's Crossbow 2.0
 half defines them as the port a read of the register arrived on
-(:src:`xbridge-asic-spec-0.5 p. 75`), and the value 8 is HEART's port,
-so the field is *established* on revision 5 for reads from widget 8. The
+(:src:`xbridge-asic-spec-0.5 p. 75`), and the value 8 is HEART's port.
+That the field means this on revision 5 is *inferred*: it is one read,
+which a constant 8 would also explain, and the definition is from a
+different chip's specification. The
 interrupt destination sends Crossbow errors to HEART bit 58, the bit
-OpenBSD and Linux name the Crossbow error. The firmware's fences block a
+OpenBSD and Linux name the Crossbow error. The fences read as blocking a
 warm reset from port 11, the V12, at widget 0, at HEART (link 8) and at
-the Bridge (link 15), and leave the four empty ports' fences open.
+the Bridge (link 15), and leave open the fences of the five empty ports (9, 10, 12, 13 and 14)
+and of link 11.
 
 .. _sgi-xbow-octane2-links:
 
@@ -464,11 +468,13 @@ Decoded against the specification's link tables (PDF pages 77-81):
   LLP receiver errors (status bit 4), a receive error counter overflow
   (bit 7) and nonzero receive retry counts in auxiliary bits 31:24; link
   9 shows neither.
-- The firmware gave the three fitted links widget credit 4, 4 and 3
-  (bits 22:18) and enabled the illegal-destination, overallocation,
+- The three fitted links read widget credit 4, 4 and 3
+  (bits 22:18) and have the illegal-destination, overallocation,
   bandwidth, counter-overflow, maximum-retry and maximum-request-timeout
-  interrupts. It left the empty links at the default credit of 2 with
-  only the link-alive interrupt (bit 31) enabled.
+  interrupts. The empty links read the default credit of 2 with
+  only the link-alive interrupt (bit 31) enabled. That the firmware set
+  the fitted links' values is *inferred* from the reads being taken after
+  initialisation.
 
 These establish, for this board at PROM time, that one revision 5
 Crossbow uses widgets 8, 11 and 15 and no other port, and that no

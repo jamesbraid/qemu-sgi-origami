@@ -323,8 +323,8 @@ read pin register 2, IOC3 offset ``0x48``, and name the machine Octane
 when it is nonzero, a *software expectation*. Mainline Linux does not
 read the pin. The reference Octane2, board ``030-1467-001`` revision B,
 reads 1 in pin register 2 and bit 2 set in the pin data register at
-``0x3c`` after PROM start-up (:ref:`measured <sgi-ioc3-octane2-pins>`),
-*established* for that board. OpenBSD's rule would name it an Octane, so
+``0x3c`` after PROM start-up (:ref:`measured <sgi-ioc3-octane2-pins>`); pin register 3
+also reads 1. This is *established* for that board. OpenBSD's rule would name it an Octane, so
 the comment does not hold for this board, and what the pin senses is
 *unknown*. The model drives the pin high on ``octane`` and low on
 ``octane2``, which differs from the measured board.

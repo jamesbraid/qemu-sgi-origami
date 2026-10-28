@@ -263,10 +263,11 @@ MII control ``0x21`` decodes under Linux ``ioc3.h`` as register 1 in bits
 4:0, PHY address 1 in bits 9:5 and busy clear. The read data is that
 register's value: BMSR ``0x7809``, 100BASE-TX and 10BASE-T at both
 duplexes, negotiation ability and extended capability, with link status,
-negotiation complete and every fault bit clear. The kernel booted
+negotiation complete and every fault bit clear. Link status is latch-low,
+so a clear bit shows the PHY reported link down at the PROM's last read of
+the register, which is *inferred* to be this transaction. The kernel booted
 afterwards warned ``ef0: link fail - check ethernet cable``. This
-establishes the PHY address and that the link was down at that moment.
-It does not establish the part, its revision, its straps or any other
+establishes the PHY address. It does not establish the part, its revision, its straps or any other
 register.
 
 .. _sgi-ics1890-limits:

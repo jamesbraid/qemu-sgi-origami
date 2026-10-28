@@ -1081,7 +1081,7 @@ Request timeout
    0x9000000018000028:                 28
 
 The value after PROM startup, not a cold-reset value. A later 32-bit read
-at ``0x2c`` returned the same word, so both views reach one register on
+at ``0x2c`` returned the same word, so the two views agree on
 revision F:
 
 .. code-block:: text

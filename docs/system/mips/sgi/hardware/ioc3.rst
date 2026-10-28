@@ -132,15 +132,18 @@ implement it and those offsets read zero.
 Board population
 ----------------
 
-The subsystem identity tells Linux which functions the board wires up.
+The model's subsystem identity selects the functions the board wires up,
+as it does for Linux, which supplies its own id because the chip has no
+subsystem register (:ref:`sgi-ioc3-measurements`).
 With ``population`` unset, the model picks the functions from the
 subsystem id by the table below. The table follows the per-board setup
 routines of Linux ``drivers/mfd/ioc3.c``, *software expectation*, with
 parallel ports added from the board manuals and OpenBSD's attachment,
 since Linux has no IOC3 parallel driver. The machine presets set the
 population explicitly instead, and not every board presents its Linux
-id: the BaseIO, BaseIO-G and IO-8 chips present ``0xffff``, a placeholder
-for a value no public source records (:doc:`baseio`).
+id: the BaseIO, BaseIO-G and IO-8 chips present ``0xffff``, a model value
+with no hardware counterpart, since the chip has no subsystem register
+(*approximation*; :doc:`baseio`).
 
 .. list-table::
    :header-rows: 1
@@ -1327,24 +1330,30 @@ after the firmware had initialised the machine:
      -
    * - ``0x1c``
      - ``0x00500000``
-     -
+     - the same value as BAR 0; what the word means is *unknown*
    * - ``0x20``-``0x3f``
      - the words at ``0x00``-``0x1f`` again
      -
 
 The identity, class, revision and Status values are *established* for
-this chip revision. Configuration space repeats every 32 bytes, so the
-chip has no separate subsystem vendor and subsystem ID registers: a read
-at ``0x2c`` returns the ``0x0c`` word. The command, latency and BAR
-values are what this machine's firmware wrote, not reset values.
+this chip revision. The command, latency and BAR values are what this
+machine read after firmware initialisation, not reset values.
 
-The words at ``0x2c`` and ``0x3c`` show what the model gets wrong here:
-the model presents a subsystem vendor and ID at ``0x2c`` and interrupt
-pin A at ``0x3d``, where this chip returns the repeated ``0x0c`` and
-``0x1c`` words, so its interrupt pin byte reads zero. Linux supplies the
-subsystem ID in its own configuration accessor
-(``arch/mips/pci/pci-xtalk-bridge.c``), which agrees with the chip
-having none.
+The chip decodes 32 bytes of configuration space and repeats them in the
+next 32, *established* by the 64 bytes read. That it therefore has no
+subsystem vendor and subsystem ID registers of its own is *inferred* from
+this repeat on this chip; the read at ``0x2c`` returns the ``0x0c`` word.
+The word at ``0x1c`` reads the BAR 0 value on this unit, *established*,
+and what it means is *unknown*. Interrupt pin and line, at ``0x3c``, are
+likewise the repeated ``0x1c`` word, so the pin byte at ``0x3d`` reads zero.
+
+Software does not read the chip for these. Linux never reads the chip's
+``0x2c``: its Bridge code answers ``0x2c`` from a per-slot table built
+from the Bridge's board part (``ioc3_cfg_rd()`` in
+``arch/mips/pci/pci-xtalk-bridge.c`` at ``db2ddb871435``), and OpenBSD
+``sys/arch/sgi/xbow/xbridge.c`` at ``2df91d80c104`` passes only the first
+``0x20`` bytes of the header and picks the board from the one-wire part,
+both *software expectations*.
 
 .. _sgi-ioc3-octane2-registers:
 
@@ -1427,14 +1436,16 @@ load, chip revision 1, PROM monitor after initialisation:
      - ``0x7809``
      - the PHY's status register
 
-These are what the firmware left, not reset values. The arbiter idle bits
+These are the values read after firmware initialisation, not reset values. The arbiter idle bits
 in chip control and MAC control read set with no DMA running, as the
-model reads them. The firmware set the large-buffer bit, so it treats the
-board as fitting 128 KB of Ethernet buffer RAM, a *software expectation*.
-The last MII transaction the firmware made was a read of register 1 at
-PHY address 1, which returned ``0x7809`` with the link down; the kernel
-booted afterwards warned ``ef0: link fail - check ethernet cable``
-(:ref:`sgi-ics1890-measurements`).
+model reads them. The large-buffer bit reads set, which is *inferred* to mean the firmware
+treats the board as fitting 128 KB of Ethernet buffer RAM, a *software
+expectation*.
+The MII registers still hold a read of register 1 at PHY address 1 that
+returned ``0x7809``, so that read is *inferred* to be the PROM's last MII
+transaction. The status register's link bit is latch-low, so the PHY
+reported link down at the PROM's last read, not necessarily at the
+later register dump (:ref:`sgi-ics1890-measurements`).
 
 .. _sgi-ioc3-octane2-pins:
 
@@ -1489,9 +1500,11 @@ establish a reset state or the parallel controller part.
 Model limits
 ============
 
-- Configuration space presents a subsystem identity at ``0x2c`` and
-  interrupt pin A, where the reference Octane2's chip repeats its first
-  32 bytes and reads pin zero (:ref:`sgi-ioc3-measurements`).
+- Configuration space presents a full header with subsystem ids and an
+  interrupt pin, where the reference Octane2's chip repeats 32 bytes and
+  reads pin zero (:ref:`sgi-ioc3-measurements`).
+- Pin data and the pin registers view one stored word. On the reference
+  Octane2, pin registers 2 and 3 read 1 (:ref:`sgi-ioc3-octane2-pins`).
 - Chip control bits 21:19 read zero; the reference Octane2 reads 4 there
   at its PROM menu. SuperIO status bits 29 and 30, set on that board, are
   never raised.

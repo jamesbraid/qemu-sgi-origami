@@ -221,8 +221,8 @@ must decode (*software expectation*). Interrupt pin is A. On the
 reference Octane2 both ISP1040 headers show BAR 0 as I/O, BAR 1 as 32-bit
 memory, interrupt pin A and no subsystem identity, *established* for
 those parts (:ref:`sgi-qlogic-isp-measurements`). The same headers show an
-expansion ROM base register at ``0x30``, which the firmware gave a base
-with decode disabled; the model has none and reads zero there.
+expansion ROM base register at ``0x30``, which holds a base with decode
+disabled after firmware initialisation; the model has none and reads zero there.
 
 The Status word at reset reads medium DEVSEL timing, ``0x0200``, on the
 ISP1040. The reset value matters. The stock IRIX single-CPU miniroot reads
@@ -237,9 +237,11 @@ adapters read Status ``0x0200`` after their firmware had set Command
 ``0x0006`` (:ref:`sgi-qlogic-isp-measurements`), *established* for that
 point in the boot. DEVSEL timing is a read-only field, so that the chip
 also resets to ``0x0200`` is *inferred*; a read taken before any firmware
-runs would settle it. The same firmware wrote ``0x40`` to the cache line
-size and the Latency Timer and both read back, so the real part's Latency
-Timer is writable, where the model keeps it read-only on the ISP1040. The error latches in Status are the PCI core's
+runs would settle it. Both headers also read ``0x40`` in the cache line
+size and the Latency Timer after firmware initialisation. That the real
+part's Latency Timer is writable is *inferred*, and so is that the firmware
+wrote the value: a hardwired or reset value would read the same. The model keeps
+the Latency Timer read-only on the ISP1040. The error latches in Status are the PCI core's
 write-one-to-clear bits, and nothing in the model sets them.
 
 The ISP12160 differs in these ways.
@@ -1440,9 +1442,10 @@ The two headers differ only in their base addresses. Decoded:
 
 The identity, class, revision, Status, BAR layout, expansion ROM base
 register and interrupt pin are *established* for these two parts. The
-Command, cache line, Latency Timer and base values are what this
-machine's firmware wrote, so they show that those fields are writable on
-the real part. No value here is a reset value. The inventory and graph
+Command, cache line, Latency Timer and base values are what the
+machine read after firmware initialisation. That the firmware wrote them,
+and so that those fields are writable on the real part, is *inferred*; a
+hardwired or reset value would read the same. No value here is a reset value. The inventory and graph
 add that the disk is target 1 on controller 0, at PCI device 0; they do
 not say which drive bay holds it. The ``rev. 2`` is IRIX's sub-version
 label, not the PCI revision byte.
@@ -1473,8 +1476,9 @@ Model limits
   revision of 5 is *observed* on Origin 200 captures and *established* on
   the reference Octane2.
 - The ISP1040's Latency Timer is read-only and it has no expansion ROM
-  base register, where the reference Octane2's parts take a Latency Timer
-  write and implement the ROM base register. The value 6 in bus
+  base register, where the reference Octane2's parts read a nonzero Latency
+  Timer and a ROM base with decode disabled. That the real parts take a
+  Latency Timer write and implement the ROM base register is *inferred*. The value 6 in bus
   configuration 0 is *inferred* from the family numbering and has not been
   read from hardware.
 - The tape models no real DDS mechanics (helical scan, compression
