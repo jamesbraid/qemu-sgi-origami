@@ -8378,10 +8378,9 @@ static void check_o2plus_cpu(bool performance)
     o2_product_prepare(&t);
     o2_product_select_plus(&t);
     o2plus_cpu_image(&t, performance);
-    /* Active cycle-counter access currently rejects icount clock reads. */
     qts = qtest_initf("-M %s -cpu %s -nodefaults -S "
-        "-accel tcg,thread=single %s", t.machine, O2PLUS_CPU,
-        performance ? "" : "-icount shift=3,align=off,sleep=off -rtc clock=vm");
+        "-accel tcg,thread=single -icount shift=3,align=off,sleep=off "
+        "-rtc clock=vm", t.machine, O2PLUS_CPU);
     for (unsigned pass = 0; pass < 2; pass++) {
         uint32_t count;
 
@@ -8423,6 +8422,165 @@ static void test_o2plus_cpu(void)
 static void test_o2plus_performance_counter(void)
 {
     check_o2plus_cpu(true);
+}
+
+static void o2_perf_move(SN0Image *p, unsigned rt, unsigned sel,
+                         bool write, bool wide)
+{
+    uint32_t word = write ? mips_mtc0(rt, 25) : mips_mfc0(rt, 25);
+
+    sn0_emit(p, word | sel | (wide ? 1u << 21 : 0));
+    if (write) {
+        for (unsigned i = 0; i < 4; i++) {
+            sn0_emit_nop(p);
+        }
+    }
+}
+
+static void o2_perf_delay(SN0Image *p)
+{
+    unsigned loop, branch;
+
+    sn0_emit_mtc0(p, 0, 9);
+    sn0_emit_li(p, SN0_R_T0, 0x7fffffff);
+    sn0_emit_mtc0(p, SN0_R_T0, 11);
+    loop = p->pos;
+    sn0_emit_mfc0(p, SN0_R_T0, 9);
+    sn0_emit_i(p, 11, SN0_R_T0, SN0_R_T1, 5000); /* sltiu */
+    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T1, 0);
+    sn0_patch_branch(p, branch, loop);
+}
+
+static void o2_perf_image(O2ProductTest *t, bool wide, bool eret)
+{
+    g_autofree SN0Image *p = g_new0(SN0Image, 1);
+    g_autofree uint8_t *rom = g_malloc0(512 * KiB);
+
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_li(p, SN0_R_S0, 0xa0004000);
+    o2_perf_move(p, 0, 0, true, wide);
+    sn0_emit_li(p, SN0_R_T0, 0x1234);
+    o2_perf_move(p, SN0_R_T0, 1, true, wide);
+    o2_perf_move(p, SN0_R_T0, 1, false, wide);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0));
+    sn0_emit_li(p, SN0_R_T0, 2);
+    o2_perf_move(p, SN0_R_T0, 0, true, wide);
+    o2_perf_delay(p);
+    o2_perf_move(p, SN0_R_T0, 1, false, wide);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 4));
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL | 2);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    o2_perf_move(p, SN0_R_T0, 1, false, wide);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 8));
+    o2_perf_delay(p);
+    o2_perf_move(p, SN0_R_T0, 1, false, wide);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x0c));
+    if (eret) {
+        unsigned resume = p->pos + 9 * 4;
+
+        sn0_emit_li(p, SN0_R_T0, 0xbfc00000 + resume);
+        sn0_emit_mtc0(p, SN0_R_T0, 14);
+        sn0_emit_eret(p);
+        g_assert_cmpuint(p->pos, ==, resume);
+    } else {
+        sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+        sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    }
+    o2_perf_delay(p);
+    o2_perf_move(p, SN0_R_T0, 1, false, wide);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x10));
+    sn0_emit_li(p, SN0_R_T0, 0x12);
+    o2_perf_move(p, SN0_R_T0, 0, true, wide);
+    sn0_emit_li(p, SN0_R_T0, 0x80000000);
+    o2_perf_move(p, SN0_R_T0, 1, true, wide);
+    sn0_emit_mfc0(p, SN0_R_T0, 13);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x14));
+    o2_perf_move(p, 0, 1, true, wide);
+    sn0_emit_mfc0(p, SN0_R_T0, 13);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x18));
+    o2_perf_move(p, 0, 0, true, wide);
+    o2_perf_move(p, SN0_R_T0, 0, false, wide);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x1c));
+    o2_perf_move(p, SN0_R_T0, 1, false, wide);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x20));
+    o2_perf_delay(p);
+    o2_perf_move(p, SN0_R_T0, 1, false, wide);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x24));
+    sn0_emit_li(p, SN0_R_T0, 1);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x3c));
+    sn0_emit_park(p);
+    g_assert_cmpuint(p->pos, <, 0x380);
+    p->pos = 0x380;
+    sn0_emit_li(p, SN0_R_S0, 0xa0004000);
+    sn0_emit_li(p, SN0_R_T0, 1);
+    sn0_emit(p, mips_sw(SN0_R_T0, SN0_R_S0, 0x38));
+    sn0_emit_park(p);
+    memcpy(rom, p->bytes, p->pos);
+    g_assert_true(g_file_set_contents(t->rom, (char *)rom, 512 * KiB, NULL));
+}
+
+static void check_product_performance_io(bool plus, bool wide, bool eret)
+{
+    O2ProductTest t = { 0 };
+    QTestState *qts;
+    SgiWait wait;
+
+    o2_product_prepare(&t);
+    if (plus) {
+        o2_product_select_plus(&t);
+    }
+    o2_perf_image(&t, wide, eret);
+    qts = qtest_initf("-M %s -cpu %s -nodefaults -S "
+        "-accel tcg,thread=single -icount shift=3,align=off,sleep=off "
+        "-rtc clock=vm", t.machine, plus ? O2PLUS_CPU : "R10000");
+    for (unsigned pass = 0; pass < 2; pass++) {
+        if (pass) {
+            qtest_system_reset(qts);
+        }
+        qtest_memset(qts, RAM_FULL + 0x4000, 0, 64);
+        qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+        sgi_wait_start(&wait, "performance registers after reset %u", pass);
+        while (!qtest_readl(qts, RAM_FULL + 0x403c)) {
+            g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x4038), ==, 0);
+            sgi_wait_pause(&wait, 1000);
+        }
+        qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x4000), ==, 0x1234);
+        g_assert_cmpuint(qtest_readl(qts, RAM_FULL + 0x4004), >, 0x1234);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x4008), ==,
+                        qtest_readl(qts, RAM_FULL + 0x400c));
+        g_assert_cmpuint(qtest_readl(qts, RAM_FULL + 0x4010), >,
+                         qtest_readl(qts, RAM_FULL + 0x400c));
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x4014) & 0x8000,
+                        ==, 0x8000);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x4018) & 0x8000, ==, 0);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x401c), ==, 0);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x4020), ==,
+                        qtest_readl(qts, RAM_FULL + 0x4024));
+    }
+    qtest_quit(qts);
+    o2_product_cleanup(&t);
+}
+
+static void test_product_performance_32(void)
+{
+    check_product_performance_io(false, false, false);
+}
+
+static void test_product_performance_64(void)
+{
+    check_product_performance_io(false, true, false);
+}
+
+static void test_o2plus_performance_io(void)
+{
+    check_product_performance_io(true, false, false);
+}
+
+static void test_o2plus_performance_eret(void)
+{
+    check_product_performance_io(true, false, true);
 }
 
 static void test_o2plus_configuration(void)
@@ -8909,6 +9067,10 @@ int main(int argc, char **argv)
                    test_banked_approx_migration);
     add_case("o2/o2plus-cpu", test_o2plus_cpu);
     add_case("o2/o2plus-performance-counter", test_o2plus_performance_counter);
+    add_case("o2/product-performance-32", test_product_performance_32);
+    add_case("o2/product-performance-64", test_product_performance_64);
+    add_case("o2/o2plus-performance-io", test_o2plus_performance_io);
+    add_case("o2/o2plus-performance-eret", test_o2plus_performance_eret);
     add_case("o2/o2plus-configuration", test_o2plus_configuration);
     add_case("o2/o2plus-composition", test_o2plus_composition);
     add_case("o2/o2plus-native-pci", test_o2plus_native_pci);
