@@ -334,10 +334,12 @@ static void check_io_board_presets(const SGIModelTopology *t)
                       preset == SGI_MODEL_IO_BOARD_PRESET_KONA ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_MGRAS ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_ODYSSEY ||
-                      preset == SGI_MODEL_IO_BOARD_PRESET_VBRICK);
+                      preset == SGI_MODEL_IO_BOARD_PRESET_VBRICK ||
+                      preset == SGI_MODEL_IO_BOARD_PRESET_IO7);
         if (preset != SGI_MODEL_IO_BOARD_PRESET_IO8 &&
             preset != SGI_MODEL_IO_BOARD_PRESET_FUEL &&
-            preset != SGI_MODEL_IO_BOARD_PRESET_IO9) {
+            preset != SGI_MODEL_IO_BOARD_PRESET_IO9 &&
+            preset != SGI_MODEL_IO_BOARD_PRESET_IO7) {
             g_assert_nonnull(entry->value->part);
             g_assert_true(entry->value->has_revision);
             g_assert_true(entry->value->has_serial);
