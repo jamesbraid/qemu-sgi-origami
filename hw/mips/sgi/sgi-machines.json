@@ -26145,9 +26145,9 @@
           ],
           "flash": {
             "kind": "operator-prom",
-            "select": false,
+            "select": true,
             "size": 1048576,
-            "strap": false
+            "strap": true
           },
           "heart": {
             "board-records": [
