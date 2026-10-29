@@ -707,8 +707,17 @@ typedef struct SGIKonaPendingSwap {
  * reading back after each, before its SGI_KONA_INT_ENABLE and
  * SGI_KONA_RESET_ARG writes. A stock diagnostic tool's register table
  * names bit 0 the host-interface reset and bit 1 the ARM start (inferred
- * from the names). The model has no ARM and resets nothing here: every
- * write is stored and traced, and none has an effect.
+ * from the names). Every write is stored and traced.
+ *
+ * A write with bit 0 set resets what the kernel rewrites after its 1,
+ * read, 0, read pulse (established that it rewrites them; that the pulse
+ * resets them is inferred): SGI_KONA_INT_ENABLE, SGI_KONA_RESET_ARG
+ * (the global enable), SGI_KONA_CREDIT_CONFIG, the group word at
+ * SGI_KONA_LOW_WINDOW_WRITE, and every map RAM entry, which becomes
+ * invalid. It leaves the DMA registers, the low-water state, the command
+ * framers and the model's ARM-side state alone, since the kernel never
+ * rewrites them after a pulse and what the pulse does to them is
+ * unknown. The model has no ARM, so bit 1 starts nothing.
  */
 #define SGI_KONA_RESET_STROBE 0x800300
 
