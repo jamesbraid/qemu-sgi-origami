@@ -17898,9 +17898,11 @@ static void assert_native_error(QTestState *s, uint32_t error)
  * A state token not legal between a begin and its end (kind 0 in the
  * firmware's token map) is refused there: the firmware records an invalid
  * operation and discards its payload by the word-count table, 32 words for
- * the double matrix load 0xd4. Here glMatrixMode and glLoadMatrixd arrive
- * inside a triangle; neither acts, the error is GL_INVALID_OPERATION, and
- * the vertices and end around them still frame.
+ * the double matrix load 0xd4. Here glDepthRange (0xcf, the family's
+ * first) and glTranslatef (0xdf, its last) each arrive alone inside a
+ * begin, then glMatrixMode and glLoadMatrixd inside a triangle. None
+ * acts, each begin raises GL_INVALID_OPERATION, and the vertices and end
+ * around them still frame.
  */
 static void test_state_token_refused_in_begin(void)
 {
@@ -17915,6 +17917,18 @@ static void test_state_token_refused_in_begin(void)
         doubles[k] = k & 1 ? 0 : 0x40000000 + k;
     }
     gl_make_current(s);
+    /* Each end of the family alone, then the middle, each its own error. */
+    gl_begin(s, 4);
+    kona_command(s, 0xcf,
+                 (uint32_t[]){ 0x3fd00000, 0, 0x3fe00000, 0 }, 4);
+    gl_end(s);
+    assert_native_error(s, 0x502);
+    assert_native_error(s, 0);
+    gl_begin(s, 4);
+    kona_command_f(s, 0xdf, (float[]){ 1, 2, 3 }, 3);
+    gl_end(s);
+    assert_native_error(s, 0x502);
+    assert_native_error(s, 0);
     gl_begin(s, 4);
     kona_command_f(s, 0x90, (float[]){ -0.5f, -0.5f, 0 }, 3);
     kona_command(s, 0xd0, (uint32_t[]){ 0x1701 }, 1);
@@ -17926,6 +17940,8 @@ static void test_state_token_refused_in_begin(void)
     assert_native_depth(s, 0xba0, (uint32_t[]){ 0x1700 }, 1);
     assert_native_depth(s, 0xba6, identity, 16);
     assert_native_depth(s, 0xba7, identity, 16);
+    assert_native_depth(s, 0xb70,
+                        (uint32_t[]){ 0, 0, 0x3ff00000, 0 }, 4);
     assert_textport_in_step(s);
     qtest_quit(s);
 
@@ -17934,7 +17950,7 @@ static void test_state_token_refused_in_begin(void)
     g_assert_cmpuint(count_occurrences(found, "kernel_command token 0x90 "),
                      ==, 3);
     g_assert_cmpuint(count_occurrences(found, "kernel_command token 0x71 "),
-                     ==, 1);
+                     ==, 3);
 }
 
 static void test_draw_pixels_begin_with_skips(void)
