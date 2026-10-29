@@ -5403,6 +5403,13 @@ static void add_texture_board_cases(const char *path, GTestDataFunc fn)
 #define TEX_SB_SPEC 0x110
 #define TEX_SB_TEXSIZE_2X2 0x1111
 #define TEX_SB_BLOCK_REG 0x0e3d
+/*
+ * TEXMODE2 bit 16, set for a texture without border texels and clear for
+ * one specified with a border (inferred, the texture contract's gr4
+ * readings). The stored-border cases draw a bordered texture, so they
+ * bind with it clear.
+ */
+#define TEX_TEXMODE2_NO_BORDER 0x10000
 
 typedef struct TexStoredBorderSample {
     float s, t;
@@ -5497,12 +5504,14 @@ static void tex_sb_upload_complete(QTestState *t, uint32_t base,
     tex_sb_upload_core(t, core);
 }
 
-static void tex_sb_bind(QTestState *t, bool linear)
+static void tex_sb_bind_as(QTestState *t, bool linear, bool bordered)
 {
     uint32_t filters = linear ? TEX_MAG_LINEAR | TEX_MIN_LINEAR : 0;
+    uint32_t mode2 = TEX_TEXMODE2_RGBA8 & ~TEX_TEXMODE2_NO_BORDER;
 
     tex_bind(t, TEX_TEXMODE1_ON,
-             TEX_TEXMODE2_RGBA8 | TEX_SB_CLAMP_BITS | filters);
+             mode2 | (bordered ? 0 : TEX_TEXMODE2_NO_BORDER) |
+             TEX_SB_CLAMP_BITS | filters);
     tex_records(t, (const uint32_t[]) {
         TEX_TXSIZE, TEX_SB_TEXSIZE_2X2,
         TEX_TXCLAMPSIZE, 2 << 13 | 2,
@@ -5510,7 +5519,8 @@ static void tex_sb_bind(QTestState *t, bool linear)
     tex_mipmap_word(t, 4);
 }
 
-static uint32_t tex_sb_draw(QTestState *t, float s, float v, bool linear)
+static uint32_t tex_sb_draw_as(QTestState *t, float s, float v, bool linear,
+                               bool bordered)
 {
     static const float white[4] = { 1, 1, 1, 1 };
     float quad[4][4] = {
@@ -5518,9 +5528,14 @@ static uint32_t tex_sb_draw(QTestState *t, float s, float v, bool linear)
         { 32, 32, s, v }, { 16, 32, s, v },
     };
 
-    tex_sb_bind(t, linear);
+    tex_sb_bind_as(t, linear, bordered);
     tex_quad_rect(t, white, (const float (*)[4])quad);
     return gl_window_pixel(t, 24, 24);
+}
+
+static uint32_t tex_sb_draw(QTestState *t, float s, float v, bool linear)
+{
+    return tex_sb_draw_as(t, s, v, linear, true);
 }
 
 static const uint8_t *tex_sb_texel(const uint8_t image[64], int x, int y)
@@ -5754,6 +5769,24 @@ static void test_gl_texture_stored_border_overlapping_base_invalidates(void)
     qtest_quit(t);
 }
 
+/*
+ * The same complete ring drawn with TEXMODE2 bit 16 set, a texture
+ * without border texels: a linear sample on the left edge blends the red
+ * corner texel with the border colour, 0 here, as if no ring were stored.
+ * Cleared again, the ring is sampled.
+ */
+static void test_gl_texture_stored_border_needs_bit_16_clear(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t image[64], core[16];
+
+    tex_sb_upload_complete(t, 0, 4, 0, image, core);
+    tex_expect(tex_sb_draw_as(t, 0, 0.25f, true, false), 0.5, 0, 0);
+    tex_sb_expect_linear(t, image, 0, 0.25f);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 static void test_gl_texture_stored_border_bad_upload(void)
 {
     QTestState *t = tex_start(TEX_ARGS);
@@ -5792,8 +5825,10 @@ static uint32_t tex_wide_edge_sample(QTestState *t)
         { 32, 32, 0, 0.5f }, { 16, 32, 0, 0.5f },
     };
 
-    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | TEX_SB_CLAMP_BITS |
-             TEX_MAG_LINEAR | TEX_MIN_LINEAR);
+    /* distort's level has a border, so bit 16 is clear. */
+    tex_bind(t, TEX_TEXMODE1_ON,
+             (TEX_TEXMODE2_RGBA8 & ~TEX_TEXMODE2_NO_BORDER) |
+             TEX_SB_CLAMP_BITS | TEX_MAG_LINEAR | TEX_MIN_LINEAR);
     tex_records(t, (const uint32_t[]) {
         TEX_TXSIZE, 0x0909,
         TEX_TXCLAMPSIZE, 512 << 13 | 1,
@@ -5980,8 +6015,7 @@ static uint32_t tex_precision_border_draw(QTestState *t)
     gl_enter_slot(t, GL_SLOT_A);
     tex_bind(t, tex_mode1(TEX_ENV_MODULATE, TEX_LAYOUT_RGBA,
                           TEX_CLASS_COLOUR, 2),
-             0x10000 | 2 << 2 | TEX_MAG_LINEAR | TEX_MIN_LINEAR |
-             TEX_SB_CLAMP_BITS);
+             2 << 2 | TEX_MAG_LINEAR | TEX_MIN_LINEAR | TEX_SB_CLAMP_BITS);
     tex_records(t, (const uint32_t[]) {
         TEX_TXSIZE, 0x101,
         TEX_TXCLAMPSIZE, 2 << 13 | 1,
@@ -6331,6 +6365,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-stored-border-rejected-upload",
                    test_gl_texture_stored_border_bad_upload);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-stored-border-needs-bit-16-clear",
+                   test_gl_texture_stored_border_needs_bit_16_clear);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-wide-level-branch-refused",
                    test_gl_texture_wide_level_branch_refused);

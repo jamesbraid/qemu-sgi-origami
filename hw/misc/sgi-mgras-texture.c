@@ -485,6 +485,16 @@ enum {
 #define MGRAS_TEXMODE2_WRAP_T    0x00001000u
 #define MGRAS_TEXMODE2_WRAP_R    0x00002000u
 #define MGRAS_TEXMODE2_CLAMP     0x00004000u
+/*
+ * Bit 16 set: the texture has no border texels, so a fetch past the edge
+ * under clamp to border takes TXBCOLOR; clear, the level's border texels
+ * were loaded and such a fetch reads them. Inferred (the texture
+ * contract's gr4 readings): a texture specified with a border drew with
+ * bit 16 clear and every unbordered texture traced has it set. The model
+ * samples a level's stored border ring only while the bit is clear. The
+ * discriminating test is gl-texture-stored-border-needs-bit-16-clear.
+ */
+#define MGRAS_TEXMODE2_NO_BORDER 0x00010000u
 #define MGRAS_TEXMODE2_VOLUME    0x00800000u
 
 /* TXLOD: bits 25:16 are 64 times the minimum LOD, 3:0 the last level. */
@@ -2100,8 +2110,9 @@ static void mgras_tex_commit(SGIMgrasState *s)
     }
     /*
      * The model caches uploaded border texels outside the TRAM image and
-     * offers them for sampling only when the ring is complete. The board's
-     * placement and sampling are unknown.
+     * offers them for sampling only when the ring is complete and the
+     * draw's TEXMODE2 bit 16 is clear. The board's placement and sampling
+     * are unknown.
      */
     mgras_tex_border_invalidate_tram(s, t, start, image_bits);
     mgras_tex_border_prepare(t, border_key, t->load_base, mode, w, h,
@@ -2753,7 +2764,8 @@ static bool mgras_tex_draw_level(SGIMgrasState *s, uint32_t n, uint32_t mode,
     uint64_t image_bits = ((uint64_t)mgras_tex_slot_bits(mode) << log2w)
                           << log2h;
 
-    if (t->border_count[border_key] &&
+    if (!(t->texmode2 & MGRAS_TEXMODE2_NO_BORDER) &&
+        t->border_count[border_key] &&
         t->border_base[border_key] == t->base &&
         MGRAS_TEX_LAYOUT(t->border_mode[border_key]) ==
             MGRAS_TEX_LAYOUT(mode) &&
