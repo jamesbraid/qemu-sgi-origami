@@ -8462,6 +8462,52 @@ static SGIGLTexImage texture_image(TexturePixels *p)
     };
 }
 
+/*
+ * GL_SGIX_texture_coordinate_clamp: under CLAMP, S = 0.9 over two texels
+ * puts the linear footprint on texel 1 and the border; a maximum clamp of
+ * one half pulls it back to the middle of texels 0 and 1. REPEAT ignores
+ * the clamp, and a value outside [0, 1] drops the draw.
+ */
+static void test_texture_max_clamp(void)
+{
+    TexturePixels pixels = { .pixel = {
+        0xff0000ff, 0x00ff00ff, 0xff0000ff, 0x00ff00ff,
+    } };
+    SGIGLTexImage image = texture_image(&pixels);
+    SGIGLContext c;
+    const float color[4] = { 1, 1, 1, 1 };
+    float coord[4] = { 0.9f, 0.25f, 0, 1 }, out[4];
+
+    context_init(&c);
+    enable(&c, SGI_GL_TEXTURE_2D, true);
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    image.min_filter = image.mag_filter = SGI_GL_LINEAR;
+    image.wrap_s = image.wrap_t = SGI_GL_CLAMP;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                             color, out));
+    g_assert_cmpfloat_with_epsilon(out[0], 0, 0.000001);
+    g_assert_cmpfloat_with_epsilon(out[1], 0.7, 0.000001);
+
+    image.max_clamp = true;
+    image.max_clamp_s = 0.5;
+    image.max_clamp_t = image.max_clamp_r = 1;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                             color, out));
+    g_assert_cmpfloat_with_epsilon(out[0], 0.5, 0.000001);
+    g_assert_cmpfloat_with_epsilon(out[1], 0.5, 0.000001);
+
+    image.wrap_s = SGI_GL_REPEAT;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                             color, out));
+    g_assert_cmpfloat_with_epsilon(out[0], 0.3, 0.000001);
+    g_assert_cmpfloat_with_epsilon(out[1], 0.7, 0.000001);
+
+    image.max_clamp_s = 1.5;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                              color, out));
+    sgi_gl_cleanup(&c);
+}
+
 static void test_texture_shadow(void)
 {
     TexturePixels pixels = { .pixel = {
@@ -14331,6 +14377,7 @@ int main(int argc, char **argv)
                     test_mipmap_projective_triangle);
     g_test_add_func("/sgi-gl/texture-coordinates", test_texture_coordinates);
     g_test_add_func("/sgi-gl/texture-sampling", test_texture_sampling);
+    g_test_add_func("/sgi-gl/texture-max-clamp", test_texture_max_clamp);
     g_test_add_func("/sgi-gl/texture-replace-smooth-coverage",
                     test_texture_replace_smooth_coverage);
     g_test_add_func("/sgi-gl/texture-border/texels",

@@ -81,7 +81,7 @@ static bool sgi_render_texture_image_supported(const SGIGLTexImage *image,
          image->wrap_t != SGI_GL_CLAMP_TO_BORDER) ||
         image->post_filter || image->detail_image ||
         image->read_filter_weight || image->lod_scale_s ||
-        image->lod_scale_t ||
+        image->lod_scale_t || image->max_clamp ||
         (st->texture_env_mode != SGI_GL_REPLACE &&
          st->texture_env_mode != SGI_GL_MODULATE &&
          st->texture_env_mode != SGI_GL_DECAL &&

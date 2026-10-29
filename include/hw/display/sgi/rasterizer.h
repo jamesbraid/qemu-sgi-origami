@@ -372,6 +372,13 @@ typedef struct SGIGLTexImage {
     bool (*read_border_texel_3d_components)(void *opaque, int32_t x, int32_t y,
                                             int32_t z,
                                             uint16_t component[4]);
+    /*
+     * GL_SGIX_texture_coordinate_clamp: with max_clamp set, an axis whose
+     * wrap is CLAMP clamps its coordinate to [0, max_clamp_*], each in
+     * [0, 1], instead of [0, 1]. Other wrap modes ignore it.
+     */
+    bool max_clamp;
+    double max_clamp_s, max_clamp_t, max_clamp_r;
 } SGIGLTexImage;
 
 /*
