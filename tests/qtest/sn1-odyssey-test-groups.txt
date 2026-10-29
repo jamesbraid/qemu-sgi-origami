@@ -26,6 +26,7 @@ board /mips64/sn1/odyssey/interrupt-packet-composition
 board /mips64/sn1/odyssey/interrupt-packet-reaches-bedrock-pending
 board /mips64/sn1/odyssey/flag-interrupt-uses-routed-vector
 board /mips64/sn1/odyssey/flow-control-credit-target
+board /mips64/sn1/odyssey/statistics-region-registers
 board /mips64/sn1/odyssey/baseio-prom-diagnostic-registers
 board /mips64/sn1/odyssey/unmodeled-offsets-are-visible
 board /mips64/sn1/odyssey/reset-restores-documented-values
