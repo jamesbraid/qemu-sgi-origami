@@ -4382,6 +4382,129 @@ static void test_gl_records_apply_the_read_registers(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
+#define GL_RSS_ZOOM_INITIAL   0x154
+#define GL_RSS_ZOOM_STEP      0x155
+#define GL_XFRMODE_MAGNIFY    (1u << 19)
+#define GL_XFRMODE_DECIMATE   (1u << 20)
+
+static uint32_t gl_raster_zoom_pixel(uint32_t x)
+{
+    return (0x05 + 0x0f * x) << 24 | 0x80 << 16 | 0x33 << 8 | 0xff;
+}
+
+/*
+ * The x zoom records a 6.5.30 client sends before a draw (the raster and
+ * display contract's traced zoom words): the factor in 0x154 and 0x155,
+ * the transfer mode in 0x159.
+ */
+static void gl_raster_zoom_records(QTestState *qts, uint32_t initial,
+                                   uint32_t step, uint32_t mode)
+{
+    const GLRecord triples[] = {
+        { GL_RSS_ZOOM_STEP, step }, { GL_RSS_ZOOM_INITIAL, initial },
+    };
+    const GLRecord pairs[] = { { GL_RSS_XFRMODE, mode } };
+
+    gl_rss_triples(qts, triples, ARRAY_SIZE(triples));
+    gl_rss_pairs(qts, pairs, ARRAY_SIZE(pairs));
+}
+
+/* Window row y's pixels from column x, w of them. */
+static void gl_raster_zoom_expect(QTestState *qts, uint32_t x, uint32_t y,
+                                  const uint32_t *want, uint32_t w)
+{
+    for (uint32_t i = 0; i < w; i++) {
+        g_assert_cmphex(gl_window_pixel(qts, x + i, y), ==, want[i]);
+    }
+}
+
+/*
+ * OpenGL 1.2.1, 3.6.4: source pixel s fills the window columns whose
+ * centres lie in [s * z, (s + 1) * z), so column j takes the source
+ * pixel floor((j + 0.5) / z).
+ */
+static uint32_t gl_raster_zoom_source(uint32_t j, double z)
+{
+    return floor((j + 0.5) / z);
+}
+
+/*
+ * The raster engine's zoom: a magnification by the factor under 0x159 bit
+ * 19, a step through n replicated source pixels under bit 20, nothing
+ * under neither. Zoom 1.5 sends step 341 with n = 2, so it draws at
+ * 512 / 341: window column 22 takes source pixel 14 where an exact 1.5
+ * would take 15. Zoom 0.5 takes every second pixel, zoom 2 doubles each,
+ * and zoom 1's 0x1000f424 and 0 change nothing.
+ */
+static void test_gl_pixels_raster_zoom(void)
+{
+    static const uint32_t box15[6] = { 0, 0, 23, 0, 1 << 16 | 32, 1 };
+    static const uint32_t box05[6] = { 0, 0, 1, 0, 1 << 16 | 4, 1 };
+    static const uint32_t box2[6] = { 0, 0, 7, 0, 1 << 16 | 4, 1 };
+    static const uint32_t box1[6] = { 0, 0, 3, 0, 1 << 16 | 4, 1 };
+    uint32_t words[16], want[25];
+    uint8_t image[64];
+
+    for (uint32_t x = 0; x < 16; x++) {
+        words[x] = gl_raster_zoom_pixel(x);
+        stl_be_p(&image[4 * x], words[x]);
+    }
+    gl_pixels_context(qts, 0);
+
+    /* Zoom 1.5: by DMA under the fractional-x routine, as traced. */
+    gl_raster_pos2f(qts, 8, 8);
+    gl_raster_zoom_records(qts, 0x155, 0x155, 0xc00080 | GL_XFRMODE_DECIMATE);
+    gl_pixels_zoom_program(qts, 0x3715, 1.0f, box15);
+    gl_pixels_draw_as(qts, 16, GL_PIXELS_BY_DMA);
+    gl_pixels_dma(qts, image, sizeof(image), 64, 1, 64, 0xa7);
+    gl_pixels_fence(qts);
+    for (uint32_t j = 0; j < 24; j++) {
+        want[j] = words[gl_raster_zoom_source(j, 512.0 / 341)] >> 8;
+    }
+    want[24] = 0;
+    g_assert_cmphex(want[22], ==, words[14] >> 8);
+    gl_raster_zoom_expect(qts, 8, 8, want, 25);
+
+    /* Zoom 0.5: columns 0 and 1 take source pixels 1 and 3. */
+    gl_raster_pos2f(qts, 8, 12);
+    gl_raster_zoom_records(qts, 0x200, 0x200, 0xc00080 | GL_XFRMODE_DECIMATE);
+    gl_pixels_zoom_program(qts, 0x352d, 1.0f, box05);
+    gl_pixels_draw(qts, 4);
+    gl_pixels_row(qts, 0, words, 4);
+    gl_pixels_fence(qts);
+    want[0] = words[1] >> 8;
+    want[1] = words[3] >> 8;
+    want[2] = 0;
+    gl_raster_zoom_expect(qts, 8, 12, want, 3);
+
+    /* Zoom 2: each source pixel twice. */
+    gl_raster_pos2f(qts, 8, 16);
+    gl_raster_zoom_records(qts, 0x200, 0x200, 0xc00080 | GL_XFRMODE_MAGNIFY);
+    gl_pixels_zoom_program(qts, 0x352d, 1.0f, box2);
+    gl_pixels_draw(qts, 4);
+    gl_pixels_row(qts, 0, words, 4);
+    gl_pixels_fence(qts);
+    for (uint32_t j = 0; j < 8; j++) {
+        want[j] = words[j / 2] >> 8;
+    }
+    want[8] = 0;
+    gl_raster_zoom_expect(qts, 8, 16, want, 9);
+
+    /* Zoom 1: the traced pair without either bit draws unzoomed. */
+    gl_raster_pos2f(qts, 8, 20);
+    gl_raster_zoom_records(qts, 0, 0x1000f424, 0xc00080);
+    gl_pixels_zoom_program(qts, 0x352d, 1.0f, box1);
+    gl_pixels_draw(qts, 4);
+    gl_pixels_row(qts, 0, words, 4);
+    gl_pixels_fence(qts);
+    for (uint32_t j = 0; j < 4; j++) {
+        want[j] = words[j] >> 8;
+    }
+    want[4] = 0;
+    gl_raster_zoom_expect(qts, 8, 20, want, 5);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 /*
  * glReadPixels' data-port form for RGBA: records, 0xdb04 and a word, then
  * 0x8f08 and two zeros. Without the 0x8f08 nothing is read; with it the
@@ -6679,6 +6802,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-records-apply-the-read-registers",
         test_gl_records_apply_the_read_registers, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-raster-zoom",
+        test_gl_pixels_raster_zoom, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-readpixels-dataport-rgba",
         test_gl_readpixels_dataport_rgba, true);
