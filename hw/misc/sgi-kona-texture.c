@@ -1221,6 +1221,15 @@ static bool texture_filter_weight(void *opaque, double lambda, double *weight)
     fraction = position - node;
     *weight = o->filter_curve[node] * (1 - fraction) +
               o->filter_curve[MIN(node + 1, 63)] * fraction;
+    /*
+     * Back to the public weight. The GL client library sends a spline
+     * table of type 1 doubled and one of type 2 negated, and the command
+     * carries no type. Halving detail tables and negating sharpening
+     * tables undoes that only if detail uses type 1 and sharpening type
+     * 2, which is inferred: which type each filter uses has not been
+     * read. Were it the other way round, both weights here would be
+     * wrong in sign and scale.
+     */
     *weight *= o->params.mag_filter == SGI_GL_LINEAR_DETAIL_SGIS ||
                o->params.mag_filter == SGI_GL_LINEAR_DETAIL_COLOR_SGIS ||
                o->params.mag_filter == SGI_GL_LINEAR_DETAIL_ALPHA_SGIS ?
