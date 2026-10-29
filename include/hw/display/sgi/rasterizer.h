@@ -616,6 +616,23 @@ typedef struct SGIRasterTarget {
  */
 void sgi_raster_set_parallel(unsigned bands, uint64_t min_pixels);
 
+/*
+ * How filled triangles sample a texture. SGI_RASTER_TEXTURE_SPANS, the
+ * default, samples in fixed point and draws the rows of a state it has a
+ * specialised row loop for through that loop; SGI_RASTER_TEXTURE_FIXED
+ * samples in fixed point through the general per-fragment loop only, the
+ * interpreter every specialised loop must match pixel for pixel; and
+ * SGI_RASTER_TEXTURE_DOUBLE samples in double precision, as every other
+ * primitive does. Process-wide, for tests and measurements.
+ */
+typedef enum SGIRasterTexturePath {
+    SGI_RASTER_TEXTURE_SPANS,
+    SGI_RASTER_TEXTURE_FIXED,
+    SGI_RASTER_TEXTURE_DOUBLE,
+} SGIRasterTexturePath;
+
+void sgi_raster_set_texture_path(SGIRasterTexturePath path);
+
 SGIRenderResult sgi_render_resource_snapshot(const SGIRasterTarget *target,
                                               const SGIRenderResource *resource,
                                               uint32_t slice,

@@ -73,6 +73,8 @@ typedef struct SGISoftDraw {
     bool *rgba_reported;
     /* Texels already read in this draw, or NULL (sgi_soft_texel_cache). */
     struct SGISoftTexelCache *texels;
+    /* Filled triangles sample in fixed point, or NULL (sgi_soft_fixed). */
+    const struct SGISoftFixedTex *fixed;
     /* Of bands > 1, the rows this pass draws (sgi_soft_row_in_band()). */
     unsigned band, bands;
 } SGISoftDraw;
@@ -100,6 +102,13 @@ typedef struct SGISoftFrag {
     double rgba[4];
     double texcoord[4];
     double texture_rho;
+    /*
+     * With fixed set, the texel the fixed-point sampler filtered for the
+     * fragment, which the texture environment applies in place of
+     * sampling texcoord.
+     */
+    bool fixed;
+    double texel[4];
     double index;
     double fog;           /* the fog coordinate (3.10) */
 } SGISoftFrag;
@@ -1527,6 +1536,17 @@ static void __attribute__((constructor)) sgi_soft_unorm8_init(void)
  * the comparison reference, and failed reads always go to the family.
  */
 #define SGI_SOFT_TEXEL_CACHE_SIZE 4096
+#define SGI_SOFT_FIXED_LEVELS 14
+
+/*
+ * The fixed-point sampler's texels of one level for one draw, by interior
+ * index: each the read tag in the high word and the packed RGBA8 texel,
+ * components expanded, in the low (sgi_soft_fixed_texel()).
+ */
+typedef struct SGISoftFixedStore {
+    uint64_t *cell;
+    size_t size;
+} SGISoftFixedStore;
 
 typedef struct SGISoftTexelEntry {
     uint64_t serial;
@@ -1544,14 +1564,27 @@ typedef struct SGISoftTexelCache {
      * cache would only cost.
      */
     bool bypass;
+    /*
+     * The fixed-point sampler's levels, and the tag a cell read in this
+     * draw carries: the draw's serial in 31 bits, never zero, and with
+     * SGI_SOFT_FIXED_FAILED set for a texel whose read failed.
+     */
+    uint32_t tag;
+    SGISoftFixedStore fixed[SGI_SOFT_FIXED_LEVELS];
     SGISoftTexelEntry entry[SGI_SOFT_TEXEL_CACHE_SIZE];
 } SGISoftTexelCache;
+
+#define SGI_SOFT_FIXED_FAILED 0x80000000u
 
 static __thread SGISoftTexelCache *sgi_soft_texel_cache;
 static __thread Notifier sgi_soft_texel_cache_exit;
 
 static void sgi_soft_texel_cache_free(Notifier *n, void *unused)
 {
+    for (unsigned i = 0; sgi_soft_texel_cache && i < SGI_SOFT_FIXED_LEVELS;
+         i++) {
+        g_free(sgi_soft_texel_cache->fixed[i].cell);
+    }
     g_free(sgi_soft_texel_cache);
     sgi_soft_texel_cache = NULL;
 }
@@ -1569,6 +1602,18 @@ static SGISoftTexelCache *sgi_soft_texel_cache_begin(
     c->serial++;
     c->image = image;
     c->bypass = false;
+    c->tag = c->serial & ~SGI_SOFT_FIXED_FAILED;
+    if (!c->tag) {
+        /* Tags have come round: cells from 2^31 draws ago would match. */
+        for (unsigned i = 0; i < SGI_SOFT_FIXED_LEVELS; i++) {
+            if (c->fixed[i].cell) {
+                memset(c->fixed[i].cell, 0,
+                       c->fixed[i].size * sizeof(*c->fixed[i].cell));
+            }
+        }
+        c->serial++;
+        c->tag = c->serial & ~SGI_SOFT_FIXED_FAILED;
+    }
     return c;
 }
 
@@ -2113,6 +2158,56 @@ static bool sgi_soft_texture_detail_sample(const SGISoftDraw *r,
     return true;
 }
 
+/*
+ * A filtered texel through the image's post-filter, if it has one, and
+ * then by the texture environment env into a fragment's colour rgba,
+ * for an image of base format format (OpenGL 1.2.1, 3.8.9). Inlined, so
+ * a caller that names a constant format and environment carries no test
+ * of them.
+ */
+static inline QEMU_ALWAYS_INLINE
+void sgi_soft_texture_apply(const SGISoftDraw *r, uint32_t format,
+                            uint32_t env, double texel[4], double rgba[4])
+{
+    const SGIGLTexImage *im = r->texture;
+
+    if (im->post_filter) {
+        im->post_filter(im->opaque, texel);
+    }
+    if (format == SGI_GL_DEPTH_COMPONENT) {
+        format = SGI_GL_LUMINANCE;
+    }
+    for (int k = 0; k < 4; k++) {
+        bool alpha = k == 3;
+
+        if ((!alpha && format == SGI_GL_ALPHA) ||
+            (alpha && (format == SGI_GL_RGB ||
+                       format == SGI_GL_LUMINANCE))) {
+            continue;
+        }
+        switch (env) {
+        case SGI_GL_REPLACE:
+            rgba[k] = texel[k];
+            break;
+        case SGI_GL_MODULATE:
+            rgba[k] *= texel[k];
+            break;
+        case SGI_GL_DECAL:
+            if (!alpha) {
+                rgba[k] = format == SGI_GL_RGB ? texel[k] :
+                    rgba[k] * (1 - texel[3]) + texel[k] * texel[3];
+            }
+            break;
+        case SGI_GL_BLEND:
+            rgba[k] = alpha && format != SGI_GL_INTENSITY ?
+                rgba[k] * texel[k] :
+                rgba[k] * (1 - texel[k]) +
+                MIN(MAX(r->st->texture_env_color[k], 0), 1) * texel[k];
+            break;
+        }
+    }
+}
+
 static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
 {
     const SGIGLTexImage *im = r->texture;
@@ -2181,41 +2276,8 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
                                         texel)) {
         return false;
     }
-    if (im->post_filter) {
-        im->post_filter(im->opaque, texel);
-    }
-    if (format == SGI_GL_DEPTH_COMPONENT) {
-        format = SGI_GL_LUMINANCE;
-    }
-    for (int k = 0; k < 4; k++) {
-        bool alpha = k == 3;
-
-        if ((!alpha && format == SGI_GL_ALPHA) ||
-            (alpha && (format == SGI_GL_RGB ||
-                       format == SGI_GL_LUMINANCE))) {
-            continue;
-        }
-        switch (st->texture_env_mode) {
-        case SGI_GL_REPLACE:
-            frag->rgba[k] = texel[k];
-            break;
-        case SGI_GL_MODULATE:
-            frag->rgba[k] *= texel[k];
-            break;
-        case SGI_GL_DECAL:
-            if (!alpha) {
-                frag->rgba[k] = format == SGI_GL_RGB ? texel[k] :
-                    frag->rgba[k] * (1 - texel[3]) + texel[k] * texel[3];
-            }
-            break;
-        case SGI_GL_BLEND:
-            frag->rgba[k] = alpha && format != SGI_GL_INTENSITY ?
-                frag->rgba[k] * texel[k] :
-                frag->rgba[k] * (1 - texel[k]) +
-                MIN(MAX(st->texture_env_color[k], 0), 1) * texel[k];
-            break;
-        }
-    }
+    sgi_soft_texture_apply(r, format, st->texture_env_mode, texel,
+                           frag->rgba);
     return true;
 }
 
@@ -2449,8 +2511,16 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
     if (!(z >= 0.0 && z <= 1.0)) {
         return;
     }
-    if (r->texture && !sgi_soft_texture(r, &fogged)) {
-        return;
+    if (r->texture) {
+        if (frag->fixed) {
+            uint32_t format = r->texture_base ? r->texture_base->base_format :
+                              r->texture->base_format;
+
+            sgi_soft_texture_apply(r, format, r->st->texture_env_mode,
+                                   fogged.texel, fogged.rgba);
+        } else if (!sgi_soft_texture(r, &fogged)) {
+            return;
+        }
     }
     if (r->st->fog) {
         sgi_soft_fog(r, &fogged, z);
@@ -2973,6 +3043,632 @@ typedef struct SGISoftTexPlane {
     double x, y;
 } SGISoftTexPlane;
 
+/*
+ * Fixed-point texturing for filled triangles.
+ *
+ * Approximated: no source gives any family's sub-texel, filter-weight or
+ * level-of-detail widths, and the double arithmetic of sgi_soft_texture()
+ * is no closer to a board's than another choice. Where the state allows,
+ * a filled triangle samples instead with:
+ *  - each fragment's s and t from the triangle's S/W, T/W and Q/W planes,
+ *    divided in double, so a far, many-times repeated floor keeps its
+ *    texel positions (a 32-bit fixed-point numerator does not);
+ *  - texel positions in 1/256 of a texel: bilinear weights of 8 bits;
+ *  - lambda, the level of detail, in 1/256, from the squared footprint
+ *    through a 10-bit table of log2, with no square root; within a few
+ *    steps of a choice between filters or nearest levels it is computed
+ *    exactly instead, rounded up, so the choice is the double path's;
+ *  - a blend between two levels by an 8-bit fraction;
+ *  - texels as 8-bit components, filtered in integers with no rounding
+ *    until the texture environment takes the result in double.
+ * Coverage, depth, stencil and the pixels written are those of the
+ * double path. Colour differs from it within a bound measured on the
+ * comparison corpus; tests/unit/test-sgi-gl.c checks that bound and
+ * pins each width.
+ *
+ * The state it takes: a 2D image or pyramid of base format alpha,
+ * luminance, luminance-alpha, intensity, RGB or RGBA, read through the
+ * packed reader or through component readers 1, 2, 4 or 8 bits wide,
+ * which convert to 8 bits exactly; levels of at most 8192 texels a side
+ * and 2^22 texels; NEAREST, LINEAR or a mipmap minification filter with
+ * NEAREST or LINEAR magnification; any wrap, a border image only under
+ * REPEAT or CLAMP_TO_EDGE, which never reach it; no alpha test, whose
+ * outcome would move with the texel's alpha; and no logical operation,
+ * which turns a difference in the lowest bit into one in any. Anything
+ * else, and a
+ * fragment the fixed sampler cannot take (a coordinate beyond 2^30, Q/W
+ * not positive, a failed read), goes to sgi_soft_texture(), so it is
+ * dropped and reported as before.
+ */
+#define SGI_SOFT_FIXED_MAX_SIDE 8192u
+#define SGI_SOFT_FIXED_MAX_TEXELS (1u << 22)
+/* Lambda's bounds, beyond any level count, in 1/256. */
+#define SGI_SOFT_FIXED_LAMBDA_MAX (1 << 24)
+
+static SGIRasterTexturePath sgi_soft_texture_path;
+
+void sgi_raster_set_texture_path(SGIRasterTexturePath path)
+{
+    sgi_soft_texture_path = path;
+}
+
+typedef struct SGISoftFixedLevel {
+    const SGIGLTexLevel *level;     /* NULL: the image's level-zero fields */
+    uint32_t width, height;
+    uint32_t width_shift;
+    bool raw;                       /* read through the component reader */
+} SGISoftFixedLevel;
+
+typedef struct SGISoftFixedTex {
+    SGISoftFixedLevel level[SGI_SOFT_FIXED_LEVELS];
+    uint32_t range;                 /* the last level, relative to base */
+    uint32_t format;
+    uint32_t min, mag, wrap_s, wrap_t;
+    uint32_t border;                /* the border colour as a texel */
+    /* Whether the footprint chooses the filter or level at all. */
+    bool lod;
+    /* Whether it chooses between filters or nearest levels. */
+    bool choice;
+    int32_t min_lod, max_lod;       /* in 1/256 */
+    int32_t mag_below;              /* lambda at or below it magnifies */
+    double ns, nt;                  /* the footprint's per-axis scales */
+} SGISoftFixedTex;
+
+/* An 8-bit image component from one of a component reader's width. */
+static uint32_t sgi_soft_fixed_component(uint32_t value, uint8_t bits)
+{
+    return value * (255 / ((1u << bits) - 1));
+}
+
+/*
+ * A packed RRGGBBAA texel with the components the base format lacks
+ * filled in, as sgi_soft_texture_components() fills them.
+ */
+static uint32_t sgi_soft_fixed_expand(uint32_t format, uint32_t rgba)
+{
+    uint32_t r = rgba >> 24;
+
+    switch (format) {
+    case SGI_GL_ALPHA:
+        return 0xffffff00u | (rgba & 0xff);
+    case SGI_GL_LUMINANCE:
+        return r * 0x01010100u | 0xff;
+    case SGI_GL_LUMINANCE_ALPHA:
+        return r * 0x01010100u | (rgba & 0xff);
+    case SGI_GL_INTENSITY:
+        return r * 0x01010101u;
+    case SGI_GL_RGB:
+        return rgba | 0xff;
+    default:
+        return rgba;
+    }
+}
+
+static bool sgi_soft_fixed_widths(uint32_t format, const uint8_t bits[4])
+{
+    uint8_t mask = sgi_soft_texture_component_mask(format);
+
+    for (unsigned k = 0; k < 4; k++) {
+        if ((mask & (1u << k)) && bits[k] != 1 && bits[k] != 2 &&
+            bits[k] != 4 && bits[k] != 8) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static uint32_t sgi_soft_fixed_unit(double c)
+{
+    return (uint32_t)(MIN(MAX(c, 0.0), 1.0) * 255 + 0.5);
+}
+
+/*
+ * Whether draw r's filled triangles sample its texture in fixed point,
+ * and if so f made ready for them; the tests sgi_soft_texture_setup()
+ * has already made are not repeated.
+ */
+static bool sgi_soft_fixed_setup(const SGISoftDraw *r, SGISoftFixedTex *f)
+{
+    const SGIGLTexImage *im = r->texture;
+    const SGIGLTexLevel *base = r->texture_base;
+    const SGIGLTexPyramid *p = im ? im->pyramid : NULL;
+    bool mipmap, edge_only;
+    double border[4];
+
+    if (sgi_soft_texture_path == SGI_RASTER_TEXTURE_DOUBLE || !im ||
+        !r->texels || im->volume || im->one_dimensional ||
+        r->st->index_bits || r->st->alpha_test || r->logic_op) {
+        return false;
+    }
+    memset(f, 0, sizeof(*f));
+    f->format = base ? base->base_format : im->base_format;
+    f->min = im->min_filter;
+    f->mag = im->mag_filter;
+    f->wrap_s = im->wrap_s;
+    f->wrap_t = im->wrap_t;
+    mipmap = sgi_soft_texture_mipmap(f->min);
+    if (f->format == SGI_GL_DEPTH_COMPONENT ||
+        (f->mag != SGI_GL_NEAREST && f->mag != SGI_GL_LINEAR) ||
+        (f->min != SGI_GL_NEAREST && f->min != SGI_GL_LINEAR && !mipmap)) {
+        return false;
+    }
+    edge_only = (f->wrap_s == SGI_GL_REPEAT ||
+                 f->wrap_s == SGI_GL_CLAMP_TO_EDGE) &&
+                (f->wrap_t == SGI_GL_REPEAT ||
+                 f->wrap_t == SGI_GL_CLAMP_TO_EDGE);
+    f->range = base ? r->texture_last - p->base_level : 0;
+    if (f->range >= SGI_SOFT_FIXED_LEVELS) {
+        return false;
+    }
+    for (uint32_t i = 0; i <= f->range; i++) {
+        const SGIGLTexLevel *l = base ?
+            sgi_soft_texture_level(p, p->base_level + i) : NULL;
+        SGISoftFixedLevel *fl = &f->level[i];
+        uint32_t format = l ? l->base_format : im->base_format;
+        bool raw = l ? !!l->read_texel_components :
+                       !!im->read_texel_components;
+
+        fl->level = l;
+        fl->width = l ? l->width : im->width;
+        fl->height = l ? l->height : im->height;
+        fl->width_shift = ctz32(fl->width);
+        fl->raw = raw;
+        if (!l && i) {
+            return false;
+        }
+        if (fl->width > SGI_SOFT_FIXED_MAX_SIDE ||
+            fl->height > SGI_SOFT_FIXED_MAX_SIDE ||
+            (uint64_t)fl->width * fl->height > SGI_SOFT_FIXED_MAX_TEXELS ||
+            !is_power_of_2(fl->width) || !is_power_of_2(fl->height) ||
+            format != f->format ||
+            ((l ? l->border : im->border) && !edge_only) ||
+            (raw ? !sgi_soft_fixed_widths(format, l ? l->component_bits :
+                                                  im->component_bits) :
+                   !(l ? !!l->read_texel : !!im->read_texel))) {
+            return false;
+        }
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        border[k] = MIN(MAX(im->border_color[k], 0), 1);
+    }
+    sgi_soft_texture_components(f->format, border);
+    f->border = sgi_soft_fixed_unit(border[0]) << 24 |
+                sgi_soft_fixed_unit(border[1]) << 16 |
+                sgi_soft_fixed_unit(border[2]) << 8 |
+                sgi_soft_fixed_unit(border[3]);
+    /* An image without a pyramid has one filter and no footprint. */
+    f->lod = base && (mipmap || f->min != f->mag);
+    f->choice = f->lod && !(f->min == SGI_GL_LINEAR_MIPMAP_LINEAR &&
+                            f->mag == SGI_GL_LINEAR);
+    if (base) {
+        /* Rounded up, as an exact lambda is (sgi_soft_fixed_decide()). */
+        f->min_lod = ceil(MIN(MAX(p->min_lod * 256,
+                                  -SGI_SOFT_FIXED_LAMBDA_MAX),
+                              SGI_SOFT_FIXED_LAMBDA_MAX));
+        f->max_lod = ceil(MIN(MAX(p->max_lod * 256,
+                                  -SGI_SOFT_FIXED_LAMBDA_MAX),
+                              SGI_SOFT_FIXED_LAMBDA_MAX));
+        f->ns = base->width * sgi_soft_texture_lod_scale(im->lod_scale_s);
+        f->nt = base->height * sgi_soft_texture_lod_scale(im->lod_scale_t);
+    }
+    /* sgi_soft_texture_select()'s c, for these filters. */
+    f->mag_below = f->mag == SGI_GL_LINEAR &&
+                   (f->min == SGI_GL_NEAREST_MIPMAP_NEAREST ||
+                    f->min == SGI_GL_NEAREST_MIPMAP_LINEAR) ? 128 : 0;
+    return true;
+}
+
+/*
+ * Make this thread's texel store ready for draw r's levels: false, and
+ * the draw samples in double, where it cannot be allocated.
+ */
+static bool sgi_soft_fixed_begin(const SGISoftDraw *r)
+{
+    const SGISoftFixedTex *f = r->fixed;
+
+    for (uint32_t i = 0; i <= f->range; i++) {
+        SGISoftFixedStore *store = &r->texels->fixed[i];
+        size_t size = (size_t)f->level[i].width * f->level[i].height;
+
+        if (store->size < size) {
+            g_free(store->cell);
+            store->size = 0;
+            store->cell = g_try_new0(uint64_t, size);
+            if (!store->cell) {
+                return false;
+            }
+            store->size = size;
+        }
+    }
+    return true;
+}
+
+/*
+ * Read interior texel (x, y) of relative level i into its cell, and
+ * return the cell; a read that fails, or returns a component beyond its
+ * width, leaves the cell tagged failed.
+ */
+static uint64_t __attribute__((noinline))
+sgi_soft_fixed_fill(const SGISoftDraw *r, uint32_t i, uint32_t x,
+                    uint32_t y, uint64_t *cell)
+{
+    const SGISoftFixedLevel *fl = &r->fixed->level[i];
+    const SGIGLTexLevel *l = fl->level;
+    const SGIGLTexImage *im = r->texture;
+    uint32_t tag = r->texels->tag, rgba = 0;
+    bool read;
+
+    if (fl->raw) {
+        const uint8_t *bits = l ? l->component_bits : im->component_bits;
+        uint8_t mask = sgi_soft_texture_component_mask(r->fixed->format);
+        uint16_t c[4] = { 0 };
+
+        read = l ? l->read_texel_components(l->opaque, l->level, x, y, c) :
+                   im->read_texel_components(im->opaque, x, y, c);
+        for (unsigned k = 0; read && k < 4; k++) {
+            if (mask & (1u << k)) {
+                read = c[k] < (1u << bits[k]);
+                rgba |= sgi_soft_fixed_component(c[k], bits[k]) <<
+                        (24 - 8 * k);
+            }
+        }
+    } else {
+        read = l ? l->read_texel(l->opaque, l->level, x, y, &rgba) :
+                   im->read_texel(im->opaque, x, y, &rgba);
+    }
+    *cell = (uint64_t)(read ? tag : tag | SGI_SOFT_FIXED_FAILED) << 32 |
+            sgi_soft_fixed_expand(r->fixed->format, rgba);
+    return *cell;
+}
+
+/* Interior texel (x, y) of relative level i, read once a draw. */
+static inline QEMU_ALWAYS_INLINE
+bool sgi_soft_fixed_texel(const SGISoftDraw *r, uint32_t i, uint32_t x,
+                          uint32_t y, uint32_t *rgba)
+{
+    uint64_t *cell = &r->texels->fixed[i].cell[
+        ((size_t)y << r->fixed->level[i].width_shift) + x];
+    uint64_t v = *cell;
+
+    if (unlikely((uint32_t)(v >> 32) != r->texels->tag)) {
+        if ((uint32_t)(v >> 32) == (r->texels->tag | SGI_SOFT_FIXED_FAILED)) {
+            return false;
+        }
+        v = sgi_soft_fixed_fill(r, i, x, y, cell);
+        if ((uint32_t)(v >> 32) != r->texels->tag) {
+            return false;
+        }
+    }
+    *rgba = v;
+    return true;
+}
+
+/*
+ * The texel at signed index (x, y) of relative level i after wrapping,
+ * which leaves an index outside the interior only under CLAMP and
+ * CLAMP_TO_BORDER: there the border colour.
+ */
+static inline QEMU_ALWAYS_INLINE
+bool sgi_soft_fixed_tap(const SGISoftDraw *r, uint32_t i, int64_t x,
+                        int64_t y, const bool repeat, uint32_t *rgba)
+{
+    const SGISoftFixedLevel *fl = &r->fixed->level[i];
+
+    if (!repeat && (x < 0 || y < 0 || x >= fl->width || y >= fl->height)) {
+        *rgba = r->fixed->border;
+        return true;
+    }
+    return sgi_soft_fixed_texel(r, i, x, y, rgba);
+}
+
+/* floor(x) for |x| below 2^62. */
+static inline int64_t sgi_soft_fixed_floor(double x)
+{
+    int64_t i = (int64_t)x;
+
+    return i - (x < i);
+}
+
+/*
+ * One axis of a fixed-point position u, in 1/256 of a texel of a level n
+ * texels wide, wrapped as sgi_soft_texture_axis() wraps the coordinate:
+ * for LINEAR, the first tap's index in *x0, the second's in *x1 and the
+ * second's weight; for NEAREST, the tap's index in *x0.
+ */
+static inline QEMU_ALWAYS_INLINE
+uint32_t sgi_soft_fixed_axis(int64_t u, uint32_t n, uint32_t wrap,
+                             bool linear, int64_t *x0, int64_t *x1)
+{
+    int64_t whole = (int64_t)n << 8;
+    uint32_t a = 0;
+
+    if (linear) {
+        switch (wrap) {
+        case SGI_GL_REPEAT:
+            u -= 128;
+            break;
+        case SGI_GL_CLAMP_TO_EDGE:
+            u = MIN(MAX(u - 128, 0), whole - 256);
+            break;
+        case SGI_GL_CLAMP_TO_BORDER:
+            u = MIN(MAX(u, -128), whole + 128) - 128;
+            break;
+        default:
+            u = MIN(MAX(u, 0), whole) - 128;
+            break;
+        }
+        a = u & 255;
+        *x0 = u >> 8;
+        *x1 = *x0 + 1;
+        if (wrap == SGI_GL_REPEAT) {
+            *x0 &= n - 1;
+            *x1 &= n - 1;
+        } else if (wrap == SGI_GL_CLAMP_TO_EDGE) {
+            *x1 = MIN(*x1, n - 1);
+        }
+        return a;
+    }
+    *x0 = u >> 8;
+    switch (wrap) {
+    case SGI_GL_REPEAT:
+        *x0 &= n - 1;
+        break;
+    case SGI_GL_CLAMP_TO_BORDER:
+        *x0 = MIN(MAX(*x0, -1), (int64_t)n);
+        break;
+    default:
+        *x0 = MIN(MAX(*x0, 0), (int64_t)n - 1);
+        break;
+    }
+    return 0;
+}
+
+/*
+ * A texel's red and blue, or green and alpha, in the low 16 bits of two
+ * 32-bit lanes: the first of them in the high lane.
+ */
+#define SGI_SOFT_FIXED_PAIRS 0x00ff00ffu
+
+static inline uint64_t sgi_soft_fixed_widen(uint32_t pairs)
+{
+    return (pairs & 0xffff) | (uint64_t)(pairs >> 16) << 32;
+}
+
+/*
+ * Relative level i sampled at (s, t) with filter, each component in
+ * 1/(255 * 2^16): out[0] holds red over blue and out[1] green over
+ * alpha, one to each 32-bit lane. A component times a weight of at most
+ * 256 fits 16 bits, so each pass filters two components in one product.
+ */
+static inline QEMU_ALWAYS_INLINE
+bool sgi_soft_fixed_level(const SGISoftDraw *r, uint32_t i, uint32_t filter,
+                          double s, double t, const bool repeat,
+                          uint64_t out[2])
+{
+    const SGISoftFixedTex *f = r->fixed;
+    const SGISoftFixedLevel *fl = &f->level[i];
+    uint32_t ws = repeat ? SGI_GL_REPEAT : f->wrap_s;
+    uint32_t wt = repeat ? SGI_GL_REPEAT : f->wrap_t;
+    int64_t u = sgi_soft_fixed_floor(s * (fl->width * 256.0));
+    int64_t v = sgi_soft_fixed_floor(t * (fl->height * 256.0));
+    int64_t x0, x1, y0, y1;
+    uint32_t c00, c10, c01, c11, a, b;
+
+    if (filter == SGI_GL_NEAREST) {
+        sgi_soft_fixed_axis(u, fl->width, ws, false, &x0, &x1);
+        sgi_soft_fixed_axis(v, fl->height, wt, false, &y0, &y1);
+        if (!sgi_soft_fixed_tap(r, i, x0, y0, repeat, &c00)) {
+            return false;
+        }
+        out[0] = sgi_soft_fixed_widen((c00 >> 8) & SGI_SOFT_FIXED_PAIRS) << 16;
+        out[1] = sgi_soft_fixed_widen(c00 & SGI_SOFT_FIXED_PAIRS) << 16;
+        return true;
+    }
+    a = sgi_soft_fixed_axis(u, fl->width, ws, true, &x0, &x1);
+    b = sgi_soft_fixed_axis(v, fl->height, wt, true, &y0, &y1);
+    if (!sgi_soft_fixed_tap(r, i, x0, y0, repeat, &c00) ||
+        !sgi_soft_fixed_tap(r, i, x1, y0, repeat, &c10) ||
+        !sgi_soft_fixed_tap(r, i, x0, y1, repeat, &c01) ||
+        !sgi_soft_fixed_tap(r, i, x1, y1, repeat, &c11)) {
+        return false;
+    }
+    {
+        const uint32_t m = SGI_SOFT_FIXED_PAIRS, ia = 256 - a, ib = 256 - b;
+        uint32_t top_rb = ((c00 >> 8) & m) * ia + ((c10 >> 8) & m) * a;
+        uint32_t bot_rb = ((c01 >> 8) & m) * ia + ((c11 >> 8) & m) * a;
+        uint32_t top_ga = (c00 & m) * ia + (c10 & m) * a;
+        uint32_t bot_ga = (c01 & m) * ia + (c11 & m) * a;
+
+        out[0] = sgi_soft_fixed_widen(top_rb) * ib +
+                 sgi_soft_fixed_widen(bot_rb) * b;
+        out[1] = sgi_soft_fixed_widen(top_ga) * ib +
+                 sgi_soft_fixed_widen(bot_ga) * b;
+    }
+    return true;
+}
+
+/* round(128 log2(1 + (i + 0.5) / 1024)): lambda's table, in 1/256. */
+static int16_t sgi_soft_fixed_log2[1024];
+
+static void __attribute__((constructor)) sgi_soft_fixed_log2_init(void)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(sgi_soft_fixed_log2); i++) {
+        sgi_soft_fixed_log2[i] = lround(128 * log2(1 + (i + 0.5) / 1024));
+    }
+}
+
+/*
+ * Lambda in 1/256, log2 of the footprint rho, from rho squared, finite
+ * and not negative: half its binary exponent plus the table's value for
+ * the top ten bits of its significand. Zero and subnormals give the
+ * least lambda, which every level clamp raises.
+ */
+static inline int32_t sgi_soft_fixed_lambda(double rho2)
+{
+    uint64_t bits;
+    int exponent;
+
+    memcpy(&bits, &rho2, sizeof(bits));
+    exponent = (bits >> 52) & 0x7ff;
+    if (!exponent) {
+        return -SGI_SOFT_FIXED_LAMBDA_MAX;
+    }
+    return (exponent - 1023) * 128 + sgi_soft_fixed_log2[(bits >> 42) & 1023];
+}
+
+/*
+ * Lambda for footprint squared rho2 from its table value lambda, or,
+ * within a few steps of a lambda where the filter or nearest level
+ * changes, computed exactly and rounded up. A lambda of ceil(256 l) is at
+ * or below 256 c exactly when l is at or below c, and rounds to the same
+ * nearest level, so those choices are sgi_soft_texture_select()'s; only
+ * the blend between levels takes the table's precision.
+ */
+static inline int32_t sgi_soft_fixed_decide(const SGISoftFixedTex *f,
+                                            double rho2, int32_t lambda)
+{
+    int32_t clamped = MIN(MAX(lambda, f->min_lod), f->max_lod);
+    bool at_edge = abs(clamped - f->mag_below) <= 3 ||
+                   ((f->min == SGI_GL_NEAREST_MIPMAP_NEAREST ||
+                     f->min == SGI_GL_LINEAR_MIPMAP_NEAREST) &&
+                    abs(((clamped - 128) & 255) - 128) >= 125);
+
+    if (!f->choice || !at_edge) {
+        return lambda;
+    }
+    return rho2 > 0 ? MIN(MAX(ceil(128 * log2(rho2)),
+                              -SGI_SOFT_FIXED_LAMBDA_MAX),
+                          SGI_SOFT_FIXED_LAMBDA_MAX) :
+                      -SGI_SOFT_FIXED_LAMBDA_MAX;
+}
+
+/*
+ * A fragment's s, t and lambda from the triangle's planes g at pixel
+ * column px, whose row terms are row; false where the fixed sampler
+ * cannot take it. rho2_flat, where Q/W is the same across the triangle,
+ * is its footprint squared there, the same at every fragment.
+ */
+static inline QEMU_ALWAYS_INLINE
+bool sgi_soft_fixed_coords(const SGISoftFixedTex *f,
+                           const SGISoftTexPlane *g, const double row[4],
+                           int px, const int32_t *flat_lambda,
+                           double *s, double *t, int32_t *lambda)
+{
+    double x = px + 0.5 - g->x;
+    double q = g->value[2] + x * g->dx[2] + row[2];
+    double iq, a, b, c, e, rho2;
+
+    if (!(q > 0)) {
+        return false;
+    }
+    iq = 1 / q;
+    *s = (g->value[0] + x * g->dx[0] + row[0]) * iq;
+    *t = (g->value[1] + x * g->dx[1] + row[1]) * iq;
+    if (!(fabs(*s) < 0x1p30 && fabs(*t) < 0x1p30)) {
+        return false;
+    }
+    if (!f->lod || flat_lambda) {
+        *lambda = flat_lambda ? *flat_lambda : 0;
+        return true;
+    }
+    /* d(S/Q)/dx is (dS/dx - s dQ/dx) / Q, and so on. */
+    a = f->ns * (g->dx[0] - *s * g->dx[2]) * iq;
+    b = f->nt * (g->dx[1] - *t * g->dx[2]) * iq;
+    c = f->ns * (g->dy[0] - *s * g->dy[2]) * iq;
+    e = f->nt * (g->dy[1] - *t * g->dy[2]) * iq;
+    rho2 = MAX(a * a + b * b, c * c + e * e);
+    if (!(rho2 <= DBL_MAX)) {
+        return false;
+    }
+    *lambda = sgi_soft_fixed_decide(f, rho2, sgi_soft_fixed_lambda(rho2));
+    return true;
+}
+
+/*
+ * The fixed-point sampler's choice of kernel, a constant in the
+ * specialised row loops: NEAREST or LINEAR with no footprint, trilinear
+ * (LINEAR_MIPMAP_LINEAR minification with LINEAR magnification), or any
+ * filter the image has, chosen per fragment.
+ */
+typedef enum SGISoftFixedKernel {
+    SGI_SOFT_FIXED_ANY,
+    SGI_SOFT_FIXED_NEAREST,
+    SGI_SOFT_FIXED_LINEAR,
+    SGI_SOFT_FIXED_TRILINEAR,
+} SGISoftFixedKernel;
+
+/*
+ * The filtered texel at (s, t) for lambda, each component in [0, 1], as
+ * sgi_soft_texture_select() chooses filter, levels and their blend, with
+ * lambda and the blend fraction in 1/256. kernel, and repeat (both axes
+ * GL_REPEAT), are constants where the caller can name them.
+ */
+static inline QEMU_ALWAYS_INLINE
+bool sgi_soft_fixed_sample(const SGISoftDraw *r, double s, double t,
+                           int32_t lambda, const SGISoftFixedKernel kernel,
+                           const bool repeat, double texel[4])
+{
+    const SGISoftFixedTex *f = r->fixed;
+    const double unit = 1.0 / (255.0 * (1 << 24));
+    uint32_t first = 0, second = 0, alpha = 0;
+    uint32_t filter = kernel == SGI_SOFT_FIXED_NEAREST ? SGI_GL_NEAREST :
+                      kernel == SGI_SOFT_FIXED_ANY ? f->min : SGI_GL_LINEAR;
+    uint64_t out[2], other[2];
+
+    if (kernel == SGI_SOFT_FIXED_TRILINEAR ||
+        (kernel == SGI_SOFT_FIXED_ANY && f->lod)) {
+        lambda = MIN(MAX(lambda, f->min_lod), f->max_lod);
+    }
+    if (kernel == SGI_SOFT_FIXED_TRILINEAR) {
+        /* At or below 0, magnification is the same LINEAR on level 0. */
+        uint32_t rel = MIN(MAX(lambda, 0), (int32_t)(f->range << 8));
+
+        first = rel >> 8;
+        alpha = rel & 255;
+        second = MIN(first + 1, f->range);
+    } else if (kernel == SGI_SOFT_FIXED_ANY && f->lod) {
+        if (lambda <= f->mag_below) {
+            filter = f->mag;
+        } else if (sgi_soft_texture_mipmap(f->min)) {
+            filter = f->min == SGI_GL_NEAREST_MIPMAP_NEAREST ||
+                     f->min == SGI_GL_NEAREST_MIPMAP_LINEAR ?
+                     SGI_GL_NEAREST : SGI_GL_LINEAR;
+            if (f->min == SGI_GL_NEAREST_MIPMAP_NEAREST ||
+                f->min == SGI_GL_LINEAR_MIPMAP_NEAREST) {
+                /* The nearest level: lambda rounded, half down. */
+                first = lambda <= 128 ? 0 :
+                        lambda > (int32_t)(f->range << 8) + 128 ? f->range :
+                        (uint32_t)(lambda + 127) >> 8;
+            } else {
+                uint32_t rel = MIN(MAX(lambda, 0),
+                                   (int32_t)(f->range << 8));
+
+                first = rel >> 8;
+                alpha = rel & 255;
+                second = MIN(first + 1, f->range);
+            }
+        }
+    }
+    if (!sgi_soft_fixed_level(r, first, filter, s, t, repeat, out)) {
+        return false;
+    }
+    if (alpha) {
+        if (!sgi_soft_fixed_level(r, second, filter, s, t, repeat, other)) {
+            return false;
+        }
+        out[0] = out[0] * (256 - alpha) + other[0] * alpha;
+        out[1] = out[1] * (256 - alpha) + other[1] * alpha;
+    } else {
+        out[0] <<= 8;
+        out[1] <<= 8;
+    }
+    texel[0] = (uint32_t)(out[0] >> 32) * unit;
+    texel[1] = (uint32_t)(out[1] >> 32) * unit;
+    texel[2] = (uint32_t)out[0] * unit;
+    texel[3] = (uint32_t)out[1] * unit;
+    return true;
+}
+
 static void sgi_soft_texture_values(const SGISoftVertex *v, bool volume,
                                      bool one_dimensional, double value[4])
 {
@@ -3314,6 +4010,10 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     /* The footprint's per-axis scales, and its value where Q/W is flat. */
     double tex_ns = 0, tex_nt = 0, tex_nr = 0, flat_rho = NAN;
     bool flat_q = false, flat_ok = false;
+    /* Fragments sample in fixed point, and their lambda where it is flat. */
+    bool fixed = false;
+    int32_t fixed_flat_lambda = 0;
+    const int32_t *fixed_flat = NULL;
     int64_t min_x, max_x, min_y, max_y, area, step0, step1, step2;
     double offset;
     bool ccw, front;
@@ -3339,6 +4039,33 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
         sgi_soft_texture_report(r, 16, "invalid primitive coefficients, "
                                       "primitive dropped");
         return;
+    }
+    /* An image with no pyramid has no planes to fail: it samples in double. */
+    fixed = r->fixed &&
+            (r->texture_base ||
+             sgi_soft_texture_plane(v, sub, false, false, &gradient));
+    if (fixed && r->fixed->lod && gradient.dx[2] == 0 &&
+        gradient.dy[2] == 0) {
+        /*
+         * Q/W flat, as for the double footprint below: every fragment's
+         * lambda is this one, which sgi_soft_fixed_coords() would compute
+         * for each of them, since s dQ/dx and t dQ/dx are then zero.
+         */
+        double q = gradient.value[2], iq, a, b, c, e, rho2;
+
+        if (q > 0) {
+            iq = 1 / q;
+            a = r->fixed->ns * gradient.dx[0] * iq;
+            b = r->fixed->nt * gradient.dx[1] * iq;
+            c = r->fixed->ns * gradient.dy[0] * iq;
+            e = r->fixed->nt * gradient.dy[1] * iq;
+            rho2 = MAX(a * a + b * b, c * c + e * e);
+            if (rho2 <= DBL_MAX) {
+                fixed_flat_lambda = sgi_soft_fixed_decide(r->fixed, rho2,
+                    sgi_soft_fixed_lambda(rho2));
+                fixed_flat = &fixed_flat_lambda;
+            }
+        }
     }
     if (r->texture_base) {
         tex_ns = r->texture_base->width *
@@ -3391,6 +4118,7 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
         flat_frag.rgba[k] = flat[k];
     }
     flat_frag.index = *flat_index;
+    flat_frag.fixed = false;
     offset = sgi_soft_offset(r, v);
     if (area < 0) {
         /* Rasterize either winding the same way from here. */
@@ -3452,7 +4180,7 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                                  step2, area, offset, &flat_frag, smooth);
             continue;
         }
-        if (r->texture_base) {
+        if (r->texture_base || fixed) {
             for (unsigned k = 0; k < 4; k++) {
                 tex_row[k] = (py + 0.5 - gradient.y) * gradient.dy[k];
             }
@@ -3476,8 +4204,19 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
             sum = w0 + w1 + w2;
             depth_w = (1.0 - b1 - b2) * v[0].depth_w + b1 * v[1].depth_w +
                       b2 * v[2].depth_w;
+            if (fixed) {
+                double s, t;
+                int32_t lambda;
+
+                frag.fixed = sgi_soft_fixed_coords(r->fixed, &gradient,
+                                                   tex_row, px, fixed_flat,
+                                                   &s, &t, &lambda) &&
+                             sgi_soft_fixed_sample(r, s, t, lambda,
+                                                   SGI_SOFT_FIXED_ANY, false,
+                                                   frag.texel);
+            }
             /* Only texturing reads the coordinates, only fog the distance. */
-            if (r->texture) {
+            if (r->texture && !frag.fixed) {
                 for (int k = 0; k < 4; k++) {
                     frag.texcoord[k] = (w0 * v[0].texcoord[k] +
                                         w1 * v[1].texcoord[k] +
@@ -3513,7 +4252,7 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                              (w1 * (v[1].index - v[0].index) +
                               w2 * (v[2].index - v[0].index)) / sum;
             }
-            if (r->texture_base) {
+            if (r->texture_base && !frag.fixed) {
                 double value[4], out[5];
 
                 for (unsigned k = 0; k < 4; k++) {
@@ -4229,6 +4968,7 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
                 double t, wa, wb;
                 SGISoftFrag frag;
 
+                frag.fixed = false;
                 t = ((cx - a.x) * (b.x - a.x) +
                      (cy - a.y) * (b.y - a.y)) / len2;
                 /* Approximation: retain endpoint values, not extrapolation. */
@@ -4421,6 +5161,7 @@ static void sgi_soft_point_projected(const SGISoftDraw *r,
     y1 = MIN(py - r->point_size / 2 + r->point_size - 1, by1);
     memcpy(frag.rgba, v.rgba, sizeof(frag.rgba));
     frag.index = v.index;
+    frag.fixed = false;
     if (provoking && r->st->shade_model == SGI_GL_FLAT) {
         frag.index = provoking[SGI_GL_V_INDEX];
         for (unsigned k = 0; k < 4; k++) {
@@ -5386,6 +6127,9 @@ static void sgi_soft_band_draw(void *opaque, unsigned band, unsigned bands)
     if (r.texture) {
         r.texels = sgi_soft_texel_cache_begin(r.texture);
     }
+    if (r.fixed && !sgi_soft_fixed_begin(&r)) {
+        r.fixed = NULL;
+    }
     sgi_soft_band_quiet = band > 0;
     sgi_soft_draw_triangles(&r, job->d);
     sgi_soft_band_quiet = false;
@@ -5434,6 +6178,7 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
     uint32_t n = d->count;
     unsigned texture_reports = 0;
     bool rgba_reported = false;
+    SGISoftFixedTex fixed;
 
     line.counter %= 16 * line.repeat;
     r.texture_reports = &texture_reports;
@@ -5462,6 +6207,13 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
     }
     if (!sgi_soft_setup_ops(&r)) {
         return SGI_GL_DRAW_OK;
+    }
+    if (d->mode >= SGI_GL_TRIANGLES && d->mode <= SGI_GL_POLYGON &&
+        sgi_soft_fixed_setup(&r, &fixed)) {
+        r.fixed = &fixed;
+        if (!sgi_soft_fixed_begin(&r)) {
+            r.fixed = NULL;
+        }
     }
     if (!rules->smooth_primitives) {
         const char *smooth = NULL;
