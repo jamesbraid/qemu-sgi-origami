@@ -500,6 +500,57 @@ static void test_activation_packets_skip(void)
 }
 
 /*
+ * The kernel's bracket register takes three values: 0x30000 (privileged
+ * and force) before the first word of a sequence, 0x10000 (privileged)
+ * between packets, and 0 after. The clip validation sets them once
+ * around four packets, 0x1f3, 0x1ee, 0x1f4 and 0x172, with no store
+ * between them, so the privileged bit, not a force per selector, keeps
+ * every packet the kernel's. Here it cuts a viewport, 0xe3 and four
+ * words, after two: the four packets frame as kernel commands, and after
+ * the 0 the viewport's last two words finish it.
+ */
+static void test_bracket_force_once(void)
+{
+    static const uint32_t records[11] = {
+        1, 9, 0, 0x1f8, 0x103, 0x55000005, 0x55000006, 0x55000007,
+        0x55000008, 0x55000009, 0x5500000a,
+    };
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0xe3, (uint32_t[]){ 1, 9 }, 2);
+    qtest_writel(s, REG_KICK, 0x30000);
+    kona_command(s, 0x1f3, records, ARRAY_SIZE(records));
+    kona_command(s, 0x1ee, (uint32_t[]){ 1, 9, 0x44000000 }, 3);
+    kona_command(s, 0x1f4, (uint32_t[]){ 0x66000000, 0xffffffff }, 2);
+    kona_command(s, 0x172, (uint32_t[]){ 0 }, 1);
+    qtest_writel(s, REG_KICK, 0);
+    qtest_writel(s, REG_COMMAND, 1280);
+    qtest_writel(s, REG_COMMAND, 0xe3000000);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_null(strstr(found, "bracket store"));
+    g_assert_nonnull(strstr(found, "token 0x1f3 args 0x1 0x9 0x0 argc 11\n"));
+    g_assert_nonnull(strstr(found, "token 0x1ee args 0x1 0x9 0x44000000"
+                                   " argc 3\n"));
+    g_assert_nonnull(strstr(found, "token 0x1f4 args 0x66000000 0xffffffff"
+                                   " 0x0 argc 2\n"));
+    g_assert_nonnull(strstr(found, "token 0x172 args 0x0 0x0 0x0 argc 1\n"));
+    g_assert_nonnull(strstr(found, "token 0xe3 args 0x1 0x9 0x500"
+                                   " argc 4\n"));
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_bracket_suspend "),
+                     ==, 1);
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_bracket_resume "),
+                     ==, 1);
+}
+
+/*
  * The GL client's set-up block, in the traced order with words shaped to
  * misframe on a wrong count: 0x177, 0x1d7 twice, 0x17e with its slot word
  * and 33 table words, sixteen of them in pairs through doubleword stores,
@@ -3945,6 +3996,8 @@ int main(int argc, char **argv)
                    test_swap_packets_framed);
     qtest_add_func("sn0/origin2000/kona-context/activation-packets-skip",
                    test_activation_packets_skip);
+    qtest_add_func("sn0/origin2000/kona-context/bracket-force-once",
+                   test_bracket_force_once);
     qtest_add_func("sn0/origin2000/kona-context/make-current-stream-framed",
                    test_make_current_stream_framed);
     qtest_add_func("sn0/origin2000/kona-context/"
