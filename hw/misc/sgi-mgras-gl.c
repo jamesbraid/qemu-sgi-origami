@@ -5010,9 +5010,14 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
      * four bytes, with the image as one DMA line and last word 0x98: the
      * GL contract's x-zoom trace (established as the IRIX 6.5.30 client's
      * words on a model run; bit 0 of the last word is unknown and not
-     * read). The discriminating test is gl-pixels-zoomed-dma-whole-image.
+     * read). Only a draw zoomed in x, by its box and the raster engine's
+     * mode bits, counts this way in that trace; an unzoomed DMA draw is
+     * not covered and keeps the one-row count. The discriminating test is
+     * gl-pixels-zoomed-dma-whole-image.
      */
-    bool dma_whole_image = dma_only &&
+    bool dma_whole_image = dma_only && px->zoom_x &&
+        (s->rss[MGRAS_RSS_XFRMODE] &
+         (MGRAS_XFRMODE_MAGNIFY | MGRAS_XFRMODE_DECIMATE)) &&
         !mgras_gl_pixels_has_routine(ge, MGRAS_GE_ROUTINE_ZOOM_Y) &&
         !mgras_gl_pixels_has_routine(ge, MGRAS_GE_ROUTINE_ZOOM_XF) &&
         px->format == MGRAS_GL_PIXELS_RGBA8 &&

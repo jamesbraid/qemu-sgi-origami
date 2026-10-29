@@ -4542,6 +4542,7 @@ static void test_gl_pixels_zoomed_dma_whole_image(void)
 {
     static const uint32_t box05[6] = { 0, 0, 7, 3, 4 << 16 | 16, 1 };
     static const uint32_t box2[6] = { 0, 0, 31, 3, 4 << 16 | 16, 1 };
+    static const uint32_t box1[6] = { 0, 0, 15, 3, 4 << 16 | 16, 1 };
     uint32_t words[4][16];
     uint8_t image[256];
 
@@ -4575,6 +4576,29 @@ static void test_gl_pixels_zoomed_dma_whole_image(void)
             g_assert_cmphex(gl_window_pixel(qts, 8 + j, 16 + y), ==, want);
         }
     }
+
+    /* A count that is neither one row nor the image draws nothing. */
+    gl_raster_pos2f(qts, 8, 24);
+    gl_raster_zoom_records(qts, 0x200, 0x200, 0xc00080 | GL_XFRMODE_MAGNIFY);
+    gl_pixels_zoom_program(qts, 0x352d, 1.0f, box2);
+    gl_pixels_draw_traced(qts, 0x30, 1, 0x98);
+    gl_pixels_dma(qts, image, sizeof(image), 256, 1, 256, 0xa7);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 8, 24), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 20, 26), ==, 0);
+
+    /*
+     * Nor does the whole-image count unzoomed, which no trace has: neither
+     * the box nor the transfer mode zooms.
+     */
+    gl_raster_pos2f(qts, 8, 32);
+    gl_raster_zoom_records(qts, 0, 0x1000f424, 0xc00080);
+    gl_pixels_zoom_program(qts, 0x352d, 1.0f, box1);
+    gl_pixels_draw_traced(qts, 0x40, 1, 0x98);
+    gl_pixels_dma(qts, image, sizeof(image), 256, 1, 256, 0xa7);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 8, 32), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 15, 35), ==, 0);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
