@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Copyright (c) 2026 James Braid */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "memtx.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
+#include "sgi-crime-line-vectors.h"
 
 #define CRIME 0x14000000ULL
 #define RE 0x15000000ULL
@@ -7651,7 +7653,11 @@ static void test_native_parameters(void)
         for (unsigned width = 1; width <= 8; width *= 2) {
             if (width != r->width) {
                 bool gl_pair = width == 8 && (r->offset == 0x80 ||
-                    r->offset == 0x88 || r->offset == 0x90);
+                    r->offset == 0x88 || r->offset == 0x90 ||
+                    r->offset == 0xe0 || r->offset == 0xe8 ||
+                    r->offset == 0xf0 || r->offset == 0xf8 ||
+                    r->offset == 0x100 || r->offset == 0x108 ||
+                    r->offset == 0x190);
 
                 if (gl_pair) {
                     g_assert_cmpint(memtx_write(s, DE + r->offset, 0, width),
@@ -7730,6 +7736,11 @@ static void test_native_isolation(void)
         const Register *r = &native_registers[i];
         uint64_t value = r->width == 8 ? UINT64_MAX : UINT32_MAX;
 
+        /* The shading family now has independently tested START dispatch. */
+        if ((r->offset >= 0xe0 && r->offset <= 0x10c) ||
+            (r->offset >= 0x1c0 && r->offset <= 0x1e8)) {
+            continue;
+        }
         g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset, value,
                                     r->width), !=, MEMTX_OK);
     }
@@ -8802,7 +8813,7 @@ static void test_triangle_admission(void)
     for (unsigned bit = 0; bit < 32; bit++) {
         Shape c = triangle_prepare(s, 0, 0, 0);
 
-        if ((1U << bit) & 0x5a02f8U) {
+        if ((1U << bit) & 0x5b17ffU) {
             continue;
         }
         triangle_vertices(s, triangle_integer, NULL, true);
@@ -8821,7 +8832,7 @@ static void test_triangle_admission(void)
             qtest_writel(s, DE + 0x10, 0x800);
             break;
         case 2:
-            qtest_writel(s, DE + 8, 0x124);
+            qtest_writel(s, DE + 8, 0x114);
             break;
         case 3:
             qtest_writel(s, DE + 8, 0xe28);
@@ -10285,6 +10296,3353 @@ static void test_x_domain_transactions(void)
     g_rmdir(dir);
 }
 
+static Shape pipeline_prepare(QTestState *s, unsigned mode, unsigned bank)
+{
+    Shape c = shape_default();
+
+    c.bank = bank;
+    c.bytes = 1U << ((mode >> 8) & 3);
+    c.width = c.height = 4;
+    c.old = c.bytes == 4 ? 0x9d3b76a5 : 0x8e7b;
+    map_region(s, bank, c.bytes, 0, 0, 3, 3);
+    shape_memory(s, &c, NULL);
+    setup(s, mode | bank << 10, false);
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW);
+    qtest_writel(s, DE + 0x60, 0x02020000);
+    qtest_writel(s, DE + 0x80, 0);
+    qtest_writel(s, DE + 0x84, 0);
+    qtest_writel(s, DE + 0x88, 512);
+    qtest_writel(s, DE + 0x8c, 0);
+    qtest_writel(s, DE + 0x90, 0);
+    qtest_writel(s, DE + 0x94, 512);
+    return c;
+}
+
+static const unsigned shade_dx[] = { 0xf0, 0xf4, 0x100, 0x104 };
+static const unsigned shade_dy[] = { 0xf8, 0xfc, 0x108, 0x10c };
+
+static void pipeline_shade(QTestState *s, const int start[4],
+                             const int dx[4], const int dy[4])
+{
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, DE + 0xe0 + 4 * k, start[k]);
+        qtest_writel(s, DE + shade_dx[k], dx[k]);
+        qtest_writel(s, DE + shade_dy[k], dy[k]);
+    }
+}
+
+static void test_pipeline_smooth(void)
+{
+    const int start[4] = { 10 * 4096, 20 * 4096, 30 * 4096, 40 * 4096 };
+    const int dx[4] = { 4096, -8192, 12288, -4096 };
+    const int dy[4] = { 8192, 4096, -4096, -8192 };
+    QTestState *s = start_indexed_state();
+    Shape c = pipeline_prepare(s, 0x228, 0);
+
+    pipeline_shade(s, start, dx, dy);
+    qtest_writel(s, DE + 0x80, 32);
+    qtest_writel(s, DE + 0x84, 16);
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x10000);
+    for (unsigned word = 0; word < 12; word++) {
+        unsigned offset = 0xe0 + 4 * word;
+        int value = word < 4 ? start[word] : 0;
+
+        for (unsigned k = 0; k < 4; k++) {
+            if (offset == shade_dx[k]) {
+                value = dx[k];
+            } else if (offset == shade_dy[k]) {
+                value = dy[k];
+            }
+        }
+        shape_memory(s, &c, NULL);
+        g_assert_cmpint(memtx_writel(s, DE + 0x800 + offset, value),
+                        ==, MEMTX_OK);
+        /* Independent four-channel fixture from the cleared contract. */
+        g_assert_cmphex(qtest_readl(s, pixel_address(0, 2, 3, 4)),
+                        ==, 0x12132120);
+        g_assert_cmphex(qtest_readl(s, pixel_address(0, 0, 0, 4)), ==, c.old);
+    }
+    qtest_quit(s);
+}
+
+static void test_pipeline_blend_fixture(void)
+{
+    QTestState *s = start_indexed_state();
+    Shape c = pipeline_prepare(s, 0x124, 0);
+
+    c.old = 0x8000 | 3 << 10 | 19 << 5 | 27;
+    shape_memory(s, &c, NULL);
+    qtest_writel(s, DE + 0xd0, 0x1153c940);
+    qtest_writel(s, DE + 0x1a8, 0x45);
+    for (unsigned dither = 0; dither < 2; dither++) {
+        shape_memory(s, &c, NULL);
+        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x400 | dither << 8);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        g_assert_cmphex(qtest_readw(s, pixel_address(0, 0, 0, 2)), ==,
+                        0x8000 | (dither ? 3 : 2) << 10 |
+                        (dither ? 17 : 16) << 5 | (dither ? 27 : 26));
+        if (dither) {
+            g_assert_cmphex(qtest_readw(s, pixel_address(0, 0, 3, 2)), ==,
+                            0x8000 | 2 << 10 | 16 << 5 | 26);
+        }
+    }
+    qtest_quit(s);
+}
+
+/* Reduced fractions keep this reference independent of the device's scale. */
+typedef struct PipelineFraction {
+    int64_t n, d;
+} PipelineFraction;
+
+static PipelineFraction pipeline_fraction(int64_t n, int64_t d)
+{
+    int64_t a = n < 0 ? -n : n, b = d;
+
+    while (b) {
+        int64_t r = a % b;
+
+        a = b;
+        b = r;
+    }
+    return (PipelineFraction) { n / a, d / a };
+}
+
+static PipelineFraction pipeline_product(PipelineFraction a, PipelineFraction b)
+{
+    return pipeline_fraction(a.n * b.n, a.d * b.d);
+}
+
+static PipelineFraction pipeline_sum(PipelineFraction a, PipelineFraction b,
+                                      int sign)
+{
+    return pipeline_fraction(a.n * b.d + sign * b.n * a.d, a.d * b.d);
+}
+
+static PipelineFraction pipeline_factor(unsigned selector, unsigned channel,
+                                         const PipelineFraction *s,
+                                         const PipelineFraction *d,
+                                         const PipelineFraction *c,
+                                         bool source)
+{
+    PipelineFraction one = { 1, 1 };
+    PipelineFraction value;
+
+    switch (selector) {
+    case 0:
+        return (PipelineFraction) { 0, 1 };
+    case 1:
+        return one;
+    case 2:
+    case 3:
+        value = source ? d[channel] : s[channel];
+        break;
+    case 4:
+    case 5:
+        value = s[3];
+        break;
+    case 6:
+    case 7:
+        value = d[3];
+        break;
+    case 8:
+    case 9:
+        value = c[channel];
+        break;
+    case 10:
+    case 11:
+        value = c[3];
+        break;
+    case 12:
+        if (channel == 3) {
+            return one;
+        }
+        value = pipeline_sum(one, d[3], -1);
+        return s[3].n * value.d < value.n * s[3].d ? s[3] : value;
+    default:
+        g_assert_not_reached();
+    }
+    return selector & 1 ? pipeline_sum(one, value, -1) : value;
+}
+
+static unsigned pipeline_rank(unsigned x, unsigned y)
+{
+    return 8 * ((x ^ y) & 1) + 4 * (y & 1) +
+           2 * (((x ^ y) >> 1) & 1) + ((y >> 1) & 1);
+}
+
+static uint32_t pipeline_reference(unsigned mode, uint32_t source,
+                                     uint32_t old, uint32_t constant,
+                                     unsigned function, unsigned draw,
+                                     unsigned logic, uint32_t plane,
+                                     unsigned x, unsigned y)
+{
+    bool packed16 = ((mode >> 2) & 3) == 1;
+    bool rgb = ((mode >> 4) & 15) == 1;
+    unsigned bytes = 1U << ((mode >> 8) & 3);
+    unsigned half = packed16 && bytes == 4 && (mode & 3) == 3 ? 16 : 0;
+    uint32_t meaningful = packed16 ? 0xffffU << half :
+                          rgb ? 0xffffff00U : UINT32_MAX;
+    uint32_t selected = old >> half, packed = 0, mask = meaningful;
+    PipelineFraction src[4], dst[4], con[4];
+
+    for (unsigned k = 0; k < 4; k++) {
+        unsigned shift = 24 - 8 * k;
+
+        src[k] = pipeline_fraction((source >> shift) & 255, 255);
+        con[k] = pipeline_fraction((constant >> shift) & 255, 255);
+        if (packed16) {
+            dst[k] = k == 3 ?
+                pipeline_fraction((selected >> 15) & 1, 1) :
+                pipeline_fraction((selected >> (10 - 5 * k)) & 31, 31);
+        } else {
+            dst[k] = rgb && k == 3 ? pipeline_fraction(1, 1) :
+                     pipeline_fraction((selected >> shift) & 255, 255);
+        }
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        PipelineFraction v = src[k];
+        unsigned q;
+
+        if (draw & 0x400) {
+            unsigned op = function >> 8;
+            PipelineFraction a = pipeline_product(src[k], pipeline_factor(
+                (function >> 4) & 15, k, src, dst, con, true));
+            PipelineFraction b = pipeline_product(dst[k], pipeline_factor(
+                function & 15, k, src, dst, con, false));
+            bool less = src[k].n * dst[k].d < dst[k].n * src[k].d;
+
+            switch (op) {
+            case 0:
+                v = pipeline_sum(a, b, 1);
+                break;
+            case 1:
+                v = less ? src[k] : dst[k];
+                break;
+            case 2:
+                v = less ? dst[k] : src[k];
+                break;
+            case 3:
+                v = pipeline_sum(a, b, -1);
+                break;
+            case 4:
+                v = pipeline_sum(b, a, -1);
+                break;
+            default:
+                g_assert_not_reached();
+            }
+            v.n = CLAMP(v.n, 0, v.d);
+        }
+        if (packed16 && k < 3) {
+            int64_t scaled = 31 * v.n;
+
+            q = scaled / v.d;
+            if ((draw & 0x100) &&
+                32 * (scaled - q * v.d) >
+                (2 * pipeline_rank(x, y) + 1) * v.d) {
+                q++;
+            }
+            packed |= MIN(q, 31) << (10 - 5 * k);
+        } else if (packed16) {
+            packed |= MIN(1, 2 * v.n / v.d) << 15;
+        } else {
+            q = (510 * v.n + v.d) / (2 * v.d);
+            packed |= q << (24 - 8 * k);
+        }
+    }
+    packed <<= half;
+    if (draw & 0x80) {
+        mask &= plane;
+    }
+    for (unsigned b = 0; b < bytes; b++) {
+        if (!(draw & (1U << (6 - ((x * bytes + b) & 3))))) {
+            mask &= ~(0xffU << (8 * (bytes - 1 - b)));
+        }
+    }
+    if (draw & 0x200) {
+        packed = rop_result(logic, packed, old, bytes * 8);
+    }
+    return (old & ~mask) | (packed & mask);
+}
+
+static void pipeline_check(QTestState *s, const Shape *c, unsigned mode,
+                            uint32_t color, uint32_t constant, unsigned func,
+                            unsigned draw, unsigned logic, uint32_t plane)
+{
+    uint32_t expected[16];
+
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            expected[4 * y + x] = pipeline_reference(mode, color, c->old,
+                constant, func, draw, logic, plane, x, y);
+        }
+    }
+    shape_memory(s, c, NULL);
+    qtest_writel(s, DE + 0xd0, color);
+    qtest_writel(s, DE + 0x18, draw);
+    qtest_writel(s, DE + 0x1a0, constant);
+    qtest_writel(s, DE + 0x1a8, func);
+    qtest_writel(s, DE + 0x1b0, logic);
+    qtest_writel(s, DE + 0x1b8, plane);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    shape_memory(s, c, expected);
+}
+
+static void test_pipeline_factors(gconstpointer selection)
+{
+    const unsigned modes[] = { 0x228, 0x218, 0x124, 0x224, 0x226, 0x227 };
+    QTestState *s = start_indexed_state();
+
+    {
+        unsigned m = GPOINTER_TO_UINT(selection);
+        Shape c = pipeline_prepare(s, modes[m], m % 3);
+
+        /* Asymmetric factors distinguish source, destination and constant. */
+        for (unsigned op = 0; op < 5; op++) {
+            for (unsigned sf = 0; sf <= 12; sf++) {
+                for (unsigned df = 0; df <= 11; df++) {
+                    pipeline_check(s, &c, modes[m], 0x1153c940, 0x9b2371d6,
+                        op << 8 | sf << 4 | df,
+                        TRIANGLE_DRAW | 0x400 | ((sf ^ df) & 1) << 8,
+                        3, UINT32_MAX);
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_pipeline_quantizer(void)
+{
+    QTestState *s = start_indexed_state();
+    Shape c = pipeline_prepare(s, 0x124, 0);
+
+    for (unsigned v = 0; v <= 255; v++) {
+        unsigned total = 0;
+        uint32_t color = v * 0x01010100U | 255;
+
+        pipeline_check(s, &c, 0x124, color, 0, 0,
+                       TRIANGLE_DRAW | 0x100, 3, UINT32_MAX);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                unsigned q = qtest_readw(s, pixel_address(0, x, y, 2)) & 31;
+
+                g_assert_true(q == 31 * v / 255 || q == (31 * v + 254) / 255);
+                total += q;
+            }
+        }
+        /* |mean - ideal| <= 1/32 in code units, without floating point. */
+        g_assert_cmpint(abs((int)(2 * 255 * total - 32 * 31 * v)), <=, 255);
+    }
+    qtest_quit(s);
+}
+
+static void test_pipeline_identity(gconstpointer selection)
+{
+    const unsigned modes[] = { 0x124, 0x224, 0x226, 0x227, 0x228, 0x218 };
+    QTestState *s = start_indexed_state();
+
+    {
+        unsigned m = GPOINTER_TO_UINT(selection);
+        Shape c = pipeline_prepare(s, modes[m], m % 3);
+        unsigned codes = modes[m] == 0x228 || modes[m] == 0x218 ? 256 : 32;
+
+        for (unsigned code = 0; code < codes; code++) {
+            for (unsigned alpha = 0; alpha < 2; alpha++) {
+                uint32_t selected = code | ((code * 7) & 31) << 5 |
+                                    ((code * 13) & 31) << 10 | alpha << 15;
+
+                if (codes == 256) {
+                    c.old = code << 24 | (255 - code) << 16 |
+                            ((code * 73) & 255) << 8 | code;
+                } else if (c.bytes == 2) {
+                    c.old = selected;
+                } else {
+                    c.old = modes[m] == 0x227 ? selected << 16 | 0x6b95 :
+                                              0x6b950000 | selected;
+                }
+                for (unsigned dither = 0; dither < 2; dither++) {
+                    for (unsigned function = 0; function < 2; function++) {
+                        unsigned draw = TRIANGLE_DRAW | 0x400 | dither << 8;
+
+                        pipeline_check(s, &c, modes[m], 0x3279e100, 0,
+                                       function ? 0x45 : 0x01, draw,
+                                       3, UINT32_MAX);
+                        /* Repeated transparent redraw must remain exact. */
+                        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0),
+                                        ==, MEMTX_OK);
+                        for (unsigned y = 0; y < 4; y++) {
+                            for (unsigned x = 0; x < 4; x++) {
+                                uint8_t data[4];
+
+                                qtest_memread(s, pixel_address(c.bank, x, y,
+                                              c.bytes), data, c.bytes);
+                                uint32_t value = c.bytes == 2 ?
+                                    lduw_be_p(data) : ldl_be_p(data);
+
+                                g_assert_cmphex(value, ==, c.old);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_pipeline_masks(gconstpointer selection)
+{
+    const unsigned modes[] = {
+        0x228, 0x218, 0x124, 0x224, 0x225, 0x226, 0x227,
+    };
+    QTestState *s = start_indexed_state();
+
+    {
+        unsigned m = GPOINTER_TO_UINT(selection);
+        Shape c = pipeline_prepare(s, modes[m], m % 3);
+
+        for (unsigned rop = 0; rop < 16; rop++) {
+            for (unsigned mask = 0; mask < 16; mask++) {
+                unsigned draw = (TRIANGLE_DRAW & ~0x78U) | mask << 3 |
+                                0x780;
+                uint32_t plane = mask & 1 ? 0xa56b379d : UINT32_MAX;
+
+                pipeline_check(s, &c, modes[m], 0x537b9146, 0x7135b9e3,
+                               0x89, draw, rop, plane);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static uint32_t pipeline_plane_color(const int *start, const int *dx,
+                                       const int *dy, int ax, int ay,
+                                       int x, int y)
+{
+    uint32_t color = 0;
+
+    for (unsigned k = 0; k < 4; k++) {
+        int64_t n = start[k] + (int64_t)dx[k] * (x - ax) +
+                    (int64_t)dy[k] * (y - ay);
+        int64_t divisor = 4096;
+        int64_t v = n < 0 ? -((-n + divisor - 1) / divisor) : n / divisor;
+
+        color |= CLAMP(v, 0, 255) << (24 - 8 * k);
+    }
+    return color;
+}
+
+static void test_pipeline_planes(void)
+{
+    const int starts[] = { 10 * 4096, 20 * 4096, 30 * 4096, 40 * 4096 };
+    const int dx[] = { 4096, -8192, 12288, -4096 };
+    const int dy[] = { 8192, 4096, -4096, -8192 };
+    const int origins[] = { 0, 1, -1, -4096, -4097 };
+    const unsigned modes[] = { 0x228, 0x124, 0x227, 0x218 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned m = 0; m < ARRAY_SIZE(modes); m++) {
+        for (unsigned origin = 0; origin < ARRAY_SIZE(origins); origin++) {
+            for (unsigned direction = 0; direction < 4; direction++) {
+                Shape c = pipeline_prepare(s, modes[m], m % 3);
+                unsigned draw = TRIANGLE_DRAW | 0x10700;
+                uint32_t expected[16];
+                int o = origins[origin];
+                const int vertices[3][2] = {
+                    {96, 80}, {576, 64}, {64, 576},
+                };
+
+                const int anchors[4][2] = { {1, 9}, {9, 1}, {1, 1}, {1, 1} };
+                int loaded[4];
+
+                for (unsigned k = 0; k < 4; k++) {
+                    loaded[k] = starts[k] + dx[k] * anchors[direction][0] +
+                                dy[k] * anchors[direction][1];
+                }
+                pipeline_shade(s, loaded, dx, dy);
+                qtest_writel(s, DE + 0x58, xy((uint16_t)o, (uint16_t)o));
+                qtest_writel(s, DE + 0x60, 0x02000000 | direction << 16);
+                qtest_writel(s, DE + 0x18, draw);
+                qtest_writel(s, DE + 0x1a0, 0x9b2371d6);
+                qtest_writel(s, DE + 0x1a8, 0x45);
+                qtest_writel(s, DE + 0x1b0, 6);
+                qtest_writel(s, DE, UINT32_MAX);
+                for (unsigned v = 0; v < 3; v++) {
+                    unsigned index = direction & 1 && v ? 3 - v : v;
+
+                    for (unsigned axis = 0; axis < 2; axis++) {
+                        qtest_writel(s, DE + 0x80 + 8 * v + 4 * axis,
+                                    vertices[index][axis] - 64 * o);
+                    }
+                }
+                for (unsigned y = 0; y < 4; y++) {
+                    for (unsigned x = 0; x < 4; x++) {
+                        uint32_t color = pipeline_plane_color(starts, dx, dy,
+                                                              0, 0, x, y);
+                        uint32_t old = c.old ^ ((x + 7 * y) * 0x01234567U);
+
+                        if (c.bytes == 2) {
+                            old &= 0xffff;
+                        }
+                        pixel_write(s, pixel_address(c.bank, x, y, c.bytes),
+                                    c.bytes, old);
+                        expected[y * 4 + x] = x >= 2 && y >= 2 ?
+                            pipeline_reference(modes[m], color, old,
+                                0x9b2371d6, 0x45, draw, 6, UINT32_MAX, x, y) :
+                            old;
+                    }
+                }
+                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+                shape_memory(s, &c, expected);
+            }
+        }
+    }
+    /* Extreme origins produce empty coverage without changing admission. */
+    for (unsigned positive = 0; positive < 2; positive++) {
+        Shape c = pipeline_prepare(s, 0x227, 0);
+        uint32_t expected[16];
+
+        pipeline_shade(s, starts, dx, dy);
+        qtest_writel(s, DE + 0x58, positive ? 0x7fff7fff : 0x80008000);
+        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x10700);
+        qtest_writel(s, DE + 0x1a8, 0x45);
+        for (unsigned i = 0; i < 16; i++) {
+            expected[i] = c.old;
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+}
+
+static void pipeline_failure(QTestState *s, const Shape *c, const char *path,
+                               uint64_t addr, uint64_t value, unsigned width)
+{
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    uint32_t *old = g_new(uint32_t, c->width * c->height);
+    IfbSnapshot first, last;
+
+    for (unsigned i = 0; i < c->width * c->height; i++) {
+        old[i] = c->old;
+    }
+    save_paired_renderer(s, path, before);
+    ifb_snapshot(s, &first);
+    g_assert_cmpint(memtx_write(s, addr, value, width), !=, MEMTX_OK);
+    ifb_snapshot(s, &last);
+    g_assert_cmpmem(&first, sizeof(first), &last, sizeof(last));
+    shape_memory(s, c, old);
+    save_paired_renderer(s, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    g_free(old);
+}
+
+static void test_pipeline_shade_bounds(void)
+{
+    static const struct {
+        int start, dx, dy, anchor;
+        bool valid;
+        unsigned color;
+    } cases[] = {
+        { -(1 << 20), 0, 0, 65, true, 0 },
+        { -(1 << 20), 1, 0, 65, false, 0 },
+        { (1 << 20) - 1, 0, 0, 65, true, 255 },
+        { (1 << 20) - 1, -1, 0, 65, false, 0 },
+        { 4096, 4096, 0, -1, true, 2 },
+        { -256 * 4096, -1, -1, 65, true, 0 },
+        { -255 * 4096, -4096, -4096, 65, true, 0 },
+        { -129 * 4096, 4096, -8192, 65, true, 0 },
+        { -128 * 4096, -4096, 8192, 65, true, 0 },
+        { -127 * 4096, 8192, -4096, 65, true, 0 },
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-shade-bounds-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(cases); n++) {
+        for (unsigned clipped = 0; clipped < 2; clipped++) {
+            Shape c = pipeline_prepare(s, 0x228, 0);
+            int start[4], dx[4], dy[4];
+            int side = 256 * (cases[n].anchor < 0) - 128;
+            const int vertices[3][2] = {
+                {cases[n].anchor, cases[n].anchor},
+                {side, 128},
+                {side, -256},
+            };
+
+            for (unsigned k = 0; k < 4; k++) {
+                start[k] = cases[n].start;
+                dx[k] = cases[n].dx;
+                dy[k] = cases[n].dy;
+            }
+            pipeline_shade(s, start, dx, dy);
+            qtest_writel(s, DE + 0x58, 0xfff8fff8);
+            for (unsigned v = 0; v < 3; v++) {
+                for (unsigned axis = 0; axis < 2; axis++) {
+                    qtest_writel(s, DE + 0x80 + 8 * v + 4 * axis,
+                                vertices[v][axis] + 512);
+                }
+            }
+            qtest_writel(s, DE + 0x18,
+                        (clipped ? TRIANGLE_DRAW & ~0x78U : TRIANGLE_DRAW) |
+                        0x10000);
+            if (cases[n].valid) {
+                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+                g_assert_cmphex(pixel_read(s, pixel_address(0, 0, 0, 4), 4),
+                    ==, clipped ? c.old : cases[n].color * 0x01010101U);
+            } else {
+                pipeline_failure(s, &c, path, DE + 0x8ec, cases[n].start, 4);
+            }
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_pipeline_transactions(void)
+{
+    const unsigned invalid[] = { 0x1000, 0x500, 0xd0, 0xc };
+    g_autofree char *dir = g_dir_make_tmp("crime-pipeline-state-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    uint64_t value;
+
+    for (unsigned n = 0; n < 12; n++) {
+        Shape c = pipeline_prepare(s, 0x228, 0);
+        uint64_t address = DE + 0xe0 + 4 * n;
+
+        qtest_writel(s, DE + 0xd0, 0x12345678);
+        for (unsigned width = 1; width <= 8; width *= 2) {
+            if (width != 4) {
+                if (width != 8 || (n & 1)) {
+                    pipeline_failure(s, &c, path, address, UINT64_MAX, width);
+                }
+                pipeline_failure(s, &c, path, address + 0x800,
+                                 UINT64_MAX, width);
+            }
+        }
+        for (unsigned delta = 1; delta < 4; delta++) {
+            pipeline_failure(s, &c, path, address + delta, UINT32_MAX, 4);
+            pipeline_failure(s, &c, path, address + 0x800 + delta,
+                             UINT32_MAX, 4);
+        }
+        g_assert_cmpint(memtx_read(s, address, &value, 4), !=, MEMTX_OK);
+        g_assert_cmpint(memtx_read(s, address + 0x800, &value, 4),
+                        !=, MEMTX_OK);
+        for (unsigned bad = 0; bad < ARRAY_SIZE(invalid); bad++) {
+            qtest_writel(s, DE + 0x1a8, invalid[bad]);
+            qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x400);
+            pipeline_failure(s, &c, path, address + 0x800, 0xdeadbeef, 4);
+            qtest_writel(s, DE + 0x18, (TRIANGLE_DRAW & ~0x78U) | 0x400);
+            pipeline_failure(s, &c, path, address + 0x800, 0xdeadbeef, 4);
+        }
+        /* Smooth lines and texture stay unsupported even with no writes. */
+        qtest_writel(s, DE + 0x60, 0x01000020);
+        qtest_writel(s, DE + 0x18, 0x10000);
+        pipeline_failure(s, &c, path, address + 0x800, 0, 4);
+        qtest_writel(s, DE + 0x60, 0x02020000);
+        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x2000);
+        pipeline_failure(s, &c, path, address + 0x800, 0, 4);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_pipeline_late_faults(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-pipeline-tiles-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    const int starts[] = { 100 * 4096, 80 * 4096, 60 * 4096, 40 * 4096 };
+    const int dx[] = { 100, -200, 300, -400 };
+    const int dy[] = { -200, 100, -400, 300 };
+
+    for (unsigned variant = 0; variant < 4; variant++) {
+        unsigned alias = variant >> 1;
+        Shape c = pipeline_prepare(s, 0x227, 0);
+        unsigned left = alias ? 0 : 126, top = alias ? 0 : 126;
+        unsigned span = alias ? 132 : 4;
+        const unsigned vertex[3][2] = {
+            {left * 64, top * 64}, {(left + 2 * span) * 64, top * 64},
+            {left * 64, (top + 8) * 64},
+        };
+
+        c.x = left;
+        c.y = top;
+        c.width = span;
+        c.height = 4;
+        map_region(s, 0, 4, left, top, left + span - 1, top + 3);
+        shape_memory(s, &c, NULL);
+        for (unsigned v = 0; v < 3; v++) {
+            for (unsigned axis = 0; axis < 2; axis++) {
+                qtest_writel(s, DE + 0x80 + 8 * v + 4 * axis, vertex[v][axis]);
+            }
+        }
+        pipeline_shade(s, starts, dx, dy);
+        qtest_writel(s, DE + 0x18,
+                    TRIANGLE_DRAW | 0x10700 | (variant & 1) << 12);
+        qtest_writel(s, DE + 0x1a8, 0x45);
+        tile(s, 0, 1, alias ? page_for(0, 0) : 0x7fff);
+        pipeline_failure(s, &c, path, DE + 0x8ec, starts[3] + 17, 4);
+        if (alias) {
+            tile(s, 0, 1, page_for(0, 1));
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_pipeline_storage(void)
+{
+    const unsigned modes[] = {
+        0x228, 0x218, 0x124, 0x224, 0x225, 0x226, 0x227,
+    };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned m = 0; m < ARRAY_SIZE(modes); m++) {
+        for (unsigned bank = 0; bank < 3; bank++) {
+            for (unsigned direction = 0; direction < 4; direction++) {
+                Shape c = pipeline_prepare(s, modes[m], bank);
+                uint32_t expected[16];
+                const unsigned vertices[2][3][2] = {
+                    { {126, 126}, {130, 126}, {126, 130} },
+                    { {130, 130}, {126, 130}, {130, 126} },
+                };
+                unsigned draw = TRIANGLE_DRAW | 0x700;
+
+                c.x = c.y = 126;
+                map_region(s, bank, c.bytes, 126, 126, 129, 129);
+                shape_memory(s, &c, NULL);
+                qtest_writel(s, DE + 0x18, draw);
+                qtest_writel(s, DE + 0x1a8, 0x45);
+                qtest_writel(s, DE + 0x1b0, 6);
+                qtest_writel(s, DE + 0xd0, 0x537b9146);
+                qtest_writel(s, DE + 0x60, 0x02000000 | direction << 16);
+                for (unsigned triangle = 0; triangle < 2; triangle++) {
+                    for (unsigned v = 0; v < 3; v++) {
+                        unsigned index = direction & 1 && v ? 3 - v : v;
+
+                        for (unsigned axis = 0; axis < 2; axis++) {
+                            qtest_writel(s, DE + 0x80 + 8 * v + 4 * axis,
+                                        vertices[triangle][index][axis] * 64);
+                        }
+                    }
+                    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0),
+                                    ==, MEMTX_OK);
+                }
+                for (unsigned y = 0; y < 4; y++) {
+                    for (unsigned x = 0; x < 4; x++) {
+                        expected[y * 4 + x] = pipeline_reference(modes[m],
+                            0x537b9146, c.old, 0, 0x45, draw, 6,
+                            UINT32_MAX, x + 126, y + 126);
+                    }
+                }
+                shape_memory(s, &c, expected);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_pipeline_phase(void)
+{
+    const int origins[] = { 0, 1, -1, -4096 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned half = 0; half < 2; half++) {
+        for (unsigned origin = 0; origin < ARRAY_SIZE(origins); origin++) {
+            for (unsigned clip = 0; clip < 2; clip++) {
+                unsigned mode = 0x226 | half;
+                Shape c = pipeline_prepare(s, mode, 0);
+                uint32_t expected[16];
+                int o = origins[origin];
+                const unsigned vertex[3][2] = { {4, 4}, {12, 4}, {4, 12} };
+                unsigned draw = TRIANGLE_DRAW | 0x100 | clip << 20;
+
+                c.x = c.y = 4;
+                shape_memory(s, &c, NULL);
+                qtest_writel(s, DE + 0x58, xy((uint16_t)o, (uint16_t)o));
+                for (unsigned v = 0; v < 3; v++) {
+                    for (unsigned axis = 0; axis < 2; axis++) {
+                        qtest_writel(s, DE + 0x80 + 8 * v + 4 * axis,
+                                    (vertex[v][axis] - o) * 64);
+                    }
+                }
+                qtest_writel(s, DE + 0x18, draw);
+                qtest_writeq(s, DE + 0x48, bounds(6 - o, 6 - o, 8 - o, 8 - o));
+                qtest_writel(s, DE + 0x10, 0x21);
+                qtest_writeq(s, DE + 0x20, bounds(4, 4, 8, 8));
+                qtest_writel(s, DE + 0xd0, 0xe9e9e9ab);
+                for (unsigned y = 0; y < 4; y++) {
+                    for (unsigned x = 0; x < 4; x++) {
+                        expected[y * 4 + x] = clip && (x < 2 || y < 2) ?
+                            c.old : pipeline_reference(mode, 0xe9e9e9ab,
+                                c.old, 0, 0, draw, 3, UINT32_MAX, x + 4, y + 4);
+                    }
+                }
+                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+                shape_memory(s, &c, expected);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_pipeline_populated_banks(void)
+{
+    QTestState *s = start_profile_ram("legacy-software", true, true, false, "");
+    Shape c = pipeline_prepare(s, 0x227, 0);
+    uint32_t draw = TRIANGLE_DRAW | 0x500;
+    const unsigned vertex[3][2] = { {126, 0}, {134, 0}, {126, 8} };
+
+    for (unsigned i = 0; i < 8; i++) {
+        qtest_writeq(s, CRIME + 0x208 + 8 * i, 0x100 | i * 4);
+    }
+    tile(s, 0, 0, 0x7ff);
+    tile(s, 0, 1, 0x800);
+    qtest_writel(s, DE + 0x18, draw);
+    qtest_writel(s, DE + 0x1a8, 0x45);
+    qtest_writel(s, DE + 0xd0, 0x1153c940);
+    for (unsigned v = 0; v < 3; v++) {
+        qtest_writel(s, DE + 0x80 + 8 * v, vertex[v][0] * 64);
+        qtest_writel(s, DE + 0x84 + 8 * v, vertex[v][1] * 64);
+    }
+    for (unsigned x = 126; x < 130; x++) {
+        uint64_t address = x < 128 ? 0x7ff0000ULL + 4 * x :
+                                    0x8000000ULL + 4 * (x - 128);
+
+        pixel_write(s, address, 4, c.old);
+    }
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    for (unsigned x = 126; x < 130; x++) {
+        uint64_t address = x < 128 ? 0x7ff0000ULL + 4 * x :
+                                    0x8000000ULL + 4 * (x - 128);
+
+        g_assert_cmphex(pixel_read(s, address, 4), ==,
+            pipeline_reference(0x227, 0x1153c940, c.old, 0, 0x45,
+                               draw, 3, UINT32_MAX, x, 0));
+    }
+    qtest_quit(s);
+}
+
+static void test_pipeline_migration(void)
+{
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-pipeline-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *from = start(), *to = start_options("-incoming defer");
+    Shape c = pipeline_prepare(from, 0x227, 0);
+    const int starts[] = { 100 * 4096, 80 * 4096, 60 * 4096, 40 * 4096 };
+    const int dx[] = { 100, -200, 300, -400 };
+    const int dy[] = { -200, 100, -400, 300 };
+    unsigned draw = TRIANGLE_DRAW | 0x10700;
+    uint32_t expected[16];
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+
+    pipeline_shade(from, starts, dx, dy);
+    qtest_writel(from, DE + 0x18, draw);
+    qtest_writel(from, DE + 0x1a8, 0x45);
+    qtest_writel(from, DE + 0x1b0, 6);
+    /* Upper raw container bits survive GO and migration, never arithmetic. */
+    g_assert_cmpint(memtx_writel(from, DE + 0x8ec,
+                                0xc0000000U | starts[3]), ==, MEMTX_OK);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            uint32_t color = pipeline_plane_color(starts, dx, dy, 0, 0, x, y);
+
+            expected[4 * y + x] = pipeline_reference(0x227, color, c.old,
+                0, 0x45, draw, 6, UINT32_MAX, x, y);
+        }
+    }
+    shape_memory(from, &c, expected);
+    save_paired_renderer(from, path, before);
+    g_assert_cmphex(before[192 + 0xec / 4], ==, 0xc0000000U | starts[3]);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    save_paired_renderer(to, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    shape_memory(to, &c, expected);
+    qtest_system_reset(to);
+    shape_memory(to, &c, expected);
+    save_renderer(to, path, after);
+    for (unsigned n = 0; n < 12; n++) {
+        g_assert_cmphex(after[192 + (0xe0 + 4 * n) / 4], ==, 0);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(sock);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void pipeline_normalize_draw_ifb(IfbSnapshot *state)
+{
+    for (unsigned i = 0; i < 64; i++) {
+        if (ldq_be_p(state->ram + 512 + 8 * i) == 0x120300000000ULL) {
+            uint64_t value = ldq_be_p(state->ram + 8 * i);
+
+            stq_be_p(state->ram + 8 * i, value & ~(0x1000ULL << 32));
+        }
+    }
+}
+
+static void test_pipeline_inactive_line_control(gconstpointer selection)
+{
+    const unsigned modes[] = {
+        0x228, 0x218, 0x124, 0x224, 0x225, 0x226, 0x227,
+    };
+    const int starts[] = { 100 * 4096, 80 * 4096, 60 * 4096, 40 * 4096 };
+    const int dx[] = { 100, -200, 300, -400 };
+    const int dy[] = { -200, 100, -400, 300 };
+    unsigned m = GPOINTER_TO_UINT(selection);
+    g_autofree char *dir = g_dir_make_tmp("crime-inactive-line-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s[2] = { start_indexed_state(), start_indexed_state() };
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned direction = 0; direction < 4; direction++) {
+            for (unsigned smooth = 0; smooth < 2; smooth++) {
+                for (unsigned clipping = 0; clipping < 4; clipping++) {
+                    Shape c[2];
+                    uint32_t expected[16];
+                    uint64_t raw[2][RENDER_WORDS];
+                    IfbSnapshot journal[2] = { 0 };
+                    const int anchors[4][2] = {
+                        {0, 8}, {8, 0}, {0, 0}, {0, 0},
+                    };
+                    int loaded[4];
+                    unsigned draw = TRIANGLE_DRAW | 0xa0080 | smooth << 16 |
+                                    (direction & 1 ? 0x700 : 0x200);
+
+                    if (clipping == 1) {
+                        draw |= 0x100000;
+                    } else if (clipping == 3) {
+                        draw &= ~0x78U;
+                    }
+                    for (unsigned k = 0; k < 4; k++) {
+                        loaded[k] = starts[k];
+                        if (clipping != 2) {
+                            loaded[k] += dx[k] * anchors[direction][0] +
+                                         dy[k] * anchors[direction][1];
+                        }
+                    }
+                    for (unsigned aa = 0; aa < 2; aa++) {
+                        c[aa] = pipeline_prepare(s[aa], modes[m], bank);
+                        pipeline_shade(s[aa], loaded, dx, dy);
+                        qtest_writel(s[aa], DE + 0x190, 0xa579b3e1);
+                        qtest_writel(s[aa], DE + 0x194, 0x6c28f04d);
+                        qtest_writel(s[aa], DE + 0xc0, UINT32_MAX);
+                        qtest_writel(s[aa], DE + 0xc4, 0x3971bd65);
+                        qtest_writel(s[aa], DE + 0x18, draw | aa << 12);
+                        qtest_writel(s[aa], DE + 0xd0, 0x1153c940);
+                        qtest_writel(s[aa], DE + 0x1a8, 0x45);
+                        qtest_writel(s[aa], DE + 0x1b0, 6);
+                        qtest_writel(s[aa], DE + 0x1b8, 0xa5379b6d);
+                        qtest_writel(s[aa], DE + 0x58, 0xf000f000);
+                        qtest_writel(s[aa], DE + 0x60,
+                                    0x02000000 | direction << 16);
+                        qtest_writeq(s[aa], DE + 0x48,
+                                     bounds(4098, 4098, 4100, 4100));
+                        for (unsigned v = 0; v < 3; v++) {
+                            unsigned index = direction & 1 && v ? 3 - v : v;
+                            unsigned x = clipping != 2 && index == 1 ? 512 : 0;
+                            unsigned y = clipping != 2 && index == 2 ? 512 : 0;
+
+                            qtest_writel(s[aa], DE + 0x80 + 8 * v, 262144 + x);
+                            qtest_writel(s[aa], DE + 0x84 + 8 * v, 262144 + y);
+                        }
+                    }
+                    for (unsigned i = 0; i < 16; i++) {
+                        expected[i] = c[0].old;
+                    }
+                    for (unsigned word = 0; word < 12; word++) {
+                        unsigned offset = 0xe0 + 4 * word;
+                        int value = word < 4 ? loaded[word] : 0;
+
+                        for (unsigned k = 0; k < 4; k++) {
+                            if (offset == shade_dx[k]) {
+                                value = dx[k];
+                            } else if (offset == shade_dy[k]) {
+                                value = dy[k];
+                            }
+                        }
+                        for (unsigned y = 0; y < 4; y++) {
+                            for (unsigned x = 0; x < 4; x++) {
+                                uint32_t color = smooth ? pipeline_plane_color(
+                                    starts, dx, dy, 0, 0, x, y) : 0x1153c940;
+                                bool visible = clipping != 2 &&
+                                    (clipping != 1 || (x >= 2 && y >= 2));
+
+                                if (visible) {
+                                    expected[4 * y + x] = pipeline_reference(
+                                        modes[m], color, expected[4 * y + x],
+                                        0, 0x45, draw, 6, 0xa5379b6d, x, y);
+                                }
+                            }
+                        }
+                        for (unsigned aa = 0; aa < 2; aa++) {
+                            g_assert_cmpint(memtx_writel(s[aa],
+                                DE + 0x800 + offset, value), ==, MEMTX_OK);
+                            shape_memory(s[aa], &c[aa], expected);
+                        }
+                    }
+                    for (unsigned aa = 0; aa < 2; aa++) {
+                        ifb_snapshot(s[aa], &journal[aa]);
+                        pipeline_normalize_draw_ifb(&journal[aa]);
+                        save_paired_renderer(s[aa], path, raw[aa]);
+                        g_assert_cmphex(raw[aa][192 + 0x18 / 4],
+                                        ==, draw | aa << 12);
+                    }
+                    raw[1][192 + 0x18 / 4] &= ~0x1000ULL;
+                    g_assert_cmpmem(raw[0], sizeof(raw[0]),
+                                    raw[1], sizeof(raw[1]));
+                    g_assert_cmpmem(&journal[0], sizeof(journal[0]),
+                                    &journal[1], sizeof(journal[1]));
+                }
+            }
+        }
+    }
+    qtest_quit(s[0]);
+    qtest_quit(s[1]);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_pipeline_line_control_refusals(void)
+{
+    const unsigned unsupported[] = { 0x2000, 0x800, 0x4000, 0x8000 };
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-line-control-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned aa = 0; aa < 2; aa++) {
+        for (unsigned bad = 0; bad < ARRAY_SIZE(unsupported); bad++) {
+            Shape c = pipeline_prepare(s, 0x227, 0);
+
+            qtest_writel(s, DE + 0x18,
+                        TRIANGLE_DRAW | aa << 12 | unsupported[bad]);
+            pipeline_failure(s, &c, path, DE + 0x8ec, 0x7351b9df, 4);
+        }
+    }
+    {
+        Shape c = pipeline_prepare(s, 0x228, 0);
+
+        qtest_writel(s, DE + 0x60, 0x01000020);
+        qtest_writel(s, DE + 0x70, xy(0, 0));
+        qtest_writel(s, DE + 0x74, xy(3, 0));
+        qtest_writel(s, DE + 0x18, 0x10f8);
+        pipeline_failure(s, &c, path, DE + 0x8ec, 0x7351b9df, 4);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_pipeline_anchor_literals(void)
+{
+    const int start[] = { 10 * 4096, 20 * 4096, 30 * 4096, 40 * 4096 };
+    const int dx[] = { 4096, -8192, 12288, -4096 };
+    const int dy[] = { 8192, 4096, -4096, -8192 };
+    const int vertex[3][2] = { {32, 16}, {352, 16}, {288, 304} };
+    const int origins[] = { 0, -4096, -4097 };
+    const uint32_t colors[2][2] = {
+        { 0x02151b30, 0x091b1429 }, { 0x0e112324, 0x0e112324 },
+    };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned direction = 0; direction < 4; direction++) {
+        for (unsigned winding = 0; winding < 2; winding++) {
+            for (unsigned origin = 0; origin < ARRAY_SIZE(origins); origin++) {
+                Shape c = pipeline_prepare(s, 0x228, 0);
+                int o = origins[origin];
+
+                pipeline_shade(s, start, dx, dy);
+                qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x10000);
+                qtest_writel(s, DE + 0x60, 0x02000000 | direction << 16);
+                qtest_writel(s, DE + 0x58, xy((uint16_t)o, (uint16_t)o));
+                for (unsigned v = 0; v < 3; v++) {
+                    unsigned index = winding && v ? 3 - v : v;
+
+                    for (unsigned axis = 0; axis < 2; axis++) {
+                        qtest_writel(s, DE + 0x80 + 8 * v + 4 * axis,
+                                    vertex[index][axis] - 64 * o);
+                    }
+                }
+                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+                /* Same loaded starts distinguish traversal-selected anchors. */
+                g_assert_cmphex(pixel_read(s, pixel_address(0, 2, 1, 4), 4),
+                                ==, colors[direction >> 1][winding]);
+                g_assert_cmphex(pixel_read(s, pixel_address(0, 0, 0, 4), 4),
+                                ==, c.old);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_pipeline_anchor_floors(void)
+{
+    const int coordinates[] = { -1, 0, 1, 63, 64, 65 };
+    const unsigned values[] = { 3, 2, 2, 2, 1, 1 };
+    g_autofree char *dir = g_dir_make_tmp("crime-anchor-floor-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned axis = 0; axis < 2; axis++) {
+        for (unsigned n = 0; n < ARRAY_SIZE(coordinates); n++) {
+            for (unsigned direction = 0; direction < 4; direction++) {
+                for (unsigned winding = 0; winding < 2; winding++) {
+                    int vertices[3][2] = {
+                        {coordinates[n], -64}, {-128, 256}, {256, 256},
+                    };
+                    const unsigned orders[2][2][3] = {
+                        { {1, 2, 0}, {2, 1, 0} },
+                        { {0, 1, 2}, {0, 2, 1} },
+                    };
+                    const int start[4] = { 4096, 4096, 4096, 4096 };
+                    int dx[4], dy[4];
+                    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+
+                    pipeline_prepare(s, 0x228, 0);
+                    for (unsigned k = 0; k < 4; k++) {
+                        dx[k] = axis ? 0 : 4096;
+                        dy[k] = axis ? 4096 : 0;
+                    }
+                    pipeline_shade(s, start, dx, dy);
+                    qtest_writel(s, DE + 0x58, 0xfffcfffc);
+                    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x10000);
+                    qtest_writel(s, DE + 0x60, 0x02000000 | direction << 16);
+                    for (unsigned v = 0; v < 3; v++) {
+                        unsigned index = orders[direction >> 1][winding][v];
+
+                        for (unsigned a = 0; a < 2; a++) {
+                            qtest_writel(s, DE + 0x80 + 8 * v + 4 * a,
+                                        vertices[index][axis ^ a] + 256);
+                        }
+                    }
+                    save_paired_renderer(s, path, before);
+                    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0),
+                                    ==, MEMTX_OK);
+                    g_assert_cmphex(pixel_read(s, pixel_address(0, 1, 1, 4), 4),
+                                    ==, values[n] * 0x01010101U);
+                    save_paired_renderer(s, path, after);
+                    /* Loaded starts must not receive a second adjustment. */
+                    g_assert_cmpmem(before, sizeof(before),
+                                    after, sizeof(after));
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_pipeline_anchor_invariants(void)
+{
+    const int start[] = { 10 * 4096, 20 * 4096, 30 * 4096, 40 * 4096 };
+    const int dx[] = { 4096, -8192, 12288, -4096 };
+    const int dy[] = { 8192, 4096, -4096, -8192 };
+    const int vertex[3][2] = { {32, 16}, {352, 16}, {288, 304} };
+    const int origins[] = { 0, -4096 };
+    const unsigned modes[] = { 0x228, 0x227 };
+    const uint32_t colors[2][2] = {
+        { 0x02151b30, 0x091b1429 }, { 0x0e112324, 0x0e112324 },
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-anchor-state-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned mode = 0; mode < ARRAY_SIZE(modes); mode++) {
+        for (unsigned shift = 0; shift < 2; shift++) {
+            for (unsigned origin = 0; origin < ARRAY_SIZE(origins); origin++) {
+                for (unsigned direction = 0; direction < 4; direction++) {
+                    for (unsigned winding = 0; winding < 2; winding++) {
+                        Shape c = pipeline_prepare(s, modes[mode], 0);
+                        int o = origins[origin];
+                        unsigned draw = TRIANGLE_DRAW | 0x11700;
+                        uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+                        unsigned x = 2 + shift, y = 1 + shift;
+
+                        pipeline_shade(s, start, dx, dy);
+                        qtest_writel(s, DE + 0x60,
+                                    0x02000000 | direction << 16);
+                        qtest_writel(s, DE + 0x58,
+                                    xy((uint16_t)o, (uint16_t)o));
+                        qtest_writel(s, DE + 0x1a8, 0x45);
+                        qtest_writel(s, DE + 0x1b0, 6);
+                        for (unsigned v = 0; v < 3; v++) {
+                            unsigned index = winding && v ? 3 - v : v;
+
+                            for (unsigned a = 0; a < 2; a++) {
+                                qtest_writel(s, DE + 0x80 + 8 * v + 4 * a,
+                                    vertex[index][a] + 64 * ((int)shift - o));
+                            }
+                        }
+                        for (unsigned clip = 0; clip < 2; clip++) {
+                            uint32_t expected = pipeline_reference(modes[mode],
+                                colors[direction >> 1][winding], c.old, 0,
+                                0x45, draw, 6, UINT32_MAX, x, y);
+
+                            shape_memory(s, &c, NULL);
+                            qtest_writel(s, DE + 0x18, draw | clip << 20);
+                            qtest_writeq(s, DE + 0x48,
+                                         bounds(x - o, y - o,
+                                                4 + shift - o, 4 + shift - o));
+                            save_paired_renderer(s, path, before);
+                            /* Inactive foreground START still commits once. */
+                            g_assert_cmpint(memtx_writel(s, DE + 0x8d0,
+                                                        0xf13579bd),
+                                            ==, MEMTX_OK);
+                            g_assert_cmphex(pixel_read(s,
+                                pixel_address(0, x, y, c.bytes), c.bytes),
+                                ==, expected);
+                            if (clip) {
+                                g_assert_cmphex(pixel_read(s,
+                                    pixel_address(0, x - 1, y, c.bytes),
+                                    c.bytes),
+                                    ==, c.old);
+                            }
+                            save_paired_renderer(s, path, after);
+                            before[192 + 0xd0 / 4] = 0xf13579bd;
+                            g_assert_cmpmem(before, sizeof(before),
+                                            after, sizeof(after));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_sz_depth_fixture(void)
+{
+    QTestState *s = start_indexed_state();
+    Shape c = pipeline_prepare(s, 0x228, 0);
+    uint32_t expected[16];
+
+    map_region(s, 2, 4, 0, 0, 3, 3);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            pixel_write(s, pixel_address(2, x, y, 4), 4, 0x6b000011);
+            expected[4 * y + x] = c.old;
+        }
+    }
+    qtest_writel(s, DE + 0xd0, 0x13579bdf);
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 6);
+    qtest_writel(s, DE + 0x1c0, 1U << 25);
+    qtest_writeq(s, DE + 0x1c8, 18 * 4096);
+    qtest_writeq(s, DE + 0x1d0, 0);
+    qtest_writeq(s, DE + 0x1d8, 0);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    shape_memory(s, &c, expected);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                            ==, 0x6b000011);
+            expected[4 * y + x] = 0x13579bdf;
+        }
+    }
+    g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, 16 * 4096), ==, MEMTX_OK);
+    shape_memory(s, &c, expected);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                            ==, 0x6b000010);
+        }
+    }
+    qtest_quit(s);
+}
+
+typedef struct SZCase {
+    unsigned draw, control, stencil, mask, bank, mode;
+    int64_t start, dx, dy;
+    uint32_t old, color, plane;
+    bool rectangle;
+} SZCase;
+
+static SZCase sz_case(void)
+{
+    return (SZCase) {
+        .draw = TRIANGLE_DRAW | 6, .control = 7U << 25,
+        .stencil = 0x62ff7000, .mask = 255, .mode = 0x228,
+        .start = 18 * 4096, .old = 0x53000011,
+        .color = 0x1153c940, .plane = UINT32_MAX,
+    };
+}
+
+static bool sz_reference_compare(unsigned function, uint32_t a, uint32_t b)
+{
+    const bool result[8] = {
+        false, a < b, a == b, a <= b, a > b, a != b, a >= b, true,
+    };
+
+    return result[function];
+}
+
+static uint32_t sz_reference_depth(int64_t z)
+{
+    if (z <= 0) {
+        return 0;
+    }
+    return MIN(z / 4096, 0xffffff);
+}
+
+static uint32_t sz_reference(const SZCase *v, uint32_t old, uint32_t z,
+                               bool *color)
+{
+    unsigned stencil = old >> 24, reference = v->stencil >> 24;
+    unsigned cmpmask = (v->stencil >> 16) & 255;
+    bool depth_enabled = v->draw & 4, stencil_enabled = v->draw & 1;
+    bool write = depth_enabled && (v->draw & 2);
+    bool sp, zp;
+    unsigned outcome, op, next;
+    const unsigned candidates[6] = {
+        stencil, 0, reference, stencil == 255 ? 255 : stencil + 1,
+        stencil == 0 ? 0 : stencil - 1, 255 - stencil,
+    };
+
+    if (v->control & 0x1000000) {
+        bool select = ((v->stencil >> 12) & 7) == 7 || stencil != reference;
+        uint32_t effective = select ? v->control & 0xffffff : old & 0xffffff;
+        bool replace = (v->stencil & 0xf0) == 0x20;
+        bool pass = sz_reference_compare((v->control >> 25) & 7, z, effective);
+
+        *color = pass && (!replace || select);
+        if (!write || (!select && replace) || (!pass && !replace)) {
+            return old;
+        }
+        return reference << 24 | (pass ? z : effective);
+    }
+    sp = !stencil_enabled || sz_reference_compare(
+        (v->stencil >> 12) & 7, reference & cmpmask, stencil & cmpmask);
+    zp = !depth_enabled || sz_reference_compare(
+        (v->control >> 25) & 7, z, old & 0xffffff);
+    *color = sp && zp;
+    outcome = !sp ? 8 : !zp ? 4 : 0;
+    op = (v->stencil >> outcome) & 15;
+    next = stencil_enabled ? candidates[op] : stencil;
+    next = (stencil & ~(stencil_enabled ? v->mask : 0)) |
+           (next & (stencil_enabled ? v->mask : 0));
+    return next << 24 | (*color && write ? z : old & 0xffffff);
+}
+
+static void sz_program(QTestState *s, const SZCase *v)
+{
+    qtest_writel(s, DE + 0x18, v->draw);
+    qtest_writel(s, DE + 0xd0, v->color);
+    qtest_writel(s, DE + 0x1c0, v->control);
+    qtest_writel(s, DE + 0x1e0, v->stencil);
+    qtest_writel(s, DE + 0x1e8, v->mask);
+    qtest_writeq(s, DE + 0x1c8, v->start);
+    qtest_writeq(s, DE + 0x1d0, v->dx);
+    qtest_writeq(s, DE + 0x1d8, v->dy);
+    qtest_writel(s, DE + 0x1b8, v->plane);
+    qtest_writel(s, DE + 0x1b0, 6);
+    qtest_writel(s, DE + 0x1a8, 0x45);
+}
+
+static void sz_run(QTestState *s, const SZCase *v)
+{
+    Shape c = pipeline_prepare(s, v->mode, v->bank);
+    uint32_t expected[16], zs[16];
+
+    map_region(s, 2, 4, 0, 0, 3, 3);
+    sz_program(s, v);
+    if (v->rectangle) {
+        qtest_writel(s, DE + 0x60, 0x03020000);
+        qtest_writel(s, DE + 0x88, 3 * 64);
+        qtest_writel(s, DE + 0x8c, 3 * 64);
+    }
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            bool color;
+            uint32_t z = sz_reference_depth(v->start + v->dx * x + v->dy * y);
+
+            pixel_write(s, pixel_address(2, x, y, 4), 4, v->old);
+            zs[4 * y + x] = sz_reference(v, v->old, z, &color);
+            expected[4 * y + x] = color ? pipeline_reference(v->mode,
+                v->color, c.old, 0, 0x45, v->draw, 6, v->plane, x, y) : c.old;
+        }
+    }
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    shape_memory(s, &c, expected);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                            ==, zs[4 * y + x]);
+        }
+    }
+}
+
+static void test_sz_comparisons(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned function = 0; function < 8; function++) {
+        for (unsigned value = 16; value <= 18; value++) {
+            for (unsigned write = 0; write < 2; write++) {
+                SZCase v = sz_case();
+
+                v.draw = TRIANGLE_DRAW | 4 | write << 1;
+                v.control = function << 25;
+                v.start = value * 4096;
+                v.bank = value & 1;
+                sz_run(s, &v);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_sz_stencil(void)
+{
+    const unsigned masks[] = { 0, 0x0f, 0xf0, 255 };
+    const unsigned values[] = { 0, 1, 0x53, 254, 255 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned function = 0; function < 8; function++) {
+        for (unsigned mask = 0; mask < ARRAY_SIZE(masks); mask++) {
+            for (unsigned old = 0; old < ARRAY_SIZE(values); old++) {
+                for (unsigned ref = 0; ref < ARRAY_SIZE(values); ref++) {
+                    SZCase v = sz_case();
+
+                    v.draw |= 1;
+                    v.stencil = values[ref] << 24 | masks[mask] << 16 |
+                                function << 12 | 0x532;
+                    v.old = values[old] << 24 | 17;
+                    v.mask = 0x5a;
+                    v.bank = ref & 1;
+                    sz_run(s, &v);
+                }
+            }
+        }
+    }
+    for (unsigned op = 0; op < 6; op++) {
+        for (unsigned outcome = 0; outcome < 3; outcome++) {
+            for (unsigned old = 0; old < ARRAY_SIZE(values); old++) {
+                for (unsigned mask = 0; mask < ARRAY_SIZE(masks); mask++) {
+                    SZCase v = sz_case();
+
+                    v.draw |= 1;
+                    v.old = values[old] << 24 | 17;
+                    v.mask = masks[mask];
+                    v.control = outcome == 1 ? 0 : 7U << 25;
+                    v.stencil = 0x62ff0000 | (outcome ? 7 : 0) << 12 |
+                                op << 8 | op << 4 | op;
+                    sz_run(s, &v);
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_sz_tags(gconstpointer selection)
+{
+    unsigned comparison = GPOINTER_TO_UINT(selection);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned function = 0; function < 8; function++) {
+        for (unsigned row = 0; row < 2; row++) {
+            for (unsigned write = 0; write < 2; write++) {
+                for (unsigned match = 0; match < 2; match++) {
+                    for (unsigned incoming = 0; incoming < 3; incoming++) {
+                        for (unsigned ref = 0; ref < 4; ref++) {
+                            const unsigned references[] = { 0, 1, 254, 255 };
+                            SZCase v = sz_case();
+                            unsigned r = references[ref];
+
+                            v.draw = TRIANGLE_DRAW | 5 | write << 1;
+                            v.control = function << 25 | 0x1000000 | 0x654321;
+                            v.stencil = r << 24 | 0xff0000 | comparison << 12 |
+                                        row << 5 | 2;
+                            v.mask = write ? 255 : 0;
+                            v.old = (match ? r : r ^ 255) << 24 | 0x123456;
+                            v.start = (incoming == 0 ? 0x100000LL :
+                                       incoming == 1 ? 0x654321LL :
+                                                       0x700000LL) * 4096;
+                            sz_run(s, &v);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_sz_all_references(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned reference = 0; reference <= 256; reference++) {
+        unsigned r = reference & 255;
+
+        for (unsigned path = 0; path < 3; path++) {
+            for (unsigned match = 0; match < 2; match++) {
+                SZCase v = sz_case();
+
+                v.draw = (TRIANGLE_DRAW & ~0x78U) | 7;
+                v.rectangle = path != 0;
+                v.control = 0x0f654321;
+                v.stencil = r << 24 | 0xff0000 |
+                            (path == 2 ? 7 : 5) << 12 | (path == 1 ? 0x22 : 2);
+                v.old = (match ? r : r ^ 255) << 24 | 0x123456;
+                v.start = 0x654321LL * 4096;
+                sz_run(s, &v);
+                /* Clearing tag mode cannot perform hidden conversion. */
+                qtest_writel(s, DE + 0x1c0, v.control & ~0x1000000U);
+                for (unsigned y = 0; y < 4; y++) {
+                    for (unsigned x = 0; x < 4; x++) {
+                        bool color;
+
+                        g_assert_cmphex(pixel_read(s,
+                            pixel_address(2, x, y, 4), 4), ==,
+                            sz_reference(&v, v.old, 0x654321, &color));
+                    }
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void sz_window_bytes(QTestState *s, bool updated)
+{
+    const unsigned indices[] = { 0, 1, 16, 17 };
+    g_autofree uint8_t *data = g_malloc(65536);
+
+    for (unsigned n = 0; n < ARRAY_SIZE(indices); n++) {
+        qtest_memread(s, (uint64_t)page_for(0, indices[n]) << 16, data, 65536);
+        for (unsigned i = 0; i < 65536; i++) {
+            g_assert_cmphex(data[i], ==, 0x5a);
+        }
+        qtest_memread(s, (uint64_t)page_for(2, indices[n]) << 16, data, 65536);
+        for (unsigned i = 0; i < 65536; i += 4) {
+            g_assert_cmphex(ldl_be_p(data + i), ==,
+                            updated ? 0x53123456 : 0x53535353);
+        }
+    }
+}
+
+static void test_sz_window(void)
+{
+    const unsigned indices[] = { 0, 1, 16, 17 };
+    g_autofree char *dir = g_dir_make_tmp("crime-sz-window-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    SZCase v = sz_case();
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+
+    pipeline_prepare(s, 0x228, 0);
+    map_region(s, 2, 4, 0, 0, 255, 255);
+    /* Color remains semantically valid but has no actual RAM accesses. */
+    qtest_writeq(s, RE + 0x1000, 0);
+    v.draw = (TRIANGLE_DRAW & ~0x78U) | 0x100006;
+    v.start = 0x123456LL * 4096;
+    sz_program(s, &v);
+    qtest_writeq(s, DE + 0x48, bounds(0, 0, 256, 256));
+    qtest_writel(s, DE + 0x88, 512 * 64);
+    qtest_writel(s, DE + 0x94, 512 * 64);
+    for (unsigned fault = 0; fault < 2; fault++) {
+        for (unsigned n = 0; n < ARRAY_SIZE(indices); n++) {
+            qtest_memset(s, (uint64_t)page_for(0, indices[n]) << 16,
+                         0x5a, 65536);
+            qtest_memset(s, (uint64_t)page_for(2, indices[n]) << 16,
+                         0x53, 65536);
+        }
+        tile(s, 2, 17, fault ? 0x7fff : page_for(2, 17));
+        save_paired_renderer(s, path, before);
+        g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, v.start),
+                        ==, fault ? MEMTX_ERROR : MEMTX_OK);
+        sz_window_bytes(s, !fault);
+        save_paired_renderer(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_sz_gl_rectangles(void)
+{
+    const int origins[] = { 0, 1, -1, -4096 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned direction = 0; direction < 4; direction++) {
+        for (unsigned origin = 0; origin < ARRAY_SIZE(origins); origin++) {
+            Shape c = pipeline_prepare(s, 0x228, 0);
+            SZCase v = sz_case();
+            int o = origins[origin];
+            unsigned xs = direction & 1 ? 3 : 1;
+            unsigned xe = direction & 1 ? 1 : 3;
+            unsigned ys = direction & 2 ? 1 : 2;
+            unsigned ye = direction & 2 ? 2 : 1;
+
+            map_region(s, 2, 4, 0, 0, 7, 7);
+            for (unsigned y = 0; y < 8; y++) {
+                for (unsigned x = 0; x < 8; x++) {
+                    pixel_write(s, pixel_address(2, x, y, 4), 4, 0x6b000011);
+                }
+            }
+            v.draw = 0x400006;
+            v.start = 16 * 4096;
+            sz_program(s, &v);
+            qtest_writel(s, DE + 0x60, 0x03000000 | direction << 16);
+            qtest_writel(s, DE + 0x58, xy((uint16_t)o, (uint16_t)o));
+            qtest_writel(s, DE + 0x80, (xs - o) * 64);
+            qtest_writel(s, DE + 0x84, (ys - o) * 64);
+            qtest_writel(s, DE + 0x88, (xe - o) * 64);
+            qtest_writel(s, DE + 0x8c, (ye - o) * 64);
+            qtest_writeq(s, DE + 0x90, 0x7fc00000deadbeefULL);
+            qtest_writeq(s, DE + 0x70, UINT64_MAX);
+            qtest_writel(s, DE, UINT32_MAX);
+            qtest_writel(s, DE + 0x50, UINT32_MAX);
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            for (unsigned y = 0; y < 8; y++) {
+                for (unsigned x = 0; x < 8; x++) {
+                    g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                        ==, x >= 1 && x <= 3 && y >= 1 && y <= 2 ?
+                            0x6b000010 : 0x6b000011);
+                }
+            }
+            g_assert_cmphex(pixel_read(s, pixel_address(0, 1, 1, 4), 4),
+                            ==, c.old);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void sz_initialize(QTestState *s, const Shape *c, uint32_t value)
+{
+    map_region(s, 2, 4, c->x, c->y, c->x + c->width - 1, c->y + c->height - 1);
+    for (unsigned y = 0; y < c->height; y++) {
+        for (unsigned x = 0; x < c->width; x++) {
+            pixel_write(s, pixel_address(2, c->x + x, c->y + y, 4), 4, value);
+        }
+    }
+}
+
+static void sz_atomic_failure(QTestState *s, const Shape *c, const char *path,
+                                uint64_t address, uint64_t value,
+                                unsigned width)
+{
+    unsigned count = c->width * c->height;
+    g_autofree uint32_t *colors = g_new(uint32_t, count);
+    g_autofree uint32_t *depths = g_new(uint32_t, count);
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    IfbSnapshot a, b;
+
+    for (unsigned y = 0; y < c->height; y++) {
+        for (unsigned x = 0; x < c->width; x++) {
+            colors[y * c->width + x] = pixel_read(s,
+                pixel_address(c->bank, c->x + x, c->y + y, c->bytes), c->bytes);
+            depths[y * c->width + x] = pixel_read(s,
+                pixel_address(2, c->x + x, c->y + y, 4), 4);
+        }
+    }
+    save_paired_renderer(s, path, before);
+    ifb_snapshot(s, &a);
+    g_assert_cmpint(memtx_write(s, address, value, width), !=, MEMTX_OK);
+    ifb_snapshot(s, &b);
+    g_assert_cmpmem(&a, sizeof(a), &b, sizeof(b));
+    for (unsigned y = 0; y < c->height; y++) {
+        for (unsigned x = 0; x < c->width; x++) {
+            g_assert_cmphex(pixel_read(s,
+                pixel_address(c->bank, c->x + x, c->y + y, c->bytes), c->bytes),
+                ==, colors[y * c->width + x]);
+            g_assert_cmphex(pixel_read(s,
+                pixel_address(2, c->x + x, c->y + y, 4), 4),
+                ==, depths[y * c->width + x]);
+        }
+    }
+    save_paired_renderer(s, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+}
+
+static void test_sz_transport(void)
+{
+    const int64_t limit = INT64_C(1) << 36;
+    const int64_t values[] = {
+        -limit, -limit + 1, -4097, -4096, -1, 0, 1, 4095, 4096, 4097,
+        0xffffffLL * 4096 - 1, 0xffffffLL * 4096,
+        0xffffffLL * 4096 + 4095, limit - 4096, limit - 64, limit - 1, limit,
+    };
+    const uint64_t invalid[] = {
+        (uint64_t)(-limit - 1), (uint64_t)(limit + 1),
+        0x8000000000000000ULL, 0x1000001000000000ULL,
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-sz-transport-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    uint64_t raw[RENDER_WORDS];
+
+    for (unsigned n = 0; n < ARRAY_SIZE(values); n++) {
+        SZCase v = sz_case();
+
+        v.start = values[n];
+        sz_run(s, &v);
+        save_paired_renderer(s, path, raw);
+        g_assert_cmphex(raw[192 + 0x1c8 / 4], ==, (uint64_t)values[n]);
+    }
+    for (unsigned word = 1; word < 3; word++) {
+        for (unsigned negative = 0; negative < 2; negative++) {
+            SZCase v = sz_case();
+            Shape c = pipeline_prepare(s, v.mode, 0);
+            int64_t slope = negative ? -limit : limit;
+
+            sz_initialize(s, &c, v.old);
+            if (word == 1) {
+                v.dx = slope;
+            } else {
+                v.dy = slope;
+            }
+            v.draw &= ~0x78U;
+            sz_program(s, &v);
+            qtest_writel(s, DE + 0x88, 64);
+            qtest_writel(s, DE + 0x94, 64);
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            g_assert_cmphex(pixel_read(s, pixel_address(2, 0, 0, 4), 4),
+                            ==, 0x53000012);
+            save_paired_renderer(s, path, raw);
+            g_assert_cmphex(raw[192 + (0x1c8 + 8 * word) / 4],
+                            ==, (uint64_t)slope);
+        }
+    }
+    for (unsigned word = 0; word < 3; word++) {
+        for (unsigned n = 0; n < ARRAY_SIZE(invalid); n++) {
+            SZCase v = sz_case();
+            Shape c = pipeline_prepare(s, v.mode, 0);
+
+            sz_initialize(s, &c, v.old);
+            sz_program(s, &v);
+            sz_atomic_failure(s, &c, path, DE + 0x9c8 + 8 * word,
+                              invalid[n], 8);
+        }
+    }
+    /* Interpolation can overflow only at a late sample hidden by scissor. */
+    {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, v.mode, 0);
+
+        sz_initialize(s, &c, v.old);
+        v.start = limit - 3;
+        v.dx = v.dy = 1;
+        v.draw |= 0x100000;
+        sz_program(s, &v);
+        qtest_writeq(s, DE + 0x48, bounds(0, 0, 1, 1));
+        sz_atomic_failure(s, &c, path, DE + 0x9c8, v.start, 8);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_sz_planes(void)
+{
+    const unsigned vertices[3][2] = { {112, 144}, {608, 96}, {480, 624} };
+    const int origins[] = { 0, 1, -1, -4096, -4097 };
+    const unsigned literal[2][2] = { {18, 6}, {23, 23} };
+    const unsigned loaded[2][2] = { {25, 37}, {20, 20} };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned direction = 0; direction < 4; direction++) {
+        for (unsigned winding = 0; winding < 2; winding++) {
+            for (unsigned origin = 0; origin < ARRAY_SIZE(origins); origin++) {
+                for (unsigned global = 0; global < 2; global++) {
+                    Shape c = pipeline_prepare(s, 0x228, 0);
+                    SZCase v = sz_case();
+                    int o = origins[origin];
+
+                    c.width = c.height = 12;
+                    sz_initialize(s, &c, v.old);
+                    v.draw = (TRIANGLE_DRAW & ~0x78U) | 6;
+                    v.start = (global ? loaded[direction >> 1][winding] : 20) *
+                              4096LL;
+                    v.dx = 2 * 4096;
+                    v.dy = -4096;
+                    sz_program(s, &v);
+                    qtest_writel(s, DE + 0x60, 0x02000000 | direction << 16);
+                    qtest_writel(s, DE + 0x58, xy((uint16_t)o, (uint16_t)o));
+                    for (unsigned i = 0; i < 3; i++) {
+                        unsigned index = winding && i ? 3 - i : i;
+
+                        for (unsigned axis = 0; axis < 2; axis++) {
+                            qtest_writel(s, DE + 0x80 + 8 * i + 4 * axis,
+                                        vertices[index][axis] - 64 * o);
+                        }
+                    }
+                    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0),
+                                    ==, MEMTX_OK);
+                    g_assert_cmphex(pixel_read(s, pixel_address(2, 4, 5, 4), 4),
+                        ==, (v.old & 0xff000000U) |
+                            (global ? 23 : literal[direction >> 1][winding]));
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_sz_fragment_order(void)
+{
+    const int start[] = { 100 * 4096, 80 * 4096, 60 * 4096, 20 * 4096 };
+    const int dx[] = { 4096, -8192, 12288, 30 * 4096 };
+    const int dy[] = { 8192, 4096, -4096, -3 * 4096 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned masked = 0; masked < 2; masked++) {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+        uint32_t expected[16];
+
+        v.draw = TRIANGLE_DRAW | 0x10f87;
+        if (masked) {
+            v.draw &= ~0x78U;
+        }
+        v.stencil = 0x62ff7003;
+        v.plane = 0xa579b3e1;
+        sz_initialize(s, &c, v.old);
+        sz_program(s, &v);
+        pipeline_shade(s, start, dx, dy);
+        qtest_writel(s, DE + 0x198, 0x164);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                uint32_t source = pipeline_plane_color(start, dx, dy,
+                                                       0, 0, x, y);
+                bool alpha = (source & 255) < 100;
+
+                expected[4 * y + x] = alpha ? pipeline_reference(0x228,
+                    source, c.old, 0, 0x45, v.draw, 6, v.plane, x, y) : c.old;
+            }
+        }
+        if (masked) {
+            qtest_writeq(s, RE + 0x1000, 0);
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                uint32_t source = pipeline_plane_color(start, dx, dy,
+                                                       0, 0, x, y);
+
+                g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                    ==, (source & 255) < 100 ? 0x54000012 : v.old);
+            }
+        }
+    }
+    /* A rejected alpha test never accesses even an invalid SZ tile. */
+    {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+        uint32_t old[16];
+
+        sz_initialize(s, &c, v.old);
+        v.draw |= 0x800;
+        sz_program(s, &v);
+        qtest_writel(s, DE + 0x198, 0);
+        qtest_writeq(s, RE + 0x1400, 0);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        for (unsigned i = 0; i < 16; i++) {
+            old[i] = c.old;
+        }
+        shape_memory(s, &c, old);
+    }
+    qtest_quit(s);
+}
+
+static void test_sz_aliases(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-sz-alias-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned write = 0; write < 2; write++) {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+
+        c.width = 130;
+        c.height = 1;
+        sz_initialize(s, &c, v.old);
+        tile(s, 2, 1, page_for(2, 0));
+        v.draw = (TRIANGLE_DRAW & ~0x78U) | 4 | write << 1;
+        sz_program(s, &v);
+        qtest_writel(s, DE + 0x88, 260 * 64);
+        qtest_writel(s, DE + 0x94, 2 * 64);
+        qtest_writel(s, DE + 0x18, v.draw | 0x100000);
+        qtest_writeq(s, DE + 0x48, bounds(0, 0, 130, 1));
+        if (write) {
+            sz_atomic_failure(s, &c, path, DE + 0x9c8, v.start, 8);
+        } else {
+            g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, v.start), ==, MEMTX_OK);
+            for (unsigned x = 0; x < 128; x++) {
+                g_assert_cmphex(pixel_read(s, pixel_address(2, x, 0, 4), 4),
+                                ==, v.old);
+            }
+        }
+    }
+    /* Opposing color/SZ write masks do not legalize shared backing bytes. */
+    {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x227, 0);
+
+        sz_initialize(s, &c, v.old);
+        tile(s, 2, 0, page_for(0, 0));
+        v.draw |= 0x80;
+        v.plane = 0xff000000;
+        sz_program(s, &v);
+        sz_atomic_failure(s, &c, path, DE + 0x9c8, v.start, 8);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void sz_rectangle(QTestState *s, unsigned direction,
+                           unsigned x0, unsigned y0, unsigned x1, unsigned y1)
+{
+    qtest_writel(s, DE + 0x60, 0x03000000 | direction << 16);
+    qtest_writel(s, DE + 0x80, x0 * 64);
+    qtest_writel(s, DE + 0x84, y0 * 64);
+    qtest_writel(s, DE + 0x88, x1 * 64);
+    qtest_writel(s, DE + 0x8c, y1 * 64);
+}
+
+static void test_sz_rect_controls(void)
+{
+    const unsigned modes[] = {
+        0x228, 0x218, 0x124, 0x224, 0x225, 0x226, 0x227,
+    };
+    const unsigned unsupported[] = {
+        0x8, 0x10, 0x20, 0x40, 0x100, 0x200, 0x400, 0x800,
+        0x1000, 0x2000, 0x4000, 0x8000, 0x200000,
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-sz-rect-state-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned m = 0; m < ARRAY_SIZE(modes); m++) {
+        for (unsigned bank = 0; bank < 3; bank++) {
+            SZCase v = sz_case();
+            Shape c = pipeline_prepare(s, modes[m], bank);
+
+            sz_initialize(s, &c, v.old);
+            v.draw = 0x410087;
+            v.plane = 0;
+            v.stencil = 0x62ff7002;
+            sz_program(s, &v);
+            sz_rectangle(s, 2, 0, 0, 3, 3);
+            qtest_writel(s, DE, UINT32_MAX);
+            qtest_writel(s, DE + 0x50, UINT32_MAX);
+            qtest_writeq(s, DE + 0x70, UINT64_MAX);
+            qtest_writeq(s, DE + 0x90, UINT64_MAX);
+            qtest_writel(s, DE + 0x1a8, UINT32_MAX);
+            qtest_writel(s, DE + 0xe0, UINT32_MAX);
+            qtest_writel(s, DE + 0x100, UINT32_MAX);
+            /* No color permission, including when color selects bank C. */
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            for (unsigned y = 0; y < 4; y++) {
+                for (unsigned x = 0; x < 4; x++) {
+                    g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                                    ==, 0x62000012);
+                }
+            }
+        }
+    }
+    for (unsigned bad = 0; bad < ARRAY_SIZE(unsupported); bad++) {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+
+        sz_initialize(s, &c, v.old);
+        v.draw = 0x400007 | unsupported[bad];
+        v.plane = 0;
+        sz_program(s, &v);
+        sz_rectangle(s, 2, 0, 0, 3, 3);
+        sz_atomic_failure(s, &c, path, DE + 0x9c8, v.start, 8);
+    }
+    for (unsigned bad = 0; bad < 8; bad++) {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+
+        sz_initialize(s, &c, v.old);
+        v.draw = 0x400007;
+        sz_program(s, &v);
+        sz_rectangle(s, 2, 0, 0, 3, 3);
+        switch (bad) {
+        case 0:
+            qtest_writel(s, DE + 8, 0x234);
+            qtest_writeq(s, RE + 0x1000, 0);
+            break;
+        case 1:
+            qtest_writel(s, DE + 0x80, 1);
+            break;
+        case 2:
+            qtest_writel(s, DE + 0x8c, 0x7fc00000);
+            break;
+        case 3:
+            qtest_writeq(s, DE + 0x1d0, 1);
+            break;
+        case 4:
+            qtest_writeq(s, DE + 0x1d8, -1);
+            break;
+        case 5:
+            qtest_writel(s, DE + 0x18, 7);
+            qtest_writel(s, DE + 0x70, xy(0, 0));
+            qtest_writel(s, DE + 0x74, xy(3, 3));
+            break;
+        case 6:
+            qtest_writel(s, DE + 0x60, 0x03020001);
+            break;
+        case 7:
+            qtest_writeq(s, RE + 0x1400, 0);
+            break;
+        }
+        sz_atomic_failure(s, &c, path, DE + 0x9c8, v.start, 8);
+    }
+    for (unsigned direction = 0; direction < 4; direction++) {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+
+        sz_initialize(s, &c, v.old);
+        v.draw = 0x400007;
+        sz_program(s, &v);
+        sz_rectangle(s, direction, direction & 1 ? 0 : 3,
+                     direction & 2 ? 0 : 3, direction & 1 ? 3 : 0,
+                     direction & 2 ? 3 : 0);
+        sz_atomic_failure(s, &c, path, DE + 0x9c8, v.start, 8);
+    }
+    /* Inactive Z/control payloads retain every raw bit. */
+    {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+        uint64_t raw[RENDER_WORDS];
+
+        sz_initialize(s, &c, v.old);
+        v.draw = 0x400001;
+        v.control = 0xf0000000;
+        v.start = INT64_MIN;
+        v.dx = INT64_MAX;
+        v.dy = -1;
+        v.stencil = 0x62ff7003;
+        sz_program(s, &v);
+        sz_rectangle(s, 2, 0, 0, 3, 3);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        g_assert_cmphex(pixel_read(s, pixel_address(2, 1, 1, 4), 4),
+                        ==, 0x54000011);
+        save_paired_renderer(s, path, raw);
+        g_assert_cmphex(raw[192 + 0x1c8 / 4], ==, (uint64_t)INT64_MIN);
+        g_assert_cmphex(raw[192 + 0x1d0 / 4], ==, (uint64_t)INT64_MAX);
+        g_assert_cmphex(raw[192 + 0x1d8 / 4], ==, UINT64_MAX);
+        sz_atomic_failure(s, &c, path, DE + 0x818, v.draw | 4, 4);
+    }
+    /* Alpha-byte-only output is an actual color access, not SZ-only. */
+    {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+
+        sz_initialize(s, &c, v.old);
+        v.draw = 0x40000e;
+        sz_program(s, &v);
+        tile(s, 0, 0, 0x7fff);
+        sz_atomic_failure(s, &c, path, DE + 0x9c8, v.start, 8);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static const unsigned sz_offsets[] = {
+    0x1c0, 0x1c8, 0x1d0, 0x1d8, 0x1e0, 0x1e8,
+};
+static const unsigned sz_widths[] = { 4, 8, 8, 8, 4, 4 };
+
+static void test_sz_start_forms(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-sz-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(sz_offsets); n++) {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS], value;
+        SZCase prospective;
+        uint32_t expected[16];
+
+        sz_initialize(s, &c, v.old);
+        v.draw |= 0x201;
+        v.stencil = 0x62ff7003;
+        prospective = v;
+        switch (n) {
+        case 0:
+            v.control = 0;
+            value = prospective.control;
+            break;
+        case 1:
+            v.start = 19 * 4096;
+            value = prospective.start;
+            break;
+        case 2:
+            prospective.dx = 4096;
+            value = prospective.dx;
+            break;
+        case 3:
+            prospective.dy = -4096;
+            value = prospective.dy;
+            break;
+        case 4:
+            v.stencil &= ~15U;
+            value = prospective.stencil;
+            break;
+        case 5:
+            v.mask = 0;
+            value = prospective.mask;
+            break;
+        default:
+            g_assert_not_reached();
+        }
+        sz_program(s, &v);
+        save_paired_renderer(s, path, before);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + sz_offsets[n],
+                                    value, sz_widths[n]), ==, MEMTX_OK);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                bool pass;
+                uint32_t z = sz_reference_depth(prospective.start +
+                    prospective.dx * x + prospective.dy * y);
+
+                expected[4 * y + x] = pipeline_reference(0x228, v.color,
+                    c.old, 0, 0x45, v.draw, 6, v.plane, x, y);
+                g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                    ==, sz_reference(&prospective, v.old, z, &pass));
+            }
+        }
+        shape_memory(s, &c, expected);
+        save_paired_renderer(s, path, after);
+        before[192 + sz_offsets[n] / 4] = value;
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    }
+    for (unsigned n = 0; n < ARRAY_SIZE(sz_offsets); n++) {
+        Shape c = shape_default();
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+        uint64_t value = sz_widths[n] == 8 ? UINT64_MAX : UINT32_MAX;
+        g_autofree uint32_t *expected = NULL;
+
+        c.bytes = 4;
+        c.width = c.height = 4;
+        c.primitive = 0;
+        c.x0 = c.y0 = 1;
+        expected = shape_reference(&c);
+        map_region(s, 0, 4, 0, 0, 3, 3);
+        shape_memory(s, &c, NULL);
+        shape_stage(s, &c);
+        save_paired_renderer(s, path, before);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + sz_offsets[n], value,
+                                    sz_widths[n]), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+        save_paired_renderer(s, path, after);
+        before[192 + sz_offsets[n] / 4] = value;
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_sz_widths_reserved(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-sz-widths-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(sz_offsets); n++) {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+        uint64_t value;
+
+        sz_initialize(s, &c, v.old);
+        sz_program(s, &v);
+        for (unsigned width = 1; width <= 8; width *= 2) {
+            if (width != sz_widths[n]) {
+                sz_atomic_failure(s, &c, path, DE + sz_offsets[n], 0, width);
+                sz_atomic_failure(s, &c, path, DE + 0x800 + sz_offsets[n],
+                                  0, width);
+            }
+        }
+        for (unsigned delta = 1; delta < sz_widths[n]; delta++) {
+            sz_atomic_failure(s, &c, path, DE + sz_offsets[n] + delta,
+                              0, sz_widths[n]);
+            sz_atomic_failure(s, &c, path, DE + 0x800 + sz_offsets[n] + delta,
+                              0, sz_widths[n]);
+        }
+        g_assert_cmpint(memtx_read(s, DE + 0x800 + sz_offsets[n], &value,
+                                   sz_widths[n]), !=, MEMTX_OK);
+        if (sz_widths[n] == 8) {
+            g_assert_cmpint(memtx_read(s, DE + sz_offsets[n], &value, 8),
+                            !=, MEMTX_OK);
+        }
+    }
+    for (unsigned reserved = 0; reserved < 12; reserved++) {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+
+        v.draw |= 1;
+        sz_initialize(s, &c, v.old);
+        switch (reserved) {
+        case 0:
+            v.control |= 0x10000000;
+            break;
+        case 1:
+            v.stencil |= 0x8000;
+            break;
+        case 2:
+            v.stencil |= 0x600;
+            break;
+        case 3:
+            v.stencil |= 0x60;
+            break;
+        case 4:
+            v.stencil |= 6;
+            break;
+        case 5:
+            v.mask |= 0x100;
+            break;
+        case 6:
+            v.control |= 0x1000000;
+            v.stencil = 0x62ff7002;
+            v.mask = 1;
+            break;
+        case 7:
+            v.control |= 0x1000000;
+            v.stencil = 0x62ff6002;
+            break;
+        case 8:
+            v.control |= 0x1000000;
+            v.stencil = 0x62fe7002;
+            break;
+        case 9:
+            v.control |= 0x1000000;
+            v.stencil = 0x62ff7102;
+            break;
+        case 10:
+            v.control |= 0x1000000;
+            v.stencil = 0x62ff7032;
+            break;
+        case 11:
+            v.control |= 0x1000000;
+            v.draw &= ~1U;
+            break;
+        }
+        sz_program(s, &v);
+        qtest_writel(s, DE + 0x18, v.draw & ~0x78U);
+        sz_atomic_failure(s, &c, path, DE + 0x9c8, v.start, 8);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_sz_late_faults(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-sz-late-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned lane = 0; lane < 4; lane++) {
+        for (unsigned fault = 0; fault < 3; fault++) {
+            SZCase v = sz_case();
+            Shape c = pipeline_prepare(s, 0x228, lane & 1);
+            unsigned x = 126 + 128 * lane, y = 126;
+            unsigned index = 16 + (x + 3) / 128;
+
+            c.x = x;
+            c.y = y;
+            map_region(s, c.bank, 4, x, y, x + 3, y + 3);
+            shape_memory(s, &c, NULL);
+            sz_initialize(s, &c, v.old);
+            sz_program(s, &v);
+            qtest_writel(s, DE + 0x80, x * 64);
+            qtest_writel(s, DE + 0x84, y * 64);
+            qtest_writel(s, DE + 0x88, (x + 8) * 64);
+            qtest_writel(s, DE + 0x8c, y * 64);
+            qtest_writel(s, DE + 0x90, x * 64);
+            qtest_writel(s, DE + 0x94, (y + 8) * 64);
+            if (fault < 2) {
+                tile(s, 2, index, 0x7fff);
+                if (fault) {
+                    uint64_t address = RE + 0x1400 + (index / 4) * 8;
+                    uint64_t tlb = qtest_readq(s, address);
+
+                    qtest_writeq(s, address, tlb & ~(0x8000ULL <<
+                                 (48 - 16 * (index % 4))));
+                }
+            } else {
+                tile(s, c.bank, index, 0x7fff);
+            }
+            sz_atomic_failure(s, &c, path, DE + 0x9c8, v.start, 8);
+        }
+    }
+    for (unsigned row = 0; row < 2; row++) {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+
+        c.x = c.y = 126;
+        sz_initialize(s, &c, 0x10123456);
+        v.draw = 0x400007;
+        v.control = 0x03654321;
+        v.stencil = 0x20ff5002 | row << 5;
+        v.start = 0x700000LL * 4096;
+        sz_program(s, &v);
+        sz_rectangle(s, 2, 126, 126, 129, 129);
+        tile(s, 2, 17, 0x7fff);
+        sz_atomic_failure(s, &c, path, DE + 0x9c8, v.start, 8);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_sz_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-sz-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned depth = 0; depth < 2; depth++) {
+        QTestState *from = start(), *to = start_options("-incoming defer");
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(from, 0x228, 0);
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+        uint32_t color[16], expected;
+
+        sz_initialize(from, &c, v.old);
+        v.draw = TRIANGLE_DRAW | 0x201 | (depth ? 6 : 0);
+        v.stencil = 0x62ff7003;
+        if (!depth) {
+            v.control = 0xf0000000;
+            v.start = INT64_MIN;
+            v.dx = INT64_MAX;
+            v.dy = -1;
+        }
+        sz_program(from, &v);
+        g_assert_cmpint(memtx_writel(from, DE + 0x9f0, 0), ==, MEMTX_OK);
+        expected = depth ? 0x54000012 : 0x54000011;
+        for (unsigned i = 0; i < 16; i++) {
+            color[i] = c.old ^ v.color;
+        }
+        save_paired_renderer(from, path, before);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        sgi_migrate_stopped(from, uri);
+        sgi_wait_migration(to, "completed");
+        save_paired_renderer(to, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        shape_memory(to, &c, color);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                g_assert_cmphex(pixel_read(to, pixel_address(2, x, y, 4), 4),
+                                ==, expected);
+            }
+        }
+        qtest_system_reset(to);
+        shape_memory(to, &c, color);
+        g_assert_cmphex(pixel_read(to, pixel_address(2, 1, 1, 4), 4),
+                        ==, expected);
+        save_renderer(to, path, after);
+        for (unsigned n = 0; n < ARRAY_SIZE(sz_offsets); n++) {
+            g_assert_cmphex(after[192 + sz_offsets[n] / 4], ==, 0);
+        }
+        qtest_quit(from);
+        qtest_quit(to);
+        g_unlink(sock);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_sz_rect_clipping(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-sz-rect-clip-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned outside = 0; outside < 2; outside++) {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+
+        sz_initialize(s, &c, v.old);
+        v.draw = 0x500006;
+        sz_program(s, &v);
+        sz_rectangle(s, 2, 0, 0, 3, 3);
+        qtest_writel(s, DE + 0x58, outside ? 0xf000f000 : 0xffffffff);
+        qtest_writeq(s, DE + 0x48, bounds(1, 1, 3, 3));
+        qtest_writel(s, DE + 0x10, 0x21);
+        qtest_writeq(s, DE + 0x20, bounds(1, 1, 3, 3));
+        qtest_writeq(s, RE + 0x1000, 0);
+        save_paired_renderer(s, path, before);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        save_paired_renderer(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                    ==, !outside && x == 1 && y == 1 ? 0x53000012 : v.old);
+            }
+        }
+        if (outside) {
+            sz_atomic_failure(s, &c, path, DE + 0x9c8,
+                              (INT64_C(1) << 36) + 1, 8);
+        }
+    }
+    for (unsigned direction = 0; direction < 4; direction++) {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+
+        sz_initialize(s, &c, v.old);
+        v.draw = 0x400006;
+        sz_program(s, &v);
+        sz_rectangle(s, direction, 1, 2, 1, 2);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                    ==, x == 1 && y == 2 ? 0x53000012 : v.old);
+            }
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_sz_populated_banks(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-sz-banks-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_profile_ram("legacy-software", true, true, false, "");
+    SZCase v = sz_case();
+    Shape c = pipeline_prepare(s, 0x228, 0);
+
+    for (unsigned i = 0; i < 8; i++) {
+        qtest_writeq(s, CRIME + 0x208 + i * 8, 0x100 | i * 4);
+    }
+    v.draw = 0x400007;
+    v.control = 0x0f654321;
+    v.stencil = 0x20ff5022;
+    v.start = 0x654321LL * 4096;
+    sz_program(s, &v);
+    sz_rectangle(s, 2, 126, 0, 129, 0);
+    tile(s, 2, 0, 0x7ff);
+    tile(s, 2, 1, 0x800);
+    for (unsigned x = 126; x < 130; x++) {
+        uint64_t address = x < 128 ? 0x7ff0000ULL + 4 * x :
+                                    0x8000000ULL + 4 * (x - 128);
+
+        pixel_write(s, address, 4, 0x10123456);
+    }
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    for (unsigned x = 126; x < 130; x++) {
+        uint64_t address = x < 128 ? 0x7ff0000ULL + 4 * x :
+                                    0x8000000ULL + 4 * (x - 128);
+
+        g_assert_cmphex(pixel_read(s, address, 4), ==, 0x20654321);
+        pixel_write(s, address, 4, 0x10123456);
+    }
+    qtest_writeq(s, CRIME + 0x210, 0);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_ERROR);
+    for (unsigned x = 126; x < 128; x++) {
+        g_assert_cmphex(pixel_read(s, 0x7ff0000ULL + 4 * x, 4), ==, 0x10123456);
+    }
+    qtest_writeq(s, CRIME + 0x210, 0x104);
+    /* Different physical views of the same RAM still form a forbidden alias. */
+    c = pipeline_prepare(s, 0x228, 0);
+    sz_initialize(s, &c, v.old);
+    v = sz_case();
+    v.draw |= 0x80;
+    v.plane = 0xff000000;
+    sz_program(s, &v);
+    tile(s, 2, 0, 0x4003);
+    g_assert_cmphex(pixel_read(s, 0x40030000, 4), ==, c.old);
+    {
+        IfbSnapshot before, after;
+        uint32_t old_color[16];
+
+        for (unsigned i = 0; i < 16; i++) {
+            old_color[i] = c.old;
+        }
+        ifb_snapshot(s, &before);
+        g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, 19 * 4096),
+                        ==, MEMTX_ERROR);
+        ifb_snapshot(s, &after);
+        g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
+        shape_memory(s, &c, old_color);
+        /* Banked CRIME is deliberately non-migratable; observe raw rollback. */
+        tile(s, 2, 0, page_for(2, 0));
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        g_assert_cmphex(pixel_read(s, pixel_address(2, 1, 1, 4), 4),
+                        ==, 0x53000012);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_sz_tag_literals(void)
+{
+    QTestState *s = start_indexed_state();
+    const unsigned references[] = { 0, 1, 254, 255, 0 };
+
+    for (unsigned match = 0; match < 2; match++) {
+        for (unsigned row = 0; row < 2; row++) {
+            SZCase v = sz_case();
+
+            v.rectangle = true;
+            v.draw = 0x400007;
+            v.control = 0x03654321;
+            v.stencil = 0x20ff5002 | row << 5;
+            v.old = match ? 0x20123456 : 0x10123456;
+            v.start = (match ? 0x100000LL : 0x700000LL) * 4096;
+            sz_run(s, &v);
+            /* Failed-depth materialization writes clear Z and tag together. */
+            g_assert_cmphex(pixel_read(s, pixel_address(2, 1, 1, 4), 4), ==,
+                match ? (row ? 0x20123456 : 0x20100000) :
+                        (row ? 0x20654321 : 0x10123456));
+        }
+    }
+    {
+        SZCase v = sz_case();
+        Shape c = pipeline_prepare(s, 0x228, 0);
+        uint32_t old[16];
+
+        sz_initialize(s, &c, 0);
+        v.draw = 0x400007;
+        v.control = 0x0f654321;
+        v.stencil = 0x20ff5022;
+        v.start = 0x654321LL * 4096;
+        sz_program(s, &v);
+        sz_rectangle(s, 2, 0, 0, 3, 3);
+        qtest_writeq(s, RE + 0x1000, 0);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                old[4 * y + x] = ((x + y) & 1 ? 0x20000000 : 0x10000000) |
+                                 (0x123456 + 17 * (4 * y + x));
+                pixel_write(s, pixel_address(2, x, y, 4), 4, old[4 * y + x]);
+            }
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        qtest_writel(s, DE + 0x1c0, v.control & ~0x1000000U);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                    ==, (x + y) & 1 ? old[4 * y + x] : 0x20654321);
+            }
+        }
+        for (unsigned n = 0; n < ARRAY_SIZE(references); n++) {
+            uint32_t physical = references[n] << 24 | 0x654321;
+
+            v.control = 0x0f654321;
+            v.stencil = references[n] << 24 | 0xff7002;
+            sz_program(s, &v);
+            sz_rectangle(s, 2, 0, 0, 3, 3);
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            for (unsigned y = 0; y < 4; y++) {
+                for (unsigned x = 0; x < 4; x++) {
+                    g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                                    ==, physical);
+                    pixel_write(s, pixel_address(2, x, y, 4), 4, 0x10123456);
+                }
+            }
+            for (unsigned band = 0; band < 2; band++) {
+                sz_rectangle(s, 2, 0, 2 * band, 3, 2 * band + 1);
+                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            }
+            for (unsigned y = 0; y < 4; y++) {
+                for (unsigned x = 0; x < 4; x++) {
+                    g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                                    ==, physical);
+                    pixel_write(s, pixel_address(2, x, y, 4), 4, 0x10123456);
+                }
+            }
+            /* MTE clears the same physical bytes without tag history. */
+            qtest_writel(s, MTE, 0x208);
+            qtest_writel(s, MTE + 8, UINT32_MAX);
+            qtest_writel(s, MTE + 0x18, physical);
+            qtest_writel(s, MTE + 0x30, xy(0, 0));
+            qtest_writel(s, MTE + 0x48, 1);
+            g_assert_cmpint(memtx_writel(s, MTE + 0x838, xy(15, 3)),
+                            ==, MEMTX_OK);
+            for (unsigned y = 0; y < 4; y++) {
+                for (unsigned x = 0; x < 4; x++) {
+                    g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                                    ==, physical);
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_line_first(void)
+{
+    QTestState *s = start_indexed_state();
+    Shape c = pipeline_prepare(s, 0x228, 0);
+    uint32_t expected[16];
+
+    qtest_writel(s, DE + 0x60, 0x01000020);
+    qtest_writel(s, DE + 0x80, 64);
+    qtest_writel(s, DE + 0x84, 2 * 64);
+    qtest_writel(s, DE + 0x88, 4 * 64);
+    qtest_writel(s, DE + 0x8c, 2 * 64);
+    qtest_writeq(s, DE + 0x90, UINT64_MAX);
+    qtest_writel(s, DE + 0xd0, 0x13579bdf);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            expected[y * 4 + x] = y == 2 && x >= 1 ? 0x13579bdf : c.old;
+        }
+    }
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    shape_memory(s, &c, expected);
+    qtest_quit(s);
+}
+
+static void test_gl_line_pair_staging(void)
+{
+    const unsigned pairs[] = { 0xe0, 0xe8, 0xf0, 0xf8, 0x100, 0x108, 0x190 };
+    g_autofree char *dir = g_dir_make_tmp("crime-line-pairs-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    uint64_t raw[RENDER_WORDS];
+    Shape c = pipeline_prepare(s, 0x228, 0);
+    uint32_t old[16];
+
+    qtest_writel(s, DE + 0x60, 0x01000020);
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x200);
+    qtest_writel(s, DE + 0x1b0, 6);
+    qtest_writel(s, DE + 0xd0, 0x13579bff);
+    qtest_writeq(s, DE + 0x80, UINT64_C(64) << 32 | 128);
+    qtest_writeq(s, DE + 0x88, UINT64_C(256) << 32 | 128);
+    for (unsigned n = 0; n < 16; n++) {
+        old[n] = c.old;
+    }
+    for (unsigned n = 0; n < ARRAY_SIZE(pairs); n++) {
+        uint64_t value = 0xa579b3e16c28f04dULL ^ (UINT64_C(0x123456789) * n);
+
+        unsigned head = ifb_next(s);
+
+        g_assert_cmpint(memtx_writeq(s, DE + pairs[n], value), ==, MEMTX_OK);
+        ifb_head(s, (head + 1) & 63);
+        shape_memory(s, &c, old);
+        g_assert_cmphex(qtest_readq(s, CRIME + 0x10), ==, 0);
+        save_paired_renderer(s, path, raw);
+        g_assert_cmphex(raw[192 + pairs[n] / 4], ==, value >> 32);
+        g_assert_cmphex(raw[192 + pairs[n] / 4 + 1], ==, (uint32_t)value);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_line_aa_horizontal(void)
+{
+    QTestState *s = start_indexed_state();
+    Shape c = pipeline_prepare(s, 0x228, 0);
+    uint32_t expected[16];
+
+    qtest_writel(s, DE + 0x60, 0x01000000);
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x1200);
+    qtest_writel(s, DE + 0x1b0, 6);
+    qtest_writel(s, DE + 0x80, 0);
+    qtest_writel(s, DE + 0x84, 64);
+    qtest_writel(s, DE + 0x88, 3 * 64);
+    qtest_writel(s, DE + 0x8c, 64);
+    qtest_writel(s, DE + 0xd0, 0x13579bff);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            unsigned alpha = x == 0 || x == 3 ? 127 : 254;
+
+            if (y != 1) {
+                alpha = x == 0 || x == 3 ? 63 : 127;
+            }
+            expected[4 * y + x] = y < 3 ?
+                c.old ^ (0x13579b00 | alpha) : c.old;
+        }
+    }
+    g_assert_cmpint(memtx_writeq(s, DE + 0x990,
+                                0x0000400000002020ULL), ==, MEMTX_OK);
+    shape_memory(s, &c, expected);
+    qtest_quit(s);
+}
+
+
+static void gl_line_vertices(QTestState *s, const int a[2], const int b[2],
+                                int ox, int oy, uint32_t prefix)
+{
+    const int *vertices[2] = { a, b };
+    const int origins[2] = { ox, oy };
+
+    qtest_writel(s, DE + 0x58, xy((uint16_t)ox, (uint16_t)oy));
+    for (unsigned v = 0; v < 2; v++) {
+        uint32_t raw[2];
+
+        for (unsigned axis = 0; axis < 2; axis++) {
+            int field = vertices[v][axis] - 64 * origins[axis];
+
+            g_assert_cmpint(field, >=, 0);
+            g_assert_cmpint(field, <=, 0x7ffff);
+            raw[axis] = prefix + field;
+        }
+        qtest_writeq(s, DE + 0x80 + 8 * v, (uint64_t)raw[0] << 32 | raw[1]);
+    }
+}
+
+static void test_gl_line_nonaa_vectors(void)
+{
+    const uint32_t prefixes[] = { 0, 0x00800000, 0x48000000 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(gl_nonaa_vectors); n++) {
+        const GLNonAAVector *v = &gl_nonaa_vectors[n];
+        Shape c = pipeline_prepare(s, 0x228, n % 3);
+        uint32_t expected[256];
+
+        c.width = c.height = 16;
+        map_region(s, c.bank, 4, 0, 0, 15, 15);
+        shape_memory(s, &c, NULL);
+        gl_line_vertices(s, v->a, v->b, -4096, -4096, prefixes[n % 3]);
+        qtest_writel(s, DE + 0x60, 0x01000000 | v->halfwidth |
+                    (n % 4) << 16 | (n & 1) << 18);
+        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x200);
+        qtest_writel(s, DE + 0x1b0, 6);
+        qtest_writel(s, DE + 0xd0, 0x13579bdf);
+        qtest_writeq(s, DE + 0x190, UINT64_MAX);
+        qtest_writeq(s, DE + 0x90, UINT64_MAX);
+        qtest_writel(s, DE + 0x50, UINT32_MAX);
+        for (unsigned y = 0; y < 16; y++) {
+            for (unsigned x = 0; x < 16; x++) {
+                expected[16 * y + x] = v->rows[y] & (1U << x) ?
+                                      c.old ^ 0x13579bdf : c.old;
+            }
+        }
+        g_test_message("non-AA vector %u, H=%u", n, v->halfwidth);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+}
+
+static QTestState *gl_line_numeric_start(void)
+{
+    return start_profile_ram("legacy-software", false, true, false,
+        "-device sgi-crime-test-fixture,id=inject,crime=/machine/peripheral/crime");
+}
+
+static void gl_line_aa_program(QTestState *s, const int a[2], const int b[2],
+                                  int ox, int oy, int slope, unsigned ideal,
+                                  unsigned cs, unsigned ce)
+{
+    setup(s, 0x228, false);
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x1000);
+    qtest_writel(s, DE + 0x60, 0x01000020);
+    gl_line_vertices(s, a, b, ox, oy, 0);
+    qtest_writeq(s, DE + 0x190,
+        (uint64_t)((uint32_t)(uint16_t)slope << 16 | ideal) << 32 |
+        (cs << 8) | ce);
+}
+
+static uint64_t gl_line_area_bits(QTestState *s, int x, int y)
+{
+    uint64_t point = (uint64_t)(uint32_t)x << 32 | (uint32_t)y;
+    g_autoptr(QDict) reply = NULL;
+
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+        "'property':'line-sample','value':%" PRIu64 "}}", point);
+    reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':'/machine/peripheral/inject',"
+        "'property':'line-area'}}");
+    g_assert_true(qdict_haskey(reply, "return"));
+    return qdict_get_int(reply, "return");
+}
+
+static unsigned gl_line_area_code(uint64_t bits)
+{
+    double area;
+
+    memcpy(&area, &bits, sizeof(area));
+    return MIN(255, (unsigned)(256 * area));
+}
+
+static void test_gl_line_precision(void)
+{
+    QTestState *s = gl_line_numeric_start();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(gl_aa_vectors); n++) {
+        const GLAAVector *v = &gl_aa_vectors[n];
+        uint64_t bits;
+        double area;
+        unsigned encoded;
+
+        gl_line_aa_program(s, v->a, v->b, v->origin[0], v->origin[1],
+                           v->slope, v->ideal, v->cs, v->ce);
+        bits = gl_line_area_bits(s, v->x, v->y);
+        memcpy(&area, &bits, sizeof(area));
+        encoded = gl_line_area_code(bits);
+        g_test_message("AA sample %u at (%d,%d), q14=%d, %.17g vs %.17g",
+                       n, v->x, v->y, v->slope, area, v->area);
+        g_assert_cmpfloat(fabs(area - v->area), <=, 1.0 / 4294967296.0);
+        if (v->boundary) {
+            g_assert_cmpint(abs((int)encoded - (int)v->encoded), <=, 1);
+        } else {
+            g_assert_cmpuint(encoded, ==, v->encoded);
+        }
+    }
+    qtest_quit(s);
+}
+
+static int64_t gl_line_reference_floor(int64_t n, int64_t d)
+{
+    return n < 0 ? -((-n + d - 1) / d) : n / d;
+}
+
+static void test_gl_line_canonical(void)
+{
+    const int translations[][2] = { {1, 3}, {-32768, -32768}, {32767, 32767} };
+    QTestState *s = gl_line_numeric_start();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(gl_aa_vectors); n++) {
+        const GLAAVector *v = &gl_aa_vectors[n];
+        unsigned major = abs(v->b[0] - v->a[0]) >=
+                         abs(v->b[1] - v->a[1]) ? 0 : 1;
+        unsigned minor = 1 - major;
+        int d = v->b[major] > v->a[major] ? 1 : -1;
+        int64_t k0 = d * gl_line_reference_floor(d * v->a[major] + 32, 64);
+        int64_t reverse_k0 = -d * gl_line_reference_floor(
+            -d * v->b[major] + 32, 64);
+        unsigned reverse_ideal =
+            (v->ideal + v->slope * (reverse_k0 - k0)) & 65535;
+        uint64_t bits;
+
+        gl_line_aa_program(s, v->a, v->b, v->origin[0], v->origin[1],
+                           v->slope, v->ideal, v->cs, v->ce);
+        bits = gl_line_area_bits(s, v->x, v->y);
+        gl_line_aa_program(s, v->b, v->a, v->origin[0], v->origin[1],
+                           v->slope, reverse_ideal, v->ce, v->cs);
+        g_test_message("canonical AA sample %u", n);
+        g_assert_cmphex(gl_line_area_bits(s, v->x, v->y), ==, bits);
+        {
+            const int change[2] = { -1, -3 };
+            unsigned ideal = (v->ideal - 16384 * change[minor]) & 65535;
+
+            gl_line_aa_program(s, v->a, v->b, v->origin[0] + change[0],
+                v->origin[1] + change[1], v->slope, ideal, v->cs, v->ce);
+            g_assert_cmphex(gl_line_area_bits(s, v->x, v->y), ==, bits);
+        }
+        for (unsigned t = 0; t < ARRAY_SIZE(translations); t++) {
+            int a[2], b[2], pixel[2] = { v->x, v->y };
+            int origin[2];
+
+            for (unsigned axis = 0; axis < 2; axis++) {
+                int delta = translations[t][axis] - v->origin[axis];
+
+                a[axis] = v->a[axis] + 64 * delta;
+                b[axis] = v->b[axis] + 64 * delta;
+                pixel[axis] += delta;
+                origin[axis] = translations[t][axis];
+            }
+            gl_line_aa_program(s, a, b, origin[0], origin[1], v->slope,
+                               v->ideal, v->cs, v->ce);
+            g_assert_cmphex(gl_line_area_bits(s, pixel[0], pixel[1]), ==, bits);
+        }
+        {
+            int b[2] = { v->b[0], v->b[1] };
+            const int origin[2] = { -4096, -4096 };
+            int change = origin[minor] - v->origin[minor];
+            unsigned ideal = (v->ideal - 16384 * change) & 65535;
+            uint64_t extended;
+
+            b[major] += d * 4 * 64;
+            gl_line_aa_program(s, v->a, b, origin[0], origin[1], v->slope,
+                               ideal, v->cs, v->ce);
+            extended = gl_line_area_bits(s, v->x, v->y);
+            g_assert_cmpuint(gl_line_area_code(extended), >=,
+                             gl_line_area_code(bits));
+        }
+    }
+    qtest_quit(s);
+}
+
+static uint32_t gl_line_reference_color(const int *start, const int *dx,
+                                         const int *dy, const int anchor[2],
+                                         int x, int y)
+{
+    uint32_t color = 0;
+
+    for (unsigned k = 0; k < 4; k++) {
+        int64_t n = 64LL * start[k] + (int64_t)dx[k] * (64 * x - anchor[0]) +
+                    (int64_t)dy[k] * (64 * y - anchor[1]);
+        int64_t v = gl_line_reference_floor(n, 64 * 4096);
+
+        color |= CLAMP(v, 0, 255) << (24 - 8 * k);
+    }
+    return color;
+}
+
+static void gl_line_shade_pairs(QTestState *s, const int *start,
+                                  const int *dx, const int *dy)
+{
+    const unsigned bases[] = { 0xe0, 0xe8, 0xf0, 0xf8, 0x100, 0x108 };
+    const int words[6][2] = {
+        { start[0], start[1] }, { start[2], start[3] },
+        { dx[0], dx[1] }, { dy[0], dy[1] },
+        { dx[2], dx[3] }, { dy[2], dy[3] },
+    };
+
+    for (unsigned n = 0; n < ARRAY_SIZE(bases); n++) {
+        qtest_writeq(s, DE + bases[n],
+            (uint64_t)(uint32_t)words[n][0] << 32 | (uint32_t)words[n][1]);
+    }
+}
+
+static void test_gl_line_output(gconstpointer selection)
+{
+    const unsigned modes[] = {
+        0x228, 0x218, 0x124, 0x224, 0x225, 0x226, 0x227
+    };
+    const unsigned widths[] = { 0, 1, 16, 32, 65, 65535 };
+    const int starts[] = { 100 * 4096, 80 * 4096, 60 * 4096, 128 * 4096 };
+    const int dx[] = { 4096, -8192, 12288, -16384 };
+    const int dy[] = { 8192, 4096, -4096, -8192 };
+    unsigned mode = modes[GPOINTER_TO_UINT(selection)];
+    QTestState *s = start_indexed_state();
+
+    for (unsigned rop = 0; rop < 16; rop++) {
+        for (unsigned mask = 0; mask < 16; mask++) {
+            Shape c = pipeline_prepare(s, mode, (rop + mask) % 3);
+            int a[2] = { 32, 80 }, b[2] = { 224, 80 }, loaded[4];
+            uint32_t expected[16];
+            bool transpose = mask & 2, smooth = mask & 4, reverse = rop & 4;
+            unsigned draw = 0x411680 | mask << 3 | (rop & 1) << 8 |
+                            (smooth ? 0x10000 : 0) | (mask & 1 ? 0x800 : 0);
+            unsigned function = rop & 1 ? 0x45 : 0x89;
+            uint32_t plane = mask & 8 ? 0xa579b3e1 : UINT32_MAX;
+
+            /* The analytic coverage rectangle is [.5,3.5] by [.25,2.25]. */
+            draw &= ~0x10000U;
+            if (smooth) {
+                draw |= 0x10000;
+            }
+            if (transpose) {
+                a[0] = 80;
+                a[1] = 32;
+                b[0] = 80;
+                b[1] = 224;
+            }
+            for (unsigned k = 0; k < 4; k++) {
+                loaded[k] = starts[k] + (reverse ?
+                    dx[k] * (b[0] - a[0]) / 64 +
+                    dy[k] * (b[1] - a[1]) / 64 : 0);
+            }
+            if (rop & 1) {
+                gl_line_shade_pairs(s, loaded, dx, dy);
+            } else {
+                pipeline_shade(s, loaded, dx, dy);
+            }
+            gl_line_vertices(s, reverse ? b : a, reverse ? a : b,
+                             -4096, -4096, 0x48000000);
+            qtest_writel(s, DE + 0x60, 0x01000000 | widths[mask % 6] |
+                        (rop % 4) << 16 | (mask & 1) << 18);
+            qtest_writel(s, DE + 0x18, draw);
+            qtest_writel(s, DE + 0xd0, 0x13579b80);
+            qtest_writel(s, DE + 0x1a0, 0x9b2371d6);
+            qtest_writel(s, DE + 0x1a8, function);
+            qtest_writel(s, DE + 0x1b0, rop);
+            qtest_writel(s, DE + 0x1b8, plane);
+            qtest_writel(s, DE + 0x198, 0x164);
+            qtest_writeq(s, DE + 0x90, UINT64_MAX);
+            qtest_writel(s, DE + 0x50, UINT32_MAX);
+            qtest_writeq(s, DE + 0x190, 0x0000500000004040ULL);
+            for (unsigned y = 0; y < 4; y++) {
+                for (unsigned x = 0; x < 4; x++) {
+                    unsigned major = transpose ? y : x;
+                    unsigned minor = transpose ? x : y;
+                    unsigned coverage =
+                        minor == 0 ? 64 : minor == 1 ? 255 : 192;
+                    uint32_t source = smooth ? gl_line_reference_color(
+                        starts, dx, dy, a, x, y) : 0x13579b80;
+
+                    source = (source & 0xffffff00U) |
+                             (source & 255) * coverage / 256;
+                    expected[4 * y + x] =
+                        major >= 1 && major <= 3 && minor < 3 &&
+                        (!(draw & 0x800) || (source & 255) < 100) ?
+                        pipeline_reference(mode, source, c.old, 0x9b2371d6,
+                            function, draw, rop, plane, x, y) : c.old;
+                }
+            }
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            shape_memory(s, &c, expected);
+        }
+    }
+    /* Coverage preserves transparent source-over identity. */
+    {
+        Shape c = pipeline_prepare(s, mode, 0);
+        const int a[] = { 32, 80 }, b[] = { 224, 80 };
+        uint32_t expected[16];
+
+        gl_line_vertices(s, a, b, 0, 0, 0);
+        qtest_writel(s, DE + 0x60, 0x01000000);
+        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x1500);
+        qtest_writel(s, DE + 0xd0, 0x3579b100);
+        qtest_writel(s, DE + 0x1a8, 0x45);
+        qtest_writeq(s, DE + 0x190, 0x0000500000004040ULL);
+        for (unsigned i = 0; i < 16; i++) {
+            expected[i] = c.old;
+        }
+        for (unsigned repeat = 0; repeat < 2; repeat++) {
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            shape_memory(s, &c, expected);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_line_alpha_edges(void)
+{
+    QTestState *s = start_indexed_state();
+    const int a[] = { 0, 64 }, b[] = { 192, 64 };
+    Shape c = pipeline_prepare(s, 0x228, 0);
+
+    gl_line_vertices(s, a, b, 0, 0, 0);
+    qtest_writel(s, DE + 0x60, 0x01000000);
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x1a00);
+    qtest_writel(s, DE + 0x1b0, 6);
+    qtest_writel(s, DE + 0xd0, 0x13579b80);
+    qtest_writel(s, DE + 0x198, 0x141);
+    qtest_writeq(s, DE + 0x190, 0x0000400000002020ULL);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    g_assert_cmphex(pixel_read(s, pixel_address(0, 0, 1, 4), 4),
+                    ==, c.old ^ 0x13579b40);
+    g_assert_cmphex(pixel_read(s, pixel_address(0, 1, 1, 4), 4), ==, c.old);
+    /* A computed positive area may encode q=0 and still performs the ROP. */
+    c = pipeline_prepare(s, 0x228, 0);
+    gl_line_vertices(s, a, b, 0, 0, 0);
+    qtest_writel(s, DE + 0x60, 0x01000000);
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x1200);
+    qtest_writel(s, DE + 0x1b0, 6);
+    qtest_writel(s, DE + 0xd0, 0x13579bff);
+    qtest_writeq(s, DE + 0x190, 0x00005fff00002020ULL);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    g_assert_cmphex(pixel_read(s, pixel_address(0, 1, 0, 4), 4),
+                    ==, c.old ^ 0x13579b00);
+    qtest_quit(s);
+}
+
+static Shape gl_line_prepare(QTestState *s, bool aa)
+{
+    Shape c = pipeline_prepare(s, 0x228, 0);
+    const int a[] = { 0, 64 }, b[] = { 192, 64 };
+
+    gl_line_vertices(s, a, b, 0, 0, 0);
+    qtest_writel(s, DE + 0x60, 0x01000020);
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x200 | (aa ? 0x1000 : 0));
+    qtest_writel(s, DE + 0x1b0, 6);
+    qtest_writel(s, DE + 0xd0, 0x13579bff);
+    qtest_writeq(s, DE + 0x190, 0x0000400000002020ULL);
+    return c;
+}
+
+static void test_gl_line_pairs_atomic(void)
+{
+    const unsigned pairs[] = { 0xe0, 0xe8, 0xf0, 0xf8, 0x100, 0x108, 0x190 };
+    const uint64_t invalid[] = {
+        0x4001400000002020ULL, 0xbfff400000002020ULL,
+        0x0000400000000020ULL, 0x0000400000002000ULL,
+        0x0000400000004120ULL, 0x0000400000002041ULL,
+        0x000040000000a020ULL,
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-pair-atomic-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    uint64_t value;
+
+    for (unsigned n = 0; n < ARRAY_SIZE(pairs); n++) {
+        Shape c = gl_line_prepare(s, true);
+
+        for (unsigned width = 1; width <= 2; width *= 2) {
+            pipeline_failure(s, &c, path, DE + pairs[n], 0, width);
+            pipeline_failure(s, &c, path, DE + 0x800 + pairs[n], 0, width);
+        }
+        for (unsigned delta = 1; delta < 8; delta++) {
+            pipeline_failure(s, &c, path, DE + pairs[n] + delta,
+                             UINT64_MAX, 8);
+            pipeline_failure(s, &c, path, DE + 0x800 + pairs[n] + delta,
+                             UINT64_MAX, 8);
+        }
+        if (pairs[n] != 0x190) {
+            pipeline_failure(s, &c, path, DE + 0x800 + pairs[n],
+                             UINT64_MAX, 8);
+        }
+        for (unsigned width = 4; width <= 8; width *= 2) {
+            g_assert_cmpint(memtx_read(s, DE + pairs[n], &value, width),
+                            !=, MEMTX_OK);
+            g_assert_cmpint(memtx_read(s, DE + 0x800 + pairs[n], &value, width),
+                            !=, MEMTX_OK);
+        }
+    }
+    for (unsigned n = 0; n < ARRAY_SIZE(invalid); n++) {
+        for (unsigned empty = 0; empty < 2; empty++) {
+            Shape c = gl_line_prepare(s, true);
+
+            if (empty) {
+                qtest_writeq(s, DE + 0x88, 64);
+                qtest_writel(s, DE + 0x18, 0x401000);
+            }
+            pipeline_failure(s, &c, path, DE + 0x990, invalid[n], 8);
+        }
+    }
+    for (unsigned nonaa = 0; nonaa < 2; nonaa++) {
+        for (unsigned late = 0; late < 2; late++) {
+            Shape c = gl_line_prepare(s, !nonaa);
+            const int a[] = { 16, 64 }, b[] = { 272, 64 };
+            int starts[4], dx[4], dy[4] = { 0, 0, 0, 0 };
+
+            gl_line_vertices(s, a, b, 0, 0, 0);
+            qtest_writel(s, DE + 0x18,
+                0x510278 | (nonaa ? 0 : 0x1000));
+            qtest_writeq(s, DE + 0x48, bounds(1, 0, 2, 4));
+            for (unsigned k = 0; k < 4; k++) {
+                starts[k] = late ? (1 << 20) - 2 : -(1 << 20);
+                dx[k] = 1;
+            }
+            pipeline_shade(s, starts, dx, dy);
+            pipeline_failure(s, &c, path, DE + 0x990,
+                             0x0000400000002020ULL, 8);
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_line_failures(void)
+{
+    const unsigned unsupported[] = {
+        1, 2, 4, 0x2000, 0x4000, 0x8000, 0x80000, 0x200000,
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-line-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(unsupported); n++) {
+        Shape c = gl_line_prepare(s, true);
+
+        qtest_writel(s, DE + 0x18, 0x401000 | unsupported[n]);
+        pipeline_failure(s, &c, path, DE + 0x990, 0x0000400000002020ULL, 8);
+    }
+    for (unsigned bad = 0; bad < 5; bad++) {
+        Shape c = gl_line_prepare(s, true);
+
+        switch (bad) {
+        case 0:
+            qtest_writel(s, DE + 8, 0x234);
+            break;
+        case 1:
+            qtest_writel(s, DE + 0x18, 0x401478);
+            qtest_writel(s, DE + 0x1a8, 0x1000);
+            break;
+        case 2:
+            qtest_writel(s, DE + 0x18, 0x401878);
+            qtest_writel(s, DE + 0x198, 0x800);
+            break;
+        case 3:
+            qtest_writel(s, DE + 0x80, 0x7fc00000);
+            break;
+        case 4:
+            qtest_writel(s, DE + 0x60, 0x01080020);
+            break;
+        }
+        pipeline_failure(s, &c, path, DE + 0x990, 0x0000400000002020ULL, 8);
+    }
+    /* Bad final RAM mappings cannot retire the earlier line fragments. */
+    for (unsigned aa = 0; aa < 2; aa++) {
+        Shape c = gl_line_prepare(s, aa);
+        const int a[] = { 126 * 64, 127 * 64 }, b[] = { 131 * 64, 127 * 64 };
+        unsigned index = aa ? 17 : 1;
+
+        c.x = 125;
+        c.y = 125;
+        c.width = c.height = 8;
+        map_region(s, 0, 4, 125, 125, 132, 132);
+        shape_memory(s, &c, NULL);
+        gl_line_vertices(s, a, b, 0, 0, 0);
+        qtest_writeq(s, DE + 0x190, 0x0000c00000002020ULL);
+        tile(s, 0, index, 0x7fff);
+        pipeline_failure(s, &c, path, DE + 0x990, 0x0000c00000002020ULL, 8);
+    }
+    /* A one-cell packet consumes cap fractions as endpoints. */
+    {
+        Shape c = gl_line_prepare(s, true);
+        const int a[] = { 6, 64 }, b[] = { 13, 64 };
+
+        gl_line_vertices(s, a, b, 0, 0, 0);
+        pipeline_failure(s, &c, path, DE + 0x990, 0x0000400000000101ULL, 8);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_line_color_anchor(void)
+{
+    const int starts[] = { 100 * 4096, 80 * 4096, 60 * 4096, 128 * 4096 };
+    const int dx[] = { 4096, -8192, 12288, -16384 };
+    const int dy[] = { 8192, 4096, -4096, -8192 };
+    const int a[] = { 32, 80 }, b[] = { 224, 80 };
+    const unsigned caps[] = { 0x4040, 0x2020, 0x0140 };
+    const int slopes[] = { 0, 8192, -8192 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned cap = 0; cap < ARRAY_SIZE(caps); cap++) {
+        for (unsigned slope = 0; slope < ARRAY_SIZE(slopes); slope++) {
+            for (unsigned clipped = 0; clipped < 2; clipped++) {
+                Shape c = pipeline_prepare(s, 0x218, 0);
+                uint32_t expected = gl_line_reference_color(starts, dx, dy,
+                                                           a, 2, 1);
+
+                gl_line_vertices(s, a, b, -4096, -4096, 0);
+                pipeline_shade(s, starts, dx, dy);
+                qtest_writel(s, DE + 0x60, 0x01000020);
+                qtest_writel(s, DE + 0x18, 0x411078 | clipped << 20);
+                qtest_writel(s, DE + 0xd0, cap * 0x13579bdf);
+                qtest_writeq(s, DE + 0x90, UINT64_MAX);
+                qtest_writeq(s, DE + 0x48, bounds(4098, 4096, 4100, 4100));
+                qtest_writeq(s, DE + 0x190,
+                    (uint64_t)((uint32_t)(uint16_t)slopes[slope] << 16 |
+                               20480) << 32 |
+                    caps[cap]);
+                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+                g_assert_cmphex(pixel_read(s, pixel_address(0, 2, 1, 4), 4),
+                                ==, (expected & 0xffffff00U) | (c.old & 255));
+                if (clipped) {
+                    g_assert_cmphex(pixel_read(s, pixel_address(0, 1, 1, 4), 4),
+                                    ==, c.old);
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_line_migration(void)
+{
+    const unsigned pairs[] = { 0xe0, 0xe8, 0xf0, 0xf8, 0x100, 0x108 };
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-line-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *from = start(), *to = start_options("-incoming defer");
+    Shape c = gl_line_prepare(from, true);
+    uint32_t expected[16], old[16];
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+
+    for (unsigned n = 0; n < ARRAY_SIZE(pairs); n++) {
+        qtest_writeq(from, DE + pairs[n], 0xa579b3e16c28f04dULL ^ n);
+    }
+    g_assert_cmpint(memtx_writeq(from, DE + 0x990, 0x0000400000002020ULL),
+                    ==, MEMTX_OK);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            unsigned alpha = y == 1 ? (x == 0 || x == 3 ? 127 : 254) :
+                                     (x == 0 || x == 3 ? 63 : 127);
+
+            expected[4 * y + x] = y < 3 ?
+                c.old ^ (0x13579b00 | alpha) : c.old;
+            old[4 * y + x] = c.old;
+        }
+    }
+    qtest_writeq(from, DE + 0x190, 0x4001000000000000ULL);
+    save_paired_renderer(from, path, before);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    save_paired_renderer(to, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    shape_memory(to, &c, expected);
+    g_assert_cmpint(memtx_writeq(to, DE + 0x990, 0x0000400000002020ULL),
+                    ==, MEMTX_OK);
+    shape_memory(to, &c, old);
+    qtest_system_reset(to);
+    shape_memory(to, &c, old);
+    save_renderer(to, path, after);
+    for (unsigned n = 0; n < 12; n++) {
+        g_assert_cmphex(after[192 + (0xe0 + 4 * n) / 4], ==, 0);
+    }
+    g_assert_cmphex(after[192 + 0x190 / 4], ==, 0);
+    g_assert_cmphex(after[192 + 0x194 / 4], ==, 0);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(sock);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_shade_start_family(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-shade-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    Shape c = shape_default();
+
+    c.bytes = 4;
+    c.width = c.height = 4;
+    c.primitive = 0;
+    c.x0 = c.y0 = 1;
+    c.foreground = 0x1234ab67;
+    c.old = 0x89abcdef;
+    map_region(s, 0, 4, 0, 0, 3, 3);
+    for (unsigned n = 0; n < 12; n++) {
+        g_autofree uint32_t *expected = shape_reference(&c);
+
+        shape_memory(s, &c, NULL);
+        shape_stage(s, &c);
+        for (unsigned word = 0; word < 12; word++) {
+            qtest_writel(s, DE + 0xe0 + 4 * word, 0xa5000000U + word);
+        }
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                g_assert_cmphex(pixel_read(s, pixel_address(0, x, y, 4), 4),
+                                ==, c.old);
+            }
+        }
+        save_paired_renderer(s, path, before);
+        /* XOR distinguishes one execution from zero or two. */
+        g_assert_cmpint(memtx_writel(s, DE + 0x8e0 + 4 * n,
+                                    0xa50ff000U + n), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+        save_paired_renderer(s, path, after);
+        before[192 + (0xe0 + 4 * n) / 4] = 0xa50ff000U + n;
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     take_group_paths(&argc, argv);
@@ -10559,5 +13917,140 @@ int main(int argc, char **argv)
     add_case("sgi/crime/render/ifb/profiles", test_ifb_profiles);
     add_case("sgi/crime/render/ifb/invalid-stream",
              test_ifb_invalid_stream);
+    add_case("sgi/crime/render/pipeline/start", test_shade_start_family);
+    add_case("sgi/crime/render/pipeline/smooth",
+             test_pipeline_smooth);
+    add_case("sgi/crime/render/pipeline/blend-fixture",
+             test_pipeline_blend_fixture);
+    add_case("sgi/crime/render/pipeline/quantizer",
+             test_pipeline_quantizer);
+    add_data_case("sgi/crime/render/pipeline/factors/0",
+                  GUINT_TO_POINTER(0), test_pipeline_factors);
+    add_data_case("sgi/crime/render/pipeline/factors/1",
+                  GUINT_TO_POINTER(1), test_pipeline_factors);
+    add_data_case("sgi/crime/render/pipeline/factors/2",
+                  GUINT_TO_POINTER(2), test_pipeline_factors);
+    add_data_case("sgi/crime/render/pipeline/factors/3",
+                  GUINT_TO_POINTER(3), test_pipeline_factors);
+    add_data_case("sgi/crime/render/pipeline/factors/4",
+                  GUINT_TO_POINTER(4), test_pipeline_factors);
+    add_data_case("sgi/crime/render/pipeline/factors/5",
+                  GUINT_TO_POINTER(5), test_pipeline_factors);
+    add_data_case("sgi/crime/render/pipeline/identity/0",
+                  GUINT_TO_POINTER(0), test_pipeline_identity);
+    add_data_case("sgi/crime/render/pipeline/identity/1",
+                  GUINT_TO_POINTER(1), test_pipeline_identity);
+    add_data_case("sgi/crime/render/pipeline/identity/2",
+                  GUINT_TO_POINTER(2), test_pipeline_identity);
+    add_data_case("sgi/crime/render/pipeline/identity/3",
+                  GUINT_TO_POINTER(3), test_pipeline_identity);
+    add_data_case("sgi/crime/render/pipeline/identity/4",
+                  GUINT_TO_POINTER(4), test_pipeline_identity);
+    add_data_case("sgi/crime/render/pipeline/identity/5",
+                  GUINT_TO_POINTER(5), test_pipeline_identity);
+    add_data_case("sgi/crime/render/pipeline/masks/0",
+                  GUINT_TO_POINTER(0), test_pipeline_masks);
+    add_data_case("sgi/crime/render/pipeline/masks/1",
+                  GUINT_TO_POINTER(1), test_pipeline_masks);
+    add_data_case("sgi/crime/render/pipeline/masks/2",
+                  GUINT_TO_POINTER(2), test_pipeline_masks);
+    add_data_case("sgi/crime/render/pipeline/masks/3",
+                  GUINT_TO_POINTER(3), test_pipeline_masks);
+    add_data_case("sgi/crime/render/pipeline/masks/4",
+                  GUINT_TO_POINTER(4), test_pipeline_masks);
+    add_data_case("sgi/crime/render/pipeline/masks/5",
+                  GUINT_TO_POINTER(5), test_pipeline_masks);
+    add_data_case("sgi/crime/render/pipeline/masks/6",
+                  GUINT_TO_POINTER(6), test_pipeline_masks);
+    add_case("sgi/crime/render/pipeline/planes",
+             test_pipeline_planes);
+    add_case("sgi/crime/render/pipeline/shade-bounds",
+             test_pipeline_shade_bounds);
+    add_case("sgi/crime/render/pipeline/transactions",
+             test_pipeline_transactions);
+    add_case("sgi/crime/render/pipeline/late-faults",
+             test_pipeline_late_faults);
+    add_case("sgi/crime/render/pipeline/storage",
+             test_pipeline_storage);
+    add_case("sgi/crime/render/pipeline/phase",
+             test_pipeline_phase);
+    add_case("sgi/crime/render/pipeline/populated-banks",
+             test_pipeline_populated_banks);
+    add_case("sgi/crime/render/pipeline/migration",
+             test_pipeline_migration);
+    add_data_case("sgi/crime/render/pipeline/inactive-line/0",
+                  GUINT_TO_POINTER(0), test_pipeline_inactive_line_control);
+    add_data_case("sgi/crime/render/pipeline/inactive-line/1",
+                  GUINT_TO_POINTER(1), test_pipeline_inactive_line_control);
+    add_data_case("sgi/crime/render/pipeline/inactive-line/2",
+                  GUINT_TO_POINTER(2), test_pipeline_inactive_line_control);
+    add_data_case("sgi/crime/render/pipeline/inactive-line/3",
+                  GUINT_TO_POINTER(3), test_pipeline_inactive_line_control);
+    add_data_case("sgi/crime/render/pipeline/inactive-line/4",
+                  GUINT_TO_POINTER(4), test_pipeline_inactive_line_control);
+    add_data_case("sgi/crime/render/pipeline/inactive-line/5",
+                  GUINT_TO_POINTER(5), test_pipeline_inactive_line_control);
+    add_data_case("sgi/crime/render/pipeline/inactive-line/6",
+                  GUINT_TO_POINTER(6), test_pipeline_inactive_line_control);
+    add_case("sgi/crime/render/pipeline/line-control-refusals",
+             test_pipeline_line_control_refusals);
+    add_case("sgi/crime/render/pipeline/anchor-literals",
+             test_pipeline_anchor_literals);
+    add_case("sgi/crime/render/pipeline/anchor-floors",
+             test_pipeline_anchor_floors);
+    add_case("sgi/crime/render/pipeline/anchor-invariants",
+             test_pipeline_anchor_invariants);
+    add_case("sgi/crime/render/sz/depth-fixture", test_sz_depth_fixture);
+    add_case("sgi/crime/render/sz/comparisons", test_sz_comparisons);
+    add_case("sgi/crime/render/sz/stencil", test_sz_stencil);
+    add_case("sgi/crime/render/sz/all-references", test_sz_all_references);
+    add_case("sgi/crime/render/sz/window", test_sz_window);
+    add_data_case("sgi/crime/render/sz/tags/5",
+                  GUINT_TO_POINTER(5), test_sz_tags);
+    add_data_case("sgi/crime/render/sz/tags/7",
+                  GUINT_TO_POINTER(7), test_sz_tags);
+    add_case("sgi/crime/render/sz/gl-rectangles", test_sz_gl_rectangles);
+    add_case("sgi/crime/render/sz/transport", test_sz_transport);
+    add_case("sgi/crime/render/sz/planes", test_sz_planes);
+    add_case("sgi/crime/render/sz/fragment-order", test_sz_fragment_order);
+    add_case("sgi/crime/render/sz/aliases", test_sz_aliases);
+    add_case("sgi/crime/render/sz/rect-controls", test_sz_rect_controls);
+    add_case("sgi/crime/render/sz/start-forms", test_sz_start_forms);
+    add_case("sgi/crime/render/sz/widths-reserved", test_sz_widths_reserved);
+    add_case("sgi/crime/render/sz/late-faults", test_sz_late_faults);
+    add_case("sgi/crime/render/sz/migration", test_sz_migration);
+    add_case("sgi/crime/render/sz/rect-clipping", test_sz_rect_clipping);
+    add_case("sgi/crime/render/sz/populated-banks", test_sz_populated_banks);
+    add_case("sgi/crime/render/sz/tag-literals", test_sz_tag_literals);
+    add_case("sgi/crime/render/gl-line/first", test_gl_line_first);
+    add_case("sgi/crime/render/gl-line/pair-staging",
+             test_gl_line_pair_staging);
+    add_case("sgi/crime/render/gl-line/aa-horizontal",
+             test_gl_line_aa_horizontal);
+    add_case("sgi/crime/render/gl-line/nonaa-vectors",
+             test_gl_line_nonaa_vectors);
+    add_case("sgi/crime/render/gl-line/precision", test_gl_line_precision);
+    add_case("sgi/crime/render/gl-line/canonical", test_gl_line_canonical);
+    add_data_case("sgi/crime/render/gl-line/output/0",
+                  GUINT_TO_POINTER(0), test_gl_line_output);
+    add_data_case("sgi/crime/render/gl-line/output/1",
+                  GUINT_TO_POINTER(1), test_gl_line_output);
+    add_data_case("sgi/crime/render/gl-line/output/2",
+                  GUINT_TO_POINTER(2), test_gl_line_output);
+    add_data_case("sgi/crime/render/gl-line/output/3",
+                  GUINT_TO_POINTER(3), test_gl_line_output);
+    add_data_case("sgi/crime/render/gl-line/output/4",
+                  GUINT_TO_POINTER(4), test_gl_line_output);
+    add_data_case("sgi/crime/render/gl-line/output/5",
+                  GUINT_TO_POINTER(5), test_gl_line_output);
+    add_data_case("sgi/crime/render/gl-line/output/6",
+                  GUINT_TO_POINTER(6), test_gl_line_output);
+    add_case("sgi/crime/render/gl-line/alpha-edges", test_gl_line_alpha_edges);
+    add_case("sgi/crime/render/gl-line/pairs-atomic",
+             test_gl_line_pairs_atomic);
+    add_case("sgi/crime/render/gl-line/failures", test_gl_line_failures);
+    add_case("sgi/crime/render/gl-line/color-anchor",
+             test_gl_line_color_anchor);
+    add_case("sgi/crime/render/gl-line/migration", test_gl_line_migration);
     return g_test_run();
 }

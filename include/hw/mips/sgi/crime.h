@@ -117,4 +117,7 @@ struct SGICrimeState {
     bool bank_migration_marker_registered;
 };
 
+/* Pure qtest observation of the selected coverage approximation. */
+bool sgi_crime_line_coverage(SGICrimeState *s, int x, int y, uint64_t *bits);
+
 #endif

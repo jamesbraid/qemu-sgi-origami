@@ -15,6 +15,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(CrimeTestState, SGI_CRIME_TEST)
 struct CrimeTestState {
     DeviceState parent_obj;
     SGICrimeState *crime;
+    uint64_t line_sample;
 };
 
 static SGICrimeState *crime_test_target(Object *obj, Error **errp)
@@ -82,6 +83,46 @@ invalid:
     error_setg(errp, "%s exceeds the admitted latch fields", name);
 }
 
+static void crime_test_line_get(Object *obj, Visitor *v, const char *name,
+                                 void *opaque, Error **errp)
+{
+    CrimeTestState *s = SGI_CRIME_TEST(obj);
+    SGICrimeState *crime = crime_test_target(obj, errp);
+    uint64_t value = s->line_sample;
+
+    if (!crime) {
+        return;
+    }
+    if (!strcmp(name, "line-area") &&
+        !sgi_crime_line_coverage(crime, (int32_t)(s->line_sample >> 32),
+                                (int32_t)s->line_sample, &value)) {
+        error_setg(errp, "invalid native AA line numerical sample");
+        return;
+    }
+    visit_type_uint64(v, name, &value, errp);
+}
+
+static void crime_test_line_set(Object *obj, Visitor *v, const char *name,
+                                 void *opaque, Error **errp)
+{
+    CrimeTestState *s = SGI_CRIME_TEST(obj);
+    uint64_t value;
+    int32_t x, y;
+
+    if (!crime_test_target(obj, errp) ||
+        !visit_type_uint64(v, name, &value, errp)) {
+        return;
+    }
+    x = value >> 32;
+    y = value;
+    if (x <= -(1 << 18) || x >= (1 << 18) ||
+        y <= -(1 << 18) || y >= (1 << 18)) {
+        error_setg(errp, "native AA line sample exceeds the numerical domain");
+        return;
+    }
+    s->line_sample = value;
+}
+
 static void crime_test_realize(DeviceState *dev, Error **errp)
 {
     CrimeTestState *s = SGI_CRIME_TEST(dev);
@@ -121,6 +162,10 @@ static void crime_test_class_init(ObjectClass *oc, const void *data)
     dc->vmsd = &crime_test_vmstate;
     dc->desc = "Synthetic CRIME error latch fixture";
     device_class_set_props(dc, crime_test_properties);
+    object_class_property_add(oc, "line-sample", "uint64", crime_test_line_get,
+                               crime_test_line_set, NULL, NULL);
+    object_class_property_add(oc, "line-area", "uint64", crime_test_line_get,
+                               NULL, NULL, NULL);
     for (unsigned i = 0; i < ARRAY_SIZE(properties); i++) {
         object_class_property_add(oc, properties[i], "uint64", crime_test_get,
                                    crime_test_set, NULL, NULL);
