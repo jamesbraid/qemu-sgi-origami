@@ -4,6 +4,9 @@
  * selects the reviewed functional policy in Origami's o2-gbe-platform.md.
  * Pipeline phase, byte placement, FIFO reset and PLL validity are model
  * approximations. FIFO reset policy is in o2-gbe-dma-reset.md.
+ * The revision property selects only the CTRLSTAT revision field and the
+ * color-map FIFO count encoding; revision 2's added registers and its
+ * clock reference remain unsupported.
  */
 #include "qemu/osdep.h"
 #include "hw/core/resettable.h"
@@ -49,6 +52,7 @@ struct SGIO2GBEState {
     SGIScanout scanout;
     bool functional;
     int dma_view;
+    uint8_t revision;
     uint8_t model_config;
     uint64_t reference_hz, ttl_hz, differential_hz;
     uint32_t ctrl, dot, sysclk;
@@ -804,7 +808,16 @@ static uint64_t read_reg(void *opaque, hwaddr addr, unsigned size)
     }
     case 0xc: return s->sysclk;
     case 0x14: return 0x666;
-    case 0x58000: return MIN(s->palette_pending, 63);
+    case 0x58000:
+        /*
+         * Revision 1 reports occupancy, which resets to zero. From revision
+         * 2 the field counts free entries of the 64-entry FIFO, saturated
+         * to six bits, which matches the GBE specification's prose; the
+         * revision split is inferred from the IRIX 6.5.30 X server, which
+         * accepts zero only below revision 2. Writes drain synchronously.
+         */
+        return s->revision < 2 ? MIN(s->palette_pending, 63) :
+                                 MIN(64 - s->palette_pending, 63);
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-o2-gbe: unsupported access read at 0x%06"
@@ -943,7 +956,7 @@ static void write_reg(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         if ((v >> 28 & 3) == 2) {
             unsupported("clock source 2");
         }
-        s->ctrl = (v & 0x3fffffc0u) | 1;
+        s->ctrl = (v & 0x3fffffc0u) | s->revision;
         aux_outputs(s);
         break;
     case 4:
@@ -1022,7 +1035,7 @@ static void reset_enter(Object *obj, ResetType type)
 {
     SGIO2GBEState *s = SGI_O2_GBE(obj);
     timer_del(s->timer);
-    s->ctrl = 0x03ffffc1;
+    s->ctrl = 0x03ffffc0 | s->revision;
     s->dot = 0;
     pll_status(s);
     s->sysclk = 8;
@@ -1159,7 +1172,12 @@ static const VMStateDescription vmstate_gbe = {
 static void realize(DeviceState *dev, Error **errp)
 {
     SGIO2GBEState *s = SGI_O2_GBE(dev);
-    s->model_config = s->functional | s->dma_view << 1;
+    if (s->revision < 1 || s->revision > 2) {
+        error_setg(errp, "GBE revision must be 1 or 2");
+        return;
+    }
+    s->model_config = s->functional | s->dma_view << 1 |
+                      (s->revision - 1) << 2;
     if (s->reference_hz > 1000000000 || !s->reference_hz ||
         s->ttl_hz > 1000000000 || s->differential_hz > 1000000000) {
         error_setg(errp, "GBE clock inputs must be at most 1 GHz, with a "
@@ -1208,6 +1226,7 @@ static const PropertyInfo prop_dma_view = {
 static const Property properties[] = {
     DEFINE_PROP("dma-view", SGIO2GBEState, dma_view, prop_dma_view, int),
     DEFINE_PROP_BOOL("functional-display", SGIO2GBEState, functional, false),
+    DEFINE_PROP_UINT8("revision", SGIO2GBEState, revision, 1),
     DEFINE_PROP_UINT64("reference-hz", SGIO2GBEState, reference_hz, 20000000),
     DEFINE_PROP_UINT64("external-ttl-hz", SGIO2GBEState, ttl_hz, 0),
     DEFINE_PROP_UINT64("external-differential-hz", SGIO2GBEState,
