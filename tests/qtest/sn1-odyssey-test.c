@@ -1947,6 +1947,46 @@ static void test_command_fifo_setup_registers(void)
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
+/*
+ * Program-sequencer registers: classes 0x20 to 0x35 in the program word
+ * shape (bits 31:24 the register, bit 15 set, the value in bits 9:0 and
+ * bit 23). The kernel writes 0x26 = 127 and 0x2e = 896 at set-up, the GL
+ * library 0x22 to 0x25 as its context default; none of them is a command
+ * the model fails to recognise, and the stream stays aligned after them.
+ */
+static void test_command_fifo_sequencer_registers(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    const uint32_t unhandled[] = {
+        0x20, 0x21, 0x24, 0x26, 0x2b, 0x2d, 0x2e, 0x2f, 0x30,
+    };
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-seq-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    cmd_push(qts, 0x2600807f);
+    cmd_push(qts, 0x2e008380);
+    for (unsigned i = 0; i < ARRAY_SIZE(unhandled); i++) {
+        cmd_push(qts, unhandled[i] << 24 | 0x00808000 | i);
+    }
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_null(strstr(log, "command FIFO word"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 static void test_reset_restores_the_documented_values(void)
 {
     QTestState *qts = board_start("");
@@ -22558,6 +22598,8 @@ int main(int argc, char **argv)
                    test_unmodeled_offsets_are_visible);
     add_fresh_case("sn1/odyssey/command-fifo-setup-registers",
                    test_command_fifo_setup_registers);
+    add_fresh_case("sn1/odyssey/command-fifo-sequencer-registers",
+                   test_command_fifo_sequencer_registers);
     add_case("sn1/odyssey/command-fifo-selftest",
              test_command_fifo_selftest);
     add_fresh_case("sn1/odyssey/reset-restores-documented-values",
