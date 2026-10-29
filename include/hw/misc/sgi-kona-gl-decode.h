@@ -157,6 +157,12 @@ bool sgi_kona_gl_texture_format_storage(uint32_t index, uint32_t *storage);
 void sgi_kona_gl_words_or_bytes(uint32_t *words, uint64_t at,
                                 const uint8_t *bytes, size_t n);
 
+/* The widest pixel, CMYKA as five 32-bit components, in words. */
+#define SGI_KONA_GL_PIXEL_WORDS_MAX 5
+
+/* False for the CMYK formats, whose conversion to colour is unknown. */
+bool sgi_kona_gl_pixel_colour_format(uint32_t format);
+
 /* Native scalar types 0..6; zero bytes for an unknown format or type. */
 uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type);
 uint32_t sgi_kona_gl_native_pixel_bytes(uint32_t format, uint32_t type);

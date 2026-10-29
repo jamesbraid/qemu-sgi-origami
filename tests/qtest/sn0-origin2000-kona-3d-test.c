@@ -6419,19 +6419,21 @@ static void test_texture_ordinary_source(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
     static const unsigned formats[] = { 0, 1, 2, 3, 6, 7, 9, 10, 8 };
+    /* Codes 9 and 10 are CMYK and CMYKA, framed but never converted. */
     static const uint32_t expected[] = {
         0x800000ff, 0x008000ff, 0x000080ff, 0x00000080,
-        0x808080ff, 0x80808040, 0x204080ff, 0x20408010, 0x10204080,
+        0x808080ff, 0x80808040, 0, 0, 0x10204080,
     };
     unsigned index = mode < 18 ? mode % 9 : 1;
     unsigned format = formats[index];
-    unsigned components = format == 7 ? 2 : format == 9 ? 3 :
-                          (format == 8 || format == 10) ? 4 : 1;
+    bool cmyk = format == 9 || format == 10;
+    unsigned components = format == 7 ? 2 : format == 10 ? 5 :
+                          (format == 8 || format == 9) ? 4 : 1;
     bool dma = (mode >= 9 && mode < 18) || mode == 19;
     bool migrate = mode == 18 || mode == 19;
     uint32_t pixel = mode == 20 ? 0 : expected[index];
     unsigned bytes = 4 * components;
-    uint8_t source[20] = { 0 };
+    uint8_t source[24] = { 0 };
     uint32_t h[20];
     QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
     g_autofree char *dir = NULL, *uri = NULL;
@@ -6484,7 +6486,7 @@ static void test_texture_ordinary_source(gconstpointer opaque)
         assert_texture_pixel(s, k % 2, k / 2, pixel);
     }
     texture_native_format_bind(s, 37, 0, 0, 0);
-    assert_texture_pixel(s, 0, 0, mode == 20 ? 0 : pixel | 0xff);
+    assert_texture_pixel(s, 0, 0, mode == 20 || cmyk ? 0 : pixel | 0xff);
     texture_native_format_bind(s, 41, 0, 0, 0);
     assert_texture_pixel(s, 0, 0, pixel);
     texture_native_format_bind(s, 0, 0, 0, 0);
@@ -12132,6 +12134,56 @@ static void test_packed_pixel_read(gconstpointer opaque)
     }
     g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
     qtest_quit(s);
+}
+
+/*
+ * Native format codes 9 and 10 are the client library's 0x800c and 0x800d,
+ * CMYK and CMYKA in the public registry, four and five components in the
+ * library's components table. DrawPixels in either takes exactly that many
+ * bytes a pixel off the stream and draws nothing, since how the pipe turns
+ * them into colour is unknown; ReadPixels in either is refused. A size of
+ * three or four components, as BGR and BGRA would have, leaves words over
+ * that misframe the stream.
+ */
+static void test_cmyk_pixels(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+    g_autofree Expected *e = g_new(Expected, 1);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    for (unsigned format = 9; format <= 10; format++) {
+        unsigned components = format == 9 ? 4 : 5;
+        /* Two unsigned-byte pixels, each word a would-be selector. */
+        unsigned words = DIV_ROUND_UP(2 * components, 4);
+
+        kona_command(s, 0x3a, (uint32_t[]) { 2, 1, format, 1, 0, 0, 0, 0 },
+                     8);
+        for (unsigned k = 0; k < words; k++) {
+            qtest_writel(s, REG_COMMAND, 0x8c8c8c8c);
+        }
+        kona_command(s, 0x71, (uint32_t[]) { 0 }, 1);
+        prepare_refused_reply(s);
+        kona_command(s, 0x39,
+                     (uint32_t[]) { 0, 0, 2, 1, format, 1, 0 }, 7);
+        assert_read_answered_zero(s);
+    }
+    expected_clear(e, 0);
+    assert_window_matches(s, e);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_cmpuint(count_occurrences(found, "token 0x71 args 0x0 0x0 0x0 "
+                                       "argc 1\n"), ==, 2);
+    g_assert_nonnull(strstr(found, "glReadPixels of CMYK format 9 is not "
+                                   "modelled"));
+    g_assert_nonnull(strstr(found, "glReadPixels of CMYK format 10 is not "
+                                    "modelled"));
 }
 
 static void test_reordered_pixels(gconstpointer opaque)
@@ -19877,9 +19929,9 @@ int main(int argc, char **argv)
     }
     static const char *texture_source_cases[] = {
         "red-pio", "green-pio", "blue-pio", "alpha-pio", "luminance-pio",
-        "luminance-alpha-pio", "bgr-pio", "bgra-pio", "abgr-pio", "red-dma",
+        "luminance-alpha-pio", "cmyk-pio", "cmyka-pio", "abgr-pio", "red-dma",
         "green-dma", "blue-dma", "alpha-dma", "luminance-dma",
-        "luminance-alpha-dma", "bgr-dma", "bgra-dma", "abgr-dma",
+        "luminance-alpha-dma", "cmyk-dma", "cmyka-dma", "abgr-dma",
         "partial-pio-migrates", "pending-dma-migrates",
         "partial-pio-context-aborted",
     };
@@ -20766,9 +20818,9 @@ int main(int argc, char **argv)
     };
     static const char *read_dma_formats[] = {
         "red", "green", "blue", "alpha", "rgb", "rgba", "luminance",
-        "luminance-alpha", "bgr", "bgra",
+        "luminance-alpha",
     };
-    for (unsigned mode = 0; mode < 70; mode++) {
+    for (unsigned mode = 0; mode < 7 * ARRAY_SIZE(read_dma_formats); mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/read-dma-typed/%s-%s",
             read_dma_formats[mode / 7], colour_types[mode % 7]);
@@ -20995,6 +21047,9 @@ int main(int argc, char **argv)
         "bgra-4444", "bgra-5551", "bgra-8888", "bgra-1010102",
     };
     for (unsigned mode = 0; mode < 36; mode++) {
+        if (mode % 9 >= 5) {
+            continue;   /* Code 10 is CMYKA, not BGRA: test_cmyk_pixels(). */
+        }
         g_autofree char *ingress = g_strdup_printf(
             "sn0/origin2000/kona-3d/packed-ingress/%s-%s%s",
             packed_names[mode % 9], (mode / 9) & 1 ? "dma" : "pio",
@@ -21013,26 +21068,15 @@ int main(int argc, char **argv)
         "bgr-pio", "bgra-pio", "bgr-ushort-swapped-dma", "bgra-float-dma",
         "abgr-pio", "abgr-ushort-swapped-dma", "abgr-float-dma",
     };
-    for (unsigned k = 0; k < ARRAY_SIZE(reordered_pixels_cases); k++) {
+    /* Codes 9 and 10 are CMYK and CMYKA: only the ABGR cases remain. */
+    for (unsigned k = 4; k < ARRAY_SIZE(reordered_pixels_cases); k++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/reordered-pixels/%s",
             reordered_pixels_cases[k]);
 
         add_data_case(path, GUINT_TO_POINTER(k), test_reordered_pixels);
     }
-    for (unsigned mode = 0; mode < 14; mode++) {
-        g_autofree char *read = g_strdup_printf(
-            "sn0/origin2000/kona-3d/reordered-read/%s-%s",
-            mode < 7 ? "bgr" : "bgra", colour_types[mode % 7]);
-        g_autofree char *pack = g_strdup_printf(
-            "sn0/origin2000/kona-3d/reordered-pack/%s-%s",
-            mode < 7 ? "bgr" : "bgra", colour_types[mode % 7]);
-
-        add_data_case(read, GUINT_TO_POINTER(96 + mode),
-                      test_read_pixels_colour);
-        add_data_case(pack, GUINT_TO_POINTER(54 + mode),
-                      test_read_pixels_pack_swap);
-    }
+    add_case("sn0/origin2000/kona-3d/cmyk-pixels", test_cmyk_pixels);
     static const char *single_formats[] = { "red", "green", "blue" };
     for (unsigned mode = 0; mode < 42; mode++) {
         g_autofree char *path = g_strdup_printf(
