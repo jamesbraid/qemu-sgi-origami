@@ -2334,6 +2334,38 @@ static void test_backend_tables_and_readback(void)
 }
 
 /*
+ * The kernel's back-end initialisation writes the 32 main display modes
+ * with only 0x004b5e00 and bits 8:0 clear defined, the rest from stack
+ * words it never sets, and the 8 overlay modes with only their low byte
+ * cleared. The model's choice is to reset every mode to zero and keep each
+ * word as written; reset clears them again.
+ */
+static void test_backend_mode_reset(void)
+{
+    QTestState *qts = board_start("");
+    const uint32_t junk = 0x6c3a9f17;
+
+    for (uint32_t id = 0; id < 40; id++) {
+        g_assert_cmphex(backend_readback(qts, 0x2900 + id), ==, 0);
+    }
+    backend_push32(qts, ODSY_BACKEND_HDR(0x2900, 32));
+    for (uint32_t id = 0; id < 32; id++) {
+        backend_push32(qts, ((junk & 0xfe001fff) | 0x004b5e00) & 0xfffffe00);
+    }
+    backend_push32(qts, ODSY_BACKEND_HDR(0x2920, 8));
+    for (uint32_t id = 0; id < 8; id++) {
+        backend_push32(qts, junk & 0xffffff00);
+    }
+    g_assert_cmphex(backend_readback(qts, 0x2900), ==, 0x6c4b5e00);
+    g_assert_cmphex(backend_readback(qts, 0x291f), ==, 0x6c4b5e00);
+    g_assert_cmphex(backend_readback(qts, 0x2927), ==, 0x6c3a9f00);
+    qtest_system_reset(qts);
+    g_assert_cmphex(backend_readback(qts, 0x2900), ==, 0);
+    g_assert_cmphex(backend_readback(qts, 0x2927), ==, 0);
+    board_quit(qts);
+}
+
+/*
  * The display channel's active size. The kernel and the X server write the
  * selected video format's active pixels and lines to backend entries 0x2802
  * and 0x2803, with the channel origin and a zero word after them: 1280 and
@@ -22997,6 +23029,8 @@ int main(int argc, char **argv)
              test_framebuffer_pixel_reaches_display_and_screendump);
     add_fresh_case("sn1/odyssey/backend-tables-and-readback",
                    test_backend_tables_and_readback);
+    add_fresh_case("sn1/odyssey/backend-mode-reset",
+                   test_backend_mode_reset);
     add_fresh_case("sn1/odyssey/display-channel-size-sets-scanout",
                    test_display_channel_size_sets_scanout);
     add_fresh_case("sn1/odyssey/reset-clears-the-framebuffer",
