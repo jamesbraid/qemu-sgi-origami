@@ -17208,12 +17208,24 @@ int main(int argc, char **argv)
     add_case("sgi/crime/render/gl-transfer/starts", test_gl_transfer_starts);
     add_case("sgi/crime/render/gl-transfer/refusals",
              test_gl_transfer_refusals);
-    for (unsigned n = 0; n < 9; n++) {
-        g_autofree char *name =
-            g_strdup_printf("sgi/crime/render/gl-transfer/widths/%u", n);
-
-        add_data_case(name, GUINT_TO_POINTER(n), test_gl_transfer_widths);
-    }
+    add_data_case("sgi/crime/render/gl-transfer/widths/0",
+                  GUINT_TO_POINTER(0), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/1",
+                  GUINT_TO_POINTER(1), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/2",
+                  GUINT_TO_POINTER(2), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/3",
+                  GUINT_TO_POINTER(3), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/4",
+                  GUINT_TO_POINTER(4), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/5",
+                  GUINT_TO_POINTER(5), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/6",
+                  GUINT_TO_POINTER(6), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/7",
+                  GUINT_TO_POINTER(7), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/8",
+                  GUINT_TO_POINTER(8), test_gl_transfer_widths);
     add_case("sgi/crime/render/gl-transfer/order", test_gl_transfer_order);
     add_case("sgi/crime/render/gl-transfer/mixed-overlap",
              test_gl_transfer_mixed_overlap);
