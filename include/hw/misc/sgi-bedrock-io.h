@@ -134,6 +134,12 @@ void sgi_bedrock_io_set_claimant(SGIBedrockIOState *s,
                                  SGIBedrockIOState *(*claimant)(void *opaque,
                                                                 unsigned int),
                                  void *opaque);
+/*
+ * The interface serving node @number: this one, the one the claimant
+ * returns for it, or NULL when neither carries that number.
+ */
+SGIBedrockIOState *sgi_bedrock_io_serving(SGIBedrockIOState *s,
+                                          unsigned int number);
 MemTxResult sgi_bedrock_io_inbound_rw(SGIBedrockIOState *s, unsigned widget,
                                       unsigned device, hwaddr address,
                                       void *buffer, size_t size, bool write);

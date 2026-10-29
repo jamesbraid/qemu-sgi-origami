@@ -172,6 +172,12 @@ static SGIBedrockIOState *ii_serving(SGIBedrockIOState *s, unsigned number)
     return other && ii_node_number(other) == number ? other : NULL;
 }
 
+SGIBedrockIOState *sgi_bedrock_io_serving(SGIBedrockIOState *s,
+                                          unsigned int number)
+{
+    return ii_serving(s, number);
+}
+
 /*
  * The engine's interrupt-address register names where its completion
  * interrupt lands: bit 0 selects the processor

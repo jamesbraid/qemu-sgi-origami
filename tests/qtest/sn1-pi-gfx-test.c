@@ -579,6 +579,66 @@ static void test_cross_node(void)
     qtest_quit(qts);
 }
 
+/*
+ * A routed Origin 3400: the head behind node 0 returns credits for a
+ * processor of node 1, which hangs off another port of the same router.
+ * They reach node 1 by its number along node 0's route table, as an
+ * interrupt packet would, not by a cable node 0 does not have to it.
+ * Node 0 is on router port 2 and node 1 on port 3, so node 0's route to
+ * number 1 is turn 1.
+ */
+#define NI_LOCAL_ROUTE(number) (UINT64_C(0x681000) + (number) * 8)
+
+static void cpu_writeq(QTestState *qts, unsigned int cpu, uint64_t address,
+                       uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, cpu, address, bytes,
+                                     sizeof(bytes)));
+}
+
+static uint64_t cpu_readq(QTestState *qts, unsigned int cpu, uint64_t address)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, cpu, address, bytes,
+                                    sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+/* Node 1's interface 0, through its first processor's local form. */
+#define NODE1_CPU 4
+
+static void test_routed_credit_return(void)
+{
+    g_autofree char *prom = write_image();
+    g_autofree char *quoted = g_shell_quote(prom);
+    QTestState *qts = qtest_initf(
+        "-M origin3000,topology=origin3400 -cpu R12000 -smp 16 -m 16384 "
+        RUN "-bios %s -device sgi-pi-gfx-test-head,id=head,"
+        "pi=/machine/node0/bedrock,widget=11", quoted);
+
+    unlink(prom);
+    cpu_writeq(qts, 4, BEDROCK_LOCAL + LB_REVISION, UINT64_C(1) << 32);
+    cpu_writeq(qts, NODE1_CPU, BEDROCK_LOCAL + PI_GFX_PAGE(0),
+               PAGE_ENABLE | PAGE);
+    cpu_writeq(qts, NODE1_CPU, BEDROCK_LOCAL + PI_GFX_CREDIT(0), 100);
+    map(qts, 0, MAP(1, 0, 0, HEAD_WIDGET));
+
+    /* Out of reach until node 0's route table names the way. */
+    head_returns(qts, 4);
+    g_assert_cmpuint(cpu_readq(qts, NODE1_CPU,
+                               BEDROCK_LOCAL + PI_GFX_CREDIT(0)), ==, 100);
+
+    cpu_writeq(qts, 0, BEDROCK_LOCAL + NI_LOCAL_ROUTE(1), 1);
+    head_returns(qts, 4);
+    g_assert_cmpuint(cpu_readq(qts, NODE1_CPU,
+                               BEDROCK_LOCAL + PI_GFX_CREDIT(0)), ==, 104);
+    qtest_quit(qts);
+}
+
 static uint64_t head_taken(QTestState *qts);
 
 static void test_ip53_host_credit_return(void)
@@ -900,6 +960,8 @@ int main(int argc, char **argv)
                    test_ip53_fifo_store_while_another_waits);
     qtest_add_func("sn1/pi-gfx/ip53-scanout-waits-for-slice",
                    test_ip53_scanout_waits_for_slice);
+    qtest_add_func("sn1/pi-gfx/routed-credit-return",
+                   test_routed_credit_return);
     qtest_add_func("sn1/pi-gfx/routed-node-access-while-another-waits",
                    test_routed_node_access_while_another_waits);
     return g_test_run();

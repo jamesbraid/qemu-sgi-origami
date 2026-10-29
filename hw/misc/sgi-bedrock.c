@@ -1244,7 +1244,10 @@ MemoryRegion *sgi_bedrock_processor_io(SGIBedrockState *s, unsigned int slot)
 /*
  * A graphics head behind this node returned credits: the node-widget map
  * names the node, the interface and the slot that get them. Another node is
- * the one at the far end of this node's cable, when it carries that number.
+ * whichever the I/O interface reaches by that number, across the network:
+ * the far end of this node's cable, or on a routed machine the node the
+ * route tables lead to. A Bedrock with no machine around it falls back to
+ * the far end of its cable.
  */
 static void bedrock_return_gfx_credits(Object *obj, unsigned int widget,
                                        uint32_t credits)
@@ -1266,6 +1269,10 @@ static void bedrock_return_gfx_credits(Object *obj, unsigned int widget,
     }
     if (route.node == sgi_bedrock_node_number(s)) {
         target = s;
+    } else if (s->io.claimant) {
+        SGIBedrockIOState *io = sgi_bedrock_io_serving(&s->io, route.node);
+
+        target = io ? io->bedrock : NULL;
     } else if (bedrock_neighbor(s, &peer, &peer_index)) {
         target = (SGIBedrockState *)object_dynamic_cast(peer,
                                                         TYPE_SGI_BEDROCK);
