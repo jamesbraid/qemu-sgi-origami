@@ -311,6 +311,7 @@ texture /mips64/sn1/odyssey/texture-adapter/integer-quads
 texture /mips64/sn1/odyssey/texture-adapter/lod-bias
 texture /mips64/sn1/odyssey/texture-adapter/max-clamp
 texture /mips64/sn1/odyssey/texture-adapter/scale-bias
+texture /mips64/sn1/odyssey/texture-adapter/sampler-bit17
 texture /mips64/sn1/odyssey/texture-adapter/offset-and-unknown-table
 texture /mips64/sn1/odyssey/texture-adapter/one-dimensional-mode
 texture /mips64/sn1/odyssey/texture-adapter/public-stored-border-copies

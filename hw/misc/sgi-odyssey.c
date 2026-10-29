@@ -6100,14 +6100,43 @@ static bool odyssey_texture_detail_function_weight(
            odyssey_texture_detail_entry_weight(table[last], &weight->last);
 }
 
+/*
+ * Sampler word 4 bits 7:5 are the minification code (0 nearest, 1 linear,
+ * 2 to 5 the four mipmap modes in GL order) and bits 4:1 the
+ * magnification code (2 linear detail, 3 detail alpha, 4 detail colour).
+ * With a detail magnification filter the GL library sends GL_NEAREST as
+ * code 2 and GL_LINEAR as code 5 (ESTABLISHED as the library's setter), so
+ * a detail word carries code 2 or 5. The model samples each code as the
+ * mipmap mode it names: INFERRED, since the library means GL_NEAREST or
+ * GL_LINEAR by them and what the board does with code 2 or 5 under a
+ * detail filter is UNKNOWN.
+ */
+#define ODSY_TEX_MIN_MASK 0xe0
+#define ODSY_TEX_MIN_NEAREST_MIPMAP_NEAREST 0x40
+#define ODSY_TEX_MIN_LINEAR_MIPMAP_LINEAR 0xa0
+/*
+ * Word 4 bit 17: set for GL_LINEAR_MIPMAP_LINEAR and for GL_PHASE_SGIX,
+ * clear otherwise (ESTABLISHED as the library's setter). Its effect on the
+ * board is UNKNOWN. With minification code 5 the model samples as that
+ * code says and ignores the bit; with any other code it can only mean
+ * GL_PHASE_SGIX, which the model does not implement, so the draw drops.
+ */
+#define ODSY_TEX_SAMPLER_BIT17 (1u << 17)
+
 static uint32_t odyssey_texture_detail_filter(uint32_t word)
 {
-    switch (word) {
-    case 0x13000044:
+    uint32_t min = word & ODSY_TEX_MIN_MASK;
+
+    if (min != ODSY_TEX_MIN_NEAREST_MIPMAP_NEAREST &&
+        min != ODSY_TEX_MIN_LINEAR_MIPMAP_LINEAR) {
+        return 0;
+    }
+    switch (word & ~ODSY_TEX_MIN_MASK) {
+    case 0x13000004:
         return SGI_GL_LINEAR_DETAIL_SGIS;
-    case 0x13000046:
+    case 0x13000006:
         return SGI_GL_LINEAR_DETAIL_ALPHA_SGIS;
-    case 0x13000048:
+    case 0x13000008:
         return SGI_GL_LINEAR_DETAIL_COLOR_SGIS;
     default:
         return 0;
@@ -6250,7 +6279,11 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     uint32_t width_word = s->tex_sampler[1], height_word = s->tex_sampler[2];
     uint32_t width = width_word, height = height_word;
     uint32_t depth = s->tex_sampler[3];
-    uint32_t word = s->tex_sampler[4], components = word & 0x0f800000;
+    bool phase = (s->tex_sampler[4] & ODSY_TEX_SAMPLER_BIT17) &&
+                 (s->tex_sampler[4] & ODSY_TEX_MIN_MASK) !=
+                 ODSY_TEX_MIN_LINEAR_MIPMAP_LINEAR;
+    uint32_t word = s->tex_sampler[4] & ~ODSY_TEX_SAMPLER_BIT17;
+    uint32_t components = word & 0x0f800000;
     uint32_t sampler_size = s->tex_sampler[0];
     OdysseyTextureDetailSampler detail_sampler;
     OdysseyTextureDetailWeight detail_weight = { 0 };
@@ -6434,7 +6467,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                   filter) && !detail_filter) ||
         (s->tex_lod[0] | s->tex_lod[1] | s->tex_lod[2] | s->tex_lod[3]) &
             ~ODSY_TEX_LOD_MASK ||
-        !odyssey_texture_scale_bias_known(s) ||
+        !odyssey_texture_scale_bias_known(s) || phase ||
         s->tex_offset[0] || s->tex_offset[1] || s->tex_offset[2] ||
         (min >= 0x40 && lo > hi) ||
         (colour_table &&
@@ -6786,7 +6819,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
 unsupported:
     qemu_log_mask(LOG_UNIMP, "sgi-odyssey: unsupported texture state "
                   "sampler 0x%x environment %u%s, draw dropped\n",
-                  word, s->tex_env[0],
+                  s->tex_sampler[4], s->tex_env[0],
                   odyssey_gl_index_mode(s) ? " colour-index" : "");
     return false;
 }
