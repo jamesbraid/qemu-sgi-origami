@@ -946,6 +946,44 @@ static void test_shadow_and_bounds(void)
     qtest_quit(q);
 }
 
+/*
+ * Revision 1 keeps the occupancy count, zero with synchronous draining.
+ * Revision 2 counts free entries of the 64-entry FIFO in six bits. The IRIX
+ * 6.5.30 X server waits for at least 48 free there and accepts zero only
+ * below revision 2 (Origami's O2 graphics driver evidence datasheet).
+ */
+static void test_cmfifo_revision(void)
+{
+    static const struct {
+        const char *extra;
+        uint32_t revision, count;
+    } cases[] = {
+        { "", 1, 0 },
+        { "-global sgi-o2-gbe.revision=1", 1, 0 },
+        { "-global sgi-o2-gbe.revision=2", 2, 63 },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        QTestState *q = start(cases[i].extra);
+
+        g_assert_cmphex(rd(q, 0) & 15, ==, cases[i].revision);
+        g_assert_cmphex(rd(q, 0x58000), ==, cases[i].count);
+        for (unsigned n = 0; n < 80; n++) {
+            wr(q, CMAP(n), n << 24);
+            g_assert_cmphex(rd(q, 0x58000), ==, cases[i].count);
+        }
+        g_assert_cmphex(rd(q, CMAP(79)), ==, 79u << 24);
+        /* The revision field is read-only. */
+        wr(q, 0, 0x300aa00f);
+        g_assert_cmphex(rd(q, 0) & 15, ==, cases[i].revision);
+        qtest_system_reset(q);
+        g_assert_cmphex(rd(q, 0) & 0x3ffffcf, ==,
+                        0x3ffffc0 | cases[i].revision);
+        g_assert_cmphex(rd(q, 0x58000), ==, cases[i].count);
+        qtest_quit(q);
+    }
+}
+
 static void test_i2c_idle(void)
 {
     QTestState *q = start("");
@@ -2790,6 +2828,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-gbe/rgb8-geometry-cursor", test_rgb8_geometry);
     qtest_add_func("/sgi-gbe/formats", test_formats);
     qtest_add_func("/sgi-gbe/shadow-bounds", test_shadow_and_bounds);
+    qtest_add_func("/sgi-gbe/cmfifo-revision", test_cmfifo_revision);
     qtest_add_func("/sgi-gbe/i2c-idle", test_i2c_idle);
     qtest_add_func("/sgi-gbe/multitile", test_multitile);
     qtest_add_func("/sgi-gbe/i2c-slaves", test_i2c_slaves);
