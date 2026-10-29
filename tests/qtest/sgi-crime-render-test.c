@@ -9700,17 +9700,13 @@ static void test_evidence_parameters_across_mte(void)
 }
 
 /*
- * The OpenGL library loads fog colour, the 8.12 fog steppers and Texture.mode
- * type codes 1, 2 and 4-8 with one or two log2 bytes per texel, and enables
- * hardware fog with DrawMode bit 14 and AA lines with bit 12, committing an
- * AA line by a 64-bit store to 0x15002990. The model stores the state but
- * implements none of these stages, so a commit that asks for one is refused
- * without drawing.
+ * Retained fog and texture words remain writable. Active triangle fog is
+ * unsupported. Line AA control is inactive for triangles, and a line-only
+ * START must not turn a triangle into a line.
  */
 static void test_evidence_unsupported_stages(void)
 {
     static const unsigned types[] = { 1, 2, 4, 5, 6, 7, 8 };
-    static const uint32_t stages[] = { 1U << 14, 1U << 12 };
     QTestState *s = triangle_start("");
     Shape c;
 
@@ -9733,15 +9729,19 @@ static void test_evidence_unsupported_stages(void)
     }
     qtest_writel(s, DE + 0x1b0, 3);
     qtest_writel(s, DE + 0x1b8, UINT32_MAX);
-    for (unsigned i = 0; i < ARRAY_SIZE(stages); i++) {
-        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | stages[i]);
-        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR),
-                        !=, MEMTX_OK);
-        triangle_pixels(s, &c, triangle_empty, 0, 3, UINT32_MAX);
-    }
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | (1U << 14));
+    g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), !=, MEMTX_OK);
+    triangle_pixels(s, &c, triangle_empty, 0, 3, UINT32_MAX);
     g_assert_cmpint(memtx_writeq(s, DE + 0x990, 0x12345678abcd0100ULL),
                     !=, MEMTX_OK);
     triangle_pixels(s, &c, triangle_empty, 0, 3, UINT32_MAX);
+    for (unsigned aa = 0; aa < 2; aa++) {
+        shape_memory(s, &c, NULL);
+        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | aa << 12);
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR),
+                        ==, MEMTX_OK);
+        triangle_pixels(s, &c, triangle_ten, TRIANGLE_COLOR, 3, UINT32_MAX);
+    }
     qtest_quit(s);
 }
 
