@@ -1,6 +1,7 @@
 system_ss.add(files(
   'announce.c',
   'checksum.c',
+  'crc.c',
   'dgram.c',
   'dump.c',
   'eth.c',

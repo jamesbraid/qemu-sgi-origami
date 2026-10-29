@@ -59,6 +59,7 @@ tests = {
   'test-qht': [],
   'test-qtree': [],
   'test-bitops': [],
+  'test-net-crc': ['../../net/crc.c'],
   'test-bitcnt': [],
   'test-qgraph': ['../qtest/libqos/qgraph.c'],
   'check-qom-interface': [qom],
