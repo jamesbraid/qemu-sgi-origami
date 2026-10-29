@@ -11164,7 +11164,12 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
     case ODSY_PROG_RUN_ONCE:
         /*
          * Consumed, not kept: the derived shininess floats and the one-shot
-         * run have no modelled effect.
+         * run have no modelled effect. Block 0x1ea (ODSY_GL_SHININESS_DERIVED)
+         * is also the second read path of attribute slots 448 and 544: every
+         * full context replay sends it with the selected slot-448 entry's
+         * first operand, that with bit 31 flipped, and the same for slot 544
+         * (ESTABLISHED as the kernel's replay). What the block does on the
+         * board is UNKNOWN; the model gives neither use an effect.
          */
         break;
     case ODSY_GL_CLIP_PLANE_LOAD:
