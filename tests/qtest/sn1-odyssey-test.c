@@ -14586,6 +14586,43 @@ static void test_texture_offset_and_unknown_table(void)
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
+/*
+ * Sampler word 4 bit 17 accompanies GL_LINEAR_MIPMAP_LINEAR (code 5): the
+ * draw samples as code 5 without it did. With another code the bit can
+ * only be GL_PHASE_SGIX, which the model lacks, so the draw drops.
+ */
+static void test_texture_sampler_bit17(void)
+{
+    const uint32_t blue = 0x0000ffff;
+    const uint32_t words[] = {
+        0x00010405, 0x10,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, 0x180000, 0x41100002, 0,
+        0x00010e81, 0x181000, 0x41100002, 0,
+        0x00010406, 0,
+        0x00011013, 0, 0, 0x0100, 0x0f00,
+    };
+    QTestState *qts = board_start("");
+
+    texture_chain_upload_solid(qts, 0x180000, 2, 2, 0xff0000ff);
+    texture_chain_upload_solid(qts, 0x181000, 1, 1, blue);
+    texture_adapter_window(qts);
+    push_user_words(qts, words, ARRAY_SIZE(words));
+    for (unsigned i = 0; i < 2; i++) {
+        const uint32_t sampler[] = {
+            0x00011c16, 0x08000420, 2, 2, 1,
+            i ? 0x13020040 : 0x130200a0, 0, 0,
+        };
+
+        push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+        odsy_test_pixel_write(qts, 10 + i, 10, 0x12345678);
+        texture_adapter_point(qts, 10 + i, 10, 0.25f, 0.25f);
+    }
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, blue);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0x12345678);
+    board_quit(qts);
+}
+
 static void test_texture_chain_explicit_level(void)
 {
     QTestState *qts = board_start("");
@@ -16766,6 +16803,25 @@ static void test_texture_adapter_detail_zero_identity(void)
         texture_adapter_upload_detail_function(qts, 0x00400000);
         texture_adapter_point(qts, 16 + mode, 10, 0.125f, 0.125f);
         detail_pixels[mode] = odsy_test_pixel(qts, 16 + mode, 10);
+    }
+    /*
+     * With a detail magnification filter the library sends GL_LINEAR as
+     * minification code 5, and GL_LINEAR_MIPMAP_LINEAR as code 5 with bit
+     * 17. A point magnifies, so both draw as code 2 does.
+     */
+    for (unsigned i = 0; i < 2; i++) {
+        const uint32_t linear[] = {
+            0x00011c16, 0x04108000, 1, 1, 1,
+            0x130000a4 | (i ? 0x20000 : 0), 0, 0,
+        };
+
+        push_user_words(qts, state, ARRAY_SIZE(state));
+        push_user_words(qts, linear, ARRAY_SIZE(linear));
+        texture_adapter_upload_detail_function(qts, 0x00400000);
+        odsy_test_pixel_write(qts, 20 + i, 10, 0x12345678);
+        texture_adapter_point(qts, 20 + i, 10, 0.125f, 0.125f);
+        g_assert_cmphex(odsy_test_pixel(qts, 20 + i, 10), ==,
+                        detail_pixels[0]);
     }
 
     for (unsigned shape = 0; shape < ARRAY_SIZE(rectangular_sampler); shape++) {
@@ -22907,6 +22963,8 @@ int main(int argc, char **argv)
              test_texture_max_clamp);
     add_case("sn1/odyssey/texture-adapter/scale-bias",
              test_texture_scale_bias);
+    add_case("sn1/odyssey/texture-adapter/sampler-bit17",
+             test_texture_sampler_bit17);
     add_fresh_case("sn1/odyssey/texture-adapter/offset-and-unknown-table",
                    test_texture_offset_and_unknown_table);
     add_case("sn1/odyssey/texture-adapter/one-dimensional-mode",
