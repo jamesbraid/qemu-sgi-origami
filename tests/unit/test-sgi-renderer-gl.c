@@ -9874,6 +9874,12 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     module_call_init(MODULE_INIT_QOM);
+    /*
+     * The Mesa renderer reproduces the double-precision texture sampler,
+     * not the fixed-point one filled triangles take by default, so the
+     * scalar side of every comparison here samples in double.
+     */
+    sgi_raster_set_texture_path(SGI_RASTER_TEXTURE_DOUBLE);
     /* Registered only on request: the CI report check rejects skips. */
     if (g_getenv("QEMU_TEST_SGI_BENCH")) {
         g_test_add_func("/sgi-renderer-gl/benchmark", test_benchmark);

@@ -9735,7 +9735,8 @@ static void test_wide_fragment_ops(void)
 }
 
 /* At (16.5,16.5), weights 1/2,1/4,1/4 produce S=2/13, not 1/4. */
-static void test_texture_projective(void)
+/* The projective triangle's pixel (16, 16), sampled by the given path. */
+static uint32_t texture_projective_pixel(SGIRasterTexturePath path)
 {
     TexturePixels pixels = { .pixel = {
         0xffffffff, 0, 0xffffffff, 0 } };
@@ -9750,14 +9751,33 @@ static void test_texture_projective(void)
     enable(&f.c, SGI_GL_TEXTURE_2D, true);
     texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
     frag_command(&f, SGI_GL_OP_SHADE_MODEL, (uint32_t[]) { SGI_GL_FLAT }, 1);
+    sgi_raster_set_texture_path(path);
     frag_command(&f, SGI_GL_OP_BEGIN, &triangle, 1);
     texture_vertex(&f, -63.0f / 64, -63.0f / 64, 1, 0, 0.25f, 1);
     texture_vertex(&f, 65.0f / 64, -63.0f / 64, 2, 1, 0.5f, 2);
     texture_vertex(&f, -63.0f / 64, 65.0f / 64, 4, 0, 0.25f, 1);
     frag_command(&f, SGI_GL_OP_END, NULL, 0);
-    /* Linear CLAMP white/black with black border: 1/2+2*(2/13). */
-    g_assert_cmphex(frag_pixel(&f, 16, 16), ==,
-                   texture_rgb(21.0 / 26, 21.0 / 26, 21.0 / 26));
+    sgi_raster_set_texture_path(SGI_RASTER_TEXTURE_SPANS);
+    return frag_pixel(&f, 16, 16);
+}
+
+/*
+ * Linear CLAMP white/black with black border: 1/2+2*(2/13) in double.
+ * The fixed-point sampler's 8-bit weights cannot hold 2/13, so it comes
+ * within a step of it.
+ */
+static void test_texture_projective(void)
+{
+    uint32_t exact = texture_rgb(21.0 / 26, 21.0 / 26, 21.0 / 26);
+    uint32_t fixed = texture_projective_pixel(SGI_RASTER_TEXTURE_SPANS);
+
+    g_assert_cmphex(texture_projective_pixel(SGI_RASTER_TEXTURE_DOUBLE), ==,
+                    exact);
+    for (unsigned k = 0; k < 3; k++) {
+        int got = (fixed >> (8 * k)) & 0xff, want = (exact >> (8 * k)) & 0xff;
+
+        g_assert_cmpint(abs(got - want), <=, 1);
+    }
 }
 
 static void test_texture_fog_order(void)
@@ -14322,6 +14342,449 @@ static void test_hints_ignore_rendering(void)
     sgi_gl_cleanup(&f->c);
 }
 
+/*
+ * Fixed-point texturing: filled triangles sample in fixed point unless
+ * sgi_raster_set_texture_path() chooses the double path. A 16x16
+ * pyramid of random texels, read packed or through component readers.
+ */
+#define FIXED_TEX_LOG2 4
+#define FIXED_TEX_LEVELS (FIXED_TEX_LOG2 + 1)
+
+typedef struct FixedTexture {
+    uint32_t texel[FIXED_TEX_LEVELS][1u << (2 * FIXED_TEX_LOG2)];
+    uint8_t bits[4];
+    SGIGLTexLevel level[FIXED_TEX_LEVELS];
+    SGIGLTexPyramid pyramid;
+    SGIGLTexImage image;
+} FixedTexture;
+
+static bool fixed_read_texel(void *opaque, uint32_t level, uint32_t x,
+                             uint32_t y, uint32_t *rgba)
+{
+    FixedTexture *t = opaque;
+
+    *rgba = t->texel[level][y * t->level[level].width + x];
+    return true;
+}
+
+/* Each component the top bits of the packed texel's byte. */
+static bool fixed_read_components(void *opaque, uint32_t level, uint32_t x,
+                                  uint32_t y, uint16_t component[4])
+{
+    FixedTexture *t = opaque;
+    uint32_t word = t->texel[level][y * t->level[level].width + x];
+
+    for (unsigned k = 0; k < 4; k++) {
+        uint32_t byte = (word >> (24 - 8 * k)) & 0xff;
+
+        component[k] = t->bits[k] >= 8 ? byte << (t->bits[k] - 8) :
+                                         byte >> (8 - t->bits[k]);
+    }
+    return true;
+}
+
+static void fixed_texture_init(FixedTexture *t, uint32_t format,
+                               const uint8_t *bits, uint32_t min,
+                               uint32_t mag, uint32_t wrap_s, uint32_t wrap_t)
+{
+    for (unsigned l = 0; l < FIXED_TEX_LEVELS; l++) {
+        uint32_t size = 1u << (FIXED_TEX_LOG2 - l);
+
+        t->level[l] = (SGIGLTexLevel) {
+            .level = l, .width = size, .height = size, .depth = 1,
+            .base_format = format, .internal_format = format,
+            .read_texel = fixed_read_texel, .opaque = t,
+        };
+        if (bits) {
+            memcpy(t->bits, bits, sizeof(t->bits));
+            memcpy(t->level[l].component_bits, bits, sizeof(t->bits));
+            t->level[l].read_texel_components = fixed_read_components;
+        }
+    }
+    t->pyramid = (SGIGLTexPyramid) {
+        .levels = t->level, .count = FIXED_TEX_LEVELS,
+        .base_level = 0, .max_level = 1000,
+        .min_lod = -1000, .max_lod = 1000,
+    };
+    t->image = (SGIGLTexImage) {
+        .width = 1u << FIXED_TEX_LOG2, .height = 1u << FIXED_TEX_LOG2,
+        .depth = 1, .base_format = format,
+        .min_filter = min, .mag_filter = mag,
+        .wrap_s = wrap_s, .wrap_t = wrap_t, .wrap_r = SGI_GL_REPEAT,
+        .border_color = { 0.25, 0.5, 0.75, 1 },
+        .pyramid = &t->pyramid, .opaque = t,
+    };
+}
+
+static SGIRasterTarget fixed_target(BandPlanes *b, const SGIGLTexImage *im)
+{
+    return (SGIRasterTarget) {
+        .store_colour = band_store_colour,
+        .load_colour = band_load_colour,
+        .load_depth = band_load_depth,
+        .store_depth = band_store_depth,
+        .load_stencil = band_load_stencil,
+        .store_stencil = band_store_stencil,
+        .texture = im,
+        .opaque = b,
+    };
+}
+
+/*
+ * Case index of the bound test: random textured triangles in perspective
+ * under random texture and fragment state, drawn by the given path.
+ */
+static void fixed_bound_case(unsigned index, SGIRasterTexturePath path,
+                             BandPlanes *b)
+{
+    static const uint32_t formats[] = {
+        SGI_GL_RGBA, SGI_GL_RGB, SGI_GL_LUMINANCE, SGI_GL_LUMINANCE_ALPHA,
+        SGI_GL_ALPHA, SGI_GL_INTENSITY,
+    };
+    static const uint32_t mins[] = {
+        SGI_GL_NEAREST, SGI_GL_LINEAR, SGI_GL_NEAREST_MIPMAP_NEAREST,
+        SGI_GL_LINEAR_MIPMAP_NEAREST, SGI_GL_NEAREST_MIPMAP_LINEAR,
+        SGI_GL_LINEAR_MIPMAP_LINEAR,
+    };
+    static const uint32_t wraps[] = {
+        SGI_GL_REPEAT, SGI_GL_CLAMP, SGI_GL_CLAMP_TO_EDGE,
+        SGI_GL_CLAMP_TO_BORDER,
+    };
+    static const uint32_t envs[] = {
+        SGI_GL_REPLACE, SGI_GL_MODULATE, SGI_GL_DECAL, SGI_GL_BLEND,
+    };
+    static const uint8_t widths[] = { 1, 2, 4, 8, 12 };
+    static FixedTexture tex;
+    GRand *rand = g_rand_new_with_seed(0xf1ed + index);
+    float verts[9][SGI_GL_VERTEX_FLOATS] = { 0 };
+    uint32_t stipple[32];
+    SGIRasterRules rules = rules_supported;
+    uint32_t format = formats[g_rand_int_range(rand, 0, 6)];
+    uint8_t bits[4];
+    SGIGLDraw d = {
+        .context = 0x1234, .mode = SGI_GL_TRIANGLES,
+        .count = G_N_ELEMENTS(verts), .vertices = &verts[0][0],
+    };
+    SGIRasterTarget t;
+    SGIGLContext c;
+
+    for (unsigned k = 0; k < 4; k++) {
+        bits[k] = widths[g_rand_int_range(rand, 0, G_N_ELEMENTS(widths))];
+    }
+    fixed_texture_init(&tex, format, g_rand_int_range(rand, 0, 3) ? NULL : bits,
+                       mins[g_rand_int_range(rand, 0, 6)],
+                       g_rand_boolean(rand) ? SGI_GL_LINEAR : SGI_GL_NEAREST,
+                       wraps[g_rand_int_range(rand, 0, 4)],
+                       wraps[g_rand_int_range(rand, 0, 4)]);
+    for (unsigned l = 0; l < FIXED_TEX_LEVELS; l++) {
+        for (unsigned i = 0; i < G_N_ELEMENTS(tex.texel[l]); i++) {
+            tex.texel[l][i] = g_rand_int(rand);
+        }
+    }
+    rules.stencil_bits = 8;
+    rules.dither = g_rand_boolean(rand) ? SGI_DITHER_BAYER4_TOP_ROWS :
+                   SGI_DITHER_NONE;
+    memset(b, 0, sizeof(*b));
+    for (unsigned i = 0; i < W * H; i++) {
+        b->p.depth[i] = g_rand_int(rand) & 0xffffff;
+        b->p.colour[0][i] = g_rand_int(rand) & 0xffffff;
+    }
+    context_init(&c);
+    c.cur.texture_2d = 1;
+    c.cur.texture_env_mode = envs[g_rand_int_range(rand, 0, 4)];
+    if (c.cur.texture_env_mode == SGI_GL_DECAL && format != SGI_GL_RGB &&
+        format != SGI_GL_RGBA) {
+        c.cur.texture_env_mode = SGI_GL_MODULATE;
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        c.cur.texture_env_color[k] = g_rand_double(rand);
+        c.cur.fog_color[k] = g_rand_double(rand);
+    }
+    c.cur.shade_model = g_rand_boolean(rand) ? SGI_GL_SMOOTH : SGI_GL_FLAT;
+    c.cur.depth_test = g_rand_int_range(rand, 0, 10) < 6;
+    c.cur.depth_func = g_rand_int_range(rand, 0, 8);
+    c.cur.depth_mask = g_rand_int_range(rand, 0, 10) < 8;
+    c.cur.dither = 1;
+    c.cur.blend = g_rand_int_range(rand, 0, 10) < 2;
+    c.cur.blend_src = SGI_GL_SRC_ALPHA;
+    c.cur.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA;
+    c.cur.blend_equation = SGI_GL_FUNC_ADD;
+    c.cur.fog = g_rand_int_range(rand, 0, 10) < 2;
+    c.cur.fog_mode = SGI_GL_EXP;
+    c.cur.fog_density = g_rand_double(rand);
+    c.cur.stencil_test = g_rand_int_range(rand, 0, 10) < 2;
+    c.cur.stencil_func = g_rand_int_range(rand, 0, 8);
+    c.cur.stencil_ref = g_rand_int_range(rand, 0, 256);
+    c.cur.stencil_value_mask = 0xff;
+    c.cur.stencil_write_mask = 0xff;
+    c.cur.stencil_op[2] = SGI_GL_INCR;
+    c.cur.clip_planes = g_rand_int_range(rand, 0, 10) < 1;
+    c.cur.clip_plane[0][0] = 1;
+    c.cur.clip_plane[0][3] = g_rand_double_range(rand, -0.5, 0.5);
+    if (g_rand_int_range(rand, 0, 10) < 1) {
+        for (unsigned i = 0; i < 32; i++) {
+            stipple[i] = g_rand_int(rand);
+        }
+        d.polygon_stipple = stipple;
+        d.polygon_stipple_enabled = true;
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(verts); i++) {
+        float *v = verts[i];
+        double w = g_rand_double_range(rand, 1, 4);
+
+        v[SGI_GL_V_POSITION + 0] = g_rand_double_range(rand, -1.3, 1.3) * w;
+        v[SGI_GL_V_POSITION + 1] = g_rand_double_range(rand, -1.3, 1.3) * w;
+        v[SGI_GL_V_POSITION + 2] = g_rand_double_range(rand, -0.9, 0.9) * w;
+        v[SGI_GL_V_POSITION + 3] = w;
+        for (unsigned k = 0; k < 4; k++) {
+            v[SGI_GL_V_COLOR + k] = g_rand_double(rand);
+        }
+        v[SGI_GL_V_TEXCOORD + 0] = g_rand_double_range(rand, -3, 4) * w;
+        v[SGI_GL_V_TEXCOORD + 1] = g_rand_double_range(rand, -3, 4) * w;
+        v[SGI_GL_V_TEXCOORD + 3] = w * (g_rand_int_range(rand, 0, 10) < 4 ?
+                                        g_rand_double_range(rand, 0.5, 2) : 1);
+        v[SGI_GL_V_FOG] = g_rand_double_range(rand, 0, 4);
+    }
+    t = fixed_target(b, &tex.image);
+    d.state = &c.cur;
+    sgi_raster_set_texture_path(path);
+    sgi_soft_draw(&rules, &t, &d);
+    sgi_raster_set_texture_path(SGI_RASTER_TEXTURE_SPANS);
+    sgi_gl_cleanup(&c);
+    g_rand_free(rand);
+}
+
+/*
+ * The fixed-point path draws the same depth, stencil and pixels as the
+ * double path, and its colour lies close to the double path's. The
+ * design's limit is 32 of 255 on any channel and a mean of one. The
+ * benchmark's comparison corpus measured 2 and 0.007, these noisier
+ * scenes 2 and 0.053; the test holds them to 2 and 0.1.
+ */
+static void test_texture_fixed_bound(void)
+{
+    static BandPlanes a, b;
+    uint64_t channels = 0, sum = 0;
+    unsigned max = 0;
+
+    for (unsigned i = 0; i < 400; i++) {
+        fixed_bound_case(i, SGI_RASTER_TEXTURE_DOUBLE, &a);
+        fixed_bound_case(i, SGI_RASTER_TEXTURE_SPANS, &b);
+        g_assert(!memcmp(a.p.depth, b.p.depth, sizeof(a.p.depth)));
+        g_assert(!memcmp(a.p.stencil, b.p.stencil, sizeof(a.p.stencil)));
+        g_assert(!memcmp(a.stores, b.stores, sizeof(a.stores)));
+        for (unsigned p = 0; p < W * H; p++) {
+            for (unsigned k = 0; a.stores[p] && k < 3; k++) {
+                int x = (a.p.colour[0][p] >> (8 * k)) & 0xff;
+                int y = (b.p.colour[0][p] >> (8 * k)) & 0xff;
+
+                max = MAX(max, (unsigned)abs(x - y));
+                sum += abs(x - y);
+                channels++;
+            }
+        }
+    }
+    g_assert_cmpuint(channels, >, 100000);
+    g_assert_cmpuint(max, <=, 2);
+    g_assert_cmpfloat((double)sum / channels, <=, 0.1);
+}
+
+/*
+ * Draw a quad over the whole plane with texture coordinates s0 to s1
+ * left to right and t0 to t1 bottom to top, under the given path.
+ */
+static void fixed_quad(BandPlanes *b, const SGIGLTexImage *im,
+                       SGIRasterTexturePath path, double s0, double s1,
+                       double t0, double t1, double w_top)
+{
+    const double corner[4][4] = {
+        { -1, -1, s0, t0 }, { 1, -1, s1, t0 },
+        { 1, 1, s1, t1 }, { -1, 1, s0, t1 },
+    };
+    float verts[4][SGI_GL_VERTEX_FLOATS] = { 0 };
+    SGIGLDraw d = {
+        .context = 0x1234, .mode = SGI_GL_QUADS, .count = 4,
+        .vertices = &verts[0][0],
+    };
+    SGIRasterTarget t = fixed_target(b, im);
+    SGIGLContext c;
+
+    for (unsigned i = 0; i < 4; i++) {
+        double w = i >= 2 ? w_top : 1;
+
+        verts[i][SGI_GL_V_POSITION + 0] = corner[i][0] * w;
+        verts[i][SGI_GL_V_POSITION + 1] = corner[i][1] * w;
+        verts[i][SGI_GL_V_POSITION + 3] = w;
+        verts[i][SGI_GL_V_TEXCOORD + 0] = corner[i][2];
+        verts[i][SGI_GL_V_TEXCOORD + 1] = corner[i][3];
+        verts[i][SGI_GL_V_TEXCOORD + 3] = 1;
+        for (unsigned k = 0; k < 4; k++) {
+            verts[i][SGI_GL_V_COLOR + k] = 1;
+        }
+    }
+    memset(b, 0, sizeof(*b));
+    context_init(&c);
+    c.cur.texture_2d = 1;
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    d.state = &c.cur;
+    sgi_raster_set_texture_path(path);
+    sgi_soft_draw(&rules_supported, &t, &d);
+    sgi_raster_set_texture_path(SGI_RASTER_TEXTURE_SPANS);
+    sgi_gl_cleanup(&c);
+}
+
+static bool fixed_black_white(void *opaque, uint32_t x, uint32_t y,
+                              uint32_t *rgba)
+{
+    *rgba = x ? 0xffffffff : 0xff;
+    return true;
+}
+
+/*
+ * Approximated: bilinear weights of 8 bits. A black and a white texel
+ * side by side, clamped to their edges: each pixel is the white texel's
+ * weight, floor(256 f) / 256 for the fraction f of the way from one
+ * texel centre to the other, where the double path has f itself.
+ */
+static void test_texture_fixed_weights(void)
+{
+    static BandPlanes fixed, exact;
+    SGIGLTexImage im = {
+        .width = 2, .height = 1, .base_format = SGI_GL_RGBA,
+        .min_filter = SGI_GL_LINEAR, .mag_filter = SGI_GL_LINEAR,
+        .wrap_s = SGI_GL_CLAMP_TO_EDGE, .wrap_t = SGI_GL_CLAMP_TO_EDGE,
+        .read_texel = fixed_black_white,
+    };
+    unsigned differ = 0;
+
+    fixed_quad(&fixed, &im, SGI_RASTER_TEXTURE_SPANS, 0.11, 0.93, 0.5, 0.5,
+               1);
+    fixed_quad(&exact, &im, SGI_RASTER_TEXTURE_DOUBLE, 0.11, 0.93, 0.5, 0.5,
+               1);
+    for (int x = 0; x < W; x++) {
+        double s = 0.11 + (0.93 - 0.11) * (x + 0.5) / W;
+        double u = MIN(MAX(2 * s - 0.5, 0), 1);
+        int64_t position = MIN(MAX((int64_t)floor(s * 512) - 128, 0), 256);
+        double weight = position == 256 ? 1 : (position & 255) / 256.0;
+        uint32_t got = fixed.p.colour[0][planes_index(x, 32)] & 0xff;
+
+        if (fabs(s * 512 - round(s * 512)) < 1.0 / (1 << 20)) {
+            continue;
+        }
+        g_assert_cmpuint(got, ==, (uint32_t)(weight * 255 + 0.5));
+        g_assert_cmpuint(exact.p.colour[0][planes_index(x, 32)] & 0xff, ==,
+                         (uint32_t)(u * 255 + 0.5));
+        differ += got != (uint32_t)(u * 255 + 0.5);
+    }
+    g_assert_cmpuint(differ, >, 4);
+}
+
+/*
+ * Approximated: lambda from a 10-bit table of log2, and the blend
+ * between two levels by its 8-bit fraction. A black 2x2 level 0 and a
+ * white level 1, trilinear, with 36.6 repeats across 64 pixels: the
+ * footprint squared is (2 36.6 / 64)^2, whose table lambda is 50/256,
+ * so every pixel is 50/256 white. The double path gives 49 of 255.
+ */
+static void test_texture_fixed_lambda(void)
+{
+    static BandPlanes fixed, exact;
+    static FixedTexture tex;
+    double k = 36.6, rho2 = (2 * k / W) * (2 * k / W);
+    int exponent;
+    double mantissa = frexp(rho2, &exponent) * 2 - 1;
+    int32_t lambda = (exponent - 1) * 128 +
+                     lround(128 * log2(1 + (floor(mantissa * 1024) + 0.5) /
+                                       1024));
+
+    fixed_texture_init(&tex, SGI_GL_RGBA, NULL, SGI_GL_LINEAR_MIPMAP_LINEAR,
+                       SGI_GL_LINEAR, SGI_GL_REPEAT, SGI_GL_REPEAT);
+    tex.pyramid.count = 2;
+    tex.level[0].width = tex.level[0].height = 2;
+    tex.level[1].width = tex.level[1].height = 1;
+    tex.image.width = tex.image.height = 2;
+    memset(tex.texel, 0, sizeof(tex.texel));
+    tex.texel[1][0] = 0xffffffff;
+    g_assert_cmpint(lambda, ==, 50);
+    fixed_quad(&fixed, &tex.image, SGI_RASTER_TEXTURE_SPANS, 0, k, 0.25, 0.25,
+               1);
+    fixed_quad(&exact, &tex.image, SGI_RASTER_TEXTURE_DOUBLE, 0, k, 0.25,
+               0.25, 1);
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            g_assert_cmphex(fixed.p.colour[0][planes_index(x, y)], ==,
+                            0x323232);
+            g_assert_cmphex(exact.p.colour[0][planes_index(x, y)], ==,
+                            0x313131);
+        }
+    }
+}
+
+/*
+ * The choice of filter and nearest level is the double path's: under
+ * NEAREST magnification and NEAREST_MIPMAP_NEAREST minification each
+ * pixel is one texel of one level, so a floor in perspective whose
+ * footprint crosses every level comes out the same pixel for pixel.
+ */
+static void test_texture_fixed_choices(void)
+{
+    static BandPlanes fixed, exact;
+    static FixedTexture tex;
+    GRand *rand = g_rand_new_with_seed(0xc401ce);
+
+    fixed_texture_init(&tex, SGI_GL_RGBA, NULL, SGI_GL_NEAREST_MIPMAP_NEAREST,
+                       SGI_GL_NEAREST, SGI_GL_REPEAT, SGI_GL_REPEAT);
+    for (unsigned l = 0; l < FIXED_TEX_LEVELS; l++) {
+        for (unsigned i = 0; i < G_N_ELEMENTS(tex.texel[l]); i++) {
+            tex.texel[l][i] = g_rand_int(rand);
+        }
+    }
+    g_rand_free(rand);
+    fixed_quad(&fixed, &tex.image, SGI_RASTER_TEXTURE_SPANS, 0, 9, 0, 21, 16);
+    fixed_quad(&exact, &tex.image, SGI_RASTER_TEXTURE_DOUBLE, 0, 9, 0, 21, 16);
+    g_assert(!memcmp(&fixed.p, &exact.p, sizeof(fixed.p)));
+}
+
+/*
+ * Coordinates keep their precision far down a floor in perspective,
+ * where 1/W is 1/32 and the texture repeats 200 times across, starting
+ * 100,000 repeats from the origin: a 32-bit fixed-point numerator left
+ * about 14 of 255 on a far floor, and single precision would leave an
+ * eighth of a texel here. Trilinear colour stays within 2 of the double
+ * path's.
+ */
+static void test_texture_fixed_far_floor(void)
+{
+    static BandPlanes fixed, exact;
+    static FixedTexture tex;
+    GRand *rand = g_rand_new_with_seed(0xf100);
+    unsigned max = 0;
+
+    fixed_texture_init(&tex, SGI_GL_RGBA, NULL, SGI_GL_LINEAR_MIPMAP_LINEAR,
+                       SGI_GL_LINEAR, SGI_GL_REPEAT, SGI_GL_REPEAT);
+    for (unsigned l = 0; l < FIXED_TEX_LEVELS; l++) {
+        for (unsigned i = 0; i < G_N_ELEMENTS(tex.texel[l]); i++) {
+            tex.texel[l][i] = g_rand_int(rand);
+        }
+    }
+    g_rand_free(rand);
+    fixed_quad(&fixed, &tex.image, SGI_RASTER_TEXTURE_SPANS, 100000,
+               100200, 0, 300, 32);
+    fixed_quad(&exact, &tex.image, SGI_RASTER_TEXTURE_DOUBLE, 100000,
+               100200, 0, 300, 32);
+    for (unsigned p = 0; p < W * H; p++) {
+        g_assert_cmpuint(fixed.stores[p], ==, exact.stores[p]);
+        for (unsigned k = 0; k < 3; k++) {
+            int x = (fixed.p.colour[0][p] >> (8 * k)) & 0xff;
+            int y = (exact.p.colour[0][p] >> (8 * k)) & 0xff;
+
+            max = MAX(max, (unsigned)abs(x - y));
+        }
+    }
+    g_assert_cmpuint(fixed.stores[planes_index(32, 60)], ==, 1);
+    g_assert_cmpuint(max, <=, 2);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -14476,6 +14939,14 @@ int main(int argc, char **argv)
                     test_texture_points_lines_binding);
     g_test_add_func("/sgi-gl/texture-clips-behind-eye",
                     test_texture_clips_behind_eye);
+    g_test_add_func("/sgi-gl/texture-fixed/bound", test_texture_fixed_bound);
+    g_test_add_func("/sgi-gl/texture-fixed/weights",
+                    test_texture_fixed_weights);
+    g_test_add_func("/sgi-gl/texture-fixed/lambda", test_texture_fixed_lambda);
+    g_test_add_func("/sgi-gl/texture-fixed/choices",
+                    test_texture_fixed_choices);
+    g_test_add_func("/sgi-gl/texture-fixed/far-floor",
+                    test_texture_fixed_far_floor);
     g_test_add_func("/sgi-gl/batch-matches-pieces", test_batch_matches_pieces);
     g_test_add_func("/sgi-gl/triangle-coverage-exact",
                     test_triangle_coverage_exact);
