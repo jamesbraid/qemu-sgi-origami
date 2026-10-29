@@ -221,6 +221,44 @@ static void test_error_enable_refusal(void)
     }
 }
 
+/*
+ * IRIX 6.5.30 registers inputs 28 and 29 at its two software priorities and
+ * raises them only through SOFTINT; its dispatcher ANDs INTSTAT with the mask
+ * it installed. INTSTAT must therefore show a software cause whatever the
+ * mask, and a raw external input at those positions must create none.
+ * Legacy delivers every cause on IP2; CRIME 1.5 routes 28 to IP4 and 29 to
+ * IP5.
+ */
+static void test_software_causes(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        QTestState *s = start_profile(legacy, "");
+
+        qtest_irq_intercept_out_named(s, CRIME_PATH, "cpu-ip");
+        cause(s, 28, true);
+        cause(s, 29, true);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 0);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0);
+        cause(s, 28, false);
+        cause(s, 29, false);
+        for (unsigned bit = 28; bit <= 29; bit++) {
+            unsigned output = legacy ? 1 : 1U << (bit - 26);
+
+            qtest_writeq(s, BASE + 0x18, 0);
+            qtest_writeq(s, BASE + 0x20, 1U << bit);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << bit);
+            assert_outputs(s, 0);
+            qtest_writeq(s, BASE + 0x18, 1U << bit);
+            assert_outputs(s, output);
+            qtest_writeq(s, BASE + 0x18, ~(1U << bit) & 0x3fffffffU);
+            assert_outputs(s, 0);
+            qtest_writeq(s, BASE + 0x20, 0);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 0);
+        }
+        qtest_quit(s);
+    }
+}
+
 static void test_controls(void)
 {
     QTestState *s = start_profile(true, "");
@@ -2917,6 +2955,7 @@ int main(int argc, char **argv)
     }
     add_case("sgi/crime/legacy/identity", test_identity);
     add_case("sgi/crime/legacy/controls", test_controls);
+    add_case("sgi/crime/legacy/software-causes", test_software_causes);
     add_case("sgi/crime/legacy/error-enable-zero",
                    test_error_enable_zero);
     add_case("sgi/crime/legacy/error-enable-refusal",
