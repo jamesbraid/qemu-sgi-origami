@@ -2114,6 +2114,82 @@ static void test_framebuffer_pixel_reaches_display_and_screendump(void)
     board_quit(qts);
 }
 
+/* A back-end entry's word at offset 4 of its read-window slot. */
+static uint32_t backend_readback(QTestState *qts, uint32_t index)
+{
+    return qtest_readl(qts, WIDGET + 0x220000 + ((uint64_t)index << 3) + 4);
+}
+
+/*
+ * The kernel's back-end loads: type 3 headers (bit 30 clear) at start-up,
+ * type 7 (bit 30 set) for later mode and cursor writes, each counting the
+ * 32-bit words that follow across 64-bit stores, upper half first, wherever
+ * the header falls. The frame and line tables, the timing, DAC, clock and
+ * scanout entries are kept and read back at offset 4 of their read-window
+ * slot, which the kernel's read-modify-writes of 0x26c0, 0x2482, 0x2483 and
+ * 0x2700 rely on; none of them is reported as unmodeled. 0x2701 bits 2:0
+ * are the back end's version, 1.
+ */
+static void test_backend_tables_and_readback(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    const uint32_t entries[] = {
+        0x2481, 0x2482, 0x2483, 0x2600, 0x2680, 0x26c0, 0x2700, 0x27c0,
+        0x27cc, 0x2800, 0x2801, 0x2807, 0x2809, 0x2929, 0x2b00,
+    };
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-backend-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    /* The frame table: a type 3 header, 128 words, two to a store. */
+    backend_push64(qts, 0x39000080, 0x00010000);
+    for (uint32_t i = 1; i < 127; i += 2) {
+        backend_push64(qts, 0x00010000 | i, 0x00010000 | (i + 1));
+    }
+    /* Its last word shares a store with the line table's type 3 header. */
+    backend_push64(qts, 0x0001007f, 0x38000400);
+    for (uint32_t i = 0; i < 1024; i += 2) {
+        backend_push64(qts, 0x00020000 | i, 0x00020000 | (i + 1));
+    }
+    g_assert_cmphex(backend_readback(qts, 0x2400), ==, 0x00010000);
+    g_assert_cmphex(backend_readback(qts, 0x247f), ==, 0x0001007f);
+    g_assert_cmphex(backend_readback(qts, 0x2000), ==, 0x00020000);
+    g_assert_cmphex(backend_readback(qts, 0x23ff), ==, 0x000203ff);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(entries); i++) {
+        /* Type 3 for the even ones, type 7 for the odd. */
+        backend_push32(qts, ODSY_BACKEND_HDR(entries[i], 1) |
+                            (i & 1 ? 0x40000000u : 0));
+        backend_push32(qts, 0x00a50000 | entries[i]);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(entries); i++) {
+        g_assert_cmphex(backend_readback(qts, entries[i]), ==,
+                        0x00a50000 | entries[i]);
+    }
+    /* The kernel's DAC-gain read-modify-write. */
+    backend_push32(qts, ODSY_BACKEND_HDR(0x26c0, 1));
+    backend_push32(qts, backend_readback(qts, 0x26c0) | 2);
+    g_assert_cmphex(backend_readback(qts, 0x26c0), ==, 0x00a526c2);
+    g_assert_cmphex(backend_readback(qts, 0x2701) & 7, ==, 1);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_null(strstr(log, "0x400000"));
+    g_assert_null(strstr(log, "0x22"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 /*
  * The display channel's active size. The kernel and the X server write the
  * selected video format's active pixels and lines to backend entries 0x2802
@@ -22494,6 +22570,8 @@ int main(int argc, char **argv)
              test_i2c_reset_state_poll_terminates);
     add_case("sn1/odyssey/framebuffer-pixel-reaches-scanout",
              test_framebuffer_pixel_reaches_display_and_screendump);
+    add_fresh_case("sn1/odyssey/backend-tables-and-readback",
+                   test_backend_tables_and_readback);
     add_fresh_case("sn1/odyssey/display-channel-size-sets-scanout",
                    test_display_channel_size_sets_scanout);
     add_fresh_case("sn1/odyssey/reset-clears-the-framebuffer",
