@@ -929,6 +929,53 @@ static void test_texture_detail_sampler(void)
     g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
 }
 
+/*
+ * Word 17 of a texel load, field by field as the raster datasheet gives
+ * the library's construction: texel size code in bits 0-1, load scissor
+ * 2, target bank 3-4, tiling kind 5-6, s and t bits per page 7-10 and
+ * 11-14, interlace 15. The bits per page come from a 12-row table indexed
+ * by tiling kind times 3 plus size code. Every word the model accepts,
+ * scanned over all 16-bit values for each storage family, 2D and volume,
+ * must be one the library could build: a size code below 3, a table row
+ * that exists and agrees, bank at most 1 and no interlace.
+ */
+static void test_texture_load_word17_fields(void)
+{
+    static const uint8_t per_page[12][2] = {
+        { 4, 4 }, { 3, 4 }, { 2, 4 }, { 3, 2 }, { 3, 1 }, { 3, 1 },
+        { 3, 2 }, { 2, 2 }, { 2, 1 }, { 5, 3 }, { 4, 3 }, { 3, 3 },
+    };
+    static const uint32_t storage[] = { 0xd, 0xe, 8, 0x10, 0x14, 0x30 };
+    unsigned accepted = 0;
+
+    for (unsigned k = 0; k < ARRAY_SIZE(storage); k++) {
+        for (unsigned volume = 0; volume < 2; volume++) {
+            uint32_t h[20] = {
+                [0] = volume ? SGI_GL_TEXTURE_3D : SGI_GL_TEXTURE_2D,
+                [9] = storage[k],
+            };
+
+            for (uint32_t word = 0; word < 0x10000; word++) {
+                unsigned size = word & 3, tiling = (word >> 5) & 3;
+                unsigned row = tiling * 3 + size;
+
+                h[17] = word;
+                if (!sgi_kona_gl_texture_native_layout(h)) {
+                    continue;
+                }
+                accepted++;
+                g_assert_cmpuint(size, <, 3);
+                g_assert_cmpuint(row, <, ARRAY_SIZE(per_page));
+                g_assert_cmpuint((word >> 7) & 15, ==, per_page[row][0]);
+                g_assert_cmpuint((word >> 11) & 15, ==, per_page[row][1]);
+                g_assert_cmpuint((word >> 3) & 3, <=, 1);
+                g_assert_false(word & 0x8000);
+            }
+        }
+    }
+    g_assert_cmpuint(accepted, >, 0);
+}
+
 static void test_texture_native_layout(void)
 {
     static const struct {
@@ -3413,6 +3460,8 @@ int main(int argc, char **argv)
                     test_texture_sampler_1d);
     g_test_add_func("/sgi-kona-gl-decode/texture-native-layout",
                     test_texture_native_layout);
+    g_test_add_func("/sgi-kona-gl-decode/texture-load-word17-fields",
+                    test_texture_load_word17_fields);
     g_test_add_func("/sgi-kona-gl-decode/texture-volume-layout",
                     test_texture_volume_layout);
     g_test_add_func("/sgi-kona-gl-decode/texture-volume-unset-comparison",
