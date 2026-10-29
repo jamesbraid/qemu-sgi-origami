@@ -43,6 +43,10 @@
 #include "hw/mips/sgi/xio-link.h"
 #include "qemu/queue.h"
 #include "qom/object.h"
+#include "migration/vmstate.h"
+
+/* Room for a slot name in a migration stream, with its terminating zero. */
+#define SGI_XIO_BOARD_SLOT_NAME_SIZE 32
 
 #define TYPE_SGI_XIO_BOARD "sgi-xio-board"
 OBJECT_DECLARE_TYPE(SGIXioBoardState, SGIXioBoardClass, SGI_XIO_BOARD)
@@ -123,10 +127,27 @@ struct SGIXioBoardState {
     strList *other_identity_parts;
     OneWireBus *onewire_bus;
 
+    /*
+     * The "slot" a migration stream's board was in, zero-padded; see
+     * vmstate_sgi_xio_board_slot.
+     */
+    uint8_t migrated_slot[SGI_XIO_BOARD_SLOT_NAME_SIZE];
+
     /* < private > */
     bool queued;
     QTAILQ_ENTRY(SGIXioBoardState) node;
 };
+
+/*
+ * A graphics pipe is a system-bus device with no device path, so its
+ * vmstate instance follows realize order, which is command-line order:
+ * two identical builds given the same pipes in another order would load
+ * each pipe's state into the other. A pipe family's vmstate carries this
+ * section, the board's "slot" zero-padded to SGI_XIO_BOARD_SLOT_NAME_SIZE
+ * bytes, and a stream whose slot differs from the destination board's is
+ * refused, naming both.
+ */
+extern const VMStateDescription vmstate_sgi_xio_board_slot;
 
 struct SGIXioBoardIdentityPart;
 

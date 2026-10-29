@@ -13,6 +13,7 @@
 #include "qapi/qapi-builtin-visit.h"
 #include "qapi/visitor.h"
 #include "qemu/cutils.h"
+#include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qobject/qnum.h"
 #include "qom/object.h"
@@ -627,6 +628,56 @@ static void sgi_xio_board_set_other_identity_parts(Object *obj, Visitor *v,
     qapi_free_strList(board->other_identity_parts);
     board->other_identity_parts = replacement;
 }
+
+static void sgi_xio_board_slot_bytes(SGIXioBoardState *board,
+                                     uint8_t *bytes)
+{
+    memset(bytes, 0, SGI_XIO_BOARD_SLOT_NAME_SIZE);
+    if (board->slot_name) {
+        memcpy(bytes, board->slot_name,
+               MIN(strlen(board->slot_name),
+                   SGI_XIO_BOARD_SLOT_NAME_SIZE - 1));
+    }
+}
+
+static int sgi_xio_board_slot_pre_save(void *opaque)
+{
+    SGIXioBoardState *board = opaque;
+
+    sgi_xio_board_slot_bytes(board, board->migrated_slot);
+    return 0;
+}
+
+static int sgi_xio_board_slot_post_load(void *opaque, int version_id)
+{
+    SGIXioBoardState *board = opaque;
+    uint8_t here[SGI_XIO_BOARD_SLOT_NAME_SIZE];
+    char stream[SGI_XIO_BOARD_SLOT_NAME_SIZE];
+
+    sgi_xio_board_slot_bytes(board, here);
+    if (memcmp(here, board->migrated_slot, sizeof(here))) {
+        memcpy(stream, board->migrated_slot, sizeof(stream));
+        stream[sizeof(stream) - 1] = 0;
+        error_report("%s: the migration stream's board was in slot %s, "
+                     "and this one is in slot %s",
+                     object_get_typename(OBJECT(board)), stream,
+                     board->slot_name ? board->slot_name : "");
+        return -EINVAL;
+    }
+    return 0;
+}
+
+const VMStateDescription vmstate_sgi_xio_board_slot = {
+    .name = "sgi-xio-board-slot",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_save = sgi_xio_board_slot_pre_save,
+    .post_load = sgi_xio_board_slot_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BUFFER(migrated_slot, SGIXioBoardState),
+        VMSTATE_END_OF_LIST()
+    },
+};
 
 void sgi_xio_board_class_set_identity(ObjectClass *oc,
                                       const SGIXioBoardIdentity *identity)

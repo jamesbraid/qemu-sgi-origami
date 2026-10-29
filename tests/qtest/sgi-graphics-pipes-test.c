@@ -19,6 +19,7 @@
 #include "qobject/qnum.h"
 #include "qobject/qstring.h"
 #include "sgi-launch.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 #define OCTANE2_CPU "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
@@ -1181,6 +1182,93 @@ static void test_multi_identity(void)
     }
 }
 
+#define RACK_IO3(off)       (SPACE_IO + (UINT64_C(15) << 24) + (off))
+#define KONA_WIDGET_CONTROL 0x24
+
+/* The migration status @s reports. */
+static char *migration_status(QTestState *s)
+{
+    QDict *ret = qtest_qmp_assert_success_ref(s,
+        "{ 'execute': 'query-migrate' }");
+    char *status = g_strdup(qdict_get_try_str(ret, "status"));
+
+    qobject_unref(ret);
+    return status;
+}
+
+/*
+ * Migrate an Onyx2 rack with pipes in io3 and io7 into a destination
+ * whose pipes are given in @order, and return the destination, stopped,
+ * once it has finished loading: "completed" or "failed".
+ */
+static QTestState *rack_migrate(const char *order, char **status)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pipes-migrate-XXXXXX",
+                                          &error);
+    g_autofree char *uri = NULL;
+    g_autofree char *more = NULL;
+    QTestState *from, *to;
+    int64_t deadline = g_get_monotonic_time() +
+                       SGI_MIGRATION_WAIT_MIN_S * G_TIME_SPAN_SECOND;
+
+    g_assert_no_error(error);
+    uri = g_strdup_printf("unix:%s/migration.sock", dir);
+    from = start(&onyx2_rack_two_nodes,
+                 "-device sgi-kona,slot=io3,product=ir3 "
+                 "-device sgi-kona,slot=io7,product=ir3");
+    cpu_writel(from, 0, RACK_IO3(KONA_WIDGET_CONTROL), 0x1003);
+    cpu_writel(from, RACK_N2_CPU, RACK_IO7(KONA_WIDGET_CONTROL), 0x1007);
+    more = g_strdup_printf("-incoming defer %s", order);
+    to = start(&onyx2_rack_two_nodes, more);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s,"
+        "'exit-on-error':false}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    for (;;) {
+        *status = migration_status(to);
+        if (g_str_equal(*status, "completed") ||
+            g_str_equal(*status, "failed")) {
+            break;
+        }
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_free(*status);
+        g_usleep(1000);
+    }
+    qtest_quit(from);
+    g_unlink(uri + strlen("unix:"));
+    g_rmdir(dir);
+    return to;
+}
+
+/*
+ * A pipe's migration stream carries its slot. A destination given the
+ * same pipes in the same order loads each pipe's own state; one given
+ * them in the other order would load io3's state into io7 and the
+ * reverse, and is refused instead.
+ */
+static void test_multi_migration(void)
+{
+    g_autofree char *status = NULL;
+    QTestState *to;
+
+    to = rack_migrate("-device sgi-kona,slot=io3,product=ir3 "
+                      "-device sgi-kona,slot=io7,product=ir3", &status);
+    g_assert_cmpstr(status, ==, "completed");
+    g_assert_cmphex(cpu_readl(to, 0, RACK_IO3(KONA_WIDGET_CONTROL)), ==,
+                    0x1003);
+    g_assert_cmphex(cpu_readl(to, RACK_N2_CPU, RACK_IO7(KONA_WIDGET_CONTROL)),
+                    ==, 0x1007);
+    qtest_quit(to);
+    g_free(status);
+
+    to = rack_migrate("-device sgi-kona,slot=io7,product=ir3 "
+                      "-device sgi-kona,slot=io3,product=ir3", &status);
+    g_assert_cmpstr(status, ==, "failed");
+    qtest_quit(to);
+}
+
 int main(int argc, char **argv)
 {
     QTestState *qts;
@@ -1210,6 +1298,8 @@ int main(int argc, char **argv)
                    test_multi_onyx3400_ir);
     qtest_add_func("/sgi-graphics-pipes/multi/rm-count", test_multi_rm_count);
     qtest_add_func("/sgi-graphics-pipes/multi/identity", test_multi_identity);
+    qtest_add_func("/sgi-graphics-pipes/multi/migration",
+                   test_multi_migration);
     qtest_add_func("/sgi-graphics-pipes/multi/onyx2-rack",
                    test_multi_onyx2_rack);
     for (size_t i = 0; i < G_N_ELEMENTS(launches); i++) {

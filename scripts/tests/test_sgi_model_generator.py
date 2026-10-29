@@ -418,6 +418,15 @@ class GraphicsPipeTests(unittest.TestCase):
             "gbrick1-pipe0-pipe": 0x51454d554720,
             "gbrick1-pipe1-pipe": 0x51454d554730})
 
+    def test_slot_name_fits_the_migration_field(self):
+        section = self.many_slots("XIO slot {number}")
+        section["slots"][0]["names"] = ["g" * 31]
+        section["slots"][0]["description"] = "a slot"
+        self.resolve(section)
+        section["slots"][0]["names"] = ["g" * 32]
+        with self.assertRaisesRegex(ResolutionError, "32-byte slot field"):
+            self.resolve(section)
+
     def test_pci_placement(self):
         slots = {slot["name"]: slot for slot in
                  self.topology("origin200-dual")["graphics"]["slots"]}
