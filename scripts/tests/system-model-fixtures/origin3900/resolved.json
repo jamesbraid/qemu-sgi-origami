@@ -296,6 +296,9 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/router.rst"
+      ],
       "hardware_kind": "router",
       "id": "cx0-router",
       "identity": {
@@ -427,6 +430,15 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
       "hardware_kind": "bedrock",
       "id": "cx0-node0-bedrock",
       "identity": {
@@ -661,6 +673,15 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
       "hardware_kind": "bedrock",
       "id": "cx0-node1-bedrock",
       "identity": {
@@ -895,6 +916,15 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
       "hardware_kind": "bedrock",
       "id": "cx0-node2-bedrock",
       "identity": {
@@ -1129,6 +1159,15 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
       "hardware_kind": "bedrock",
       "id": "cx0-node3-bedrock",
       "identity": {
