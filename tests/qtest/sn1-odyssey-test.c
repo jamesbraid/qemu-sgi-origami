@@ -13438,6 +13438,79 @@ static void context_switch_to(QTestState *qts, uint32_t id)
                                 ODSY_CTX_SWITCH_DONE_OFFSET), ==, 1);
 }
 
+/*
+ * The kernel's full transform-state replay: register 0x31 selects a
+ * 16-word group of a 512-word table loaded through 0x9080bda2; register
+ * 0x34 selects 68-word-table entries loaded through 0x9080bdc8 (16 words)
+ * and 0x908091df (4 words); register 0x28 = 0 then a run of 0x60 words
+ * fills the routine list; and block 0x1ea, 0x908091ea, carries four words
+ * built from the selected slot-448 and slot-544 entries' first operands,
+ * each followed by itself with bit 31 flipped. What the tables and the
+ * block hold on the board is unknown: the model takes each with its
+ * operands, and a word misread as a command would be reported.
+ */
+static void test_command_fifo_context_replay_words(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    static const uint32_t selects[] = { 36, 52, 20 };
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-replay-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    for (uint32_t index = 0; index < 512; index += 16) {
+        if (index == 320 || index == 480) {
+            continue;
+        }
+        cmd_push(qts, ODSY_PROG(0x31, index));
+        cmd_push(qts, 0x9080bda2);
+        for (unsigned i = 0; i < 16; i++) {
+            cmd_push(qts, 0x00007777);
+        }
+    }
+    cmd_push(qts, ODSY_PROG(0x34, 0));
+    cmd_push(qts, 0x9080bdc8);
+    for (unsigned i = 0; i < 16; i++) {
+        cmd_push(qts, 0x3f800000);
+    }
+    cmd_push(qts, ODSY_PROG(0x34, 16));
+    cmd_push(qts, 0x908091df);
+    for (unsigned i = 0; i < 4; i++) {
+        cmd_push(qts, 0x00007777);
+    }
+    for (unsigned k = 0; k < ARRAY_SIZE(selects); k++) {
+        cmd_push(qts, ODSY_PROG(0x34, selects[k]));
+        cmd_push(qts, 0x9080bdc8);
+        for (unsigned i = 0; i < 16; i++) {
+            cmd_push(qts, i % 5 ? 0 : 0x3f800000);
+        }
+    }
+    cmd_push(qts, ODSY_PROG(0x28, 0));
+    for (unsigned i = 0; i < 40; i++) {
+        cmd_push(qts, ODSY_PROG(0x60, i));
+    }
+    cmd_push(qts, 0x908091ea);
+    cmd_push(qts, 0x00007777);
+    cmd_push(qts, 0x80007777);
+    cmd_push(qts, 0x00007778);
+    cmd_push(qts, 0x80007778);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_null(strstr(log, "command FIFO word"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 /* Synthetic halfwords exercise the unsupported uploaded-program path. */
 static void push_synthetic_program_entry(QTestState *qts, uint32_t value)
 {
@@ -23212,6 +23285,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_colour_index);
     add_fresh_case("sn1/odyssey/command-fifo-gl-colour-index-write-mask",
              test_command_fifo_gl_colour_index_write_mask);
+    add_fresh_case("sn1/odyssey/command-fifo-context-replay-words",
+                   test_command_fifo_context_replay_words);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-window-unknown",
              test_command_fifo_gl_program_window_unknown);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-window-one-address",

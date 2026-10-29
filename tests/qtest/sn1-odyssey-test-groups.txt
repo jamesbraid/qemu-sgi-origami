@@ -184,6 +184,7 @@ gl /mips64/sn1/odyssey/scanout-overlay-menu
 gl /mips64/sn1/odyssey/command-fifo-dest-select-flags
 gl /mips64/sn1/odyssey/command-fifo-gl-colour-index
 gl /mips64/sn1/odyssey/command-fifo-gl-colour-index-write-mask
+gl /mips64/sn1/odyssey/command-fifo-context-replay-words
 gl /mips64/sn1/odyssey/command-fifo-gl-program-window-unknown
 gl /mips64/sn1/odyssey/command-fifo-gl-program-window-record
 gl /mips64/sn1/odyssey/command-fifo-gl-program-window-one-address
