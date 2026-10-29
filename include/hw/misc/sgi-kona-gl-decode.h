@@ -13,6 +13,9 @@
 
 #define SGI_KONA_GL_MAX_ARGS 22
 
+/* The selector word's command field; the bits above it carry data. */
+#define SGI_KONA_GL_SELECTOR_MASK 0xffffu
+
 typedef struct SGIKonaGLSelectorInfo {
     uint32_t selector;
     const char *call;
@@ -41,6 +44,8 @@ typedef enum SGIKonaGLDecodeResult {
 typedef struct SGIKonaGLCommand {
     const SGIKonaGLSelectorInfo *info;  /* NULL for an unknown selector */
     uint32_t selector;
+    /* Bits 16 to 31 of the selector word, in place: a packed form's data. */
+    uint32_t packed;
     unsigned argc;
     uint32_t args[SGI_KONA_GL_MAX_ARGS];
     /*

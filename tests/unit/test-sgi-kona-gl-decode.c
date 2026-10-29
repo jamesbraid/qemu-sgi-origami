@@ -147,6 +147,30 @@ static void test_unknown_selector(void)
     g_assert_null(sgi_kona_gl_lookup(0xdeadbeef));
 }
 
+/*
+ * The byte and short attribute forms put data in bits 16 to 31 of the
+ * selector word (glVertex2s(x, y) is x << 16 | 0x8e), so the selector is
+ * the low half: data there neither hides a selector nor names another.
+ */
+static void test_selector_low_half(void)
+{
+    const uint32_t vertex[] = { 0xabcd0090, 0x3f800000, 0x40000000, 0 };
+    const uint32_t unknown[] = { 0x00010000 | 0x1a6, 0 };
+    SGIKonaGLCommand cmd;
+
+    g_assert_cmpint(sgi_kona_gl_decode(vertex, ARRAY_SIZE(vertex), 0, &cmd),
+                    ==, SGI_KONA_GL_DECODE_OK);
+    g_assert_cmphex(cmd.selector, ==, 0x90);
+    g_assert_cmphex(cmd.packed, ==, 0xabcd0000);
+    g_assert_cmpuint(cmd.length, ==, 4);
+    g_assert_cmphex(cmd.args[2], ==, 0);
+
+    g_assert_cmpint(sgi_kona_gl_decode(unknown, ARRAY_SIZE(unknown), 0, &cmd),
+                    ==, SGI_KONA_GL_DECODE_UNKNOWN_SELECTOR);
+    g_assert_cmphex(cmd.selector, ==, 0x1a6);
+    g_assert_cmpuint(cmd.length, ==, 1);
+}
+
 static void test_truncated_packet(void)
 {
     const uint32_t vertex[] = { 0x90, 0x3f800000, 0x40000000 };
@@ -221,7 +245,7 @@ static void test_multi_command_stream(void)
         { SGI_KONA_GL_DECODE_OK, 0x1a, 2 },
         { SGI_KONA_GL_DECODE_OK, 0x90, 4 },
         { SGI_KONA_GL_DECODE_OK, 0x90, 4 },
-        { SGI_KONA_GL_DECODE_UNKNOWN_SELECTOR, 0x12345678, 1 },
+        { SGI_KONA_GL_DECODE_UNKNOWN_SELECTOR, 0x5678, 1 },
         { SGI_KONA_GL_DECODE_OK, 0x90, 4 },
         { SGI_KONA_GL_DECODE_OK, 0x71, 2 },
         { SGI_KONA_GL_DECODE_OK, 0xc6, 2 },
@@ -3275,6 +3299,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-kona-gl-decode/swap-finish",
                     test_swap_and_finish_share_a_selector);
     g_test_add_func("/sgi-kona-gl-decode/unknown", test_unknown_selector);
+    g_test_add_func("/sgi-kona-gl-decode/selector-low-half",
+                    test_selector_low_half);
     g_test_add_func("/sgi-kona-gl-decode/truncated", test_truncated_packet);
     g_test_add_func("/sgi-kona-gl-decode/length-mismatch",
                     test_length_mismatch);
