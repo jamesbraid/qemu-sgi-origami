@@ -3077,6 +3077,45 @@ static void test_command_fifo_dma_trace(void)
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
+/*
+ * One kick names one 128-byte work-list entry: the 32-byte header and up to
+ * 12 page pairs, with no terminator when all twelve are used; the next
+ * entry's words follow at once. Twelve one-row pairs fill this entry, and
+ * the 2 KiB after it are nonzero, as a following entry's header and pairs
+ * would be. The transfer takes exactly the twelve rows.
+ */
+static void test_command_fifo_dma_full_entry(void)
+{
+    QTestState *qts = board_start("");
+    const uint64_t table = 0xb80000, source = 0xb90000;
+    uint8_t tbl[ODSY_DMA_TABLE_HEADER + 12 * 8 + 0x800];
+    uint8_t row[64];
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_BANKS);
+    memset(tbl, 0xff, sizeof(tbl));
+    memset(tbl, 0, ODSY_DMA_TABLE_HEADER);
+    dma_object_header(tbl, 12, false);
+    for (unsigned k = 0; k < 12; k++) {
+        for (unsigned i = 0; i < 16; i++) {
+            stl_be_p(&row[i * 4], 0xcc000000u | k << 8 | i);
+        }
+        qtest_memwrite(qts, source + k * ODSY_DMA_PAGE_SIZE, row, sizeof(row));
+        stq_be_p(&tbl[ODSY_DMA_TABLE_HEADER + k * 8],
+                 ODSY_DMA_PTE(source + k * ODSY_DMA_PAGE_SIZE, sizeof(row)));
+    }
+    qtest_memwrite(qts, table, tbl, sizeof(tbl));
+    dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table);
+
+    for (unsigned k = 0; k < 12; k++) {
+        g_assert_cmphex(odsy_test_dma_word(qts, k * 16), ==,
+                        0xcc000000u | k << 8);
+        g_assert_cmphex(odsy_test_dma_word(qts, k * 16 + 15), ==,
+                        0xcc000000u | k << 8 | 15);
+    }
+    board_quit(qts);
+}
+
 static void test_command_fifo_dma_page_table(void)
 {
     QTestState *qts = board_start("");
@@ -22801,6 +22840,8 @@ int main(int argc, char **argv)
                    test_command_fifo_dma_trace);
     add_fresh_case("sn1/odyssey/command-fifo-dma-page-table",
                    test_command_fifo_dma_page_table);
+    add_fresh_case("sn1/odyssey/command-fifo-dma-full-entry",
+                   test_command_fifo_dma_full_entry);
     add_fresh_case("sn1/odyssey/command-fifo-dma-image",
                    test_command_fifo_dma_image);
     add_fresh_case("sn1/odyssey/readback/direction", test_readback_direction);
