@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "4e392abdb6318a31232a6d6f60c7107ad64d3286cb53d0d2a42466120fc1d786"
+    "457b822290c6a14fe7c47f6b7e01053e3012af22f10d0a05a636d8c5a4d80a75"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -209,9 +209,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 138)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 139)
         self.assertEqual(len(discover_model_paths(INPUTS)), 43)
-        self.assertEqual(len(layers), 93)
+        self.assertEqual(len(layers), 94)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -338,6 +338,7 @@ class GraphicsPipeTests(unittest.TestCase):
                   for topology in self.catalogue["topologies"]
                   if topology.get("graphics")}
         self.assertEqual(limits.pop("onyx3400-ir"), 4)
+        self.assertEqual(limits.pop("onyx2-rack"), 2)
         self.assertEqual(set(limits.values()), {1})
 
     def test_max_pipes_above_the_slots_is_refused(self):
@@ -365,6 +366,16 @@ class GraphicsPipeTests(unittest.TestCase):
             self.resolve(section)
         section["slots"][0]["names"] = ["io2", "io3", "io4", "io5"]
         self.resolve(section)
+
+    def test_rack_second_pipe_needs_node_board_2(self):
+        slots = {slot["name"]: slot for slot in
+                 self.topology("onyx2-rack")["graphics"]["slots"]}
+        self.assertNotIn("requires", slots["io3"])
+        self.assertEqual(slots["io7"]["requires"], {"min-nodes": 2})
+        records = {board["label"]: board for board in
+                   self.topology("onyx2-rack")["io-boards"]}
+        self.assertEqual(records["io7"]["other-identity-parts"],
+                         records["io3"]["other-identity-parts"])
 
     def test_pci_placement(self):
         slots = {slot["name"]: slot for slot in

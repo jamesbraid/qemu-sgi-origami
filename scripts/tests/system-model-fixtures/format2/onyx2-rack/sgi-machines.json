@@ -3332,7 +3332,7 @@
       "graphics": {
         "headless": false,
         "headless-refused": "SGI sold no Onyx2 without an InfiniteReality pipe, and an Onyx2 with no pipe is an Origin 2000, so use origin2000-deskside or origin2000-rack",
-        "max-pipes": 1,
+        "max-pipes": 2,
         "slots": [
           {
             "changeable": false,
@@ -3568,6 +3568,234 @@
                 "reason": "no manual or capture places a GE14 InfiniteReality2 in an Onyx2 rack"
               }
             ]
+          },
+          {
+            "changeable": false,
+            "description": "Xtown in XIO slot 7, cabled to the graphics module's Ktown: the rack's second InfiniteReality pipe",
+            "families": [
+              {
+                "device": "sgi-kona",
+                "family": "kona",
+                "name": "InfiniteReality",
+                "products": [
+                  {
+                    "assembly": "030-1398-001",
+                    "description": "GE16 geometry board, RM9 raster managers, 64 MB texture per RM",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "io7 is taken as the graphics module's left-hand pipe, which takes at most two raster managers; which Ktown connector a second pipe uses is approximated",
+                      "presents the GE16-4 geometry board, since no InfiniteReality2E capture gives the GE16 variant",
+                      "presents the TM7 as its 64 MB texture board, which is inferred",
+                      "a DG5-2 in a rack presents the 030-1055-001 part, since no capture shows a plain DG5-2 in an Onyx2 rack"
+                    ],
+                    "name": "InfiniteReality2E",
+                    "pairing": "established",
+                    "product": "ir2e",
+                    "settings": [
+                      {
+                        "changeable": false,
+                        "default": "ge16-4",
+                        "description": "geometry board",
+                        "name": "geometry",
+                        "values": [
+                          {
+                            "description": "GE16-4, four geometry engines",
+                            "evidence": "030-1398-001",
+                            "value": "ge16-4"
+                          }
+                        ]
+                      },
+                      {
+                        "changeable": false,
+                        "default": "rm9",
+                        "description": "raster-manager board",
+                        "name": "rm-type",
+                        "values": [
+                          {
+                            "description": "RM9; gfxinfo names the InfiniteReality3 board RM10",
+                            "evidence": "030-1402-001",
+                            "value": "rm9"
+                          }
+                        ]
+                      },
+                      {
+                        "changeable": false,
+                        "default": "1",
+                        "description": "raster-manager boards in the pipe",
+                        "name": "rm-count",
+                        "values": [
+                          {
+                            "description": "one raster manager",
+                            "value": "1"
+                          },
+                          {
+                            "description": "two raster managers",
+                            "value": "2"
+                          }
+                        ]
+                      },
+                      {
+                        "changeable": false,
+                        "default": "64",
+                        "description": "texture memory on each raster manager, in MB",
+                        "name": "texture-mb",
+                        "values": [
+                          {
+                            "description": "64 MB",
+                            "evidence": "TM7 030-1053-001",
+                            "value": "64"
+                          }
+                        ]
+                      },
+                      {
+                        "changeable": false,
+                        "default": "dg5-2",
+                        "description": "display generator board",
+                        "name": "display",
+                        "values": [
+                          {
+                            "description": "DG5-2, 2 channels",
+                            "evidence": "030-1055-001",
+                            "value": "dg5-2"
+                          },
+                          {
+                            "description": "DG5-8, 8 channels",
+                            "evidence": "030-1087-001",
+                            "value": "dg5-8"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "assembly": "030-1398-001",
+                    "description": "GE16-4 geometry board, RM10 raster managers (RM9 in configmon), 256 MB texture per RM",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "io7 is taken as the graphics module's left-hand pipe, which takes at most two raster managers; which Ktown connector a second pipe uses is approximated",
+                      "a DG5-2 in a rack presents the 030-1055-001 part, since no capture shows a plain DG5-2 in an Onyx2 rack"
+                    ],
+                    "name": "InfiniteReality3",
+                    "pairing": "established",
+                    "product": "ir3",
+                    "settings": [
+                      {
+                        "changeable": false,
+                        "default": "ge16-4",
+                        "description": "geometry board",
+                        "name": "geometry",
+                        "values": [
+                          {
+                            "description": "GE16-4, four geometry engines",
+                            "evidence": "030-1398-001",
+                            "value": "ge16-4"
+                          }
+                        ]
+                      },
+                      {
+                        "changeable": false,
+                        "default": "rm9",
+                        "description": "raster-manager board",
+                        "name": "rm-type",
+                        "values": [
+                          {
+                            "description": "RM9; gfxinfo names the InfiniteReality3 board RM10",
+                            "evidence": "030-1402-001",
+                            "value": "rm9"
+                          }
+                        ]
+                      },
+                      {
+                        "changeable": false,
+                        "default": "1",
+                        "description": "raster-manager boards in the pipe",
+                        "name": "rm-count",
+                        "values": [
+                          {
+                            "description": "one raster manager",
+                            "value": "1"
+                          },
+                          {
+                            "description": "two raster managers",
+                            "value": "2"
+                          }
+                        ]
+                      },
+                      {
+                        "changeable": false,
+                        "default": "256",
+                        "description": "texture memory on each raster manager, in MB",
+                        "name": "texture-mb",
+                        "values": [
+                          {
+                            "description": "256 MB",
+                            "evidence": "030-1588-001",
+                            "value": "256"
+                          }
+                        ]
+                      },
+                      {
+                        "changeable": false,
+                        "default": "dg5-2",
+                        "description": "display generator board",
+                        "name": "display",
+                        "values": [
+                          {
+                            "description": "DG5-2, 2 channels",
+                            "evidence": "030-1055-001",
+                            "value": "dg5-2"
+                          },
+                          {
+                            "description": "DG5-8, 8 channels",
+                            "evidence": "030-1087-001",
+                            "value": "dg5-8"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "name": "io7",
+            "placement": [
+              {
+                "name": "slot",
+                "value": "io7"
+              }
+            ],
+            "refusals": [
+              {
+                "family": "kona",
+                "product": "ir2",
+                "reason": "no manual or capture places a GE14 InfiniteReality2 in an Onyx2 rack"
+              },
+              {
+                "family": "kona",
+                "product": "ir2e",
+                "reason": "the model takes io7 as the graphics module's second pipe, on the left-hand Ktown connector, which takes one or two raster managers; that placement is approximated",
+                "settings": [
+                  {
+                    "name": "rm-count",
+                    "value": "4"
+                  }
+                ]
+              },
+              {
+                "family": "kona",
+                "product": "ir3",
+                "reason": "the model takes io7 as the graphics module's second pipe, on the left-hand Ktown connector, which takes one or two raster managers; that placement is approximated",
+                "settings": [
+                  {
+                    "name": "rm-count",
+                    "value": "4"
+                  }
+                ]
+              }
+            ],
+            "requires": {
+              "min-nodes": 2
+            }
           }
         ]
       },
@@ -3600,6 +3828,21 @@
           "preset": "kona",
           "revision": 0,
           "serial": 89358092027648
+        },
+        {
+          "attachment": 7,
+          "carrier": "xio-slot",
+          "id": "io7-pipe",
+          "label": "io7",
+          "module-index": 0,
+          "other-identity-parts": [
+            "030-1067-001"
+          ],
+          "part": "030-1398-001",
+          "populated": true,
+          "preset": "kona",
+          "revision": 0,
+          "serial": 89358092027664
         }
       ],
       "ip27-firmware": {
@@ -3741,10 +3984,6 @@
             {
               "controlling-node": 1,
               "slot": 8
-            },
-            {
-              "controlling-node": 1,
-              "slot": 9
             }
           ]
         },
@@ -3831,10 +4070,6 @@
             {
               "controlling-node": 1,
               "slot": 8
-            },
-            {
-              "controlling-node": 1,
-              "slot": 9
             }
           ]
         },
@@ -3917,28 +4152,24 @@
               "slot": 3
             },
             {
-              "controlling-node": 1,
+              "controlling-node": 3,
               "slot": 4
             },
             {
-              "controlling-node": 3,
+              "controlling-node": 1,
               "slot": 5
             },
             {
-              "controlling-node": 1,
+              "controlling-node": 3,
               "slot": 6
             },
             {
-              "controlling-node": 3,
+              "controlling-node": 1,
               "slot": 7
             },
             {
-              "controlling-node": 1,
-              "slot": 8
-            },
-            {
               "controlling-node": 3,
-              "slot": 9
+              "slot": 8
             }
           ]
         }
@@ -4456,6 +4687,11 @@
           "crossbar-index": 1,
           "node-index": 3,
           "widget": 9
+        },
+        {
+          "crossbar-index": 1,
+          "node-index": 1,
+          "widget": 14
         }
       ],
       "xio-slots": [
@@ -4486,13 +4722,6 @@
           "id": "xio-slot-6",
           "label": "io6",
           "widget": 13
-        },
-        {
-          "controlling-node": 1,
-          "crossbar-index": 1,
-          "id": "xio-slot-7",
-          "label": "io7",
-          "widget": 14
         },
         {
           "controlling-node": 3,

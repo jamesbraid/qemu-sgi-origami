@@ -37,14 +37,14 @@ layer:
     - node_slots: [1, 2]
       routers: [router-1, router-2]
       fabric_links: [r1-node1, r1-node2, r1-r2]
-      xio_slots: {pci-expansion: 1, xio-slot-4: 1, xio-slot-5: 1, xio-slot-6: 1, xio-slot-7: 2, xio-slot-8: 2, xio-slot-9: 2, xio-slot-10: 2, xio-slot-11: 2, xio-slot-12: 2}
+      xio_slots: {pci-expansion: 1, xio-slot-4: 1, xio-slot-5: 1, xio-slot-6: 1, xio-slot-8: 2, xio-slot-9: 2, xio-slot-10: 2, xio-slot-11: 2, xio-slot-12: 2}
       supported_cpu_populations: [[2, 2], [1, 1], [2, 1]]
       grade: established
       sources: ["web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: in a 2-node system N1 controls IO1-IO6 and N2 IO7-IO12", qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-populations]
     - node_slots: [1, 2, 3]
       routers: [router-1, router-2]
       fabric_links: [r1-node1, r1-node2, r1-r2, r2-node3]
-      xio_slots: {pci-expansion: 3, xio-slot-4: 3, xio-slot-5: 1, xio-slot-6: 3, xio-slot-7: 2, xio-slot-8: 2, xio-slot-9: 2, xio-slot-10: 2, xio-slot-11: 2, xio-slot-12: 2}
+      xio_slots: {pci-expansion: 3, xio-slot-4: 3, xio-slot-5: 1, xio-slot-6: 3, xio-slot-8: 2, xio-slot-9: 2, xio-slot-10: 2, xio-slot-11: 2, xio-slot-12: 2}
       supported_cpu_populations: [[2, 2, 2], [1, 1, 1], [2, 1, 1], [2, 2, 1]]
       grade: inferred
       sources: ["qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-module-routers", "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"]
@@ -54,7 +54,7 @@ layer:
     - node_slots: [1, 2, 3, 4]
       routers: [router-1, router-2]
       fabric_links: [r1-node1, r1-node2, r1-r2, r2-node3, r2-node4]
-      xio_slots: {pci-expansion: 3, xio-slot-4: 3, xio-slot-5: 1, xio-slot-6: 3, xio-slot-7: 2, xio-slot-8: 4, xio-slot-9: 2, xio-slot-10: 4, xio-slot-11: 2, xio-slot-12: 4}
+      xio_slots: {pci-expansion: 3, xio-slot-4: 3, xio-slot-5: 1, xio-slot-6: 3, xio-slot-8: 4, xio-slot-9: 2, xio-slot-10: 4, xio-slot-11: 2, xio-slot-12: 4}
       supported_cpu_populations: [[2, 2, 2, 2], [1, 1, 1, 1], [2, 1, 1, 1], [2, 2, 1, 1], [2, 2, 2, 1]]
       grade: established
       sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified", "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants", "qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-module-routers"]
@@ -77,7 +77,8 @@ layer:
   # hw/mips/sgi/models/graphics-products.yaml's (docs/system/mips/sgi/sn.rst,
   # Graphics pipes).
   graphics:
-    max_pipes: 1
+    max_pipes: 2
+    max_pipes_sources: ["007-3457-005 printed page 1 PDF page 25: one or two pipes in a single rack", "007-3457-005 printed page 14 PDF page 38: two pipes per graphics module"]
     headless: false
     headless_refused: "SGI sold no Onyx2 without an InfiniteReality pipe, and an Onyx2 with no pipe is an Origin 2000, so use origin2000-deskside or origin2000-rack"
     slots:
@@ -121,6 +122,52 @@ layer:
           - family: kona
             product: ir2
             reason: "no manual or capture places a GE14 InfiniteReality2 in an Onyx2 rack"
+      - name: io7
+        description: "Xtown in XIO slot 7, cabled to the graphics module's Ktown: the rack's second InfiniteReality pipe"
+        placement: {slot: io7}
+        families:
+          - family: kona
+            products:
+              - product: ir2e
+                fidelity: approximated
+                limitations:
+                  - "io7 is taken as the graphics module's left-hand pipe, which takes at most two raster managers; which Ktown connector a second pipe uses is approximated"
+                  - "presents the GE16-4 geometry board, since no InfiniteReality2E capture gives the GE16 variant"
+                  - "presents the TM7 as its 64 MB texture board, which is inferred"
+                  - "a DG5-2 in a rack presents the 030-1055-001 part, since no capture shows a plain DG5-2 in an Onyx2 rack"
+                pairing: established
+                assembly: "030-1398-001"
+                settings:
+                  geometry: {values: [ge16-4]}
+                  rm-type: {values: [rm9]}
+                  rm-count: {values: ["1", "2"], default: "1"}
+                  texture-mb: {values: ["64"]}
+                  display: {values: [dg5-2, dg5-8], default: dg5-2}
+              - product: ir3
+                fidelity: approximated
+                limitations:
+                  - "io7 is taken as the graphics module's left-hand pipe, which takes at most two raster managers; which Ktown connector a second pipe uses is approximated"
+                  - "a DG5-2 in a rack presents the 030-1055-001 part, since no capture shows a plain DG5-2 in an Onyx2 rack"
+                pairing: established
+                assembly: "030-1398-001"
+                settings:
+                  geometry: {values: [ge16-4]}
+                  rm-type: {values: [rm9]}
+                  rm-count: {values: ["1", "2"], default: "1"}
+                  texture-mb: {values: ["256"]}
+                  display: {values: [dg5-2, dg5-8], default: dg5-2}
+        refusals:
+          - family: kona
+            product: ir2
+            reason: "no manual or capture places a GE14 InfiniteReality2 in an Onyx2 rack"
+          - family: kona
+            product: ir2e
+            settings: {rm-count: "4"}
+            reason: "the model takes io7 as the graphics module's second pipe, on the left-hand Ktown connector, which takes one or two raster managers; that placement is approximated"
+          - family: kona
+            product: ir3
+            settings: {rm-count: "4"}
+            reason: "the model takes io7 as the graphics module's second pipe, on the left-hand Ktown connector, which takes one or two raster managers; that placement is approximated"
   data:
     machine:
       name: Onyx2 rack with one InfiniteReality pipe
@@ -253,6 +300,9 @@ layer:
         - component: io3-xg
           serial: '0x51454d554700'
           reason: Synthetic graphics board identity G0, carrying the "QEMU" marker; not hardware evidence.
+        - component: io7-xg
+          serial: '0x51454d554710'
+          reason: Synthetic graphics board identity G16, the second pipe slot's first instance under the sixteen-per-slot rule, carrying the "QEMU" marker; not hardware evidence.
         - component: mediaio-ioc3
           serial: '0x5e7454d55001'
           reason: Synthetic IOC3 identity 1. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the "EMU" marker; not hardware evidence.
