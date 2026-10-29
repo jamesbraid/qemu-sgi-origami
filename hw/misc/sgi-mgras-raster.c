@@ -2077,11 +2077,26 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
  * server's read has it, and a transfer mode with bits 7:4 equal to 8, the
  * client's RGBA and GL_ABGR_EXT form, reads the same 4-byte pixels; the
  * alignment fields in bits 10:8 and 16:14 are ignored. Which order the board
- * returns rows in for the client, and what its other mode values return, are
- * unknown, so the model logs them and reads zero.
+ * returns rows in for the client is unknown. Depth and stencil reads are
+ * below; what the other mode values return is unknown, so the model logs
+ * them and reads zero.
  */
 #define MGRAS_XFRMODE_GL_FORMAT_MASK 0xf0
 #define MGRAS_XFRMODE_GL_FORMAT_RGBA 0x80
+/*
+ * Depth and stencil reads, the client's GL_DEPTH_COMPONENT and
+ * GL_STENCIL_INDEX less 0x1900 in bits 7:4. Inferred (the raster and
+ * display contract's depth and stencil paragraph): each pixel's
+ * depth word holds 24-bit depth in bits 23:0 and stencil in 31:24, the
+ * layout the model already keeps; a depth read returns
+ * Z << 8 | Z >> 16, depth widened to 32 bits, and a stencil read the
+ * top byte. Approximated: each pixel comes back as one 4-byte element
+ * like a colour read, the stencil in bits 7:0 of it; whether the board
+ * packs narrower elements is unknown. The discriminating test is
+ * gl-readpixels-dataport-depth-stencil.
+ */
+#define MGRAS_XFRMODE_GL_FORMAT_STENCIL 0x10
+#define MGRAS_XFRMODE_GL_FORMAT_DEPTH 0x20
 #define MGRAS_XFRMODE_GL_ALIGN_MASK  0x1c700
 #define MGRAS_XFRMODE_CAPTURED_XIMAGE_READ 0x4008a
 #define MGRAS_XFRMODE_CAPTURED_XIMAGE_SINGLE_ROW 0x10080
@@ -2102,8 +2117,12 @@ static void mgras_pio_read_start(SGIMgrasState *s, bool client)
     if (client) {
         uint32_t low = y0;
 
-        if ((mode & MGRAS_XFRMODE_GL_FORMAT_MASK) !=
-            MGRAS_XFRMODE_GL_FORMAT_RGBA) {
+        switch (mode & MGRAS_XFRMODE_GL_FORMAT_MASK) {
+        case MGRAS_XFRMODE_GL_FORMAT_RGBA:
+        case MGRAS_XFRMODE_GL_FORMAT_DEPTH:
+        case MGRAS_XFRMODE_GL_FORMAT_STENCIL:
+            break;
+        default:
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: data-port read for the "
                           "OpenGL client, mode 0x%x, not modelled; reads "
                           "return zero\n", mode);
@@ -2173,12 +2192,27 @@ bool sgi_mgras_raster_record(SGIMgrasState *s, uint32_t reg, uint32_t value)
     }
 }
 
-/* Bank 0's pixel at screen (x, y) as the data port gives it. */
+/*
+ * Bank 0's pixel at screen (x, y) as the data port gives it, or the depth
+ * or stencil the transfer mode asks for. Only a client read can name
+ * depth or stencil: mgras_pio_read_start() refuses those modes from the
+ * X server.
+ */
 static uint32_t mgras_pio_read_pixel(SGIMgrasState *s, uint32_t x, uint32_t y)
 {
     uint32_t p = s->front[y * s->width + x];
+    uint32_t z = s->depth[y * s->width + x];
 
-    return ((p & 0xff) << 16) | (p & 0xff00) | ((p >> 16) & 0xff);
+    switch (s->rss[MGRAS_RSS_BYTE_XFER_PACKING] &
+            MGRAS_XFRMODE_GL_FORMAT_MASK) {
+    case MGRAS_XFRMODE_GL_FORMAT_DEPTH:
+        z &= 0xffffff;
+        return z << 8 | z >> 16;
+    case MGRAS_XFRMODE_GL_FORMAT_STENCIL:
+        return z >> 24;
+    default:
+        return ((p & 0xff) << 16) | (p & 0xff00) | ((p >> 16) & 0xff);
+    }
 }
 
 uint32_t sgi_mgras_raster_pio_read(SGIMgrasState *s, bool high)

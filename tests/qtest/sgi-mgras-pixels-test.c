@@ -4476,6 +4476,52 @@ static void test_gl_readpixels_other_mode_reads_zero(void)
     g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0);
 }
 
+#define GL_READ_MODE_STENCIL  0x10      /* GL_STENCIL_INDEX & 0xf */
+#define GL_READ_MODE_DEPTH    0x20      /* GL_DEPTH_COMPONENT & 0xf */
+
+/*
+ * Depth and stencil through the data port (inferred, the raster and
+ * display contract's depth and stencil paragraph): a pixel's word holds
+ * depth in bits 23:0 and stencil in 31:24; a depth read returns
+ * Z << 8 | Z >> 16 and a stencil read the top byte. Pixel (10, 20) keeps
+ * depth 0x123456 and stencil 0x5a; pixel (11, 20) is cleared again to
+ * depth 0xfedcba and stencil 0xa5 under a one-pixel scissor.
+ */
+static void test_gl_readpixels_dataport_depth_stencil(void)
+{
+    gl_pixels_context(qts, 0);
+    gl_one(qts, GL_CLEAR_DEPTH_HDR, 0x123456);
+    gl_word(qts, GL_CLEAR_DEPTH_BUFFER);
+    gl_one(qts, GL_CLEAR_STENCIL_HDR, 0x5a);
+    gl_word(qts, GL_CLEAR_STENCIL_BUFFER);
+    gl_scissor(qts, 11, 20, 1, 1);
+    gl_one(qts, GL_SCISSOR_TEST_HDR, 1);
+    gl_one(qts, GL_CLEAR_DEPTH_HDR, 0xfedcba);
+    gl_word(qts, GL_CLEAR_DEPTH_BUFFER);
+    gl_one(qts, GL_CLEAR_STENCIL_HDR, 0xa5);
+    gl_word(qts, GL_CLEAR_STENCIL_BUFFER);
+    gl_one(qts, GL_SCISSOR_TEST_HDR, 0);
+
+    gl_word(qts, GL_READ_OPEN);
+    gl_read_registers(qts, 256 + 10, GL_READ_HW_ROW(20), GL_READ_HW_ROW(20),
+                      2, 1, GL_READ_MODE_DEPTH, false);
+    gl_read_setup_word(qts);
+    gl_read_trigger(qts);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0x12345612);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0xfedcbafe);
+    gl_word(qts, GL_READ_CLOSE);
+
+    gl_word(qts, GL_READ_OPEN);
+    gl_read_registers(qts, 256 + 10, GL_READ_HW_ROW(20), GL_READ_HW_ROW(20),
+                      2, 1, GL_READ_MODE_STENCIL, false);
+    gl_read_setup_word(qts);
+    gl_read_trigger(qts);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0x5a);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0xa5);
+    gl_word(qts, GL_READ_CLOSE);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 /*
  * Everything a read brackets itself with is consumed without a log line
  * and without disturbing the next draw: 0x9600 and 0x9700, the save and
@@ -6642,6 +6688,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-readpixels-other-mode-reads-zero",
         test_gl_readpixels_other_mode_reads_zero, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-dataport-depth-stencil",
+        test_gl_readpixels_dataport_depth_stencil, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-readpixels-bracket-opaque",
         test_gl_readpixels_bracket_opaque, false);
