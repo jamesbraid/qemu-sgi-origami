@@ -690,6 +690,8 @@ struct SGIOdysseyState {
      */
     uint16_t gl_program_mem[SGI_ODYSSEY_GL_PROGRAM_ENTRIES * 6];
     uint32_t gl_program_addr;
+    /* The program-sequencer registers, classes 0x20 to 0x35, as written. */
+    uint32_t gl_seq[22];
     uint32_t gl_program_half;
     bool gl_program_mem_reported;
     bool gl_two_sided_logged;

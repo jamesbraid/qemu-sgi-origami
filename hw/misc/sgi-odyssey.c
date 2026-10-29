@@ -1330,6 +1330,17 @@ enum {
 #define ODSY_COLOUR_MATERIAL_DIFFUSE 0x2
 #define ODSY_COLOUR_MATERIAL_SPECULAR 0x4
 #define ODSY_COLOUR_MATERIAL_EMISSION 0x8
+/*
+ * Classes 0x20 to 0x35 are program-sequencer registers the host never reads
+ * back; the GL library keeps a copy of each at a fixed stride, so the
+ * numbering is contiguous (ESTABLISHED as the library's and kernel's
+ * writers). The kernel writes 0x26 = 127 and 0x2e = 896 at set-up. The
+ * model acts on the classes named above, keeps every value in gl_seq[] and
+ * accepts the rest, whose meaning is UNKNOWN, without effect. Class 0x34 in
+ * this shape is the matrix target select (ODSY_GL_MATRIX_SELECT_TAG).
+ */
+#define ODSY_PROG_SEQ_FIRST 0x20
+#define ODSY_PROG_SEQ_LAST 0x35
 #define ODSY_PROG_PROGRAM_HALFWORD 0x40
 #define ODSY_PROG_PROGRAM_HALFWORD_LAST 0x5f
 #define ODSY_PROG_CONST_STORE 0x60
@@ -7644,6 +7655,10 @@ static bool odyssey_is_program_word(uint32_t word)
         cls <= ODSY_PROG_PROGRAM_HALFWORD_LAST) {
         return true;
     }
+    if (cls >= ODSY_PROG_SEQ_FIRST && cls <= ODSY_PROG_SEQ_LAST &&
+        cls != (ODSY_GL_MATRIX_SELECT_TAG >> ODSY_PROG_CLASS_SHIFT)) {
+        return true;
+    }
     switch (cls) {
     case ODSY_PROG_COLOUR_MODE:
     case ODSY_PROG_COLOUR_MODE_B:
@@ -8107,8 +8122,12 @@ static void odyssey_colour_mode(SGIOdysseyState *s, uint32_t cls, uint32_t v)
 static void odyssey_gl_program_word(SGIOdysseyState *s, uint32_t word)
 {
     uint32_t v = odyssey_prog_value(word);
+    uint32_t cls = word >> ODSY_PROG_CLASS_SHIFT;
 
-    switch (word >> ODSY_PROG_CLASS_SHIFT) {
+    if (cls >= ODSY_PROG_SEQ_FIRST && cls <= ODSY_PROG_SEQ_LAST) {
+        s->gl_seq[cls - ODSY_PROG_SEQ_FIRST] = v;
+    }
+    switch (cls) {
     case ODSY_PROG_COLOUR_MODE:
     case ODSY_PROG_COLOUR_MODE_B:
         odyssey_colour_mode(s, word >> ODSY_PROG_CLASS_SHIFT, v);
@@ -8159,7 +8178,7 @@ static void odyssey_gl_program_word(SGIOdysseyState *s, uint32_t word)
         if ((word >> ODSY_PROG_CLASS_SHIFT) >= ODSY_PROG_PROGRAM_HALFWORD) {
             odyssey_gl_program_halfword(s, word);
         }
-        /* Class 0x25: accepted, see ODSY_PROG_SHAPE. */
+        /* The other sequencer classes: kept in gl_seq[] only. */
         break;
     }
 }
@@ -13221,6 +13240,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     /* Program memory's reset content is unknown; the kernel loads it. */
     memset(s->gl_program_mem, 0, sizeof(s->gl_program_mem));
     s->gl_program_addr = 0;
+    memset(s->gl_seq, 0, sizeof(s->gl_seq));
     s->gl_program_half = 0;
     s->gl_program_mem_reported = false;
     s->gl_const_index = 0;
@@ -14363,8 +14383,8 @@ static int odyssey_work_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 48,
-    .minimum_version_id = 48,
+    .version_id = 49,
+    .minimum_version_id = 49,
     .pre_save = odyssey_work_pre_save,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -14535,6 +14555,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT16_ARRAY(gl_program_mem, SGIOdysseyState,
                              SGI_ODYSSEY_GL_PROGRAM_ENTRIES * 6),
         VMSTATE_UINT32(gl_program_addr, SGIOdysseyState),
+        VMSTATE_UINT32_ARRAY(gl_seq, SGIOdysseyState, 22),
         VMSTATE_UINT32(gl_program_half, SGIOdysseyState),
         /* The model-view lighting reads. */
         VMSTATE_UINT32_ARRAY(gl_modelview, SGIOdysseyState, 16),
