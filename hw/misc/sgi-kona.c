@@ -7224,6 +7224,21 @@ static bool sgi_kona_gl_transform(SGIKonaState *s, int i, uint32_t selector,
     SGIGLCmd cmd = { .args = a };
     SGIGLSink sink;
 
+    /*
+     * The matrix family, depth range included, is not legal between a
+     * begin and its end. The firmware's token map marks such tokens kind
+     * 0, and the pipe diverts one arriving inside a begin to a routine that
+     * records an invalid operation and discards its payload by count
+     * (established from the firmware; that the hardware does the divert
+     * is inferred). The payload is already framed here, so only the
+     * error is left to do.
+     */
+    if (selector >= SGI_KONA_CMD_GL_DEPTH_RANGE &&
+        selector <= SGI_KONA_CMD_GL_TRANSLATEF && s->state[i]->gl.in_begin) {
+        sgi_kona_gl_set_error(s, 0x502);    /* GL_INVALID_OPERATION */
+        return true;
+    }
+
     switch (selector) {
     case SGI_KONA_CMD_GL_MATRIX_MODE:
         cmd = (SGIGLCmd) { SGI_GL_OP_MATRIX_MODE, 1, args };
