@@ -984,6 +984,90 @@ static void test_cmfifo_revision(void)
     }
 }
 
+/* Reset alone restores the revision field; nothing reads CTRLSTAT before. */
+static void test_revision_reset(void)
+{
+    for (uint32_t revision = 1; revision <= 2; revision++) {
+        g_autofree char *extra = g_strdup_printf(
+            "-global sgi-o2-gbe.revision=%u", revision);
+        QTestState *q = start(extra);
+
+        wr(q, 0, 0);
+        qtest_system_reset(q);
+        g_assert_cmphex(rd(q, 0) & 0x3ffffcf, ==, 0x3ffffc0 | revision);
+        qtest_quit(q);
+    }
+}
+
+static void test_revision_rejected(void)
+{
+    static const unsigned revisions[] = { 0, 3 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(revisions); i++) {
+        g_autofree char *command = g_strdup_printf(
+            "timeout 5 %s -nodefaults -display none -accel qtest -M none "
+            "-device sgi-o2-gbe,revision=%u", qtest_qemu_binary(NULL),
+            revisions[i]);
+        g_auto(GStrv) argv = NULL;
+        g_autofree char *errors = NULL;
+        int status;
+
+        g_assert_true(g_shell_parse_argv(command, NULL, &argv, NULL));
+        g_assert_true(g_spawn_sync(NULL, argv, NULL, G_SPAWN_SEARCH_PATH,
+                                   NULL, NULL, NULL, &errors, &status, NULL));
+        g_assert_true(WIFEXITED(status));
+        g_assert_cmpint(WEXITSTATUS(status), !=, 0);
+        g_assert_cmpint(WEXITSTATUS(status), !=, 124);
+        g_assert_nonnull(errors);
+        g_assert_nonnull(strstr(errors, "GBE revision must be 1 or 2"));
+    }
+}
+
+/* The destination must refuse a stream from the other revision. */
+static void test_revision_migration(void)
+{
+    for (uint32_t revision = 1; revision <= 2; revision++) {
+        g_autofree char *dir = g_dir_make_tmp("gbe-rev-migrate-XXXXXX", NULL);
+        g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+        g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+        g_autofree char *from_extra = g_strdup_printf(
+            "-global sgi-o2-gbe.revision=%u", revision);
+        g_autofree char *to_extra = g_strdup_printf(
+            "-global sgi-o2-gbe.revision=%u -incoming defer", 3 - revision);
+        QTestState *from = start(from_extra);
+        QTestState *to = start(to_extra);
+        int64_t deadline = g_get_monotonic_time() +
+                           SGI_MIGRATION_WAIT_MIN_S * G_TIME_SPAN_SECOND;
+        g_autofree char *seen = NULL;
+
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s,"
+            "'exit-on-error':false}}", uri);
+        qtest_qmp_assert_success(from,
+            "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+        for (;;) {
+            QDict *ret = qtest_qmp_assert_success_ref(to,
+                "{'execute':'query-migrate'}");
+
+            g_free(seen);
+            seen = g_strdup(qdict_get_try_str(ret, "status") ?: "");
+            qobject_unref(ret);
+            if (g_str_equal(seen, "failed") ||
+                g_str_equal(seen, "completed")) {
+                break;
+            }
+            g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+            g_usleep(1000);
+        }
+        g_assert_cmpstr(seen, ==, "failed");
+        g_assert_cmphex(rd(to, 0) & 15, ==, 3 - revision);
+        qtest_quit(from);
+        qtest_quit(to);
+        g_unlink(sock);
+        g_rmdir(dir);
+    }
+}
+
 static void test_i2c_idle(void)
 {
     QTestState *q = start("");
@@ -2829,6 +2913,9 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-gbe/formats", test_formats);
     qtest_add_func("/sgi-gbe/shadow-bounds", test_shadow_and_bounds);
     qtest_add_func("/sgi-gbe/cmfifo-revision", test_cmfifo_revision);
+    qtest_add_func("/sgi-gbe/revision-reset", test_revision_reset);
+    qtest_add_func("/sgi-gbe/revision-rejected", test_revision_rejected);
+    qtest_add_func("/sgi-gbe/revision-migration", test_revision_migration);
     qtest_add_func("/sgi-gbe/i2c-idle", test_i2c_idle);
     qtest_add_func("/sgi-gbe/multitile", test_multitile);
     qtest_add_func("/sgi-gbe/i2c-slaves", test_i2c_slaves);
