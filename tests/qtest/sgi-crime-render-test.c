@@ -8704,6 +8704,30 @@ static void ifb_varied_write(QTestState *s, unsigned n)
     }
 }
 
+/*
+ * The IRIX 6.5.30 kernel writes zero to the engine-status bank after
+ * translation loads and at the end of context save, once it has copied the
+ * entries from the status start pointer up to the write pointer. Whether
+ * the write moves either pointer is unknown. Synchronous commits keep the
+ * two equal, so here it must leave the ring and both pointers unchanged.
+ */
+static void test_ifb_status_bank_zero(void)
+{
+    QTestState *s = triangle_start("");
+
+    for (unsigned n = 0; n < 5; n++) {
+        qtest_writel(s, DE + 0xd0, 0x22000000U + n);
+    }
+    ifb_head(s, 5);
+    g_assert_cmpint(memtx_writel(s, STATUS + 8, 0), ==, MEMTX_OK);
+    ifb_head(s, 5);
+    for (unsigned n = 0; n < 5; n++) {
+        ifb_entry(s, n, 0x121a00000000ULL,
+                  (uint64_t)(0x22000000U + n) << 32);
+    }
+    qtest_quit(s);
+}
+
 static void test_ifb_wrap(void)
 {
     QTestState *s = triangle_start("");
@@ -9204,6 +9228,8 @@ int main(int argc, char **argv)
     add_case("sgi/crime/render/ifb/ram", test_ifb_ram);
     add_case("sgi/crime/render/ifb/transactions", test_ifb_transactions);
     add_case("sgi/crime/render/ifb/wrap", test_ifb_wrap);
+    add_case("sgi/crime/render/ifb/status-bank-zero",
+             test_ifb_status_bank_zero);
     add_case("sgi/crime/render/ifb/atomic", test_ifb_atomic);
     add_case("sgi/crime/render/ifb/restore", test_ifb_restore);
     add_case("sgi/crime/render/ifb/migration", test_ifb_migration);
