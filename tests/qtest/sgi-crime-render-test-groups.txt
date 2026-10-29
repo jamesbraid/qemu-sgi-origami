@@ -290,3 +290,10 @@ shade-iteration-invariants /mips64/sgi/crime/render/shade-iteration/invariants
 shade-iteration-raw /mips64/sgi/crime/render/shade-iteration/raw
 shade-iteration-rollback /mips64/sgi/crime/render/shade-iteration/rollback
 shade-iteration-migration /mips64/sgi/crime/render/shade-iteration/migration
+gl-transfer-upload /mips64/sgi/crime/render/gl-transfer/upload
+gl-transfer-download /mips64/sgi/crime/render/gl-transfer/download
+gl-transfer-copy /mips64/sgi/crime/render/gl-transfer/copy
+gl-transfer-geometry /mips64/sgi/crime/render/gl-transfer/geometry
+gl-transfer-repeats /mips64/sgi/crime/render/gl-transfer/repeats
+gl-transfer-formats /mips64/sgi/crime/render/gl-transfer/formats
+gl-transfer-precision /mips64/sgi/crime/render/gl-transfer/precision

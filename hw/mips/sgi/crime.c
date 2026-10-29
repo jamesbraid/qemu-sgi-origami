@@ -1734,15 +1734,15 @@ static int64_t crime_blend_factor(unsigned selector, unsigned channel,
     }
 }
 
-static uint32_t crime_triangle_pack(const CrimeTriangleOutput *o,
-                                     const uint64_t *p, uint32_t source,
-                                     uint32_t old, unsigned x, unsigned y)
+static uint32_t crime_color_pack(const CrimeTriangleOutput *o,
+                                  const uint64_t *p, const int64_t src[4],
+                                  uint32_t old, unsigned x, unsigned y)
 {
     static const unsigned rank[4][4] = {
         { 0, 8, 2, 10 }, { 12, 4, 14, 6 },
         { 3, 11, 1, 9 }, { 15, 7, 13, 5 },
     };
-    int64_t src[4], dst[4], constant[4];
+    int64_t dst[4], constant[4];
     uint32_t draw = p[0x18 / 4], func = p[0x1a8 / 4];
     uint32_t selected = old >> o->shift, packed = 0;
     unsigned operation = (func >> 8) & 15;
@@ -1750,7 +1750,6 @@ static uint32_t crime_triangle_pack(const CrimeTriangleOutput *o,
     for (unsigned k = 0; k < 4; k++) {
         unsigned shift = 24 - 8 * k;
 
-        src[k] = ((source >> shift) & 255) * 31;
         constant[k] = ((p[0x1a0 / 4] >> shift) & 255) * 31;
         if (o->format == 1) {
             dst[k] = k == 3 ? ((selected >> 15) & 1) * CRIME_COLOR_ONE :
@@ -1808,6 +1807,377 @@ static uint32_t crime_triangle_pack(const CrimeTriangleOutput *o,
         }
     }
     return packed << o->shift;
+}
+
+static uint32_t crime_triangle_pack(const CrimeTriangleOutput *o,
+                                     const uint64_t *p, uint32_t source,
+                                     uint32_t old, unsigned x, unsigned y)
+{
+    int64_t normalized[4];
+
+    for (unsigned k = 0; k < 4; k++) {
+        normalized[k] = ((source >> (24 - 8 * k)) & 255) * 31;
+    }
+    return crime_color_pack(o, p, normalized, old, x, y);
+}
+
+typedef struct CrimeGLTransferPixel {
+    uint64_t source[4], destination[4];
+    uint32_t mask;
+    uint16_t x, y;
+} CrimeGLTransferPixel;
+
+static bool crime_gl_transfer_mode(uint32_t raw, CrimeTriangleOutput *o,
+                                    bool source)
+{
+    unsigned bank = (raw >> 10) & 7;
+
+    if (bank == 4 || bank == 5) {
+        if (((raw >> 4) & 15) != 2 || ((raw >> 8) & 3) != 2 ||
+            ((raw >> 2) & 3) != 2 || (raw & 2)) {
+            return false;
+        }
+        *o = (CrimeTriangleOutput) {
+            .bank = bank, .bytes = 4, .format = 2, .mask = UINT32_MAX,
+        };
+        return true;
+    }
+    return crime_triangle_output(raw, o) && (!source || o->format != 3);
+}
+
+static bool crime_gl_transfer_geometry(const uint64_t *p,
+                                        CrimeRenderGeometry *g)
+{
+    uint32_t primitive = p[0x60 / 4];
+    int *points[2][2] = { {&g->x0, &g->y0}, {&g->x1, &g->y1} };
+    uint64_t samples;
+
+    for (unsigned v = 0; v < 2; v++) {
+        for (unsigned a = 0; a < 2; a++) {
+            int64_t field;
+            int16_t origin = p[0x58 / 4] >> (a ? 0 : 16);
+
+            if (!crime_render_gl_field(p[(0x80 + 8 * v + 4 * a) / 4],
+                                       &field) || (field & 63)) {
+                return false;
+            }
+            *points[v][a] = field / 64 + origin;
+        }
+    }
+    g->dx = primitive & 0x10000 ? -1 : 1;
+    g->dy = primitive & 0x20000 ? 1 : -1;
+    if ((g->x1 - g->x0) * g->dx < 0 ||
+        (g->y1 - g->y0) * g->dy < 0) {
+        return false;
+    }
+    g->width = abs(g->x1 - g->x0) + 1;
+    samples = (uint64_t)g->width * (abs(g->y1 - g->y0) + 1);
+    if (samples > 4194304) {
+        return false;
+    }
+    g->samples = samples;
+    return true;
+}
+
+static void crime_gl_transfer_sift(uint64_t *ids, unsigned root, unsigned count)
+{
+    uint64_t value = ids[root];
+
+    while (root < count / 2) {
+        unsigned child = 2 * root + 1;
+
+        if (child + 1 < count && ids[child] < ids[child + 1]) {
+            child++;
+        }
+        if (value >= ids[child]) {
+            break;
+        }
+        ids[root] = ids[child];
+        root = child;
+    }
+    ids[root] = value;
+}
+
+/* In-place heapsort keeps alias metadata inside the command's memory bound. */
+static void crime_gl_transfer_sort(uint64_t *ids, unsigned count)
+{
+    for (unsigned root = count / 2; root > 0; root--) {
+        crime_gl_transfer_sift(ids, root - 1, count);
+    }
+    for (unsigned end = count; end > 1; end--) {
+        uint64_t value = ids[0];
+
+        ids[0] = ids[end - 1];
+        ids[end - 1] = value;
+        crime_gl_transfer_sift(ids, 0, end - 1);
+    }
+}
+
+static void crime_gl_transfer_read(const uint64_t *physical, unsigned bytes,
+                                    uint8_t *data)
+{
+    for (unsigned b = 0; b < bytes; b++) {
+        MemTxResult result = address_space_read(&address_space_memory,
+            physical[b], MEMTXATTRS_UNSPECIFIED, &data[b], 1);
+
+        /* Preflight and the BQL guarantee ordinary RAM at each byte. */
+        g_assert(result == MEMTX_OK);
+    }
+}
+
+static MemTxResult crime_render_gl_transfer(SGICrimeState *s, hwaddr offset,
+                                             const uint64_t *p,
+                                             unsigned index, unsigned words)
+{
+    CrimeTriangleOutput src, dst;
+    CrimeRenderGeometry g = { 0 };
+    CrimeRenderClip scissor = crime_render_clip(p[0x48 / 4]), screen = { 0 };
+    uint32_t draw = p[0x18 / 4], clip = p[0x10 / 4];
+    uint32_t primitive = p[0x60 / 4], ignored = primitive & 0x00f80000U;
+    unsigned height, kx = 1, ky = 1, count = 0, identities = 0, operation;
+    int sx = 0, sy = 0, hx = 1, hy = 1;
+    int ox = (int16_t)(p[0x58 / 4] >> 16), oy = (int16_t)p[0x58 / 4];
+    uint64_t source_pitch = 0, destination_pitch = 0, metadata;
+    bool upload, download, has_screen = false, inside = clip & 31;
+    g_autofree CrimeGLTransferPixel *pixels = NULL;
+    g_autofree uint64_t *destination_ids = NULL;
+
+    if (!crime_gl_transfer_mode(p[0], &src, true) ||
+        !crime_gl_transfer_mode(p[8 / 4], &dst, false) ||
+        (src.bank >= 4 && dst.bank >= 4) || (draw & ~0x7107f8U) ||
+        !crime_gl_transfer_geometry(p, &g) || (clip & ~0x3ffU) ||
+        ((clip & 31) & ~((clip >> 5) & 31)) ||
+        ctpop32((clip >> 5) & 31) > 1) {
+        return crime_transfer_fail(offset, "unsupported GL pixel transfer");
+    }
+    upload = src.bank >= 4;
+    download = dst.bank >= 4;
+    height = g.samples / g.width;
+    if (words && ((index == 0x190 / 4 || index == 0x194 / 4) ||
+        ((index == 0xb0 / 4 || index == 0xb4 / 4) && !download))) {
+        return crime_transfer_fail(offset, "unsupported GL transfer START");
+    }
+    operation = draw & 0x200 ? p[0x1b0 / 4] : 3;
+    if (operation > 15 || ((draw & 0x400) &&
+        ((p[0x1a8 / 4] & ~0xfffULL) ||
+         ((p[0x1a8 / 4] >> 8) & 15) > 4 ||
+         ((p[0x1a8 / 4] >> 4) & 15) > 12 ||
+         (p[0x1a8 / 4] & 15) > 11))) {
+        return crime_transfer_fail(offset,
+                                   "unsupported GL transfer color state");
+    }
+    for (unsigned n = 0; n < 5; n++) {
+        if (clip & (1U << (5 + n))) {
+            screen = crime_render_clip(p[(0x20 + 8 * n) / 4]);
+            has_screen = true;
+        }
+    }
+    if ((has_screen && (screen.xmin > screen.xmax ||
+                        screen.ymin > screen.ymax)) ||
+        ((draw & 0x100000) && (scissor.xmin > scissor.xmax ||
+                              scissor.ymin > scissor.ymax))) {
+        return crime_transfer_fail(offset, "invalid GL transfer clipping");
+    }
+    if (upload) {
+        uint32_t xstep = p[0xa8 / 4], ystep = p[0xac / 4];
+        unsigned columns, rows, advance = ystep & 0x1ffff;
+
+        if ((xstep & 0x0ffe0000U) || (ystep & 0x0ffe0000U) ||
+            (xstep & 0x1ffff) != 4 || advance < 4) {
+            return crime_transfer_fail(offset, "unsupported GL upload steps");
+        }
+        kx = (xstep >> 28) + 1;
+        ky = (ystep >> 28) + 1;
+        columns = DIV_ROUND_UP(g.width, kx);
+        rows = DIV_ROUND_UP(height, ky);
+        source_pitch = (uint64_t)(columns - 1) * 4 + advance;
+        if (!crime_color_envelope(p[0xa0 / 4], source_pitch,
+                                  columns, rows, 4)) {
+            return crime_transfer_fail(offset, "invalid GL upload envelope");
+        }
+    } else {
+        int last_x, last_y;
+        uint32_t xstep = p[0xa8 / 4], ystep = p[0xac / 4];
+
+        if ((p[0xa0 / 4] & ~0x07ff07ffULL) ||
+            (xstep != 1 && (download || xstep != 0x7ff)) ||
+            (ystep != 1 && (download || ystep != 0x7ff))) {
+            return crime_transfer_fail(offset, "unsupported GL tiled source");
+        }
+        hx = xstep == 1 ? 1 : -1;
+        hy = ystep == 1 ? 1 : -1;
+        sx = 4096 + (int)((p[0xa0 / 4] >> 16) & 0x7ff) +
+             (int16_t)(p[0x50 / 4] >> 16);
+        sy = 4096 + (int)(p[0xa0 / 4] & 0x7ff) + (int16_t)p[0x50 / 4];
+        last_x = sx + g.dx * hx * (int)(g.width - 1);
+        last_y = sy + g.dy * hy * (int)(height - 1);
+        if (MIN(sx, last_x) < 0 || MAX(sx, last_x) >= 2048 ||
+            MIN(sy, last_y) < 0 || MAX(sy, last_y) >= 2048) {
+            return crime_transfer_fail(offset, "invalid GL source coordinates");
+        }
+    }
+    if (download) {
+        if (p[0xb4 / 4] < 4 || p[0xb4 / 4] > 0x1ffff) {
+            return crime_transfer_fail(offset,
+                                   "unsupported GL download stride");
+        }
+        destination_pitch = (uint64_t)(g.width - 1) * 4 + p[0xb4 / 4];
+        if (!crime_color_envelope(p[0xb0 / 4], destination_pitch,
+                                  g.width, height, 4)) {
+            return crime_transfer_fail(offset, "invalid GL download envelope");
+        }
+    }
+    if (ignored) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-crime: GL transfer primitive raw 0x%08x "
+                      "ignores reserved bits 0x%08x\n", primitive, ignored);
+    }
+    metadata = (uint64_t)g.samples *
+               (sizeof(*pixels) + dst.bytes * sizeof(*destination_ids));
+    if (metadata > 512 * MiB) {
+        return crime_transfer_fail(offset, "GL transfer plan exceeds limit");
+    }
+    pixels = g_try_new(CrimeGLTransferPixel, g.samples);
+    destination_ids = g_try_new(uint64_t, (size_t)g.samples * dst.bytes);
+    if (!pixels || !destination_ids) {
+        return crime_transfer_fail(offset,
+                                   "GL transfer plan allocation failed");
+    }
+    for (unsigned r = 0; r < height; r++) {
+        int y = g.y0 + g.dy * (int)r;
+
+        for (unsigned c = 0; c < g.width; c++) {
+            int x = g.x0 + g.dx * (int)c;
+            uint64_t source = p[0xa0 / 4] + (r / ky) * source_pitch +
+                              (uint64_t)(c / kx) * 4;
+            uint64_t destination = p[0xb0 / 4] + r * destination_pitch +
+                                   (uint64_t)c * 4;
+            uint32_t mask = dst.mask &
+                (draw & 0x80 ? p[0x1b8 / 4] : UINT32_MAX);
+            CrimeGLTransferPixel *pixel = &pixels[count];
+
+            if (x < 0 || x >= 2048 || y < 0 || y >= 2048 ||
+                (has_screen && crime_render_inside(&screen, x, y) != inside) ||
+                ((draw & 0x100000) &&
+                 !crime_render_inside(&scissor, x - ox, y - oy))) {
+                continue;
+            }
+            for (unsigned b = 0; b < dst.bytes; b++) {
+                unsigned lane = (download ? destination + b :
+                                 (uint64_t)x * dst.bytes + b) & 3;
+
+                if (!(draw & (1U << (6 - lane)))) {
+                    mask &= ~(0xffU << (8 * (dst.bytes - 1 - b)));
+                }
+            }
+            if (!mask) {
+                continue;
+            }
+            pixel->mask = mask;
+            pixel->x = x;
+            pixel->y = y;
+            for (unsigned endpoint = 0; endpoint < 2; endpoint++) {
+                const CrimeTriangleOutput *o = endpoint ? &dst : &src;
+                int tx = endpoint ? x : sx + g.dx * hx * (int)c;
+                int ty = endpoint ? y : sy + g.dy * hy * (int)r;
+
+                for (unsigned b = 0; b < o->bytes; b++) {
+                    uint64_t identity, *physical = endpoint ?
+                        &pixel->destination[b] : &pixel->source[b];
+                    CrimeRenderTranslation mapped;
+
+                    if (o->bank >= 4) {
+                        mapped = crime_render_linear(s, o->bank,
+                            (endpoint ? destination : source) + b,
+                            physical, &identity);
+                    } else {
+                        mapped = crime_framebuffer_translate(s, o->bank,
+                            (uint64_t)tx * o->bytes + b, ty, 1,
+                            physical, &identity);
+                    }
+                    if (mapped != CRIME_RENDER_MAPPED ||
+                        identity > UINT64_MAX / 2) {
+                        return crime_transfer_fail(offset,
+                                                   "invalid GL transfer mapping");
+                    }
+                    if (endpoint) {
+                        bool enabled =
+                            (mask >> (8 * (dst.bytes - 1 - b))) & 255;
+
+                        destination_ids[identities++] = identity * 2 + enabled;
+                    }
+                }
+            }
+            count++;
+        }
+    }
+    crime_gl_transfer_sort(destination_ids, identities);
+    for (unsigned i = 1; i < identities; i++) {
+        uint64_t a = destination_ids[i - 1], b = destination_ids[i];
+
+        if (a / 2 == b / 2 && (a & b & 1)) {
+            return crime_transfer_fail(offset,
+                                   "GL transfer destination aliases");
+        }
+    }
+    if (upload || download) {
+        for (unsigned i = 0; i < count; i++) {
+            for (unsigned b = 0; b < src.bytes; b++) {
+                CrimeTransferSpan span;
+                unsigned lo = 0, hi = identities;
+
+                if (!crime_transfer_resolve(s, pixels[i].source[b], 1, &span)) {
+                    return crime_transfer_fail(offset,
+                                               "invalid GL transfer source RAM");
+                }
+                while (lo < hi) {
+                    unsigned mid = lo + (hi - lo) / 2;
+
+                    if (destination_ids[mid] / 2 < span.offset) {
+                        lo = mid + 1;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                if (lo < identities && destination_ids[lo] / 2 == span.offset) {
+                    return crime_transfer_fail(offset,
+                                               "GL linear transfer overlaps");
+                }
+            }
+        }
+    }
+    /* Stable RAM and bounded pure color arithmetic cannot fail here. */
+    for (unsigned i = 0; i < count; i++) {
+        CrimeGLTransferPixel *pixel = &pixels[i];
+        uint8_t source_data[4], destination_data[4];
+        int64_t normalized[4];
+        uint32_t source, old, packed, result;
+
+        crime_gl_transfer_read(pixel->source, src.bytes, source_data);
+        crime_gl_transfer_read(pixel->destination, dst.bytes, destination_data);
+        source = crime_render_load_pixel(source_data, src.bytes) >> src.shift;
+        old = crime_render_load_pixel(destination_data, dst.bytes);
+        for (unsigned k = 0; k < 4; k++) {
+            normalized[k] = src.format == 1 ?
+                (k == 3 ? ((source >> 15) & 1) * CRIME_COLOR_ONE :
+                          ((source >> (10 - 5 * k)) & 31) * 255) :
+                ((source >> (24 - 8 * k)) & 255) * 31;
+        }
+        packed = crime_color_pack(&dst, p, normalized, old, pixel->x, pixel->y);
+        result = (old & ~pixel->mask) |
+                 (crime_render_rop(operation, packed, old) & pixel->mask);
+        crime_render_store_pixel(destination_data, dst.bytes, result);
+        for (unsigned b = 0; b < dst.bytes; b++) {
+            if ((pixel->mask >> (8 * (dst.bytes - 1 - b))) & 255) {
+                MemTxResult tx = address_space_write(&address_space_memory,
+                    pixel->destination[b], MEMTXATTRS_UNSPECIFIED,
+                    &destination_data[b], 1);
+
+                g_assert(tx == MEMTX_OK);
+            }
+        }
+    }
+    return MEMTX_OK;
 }
 
 #define CRIME_Z_LIMIT (INT64_C(1) << 36)
@@ -2372,6 +2742,16 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                           role ? "destination" : "source", raw, ignored);
             s->render_mode_reported |= 1U << role;
         }
+    }
+    if (s->legacy_software && (p[0x60 / 4] >> 24) == 3 &&
+        (draw & 0x600000) == 0x600000) {
+        result = crime_render_gl_transfer(s, offset, p, index, words);
+        if (result == MEMTX_OK) {
+            for (unsigned i = 0; i < words; i++) {
+                s->render.parameter[index + i] = p[index + i];
+            }
+        }
+        return result;
     }
     sz_active = draw & 5;
     alpha = draw & 0x800;
