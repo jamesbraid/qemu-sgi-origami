@@ -3671,6 +3671,10 @@ def compile_model(model: dict) -> dict:
     if machine.get("graphics"):
         topology["graphics"] = copy.deepcopy(machine["graphics"])
         model_graphics.attach_slot_requirements(topology)
+        try:
+            model_graphics.check_pipe_serials(topology)
+        except ValueError as exc:
+            raise CompileError(str(exc)) from exc
     if pci_host_bridges:
         topology["pci_host_bridges"] = pci_host_bridges
     ip53_runtime = machine.get("emulation", {}).get("ip53_runtime")

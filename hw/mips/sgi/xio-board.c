@@ -315,16 +315,17 @@ static bool sgi_xio_board_attach_part(SGIXioBoardState *board,
     SGIXioBoardClass *bc = SGI_XIO_BOARD_GET_CLASS(board);
     SGIBridgeBoardRecord stored = *record;
     uint8_t rom[SGI_BRIDGE_ONEWIRE_RECORD_SIZE];
+    uint64_t serial = known->serial;
     DeviceState *part;
 
     if (bc->identity_record) {
-        bc->identity_record(board, known, &stored);
+        bc->identity_record(board, known, &stored, &serial);
     }
     sgi_bridge_onewire_build_record(rom, &stored);
     part = qdev_new(TYPE_ONEWIRE_DS2502);
     object_property_add_child(OBJECT(board), known->child_name, OBJECT(part));
     qdev_prop_set_uint8(part, "family", identity->family);
-    qdev_prop_set_uint64(part, "serial", known->serial);
+    qdev_prop_set_uint64(part, "serial", serial);
     ds2502_set_image(part, rom, sizeof(rom));
     return qdev_realize_and_unref(part, BUS(board->onewire_bus), errp);
 }

@@ -22,6 +22,7 @@ from typing import Any
 
 import yaml
 
+from . import synthetic_serial
 from .exceptions import ResolutionError
 
 GRAPHICS_PRODUCTS_FILE = "graphics-products.yaml"
@@ -572,6 +573,55 @@ def _pipe_record_nodes(topology: dict) -> dict[str, int]:
             nodes[boards[board].get("label")] = node
         board += 1
     return nodes
+
+
+# The one-wire records one KONA pipe presents past its geometry board:
+# instances 1 to 11 of its slot's sixteen (hw/misc/sgi-kona.c).
+_KONA_RECORDS = 12
+
+
+def check_pipe_serials(topology: dict) -> None:
+    """Refuse a topology whose pipes could present a serial another of its
+    boards or pipes presents. Each KONA pipe record's slot position p
+    gives its records graphics instances 16p to 16p + 15: the record's own
+    serial for the geometry board, then the rest from 16p + 1. Its Ktown,
+    shared with another pipe, keeps that pipe's."""
+    graphics = topology.get("graphics")
+    if not graphics:
+        return
+    names = [slot["name"] for slot in graphics["slots"]]
+    serials: dict[int, str] = {}
+    for board in topology.get("io_boards", []):
+        serial = board.get("serial")
+        if serial is None:
+            continue
+        if serial in serials:
+            raise ValueError(f"I/O boards '{serials[serial]}' and "
+                             f"'{board['id']}' share serial {serial:#x}")
+        serials[serial] = board["id"]
+    for board in topology.get("io_boards", []):
+        if board.get("board_kind") != "KONA" or board.get("label") not in names:
+            continue
+        position = names.index(board["label"])
+        if position >= MULTI_PIPE_SLOTS:
+            raise ValueError(
+                f"pipe record '{board['id']}' fills slot {position}; pipe "
+                f"slots take serial instances only for the first "
+                f"{MULTI_PIPE_SLOTS}")
+        derived = {synthetic_serial.onewire_serial("G", 16 * position + k)
+                   for k in range(1, _KONA_RECORDS)}
+        own = board.get("serial")
+        if own is not None and own >> 16 == synthetic_serial.ONEWIRE_PREFIX:
+            letter, instance = (own >> 8) & 0xff, own & 0xff
+            if letter == ord("G") and instance // 16 != position:
+                raise ValueError(
+                    f"pipe record '{board['id']}' serial {own:#x} lies in "
+                    f"another pipe slot's instances; slot {position} takes "
+                    f"{16 * position} to {16 * position + 15}")
+        for serial in sorted(derived & serials.keys()):
+            raise ValueError(
+                f"pipe record '{board['id']}' presents serial {serial:#x}, "
+                f"which '{serials[serial]}' already presents")
 
 
 def attach_slot_requirements(topology: dict) -> None:

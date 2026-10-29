@@ -382,17 +382,17 @@ layer:
             serial: "0x51454d554e03"
             reason: Synthetic node identity N3, carrying the "QEMU" marker; not hardware evidence.
           - component: gbrick0-pipe0-xg
-            serial: "0x51454d554e04"
-            reason: Synthetic graphics widget identity 0, carrying the "QEMU" marker; not hardware evidence.
+            serial: "0x51454d554700"
+            reason: Synthetic geometry board identity G0, pipe slot 0's first graphics instance (sixteen per slot), carrying the "QEMU" marker; not hardware evidence.
           - component: gbrick0-pipe1-xg
-            serial: "0x51454d554e05"
-            reason: Synthetic graphics widget identity 1, carrying the "QEMU" marker; not hardware evidence.
+            serial: "0x51454d554710"
+            reason: Synthetic geometry board identity G16, pipe slot 1's first graphics instance (sixteen per slot), carrying the "QEMU" marker; not hardware evidence.
           - component: gbrick1-pipe0-xg
-            serial: "0x51454d554e06"
-            reason: Synthetic graphics widget identity 2, carrying the "QEMU" marker; not hardware evidence.
+            serial: "0x51454d554720"
+            reason: Synthetic geometry board identity G32, pipe slot 2's first graphics instance (sixteen per slot), carrying the "QEMU" marker; not hardware evidence.
           - component: gbrick1-pipe1-xg
-            serial: "0x51454d554e07"
-            reason: Synthetic graphics widget identity 3, carrying the "QEMU" marker; not hardware evidence.
+            serial: "0x51454d554730"
+            reason: Synthetic geometry board identity G48, pipe slot 3's first graphics instance (sixteen per slot), carrying the "QEMU" marker; not hardware evidence.
           - component: ibrick-ioc3
             serial: "0x51454d554e10"
             reason: Synthetic identity for this component, carrying the "QEMU" marker; not hardware evidence.

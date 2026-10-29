@@ -168,14 +168,15 @@ struct SGIXioBoardClass {
 
     /*
      * Optional. Called for each identity part before its record is
-     * stored, with the record the class and "board-part" give it, so a
-     * board whose configuration decides what its boards are named can
-     * change the name and revision. build_widget() has already run, so
-     * the board's own properties are checked by then.
+     * stored, with the record the class and "board-part" give it and
+     * the part's ROM serial, so a board whose configuration decides what
+     * its boards are named, or which pipe slot it fills, can change the
+     * name, revision, barcode and serial. build_widget() has already run,
+     * so the board's own properties are checked by then.
      */
     void (*identity_record)(SGIXioBoardState *board,
                             const struct SGIXioBoardIdentityPart *part,
-                            SGIBridgeBoardRecord *record);
+                            SGIBridgeBoardRecord *record, uint64_t *serial);
 };
 
 /*
