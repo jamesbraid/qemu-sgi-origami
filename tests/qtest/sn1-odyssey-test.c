@@ -13353,6 +13353,41 @@ static void test_command_fifo_gl_program_window_record(void)
 }
 
 /*
+ * The kernel and the GL library load consecutive program entries after a
+ * single class 0x27 address word: six class 0x40 halfwords an entry, least
+ * significant first, and the address moves on to the next entry by itself
+ * (INFERRED: no address word comes between). Record 23's synthetic body
+ * sent that way lights light.c's triangle as the per-entry upload does.
+ */
+static void test_command_fifo_gl_program_window_one_address(void)
+{
+    static const uint32_t list[] = { 0x49a, 0x203, 0x50f, 0x4c5 };
+    static uint16_t body[199 * 6];
+    char *log_path = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts = lit_start(&log_path);
+
+    body[199 * 6 - 4] = 0xef1b;
+    body[199 * 6 - 3] = 0x0790;
+    body[199 * 6 - 2] = 0x2469;
+    body[199 * 6 - 1] = 0x0015;
+    user_cmd_push(qts, ODSY_PROG(0x27, 0x738));
+    for (unsigned e = 0; e < 199; e++) {
+        for (int i = 5; i >= 0; i--) {
+            uint16_t v = body[e * 6 + i];
+
+            user_cmd_push(qts, 0x40000000u | (uint32_t)(v >> 10) << 23 |
+                               0x8000u | (v & 0x3ffu));
+        }
+    }
+    push_constants(qts, list, ARRAY_SIZE(list));
+    push_program(qts, 0, 0x738, 0x760, 0x787);
+    push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xfe7f3fffu);
+    log = lit_finish(qts, log_path);
+}
+
+/*
  * Record 18, a local-viewer window record: light2.c's lights and material
  * under record 18's entries 738 75b 77d and a synthetic body whose last four
  * halfwords give record 18's CRC. It lights with the local viewer's half
@@ -22921,6 +22956,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_colour_index_write_mask);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-window-unknown",
              test_command_fifo_gl_program_window_unknown);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-window-one-address",
+                   test_command_fifo_gl_program_window_one_address);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-window-record",
                    test_command_fifo_gl_program_window_record);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-window-local-viewer",
