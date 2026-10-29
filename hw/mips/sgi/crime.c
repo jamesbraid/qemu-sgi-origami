@@ -1559,6 +1559,20 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
                           (hwaddr)(0x14000000ULL + offset), value);
             return MEMTX_OK;
         }
+        if (offset == 0x1000408 && size == 4 && !value) {
+            /*
+             * IRIX writes zero here first in renderer initialization and
+             * error recovery. Its role, a renderer and interface-buffer
+             * reset or enable, is inferred; with nothing ever queued there
+             * is nothing to discard, so it is accepted without effect.
+             */
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-crime: renderer 4-byte zero write at "
+                          "0x%" HWADDR_PRIx " accepted as a no-op "
+                          "(inferred reset or enable role not modeled)\n",
+                          (hwaddr)(0x14000000ULL + offset));
+            return MEMTX_OK;
+        }
         if (offset == CRIME_TRANSFER + 0x10 && size == 4) {
             s->transfer.parameter[2] = value;
             return MEMTX_OK;
