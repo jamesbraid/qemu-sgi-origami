@@ -2142,6 +2142,9 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
 #define MGRAS_RSS_XFRCONTROL 0x102
 #define MGRAS_RSS_XFRSIZE 0x153
 #define MGRAS_RSS_XFRCOUNTERS 0x158
+/* The x zoom factor a pixel draw's records load (sgi-mgras-gl.c). */
+#define MGRAS_RSS_ZOOM_INITIAL 0x154
+#define MGRAS_RSS_ZOOM_STEP 0x155
 #define MGRAS_XFRCONTROL_PIO_READ 0xa
 #define MGRAS_XFRMODE_PIO_READ 0x8000
 
@@ -2252,9 +2255,10 @@ void sgi_mgras_raster_pio_read_trigger(SGIMgrasState *s)
  * value as a state write does, so a later execute sees it. Approximated:
  * it does not also touch the glyph arming or the query flag a direct write
  * to the box registers does, since the client's records are not the X
- * server's glyph traffic. Only the registers a read writes are applied;
- * the draw path's other records, and 0xc and 0x15f whose meaning is
- * unknown, are left, and the caller logs them.
+ * server's glyph traffic. Only the registers a read writes and the draw
+ * path's x zoom factor are applied; the draw path's other records, and
+ * 0xc and 0x15f whose meaning is unknown, are left, and the caller logs
+ * them.
  */
 bool sgi_mgras_raster_record(SGIMgrasState *s, uint32_t reg, uint32_t value)
 {
@@ -2264,6 +2268,8 @@ bool sgi_mgras_raster_record(SGIMgrasState *s, uint32_t reg, uint32_t value)
     case MGRAS_RSS_XFRSIZE:
     case MGRAS_RSS_XFRCOUNTERS:
     case MGRAS_RSS_BYTE_XFER_PACKING:
+    case MGRAS_RSS_ZOOM_INITIAL:
+    case MGRAS_RSS_ZOOM_STEP:
         s->rss[reg] = value;
         return true;
     default:

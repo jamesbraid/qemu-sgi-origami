@@ -664,6 +664,38 @@ enum {
  */
 #define MGRAS_GE_ROUTINE_ZOOM_Y  0x3663
 #define MGRAS_GE_ROUTINE_ZOOM_XF 0x3715
+/*
+ * The raster engine's x zoom (the raster and display contract's zoom
+ * factor reading and its traced words). Before a draw the client's 0x7c08
+ * records load 0x154 and 0x155 with one 8.8 factor (256 = 1) and its
+ * 0x7f08 pairs load the transfer mode 0x159, whose bit 19 makes the
+ * factor a magnification and bit 20 a source step. A zoom that is not a
+ * whole number reaches the raster engine as a step through each source
+ * pixel replicated n times by the geometry engine (zoom 1.5: n = 2, step
+ * 341; zoom 3.25: n = 4, step 315). Zoom 1 sends 0x1000f424 and 0 with
+ * neither bit, which the raster engine is taken to ignore. Established
+ * as the IRIX 6.5.30 client's words in a model trace; that RE4 zooms by
+ * them is inferred.
+ *
+ * Approximated: the board's sampling rule is unverified, so the model
+ * draws with OpenGL 1.2.1's own glPixelZoom rule (3.6.4: a source pixel
+ * fills the window pixels whose centres its zoomed footprint covers) at
+ * the zoom the factor gives, n * 256 / step or factor / 256. That keeps
+ * the factor's truncation (1.5 draws as 512 / 341) but not whatever
+ * rounding RE4 applies within a span; a board read-back of the same
+ * draw would settle it. n is not in any register the raster engine sees,
+ * so the model takes the whole number nearest the box's width times the
+ * step over 256 source pixels. 0x154 differing from 0x155, a second
+ * client path whose words are not decoded, and both bits together are
+ * logged and draw at the box's zoom. The discriminating test is
+ * gl-pixels-raster-zoom.
+ */
+#define MGRAS_RSS_ZOOM_INITIAL   0x154
+#define MGRAS_RSS_ZOOM_STEP      0x155
+#define MGRAS_RSS_XFRMODE        0x159
+#define MGRAS_XFRMODE_MAGNIFY    (1u << 19)
+#define MGRAS_XFRMODE_DECIMATE   (1u << 20)
+#define MGRAS_ZOOM_FACTOR_MAX    0x1ffff
 #define MGRAS_GE_UNPACK_4UB      0x4064
 #define MGRAS_GE_UNPACK_3UB      0x40f2
 #define MGRAS_HQ_PIXEL_ABGR      0x80
@@ -4730,6 +4762,41 @@ static bool mgras_gl_pixels_zoom(SGIMgrasState *s, bool pixel_texture,
     return true;
 }
 
+/* Replace the box's x zoom with the raster engine's, when it has one. */
+static void mgras_gl_pixels_raster_zoom(SGIMgrasState *s,
+                                        SGIMgrasGLPixels *px)
+{
+    uint32_t mode = s->rss[MGRAS_RSS_XFRMODE] &
+                    (MGRAS_XFRMODE_MAGNIFY | MGRAS_XFRMODE_DECIMATE);
+    uint32_t f = s->rss[MGRAS_RSS_ZOOM_STEP];
+    double zx, n;
+
+    if (!mode) {
+        return;
+    }
+    if (mode != MGRAS_XFRMODE_MAGNIFY && mode != MGRAS_XFRMODE_DECIMATE) {
+        goto unmodelled;
+    }
+    if (!px->zoom_x || !px->w || !f || f > MGRAS_ZOOM_FACTOR_MAX ||
+        s->rss[MGRAS_RSS_ZOOM_INITIAL] != f) {
+        goto unmodelled;
+    }
+    if (mode == MGRAS_XFRMODE_MAGNIFY) {
+        zx = f / 256.0;
+    } else {
+        n = MAX(1, round((double)px->dest_w * f / (256.0 * px->w)));
+        zx = n * 256.0 / f;
+    }
+    px->zoom_x = float_bits(zx);
+    return;
+
+unmodelled:
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: raster zoom 0x%x 0x%x under "
+                  "transfer mode 0x%x is not modelled; the box's zoom is "
+                  "used\n", s->rss[MGRAS_RSS_ZOOM_INITIAL], f,
+                  s->rss[MGRAS_RSS_XFRMODE]);
+}
+
 /* The rectangle and form of the draw 0x8d20 starts, or false, logged. */
 static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
                                     bool dma_only, SGIMgrasGLPixels *px)
@@ -4854,6 +4921,7 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
         px->w = (row_words * 4) / px->bpp;
         px->zoom_x = float_bits((float)px->dest_w / px->w);
     }
+    mgras_gl_pixels_raster_zoom(s, px);
     uint64_t expected_words = DIV_ROUND_UP(px->w * px->bpp, 4);
 
     /*
