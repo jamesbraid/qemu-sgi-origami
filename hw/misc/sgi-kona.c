@@ -2359,10 +2359,20 @@ static void sgi_kona_post_reason(SGIKonaState *s, uint32_t token,
  * index names the context's entry in the kernel's table, not the save
  * area, so the save area is the one the last 0x1fd or 0x1f9 named.
  *
- * Approximated: hardware writes a real context record into the save area,
- * whose contents are unknown; the model writes only the two words the
- * kernel reads back. Hardware presumably posts once the outgoing
- * context's queued work has drained and its state is saved; the model
+ * Approximated: hardware writes a real context record into the save area;
+ * the model writes only the two words the kernel reads back, and keeps
+ * every context's state, raster state included, in its own per-context
+ * records, restored by key. The pipe's context image (0x1f9's header,
+ * tagged records, a 0xedededed check word after each) holds no raster
+ * record: the only raster-side state it saves is the back-end chip's
+ * 89-word register shadow (tag 0x20), written back through the
+ * raster-register path on restore (inferred). The model does not build
+ * that image or that shadow, so its raster restore is its own, not the
+ * pipe's. The raster boards have no interrupt lines, and the model
+ * raises no interrupt for raster state either way.
+ *
+ * Hardware presumably posts once the outgoing context's queued work has
+ * drained and its state is saved; the model
  * keeps no queued work, so it posts at once. The guest checks are the
  * minimal GLX program's first make-current going on to 0x1fd and 0x1f2
  * rather than the timeout, and a later swap back sending
