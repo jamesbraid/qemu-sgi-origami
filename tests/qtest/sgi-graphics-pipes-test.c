@@ -12,6 +12,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qemu/bswap.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "qobject/qjson.h"
@@ -79,6 +80,9 @@ static const Launch launches[] = {
       "nvram0-clock=sgi-ds1742-clock-io9",
       "-cpu R16000,r16000-experimental=on,r16000-reset-mode=0x009bad85,"
       "r16000-scache-bytes=0x400000 -smp 4 -m 4G", SN1_PROM, NULL, true },
+    { "onyx3400-ir", "origin3000,topology=onyx3400-ir",
+      "-cpu R12000 -smp 16 -m 16384", SN1_PROM,
+      "/machine/module5/gbrick0-pipe0-pipe" },
 };
 
 static const Launch origin300 = {
@@ -305,7 +309,7 @@ static char *pipe_path(QTestState *qts, const char *device)
     if (g_str_equal(device, "psitech-rad4")) {
         return g_strdup("/machine/peripheral/pipe");
     }
-    for (unsigned module = 0; module < 4; module++) {
+    for (unsigned module = 0; module < 8; module++) {
         g_autofree char *path = g_strdup_printf("/machine/module%u/pipe",
                                                 module);
         g_autofree char *type = qom_type(qts, path);
@@ -378,6 +382,8 @@ static void test_catalogue_records(void)
             g_assert_false(qdict_haskey(g, "headless-refused"));
         }
     }
+    g_assert_cmpint(qdict_get_int(graphics_record("onyx3400-ir"),
+                                  "max-pipes"), ==, 4);
     /* The Origin 300's XIO connector is a cable port, not a slot. */
     g_assert_null(qdict_get(topology_record("origin300"), "graphics"));
 
@@ -895,6 +901,126 @@ static void test_ip53_v12(void)
     }
 }
 
+/*
+ * The Onyx 3400's four G-brick pipes, each on its own N-brick or I-brick
+ * chip's free Crosstown2 port (widget 0xb) behind the C-brick cabled to
+ * that chip's port A. Processors 4k to 4k+3 sit on C-brick k.
+ */
+static const char *const gbrick_slots[] = {
+    "gbrick0-pipe0-pipe", "gbrick0-pipe1-pipe",
+    "gbrick1-pipe0-pipe", "gbrick1-pipe1-pipe",
+};
+
+#define GBRICK_PIPE_WIDGET(off) (SPACE_IO + (UINT64_C(0xb) << 24) + (off))
+#define GBRICK_PIPE_ID      0x04
+#define GBRICK_PIPE_CONTROL 0x24
+
+static uint32_t cpu_readl(QTestState *qts, unsigned cpu, uint64_t addr)
+{
+    uint8_t bytes[4];
+
+    g_assert_true(qtest_memread_cpu(qts, cpu, addr, bytes, sizeof(bytes)));
+    return ldl_be_p(bytes);
+}
+
+static void cpu_writel(QTestState *qts, unsigned cpu, uint64_t addr,
+                       uint32_t value)
+{
+    uint8_t bytes[4];
+
+    stl_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, cpu, addr, bytes, sizeof(bytes)));
+}
+
+/* Capture @device's console @head, failing the test if it has none. */
+static void assert_console(QTestState *qts, const char *device, int head)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pipes-dump-XXXXXX", &error);
+    g_autofree char *path = NULL;
+
+    g_assert_no_error(error);
+    path = g_build_filename(dir, "dump.ppm", NULL);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'screendump','arguments':{'filename':%s,'device':%s,"
+        "'head':%d}}", path, device, head);
+    g_assert_true(g_file_test(path, G_FILE_TEST_EXISTS));
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+/*
+ * Four pipes realize together on onyx3400-ir. Each answers the
+ * InfiniteReality identity at its chip's free port, and a value each
+ * C-brick writes to its own pipe's control register reads back only
+ * there, so every pipe is its own widget on its own node. Each has its
+ * consoles under its slot's name. A fifth pipe is refused by the limit,
+ * and a pipe in a slot already holding one by the slot.
+ */
+static void test_multi_onyx3400_ir(void)
+{
+    const Launch *l = launch_for("onyx3400-ir");
+    g_autoptr(GString) all = g_string_new(NULL);
+    g_autofree char *five = NULL;
+    QTestState *qts;
+
+    for (size_t k = 0; k < G_N_ELEMENTS(gbrick_slots); k++) {
+        g_string_append_printf(all, " -device sgi-kona,slot=%s",
+                               gbrick_slots[k]);
+    }
+    qts = start(l, all->str);
+    for (unsigned k = 0; k < G_N_ELEMENTS(gbrick_slots); k++) {
+        g_autofree char *path = g_strdup_printf("/machine/module%u/%s",
+                                                5 + k / 2, gbrick_slots[k]);
+        g_autofree char *type = qom_type(qts, path);
+        uint32_t id = cpu_readl(qts, 4 * k, GBRICK_PIPE_WIDGET(GBRICK_PIPE_ID));
+
+        g_assert_cmpstr(type, ==, "sgi-kona");
+        g_assert_cmphex((id >> 12) & 0xffff, ==, 0xc102);
+        g_assert_cmphex((id >> 1) & 0x7ff, ==, 0x2aa);
+        cpu_writel(qts, 4 * k, GBRICK_PIPE_WIDGET(GBRICK_PIPE_CONTROL),
+                   0x100u << k);
+        assert_console(qts, gbrick_slots[k], 0);
+    }
+    for (unsigned k = 0; k < G_N_ELEMENTS(gbrick_slots); k++) {
+        g_assert_cmphex(cpu_readl(qts, 4 * k,
+                                  GBRICK_PIPE_WIDGET(GBRICK_PIPE_CONTROL)),
+                        ==, 0x100u << k);
+    }
+    qtest_quit(qts);
+
+    five = g_strdup_printf("%s -device sgi-kona,slot=gbrick0-pipe0-pipe",
+                           all->str);
+    assert_refused(l, five,
+                   "topology 'onyx3400-ir' builds at most 4 graphics pipes, "
+                   "and gbrick0-pipe0-pipe already holds one");
+    assert_refused(l, "-device sgi-kona,slot=gbrick0-pipe0-pipe "
+                   "-device sgi-kona,slot=gbrick1-pipe0-pipe "
+                   "-device sgi-kona,slot=gbrick0-pipe0-pipe",
+                   "graphics slot gbrick0-pipe0-pipe already holds a pipe");
+}
+
+/*
+ * A G-brick's pipe 1 takes one or two raster managers; only pipe 0 takes
+ * four.
+ */
+static void test_multi_rm_count(void)
+{
+    const Launch *l = launch_for("onyx3400-ir");
+    QTestState *qts;
+    g_autofree char *count = NULL;
+
+    assert_refused(l, "-device sgi-kona,slot=gbrick0-pipe1-pipe,rm-count=4",
+                   "does not offer sgi-kona product=ir3 with rm-count=4; it "
+                   "offers 1 and 2: a G-brick's pipe 1 takes one or two "
+                   "raster managers; only pipe 0 takes four");
+    qts = start(l, "-device sgi-kona,slot=gbrick0-pipe0-pipe,rm-count=4 "
+                "-device sgi-kona,slot=gbrick0-pipe1-pipe,rm-count=2");
+    count = qom_text(qts, "/machine/module5/gbrick0-pipe1-pipe", "rm-count");
+    g_assert_cmpstr(count, ==, "2");
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     QTestState *qts;
@@ -920,6 +1046,9 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-graphics-pipes/vga-other", test_vga_other_refused);
     qtest_add_func("/sgi-graphics-pipes/refusals", test_refusals);
     qtest_add_func("/sgi-graphics-pipes/ip53-v12", test_ip53_v12);
+    qtest_add_func("/sgi-graphics-pipes/multi/onyx3400-ir",
+                   test_multi_onyx3400_ir);
+    qtest_add_func("/sgi-graphics-pipes/multi/rm-count", test_multi_rm_count);
     for (size_t i = 0; i < G_N_ELEMENTS(launches); i++) {
         g_autofree char *path = g_strdup_printf(
             "/sgi-graphics-pipes/default/%s", launches[i].topology);

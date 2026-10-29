@@ -413,6 +413,13 @@ bool sgi_graphics_check_pipe(SGIGraphicsPipes *pipes, DeviceState *dev,
         return false;
     }
 
+    if (pipes->host_node &&
+        !sgi_graphics_check_host(machine, pipes->fitted, name,
+                                 pipes->host_node(pipes->opaque, dev),
+                                 errp)) {
+        return false;
+    }
+
     values = sgi_graphics_requested(dev, slot, family);
     requested = sgi_graphics_get(dev, "product");
     offer = sgi_graphics_offer(slot, family);
@@ -554,6 +561,7 @@ static void sgi_graphics_fitted_free(gpointer data)
     SGIGraphicsFitted *fitted = data;
 
     g_free(fitted->name);
+    g_free(fitted->host);
     g_free(fitted);
 }
 
@@ -608,6 +616,8 @@ void sgi_graphics_pipes_plug(SGIGraphicsPipes *p, DeviceState *dev)
     fitted->dev = dev;
     fitted->name = g_strdup(slot ? slot->name : dev->id ? dev->id :
                             object_get_typename(OBJECT(dev)));
+    fitted->host = p->host_node ? g_strdup(p->host_node(p->opaque, dev)) :
+                   NULL;
     g_ptr_array_add(p->fitted, fitted);
 }
 

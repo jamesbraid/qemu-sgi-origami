@@ -2707,7 +2707,7 @@ static bool sgi_kona_pixel_depth(SGIKonaState *s, SGIKonaConfig *c,
 static bool sgi_kona_configure(SGIKonaState *s, Error **errp)
 {
     SGIKonaConfig *c = &s->config;
-    bool ktown = sgi_kona_has_ktown(SGI_XIO_BOARD(s));
+    bool ktown = s->ktown2 || sgi_kona_has_ktown(SGI_XIO_BOARD(s));
     const char *dg_part;
     size_t i;
 
@@ -20834,6 +20834,7 @@ static const Property sgi_kona_properties[] = {
      * product's own board, one raster manager, and the channel count of
      * the display generator.
      */
+    DEFINE_PROP_BOOL("ktown2", SGIKonaState, ktown2, false),
     DEFINE_PROP_STRING("product", SGIKonaState, product),
     DEFINE_PROP_STRING("geometry", SGIKonaState, geometry),
     DEFINE_PROP_STRING("rm-type", SGIKonaState, rm_type),

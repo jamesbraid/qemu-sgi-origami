@@ -41,10 +41,12 @@ bool sgi_graphics_vga_none(const char *machine, bool *none, Error **errp);
 const SGIModelGraphicsSlot *sgi_graphics_default_slot(
     const SGIModelGraphics *g);
 
-/* One pipe a machine holds, by its catalogue slot or its id. */
+/* One pipe a machine holds: its catalogue slot, or its id, and its node. */
 typedef struct SGIGraphicsFitted {
     DeviceState *dev;
     char *name;
+    /* The id of the node board that controls the slot, or NULL. */
+    char *host;
 } SGIGraphicsFitted;
 
 /*
@@ -69,6 +71,14 @@ typedef struct SGIGraphicsPipes {
     DeviceState *default_pipe;
     /* SGIGraphicsFitted, in plug order. */
     GPtrArray *fitted;
+    /*
+     * Optional, set before init: the id of the node board that controls
+     * @dev's slot, which the machine's live topology knows and the
+     * catalogue's graphics record does not, or NULL for none. A machine
+     * whose slots all belong to one node leaves it NULL.
+     */
+    const char *(*host_node)(void *opaque, DeviceState *dev);
+    void *opaque;
 } SGIGraphicsPipes;
 
 /*
@@ -96,13 +106,22 @@ void sgi_graphics_pipes_done(SGIGraphicsPipes *p);
 void sgi_graphics_pipes_cleanup(SGIGraphicsPipes *p);
 
 /*
+ * The rule that a node controls at most one pipe: refuse a pipe for slot
+ * @name when node board @host already controls one of @fitted's
+ * (SGIGraphicsFitted) in another slot. A NULL @host never conflicts.
+ */
+bool sgi_graphics_check_host(const char *machine, GPtrArray *fitted,
+                             const char *name, const char *host,
+                             Error **errp);
+
+/*
  * Check pipe @dev, of @family, against registry @pipes before it realizes,
  * as a machine's pre-plug handler does: find the slot its placement
  * properties name, refuse a family, product or setting value the slot
  * does not offer with the catalogue's own reason, refuse a slot the
- * machine's node boards do not fit and a pipe beyond the topology's
- * max-pipes, and set every setting @dev leaves unset to the slot's
- * default.
+ * machine's node boards do not fit, a pipe beyond the topology's
+ * max-pipes and a second pipe on one node, and set every setting @dev
+ * leaves unset to the slot's default.
  */
 bool sgi_graphics_check_pipe(SGIGraphicsPipes *pipes, DeviceState *dev,
                              SGIModelGraphicsFamilyKind family,

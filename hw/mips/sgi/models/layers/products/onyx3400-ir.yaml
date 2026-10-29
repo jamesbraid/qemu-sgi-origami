@@ -46,10 +46,13 @@ layer:
   memory_kits_per_node: [kit-4096-eight-512-banks, kit-4096-eight-512-banks, kit-4096-eight-512-banks, kit-4096-eight-512-banks]
   # The four InfiniteReality3 pipes of the two G-bricks, each a slot named by
   # the label its cable gives it (docs/system/mips/sgi/sn.rst, Graphics pipes).
-  # The graphics contract builds at most one pipe at once, so the machine
-  # fits the first (the I-brick's) by default and refuses a second.
+  # All four may be fitted at once; the machine fits the first (the
+  # I-brick's) by default. A G-brick's pipe 1 takes one or two raster
+  # managers, its pipe 0 one, two or four (007-4264-002 printed pages 39
+  # and 40).
   graphics:
-    max_pipes: 1
+    max_pipes: 4
+    max_pipes_sources: ["007-4264-002 printed page 26: one to eight G-bricks and one to eight graphics pipes", "007-4264-002 printed page 27, Figure 1-10: two G-bricks of two pipes each, all four cabled in this composition"]
     headless: false
     headless_refused: "an Onyx 3400 with InfiniteReality is sold with G-bricks; a system with none is an Origin 3400, so use origin3400"
     slots:
@@ -97,7 +100,7 @@ layer:
                 settings:
                   geometry: {values: [ge16-4]}
                   rm-type: {values: [rm9]}
-                  rm-count: {values: ["1", "2", "4"], default: "1"}
+                  rm-count: {values: ["1", "2"], default: "1"}
                   texture-mb: {values: ["256"]}
                   display: {values: [dg5-2, dg5-8], default: dg5-2}
         refusals:
@@ -107,6 +110,10 @@ layer:
           - family: kona
             product: ir2e
             reason: "the G-brick pipe layer is an InfiniteReality3 pipe, and no other revision is modelled for the G-brick"
+          - family: kona
+            product: ir3
+            settings: {rm-count: "4"}
+            reason: "a G-brick's pipe 1 takes one or two raster managers; only pipe 0 takes four"
       - name: gbrick1-pipe0-pipe
         description: "G-brick 1 pipe 0, cabled to N-brick graphics pipe 1"
         placement: {slot: gbrick1-pipe0-pipe}
@@ -147,7 +154,7 @@ layer:
                 settings:
                   geometry: {values: [ge16-4]}
                   rm-type: {values: [rm9]}
-                  rm-count: {values: ["1", "2", "4"], default: "1"}
+                  rm-count: {values: ["1", "2"], default: "1"}
                   texture-mb: {values: ["256"]}
                   display: {values: [dg5-2, dg5-8], default: dg5-2}
         refusals:
@@ -157,6 +164,10 @@ layer:
           - family: kona
             product: ir2e
             reason: "the G-brick pipe layer is an InfiniteReality3 pipe, and no other revision is modelled for the G-brick"
+          - family: kona
+            product: ir3
+            settings: {rm-count: "4"}
+            reason: "a G-brick's pipe 1 takes one or two raster managers; only pipe 0 takes four"
   composition_rules:
     counts:
       - {bricks: [c-brick], min: 1, max: 8}

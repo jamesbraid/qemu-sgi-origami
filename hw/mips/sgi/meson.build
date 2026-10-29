@@ -19,6 +19,7 @@ sgi_machines_embed_c = custom_target('sgi-machines-embed.c.inc',
 # through the shared genh list.
 mips_ss.add(when: 'CONFIG_SGI_CATALOGUE',
             if_true: [files('sgi-machines.c', 'sgi-graphics.c',
+                            'sgi-graphics-host.c',
                             'machine-storage.c',
                             'board-mac.c', 'sgi-cpu.c'),
                       sgi_machines_embed_c],
