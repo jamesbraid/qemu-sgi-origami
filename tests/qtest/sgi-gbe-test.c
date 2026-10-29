@@ -947,10 +947,11 @@ static void test_shadow_and_bounds(void)
 }
 
 /*
- * Revision 1 keeps the occupancy count, zero with synchronous draining.
- * Revision 2 counts free entries of the 64-entry FIFO in six bits. The IRIX
- * 6.5.30 X server waits for at least 48 free there and accepts zero only
- * below revision 2 (Origami's O2 graphics driver evidence datasheet).
+ * Revision 1 keeps the occupancy count and revision 2 counts free entries
+ * of the 64-entry FIFO in six bits. Writes drain synchronously, so every
+ * read sees the empty value, 0 or 63, and each write has already reached
+ * its CMAP entry. The IRIX 6.5.30 X server waits for at least 48 free there
+ * and accepts zero only below revision 2 (Origami's O2 GBE datasheet).
  */
 static void test_cmfifo_revision(void)
 {
@@ -971,8 +972,8 @@ static void test_cmfifo_revision(void)
         for (unsigned n = 0; n < 80; n++) {
             wr(q, CMAP(n), n << 24);
             g_assert_cmphex(rd(q, 0x58000), ==, cases[i].count);
+            g_assert_cmphex(rd(q, CMAP(n)), ==, n << 24);
         }
-        g_assert_cmphex(rd(q, CMAP(79)), ==, 79u << 24);
         /* The revision field is read-only. */
         wr(q, 0, 0x300aa00f);
         g_assert_cmphex(rd(q, 0) & 15, ==, cases[i].revision);

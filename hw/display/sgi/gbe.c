@@ -814,7 +814,12 @@ static uint64_t read_reg(void *opaque, hwaddr addr, unsigned size)
          * 2 the field counts free entries of the 64-entry FIFO, saturated
          * to six bits, which matches the GBE specification's prose; the
          * revision split is inferred from the IRIX 6.5.30 X server, which
-         * accepts zero only below revision 2. Writes drain synchronously.
+         * accepts zero only below revision 2.
+         *
+         * Approximation: writes drain synchronously, so the queue is empty
+         * at every MMIO completion and the count only ever reads its empty
+         * value, 0 or 63. No drain rate is documented, so blanking-only
+         * draining, a partly full queue and overflow are not modeled.
          */
         return s->revision < 2 ? MIN(s->palette_pending, 63) :
                                  MIN(64 - s->palette_pending, 63);
