@@ -197,6 +197,19 @@ typedef struct SN1NodeState {
     /* Used in place of the aliases above once a flash part is attached. */
     SN1PromView prom_view_reset;
     IOMMUMemoryRegion reset_router;
+    /*
+     * The reset view as this node's processors reach it at node field zero:
+     * the firmware's references reach this node's own PROM, and the rest
+     * reach the memory of the node that carries number zero.
+     */
+    IOMMUMemoryRegion reset_local_router;
+    /* Its unmapped parent; processors reach it through local_form[][0]. */
+    MemoryRegion reset_local_holder;
+    MemoryRegion reset_local_probe;
+    /* The node's claim path, which memory references off node 0 take. */
+    AddressSpace reset_claim_as;
+    MemoryListener reset_claim_listener;
+    bool reset_claim_changed;
     /* The router's place in the system space while notifiers register. */
     MemoryRegion reset_probe;
     MemoryRegion reset_memory;

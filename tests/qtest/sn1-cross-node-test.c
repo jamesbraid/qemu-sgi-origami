@@ -957,9 +957,10 @@ static void test_bte_data_goes_by_number(void)
 }
 
 /*
- * The reset view and the local boot view are reader-relative forms of the
- * reader's own node's flash. Each node gets its own 16 MiB boot flash; node
- * 1's carries a marker at position zero, node 0's is blank.
+ * The local boot view is a reader-relative form of the reader's own node's
+ * flash, and so is the reset view until the nodes carry different numbers.
+ * Each node gets its own 16 MiB boot flash; node 1's carries a marker at
+ * position zero, node 0's is blank.
  */
 #define PROM_RESET UINT64_C(0x1fc00000)
 #define HUB_LOCAL_BOOT (SPACE_HUB + UINT64_C(0x18000000))
@@ -1001,21 +1002,100 @@ static void machine_quit_marked(QTestState *qts, char **flashes)
     }
 }
 
+/*
+ * A monitor read is a memory reference, not a firmware one. Once node 1
+ * carries 1 its processors' reference at node field zero names node 0, whose
+ * reset view (no bank enabled, so its blank flash) answers.
+ */
 static void test_reset_view_is_each_nodes_own(void)
 {
     char *flashes[2];
     QTestState *qts = machine_start_marked(flashes);
-    unsigned int round;
 
-    /* Before and after node 1 takes a number other than node 0's. */
-    for (round = 0; round < 2; round++) {
-        g_assert_cmphex(cpu_read_ok(qts, 2, PROM_RESET), ==, PROM_MARKER);
-        g_assert_cmphex(cpu_read_ok(qts, 3, PROM_RESET), ==, PROM_MARKER);
-        g_assert_cmphex(cpu_read_ok(qts, 0, PROM_RESET), ==, 0);
-        g_assert_cmphex(cpu_read_ok(qts, 1, PROM_RESET), ==, 0);
-        set_node_number(qts, 1, 1);
+    g_assert_cmphex(cpu_read_ok(qts, 2, PROM_RESET), ==, PROM_MARKER);
+    g_assert_cmphex(cpu_read_ok(qts, 3, PROM_RESET), ==, PROM_MARKER);
+    g_assert_cmphex(cpu_read_ok(qts, 0, PROM_RESET), ==, 0);
+    g_assert_cmphex(cpu_read_ok(qts, 1, PROM_RESET), ==, 0);
+    set_node_number(qts, 1, 1);
+    for (unsigned int cpu = 0; cpu < 4; cpu++) {
+        g_assert_cmphex(cpu_read_ok(qts, cpu, PROM_RESET), ==, 0);
     }
+    g_assert_cmphex(cpu_read_ok(qts, 2, NODE(1) + PROM_RESET), ==,
+                    PROM_MARKER);
     machine_quit_marked(qts, flashes);
+}
+
+/*
+ * The reset view's memory page at node field zero is node 0's page from
+ * every node once node 1 carries another number: a coherent reference names
+ * memory by number, and only the firmware's references are reader-relative.
+ * The Origin 3200's 512 MiB bank 0 covers the reset address, so the page is
+ * RAM on both nodes; each node's copy carries its own marker.
+ */
+#define ORIGIN3200_ARGS "-M origin3000,topology=origin3200 " \
+                        "-cpu R12000 -smp 8 -m 8192"
+/* Bank 0 alone, 512 MiB (size code 4), no bank swap. */
+#define MD_BANK0_512MB UINT64_C(0x41)
+#define RESET_PAGE (PROM_RESET + UINT64_C(0x8000))
+#define RESET_PAGE_NODE0 UINT64_C(0x00c0ffee00000000)
+#define RESET_PAGE_NODE1 UINT64_C(0x00c0ffee00000001)
+
+static void test_reset_page_is_node_zeros(void)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(ORIGIN3200_ARGS " -bios %s", quoted);
+
+    qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_BANK0_512MB);
+    peer_access(qts, MD_MEMORY_CONFIG, true, MD_BANK0_512MB);
+    qtest_writeq(qts, RESET_PAGE, RESET_PAGE_NODE0);
+    set_node_number(qts, 1, 1);
+    qtest_writeq(qts, NODE(1) + RESET_PAGE, RESET_PAGE_NODE1);
+
+    for (unsigned int cpu = 0; cpu < 8; cpu++) {
+        g_assert_cmphex(cpu_read_ok(qts, cpu, RESET_PAGE), ==,
+                        RESET_PAGE_NODE0);
+        g_assert_cmphex(cpu_read_ok(qts, cpu, NODE(1) + RESET_PAGE), ==,
+                        RESET_PAGE_NODE1);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * On a routed machine the reset page at node field zero follows the
+ * reader's route to number 0, like any other node-field-zero address: out
+ * of reach it is a decode error, and once the NI route table names the
+ * router port of node 0, node 0's page answers. An Origin 3400's node 1 is
+ * on router port 3 and node 0 on port 2, so its route to number 0 is turn 7.
+ */
+#define ORIGIN3400_ARGS "-M origin3000,topology=origin3400 " \
+                        "-cpu R12000 -smp 16 -m 16384"
+#define NI_LOCAL_ROUTE(number) (UINT64_C(0x681000) + (number) * 8)
+#define ROUTED_PROBE UINT64_C(0x10000)
+
+static void test_routed_reset_page_follows_the_route(void)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(ORIGIN3400_ARGS " -bios %s", quoted);
+
+    for (unsigned int node = 0; node < 4; node++) {
+        bte_cpu_writeq(qts, node * 4, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
+                       MD_BANK0_512MB);
+    }
+    bte_cpu_writeq(qts, 0, RESET_PAGE, RESET_PAGE_NODE0);
+    bte_cpu_writeq(qts, 0, ROUTED_PROBE, WORD0);
+    bte_cpu_writeq(qts, 4, RESET_PAGE, RESET_PAGE_NODE1);
+    for (unsigned int node = 1; node < 4; node++) {
+        bte_cpu_writeq(qts, node * 4, BEDROCK_LOCAL + LB_REVISION,
+                       (uint64_t)node << REVISION_NODE_SHIFT);
+    }
+
+    assert_unreachable(qts, 4, ROUTED_PROBE);
+    assert_unreachable(qts, 4, RESET_PAGE);
+    bte_cpu_writeq(qts, 4, BEDROCK_LOCAL + NI_LOCAL_ROUTE(0), 7);
+    g_assert_cmphex(cpu_read_ok(qts, 4, ROUTED_PROBE), ==, WORD0);
+    g_assert_cmphex(cpu_read_ok(qts, 4, RESET_PAGE), ==, RESET_PAGE_NODE0);
+    g_assert_cmphex(cpu_read_ok(qts, 0, RESET_PAGE), ==, RESET_PAGE_NODE0);
+    qtest_quit(qts);
 }
 
 static void test_local_boot_view_is_the_readers(void)
@@ -1945,6 +2025,10 @@ int main(int argc, char **argv)
                    test_bte_completion_goes_by_number);
     qtest_add_func("sn1/cross-node/reset-view-is-each-nodes-own",
                    test_reset_view_is_each_nodes_own);
+    qtest_add_func("sn1/cross-node/reset-page-is-node-zeros",
+                   test_reset_page_is_node_zeros);
+    qtest_add_func("sn1/cross-node/routed-reset-page-follows-the-route",
+                   test_routed_reset_page_follows_the_route);
     qtest_add_func("sn1/cross-node/local-boot-view-is-the-readers",
                    test_local_boot_view_is_the_readers);
     qtest_add_func("sn1/cross-node/l1-uart-local-form-is-the-readers",

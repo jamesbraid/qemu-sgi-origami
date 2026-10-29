@@ -184,6 +184,27 @@ This is an emulator compatibility carrier. What it rests on:
   payload offsets such as ``0x998`` and ``0x247c`` at the high local
   view (measured from the stock image).
 
+On a machine of more than one node the CPU reset view, at node field
+zero, splits by reference. The firmware's references, through the
+uncached compatibility segment or with cache algorithm 3, reach the
+reading processor's own node's payload, as every node's processors
+fetch their own reset vector before any node carries a number other
+than 0. Every other reference there is a memory reference, which names
+memory by node number. While the reader's node carries 0 it reaches
+that node's own banks, or its payload where none is enabled, as before
+renumbering. On any other node it takes the node's claim path, as at
+any other node-field-zero address: it follows the cable, the NI route
+table and the routers to number 0, and is a decode error where number
+0 is out of reach. The first half is the carrier's approximation; the
+second follows the memory claims. On this model IRIX 6.5.30 uses pages
+in that range on nodes of 2 GiB, and processors on the other nodes
+reading their own node's copy made its processes fault on a four-node
+Origin 3900. The qtests ``sn1/cross-node/reset-page-is-node-zeros``
+(an Origin 3200, every processor) and
+``sn1/cross-node/routed-reset-page-follows-the-route`` (an Origin 3400
+whose route to number 0 is written after numbering) check the memory
+half.
+
 Unknown: how an IP45 board's reset request selects flash rather than
 memory, the fitted flash part, the full chip-select range and what
 answers outside the image. The carrier maps only the payload's own
