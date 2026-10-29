@@ -3062,6 +3062,328 @@ static void test_rad_input_clock(void)
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
+/*
+ * Clock generator words IRIX 6.5.30 writes for each rate, measured on another
+ * emulator's RAD1 model (iris, github.com/jamesbraid/iris, commit 4ec2939's
+ * rad1/tests.rs): 0xa0, 0xa4 and, in every case, 1 in the master-select word
+ * 0xb0.
+ * The layout is the public Linux driver's, where generator 1 is the analog
+ * output; the 0xa0 words select generator 1 with bit 29.
+ */
+static const struct {
+    uint32_t rate;
+    uint32_t ctl;
+    uint32_t rem;
+} octane_rad_irix_clocks[] = {
+    { 44100, 0x20000603, 0x0034ff6d },
+    { 22050, 0x20000207, 0x0068ff6d },
+    { 11025, 0x20000610, 0x003dff6d },
+    { 8000, 0x20000617, 0x0000ffff },
+    { 16000, 0x2000060b, 0x0000ffff },
+    { 32000, 0x20000605, 0x0000ffff },
+    { 48000, 0x20000603, 0x0000ffff },
+};
+
+#define RAD_CG_IN_SELECT    0x10000000u
+#define RAD_CG_OUT_SELECT   0x20000000u
+#define RAD_CG_IN_MUX       0xb4
+#define RAD_CG_OUT_MUX      0xb0
+
+static void octane_rad_cg_load(QTestState *qts, unsigned mux, uint32_t ctl,
+                               uint32_t rem, uint32_t select)
+{
+    qtest_writel(qts, RAD_BAR0 + mux, 1);
+    qtest_writel(qts, RAD_BAR0 + 0xa4, rem);
+    qtest_writel(qts, RAD_BAR0 + 0xa0, ctl | select);
+}
+
+static void octane_rad_clock_map(QTestState *qts)
+{
+    octane_rad_map(qts);
+    qtest_writel(qts, CFG(3) + 4, 6);
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+}
+
+/* Map the card and run the analog output and input on 4 KiB rings. */
+static void octane_rad_clock_start(QTestState *qts, bool output, bool input)
+{
+    octane_rad_clock_map(qts);
+    if (output) {
+        octane_rad_output_program(qts, 0xa000a000);
+        qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000001);
+    }
+    if (input) {
+        octane_rad_input_program(qts, 0xa000b000, 0xfffff000);
+        qtest_writel(qts, RAD_BAR0 + 0x4c, 0x03000001);
+    }
+}
+
+static uint32_t octane_rad_out_frames(QTestState *qts)
+{
+    return qtest_readl(qts, RAD_BAR0 + 0x2c) >> 18;
+}
+
+static uint32_t octane_rad_in_frames(QTestState *qts)
+{
+    return qtest_readl(qts, RAD_BAR0 + 0x14) >> 18;
+}
+
+static uint32_t octane_rad_frames_in(uint32_t rate, uint64_t ns)
+{
+    return (uint64_t)rate * ns / 1000000000;
+}
+
+/* Each IRIX word paces the output at exactly its rate. */
+static void test_rad_clock_irix_words(void)
+{
+    QTestState *qts = octane_start();
+
+    for (unsigned i = 0; i < ARRAY_SIZE(octane_rad_irix_clocks); i++) {
+        uint32_t rate = octane_rad_irix_clocks[i].rate;
+
+        qtest_system_reset(qts);
+        octane_rad_clock_map(qts);
+        octane_rad_cg_load(qts, RAD_CG_OUT_MUX, octane_rad_irix_clocks[i].ctl,
+                           octane_rad_irix_clocks[i].rem, 0);
+        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0xa0), ==,
+                        octane_rad_irix_clocks[i].ctl);
+        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0xa4), ==,
+                        octane_rad_irix_clocks[i].rem);
+        octane_rad_clock_start(qts, true, false);
+        qtest_clock_step(qts, 250000000);
+        g_test_message("rate %u", rate);
+        g_assert_cmpuint(octane_rad_out_frames(qts), ==,
+                         octane_rad_frames_in(rate, 250000000));
+    }
+    qtest_quit(qts);
+}
+
+/* The master select picks 176.4 or 192 kHz, whichever order it arrives in. */
+static void test_rad_clock_master(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd = g_file_open_tmp("octane-rad-master-XXXXXX", &log_path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d unimp -D %s", quoted);
+    qts = octane_start_args(extra);
+
+    /* Divisor 8 of the 176.4 kHz master: 22050 Hz. */
+    octane_rad_clock_map(qts);
+    qtest_writel(qts, RAD_BAR0 + RAD_CG_OUT_MUX, 0);
+    qtest_writel(qts, RAD_BAR0 + 0xa4, 0x0000ffff);
+    qtest_writel(qts, RAD_BAR0 + 0xa0, RAD_CG_OUT_SELECT | 7);
+    octane_rad_clock_start(qts, true, false);
+    qtest_clock_step(qts, 100000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 2205);
+
+    /* Selecting the 192 kHz master retunes the running channel: 24000 Hz. */
+    qtest_writel(qts, RAD_BAR0 + RAD_CG_OUT_MUX, 1);
+    qtest_clock_step(qts, 100000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 2205 + 2400);
+
+    /* Bits above bit 0 do not change the master, but are logged. */
+    qtest_writel(qts, RAD_BAR0 + RAD_CG_OUT_MUX, 5);
+    qtest_clock_step(qts, 100000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 2205 + 2400 + 2400);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "master select 0x00000005 at 0xb0"));
+    g_assert_null(strstr(log, "master select 0x00000001"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/* Generator 0 clocks the input alone, generator 1 the output alone. */
+static void test_rad_clock_generators(void)
+{
+    QTestState *qts = octane_start();
+    uint32_t in = 0, out = 0;
+
+    octane_rad_clock_start(qts, true, true);
+    qtest_clock_step(qts, 50000000);
+    in += 2205;
+    out += 2205;
+    g_assert_cmpuint(octane_rad_in_frames(qts), ==, in);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, out);
+
+    /* Generator 0, 48 kHz: the output stays at its own rate. */
+    octane_rad_cg_load(qts, RAD_CG_IN_MUX, 0x603, 0x0000ffff,
+                       RAD_CG_IN_SELECT);
+    qtest_clock_step(qts, 50000000);
+    in += 2400;
+    out += 2205;
+    g_assert_cmpuint(octane_rad_in_frames(qts), ==, in);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, out);
+
+    /* Generator 1, 32 kHz: the input keeps 48 kHz. */
+    octane_rad_cg_load(qts, RAD_CG_OUT_MUX, 0x605, 0x0000ffff,
+                       RAD_CG_OUT_SELECT);
+    qtest_clock_step(qts, 50000000);
+    in += 2400;
+    out += 1600;
+    g_assert_cmpuint(octane_rad_in_frames(qts), ==, in);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, out);
+
+    /* Generators 2 and 3 clock neither analog channel. */
+    octane_rad_cg_load(qts, 0xac, 0x607, 0x0000ffff, 0x40000000);
+    octane_rad_cg_load(qts, 0xa8, 0x607, 0x0000ffff, 0x80000000);
+    qtest_clock_step(qts, 50000000);
+    in += 2400;
+    out += 1600;
+    g_assert_cmpuint(octane_rad_in_frames(qts), ==, in);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, out);
+    qtest_quit(qts);
+}
+
+/* A write that selects no generator, and a bare 0xa4, change no rate. */
+static void test_rad_clock_no_select(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd = g_file_open_tmp("octane-rad-clock-XXXXXX", &log_path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d unimp -D %s", quoted);
+    qts = octane_start_args(extra);
+    octane_rad_clock_start(qts, true, false);
+
+    /* Before any load: the 44.1 kHz stand-in for the unknown power-on rate. */
+    qtest_writel(qts, RAD_BAR0 + 0xa0, 0x02000007);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0xa0), ==, 0x02000007);
+    qtest_clock_step(qts, 100000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 4410);
+
+    octane_rad_cg_load(qts, RAD_CG_OUT_MUX, 0x617, 0x0000ffff,
+                       RAD_CG_OUT_SELECT);
+    qtest_clock_step(qts, 100000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 4410 + 800);
+
+    /* The IRIX flag-only words and a new remainder alone leave 8 kHz. */
+    qtest_writel(qts, RAD_BAR0 + 0xa0, 0x0200000b);
+    qtest_writel(qts, RAD_BAR0 + 0xa4, 0x0034ff6d);
+    qtest_clock_step(qts, 100000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 4410 + 800 + 800);
+
+    /* Flag bits 9 and 10 are ignored: 8 kHz with them clear, too. */
+    qtest_writel(qts, RAD_BAR0 + 0xa4, 0x0000ffff);
+    qtest_writel(qts, RAD_BAR0 + 0xa0, RAD_CG_OUT_SELECT | 0x17);
+    qtest_clock_step(qts, 100000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==,
+                     4410 + 800 + 800 + 800);
+
+    /* A select-less word with unknown bits loads nothing but is logged. */
+    qtest_writel(qts, RAD_BAR0 + 0xa0, 0x00800007);
+
+    /* Bits outside the known fields are still loaded, but observable. */
+    qtest_writel(qts, RAD_BAR0 + 0xa0, RAD_CG_OUT_SELECT | 0x02000603);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "clock generator load 0x22000603"));
+    g_assert_null(strstr(log, "clock generator load 0x02000007"));
+    g_assert_nonnull(strstr(log, "clock generator load 0x00800007"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/* A rate change keeps what was already played and continues from there. */
+static void test_rad_clock_midstream(void)
+{
+    QTestState *qts = octane_start();
+
+    octane_rad_clock_start(qts, true, true);
+    qtest_clock_step(qts, 100000000);
+
+    /* No read between the steps: the write itself catches both channels up. */
+    octane_rad_cg_load(qts, RAD_CG_OUT_MUX, 0x617, 0x0000ffff,
+                       RAD_CG_OUT_SELECT);
+    octane_rad_cg_load(qts, RAD_CG_IN_MUX, 0x20b, 0x0000ffff,
+                       RAD_CG_IN_SELECT);
+    qtest_clock_step(qts, 250000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 4410 + 2000);
+    g_assert_cmpuint(octane_rad_in_frames(qts), ==, 4410 + 4000);
+
+    /* The ring pointer follows the frames moved, not the clock's start. */
+    octane_rad_status_program(qts, 0xa0008000, 0xfffffffc);
+    qtest_writel(qts, RAD_BAR0 + 0x5c, 0x40001);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x8038), ==,
+                    0xa000a000 + ((4410 + 2000) * 8) % 4096);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x8010), ==,
+                    0xa000b000 + ((4410 + 4000) * 8) % 4096);
+    qtest_quit(qts);
+}
+
+/* Reset puts the 44.1 kHz stand-in back and clears the generator words. */
+static void test_rad_clock_reset(void)
+{
+    QTestState *qts = octane_start();
+
+    octane_rad_clock_map(qts);
+    octane_rad_cg_load(qts, RAD_CG_OUT_MUX, 0x617, 0x0000ffff,
+                       RAD_CG_OUT_SELECT);
+    octane_rad_cg_load(qts, RAD_CG_IN_MUX, 0x617, 0x0000ffff,
+                       RAD_CG_IN_SELECT);
+    octane_rad_clock_start(qts, true, true);
+    qtest_clock_step(qts, 100000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 800);
+    g_assert_cmpuint(octane_rad_in_frames(qts), ==, 800);
+
+    qtest_system_reset(qts);
+    octane_rad_map(qts);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0xa0), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + RAD_CG_OUT_MUX), ==, 0);
+    octane_rad_clock_start(qts, true, true);
+    qtest_clock_step(qts, 100000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 4410);
+    g_assert_cmpuint(octane_rad_in_frames(qts), ==, 4410);
+    qtest_quit(qts);
+}
+
+/* A running channel keeps its generator's rate across migration. */
+static void test_rad_clock_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("octane-rad-clock-XXXXXX",
+                                               &error);
+    g_autofree char *socket = g_build_filename(directory, "mig.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = octane_start();
+    QTestState *to = octane_start_args("-incoming defer");
+
+    g_assert_no_error(error);
+    octane_rad_clock_map(from);
+    octane_rad_cg_load(from, RAD_CG_OUT_MUX, 0x617, 0x0000ffff,
+                       RAD_CG_OUT_SELECT);
+    octane_rad_cg_load(from, RAD_CG_IN_MUX, 0x605, 0x0000ffff,
+                       RAD_CG_IN_SELECT);
+    octane_rad_clock_start(from, true, true);
+    qtest_clock_step(from, 100000000);
+    qtest_qmp_assert_success(from, "{'execute':'stop'}");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_migrate_resume(to);
+    g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0xa0), ==,
+                    RAD_CG_IN_SELECT | 0x605);
+    g_assert_cmpuint(octane_rad_out_frames(to), ==, 800);
+    g_assert_cmpuint(octane_rad_in_frames(to), ==, 3200);
+    qtest_clock_step(to, 100000000);
+    g_assert_cmpuint(octane_rad_out_frames(to), ==, 1600);
+    g_assert_cmpuint(octane_rad_in_frames(to), ==, 6400);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 static void octane_rad_aes_subcode_program(QTestState *qts, uint64_t base,
                                            uint32_t ctrl)
 {
@@ -5405,6 +5727,13 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rad-status-routes", test_rad_status_routes);
     qtest_add_func("/octane/rad-output-clock", test_rad_output_clock);
     qtest_add_func("/octane/rad-input-clock", test_rad_input_clock);
+    qtest_add_func("/octane/rad-clock-irix-words", test_rad_clock_irix_words);
+    qtest_add_func("/octane/rad-clock-master", test_rad_clock_master);
+    qtest_add_func("/octane/rad-clock-generators", test_rad_clock_generators);
+    qtest_add_func("/octane/rad-clock-no-select", test_rad_clock_no_select);
+    qtest_add_func("/octane/rad-clock-midstream", test_rad_clock_midstream);
+    qtest_add_func("/octane/rad-clock-reset", test_rad_clock_reset);
+    qtest_add_func("/octane/rad-clock-migration", test_rad_clock_migration);
     qtest_add_func("/octane/rad-aes-subcode", test_rad_aes_subcode);
     qtest_add_func("/octane/rad-status-continuous", test_rad_status_continuous);
     qtest_add_func("/octane/rad-status-overrun", test_rad_status_overrun);
