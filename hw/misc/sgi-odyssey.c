@@ -226,9 +226,12 @@
  * 32, 64, 128 MB) from the strap word at +0x106c, then clears, sets and
  * clears bit 5 and sets bit 8, 400 us apart. No kernel object reads it
  * back. INFERRED: an SDRAM controller set-up with an initialisation pulse
- * on bit 5 and an enable on bit 8. The model has no SDRAM controller: it
- * stores the word, reports the first write, and reports as a guest error
- * a size, bank or latency field that disagrees with the strap it answers.
+ * on bit 5 and an enable on bit 8. The kernel programs strap size code 3
+ * like 128 MB, code 2 (ESTABLISHED). The model has no SDRAM controller: it
+ * stores the word and reports the first write. MODEL CHOICE: a size, bank
+ * or latency field that disagrees with the strap it answers, size code 3
+ * read as 2, is reported as a guest error; the board's behaviour then is
+ * UNKNOWN.
  */
 #define ODSY_MEMORY_CONTROL 0x1004
 #define ODSY_MEMORY_CONTROL_LATENCY_2 (1u << 1)
@@ -851,11 +854,11 @@ static unsigned odyssey_cmd_arity(uint32_t word)
 
 /*
  * Block 0x258 with one operand, 0x00120000: sent ahead of the X server's
- * rectangle copy, ahead of every kernel DMA request and between DMA
- * operations (ESTABLISHED as the senders). Its meaning is UNKNOWN; the
- * model accepts it without effect. Only ODSY_CMD_COPY_RECT_TRIGGER, not
- * this block, used to be mistaken for the blit entry point (see that
- * constant's comment).
+ * rectangle copy, first in the kernel's pixel-transfer request, and after
+ * an entry that is not its request's last (ESTABLISHED as the senders).
+ * Its meaning is UNKNOWN; the model accepts it without effect. Only
+ * ODSY_CMD_COPY_RECT_TRIGGER, not this block, used to be mistaken for the
+ * blit entry point (see that constant's comment).
  */
 #define ODSY_REG_BLIT_PREFIX 0x0658
 
@@ -2867,6 +2870,8 @@ static void odyssey_memory_control(SGIOdysseyState *s, uint32_t value)
     uint32_t strap = s->memory_config;
     uint32_t size = (value >> ODSY_MEMORY_CONTROL_SIZE_SHIFT) &
                     ODSY_MEMORY_CONTROL_SIZE_MASK;
+    /* The kernel programs strap code 3 like 128 MB, code 2. */
+    uint32_t strap_size = MIN(strap >> ODSY_CONFIG_SIZE_SHIFT, 2);
 
     s->memory_control = value;
     if (!s->memory_control_reported) {
@@ -2879,7 +2884,8 @@ static void odyssey_memory_control(SGIOdysseyState *s, uint32_t value)
     if (!(value & ~(0xfu << 19))) {
         return;
     }
-    if (size != strap >> ODSY_CONFIG_SIZE_SHIFT ||
+    /* MODEL CHOICE: a mismatch is reported; see ODSY_MEMORY_CONTROL. */
+    if (size != strap_size ||
         !!(value & ODSY_MEMORY_CONTROL_FOUR_BANKS) !=
         !!(strap & ODSY_CONFIG_FOUR_BANKS) ||
         !!(value & ODSY_MEMORY_CONTROL_LATENCY_2) !=
