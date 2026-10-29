@@ -270,6 +270,7 @@
 #define ODSY_STATUS0 0x1064
 #define ODSY_MEMORY_CONFIG 0x106c
 #define ODSY_FLCTL_CONFIG 0x1070
+#define ODSY_FLCTL_TARGET 0x1074
 #define ODSY_SW_TOKEN 0x107c
 #define ODSY_NIC_PROM 0x10d8
 #define ODSY_NIC_KERNEL 0x10dc
@@ -443,11 +444,27 @@
 /*
  * The command FIFO's low-water mark, in stores: below it bit 17 reads set,
  * and the level falling below it raises the low-water flag. The mark is
- * unknown (the IRIX driver's credit-wait recovery rewrites bits 16:12 of
- * 0x1074 from a driver variable, which may be such a mark); 16, a quarter
- * of the model's FIFO depth, is the model's choice.
+ * unknown; 16, a quarter of the model's FIFO depth, is the model's choice.
+ * The field the driver rewrites in 0x1074 is not a mark (ODSY_FLCTL_TARGET
+ * below).
  */
 #define ODSY_CFIFO_LOW_WATER 16
+
+/*
+ * 0x1074 bits 16:12: the HEART flow-control credit target number. The
+ * IRIX IP30 kernel writes the number its shared flow-control code reports
+ * for the board there when it attaches the board to flow control
+ * (ESTABLISHED as the kernel's write). That the board addresses its
+ * credit returns to that target is INFERRED from the name. Readback of
+ * the whole word is INFERRED from the driver rewriting the field in place.
+ * Limitation: the model stores the word and reads it back, but credits
+ * still go to the node the "pi" link names, routed by widget number; the
+ * HEART model has no graphics flow-control counters for a target to
+ * select, so the target changes nothing, and the first write of one is
+ * reported. The reset value is unknown; zero is the model's choice.
+ */
+#define ODSY_FLCTL_TARGET_SHIFT 12
+#define ODSY_FLCTL_TARGET_MASK 0x1f
 
 /*
  * ODSY_INTR_FLAGS' low-water bit, the command-FIFO low-water interrupt
@@ -2264,6 +2281,7 @@ static int64_t odyssey_reg(hwaddr addr, unsigned size)
     case ODSY_CFIFO_SELFTEST:
     case ODSY_MEMORY_CONFIG:
     case ODSY_FLCTL_CONFIG:
+    case ODSY_FLCTL_TARGET:
     case ODSY_SW_TOKEN:
     case ODSY_NIC_PROM:
     case ODSY_NIC_KERNEL:
@@ -2717,6 +2735,9 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case ODSY_FLCTL_CONFIG:
         value = s->flctl_config;
+        break;
+    case ODSY_FLCTL_TARGET:
+        value = s->flctl_target;
         break;
     case ODSY_SW_TOKEN:
         value = s->sw_token;
@@ -12057,6 +12078,17 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
     case ODSY_FLCTL_CONFIG:
         s->flctl_config = value;
         break;
+    case ODSY_FLCTL_TARGET:
+        s->flctl_target = value;
+        if (!s->flctl_target_reported) {
+            s->flctl_target_reported = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: flow-control credit "
+                          "target %u stored; credits still return through "
+                          "the node interface\n",
+                          (uint32_t)(value >> ODSY_FLCTL_TARGET_SHIFT) &
+                          ODSY_FLCTL_TARGET_MASK);
+        }
+        break;
     case ODSY_SW_TOKEN:
         s->sw_token = value;
         break;
@@ -12731,6 +12763,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
      */
     s->interrupt_asserted = false;
     s->flctl_config = ODSY_FLCTL_CONFIG_RESET;
+    s->flctl_target = 0;
     s->sw_token = 0;
     s->route_dest_upper = 0;
     s->route_dest_lower = 0;
@@ -14073,8 +14106,8 @@ static int odyssey_work_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 43,
-    .minimum_version_id = 43,
+    .version_id = 44,
+    .minimum_version_id = 44,
     .pre_save = odyssey_work_pre_save,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -14087,6 +14120,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32(intr_flags, SGIOdysseyState),
         VMSTATE_UINT32(intr_enable, SGIOdysseyState),
         VMSTATE_UINT32(flctl_config, SGIOdysseyState),
+        VMSTATE_UINT32(flctl_target, SGIOdysseyState),
         VMSTATE_UINT32(sw_token, SGIOdysseyState),
         VMSTATE_UINT32(route_dest_upper, SGIOdysseyState),
         VMSTATE_UINT32(route_dest_lower, SGIOdysseyState),

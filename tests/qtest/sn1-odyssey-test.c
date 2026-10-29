@@ -74,6 +74,7 @@
 #define ODSY_STATUS0 0x1064
 #define ODSY_MEMORY_CONFIG 0x106c
 #define ODSY_FLCTL_CONFIG 0x1070
+#define ODSY_FLCTL_TARGET 0x1074
 #define ODSY_SW_TOKEN 0x107c
 #define ODSY_BUZZ_1 0x1078
 #define ODSY_BUZZ_2 0x1088
@@ -1734,6 +1735,26 @@ static void test_flag_interrupt_uses_routed_vector(void)
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
                     4);
 
+    board_quit(qts);
+}
+
+/*
+ * 0x1074 bits 16:12 take the HEART flow-control credit target number when
+ * the IP30 kernel attaches the board to flow control. The model stores
+ * the word and reads it back; the target changes neither the FIFO status
+ * nor the low-water mark.
+ */
+static void test_flow_control_credit_target(void)
+{
+    QTestState *qts = board_start("");
+
+    g_assert_cmphex(reg_read(qts, ODSY_FLCTL_TARGET), ==, 0);
+    reg_write(qts, ODSY_FLCTL_TARGET, 0x0001b000);
+    g_assert_cmphex(reg_read(qts, ODSY_FLCTL_TARGET), ==, 0x0001b000);
+    g_assert_cmphex(reg_read(qts, ODSY_FLCTL_CONFIG), ==, FLCTL_CONFIG_RESET);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10030000);
+    reg_write(qts, ODSY_FLCTL_TARGET, 0x00005000);
+    g_assert_cmphex(reg_read(qts, ODSY_FLCTL_TARGET), ==, 0x00005000);
     board_quit(qts);
 }
 
@@ -22210,6 +22231,8 @@ int main(int argc, char **argv)
                    test_flag_interrupt_uses_routed_vector);
     add_fresh_case("sn1/odyssey/interrupt-packet-reaches-bedrock-pending",
                    test_interrupt_packet_reaches_bedrock_pending);
+    add_fresh_case("sn1/odyssey/flow-control-credit-target",
+                   test_flow_control_credit_target);
     add_fresh_case("sn1/odyssey/baseio-prom-diagnostic-registers",
                    test_baseio_prom_diagnostic_registers);
     add_fresh_case("sn1/odyssey/unmodeled-offsets-are-visible",
