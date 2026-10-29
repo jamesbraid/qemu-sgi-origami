@@ -41,6 +41,7 @@ sgi_kona_internal_write_dropped(uint32_t addr, uint32_t value) "internal 0x%08x 
 sgi_kona_load_record(uint32_t sections, uint32_t recorded) "sections %u recorded %u"
 sgi_kona_load_section(uint32_t index, uint32_t addr, uint32_t words, const char *sha256) "section %u addr 0x%08x words %u sha256 %s"
 sgi_kona_loader_register(uint64_t offset, uint32_t value) "offset 0x%" PRIx64 " value 0x%x"
+sgi_kona_reset_register(uint32_t value) "value 0x%x"
 # Kernel commands framed on the +0xc10000 port, and the reason page 0x1f1
 # registers (mapped: translated through the XG map RAM).
 sgi_kona_kernel_command(uint32_t token, uint32_t a0, uint32_t a1, uint32_t a2, unsigned int argc) "token 0x%x args 0x%x 0x%x 0x%x argc %u"

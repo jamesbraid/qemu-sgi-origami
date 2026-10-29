@@ -33,6 +33,7 @@
 #define REG_LOADER_328      KONA_REG(0x800328)
 #define REG_MAPRAM(i)       KONA_REG(0x100000 + 4 * (uint64_t)(i))
 #define REG_ACTIVITY        KONA_REG(0x8003a8)
+#define REG_RESET_STROBE    KONA_REG(0x800300)
 #define REG_DMA_FIFO_PUSH   KONA_REG(0x80007c)
 #define REG_INT_CAUSE       KONA_REG(0x800238)
 #define REG_MAILBOX         KONA_REG(0x800240)
@@ -987,6 +988,41 @@ static void test_activity_latch(void)
 }
 
 /*
+ * Registers with roles only from a stock diagnostic tool's names, none
+ * modelled, each observable: the reset register (bit 0 host-interface
+ * reset, bit 1 ARM start) stores and traces the firmware's 3, 2 and the
+ * driver's 1, 0, and the pipe still takes commands after; the output DMA
+ * flush the pipe-death path writes stays an unimplemented write.
+ */
+static void test_named_registers_observable(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(MACHINE_ARGS, "sgi_kona_reset_register",
+                                     "unimp", &log);
+
+    for (uint32_t v = 0; v < 4; v++) {
+        qtest_writel(s, REG_RESET_STROBE, 3 - v);
+        g_assert_cmphex(qtest_readl(s, REG_RESET_STROBE), ==, 3 - v);
+    }
+    qtest_writel(s, KONA_REG(0x800298), 0xbadc0ffe);
+    kona_command(s, 0x1e9, (uint32_t[]){ 0 }, 1);
+    g_assert_cmphex(qtest_readl(s, REG_ACTIVITY), ==, ACTIVITY_BUS);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    for (uint32_t v = 0; v < 4; v++) {
+        g_autofree char *line = g_strdup_printf(
+            "sgi_kona_reset_register value 0x%x\n", v);
+
+        g_assert_nonnull(strstr(found, line));
+    }
+    g_assert_null(strstr(found, "unimplemented write of offset 0x800300"));
+    g_assert_nonnull(strstr(found, "unimplemented write of offset 0x800298 "
+                                   "(value 0xbadc0ffe)"));
+}
+
+/*
  * The 0x1e9 answer placement: map RAM entry 0 = 0x20003e80, then
  * gfxinit's 0x1f2 0 0x9000 0x4000 and 0x1e9 0. Host page 0x3e80000 holds
  * the configuration block from byte 8 and a non-zero word 0, word 1 and
@@ -1540,6 +1576,8 @@ int main(int argc, char **argv)
                    test_reset_clears_cause_and_reason_page);
     qtest_add_func("sn0/origin2000/kona-bringup/activity-latch",
                    test_activity_latch);
+    qtest_add_func("sn0/origin2000/kona-bringup/named-registers-observable",
+                   test_named_registers_observable);
     qtest_add_func("sn0/origin2000/kona-bringup/config-answer-placement",
                    test_config_answer_placement);
     qtest_add_func("sn0/origin2000/kona-bringup/config-pool-descriptors",
