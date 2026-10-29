@@ -14533,12 +14533,15 @@ static int odyssey_work_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 52,
-    .minimum_version_id = 52,
+    .version_id = 53,
+    .minimum_version_id = 53,
     .pre_save = odyssey_work_pre_save,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
     .fields = (const VMStateField[]) {
+        /* The slot, which the destination board's must match. */
+        VMSTATE_STRUCT(parent_obj, SGIOdysseyState, 0,
+                       vmstate_sgi_xio_board_slot, SGIXioBoardState),
         VMSTATE_UINT32(widget_control, SGIOdysseyState),
         VMSTATE_UINT32(xt_req_timeout, SGIOdysseyState),
         VMSTATE_UINT32(int_dest_upper, SGIOdysseyState),

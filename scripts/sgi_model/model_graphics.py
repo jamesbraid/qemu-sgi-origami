@@ -45,6 +45,10 @@ _SECTION_FIELDS = {"max_pipes", "max_pipes_sources", "headless",
 # offsets its placeholder serials from instance 64 (hw/mips/sgi/xio-board.c),
 # so a machine with several pipes lists at most four slots.
 MULTI_PIPE_SLOTS = 4
+
+# A pipe's migration stream carries its slot name, zero-padded, in this
+# many bytes (SGI_XIO_BOARD_SLOT_NAME_SIZE in hw/mips/sgi/xio-board.h).
+SLOT_NAME_SIZE = 32
 _MACHINE_PROPERTIES_FIELDS = {"properties", "reason"}
 _SLOT_FIELDS = {"name", "names", "description", "placement", "default",
                 "families", "refusals"}
@@ -374,6 +378,11 @@ def resolve_graphics(product_id: str, section: Any,
         for name in names:
             if not isinstance(name, str) or not _SLOT_NAME.match(name):
                 raise ResolutionError(f"{label} slot name {name!r} is invalid")
+            if len(name) >= SLOT_NAME_SIZE:
+                raise ResolutionError(
+                    f"{label} slot name {name!r} does not fit the "
+                    f"{SLOT_NAME_SIZE}-byte slot field a pipe's migration "
+                    "stream carries")
             where = f"{label} slot '{name}'"
             slot: dict[str, Any] = {
                 "name": name,

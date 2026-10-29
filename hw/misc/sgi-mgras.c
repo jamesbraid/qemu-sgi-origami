@@ -2413,11 +2413,14 @@ static const VMStateDescription vmstate_sgi_mgras_clip_id = {
 };
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 36, .minimum_version_id = 36,
+    .name = TYPE_SGI_MGRAS, .version_id = 37, .minimum_version_id = 37,
     .pre_save = mgras_pre_save,
     .pre_load = mgras_pre_load,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
+        /* The slot, which the destination board's must match. */
+        VMSTATE_STRUCT(parent_obj, SGIMgrasState, 0,
+                       vmstate_sgi_xio_board_slot, SGIXioBoardState),
         VMSTATE_UINT32(front_count, SGIMgrasState),
         VMSTATE_VALIDATE("front plane length is fixed",
                          mgras_front_count_valid),
