@@ -663,6 +663,16 @@ static void resolve_row(void *opaque, unsigned y, uint32_t *dst)
     GBEPlaneRow cache[2] = { 0 };
     unsigned ry = yp ? (lo(s->vt[16]) + y) % yp : 0;
     unsigned py = yp ? distance(ry, hi(s->vt[14]), yp) : 0;
+    uint64_t den;
+
+    /*
+     * Approximation: with no pixel clock the console shows no picture.
+     * What a monitor shows without one is not established.
+     */
+    if (!clock_rate(s, &den)) {
+        memset(dst, 0, s->scanout.mode.width * sizeof(*dst));
+        return;
+    }
 
     if (producer && producer + 2 <= xp) {
         producer += 2;
