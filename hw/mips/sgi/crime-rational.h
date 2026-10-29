@@ -3,6 +3,8 @@
 #ifndef HW_MIPS_SGI_CRIME_RATIONAL_H
 #define HW_MIPS_SGI_CRIME_RATIONAL_H
 
+#include "qemu/int128.h"
+
 /* Fixed capacity is a model work bound, never a wrapping accumulator. */
 typedef struct CrimeInteger {
     uint32_t word[16];
@@ -80,13 +82,17 @@ static inline bool crime_integer_shift(CrimeInteger *r, const CrimeInteger *a,
                                  unsigned shift)
 {
     CrimeInteger v = { 0 };
-    unsigned bits = crime_integer_bits(a);
-    if (bits + shift > 512) {
+    unsigned bits = crime_integer_bits(a), part = shift % 32;
+    unsigned whole = shift / 32;
+
+    if (shift > 512 || bits > 512 - shift) {
         return false;
     }
-    for (unsigned i = 0; i < bits; i++) {
-        if (a->word[i / 32] & (1U << (i % 32))) {
-            v.word[(i + shift) / 32] |= 1U << ((i + shift) % 32);
+    for (unsigned i = 0; i < DIV_ROUND_UP(bits, 32); i++) {
+        unsigned index = i + whole;
+        v.word[index] |= a->word[i] << part;
+        if (part && index + 1 < ARRAY_SIZE(v.word)) {
+            v.word[index + 1] = a->word[i] >> (32 - part);
         }
     }
     *r = v;
@@ -127,25 +133,78 @@ static inline bool crime_integer_multiply(CrimeInteger *r,
     return true;
 }
 
+static inline CrimeInteger crime_integer_from128(Int128 value)
+{
+    uint64_t low = int128_getlo(value), high = int128_gethi(value);
+    CrimeInteger result = { .word = {low, low >> 32, high, high >> 32} };
+    return result;
+}
+
 static inline void crime_integer_divide(CrimeInteger *q, CrimeInteger *rem,
                                   const CrimeInteger *a, const CrimeInteger *b)
 {
     CrimeInteger quotient = { 0 }, remainder = *a, shifted;
-    int shift = (int)crime_integer_bits(a) - crime_integer_bits(b);
-    g_assert(crime_integer_bits(b));
-    if (crime_integer_words(a) <= 2 && crime_integer_words(b) <= 2) {
+    unsigned na = crime_integer_words(a), nb = crime_integer_words(b);
+    unsigned divisor_bits;
+    int shift;
+
+    g_assert(nb);
+    if (na <= 2 && nb <= 2) {
         uint64_t av = (uint64_t)a->word[1] << 32 | a->word[0];
         uint64_t bv = (uint64_t)b->word[1] << 32 | b->word[0];
         *q = crime_integer(av / bv);
         *rem = crime_integer(av % bv);
         return;
     }
-    for (; shift >= 0; shift--) {
+    if (na <= 4 && nb <= 4) {
+        Int128 av = int128_make128(
+            (uint64_t)a->word[1] << 32 | a->word[0],
+            (uint64_t)a->word[3] << 32 | a->word[2]);
+        Int128 bv = int128_make128(
+            (uint64_t)b->word[1] << 32 | b->word[0],
+            (uint64_t)b->word[3] << 32 | b->word[2]);
+        Int128 qv = int128_divu(av, bv), rv = int128_remu(av, bv);
+        *q = crime_integer_from128(qv);
+        *rem = crime_integer_from128(rv);
+        return;
+    }
+    if (nb <= 2) {
+        uint64_t divisor = (uint64_t)b->word[1] << 32 | b->word[0];
+        uint64_t carry = 0;
+
+        /* Each carried remainder is smaller than the native divisor. */
+        for (int i = (na - 1) / 2; i >= 0; i--) {
+            uint64_t low = (uint64_t)a->word[2 * i + 1] << 32 |
+                           a->word[2 * i];
+            uint64_t high = carry;
+            carry = divu128(&low, &high, divisor);
+            g_assert(!high);
+            quotient.word[2 * i] = low;
+            quotient.word[2 * i + 1] = low >> 32;
+        }
+        *q = quotient;
+        *rem = crime_integer(carry);
+        return;
+    }
+    divisor_bits = (nb - 1) * 32 + 32 - clz32(b->word[nb - 1]);
+    shift = (int)crime_integer_bits(a) - (int)divisor_bits;
+    if (shift >= 0) {
         bool fit = crime_integer_shift(&shifted, b, shift);
         g_assert(fit);
+    }
+    for (; shift >= 0; shift--) {
+        unsigned words = DIV_ROUND_UP(divisor_bits + shift, 32);
+        uint32_t carry = 0;
+
         if (crime_integer_compare(&remainder, &shifted) >= 0) {
             crime_integer_subtract(&remainder, &remainder, &shifted);
             quotient.word[shift / 32] |= 1U << (shift % 32);
+        }
+        /* Shift the same exact divisor instead of rebuilding every bit. */
+        for (int i = words - 1; i >= 0; i--) {
+            uint32_t next = shifted.word[i] << 31;
+            shifted.word[i] = (shifted.word[i] >> 1) | carry;
+            carry = next;
         }
     }
     *q = quotient;
