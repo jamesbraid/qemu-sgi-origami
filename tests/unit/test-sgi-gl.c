@@ -14352,6 +14352,7 @@ static void test_hints_ignore_rendering(void)
 
 typedef struct FixedTexture {
     uint32_t texel[FIXED_TEX_LEVELS][1u << (2 * FIXED_TEX_LOG2)];
+    unsigned reads[FIXED_TEX_LEVELS][1u << (2 * FIXED_TEX_LOG2)];
     uint8_t bits[4];
     SGIGLTexLevel level[FIXED_TEX_LEVELS];
     SGIGLTexPyramid pyramid;
@@ -14363,6 +14364,7 @@ static bool fixed_read_texel(void *opaque, uint32_t level, uint32_t x,
 {
     FixedTexture *t = opaque;
 
+    qatomic_inc(&t->reads[level][y * t->level[level].width + x]);
     *rgba = t->texel[level][y * t->level[level].width + x];
     return true;
 }
@@ -14718,6 +14720,56 @@ static void test_texture_fixed_spans(void)
 }
 
 /*
+ * A draw at least as large as its levels have texels reads each of them
+ * once, however many bands draw it: a trilinear quad over the 64x64
+ * plane in four bands reads every texel of the 16x16 pyramid exactly
+ * once.
+ */
+static void test_texture_fixed_reads_once(void)
+{
+    static FixedTexture tex;
+    static BandPlanes b;
+    float verts[4][SGI_GL_VERTEX_FLOATS] = { 0 };
+    const float corner[4][2] = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 } };
+    SGIGLDraw d = {
+        .context = 0x1234, .mode = SGI_GL_QUADS, .count = 4,
+        .vertices = &verts[0][0],
+    };
+    SGIRasterTarget t;
+    SGIGLContext c;
+
+    fixed_texture_init(&tex, SGI_GL_RGBA, NULL, SGI_GL_LINEAR_MIPMAP_LINEAR,
+                       SGI_GL_LINEAR, SGI_GL_REPEAT, SGI_GL_REPEAT);
+    memset(tex.reads, 0, sizeof(tex.reads));
+    memset(tex.texel, 0x80, sizeof(tex.texel));
+    for (unsigned i = 0; i < 4; i++) {
+        verts[i][SGI_GL_V_POSITION + 0] = corner[i][0];
+        verts[i][SGI_GL_V_POSITION + 1] = corner[i][1];
+        verts[i][SGI_GL_V_POSITION + 3] = 1;
+        verts[i][SGI_GL_V_TEXCOORD + 0] = (corner[i][0] + 1) * 2;
+        verts[i][SGI_GL_V_TEXCOORD + 1] = (corner[i][1] + 1) * 2;
+        verts[i][SGI_GL_V_TEXCOORD + 3] = 1;
+    }
+    memset(&b, 0, sizeof(b));
+    context_init(&c);
+    c.cur.texture_2d = 1;
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    d.state = &c.cur;
+    t = fixed_target(&b, &tex.image);
+    t.concurrent_pixels = true;
+    sgi_raster_set_parallel(4, 0);
+    sgi_soft_draw(&rules_supported, &t, &d);
+    sgi_raster_set_parallel(0, SGI_RASTER_PARALLEL_MIN_PIXELS);
+    sgi_gl_cleanup(&c);
+    for (unsigned l = 0; l < FIXED_TEX_LEVELS; l++) {
+        for (unsigned i = 0; i < (1u << (2 * (FIXED_TEX_LOG2 - l))); i++) {
+            g_assert_cmpuint(tex.reads[l][i], ==, 1);
+        }
+    }
+    g_assert_cmphex(b.p.colour[0][planes_index(5, 7)], ==, 0x808080);
+}
+
+/*
  * Draw a quad over the whole plane with texture coordinates s0 to s1
  * left to right and t0 to t1 bottom to top, under the given path.
  */
@@ -15069,6 +15121,8 @@ int main(int argc, char **argv)
                     test_texture_clips_behind_eye);
     g_test_add_func("/sgi-gl/texture-fixed/bound", test_texture_fixed_bound);
     g_test_add_func("/sgi-gl/texture-fixed/spans", test_texture_fixed_spans);
+    g_test_add_func("/sgi-gl/texture-fixed/reads-once",
+                    test_texture_fixed_reads_once);
     g_test_add_func("/sgi-gl/texture-fixed/weights",
                     test_texture_fixed_weights);
     g_test_add_func("/sgi-gl/texture-fixed/lambda", test_texture_fixed_lambda);

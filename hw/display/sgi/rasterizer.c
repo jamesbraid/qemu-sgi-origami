@@ -1577,6 +1577,12 @@ static void __attribute__((constructor)) sgi_soft_unorm8_init(void)
 typedef struct SGISoftFixedStore {
     uint64_t *cell;
     size_t size;
+    /*
+     * Every texel of the level, for a draw that reads them all first, in
+     * the sampler's lanes (sgi_soft_fixed_lanes()).
+     */
+    uint64_t *plain;
+    size_t plain_size;
 } SGISoftFixedStore;
 
 typedef struct SGISoftTexelEntry {
@@ -1615,6 +1621,7 @@ static void sgi_soft_texel_cache_free(Notifier *n, void *unused)
     for (unsigned i = 0; sgi_soft_texel_cache && i < SGI_SOFT_FIXED_LEVELS;
          i++) {
         g_free(sgi_soft_texel_cache->fixed[i].cell);
+        g_free(sgi_soft_texel_cache->fixed[i].plain);
     }
     g_free(sgi_soft_texel_cache);
     sgi_soft_texel_cache = NULL;
@@ -3156,6 +3163,9 @@ typedef struct SGISoftFixedTex {
     SGISoftFixedLevel level[SGI_SOFT_FIXED_LEVELS];
     /* The row loop for textured triangles, or NULL for the general one. */
     SGISoftTexSpanFn *span;
+    /* Every texel read before drawing, by level (sgi_soft_fixed_prefill()). */
+    bool prefilled;
+    const uint64_t *plain[SGI_SOFT_FIXED_LEVELS];
     uint32_t range;                 /* the last level, relative to base */
     uint32_t format;
     uint32_t min, mag, wrap_s, wrap_t;
@@ -3352,23 +3362,23 @@ static bool sgi_soft_fixed_begin(const SGISoftDraw *r)
 }
 
 /*
- * Read interior texel (x, y) of relative level i into its cell, and
- * return the cell; a read that fails, or returns a component beyond its
- * width, leaves the cell tagged failed.
+ * Interior texel (x, y) of relative level i of draw r's image as a packed
+ * texel, components expanded; false where the read fails or returns a
+ * component beyond its width.
  */
-static uint64_t __attribute__((noinline))
-sgi_soft_fixed_fill(const SGISoftDraw *r, uint32_t i, uint32_t x,
-                    uint32_t y, uint64_t *cell)
+static bool sgi_soft_fixed_read(const SGISoftDraw *r,
+                                const SGISoftFixedTex *f, uint32_t i,
+                                uint32_t x, uint32_t y, uint32_t *texel)
 {
-    const SGISoftFixedLevel *fl = &r->fixed->level[i];
+    const SGISoftFixedLevel *fl = &f->level[i];
     const SGIGLTexLevel *l = fl->level;
     const SGIGLTexImage *im = r->texture;
-    uint32_t tag = r->texels->tag, rgba = 0;
+    uint32_t rgba = 0;
     bool read;
 
     if (fl->raw) {
         const uint8_t *bits = l ? l->component_bits : im->component_bits;
-        uint8_t mask = sgi_soft_texture_component_mask(r->fixed->format);
+        uint8_t mask = sgi_soft_texture_component_mask(f->format);
         uint16_t c[4] = { 0 };
 
         read = l ? l->read_texel_components(l->opaque, l->level, x, y, c) :
@@ -3384,9 +3394,90 @@ sgi_soft_fixed_fill(const SGISoftDraw *r, uint32_t i, uint32_t x,
         read = l ? l->read_texel(l->opaque, l->level, x, y, &rgba) :
                    im->read_texel(im->opaque, x, y, &rgba);
     }
-    *cell = (uint64_t)(read ? tag : tag | SGI_SOFT_FIXED_FAILED) << 32 |
-            sgi_soft_fixed_expand(r->fixed->format, rgba);
+    *texel = sgi_soft_fixed_expand(f->format, rgba);
+    return read;
+}
+
+/*
+ * Read interior texel (x, y) of relative level i into its cell, and
+ * return the cell, tagged failed where the read failed.
+ */
+static uint64_t __attribute__((noinline))
+sgi_soft_fixed_fill(const SGISoftDraw *r, uint32_t i, uint32_t x,
+                    uint32_t y, uint64_t *cell)
+{
+    uint32_t tag = r->texels->tag, texel;
+    bool read = sgi_soft_fixed_read(r, r->fixed, i, x, y, &texel);
+
+    *cell = (uint64_t)(read ? tag : tag | SGI_SOFT_FIXED_FAILED) << 32 | texel;
     return *cell;
+}
+
+/*
+ * The relative levels a draw's fragments can sample, first to last: the
+ * level clamp keeps lambda within [min_lod, max_lod], and a lambda above
+ * a half never magnifies, so no level outside reaches the sampler.
+ */
+static void sgi_soft_fixed_reach(const SGISoftFixedTex *f, uint32_t *first,
+                                 uint32_t *last)
+{
+    *first = 0;
+    *last = f->range;
+    if (!f->lod) {
+        return;
+    }
+    if (f->min_lod > 128) {
+        *first = MIN(f->min_lod >> 8, (int32_t)f->range);
+    }
+    *last = f->max_lod <= 0 ? 0 :
+            MIN((f->max_lod + 255) >> 8, (int32_t)f->range);
+    *first = MIN(*first, *last);
+}
+
+/*
+ * Read every texel of the levels draw r can sample into this thread's
+ * plain arrays, which f then shares with the draw's bands: for a large
+ * draw that covers about as many pixels as those levels have texels,
+ * which then reads each once rather than once in each band, and taps
+ * them without a tag. False, and the draw reads texels as it reaches them,
+ * where any read fails or the arrays cannot be allocated.
+ */
+static bool sgi_soft_fixed_prefill(const SGISoftDraw *r, SGISoftFixedTex *f)
+{
+    uint32_t first, last;
+
+    sgi_soft_fixed_reach(f, &first, &last);
+    for (uint32_t i = first; i <= last; i++) {
+        SGISoftFixedStore *store = &r->texels->fixed[i];
+        const SGISoftFixedLevel *fl = &f->level[i];
+        size_t size = (size_t)fl->width * fl->height;
+
+        if (store->plain_size < size) {
+            g_free(store->plain);
+            store->plain_size = 0;
+            store->plain = g_try_new(uint64_t, size);
+            if (!store->plain) {
+                return false;
+            }
+            store->plain_size = size;
+        }
+        for (uint32_t y = 0; y < fl->height; y++) {
+            for (uint32_t x = 0; x < fl->width; x++) {
+                uint32_t texel;
+
+                if (!sgi_soft_fixed_read(r, f, i, x, y, &texel)) {
+                    return false;
+                }
+                store->plain[((size_t)y << fl->width_shift) + x] =
+                    sgi_soft_fixed_lanes(texel);
+            }
+        }
+    }
+    for (uint32_t i = first; i <= last; i++) {
+        f->plain[i] = r->texels->fixed[i].plain;
+    }
+    f->prefilled = true;
+    return true;
 }
 
 /* Interior texel (x, y) of relative level i in lanes, read once a draw. */
@@ -3397,6 +3488,10 @@ bool sgi_soft_fixed_texel(const SGISoftDraw *r, uint32_t i, uint32_t x,
     size_t index = ((size_t)y << r->fixed->level[i].width_shift) + x;
     uint64_t *cell, v;
 
+    if (r->fixed->prefilled) {
+        *lanes = r->fixed->plain[i][index];
+        return true;
+    }
     cell = &r->texels->fixed[i].cell[index];
     v = *cell;
     if (unlikely((uint32_t)(v >> 32) != r->texels->tag)) {
@@ -6457,6 +6552,26 @@ static uint64_t sgi_soft_draw_pixels(const SGISoftDraw *r, const SGIGLDraw *d,
     return sum;
 }
 
+/*
+ * Whether every vertex of a draw has the texture coordinates its image
+ * uses: a draw with one that has not drops that primitive unread, so it
+ * reads its texels as it reaches them rather than all of them first.
+ */
+static bool sgi_soft_fixed_coordinates_valid(const SGISoftDraw *r,
+                                             const SGIGLDraw *d)
+{
+    for (uint32_t i = 0; i < d->count; i++) {
+        SGIVolumeVertex v;
+
+        sgi_volume_from_draw_vertex(r->st,
+            &d->vertices[(size_t)i * SGI_GL_VERTEX_FLOATS], &v);
+        if (!sgi_soft_texcoord_valid(r->texture, r->texture_base, &v)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 typedef struct SGISoftBandDraw {
     const SGISoftDraw *r;
     const SGIGLDraw *d;
@@ -6472,7 +6587,7 @@ static void sgi_soft_band_draw(void *opaque, unsigned band, unsigned bands)
     if (r.texture) {
         r.texels = sgi_soft_texel_cache_begin(r.texture);
     }
-    if (r.fixed && !sgi_soft_fixed_begin(&r)) {
+    if (r.fixed && !r.fixed->prefilled && !sgi_soft_fixed_begin(&r)) {
         r.fixed = NULL;
     }
     sgi_soft_band_quiet = band > 0;
@@ -6555,9 +6670,21 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
     }
     if (d->mode >= SGI_GL_TRIANGLES && d->mode <= SGI_GL_POLYGON &&
         sgi_soft_fixed_setup(&r, &fixed)) {
+        uint64_t texels = 0;
+        uint32_t first, last;
+
         r.fixed = &fixed;
         fixed.span = sgi_soft_fixed_span_select(&r);
-        if (!sgi_soft_fixed_begin(&r)) {
+        sgi_soft_fixed_reach(&fixed, &first, &last);
+        for (uint32_t i = first; i <= last; i++) {
+            texels += (uint64_t)fixed.level[i].width * fixed.level[i].height;
+        }
+        /* A draw as large as the smallest that bands share, at least. */
+        texels = MAX(texels, SGI_RASTER_PARALLEL_MIN_PIXELS);
+        if (!(sgi_soft_draw_pixels(&r, d, texels) >= texels &&
+              sgi_soft_fixed_coordinates_valid(&r, d) &&
+              sgi_soft_fixed_prefill(&r, &fixed)) &&
+            !sgi_soft_fixed_begin(&r)) {
             r.fixed = NULL;
         }
     }
