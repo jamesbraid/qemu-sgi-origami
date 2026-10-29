@@ -3278,6 +3278,73 @@ static void dma_image_table(QTestState *qts, uint64_t table,
     qtest_memwrite(qts, table, tbl, sizeof(tbl));
 }
 
+/*
+ * A clipped pixel transfer arrives as several operations: block 0x258
+ * (word 0x0658, operand 0x00120000) ahead of each, one entry per chunk
+ * whose header carries that chunk's rows, the interrupt request on the
+ * last chunk only, and a 0x0a5a tag write-back after the last. Each chunk
+ * draws its own rows. A failed operation's drain, block 0x044 with operand
+ * 0 and then 0x0a5a with operand 0xd0a, is accepted and writes its tag.
+ */
+static void test_command_fifo_dma_chunks(void)
+{
+    QTestState *qts = board_start("");
+    const uint64_t fence_base = 0xb70000;
+    const uint64_t table[2] = { 0xb80000, 0xb81000 };
+    const uint64_t page[2] = { 0xb84000, 0xb88000 };
+    const uint32_t row_y[2] = { 300, 364 };
+    uint8_t px[8];
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_BANKS);
+    reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
+    reg_write(qts, ODSY_HOST_WRITE_ADDR_LOWER, (uint32_t)fence_base);
+    reg_write(qts, ODSY_ROUTE_DEST_UPPER, ODSY_TEST_ROUTE_DEST_UPPER);
+    reg_write(qts, ODSY_ROUTE_DEST_LOWER, ODSY_TEST_ROUTE_DEST_LOWER);
+    reg_write(qts, ODSY_ROUTE_VECTORS, ODSY_TEST_ROUTE_VECTORS);
+    user_cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    user_cmd_push(qts, 0x2000);
+    user_cmd_push(qts, 0x50);
+    user_cmd_push(qts, 0x20006950);
+    user_cmd_push(qts, 0);
+
+    for (unsigned c = 0; c < 2; c++) {
+        uint32_t hdr[8] = {
+            0x2000, (row_y[c] << 16) | 200, 0x50, (1 << 16) | 2, 0x8223305a,
+            0, 8, (c ? ODSY_DMA_IRQ_REQUEST : 0) | 0x32010000,
+        };
+        const uint64_t pte[] = { ODSY_DMA_PTE(page[c], 8) };
+
+        stl_be_p(&px[0], 0x00102030 + c);
+        stl_be_p(&px[4], 0x00405060 + c);
+        qtest_memwrite(qts, page[c], px, sizeof(px));
+        dma_image_table(qts, table[c], hdr, pte, 1);
+        cmd_push(qts, 0x00010658);
+        cmd_push(qts, 0x00120000);
+        dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table[c]);
+        /* Only the last chunk asks for the DMA-done interrupt. */
+        g_assert_cmpint(!!odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"),
+                        ==, c);
+    }
+    cmd_push(qts, ODSY_CMD_HOST_WRITE_SELECT);
+    cmd_push(qts, 3);
+    cmd_push(qts, 0x5a01);
+    g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0x102030ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 201, 300), ==, 0x405060ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 200, 364), ==, 0x102031ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 201, 364), ==, 0x405061ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 200, 301), ==, 0);
+    g_assert_cmphex(qtest_readw(qts, fence_base + 6), ==, 0x5a01);
+
+    cmd_push(qts, 0x00010444);
+    cmd_push(qts, 0);
+    cmd_push(qts, ODSY_CMD_HOST_WRITE_SELECT);
+    cmd_push(qts, 0xd0a);
+    cmd_push(qts, 0x5a02);
+    g_assert_cmphex(qtest_readw(qts, fence_base + 2 * 0xd0a), ==, 0x5a02);
+    board_quit(qts);
+}
+
 static void test_command_fifo_dma_image(void)
 {
     QTestState *qts = board_start("");
@@ -22842,6 +22909,8 @@ int main(int argc, char **argv)
                    test_command_fifo_dma_page_table);
     add_fresh_case("sn1/odyssey/command-fifo-dma-full-entry",
                    test_command_fifo_dma_full_entry);
+    add_fresh_case("sn1/odyssey/command-fifo-dma-chunks",
+                   test_command_fifo_dma_chunks);
     add_fresh_case("sn1/odyssey/command-fifo-dma-image",
                    test_command_fifo_dma_image);
     add_fresh_case("sn1/odyssey/readback/direction", test_readback_direction);
