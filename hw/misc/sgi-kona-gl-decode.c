@@ -513,7 +513,11 @@ bool sgi_kona_gl_texture_native_layout(const uint32_t h[20])
     }
     /*
      * Bit three selects a bank in ordinary mode and in a volume's layout
-     * mode one, and level parity in its layout mode two.
+     * mode one, and level parity in its layout mode two. Bit two, load
+     * scissor, equals word 6 on every sender path read (established).
+     * What word 6 means is unsettled: one reading calls it the DMA flag,
+     * another a context flag that also forces load scissor. The model
+     * checks only the equality and gives neither word a behaviour.
      */
     layout |= h[6] << 2;
     single |= h[6] << 2;
