@@ -370,15 +370,17 @@ static void test_abstract_interfaces(void)
 
 static void add_machine_test_case(const char *mname)
 {
+    const char *profile = g_str_equal(mname, "o2") ?
+        ",register-test-profile=on -m 64M" : "";
     char *path, *args;
 
     path = g_strdup_printf("device/introspect/concrete/defaults/%s", mname);
-    args = g_strdup_printf("-M %s", mname);
+    args = g_strdup_printf("-M %s%s", mname, profile);
     qtest_add_data_func_full(path, args, test_device_intro_concrete, g_free);
     g_free(path);
 
     path = g_strdup_printf("device/introspect/concrete/nodefaults/%s", mname);
-    args = g_strdup_printf("-nodefaults -M %s", mname);
+    args = g_strdup_printf("-nodefaults -M %s%s", mname, profile);
     qtest_add_data_func_full(path, args, test_device_intro_concrete, g_free);
     g_free(path);
 }
