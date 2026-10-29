@@ -2497,6 +2497,72 @@ static bool sgi_soft_owned_at(const SGISoftDraw *r, int px, int py)
              (int64_t)py < (int64_t)r->st->scissor[1] + r->st->scissor[3]));
 }
 
+/*
+ * The colour of a fragment that has passed every test written to the
+ * draw's colour targets at plane pixel (x, y): blended with or combined
+ * by the logical operation with what is there, dithered and masked, from
+ * dest in RGBA mode, which the caller has read where the draw reads it.
+ */
+static inline QEMU_ALWAYS_INLINE
+void sgi_soft_fragment_store(const SGISoftDraw *r, int x, int y,
+                             const SGISoftFrag *f,
+                             const SGIRasterColour *dest)
+{
+    const SGIRasterTarget *t = r->t;
+    uint32_t colour;
+
+    if (!r->st->index_bits && t->store_rgba) {
+        for (unsigned i = 0; r->rgba_mask && i < r->ntargets; i++) {
+            SGIRasterColour out = sgi_soft_rgba_result(r, x, y, f,
+                                                       &dest[i]);
+
+            t->store_rgba(t->opaque, r->targets[i], x, y, &out);
+        }
+        return;
+    }
+    /*
+     * Dithering follows blending (4.1.7), so a colour to be blended is
+     * rounded and the blend's result dithered.
+     */
+    colour = r->st->index_bits ? sgi_soft_index(r, f->index) :
+             r->blend ? sgi_soft_rgb(r->rules, f->rgba) :
+                        sgi_soft_store_rgb(r, x, y, f->rgba);
+    for (uint32_t i = 0; i < r->ntargets; i++) {
+        uint32_t out = colour;
+
+        if (r->logic_op) {
+            uint32_t bits = r->st->index_bits ? r->st->index_bits :
+                                                3 * r->rules->color_bits;
+
+            out = sgi_soft_logic_op(r->st->logic_op_mode, colour,
+                                    t->load_colour(t->opaque, r->targets[i],
+                                                   x, y)) &
+                  (bits >= 32 ? UINT32_MAX : (1u << bits) - 1);
+        }
+        if (r->st->index_bits) {
+            t->store_index(t->opaque, r->targets[i], x, y, out,
+                           r->st->index_mask);
+            continue;
+        }
+        if (!r->colour_mask) {
+            continue;
+        }
+        if (r->blend) {
+            out = sgi_soft_blend(r, x, y, colour,
+                                 sgi_soft_alpha(r->rules, f->rgba[3]) /
+                                 (double)sgi_soft_alpha_max(r->rules),
+                                 t->load_colour(t->opaque, r->targets[i],
+                                                x, y));
+        }
+        if (r->colour_mask != sgi_soft_colour_bits(r->rules)) {
+            out = (out & r->colour_mask) |
+                  (t->load_colour(t->opaque, r->targets[i], x, y) &
+                   ~r->colour_mask);
+        }
+        t->store_colour(t->opaque, r->targets[i], x, y, out);
+    }
+}
+
 static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
                                  double z, const SGISoftFrag *frag,
                                  double coverage, bool antialias)
@@ -2505,7 +2571,6 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
     SGISoftFrag fogged = *frag;
     const SGISoftFrag *f = &fogged;
     int x = r->win.ox + px, y = r->win.oy + py;
-    uint32_t colour;
     SGIRasterColour dest[SGI_GL_MAX_TARGETS] = { 0 };
 
     if (!(z >= 0.0 && z <= 1.0)) {
@@ -2554,55 +2619,7 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
     if (!sgi_raster_depth_stencil(r->rules, r->st, t, x, y, z)) {
         return;
     }
-    if (!r->st->index_bits && t->store_rgba) {
-        for (unsigned i = 0; r->rgba_mask && i < r->ntargets; i++) {
-            SGIRasterColour out = sgi_soft_rgba_result(r, x, y, f, &dest[i]);
-
-            t->store_rgba(t->opaque, r->targets[i], x, y, &out);
-        }
-        return;
-    }
-    /*
-     * Dithering follows blending (4.1.7), so a colour to be blended is
-     * rounded and the blend's result dithered.
-     */
-    colour = r->st->index_bits ? sgi_soft_index(r, f->index) :
-             r->blend ? sgi_soft_rgb(r->rules, f->rgba) :
-                        sgi_soft_store_rgb(r, x, y, f->rgba);
-    for (uint32_t i = 0; i < r->ntargets; i++) {
-        uint32_t out = colour;
-
-        if (r->logic_op) {
-            uint32_t bits = r->st->index_bits ? r->st->index_bits :
-                                                3 * r->rules->color_bits;
-
-            out = sgi_soft_logic_op(r->st->logic_op_mode, colour,
-                                    t->load_colour(t->opaque, r->targets[i],
-                                                   x, y)) &
-                  (bits >= 32 ? UINT32_MAX : (1u << bits) - 1);
-        }
-        if (r->st->index_bits) {
-            t->store_index(t->opaque, r->targets[i], x, y, out,
-                           r->st->index_mask);
-            continue;
-        }
-        if (!r->colour_mask) {
-            continue;
-        }
-        if (r->blend) {
-            out = sgi_soft_blend(r, x, y, colour,
-                                 sgi_soft_alpha(r->rules, f->rgba[3]) /
-                                 (double)sgi_soft_alpha_max(r->rules),
-                                 t->load_colour(t->opaque, r->targets[i],
-                                                x, y));
-        }
-        if (r->colour_mask != sgi_soft_colour_bits(r->rules)) {
-            out = (out & r->colour_mask) |
-                  (t->load_colour(t->opaque, r->targets[i], x, y) &
-                   ~r->colour_mask);
-        }
-        t->store_colour(t->opaque, r->targets[i], x, y, out);
-    }
+    sgi_soft_fragment_store(r, x, y, f, dest);
 }
 
 /*
@@ -3099,8 +3116,15 @@ typedef struct SGISoftFixedLevel {
     bool raw;                       /* read through the component reader */
 } SGISoftFixedLevel;
 
+typedef struct SGISoftTexSpan SGISoftTexSpan;
+typedef int SGISoftTexSpanFn(const SGISoftDraw *r, const SGISoftTexSpan *sp,
+                             int py, int px0, int px1, int64_t e1,
+                             int64_t e2);
+
 typedef struct SGISoftFixedTex {
     SGISoftFixedLevel level[SGI_SOFT_FIXED_LEVELS];
+    /* The row loop for textured triangles, or NULL for the general one. */
+    SGISoftTexSpanFn *span;
     uint32_t range;                 /* the last level, relative to base */
     uint32_t format;
     uint32_t min, mag, wrap_s, wrap_t;
@@ -3669,6 +3693,251 @@ bool sgi_soft_fixed_sample(const SGISoftDraw *r, double s, double t,
     return true;
 }
 
+/*
+ * One triangle's fixed inputs to a textured row loop
+ * (sgi_soft_texture_row()).
+ */
+struct SGISoftTexSpan {
+    const SGISoftVertex *v;         /* three, wound as the rows step */
+    const SGISoftTexPlane *g;
+    const double *row;              /* the texture planes' row terms */
+    const int32_t *flat_lambda;     /* lambda where Q/W is flat, or NULL */
+    const SGISoftFrag *flat;
+    double offset;
+    int64_t area, step1, step2;
+    bool smooth;
+    /*
+     * Smooth colour components that are 0 at every vertex, or 1 at
+     * every vertex: interpolation gives exactly that value, the terms
+     * summing to the weights' own sum, so they are not interpolated.
+     */
+    uint8_t constant;
+};
+
+/*
+ * Pixels px0 to px1 of row py of a textured triangle, whose edge values
+ * for v[2]-v[0] and v[0]-v[1] at px0 are e1 and e2, under state
+ * sgi_soft_fixed_span_select() admits: what the general loop and
+ * sgi_soft_fragment_at() leave for each fragment, with the fixed-point
+ * sampler, and the same planes; only the order of target calls differs,
+ * the depth read coming before the texture's. It stops at the first
+ * fragment the fixed sampler cannot take and returns its column, which
+ * the caller draws through the general loop, or px1 + 1 when the row is
+ * done. The constant arguments select a specialisation each: the
+ * sampler's kernel and wrap, the environment and base format where
+ * nonzero, and with known set, a depth-tested draw without blending or
+ * fog, so the per-pixel loop carries no test of them.
+ */
+static inline QEMU_ALWAYS_INLINE
+int sgi_soft_texture_row(const SGISoftDraw *r, const SGISoftTexSpan *sp,
+                         int py, int px0, int px1, int64_t e1, int64_t e2,
+                         const SGISoftFixedKernel kernel, const bool repeat,
+                         const uint32_t env_known,
+                         const uint32_t format_known, const bool known)
+{
+    const SGIRasterRules *rules = r->rules;
+    const SGIGLDrawState *st = r->st;
+    const SGIRasterTarget *t = r->t;
+    const SGISoftVertex *v = sp->v;
+    const int y = r->win.oy + py;
+    bool clipped = r->win.clip->n > 1;
+    const bool depth_test = known || st->depth_test;
+    const bool fog = !known && st->fog;
+    const bool rgba_read = t->store_rgba && r->rgba_read;
+    const uint32_t env = env_known ? env_known : st->texture_env_mode;
+    const uint32_t format = format_known ? format_known : r->fixed->format;
+    /* REPLACE leaves none of the colour of these formats' fragments. */
+    const bool keeps = env != SGI_GL_REPLACE ||
+                       (format != SGI_GL_RGBA && format != SGI_GL_INTENSITY &&
+                        format != SGI_GL_LUMINANCE_ALPHA);
+    int end = px1 + 1;
+    SGISoftFrag frag = *sp->flat;
+    SGIRasterColour dest[SGI_GL_MAX_TARGETS] = { 0 };
+
+    for (uint32_t i = 0; clipped && i < MIN(r->win.clip->n, SGI_CLIP_MAX);
+         i++) {
+        /* One of the window's rectangles holds the whole row. */
+        const SGIClipRect *c = &r->win.clip->r[i];
+
+        clipped = !(y >= c->y0 && y <= c->y1 &&
+                    (int64_t)r->win.ox + px0 >= c->x0 &&
+                    (int64_t)r->win.ox + px1 <= c->x1);
+    }
+    if (st->scissor_test && !clipped) {
+        /* sgi_soft_owned_at()'s scissor test, decided for the whole row. */
+        int64_t sx0 = st->scissor[0];
+        int64_t sx1 = (int64_t)st->scissor[0] + st->scissor[2] - 1;
+
+        if (!(py >= st->scissor[1] &&
+              (int64_t)py < (int64_t)st->scissor[1] + st->scissor[3])) {
+            return end;
+        }
+        if (sx0 > px0) {
+            if (sx0 > px1) {
+                return end;
+            }
+            e1 += (sx0 - px0) * sp->step1;
+            e2 += (sx0 - px0) * sp->step2;
+            px0 = sx0;
+        }
+        px1 = MIN(px1, sx1);
+    }
+    for (int px = px0; px <= px1; px++, e1 += sp->step1, e2 += sp->step2) {
+        const int x = r->win.ox + px;
+        double b1 = (double)e1 / sp->area;
+        double b2 = (double)e2 / sp->area;
+        double z = v[0].z + b1 * (v[1].z - v[0].z) + b2 * (v[2].z - v[0].z);
+        double w0 = (1.0 - b1 - b2) * v[0].inv_w;
+        double w1 = b1 * v[1].inv_w;
+        double w2 = b2 * v[2].inv_w;
+        double sum = w0 + w1 + w2;
+        double off = sp->offset, zw, s, tc;
+        int32_t lambda;
+        uint32_t zq = 0;
+
+        if (rules->depth_row_given) {
+            double depth_w = (1.0 - b1 - b2) * v[0].depth_w +
+                             b1 * v[1].depth_w + b2 * v[2].depth_w;
+            double slack = rules->depth_slack;
+
+            z = (z + off) / depth_w;
+            off = 0;
+            if (z < 0 && z >= -slack) {
+                z = 0;
+            } else if (z > 1 && z <= 1 + slack) {
+                z = 1;
+            }
+        }
+        if (!sgi_raster_window_depth(st, z, off, &zw) ||
+            !(zw >= 0.0 && zw <= 1.0)) {
+            continue;
+        }
+        if (clipped && !sgi_soft_owned_at(r, px, py)) {
+            continue;
+        }
+        if (depth_test) {
+            zq = sgi_raster_depth_code(rules, zw);
+            if (!sgi_soft_compare(st->depth_func, zq,
+                                  t->load_depth(t->opaque, x, y))) {
+                continue;
+            }
+        }
+        if (!sgi_soft_fixed_coords(r->fixed, sp->g, sp->row, px,
+                                   sp->flat_lambda, &s, &tc, &lambda) ||
+            !sgi_soft_fixed_sample(r, s, tc, lambda, kernel, repeat,
+                                   frag.texel)) {
+            return px;
+        }
+        if (sp->smooth && keeps) {
+            for (int k = 0; k < 4; k++) {
+                frag.rgba[k] = sp->constant & (1u << k) ? v[0].rgba[k] :
+                               (w0 * v[0].rgba[k] + w1 * v[1].rgba[k] +
+                                w2 * v[2].rgba[k]) / sum;
+            }
+        } else {
+            memcpy(frag.rgba, sp->flat->rgba, sizeof(frag.rgba));
+        }
+        sgi_soft_texture_apply(r, format, env, frag.texel, frag.rgba);
+        if (fog) {
+            frag.fog = (w0 * v[0].fog + w1 * v[1].fog + w2 * v[2].fog) / sum;
+            sgi_soft_fog(r, &frag, zw);
+        }
+        if (rgba_read &&
+            !sgi_soft_rgba_load(rules, t, r->targets, r->ntargets, x, y,
+                                dest, r->rgba_reported)) {
+            continue;
+        }
+        if (depth_test && st->depth_mask) {
+            t->store_depth(t->opaque, x, y, zq);
+        }
+        sgi_soft_fragment_store(r, x, y, &frag, dest);
+    }
+    return end;
+}
+
+#define SGI_SOFT_TEXTURE_SPAN(name, kernel, repeat, env, format, known) \
+static int name(const SGISoftDraw *r, const SGISoftTexSpan *sp, int py, \
+                int px0, int px1, int64_t e1, int64_t e2) \
+{ \
+    return sgi_soft_texture_row(r, sp, py, px0, px1, e1, e2, kernel, \
+                                repeat, env, format, known); \
+}
+
+/* Any state the row loops take, tested per pixel. */
+SGI_SOFT_TEXTURE_SPAN(sgi_soft_texture_span_any, SGI_SOFT_FIXED_ANY, false,
+                      0, 0, false)
+
+/*
+ * The states drawing commonly textures in, one loop each: a repeated RGB
+ * or RGBA image, nearest, bilinear or trilinear, replacing or modulating
+ * the fragment's colour, depth tested, without blending or fog.
+ */
+#define SGI_SOFT_TEXTURE_SPANS(kernel, k) \
+SGI_SOFT_TEXTURE_SPAN(sgi_soft_texture_span_##k##_replace_rgba, kernel, \
+                      true, SGI_GL_REPLACE, SGI_GL_RGBA, true) \
+SGI_SOFT_TEXTURE_SPAN(sgi_soft_texture_span_##k##_replace_rgb, kernel, \
+                      true, SGI_GL_REPLACE, SGI_GL_RGB, true) \
+SGI_SOFT_TEXTURE_SPAN(sgi_soft_texture_span_##k##_modulate_rgba, kernel, \
+                      true, SGI_GL_MODULATE, SGI_GL_RGBA, true) \
+SGI_SOFT_TEXTURE_SPAN(sgi_soft_texture_span_##k##_modulate_rgb, kernel, \
+                      true, SGI_GL_MODULATE, SGI_GL_RGB, true)
+
+SGI_SOFT_TEXTURE_SPANS(SGI_SOFT_FIXED_NEAREST, nearest)
+SGI_SOFT_TEXTURE_SPANS(SGI_SOFT_FIXED_LINEAR, linear)
+SGI_SOFT_TEXTURE_SPANS(SGI_SOFT_FIXED_TRILINEAR, trilinear)
+
+/* By kernel less one, then replace or modulate, then RGBA or RGB. */
+static SGISoftTexSpanFn *const sgi_soft_texture_spans[3][2][2] = {
+#define SGI_SOFT_TEXTURE_SPAN_ROW(k) { \
+        { sgi_soft_texture_span_##k##_replace_rgba, \
+          sgi_soft_texture_span_##k##_replace_rgb }, \
+        { sgi_soft_texture_span_##k##_modulate_rgba, \
+          sgi_soft_texture_span_##k##_modulate_rgb }, \
+    }
+    SGI_SOFT_TEXTURE_SPAN_ROW(nearest),
+    SGI_SOFT_TEXTURE_SPAN_ROW(linear),
+    SGI_SOFT_TEXTURE_SPAN_ROW(trilinear),
+#undef SGI_SOFT_TEXTURE_SPAN_ROW
+};
+
+/*
+ * The row loop for draw r's textured triangles, or NULL for the general
+ * loop: under SGI_RASTER_TEXTURE_SPANS, for state whose per-fragment
+ * work is ownership, the depth test, the texture, fog, blending and the
+ * store, whatever the colour mask, dither and targets. A loop of its own
+ * for the common states named above; the others take the loop that tests
+ * the state per pixel.
+ */
+static SGISoftTexSpanFn *sgi_soft_fixed_span_select(const SGISoftDraw *r)
+{
+    const SGIGLDrawState *st = r->st;
+    const SGIRasterTarget *t = r->t;
+    const SGISoftFixedTex *f = r->fixed;
+    uint32_t smax;
+    int kernel, env, format;
+
+    if (sgi_soft_texture_path != SGI_RASTER_TEXTURE_SPANS ||
+        r->polygon_stipple || st->clip_planes ||
+        (st->stencil_test && sgi_soft_stencil_max(r->rules, t, &smax)) ||
+        (st->depth_test &&
+         (!t->load_depth || (st->depth_mask && !t->store_depth)))) {
+        return NULL;
+    }
+    kernel = !f->lod && f->min == SGI_GL_NEAREST ? 0 :
+             !f->lod && f->min == SGI_GL_LINEAR ? 1 :
+             f->min == SGI_GL_LINEAR_MIPMAP_LINEAR &&
+             f->mag == SGI_GL_LINEAR ? 2 : -1;
+    env = st->texture_env_mode == SGI_GL_REPLACE ? 0 :
+          st->texture_env_mode == SGI_GL_MODULATE ? 1 : -1;
+    format = f->format == SGI_GL_RGBA ? 0 : f->format == SGI_GL_RGB ? 1 : -1;
+    if (kernel < 0 || env < 0 || format < 0 ||
+        f->wrap_s != SGI_GL_REPEAT || f->wrap_t != SGI_GL_REPEAT ||
+        !st->depth_test || r->blend || st->fog) {
+        return sgi_soft_texture_span_any;
+    }
+    return sgi_soft_texture_spans[kernel][env][format];
+}
+
 static void sgi_soft_texture_values(const SGISoftVertex *v, bool volume,
                                      bool one_dimensional, double value[4])
 {
@@ -4014,6 +4283,9 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     bool fixed = false;
     int32_t fixed_flat_lambda = 0;
     const int32_t *fixed_flat = NULL;
+    /* The row loop for textured fragments, and its inputs. */
+    SGISoftTexSpanFn *span = NULL;
+    SGISoftTexSpan sp;
     int64_t min_x, max_x, min_y, max_y, area, step0, step1, step2;
     double offset;
     bool ccw, front;
@@ -4154,6 +4426,23 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     step0 = -(v[2].y - v[1].y) * (1 << sub);
     step1 = -(v[0].y - v[2].y) * (1 << sub);
     step2 = -(v[1].y - v[0].y) * (1 << sub);
+    if (fixed && r->fixed->span) {
+        span = r->fixed->span;
+        sp = (SGISoftTexSpan) {
+            .v = v, .g = &gradient, .row = tex_row,
+            .flat_lambda = fixed_flat, .flat = &flat_frag,
+            .offset = offset, .area = area, .step1 = step1, .step2 = step2,
+            .smooth = smooth,
+        };
+        for (unsigned k = 0; k < 4; k++) {
+            double c = v[0].rgba[k];
+
+            if ((c == 0 || c == 1) && v[1].rgba[k] == c &&
+                v[2].rgba[k] == c) {
+                sp.constant |= 1u << k;
+            }
+        }
+    }
     for (int py = py0; py <= py1; py++) {
         int64_t cy, cx, e0, e1, e2, lo, hi;
 
@@ -4190,6 +4479,20 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
             double b1, b2, z, w0, w1, w2, sum, depth_w;
             bool background;
 
+            if (span) {
+                /*
+                 * The row loop draws up to a fragment the fixed sampler
+                 * cannot take, which this loop then draws in double.
+                 */
+                int stop = span(r, &sp, py, px, px0 + hi, e1, e2);
+
+                e1 += (int64_t)(stop - px) * step1;
+                e2 += (int64_t)(stop - px) * step2;
+                px = stop;
+                if (px > px0 + hi) {
+                    break;
+                }
+            }
             /* Window phase precedes plane translation and fragment work. */
             if (!sgi_soft_stipple_pass(r, px, py, &background)) {
                 continue;
@@ -4204,7 +4507,7 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
             sum = w0 + w1 + w2;
             depth_w = (1.0 - b1 - b2) * v[0].depth_w + b1 * v[1].depth_w +
                       b2 * v[2].depth_w;
-            if (fixed) {
+            if (fixed && !span) {
                 double s, t;
                 int32_t lambda;
 
@@ -6211,6 +6514,7 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
     if (d->mode >= SGI_GL_TRIANGLES && d->mode <= SGI_GL_POLYGON &&
         sgi_soft_fixed_setup(&r, &fixed)) {
         r.fixed = &fixed;
+        fixed.span = sgi_soft_fixed_span_select(&r);
         if (!sgi_soft_fixed_begin(&r)) {
             r.fixed = NULL;
         }
