@@ -136,6 +136,13 @@ const SGIModelGraphicsSlot *sgi_graphics_pipe_slot(
     SGIModelGraphicsFamilyKind family);
 
 /*
+ * The position in @g's slot list of the slot named @name, or -1: what
+ * the catalogue numbers a pipe's identity by, whatever order pipes are
+ * given in.
+ */
+int sgi_graphics_slot_position(const SGIModelGraphics *g, const char *name);
+
+/*
  * @slot's default pipe as a device created but not realized, with its
  * placement, product and every setting set. A machine creates it while
  * it initializes, so it is not taken for a hot-plugged device, and

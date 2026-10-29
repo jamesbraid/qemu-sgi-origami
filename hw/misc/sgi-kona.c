@@ -81,6 +81,13 @@
 #define SGI_KONA_KTOWN_SERIAL    SGI_SYNTHETIC_ONEWIRE_SERIAL('G', 1)
 
 /*
+ * The pipe slots a machine's pipes take serials for (identity-index), and
+ * shared-identity-index's value for a pipe whose Ktown is its own.
+ */
+#define SGI_KONA_IDENTITY_SLOTS 4
+#define SGI_KONA_OWN_IDENTITY   UINT8_MAX
+
+/*
  * These records use the shared fixed-offset board-record representation.
  * Barcode, part, revision, and name are stored fields. Group, capability,
  * and variety bytes use the unprogrammed value. The displayed serial is the
@@ -2628,6 +2635,8 @@ static const SGIKonaProduct sgi_kona_products[] = {
  * names; the geometry board and Ktown keep 0 and 1.
  */
 #define SGI_KONA_SERIAL_RM(i)   (2 + (i))
+/* A pipe's first instance: sixteen per slot, so slots never share one. */
+#define SGI_KONA_SERIAL_BASE(s) (16 * (unsigned)(s)->identity_index)
 #define SGI_KONA_SERIAL_TM(i)   (6 + (i))
 #define SGI_KONA_SERIAL_DG      10
 #define SGI_KONA_SERIAL_DGOPT   11
@@ -2835,11 +2844,31 @@ refused:
  */
 static void sgi_kona_identity_record(SGIXioBoardState *board,
                                      const SGIXioBoardIdentityPart *part,
-                                     SGIBridgeBoardRecord *record)
+                                     SGIBridgeBoardRecord *record,
+                                     uint64_t *serial)
 {
     SGIKonaState *s = SGI_KONA(board);
     const SGIKonaConfig *c = &s->config;
 
+    /*
+     * Each pipe slot's records take their own serials, the barcode
+     * following the serial: the geometry board the machine's pipe record
+     * serial, the Ktown its slot's (or the slot it is shared with) second
+     * instance.
+     */
+    if (part->record == &sgi_kona_geometry_record) {
+        *serial = s->onewire_serial ? s->onewire_serial :
+                  SGI_SYNTHETIC_ONEWIRE_SERIAL('G', 16 * s->identity_index);
+        sgi_synthetic_barcode(s->geometry_barcode, 'G', *serial);
+        record->barcode = s->geometry_barcode;
+    } else if (part->record == &sgi_kona_ktown_record) {
+        unsigned slot = s->shared_identity_index == SGI_KONA_OWN_IDENTITY ?
+                        s->identity_index : s->shared_identity_index;
+
+        *serial = SGI_SYNTHETIC_ONEWIRE_SERIAL('G', 16 * slot + 1);
+        sgi_synthetic_barcode(s->ktown_barcode, 'G', *serial);
+        record->barcode = s->ktown_barcode;
+    }
     if (!c->product) {
         return;
     }
@@ -3046,7 +3075,8 @@ static void sgi_kona_put_words(uint8_t *at, unsigned count, uint32_t word)
     }
 }
 
-static void sgi_kona_config_block(const SGIKonaConfig *c, uint8_t *block)
+static void sgi_kona_config_block(const SGIKonaConfig *c, unsigned base,
+                                  uint8_t *block)
 {
     static const uint32_t ge_words[] = {
         0, 0x14832057, 0x24731057, 0x14231057,
@@ -3085,9 +3115,10 @@ static void sgi_kona_config_block(const SGIKonaConfig *c, uint8_t *block)
         sgi_kona_put_words(chips + 0x1c, 8, 0x24d31057);
         sgi_kona_put_words(chips + 0x3c, 20, 0x54938057);
         sgi_kona_put_record(block + SGI_KONA_CFG_NIC_RM(i),
-                            &c->raster->board, SGI_KONA_SERIAL_RM(i));
+                            &c->raster->board, base + SGI_KONA_SERIAL_RM(i));
         sgi_kona_put_record(block + SGI_KONA_CFG_NIC_TM(i),
-                            &c->texture->board, SGI_KONA_SERIAL_TM(i));
+                            &c->texture->board,
+                            base + SGI_KONA_SERIAL_TM(i));
     }
     stl_be_p(block + SGI_KONA_CFG_TRAILING_WORD, c->geometry->trailing_word);
     stl_be_p(block + SGI_KONA_CFG_DG_WORDS, 0x05532057);
@@ -3095,10 +3126,10 @@ static void sgi_kona_config_block(const SGIKonaConfig *c, uint8_t *block)
     sgi_kona_put_words(block + SGI_KONA_CFG_DG_CHANNELS, channels,
                        0x15631057);
     sgi_kona_put_record(block + SGI_KONA_CFG_NIC_DG, &c->display->board,
-                        SGI_KONA_SERIAL_DG);
+                        base + SGI_KONA_SERIAL_DG);
     if (c->option) {
         sgi_kona_put_record(block + SGI_KONA_CFG_NIC_DGOPT, &c->option->board,
-                            SGI_KONA_SERIAL_DGOPT);
+                            base + SGI_KONA_SERIAL_DGOPT);
     }
 }
 
@@ -3133,13 +3164,15 @@ static bool sgi_kona_post_return(SGIKonaState *s, uint32_t token,
     return false;
 }
 
-static void sgi_kona_answer_config(SGIKonaState *s)
+/* The block sgi_kona_answer_config() posts, into @block. */
+static void sgi_kona_build_config(SGIKonaState *s, uint8_t *block)
 {
-    uint8_t block[SGI_KONA_CONFIG_SIZE] = { 0 };
     const SGIKonaConfig *c = &s->config;
 
+    memset(block, 0, SGI_KONA_CONFIG_SIZE);
+
     if (c->product) {
-        sgi_kona_config_block(c, block);
+        sgi_kona_config_block(c, SGI_KONA_SERIAL_BASE(s), block);
     } else {
         for (size_t i = 0; i < ARRAY_SIZE(sgi_kona_config_fields); i++) {
             stl_be_p(block + sgi_kona_config_fields[i].offset,
@@ -3169,8 +3202,33 @@ static void sgi_kona_answer_config(SGIKonaState *s)
         stl_be_p(p + 0x14, pool.granule);
         stl_be_p(p + 0x18, pool.capacity);
     }
+}
+
+static void sgi_kona_answer_config(SGIKonaState *s)
+{
+    uint8_t block[SGI_KONA_CONFIG_SIZE];
+
+    sgi_kona_build_config(s, block);
     sgi_kona_post_return(s, SGI_KONA_CMD_GET_CONFIG, SGI_KONA_CONFIG_OFFSET,
                          block, sizeof(block));
+}
+
+/*
+ * qtest: the configuration block the pipe answers 0x1e9 with, as hex,
+ * without the return page and DMA a guest sets up to fetch it.
+ */
+static void sgi_kona_test_get_config_block(Object *obj, Visitor *v,
+                                           const char *name, void *opaque,
+                                           Error **errp)
+{
+    uint8_t block[SGI_KONA_CONFIG_SIZE];
+    g_autoptr(GString) hex = g_string_sized_new(2 * sizeof(block));
+
+    sgi_kona_build_config(SGI_KONA(obj), block);
+    for (size_t i = 0; i < sizeof(block); i++) {
+        g_string_append_printf(hex, "%02x", block[i]);
+    }
+    visit_type_str(v, name, &hex->str, errp);
 }
 
 /*
@@ -19659,6 +19717,15 @@ static bool sgi_kona_build_widget(SGIXioBoardState *board,
                   "packets travel");
         return false;
     }
+    if (s->identity_index >= SGI_KONA_IDENTITY_SLOTS ||
+        (s->shared_identity_index != SGI_KONA_OWN_IDENTITY &&
+         s->shared_identity_index >= SGI_KONA_IDENTITY_SLOTS)) {
+        error_setg(errp, "sgi-kona: identity-index and shared-identity-index "
+                   "take 0 to %u: each pipe slot's records use sixteen "
+                   "graphics serial instances, and boards placed by slot "
+                   "name start theirs at 64", SGI_KONA_IDENTITY_SLOTS - 1);
+        return false;
+    }
     if (!sgi_kona_configure(s, errp)) {
         return false;
     }
@@ -20449,6 +20516,8 @@ static void sgi_kona_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-plane-word", "uint32",
                         sgi_kona_test_get_plane_word, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-config-block", "str",
+                        sgi_kona_test_get_config_block, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-pixel-count",
                                    &s->test_pixel_count,
                                    OBJ_PROP_FLAG_READWRITE);
@@ -20835,6 +20904,10 @@ static const Property sgi_kona_properties[] = {
      * the display generator.
      */
     DEFINE_PROP_BOOL("ktown2", SGIKonaState, ktown2, false),
+    DEFINE_PROP_UINT8("identity-index", SGIKonaState, identity_index, 0),
+    DEFINE_PROP_UINT8("shared-identity-index", SGIKonaState,
+                      shared_identity_index, SGI_KONA_OWN_IDENTITY),
+    DEFINE_PROP_UINT64("geometry-serial", SGIKonaState, onewire_serial, 0),
     DEFINE_PROP_STRING("product", SGIKonaState, product),
     DEFINE_PROP_STRING("geometry", SGIKonaState, geometry),
     DEFINE_PROP_STRING("rm-type", SGIKonaState, rm_type),

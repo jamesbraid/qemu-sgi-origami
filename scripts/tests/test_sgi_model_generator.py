@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "457b822290c6a14fe7c47f6b7e01053e3012af22f10d0a05a636d8c5a4d80a75"
+    "858a933ee8cbc7c9c49d91e0334ba6ec8a26923168bb427b12fac88b5724a2e4"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -376,6 +376,47 @@ class GraphicsPipeTests(unittest.TestCase):
                    self.topology("onyx2-rack")["io-boards"]}
         self.assertEqual(records["io7"]["other-identity-parts"],
                          records["io3"]["other-identity-parts"])
+
+    def pipe_topology(self, *boards):
+        return {"graphics": {"slots": [{"name": name} for name in
+                                       ("p0", "p1", "p2", "p3", "p4")]},
+                "io_boards": [dict(board) for board in boards]}
+
+    def test_pipe_serials_follow_their_slot(self):
+        g = lambda n: 0x51454d554700 | n
+        ok = self.pipe_topology(
+            {"id": "a", "board_kind": "KONA", "label": "p0", "serial": g(0)},
+            {"id": "b", "board_kind": "KONA", "label": "p1", "serial": g(16)})
+        model_graphics.check_pipe_serials(ok)
+        with self.assertRaisesRegex(ValueError, "another pipe slot"):
+            model_graphics.check_pipe_serials(self.pipe_topology(
+                {"id": "b", "board_kind": "KONA", "label": "p1",
+                 "serial": g(5)}))
+        with self.assertRaisesRegex(ValueError, "already presents"):
+            model_graphics.check_pipe_serials(self.pipe_topology(
+                {"id": "b", "board_kind": "KONA", "label": "p1",
+                 "serial": g(16)},
+                {"id": "c", "board_kind": "MGRAS", "serial": g(18)}))
+        with self.assertRaisesRegex(ValueError, "share serial"):
+            model_graphics.check_pipe_serials(self.pipe_topology(
+                {"id": "a", "board_kind": "KONA", "label": "p0",
+                 "serial": g(0)},
+                {"id": "b", "board_kind": "KONA", "label": "p1",
+                 "serial": g(0)}))
+        with self.assertRaisesRegex(ValueError, "first 4"):
+            model_graphics.check_pipe_serials(self.pipe_topology(
+                {"id": "e", "board_kind": "KONA", "label": "p4",
+                 "serial": g(64)}))
+
+    def test_gbrick_pipes_take_graphics_serials(self):
+        serials = {board["label"]: board["serial"] for board in
+                   self.topology("onyx3400-ir")["io-boards"]
+                   if board["preset"] == "kona"}
+        self.assertEqual(serials, {
+            "gbrick0-pipe0-pipe": 0x51454d554700,
+            "gbrick0-pipe1-pipe": 0x51454d554710,
+            "gbrick1-pipe0-pipe": 0x51454d554720,
+            "gbrick1-pipe1-pipe": 0x51454d554730})
 
     def test_pci_placement(self):
         slots = {slot["name"]: slot for slot in

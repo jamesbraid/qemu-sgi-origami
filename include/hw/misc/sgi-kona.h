@@ -23,6 +23,7 @@
 #include "hw/display/sgi/x-gc.h"
 #include "hw/misc/sgi-command-port.h"
 #include "hw/misc/sgi-kona-dma.h"
+#include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/misc/sgi-kona-ports.h"
 #include "hw/misc/sgi-kona-texture.h"
 #include "system/memory.h"
@@ -1917,6 +1918,20 @@ struct SGIKonaState {
      * the catalogue slot's to say.
      */
     bool ktown2;
+    /*
+     * Which pipe slot of its machine the pipe fills, by the slot's place in
+     * the catalogue's slot list, 0 to 3: its one-wire records take graphics
+     * serial instances 16 * identity-index onwards, so no two pipes of one
+     * machine share one. geometry-serial, when set, is the geometry board's
+     * own serial from the machine's pipe record. shared-identity-index
+     * names the slot whose pipe the shared Ktown's serial follows, for the
+     * second pipe of an Onyx2 graphics module.
+     */
+    uint8_t identity_index;
+    uint8_t shared_identity_index;
+    uint64_t onewire_serial;
+    char geometry_barcode[SGI_SYNTHETIC_BARCODE_SIZE];
+    char ktown_barcode[SGI_SYNTHETIC_BARCODE_SIZE];
     char *product;
     char *geometry;
     char *rm_type;

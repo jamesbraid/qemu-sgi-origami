@@ -538,6 +538,19 @@ bool sgi_graphics_check_pipe(SGIGraphicsPipes *pipes, DeviceState *dev,
     return true;
 }
 
+int sgi_graphics_slot_position(const SGIModelGraphics *g, const char *name)
+{
+    int position = 0;
+
+    for (SGIModelGraphicsSlotList *s = g ? g->slots : NULL; s && name;
+         s = s->next, position++) {
+        if (g_str_equal(s->value->name, name)) {
+            return position;
+        }
+    }
+    return -1;
+}
+
 DeviceState *sgi_graphics_new_default(const SGIModelGraphicsSlot *slot)
 {
     const SGIModelGraphicsPipe *def = slot->q_default;

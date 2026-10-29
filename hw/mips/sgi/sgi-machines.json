@@ -27337,7 +27337,7 @@
           "populated": true,
           "preset": "kona",
           "revision": 0,
-          "serial": 89358092029444
+          "serial": 89358092027648
         },
         {
           "attachment": 3,
@@ -27350,7 +27350,7 @@
           "populated": true,
           "preset": "kona",
           "revision": 0,
-          "serial": 89358092029445
+          "serial": 89358092027664
         },
         {
           "attachment": 4,
@@ -27363,7 +27363,7 @@
           "populated": true,
           "preset": "kona",
           "revision": 0,
-          "serial": 89358092029446
+          "serial": 89358092027680
         },
         {
           "attachment": 5,
@@ -27376,7 +27376,7 @@
           "populated": true,
           "preset": "kona",
           "revision": 0,
-          "serial": 89358092029447
+          "serial": 89358092027696
         }
       ],
       "ip35-firmware": {

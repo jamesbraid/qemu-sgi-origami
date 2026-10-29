@@ -1076,6 +1076,111 @@ static void test_multi_onyx2_rack(void)
     qtest_quit(qts);
 }
 
+#define KONA_CONFIG_SIZE  0x778
+#define KONA_RECORD_RM0   0x3e8
+#define KONA_RECORD_DG    0x6e0
+
+/* The configuration block pipe @path answers 0x1e9 with. */
+static void pipe_config(QTestState *qts, const char *path, uint8_t *block)
+{
+    g_autofree char *hex = qom_text(qts, path, "x-test-config-block");
+
+    g_assert_cmpuint(strlen(hex), ==, 2 * KONA_CONFIG_SIZE);
+    for (unsigned i = 0; i < KONA_CONFIG_SIZE; i++) {
+        char byte[3] = { hex[2 * i], hex[2 * i + 1], 0 };
+
+        block[i] = g_ascii_strtoull(byte, NULL, 16);
+    }
+}
+
+/* The six-byte ROM number of the record at @at in a configuration block. */
+static uint64_t record_serial(const uint8_t *block, unsigned at)
+{
+    uint64_t serial = 0;
+
+    for (int i = 0; i < 6; i++) {
+        serial = serial << 8 | block[at + 4 + i];
+    }
+    return serial;
+}
+
+static uint64_t qom_serial(QTestState *qts, const char *pipe,
+                           const char *part)
+{
+    g_autofree char *path = g_strdup_printf("%s/%s", pipe, part);
+    g_autofree char *text = qom_text(qts, path, "serial");
+
+    g_assert_nonnull(text);
+    return g_ascii_strtoull(text, NULL, 10);
+}
+
+#define G_SERIAL(n) (UINT64_C(0x51454d554700) | (n))
+
+/*
+ * Two pipes' one-wire and configuration-block records differ, each
+ * numbered by its slot's place in the catalogue (sixteen instances a
+ * slot), whatever order the pipes are given in. gbrick0-pipe0-pipe keeps
+ * the serial a single pipe always had, G0.
+ */
+static void test_multi_identity(void)
+{
+    static const char *const orders[] = {
+        "-device sgi-kona,slot=gbrick0-pipe0-pipe "
+        "-device sgi-kona,slot=gbrick1-pipe1-pipe",
+        "-device sgi-kona,slot=gbrick1-pipe1-pipe "
+        "-device sgi-kona,slot=gbrick0-pipe0-pipe",
+    };
+    static const struct {
+        unsigned position;
+        const char *path;
+    } pipes[] = {
+        { 0, "/machine/module5/gbrick0-pipe0-pipe" },
+        { 3, "/machine/module6/gbrick1-pipe1-pipe" },
+    };
+
+    for (size_t o = 0; o < G_N_ELEMENTS(orders); o++) {
+        QTestState *qts = start(launch_for("onyx3400-ir"), orders[o]);
+
+        for (size_t i = 0; i < G_N_ELEMENTS(pipes); i++) {
+            g_autofree uint8_t *block = g_malloc(KONA_CONFIG_SIZE);
+            unsigned base = 16 * pipes[i].position;
+
+            g_assert_cmphex(qom_serial(qts, pipes[i].path,
+                                       "onewire-geometry"), ==,
+                            G_SERIAL(base));
+            pipe_config(qts, pipes[i].path, block);
+            g_assert_cmphex(record_serial(block, KONA_RECORD_RM0), ==,
+                            G_SERIAL(base + 2));
+            g_assert_cmphex(record_serial(block, KONA_RECORD_DG), ==,
+                            G_SERIAL(base + 10));
+        }
+        qtest_quit(qts);
+    }
+
+    /*
+     * The Onyx2 rack's two pipes share the graphics module's one Ktown,
+     * so io7 presents io3's Ktown serial beside a geometry serial of its
+     * own.
+     */
+    {
+        QTestState *qts = start(&onyx2_rack_two_nodes,
+                                "-device sgi-kona,slot=io7,product=ir3 "
+                                "-device sgi-kona,slot=io3,product=ir3");
+        const char *io3 = "/machine/module0/io3";
+        const char *io7 = "/machine/module0/io7";
+
+        g_assert_cmphex(qom_serial(qts, io3, "onewire-geometry"), ==,
+                        G_SERIAL(0));
+        g_assert_cmphex(qom_serial(qts, io7, "onewire-geometry"), ==,
+                        G_SERIAL(16));
+        g_assert_cmphex(qom_serial(qts, io3, "onewire-ktown"), ==,
+                        G_SERIAL(1));
+        g_assert_cmphex(qom_serial(qts, io7, "onewire-ktown"), ==,
+                        G_SERIAL(1));
+        qtest_quit(qts);
+    }
+}
+
 int main(int argc, char **argv)
 {
     QTestState *qts;
@@ -1104,6 +1209,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-graphics-pipes/multi/onyx3400-ir",
                    test_multi_onyx3400_ir);
     qtest_add_func("/sgi-graphics-pipes/multi/rm-count", test_multi_rm_count);
+    qtest_add_func("/sgi-graphics-pipes/multi/identity", test_multi_identity);
     qtest_add_func("/sgi-graphics-pipes/multi/onyx2-rack",
                    test_multi_onyx2_rack);
     for (size_t i = 0; i < G_N_ELEMENTS(launches); i++) {

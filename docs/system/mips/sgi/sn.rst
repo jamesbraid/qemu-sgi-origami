@@ -1157,10 +1157,23 @@ eight on ``dg5-8``, and every channel scans out.
 Each topology's ``max-pipes`` says how many pipes it builds at once:
 four on ``onyx3400-ir``, two on ``onyx2-rack`` (``io3`` and, from two
 node boards, ``io7``, the graphics module's second pipe), one everywhere
-else. A second pipe takes
+else. ``io7`` takes one or two raster managers because the model places it
+on the module's left-hand Ktown connector, which is approximated. A second pipe takes
 another slot with a second ``-device``, and a node board controls at
 most one pipe (the Origin and Onyx2 Hardware Quick-reference Booklet,
 HMQ-380-C).
+
+Each pipe presents serials of its own. A pipe slot's records take
+graphics serial instances sixteen per slot, numbered by the slot's place
+in the catalogue's slot list rather than by the order pipes are given in:
+the geometry board the pipe record's own serial (G0, G16, G32 and G48 on
+``onyx3400-ir``), the raster, texture and display boards the slot's later
+instances. A board two pipes share keeps one serial: the Onyx2 rack's
+``io7`` lists the graphics module's Ktown with ``io3``'s serial. Whether a
+real second pipe's chain lists the Ktown at all is unknown, so listing it
+is approximated. A
+topology with several pipes lists at most four slots, so pipe serials stay
+below instance 64, where boards fitted by slot name start theirs.
 
 .. _sgi-sn-firmware-supply:
 

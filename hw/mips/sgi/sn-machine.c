@@ -3794,6 +3794,44 @@ static ssize_t sgi_machine_find_pipe_record(SGIMachineState *s,
 }
 
 /*
+ * The catalogue slot position whose pipe the shared boards of pipe record
+ * @index follow: the first KONA record of the same module listing the
+ * same other identity parts, as the two pipes of an Onyx2 graphics module
+ * list its one Ktown. A record with no other parts shares nothing.
+ */
+static int sgi_machine_pipe_shared_position(SGIMachineState *s,
+                                            const SGIModelTopology *t,
+                                            const SGIModelGraphics *g,
+                                            size_t index)
+{
+    g_autofree const SGIModelIoBoard **records = NULL;
+    const SGIModelIoBoard *own;
+    size_t count;
+
+    records = sgi_model_io_board_array(t->io_boards, &count);
+    own = records[index];
+    if (!own->has_other_identity_parts || !own->other_identity_parts) {
+        return -1;
+    }
+    for (size_t i = 0; i < count; i++) {
+        const SGIModelIoBoard *other = records[i];
+        g_autofree char *slot = NULL;
+
+        if (!s->pipe_record[i] ||
+            other->preset != SGI_MODEL_IO_BOARD_PRESET_KONA ||
+            other->module_index != own->module_index ||
+            !other->has_other_identity_parts || !other->other_identity_parts ||
+            !g_str_equal(other->other_identity_parts->value,
+                         own->other_identity_parts->value)) {
+            continue;
+        }
+        slot = sgi_machine_pipe_record_slot(s, other, i);
+        return sgi_graphics_slot_position(g, slot);
+    }
+    return -1;
+}
+
+/*
  * What a KONA pipe in the Onyx2's own pipe slot takes from the record,
  * before it realizes: the pipe's one-wire records, the geometry board's
  * own part (the rack's GE16-4 or the deskside's GE14-4) and the records
@@ -3801,6 +3839,11 @@ static ssize_t sgi_machine_find_pipe_record(SGIMachineState *s,
  * Ktown), and the Hub its DMA transfers and reason-page writes go to,
  * since they name no destination widget of their own. A `-device
  * sgi-kona` in any other slot names its Hub with fabric-hub-widget.
+ *
+ * Each pipe's serials follow its slot's place in the catalogue's slot
+ * list, not plug order: the geometry board takes the record's own serial
+ * and every other record sixteen instances per slot on, except a board
+ * two pipes share, which keeps the first pipe's.
  */
 static void sgi_machine_fill_pipe_record(SGIMachineState *s,
                                          const SGIModelTopology *t,
@@ -3813,6 +3856,7 @@ static void sgi_machine_fill_pipe_record(SGIMachineState *s,
     QList *parts = qlist_new();
     size_t count;
     ssize_t index;
+    int position;
 
     if (!object_dynamic_cast(OBJECT(dev), TYPE_SGI_KONA)) {
         qobject_unref(parts);
@@ -3836,6 +3880,18 @@ static void sgi_machine_fill_pipe_record(SGIMachineState *s,
     qdev_prop_set_uint32(dev, "fabric-hub-widget",
                          sgi_machine_kona_hub_widget(
                              s, t, s->pipe_record_attachment[index]));
+    position = sgi_graphics_slot_position(
+        sgi_machine_chassis(MACHINE(s))->graphics, name);
+    if (position >= 0) {
+        int shared = sgi_machine_pipe_shared_position(
+            s, t, sgi_machine_chassis(MACHINE(s))->graphics, index);
+
+        qdev_prop_set_uint8(dev, "identity-index", position);
+        if (shared >= 0 && shared != position) {
+            qdev_prop_set_uint8(dev, "shared-identity-index", shared);
+        }
+    }
+    qdev_prop_set_uint64(dev, "geometry-serial", record->serial);
     /* A pipe cabled to an I/O brick's crossbar is a G-brick's. */
     qdev_prop_set_bit(dev, "ktown2", s->enclosure_xbridges &&
                       s->pipe_record_attachment[index]->crossbar_index >= 0);
