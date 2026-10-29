@@ -635,9 +635,14 @@ static uint32_t sgi_rad1_audio_chan_freq(SGIRad1AudioChannel *c)
 {
     const SGIRad1AudioChannelInfo *ci = sgi_rad1_audio_chan_info(c);
 
-    if (c->dev->octane &&
-        sgi_rad1_audio_chan_index(c) == SGI_RAD1_AUDIO_CH_AES_SUB) {
-        return SGI_RAD1_OCTANE_AES_SUB_FREQ;
+    if (c->dev->octane) {
+        switch (sgi_rad1_audio_chan_index(c)) {
+        case SGI_RAD1_AUDIO_CH_AES_SUB:
+            return SGI_RAD1_OCTANE_AES_SUB_FREQ;
+        case SGI_RAD1_AUDIO_CH_IN:
+        case SGI_RAD1_AUDIO_CH_OUT:
+            return c->freq;
+        }
     }
     if (ci->freq) {
         return ci->freq;
@@ -730,6 +735,53 @@ static void sgi_rad1_audio_set_voice(SGIRad1AudioChannel *c, bool on)
     }
     if (c->in_voice) {
         audio_be_set_active_in(be, c->in_voice, on);
+    }
+}
+
+/*
+ * Move a channel's open voice to the channel's current rate. The new voice
+ * opens before the old one closes: closing the backend's last voice would
+ * tear its hardware voice down, and the wav backend truncates its file when
+ * it opens again. An input voice not yet open needs nothing, as it opens at
+ * the rate in force when the input first runs.
+ */
+static void sgi_rad1_audio_retune_voice(SGIRad1AudioChannel *c)
+{
+    AudioBackend *be = sgi_rad1_audio_chan_be(c);
+    struct audsettings as = sgi_rad1_audio_chan_settings(c);
+    const char *name = sgi_rad1_audio_chan_info(c)->voice;
+
+    if (!be) {
+        return;
+    }
+    if (sgi_rad1_audio_chan_info(c)->output) {
+        SWVoiceOut *old = c->out_voice;
+        SWVoiceOut *voice;
+
+        if (!old) {
+            return;
+        }
+        voice = audio_be_open_out(be, NULL, name, c,
+                                  sgi_rad1_audio_out_callback, &as);
+        if (voice) {
+            c->out_voice = voice;
+            sgi_rad1_audio_set_voice(c, c->running);
+            audio_be_close_out(be, old);
+        }
+    } else {
+        SWVoiceIn *old = c->in_voice;
+        SWVoiceIn *voice;
+
+        if (!old) {
+            return;
+        }
+        voice = audio_be_open_in(be, NULL, name, c,
+                                 sgi_rad1_audio_in_callback, &as);
+        if (voice) {
+            c->in_voice = voice;
+            sgi_rad1_audio_set_voice(c, c->running);
+            audio_be_close_in(be, old);
+        }
     }
 }
 
@@ -1488,6 +1540,113 @@ static int sgi_rad1_octane_startup_index(hwaddr addr)
     return -1;
 }
 
+/* A generator's rate; 44.1 kHz until a guest loads it (power-on unknown). */
+static uint32_t sgi_rad1_octane_cg_rate(SGIRad1AudioState *s, unsigned gen)
+{
+    const SGIRad1OctaneClockGen *cg = &s->octane_cg[gen];
+    int mux = sgi_rad1_octane_startup_index(
+        SGI_RAD1_OCTANE_REG_CG_MUX_LAST - 4 * gen);
+    uint64_t master, den, rem, rate;
+
+    if (!cg->programmed) {
+        return SGI_RAD1_AUDIO_FREQ;
+    }
+    master = (s->octane_startup[mux] & 1) ? SGI_RAD1_OCTANE_CG_MASTER_B
+                                          : SGI_RAD1_OCTANE_CG_MASTER_A;
+    den = 0x10000 - (cg->rem_word & 0xffff);
+    rem = cg->rem_word >> 16;
+    /*
+     * master / (div + rem / den), rounded to the nearest hertz. Exact for
+     * every rate IRIX programs; any other quotient is paced up to half a hertz
+     * off, 63 ppm at 8 kHz.
+     */
+    rate = (master * den * 2 + (cg->div * den + rem)) /
+           ((cg->div * den + rem) * 2);
+    return MAX(rate, 1);
+}
+
+/*
+ * Give an analog channel a new rate. A running channel is caught up at the
+ * old rate first, then counts on at the new one from the frame it has
+ * reached, so a rate change never moves the ring pointer or the positions.
+ */
+static void sgi_rad1_octane_set_rate(SGIRad1AudioChannel *c, uint32_t freq)
+{
+    if (c->freq == freq) {
+        return;
+    }
+    sgi_rad1_audio_chan_sync(c);
+    c->freq = freq;
+    if (c->running) {
+        c->start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+                      muldiv64_round_up(c->frames, NANOSECONDS_PER_SECOND,
+                                        freq);
+    }
+    sgi_rad1_audio_retune_voice(c);
+    if (c->running) {
+        sgi_rad1_audio_chan_arm(c);
+    }
+}
+
+static void sgi_rad1_octane_cg_apply(SGIRad1AudioState *s)
+{
+    sgi_rad1_octane_set_rate(&s->chan[SGI_RAD1_AUDIO_CH_IN],
+                             sgi_rad1_octane_cg_rate(
+                                 s, SGI_RAD1_OCTANE_CG_IN));
+    sgi_rad1_octane_set_rate(&s->chan[SGI_RAD1_AUDIO_CH_OUT],
+                             sgi_rad1_octane_cg_rate(
+                                 s, SGI_RAD1_OCTANE_CG_OUT));
+}
+
+/* Called after the word at @addr has been stored in octane_startup. */
+static void sgi_rad1_octane_cg_write(SGIRad1AudioState *s, hwaddr addr,
+                                     uint32_t value)
+{
+    if (addr == SGI_RAD1_OCTANE_REG_CG_CTL) {
+        uint32_t select = value & SGI_RAD1_OCTANE_CG_SELECT_MASK;
+        uint32_t rem_word = s->octane_startup[
+            sgi_rad1_octane_startup_index(SGI_RAD1_OCTANE_REG_CG_REM)];
+
+        /*
+         * Bit 25 rides on the startup words that load nothing; its meaning
+         * is unknown.
+         */
+        uint32_t known = SGI_RAD1_OCTANE_CG_SELECT_MASK |
+                         SGI_RAD1_OCTANE_CG_DIV_MASK |
+                         SGI_RAD1_OCTANE_CG_FLAGS_MASK |
+                         (select ? 0 : SGI_RAD1_OCTANE_CG_STARTUP_BIT);
+
+        if (value & ~known) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-rad1-octane: clock generator load 0x%08x has "
+                          "bits outside the divisor, flags and select "
+                          "fields\n", value);
+        }
+        for (unsigned g = 0; g < SGI_RAD1_OCTANE_NUM_CG; g++) {
+            SGIRad1OctaneClockGen *cg = &s->octane_cg[g];
+
+            if (!(select & (1u << (SGI_RAD1_OCTANE_CG_SELECT_SHIFT + g)))) {
+                continue;
+            }
+            cg->programmed = true;
+            cg->div = (value & SGI_RAD1_OCTANE_CG_DIV_MASK) + 1;
+            cg->rem_word = rem_word;
+            trace_sgi_rad1_octane_clockgen(g, cg->div, cg->rem_word,
+                                           sgi_rad1_octane_cg_rate(s, g));
+        }
+    } else if (addr < SGI_RAD1_OCTANE_REG_CG_REM ||
+               addr > SGI_RAD1_OCTANE_REG_CG_MUX_LAST) {
+        return;
+    } else if (addr > SGI_RAD1_OCTANE_REG_CG_REM && (value & ~1u)) {
+        /* Only bit 0 is decoded; another source may be selected. */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-rad1-octane: master select 0x%08x at 0x%" HWADDR_PRIx
+                      " has bits above bit 0, which this model ignores\n",
+                      value, addr);
+    }
+    sgi_rad1_octane_cg_apply(s);
+}
+
 static bool sgi_rad1_octane_subcode_access(hwaddr addr, unsigned size)
 {
     hwaddr word = addr & ~7ULL;
@@ -1594,6 +1753,7 @@ static MemTxResult sgi_rad1_octane_write(void *opaque, hwaddr addr,
             sgi_rad1_audio_enable_write(c, value);
         }
         s->octane_startup[index] = value;
+        sgi_rad1_octane_cg_write(s, addr, value);
         return MEMTX_OK;
     }
     if (sgi_rad1_octane_subcode_access(addr, size)) {
@@ -1966,6 +2126,8 @@ static void sgi_rad1_octane_reset_hold(Object *obj, ResetType type)
     sgi_rad1_audio_reset_hold(obj, type);
     memset(s->octane_startup, 0, sizeof(s->octane_startup));
     memset(s->octane_subcode, 0, sizeof(s->octane_subcode));
+    memset(s->octane_cg, 0, sizeof(s->octane_cg));
+    sgi_rad1_octane_cg_apply(s);
     s->octane_ust_count = 0;
     s->octane_ust_phase = 0;
     s->octane_ust_enabled = false;
@@ -1990,6 +2152,19 @@ static int sgi_rad1_octane_post_load(void *opaque, int version_id)
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     int64_t delta = now - s->octane_migration_ns;
 
+    /* The saved channels are paced at the rates their generators give. */
+    for (unsigned g = 0; g < SGI_RAD1_OCTANE_NUM_CG; g++) {
+        if (s->octane_cg[g].programmed && !s->octane_cg[g].div) {
+            return -EINVAL;
+        }
+    }
+    s->chan[SGI_RAD1_AUDIO_CH_IN].freq =
+        sgi_rad1_octane_cg_rate(s, SGI_RAD1_OCTANE_CG_IN);
+    s->chan[SGI_RAD1_AUDIO_CH_OUT].freq =
+        sgi_rad1_octane_cg_rate(s, SGI_RAD1_OCTANE_CG_OUT);
+    sgi_rad1_audio_retune_voice(&s->chan[SGI_RAD1_AUDIO_CH_IN]);
+    sgi_rad1_audio_retune_voice(&s->chan[SGI_RAD1_AUDIO_CH_OUT]);
+
     if (s->octane_ust_phase >= SGI_RAD1_OCTANE_UST_NS_PER_TICK ||
         sgi_rad1_audio_post_load(opaque, version_id)) {
         return -EINVAL;
@@ -2011,6 +2186,18 @@ static int sgi_rad1_octane_post_load(void *opaque, int version_id)
     return 0;
 }
 
+static const VMStateDescription vmstate_sgi_rad1_octane_cg = {
+    .name = "sgi-rad1-octane/clockgen",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(programmed, SGIRad1OctaneClockGen),
+        VMSTATE_UINT32(div, SGIRad1OctaneClockGen),
+        VMSTATE_UINT32(rem_word, SGIRad1OctaneClockGen),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_sgi_rad1_octane = {
     .name = "sgi-rad1-octane",
     .version_id = 6,
@@ -2020,6 +2207,10 @@ static const VMStateDescription vmstate_sgi_rad1_octane = {
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIRad1AudioState),
         VMSTATE_UINT32_ARRAY(octane_startup, SGIRad1AudioState, 26),
+        VMSTATE_STRUCT_ARRAY(octane_cg, SGIRad1AudioState,
+                             SGI_RAD1_OCTANE_NUM_CG, 1,
+                             vmstate_sgi_rad1_octane_cg,
+                             SGIRad1OctaneClockGen),
         VMSTATE_UINT64_ARRAY(octane_subcode, SGIRad1AudioState, 68),
         VMSTATE_UINT32_ARRAY(dma_bank, SGIRad1AudioState,
                              SGI_RAD1_AUDIO_DMA_BANK_WORDS),
@@ -2068,6 +2259,7 @@ static void sgi_rad1_octane_realize(PCIDevice *dev, Error **errp)
         SGIRad1AudioChannel *c = &s->chan[i];
 
         c->dev = s;
+        c->freq = SGI_RAD1_AUDIO_FREQ;
         c->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                 sgi_rad1_audio_chan_tick, c);
     }

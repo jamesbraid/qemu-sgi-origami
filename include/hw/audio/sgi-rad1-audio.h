@@ -164,6 +164,38 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_REG_CONVERGENCE_B    0xbc
 
 /*
+ * Octane clock generators, from the public Linux driver's snd_rad1_set_cg
+ * (linux-mips, message 48914C74.6090309@gentoo.org). Four generators; 0xa0
+ * names the ones to load in bits 28 and up (bit 28 + n for generator n), with
+ * the integer divisor minus one in the low bits, and takes the fractional
+ * part from 0xa4: the remainder in bits 31:16 and 0x10000 minus the
+ * denominator in bits 15:0. Generator n's master select is bit 0 of the word
+ * at 0xb4 - 4 * n: set is a 192 kHz master, clear a 176.4 kHz one. The rate
+ * is master / (divisor + remainder / denominator). Generator 0 clocks the
+ * analog input and generator 1 the analog output.
+ *
+ * The width of the divisor field, 9 bits, is inferred: Linux ORs its flag
+ * bits 10:9 above a divisor that never needs more. The flag bits themselves
+ * and the master-select words' bits above 0 have no known effect; they are
+ * ignored, and a master-select write setting them is logged. A 0xa0 write with
+ * no select bit is taken to load no generator; IRIX's startup words carry bit
+ * 25 there, whose meaning is unknown.
+ */
+#define SGI_RAD1_OCTANE_REG_CG_CTL          SGI_RAD1_AUDIO_REG_BRINGUP_FINAL
+#define SGI_RAD1_OCTANE_REG_CG_REM          0xa4
+#define SGI_RAD1_OCTANE_REG_CG_MUX_LAST     0xb4
+#define SGI_RAD1_OCTANE_NUM_CG              4
+#define SGI_RAD1_OCTANE_CG_SELECT_SHIFT     28
+#define SGI_RAD1_OCTANE_CG_SELECT_MASK      0xf0000000u
+#define SGI_RAD1_OCTANE_CG_DIV_MASK         0x1ffu
+#define SGI_RAD1_OCTANE_CG_FLAGS_MASK       0x600u
+#define SGI_RAD1_OCTANE_CG_STARTUP_BIT      0x02000000u
+#define SGI_RAD1_OCTANE_CG_MASTER_A         176400
+#define SGI_RAD1_OCTANE_CG_MASTER_B         192000
+#define SGI_RAD1_OCTANE_CG_IN               0
+#define SGI_RAD1_OCTANE_CG_OUT              1
+
+/*
  * The DMA register bank, BAR0 0x400..0x528: the status-DMA descriptor-ring
  * base/limit and the main-DMA per-channel ping-pong address/control
  * registers. Unlike the sparse bring-up offsets above, this is a dense
@@ -513,11 +545,17 @@ typedef enum SGIRad1AudioGenlock {
  * The per-word conversions live in sgi-rad1-audio-pcm.h.
  *
  * Approximations, each flagged in the register description or stated here:
- * - 44.1 kHz, the software rate of type 1's clock generator in the live IRIX
- *   run. Which 0xa0/0xa4 bits select the hardware rate is unknown. Type 0's
- *   own clock-generator rate has not been read at all; the input uses 44.1
- *   kHz because types 0 and 1 share master clock +0x498 and the output's rate
- *   is the one measured.
+ * - MediaIO: 44.1 kHz, the software rate of type 1's clock generator in the
+ *   live IRIX run. Which 0xa0/0xa4 bits select the hardware rate is unknown
+ *   there. Type 0's own clock-generator rate has not been read at all; the
+ *   input uses 44.1 kHz because types 0 and 1 share master clock +0x498 and
+ *   the output's rate is the one measured.
+ * - Octane: the analog input and output run at the rate the guest programs
+ *   into clock generators 0 and 1 (see SGIRad1OctaneClockGen). Until a guest
+ *   programs one, 44.1 kHz stands in for the power-on rate, which is unknown.
+ *   The rate is rounded to whole hertz: exact for the seven rates IRIX
+ *   programs, up to 63 ppm (0.5 Hz at 8 kHz) off for a quotient that is not
+ *   an integer.
  * - The first word of a frame is the left channel.
  * - The position registers count frames, not words.
  * - The input uses the output's frame layout. The documented layout covers
@@ -610,7 +648,16 @@ typedef struct SGIRad1AudioChannel {
     uint32_t offset;
     int64_t start_ns;
     uint64_t frames;
+    /* Octane analog channels: the rate their clock generator sets. */
+    uint32_t freq;
 } SGIRad1AudioChannel;
+
+/* A clock generator as last loaded through 0xa0; see the register notes. */
+typedef struct SGIRad1OctaneClockGen {
+    bool programmed;
+    uint32_t div;      /* the divisor, 1 to 512 */
+    uint32_t rem_word; /* 0xa4 as it stood at the load */
+} SGIRad1OctaneClockGen;
 
 /*
  * A named field per documented offset rather than an array over the whole
@@ -683,6 +730,7 @@ struct SGIRad1AudioState {
 
     /* Octane's bounded transfer and synthetic UST policy. */
     bool octane;
+    SGIRad1OctaneClockGen octane_cg[SGI_RAD1_OCTANE_NUM_CG];
     int64_t octane_migration_ns;
     uint32_t octane_ust_count;
     uint32_t octane_ust_phase;
