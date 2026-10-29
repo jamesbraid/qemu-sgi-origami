@@ -1515,8 +1515,15 @@ static void test_ifb_read(void)
 
 static void test_opaque_renderer_write(gconstpointer data)
 {
+    /*
+     * The last three are the IRIX 6.5.30 kernel's interface-buffer control
+     * words: count | stall << 7 | empty << 14 | full << 21, first with
+     * full 127, empty 63, stall 126, then the R10000-family and R5000-class
+     * thresholds (Origami's O2 graphics driver evidence datasheet).
+     */
     static const uint32_t payloads[] = {
         0, UINT32_MAX, 0x13579bdf, 0xa6c319e7,
+        0x0fefff0a, 0x0280098a, 0x0606178a,
     };
     bool status_bank = GPOINTER_TO_UINT(data);
     unsigned offset = status_bank ? 0x4008 : 0x400;
