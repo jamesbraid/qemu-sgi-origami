@@ -10869,22 +10869,19 @@ static void test_pipeline_shade_bounds(void)
 {
     static const struct {
         int start, dx, dy, anchor;
-        bool valid;
         unsigned color;
     } cases[] = {
-        { -(1 << 20), 0, 0, 65, true, 0 },
-        { -(1 << 20), 1, 0, 65, false, 0 },
-        { (1 << 20) - 1, 0, 0, 65, true, 255 },
-        { (1 << 20) - 1, -1, 0, 65, false, 0 },
-        { 4096, 4096, 0, -1, true, 2 },
-        { -256 * 4096, -1, -1, 65, true, 0 },
-        { -255 * 4096, -4096, -4096, 65, true, 0 },
-        { -129 * 4096, 4096, -8192, 65, true, 0 },
-        { -128 * 4096, -4096, 8192, 65, true, 0 },
-        { -127 * 4096, 8192, -4096, 65, true, 0 },
+        { -(1 << 20), 0, 0, 65, 0 },
+        { -(1 << 20), 1, 0, 65, 255 },
+        { (1 << 20) - 1, 0, 0, 65, 255 },
+        { (1 << 20) - 1, -1, 0, 65, 0 },
+        { 4096, 4096, 0, -1, 2 },
+        { -256 * 4096, -1, -1, 65, 0 },
+        { -255 * 4096, -4096, -4096, 65, 0 },
+        { -129 * 4096, 4096, -8192, 65, 0 },
+        { -128 * 4096, -4096, 8192, 65, 0 },
+        { -127 * 4096, 8192, -4096, 65, 0 },
     };
-    g_autofree char *dir = g_dir_make_tmp("crime-shade-bounds-XXXXXX", NULL);
-    g_autofree char *path = g_build_filename(dir, "state", NULL);
     QTestState *s = start_indexed_state();
 
     for (unsigned n = 0; n < ARRAY_SIZE(cases); n++) {
@@ -10914,18 +10911,12 @@ static void test_pipeline_shade_bounds(void)
             qtest_writel(s, DE + 0x18,
                         (clipped ? TRIANGLE_DRAW & ~0x78U : TRIANGLE_DRAW) |
                         0x10000);
-            if (cases[n].valid) {
-                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
-                g_assert_cmphex(pixel_read(s, pixel_address(0, 0, 0, 4), 4),
-                    ==, clipped ? c.old : cases[n].color * 0x01010101U);
-            } else {
-                pipeline_failure(s, &c, path, DE + 0x8ec, cases[n].start, 4);
-            }
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            g_assert_cmphex(pixel_read(s, pixel_address(0, 0, 0, 4), 4),
+                ==, clipped ? c.old : cases[n].color * 0x01010101U);
         }
     }
     qtest_quit(s);
-    g_unlink(path);
-    g_rmdir(dir);
 }
 
 static void test_pipeline_transactions(void)
@@ -14809,6 +14800,469 @@ static void test_texture_start_profiles(void)
     }
 }
 
+static unsigned shade_modular_reference(int64_t value)
+{
+    const int64_t modulus = INT64_C(1) << 21;
+    int64_t residue = value % modulus;
+    if (residue < 0) {
+        residue += modulus;
+    }
+    if (residue >= modulus / 2) {
+        residue -= modulus;
+    }
+    return CLAMP(residue / 4096 - (residue % 4096 < 0), 0, 255);
+}
+
+static uint32_t shade_modular_color(const int *start, const int *dx,
+                                    const int *dy, int ax, int ay, int x, int y)
+{
+    uint32_t color = 0;
+
+    for (unsigned k = 0; k < 4; k++) {
+        int64_t value = start[k] + (int64_t)dx[k] * (x - ax) +
+                        (int64_t)dy[k] * (y - ay);
+
+        color |= shade_modular_reference(value) << (24 - 8 * k);
+    }
+    return color;
+}
+
+static void test_shade_iteration_boundaries(void)
+{
+    const int integers[] = {
+        -256, -129, -128, -127, -1, 0, 127, 128, 255, 256, 382, 383, 384,
+    };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(integers); n++) {
+        for (int neighbor = -1; neighbor <= 1; neighbor++) {
+            for (unsigned axis = 0; axis < 3; axis++) {
+                Shape c = pipeline_prepare(s, 0x228, 0);
+                int start[4], dx[4], dy[4];
+                uint32_t expected[16];
+
+                for (unsigned k = 0; k < 4; k++) {
+                    start[k] = integers[n] * 4096 + neighbor;
+                    dx[k] = axis != 1 ? (k & 1 ? -1 : 1) : 0;
+                    dy[k] = axis != 0 ? (k & 2 ? -1 : 1) : 0;
+                }
+                pipeline_shade(s, start, dx, dy);
+                qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x10000);
+                for (unsigned y = 0; y < 4; y++) {
+                    for (unsigned x = 0; x < 4; x++) {
+                        expected[4 * y + x] =
+                            shade_modular_color(start, dx, dy, 0, 0, x, y);
+                    }
+                }
+                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+                shape_memory(s, &c, expected);
+            }
+        }
+    }
+    /* The selected clamp deliberately disagrees with the two-bit decoder. */
+    for (unsigned n = 0; n < ARRAY_SIZE(integers); n++) {
+        int v = integers[n];
+        unsigned bits = v & 511;
+        unsigned decoder = bits & 256 ? (bits & 128 ? 0 : 255) : bits;
+        unsigned selected = shade_modular_reference((int64_t)v * 4096);
+
+        if ((v >= -256 && v <= -129) || (v >= 256 && v <= 383)) {
+            g_assert_cmpuint(selected, ==, 0);
+            g_assert_cmpuint(decoder, ==, 255);
+        } else {
+            g_assert_cmpuint(selected, ==, decoder);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_shade_iteration_periods(void)
+{
+    const int vertex[3][2] = { {0, 0}, {1024 * 64, 0}, {0, 2 * 64} };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned reversed = 0; reversed < 2; reversed++) {
+        Shape c = pipeline_prepare(s, 0x228, 0);
+        int start[] = {1048575, -1048576, 12345, -67890};
+        int dx[] = {4096, -4096, 8192, -8192};
+        int dy[] = {-12288, 16384, -20480, 24576};
+        uint32_t expected[2048];
+
+        c.width = 1024;
+        c.height = 2;
+        map_region(s, 0, 4, 0, 0, 1023, 1);
+        shape_memory(s, &c, NULL);
+        if (reversed) {
+            for (unsigned k = 0; k < 4; k++) {
+                dx[k] = -dx[k];
+                dy[k] = -dy[k];
+            }
+        }
+        pipeline_shade(s, start, dx, dy);
+        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x10000);
+        for (unsigned v = 0; v < 3; v++) {
+            qtest_writel(s, DE + 0x80 + 8 * v, vertex[v][0]);
+            qtest_writel(s, DE + 0x84 + 8 * v, vertex[v][1]);
+        }
+        for (unsigned y = 0; y < 2; y++) {
+            int64_t stepped[4];
+
+            for (unsigned k = 0; k < 4; k++) {
+                stepped[k] = start[k] + (int64_t)dy[k] * y;
+            }
+            for (unsigned x = 0; x < 1024; x++) {
+                uint32_t color = 0;
+
+                for (unsigned k = 0; k < 4; k++) {
+                    color |= shade_modular_reference(stepped[k]) <<
+                             (24 - 8 * k);
+                    stepped[k] = (stepped[k] + dx[k]) % (1 << 21);
+                }
+                g_assert_cmphex(color, ==,
+                    shade_modular_color(start, dx, dy, 0, 0, x, y));
+                expected[1024 * y + x] = x < (y ? 512 : 1024) ? color : c.old;
+            }
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+}
+
+static void test_shade_iteration_capture(void)
+{
+    const int vertices[3][2] = {
+        {37932, 32491}, {37583, 32810}, {37732, 33261},
+    };
+    const uint8_t rows[16] = {
+        0, 0, 0, 0x40, 0x60, 0x30, 0x3c, 0x3c,
+        0x3c, 0x18, 0x18, 0x18, 0x18, 0, 0, 0,
+    };
+    const int starts[] = {0x001001b2, 53 * 4096, 121 * 4096, 189 * 4096};
+    const int dx[] = {-2057, 0, 0, 0}, dy[] = {-4637, 0, 0, 0};
+    QTestState *s = start_indexed_state();
+    Shape c = triangle_prepare(s, 0, 586, 506);
+    uint32_t expected[128];
+    unsigned covered = 0;
+    int64_t minimum = INT64_MAX, maximum = INT64_MIN;
+
+    c.height = 16;
+    map_region(s, 0, 4, c.x, c.y, c.x + 7, c.y + 15);
+    shape_memory(s, &c, NULL);
+    triangle_vertices(s, vertices, NULL, true);
+    pipeline_shade(s, starts, dx, dy);
+    qtest_writel(s, DE + 0x60, 0x02030000);
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x10000);
+    for (unsigned y = 0; y < 16; y++) {
+        for (unsigned x = 0; x < 8; x++) {
+            int64_t wide = -1048142 -
+                INT64_C(2057) * ((int64_t)c.x + x - 592) -
+                INT64_C(4637) * ((int64_t)c.y + y - 507);
+            bool inside = rows[y] & (1U << x);
+            expected[8 * y + x] = inside ?
+                shade_modular_reference(wide) << 24 | 0x3579bd : c.old;
+            if (inside) {
+                int64_t iterated = wide + (INT64_C(1) << 21);
+
+                minimum = MIN(minimum, iterated);
+                maximum = MAX(maximum, iterated);
+            }
+            covered += inside;
+        }
+    }
+    g_assert_cmpuint(covered, ==, 25);
+    g_assert_cmpint(minimum, ==, 1002117);
+    g_assert_cmpint(maximum, ==, 1039736);
+    g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, 0), ==, MEMTX_OK);
+    shape_memory(s, &c, expected);
+    g_assert_cmphex(pixel_read(s, pixel_address(0, 592, 509, 4), 4), ==,
+                    0xfd3579bd);
+    qtest_quit(s);
+}
+
+static void test_shade_iteration_invariants(void)
+{
+    const int vertices[3][2] = {
+        {37932, 32491}, {37583, 32810}, {37732, 33261},
+    };
+    const uint8_t rows[16] = {
+        0, 0, 0, 0x40, 0x60, 0x30, 0x3c, 0x3c,
+        0x3c, 0x18, 0x18, 0x18, 0x18, 0, 0, 0,
+    };
+    const int base[] = {-1048142, 1048142, -1048576, 1048575};
+    const int dx[] = {-2057, 2057, -524289, 524289};
+    const int dy[] = {-4637, 4637, 700001, -700001};
+    QTestState *s = start_indexed_state();
+
+    for (unsigned direction = 0; direction < 4; direction++) {
+        for (unsigned winding = 0; winding < 2; winding++) {
+            for (unsigned origin = 0; origin < 2; origin++) {
+                for (unsigned suppression = 0; suppression < 5; suppression++) {
+                    Shape c = triangle_prepare(s, 0, 586, 506);
+                    unsigned order[] = {0, winding ? 2 : 1, winding ? 1 : 2};
+                    unsigned anchor = order[direction & 2 ? 0 : 2];
+                    unsigned draw = TRIANGLE_DRAW | 0x10000;
+                    uint32_t plane = UINT32_MAX, expected[128];
+                    int loaded[4];
+                    int o = origin ? -4097 : -4096;
+                    int shifted[3][2];
+                    int ax = vertices[anchor][0] / 64;
+                    int ay = vertices[anchor][1] / 64;
+
+                    c.height = 16;
+                    map_region(s, 0, 4, c.x, c.y, c.x + 7, c.y + 15);
+                    shape_memory(s, &c, NULL);
+                    for (unsigned v = 0; v < 3; v++) {
+                        for (unsigned a = 0; a < 2; a++) {
+                            shifted[v][a] = vertices[v][a] - 64 * (o + 4096);
+                        }
+                    }
+                    triangle_vertices(s, shifted, order, true);
+                    qtest_writel(s, DE + 0x58, xy((uint16_t)o, (uint16_t)o));
+                    for (unsigned k = 0; k < 4; k++) {
+                        loaded[k] = base[k] + dx[k] * (ax - 592) +
+                                    dy[k] * (ay - 507);
+                    }
+                    pipeline_shade(s, loaded, dx, dy);
+                    qtest_writel(s, DE + 0x60, 0x02000000 | direction << 16);
+                    if (suppression == 1) {
+                        draw |= 1U << 20;
+                        qtest_writeq(s, DE + 0x48,
+                            bounds(589 - o, 512 - o, 592 - o, 519 - o));
+                    } else if (suppression == 2) {
+                        draw &= ~0x28U;
+                    } else if (suppression == 3) {
+                        draw |= 0x80;
+                        plane = 0xa5379b6d;
+                        qtest_writel(s, DE + 0x1b8, plane);
+                    } else if (suppression == 4) {
+                        uint64_t addr = RE + 0x1000 + (68 / 4) * 8;
+                        uint64_t value = qtest_readq(s, addr);
+
+                        qtest_writeq(s, addr,
+                                     value & ~(UINT64_C(0xffff) << 48));
+                    }
+                    qtest_writel(s, DE + 0x18, draw);
+                    for (unsigned y = 0; y < 16; y++) {
+                        for (unsigned x = 0; x < 8; x++) {
+                            unsigned px = c.x + x, py = c.y + y;
+                            bool inside = rows[y] & (1U << x);
+                            uint32_t color = shade_modular_color(
+                                base, dx, dy, 592, 507, px, py);
+
+                            inside &= suppression != 1 ||
+                                (px >= 589 && px < 592 &&
+                                 py >= 512 && py < 519);
+                            inside &= suppression != 4 || py < 512;
+                            expected[8 * y + x] = inside ?
+                                pipeline_reference(0x228, color, c.old, 0,
+                                    0x45, draw, 3, plane, px, py) : c.old;
+                        }
+                    }
+                    g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, 0),
+                                    ==, MEMTX_OK);
+                    shape_memory(s, &c, expected);
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_shade_iteration_raw(void)
+{
+    const int starts[] = {1048575, -1048576, 12345, -67890};
+    const int dx[] = {1, -1, 524289, -524289};
+    const int dy[] = {1, -1, -700001, 700001};
+    g_autofree char *dir = g_dir_make_tmp("crime-shade-raw-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned word = 0; word < 12; word++) {
+        for (unsigned prospective = 0; prospective < 2; prospective++) {
+            Shape c = pipeline_prepare(s, 0x228, 0);
+            uint32_t expected[16];
+            uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+            unsigned offset = 0xe0 + 4 * word;
+            uint32_t raw;
+
+            pipeline_shade(s, starts, dx, dy);
+            qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x10200);
+            qtest_writel(s, DE + 0x1b0, 6);
+            save_paired_renderer(s, path, before);
+            raw = before[192 + offset / 4];
+            /* Change one complete raw word while preserving its low 21 bits. */
+            raw += 1U << 21;
+            g_assert_cmpint(memtx_writel(s,
+                DE + offset + (prospective ? 0x800 : 0), raw), ==, MEMTX_OK);
+            if (!prospective) {
+                for (unsigned n = 0; n < 16; n++) {
+                    expected[n] = c.old;
+                }
+                shape_memory(s, &c, expected);
+                g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, 0), ==, MEMTX_OK);
+            }
+            for (unsigned y = 0; y < 4; y++) {
+                for (unsigned x = 0; x < 4; x++) {
+                    expected[4 * y + x] = c.old ^
+                        shade_modular_color(starts, dx, dy, 0, 0, x, y);
+                }
+            }
+            shape_memory(s, &c, expected);
+            save_paired_renderer(s, path, after);
+            before[192 + offset / 4] = raw;
+            g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+            qtest_readl(s, STATUS);
+            qtest_writel(s, DE + 0x1f0, 0);
+            shape_memory(s, &c, expected);
+            g_assert_cmpint(memtx_writel(s, DE + 0x800 + offset, raw),
+                            ==, MEMTX_OK);
+            for (unsigned n = 0; n < 16; n++) {
+                expected[n] = c.old;
+            }
+            shape_memory(s, &c, expected);
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_shade_iteration_rollback(void)
+{
+    const int starts[] = {1048575, -1048576, 12345, -67890};
+    const int dx[] = {1, -1, 524289, -524289};
+    const int dy[] = {1, -1, -700001, 700001};
+    g_autofree char *dir = g_dir_make_tmp("crime-shade-rollback-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = texture_start_machine();
+
+    for (unsigned failure = 0; failure < 10; failure++) {
+        Shape c = texture_start_prepare(s);
+        unsigned draw = TRIANGLE_DRAW | 0x10000;
+
+        pipeline_shade(s, starts, dx, dy);
+        if (failure == 1) {
+            qtest_writel(s, DE + 8, 0x234);
+        } else if (failure == 2) {
+            tile(s, 0, 0, 0x7fff);
+        } else if (failure == 3) {
+            const int vertices[3][2] = {
+                {8128, 64}, {8384, 64}, {8128, 320},
+            };
+
+            c.x = 126;
+            map_region(s, 0, 4, 126, 0, 133, 7);
+            shape_memory(s, &c, NULL);
+            triangle_vertices(s, vertices, NULL, true);
+            tile(s, 0, 1, 0x7fff);
+        } else if (failure == 4 || failure == 5) {
+            draw |= 0x8000;
+            if (failure == 4) {
+                qtest_writeq(s, RE + 0x1600 + (93 / 4) * 8, 0);
+            } else {
+                texture_constant(s);
+                qtest_writeq(s, DE + 0x118, texture_format(8, 0));
+                qtest_writel(s, DE + 0x110, (2U << 20) | (2U << 18) |
+                    (2U << 14) | (8U << 10) | (2U << 4) | (2U << 2) | 3U);
+                qtest_writeq(s, DE + 0x120, (UINT64_C(765) << 34) + 0x800);
+                qtest_writeq(s, DE + 0x138, UINT64_C(1) << 35);
+                qtest_writeq(s, RE + 0x1600 + (80 / 4) * 8,
+                             UINT64_C(0x800a) << 48);
+                qtest_writel(s, 0xa01f8, 0x2371b9d5);
+                qtest_writel(s, 0xa01fc, 0x91b3d5f7);
+            }
+        }
+        if (failure == 0 || failure >= 6) {
+            draw |= 0x400;
+            qtest_writel(s, DE + 0x1a8, 0x1000);
+        }
+        if (failure == 6) {
+            draw |= 0x100000;
+            qtest_writeq(s, DE + 0x48, bounds(0, 0, 0, 0));
+        } else if (failure == 7) {
+            draw &= ~0x78U;
+        } else if (failure == 8) {
+            qtest_writeq(s, RE + 0x1000, 0);
+        } else if (failure == 9) {
+            const int vertex[3][2] = { {64, 64}, {64, 64}, {64, 64} };
+
+            triangle_vertices(s, vertex, NULL, true);
+        }
+        qtest_writel(s, DE + 0x18, draw);
+        g_test_message("failure %u", failure);
+        texture_start_failure(s, &c, path, DE + 0x8e0,
+                              (uint32_t)starts[0] + (1U << 21), 4, false);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_shade_iteration_migration(void)
+{
+    const int starts[] = {1048575, -1048576, 12345, -67890};
+    const int dx[] = {1, -1, 524289, -524289};
+    const int dy[] = {1, -1, -700001, 700001};
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-shade-mod-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *from = start(), *to = start_options("-incoming defer");
+    Shape c = pipeline_prepare(from, 0x228, 0);
+    uint32_t expected[16];
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+
+    pipeline_shade(from, starts, dx, dy);
+    qtest_writel(from, DE + 0x18, TRIANGLE_DRAW | 0x10200);
+    qtest_writel(from, DE + 0x1b0, 6);
+    save_paired_renderer(from, path, before);
+    for (unsigned word = 0; word < 12; word++) {
+        unsigned index = 192 + (0xe0 + 4 * word) / 4;
+
+        before[index] = (uint32_t)before[index] ^ 0xa5e00000U;
+        qtest_writel(from, DE + 0xe0 + 4 * word, before[index]);
+    }
+    g_assert_cmpint(memtx_writeq(from, DE + 0x9c8, 0), ==, MEMTX_OK);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            expected[4 * y + x] = c.old ^
+                shade_modular_color(starts, dx, dy, 0, 0, x, y);
+        }
+    }
+    shape_memory(from, &c, expected);
+    save_paired_renderer(from, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    save_paired_renderer(to, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    shape_memory(to, &c, expected);
+    qtest_readl(to, STATUS);
+    qtest_writel(to, DE + 0x1f0, 0);
+    shape_memory(to, &c, expected);
+    g_assert_cmpint(memtx_writel(to, DE + 0x8e0, before[192 + 0xe0 / 4]),
+                    ==, MEMTX_OK);
+    for (unsigned n = 0; n < 16; n++) {
+        expected[n] = c.old;
+    }
+    shape_memory(to, &c, expected);
+    qtest_system_reset(to);
+    shape_memory(to, &c, expected);
+    save_renderer(to, path, after);
+    for (unsigned word = 0; word < 12; word++) {
+        g_assert_cmphex(after[192 + (0xe0 + 4 * word) / 4], ==, 0);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(sock);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 static void test_shade_start_family(void)
 {
     g_autofree char *dir = g_dir_make_tmp("crime-shade-start-XXXXXX", NULL);
@@ -15323,5 +15777,19 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(7), test_texture_start_rollback);
     add_data_case("sgi/crime/render/texture-start/rollback/8",
                   GUINT_TO_POINTER(8), test_texture_start_rollback);
+    add_case("sgi/crime/render/shade-iteration/capture",
+             test_shade_iteration_capture);
+    add_case("sgi/crime/render/shade-iteration/boundaries",
+             test_shade_iteration_boundaries);
+    add_case("sgi/crime/render/shade-iteration/periods",
+             test_shade_iteration_periods);
+    add_case("sgi/crime/render/shade-iteration/invariants",
+             test_shade_iteration_invariants);
+    add_case("sgi/crime/render/shade-iteration/raw",
+             test_shade_iteration_raw);
+    add_case("sgi/crime/render/shade-iteration/rollback",
+             test_shade_iteration_rollback);
+    add_case("sgi/crime/render/shade-iteration/migration",
+             test_shade_iteration_migration);
     return g_test_run();
 }

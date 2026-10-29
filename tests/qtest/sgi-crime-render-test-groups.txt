@@ -283,3 +283,10 @@ texture-start-rollback5 /mips64/sgi/crime/render/texture-start/rollback/5
 texture-start-rollback6 /mips64/sgi/crime/render/texture-start/rollback/6
 texture-start-rollback7 /mips64/sgi/crime/render/texture-start/rollback/7
 texture-start-rollback8 /mips64/sgi/crime/render/texture-start/rollback/8
+shade-iteration-capture /mips64/sgi/crime/render/shade-iteration/capture
+shade-iteration-boundaries /mips64/sgi/crime/render/shade-iteration/boundaries
+shade-iteration-periods /mips64/sgi/crime/render/shade-iteration/periods
+shade-iteration-invariants /mips64/sgi/crime/render/shade-iteration/invariants
+shade-iteration-raw /mips64/sgi/crime/render/shade-iteration/raw
+shade-iteration-rollback /mips64/sgi/crime/render/shade-iteration/rollback
+shade-iteration-migration /mips64/sgi/crime/render/shade-iteration/migration

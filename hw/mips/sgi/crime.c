@@ -2106,7 +2106,7 @@ static MemTxResult crime_render_execute_plan(hwaddr offset,
     return MEMTX_OK;
 }
 
-/* Ideal clamp and no-wrap remain functional policies. */
+/* Modular iteration and ideal signed clamp are functional policies. */
 static bool crime_triangle_shade(const uint64_t *p,
                                   const CrimeRenderGeometry *g,
                                   int x, int y, uint32_t *color)
@@ -2123,9 +2123,7 @@ static bool crime_triangle_shade(const uint64_t *p,
                         b * (y - g->shade_anchor[1]);
         int64_t component;
 
-        if (value < -(1 << 20) || value >= (1 << 20)) {
-            return false;
-        }
+        value = sextract64((uint64_t)value, 0, 21);
         component = value / 4096 - (value % 4096 < 0);
         *color |= CLAMP(component, 0, 255) << (24 - 8 * k);
     }
