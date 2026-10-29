@@ -59,9 +59,15 @@ SGIKonaGLDecodeResult sgi_kona_gl_decode(const uint32_t *words, size_t nwords,
         return SGI_KONA_GL_DECODE_TRUNCATED;
     }
 
-    cmd->selector = words[0];
+    /*
+     * The byte and short attribute forms carry data in bits 16 to 31 of
+     * the selector word, so the selector is the low half (established for
+     * the forms read; that no selector is wider is inferred).
+     */
+    cmd->selector = words[0] & SGI_KONA_GL_SELECTOR_MASK;
+    cmd->packed = words[0] & ~SGI_KONA_GL_SELECTOR_MASK;
     cmd->length = 1;
-    info = sgi_kona_gl_lookup(words[0]);
+    info = sgi_kona_gl_lookup(cmd->selector);
     cmd->info = info;
     if (!info) {
         return SGI_KONA_GL_DECODE_UNKNOWN_SELECTOR;
