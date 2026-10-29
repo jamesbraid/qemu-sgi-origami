@@ -3384,6 +3384,80 @@ static void test_rad_clock_migration(void)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
+/*
+ * The sweep a guest tone player would make, at the card: 2.0 s of a square
+ * wave at each IRIX rate, captured through the wav backend. The capture is
+ * always 44.1 kHz, so a card that paced its frames at the programmed rate but
+ * handed the host voice the wrong rate would show in the capture's length, and
+ * one that played at 44.1 kHz whatever was programmed would show in its pitch.
+ * The ring is IRIX's 512 frames and holds 16 cycles, so the pitch is the
+ * programmed rate over 32.
+ */
+static void octane_rad_tone_capture(uint32_t rate, uint32_t ctl, uint32_t rem)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *wav = NULL;
+    QTestState *qts;
+    gsize length;
+    int fd = g_file_open_tmp("octane-rad-tone-XXXXXX.wav", &path, NULL);
+    unsigned frames, crossings = 0;
+    double seconds, pitch;
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    quoted = g_shell_quote(path);
+    extra = g_strdup_printf("-audiodev wav,id=radwav,path=%s,"
+                            "out.frequency=44100,out.channels=2,"
+                            "out.format=s16 "
+                            "-global sgi-rad1-octane.audiodev=radwav", quoted);
+    qts = octane_start_args(extra);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    octane_rad_clock_map(qts);
+    for (unsigned i = 0; i < 512; i++) {
+        uint32_t level = (i / 16) % 2 ? 0x4000 : 0xc000;
+
+        qtest_writel(qts, RAM + 0xa000 + i * 8, level << 8);
+        qtest_writel(qts, RAM + 0xa004 + i * 8, level << 8);
+    }
+    octane_rad_cg_load(qts, RAD_CG_OUT_MUX, ctl, rem, 0);
+    octane_rad_clock_start(qts, true, false);
+    qtest_clock_step(qts, 2000000000);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000000);
+    /* Give accepted host samples time to drain. */
+    qtest_clock_step(qts, 100000000);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(path, &wav, &length, NULL));
+    g_assert_cmpuint(length, >, 44);
+    g_assert_cmpuint(ldl_le_p(wav + 24), ==, 44100);
+    frames = (length - 44) / 4;
+    for (unsigned i = 1; i < frames; i++) {
+        bool negative = (int16_t)lduw_le_p(wav + 44 + i * 4) < 0;
+        bool was_negative = (int16_t)lduw_le_p(wav + 44 + (i - 1) * 4) < 0;
+
+        crossings += negative != was_negative;
+    }
+    seconds = frames / 44100.0;
+    pitch = crossings / 2.0 / seconds;
+    g_test_message("rate %u: %.3f s, %.1f Hz", rate, seconds, pitch);
+    g_assert_cmpfloat(seconds, >, 1.9);
+    g_assert_cmpfloat(seconds, <, 2.1);
+    g_assert_cmpfloat(pitch, >, rate / 32.0 * 0.97);
+    g_assert_cmpfloat(pitch, <, rate / 32.0 * 1.03);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+static void test_rad_tone_sweep(void)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(octane_rad_irix_clocks); i++) {
+        octane_rad_tone_capture(octane_rad_irix_clocks[i].rate,
+                                octane_rad_irix_clocks[i].ctl,
+                                octane_rad_irix_clocks[i].rem);
+    }
+}
+
 static void octane_rad_aes_subcode_program(QTestState *qts, uint64_t base,
                                            uint32_t ctrl)
 {
@@ -5734,6 +5808,7 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rad-clock-midstream", test_rad_clock_midstream);
     qtest_add_func("/octane/rad-clock-reset", test_rad_clock_reset);
     qtest_add_func("/octane/rad-clock-migration", test_rad_clock_migration);
+    qtest_add_func("/octane/rad-tone-sweep", test_rad_tone_sweep);
     qtest_add_func("/octane/rad-aes-subcode", test_rad_aes_subcode);
     qtest_add_func("/octane/rad-status-continuous", test_rad_status_continuous);
     qtest_add_func("/octane/rad-status-overrun", test_rad_status_overrun);
