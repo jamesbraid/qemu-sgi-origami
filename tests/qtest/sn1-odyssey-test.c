@@ -14361,6 +14361,51 @@ static void test_texture_lod_bias(void)
     board_quit(qts);
 }
 
+/*
+ * An 8x8 image, red in columns 0-3 and green in 4-7, sampled nearest at
+ * S = 0.9. Sampler word 1 bits 16:0 hold the S maximum clamp in whole
+ * texels (8 for the default 1.0). Under GL_CLAMP a clamp of 3 limits S to
+ * 3/8, red; under GL_REPEAT the extension ignores it, green.
+ */
+static uint32_t max_clamp_point(QTestState *qts, int x, uint32_t wrap,
+                                uint32_t clamp_s)
+{
+    const uint32_t sampler[] = {
+        0x00011c16, 0x08000c60, clamp_s, 8, 1,
+        0x13000000 | wrap << 12 | wrap << 10, 0, 0,
+    };
+
+    push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+    odsy_test_pixel_write(qts, x, 10, 0x12345678);
+    texture_adapter_point(qts, x, 10, 0.9f, 0.5f);
+    return odsy_test_pixel(qts, x, 10);
+}
+
+static void test_texture_max_clamp(void)
+{
+    const uint32_t red = 0xff0000ff, green = 0x00ff00ff;
+    const uint32_t binding[] = {
+        0x00010405, 0x10,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, 0x180000, 0x41100002, 0,
+        0x00010406, 0,
+        0x00011013, 0, 0, 0, 0,
+    };
+    uint32_t pixels[64];
+    QTestState *qts = board_start("");
+
+    for (unsigned i = 0; i < ARRAY_SIZE(pixels); i++) {
+        pixels[i] = i % 8 < 4 ? red : green;
+    }
+    texture_adapter_upload_3d_slice(qts, 0x180000, pixels, 8, 8);
+    texture_adapter_window(qts);
+    push_user_words(qts, binding, ARRAY_SIZE(binding));
+    g_assert_cmphex(max_clamp_point(qts, 10, 2, 8), ==, green);
+    g_assert_cmphex(max_clamp_point(qts, 11, 2, 3), ==, red);
+    g_assert_cmphex(max_clamp_point(qts, 12, 0, 3), ==, green);
+    board_quit(qts);
+}
+
 static void test_texture_chain_explicit_level(void)
 {
     QTestState *qts = board_start("");
@@ -22674,6 +22719,8 @@ int main(int argc, char **argv)
              test_texture_chain_integer_quads);
     add_case("sn1/odyssey/texture-adapter/lod-bias",
              test_texture_lod_bias);
+    add_case("sn1/odyssey/texture-adapter/max-clamp",
+             test_texture_max_clamp);
     add_case("sn1/odyssey/texture-adapter/one-dimensional-mode",
              test_texture_one_dimensional_mode);
     /*

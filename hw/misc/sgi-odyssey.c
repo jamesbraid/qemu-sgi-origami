@@ -6070,6 +6070,46 @@ static void odyssey_texture_lod_bias(const SGIOdysseyState *s,
     image->lod_scale_t = bias_t ? exp2((double)bias_t / ODSY_TEX_LOD_ONE) : 0;
 }
 
+/*
+ * Sampler words 1 and 2, bits 16:0, hold each axis's maximum clamp in whole
+ * texels of the base level: the library writes trunc(2^log2size *
+ * GL_TEXTURE_MAX_CLAMP_*_SGIX), so the default 1.0 gives the size itself
+ * (ESTABLISHED as the library's setter). The model has read the field as
+ * the size; a smaller value under GL_CLAMP (wrap 2) now clamps that axis's
+ * coordinate to value / size, as GL_SGIX_texture_coordinate_clamp defines
+ * it, and the size comes from word 0's log2 field instead. That the board
+ * applies it only under GL_CLAMP, and at every level as the same fraction
+ * of the image, is INFERRED from the extension. Under other wraps a smaller
+ * value is ignored, as the extension specifies. A value above the size
+ * cannot come from the library and is left to fail the size check.
+ * Limitation: the R axis's clamp (word 3) is not applied; a volume whose
+ * word 3 is below its depth stays unsupported.
+ */
+static void odyssey_texture_max_clamp(SGIGLTexImage *image,
+                                      uint32_t sampler_size, uint32_t ws,
+                                      uint32_t wt, uint32_t *width,
+                                      uint32_t *height)
+{
+    uint32_t span_s = 1u << ((sampler_size >> 10) & 31);
+    uint32_t span_t = 1u << ((sampler_size >> 5) & 31);
+
+    image->max_clamp_s = image->max_clamp_t = image->max_clamp_r = 1;
+    if (*width < span_s) {
+        if (ws == 2) {
+            image->max_clamp = true;
+            image->max_clamp_s = (double)*width / span_s;
+        }
+        *width = span_s;
+    }
+    if (*height < span_t) {
+        if (wt == 2) {
+            image->max_clamp = true;
+            image->max_clamp_t = (double)*height / span_t;
+        }
+        *height = span_t;
+    }
+}
+
 static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                                    OdysseyTextureChain *chain,
                                    const SGIGLTexImage **resolved)
@@ -6192,6 +6232,10 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         if ((height_word >> 16) == (wt == 1 ? 0x4u : 0)) {
             height &= 0xffff;
         }
+    }
+    if (!detail_identity) {
+        odyssey_texture_max_clamp(image, sampler_size, ws, wt, &width,
+                                  &height);
     }
     if (odyssey_gl_index_mode(s)) {
         goto unsupported;
