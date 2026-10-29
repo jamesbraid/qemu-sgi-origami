@@ -19082,11 +19082,18 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
  * Such a store delivers the high word, then the low word, each exactly as a
  * 4-byte store at offset 0.
  *
- * Approximated: a doubleword at offset 0 can also open a command with its high
- * word, which the helpers never make it do, and no evidence says how the pipe
- * treats one. The doubleword data qtest (A:B inside an open load counts as A
- * then B) checks the split; a guest run whose X server reaches those helpers
- * would check it in use.
+ * The IRIX GL client library's vector senders store the same way at any
+ * stream position: glRasterPos2sv sends its selector and then x << 32 | y
+ * as one doubleword where glRasterPos2s sends x and y as two words, and
+ * glColor3fv sends its selector, red and green as one doubleword, then
+ * blue. The two forms of each call must mean the same, so a doubleword is
+ * two words, high word first, wherever it falls (inferred from those
+ * senders; how the host interface carries the wide store is unknown).
+ *
+ * Approximated: a doubleword whose high word opens a command opens it as a
+ * plain word would; no sender read does that, and no evidence says how the
+ * pipe treats one. The doubleword data qtest (A:B inside an open load
+ * counts as A then B) and the 3D qtest of the vector forms check the split.
  *
  * The register file itself is word-sized. Any other 8-byte access is
  * split into two 4-byte accesses at the address and the address plus 4,
