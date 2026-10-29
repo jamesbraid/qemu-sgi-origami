@@ -1611,6 +1611,7 @@ F: tests/qtest/board-test-fixture.c
 F: tests/qtest/ioc3-release-fixture.c
 F: tests/qtest/xio-test-board.c
 F: tests/qtest/xbridge-assembly-fixture.c
+F: tests/unit/test-crime-texture.c
 F: tests/unit/test-sgi-dma.c
 F: tests/bench/sgi-raster-bench.c
 F: tests/unit/test-sgi-kona-*.c
