@@ -5,7 +5,7 @@
  * The default 1.5 interface has an explicit legacy software alternative.
  * An opt-in standalone profile decodes eight logical 128 MiB RAM banks.
  * An opt-in synchronous linear transfer approximation uses healthy RAM.
- * The legacy profile includes synchronous 2D and bounded flat GL triangles.
+ * The legacy profile includes synchronous 2D and bounded GL color/SZ commands.
  * Physical ECC, watchdog and VICE are not modeled.
  * Unsupported register operations fail visibly.
  */
@@ -18,6 +18,9 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qemu/bswap.h"
+#include "qemu/bitops.h"
+#include "qemu/host-utils.h"
+#include "fpu/softfloat.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
@@ -433,6 +436,9 @@ typedef struct CrimeRenderPixel {
     uint64_t destination_id;
     uint32_t mask;
     uint32_t color;
+    unsigned x, y;
+    uint64_t sz_address, sz_identity;
+    uint32_t sz_value, sz_mask;
 } CrimeRenderPixel;
 
 typedef enum CrimeRenderTranslation {
@@ -531,16 +537,20 @@ static bool crime_render_validate(CrimeRenderPixel *pixels, unsigned count,
 {
     g_autofree uint32_t *order = g_new(uint32_t, count);
 
+    unsigned enabled = 0;
+
     *overlap = false;
     if (!count) {
         return true;
     }
     for (unsigned i = 0; i < count; i++) {
-        order[i] = i;
+        if (pixels[i].mask) {
+            order[enabled++] = i;
+        }
     }
-    g_qsort_with_data(order, count, sizeof(*order),
+    g_qsort_with_data(order, enabled, sizeof(*order),
                       crime_render_compare_destination, pixels);
-    for (unsigned i = 0; i < count; i++) {
+    for (unsigned i = 0; i < enabled; i++) {
         CrimeRenderPixel *p = &pixels[order[i]];
 
         for (unsigned j = i; j > 0; j--) {
@@ -562,20 +572,20 @@ static bool crime_render_validate(CrimeRenderPixel *pixels, unsigned count,
             }
         }
         if (check_overlap) {
-            unsigned lo = 0, hi = count;
+            unsigned lo = 0, hi = enabled;
 
             while (lo < hi) {
                 unsigned mid = lo + (hi - lo) / 2;
                 uint64_t destination = pixels[order[mid]].destination_id;
 
-                if (destination < pixels[i].source_id) {
+                if (destination < p->source_id) {
                     lo = mid + 1;
                 } else {
                     hi = mid;
                 }
             }
-            if (lo < count && pixels[order[lo]].destination_id ==
-                              pixels[i].source_id) {
+            if (lo < enabled && pixels[order[lo]].destination_id ==
+                              p->source_id) {
                 *overlap = true;
             }
         }
@@ -719,6 +729,7 @@ typedef struct CrimeRenderGeometry {
     int x0, y0, x1, y1, dx, dy, lower;
     bool xmajor;
     int64_t vertex[3][2];
+    int shade_anchor[2];
 } CrimeRenderGeometry;
 
 
@@ -744,6 +755,389 @@ static bool crime_render_gl_field(uint64_t raw, int64_t *field)
     return true;
 }
 
+#define CRIME_LINE_SCALE (INT64_C(1) << 20)
+
+typedef struct CrimeGLLine {
+    int64_t vertex[2][2];
+    int64_t p[2], q[2], u, v, j14, k0, slope;
+    float64 normal;
+    unsigned width;
+    bool xmajor, aa, empty;
+} CrimeGLLine;
+
+static int64_t crime_line_floor(int64_t value, int64_t divisor)
+{
+    return value / divisor - (value % divisor < 0);
+}
+
+static uint64_t crime_line_gcd(uint64_t a, uint64_t b)
+{
+    while (b) {
+        uint64_t r = a % b;
+
+        a = b;
+        b = r;
+    }
+    return a;
+}
+
+static Int128 crime_line_product(int64_t a, int64_t b)
+{
+    uint64_t low, high;
+
+    muls64(&low, &high, a, b);
+    return int128_make128(low, high);
+}
+
+static bool crime_line_constant(Int128 value, int64_t *result)
+{
+    if (!int128_gt(value, int128_makes64(-(INT64_C(1) << 54))) ||
+        !int128_lt(value, int128_makes64(INT64_C(1) << 54))) {
+        return false;
+    }
+    *result = (int64_t)int128_getlo(value);
+    return true;
+}
+
+static bool crime_gl_line_state(const uint64_t *p, CrimeGLLine *line)
+{
+    uint32_t primitive = p[0x60 / 4];
+    uint32_t aa = p[0x190 / 4], cov = p[0x194 / 4];
+    int64_t dx, dy;
+    float_status fs = { 0 };
+
+    if ((primitive >> 24) != 1 || (primitive & 0x00f80000) ||
+        !(p[0x18 / 4] & 0x400000)) {
+        return false;
+    }
+    for (unsigned v = 0; v < 2; v++) {
+        for (unsigned axis = 0; axis < 2; axis++) {
+            int64_t field;
+            int16_t origin = p[0x58 / 4] >> (axis ? 0 : 16);
+
+            if (!crime_render_gl_field(p[(0x80 + 8 * v + 4 * axis) / 4],
+                                       &field)) {
+                return false;
+            }
+            line->vertex[v][axis] = field + 64 * (int64_t)origin;
+        }
+    }
+    dx = line->vertex[1][0] - line->vertex[0][0];
+    dy = line->vertex[1][1] - line->vertex[0][1];
+    line->xmajor = llabs(dx) >= llabs(dy);
+    line->aa = p[0x18 / 4] & 0x1000;
+    line->empty = !dx && !dy;
+    line->width = MAX(1, ((primitive & 0xffff) + 16) / 32);
+    if (!line->aa) {
+        return true;
+    }
+    line->slope = (int16_t)(aa >> 16);
+    if (line->slope < -16384 || line->slope > 16384 ||
+        (cov & ~0x7f7fU) || !(cov & 127) || (cov & 127) > 64 ||
+        !((cov >> 8) & 127) || ((cov >> 8) & 127) > 64) {
+        return false;
+    }
+    if (line->empty) {
+        return true;
+    }
+    {
+        unsigned major = line->xmajor ? 0 : 1, minor = 1 - major;
+        int64_t a = line->vertex[0][major], b = line->vertex[1][major];
+        int d = b > a ? 1 : -1;
+        int16_t origin = p[0x58 / 4] >> (minor ? 0 : 16);
+        int64_t k1, start, end, reference, base, k, remainder;
+        int64_t delta[2], divisor, r;
+        unsigned cs = (cov >> 8) & 127, ce = cov & 127;
+
+        line->k0 = d * crime_line_floor(d * a + 32, 64);
+        k1 = d * (-crime_line_floor(-(d * b + 32), 64) - 1);
+        start = 64 * line->k0 + d * (32 - (int)cs);
+        end = 64 * k1 + d * ((int)ce - 32);
+        if (d * (end - start) <= 0) {
+            return false;
+        }
+        reference = line->vertex[0][minor] * 16384 +
+                    line->slope * (64 * line->k0 - a);
+        base = 64 * ((aa & 65535) + 16384 * (int64_t)origin);
+        k = crime_line_floor(reference - base, 4194304);
+        remainder = reference - base - k * 4194304;
+        k += remainder * 2 > 4194304;
+        line->j14 = (aa & 65535) + 16384 * (int64_t)origin + 65536 * k;
+        line->p[major] = 16384 * start;
+        line->q[major] = 16384 * end;
+        line->p[minor] = 64 * line->j14 +
+                         line->slope * (start - 64 * line->k0);
+        line->q[minor] = 64 * line->j14 +
+                         line->slope * (end - 64 * line->k0);
+        for (unsigned axis = 0; axis < 2; axis++) {
+            if (llabs(line->p[axis]) >= (INT64_C(1) << 38) ||
+                llabs(line->q[axis]) >= (INT64_C(1) << 38)) {
+                return false;
+            }
+        }
+        if (line->p[0] > line->q[0] ||
+            (line->p[0] == line->q[0] && line->p[1] > line->q[1])) {
+            for (unsigned axis = 0; axis < 2; axis++) {
+                int64_t t = line->p[axis];
+
+                line->p[axis] = line->q[axis];
+                line->q[axis] = t;
+            }
+        }
+        delta[0] = line->q[0] - line->p[0];
+        delta[1] = line->q[1] - line->p[1];
+        divisor = crime_line_gcd(llabs(delta[0]), llabs(delta[1]));
+        line->u = delta[0] / divisor;
+        line->v = delta[1] / divisor;
+        if (llabs(line->u) > 16384 || llabs(line->v) > 16384 ||
+            !crime_line_constant(int128_add(
+                crime_line_product(line->u, line->u),
+                crime_line_product(line->v, line->v)),
+                                 &r) || r <= 0 || r > (INT64_C(1) << 29)) {
+            return false;
+        }
+        set_float_rounding_mode(float_round_nearest_even, &fs);
+        line->normal = float64_sqrt(int64_to_float64(r, &fs), &fs);
+    }
+    return true;
+}
+
+typedef struct CrimeLinePoint {
+    float64 x, y;
+} CrimeLinePoint;
+
+typedef struct CrimeLinePlane {
+    float64 x, y, constant;
+    bool skip;
+} CrimeLinePlane;
+
+static float64 crime_line_evaluate(const CrimeLinePlane *plane,
+                                     CrimeLinePoint p, float_status *fs)
+{
+    float64 a = float64_mul(plane->x, p.x, fs);
+    float64 b = float64_mul(plane->y, p.y, fs);
+
+    return float64_add(float64_add(a, b, fs), plane->constant, fs);
+}
+
+static void crime_line_cap(Int128 constant, int64_t u, int64_t v,
+                             bool *skip, bool *empty)
+{
+    Int128 lo = INT128_MAX, hi = INT128_MIN;
+
+    for (unsigned corner = 0; corner < 4; corner++) {
+        int64_t x = corner & 1 ? CRIME_LINE_SCALE / 2 : -CRIME_LINE_SCALE / 2;
+        int64_t y = corner & 2 ? CRIME_LINE_SCALE / 2 : -CRIME_LINE_SCALE / 2;
+        Int128 value = int128_sub(
+            int128_add(crime_line_product(u, x), crime_line_product(v, y)),
+            constant);
+
+        lo = int128_min(lo, value);
+        hi = int128_max(hi, value);
+    }
+    *skip = int128_nonneg(lo);
+    *empty = int128_le(hi, int128_zero());
+}
+
+static bool crime_gl_line_area(const CrimeGLLine *line, int x, int y,
+                                 float64 *area)
+{
+    int64_t a[2], b[2], ka, kb, h;
+    Int128 ia, ib, ih;
+    CrimeLinePlane planes[4] = { 0 };
+    CrimeLinePoint polygon[12], next[12];
+    unsigned count = 4;
+    float_status fs = { 0 };
+    float64 u, v, fa, fb, fh, total = float64_zero;
+    bool empty;
+
+    *area = float64_zero;
+    if (line->empty) {
+        return true;
+    }
+    if (x <= -(1 << 18) || x >= (1 << 18) ||
+        y <= -(1 << 18) || y >= (1 << 18)) {
+        return false;
+    }
+    set_float_rounding_mode(float_round_nearest_even, &fs);
+    for (unsigned axis = 0; axis < 2; axis++) {
+        int64_t center = (int64_t)(axis ? y : x) * CRIME_LINE_SCALE;
+
+        a[axis] = line->p[axis] - center;
+        b[axis] = line->q[axis] - center;
+        if (llabs(a[axis]) >= (INT64_C(1) << 39) ||
+            llabs(b[axis]) >= (INT64_C(1) << 39)) {
+            return false;
+        }
+    }
+    ia = int128_add(crime_line_product(line->u, a[0]),
+                    crime_line_product(line->v, a[1]));
+    ib = int128_add(crime_line_product(line->u, b[0]),
+                    crime_line_product(line->v, b[1]));
+    ih = int128_sub(crime_line_product(line->u, a[1]),
+                    crime_line_product(line->v, a[0]));
+    if (!crime_line_constant(ia, &ka) || !crime_line_constant(ib, &kb) ||
+        !crime_line_constant(ih, &h)) {
+        return false;
+    }
+    crime_line_cap(ia, line->u, line->v, &planes[0].skip, &empty);
+    if (empty) {
+        return true;
+    }
+    crime_line_cap(int128_neg(ib), -line->u, -line->v, &planes[1].skip, &empty);
+    if (empty) {
+        return true;
+    }
+    u = int64_to_float64(line->u, &fs);
+    v = int64_to_float64(line->v, &fs);
+    fa = int64_to_float64_scalbn(ka, -20, &fs);
+    fb = int64_to_float64_scalbn(kb, -20, &fs);
+    fh = int64_to_float64_scalbn(h, -20, &fs);
+    planes[0].x = u;
+    planes[0].y = v;
+    planes[0].constant = float64_chs(fa);
+    planes[1].x = float64_chs(u);
+    planes[1].y = float64_chs(v);
+    planes[1].constant = fb;
+    planes[2].x = v;
+    planes[2].y = float64_chs(u);
+    planes[2].constant = float64_add(line->normal, fh, &fs);
+    planes[3].x = float64_chs(v);
+    planes[3].y = u;
+    planes[3].constant = float64_sub(line->normal, fh, &fs);
+    polygon[0] = (CrimeLinePoint) { float64_chs(float64_half),
+                                   float64_chs(float64_half) };
+    polygon[1] = (CrimeLinePoint) { float64_half, float64_chs(float64_half) };
+    polygon[2] = (CrimeLinePoint) { float64_half, float64_half };
+    polygon[3] = (CrimeLinePoint) { float64_chs(float64_half), float64_half };
+    for (unsigned plane = 0; plane < 4 && count; plane++) {
+        unsigned n = 0;
+        CrimeLinePoint previous = polygon[count - 1];
+        float64 fp = crime_line_evaluate(&planes[plane], previous, &fs);
+        bool previous_inside = float64_le(float64_zero, fp, &fs);
+
+        if (planes[plane].skip) {
+            continue;
+        }
+        for (unsigned i = 0; i < count; i++) {
+            CrimeLinePoint current = polygon[i];
+            float64 fc = crime_line_evaluate(&planes[plane], current, &fs);
+            bool inside = float64_le(float64_zero, fc, &fs);
+
+            if (previous_inside != inside) {
+                float64 t = float64_div(fp, float64_sub(fp, fc, &fs), &fs);
+                float64 dx = float64_sub(current.x, previous.x, &fs);
+                float64 dy = float64_sub(current.y, previous.y, &fs);
+
+                if (n >= ARRAY_SIZE(next)) {
+                    return false;
+                }
+                next[n++] = (CrimeLinePoint) {
+                    float64_add(previous.x, float64_mul(t, dx, &fs), &fs),
+                    float64_add(previous.y, float64_mul(t, dy, &fs), &fs),
+                };
+            }
+            if (inside) {
+                if (n >= ARRAY_SIZE(next)) {
+                    return false;
+                }
+                next[n++] = current;
+            }
+            previous = current;
+            fp = fc;
+            previous_inside = inside;
+        }
+        memcpy(polygon, next, n * sizeof(*polygon));
+        count = n;
+    }
+    for (unsigned i = 1; i + 1 < count; i++) {
+        float64 ax = float64_sub(polygon[i].x, polygon[0].x, &fs);
+        float64 ay = float64_sub(polygon[i].y, polygon[0].y, &fs);
+        float64 bx = float64_sub(polygon[i + 1].x, polygon[0].x, &fs);
+        float64 by = float64_sub(polygon[i + 1].y, polygon[0].y, &fs);
+        float64 cross = float64_sub(float64_mul(ax, by, &fs),
+                                    float64_mul(ay, bx, &fs), &fs);
+
+        total = float64_add(total, float64_abs(cross), &fs);
+    }
+    total = float64_div(total, int64_to_float64(2, &fs), &fs);
+    if (float64_is_any_nan(total) || float64_is_infinity(total) ||
+        (get_float_exception_flags(&fs) &
+         (float_flag_invalid | float_flag_divbyzero | float_flag_overflow))) {
+        return false;
+    }
+    *area = float64_lt(total, float64_zero, &fs) ? float64_zero :
+            float64_lt(float64_one, total, &fs) ? float64_one : total;
+    return true;
+}
+
+/* Coefficients of 1, epsilon and epsilon squared, with positive denominator. */
+typedef struct CrimeLineInterval {
+    int64_t n[3], d;
+} CrimeLineInterval;
+
+static int crime_line_interval_compare(const CrimeLineInterval *a,
+                                         const CrimeLineInterval *b)
+{
+    for (unsigned i = 0; i < 3; i++) {
+        int64_t difference = a->n[i] * b->d - b->n[i] * a->d;
+
+        if (difference) {
+            return difference > 0 ? 1 : -1;
+        }
+    }
+    return 0;
+}
+
+static bool crime_gl_line_diamond(const CrimeGLLine *line, int x, int y)
+{
+    CrimeLineInterval lower = { .n = { 0, 0, 0 }, .d = 1 };
+    CrimeLineInterval upper = { .n = { 1, 0, 0 }, .d = 1 };
+    int64_t ax = line->vertex[0][0] - 64 * (int64_t)x;
+    int64_t ay = 64 * (int64_t)y - line->vertex[0][1];
+    int64_t bx = line->vertex[1][0] - 64 * (int64_t)x;
+    int64_t by = 64 * (int64_t)y - line->vertex[1][1];
+    bool final_inside = true;
+
+    if (line->xmajor) {
+        ay -= 32 * (line->width - 1);
+        by -= 32 * (line->width - 1);
+    } else {
+        ax -= 32 * (line->width - 1);
+        bx -= 32 * (line->width - 1);
+    }
+    for (unsigned plane = 0; plane < 4; plane++) {
+        int64_t sx = plane & 1 ? 1 : -1;
+        int64_t sy = plane & 2 ? 1 : -1;
+        int64_t da = sx * ax + sy * ay;
+        int64_t db = sx * bx + sy * by;
+        CrimeLineInterval bound = { .n = { 32 - da, 64 * sx, 64 * sy },
+                                    .d = db - da };
+        bool end_positive = 32 - db > 0 ||
+                            (32 - db == 0 && sx > 0);
+
+        final_inside &= end_positive;
+        if (!bound.d) {
+            if (!(32 - da > 0 || (32 - da == 0 && sx > 0))) {
+                return false;
+            }
+            continue;
+        }
+        if (bound.d < 0) {
+            bound.d = -bound.d;
+            for (unsigned i = 0; i < 3; i++) {
+                bound.n[i] = -bound.n[i];
+            }
+            if (crime_line_interval_compare(&lower, &bound) < 0) {
+                lower = bound;
+            }
+        } else if (crime_line_interval_compare(&upper, &bound) > 0) {
+            upper = bound;
+        }
+    }
+    return !final_inside && crime_line_interval_compare(&lower, &upper) < 0;
+}
+
 static bool crime_render_triangle(const uint64_t *p, CrimeRenderGeometry *g)
 {
     uint32_t primitive = p[0x60 / 4];
@@ -763,6 +1157,12 @@ static bool crime_render_triangle(const uint64_t *p, CrimeRenderGeometry *g)
             }
             g->vertex[i][axis] = field + (int64_t)origin * 64;
         }
+    }
+    /* Loaded starts refer to the original traversal-selected integer sample. */
+    for (unsigned axis = 0; axis < 2; axis++) {
+        int64_t selected = g->vertex[primitive & 0x20000 ? 0 : 2][axis];
+
+        g->shade_anchor[axis] = selected / 64 - (selected % 64 < 0);
     }
     /* The bounded six-bit transport requires 64-bit edge products. */
     area = crime_render_edge(g->vertex[0], g->vertex[1],
@@ -822,13 +1222,63 @@ static bool crime_render_triangle_inside(const CrimeRenderGeometry *g,
     return true;
 }
 
+static bool crime_render_gl_rectangle(const uint64_t *p, CrimeRenderGeometry *g)
+{
+    uint32_t primitive = p[0x60 / 4];
+    int xy[2][2];
+    int xmin, xmax, ymin, ymax;
+
+    if ((primitive & ~0x30000U) != 0x03000000) {
+        return false;
+    }
+    for (unsigned v = 0; v < 2; v++) {
+        for (unsigned axis = 0; axis < 2; axis++) {
+            int64_t field;
+            int16_t origin = p[0x58 / 4] >> (axis ? 0 : 16);
+
+            if (!crime_render_gl_field(p[(0x80 + 8 * v + 4 * axis) / 4],
+                                       &field) || (field & 63)) {
+                return false;
+            }
+            xy[v][axis] = field / 64 + origin;
+        }
+    }
+    g->dx = primitive & 0x10000 ? -1 : 1;
+    g->dy = primitive & 0x20000 ? 1 : -1;
+    if (g->dx * (xy[1][0] - xy[0][0]) < 0 ||
+        g->dy * (xy[1][1] - xy[0][1]) < 0) {
+        return false;
+    }
+    xmin = MAX(MIN(xy[0][0], xy[1][0]), 0);
+    ymin = MAX(MIN(xy[0][1], xy[1][1]), 0);
+    xmax = MIN(MAX(xy[0][0], xy[1][0]), 2047);
+    ymax = MIN(MAX(xy[0][1], xy[1][1]), 2047);
+    if (xmin > xmax || ymin > ymax) {
+        g->samples = g->capacity = 0;
+        return true;
+    }
+    g->x0 = g->dx > 0 ? xmin : xmax;
+    g->y0 = g->dy > 0 ? ymin : ymax;
+    g->x1 = xy[1][0];
+    g->y1 = xy[1][1];
+    g->width = xmax - xmin + 1;
+    g->samples = g->capacity = g->width * (ymax - ymin + 1);
+    return true;
+}
+
 static bool crime_render_geometry(const uint64_t *p, CrimeRenderGeometry *g)
 {
     uint32_t primitive = p[0x60 / 4];
 
     g->opcode = primitive >> 24;
+    if (g->opcode == 1 && (p[0x18 / 4] & 0x400000)) {
+        return !(primitive & 0x00f80000);
+    }
     if (g->opcode == 2) {
         return crime_render_triangle(p, g);
+    }
+    if (g->opcode == 3 && (p[0x18 / 4] & 0x400000)) {
+        return crime_render_gl_rectangle(p, g);
     }
     g->x0 = p[0x70 / 4] >> 16;
     g->y0 = p[0x70 / 4] & 0xffff;
@@ -1191,6 +1641,656 @@ static MemTxResult crime_render_color(SGICrimeState *s, hwaddr offset,
     return MEMTX_OK;
 }
 
+typedef struct CrimeTriangleOutput {
+    unsigned bank, bytes, format, shift;
+    uint32_t mask;
+} CrimeTriangleOutput;
+
+static bool crime_triangle_output(uint32_t raw, CrimeTriangleOutput *o)
+{
+    unsigned type = (raw >> 4) & 15;
+    unsigned depth = (raw >> 2) & 3;
+    unsigned storage = (raw >> 8) & 3;
+    bool split = raw & 2;
+
+    o->bank = (raw >> 10) & 7;
+    o->shift = 0;
+    if (o->bank >= 3) {
+        return false;
+    }
+    if (depth == 2 && storage == 2 && !split &&
+        (type == 1 || type == 2)) {
+        o->format = type == 2 ? 2 : 3;
+        o->mask = type == 2 ? UINT32_MAX : 0xffffff00U;
+    } else if (type == 2 && depth == 1 &&
+               ((storage == 1 && !split) || storage == 2)) {
+        o->format = 1;
+        o->shift = storage == 2 && split && (raw & 1) ? 16 : 0;
+        o->mask = 0xffffU << o->shift;
+    } else {
+        return false;
+    }
+    o->bytes = 1U << storage;
+    return true;
+}
+
+/* Selected model precision, preserving exact five-bit destination values. */
+#define CRIME_COLOR_ONE INT64_C(7905)
+#define CRIME_COLOR_DEN (CRIME_COLOR_ONE * CRIME_COLOR_ONE)
+
+static int64_t crime_blend_factor(unsigned selector, unsigned channel,
+                                   const int64_t *source,
+                                   const int64_t *destination,
+                                   const int64_t *constant, bool source_factor)
+{
+    switch (selector) {
+    case 0:
+        return 0;
+    case 1:
+        return CRIME_COLOR_ONE;
+    case 2:
+        return source_factor ? destination[channel] : source[channel];
+    case 3:
+        return CRIME_COLOR_ONE -
+               (source_factor ? destination[channel] : source[channel]);
+    case 4:
+        return source[3];
+    case 5:
+        return CRIME_COLOR_ONE - source[3];
+    case 6:
+        return destination[3];
+    case 7:
+        return CRIME_COLOR_ONE - destination[3];
+    case 8:
+        return constant[channel];
+    case 9:
+        return CRIME_COLOR_ONE - constant[channel];
+    case 10:
+        return constant[3];
+    case 11:
+        return CRIME_COLOR_ONE - constant[3];
+    case 12:
+        return channel == 3 ? CRIME_COLOR_ONE :
+               MIN(source[3], CRIME_COLOR_ONE - destination[3]);
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static uint32_t crime_triangle_pack(const CrimeTriangleOutput *o,
+                                     const uint64_t *p, uint32_t source,
+                                     uint32_t old, unsigned x, unsigned y)
+{
+    static const unsigned rank[4][4] = {
+        { 0, 8, 2, 10 }, { 12, 4, 14, 6 },
+        { 3, 11, 1, 9 }, { 15, 7, 13, 5 },
+    };
+    int64_t src[4], dst[4], constant[4];
+    uint32_t draw = p[0x18 / 4], func = p[0x1a8 / 4];
+    uint32_t selected = old >> o->shift, packed = 0;
+    unsigned operation = (func >> 8) & 15;
+
+    for (unsigned k = 0; k < 4; k++) {
+        unsigned shift = 24 - 8 * k;
+
+        src[k] = ((source >> shift) & 255) * 31;
+        constant[k] = ((p[0x1a0 / 4] >> shift) & 255) * 31;
+        if (o->format == 1) {
+            dst[k] = k == 3 ? ((selected >> 15) & 1) * CRIME_COLOR_ONE :
+                     ((selected >> (10 - 5 * k)) & 31) * 255;
+        } else {
+            dst[k] = o->format == 3 && k == 3 ? CRIME_COLOR_ONE :
+                     ((selected >> shift) & 255) * 31;
+        }
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        int64_t n = src[k] * CRIME_COLOR_ONE, q;
+
+        if (draw & 0x400) {
+            int64_t a = src[k] * crime_blend_factor((func >> 4) & 15,
+                k, src, dst, constant, true);
+            int64_t b = dst[k] * crime_blend_factor(func & 15,
+                k, src, dst, constant, false);
+
+            switch (operation) {
+            case 0:
+                n = a + b;
+                break;
+            case 1:
+                n = MIN(src[k], dst[k]) * CRIME_COLOR_ONE;
+                break;
+            case 2:
+                n = MAX(src[k], dst[k]) * CRIME_COLOR_ONE;
+                break;
+            case 3:
+                n = a - b;
+                break;
+            case 4:
+                n = b - a;
+                break;
+            default:
+                g_assert_not_reached();
+            }
+            n = CLAMP(n, 0, CRIME_COLOR_DEN);
+        }
+        if (o->format == 1 && k < 3) {
+            int64_t scaled = 31 * n;
+
+            q = scaled / CRIME_COLOR_DEN;
+            if ((draw & 0x100) &&
+                (scaled % CRIME_COLOR_DEN) * 32 >
+                (2 * rank[y & 3][x & 3] + 1) * CRIME_COLOR_DEN) {
+                q++;
+            }
+            packed |= MIN(q, 31) << (10 - 5 * k);
+        } else if (o->format == 1) {
+            packed |= MIN(1, 2 * n / CRIME_COLOR_DEN) << 15;
+        } else {
+            q = (255 * n + CRIME_COLOR_DEN / 2) / CRIME_COLOR_DEN;
+            packed |= q << (24 - 8 * k);
+        }
+    }
+    return packed << o->shift;
+}
+
+#define CRIME_Z_LIMIT (INT64_C(1) << 36)
+
+typedef struct CrimeRenderSZ {
+    bool depth, stencil, write_depth, tag;
+    uint32_t control, mode, mask;
+    int64_t start, dx, dy;
+} CrimeRenderSZ;
+
+static bool crime_render_compare(unsigned function, uint32_t a, uint32_t b)
+{
+    switch (function) {
+    case 0:
+        return false;
+    case 1:
+        return a < b;
+    case 2:
+        return a == b;
+    case 3:
+        return a <= b;
+    case 4:
+        return a > b;
+    case 5:
+        return a != b;
+    case 6:
+        return a >= b;
+    case 7:
+        return true;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static bool crime_render_sz_state(const uint64_t *p, unsigned opcode,
+                                    CrimeRenderSZ *sz)
+{
+    uint32_t draw = p[0x18 / 4];
+
+    sz->depth = draw & 4;
+    sz->stencil = draw & 1;
+    sz->write_depth = sz->depth && (draw & 2);
+    sz->control = p[0x1c0 / 4];
+    sz->mode = p[0x1e0 / 4];
+    sz->mask = p[0x1e8 / 4];
+    sz->tag = (sz->depth || sz->stencil) && (sz->control & 0x1000000);
+    if (!sz->depth && !sz->stencil) {
+        return true;
+    }
+    if ((opcode != 2 && opcode != 3) || (draw & 0x200000) ||
+        !(draw & 0x400000)) {
+        return false;
+    }
+    if (sz->depth) {
+        sz->start = (int64_t)p[0x1c8 / 4];
+        sz->dx = (int64_t)p[0x1d0 / 4];
+        sz->dy = (int64_t)p[0x1d8 / 4];
+        if ((sz->control & 0xf0000000U) ||
+            sz->start < -CRIME_Z_LIMIT || sz->start > CRIME_Z_LIMIT ||
+            sz->dx < -CRIME_Z_LIMIT || sz->dx > CRIME_Z_LIMIT ||
+            sz->dy < -CRIME_Z_LIMIT || sz->dy > CRIME_Z_LIMIT ||
+            (opcode == 3 && (sz->dx || sz->dy))) {
+            return false;
+        }
+    }
+    if (sz->stencil && ((sz->mode & 0x8000) || (sz->mask & ~0xffU) ||
+        ((sz->mode >> 8) & 15) > 5 || ((sz->mode >> 4) & 15) > 5 ||
+        (sz->mode & 15) > 5)) {
+        return false;
+    }
+    if (sz->tag) {
+        unsigned comparison = (sz->mode >> 12) & 15;
+        unsigned depth_fail = (sz->mode >> 4) & 15;
+
+        if (!sz->depth || !sz->stencil ||
+            (comparison != 5 && comparison != 7) ||
+            ((sz->mode >> 16) & 255) != 255 ||
+            ((sz->mode >> 8) & 15) != 0 ||
+            (depth_fail != 0 && depth_fail != 2) ||
+            (sz->mode & 15) != 2 ||
+            sz->mask != (sz->write_depth ? 255 : 0)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool crime_render_sz_depth(const CrimeRenderSZ *sz,
+                                    const CrimeRenderGeometry *g,
+                                    int x, int y, uint32_t *depth)
+{
+    int64_t z = sz->start;
+
+    if (!sz->depth) {
+        *depth = 0;
+        return true;
+    }
+    if (g->opcode == 2) {
+        z += sz->dx * (x - g->shade_anchor[0]) +
+             sz->dy * (y - g->shade_anchor[1]);
+    }
+    if (z < -CRIME_Z_LIMIT || z > CRIME_Z_LIMIT) {
+        return false;
+    }
+    z = z / 4096 - (z % 4096 < 0);
+    *depth = CLAMP(z, 0, 0xffffff);
+    return true;
+}
+
+static uint32_t crime_render_stencil(unsigned operation, unsigned old,
+                                       unsigned reference)
+{
+    switch (operation) {
+    case 0:
+        return old;
+    case 1:
+        return 0;
+    case 2:
+        return reference;
+    case 3:
+        return MIN(old + 1, 255);
+    case 4:
+        return old ? old - 1 : 0;
+    case 5:
+        return old ^ 255;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static bool crime_render_sz_sample(SGICrimeState *s, const CrimeRenderSZ *sz,
+                                     unsigned x, unsigned y, uint32_t depth,
+                                     CrimeRenderPixel *pixel, bool *color_pass)
+{
+    uint8_t data[4];
+    uint32_t old, stencil, reference = sz->mode >> 24;
+    uint32_t stored_depth, next_stencil, mask = 0;
+    unsigned operation;
+    bool stencil_pass, depth_pass;
+
+    if (crime_render_translate(s, 2, x, y, 4, 4,
+        &pixel->sz_address, &pixel->sz_identity) != CRIME_RENDER_MAPPED ||
+        address_space_read(&address_space_memory, pixel->sz_address,
+                           MEMTXATTRS_UNSPECIFIED, data, 4) != MEMTX_OK) {
+        return false;
+    }
+    old = ldl_be_p(data);
+    stencil = old >> 24;
+    stored_depth = old & 0xffffff;
+    pixel->sz_mask = 0;
+    pixel->sz_value = old;
+    if (sz->tag) {
+        bool predicate = ((sz->mode >> 12) & 7) == 7 || stencil != reference;
+        bool materialize = ((sz->mode >> 4) & 15) == 2;
+        uint32_t effective = predicate ? sz->control & 0xffffff : stored_depth;
+
+        depth_pass = crime_render_compare((sz->control >> 25) & 7,
+                                           depth, effective);
+        *color_pass = depth_pass && (predicate || !materialize);
+        if (sz->write_depth && (predicate || !materialize) &&
+            (depth_pass || (predicate && materialize))) {
+            pixel->sz_mask = UINT32_MAX;
+            pixel->sz_value = reference << 24 |
+                              (depth_pass ? depth : effective);
+        }
+        return true;
+    }
+    stencil_pass = !sz->stencil || crime_render_compare(
+        (sz->mode >> 12) & 7, reference & (sz->mode >> 16),
+        stencil & (sz->mode >> 16));
+    depth_pass = !sz->depth || crime_render_compare(
+        (sz->control >> 25) & 7, depth, stored_depth);
+    *color_pass = stencil_pass && depth_pass;
+    operation = !stencil_pass ? (sz->mode >> 8) & 15 :
+                !depth_pass ? (sz->mode >> 4) & 15 : sz->mode & 15;
+    next_stencil = stencil;
+    if (sz->stencil && operation) {
+        mask = sz->mask << 24;
+        next_stencil = crime_render_stencil(operation, stencil, reference);
+    }
+    if (*color_pass && sz->write_depth) {
+        mask |= 0xffffff;
+    }
+    pixel->sz_mask = mask;
+    pixel->sz_value = (old & ~mask) |
+        (((next_stencil << 24) | depth) & mask);
+    return true;
+}
+
+static int crime_render_compare_sz(const void *a, const void *b, void *opaque)
+{
+    const CrimeRenderPixel *pixels = opaque;
+    uint64_t x = pixels[*(const uint32_t *)a].sz_identity;
+    uint64_t y = pixels[*(const uint32_t *)b].sz_identity;
+
+    return (x > y) - (x < y);
+}
+
+static bool crime_render_sz_aliases(CrimeRenderPixel *pixels, unsigned count,
+                                      unsigned bytes)
+{
+    g_autofree uint32_t *sz_order = g_new(uint32_t, count);
+    g_autofree uint32_t *color_order = g_new(uint32_t, count);
+    unsigned colors = 0, z = 0, c = 0;
+
+    if (!count) {
+        return true;
+    }
+    for (unsigned i = 0; i < count; i++) {
+        sz_order[i] = i;
+        if (pixels[i].mask) {
+            color_order[colors++] = i;
+        }
+    }
+    g_qsort_with_data(sz_order, count, sizeof(*sz_order),
+                      crime_render_compare_sz, pixels);
+    g_qsort_with_data(color_order, colors, sizeof(*color_order),
+                      crime_render_compare_destination, pixels);
+    for (unsigned i = 1; i < count; i++) {
+        CrimeRenderPixel *a = &pixels[sz_order[i - 1]];
+        CrimeRenderPixel *b = &pixels[sz_order[i]];
+
+        if (a->sz_identity + 4 > b->sz_identity && (a->sz_mask || b->sz_mask)) {
+            return false;
+        }
+    }
+    while (z < count && c < colors) {
+        uint64_t sz = pixels[sz_order[z]].sz_identity;
+        uint64_t color = pixels[color_order[c]].destination_id;
+
+        if (sz + 4 <= color) {
+            z++;
+        } else if (color + bytes <= sz) {
+            c++;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+static MemTxResult crime_render_execute_plan(hwaddr offset,
+                                           CrimeRenderPixel *pixels,
+                                           unsigned count, unsigned bytes,
+                                           const CrimeTriangleOutput *o,
+                                           const uint64_t *p,
+                                           unsigned operation, bool sz)
+{
+    /* Read and stage every result before the first destination write. */
+    for (unsigned i = 0; i < count; i++) {
+        CrimeRenderPixel *pixel = &pixels[i];
+        uint8_t data[4];
+        uint32_t old, source, result;
+
+        if (!pixel->mask) {
+            continue;
+        }
+        if (address_space_read(&address_space_memory, pixel->destination,
+                               MEMTXATTRS_UNSPECIFIED, data,
+                               bytes) != MEMTX_OK) {
+            return crime_transfer_fail(offset,
+                                       "validated triangle read failed");
+        }
+        old = crime_render_load_pixel(data, bytes);
+        source = o ? crime_triangle_pack(o, p, pixel->color, old,
+                                          pixel->x, pixel->y) : pixel->color;
+        result = crime_render_rop(operation, source, old);
+        pixel->color = (old & ~pixel->mask) | (result & pixel->mask);
+    }
+    for (unsigned i = 0; i < count; i++) {
+        uint8_t data[4];
+
+        if (pixels[i].mask) {
+            crime_render_store_pixel(data, bytes, pixels[i].color);
+            if (address_space_write(&address_space_memory,
+                pixels[i].destination, MEMTXATTRS_UNSPECIFIED, data,
+                bytes) != MEMTX_OK) {
+                return crime_transfer_fail(offset,
+                                           "validated color write failed");
+            }
+        }
+        if (sz && pixels[i].sz_mask) {
+            stl_be_p(data, pixels[i].sz_value);
+            if (address_space_write(&address_space_memory,
+                pixels[i].sz_address, MEMTXATTRS_UNSPECIFIED, data,
+                4) != MEMTX_OK) {
+                return crime_transfer_fail(offset, "validated SZ write failed");
+            }
+        }
+    }
+    return MEMTX_OK;
+}
+
+/* Ideal clamp and no-wrap remain functional policies. */
+static bool crime_triangle_shade(const uint64_t *p,
+                                  const CrimeRenderGeometry *g,
+                                  int x, int y, uint32_t *color)
+{
+    static const unsigned dx[] = { 0xf0, 0xf4, 0x100, 0x104 };
+    static const unsigned dy[] = { 0xf8, 0xfc, 0x108, 0x10c };
+
+    *color = 0;
+    for (unsigned k = 0; k < 4; k++) {
+        int64_t start = sextract32(p[(0xe0 + 4 * k) / 4], 0, 21);
+        int64_t a = sextract32(p[dx[k] / 4], 0, 21);
+        int64_t b = sextract32(p[dy[k] / 4], 0, 21);
+        int64_t value = start + a * (x - g->shade_anchor[0]) +
+                        b * (y - g->shade_anchor[1]);
+        int64_t component;
+
+        if (value < -(1 << 20) || value >= (1 << 20)) {
+            return false;
+        }
+        component = value / 4096 - (value % 4096 < 0);
+        *color |= CLAMP(component, 0, 255) << (24 - 8 * k);
+    }
+    return true;
+}
+
+typedef struct CrimeLineFragment {
+    int x, y;
+    uint32_t color;
+} CrimeLineFragment;
+
+static bool crime_gl_line_color(const uint64_t *p, const CrimeGLLine *line,
+                                  int x, int y, unsigned coverage,
+                                  uint32_t *color)
+{
+    static const unsigned dx[] = { 0xf0, 0xf4, 0x100, 0x104 };
+    static const unsigned dy[] = { 0xf8, 0xfc, 0x108, 0x10c };
+
+    if (x <= -(1 << 18) || x >= (1 << 18) ||
+        y <= -(1 << 18) || y >= (1 << 18)) {
+        return false;
+    }
+    *color = p[0xd0 / 4];
+    if (p[0x18 / 4] & 0x10000) {
+        *color = 0;
+        for (unsigned k = 0; k < 4; k++) {
+            int64_t start = sextract32(p[(0xe0 + 4 * k) / 4], 0, 21);
+            int64_t a = sextract32(p[dx[k] / 4], 0, 21);
+            int64_t b = sextract32(p[dy[k] / 4], 0, 21);
+            int64_t n = 64 * start + a * (64 * x - line->vertex[0][0]) +
+                        b * (64 * y - line->vertex[0][1]);
+            int64_t value = crime_line_floor(n, 64);
+            int64_t component;
+
+            if (value < -(1 << 20) || value >= (1 << 20)) {
+                return false;
+            }
+            component = CLAMP(crime_line_floor(value, 4096), 0, 255);
+            *color |= component << (24 - 8 * k);
+        }
+    }
+    if (line->aa) {
+        *color = (*color & 0xffffff00U) | ((*color & 255) * coverage / 256);
+    }
+    return true;
+}
+
+static bool crime_gl_line_emit(const uint64_t *p, const CrimeGLLine *line,
+                                 GArray *fragments, int x, int y,
+                                 unsigned coverage)
+{
+    CrimeLineFragment fragment = { .x = x, .y = y };
+
+    if (!crime_gl_line_color(p, line, x, y, coverage, &fragment.color)) {
+        return false;
+    }
+    if (x >= 0 && y >= 0 && x < 2048 && y < 2048) {
+        if (fragments->len >= 2048 * 2048) {
+            return false;
+        }
+        g_array_append_val(fragments, fragment);
+    }
+    return true;
+}
+
+static bool crime_gl_line_band(const uint64_t *p, const CrimeGLLine *line,
+                                 GArray *fragments, int major, int first,
+                                 int last)
+{
+    for (int minor = first; minor <= last; minor++) {
+        int x = line->xmajor ? major : minor;
+        int y = line->xmajor ? minor : major;
+
+        if (!crime_gl_line_emit(p, line, fragments, x, y, 255)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool crime_gl_line_generate(const uint64_t *p, const CrimeGLLine *line,
+                                     GArray *fragments)
+{
+    unsigned major_axis = line->xmajor ? 0 : 1, minor_axis = 1 - major_axis;
+    int first, last;
+    float_status fs = { 0 };
+
+    if (line->empty) {
+        return true;
+    }
+    set_float_rounding_mode(float_round_nearest_even, &fs);
+    if (line->aa) {
+        first = crime_line_floor(MIN(line->p[major_axis], line->q[major_axis]),
+                                  CRIME_LINE_SCALE) - 2;
+        last = crime_line_floor(MAX(line->p[major_axis], line->q[major_axis]),
+                                 CRIME_LINE_SCALE) + 2;
+        for (int major = first; major <= last; major++) {
+            int center = crime_line_floor(line->j14 +
+                                           line->slope * (major - line->k0),
+                                           16384);
+
+            /* The normal band and pixel square fit this minor range. */
+            for (int minor = center - 4; minor <= center + 4; minor++) {
+                int x = line->xmajor ? major : minor;
+                int y = line->xmajor ? minor : major;
+                float64 area;
+                unsigned coverage;
+
+                if (!crime_gl_line_area(line, x, y, &area)) {
+                    return false;
+                }
+                if (!float64_lt(float64_zero, area, &fs)) {
+                    continue;
+                }
+                coverage = MIN(255, float64_to_uint32_round_to_zero(
+                    float64_mul(area, int64_to_float64(256, &fs), &fs), &fs));
+                if (!crime_gl_line_emit(p, line, fragments, x, y, coverage)) {
+                    return false;
+                }
+            }
+        }
+    } else {
+        int64_t a = line->vertex[0][major_axis];
+        int64_t b = line->vertex[1][major_axis];
+        int64_t delta = b - a;
+        int64_t minor_delta = line->vertex[1][minor_axis] -
+                              line->vertex[0][minor_axis];
+        int64_t minor_start = line->vertex[0][minor_axis] +
+            (line->xmajor ? 32 : -32) * (int64_t)(line->width - 1);
+
+        first = crime_line_floor(MIN(a, b), 64) - 1;
+        last = crime_line_floor(MAX(a, b), 64) + 1;
+        for (int major = first; major <= last; major++) {
+            int64_t numerator = minor_start * delta +
+                                minor_delta * (64 * major - a);
+            int64_t denominator = delta * 64;
+            int center, lo = INT_MAX, hi = INT_MIN;
+
+            if (denominator < 0) {
+                numerator = -numerator;
+                denominator = -denominator;
+            }
+            center = crime_line_floor(numerator, denominator);
+            for (int minor = center - 2; minor <= center + 2; minor++) {
+                int x = line->xmajor ? major : minor;
+                int y = line->xmajor ? minor : major;
+                int begin, end;
+
+                if (!crime_gl_line_diamond(line, x, y)) {
+                    continue;
+                }
+                begin = line->xmajor ? minor - (int)line->width + 1 : minor;
+                end = line->xmajor ? minor : minor + (int)line->width - 1;
+                if (lo != INT_MAX && begin > hi + 1) {
+                    if (!crime_gl_line_band(p, line, fragments,
+                                            major, lo, hi)) {
+                        return false;
+                    }
+                    lo = INT_MAX;
+                }
+                lo = MIN(lo, begin);
+                hi = MAX(hi, end);
+            }
+            if (lo != INT_MAX &&
+                !crime_gl_line_band(p, line, fragments, major, lo, hi)) {
+                return false;
+            }
+        }
+    }
+    return !(get_float_exception_flags(&fs) &
+             (float_flag_invalid | float_flag_divbyzero | float_flag_overflow));
+}
+
+bool sgi_crime_line_coverage(SGICrimeState *s, int x, int y, uint64_t *bits)
+{
+    CrimeGLLine line = { 0 };
+    float64 area;
+
+    if (!s->legacy_software || !s->functional_memory_transfer ||
+        !crime_gl_line_state(s->render.parameter, &line) || !line.aa ||
+        !crime_gl_line_area(&line, x, y, &area)) {
+        return false;
+    }
+    *bits = float64_val(area);
+    return true;
+}
+
 static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                                            unsigned index, uint64_t value,
                                            unsigned words)
@@ -1203,9 +2303,14 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     unsigned bit = 0, repeat = 0, first = 0, last = 0, max_repeat = 0;
     int sx, sy, destination_x, destination_y;
     bool copy, stipple, overlap, inside, upload, download, transfer;
-    bool alpha, alpha_pass, triangle;
+    bool alpha, alpha_pass, triangle, sz_active, gl_rectangle;
+    bool native_gl, gl_line;
     CrimeRenderClip scissor, screen[5];
     CrimeRenderGeometry geometry = { 0 };
+    CrimeTriangleOutput output = { 0 };
+    CrimeRenderSZ sz = { 0 };
+    CrimeGLLine line = { 0 };
+    g_autoptr(GArray) line_fragments = NULL;
     g_autofree CrimeRenderPixel *pixels = NULL;
     g_autoptr(GArray) bounded_pixels = NULL;
     MemTxResult result;
@@ -1233,27 +2338,48 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
             s->render_mode_reported |= 1U << role;
         }
     }
+    sz_active = draw & 5;
     alpha = draw & 0x800;
     if (alpha && (p[0x198 / 4] & ~0x7ffULL)) {
         return crime_transfer_fail(offset, "unsupported alpha comparison");
     }
     triangle = (p[0x60 / 4] >> 24) == 2;
-    if ((draw & ~(triangle ? 0x5a02f8U : 0x3e0af8U)) ||
-        (triangle ? (!(draw & 0x400000) ||
-                      (p[0x8 / 4] & 0x3ffU) != 0x228) :
+    gl_rectangle = (p[0x60 / 4] >> 24) == 3 && (draw & 0x400000);
+    gl_line = (p[0x60 / 4] >> 24) == 1 && (draw & 0x400000);
+    native_gl = triangle || gl_rectangle || gl_line;
+    if ((draw & ~(gl_line ? 0x511ff8U : gl_rectangle ? 0x510087U :
+                    triangle ? (0x5b17ffU | (sz_active ? 0x800U : 0)) :
+                               0x3e0affU)) ||
+        (native_gl ? (!(draw & 0x400000) ||
+                      !crime_triangle_output(p[0x8 / 4], &output)) :
                     (p[0x50 / 4] ||
                      (copy ? p[0x58 / 4] != 0 :
                              (p[0x58 / 4] & 0x80008000U)))) ||
         !crime_render_geometry(p, &geometry)) {
         return crime_transfer_fail(offset, "unsupported primitive state");
     }
-    destination_x = triangle ? (int16_t)(p[0x58 / 4] >> 16) :
+    if (words && (index == 0x190 / 4 || index == 0x194 / 4) && !gl_line) {
+        return crime_transfer_fail(offset, "AA START requires native GL line");
+    }
+    if (((draw & 7) && (copy || !native_gl)) ||
+        !crime_render_sz_state(p, geometry.opcode, &sz)) {
+        return crime_transfer_fail(offset, "unsupported depth/stencil state");
+    }
+    if ((triangle || gl_line) && (draw & 0x400) &&
+        ((p[0x1a8 / 4] & ~0xfffULL) ||
+         ((p[0x1a8 / 4] >> 8) & 15) > 4 ||
+         ((p[0x1a8 / 4] >> 4) & 15) > 12 ||
+         (p[0x1a8 / 4] & 15) > 11)) {
+        return crime_transfer_fail(offset, "unsupported blend function");
+    }
+    destination_x = native_gl ? (int16_t)(p[0x58 / 4] >> 16) :
                                (int)(p[0x58 / 4] >> 16);
-    destination_y = triangle ? (int16_t)p[0x58 / 4] :
+    destination_y = native_gl ? (int16_t)p[0x58 / 4] :
                                (int)(p[0x58 / 4] & 0xffff);
     stipple = (geometry.opcode == 1 && (draw & 0x80000)) ||
               (geometry.opcode == 3 && (draw & 0x40000));
-    if (alpha && (copy || stipple || (p[0x8 / 4] & 0x3ffU) != 0x228)) {
+    if (alpha && (copy || stipple ||
+                  (!gl_line && (p[0x8 / 4] & 0x3ffU) != 0x228))) {
         return crime_transfer_fail(offset, "unsupported alpha primitive");
     }
     if (copy && (geometry.opcode != 3 || stipple)) {
@@ -1286,7 +2412,11 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         }
         return result;
     }
-    if (!crime_render_mode(p[0x8 / 4], &destination_bank, &bytes, &stride)) {
+    if (native_gl) {
+        destination_bank = output.bank;
+        bytes = stride = output.bytes;
+    } else if (!crime_render_mode(p[0x8 / 4], &destination_bank,
+                                  &bytes, &stride)) {
         return crime_transfer_fail(offset, "unsupported destination mode");
     }
     if (copy &&
@@ -1314,7 +2444,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         return crime_transfer_fail(offset, "unsupported raster operation");
     }
     inside = clip & 31;
-    if ((clip & ~(triangle ? 0x7ffU : 0x3ffU)) ||
+    if ((clip & ~(native_gl ? 0x7ffU : 0x3ffU)) ||
         ((clip & 31) & ~((clip >> 5) & 31))) {
         return crime_transfer_fail(offset, "unsupported clip mode");
     }
@@ -1370,9 +2500,17 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         return crime_transfer_fail(offset, "invalid indexed linear envelope");
     }
     plane = draw & 0x80 ? p[0x1b8 / 4] : UINT32_MAX;
-    plane &= UINT32_MAX >> (32 - 8 * bytes);
+    plane &= native_gl ? output.mask : UINT32_MAX >> (32 - 8 * bytes);
     alpha_pass = !alpha || crime_render_alpha_pass(p[0xd0 / 4], p[0x198 / 4]);
-    if (geometry.opcode <= 1) {
+    if (gl_line) {
+        line_fragments = g_array_new(false, false, sizeof(CrimeLineFragment));
+        if (!crime_gl_line_state(p, &line) ||
+            !crime_gl_line_generate(p, &line, line_fragments)) {
+            return crime_transfer_fail(offset, "invalid GL line producer");
+        }
+        geometry.samples = geometry.capacity = line_fragments->len;
+    }
+    if (geometry.opcode <= 1 && !gl_line) {
         bounded_pixels = g_array_new(false, false, sizeof(CrimeRenderPixel));
     } else {
         pixels = g_new(CrimeRenderPixel, geometry.capacity);
@@ -1380,7 +2518,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     for (unsigned i = 0; i < geometry.samples; i++) {
         int cx, cy;
         unsigned stripe_x = 1, stripe_y = 1, first_col = 0, first_row = 0;
-        uint32_t color = p[0xd0 / 4];
+        uint32_t color = p[0xd0 / 4], fragment_depth = 0;
         uint32_t linear = transfer ? linear_first +
             (i / geometry.width) * linear_pitch + i % geometry.width : 0;
         bool foreground = !stipple || (p[0xc4 / 4] & (1U << (31 - bit)));
@@ -1399,11 +2537,34 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
             }
             color = p[0xd8 / 4];
         }
-        crime_render_sample(&geometry, i, &cx, &cy);
-        if (triangle && !crime_render_triangle_inside(&geometry, cx, cy)) {
-            continue;
+        if (gl_line) {
+            CrimeLineFragment *fragment = &g_array_index(
+                line_fragments, CrimeLineFragment, i);
+
+            cx = fragment->x;
+            cy = fragment->y;
+            color = fragment->color;
+            alpha_pass = !alpha ||
+                         crime_render_alpha_pass(color, p[0x198 / 4]);
+        } else {
+            crime_render_sample(&geometry, i, &cx, &cy);
         }
-        if (geometry.opcode == 1) {
+        if (triangle) {
+            if (!crime_render_triangle_inside(&geometry, cx, cy)) {
+                continue;
+            }
+            if ((draw & 0x10000) &&
+                !crime_triangle_shade(p, &geometry, cx, cy, &color)) {
+                return crime_transfer_fail(offset, "shade arithmetic overflow");
+            }
+            alpha_pass = !alpha ||
+                         crime_render_alpha_pass(color, p[0x198 / 4]);
+        }
+        if (sz_active && !crime_render_sz_depth(&sz, &geometry,
+                                                 cx, cy, &fragment_depth)) {
+            return crime_transfer_fail(offset, "depth arithmetic overflow");
+        }
+        if (geometry.opcode == 1 && !gl_line) {
             if (!geometry.steps || !geometry.xmajor) {
                 stripe_x = geometry.thickness;
                 cx += geometry.lower;
@@ -1413,7 +2574,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 cy += geometry.lower;
             }
         }
-        if (geometry.opcode <= 1) {
+        if (geometry.opcode <= 1 && !gl_line) {
             int64_t left = (int64_t)cx + destination_x;
             int64_t top = (int64_t)cy + destination_y;
 
@@ -1428,11 +2589,11 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         }
         for (unsigned row = first_row; row < stripe_y; row++) {
             int local_y = cy + (int)row;
-            int y = local_y + (triangle ? 0 : destination_y);
+            int y = local_y + (native_gl ? 0 : destination_y);
 
             for (unsigned col = first_col; col < stripe_x; col++) {
                 int local_x = cx + (int)col;
-                int x = local_x + (triangle ? 0 : destination_x);
+                int x = local_x + (native_gl ? 0 : destination_x);
                 uint32_t mask = plane;
                 CrimeRenderPixel bounded_pixel = { 0 };
                 CrimeRenderPixel *pixel;
@@ -1446,8 +2607,8 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 if (x < 0 || x >= 2048 || y < 0 || y >= 2048 ||
                     ((draw & 0x100000) &&
                      !crime_render_inside(&scissor,
-                         triangle ? x - destination_x : local_x,
-                         triangle ? y - destination_y : local_y)) ||
+                         native_gl ? x - destination_x : local_x,
+                         native_gl ? y - destination_y : local_y)) ||
                     !screen_pass) {
                     continue;
                 }
@@ -1459,11 +2620,26 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                         mask &= ~(0xffU << (8 * (bytes - 1 - b)));
                     }
                 }
-                if (!mask || !alpha_pass) {
+                if ((!mask && !sz_active) || !alpha_pass) {
                     continue;
                 }
                 pixel = bounded_pixels ? &bounded_pixel : &pixels[count];
-                if (download) {
+                *pixel = (CrimeRenderPixel) { 0 };
+                if (sz_active) {
+                    bool color_pass;
+
+                    if (!crime_render_sz_sample(s, &sz, x, y, fragment_depth,
+                                                 pixel, &color_pass)) {
+                        return crime_transfer_fail(offset,
+                                                   "invalid SZ mapping");
+                    }
+                    if (!color_pass) {
+                        mask = 0;
+                    }
+                }
+                if (!mask) {
+                    translation = CRIME_RENDER_MAPPED;
+                } else if (download) {
                     translation = crime_render_linear(
                         s, destination_bank, linear, &pixel->destination,
                         &pixel->destination_id);
@@ -1475,7 +2651,11 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
 
                 if (!copy && translation == CRIME_RENDER_INVALID_TILE) {
                     suppressed++;
-                    continue;
+                    if (!sz_active) {
+                        continue;
+                    }
+                    mask = 0;
+                    translation = CRIME_RENDER_MAPPED;
                 }
                 if (translation != CRIME_RENDER_MAPPED) {
                     return crime_transfer_fail(offset,
@@ -1504,6 +2684,8 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 }
                 pixel->mask = mask;
                 pixel->color = color;
+                pixel->x = x;
+                pixel->y = y;
                 if (bounded_pixels) {
                     g_array_append_val(bounded_pixels, bounded_pixel);
                 }
@@ -1519,9 +2701,16 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         (transfer && overlap)) {
         return crime_transfer_fail(offset, "primitive memory aliases");
     }
+    if (sz_active && !crime_render_sz_aliases(pixels, count, bytes)) {
+        return crime_transfer_fail(offset, "SZ memory aliases");
+    }
     /* MMIO holds the BQL, keeping prevalidated RAM mappings stable. */
-    result = crime_render_execute(offset, pixels, count, bytes, copy,
-                                   operation, true);
+    result = triangle || gl_line || sz_active ?
+        crime_render_execute_plan(offset, pixels, count, bytes,
+                                   triangle || gl_line ? &output : NULL, p,
+                                   operation, sz_active) :
+        crime_render_execute(offset, pixels, count, bytes, copy,
+                              operation, true);
     if (result == MEMTX_OK) {
         for (unsigned i = 0; i < words; i++) {
             s->render.parameter[index + i] = p[index + i];
@@ -1711,6 +2900,8 @@ static MemTxResult crime_render_state_write(SGICrimeState *s, hwaddr offset,
             return MEMTX_OK;
         case 0x070:
         case 0x080: case 0x088: case 0x090:
+        case 0x0e0: case 0x0e8: case 0x0f0: case 0x0f8:
+        case 0x100: case 0x108: case 0x190:
         case 0x0a8:
         case 0x0c0: {
             const CrimeRenderRegister *second =
@@ -1917,10 +3108,13 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
         if (crime_render_state_access(offset, size)) {
             return crime_render_state_write(s, offset, value, size);
         }
-        if (reg && !reg->native_only) {
+        if (reg && (!reg->native_only ||
+                    (reg->offset >= 0xe0 && reg->offset <= 0x10c) ||
+                    (reg->offset >= 0x1c0 && reg->offset <= 0x1e8) ||
+                    reg->offset == 0x190 || reg->offset == 0x194)) {
             bool paired = size == 8 &&
                 (reg->offset == 0x070 || reg->offset == 0x0a8 ||
-                 reg->offset == 0x0c0);
+                 reg->offset == 0x0c0 || reg->offset == 0x190);
 
             if (size == reg->size || paired) {
                 return crime_render_de_commit(s, offset, reg->offset / 4,
