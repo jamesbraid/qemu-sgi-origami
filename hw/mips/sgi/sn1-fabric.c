@@ -401,6 +401,16 @@ void sn1_fabric_init_processor_view(SN1FabricProcessorView *view,
     view->space = space;
     memory_region_init_io(&view->region, endpoint->owner, &sn1_processor_ops,
                           view, name, SN1_FABRIC_SPACE_SIZE);
+    /*
+     * The view only forwards, and it holds nothing across the call. The
+     * memory core's re-entrancy guard is per owning device, so with it on,
+     * every view of a node would share one guard: while one processor is
+     * inside a device that lets the big lock go (a graphics board waiting
+     * out a drawing slice), another processor of the same node would be
+     * refused at its own view and take a bus error. The node's DMA and BTE
+     * view also forwards while a node-owned register callback is active.
+     */
+    view->region.disable_reentrancy_guard = true;
     memory_region_set_enabled(&view->region, false);
     memory_region_add_subregion_overlap(container, sn1_node_space_base[space],
                                         &view->region, 0);

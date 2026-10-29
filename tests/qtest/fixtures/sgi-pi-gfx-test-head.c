@@ -10,6 +10,13 @@
  * for any port that leaves its access width at the default. Real heads return
  * credits as their framers take words off their ports; they adopt the
  * interface on their own branches.
+ *
+ * With "pio" linked to a node's processor-facing I/O window, the port is
+ * placed over that window instead, at "pio-offset", so a processor reaches
+ * it on its own I/O path, through its node and the fabric, as it reaches a
+ * board. A port load while "sleep-ms" is nonzero lets the big lock go for
+ * that long first, as a board's load does while it waits out a drawing
+ * slice.
  */
 
 #include "qemu/osdep.h"
@@ -18,6 +25,7 @@
 #include "hw/mips/sgi/pi-gfx.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
+#include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "system/address-spaces.h"
 #include "system/memory.h"
@@ -35,11 +43,22 @@ struct SGIPIGfxTestHeadState {
     bool auto_return;
     uint8_t port_width;
     uint32_t taken;
+    MemoryRegion *pio;
+    uint64_t pio_offset;
+    uint32_t sleep_ms;
     MemoryRegion port;
 };
 
 static uint64_t test_head_port_read(void *opaque, hwaddr addr, unsigned size)
 {
+    SGIPIGfxTestHeadState *s = opaque;
+    uint32_t sleep_ms = qatomic_read(&s->sleep_ms);
+
+    if (sleep_ms && bql_locked()) {
+        bql_unlock();
+        g_usleep(sleep_ms * 1000ULL);
+        bql_lock();
+    }
     return 0;
 }
 
@@ -134,13 +153,15 @@ static void test_head_init(Object *obj)
                         NULL, NULL);
     object_property_add_uint32_ptr(obj, "taken", &s->taken,
                                    OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "sleep-ms", &s->sleep_ms,
+                                   OBJ_PROP_FLAG_READWRITE);
 }
 
 static void test_head_realize(DeviceState *dev, Error **errp)
 {
     SGIPIGfxTestHeadState *s = SGI_PI_GFX_TEST_HEAD(dev);
 
-    if (!s->port_base) {
+    if (!s->port_base && !s->pio) {
         return;
     }
     if (s->port_width != 4 && s->port_width != 8) {
@@ -151,6 +172,11 @@ static void test_head_realize(DeviceState *dev, Error **errp)
                           s->port_width == 4 ? &test_head_narrow_port_ops :
                                                &test_head_port_ops, s,
                           "sgi-pi-gfx-test-head.port", TEST_HEAD_PORT_SIZE);
+    if (s->pio) {
+        memory_region_add_subregion_overlap(s->pio, s->pio_offset, &s->port,
+                                            10);
+        return;
+    }
     memory_region_add_subregion_overlap(get_system_memory(), s->port_base,
                                         &s->port, 10);
 }
@@ -163,6 +189,9 @@ static const Property test_head_properties[] = {
     DEFINE_PROP_BOOL("auto-return", SGIPIGfxTestHeadState, auto_return,
                      false),
     DEFINE_PROP_UINT8("port-width", SGIPIGfxTestHeadState, port_width, 8),
+    DEFINE_PROP_LINK("pio", SGIPIGfxTestHeadState, pio, TYPE_MEMORY_REGION,
+                     MemoryRegion *),
+    DEFINE_PROP_UINT64("pio-offset", SGIPIGfxTestHeadState, pio_offset, 0),
 };
 
 static void test_head_class_init(ObjectClass *oc, const void *data)
