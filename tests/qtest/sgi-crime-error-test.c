@@ -58,11 +58,12 @@ static void seed_errors(QTestState *s)
     }
 }
 
-static void assert_errors(QTestState *s, uint32_t cpu_status)
+static void assert_errors(QTestState *s, uint32_t cpu_status,
+                          uint32_t memory_status)
 {
     g_assert_cmphex(qtest_readq(s, BASE + 0x40), ==, 0xfedcba9876543210ULL);
     g_assert_cmphex(qtest_readq(s, BASE + 0x48), ==, cpu_status);
-    g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==, 7U << 25);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==, memory_status);
     g_assert_cmphex(qtest_readq(s, BASE + 0x258), ==, 0x23456789);
 }
 
@@ -93,14 +94,18 @@ static void test_clear_isolation(void)
     qtest_set_irq_in(s, CRIME_PATH, "external", 4, 1);
     qtest_set_irq_in(s, CRIME_PATH, "external", 5, 1);
     assert_outputs(s, true);
-    qtest_writeq(s, BASE + 0x250, 0);
     qtest_writeq(s, BASE + 0x200, 1);
     g_assert_cmphex(qtest_readq(s, BASE + 0x200), ==, 1);
     qtest_writeq(s, BASE + 0x200, 0);
     g_assert_cmphex(qtest_readq(s, BASE + 0x200), ==, 0);
-    assert_errors(s, 5);
+    assert_errors(s, 5, 7U << 25);
+    /* Zero clears the memory-error status only, keeping its address. */
+    qtest_writeq(s, BASE + 0x250, 0);
+    assert_errors(s, 5, 0);
+    seed(s, "memory-error-status", 7U << 25);
     qtest_writeq(s, BASE + 0x48, 0);
-    assert_errors(s, 0);
+    assert_errors(s, 0, 7U << 25);
+    qtest_writeq(s, BASE + 0x250, 0);
     g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, pending);
     assert_outputs(s, true);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
@@ -108,7 +113,7 @@ static void test_clear_isolation(void)
     g_assert_cmpint(memtx_writeq(s, BASE + 0x40, 0), !=, MEMTX_OK);
     g_assert_cmpint(memtx_writeq(s, BASE + 0x250, 1), !=, MEMTX_OK);
     g_assert_cmpint(memtx_writeq(s, BASE + 0x258, 0), !=, MEMTX_OK);
-    assert_errors(s, 0);
+    assert_errors(s, 0, 0);
     assert_stopped(s);
     qtest_quit(s);
 }
@@ -129,7 +134,7 @@ static void test_transfer_failure_retention(void)
     qtest_writel(s, MTE + 0x18, 0xa5);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
     g_assert_cmpint(memtx_writel(s, MTE + 0x838, 63), !=, MEMTX_OK);
-    assert_errors(s, 5);
+    assert_errors(s, 5, 7U << 25);
     assert_stopped(s);
     g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, 1U << 4);
     g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
@@ -157,7 +162,7 @@ static void test_seed_validation(void)
             "'value':%" PRIu64 "}}", INJECT_PATH, properties[i], invalid[i]);
 
         g_assert_nonnull(qdict_get_qdict(reply, "error"));
-        assert_errors(s, 5);
+        assert_errors(s, 5, 7U << 25);
     }
     qtest_quit(s);
 }
@@ -191,7 +196,7 @@ static void test_migration(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
     sgi_wait_migration(to, "completed");
-    assert_errors(to, 5);
+    assert_errors(to, 5, 7U << 25);
     g_assert_cmphex(qtest_readq(to, BASE + 0x28), ==, hardware);
     g_assert_cmphex(qtest_readq(to, BASE + 0x20), ==, 1U << 30);
     g_assert_cmphex(qtest_readq(to, BASE + 0x200), ==, 1);
@@ -203,11 +208,11 @@ static void test_migration(void)
     qtest_writeq(to, BASE + 0x18, hardware | (1U << 30));
     assert_outputs(to, true);
     qtest_writeq(to, BASE + 0x48, 0);
-    assert_errors(to, 0);
+    assert_errors(to, 0, 7U << 25);
     qtest_qmp_assert_success(to, "{'execute':'cont'}");
     g_assert_cmpint(memtx_writel(to, MTE + 0x800, UINT32_MAX), !=, MEMTX_OK);
     assert_stopped(to);
-    assert_errors(to, 0);
+    assert_errors(to, 0, 7U << 25);
     g_assert_cmphex(qtest_readl(to, MTE), ==, 0xdeadbeef);
     for (unsigned i = 0; i < 128; i++) {
         g_assert_cmphex(qtest_readb(to, 0x3000 + i), ==, 0x5d);

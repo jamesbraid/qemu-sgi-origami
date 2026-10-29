@@ -452,6 +452,7 @@ static QTestState *start_banked(bool approximation)
 static void test_healthy_memory(void)
 {
     QTestState *s = start_banked(false);
+    bool legacy = !strcmp(selected_profile, "legacy-software");
     uint64_t value;
 
     /* Ordinary misses establish decoder latches before transfer validation. */
@@ -461,7 +462,10 @@ static void test_healthy_memory(void)
     g_assert_cmphex(qtest_readq(s, BASE + 0x258), ==, 0x12345);
     qtest_writeq(s, BASE + 0x200, 1);
     g_assert_cmphex(qtest_readq(s, BASE + 0x200), ==, 1);
+    /* Only the legacy profile clears the status on a zero write. */
     qtest_writeq(s, BASE + 0x250, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==, legacy ? 0 : 1U << 26);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x258), ==, 0x12345);
     qtest_writeq(s, BASE + 0x270, 0);
     g_assert_cmphex(qtest_readq(s, BASE + 0x260), ==, 0);
     g_assert_cmphex(qtest_readq(s, BASE + 0x270), ==, 0);
@@ -481,7 +485,7 @@ static void test_healthy_memory(void)
     qtest_writel(s, MTE, CLEAR_A);
     qtest_writel(s, MTE + 8, UINT32_MAX);
     g_assert_cmpint(memtx_writel(s, MTE + 0x838, 31), !=, MEMTX_OK);
-    g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==, 1U << 26);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==, legacy ? 0 : 1U << 26);
     g_assert_cmphex(qtest_readq(s, BASE + 0x258), ==, 0x12345);
     assert_stopped(s);
     qtest_quit(s);

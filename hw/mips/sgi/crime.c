@@ -2024,8 +2024,14 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
             break;
         case 0x0010:
         case 0x0030:
+            if (!value) {
+                return MEMTX_OK;
+            }
+            break;
         case 0x0250:
             if (!value) {
+                /* The error address latch is kept. */
+                s->memory_error_status = 0;
                 return MEMTX_OK;
             }
             break;
