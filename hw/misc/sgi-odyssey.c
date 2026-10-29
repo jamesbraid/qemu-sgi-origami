@@ -952,8 +952,15 @@ static unsigned odyssey_cmd_arity(uint32_t word)
 #define ODSY_DMA_IRQ_REQUEST (1u << 31)
 #define ODSY_DMA_PTE_LEN_MASK 0xffff
 #define ODSY_DMA_PTE_ADDR_SHIFT 16
-/* A work budget bounding the entry walk when no terminator is reached. */
-#define ODSY_DMA_MAX_PAGES 256
+/*
+ * One kick names one 128-byte work-list entry: the 32-byte header, then up
+ * to 12 page pairs in bytes 32-127 (ESTABLISHED as the kernel's entry
+ * builder, which cuts a longer request into several entries of at most
+ * 0x24000 bytes each). The walk ends at a zero pair or after the twelfth,
+ * where the entry ends; the bytes after it belong to the next entry.
+ */
+#define ODSY_DMA_ENTRY_PAGES 12
+#define ODSY_DMA_MAX_PAGES ODSY_DMA_ENTRY_PAGES
 
 /*
  * Board-to-host transfers. Every rule below is software behaviour read from
@@ -9244,8 +9251,8 @@ typedef struct OdysseyDMAEntry {
 } OdysseyDMAEntry;
 
 /*
- * The table's entries, up to the zero terminator, into e[]. Returns how many,
- * or -1 (logged) when a read fails or no terminator comes within the budget.
+ * The entry's page pairs, up to a zero pair or the twelfth, into e[].
+ * Returns how many, or -1 when a read fails.
  */
 static int odyssey_dma_entries(const SGIDMABus *bus, uint64_t table,
                                uint64_t seq, OdysseyDMAEntry *e)
@@ -9267,10 +9274,7 @@ static int odyssey_dma_entries(const SGIDMABus *bus, uint64_t table,
         e[n].addr = pte >> ODSY_DMA_PTE_ADDR_SHIFT;
         e[n].len = pte & ODSY_DMA_PTE_LEN_MASK;
     }
-    qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: DMA page table at 0x%"
-                  PRIx64 " has no terminator within %u entries\n",
-                  table, ODSY_DMA_MAX_PAGES);
-    return -1;
+    return n;
 }
 
 /*

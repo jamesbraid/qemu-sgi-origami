@@ -99,6 +99,7 @@ fifo /mips64/sn1/odyssey/command-fifo-copyrect-prefix-is-a-register
 fifo /mips64/sn1/odyssey/command-fifo-host-write-sync
 fifo /mips64/sn1/odyssey/command-fifo-dma-trace
 fifo /mips64/sn1/odyssey/command-fifo-dma-page-table
+fifo /mips64/sn1/odyssey/command-fifo-dma-full-entry
 fifo /mips64/sn1/odyssey/command-fifo-dma-image
 fifo /mips64/sn1/odyssey/command-fifo-pattern-quad
 fifo /mips64/sn1/odyssey/command-fifo-pattern-quad-straddles-screen
