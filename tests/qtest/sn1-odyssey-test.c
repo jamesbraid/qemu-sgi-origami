@@ -1748,11 +1748,25 @@ static void test_flag_interrupt_uses_routed_vector(void)
  */
 static void test_flow_control_credit_target(void)
 {
-    QTestState *qts = board_start("");
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    const char *first;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-flctl-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
 
     g_assert_cmphex(reg_read(qts, ODSY_FLCTL_TARGET), ==, 0);
-    reg_write(qts, ODSY_FLCTL_TARGET, 0x0001b000);
-    g_assert_cmphex(reg_read(qts, ODSY_FLCTL_TARGET), ==, 0x0001b000);
+    reg_write(qts, ODSY_FLCTL_TARGET, 1u << 17 | 0x1bu << 12 | 0xc8);
+    g_assert_cmphex(reg_read(qts, ODSY_FLCTL_TARGET), ==, 0x0003b0c8);
     g_assert_cmphex(reg_read(qts, ODSY_FLCTL_CONFIG), ==, FLCTL_CONFIG_RESET);
     g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10030000);
     reg_write(qts, ODSY_FLCTL_TARGET, 0x00005000);
@@ -1764,6 +1778,17 @@ static void test_flow_control_credit_target(void)
     g_assert_cmphex(reg_read(qts, ODSY_FLCTL_CONFIG), ==, FLCTL_CONFIG_RESET);
     g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10030000);
     board_quit(qts);
+
+    /* The first write, and only it, names both targets in the log. */
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    first = strstr(log, "sgi-odyssey: flow-control interrupt target 1 and "
+                        "credit target 27 stored; credits still return "
+                        "through the node interface\n");
+    g_assert_nonnull(first);
+    g_assert_null(strstr(first + strlen("sgi-odyssey: flow-control"),
+                         "flow-control interrupt target"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
 /*
