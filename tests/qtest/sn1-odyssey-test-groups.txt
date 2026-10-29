@@ -84,6 +84,7 @@ fifo /mips64/sn1/odyssey/command-work-credits-at-fifo-entry
 fifo /mips64/sn1/odyssey/command-work-map-rewrite-settles
 fifo /mips64/sn1/odyssey/command-work-stop-and-reset
 fifo /mips64/sn1/odyssey/command-work-draws-on-board-thread
+fifo /mips64/sn1/odyssey/command-fifo-setup-registers
 fifo /mips64/sn1/odyssey/command-fifo-selftest
 fifo /mips64/sn1/odyssey/command-fifo-fillrect
 fifo /mips64/sn1/odyssey/command-fifo-id-plane-write

@@ -140,6 +140,11 @@ struct SGIOdysseyState {
     uint32_t intr_enable;
     uint32_t flctl_config;
     uint32_t flctl_target;
+    /*
+     * The FIFO set-up registers 0x6b0-0x6b3 and 0x7b5, in that order, as
+     * last written through the command FIFO (ODSY_REG_FIFO_SETUP_*).
+     */
+    uint32_t fifo_setup[5];
     /* A credit target was written; not migrated. */
     bool flctl_target_reported;
     uint32_t sw_token;

@@ -467,6 +467,24 @@
 #define ODSY_FLCTL_TARGET_MASK 0x1f
 
 /*
+ * FIFO set-up registers. The IRIX IP30 kernel's command-FIFO set-up stores
+ * five doublewords whose high word is below 0x10000: 0x6b0 = 0, 0x6b1 =
+ * 256, 0x6b3 = 24144, 0x6b2 = 32192 and 0x7b5 = 1 (ESTABLISHED as the
+ * kernel's stores). That such a doubleword is a register write, the high
+ * word naming the register and the low word its value, is INFERRED; the
+ * command parser sees the same two words either way, and takes the first
+ * as a one-operand word. That 0x6b1-0x6b3 hold the FIFO water marks is
+ * INFERRED only because they are the sole values the driver writes that
+ * could be marks; which is which, and their units, are UNKNOWN. 0x6b0 and
+ * 0x7b5 have no known meaning. Limitation: the model stores all five and
+ * applies none of them. Its low-water mark stays ODSY_CFIFO_LOW_WATER.
+ */
+#define ODSY_REG_FIFO_SETUP_FIRST 0x6b0
+#define ODSY_REG_FIFO_SETUP_LAST 0x6b3
+#define ODSY_REG_FIFO_SETUP_7B5 0x7b5
+#define ODSY_FIFO_SETUP_7B5_INDEX 4
+
+/*
  * ODSY_INTR_FLAGS' low-water bit, the command-FIFO low-water interrupt
  * (the kernel's flags decode names it as the low-water flag bit). The IRIX
  * driver's high-water path sleeps the writing process, enables this source
@@ -11198,6 +11216,12 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
     case ODSY_REG_TEX_LOD:
         memcpy(s->tex_lod, s->cmd_operand, sizeof(s->tex_lod));
         break;
+    case ODSY_REG_FIFO_SETUP_FIRST ... ODSY_REG_FIFO_SETUP_LAST:
+        s->fifo_setup[tag - ODSY_REG_FIFO_SETUP_FIRST] = s->cmd_operand[0];
+        break;
+    case ODSY_REG_FIFO_SETUP_7B5:
+        s->fifo_setup[ODSY_FIFO_SETUP_7B5_INDEX] = s->cmd_operand[0];
+        break;
     case ODSY_GL_TEXCOORD_1F:
         s->tex_coord[0] = s->cmd_operand[0];
         s->tex_coord[1] = 0;
@@ -11590,6 +11614,12 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
         return;
     }
     if (word == 0x740 || word == 0x741) {
+        odyssey_cmd_start(s, word, 1);
+        return;
+    }
+    if ((word >= ODSY_REG_FIFO_SETUP_FIRST &&
+         word <= ODSY_REG_FIFO_SETUP_LAST) ||
+        word == ODSY_REG_FIFO_SETUP_7B5) {
         odyssey_cmd_start(s, word, 1);
         return;
     }
@@ -12764,6 +12794,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->interrupt_asserted = false;
     s->flctl_config = ODSY_FLCTL_CONFIG_RESET;
     s->flctl_target = 0;
+    memset(s->fifo_setup, 0, sizeof(s->fifo_setup));
     s->sw_token = 0;
     s->route_dest_upper = 0;
     s->route_dest_lower = 0;
@@ -13668,6 +13699,16 @@ static void odyssey_instance_init(Object *obj)
                                        &s->mesa_counts.fallbacks[r],
                                        OBJ_PROP_FLAG_READ);
     }
+    for (unsigned i = 0; i < ARRAY_SIZE(s->fifo_setup); i++) {
+        g_autofree char *name =
+            g_strdup_printf("x-test-fifo-setup-%x",
+                            i == ODSY_FIFO_SETUP_7B5_INDEX ?
+                            ODSY_REG_FIFO_SETUP_7B5 :
+                            ODSY_REG_FIFO_SETUP_FIRST + i);
+
+        object_property_add_uint32_ptr(obj, name, &s->fifo_setup[i],
+                                       OBJ_PROP_FLAG_READ);
+    }
     /* Synthetic model DID byte; this says nothing about physical WID rules. */
     object_property_add(obj, "x-test-did", "uint32", odyssey_test_get_did,
                         odyssey_test_set_did, NULL, NULL);
@@ -14106,8 +14147,8 @@ static int odyssey_work_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 44,
-    .minimum_version_id = 44,
+    .version_id = 45,
+    .minimum_version_id = 45,
     .pre_save = odyssey_work_pre_save,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -14121,6 +14162,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32(intr_enable, SGIOdysseyState),
         VMSTATE_UINT32(flctl_config, SGIOdysseyState),
         VMSTATE_UINT32(flctl_target, SGIOdysseyState),
+        VMSTATE_UINT32_ARRAY(fifo_setup, SGIOdysseyState, 5),
         VMSTATE_UINT32(sw_token, SGIOdysseyState),
         VMSTATE_UINT32(route_dest_upper, SGIOdysseyState),
         VMSTATE_UINT32(route_dest_lower, SGIOdysseyState),

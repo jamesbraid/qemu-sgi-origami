@@ -1897,6 +1897,56 @@ static void test_command_fifo_selftest(void)
     board_quit(qts);
 }
 
+/*
+ * The five set-up doublewords carry a register in the high word and its
+ * value in the low word. The model stores them, reports none as an
+ * unmodeled command word, and keeps its own low-water mark.
+ */
+static void test_command_fifo_setup_registers(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    const struct {
+        const char *property;
+        uint32_t value;
+    } stored[] = {
+        { "x-test-fifo-setup-6b0", 0 },
+        { "x-test-fifo-setup-6b1", 256 },
+        { "x-test-fifo-setup-6b2", 32192 },
+        { "x-test-fifo-setup-6b3", 24144 },
+        { "x-test-fifo-setup-7b5", 1 },
+    };
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-setup-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    cmd_push64(qts, 0x000006b0, 0x00000000);
+    cmd_push64(qts, 0x000006b1, 0x00000100);
+    cmd_push64(qts, 0x000006b3, 0x00005e50);
+    cmd_push64(qts, 0x000006b2, 0x00007dc0);
+    cmd_push64(qts, 0x000007b5, 0x00000001);
+    for (unsigned i = 0; i < ARRAY_SIZE(stored); i++) {
+        g_assert_cmphex(odsy_qom_get_uint(qts, stored[i].property), ==,
+                        stored[i].value);
+    }
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10030000);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_null(strstr(log, "command FIFO word"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 static void test_reset_restores_the_documented_values(void)
 {
     QTestState *qts = board_start("");
@@ -22237,6 +22287,8 @@ int main(int argc, char **argv)
                    test_baseio_prom_diagnostic_registers);
     add_fresh_case("sn1/odyssey/unmodeled-offsets-are-visible",
                    test_unmodeled_offsets_are_visible);
+    add_fresh_case("sn1/odyssey/command-fifo-setup-registers",
+                   test_command_fifo_setup_registers);
     add_case("sn1/odyssey/command-fifo-selftest",
              test_command_fifo_selftest);
     add_fresh_case("sn1/odyssey/reset-restores-documented-values",
