@@ -434,12 +434,11 @@ static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
         qdev_prop_set_uint16(parallel, "fifo-depth", 16);
     }
     /*
-     * Inputs 2 and 3 read high. Public IP30 wiring assigns GPIO2 as a
-     * read-only product input and expects an Octane high, but an Octane2's
-     * PROM Command Monitor reads inputs 2 and 3 both high, in the pin data
-     * register and in each pin register. Nothing shows a pin differing by
-     * machine, so a classic Octane, whose inputs are unmeasured, is assumed
-     * to match. Pin 8 also reads high there and is not modelled here.
+     * Inputs 2 and 3 read high on the board. An Octane2's PROM Command
+     * Monitor reads them both high, in the pin data register and in each pin
+     * register; a classic Octane's are unmeasured and assumed to match. No
+     * GPIO input identifies the product. Pin 8 also reads high there and is
+     * not modelled here.
      */
     uint32_t gpio_inputs = (1u << 2) | (1u << 3);
 

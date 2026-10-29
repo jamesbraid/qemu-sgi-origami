@@ -1021,16 +1021,14 @@ static void ip30_ioc3_attach(QTestState *s)
 static void ip30_ioc3_assert_input(QTestState *s, bool octane2)
 {
     /*
-     * Input 2 reads high on the Octane per public OpenBSD IP30 wiring and on
-     * a reference Octane2 per its PROM Command Monitor, which also reads
-     * input 3 high there.
+     * Inputs 2 and 3 read high on every Octane board: measured on one
+     * Octane2 from its PROM Command Monitor, assumed for the classic
+     * Octane. The machine argument only selects which machine runs.
      */
     g_assert_cmphex(qtest_readl(s, IP30_PIN_REG(2)), ==, 1);
     g_assert_cmphex(qtest_readl(s, IP30_PIN_DATA) & 4, ==, 4);
-    if (octane2) {
-        g_assert_cmphex(qtest_readl(s, IP30_PIN_REG(3)), ==, 1);
-        g_assert_cmphex(qtest_readl(s, IP30_PIN_DATA) & 8, ==, 8);
-    }
+    g_assert_cmphex(qtest_readl(s, IP30_PIN_REG(3)), ==, 1);
+    g_assert_cmphex(qtest_readl(s, IP30_PIN_DATA) & 8, ==, 8);
 }
 
 static void ip30_ioc3_attempt_input_write(QTestState *s, bool octane2)
@@ -1045,17 +1043,15 @@ static void ip30_ioc3_attempt_input_write(QTestState *s, bool octane2)
     qtest_writel(s, IP30_PIN_CONTROL_CLR, 4);
     qtest_writel(s, IP30_PIN_DATA, 0);
     ip30_ioc3_assert_input(s, octane2);
+    qtest_writel(s, IP30_PIN_REG(3), 0);
+    ip30_ioc3_assert_input(s, octane2);
 
-    if (octane2) {
-        qtest_writel(s, IP30_PIN_REG(3), 0);
-        ip30_ioc3_assert_input(s, octane2);
-        return;
-    }
-    qtest_writel(s, IP30_PIN_REG(3), 1);
-    g_assert_cmphex(qtest_readl(s, IP30_PIN_REG(3)), ==, 1);
-    g_assert_cmphex(qtest_readl(s, IP30_PIN_DATA) & 8, ==, 8);
+    /* An unrelated pin still writes. */
+    qtest_writel(s, IP30_PIN_REG(4), 1);
+    g_assert_cmphex(qtest_readl(s, IP30_PIN_REG(4)), ==, 1);
+    g_assert_cmphex(qtest_readl(s, IP30_PIN_DATA) & 0x10, ==, 0x10);
     qtest_writel(s, IP30_PIN_DATA, 0);
-    g_assert_cmphex(qtest_readl(s, IP30_PIN_REG(3)), ==, 0);
+    g_assert_cmphex(qtest_readl(s, IP30_PIN_REG(4)), ==, 0);
     ip30_ioc3_assert_input(s, octane2);
 }
 
@@ -1073,7 +1069,7 @@ static void test_ip30_board_gpio_input(const void *data)
     g_assert_cmphex(qtest_readl(s, IP30_IOC3_CFG + PCI_COMMAND) &
                     PCI_COMMAND_MEMORY, ==, 0);
     ip30_ioc3_attach(s);
-    g_assert_cmphex(qtest_readl(s, IP30_PIN_REG(3)), ==, octane2 ? 1 : 0);
+    g_assert_cmphex(qtest_readl(s, IP30_PIN_REG(3)), ==, 1);
     ip30_ioc3_assert_input(s, octane2);
     ip30_ioc3_attempt_input_write(s, octane2);
     qtest_quit(s);
