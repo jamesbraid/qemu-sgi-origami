@@ -3,6 +3,7 @@ testblock = declare_dependency(dependencies: [block], sources: 'iothread.c')
 
 # Unit tests selected by the SGI Meson suite, listed by test name.
 fork_unit_tests = [
+  'test-net-crc',
   'test-onewire', 'test-i2c-masters', 'test-i2c-wire', 'test-crime-texture',
   'test-sgi-o2000-module-mgmt', 'test-sgi-o2000-module-mgmt-real',
   'test-sgi-router', 'test-sn0-fabric-routed',
