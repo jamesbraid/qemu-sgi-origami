@@ -1175,6 +1175,13 @@ is approximated. A
 topology with several pipes lists at most four slots, so pipe serials stay
 below instance 64, where boards fitted by slot name start theirs.
 
+A pipe fitted by slot name takes the slot's name as its device id, and
+each of its display channels is a console with the channel as its head.
+``screendump device=gbrick1-pipe0-pipe head=1`` captures the third pipe's
+second channel, and ``-vnc :1,display=io7,head=0`` shows the Onyx2 rack's
+second pipe. Without a device, ``screendump`` takes console 0, the pipe
+that realized first, which is the first pipe given on the command line.
+
 .. _sgi-sn-firmware-supply:
 
 Firmware supply
