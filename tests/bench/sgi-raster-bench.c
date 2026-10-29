@@ -369,6 +369,7 @@ typedef enum Scene {
     SCENE_COLOUR,
     SCENE_SLIVER,
     SCENE_PERSPECTIVE,
+    SCENE_TRILINEAR,
     SCENE_COUNT,
 } Scene;
 
@@ -381,13 +382,99 @@ static const char *const scene_names[SCENE_COUNT] = {
     [SCENE_COLOUR] = "colour",
     [SCENE_SLIVER] = "sliver",
     [SCENE_PERSPECTIVE] = "perspective",
+    [SCENE_TRILINEAR] = "trilinear",
 };
+
+/*
+ * GLperf's depth-tested trilinear fill, as a frame of two quads: one
+ * across the whole window, and over it a floor in perspective on the
+ * lower 640 rows, its 1/W falling from 1 at the bottom to 1/8 at the
+ * top, so its level of detail runs from magnified to about 5. Both
+ * repeat the texture: the window quad 8 times across, the floor up to
+ * 34 times at its far edge, where coordinate precision runs out first.
+ * 2,129,920 textured fragments.
+ */
+#define TRILINEAR_FLOOR_ROWS 640
+
+static float *trilinear_quads(void)
+{
+    double top = 2.0 * TRILINEAR_FLOOR_ROWS / H - 1;
+    /* x, y, z, w, s, t for each corner, anticlockwise from bottom left */
+    const double corner[8][6] = {
+        { -1, -1, 0.8, 1, 0, 0 },
+        { 1, -1, 0.8, 1, 8, 0 },
+        { 1, 1, 0.8, 1, 8, 6.4 },
+        { -1, 1, 0.8, 1, 0, 6.4 },
+        { -1, -1, -0.5, 1, 16, 0 },
+        { 1, -1, -0.5, 1, 20, 0 },
+        { 8, top * 8, 0.5 * 8, 8, 34, 16 },
+        { -8, top * 8, 0.5 * 8, 8, 2, 16 },
+    };
+    float *v = g_new0(float, 8 * SGI_GL_VERTEX_FLOATS);
+
+    for (unsigned i = 0; i < 8; i++) {
+        float *p = &v[i * SGI_GL_VERTEX_FLOATS];
+
+        for (unsigned k = 0; k < 4; k++) {
+            p[SGI_GL_V_POSITION + k] = corner[i][k];
+            p[SGI_GL_V_COLOR + k] = 1;
+        }
+        p[SGI_GL_V_TEXCOORD + 0] = corner[i][4];
+        p[SGI_GL_V_TEXCOORD + 1] = corner[i][5];
+        p[SGI_GL_V_TEXCOORD + 3] = 1;
+    }
+    return v;
+}
+
+/*
+ * A texture with structure at every scale, for the trilinear scene:
+ * 16-texel checks in red, a ramp in green, diagonal stripes in blue and
+ * a pattern in alpha, each level the box filter of the one above.
+ */
+static void trilinear_texels(Bench *b)
+{
+    for (uint32_t y = 0; y < TEX_SIZE; y++) {
+        for (uint32_t x = 0; x < TEX_SIZE; x++) {
+            uint32_t r = (((x >> 4) ^ (y >> 4)) & 1) ? 230 : 40;
+            uint32_t g = x, bl = ((x * 3 + y * 5) & 63) * 4;
+
+            b->texels[0][y * TEX_SIZE + x] = (r << 24) | (g << 16) |
+                                              (bl << 8) | ((x ^ y) & 0xff);
+        }
+    }
+    for (unsigned l = 1; l < TEX_LEVELS; l++) {
+        uint32_t n = TEX_SIZE >> l, p = 2 * n;
+        const uint32_t *up = b->texels[l - 1];
+
+        for (uint32_t y = 0; y < n; y++) {
+            for (uint32_t x = 0; x < n; x++) {
+                const uint32_t c[4] = {
+                    up[2 * y * p + 2 * x], up[2 * y * p + 2 * x + 1],
+                    up[(2 * y + 1) * p + 2 * x],
+                    up[(2 * y + 1) * p + 2 * x + 1],
+                };
+                uint32_t out = 0;
+
+                for (unsigned k = 0; k < 4; k++) {
+                    unsigned shift = 24 - 8 * k, sum = 2;
+
+                    for (unsigned i = 0; i < 4; i++) {
+                        sum += (c[i] >> shift) & 0xff;
+                    }
+                    out |= (sum >> 2) << shift;
+                }
+                b->texels[l][y * n + x] = out;
+            }
+        }
+    }
+}
 
 static void scene_run(Scene scene, unsigned repeat)
 {
     bool rgba = scene != SCENE_COLOUR;
     const SGIRasterRules *rules = rgba ? &rules_rgba : &rules_colour;
     g_autofree float *verts = scene == SCENE_SLIVER ? slivers(scene + 1) :
+        scene == SCENE_TRILINEAR ? trilinear_quads() :
         triangles(scene + 1, scene == SCENE_BLEND ? 0.5f : 1.0f);
     Bench *b = g_new(Bench, 1);
     SGIRasterTarget t;
@@ -427,6 +514,11 @@ static void scene_run(Scene scene, unsigned repeat)
     case SCENE_SLIVER:
         c.cur.depth_test = 1;
         break;
+    case SCENE_TRILINEAR:
+        trilinear_texels(b);
+        d.mode = SGI_GL_QUADS;
+        d.count = 8;
+        /* fall through */
     case SCENE_MIPMAP:
     case SCENE_PERSPECTIVE:
         b->image.min_filter = SGI_GL_LINEAR_MIPMAP_LINEAR;
