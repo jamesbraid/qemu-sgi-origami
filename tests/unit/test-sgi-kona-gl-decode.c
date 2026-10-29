@@ -775,6 +775,52 @@ static void test_texture_sampler(void)
     g_assert_cmpmem(&p, sizeof(p), &original, sizeof(original));
 }
 
+/*
+ * The GL client library's per-axis LOD bias byte, as the command grammar
+ * datasheet gives it: a bias b >= 0 becomes trunc((16 << i) * (1 + b -
+ * i)) with i = trunc(b), a negative one trunc((16 >> i) * (1 + b + i))
+ * with i = trunc(1 - b), saturated to 1..255.
+ */
+static uint32_t client_lod_bias_byte(double b)
+{
+    int i = b >= 0 ? (int)b : (int)(1 - b);
+    int byte = b >= 0 ? (int)((16 << i) * (1 + b - i)) :
+                        (int)((16 >> i) * (1 + b + i));
+
+    return MIN(MAX(byte, 1), 255);
+}
+
+/*
+ * The byte over 16 is 2^b, linear between whole powers of two, and the
+ * sampler takes each axis's byte as exactly that derivative factor.
+ */
+static void test_texture_lod_bias_factor(void)
+{
+    static const struct {
+        double bias, factor;
+    } cases[] = {
+        { -3, 0.125 }, { -2, 0.25 }, { -1, 0.5 }, { -0.5, 0.75 },
+        { 0, 1 }, { 0.25, 1.25 }, { 0.5, 1.5 }, { 1, 2 }, { 1.5, 3 },
+        { 2, 4 }, { 3, 8 }, { 4, 255.0 / 16 }, { -5, 1.0 / 16 },
+    };
+    const uint32_t bind[5] = { 7, 0, 4 << 2, 0, 1 };
+    uint32_t record[22] = { 0, 0, 256u << 10 };
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        SGIKonaTextureParams p = {
+            .min_lod = -1000, .max_lod = 1000,
+            .post_scale = { 1, 1, 1, 1 },
+        };
+        uint32_t s = client_lod_bias_byte(cases[i].bias);
+        uint32_t t = client_lod_bias_byte(-cases[i].bias);
+
+        record[1] = 0x00100000 | t << 8 | s;
+        g_assert_true(sgi_kona_gl_texture_sampler(bind, record, &p));
+        g_assert_cmpfloat(p.lod_scale_s, ==, cases[i].factor);
+        g_assert_cmpfloat(p.lod_scale_t, ==, t / 16.0);
+    }
+}
+
 static void test_texture_sharpen_sampler(void)
 {
     const uint32_t modes[] = {
@@ -3379,6 +3425,8 @@ int main(int argc, char **argv)
                     test_texture_transform);
     g_test_add_func("/sgi-kona-gl-decode/texture-sampler",
                     test_texture_sampler);
+    g_test_add_func("/sgi-kona-gl-decode/texture-lod-bias-factor",
+                    test_texture_lod_bias_factor);
     g_test_add_func("/sgi-kona-gl-decode/texture-dimensions",
                     test_texture_dimensions);
     g_test_add_func("/sgi-kona-gl-decode/texture-sharpen-sampler",

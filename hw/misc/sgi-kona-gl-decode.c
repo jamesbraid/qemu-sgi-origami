@@ -466,6 +466,11 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
     }
     next.wrap_s = bind[3] & 0x1000 ? SGI_GL_CLAMP_TO_EDGE : SGI_GL_REPEAT;
     next.wrap_t = bind[3] & 0x2000 ? SGI_GL_CLAMP_TO_EDGE : SGI_GL_REPEAT;
+    /*
+     * The client library makes each byte from a public bias b as 16 * 2^b,
+     * linear between whole powers of two and saturated to 1..255, so the
+     * byte over 16 is the derivative factor itself.
+     */
     next.lod_scale_s = scale_s / 16.0;
     next.lod_scale_t = scale_t / 16.0;
     next.min_lod = sgi_kona_gl_texture_lod(lo);
