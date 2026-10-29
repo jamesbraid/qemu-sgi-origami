@@ -983,3 +983,4 @@ tests/qtest/sgi-crime-line-vectors.h
 tests/qtest/sgi-crime-line-vectors.py
 tests/qtest/sgi-crime-texture-addresses.h
 tests/unit/test-crime-texture.c
+tests/unit/test-net-crc.c
