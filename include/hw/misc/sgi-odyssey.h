@@ -139,6 +139,9 @@ struct SGIOdysseyState {
     uint32_t intr_flags;
     uint32_t intr_enable;
     uint32_t flctl_config;
+    uint32_t flctl_target;
+    /* A credit target was written; not migrated. */
+    bool flctl_target_reported;
     uint32_t sw_token;
 
     /*
