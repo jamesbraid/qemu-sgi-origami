@@ -19,7 +19,11 @@ void crime_texture_free(CrimeTexture *texture);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(CrimeTexture, crime_texture_free)
 
 #ifdef CRIME_TEXTURE_TEST
+struct CrimeRational;
 /* Unit-only boundary setup; absent from the device build. */
+bool crime_texture_test_environment(CrimeTexture *texture,
+                                    const struct CrimeRational *texel,
+                                    uint32_t *color);
 void crime_texture_test_work(CrimeTexture *texture, unsigned fragments,
                              unsigned taps, unsigned snapshot_bytes);
 #endif

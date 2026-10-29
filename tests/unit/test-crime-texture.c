@@ -8,7 +8,7 @@
 #include "crime-rational-reference.h"
 #include "crime-rational-vectors.h"
 #include "crime-rational-361-reference.h"
-#include "crime-texture-361-reference.h"
+#include "crime-texture-82-reference.h"
 
 #ifdef CRIME_TEXTURE_ALLOCATION_WRAP
 static int allocation_failure = -1;
@@ -535,12 +535,12 @@ static int64_t sampler_measure(bool previous, unsigned count, bool white,
     ram->trace = 1;
     begin = g_get_monotonic_time();
     if (previous) {
-        g_autoptr(PreviousTexture) t = previous_texture_new(
+        g_autoptr(Frozen82Texture) t = frozen82_texture_new(
             p, tlb, 597, 621, false, sampler_ram, ram);
         g_assert_nonnull(t);
         for (unsigned i = 0; i < count; i++) {
             uint32_t color = white ? UINT32_MAX : 0x91b3d5f7U ^ i * 0x12345U;
-            g_assert_true(previous_texture_sample(t, 320 + i % 32,
+            g_assert_true(frozen82_texture_sample(t, 320 + i % 32,
                                                   528 + i / 32, &color));
             result = (result ^ color) * UINT64_C(0x100000001b3);
         }
@@ -584,7 +584,7 @@ static void sampler_compare(unsigned count, bool timing)
             g_assert_cmpuint(old.reads, ==, current.reads);
             g_assert_cmphex(old.trace, ==, current.trace);
             g_test_message("captured sampler white=%u samples=%u round=%u "
-                           "old361=%" PRId64 " us new=%" PRId64
+                           "old82f=%" PRId64 " us new=%" PRId64
                            " us ratio=%.3f reads=%" PRIu64 " output=%016" PRIx64
                            " source=%016" PRIx64,
                            white, count, round, old_us, new_us,
@@ -642,7 +642,7 @@ static void test_sampler_matrix(void)
                     }
                     g_autoptr(CrimeTexture) t = crime_texture_new(
                         p, tlb, 597, 621, false, sampler_ram, &current);
-                    g_autoptr(PreviousTexture) previous = previous_texture_new(
+                    g_autoptr(Frozen82Texture) previous = frozen82_texture_new(
                         p, tlb, 597, 621, false, sampler_ram, &old);
                     g_assert_cmpint(t != NULL, ==, previous != NULL);
                     if (!t) {
@@ -654,7 +654,7 @@ static void test_sampler_matrix(void)
                         uint32_t a = 0x91b3d5f7 ^ i * 0x12345U, b = a;
                         bool ok = crime_texture_sample(t, points[i][0],
                                                        points[i][1], &a);
-                        bool ref = previous_texture_sample(previous,
+                        bool ref = frozen82_texture_sample(previous,
                             points[i][0], points[i][1], &b);
                         g_assert_cmpint(ok, ==, ref);
                         g_assert_cmphex(a, ==, b);
@@ -662,6 +662,161 @@ static void test_sampler_matrix(void)
                         g_assert_cmphex(current.trace, ==, old.trace);
                     }
                 }
+            }
+        }
+    }
+}
+
+static bool environment_compare(CrimeTexture *t, Frozen82Texture *previous,
+                                  const CrimeRational *texel, uint32_t primary,
+                                  int alias)
+{
+    CrimeRational current[4], reference[4];
+    uint32_t a = primary, b = primary, *out = &a, *expected = &b;
+    bool ok, ref;
+
+    memcpy(current, texel, sizeof(current));
+    memcpy(reference, texel, sizeof(reference));
+    if (alias >= 0) {
+        out = alias < 4 ? &current[alias].numerator.word[0] :
+                         &current[alias - 4].denominator.word[0];
+        expected = alias < 4 ? &reference[alias].numerator.word[0] :
+                              &reference[alias - 4].denominator.word[0];
+    }
+    uint32_t before = *out;
+    ok = crime_texture_test_environment(t, current, out);
+    ref = frozen82_texture_test_environment(previous, reference, expected);
+    g_assert_cmpint(ok, ==, ref);
+    g_assert_cmphex(*out, ==, *expected);
+    if (!ok) {
+        g_assert_cmphex(*out, ==, before);
+    }
+    for (unsigned c = 0; c < 4; c++) {
+        assert_rational(&current[c], &reference[c]);
+    }
+    return ok;
+}
+
+static void test_environment_boundaries(void)
+{
+    const unsigned formats[][2] = {
+        {1, 1}, {1, 2}, {2, 1}, {2, 2}, {4, 1},
+        {5, 1}, {6, 1}, {7, 1}, {8, 1},
+    };
+    const CrimeInteger denominators[] = {
+        { .word = {1} }, { .word = {2} }, { .word = {3} }, { .word = {255} },
+        { .word = {256} }, { .word = {0, 0, 0, 0x00800000} },
+        { .word = {UINT32_MAX, UINT32_MAX, UINT32_MAX, 0x00ffffff} },
+        { .word = {0, 0, 0, 0x01000000} },
+        { .word = {1, 0, 0, 0x01000000} },
+    };
+    const uint32_t primary[] = {
+        0, UINT32_MAX, 0x01010101, 0x7f80feff, 0xfffe8001, 0x39a175c7,
+    };
+    CrimeInteger zero = crime_integer(0), one = crime_integer(1);
+    CrimeInteger two = crime_integer(2);
+
+    for (unsigned format = 0; format < ARRAY_SIZE(formats); format++) {
+        for (unsigned function = 0; function < 4; function++) {
+            uint64_t p[128], tlb[28];
+            sampler_state(p, tlb);
+            p[0x110 / 4] &= ~((15U << 20) | (3U << 18) | 3U);
+            p[0x110 / 4] |= formats[format][0] << 20 |
+                            formats[format][1] << 18 | function;
+            p[0x168 / 4] = 0xff007f80;
+            SamplerRam ram = { 0 };
+            g_autoptr(CrimeTexture) t = crime_texture_new(
+                p, tlb, 597, 621, false, sampler_ram, &ram);
+            g_autoptr(Frozen82Texture) previous = frozen82_texture_new(
+                p, tlb, 597, 621, false, sampler_ram, &ram);
+            g_assert_cmpint(t != NULL, ==, previous != NULL);
+            if (!t) {
+                g_assert_cmpuint(formats[format][0], >=, 5);
+                g_assert_cmpuint(function, ==, 1);
+                continue;
+            }
+            for (unsigned d = 0; d < ARRAY_SIZE(denominators); d++) {
+                CrimeInteger values[8], half, remainder;
+
+                crime_integer_divide(&half, &remainder, &denominators[d], &two);
+                values[0] = zero;
+                values[1] = one;
+                values[2] = zero;
+                if (crime_integer_bits(&half)) {
+                    crime_integer_subtract(&values[2], &half, &one);
+                }
+                values[3] = half;
+                g_assert_true(crime_integer_add(&values[4], &half, &one));
+                crime_integer_subtract(&values[5], &denominators[d], &one);
+                values[6] = denominators[d];
+                g_assert_true(crime_integer_add(&values[7], &denominators[d],
+                                                &one));
+                for (unsigned n = 0; n < ARRAY_SIZE(values); n++) {
+                    CrimeRational texel[4];
+
+                    for (unsigned c = 0; c < 4; c++) {
+                        texel[c] = (CrimeRational) {
+                            .numerator = values[(n + c) % ARRAY_SIZE(values)],
+                            .denominator = denominators[d],
+                        };
+                    }
+                    for (unsigned f = 0; f < ARRAY_SIZE(primary); f++) {
+                        environment_compare(t, previous, texel, primary[f], -1);
+                    }
+                    for (unsigned alias = 0; alias < 8; alias++) {
+                        environment_compare(t, previous, texel, 0, alias);
+                    }
+                    texel[n % 4].negative = true;
+                    environment_compare(t, previous, texel, 0x7f80feff, -1);
+                }
+            }
+            CrimeRational excessive[4];
+            for (unsigned c = 0; c < 4; c++) {
+                excessive[c] = crime_rational(1, 1);
+                for (unsigned w = 0; w < 16; w++) {
+                    excessive[c].numerator.word[w] = UINT32_MAX;
+                    excessive[c].denominator.word[w] = UINT32_MAX;
+                }
+                excessive[c].numerator.word[15] = 0x7fffffff;
+            }
+            g_assert_false(environment_compare(t, previous, excessive,
+                                                0xfefefefe, -1));
+            for (unsigned alias = 0; alias < 8; alias++) {
+                g_assert_false(environment_compare(t, previous, excessive,
+                                                    0, alias));
+            }
+            g_assert_cmpuint(ram.reads, ==, 0);
+        }
+    }
+    /* All byte factors, including the alpha BLEND rule for format 6. */
+    for (unsigned type = 2; type <= 6; type += 4) {
+        for (unsigned e = 0; e < 256; e++) {
+            uint64_t p[128], tlb[28];
+            SamplerRam ram = { 0 };
+            CrimeRational texel[4];
+            sampler_state(p, tlb);
+            p[0x110 / 4] &= ~((15U << 20) | (3U << 18) | 3U);
+            p[0x110 / 4] |= type << 20 | 1U << 18 | 2;
+            p[0x168 / 4] = e * 0x01010101U;
+            g_autoptr(CrimeTexture) t = crime_texture_new(
+                p, tlb, 597, 621, false, sampler_ram, &ram);
+            g_autoptr(Frozen82Texture) previous = frozen82_texture_new(
+                p, tlb, 597, 621, false, sampler_ram, &ram);
+            g_assert_nonnull(t);
+            g_assert_nonnull(previous);
+            for (unsigned c = 0; c < 4; c++) {
+                texel[c] = crime_rational(c & 1 ? 2 : 1, 3);
+            }
+            for (unsigned f = 0; f < 256; f++) {
+                environment_compare(t, previous, texel, f * 0x01010101U, -1);
+            }
+            for (unsigned c = 0; c < 4; c++) {
+                texel[c] = crime_rational(1, 1);
+            }
+            if (!e) {
+                uint32_t color = UINT32_MAX;
+                g_assert_true(crime_texture_test_environment(t, texel, &color));
+                g_assert_cmphex(color, ==, type == 6 ? 0 : 0x000000ff);
             }
         }
     }
@@ -687,6 +842,8 @@ int main(int argc, char **argv)
                     test_equal_denominators);
     g_test_add_func("/crime/texture/captured-reference",
                     test_sampler_reference);
+    g_test_add_func("/crime/texture/environment-boundaries",
+                    test_environment_boundaries);
     g_test_add_func("/crime/texture/format-filter-reference",
                     test_sampler_matrix);
     g_test_add_func("/crime/rational/limits", test_rational_limits);

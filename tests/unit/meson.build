@@ -52,7 +52,8 @@ tests = {
   # all code tested by test-int128 is inside int128.h
   'test-int128': [],
   'test-crime-texture': ['../../hw/mips/sgi/crime-texture.c',
-                         'crime-texture-361-reference.c'],
+                         'crime-texture-361-reference.c',
+                         'crime-texture-82-reference.c'],
   'rcutorture': [],
   'test-rcu-list': [],
   'test-rcu-simpleq': [],
