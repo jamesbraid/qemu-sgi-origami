@@ -42,8 +42,10 @@ class IP32CatalogueTests(unittest.TestCase):
         self.assertEqual(offering["firmware"]["size"], 524288)
         self.assertNotIn("asset", offering["firmware"])
         self.assertEqual([c["launcher-name"] for c in offering["consoles"]], ["mace-a", "mace-b"])
-        self.assertEqual([a["bus"] for a in offering["scsi-adapters"]], ["scsi.0", "scsi.1"])
+        self.assertEqual([a["bus"] for a in offering["scsi-adapters"]],
+                         ["aic0.0", "aic1.0"])
         self.assertEqual(offering["scsi-adapters"][1]["targets"], [])
+        self.assertEqual(offering["disk-bus"], "aic0.0")
         self.assertEqual(offering["overrides"], [])
         self.assertEqual(offering["networks"][0]["nic-model"], "sgi-mace-eth")
 
@@ -68,6 +70,7 @@ class IP32CatalogueTests(unittest.TestCase):
         self.assertEqual(offering["product"], "o2")
         self.assertEqual(offering["machine-options"], "o2,variant=o2plus")
         self.assertEqual(offering["default-cpu-model"], "R12000")
+        self.assertEqual(offering["disk-bus"], "aic0.0")
         self.assertEqual(offering["default-topology"], "o2")
         self.assertEqual(offering["memory-per-node-mib"], {
             "default": 1024, "accepted": [1024]})

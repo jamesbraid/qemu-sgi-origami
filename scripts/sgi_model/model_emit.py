@@ -517,10 +517,11 @@ def _scsi_adapters_for(topology: dict) -> list[dict]:
     """One `scsi-adapters` entry per SCSI host adapter any I/O board carries, in
     the same device order `_compile_io_board`/`_compile_bedrock_pci_function`
     already sort PCI functions into. `bus` follows QEMU's own generic-SCSI
-    numbering, one bus per host adapter instantiated.
+    numbering, one bus per host adapter instantiated. IP32 uses the
+    explicitly named onboard AIC controllers' child buses instead.
     """
     if topology["generation"] == "IP32":
-        return [{"type": "scsi", "bus": f"scsi.{index}",
+        return [{"type": "scsi", "bus": f"aic{index}.0",
                  "targets": list(range(7)) if index == 0 else []}
                 for index in range(2)]
     adapters = []
