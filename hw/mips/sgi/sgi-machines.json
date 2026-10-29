@@ -26546,7 +26546,7 @@
       "graphics": {
         "headless": false,
         "headless-refused": "an Onyx 3400 with InfiniteReality is sold with G-bricks; a system with none is an Origin 3400, so use origin3400",
-        "max-pipes": 1,
+        "max-pipes": 4,
         "slots": [
           {
             "changeable": false,
@@ -26755,10 +26755,6 @@
                           {
                             "description": "two raster managers",
                             "value": "2"
-                          },
-                          {
-                            "description": "four raster managers",
-                            "value": "4"
                           }
                         ]
                       },
@@ -26815,6 +26811,17 @@
                 "family": "kona",
                 "product": "ir2e",
                 "reason": "the G-brick pipe layer is an InfiniteReality3 pipe, and no other revision is modelled for the G-brick"
+              },
+              {
+                "family": "kona",
+                "product": "ir3",
+                "reason": "a G-brick's pipe 1 takes one or two raster managers; only pipe 0 takes four",
+                "settings": [
+                  {
+                    "name": "rm-count",
+                    "value": "4"
+                  }
+                ]
               }
             ]
           },
@@ -26999,10 +27006,6 @@
                           {
                             "description": "two raster managers",
                             "value": "2"
-                          },
-                          {
-                            "description": "four raster managers",
-                            "value": "4"
                           }
                         ]
                       },
@@ -27059,6 +27062,17 @@
                 "family": "kona",
                 "product": "ir2e",
                 "reason": "the G-brick pipe layer is an InfiniteReality3 pipe, and no other revision is modelled for the G-brick"
+              },
+              {
+                "family": "kona",
+                "product": "ir3",
+                "reason": "a G-brick's pipe 1 takes one or two raster managers; only pipe 0 takes four",
+                "settings": [
+                  {
+                    "name": "rm-count",
+                    "value": "4"
+                  }
+                ]
               }
             ]
           }

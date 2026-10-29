@@ -1908,6 +1908,15 @@ struct SGIKonaState {
      * in sgi-kona.c.
      */
     char *pixel_depth;
+    /*
+     * A G-brick pipe, which the deskside guard (no Ktown record means an
+     * Onyx2 deskside pipe, at most two raster managers) must not apply to.
+     * Its Ktown2 presents no record, since no Origin 3000 capture gives
+     * the board's part, so the identity chain cannot say the pipe is not
+     * a deskside one. How many raster managers each G-brick pipe takes is
+     * the catalogue slot's to say.
+     */
+    bool ktown2;
     char *product;
     char *geometry;
     char *rm_type;

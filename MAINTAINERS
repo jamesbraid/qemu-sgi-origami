@@ -1618,6 +1618,7 @@ F: tests/unit/test-sgi-dma.c
 F: tests/bench/sgi-raster-bench.c
 F: tests/unit/test-sgi-kona-*.c
 F: tests/unit/test-sgi-gl.c
+F: tests/unit/test-sgi-graphics-host.c
 F: tests/unit/sgi-gl-texture-test.h
 F: tests/unit/test-sgi-gl-vmstate.c
 F: tests/unit/test-sgi-memory.c

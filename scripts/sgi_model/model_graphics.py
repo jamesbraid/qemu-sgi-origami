@@ -36,8 +36,14 @@ _FAMILY_FIELDS = {"family", "device", "name", "products", "settings"}
 _PRODUCT_FIELDS = {"product", "name", "description"}
 _SETTING_FIELDS = {"name", "description", "values"}
 _VALUE_FIELDS = {"value", "description", "evidence"}
-_SECTION_FIELDS = {"max_pipes", "headless", "headless_refused",
-                   "machine_properties", "slots"}
+_SECTION_FIELDS = {"max_pipes", "max_pipes_sources", "headless",
+                   "headless_refused", "machine_properties", "slots"}
+
+# Each pipe slot's one-wire records take graphics instances 16 * index to
+# 16 * index + 15 (hw/misc/sgi-kona.c), and an XIO board placed by slot name
+# offsets its placeholder serials from instance 64 (hw/mips/sgi/xio-board.c),
+# so a machine with several pipes lists at most four slots.
+MULTI_PIPE_SLOTS = 4
 _MACHINE_PROPERTIES_FIELDS = {"properties", "reason"}
 _SLOT_FIELDS = {"name", "names", "description", "placement", "default",
                 "families", "refusals"}
@@ -340,9 +346,18 @@ def resolve_graphics(product_id: str, section: Any,
     if not isinstance(section, dict) or set(section) - _SECTION_FIELDS:
         raise ResolutionError(f"{label} has unknown fields")
     max_pipes = section.get("max_pipes")
-    if max_pipes != 1:
-        raise ResolutionError(f"{label} max_pipes must be 1 until more than "
-                              "one pipe is modelled")
+    if type(max_pipes) is not int or max_pipes < 1:
+        raise ResolutionError(f"{label} max_pipes must be a whole number "
+                              "of at least 1")
+    sources = section.get("max_pipes_sources")
+    if (max_pipes > 1) != (sources is not None):
+        raise ResolutionError(f"{label} needs max_pipes_sources exactly when "
+                              "max_pipes is above 1")
+    if sources is not None and (
+            not isinstance(sources, list) or not sources or
+            not all(isinstance(item, str) and item for item in sources)):
+        raise ResolutionError(f"{label} max_pipes_sources must be a "
+                              "non-empty list of citations")
     raw_slots = section.get("slots")
     if not isinstance(raw_slots, list) or not raw_slots:
         raise ResolutionError(f"{label} slots must be a non-empty list")
@@ -412,6 +427,15 @@ def resolve_graphics(product_id: str, section: Any,
     if duplicate:
         raise ResolutionError(f"{label} describes two slots as "
                               f"'{duplicate}'")
+    if max_pipes > len(slots):
+        raise ResolutionError(f"{label} max_pipes {max_pipes} is more than "
+                              f"its {len(slots)} slots can hold")
+    if max_pipes > 1 and len(slots) > MULTI_PIPE_SLOTS:
+        raise ResolutionError(
+            f"{label} lists {len(slots)} slots, and a topology with several "
+            f"pipes lists at most {MULTI_PIPE_SLOTS}: each slot's one-wire "
+            "serials take sixteen graphics instances, below the 64 where "
+            "boards placed by slot name start")
     defaults = [slot for slot in slots if "default" in slot]
     if len(defaults) > 1:
         raise ResolutionError(f"{label} has more than one default pipe")

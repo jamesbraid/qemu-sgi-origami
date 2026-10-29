@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "1855d6000cd7c037fd129b50f248d5777b9fe6aaf9f5b67e7bfd2055b41f2cd9"
+    "4e392abdb6318a31232a6d6f60c7107ad64d3286cb53d0d2a42466120fc1d786"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -272,7 +272,9 @@ class GraphicsPipeTests(unittest.TestCase):
             graphics = topology.get("graphics")
             if graphics is None:
                 continue
-            self.assertEqual(graphics["max-pipes"], 1)
+            self.assertGreaterEqual(graphics["max-pipes"], 1)
+            self.assertLessEqual(graphics["max-pipes"],
+                                 len(graphics["slots"]))
             self.assertEqual("headless-refused" in graphics,
                              not graphics["headless"])
             names = [slot["name"] for slot in graphics["slots"]]
@@ -330,6 +332,39 @@ class GraphicsPipeTests(unittest.TestCase):
                  self.topology("origin2000-rack")["graphics"]["slots"]}
         self.assertNotIn("requires", slots["io3"])
         self.assertEqual(slots["io12"]["requires"], {"min-nodes": 2})
+
+    def test_pipe_limits(self):
+        limits = {topology["name"]: topology["graphics"]["max-pipes"]
+                  for topology in self.catalogue["topologies"]
+                  if topology.get("graphics")}
+        self.assertEqual(limits.pop("onyx3400-ir"), 4)
+        self.assertEqual(set(limits.values()), {1})
+
+    def test_max_pipes_above_the_slots_is_refused(self):
+        section = self.section([{"product": "si", "fidelity": "implemented"}])
+        section["max_pipes"] = 2
+        section["max_pipes_sources"] = ["a manual"]
+        with self.assertRaisesRegex(ResolutionError,
+                                    "more than its 1 slots can hold"):
+            self.resolve(section)
+
+    def test_max_pipes_above_one_needs_sources(self):
+        section = self.many_slots("XIO slot {number}")
+        section["max_pipes"] = 2
+        with self.assertRaisesRegex(ResolutionError, "max_pipes_sources"):
+            self.resolve(section)
+        section["max_pipes_sources"] = ["a manual"]
+        self.assertEqual(self.resolve(section)["max_pipes"], 2)
+
+    def test_several_pipes_take_at_most_four_slots(self):
+        section = self.many_slots("XIO slot {number}")
+        section["slots"][0]["names"] = ["io2", "io3", "io4", "io5", "io6"]
+        section["max_pipes"] = 2
+        section["max_pipes_sources"] = ["a manual"]
+        with self.assertRaisesRegex(ResolutionError, "at most 4"):
+            self.resolve(section)
+        section["slots"][0]["names"] = ["io2", "io3", "io4", "io5"]
+        self.resolve(section)
 
     def test_pci_placement(self):
         slots = {slot["name"]: slot for slot in

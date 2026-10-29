@@ -991,3 +991,5 @@ tests/unit/crime-rational-361-reference.h
 tests/unit/crime-texture-361-reference.c
 tests/unit/crime-texture-361-reference.h
 tests/unit/crime-texture-361-body.h
+hw/mips/sgi/sgi-graphics-host.c
+tests/unit/test-sgi-graphics-host.c

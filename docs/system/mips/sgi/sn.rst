@@ -253,10 +253,11 @@ Choices the sources do not settle, each a model choice:
 
 Stated limitations:
 
-* The graphics contract builds one pipe at once, so the machine offers
-  the four pipe slots and fits at most one ``sgi-kona``; the first,
-  I-brick port B's, is the default. Each C-brick's L1 knows its chip's
-  G-brick whether or not a pipe is fitted.
+* The machine fits up to four ``sgi-kona`` pipes, one per pipe slot;
+  the first, I-brick port B's, is the default. Each G-brick's pipe 1
+  takes one or two raster managers, its pipe 0 one, two or four. Each
+  C-brick's L1 knows its chip's G-brick whether or not a pipe is
+  fitted.
 * The N-brick's chips have no PCI heads, so the PROM's start on the
   C-bricks cabled to it prints ``xtalk_init resulted in an exception`` and
   ``Reading link e`` and ``Reading link f`` failures before it continues;
@@ -1153,7 +1154,11 @@ The IMPACT products are ``si``, ``si-t``, ``ssi``, ``mxi``, ``esi``,
 ``esi-t``, ``essi`` and ``emxi``.
 A display board reports its real channel count, two on ``dg5-2`` and
 eight on ``dg5-8``, and every channel scans out.
-At most one pipe is built at once on every topology today.
+Each topology's ``max-pipes`` says how many pipes it builds at once:
+four on ``onyx3400-ir``, one everywhere else. A second pipe takes
+another slot with a second ``-device``, and a node board controls at
+most one pipe (the Origin and Onyx2 Hardware Quick-reference Booklet,
+HMQ-380-C).
 
 .. _sgi-sn-firmware-supply:
 

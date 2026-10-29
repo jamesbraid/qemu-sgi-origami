@@ -3836,6 +3836,9 @@ static void sgi_machine_fill_pipe_record(SGIMachineState *s,
     qdev_prop_set_uint32(dev, "fabric-hub-widget",
                          sgi_machine_kona_hub_widget(
                              s, t, s->pipe_record_attachment[index]));
+    /* A pipe cabled to an I/O brick's crossbar is a G-brick's. */
+    qdev_prop_set_bit(dev, "ktown2", s->enclosure_xbridges &&
+                      s->pipe_record_attachment[index]->crossbar_index >= 0);
 }
 
 /*
@@ -10216,6 +10219,44 @@ bool sgi_machine_ip53_experiment_authorized(MachineState *machine)
 }
 
 /*
+ * The node board that controls the slot pipe @dev names: a pipe record's
+ * own node, the controlling node the live topology gives an empty XIO
+ * slot, or node 0 for the IP53 PIC fabric's graphics slot.
+ */
+static const char *sgi_machine_pipe_host(void *opaque, DeviceState *dev)
+{
+    SGIMachineState *s = opaque;
+    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
+    g_autofree const SGIModelNode **nodes = NULL;
+    const SGIModelXioSlotList *entry;
+    g_autofree char *name = NULL;
+    ssize_t record;
+    int64_t node = -1;
+    size_t count;
+
+    if (!object_property_find(OBJECT(dev), "slot")) {
+        return NULL;
+    }
+    name = object_property_get_str(OBJECT(dev), "slot", &error_abort);
+    record = sgi_machine_find_pipe_record(s, t, name);
+    if (record >= 0) {
+        node = s->pipe_record_attachment[record]->node_index;
+    } else if (name && g_str_has_prefix(name, "widget-") && s->pic_hosts) {
+        node = 0;
+    }
+    for (entry = t->xio_slots; node < 0 && name && entry;
+         entry = entry->next) {
+        g_autofree char *slot = sgi_machine_xio_slot_name(t, entry->value);
+
+        if (g_str_equal(slot, name)) {
+            node = entry->value->controlling_node;
+        }
+    }
+    nodes = sgi_model_node_array(t->nodes, &count);
+    return node >= 0 && (uint64_t)node < count ? nodes[node]->id : NULL;
+}
+
+/*
  * Check -vga and create the topology's default pipe, which
  * sgi_machine_done() realizes once it knows no -device was a pipe. It is
  * created now, while the machine initializes, so it is not taken for a
@@ -10225,6 +10266,8 @@ static bool sgi_machine_init_graphics(SGIMachineState *s, Error **errp)
 {
     const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
 
+    s->pipes.host_node = sgi_machine_pipe_host;
+    s->pipes.opaque = s;
     return sgi_graphics_pipes_init(&s->pipes, MACHINE_GET_CLASS(s)->name,
                                    sgi_machine_chassis(MACHINE(s)),
                                    QAPI_LIST_LENGTH(t->nodes),
