@@ -612,6 +612,14 @@
  * The per-drawable display-mode registers at ODSY_DISPMODE_BASE + DID
  * (drawable id 0..31). Bits 8:4 of the word name the colormap group the
  * drawable's indexed pixels resolve through.
+ *
+ * Reset: the kernel's back-end initialisation writes every main mode as
+ * ((X & 0xfe001fff) | 0x004b5e00) & 0xfffffe00 and every overlay mode
+ * (ODSY_OVERLAY_MODE_BASE) as Y & 0xffffff00, X and Y stack words it never
+ * sets (ESTABLISHED). Only 0x004b5e00 with bits 8:0 clear is defined, so
+ * group 0; the board's own reset values are UNKNOWN. MODEL CHOICE: every
+ * mode resets to zero, which agrees with the defined bits only in bits 8:0,
+ * and the model keeps whatever word is written afterwards.
  */
 #define ODSY_DISPMODE_BASE 0x2900
 #define ODSY_DISPMODE_COUNT 32
@@ -819,6 +827,12 @@
  * "unknown arity" case left to report. A register-select's low 16 bits carry
  * the same field, so this reads correctly whether passed the whole word or
  * just the register.
+ */
+/*
+ * Count 8 occurs only for blocks 0x030-0x033, 0x03b and 0x04b, each with
+ * eight operands, and no software sends counts 9 to 14 (ESTABLISHED, the
+ * driver reading). MODEL CHOICE: a count of 9 to 14 is taken as that many
+ * operands, by the same rule as every other count.
  */
 static unsigned odyssey_cmd_arity(uint32_t word)
 {
