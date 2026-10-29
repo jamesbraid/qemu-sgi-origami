@@ -987,3 +987,7 @@ tests/unit/test-net-crc.c
 tests/unit/crime-rational-reference.h
 tests/unit/crime-rational-vectors.h
 tests/unit/crime-rational-vectors.py
+tests/unit/crime-rational-361-reference.h
+tests/unit/crime-texture-361-reference.c
+tests/unit/crime-texture-361-reference.h
+tests/unit/crime-texture-361-body.h

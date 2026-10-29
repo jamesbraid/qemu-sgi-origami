@@ -7,6 +7,8 @@
 #include "hw/mips/sgi/crime-texture.h"
 #include "crime-rational-reference.h"
 #include "crime-rational-vectors.h"
+#include "crime-rational-361-reference.h"
+#include "crime-texture-361-reference.h"
 
 #ifdef CRIME_TEXTURE_ALLOCATION_WRAP
 static int allocation_failure = -1;
@@ -313,6 +315,74 @@ static void test_math_reference(void)
     }
 }
 
+static void test_equal_denominators(void)
+{
+    uint64_t seed = UINT64_C(0x5144656e6f6d);
+    for (unsigned i = 0; i < 192; i++) {
+        CrimeRational a = { 0 }, b = { 0 };
+        CrimeRational actual = crime_rational(7, 11), expected = actual;
+        bool ok, reference;
+        a.denominator = b.denominator = math_integer(&seed, i % 512 + 1);
+        a.numerator = math_integer(&seed, i * 73 % 511 + 1);
+        b.numerator = math_integer(&seed, i * 137 % 511 + 1);
+        a.negative = i & 1;
+        b.negative = i & 2;
+        if (i < 8) {
+            CrimeInteger one = crime_integer(1);
+            a.denominator = b.denominator = crime_integer(2);
+            g_assert_true(crime_integer_shift(&a.numerator, &one, 510));
+            b.numerator = a.numerator;
+            a.negative = i & 1;
+            b.negative = i & 2;
+        }
+        ok = crime_rational_add(&actual, &a, &b);
+        reference = previous_rational_add(&expected, &a, &b);
+        g_assert_cmpint(ok, ==, reference);
+        assert_rational(&actual, &expected);
+        {
+            CrimeRational alias = a;
+            bool alias_ok = crime_rational_add(&alias, &alias, &b);
+            g_assert_cmpint(alias_ok, ==, reference);
+            assert_rational(&alias, reference ? &expected : &a);
+        }
+    }
+}
+
+static void test_native_fraction_boundaries(void)
+{
+    const uint64_t values[] = {
+        0, 1, 2, UINT32_MAX, UINT64_C(1) << 63, UINT64_MAX - 4,
+        UINT64_MAX - 2, UINT64_MAX,
+    };
+    for (unsigned a = 0; a < ARRAY_SIZE(values); a++) {
+        for (unsigned b = 0; b < ARRAY_SIZE(values); b++) {
+            for (unsigned sign = 0; sign < 4; sign++) {
+                CrimeRational left = {
+                    .numerator = crime_integer(values[a]),
+                    .denominator = crime_integer(values[b] | 1),
+                    .negative = sign & 1,
+                };
+                CrimeRational right = {
+                    .numerator = crime_integer(values[b]),
+                    .denominator = crime_integer(values[a] | 1),
+                    .negative = !!(sign & 2),
+                };
+                CrimeRational actual = crime_rational(7, 11), expected = actual;
+                bool ok, ref;
+                ok = crime_rational_add(&actual, &left, &right);
+                ref = previous_rational_add(&expected, &left, &right);
+                g_assert_cmpint(ok, ==, ref);
+                assert_rational(&actual, &expected);
+                actual = expected = crime_rational(7, 11);
+                ok = crime_rational_multiply(&actual, &left, &right);
+                ref = previous_rational_multiply(&expected, &left, &right);
+                g_assert_cmpint(ok, ==, ref);
+                assert_rational(&actual, &expected);
+            }
+        }
+    }
+}
+
 static void test_divide_zero(void)
 {
     if (g_test_subprocess()) {
@@ -357,16 +427,21 @@ name(unsigned operation, unsigned iteration) \
     } \
     const CrimeRationalVector *pair = \
         &crime_rational_vectors[7 + iteration % 24]; \
+    CrimeRational left = pair->a, right = pair->b; \
     CrimeRational result = crime_rational(7, 11); \
-    bool ok = operation == 2 ? \
-        prefix ## _rational_add(&result, &pair->a, &pair->b) : \
-        prefix ## _rational_multiply(&result, &pair->a, &pair->b); \
+    if (operation == 6) { \
+        right = (CrimeRational) { .numerator = crime_integer(1), \
+            .denominator = left.denominator, .negative = iteration & 1 }; \
+    } \
+    bool ok = operation == 2 || operation == 6 ? \
+        prefix ## _rational_add(&result, &left, &right) : \
+        prefix ## _rational_multiply(&result, &left, &right); \
     return result.numerator.word[0] ^ result.denominator.word[0] ^ \
            ((uint64_t)ok << 63) ^ ((uint64_t)result.negative << 62); \
 }
 
 MATH_KERNEL(math_current, crime)
-MATH_KERNEL(math_reference, reference)
+MATH_KERNEL(math_reference, previous)
 
 static int64_t math_measure(MathKernel kernel, unsigned operation,
                              uint64_t *checksum)
@@ -384,12 +459,8 @@ static void test_rational_performance(void)
 {
     const char *names[] = {
         "divide-72-160", "gcd-72-160", "rational-add", "rational-multiply",
-        "divide-256-512", "gcd-256-512",
+        "divide-256-512", "gcd-256-512", "add-equal-denominators",
     };
-    if (!g_test_perf()) {
-        g_test_skip("select -m perf for controlled old/new helper timings");
-        return;
-    }
     for (unsigned operation = 0; operation < ARRAY_SIZE(names); operation++) {
         for (unsigned round = 0; round < 3; round++) {
             uint64_t old_sum = 0, new_sum = 0;
@@ -410,10 +481,214 @@ static void test_rational_performance(void)
     }
 }
 
+typedef struct SamplerRam {
+    uint8_t *data;
+    uint64_t reads, trace;
+} SamplerRam;
+
+static bool sampler_ram(void *opaque, uint64_t address, unsigned size,
+                         uint64_t *identity, uint8_t *data)
+{
+    SamplerRam *ram = opaque;
+    if (address + size > 224 * 65536) {
+        return false;
+    }
+    ram->reads++;
+    ram->trace = (ram->trace ^ address ^ size) * UINT64_C(0x100000001b3);
+    *identity = address;
+    memcpy(data, ram->data + address, size);
+    return true;
+}
+
+/* Numeric device planes captured from our C sampler, never vendor code. */
+static void sampler_state(uint64_t p[128], uint64_t tlb[28])
+{
+    memset(p, 0, 128 * sizeof(*p));
+    p[0x110 / 4] = 18160340;
+    p[0x118 / 4] = UINT64_C(4) << 44 | UINT64_C(4) << 40 |
+                  UINT64_C(6) << 36 | UINT64_C(6) << 32 | 0x03ff03ff;
+    p[0x134 / 4] = 3;
+    p[0x120 / 4] = UINT64_C(35013003315200);
+    p[0x138 / 4] = UINT64_C(68725694464);
+    p[0x140 / 4] = 7397376;
+    p[0x128 / 4] = UINT64_C(719994226688);
+    p[0x148 / 4] = 6731465;
+    p[0x150 / 4] = -UINT64_C(68002770944);
+    p[0x130 / 4] = 536872000;
+    p[0x158 / 4] = 5056;
+    p[0x15c / 4] = 6016;
+    for (unsigned i = 0; i < 28; i++) {
+        tlb[i] = 0;
+        for (unsigned j = 0; j < 4; j++) {
+            tlb[i] |= (uint64_t)(0x8000 | (4 * i + j) * 2) << (48 - 16 * j);
+        }
+    }
+}
+
+static int64_t sampler_measure(bool previous, unsigned count, bool white,
+                                SamplerRam *ram, uint64_t *checksum)
+{
+    uint64_t p[128], tlb[28], result = 1;
+    int64_t begin;
+    sampler_state(p, tlb);
+    ram->reads = 0;
+    ram->trace = 1;
+    begin = g_get_monotonic_time();
+    if (previous) {
+        g_autoptr(PreviousTexture) t = previous_texture_new(
+            p, tlb, 597, 621, false, sampler_ram, ram);
+        g_assert_nonnull(t);
+        for (unsigned i = 0; i < count; i++) {
+            uint32_t color = white ? UINT32_MAX : 0x91b3d5f7U ^ i * 0x12345U;
+            g_assert_true(previous_texture_sample(t, 320 + i % 32,
+                                                  528 + i / 32, &color));
+            result = (result ^ color) * UINT64_C(0x100000001b3);
+        }
+    } else {
+        g_autoptr(CrimeTexture) t = crime_texture_new(
+            p, tlb, 597, 621, false, sampler_ram, ram);
+        g_assert_nonnull(t);
+        for (unsigned i = 0; i < count; i++) {
+            uint32_t color = white ? UINT32_MAX : 0x91b3d5f7U ^ i * 0x12345U;
+            g_assert_true(crime_texture_sample(t, 320 + i % 32,
+                                               528 + i / 32, &color));
+            result = (result ^ color) * UINT64_C(0x100000001b3);
+        }
+    }
+    *checksum = result;
+    return g_get_monotonic_time() - begin;
+}
+
+static void sampler_compare(unsigned count, bool timing)
+{
+    SamplerRam old = { 0 }, current = { 0 };
+    g_autofree uint8_t *data = g_malloc(224 * 65536);
+    for (unsigned i = 0; i < 224 * 65536; i++) {
+        data[i] = (i * 13) ^ (i >> 8) ^ (i >> 16);
+    }
+    old.data = current.data = data;
+    for (unsigned white = 0; white < 2; white++) {
+        for (unsigned round = 0; round < (timing ? 3 : 1); round++) {
+            uint64_t old_sum, new_sum;
+            int64_t old_us, new_us;
+            if (round & 1) {
+                new_us = sampler_measure(false, count, white,
+                                         &current, &new_sum);
+                old_us = sampler_measure(true, count, white, &old, &old_sum);
+            } else {
+                old_us = sampler_measure(true, count, white, &old, &old_sum);
+                new_us = sampler_measure(false, count, white,
+                                         &current, &new_sum);
+            }
+            g_assert_cmphex(old_sum, ==, new_sum);
+            g_assert_cmpuint(old.reads, ==, current.reads);
+            g_assert_cmphex(old.trace, ==, current.trace);
+            g_test_message("captured sampler white=%u samples=%u round=%u "
+                           "old361=%" PRId64 " us new=%" PRId64
+                           " us ratio=%.3f reads=%" PRIu64 " output=%016" PRIx64
+                           " source=%016" PRIx64,
+                           white, count, round, old_us, new_us,
+                           new_us ? (double)old_us / new_us : 0,
+                           current.reads, new_sum, current.trace);
+        }
+    }
+}
+
+static void test_sampler_matrix(void)
+{
+    const unsigned formats[][2] = {
+        {1, 1}, {1, 2}, {2, 1}, {2, 2}, {4, 1},
+        {5, 1}, {6, 1}, {7, 1}, {8, 1},
+    };
+    const int points[][2] = { {342, 537}, {597, 621}, {800, 800}, {0, 0} };
+    const unsigned numerator_words[] = {0x120, 0x138, 0x140,
+                                        0x128, 0x148, 0x150};
+    const unsigned denominator_words[] = {0x130, 0x158, 0x15c};
+    g_autofree uint8_t *data = g_malloc(224 * 65536);
+    for (unsigned i = 0; i < 224 * 65536; i++) {
+        data[i] = (i * 13) ^ (i >> 8) ^ (i >> 16);
+    }
+    for (unsigned format = 0; format < ARRAY_SIZE(formats); format++) {
+        for (unsigned filter = 0; filter < 6; filter++) {
+            for (unsigned wrap = 0; wrap < 4; wrap++) {
+                for (unsigned function = 0; function < 4; function++) {
+                    uint64_t p[128], tlb[28];
+                    SamplerRam old = {.data = data}, current = old;
+                    sampler_state(p, tlb);
+                    p[0x110 / 4] = (filter & 1) << 24 |
+                        formats[format][0] << 20 | formats[format][1] << 18 |
+                        4U << 14 | 6U << 10 | filter << 7 | (wrap & 1) << 6 |
+                        wrap << 4 | ((wrap + filter) % 4) << 2 | function;
+                    p[0x160 / 4] = 0x175badc9;
+                    p[0x168 / 4] = 0x39c765a1;
+                    if (wrap & 1) {
+                        p[0x134 / 4] = 0;
+                        for (unsigned i = 0; i < ARRAY_SIZE(numerator_words);
+                             i++) {
+                            p[numerator_words[i] / 4] *= 16;
+                        }
+                    }
+                    if (filter & 1) {
+                        for (unsigned i = 0; i < ARRAY_SIZE(numerator_words);
+                             i++) {
+                            unsigned index = numerator_words[i] / 4;
+                            p[index] = -p[index];
+                        }
+                        for (unsigned i = 0; i < ARRAY_SIZE(denominator_words);
+                             i++) {
+                            unsigned index = denominator_words[i] / 4;
+                            p[index] = (uint32_t)-p[index];
+                        }
+                    }
+                    g_autoptr(CrimeTexture) t = crime_texture_new(
+                        p, tlb, 597, 621, false, sampler_ram, &current);
+                    g_autoptr(PreviousTexture) previous = previous_texture_new(
+                        p, tlb, 597, 621, false, sampler_ram, &old);
+                    g_assert_cmpint(t != NULL, ==, previous != NULL);
+                    if (!t) {
+                        g_assert_cmpint(function, ==, 1);
+                        g_assert_cmpuint(formats[format][0], >=, 5);
+                        continue;
+                    }
+                    for (unsigned i = 0; i < ARRAY_SIZE(points); i++) {
+                        uint32_t a = 0x91b3d5f7 ^ i * 0x12345U, b = a;
+                        bool ok = crime_texture_sample(t, points[i][0],
+                                                       points[i][1], &a);
+                        bool ref = previous_texture_sample(previous,
+                            points[i][0], points[i][1], &b);
+                        g_assert_cmpint(ok, ==, ref);
+                        g_assert_cmphex(a, ==, b);
+                        g_assert_cmpuint(current.reads, ==, old.reads);
+                        g_assert_cmphex(current.trace, ==, old.trace);
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void test_sampler_reference(void)
+{
+    sampler_compare(32, false);
+}
+
+static void test_sampler_performance(void)
+{
+    sampler_compare(512, true);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/crime/rational/small", test_rational_small);
+    g_test_add_func("/crime/rational/native-fractions",
+                    test_native_fraction_boundaries);
+    g_test_add_func("/crime/rational/equal-denominators",
+                    test_equal_denominators);
+    g_test_add_func("/crime/texture/captured-reference",
+                    test_sampler_reference);
+    g_test_add_func("/crime/texture/format-filter-reference",
+                    test_sampler_matrix);
     g_test_add_func("/crime/rational/limits", test_rational_limits);
     g_test_add_func("/crime/texture/constant-point", test_point_constant);
     g_test_add_func("/crime/rational/division-vectors", test_division_vectors);
@@ -422,6 +697,10 @@ int main(int argc, char **argv)
     g_test_add_func("/crime/rational/zero-divisor", test_divide_zero);
     g_test_add_func("/crime/rational/reference-zero-divisor",
                     test_reference_divide_zero);
-    g_test_add_func("/crime/rational/performance", test_rational_performance);
+    if (g_test_perf()) {
+        g_test_add_func("/crime/rational/performance",
+                    test_rational_performance);
+        g_test_add_func("/crime/texture/performance", test_sampler_performance);
+    }
     return g_test_run();
 }
