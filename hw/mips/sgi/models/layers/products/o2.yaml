@@ -34,7 +34,7 @@ layer:
         launch_recipe: ip32
         prom_dialogue: none
         default_cpu_model: R10000
-        disk_bus: scsi.0
+        disk_bus: aic0.0
         netboot_adapter: mace-ethernet
         default_topology: o2
         firmware_bytes: 524288

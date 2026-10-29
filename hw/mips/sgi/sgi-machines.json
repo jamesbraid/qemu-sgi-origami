@@ -217,7 +217,7 @@
       "dimms-per-node": [
         8
       ],
-      "disk-bus": "scsi.0",
+      "disk-bus": "aic0.0",
       "display-name": "O2 functional profile",
       "firmware": {
         "argument": "rom-image=",
@@ -281,7 +281,7 @@
       "resources": [],
       "scsi-adapters": [
         {
-          "bus": "scsi.0",
+          "bus": "aic0.0",
           "targets": [
             0,
             1,
@@ -294,7 +294,7 @@
           "type": "scsi"
         },
         {
-          "bus": "scsi.1",
+          "bus": "aic1.0",
           "targets": [],
           "type": "scsi"
         }
@@ -331,7 +331,7 @@
       "dimms-per-node": [
         8
       ],
-      "disk-bus": "scsi.0",
+      "disk-bus": "aic0.0",
       "display-name": "O2+ R12000A functional profile",
       "firmware": {
         "argument": "rom-image=",
@@ -402,7 +402,7 @@
       "resources": [],
       "scsi-adapters": [
         {
-          "bus": "scsi.0",
+          "bus": "aic0.0",
           "targets": [
             0,
             1,
@@ -415,7 +415,7 @@
           "type": "scsi"
         },
         {
-          "bus": "scsi.1",
+          "bus": "aic1.0",
           "targets": [],
           "type": "scsi"
         }
