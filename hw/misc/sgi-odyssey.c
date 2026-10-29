@@ -1354,8 +1354,11 @@ enum {
  * numbering is contiguous (ESTABLISHED as the library's and kernel's
  * writers). The kernel writes 0x26 = 127 and 0x2e = 896 at set-up. The
  * model acts on the classes named above, keeps every value in gl_seq[] and
- * accepts the rest, whose meaning is UNKNOWN, without effect. Class 0x34 in
- * this shape is the matrix target select (ODSY_GL_MATRIX_SELECT_TAG).
+ * accepts the rest, whose meaning is UNKNOWN, without effect. Class 0x34 is
+ * stored like the rest. Its values below 0x100 with bit 23 clear are also
+ * the model's matrix target select (ODSY_GL_MATRIX_SELECT_TAG), a reading
+ * of the GL library's matrix validations that the datasheet does not
+ * record; those keep that path.
  */
 #define ODSY_PROG_SEQ_FIRST 0x20
 #define ODSY_PROG_SEQ_LAST 0x35
@@ -7680,7 +7683,7 @@ static bool odyssey_is_program_word(uint32_t word)
         return true;
     }
     if (cls >= ODSY_PROG_SEQ_FIRST && cls <= ODSY_PROG_SEQ_LAST &&
-        cls != (ODSY_GL_MATRIX_SELECT_TAG >> ODSY_PROG_CLASS_SHIFT)) {
+        (word & ODSY_GL_MATRIX_SELECT_SHAPE) != ODSY_GL_MATRIX_SELECT_TAG) {
         return true;
     }
     switch (cls) {
@@ -10917,6 +10920,8 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         return;
     }
     if ((tag & ODSY_GL_MATRIX_SELECT_SHAPE) == ODSY_GL_MATRIX_SELECT_TAG) {
+        s->gl_seq[(ODSY_GL_MATRIX_SELECT_TAG >> ODSY_PROG_CLASS_SHIFT) -
+                  ODSY_PROG_SEQ_FIRST] = odyssey_prog_value(tag);
         /* Pick the shared matrix slot the following load targets. */
         switch (tag & 0xff) {
         case ODSY_GL_MATRIX_SELECT_COMBINED:
