@@ -1269,6 +1269,139 @@ static void test_multi_migration(void)
     qtest_quit(to);
 }
 
+/* KONA's X command slots and the GC, pixel setup, write and finish. */
+#define KONA_COMMAND_DATA     0xc1000c
+#define KONA_COMMAND_SLOT(t)  (0xc1000c + 0x20 * (uint64_t)(t))
+#define KONA_TOKEN_GC         0x129
+#define KONA_TOKEN_SETUP      0x136
+#define KONA_TOKEN_WRITE      0x139
+#define KONA_TOKEN_FINISH     0x13a
+#define KONA_FB_WIDTH         1280
+#define KONA_FB_HEIGHT        1024
+
+/* One X command to the rack pipe at @base through processor @cpu. */
+static void rack_command(QTestState *qts, unsigned cpu, uint64_t base,
+                         uint32_t token, const uint32_t *args, unsigned n)
+{
+    cpu_writel(qts, cpu, base + KONA_COMMAND_SLOT(token), args[0]);
+    for (unsigned i = 1; i < n; i++) {
+        cpu_writel(qts, cpu, base + KONA_COMMAND_DATA, args[i]);
+    }
+}
+
+/*
+ * Write one 32-bit RGB pixel @rgb at X coordinates (x, y) on the rack
+ * pipe at @base, as the X server's image write does.
+ */
+static void rack_pixel(QTestState *qts, unsigned cpu, uint64_t base,
+                       unsigned x, unsigned y, uint32_t rgb)
+{
+    uint32_t gc[13] = { 0 };
+    uint64_t color = 0x1ffe;
+
+    for (unsigned i = 0; i < 3; i++) {
+        color |= (uint64_t)((0xffu << 4) | (0xffu >> 4)) << (14 + 13 * i);
+    }
+    gc[0] = color >> 32;
+    gc[1] = color;
+    gc[3] = 0x1ffe;
+    gc[4] = 0xfff | (0xfff << 12);
+    gc[5] = 0xffffff;
+    gc[6] = 0x2804;
+    gc[7] = 0x60001;
+    gc[8] = 1;
+    gc[9] = 6;
+    gc[10] = 8;
+    rack_command(qts, cpu, base, KONA_TOKEN_GC, gc, 13);
+    rack_command(qts, cpu, base, KONA_TOKEN_SETUP,
+                 (uint32_t[]){ 0, 2, 2, 8, 1, 1, 0 }, 7);
+    rack_command(qts, cpu, base, KONA_TOKEN_WRITE, (uint32_t[]){ x, y }, 2);
+    cpu_writel(qts, cpu, base + KONA_COMMAND_DATA, rgb);
+    rack_command(qts, cpu, base, KONA_TOKEN_FINISH, (uint32_t[]){ 0 }, 1);
+}
+
+/* 0x00RRGGBB at (x, line) of a screendump of @device, or console 0. */
+static uint32_t dump_pixel(QTestState *qts, const char *device,
+                           unsigned x, unsigned line)
+{
+    static const char header[] = "P6\n1280 1024\n255\n";
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pipes-dump-XXXXXX", &error);
+    g_autofree char *path = NULL;
+    g_autofree gchar *data = NULL;
+    const uint8_t *p;
+    gsize len = 0;
+
+    g_assert_no_error(error);
+    path = g_build_filename(dir, "dump.ppm", NULL);
+    if (device) {
+        qtest_qmp_assert_success(qts,
+            "{'execute':'screendump','arguments':{'filename':%s,"
+            "'device':%s,'head':0}}", path, device);
+    } else {
+        qtest_qmp_assert_success(qts,
+            "{'execute':'screendump','arguments':{'filename':%s}}", path);
+    }
+    g_assert_true(g_file_get_contents(path, &data, &len, NULL));
+    g_unlink(path);
+    g_rmdir(dir);
+    g_assert_cmpuint(len, ==, strlen(header) +
+                     (gsize)KONA_FB_WIDTH * KONA_FB_HEIGHT * 3);
+    g_assert_cmpmem(data, strlen(header), header, strlen(header));
+    p = (const uint8_t *)data + strlen(header) +
+        ((gsize)line * KONA_FB_WIDTH + x) * 3;
+    return p[0] << 16 | p[1] << 8 | p[2];
+}
+
+/*
+ * Each pipe's console is addressed by its slot: screendump device=io3
+ * and device=io7 each return what that pipe drew and nothing the other
+ * did. With no device, screendump takes console 0, the pipe that
+ * realized first, which is the first given (io7 here), not the first in
+ * slot order.
+ */
+static void test_multi_screendump(void)
+{
+    QTestState *qts = start(&onyx2_rack_two_nodes,
+                            "-device sgi-kona,slot=io7,product=ir3 "
+                            "-device sgi-kona,slot=io3,product=ir3");
+
+    rack_pixel(qts, 0, RACK_IO3(0), 100, 200, 0x112233);
+    rack_pixel(qts, RACK_N2_CPU, RACK_IO7(0), 300, 400, 0x445566);
+    g_assert_cmphex(dump_pixel(qts, "io3", 100, 200), ==, 0x112233);
+    g_assert_cmphex(dump_pixel(qts, "io3", 300, 400), ==, 0);
+    g_assert_cmphex(dump_pixel(qts, "io7", 300, 400), ==, 0x445566);
+    g_assert_cmphex(dump_pixel(qts, "io7", 100, 200), ==, 0);
+    g_assert_cmphex(dump_pixel(qts, NULL, 300, 400), ==, 0x445566);
+    qtest_quit(qts);
+}
+
+/* System reset returns a register written on both pipes to its value. */
+static void test_multi_reset(void)
+{
+    QTestState *qts = start(&onyx2_rack_two_nodes,
+                            "-device sgi-kona,slot=io3,product=ir3 "
+                            "-device sgi-kona,slot=io7,product=ir3");
+    uint32_t io3 = cpu_readl(qts, 0, RACK_IO3(KONA_WIDGET_CONTROL));
+    uint32_t io7 = cpu_readl(qts, RACK_N2_CPU,
+                             RACK_IO7(KONA_WIDGET_CONTROL));
+
+    cpu_writel(qts, 0, RACK_IO3(KONA_WIDGET_CONTROL), io3 ^ 0x1000);
+    cpu_writel(qts, RACK_N2_CPU, RACK_IO7(KONA_WIDGET_CONTROL),
+               io7 ^ 0x1000);
+    g_assert_cmphex(cpu_readl(qts, 0, RACK_IO3(KONA_WIDGET_CONTROL)), ==,
+                    io3 ^ 0x1000);
+    g_assert_cmphex(cpu_readl(qts, RACK_N2_CPU,
+                              RACK_IO7(KONA_WIDGET_CONTROL)), ==,
+                    io7 ^ 0x1000);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    g_assert_cmphex(cpu_readl(qts, 0, RACK_IO3(KONA_WIDGET_CONTROL)), ==,
+                    io3);
+    g_assert_cmphex(cpu_readl(qts, RACK_N2_CPU,
+                              RACK_IO7(KONA_WIDGET_CONTROL)), ==, io7);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     QTestState *qts;
@@ -1300,6 +1433,9 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-graphics-pipes/multi/identity", test_multi_identity);
     qtest_add_func("/sgi-graphics-pipes/multi/migration",
                    test_multi_migration);
+    qtest_add_func("/sgi-graphics-pipes/multi/screendump",
+                   test_multi_screendump);
+    qtest_add_func("/sgi-graphics-pipes/multi/reset", test_multi_reset);
     qtest_add_func("/sgi-graphics-pipes/multi/onyx2-rack",
                    test_multi_onyx2_rack);
     for (size_t i = 0; i < G_N_ELEMENTS(launches); i++) {
