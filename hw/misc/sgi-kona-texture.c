@@ -1290,6 +1290,18 @@ static bool texture_detail_view(SGIKonaTextureState *s,
     return true;
 }
 
+/*
+ * The image the shared sampler draws from. Approximated: the sampler
+ * computes level of detail, sub-texel position, filter weights and the
+ * colour and depth iterators in double precision, which is model policy.
+ * On the pipe these are computed inside the raster board's texture
+ * address generator, filters and fragment generator, whose internal
+ * widths are unknown; the board's netlists bound only the buses between
+ * them (11-bit screen x and y into the texture path, 16-bit texel lanes,
+ * a 31-bit word per fragment to each filter), and only as upper bounds.
+ * Results can differ from a pipe in the low bits of filtered colour and
+ * in which mipmap level a fragment selects near a level boundary.
+ */
 const SGIGLTexImage *sgi_kona_texture_resolve(SGIKonaTextureState *s)
 {
     SGIKonaTextureObject *o = s->bound ?
