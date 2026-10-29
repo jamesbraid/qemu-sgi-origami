@@ -825,7 +825,6 @@ static bool crime_render_triangle_inside(const CrimeRenderGeometry *g,
 static bool crime_render_geometry(const uint64_t *p, CrimeRenderGeometry *g)
 {
     uint32_t primitive = p[0x60 / 4];
-    bool terminal_span;
 
     g->opcode = primitive >> 24;
     if (g->opcode == 2) {
@@ -835,11 +834,6 @@ static bool crime_render_geometry(const uint64_t *p, CrimeRenderGeometry *g)
     g->y0 = p[0x70 / 4] & 0xffff;
     g->x1 = p[0x74 / 4] >> 16;
     g->y1 = p[0x74 / 4] & 0xffff;
-    terminal_span = g->opcode == 1 && (primitive & 0x40000) &&
-                    g->y0 == g->y1 && g->x0 <= g->x1 && g->x1 == 2048;
-    if ((g->x0 >= 2048 && !terminal_span) || g->y0 >= 2048) {
-        return false;
-    }
     if (g->opcode <= 1) {
         if (primitive & 0x00f80000) {
             return false;
@@ -848,10 +842,9 @@ static bool crime_render_geometry(const uint64_t *p, CrimeRenderGeometry *g)
         if (!g->opcode) {
             return true;
         }
-    } else if ((primitive & ~0x30000U) != 0x3000000) {
-        return false;
-    }
-    if ((g->x1 >= 2048 && !terminal_span) || g->y1 >= 2048) {
+    } else if ((primitive & ~0x30000U) != 0x3000000 ||
+               g->x0 >= 2048 || g->y0 >= 2048 ||
+               g->x1 >= 2048 || g->y1 >= 2048) {
         return false;
     }
     if (g->opcode == 1) {
@@ -862,7 +855,7 @@ static bool crime_render_geometry(const uint64_t *p, CrimeRenderGeometry *g)
         g->thickness = MAX(1, DIV_ROUND_UP(primitive & 0xffff, 32));
         g->lower = -((int)(g->thickness - 1) / 2);
         g->xmajor = ax >= ay;
-        g->capacity = g->samples * g->thickness;
+        g->capacity = MIN(g->samples, 2048U) * g->thickness;
         if (!g->steps) {
             g->capacity *= g->thickness;
         }
@@ -1214,6 +1207,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     CrimeRenderClip scissor, screen[5];
     CrimeRenderGeometry geometry = { 0 };
     g_autofree CrimeRenderPixel *pixels = NULL;
+    g_autoptr(GArray) bounded_pixels = NULL;
     MemTxResult result;
 
     memcpy(p, s->render.parameter, sizeof(p));
@@ -1378,10 +1372,14 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     plane = draw & 0x80 ? p[0x1b8 / 4] : UINT32_MAX;
     plane &= UINT32_MAX >> (32 - 8 * bytes);
     alpha_pass = !alpha || crime_render_alpha_pass(p[0xd0 / 4], p[0x198 / 4]);
-    pixels = g_new(CrimeRenderPixel, geometry.capacity);
+    if (geometry.opcode <= 1) {
+        bounded_pixels = g_array_new(false, false, sizeof(CrimeRenderPixel));
+    } else {
+        pixels = g_new(CrimeRenderPixel, geometry.capacity);
+    }
     for (unsigned i = 0; i < geometry.samples; i++) {
         int cx, cy;
-        unsigned stripe_x = 1, stripe_y = 1;
+        unsigned stripe_x = 1, stripe_y = 1, first_col = 0, first_row = 0;
         uint32_t color = p[0xd0 / 4];
         uint32_t linear = transfer ? linear_first +
             (i / geometry.width) * linear_pitch + i % geometry.width : 0;
@@ -1415,14 +1413,28 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 cy += geometry.lower;
             }
         }
-        for (unsigned row = 0; row < stripe_y; row++) {
+        if (geometry.opcode <= 1) {
+            int64_t left = (int64_t)cx + destination_x;
+            int64_t top = (int64_t)cy + destination_y;
+
+            if (left >= 2048 || top >= 2048 ||
+                left + stripe_x <= 0 || top + stripe_y <= 0) {
+                continue;
+            }
+            first_col = MAX(0LL, -left);
+            first_row = MAX(0LL, -top);
+            stripe_x = MIN((int64_t)stripe_x, 2048 - left);
+            stripe_y = MIN((int64_t)stripe_y, 2048 - top);
+        }
+        for (unsigned row = first_row; row < stripe_y; row++) {
             int local_y = cy + (int)row;
             int y = local_y + (triangle ? 0 : destination_y);
 
-            for (unsigned col = 0; col < stripe_x; col++) {
+            for (unsigned col = first_col; col < stripe_x; col++) {
                 int local_x = cx + (int)col;
                 int x = local_x + (triangle ? 0 : destination_x);
                 uint32_t mask = plane;
+                CrimeRenderPixel bounded_pixel = { 0 };
                 CrimeRenderPixel *pixel;
                 CrimeRenderTranslation translation;
                 bool screen_pass = !screen_count;
@@ -1450,7 +1462,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 if (!mask || !alpha_pass) {
                     continue;
                 }
-                pixel = &pixels[count];
+                pixel = bounded_pixels ? &bounded_pixel : &pixels[count];
                 if (download) {
                     translation = crime_render_linear(
                         s, destination_bank, linear, &pixel->destination,
@@ -1492,9 +1504,16 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 }
                 pixel->mask = mask;
                 pixel->color = color;
+                if (bounded_pixels) {
+                    g_array_append_val(bounded_pixels, bounded_pixel);
+                }
                 count++;
             }
         }
+    }
+    if (bounded_pixels) {
+        pixels = (CrimeRenderPixel *)g_array_free(
+            g_steal_pointer(&bounded_pixels), false);
     }
     if (!crime_render_validate(pixels, count, bytes, transfer, &overlap) ||
         (transfer && overlap)) {

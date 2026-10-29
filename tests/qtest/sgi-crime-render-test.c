@@ -2441,10 +2441,10 @@ static void test_stipple_invalid(void)
     c.scissor = 0;
     c.plane = 0;
     shape_stage(s, &c);
-    assert_failure(s, DE + 0x9f0, 0, 4);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
     c.primitive = 0;
     shape_stage(s, &c);
-    assert_failure(s, DE + 0x9f0, 0, 4);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
     /* A stippled framebuffer copy remains outside this source-color policy. */
     setup(s, 0, true);
     qtest_writel(s, DE + 0x18, 0x2402f8);
@@ -3296,7 +3296,7 @@ static void test_validity_semantics(void)
     qtest_writel(v.q, DE + 0xc0, 0x08070000);
     assert_failure(v.q, DE + 0x9f0, 0, 4);
     shape_stage(v.q, &c);
-    qtest_writel(v.q, DE + 0x70, xy(2048, 3));
+    qtest_writel(v.q, DE + 0x58, 0x80000000);
     assert_failure(v.q, DE + 0x9f0, 0, 4);
     shape_stage(v.q, &c);
     assert_failure(v.q, DE + 0x874, 0x1122334455667788ULL, 8);
@@ -3608,7 +3608,23 @@ static void test_validity_profiles(void)
 static void save_paired_renderer(QTestState *s, const char *path,
                                  uint64_t words[RENDER_WORDS])
 {
+    int64_t deadline;
+
     save_renderer(s, path, words);
+    deadline = g_get_monotonic_time() +
+               SGI_MIGRATION_WAIT_MIN_S * G_TIME_SPAN_SECOND;
+    /* The source can report completion before leaving finish-migrate. */
+    for (;;) {
+        g_autoptr(QDict) state =
+            qtest_qmp_assert_success_ref(s, "{'execute':'query-status'}");
+        const char *status = qdict_get_str(state, "status");
+
+        if (g_str_equal(status, "postmigrate")) {
+            break;
+        }
+        g_assert_cmpstr(status, ==, "finish-migrate");
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+    }
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
     qtest_qmp_assert_success(s, "{'execute':'stop'}");
 }
@@ -3709,6 +3725,9 @@ static void test_paired_start_rollback(void)
             c.y0 = 1;
             c.x1 = 8;
             c.y1 = 5;
+            if (!pair) {
+                c.primitive = 0x03020000;
+            }
             c.draw |= 0xa0000;
             c.stipple_mode = 0x01050000;
             map_region(s, 0, 1, 0, 0, 11, 7);
@@ -6677,7 +6696,7 @@ static void test_ordinary_origins(void)
             shape_run(s, &c);
         }
     }
-    /* Only the omitted last sample may use the right viewport boundary. */
+    /* Suppression still refers to the original final center. */
     for (unsigned first = 2046; first <= 2048; first++) {
         Shape c = ordinary_shape(0);
 
@@ -7024,17 +7043,20 @@ static void test_ordinary_faults(void)
             qtest_writel(s, DE + 0xc0, 0x00200000);
             break;
         case 12:
+            qtest_writel(s, DE + 0x60, 0x03020000);
             qtest_writel(s, DE + 0x74, xy(2048, 101));
             break;
         case 13:
-            qtest_writel(s, DE + 0x60, 0x01000020);
+            qtest_writel(s, DE + 0x60, 0x03020000);
             qtest_writel(s, DE + 0x74, xy(2048, 100));
             break;
         case 14:
+            qtest_writel(s, DE + 0x60, 0x03020000);
             qtest_writel(s, DE + 0x70, xy(100, 2046));
             qtest_writel(s, DE + 0x74, xy(100, 2048));
             break;
         case 15:
+            qtest_writel(s, DE + 0x60, 0x03020000);
             qtest_writel(s, DE + 0x70, xy(2048, 100));
             qtest_writel(s, DE + 0x74, xy(2046, 100));
             break;
@@ -10001,6 +10023,268 @@ static void test_buffer_modes_primitives(void)
     qtest_quit(s);
 }
 
+static void test_x_domain_invisible(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-x-domain-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree uint8_t *data = g_malloc(65536);
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    QTestState *s = start_indexed_state();
+
+    for (unsigned index = 0; index < 256; index++) {
+        tile(s, 0, index, page_for(0, index));
+    }
+    qtest_memset(s, 0x30000, 0xa5, 256 * 65536);
+    setup(s, 0x200, false);
+    qtest_writel(s, DE + 0x18, 0x208);
+    qtest_writel(s, DE + 0x58, 0x026c03c4);
+    qtest_writel(s, DE + 0x60, 0x01000020);
+    qtest_writel(s, DE + 0xd0, 0x73);
+    qtest_writeq(s, DE + 0x48, bounds(9, 9, 1, 1));
+    qtest_writel(s, DE + 0x70, xy(5, 6));
+    qtest_writel(s, DE + 0x74, xy(4, 32768));
+    save_paired_renderer(s, path, before);
+    g_assert_cmpint(memtx_writel(s, DE + 0x870, xy(1, 32768)), ==, MEMTX_OK);
+    save_paired_renderer(s, path, after);
+    before[192 + 0x70 / 4] = xy(1, 32768);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    for (unsigned index = 0; index < 256; index++) {
+        qtest_memread(s, 0x30000 + index * 65536, data, 65536);
+        for (unsigned byte = 0; byte < 65536; byte++) {
+            g_assert_cmphex(data[byte], ==, 0xa5);
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_x_domain_coordinates(void)
+{
+    const unsigned coordinates[] = { 2047, 2048, 32767, 32768, 65535 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned axis = 0; axis < 2; axis++) {
+        for (unsigned n = 0; n < ARRAY_SIZE(coordinates); n++) {
+            Shape c = shape_default();
+            c.width = axis ? 4 : 2048;
+            c.height = axis ? 2048 : 4;
+            c.primitive = 0;
+            c.x0 = axis ? 2 : coordinates[n];
+            c.y0 = axis ? coordinates[n] : 2;
+            c.x1 = c.y1 = 65535;
+            if (coordinates[n] == 65535) {
+                c.origin_x = !axis;
+                c.origin_y = axis;
+            }
+            shape_run(s, &c);
+            for (unsigned reverse = 0; reverse < 2; reverse++) {
+                c.origin_x = c.origin_y = 0;
+                c.primitive = 0x01000020;
+                c.x0 = reverse ? (axis ? 2 : coordinates[n]) : 0;
+                c.y0 = reverse ? (axis ? coordinates[n] : 2) : 0;
+                c.x1 = reverse ? 0 : (axis ? 2 : coordinates[n]);
+                c.y1 = reverse ? 0 : (axis ? coordinates[n] : 2);
+                shape_run(s, &c);
+                if (coordinates[n] == 65535 && !axis && !reverse) {
+                    g_assert_cmphex(qtest_readb(s,
+                                    pixel_address(0, 2047, 0, 1)),
+                                    ==, 0x66);
+                    g_assert_cmphex(qtest_readb(s,
+                                    pixel_address(0, 2047, 1, 1)),
+                                    ==, 0xaa);
+                }
+            }
+        }
+        for (unsigned sign = 0; sign < 2; sign++) {
+            for (unsigned reverse = 0; reverse < 2; reverse++) {
+                Shape c = shape_default();
+                unsigned a[2] = { 0, sign ? 2 : 0 };
+                unsigned b[2] = { 65535, sign ? 0 : 2 };
+                c.width = axis ? 4 : 2048;
+                c.height = axis ? 2048 : 4;
+                c.primitive = 0x01030020;
+                c.x0 = (reverse ? b : a)[axis];
+                c.y0 = (reverse ? b : a)[!axis];
+                c.x1 = (reverse ? a : b)[axis];
+                c.y1 = (reverse ? a : b)[!axis];
+                shape_run(s, &c);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_x_domain_stipple_origins(void)
+{
+    QTestState *s = start_indexed_state();
+    const unsigned widths[] = { 32, 64, 65 };
+
+    for (unsigned width = 0; width < ARRAY_SIZE(widths); width++) {
+        for (unsigned opaque = 0; opaque < 2; opaque++) {
+            for (unsigned skip = 0; skip < 2; skip++) {
+                Shape c = shape_default();
+                c.width = 32;
+                c.height = 8;
+                c.x0 = 65535;
+                c.y0 = 2;
+                c.x1 = c.y1 = 0;
+                c.primitive = 0x01000000 | (skip << 18) | widths[width];
+                c.draw |= (1U << 19) | (opaque << 17);
+                c.stipple_mode = 0x05150102;
+                shape_run(s, &c);
+            }
+        }
+    }
+    for (unsigned axis = 0; axis < 2; axis++) {
+        Shape c = shape_default();
+        c.x = axis ? 0 : 2046;
+        c.y = axis ? 2046 : 0;
+        c.width = axis ? 8 : 2;
+        c.height = axis ? 2 : 8;
+        c.x0 = axis ? 0 : 2048;
+        c.y0 = axis ? 2048 : 0;
+        c.x1 = axis ? 5 : 2048;
+        c.y1 = axis ? 2048 : 5;
+        c.primitive = 0x01000041;
+        shape_run(s, &c);
+    }
+    for (unsigned clip = 0; clip < 4; clip++) {
+        Shape c = shape_default();
+        c.width = c.height = 12;
+        c.x0 = c.x1 = c.y0 = 0;
+        c.y1 = 65535;
+        c.primitive = 0x01000041;
+        c.origin_x = 3;
+        c.origin_y = 2;
+        if (clip & 1) {
+            c.draw |= 1U << 20;
+            c.scissor = bounds(0, 0, 8, 8);
+        }
+        if (clip & 2) {
+            c.clip = 0x21;
+            c.screen = bounds(2, 2, 3, 10);
+        }
+        shape_run(s, &c);
+    }
+    qtest_quit(s);
+}
+
+static void test_x_domain_bounds(void)
+{
+    QTestState *s = start_indexed_state();
+    Shape c = shape_default();
+    uint32_t unchanged[64];
+
+    c.width = c.height = 8;
+    c.x0 = c.y0 = 0;
+    c.x1 = c.y1 = 65535;
+    c.primitive = 0x0100ffff;
+    shape_memory(s, &c, NULL);
+    for (unsigned i = 0; i < ARRAY_SIZE(unchanged); i++) {
+        unchanged[i] = c.old & 255;
+    }
+    /* All center/width products are invisible; no tile is needed. */
+    c.y0 = c.y1 = 65535;
+    shape_stage(s, &c);
+    for (unsigned repeat = 0; repeat < 256; repeat++) {
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    }
+    shape_memory(s, &c, unchanged);
+    c.x0 = c.x1 = c.y0 = c.y1 = 65535;
+    shape_stage(s, &c);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    for (unsigned fault = 0; fault < 4; fault++) {
+        shape_stage(s, &c);
+        if (!fault) {
+            qtest_writel(s, DE + 0x58, 0x80000000);
+        } else if (fault == 1) {
+            qtest_writel(s, DE + 0x58, 0x8000);
+        } else if (fault == 2) {
+            qtest_writel(s, DE + 0x18, c.draw | 0x100);
+        } else {
+            qtest_writel(s, DE + 0x18, c.draw | (1U << 19));
+            qtest_writel(s, DE + 0xc0, 0x08070000);
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_ERROR);
+        shape_memory(s, &c, unchanged);
+    }
+    for (unsigned width = 65504; width <= 65535; width += 31) {
+        c.x0 = c.x1 = c.y0 = c.y1 = 0;
+        c.origin_x = c.origin_y = 1;
+        c.primitive = 0x01000000 | width;
+        map_region(s, 0, 1, 0, 0, 1025, 1025);
+        shape_run(s, &c);
+    }
+    qtest_quit(s);
+}
+
+static void test_x_domain_transactions(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-x-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    Shape c = shape_default();
+    c.width = 2048;
+    c.height = 3;
+    c.x0 = c.y0 = 0;
+    c.x1 = 65535;
+    c.y1 = 2;
+    c.primitive = 0x01000020;
+    g_autofree uint32_t *expected = shape_reference(&c);
+    g_autofree uint32_t *unchanged = g_new(uint32_t, c.width * c.height);
+    for (unsigned i = 0; i < c.width * c.height; i++) {
+        unchanged[i] = c.old & 255;
+    }
+    for (unsigned form = 0; form < 3; form++) {
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+        uint64_t value = form == 2 ? xy(65535, 2) :
+                         form ? xy(65535, 2) : xy(0, 0);
+        unsigned offset = form == 1 ? 0x74 : 0x70;
+        unsigned width = form == 2 ? 8 : 4;
+        map_region(s, 0, 1, 0, 0, 2047, 2);
+        shape_memory(s, &c, NULL);
+        shape_stage(s, &c);
+        if (form == 2) {
+            qtest_writeq(s, DE + 0x70, (uint64_t)xy(9, 6) << 32 | xy(10, 7));
+        } else {
+            qtest_writel(s, DE + offset, xy(9, 6));
+        }
+        shape_memory(s, &c, unchanged);
+        qtest_writel(s, DE + 0x58, 0x80000000);
+        save_paired_renderer(s, path, before);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + offset, value, width), ==,
+                        MEMTX_ERROR);
+        save_paired_renderer(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        shape_memory(s, &c, unchanged);
+        qtest_writel(s, DE + 0x58, 0);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + offset, value, width), ==,
+                        MEMTX_OK);
+        shape_memory(s, &c, expected);
+        save_paired_renderer(s, path, after);
+        g_assert_cmphex(after[192 + 0x70 / 4], ==, xy(0, 0));
+        g_assert_cmphex(after[192 + 0x74 / 4], ==, xy(65535, 2));
+    }
+    for (unsigned alias = 0; alias < 2; alias++) {
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+        map_region(s, 0, 1, 0, 0, 2047, 2);
+        shape_memory(s, &c, NULL);
+        shape_stage(s, &c);
+        qtest_writel(s, DE + 0x74, xy(3, 0));
+        tile(s, 0, 3, alias ? page_for(0, 0) : 0x400);
+        save_paired_renderer(s, path, before);
+        g_assert_cmpint(memtx_writel(s, DE + 0x874, xy(65535, 2)), ==,
+                        MEMTX_ERROR);
+        save_paired_renderer(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        shape_memory(s, &c, unchanged);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     take_group_paths(&argc, argv);
@@ -10090,6 +10374,14 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(1), test_transfer_masks);
     add_data_case("sgi/crime/render/transfer/download/clipping",
                   GUINT_TO_POINTER(1), test_transfer_clipping);
+    add_case("sgi/crime/render/x-domain/invisible", test_x_domain_invisible);
+    add_case("sgi/crime/render/x-domain/coordinates",
+             test_x_domain_coordinates);
+    add_case("sgi/crime/render/x-domain/stipple-origins",
+             test_x_domain_stipple_origins);
+    add_case("sgi/crime/render/x-domain/bounds", test_x_domain_bounds);
+    add_case("sgi/crime/render/x-domain/transactions",
+             test_x_domain_transactions);
     add_case("sgi/crime/render/buffer-modes/indexed",
              test_buffer_modes_indexed);
     add_case("sgi/crime/render/buffer-modes/color", test_buffer_modes_color);
