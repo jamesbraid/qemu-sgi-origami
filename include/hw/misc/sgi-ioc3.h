@@ -426,7 +426,7 @@ struct SGIIOC3State {
     uint32_t microlan_control;
     uint32_t pin_control;
     uint32_t pin_data;
-    /* Trace de-duplication only: bit 0 white, bit 1 red. Not migrated. */
+    /* Trace de-duplication only: bit 0 white, bit 1 red. Derived on load. */
     uint32_t lightbar_lit;
     /* Population properties, checked rather than replaced on migration. */
     uint32_t pin_input_mask;

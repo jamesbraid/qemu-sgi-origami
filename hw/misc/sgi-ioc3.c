@@ -1770,6 +1770,9 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
     unsigned int i;
 
     sgi_ioc3_update_irq(s);
+    /* Derived from the migrated latch, so the next trace compares to it. */
+    s->lightbar_lit = s->pin_data &
+                      (SGI_IOC3_LIGHTBAR_WHITE | SGI_IOC3_LIGHTBAR_RED);
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         sgi_ioc_sdma_kick(&s->sdma_engine, i);
         /*
