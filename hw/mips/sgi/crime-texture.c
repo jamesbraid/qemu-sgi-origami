@@ -174,6 +174,93 @@ static void crime_texture_components(const CrimeTexture *t, uint32_t raw,
     }
 }
 
+static Int128 crime_texture_scale128(Int128 value, unsigned factor)
+{
+    uint64_t low, high;
+
+    mulu64(&low, &high, int128_getlo(value), factor);
+    high += (uint64_t)int128_gethi(value) * factor;
+    return int128_make128(low, high);
+}
+
+static Int128 crime_texture_add128(Int128 a, Int128 b)
+{
+    uint64_t low = int128_getlo(a) + int128_getlo(b);
+    uint64_t high = (uint64_t)int128_gethi(a) + int128_gethi(b) +
+                    (low < int128_getlo(a));
+
+    return int128_make128(low, high);
+}
+
+static bool crime_texture_environment128(const CrimeTexture *t,
+                                          const CrimeRational *texel,
+                                          uint32_t *color)
+{
+    Int128 numerator[4], denominator[4];
+    uint32_t output = 0;
+    bool format = (t->type == 1 || t->type == 2) ?
+                  t->bytes == 2 || t->bytes == 4 :
+                  t->type >= 4 && t->type <= 8 && t->bytes == 2;
+
+    /* DECAL keeps the general path for independent color/alpha fractions. */
+    if (!format || (t->function != 0 && t->function != 2 && t->function != 3)) {
+        return false;
+    }
+    for (unsigned c = 0; c < 4; c++) {
+        unsigned bits = crime_integer_bits(&texel[c].denominator);
+
+        if (texel[c].negative || !bits || bits > 120 ||
+            crime_integer_compare(&texel[c].numerator,
+                                  &texel[c].denominator) > 0) {
+            return false;
+        }
+        numerator[c] = int128_make128(crime_integer_low64(&texel[c].numerator),
+            (uint64_t)texel[c].numerator.word[3] << 32 |
+            texel[c].numerator.word[2]);
+        denominator[c] = int128_make128(
+            crime_integer_low64(&texel[c].denominator),
+            (uint64_t)texel[c].denominator.word[3] << 32 |
+            texel[c].denominator.word[2]);
+    }
+    /*
+     * Byte factors and normalized inputs make every old clamp inert. Old
+     * initial products are below 2^128 and BLEND cross-products/sum below
+     * 2^257. Scale/half operations stay below 2^267: signed512 checks pass.
+     * The exact scaled numerator X is at most 255*D. D<2^120 also keeps
+     * X+floor(D/2)<256*D<2^128, including half ties and unreduced inputs.
+     */
+    for (unsigned c = 0; c < 4; c++) {
+        unsigned shift = 24 - 8 * c;
+        unsigned f = (*color >> shift) & 255;
+        bool present = c == 3 ? t->type != 1 && t->type != 7 : t->type != 5;
+        Int128 value;
+        unsigned byte;
+
+        if (!present) {
+            byte = f;
+        } else {
+            if (t->function == 3) {
+                value = crime_texture_scale128(numerator[c], 255);
+            } else if (t->function == 0 || (c == 3 && t->type != 6)) {
+                value = crime_texture_scale128(numerator[c], f);
+            } else {
+                unsigned e = (t->environment >> shift) & 255;
+                Int128 complement = int128_sub(denominator[c], numerator[c]);
+
+                value = crime_texture_add128(
+                    crime_texture_scale128(complement, f),
+                    crime_texture_scale128(numerator[c], e));
+            }
+            value = crime_texture_add128(value,
+                                          int128_urshift(denominator[c], 1));
+            byte = int128_getlo(int128_divu(value, denominator[c]));
+        }
+        output |= (uint32_t)byte << shift;
+    }
+    *color = output;
+    return true;
+}
+
 static bool crime_texture_environment(const CrimeTexture *t,
                                        const CrimeRational *texel,
                                        uint32_t *color)
@@ -182,6 +269,9 @@ static bool crime_texture_environment(const CrimeTexture *t,
     CrimeRational scale = crime_rational(255, 1), half = crime_rational(1, 2);
     uint32_t output = 0;
 
+    if (crime_texture_environment128(t, texel, color)) {
+        return true;
+    }
     for (unsigned c = 0; c < 4; c++) {
         unsigned shift = 24 - 8 * c;
         CrimeRational f = crime_rational((*color >> shift) & 255, 255);
@@ -668,6 +758,12 @@ void crime_texture_free(CrimeTexture *t)
 }
 
 #ifdef CRIME_TEXTURE_TEST
+bool crime_texture_test_environment(CrimeTexture *t, const CrimeRational *texel,
+                                    uint32_t *color)
+{
+    return crime_texture_environment(t, texel, color);
+}
+
 void crime_texture_test_work(CrimeTexture *t, unsigned fragments,
                              unsigned taps, unsigned snapshot_bytes)
 {

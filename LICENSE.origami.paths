@@ -994,3 +994,7 @@ tests/unit/crime-texture-361-body.h
 hw/mips/sgi/sgi-graphics-host.c
 tests/unit/test-sgi-graphics-host.c
 hw/mips/sgi/models/layers/modules/xtown.yaml
+tests/unit/crime-rational-82-reference.h
+tests/unit/crime-texture-82-reference.c
+tests/unit/crime-texture-82-reference.h
+tests/unit/crime-texture-82-body.h
