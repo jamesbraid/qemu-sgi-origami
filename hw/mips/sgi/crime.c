@@ -10,6 +10,7 @@
  * Unsupported register operations fail visibly.
  */
 #include "qemu/osdep.h"
+#include "crime-texture.h"
 #include "hw/mips/sgi/crime.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
@@ -535,13 +536,17 @@ static bool crime_render_validate(CrimeRenderPixel *pixels, unsigned count,
                                    unsigned bytes, bool check_overlap,
                                    bool *overlap)
 {
-    g_autofree uint32_t *order = g_new(uint32_t, count);
+    g_autofree uint32_t *order = NULL;
 
     unsigned enabled = 0;
 
     *overlap = false;
     if (!count) {
         return true;
+    }
+    order = g_try_new(uint32_t, count);
+    if (!order) {
+        return false;
     }
     for (unsigned i = 0; i < count; i++) {
         if (pixels[i].mask) {
@@ -1992,12 +1997,17 @@ static int crime_render_compare_sz(const void *a, const void *b, void *opaque)
 static bool crime_render_sz_aliases(CrimeRenderPixel *pixels, unsigned count,
                                       unsigned bytes)
 {
-    g_autofree uint32_t *sz_order = g_new(uint32_t, count);
-    g_autofree uint32_t *color_order = g_new(uint32_t, count);
+    g_autofree uint32_t *sz_order = NULL;
+    g_autofree uint32_t *color_order = NULL;
     unsigned colors = 0, z = 0, c = 0;
 
     if (!count) {
         return true;
+    }
+    sz_order = g_try_new(uint32_t, count);
+    color_order = g_try_new(uint32_t, count);
+    if (!sz_order || !color_order) {
+        return false;
     }
     for (unsigned i = 0; i < count; i++) {
         sz_order[i] = i;
@@ -2291,6 +2301,20 @@ bool sgi_crime_line_coverage(SGICrimeState *s, int x, int y, uint64_t *bits)
     return true;
 }
 
+static bool crime_texture_ram(void *opaque, uint64_t address, unsigned size,
+                               uint64_t *identity, uint8_t *data)
+{
+    CrimeTransferSpan span;
+
+    if (!crime_transfer_resolve(opaque, address, size, &span) ||
+        address_space_read(&address_space_memory, address,
+                           MEMTXATTRS_UNSPECIFIED, data, size) != MEMTX_OK) {
+        return false;
+    }
+    *identity = span.offset;
+    return true;
+}
+
 static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                                            unsigned index, uint64_t value,
                                            unsigned words)
@@ -2311,6 +2335,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     CrimeRenderSZ sz = { 0 };
     CrimeGLLine line = { 0 };
     g_autoptr(GArray) line_fragments = NULL;
+    g_autoptr(CrimeTexture) texture = NULL;
     g_autofree CrimeRenderPixel *pixels = NULL;
     g_autoptr(GArray) bounded_pixels = NULL;
     MemTxResult result;
@@ -2348,7 +2373,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     gl_line = (p[0x60 / 4] >> 24) == 1 && (draw & 0x400000);
     native_gl = triangle || gl_rectangle || gl_line;
     if ((draw & ~(gl_line ? 0x511ff8U : gl_rectangle ? 0x510087U :
-                    triangle ? (0x5b17ffU | (sz_active ? 0x800U : 0)) :
+                    triangle ? (0x5b97ffU | (sz_active ? 0x800U : 0)) :
                                0x3e0affU)) ||
         (native_gl ? (!(draw & 0x400000) ||
                       !crime_triangle_output(p[0x8 / 4], &output)) :
@@ -2357,6 +2382,18 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                              (p[0x58 / 4] & 0x80008000U)))) ||
         !crime_render_geometry(p, &geometry)) {
         return crime_transfer_fail(offset, "unsupported primitive state");
+    }
+    if (draw & 0x8000) {
+        if (!triangle || geometry.samples > CRIME_TEXTURE_MAX_FRAGMENTS) {
+            return crime_transfer_fail(offset, "unsupported texture primitive");
+        }
+        texture = crime_texture_new(p, s->render.texture,
+                                     geometry.shade_anchor[0],
+                                     geometry.shade_anchor[1], false,
+                                     crime_texture_ram, s);
+        if (!texture) {
+            return crime_transfer_fail(offset, "unsupported texture state");
+        }
     }
     if (words && (index == 0x190 / 4 || index == 0x194 / 4) && !gl_line) {
         return crime_transfer_fail(offset, "AA START requires native GL line");
@@ -2513,7 +2550,10 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     if (geometry.opcode <= 1 && !gl_line) {
         bounded_pixels = g_array_new(false, false, sizeof(CrimeRenderPixel));
     } else {
-        pixels = g_new(CrimeRenderPixel, geometry.capacity);
+        pixels = g_try_new(CrimeRenderPixel, geometry.capacity);
+        if (geometry.capacity && !pixels) {
+            return crime_transfer_fail(offset, "primitive allocation failed");
+        }
     }
     for (unsigned i = 0; i < geometry.samples; i++) {
         int cx, cy;
@@ -2556,6 +2596,9 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
             if ((draw & 0x10000) &&
                 !crime_triangle_shade(p, &geometry, cx, cy, &color)) {
                 return crime_transfer_fail(offset, "shade arithmetic overflow");
+            }
+            if (texture && !crime_texture_sample(texture, cx, cy, &color)) {
+                return crime_transfer_fail(offset, "invalid texture sample");
             }
             alpha_pass = !alpha ||
                          crime_render_alpha_pass(color, p[0x198 / 4]);
@@ -2699,10 +2742,11 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     }
     if (!crime_render_validate(pixels, count, bytes, transfer, &overlap) ||
         (transfer && overlap)) {
-        return crime_transfer_fail(offset, "primitive memory aliases");
+        return crime_transfer_fail(offset,
+                                   "primitive memory validation failed");
     }
     if (sz_active && !crime_render_sz_aliases(pixels, count, bytes)) {
-        return crime_transfer_fail(offset, "SZ memory aliases");
+        return crime_transfer_fail(offset, "SZ memory validation failed");
     }
     /* MMIO holds the BQL, keeping prevalidated RAM mappings stable. */
     result = triangle || gl_line || sz_active ?

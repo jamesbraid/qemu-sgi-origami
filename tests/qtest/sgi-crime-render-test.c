@@ -8,6 +8,7 @@
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
 #include "sgi-crime-line-vectors.h"
+#include "sgi-crime-texture-addresses.h"
 
 #define CRIME 0x14000000ULL
 #define RE 0x15000000ULL
@@ -12895,6 +12896,738 @@ static void test_sz_tag_literals(void)
     qtest_quit(s);
 }
 
+static void texture_constant(QTestState *s)
+{
+    /* A 1x1 RGBA8 image occupies the final packed mip allocation. */
+    uint64_t tlb = UINT64_C(0x800a) << 32;
+
+    qtest_writeq(s, RE + 0x1600 + (93 / 4) * 8, tlb);
+    qtest_writel(s, 0xafc00, 0x2371b9d5);
+    qtest_writel(s, DE + 0x110, (2U << 20) | (2U << 18) |
+                 (10U << 14) | (2U << 4) | (2U << 2) | 3U);
+    qtest_writeq(s, DE + 0x118, UINT64_C(0xaa00000f000f));
+    qtest_writeq(s, DE + 0x120, (UINT64_C(1) << 43) + 0x800);
+    qtest_writeq(s, DE + 0x128, (UINT64_C(1) << 43) + 0x800);
+    qtest_writel(s, DE + 0x130, 0x20000800);
+    qtest_writel(s, DE + 0x134, 0);
+    qtest_writeq(s, DE + 0x138, 0);
+    qtest_writeq(s, DE + 0x140, 0);
+    qtest_writeq(s, DE + 0x148, 0);
+    qtest_writeq(s, DE + 0x150, 0);
+    qtest_writel(s, DE + 0x158, 0);
+    qtest_writel(s, DE + 0x15c, 0);
+}
+
+static void test_texture_constant(void)
+{
+    QTestState *s = start_indexed_state();
+    Shape c = triangle_prepare(s, 0, 0, 0);
+
+    triangle_vertices(s, triangle_integer, NULL, true);
+    texture_constant(s);
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000);
+    g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==,
+                    MEMTX_OK);
+    triangle_pixels(s, &c, triangle_ten, 0x2371b9d5, 3, UINT32_MAX);
+    qtest_quit(s);
+}
+
+static uint32_t texture_environment(unsigned type, unsigned depth,
+                                    unsigned function, uint32_t stored)
+{
+    const uint64_t one = 7905; /* lcm(15, 31, 255) */
+    uint64_t texel[4];
+    uint32_t result = 0;
+    bool alpha_only = type == 5;
+    bool rgb_only = type == 1 || type == 7;
+
+    for (unsigned c = 0; c < 4; c++) {
+        unsigned shift = 24 - 8 * c;
+        if (type == 4) {
+            texel[c] = ((stored >> (12 - 4 * c)) & 15) * 527;
+        } else if (type >= 5) {
+            texel[c] = (c == 3 ? stored & 255 : stored >> 8 & 255) * 31;
+            if (type == 6) {
+                texel[c] = (stored >> 8 & 255) * 31;
+            }
+        } else if (depth == 2) {
+            texel[c] = (stored >> shift & 255) * 31;
+        } else {
+            texel[c] = c == 3 ? (stored >> 15) * one :
+                       (stored >> (10 - 5 * c) & 31) * 255;
+        }
+    }
+    for (unsigned c = 0; c < 4; c++) {
+        unsigned shift = 24 - 8 * c;
+        uint64_t f = TRIANGLE_COLOR >> shift & 255;
+        uint64_t e = 0x39c765a1U >> shift & 255;
+        uint64_t n, d = one;
+        bool present = c == 3 ? !rgb_only : !alpha_only;
+
+        if (!present) {
+            n = f * one;
+        } else if (function == 3 || (function == 1 && type == 1)) {
+            n = 255 * texel[c];
+        } else if (function == 0 || (function == 2 && c == 3 &&
+                                             type != 6)) {
+            n = f * texel[c];
+        } else if (function == 1) {
+            n = c == 3 ? f * one * one :
+                f * (one - texel[3]) * one + 255 * texel[c] * texel[3];
+            d = one * one;
+        } else {
+            n = f * (one - texel[c]) + e * texel[c];
+        }
+        result |= ((2 * n + d) / (2 * d)) << shift;
+    }
+    return result;
+}
+
+static void test_texture_formats(void)
+{
+    const unsigned formats[][2] = {
+        {1, 1}, {1, 2}, {2, 1}, {2, 2}, {4, 1},
+        {5, 1}, {6, 1}, {7, 1}, {8, 1},
+    };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(formats); n++) {
+        unsigned type = formats[n][0], depth = formats[n][1];
+        uint32_t stored = depth == 2 ? 0x235bad79 : 0xad39;
+
+        for (unsigned function = 0; function < 4; function++) {
+            Shape c = triangle_prepare(s, 0, 0, 0);
+            uint32_t mode = (type << 20) | (depth << 18) | (10U << 14) |
+                            (2U << 4) | (2U << 2) | function;
+            bool undefined = function == 1 && type >= 5;
+
+            triangle_vertices(s, triangle_integer, NULL, true);
+            texture_constant(s);
+            pixel_write(s, 0xafc00, 1U << depth, stored);
+            qtest_writel(s, DE + 0x110, mode);
+            qtest_writel(s, DE + 0x168, 0x39c765a1);
+            qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000);
+            g_test_message("type %u depth %u function %u",
+                           type, depth, function);
+            g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==,
+                            undefined ? MEMTX_ERROR : MEMTX_OK);
+            if (undefined) {
+                shape_memory(s, &c, NULL);
+            } else {
+                triangle_pixels(s, &c, triangle_ten,
+                    texture_environment(type, depth, function, stored),
+                    3, UINT32_MAX);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static uint64_t texture_format(unsigned u, unsigned v)
+{
+    return (uint64_t)(10 - u) << 44 | (uint64_t)(10 - v) << 40 |
+           (uint64_t)u << 36 | (uint64_t)v << 32 |
+           (uint64_t)((1U << (u + 4)) - 1) << 16 |
+           ((1U << (v + 4)) - 1);
+}
+
+static void texture_two_by_two(QTestState *s)
+{
+    texture_constant(s);
+    qtest_writel(s, DE + 0x110, (2U << 20) | (2U << 18) | (9U << 14) |
+                 (1U << 10) | (2U << 4) | (2U << 2) | 3U);
+    qtest_writeq(s, DE + 0x118, texture_format(1, 1));
+    qtest_writel(s, 0xaf800, 0x23456789);
+    qtest_writel(s, 0xaf804, 0x91b3d5f7);
+    qtest_writel(s, 0xafa00, 0x17395b7d);
+    qtest_writel(s, 0xafa04, 0x8caec0e2);
+}
+
+static void test_texture_perspective(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned flags = 0; flags < 4; flags++) {
+        for (int sign = -1; sign <= 1; sign += 2) {
+            Shape c = triangle_prepare(s, 0, 0, 0);
+            uint32_t expected[64];
+            int64_t uscale = INT64_C(1) << (43 - 4 * (flags & 1));
+            int64_t vscale = INT64_C(1) << (43 - 4 * ((flags >> 1) & 1));
+
+            triangle_vertices(s, triangle_integer, NULL, true);
+            texture_two_by_two(s);
+            qtest_writeq(s, DE + 0x120, sign * 2 * uscale + 0x800);
+            qtest_writeq(s, DE + 0x128, sign * (vscale + vscale / 4) + 0x800);
+            qtest_writeq(s, DE + 0x148, sign * (vscale * 5 / 16));
+            qtest_writel(s, DE + 0x130, sign * 0x20000000 + 0x800);
+            qtest_writel(s, DE + 0x158, sign * 0x08000000);
+            qtest_writel(s, DE + 0x134, flags);
+            qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000);
+            g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==,
+                            MEMTX_OK);
+            for (unsigned y = 0; y < 8; y++) {
+                for (unsigned x = 0; x < 8; x++) {
+                    expected[y * 8 + x] = triangle_ten[y] & (1U << x) ?
+                        (x <= 2 ? 0x91b3d5f7 : 0x23456789) : c.old;
+                }
+            }
+            shape_memory(s, &c, expected);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_texture_filtering(void)
+{
+    const unsigned wraps[] = {0, 1, 2, 3};
+    QTestState *s = start_indexed_state();
+
+    for (unsigned wrap = 0; wrap < ARRAY_SIZE(wraps); wrap++) {
+        for (unsigned linear = 0; linear < 2; linear++) {
+            Shape c = triangle_prepare(s, 0, 0, 0);
+            uint32_t expected;
+
+            triangle_vertices(s, triangle_integer, NULL, true);
+            texture_two_by_two(s);
+            qtest_writel(s, DE + 0x160, 0x17395b7d);
+            qtest_writel(s, DE + 0x110, (2U << 20) | (2U << 18) |
+                         (9U << 14) | (1U << 10) | linear << 6 |
+                         linear << 7 | wraps[wrap] << 4 | (2U << 2) | 3U);
+            /* S=-1/4, T=1/4: one tap is border under every clamp mode. */
+            qtest_writeq(s, DE + 0x120, (UINT64_C(3) << 41) + 0x800);
+            qtest_writeq(s, DE + 0x128, (UINT64_C(5) << 41) + 0x800);
+            expected = wrap == 1 ? 0x91b3d5f7 : wrap == 2 ? 0x23456789 :
+                       wrap == 0 && !linear ? 0x23456789 :
+                       wrap == 0 ? 0x1d3f6183 : 0x17395b7d;
+            qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000);
+            g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==,
+                            MEMTX_OK);
+            triangle_pixels(s, &c, triangle_ten, expected, 3, UINT32_MAX);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void texture_mip_colors(QTestState *s)
+{
+    const uint32_t colors[] = {0x20406080, 0x6080a0c0, 0xa0c0e0f0};
+    const unsigned offsets[] = {0xf000, 0xf800, 0xfc00};
+
+    texture_constant(s);
+    qtest_writeq(s, DE + 0x118, texture_format(2, 2));
+    for (unsigned level = 0; level < 3; level++) {
+        unsigned size = 4U >> level;
+        for (unsigned y = 0; y < size; y++) {
+            for (unsigned x = 0; x < size; x++) {
+                qtest_writel(s, 0xa0000 + offsets[level] + y * 512 + x * 4,
+                             colors[level]);
+            }
+        }
+    }
+}
+
+static uint32_t texture_mip_expected(unsigned minimum, unsigned maximum,
+                                      int lod)
+{
+    const uint32_t colors[] = {0x20406080, 0x6080a0c0, 0xa0c0e0f0};
+    unsigned level, next, weight;
+    uint32_t result = 0;
+    int transition = maximum && (minimum == 2 || minimum == 4) ? 128 : 0;
+
+    if (lod <= transition || minimum < 2) {
+        return colors[0];
+    }
+    if (minimum == 2 || minimum == 3) {
+        level = MIN((lod + 127) / 256, 2);
+        return colors[level];
+    }
+    level = MIN(lod / 256, 2);
+    next = MIN(level + 1, 2);
+    weight = level == next ? 0 : lod % 256;
+    for (unsigned c = 0; c < 4; c++) {
+        unsigned shift = 24 - 8 * c;
+        unsigned a = colors[level] >> shift & 255;
+        unsigned b = colors[next] >> shift & 255;
+        result |= ((a * (256 - weight) + b * weight + 128) / 256) << shift;
+    }
+    return result;
+}
+
+static void test_texture_lod(void)
+{
+    /* Each pair is twice the base-image texel-space X derivative. */
+    const int slopes[][3] = {
+        {0, 0, -4096}, {1, 0, -256}, {2, 0, 0}, {2, 2, 128},
+        {4, 0, 256}, {3, 0, 149}, {4, 4, 384}, {8, 0, 512},
+    };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned min = 0; min < 6; min++) {
+        for (unsigned mag = 0; mag < 2; mag++) {
+            for (unsigned n = 0; n < ARRAY_SIZE(slopes); n++) {
+                Shape c = triangle_prepare(s, 0, 0, 0);
+                triangle_vertices(s, triangle_integer, NULL, true);
+                texture_mip_colors(s);
+                qtest_writel(s, DE + 0x110, (2U << 20) | (2U << 18) |
+                             (8U << 14) | (2U << 10) | min << 7 | mag << 6 |
+                             (2U << 4) | (2U << 2) | 3U);
+                qtest_writeq(s, DE + 0x138,
+                             slopes[n][0] * (UINT64_C(1) << 40));
+                qtest_writeq(s, DE + 0x148,
+                             slopes[n][1] * (UINT64_C(1) << 40));
+                qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000);
+                g_test_message("min %u mag %u footprint %u", min, mag, n);
+                g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==,
+                                MEMTX_OK);
+                triangle_pixels(s, &c, triangle_ten,
+                    texture_mip_expected(min, mag, slopes[n][2]),
+                    3, UINT32_MAX);
+            }
+        }
+    }
+    /* At x=0, 1/(1+x) has finite difference -1/2, analytic derivative -1. */
+    {
+        const int vertices[3][2] = { {64, 64}, {128, 64}, {64, 128} };
+        const uint8_t one_pixel[8] = {0, 2};
+        Shape c = triangle_prepare(s, 0, 0, 0);
+        triangle_vertices(s, vertices, NULL, true);
+        texture_mip_colors(s);
+        qtest_writel(s, DE + 0x110, (2U << 20) | (2U << 18) |
+                     (8U << 14) | (2U << 10) | (2U << 7) |
+                     (2U << 4) | (2U << 2) | 3U);
+        qtest_writeq(s, DE + 0x120, (UINT64_C(1) << 44) + 0x800);
+        qtest_writeq(s, DE + 0x138, UINT64_C(1) << 43);
+        qtest_writeq(s, DE + 0x148, UINT64_C(1) << 43);
+        qtest_writel(s, DE + 0x158, 0x20000000);
+        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000);
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==,
+                        MEMTX_OK);
+        triangle_pixels(s, &c, one_pixel, 0x6080a0c0, 3, UINT32_MAX);
+    }
+    qtest_quit(s);
+}
+
+static void test_texture_transactions(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-texture-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned failure = 0; failure < 13; failure++) {
+        Shape c = triangle_prepare(s, 0, 0, 0);
+        triangle_vertices(s, triangle_integer, NULL, true);
+        texture_two_by_two(s);
+        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000);
+        qtest_writel(s, DE + 0xd0, 0x76543210);
+        switch (failure) {
+        case 0:
+            qtest_writel(s, DE + 0x130, 0);
+            break;
+        case 1:
+            /* Q is nonzero at the first sample, zero at its X neighbor. */
+            qtest_writel(s, DE + 0x158, 0xe0000000);
+            break;
+        case 2:
+            qtest_writeq(s, DE + 0x138, INT64_MAX);
+            break;
+        case 3:
+            qtest_writeq(s, RE + 0x1600 + (93 / 4) * 8, 0);
+            break;
+        case 4:
+            qtest_writeq(s, RE + 0x1600 + (93 / 4) * 8,
+                         UINT64_C(0xffff) << 32);
+            break;
+        case 5:
+            qtest_writel(s, DE + 0x110, 0x28452b | (6U << 7));
+            break;
+        case 6:
+            qtest_writeq(s, DE + 0x118, texture_format(1, 1) ^ 1);
+            break;
+        case 7:
+            qtest_writel(s, DE + 0x60, 0x01000020);
+            break;
+        case 8:
+            qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0xa000);
+            break;
+        case 9:
+            qtest_writel(s, DE + 0x134, 4);
+            break;
+        case 10:
+            qtest_writeq(s, DE + 0x118, texture_format(8, 0));
+            qtest_writel(s, DE + 0x110, (2U << 20) | (2U << 18) |
+                         (2U << 14) | (8U << 10) |
+                         (2U << 4) | (2U << 2) | 3U);
+            qtest_writeq(s, DE + 0x120, (UINT64_C(765) << 34) + 0x800);
+            qtest_writeq(s, DE + 0x138, UINT64_C(1) << 35);
+            qtest_writeq(s, RE + 0x1600 + (80 / 4) * 8,
+                         UINT64_C(0x800a) << 48);
+            qtest_writel(s, 0xa01f8, 0x2371b9d5);
+            qtest_writel(s, 0xa01fc, 0x91b3d5f7);
+            break;
+        case 11:
+            qtest_writel(s, DE + 0x130, 0x60000800);
+            qtest_writel(s, DE + 0x158, 0xe0000000);
+            break;
+        case 12:
+            qtest_writel(s, DE + 0x15c, 0xe0000000);
+            break;
+        }
+        pipeline_failure(s, &c, path, DE + 0x8d0, TRIANGLE_COLOR, 4);
+    }
+    {
+        const int vertices[3][2] = { {0, 8064}, {256, 8064}, {0, 8320} };
+        const uint8_t rows[8] = {15, 7, 3, 1};
+        Shape c = triangle_prepare(s, 0, 0, 126);
+        triangle_vertices(s, vertices, NULL, true);
+        texture_constant(s);
+        qtest_writeq(s, RE + 0x1600 + (93 / 4) * 8,
+                     UINT64_C(0x8003) << 32);
+        qtest_writel(s, DE + 0x110, (2U << 20) | (2U << 18) |
+                     (10U << 14) | (2U << 4) | (2U << 2));
+        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000);
+        /* The first output overwrites every later sample's source texel. */
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==,
+                        MEMTX_OK);
+        triangle_pixels(s, &c, rows,
+            texture_environment(2, 2, 0, c.old), 3, UINT32_MAX);
+        shape_memory(s, &c, NULL);
+        /* Restore the CPU upload after clearing the framebuffer fixture. */
+        qtest_writel(s, 0x3fc00, 0x31a7d95b);
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==,
+                        MEMTX_OK);
+        triangle_pixels(s, &c, rows,
+            texture_environment(2, 2, 0, 0x31a7d95b), 3, UINT32_MAX);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_texture_addresses(void)
+{
+    QTestState *s = start_indexed_state();
+    for (unsigned n = 0; n < ARRAY_SIZE(texture_addresses); n++) {
+        const CrimeTextureAddressVector *v = &texture_addresses[n];
+        for (unsigned subtiled = 0; subtiled < 2; subtiled++) {
+            Shape c = triangle_prepare(s, 0, 0, 0);
+            unsigned page = 0x100 + v->entry * 3;
+            unsigned offset = subtiled ? v->subtiled : v->ordinary;
+            uint64_t address = ((uint64_t)page << 16) + offset;
+            uint64_t word;
+            unsigned shift = 48 - 16 * (v->entry % 4);
+            uint32_t raw = v->bytes == 4 ? 0x315b9de7 : 0x39be;
+            uint32_t expected = v->bytes == 4 ? raw : 0x3399bbee;
+            uint8_t guard[12];
+            unsigned before = offset ? 4 : 0;
+
+            triangle_vertices(s, triangle_integer, NULL, true);
+            texture_constant(s);
+            qtest_writeq(s, DE + 0x118, texture_format(v->u, v->v));
+            qtest_writel(s, DE + 0x110, (subtiled << 24) |
+                         ((v->bytes == 4 ? 2U : 4U) << 20) |
+                         ((v->bytes == 4 ? 2U : 1U) << 18) |
+                         ((10 - v->u) << 14) | (v->u << 10) |
+                         (2U << 4) | (2U << 2) | 3U);
+            word = qtest_readq(s, RE + 0x1600 + (v->entry / 4) * 8);
+            word &= ~(UINT64_C(65535) << shift);
+            word |= (uint64_t)(0x8000 | page) << shift;
+            qtest_writeq(s, RE + 0x1600 + (v->entry / 4) * 8, word);
+            qtest_writeq(s, DE + 0x120, (UINT64_C(1) << 43) +
+                         ((uint64_t)(2 * v->x + 1) << (42 - v->u)) + 0x800);
+            qtest_writeq(s, DE + 0x128, (UINT64_C(1) << 43) +
+                         ((uint64_t)(2 * v->y + 1) << (42 - v->v)) + 0x800);
+            qtest_memset(s, address - before, 0xa5, before + v->bytes + 4);
+            pixel_write(s, address, v->bytes, raw);
+            qtest_memread(s, address - before, guard, before + v->bytes + 4);
+            qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000);
+            g_test_message("address vector %u layout %u", n, subtiled);
+            g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==,
+                            MEMTX_OK);
+            triangle_pixels(s, &c, triangle_ten, expected, 3, UINT32_MAX);
+            {
+                uint8_t after[12];
+                qtest_memread(s, address - before, after,
+                              before + v->bytes + 4);
+                g_assert_cmpmem(guard, before + v->bytes + 4,
+                                after, before + v->bytes + 4);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void texture_half_lsb(QTestState *s, bool alpha)
+{
+    texture_two_by_two(s);
+    qtest_writel(s, DE + 0x110, ((alpha ? 5U : 1U) << 20) |
+                 ((alpha ? 1U : 2U) << 18) | (9U << 14) | (1U << 10) |
+                 (1U << 7) | (1U << 6) | (2U << 4) | (2U << 2));
+    qtest_writeq(s, DE + 0x120, (UINT64_C(3) << 42) + 0x800);
+    qtest_writeq(s, DE + 0x128, (UINT64_C(5) << 41) + 0x800);
+    pixel_write(s, 0xaf800, alpha ? 2 : 4, 0);
+    pixel_write(s, alpha ? 0xaf802 : 0xaf804,
+                alpha ? 2 : 4, alpha ? 1 : 0x01000000);
+}
+
+static void test_texture_output_order(void)
+{
+    QTestState *s = start_indexed_state();
+    for (unsigned zero = 0; zero < 2; zero++) {
+        Shape c = pipeline_prepare(s, 0x228, 0);
+        SZCase v = sz_case();
+        uint32_t expected[16];
+        v.draw = TRIANGLE_DRAW | 0x8000 | 0x800 | 0x400 | 7;
+        v.stencil = 0x62ff7002;
+        map_region(s, 2, 4, 0, 0, 3, 3);
+        sz_program(s, &v);
+        texture_half_lsb(s, true);
+        qtest_writel(s, DE + 0x198, 0x400);
+        if (zero) {
+            qtest_writew(s, 0xaf802, 0);
+            tile(s, 2, 0, 0);
+            qtest_writeq(s, RE + 0x1000 + 2 * 0x200, 0);
+        }
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                pixel_write(s, pixel_address(2, x, y, 4), 4, v.old);
+                expected[4 * y + x] = zero ? c.old : pipeline_reference(
+                    0x228, 0x42719b01, c.old, 0, 0x45, v.draw,
+                    6, UINT32_MAX, x, y);
+            }
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, 0x42719bff), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                                ==, zero ? v.old : 0x62000012);
+            }
+        }
+    }
+    for (unsigned n = 0; n < 3; n++) {
+        const unsigned modes[] = {0x228, 0x124, 0x227};
+        Shape c = pipeline_prepare(s, modes[n], 0);
+        uint32_t expected[16];
+        unsigned draw = TRIANGLE_DRAW | 0x8000 | 0x400 | 0x100;
+        texture_half_lsb(s, false);
+        qtest_writel(s, DE + 0x18, draw);
+        qtest_writel(s, DE + 0x1a8, 0x11);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                expected[4 * y + x] = pipeline_reference(modes[n],
+                    0x010000ff, c.old, 0, 0x11, draw, 3, UINT32_MAX, x, y);
+            }
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, UINT32_MAX), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+}
+
+static void test_texture_anchor(void)
+{
+    const int scenes[][3][2] = {
+        { {64, 64}, {320, 64}, {64, 320} },
+        { {-1, -1}, {255, -1}, {-1, 255} },
+        { {65, 65}, {321, 65}, {65, 321} },
+    };
+    const uint8_t rows[][8] = {
+        {0, 0x1e, 0x0e, 0x06, 0x02}, {15, 7, 3, 1},
+        {0, 0, 0x1c, 0x0c, 0x04},
+    };
+    const int origins[][2] = { {0, 0}, {3, -5}, {-7, 11} };
+    const uint32_t texels[2][2] = {
+        {0x23456789, 0x91b3d5f7}, {0x17395b7d, 0x8caec0e2},
+    };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned scene = 0; scene < ARRAY_SIZE(scenes); scene++) {
+        for (unsigned traversal = 0; traversal < 4; traversal++) {
+            for (unsigned reverse = 0; reverse < 2; reverse++) {
+                for (unsigned origin = 0; origin < ARRAY_SIZE(origins);
+                     origin++) {
+                    for (unsigned clipped = 0; clipped < 2; clipped++) {
+                        unsigned order[] = {
+                            0, reverse ? 2 : 1, reverse ? 1 : 2
+                        };
+                        unsigned selected = order[traversal & 2 ? 0 : 2];
+                        int ax = scenes[scene][selected][0];
+                        int ay = scenes[scene][selected][1];
+                        int vertices[3][2];
+                        Shape c = triangle_prepare(s, 0, 0, 0);
+                        uint32_t expected[64];
+                        int ox = origins[origin][0], oy = origins[origin][1];
+
+                        ax = ax / 64 - (ax % 64 < 0);
+                        ay = ay / 64 - (ay % 64 < 0);
+                        for (unsigned v = 0; v < 3; v++) {
+                            vertices[v][0] = scenes[scene][v][0] - 64 * ox;
+                            vertices[v][1] = scenes[scene][v][1] - 64 * oy;
+                        }
+                        qtest_writel(s, DE + 0x58,
+                            (uint32_t)(uint16_t)(-4096 + ox) << 16 |
+                            (uint16_t)(-4096 + oy));
+                        triangle_vertices(s, vertices, order, true);
+                        texture_two_by_two(s);
+                        qtest_writel(s, DE + 0x60,
+                                     0x02000000 | traversal << 16);
+                        qtest_writeq(s, DE + 0x120, (INT64_C(1) << 43) +
+                                     ax * (INT64_C(1) << 41) + 0x800);
+                        qtest_writeq(s, DE + 0x128, (INT64_C(1) << 43) +
+                                     ay * (INT64_C(1) << 41) + 0x800);
+                        qtest_writeq(s, DE + 0x138, INT64_C(1) << 41);
+                        qtest_writeq(s, DE + 0x150, INT64_C(1) << 41);
+                        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000 |
+                                     (clipped ? 0x100000 : 0));
+                        qtest_writeq(s, DE + 0x48,
+                            bounds(4098 - ox, 4098 - oy, 4100 - ox, 4100 - oy));
+                        for (unsigned y = 0; y < 8; y++) {
+                            for (unsigned x = 0; x < 8; x++) {
+                                bool covered = rows[scene][y] & (1U << x);
+                                covered &= !clipped ||
+                                    (x >= 2 && x <= 3 && y >= 2 && y <= 3);
+                                expected[y * 8 + x] = covered ?
+                                    texels[y >= 2][x >= 2] : c.old;
+                            }
+                        }
+                        g_test_message("scene %u traversal %u winding %u "
+                                       "origin %u clip %u", scene, traversal,
+                                       reverse, origin, clipped);
+                        g_assert_cmpint(memtx_writel(s, DE + 0x8d0,
+                                                    TRIANGLE_COLOR), ==,
+                                        MEMTX_OK);
+                        shape_memory(s, &c, expected);
+                    }
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_texture_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-texture-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *from = start(), *to = start_options("-incoming defer");
+    Shape c = triangle_prepare(from, 0, 0, 0);
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS], translations[28];
+
+    triangle_vertices(from, triangle_integer, NULL, true);
+    texture_constant(from);
+    qtest_writel(from, DE + 0x18, TRIANGLE_DRAW | 0x8000);
+    g_assert_cmpint(memtx_writel(from, DE + 0x8d0, TRIANGLE_COLOR), ==,
+                    MEMTX_OK);
+    for (unsigned i = 0; i < ARRAY_SIZE(translations); i++) {
+        translations[i] = qtest_readq(from, RE + 0x1600 + 8 * i);
+    }
+    save_paired_renderer(from, path, before);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s} }", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    save_paired_renderer(to, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    for (unsigned i = 0; i < ARRAY_SIZE(translations); i++) {
+        g_assert_cmphex(qtest_readq(to, RE + 0x1600 + 8 * i), ==,
+                        translations[i]);
+    }
+    triangle_pixels(to, &c, triangle_ten, 0x2371b9d5, 3, UINT32_MAX);
+    qtest_writel(to, 0xafc00, 0x7193b5d7);
+    g_assert_cmpint(memtx_writel(to, DE + 0x8d0, 0x12345678), ==, MEMTX_OK);
+    triangle_pixels(to, &c, triangle_ten, 0x7193b5d7, 3, UINT32_MAX);
+    qtest_system_reset(to);
+    save_renderer(to, path, after);
+    for (unsigned i = 0; i < RENDER_WORDS; i++) {
+        g_assert_cmphex(after[i], ==, 0);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(translations); i++) {
+        g_assert_cmphex(qtest_readq(to, RE + 0x1600 + 8 * i), ==, 0);
+    }
+    triangle_pixels(to, &c, triangle_ten, 0x7193b5d7, 3, UINT32_MAX);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(sock);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_texture_border_components(void)
+{
+    const unsigned formats[][2] = {
+        {1, 1}, {1, 2}, {2, 1}, {2, 2}, {4, 1},
+        {5, 1}, {6, 1}, {7, 1}, {8, 1},
+    };
+    QTestState *s = start_indexed_state();
+    for (unsigned n = 0; n < ARRAY_SIZE(formats); n++) {
+        unsigned type = formats[n][0], depth = formats[n][1];
+        for (unsigned function = 0; function < 4; function++) {
+            Shape c = triangle_prepare(s, 0, 0, 0);
+            uint32_t mode = type << 20 | depth << 18 | 10U << 14 |
+                            3U << 4 | 2U << 2 | function;
+            bool undefined = function == 1 && type >= 5;
+            unsigned expected_type = type == 4 ? 2 : type;
+            unsigned expected_depth = type >= 5 ? 1 : 2;
+            uint32_t expected_raw = type >= 5 ? 0x17c9 : 0x175badc9;
+            triangle_vertices(s, triangle_integer, NULL, true);
+            texture_constant(s);
+            qtest_writeq(s, RE + 0x1600 + (93 / 4) * 8, 0);
+            qtest_writel(s, DE + 0x110, mode);
+            qtest_writeq(s, DE + 0x120, 0x800);
+            qtest_writel(s, DE + 0x160, 0x175badc9);
+            qtest_writel(s, DE + 0x168, 0x39c765a1);
+            qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000);
+            g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==,
+                            undefined ? MEMTX_ERROR : MEMTX_OK);
+            if (undefined) {
+                shape_memory(s, &c, NULL);
+            } else {
+                triangle_pixels(s, &c, triangle_ten,
+                    texture_environment(expected_type, expected_depth,
+                                        function, expected_raw),
+                    3, UINT32_MAX);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_texture_height_one(void)
+{
+    QTestState *s = start_indexed_state();
+    for (unsigned wrap = 0; wrap < 4; wrap++) {
+        for (unsigned linear = 0; linear < 2; linear++) {
+            for (int t = -1; t <= 2; t++) {
+                Shape c = triangle_prepare(s, 0, 0, 0);
+                uint32_t expected = 0x2371b9d5;
+                triangle_vertices(s, triangle_integer, NULL, true);
+                texture_constant(s);
+                qtest_writel(s, DE + 0x110, (2U << 20) | (2U << 18) |
+                             (10U << 14) | linear << 7 | linear << 6 |
+                             2U << 4 | wrap << 2 | 3U);
+                qtest_writel(s, DE + 0x160, 0x175badc9);
+                qtest_writeq(s, DE + 0x128,
+                             ((int64_t)t + 1) * (INT64_C(1) << 43) + 0x800);
+                if (wrap == 3 && (t < 0 || t > 1)) {
+                    expected = 0x175badc9;
+                } else if (linear && (wrap == 0 || wrap == 3)) {
+                    expected = 0x1d66b3cf;
+                }
+                qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000);
+                g_test_message("height one: T=%d wrap=%u linear=%u", t,
+                               wrap, linear);
+                g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==,
+                                MEMTX_OK);
+                triangle_pixels(s, &c, triangle_ten, expected,
+                                3, UINT32_MAX);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
 static void test_gl_line_first(void)
 {
     QTestState *s = start_indexed_state();
@@ -14052,5 +14785,20 @@ int main(int argc, char **argv)
     add_case("sgi/crime/render/gl-line/color-anchor",
              test_gl_line_color_anchor);
     add_case("sgi/crime/render/gl-line/migration", test_gl_line_migration);
+    add_case("sgi/crime/render/texture/constant", test_texture_constant);
+    add_case("sgi/crime/render/texture/formats", test_texture_formats);
+    add_case("sgi/crime/render/texture/perspective", test_texture_perspective);
+    add_case("sgi/crime/render/texture/filtering", test_texture_filtering);
+    add_case("sgi/crime/render/texture/lod", test_texture_lod);
+    add_case("sgi/crime/render/texture/transactions",
+             test_texture_transactions);
+    add_case("sgi/crime/render/texture/addresses", test_texture_addresses);
+    add_case("sgi/crime/render/texture/output-order",
+             test_texture_output_order);
+    add_case("sgi/crime/render/texture/anchor", test_texture_anchor);
+    add_case("sgi/crime/render/texture/migration", test_texture_migration);
+    add_case("sgi/crime/render/texture/border-components",
+             test_texture_border_components);
+    add_case("sgi/crime/render/texture/height-one", test_texture_height_one);
     return g_test_run();
 }
