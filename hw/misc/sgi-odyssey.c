@@ -6023,6 +6023,53 @@ static bool odyssey_texture_detail_backing_setup(SGIOdysseyState *s,
     return true;
 }
 
+/*
+ * The four 0x1013 words are 14-bit two's complement with 8 fraction bits:
+ * the GL library writes trunc(x * 256) & 0x3fff (ESTABLISHED as the
+ * library's conversion). It never sets bits 31:14, so a word that does is
+ * unknown state and drops the draw.
+ */
+#define ODSY_TEX_LOD_MASK 0x3fffu
+#define ODSY_TEX_LOD_BITS 14
+#define ODSY_TEX_LOD_ONE 256
+#define ODSY_TEX_LOD_LIMIT (15 * ODSY_TEX_LOD_ONE)
+
+static int32_t odyssey_texture_lod_word(uint32_t word)
+{
+    return sextract32(word, 0, ODSY_TEX_LOD_BITS);
+}
+
+/*
+ * Minimum and maximum LOD (words 2 and 3). The library clamps both to
+ * +/-15 before writing them (ESTABLISHED); the field holds +/-32. What the
+ * board does with a limit past 15 is UNKNOWN, as no stock client sends one:
+ * the model clamps it the way the library does, an approximation.
+ */
+static int32_t odyssey_texture_lod_limit(uint32_t word)
+{
+    return MIN(MAX(odyssey_texture_lod_word(word), -ODSY_TEX_LOD_LIMIT),
+               ODSY_TEX_LOD_LIMIT);
+}
+
+/*
+ * LOD bias S and T (words 0 and 1). The library clamps each to -32 through
+ * 31.99609375, the field's whole range, so every value is one it can send
+ * (ESTABLISHED). The R bias never reaches a register. The model applies a
+ * bias as GL_SGIX_texture_lod_bias defines it, scaling that axis's
+ * derivatives by 2^bias before the LOD is computed: INFERRED, since the
+ * board's LOD arithmetic is not documented. A zero bias leaves the scale
+ * unset, so an unbiased draw keeps the exact unscaled path.
+ */
+static void odyssey_texture_lod_bias(const SGIOdysseyState *s,
+                                     SGIGLTexImage *image)
+{
+    int32_t bias_s = odyssey_texture_lod_word(s->tex_lod[0]);
+    int32_t bias_t = odyssey_texture_lod_word(s->tex_lod[1]);
+
+    image->lod_scale_s = bias_s ? exp2((double)bias_s / ODSY_TEX_LOD_ONE) : 0;
+    image->lod_scale_t = bias_t ? exp2((double)bias_t / ODSY_TEX_LOD_ONE) : 0;
+}
+
 static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                                    OdysseyTextureChain *chain,
                                    const SGIGLTexImage **resolved)
@@ -6109,8 +6156,8 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                         colour_table_rgba8_rgba;
     bool colour_table_disabled = word == 0x11500000;
     uint32_t first = s->tex_level0 & 0x3f, count, terminal;
-    int32_t lo = sextract32(s->tex_lod[2], 0, 14);
-    int32_t hi = sextract32(s->tex_lod[3], 0, 14);
+    int32_t lo = odyssey_texture_lod_limit(s->tex_lod[2]);
+    int32_t hi = odyssey_texture_lod_limit(s->tex_lod[3]);
     static const uint32_t min_filters[] = {
         SGI_GL_NEAREST, SGI_GL_LINEAR,
         SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_LINEAR_MIPMAP_NEAREST,
@@ -6208,10 +6255,8 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
          !three_d_clamp &&
          word != (0x10000000 | components | (ws << 12) | (wt << 10) |
                   filter) && !detail_filter) ||
-        s->tex_lod[0] || s->tex_lod[1] ||
-        (s->tex_lod[2] | s->tex_lod[3]) & ~0x3fffu ||
-        lo < -15 * 256 || lo > 15 * 256 ||
-        hi < -15 * 256 || hi > 15 * 256 ||
+        (s->tex_lod[0] | s->tex_lod[1] | s->tex_lod[2] | s->tex_lod[3]) &
+            ~ODSY_TEX_LOD_MASK ||
         (min >= 0x40 && lo > hi) ||
         (colour_table &&
          ((colour_table_l8 && image->base_format != SGI_GL_LUMINANCE) ||
@@ -6258,6 +6303,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     image->mag_filter = detail_filter ? detail_filter :
                         filter & 2 ? SGI_GL_LINEAR : SGI_GL_NEAREST;
     image->min_filter = min_filters[min >> 5];
+    odyssey_texture_lod_bias(s, image);
 
     if (three_d) {
         uint32_t *entry = &s->tex_levels[first * 3];
@@ -6275,7 +6321,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
          * packing and nonzero table selectors are not established. Keep this
          * bounded model policy separate from the level-zero address rule.
          */
-        if (first || s->tex_level0 || s->tex_lod[0] || s->tex_lod[1] ||
+        if (first || s->tex_level0 ||
             (!mipmap && word != 0x13000000 && word != 0x13000022 &&
              !three_d_clamp) ||
             (mipmap && ((filter != 0x40 && filter != 0xa0) || ws || wt ||

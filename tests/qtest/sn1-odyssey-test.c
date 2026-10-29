@@ -14293,6 +14293,74 @@ static void test_texture_chain_integer_quads(void)
     board_quit(qts);
 }
 
+/*
+ * A three-level chain (red 4x4, green 2x2, blue 1x1) under nearest-mipmap-
+ * nearest, drawn as a quad with S and T running 0 to 1, so each axis's
+ * texel-per-pixel ratio is 4 over the quad's width or height. The LOD bias
+ * words are 14-bit two's complement with 8 fraction bits and scale their
+ * axis's derivatives by 2^bias (GL_SGIX_texture_lod_bias).
+ */
+static uint32_t lod_bias_quad(QTestState *qts, uint32_t bias_s,
+                              uint32_t bias_t, uint32_t min_lod,
+                              uint32_t width, uint32_t height)
+{
+    const uint32_t lod[] = {
+        0x00011013, bias_s, bias_t, min_lod, 0x0f00,
+    };
+
+    push_user_words(qts, lod, ARRAY_SIZE(lod));
+    odsy_test_pixel_write(qts, 10 + width / 2, 10 + height / 2, 0x12345678);
+    texture_integer_quad(qts, 10, 10, 10 + width, 10 + height, false);
+    return odsy_test_pixel(qts, 10 + width / 2, 10 + height / 2);
+}
+
+static void test_texture_lod_bias(void)
+{
+    const uint32_t binding[] = {
+        0x00010405, 0x10,
+        0x00011c16, 0x08000840, 4, 4, 1, 0x13000040, 0, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, 0x180000, 0x41100002, 0,
+        0x00010e81, 0x181000, 0x41100002, 0,
+        0x00010e82, 0x182000, 0x41100002, 0,
+        0x00010406, 0,
+        ODSY_GL_COLOR_3F, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE,
+    };
+    const uint32_t red = 0xff0000ff, green = 0x00ff00ff, blue = 0x0000ffff;
+    QTestState *qts = board_start("");
+
+    texture_chain_upload_solid(qts, 0x180000, 4, 4, red);
+    texture_chain_upload_solid(qts, 0x181000, 2, 2, green);
+    texture_chain_upload_solid(qts, 0x182000, 1, 1, blue);
+    texture_adapter_window(qts);
+    push_user_words(qts, binding, ARRAY_SIZE(binding));
+
+    /* 10x10 pixels: LOD log2(0.4), about -1.32, magnifies level 0. */
+    g_assert_cmphex(lod_bias_quad(qts, 0, 0, 0, 10, 10), ==, red);
+    /* 2.875 on both axes: LOD 1.55 rounds to level 2; 2.0 would give 1. */
+    g_assert_cmphex(lod_bias_quad(qts, 0x2e0, 0x2e0, 0, 10, 10), ==, blue);
+    g_assert_cmphex(lod_bias_quad(qts, 0x200, 0x200, 0, 10, 10), ==, green);
+    /*
+     * 10 wide, 40 tall: S scales 0.4 and T 0.1 texels a pixel. Biasing S
+     * by 2.875 gives LOD 1.55, level 2; the same bias on T reaches only
+     * 0.73 texels a pixel and still magnifies.
+     */
+    g_assert_cmphex(lod_bias_quad(qts, 0x2e0, 0, 0, 10, 40), ==, blue);
+    g_assert_cmphex(lod_bias_quad(qts, 0, 0x2e0, 0, 10, 40), ==, red);
+    /* 2x2 pixels: LOD 1, level 1; a bias of -1 (0x3f00) brings level 0. */
+    g_assert_cmphex(lod_bias_quad(qts, 0, 0, 0, 2, 2), ==, green);
+    g_assert_cmphex(lod_bias_quad(qts, 0x3f00, 0x3f00, 0, 2, 2), ==, red);
+    /*
+     * A minimum LOD past the library's +/-15 (20, 0x1400) clamps to 15 and
+     * selects the last level rather than dropping the draw.
+     */
+    g_assert_cmphex(lod_bias_quad(qts, 0, 0, 0x1400, 10, 10), ==, blue);
+    /* Bits above the 14-bit field are unknown state: the draw drops. */
+    g_assert_cmphex(lod_bias_quad(qts, 0x4000, 0, 0, 10, 10), ==,
+                    0x12345678);
+    board_quit(qts);
+}
+
 static void test_texture_chain_explicit_level(void)
 {
     QTestState *qts = board_start("");
@@ -22604,6 +22672,8 @@ int main(int argc, char **argv)
              test_texture_chain_explicit_level);
     add_case("sn1/odyssey/texture-adapter/integer-quads",
              test_texture_chain_integer_quads);
+    add_case("sn1/odyssey/texture-adapter/lod-bias",
+             test_texture_lod_bias);
     add_case("sn1/odyssey/texture-adapter/one-dimensional-mode",
              test_texture_one_dimensional_mode);
     /*

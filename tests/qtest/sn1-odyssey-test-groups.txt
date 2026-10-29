@@ -306,6 +306,7 @@ texture /mips64/sn1/odyssey/texture-adapter/nearest-clamp-border
 texture /mips64/sn1/odyssey/texture-adapter/clamp-border-state-restore
 texture /mips64/sn1/odyssey/texture-adapter/explicit-level
 texture /mips64/sn1/odyssey/texture-adapter/integer-quads
+texture /mips64/sn1/odyssey/texture-adapter/lod-bias
 texture /mips64/sn1/odyssey/texture-adapter/one-dimensional-mode
 texture /mips64/sn1/odyssey/texture-adapter/public-stored-border-copies
 texture /mips64/sn1/odyssey/texture-adapter/public-stored-border-1d-width8-nearest
