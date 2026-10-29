@@ -2,7 +2,11 @@
 /* Copyright (c) 2026 James Braid */
 #include "qemu/osdep.h"
 #include <math.h>
+#ifdef CONFIG_LINUX
+#include <sys/resource.h>
+#endif
 #include "qemu/bswap.h"
+#include "qemu/units.h"
 #include "libqtest.h"
 #include "memtx.h"
 #include "qobject/qdict.h"
@@ -15690,6 +15694,7 @@ static void test_gl_transfer_repeats(void)
             t.width = 2 * kx + 1;
             t.height = 2 * ky + 1;
             t.source_mode |= (kx & 1) << 10;
+            t.address ^= kx & 1 ? 0x80000000U : 0;
             t.destination_mode |= ((kx + ky) % 3) << 10;
             t.direction = (kx + ky) % 4;
             t.draw |= 0x10000;
@@ -15805,6 +15810,857 @@ static void test_gl_transfer_precision(void)
     g_assert_cmphex(pixel_read(s, pixel_address(0, 0, 0, 4), 4),
                     ==, 0x0c000080);
     qtest_quit(s);
+}
+
+static void test_gl_transfer_masks(void)
+{
+    const unsigned modes[] = {0x228, 0x218, 0x124, 0x224, 0x225, 0x226, 0x227};
+    QTestState *s = start_indexed_state();
+
+    for (unsigned f = 0; f < ARRAY_SIZE(modes); f++) {
+        for (unsigned rop = 0; rop < 16; rop++) {
+            for (unsigned mask = 0; mask < 16; mask++) {
+                GLTransferCase t = gl_transfer_case();
+
+                t.source_mode = 0x524;
+                t.destination_mode = modes[f];
+                t.draw = 0x600380 | mask << 3;
+                t.rop = rop;
+                t.plane = (rop ^ mask) & 1 ? 0xa5379b6d : UINT32_MAX;
+                t.direction = (rop + mask) % 4;
+                gl_transfer_run(s, &t);
+            }
+        }
+        for (unsigned bit = 0; bit < 32; bit++) {
+            for (unsigned active = 0; active < 2; active++) {
+                GLTransferCase t = gl_transfer_case();
+
+                t.destination_mode = modes[f];
+                t.draw |= active ? 0x80 : 0;
+                t.plane = 1U << bit;
+                gl_transfer_run(s, &t);
+            }
+        }
+    }
+    for (unsigned phase = 0; phase < 4; phase++) {
+        for (unsigned mask = 0; mask < 16; mask++) {
+            GLTransferCase t = gl_transfer_case();
+
+            t.source_mode = 0x627;
+            t.destination_mode = 0x1628;
+            t.linear = (t.linear & ~3U) | phase;
+            t.draw = 0x600280 | mask << 3;
+            t.rop = (phase + mask) % 16;
+            t.plane = 0xb375a91d;
+            gl_transfer_run(s, &t);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_transfer_blend(void)
+{
+    const unsigned sources[] = {0x524, 0x624, 0x625, 0x626, 0x627};
+    const unsigned outputs[] = {
+        0x228, 0x218, 0x124, 0x224, 0x225, 0x226, 0x227,
+    };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned op = 0; op < 5; op++) {
+        for (unsigned sf = 0; sf < 13; sf++) {
+            for (unsigned df = 0; df < 12; df++) {
+                GLTransferCase t = gl_transfer_case();
+
+                t.source_mode = sources[(op + sf + df) % ARRAY_SIZE(sources)];
+                t.destination_mode = outputs[(op + 2 * sf + df) %
+                                             ARRAY_SIZE(outputs)];
+                t.draw |= 0x500;
+                t.function = op << 8 | sf << 4 | df;
+                gl_transfer_run(s, &t);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static GLTransferCase gl_transfer_probe(QTestState *s, unsigned kind)
+{
+    GLTransferCase t = gl_transfer_case();
+    uint32_t source = 0x13579bdf, old = 0x89674523;
+
+    t.width = t.height = 1;
+    t.x = t.y = 0;
+    t.draw |= 0x200;
+    t.rop = 6;
+    t.constant_source = true;
+    t.value = source;
+    t.source_mode = kind ? 0x628 : 0x1228;
+    t.destination_mode = kind == 1 ? 0x1628 : 0x228;
+    color_map_linear(s);
+    if (kind) {
+        map_region(s, 1, 4, 40, 40, 40, 40);
+        pixel_write(s, pixel_address(1, 40, 40, 4), 4, source);
+    } else {
+        color_bytes(s, true, 0, t.address, 4, &source);
+    }
+    if (kind == 1) {
+        color_bytes(s, true, 1, t.linear, 4, &old);
+    } else {
+        map_region(s, 0, 4, 0, 0, 0, 0);
+        pixel_write(s, pixel_address(0, 0, 0, 4), 4, old);
+    }
+    gl_transfer_stage(s, &t);
+    return t;
+}
+
+static uint32_t gl_transfer_probe_read(QTestState *s, const GLTransferCase *t)
+{
+    uint32_t value = 0;
+
+    if (((t->destination_mode >> 10) & 7) >= 4) {
+        color_bytes(s, false, 1, t->linear, 4, &value);
+    } else {
+        value = pixel_read(s, pixel_address(0, 0, 0, 4), 4);
+    }
+    return value;
+}
+
+static unsigned gl_transfer_starts(Register forms[64])
+{
+    const unsigned ordinary[] = {
+        0, 8, 0x10, 0x18, 0x50, 0x58, 0x60, 0x70, 0x74, 0x78,
+        0xa0, 0xa8, 0xac, 0xc0, 0xc4, 0xd0, 0xd8, 0x1b0, 0x1b8,
+        0x1c0, 0x1e0, 0x1e8, 0x130, 0x158, 0x15c, 0x1f0, 0xb0, 0xb4,
+    };
+    const unsigned wide[] = {
+        0x20, 0x28, 0x30, 0x38, 0x40, 0x48, 0x70, 0xa8, 0xc0,
+        0x1c8, 0x1d0, 0x1d8, 0x120, 0x128, 0x138, 0x140, 0x148, 0x150,
+    };
+    unsigned count = 0;
+
+    for (unsigned n = 0; n < ARRAY_SIZE(ordinary); n++) {
+        forms[count++] = (Register) {ordinary[n], 4};
+    }
+    for (unsigned n = 0; n < ARRAY_SIZE(wide); n++) {
+        forms[count++] = (Register) {wide[n], 8};
+    }
+    for (unsigned offset = 0xe0; offset <= 0x10c; offset += 4) {
+        forms[count++] = (Register) {offset, 4};
+    }
+    return count;
+}
+
+static void test_gl_transfer_starts(void)
+{
+    Register forms[64];
+    unsigned count = gl_transfer_starts(forms);
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-gl-transfer-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned kind = 0; kind < 3; kind++) {
+        for (unsigned n = 0; n < count; n++) {
+            const Register *form = &forms[n];
+            GLTransferCase t = gl_transfer_probe(s, kind);
+            uint64_t before[RENDER_WORDS], after[RENDER_WORDS], value;
+            bool paired = form->width == 8 && (form->offset == 0x70 ||
+                form->offset == 0xa8 || form->offset == 0xc0);
+
+            if (kind != 1 && (form->offset == 0xb0 || form->offset == 0xb4)) {
+                continue;
+            }
+            save_paired_renderer(s, path, before);
+            value = form->offset == 0x1f0 ? 0xdeadbeef :
+                    before[192 + form->offset / 4];
+            if (paired) {
+                value = value << 32 | before[192 + form->offset / 4 + 1];
+            }
+            if (form->offset != 0x1f0) {
+                g_assert_cmpint(memtx_write(s, DE + form->offset,
+                    value ^ 0x1000, form->width), ==, MEMTX_OK);
+            }
+            g_assert_cmphex(gl_transfer_probe_read(s, &t), ==, 0x89674523);
+            g_test_message("kind %u offset 0x%x width %u", kind,
+                           form->offset, form->width);
+            g_assert_cmpint(memtx_write(s, DE + 0x800 + form->offset,
+                                        value, form->width), ==, MEMTX_OK);
+            g_assert_cmphex(gl_transfer_probe_read(s, &t), ==,
+                            0x89674523 ^ 0x13579bdf);
+            save_paired_renderer(s, path, after);
+            g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+            for (unsigned poll = 0; poll < 3; poll++) {
+                qtest_readl(s, STATUS);
+                qtest_writel(s, DE + 0x1f0, 0xa5a5a5a5);
+                qtest_writel(s, DE + 0x1f8, 0);
+            }
+            g_assert_cmphex(gl_transfer_probe_read(s, &t), ==,
+                            0x89674523 ^ 0x13579bdf);
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0x12345678),
+                            ==, MEMTX_OK);
+            g_assert_cmphex(gl_transfer_probe_read(s, &t), ==, 0x89674523);
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+typedef struct GLTransferSnapshot {
+    TextureStartSnapshot renderer;
+    uint64_t linear[32], banks[8];
+} GLTransferSnapshot;
+
+static void gl_transfer_snapshot(QTestState *s, const char *path,
+                                  GLTransferSnapshot *state)
+{
+    memset(state, 0, sizeof(*state));
+    if (path) {
+        texture_start_snapshot(s, path, &state->renderer);
+    } else {
+        const unsigned global[] = {0x10, 0x18, 0x20, 0x40, 0x48, 0x250, 0x258};
+
+        /* Populated-bank fixtures deliberately block migration snapshots. */
+        for (unsigned n = 0; n < 192; n++) {
+            state->renderer.words[n] = qtest_readq(s, RE + 0x1000 + 8 * n);
+        }
+        for (unsigned set = 0; set < 2; set++) {
+            const Register *regs = set ? native_registers : registers;
+            unsigned count = set ? ARRAY_SIZE(native_registers) :
+                                   ARRAY_SIZE(registers);
+
+            for (unsigned n = 0; n < count; n++) {
+                if (regs[n].readable) {
+                    uint64_t value;
+
+                    g_assert_cmpint(memtx_read(s, DE + regs[n].offset,
+                        &value, regs[n].width), ==, MEMTX_OK);
+                    state->renderer.words[192 + regs[n].offset / 4] = value;
+                }
+            }
+        }
+        for (unsigned n = 0; n < 28; n++) {
+            state->renderer.texture[n] = qtest_readq(s, RE + 0x1600 + 8 * n);
+        }
+        for (unsigned n = 0; n < ARRAY_SIZE(global); n++) {
+            state->renderer.global[n] = qtest_readq(s, CRIME + global[n]);
+        }
+        ifb_snapshot(s, &state->renderer.ifb);
+        state->renderer.status = qtest_readl(s, STATUS);
+        for (unsigned n = 0; n < 5; n++) {
+            state->renderer.irq |= qtest_get_irq(s, n) << n;
+        }
+    }
+    for (unsigned n = 0; n < 32; n++) {
+        state->linear[n] = qtest_readq(s, RE + 0x1700 + 8 * n);
+    }
+    for (unsigned n = 0; n < 8; n++) {
+        state->banks[n] = qtest_readq(s, CRIME + 0x208 + 8 * n);
+    }
+}
+
+static void gl_transfer_ram(QTestState *s, uint8_t *data)
+{
+    qtest_memread(s, 0x30000, data, 0x120000);
+    qtest_memread(s, 0x400000, data + 0x120000, 0x80000);
+    qtest_memread(s, 0x1030000, data + 0x1a0000, 0x10000);
+}
+
+static void gl_transfer_failure(QTestState *s, const char *path,
+                                 uint64_t address, uint64_t value,
+                                 unsigned width, bool read, bool all_ram)
+{
+    GLTransferSnapshot before, after;
+    size_t bytes = all_ram ? 0x1b0000 : 0;
+    g_autofree uint8_t *old = bytes ? g_malloc(bytes) : NULL;
+    g_autofree uint8_t *next = bytes ? g_malloc(bytes) : NULL;
+    uint32_t tile_old = pixel_read(s, pixel_address(0, 0, 0, 4), 4);
+    uint64_t ignored;
+
+    gl_transfer_snapshot(s, path, &before);
+    if (bytes) {
+        gl_transfer_ram(s, old);
+    }
+    g_assert_cmpint(read ? memtx_read(s, address, &ignored, width) :
+                          memtx_write(s, address, value, width), !=, MEMTX_OK);
+    gl_transfer_snapshot(s, path, &after);
+    g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
+    g_assert_cmphex(pixel_read(s, pixel_address(0, 0, 0, 4), 4), ==, tile_old);
+    if (bytes) {
+        gl_transfer_ram(s, next);
+        g_assert_cmpmem(old, bytes, next, bytes);
+    }
+}
+
+static void gl_transfer_linear_entry(QTestState *s, unsigned bank,
+                                      unsigned index, uint32_t entry)
+{
+    uint64_t address = RE + 0x1700 + bank * 128 + (index / 2) * 8;
+    uint64_t value = qtest_readq(s, address);
+
+    value = index & 1 ? (value & 0xffffffff00000000ULL) | entry :
+                       (value & UINT32_MAX) | (uint64_t)entry << 32;
+    qtest_writeq(s, address, value);
+}
+
+static void test_gl_transfer_refusals(void)
+{
+    const unsigned unsupported[] = {
+        0, 1, 2, 11, 12, 13, 14, 15, 17, 18, 19, 23,
+    };
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-gl-transfer-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = texture_start_machine();
+
+    for (unsigned bit = 0; bit < ARRAY_SIZE(unsupported); bit++) {
+        for (unsigned suppression = 0; suppression < 3; suppression++) {
+            GLTransferCase t = gl_transfer_probe(s, 0);
+
+            t.draw |= 1U << unsupported[bit];
+            if (suppression == 0) {
+                t.draw &= ~0x78U;
+            } else if (suppression == 1) {
+                t.draw |= 0x100000;
+                t.scissor = bounds(0, 0, 0, 0);
+            } else {
+                t.x = t.y = 3000;
+            }
+            gl_transfer_stage(s, &t);
+            gl_transfer_failure(s, path, DE + 0x8d0, 0x12345678,
+                                4, false, true);
+        }
+    }
+    for (unsigned failure = 0; failure < 40; failure++) {
+        GLTransferCase t = gl_transfer_case();
+        Shape c = triangle_prepare(s, 0, 124, 124);
+
+        color_map_linear(s);
+        map_region(s, 1, 4, 40, 40, 44, 43);
+        if (failure == 0) {
+            t.source_mode = 0x1218;
+        } else if (failure == 1) {
+            t.destination_mode = 0x010;
+        } else if (failure == 2) {
+            t.clip = 0x63;
+        } else if (failure == 3) {
+            t.clip = 0x400;
+        } else if (failure == 4) {
+            t.clip = 1;
+        } else if (failure == 5) {
+            t.draw |= 0x400;
+            t.function = 0x1000;
+        } else if (failure == 6) {
+            t.draw |= 0x400;
+            t.function = 0x500;
+        } else if (failure == 7) {
+            t.draw |= 0x400;
+            t.function = 0xd0;
+        } else if (failure == 8) {
+            t.draw |= 0x400;
+            t.function = 0xc;
+        } else if (failure == 9) {
+            t.draw |= 0x200;
+            t.rop = 16;
+        } else if (failure == 10) {
+            t.address = 0xfffffffd;
+        } else if (failure == 11) {
+            t.width = 1;
+            t.height = 3;
+            t.advance = 0x10000;
+        } else if (failure == 12) {
+            t.width = 2049;
+            t.height = 2048;
+            t.x = t.y = 0;
+        } else if (failure >= 13 && failure <= 18) {
+            t.source_mode = 0x628;
+            t.destination_mode = 0x1628;
+            if (failure == 13) {
+                t.stride = 0;
+            } else if (failure == 14) {
+                t.stride = 0x20000;
+            } else if (failure == 15) {
+                t.linear = 0xfffffffd;
+            } else if (failure == 16) {
+                t.stride = 0x10000;
+            } else if (failure == 17) {
+                t.hx = -1;
+            } else {
+                t.sox = 0;
+            }
+        } else if (failure == 19 || failure == 20) {
+            t.draw |= 0x200;
+            t.rop = failure == 19 ? 0 : 5;
+        } else if (failure == 21) {
+            t.address = 0x12345ff8;
+        } else if (failure == 24 || failure == 25) {
+            t.x = t.y = 0;
+            t.width = 129;
+            t.height = 1;
+            map_region(s, 0, 4, 0, 0, 128, 0);
+        } else if (failure == 26 || failure == 27) {
+            t.address = 0x12345df8;
+        } else if (failure == 28 || failure == 29) {
+            t.source_mode = 0x628;
+        }
+        gl_transfer_stage(s, &t);
+        switch (failure) {
+        case 19: case 20:
+            gl_transfer_linear_entry(s, 0, 5, 0);
+            break;
+        case 21:
+            gl_transfer_linear_entry(s, 0, 6, 0);
+            break;
+        case 22:
+            tile(s, 0, 0, 0x7fff);
+            break;
+        case 23:
+            tile(s, 0, 17, 0x7fff);
+            break;
+        case 24: case 25:
+            tile(s, 0, 1, failure == 24 ? 3 : 0x4003);
+            break;
+        case 26: case 27:
+            gl_transfer_linear_entry(s, 0, 5,
+                                     failure == 26 ? 0x8000003f : 0x8004003f);
+            break;
+        case 28:
+            qtest_writel(s, DE + 0xa8, 2);
+            break;
+        case 29:
+            qtest_writel(s, DE + 0xa0, 0x80000000);
+            break;
+        case 30:
+            qtest_writel(s, DE + 0x80, 0x48041f81);
+            break;
+        case 31:
+            qtest_writel(s, DE + 0x80, 0x49041f80);
+            break;
+        case 32:
+            qtest_writel(s, DE + 0x60, 0x03030000);
+            break;
+        case 33:
+            qtest_writel(s, DE + 0xa8, 0x20004);
+            break;
+        case 34:
+            qtest_writel(s, DE + 0xac, 0x20004);
+            break;
+        case 35:
+            qtest_writel(s, DE + 0xa8, 8);
+            break;
+        case 36:
+            qtest_writel(s, DE + 0xac, 0);
+            break;
+        case 37:
+            gl_transfer_linear_entry(s, 0, 5, 0xc000040a);
+            break;
+        case 38:
+            qtest_writeq(s, RE + 0x1000, qtest_readq(s, RE + 0x1000) &
+                         ~(UINT64_C(0xffff) << 48));
+            break;
+        case 39:
+            qtest_writeq(s, RE + 0x1000 + (17 / 4) * 8,
+                qtest_readq(s, RE + 0x1000 + (17 / 4) * 8) &
+                ~(UINT64_C(0xffff) << 32));
+            break;
+        }
+        g_test_message("failure %u", failure);
+        gl_transfer_failure(s, path, DE + 0x8d0, 0x12345678, 4, false, true);
+        if (failure <= 18) {
+            for (unsigned clipped = 0; clipped < 2; clipped++) {
+                qtest_writel(s, DE + 0x18, clipped ? t.draw | 0x100000 :
+                                                  t.draw & ~0x78U);
+                qtest_writeq(s, DE + 0x48, bounds(0, 0, 0, 0));
+                gl_transfer_failure(s, path, DE + 0x8d0,
+                                    0x12345678, 4, false, true);
+            }
+        }
+        (void)c;
+    }
+    /* Masked or clipped pixels do not consume actual-access mappings. */
+    for (unsigned clipped = 0; clipped < 2; clipped++) {
+        GLTransferCase t = gl_transfer_probe(s, 0);
+
+        if (clipped) {
+            t.draw |= 0x100000;
+            t.scissor = bounds(0, 0, 0, 0);
+        } else {
+            t.draw &= ~0x78U;
+        }
+        gl_transfer_stage(s, &t);
+        gl_transfer_linear_entry(s, 0, 5, 0);
+        qtest_writeq(s, RE + 0x1000, 0);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        g_assert_cmphex(gl_transfer_probe_read(s, &t), ==, 0x89674523);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_transfer_widths(gconstpointer selection)
+{
+    const unsigned forbidden[] = {
+        0x80, 0x84, 0x88, 0x8c, 0x90, 0x94,
+        0x134, 0x160, 0x168, 0x170, 0x178, 0x180, 0x188, 0x190, 0x194,
+    };
+    unsigned selected = GPOINTER_TO_UINT(selection), kind = selected / 3;
+    Register forms[64];
+    unsigned count = gl_transfer_starts(forms);
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-gl-transfer-width-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = texture_start_machine();
+    GLTransferCase t = gl_transfer_probe(s, kind);
+
+    for (unsigned n = 0; n < count; n++) {
+        const Register *r = &forms[n];
+        bool pair = r->offset == 0x70 || r->offset == 0xa8 || r->offset == 0xc0;
+
+        if (n % 3 != selected % 3) {
+            continue;
+        }
+        for (unsigned width = 1; width <= 8; width *= 2) {
+            gl_transfer_failure(s, path, DE + 0x800 + r->offset,
+                                0, width, true, false);
+            if (width != r->width && !((width == 4 || width == 8) && pair)) {
+                gl_transfer_failure(s, path, DE + 0x800 + r->offset,
+                                    0, width, false, false);
+            }
+        }
+        for (unsigned delta = 1; delta < r->width; delta++) {
+            gl_transfer_failure(s, path, DE + 0x800 + r->offset + delta,
+                                0, r->width, false, false);
+        }
+    }
+    for (unsigned n = 0; n < ARRAY_SIZE(forbidden); n++) {
+        if (n % 3 == selected % 3) {
+            gl_transfer_failure(s, path, DE + 0x800 + forbidden[n],
+                                0, 4, false, false);
+            gl_transfer_failure(s, path, DE + 0x800 + forbidden[n],
+                                0, 8, false, false);
+        }
+    }
+    if (selected % 3 == 0) {
+        gl_transfer_failure(s, path, DE + 0x8a0, 0, 8, false, false);
+        gl_transfer_failure(s, path, DE + 0x8b0, 0, 8, false, false);
+        gl_transfer_failure(s, path, DE + 0x1f8, 1, 4, false, false);
+        if (kind != 1) {
+            gl_transfer_failure(s, path, DE + 0x8b0, t.linear, 4, false, false);
+            gl_transfer_failure(s, path, DE + 0x8b4, t.stride, 4, false, false);
+        }
+    }
+    g_assert_cmphex(gl_transfer_probe_read(s, &t), ==, 0x89674523);
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_transfer_order(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned alias = 0; alias < 3; alias++) {
+        for (unsigned direction = 0; direction < 4; direction++) {
+            for (unsigned signs = 0; signs < 4; signs++) {
+                for (unsigned self = 0; self < 2; self++) {
+                    GLTransferCase t = gl_transfer_case();
+                    Shape c = triangle_prepare(s, 0, 0, 0);
+                    uint32_t expected[256];
+                    int dx = direction & 1 ? -1 : 1;
+                    int dy = direction & 2 ? 1 : -1;
+                    int x0 = dx > 0 ? 5 : 8, y0 = dy > 0 ? 5 : 7;
+
+                    c.width = c.height = 16;
+                    map_region(s, 0, 4, 0, 0, 15, 15);
+                    for (unsigned y = 0; y < 16; y++) {
+                        for (unsigned x = 0; x < 16; x++) {
+                            expected[16 * y + x] =
+                                0x17395b00 + 19 * x + 37 * y;
+                            pixel_write(s, pixel_address(0, x, y, 4),
+                                        4, expected[16 * y + x]);
+                        }
+                    }
+                    t.source_mode = alias ? 0x628 : 0x228;
+                    if (alias) {
+                        tile(s, 1, 0, alias == 1 ? 3 : 0x4003);
+                    }
+                    t.width = 4;
+                    t.height = 3;
+                    t.x = t.y = 5;
+                    t.direction = direction;
+                    t.hx = signs & 1 ? -1 : 1;
+                    t.hy = signs & 2 ? -1 : 1;
+                    t.sx = t.hx == 1 ? (dx > 0 ? 4 : 7) : (dx > 0 ? 8 : 3);
+                    t.sy = t.hy == 1 ? (dy > 0 ? 4 : 6) : (dy > 0 ? 8 : 3);
+                    if (self) {
+                        t.sx = x0;
+                        t.sy = y0;
+                        t.hx = t.hy = 1;
+                    }
+                    for (unsigned r = 0; r < t.height; r++) {
+                        for (unsigned col = 0; col < t.width; col++) {
+                            int x = x0 + dx * (int)col;
+                            int y = y0 + dy * (int)r;
+                            int sx = t.sx + dx * t.hx * (int)col;
+                            int sy = t.sy + dy * t.hy * (int)r;
+
+                            expected[16 * y + x] = expected[16 * sy + sx];
+                        }
+                    }
+                    gl_transfer_stage(s, &t);
+                    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0),
+                                    ==, MEMTX_OK);
+                    shape_memory(s, &c, expected);
+                }
+            }
+        }
+    }
+    /* A source-only table alias may repeat a read without repeating a write. */
+    {
+        GLTransferCase t = gl_transfer_case();
+        Shape c = triangle_prepare(s, 0, 0, 2);
+        uint32_t expected[129];
+
+        t.source_mode = 0x628;
+        t.width = 129;
+        t.height = 1;
+        t.x = t.sx = t.sy = 0;
+        t.y = 2;
+        c.x = 0;
+        c.width = 129;
+        c.height = 1;
+        map_region(s, 0, 4, 0, 2, 128, 2);
+        shape_memory(s, &c, NULL);
+        tile(s, 1, 0, page_for(1, 0));
+        tile(s, 1, 1, page_for(1, 0));
+        for (unsigned x = 0; x < 128; x++) {
+            expected[x] = 0x13579b00 + x;
+            pixel_write(s, pixel_address(1, x, 0, 4), 4, expected[x]);
+        }
+        expected[128] = expected[0];
+        gl_transfer_stage(s, &t);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_transfer_mixed_overlap(void)
+{
+    const uint32_t initial[8] = {
+        0x8c009c00, 0xb4e78fff, 0xe4a19d03, 0x4a5371d5,
+        0x2468ace1, 0x395b7d9f, 0xa5c7e901, 0x10325476,
+    };
+    QTestState *s = start_indexed_state();
+    GLTransferCase t = gl_transfer_case();
+    uint8_t expected_bytes[32];
+    uint32_t expected[8];
+    Shape c = triangle_prepare(s, 0, 0, 0);
+
+    c.width = 8;
+    c.height = 1;
+    t.source_mode = 0x524;
+    t.width = 4;
+    t.height = 1;
+    t.x = 1;
+    t.y = t.sx = t.sy = 0;
+    tile(s, 1, 0, 0x4003);
+    for (unsigned x = 0; x < 8; x++) {
+        pixel_write(s, pixel_address(0, x, 0, 4), 4, initial[x]);
+        stl_be_p(expected_bytes + 4 * x, initial[x]);
+    }
+    for (unsigned x = 0; x < 4; x++) {
+        unsigned source = lduw_be_p(expected_bytes + 2 * x);
+        unsigned old = ldl_be_p(expected_bytes + 4 * (x + 1));
+        uint32_t value = gl_transfer_reference(&t, source, old, x + 1, 0, 0);
+
+        stl_be_p(expected_bytes + 4 * (x + 1), value);
+    }
+    g_assert_cmphex(ldl_be_p(expected_bytes + 4), ==, 0x190000ff);
+    for (unsigned x = 0; x < 8; x++) {
+        expected[x] = ldl_be_p(expected_bytes + 4 * x);
+    }
+    gl_transfer_stage(s, &t);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    shape_memory(s, &c, expected);
+    for (unsigned high = 0; high < 2; high++) {
+        t.source_mode = high ? 0x627 : 0x626;
+        t.destination_mode = high ? 0x226 : 0x227;
+        t.width = t.height = 1;
+        t.sx = t.x = 1;
+        t.sy = t.y = 0;
+        pixel_write(s, pixel_address(0, 1, 0, 4), 4,
+                    high ? 0x8c00347a : 0x347a8c00);
+        gl_transfer_stage(s, &t);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        g_assert_cmphex(pixel_read(s, pixel_address(0, 1, 0, 4), 4),
+                        ==, 0x8c008c00);
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_transfer_banks(void)
+{
+    QTestState *s = start_profile_ram("legacy-software", true, true, false, "");
+    GLTransferCase t = gl_transfer_case();
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    triangle_irq_baseline(s);
+    for (unsigned n = 0; n < 8; n++) {
+        qtest_writeq(s, CRIME + 0x208 + 8 * n, 0x100 | n * 4);
+    }
+    color_map_linear(s);
+    t.y = 0;
+    t.height = 1;
+    tile(s, 0, 0, 0x7ff);
+    tile(s, 0, 1, 0x800);
+    pixel_write(s, 0x7ff01f8, 4, 0x89674523);
+    for (unsigned n = 0; n < 6; n++) {
+        uint32_t value = n ? 0x2468ace1 : 0x13579bdf;
+
+        color_bytes(s, true, 0, t.address + 4 * n, 4, &value);
+    }
+    gl_transfer_stage(s, &t);
+    qtest_writeq(s, CRIME + 0x210, 4);
+    gl_transfer_failure(s, NULL, DE + 0x8a0, t.address + 4, 4, false, true);
+    g_assert_cmphex(pixel_read(s, 0x7ff01f8, 4), ==, 0x89674523);
+    /* Consuming the old address after repair checks its write-only rollback. */
+    qtest_writeq(s, CRIME + 0x210, 0x104);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    g_assert_cmphex(pixel_read(s, 0x7ff01f8, 4), ==, 0x13579bdf);
+    qtest_quit(s);
+}
+
+static void test_gl_transfer_migration(void)
+{
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-gl-transfer-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned unsupported = 0; unsupported < 2; unsupported++) {
+        QTestState *from = start(), *to = start_options("-incoming defer");
+        GLTransferCase t = gl_transfer_probe(from, 0);
+        GLTransferSnapshot before, after;
+
+        qtest_irq_intercept_out_named(from, "/machine/peripheral/crime",
+                                       "cpu-ip");
+        qtest_irq_intercept_out_named(to, "/machine/peripheral/crime",
+                                       "cpu-ip");
+        triangle_irq_baseline(from);
+        g_assert_cmpint(memtx_writel(from, DE + 0x9f0, 0xdeadbeef),
+                        ==, MEMTX_OK);
+        qtest_writeq(from, DE + 0x120, UINT64_MAX);
+        qtest_writeq(from, DE + 0x1c8, UINT64_MAX);
+        if (unsupported) {
+            qtest_writel(from, DE + 0xa8, 0xf00bad00);
+        }
+        gl_transfer_snapshot(from, path, &before);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        sgi_migrate_stopped(from, uri);
+        sgi_wait_migration(to, "completed");
+        gl_transfer_snapshot(to, path, &after);
+        g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
+        g_assert_cmphex(gl_transfer_probe_read(to, &t), ==,
+                        0x89674523 ^ 0x13579bdf);
+        qtest_readl(to, STATUS);
+        qtest_writel(to, DE + 0x1f0, UINT32_MAX);
+        qtest_writel(to, DE + 0x1f8, 0);
+        g_assert_cmphex(gl_transfer_probe_read(to, &t), ==,
+                        0x89674523 ^ 0x13579bdf);
+        if (unsupported) {
+            gl_transfer_failure(to, path, DE + 0x9f0, 0x12345678,
+                                4, false, true);
+            qtest_writel(to, DE + 0xa8, 4);
+        }
+        g_assert_cmpint(memtx_writel(to, DE + 0x9f0, 7), ==, MEMTX_OK);
+        g_assert_cmphex(gl_transfer_probe_read(to, &t), ==, 0x89674523);
+        qtest_system_reset(to);
+        g_assert_cmphex(gl_transfer_probe_read(to, &t), ==, 0x89674523);
+        gl_transfer_snapshot(to, path, &after);
+        for (unsigned n = 0; n < RENDER_WORDS; n++) {
+            g_assert_cmphex(after.renderer.words[n], ==, 0);
+        }
+        for (unsigned n = 0; n < 32; n++) {
+            g_assert_cmphex(after.linear[n], ==, 0);
+        }
+        qtest_quit(from);
+        qtest_quit(to);
+    }
+    g_unlink(sock);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_transfer_envelopes(void)
+{
+    QTestState *s = start_indexed_state();
+    GLTransferCase t = gl_transfer_case();
+
+    t.width = 1;
+    t.height = 32;
+    t.address = 0xf2345000;
+    t.advance = 4096;
+    gl_transfer_run(s, &t);
+    t.source_mode = 0x628;
+    t.destination_mode = 0x1628;
+    t.linear = 0x98765000;
+    t.stride = 4096;
+    gl_transfer_run(s, &t);
+    qtest_quit(s);
+}
+
+static void test_gl_transfer_allocation(void)
+{
+#ifdef CONFIG_LINUX
+    const uint64_t headroom[] = {16 * MiB, 320 * MiB};
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-gl-transfer-alloc-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned n = 0; n < ARRAY_SIZE(headroom); n++) {
+        g_autofree char *log = g_strdup_printf("%s/errors-%u.txt", dir, n);
+        g_autofree char *args = g_strdup_printf("-D %s", log);
+        QTestState *s = start_profile_ram("legacy-software", false,
+                                          true, false, args);
+        GLTransferCase t = gl_transfer_case();
+        g_autofree char *stat_path =
+            g_strdup_printf("/proc/%ld/statm", (long)qtest_pid(s));
+        g_autofree char *stat = NULL, *errors = NULL;
+        struct rlimit before, limited;
+        unsigned long long pages;
+
+        /* Limit this disposable child and restore its original allowance. */
+        qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+        triangle_irq_baseline(s);
+        t.source_mode = 0x628;
+        t.width = t.height = 2048;
+        t.x = t.y = t.sx = t.sy = 0;
+        gl_transfer_stage(s, &t);
+        g_assert_true(g_file_get_contents(stat_path, &stat, NULL, NULL));
+        g_assert_cmpint(sscanf(stat, "%llu", &pages), ==, 1);
+        g_assert_cmpint(prlimit(qtest_pid(s), RLIMIT_AS, NULL, &before), ==, 0);
+        limited = before;
+        limited.rlim_cur = pages * (uint64_t)qemu_real_host_page_size() +
+                           headroom[n];
+        g_assert_cmpuint(limited.rlim_cur, <=, before.rlim_max);
+        g_assert_cmpint(prlimit(qtest_pid(s), RLIMIT_AS, &limited, NULL),
+                        ==, 0);
+        gl_transfer_failure(s, path, DE + 0x8d0, 0x12345678, 4, false, true);
+        g_assert_cmpint(prlimit(qtest_pid(s), RLIMIT_AS, &before, NULL), ==, 0);
+        qtest_quit(s);
+        g_assert_true(g_file_get_contents(log, &errors, NULL, NULL));
+        g_assert_nonnull(strstr(errors, "GL transfer plan allocation failed"));
+        g_assert_cmpint(g_unlink(log), ==, 0);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+#else
+    g_test_skip("requires Linux per-process address-space limits");
+#endif
 }
 
 static void test_shade_start_family(void)
@@ -16347,5 +17203,26 @@ int main(int argc, char **argv)
              test_gl_transfer_formats);
     add_case("sgi/crime/render/gl-transfer/precision",
              test_gl_transfer_precision);
+    add_case("sgi/crime/render/gl-transfer/masks", test_gl_transfer_masks);
+    add_case("sgi/crime/render/gl-transfer/blend", test_gl_transfer_blend);
+    add_case("sgi/crime/render/gl-transfer/starts", test_gl_transfer_starts);
+    add_case("sgi/crime/render/gl-transfer/refusals",
+             test_gl_transfer_refusals);
+    for (unsigned n = 0; n < 9; n++) {
+        g_autofree char *name =
+            g_strdup_printf("sgi/crime/render/gl-transfer/widths/%u", n);
+
+        add_data_case(name, GUINT_TO_POINTER(n), test_gl_transfer_widths);
+    }
+    add_case("sgi/crime/render/gl-transfer/order", test_gl_transfer_order);
+    add_case("sgi/crime/render/gl-transfer/mixed-overlap",
+             test_gl_transfer_mixed_overlap);
+    add_case("sgi/crime/render/gl-transfer/banks", test_gl_transfer_banks);
+    add_case("sgi/crime/render/gl-transfer/migration",
+             test_gl_transfer_migration);
+    add_case("sgi/crime/render/gl-transfer/envelopes",
+             test_gl_transfer_envelopes);
+    add_case("sgi/crime/render/gl-transfer/allocation",
+             test_gl_transfer_allocation);
     return g_test_run();
 }
