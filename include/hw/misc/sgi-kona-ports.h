@@ -21,11 +21,7 @@
  *
  * The following selectors are omitted because their count or word order is
  * unresolved. Omission does not imply that real hardware ignores them:
- * - FIFO 0x1fd places its selector after a literal and another argument.
- * - FIFO 0x1f3 and 0x172 have conflicting argument counts across uses.
  * - FIFO 0x100 also appears on an indirect register pair.
- * - FIFO 0x1eb has no established argument count.
- * - FIFO 0x1ee, 0x1f9, and 0x1f2 have unknown word order.
  * - Doorbell 0x0, 0x500, 0x1a-0x1f, 0x8c, 0x90, and 0x39 have unknown
  *   counts.
  * - Doorbell 0x119 has inconsistent argument evidence; 0x1d6 and 0x1ca

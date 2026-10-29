@@ -437,6 +437,68 @@ static void test_swap_packets_framed(void)
     g_assert_nonnull(strstr(found, "token 0x1f4 argc 2 consumed"));
 }
 
+/* 0x1f9 for a context that has run before, as the swap test sends it. */
+static void kona_context_restore(QTestState *s)
+{
+    kona_command_kicked(s, 0x1f9,
+                        (uint32_t[]){ 0x31302e39, 0x14, 0x9000, 0xedededed },
+                        4);
+}
+
+/*
+ * The kernel's context activation sends 0x1f3 (11 words), 0x1ee (3) and
+ * 0x1f4 (2) only when their state changed, each followed by the bracket
+ * 0x10000, then always its last packet, here 0x172, and one 0. Each
+ * subset frames, a skipped packet leaving the next one in step: all
+ * three, 0x1f4 alone, and none.
+ */
+static void test_activation_packets_skip(void)
+{
+    static const uint32_t records[11] = {
+        1, 9, 0, 0x1f8, 0x103, 0x55000005, 0x55000006, 0x55000007,
+        0x55000008, 0x55000009, 0x5500000a,
+    };
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    kona_context_restore(s);
+    for (unsigned subset = 0; subset < 3; subset++) {
+        qtest_writel(s, REG_KICK, 0x30000);
+        if (subset == 0) {
+            qtest_writel(s, REG_COMMAND, 0x1f3);
+            for (unsigned i = 0; i < ARRAY_SIZE(records); i++) {
+                qtest_writel(s, REG_COMMAND, records[i]);
+            }
+            qtest_writel(s, REG_KICK, 0x10000);
+            kona_command(s, 0x1ee, (uint32_t[]){ 1, 9, 0x44000000 }, 3);
+            qtest_writel(s, REG_KICK, 0x10000);
+        }
+        if (subset < 2) {
+            kona_command(s, 0x1f4, (uint32_t[]){ 0x66000000, 0xffffffff },
+                         2);
+            qtest_writel(s, REG_KICK, 0x10000);
+        }
+        kona_command(s, 0x172, (uint32_t[]){ 0 }, 1);
+        qtest_writel(s, REG_KICK, 0);
+        assert_textport_in_step(s);
+    }
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_cmpuint(count_occurrences(found, "token 0x1f3 args 0x1 0x9 0x0 "
+                                       "argc 11\n"), ==, 1);
+    g_assert_cmpuint(count_occurrences(found, "token 0x1ee args 0x1 0x9 "
+                                       "0x44000000 argc 3\n"), ==, 1);
+    g_assert_cmpuint(count_occurrences(found, "token 0x1f4 args 0x66000000 "
+                                       "0xffffffff 0x0 argc 2\n"), ==, 2);
+    g_assert_cmpuint(count_occurrences(found, "token 0x172 args 0x0 0x0 0x0 "
+                                       "argc 1\n"), ==, 3);
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_kernel_command "),
+                     ==, 1 + 7);
+}
+
 /*
  * The GL client's set-up block, in the traced order with words shaped to
  * misframe on a wrong count: 0x177, 0x1d7 twice, 0x17e with its slot word
@@ -3881,6 +3943,8 @@ int main(int argc, char **argv)
 
     qtest_add_func("sn0/origin2000/kona-context/swap-packets-framed",
                    test_swap_packets_framed);
+    qtest_add_func("sn0/origin2000/kona-context/activation-packets-skip",
+                   test_activation_packets_skip);
     qtest_add_func("sn0/origin2000/kona-context/make-current-stream-framed",
                    test_make_current_stream_framed);
     qtest_add_func("sn0/origin2000/kona-context/"
