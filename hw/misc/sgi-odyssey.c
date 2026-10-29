@@ -424,8 +424,7 @@
  * access spans it and +0x1074 (ESTABLISHED by search of the driver
  * binaries). Its reset value 0x0001c000 has no recorded source. MODEL
  * CHOICE: the model keeps it as a plain 32-bit read/write register with
- * that reset value, for the BaseIO PROM diagnostic that reads it; the
- * value is not hardware evidence.
+ * that reset value; the value is not hardware evidence.
  */
 #define ODSY_XT_REQ_TIMEOUT_RESET 0x000fffff
 #define ODSY_FLCTL_CONFIG_RESET 0x0001c000
