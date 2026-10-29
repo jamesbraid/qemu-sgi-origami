@@ -335,7 +335,8 @@ typedef enum SGIIOC3TimekeeperKind {
 #define SGI_IOC3_POPULATION_KEYBOARD_MOUSE (1U << 3)
 #define SGI_IOC3_POPULATION_PARALLEL       (1U << 4)
 #define SGI_IOC3_POPULATION_ONEWIRE_IDENTITY (1U << 5)
-#define SGI_IOC3_POPULATION_ALL            ((1U << 6) - 1)
+#define SGI_IOC3_POPULATION_LIGHTBAR       (1U << 6)
+#define SGI_IOC3_POPULATION_ALL            ((1U << 7) - 1)
 #define SGI_IOC3_POPULATION_AUTO           UINT32_MAX
 
 typedef struct SGIIOC3Population {
@@ -344,6 +345,8 @@ typedef struct SGIIOC3Population {
     bool kbc;
     bool parallel;
     bool onewire_identity;
+    /* The Octane's front lightbar, on pins 0 and 1. */
+    bool lightbar;
     SGIIOC3TimekeeperKind timekeeper;
 } SGIIOC3Population;
 
@@ -423,6 +426,8 @@ struct SGIIOC3State {
     uint32_t microlan_control;
     uint32_t pin_control;
     uint32_t pin_data;
+    /* Trace de-duplication only: bit 0 white, bit 1 red. Not migrated. */
+    uint32_t lightbar_lit;
     /* Population properties, checked rather than replaced on migration. */
     uint32_t pin_input_mask;
     uint32_t pin_input_values;

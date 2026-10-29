@@ -41,6 +41,8 @@
 #define IOC3 (BRIDGE + 0x600000)
 #define IOC3_MICROLAN (IOC3 + 0x30)
 #define IOC3_PIN_CONTROL_SET (IOC3 + 0x34)
+#define IOC3_PIN_DATA (IOC3 + 0x3c)
+#define IOC3_PIN_REG(n) (IOC3 + 0x40 + 4 * (n))
 #define IOC3_ENET_MII_DATA_R (IOC3 + 0x14c)
 #define IOC3_ENET_MII_CONTROL (IOC3 + 0x148)
 #define IOC3_ENET_MAC_CONTROL (IOC3 + 0x0f0)
@@ -1430,6 +1432,65 @@ static void test_octane2_ethernet_dma_and_interrupt(void)
 static void test_octane2_ethernet(void)
 {
     test_octane_ioc3_ethernet(true);
+}
+
+static bool ioc3_lamp(QTestState *qts, const char *name)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine/ioc3',"
+        "'property':%s}}", name);
+
+    g_assert(qdict_haskey(reply, "return"));
+    return qdict_get_bool(reply, "return");
+}
+
+/*
+ * The lightbar lamps follow pin registers 0 (white, inferred) and 1 (red,
+ * measured on an Octane2), high is lit, and reset turns both off. The pin
+ * registers keep their own behaviour.
+ */
+static void test_ioc3_lightbar(gconstpointer data)
+{
+    QTestState *qts = GPOINTER_TO_INT(data) ? octane2_start_args("") :
+                                              octane_start();
+
+    /* Map the chip's registers, as the firmware does. */
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+
+    g_assert(!ioc3_lamp(qts, "lightbar-white"));
+    g_assert(!ioc3_lamp(qts, "lightbar-red"));
+
+    qtest_writel(qts, IOC3_PIN_REG(1), 1);
+    g_assert(ioc3_lamp(qts, "lightbar-red"));
+    g_assert(!ioc3_lamp(qts, "lightbar-white"));
+    g_assert_cmphex(qtest_readl(qts, IOC3_PIN_REG(1)), ==, 1);
+    g_assert_cmphex(qtest_readl(qts, IOC3_PIN_DATA) & 3, ==, 2);
+
+    qtest_writel(qts, IOC3_PIN_REG(0), 1);
+    g_assert(ioc3_lamp(qts, "lightbar-white"));
+    g_assert(ioc3_lamp(qts, "lightbar-red"));
+
+    qtest_writel(qts, IOC3_PIN_REG(1), 0);
+    g_assert(ioc3_lamp(qts, "lightbar-white"));
+    g_assert(!ioc3_lamp(qts, "lightbar-red"));
+
+    /* The pin data register reaches the same latch. */
+    qtest_writel(qts, IOC3_PIN_DATA, 2);
+    g_assert(!ioc3_lamp(qts, "lightbar-white"));
+    g_assert(ioc3_lamp(qts, "lightbar-red"));
+
+    /* A pin other than 0 and 1 leaves the lamps alone. */
+    qtest_writel(qts, IOC3_PIN_REG(4), 1);
+    g_assert(!ioc3_lamp(qts, "lightbar-white"));
+    g_assert(ioc3_lamp(qts, "lightbar-red"));
+
+    qtest_writel(qts, IOC3_PIN_DATA, 3);
+    qtest_system_reset(qts);
+    g_assert(!ioc3_lamp(qts, "lightbar-white"));
+    g_assert(!ioc3_lamp(qts, "lightbar-red"));
+    qtest_quit(qts);
 }
 
 static void test_octane2_serial(void)
@@ -5279,6 +5340,10 @@ int main(int argc, char **argv)
                    test_octane_ethernet_dma_and_interrupt);
     qtest_add_func("/octane2/ioc3-ethernet-dma-and-interrupt",
                    test_octane2_ethernet_dma_and_interrupt);
+    qtest_add_data_func("/octane/ioc3-lightbar", GINT_TO_POINTER(0),
+                        test_ioc3_lightbar);
+    qtest_add_data_func("/octane2/ioc3-lightbar", GINT_TO_POINTER(1),
+                        test_ioc3_lightbar);
     qtest_add_func("/octane2/serial", test_octane2_serial);
     qtest_add_func("/octane/heart-widget-control", test_heart_widget_control);
     qtest_add_func("/octane/heart-widget-errors", test_heart_widget_errors);

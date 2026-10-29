@@ -6272,6 +6272,49 @@ static void test_an_explicit_population_is_independent_of_identity(
     qtest_quit(qts);
 }
 
+static bool ioc3_has_bool_property(QTestState *qts, const char *name)
+{
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-get',"
+        " 'arguments': { 'path': '/machine/peripheral/test-ioc3',"
+        " 'property': %s } }", name);
+    bool found = qdict_haskey(response, "return");
+
+    qobject_unref(response);
+    return found;
+}
+
+/*
+ * Only the Octane's system board carries the lightbar, whether the board is
+ * chosen by identity or the population names it, so no other board answers
+ * for lamps it does not have.
+ */
+static void test_only_the_octane_board_has_a_lightbar(const void *data)
+{
+    static const struct {
+        const char *args;
+        bool lightbar;
+    } cases[] = {
+        { "", false },
+        { ",subsystem-id=0xc300", false },
+        { ",subsystem-id=0xc304", true },
+        { ",population=0x3f", false },
+        { ",population=0x7f", true },
+    };
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(cases); i++) {
+        g_autofree char *args = g_strdup_printf(
+            "-M origin200 -device sgi-ioc3,id=test-ioc3,addr=3%s",
+            cases[i].args);
+        QTestState *qts = qtest_init(args);
+
+        g_assert_cmpint(ioc3_has_bool_property(qts, "lightbar-white"), ==,
+                        cases[i].lightbar);
+        g_assert_cmpint(ioc3_has_bool_property(qts, "lightbar-red"), ==,
+                        cases[i].lightbar);
+        qtest_quit(qts);
+    }
+}
+
 static void test_an_explicit_population_selects_the_other_children(
     const void *data)
 {
@@ -6347,11 +6390,11 @@ static void test_population_rejects_unknown_bits(const void *data)
 {
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
-        "-device", "sgi-ioc3,addr=3,population=0x40",
+        "-device", "sgi-ioc3,addr=3,population=0x80",
         "-qtest", "stdio", "-accel", "qtest", NULL
     };
 
-    assert_qemu_rejects(args, "IOC3 population has unknown bits 0x40");
+    assert_qemu_rejects(args, "IOC3 population has unknown bits 0x80");
 }
 
 static void test_population_rejects_an_unknown_timekeeper(const void *data)
@@ -6624,6 +6667,8 @@ int main(int argc, char **argv)
                         test_an_explicit_population_is_independent_of_identity);
     qtest_add_data_func("sn0/ioc3/population-selects-other-children", NULL,
                         test_an_explicit_population_selects_the_other_children);
+    qtest_add_data_func("sn0/ioc3/only-the-octane-board-has-a-lightbar", NULL,
+                        test_only_the_octane_board_has_a_lightbar);
     qtest_add_data_func("sn0/ioc3/released-chip-takes-its-ps2-devices", NULL,
                         test_a_released_chip_takes_its_ps2_devices);
     qtest_add_data_func("sn0/ioc3/population-rejects-onewire-without-ethernet",
