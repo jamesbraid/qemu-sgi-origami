@@ -1438,6 +1438,24 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_TEX_COLOUR_TABLE_BLOCKS 16
 #define ODSY_TEX_COLOUR_TABLE_BLOCK_WORDS 16
 #define ODSY_REG_TEX_DETAIL_FUNCTION 0x3e40
+/*
+ * The texture offset block, three words the GL library copies from the
+ * texture object at activation. The only code that writes those object
+ * words zeroes them, so the library always sends 0, 0, 0 (ESTABLISHED by
+ * the datasheet's search of the library). Their meaning is UNKNOWN, so the
+ * model stores them and a draw with any of them nonzero is reported and
+ * dropped rather than guessed.
+ */
+#define ODSY_REG_TEX_OFFSET 0x0c3e      /* 3 operands */
+/*
+ * A fourth 256-entry table, sixteen 16-word blocks. A search of the GL
+ * library found no code that sets its dirty bit or stores into its context
+ * copy, so no sender was found; whether the driver ever sends it is
+ * UNKNOWN, and so is its meaning. A block that does arrive is consumed and
+ * reported as unmodeled.
+ */
+#define ODSY_REG_TEX_TABLE3 0x3e30
+#define ODSY_TEX_TABLE3_BLOCKS 16
 #define ODSY_TEX_DETAIL_FUNCTION_BLOCKS 16
 #define ODSY_TEX_DETAIL_FUNCTION_BLOCK_WORDS 16
 #define ODSY_GL_TEXCOORD_1F 0xc380c41f  /* 1 operand: s */
@@ -6417,6 +6435,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         (s->tex_lod[0] | s->tex_lod[1] | s->tex_lod[2] | s->tex_lod[3]) &
             ~ODSY_TEX_LOD_MASK ||
         !odyssey_texture_scale_bias_known(s) ||
+        s->tex_offset[0] || s->tex_offset[1] || s->tex_offset[2] ||
         (min >= 0x40 && lo > hi) ||
         (colour_table &&
          ((colour_table_l8 && image->base_format != SGI_GL_LUMINANCE) ||
@@ -10702,6 +10721,11 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         s->tex_detail_function_valid |= 1u << block;
         return;
     }
+    if (tag >= ODSY_REG_TEX_TABLE3 &&
+        tag < ODSY_REG_TEX_TABLE3 + ODSY_TEX_TABLE3_BLOCKS) {
+        odyssey_cmd_unimplemented(s, tag);
+        return;
+    }
     if ((tag >= ODSY_REG_TEX_COLOUR_TABLE0 &&
          tag < ODSY_REG_TEX_COLOUR_TABLE0 + ODSY_TEX_COLOUR_TABLE_BLOCKS) ||
         (tag >= ODSY_REG_TEX_COLOUR_TABLE1 &&
@@ -11301,6 +11325,9 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         break;
     case ODSY_REG_TEX_SCALE_BIAS:
         memcpy(s->tex_scale_bias, s->cmd_operand, sizeof(s->tex_scale_bias));
+        break;
+    case ODSY_REG_TEX_OFFSET:
+        memcpy(s->tex_offset, s->cmd_operand, sizeof(s->tex_offset));
         break;
     case ODSY_REG_POST_FILTER_DEFAULT:
         odyssey_cmd_unimplemented(s, tag);
@@ -13000,6 +13027,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
         s->tex_scale_bias[c * 2] = ODSY_TEX_SCALE_BIAS_ONE;
         s->tex_scale_bias[c * 2 + 1] = 0;
     }
+    memset(s->tex_offset, 0, sizeof(s->tex_offset));
     memset(s->tex_coord, 0, sizeof(s->tex_coord));
     s->tex_coord_r = 0;
     s->tex_coord_q = ODSY_F32_ONE;
@@ -14240,8 +14268,8 @@ static int odyssey_work_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 46,
-    .minimum_version_id = 46,
+    .version_id = 47,
+    .minimum_version_id = 47,
     .pre_save = odyssey_work_pre_save,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -14397,6 +14425,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32(tex_level0, SGIOdysseyState),
         VMSTATE_UINT32_ARRAY(tex_lod, SGIOdysseyState, 4),
         VMSTATE_UINT32_ARRAY(tex_scale_bias, SGIOdysseyState, 8),
+        VMSTATE_UINT32_ARRAY(tex_offset, SGIOdysseyState, 3),
         VMSTATE_UINT32_ARRAY(tex_coord, SGIOdysseyState, 2),
         VMSTATE_UINT32(tex_coord_r, SGIOdysseyState),
         VMSTATE_UINT32(tex_coord_q, SGIOdysseyState),
