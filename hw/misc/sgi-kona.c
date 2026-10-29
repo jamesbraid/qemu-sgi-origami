@@ -19001,6 +19001,7 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
         break;
     case SGI_KONA_RESET_STROBE:
         s->reset_strobe = value;
+        trace_sgi_kona_reset_register(value);
         break;
     case SGI_KONA_EEPROM_ENABLE:
         s->eeprom_enable = value;

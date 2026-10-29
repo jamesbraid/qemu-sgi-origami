@@ -705,8 +705,10 @@ typedef struct SGIKonaPendingSwap {
  * (values 3, 2), its EEPROM-check sequence (values 1, 0), and the
  * kernel driver's own initialisation, which writes 1 then 0 here,
  * reading back after each, before its SGI_KONA_INT_ENABLE and
- * SGI_KONA_RESET_ARG writes. This model interprets none of these
- * writers' values.
+ * SGI_KONA_RESET_ARG writes. A stock diagnostic tool's register table
+ * names bit 0 the host-interface reset and bit 1 the ARM start (inferred
+ * from the names). The model has no ARM and resets nothing here: every
+ * write is stored and traced, and none has an effect.
  */
 #define SGI_KONA_RESET_STROBE 0x800300
 
@@ -809,6 +811,14 @@ typedef struct SGIKonaPendingSwap {
 #define SGI_KONA_LOAD_SECTIONS_MAX 32
 
 /*
+ * A stock diagnostic tool's register table names this the output DMA
+ * flush (inferred from the name); the driver's pipe-death path writes
+ * it. No output DMA is modelled and the model gives the register no
+ * case, so a write stays on the unimplemented-write log.
+ */
+#define SGI_KONA_OUTPUT_DMA_FLUSH 0x800298
+
+/*
  * The watchdog activity register. While a driver timeout is pending, the
  * driver's periodic timeout check reads it every 500 ms, treats bit 0x4
  * as transaction-bus or ARM activity, and writes 4 back (established).
@@ -818,11 +828,13 @@ typedef struct SGIKonaPendingSwap {
  * value does not affect bring-up while the driver's full-timeouts tunable
  * keeps its default of 1. Other written bits (the fatal-error path writes
  * 8, the video interrupt handler 1) have no modeled meaning and stay on
- * the unimplemented-write log. The activity-latch qtest checks the
- * model's rule; what would check it against the driver is a guest run
- * with that tunable set to 0, which must not log the driver's pipe-hang
- * message, and against hardware a read of a real pipe's register after it
- * has been idle.
+ * the unimplemented-write log. A stock diagnostic tool's table names bit
+ * 0 draw, bit 1 load, bit 2 active and bit 3 stall on the transaction bus
+ * (inferred from the names); the model stalls nothing. The activity-latch
+ * qtest checks the model's rule; what would check it against the driver
+ * is a guest run with that tunable set to 0, which must not log the
+ * driver's pipe-hang message, and against hardware a read of a real
+ * pipe's register after it has been idle.
  */
 #define SGI_KONA_ACTIVITY 0x8003a8
 #define SGI_KONA_ACTIVITY_BUS (1u << 2)
