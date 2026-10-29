@@ -22783,7 +22783,6 @@
               }
             ],
             "bridge-widget-revision": 3,
-            "gpio-classic": true,
             "widget-id-64": 1275072621,
             "widget-revision": 4,
             "widget-status-f-measured": false
@@ -23474,7 +23473,6 @@
               }
             ],
             "bridge-widget-revision": 4,
-            "gpio-classic": false,
             "widget-id-64": 1811943533,
             "widget-revision": 6,
             "widget-status-f-measured": true

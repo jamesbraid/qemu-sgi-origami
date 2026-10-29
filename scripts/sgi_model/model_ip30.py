@@ -159,7 +159,6 @@ def compile_heart_node(model, components, entry):
         "widget_revision": _integer(fitted, "widget_revision", heart["id"], 4),
         "widget_id_64": num(_required(fitted, "widget_id_64", heart["id"])),
         "widget_status_f_measured": _required(fitted, "widget_status_f_measured", heart["id"]),
-        "gpio_classic": _required(ioc3s[0]["identity"], "gpio_classic", ioc3s[0]["id"]),
         "bridge_widget_revision": _integer(
             _required(bridges[0], "identity", bridges[0]["id"]),
             "widget_revision", bridges[0]["id"], 4),

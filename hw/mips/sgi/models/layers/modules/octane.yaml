@@ -101,8 +101,6 @@ layer:
       - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
       parent: ip30-board
       hardware_kind: ioc3
-      identity:
-        gpio_classic: true
     - id: ethernet
       name: ethernet
       kind: subfunction
