@@ -1769,7 +1769,7 @@ static void test_flow_control_credit_target(void)
 /*
  * The registers the stock IP35 BaseIO PROM's graphics diagnostic reads
  * before it will print a passing board version, SDRAM size and bank count:
- * the crosstalk request timeout, the flow-control configuration and the six
+ * the crosstalk request timeout and the six
  * "Buzz registers" the diagnostic exercises with a walking-ones/walking-
  * zero-complement self-test whose exact pass criterion is not established
  * by any available source. Plain read/write storage is enough for that
