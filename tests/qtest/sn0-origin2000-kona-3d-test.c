@@ -17747,6 +17747,54 @@ static void test_renderer_migration(gconstpointer opaque)
     g_rmdir(tmpfs);
 }
 
+/*
+ * Matrix-mode changes rebind the matrix commands to the new mode's matrix:
+ * the pipe's firmware has one engine handler per mode for load, multiply,
+ * identity, frustum, ortho, push, pop, rotate, scale and translate, and
+ * the matrix-mode command selects among them. Whatever the model keys its
+ * dispatch on, each command must act on the current mode's matrix and
+ * leave the others alone. Here a load and a translate go to projection,
+ * a scale to texture and a translate to modelview, and each matrix reads
+ * back with only its own commands applied.
+ */
+static void test_matrix_commands_follow_mode(void)
+{
+    const uint32_t identity[16] = { F1, 0, 0, 0, 0, F1, 0, 0,
+                                    0, 0, F1, 0, 0, 0, 0, F1 };
+    uint32_t loaded[16], projection[16], texture[16], modelview[16];
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    for (unsigned k = 0; k < 16; k++) {
+        loaded[k] = fbits(k + 0.5f);
+    }
+    /* Column-major: translating by (1, 0, 0) adds column 0 to column 3. */
+    memcpy(projection, loaded, sizeof(projection));
+    for (unsigned r = 0; r < 4; r++) {
+        projection[12 + r] = fbits((r + 0.5f) + (12 + r + 0.5f));
+    }
+    memcpy(texture, identity, sizeof(texture));
+    texture[0] = fbits(2);
+    texture[5] = fbits(3);
+    texture[10] = fbits(4);
+    memcpy(modelview, identity, sizeof(modelview));
+    modelview[12] = fbits(5);
+
+    gl_make_current(s);
+    kona_command(s, 0xd0, (uint32_t[]){ 0x1701 }, 1);
+    kona_command(s, 0xd3, loaded, 16);
+    kona_command_f(s, 0xdf, (float[]){ 1, 0, 0 }, 3);
+    kona_command(s, 0xd0, (uint32_t[]){ 0x1702 }, 1);
+    kona_command_f(s, 0xdd, (float[]){ 2, 3, 4 }, 3);
+    kona_command(s, 0xd0, (uint32_t[]){ 0x1700 }, 1);
+    kona_command_f(s, 0xdf, (float[]){ 5, 0, 0 }, 3);
+
+    assert_native_depth(s, 0xba7, projection, 16);
+    assert_native_depth(s, 0xba8, texture, 16);
+    assert_native_depth(s, 0xba6, modelview, 16);
+    assert_native_depth(s, 0xba0, (uint32_t[]){ 0x1700 }, 1);
+    qtest_quit(s);
+}
+
 static void assert_colour_matrix_isolated(QTestState *s)
 {
     uint32_t expected[16] = { F1, 0, 0, 0, 0, F1, 0, 0,
@@ -19782,6 +19830,8 @@ int main(int argc, char **argv)
     add_case("sn0/origin2000/kona-3d/read-selection",
              test_read_selection);
     add_case("sn0/origin2000/kona-3d/get-queries", test_get_queries);
+    add_case("sn0/origin2000/kona-3d/matrix-commands-follow-mode",
+             test_matrix_commands_follow_mode);
     add_case("sn0/origin2000/kona-3d/draw-buffer-query",
              test_draw_buffer_query);
     add_case("sn0/origin2000/kona-3d/native-depth-state",
