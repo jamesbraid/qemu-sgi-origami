@@ -414,6 +414,18 @@ static const CrimeRenderRegister *crime_render_register(unsigned offset)
     return NULL;
 }
 
+static bool crime_render_texture_start(unsigned offset)
+{
+    switch (offset) {
+    case 0x120: case 0x128: case 0x130:
+    case 0x138: case 0x140: case 0x148: case 0x150:
+    case 0x158: case 0x15c:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static bool crime_render_state_access(hwaddr offset, unsigned size)
 {
     if (crime_renderer_touches(offset, size, 0x1001000, 0x800)) {
@@ -3155,7 +3167,8 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
         if (reg && (!reg->native_only ||
                     (reg->offset >= 0xe0 && reg->offset <= 0x10c) ||
                     (reg->offset >= 0x1c0 && reg->offset <= 0x1e8) ||
-                    reg->offset == 0x190 || reg->offset == 0x194)) {
+                    reg->offset == 0x190 || reg->offset == 0x194 ||
+                    crime_render_texture_start(reg->offset))) {
             bool paired = size == 8 &&
                 (reg->offset == 0x070 || reg->offset == 0x0a8 ||
                  reg->offset == 0x0c0 || reg->offset == 0x190);

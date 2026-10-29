@@ -7703,6 +7703,33 @@ static void test_native_parameters(void)
     qtest_quit(s);
 }
 
+typedef struct TexturePlaneStart {
+    unsigned offset, width, header;
+    uint64_t value;
+} TexturePlaneStart;
+
+static const TexturePlaneStart texture_plane_starts[] = {
+    {0x120, 8, 0x3a24, (UINT64_C(3) << 42) + 0x800},
+    {0x128, 8, 0x3a25, (UINT64_C(3) << 42) + 0x800},
+    {0x130, 4, 0x3226, 0x1f3fe5c0},
+    {0x138, 8, 0x3a27, UINT64_C(1) << 41},
+    {0x140, 8, 0x3a28, UINT64_C(1) << 39},
+    {0x148, 8, 0x3a29, UINT64_C(1) << 39},
+    {0x150, 8, 0x3a2a, UINT64_C(1) << 41},
+    {0x158, 4, 0x322b, 0x02000000},
+    {0x15c, 4, 0x2a2b, 0x01000000},
+};
+
+static bool texture_plane_start(unsigned offset)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(texture_plane_starts); i++) {
+        if (texture_plane_starts[i].offset == offset) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void test_native_isolation(void)
 {
     g_autofree char *dir =
@@ -7737,9 +7764,10 @@ static void test_native_isolation(void)
         const Register *r = &native_registers[i];
         uint64_t value = r->width == 8 ? UINT64_MAX : UINT32_MAX;
 
-        /* The shading family now has independently tested START dispatch. */
+        /* Cleared families have their own prospective START checks. */
         if ((r->offset >= 0xe0 && r->offset <= 0x10c) ||
-            (r->offset >= 0x1c0 && r->offset <= 0x1e8)) {
+            (r->offset >= 0x1c0 && r->offset <= 0x1e8) ||
+            texture_plane_start(r->offset)) {
             continue;
         }
         g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset, value,
@@ -12932,6 +12960,31 @@ static void test_texture_constant(void)
     qtest_quit(s);
 }
 
+static void test_texture_start_q(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-texture-start-q-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    Shape c = triangle_prepare(s, 0, 0, 0);
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+
+    triangle_vertices(s, triangle_integer, NULL, true);
+    texture_constant(s);
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000);
+    qtest_writel(s, DE + 0xd0, TRIANGLE_COLOR);
+    qtest_writel(s, DE + 0x130, 0);
+    qtest_writel(s, DE + 0x134, 3);
+    save_paired_renderer(s, path, before);
+    g_assert_cmpint(memtx_writel(s, DE + 0x930, 0x1f3fe5c0), ==, MEMTX_OK);
+    triangle_pixels(s, &c, triangle_ten, 0x2371b9d5, 3, UINT32_MAX);
+    save_paired_renderer(s, path, after);
+    before[192 + 0x130 / 4] = 0x1f3fe5c0;
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 static uint32_t texture_environment(unsigned type, unsigned depth,
                                     unsigned function, uint32_t stored)
 {
@@ -14333,6 +14386,429 @@ static void test_gl_line_migration(void)
     g_rmdir(dir);
 }
 
+typedef struct TextureStartSnapshot {
+    uint64_t words[RENDER_WORDS], texture[28], global[7];
+    IfbSnapshot ifb;
+    uint32_t status;
+    unsigned irq;
+} TextureStartSnapshot;
+
+static QTestState *texture_start_machine(void)
+{
+    QTestState *s = start_indexed_state();
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    triangle_irq_baseline(s);
+    return s;
+}
+
+static void texture_start_snapshot(QTestState *s, const char *path,
+                                    TextureStartSnapshot *state)
+{
+    const unsigned global[] = {0x10, 0x18, 0x20, 0x40, 0x48, 0x250, 0x258};
+    memset(state, 0, sizeof(*state));
+    save_paired_renderer(s, path, state->words);
+    for (unsigned i = 0; i < ARRAY_SIZE(state->texture); i++) {
+        state->texture[i] = qtest_readq(s, RE + 0x1600 + 8 * i);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(global); i++) {
+        state->global[i] = qtest_readq(s, CRIME + global[i]);
+    }
+    ifb_snapshot(s, &state->ifb);
+    state->status = qtest_readl(s, STATUS);
+    for (unsigned i = 0; i < 5; i++) {
+        state->irq |= qtest_get_irq(s, i) << i;
+    }
+}
+
+static void texture_start_pixels(QTestState *s, const Shape *c,
+                                  uint32_t pixels[64])
+{
+    g_assert_cmpuint(c->width * c->height, <=, 64);
+    for (unsigned y = 0; y < c->height; y++) {
+        for (unsigned x = 0; x < c->width; x++) {
+            pixels[y * c->width + x] = pixel_read(s,
+                pixel_address(c->bank, c->x + x, c->y + y, 4), 4);
+        }
+    }
+}
+
+static void texture_start_failure(QTestState *s, const Shape *c,
+                                   const char *path, uint64_t address,
+                                   uint64_t value, unsigned width, bool read)
+{
+    TextureStartSnapshot before, after;
+    uint32_t pixels[64];
+    g_autofree uint8_t *source = g_malloc(65536);
+    g_autofree uint8_t *next = g_malloc(65536);
+    uint64_t ignored;
+
+    texture_start_snapshot(s, path, &before);
+    texture_start_pixels(s, c, pixels);
+    qtest_memread(s, 0xa0000, source, 65536);
+    g_assert_cmpint(read ? memtx_read(s, address, &ignored, width) :
+                          memtx_write(s, address, value, width), !=, MEMTX_OK);
+    texture_start_snapshot(s, path, &after);
+    g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
+    shape_memory(s, c, pixels);
+    qtest_memread(s, 0xa0000, next, 65536);
+    g_assert_cmpmem(source, 65536, next, 65536);
+}
+
+static Shape texture_start_prepare(QTestState *s)
+{
+    const uint64_t planes[] = {
+        (UINT64_C(5) << 41) + 0x800, (UINT64_C(5) << 41) + 0x800,
+        0x20000800, UINT64_C(1) << 40, UINT64_C(1) << 38,
+        UINT64_C(1) << 38, UINT64_C(1) << 40, 0x00800000, 0x00400000,
+    };
+    Shape c = triangle_prepare(s, 0, 0, 0);
+    triangle_vertices(s, triangle_integer, NULL, true);
+    texture_two_by_two(s);
+    for (unsigned i = 0; i < ARRAY_SIZE(texture_plane_starts); i++) {
+        const TexturePlaneStart *r = &texture_plane_starts[i];
+        g_assert_cmpint(memtx_write(s, DE + r->offset, planes[i], r->width),
+                        ==, MEMTX_OK);
+    }
+    qtest_writel(s, DE + 0xd0, TRIANGLE_COLOR);
+    qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000 | 0x200);
+    qtest_writel(s, DE + 0x1b0, 6);
+    return c;
+}
+
+static uint64_t texture_start_invalid(const TexturePlaneStart *r)
+{
+    return r->width == 8 ? INT64_MAX : r->offset == 0x130 ? 0 : INT32_MAX;
+}
+
+static void texture_start_published(TextureStartSnapshot *state,
+                                      const TexturePlaneStart *r,
+                                      uint64_t value)
+{
+    unsigned head = state->status & 63, next = (head + 1) & 63;
+    uint64_t payload = r->width == 8 ? value : r->offset == 0x15c ?
+                       (uint32_t)value : (uint64_t)(uint32_t)value << 32;
+
+    state->words[192 + r->offset / 4] = value;
+    stq_be_p(state->ifb.ram + head * 8, payload);
+    stq_be_p(state->ifb.ram + 0x200 + head * 8, (uint64_t)r->header << 32);
+    state->status = (state->status & ~0x3ffffU) |
+                    next | (next << 6) | (next << 12);
+    state->ifb.status = state->status;
+}
+
+static void test_texture_start_matrix(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-texture-matrix-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = texture_start_machine();
+
+    for (unsigned i = 0; i < ARRAY_SIZE(texture_plane_starts); i++) {
+        const TexturePlaneStart *r = &texture_plane_starts[i];
+        for (unsigned invalid_old = 0; invalid_old < 2; invalid_old++) {
+            TextureStartSnapshot expected, actual, before;
+            uint32_t pixels[64];
+            Shape c = texture_start_prepare(s);
+
+            g_assert_cmpint(memtx_write(s, DE + r->offset, r->value, r->width),
+                            ==, MEMTX_OK);
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            texture_start_snapshot(s, path, &expected);
+            texture_start_pixels(s, &c, pixels);
+            c = texture_start_prepare(s);
+            if (invalid_old) {
+                g_assert_cmpint(memtx_write(s, DE + r->offset,
+                    texture_start_invalid(r), r->width), ==, MEMTX_OK);
+            }
+            texture_start_snapshot(s, path, &before);
+            g_test_message("plane 0x%x width %u invalid old %u", r->offset,
+                           r->width, invalid_old);
+            g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset,
+                                        r->value, r->width), ==, MEMTX_OK);
+            shape_memory(s, &c, pixels);
+            texture_start_snapshot(s, path, &actual);
+            g_assert_cmpmem(expected.words, sizeof(expected.words),
+                            actual.words, sizeof(actual.words));
+            g_assert_cmpmem(expected.texture, sizeof(expected.texture),
+                            actual.texture, sizeof(actual.texture));
+            texture_start_published(&before, r, r->value);
+            g_assert_cmpmem(&before, sizeof(before), &actual, sizeof(actual));
+            for (unsigned poll = 0; poll < 3; poll++) {
+                qtest_readl(s, STATUS);
+                qtest_readq(s, RE + 0x1600 + (93 / 4) * 8);
+                qtest_writel(s, DE + 0x1f0, 0);
+                qtest_writel(s, DE + 0x1f8, 0);
+            }
+            g_assert_cmpint(memtx_write(s, DE + r->offset,
+                                        r->value ^ 0x1000, r->width), ==,
+                            MEMTX_OK);
+            shape_memory(s, &c, pixels);
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_texture_start_widths(gconstpointer selection)
+{
+    const TexturePlaneStart *r =
+        &texture_plane_starts[GPOINTER_TO_UINT(selection)];
+    g_autofree char *dir = g_dir_make_tmp("crime-texture-width-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = texture_start_machine();
+    Shape c = texture_start_prepare(s);
+    uint64_t address = DE + 0x800 + r->offset;
+
+    for (unsigned width = 1; width <= 8; width *= 2) {
+        texture_start_failure(s, &c, path, address, 0, width, true);
+        if (width != r->width) {
+            texture_start_failure(s, &c, path, address, UINT64_MAX,
+                                  width, false);
+        }
+    }
+    for (unsigned delta = 1; delta < r->width; delta++) {
+        texture_start_failure(s, &c, path, address + delta, UINT64_MAX,
+                              r->width, false);
+        texture_start_failure(s, &c, path, address + delta, 0,
+                              r->width, true);
+    }
+    if (r->width == 8) {
+        texture_start_failure(s, &c, path, address + 4, UINT32_MAX, 4, false);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_texture_start_unlisted(void)
+{
+    const Register closed[] = {
+        {0x110, 4, false}, {0x118, 8, false}, {0x134, 4, false},
+        {0x160, 4, false}, {0x168, 4, false},
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-texture-closed-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = texture_start_machine();
+    Shape c = texture_start_prepare(s);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(closed); i++) {
+        for (unsigned width = 1; width <= 8; width *= 2) {
+            texture_start_failure(s, &c, path, DE + 0x800 + closed[i].offset,
+                                  UINT64_MAX, width, false);
+            texture_start_failure(s, &c, path, DE + 0x800 + closed[i].offset,
+                                  0, width, true);
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_texture_start_inactive(void)
+{
+    const uint8_t rows[8] = {0, 0x1e, 0x1e, 0x1e, 0x1e};
+    g_autofree char *dir = g_dir_make_tmp("crime-texture-dormant-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = texture_start_machine();
+
+    for (unsigned i = 0; i < ARRAY_SIZE(texture_plane_starts); i++) {
+        const TexturePlaneStart *r = &texture_plane_starts[i];
+        Shape c = triangle_prepare(s, 0, 0, 0);
+        TextureStartSnapshot before, after;
+        uint64_t value = r->width == 8 ? UINT64_C(0xfedcba9876543210) :
+                         r->offset == 0x130 ? 0 : 0xfedcba98;
+
+        setup(s, 0x228, false);
+        qtest_writel(s, DE + 0x70, xy(1, 1));
+        qtest_writel(s, DE + 0x74, xy(4, 4));
+        qtest_writel(s, DE + 0x18, 0x278);
+        qtest_writel(s, DE + 0x1b0, 6);
+        qtest_writel(s, DE + 0xd0, TRIANGLE_COLOR);
+        qtest_writel(s, DE + 0x110, UINT32_MAX);
+        qtest_writeq(s, DE + 0x118, UINT64_MAX);
+        qtest_writel(s, DE + 0x130, 0);
+        qtest_writel(s, DE + 0x134, UINT32_MAX);
+        qtest_writeq(s, RE + 0x1600 + (93 / 4) * 8, UINT64_MAX);
+        for (unsigned d = 3; d < ARRAY_SIZE(texture_plane_starts); d++) {
+            const TexturePlaneStart *derivative = &texture_plane_starts[d];
+            g_assert_cmpint(memtx_write(s, DE + derivative->offset,
+                derivative->value ^ 0x1234, derivative->width), ==, MEMTX_OK);
+        }
+        texture_start_snapshot(s, path, &before);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset, value, r->width),
+                        ==, MEMTX_OK);
+        triangle_pixels(s, &c, rows, TRIANGLE_COLOR, 6, UINT32_MAX);
+        texture_start_snapshot(s, path, &after);
+        texture_start_published(&before, r, value);
+        g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
+        triangle_vertices(s, triangle_integer, NULL, true);
+        qtest_writel(s, DE + 0x58, 0xf000f000);
+        qtest_writel(s, DE + 0x60, 0x02020000);
+        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000 | 0x200);
+        texture_start_failure(s, &c, path, DE + 0x800 + r->offset,
+                              r->value, r->width, false);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_texture_start_rollback(gconstpointer selection)
+{
+    const TexturePlaneStart *r =
+        &texture_plane_starts[GPOINTER_TO_UINT(selection)];
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-texture-rollback-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = texture_start_machine();
+
+    for (unsigned failure = 0; failure < 11; failure++) {
+        TextureStartSnapshot programmed;
+        Shape c = texture_start_prepare(s);
+        uint64_t value;
+
+        switch (failure) {
+        case 0:
+            break;
+        case 1:
+            qtest_writeq(s, RE + 0x1600 + (93 / 4) * 8, 0);
+            break;
+        case 2:
+            qtest_writeq(s, RE + 0x1600 + (93 / 4) * 8,
+                         UINT64_C(0xffff) << 32);
+            break;
+        case 3:
+            /* Two valid taps precede the first unavailable source tile. */
+            texture_constant(s);
+            qtest_writeq(s, DE + 0x118, texture_format(8, 0));
+            qtest_writel(s, DE + 0x110, (2U << 20) | (2U << 18) |
+                         (2U << 14) | (8U << 10) |
+                         (2U << 4) | (2U << 2) | 3U);
+            qtest_writeq(s, DE + 0x120, (UINT64_C(765) << 34) + 0x800);
+            qtest_writeq(s, DE + 0x138, UINT64_C(1) << 35);
+            qtest_writeq(s, RE + 0x1600 + (80 / 4) * 8,
+                         UINT64_C(0x800a) << 48);
+            qtest_writel(s, 0xa01f8, 0x2371b9d5);
+            qtest_writel(s, 0xa01fc, 0x91b3d5f7);
+            break;
+        case 4:
+            tile(s, 0, 0, 0x7fff);
+            break;
+        case 5: {
+            const int vertices[3][2] = {
+                {8128, 64}, {8384, 64}, {8128, 320},
+            };
+            c.x = 126;
+            map_region(s, 0, 4, 126, 0, 133, 7);
+            shape_memory(s, &c, NULL);
+            triangle_vertices(s, vertices, NULL, true);
+            tile(s, 0, 1, 0x7fff);
+            break;
+        }
+        case 6:
+            c = gl_line_prepare(s, false);
+            texture_two_by_two(s);
+            qtest_writel(s, DE + 0x18,
+                         qtest_readl(s, DE + 0x18) | 0x8000);
+            break;
+        case 7:
+            qtest_writeq(s, DE + 0x118, texture_format(1, 1) ^ 1);
+            break;
+        case 8:
+            texture_constant(s);
+            qtest_writel(s, DE + 0x130, 0x60000800);
+            qtest_writel(s, DE + 0x158, 0xe0000000);
+            break;
+        case 9:
+            qtest_writel(s, DE + 0x18,
+                         TRIANGLE_DRAW | 0x8000 | 0x200 | 0x80);
+            qtest_writel(s, DE + 0x1b8, 0);
+            qtest_writeq(s, RE + 0x1600 + (93 / 4) * 8, 0);
+            break;
+        case 10:
+            qtest_writel(s, DE + 0x18,
+                         TRIANGLE_DRAW | 0x8000 | 0x100000);
+            qtest_writeq(s, DE + 0x48, bounds(0, 0, 0, 0));
+            qtest_writel(s, DE + 0x110, 0);
+            break;
+        }
+        texture_start_snapshot(s, path, &programmed);
+        value = programmed.words[192 + r->offset / 4];
+        if (!failure) {
+            value = texture_start_invalid(r);
+        } else {
+            g_assert_cmpint(memtx_write(s, DE + r->offset, value ^ 0x1000,
+                                        r->width), ==, MEMTX_OK);
+        }
+        g_test_message("plane 0x%x failure %u", r->offset, failure);
+        texture_start_failure(s, &c, path, DE + 0x800 + r->offset,
+                              value, r->width, false);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_texture_start_aliases(void)
+{
+    const int vertices[3][2] = { {0, 8064}, {256, 8064}, {0, 8320} };
+    const uint8_t rows[8] = {15, 7, 3, 1};
+    QTestState *s = texture_start_machine();
+
+    for (unsigned i = 0; i < ARRAY_SIZE(texture_plane_starts); i++) {
+        const TexturePlaneStart *r = &texture_plane_starts[i];
+        Shape c = triangle_prepare(s, 0, 0, 126);
+        uint32_t expected[64];
+        uint32_t uploaded = 0x31a7d95b;
+        uint32_t second = texture_environment(2, 2, 0, uploaded);
+
+        triangle_vertices(s, vertices, NULL, true);
+        texture_constant(s);
+        qtest_writeq(s, RE + 0x1600 + (93 / 4) * 8,
+                     UINT64_C(0x8003) << 32);
+        qtest_writel(s, DE + 0x110, (2U << 20) | (2U << 18) |
+                     (10U << 14) | (2U << 4) | (2U << 2));
+        qtest_writel(s, DE + 0xd0, TRIANGLE_COLOR);
+        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000 | 0x200);
+        qtest_writel(s, DE + 0x1b0, 6);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset, r->value,
+                                    r->width), ==, MEMTX_OK);
+        triangle_pixels(s, &c, rows,
+            texture_environment(2, 2, 0, c.old), 6, UINT32_MAX);
+        texture_start_pixels(s, &c, expected);
+        qtest_writel(s, 0x3fc00, uploaded);
+        expected[0] = uploaded;
+        qtest_readl(s, STATUS);
+        qtest_writel(s, DE + 0x1f0, 0);
+        shape_memory(s, &c, expected);
+        for (unsigned y = 0; y < 8; y++) {
+            for (unsigned x = 0; x < 8; x++) {
+                if (rows[y] & (1U << x)) {
+                    expected[8 * y + x] ^= second;
+                }
+            }
+        }
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset, r->value,
+                                    r->width), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+}
+
+static void test_texture_start_profiles(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        QTestState *s = start_profile(legacy ? "legacy-software" : "1.5",
+                                      false, !legacy, "");
+        for (unsigned i = 0; i < ARRAY_SIZE(texture_plane_starts); i++) {
+            const TexturePlaneStart *r = &texture_plane_starts[i];
+            g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset,
+                                        r->value, r->width), !=, MEMTX_OK);
+        }
+        qtest_quit(s);
+    }
+}
+
 static void test_shade_start_family(void)
 {
     g_autofree char *dir = g_dir_make_tmp("crime-shade-start-XXXXXX", NULL);
@@ -14800,5 +15276,52 @@ int main(int argc, char **argv)
     add_case("sgi/crime/render/texture/border-components",
              test_texture_border_components);
     add_case("sgi/crime/render/texture/height-one", test_texture_height_one);
+    add_case("sgi/crime/render/texture-start/q", test_texture_start_q);
+    add_case("sgi/crime/render/texture-start/matrix",
+             test_texture_start_matrix);
+    add_case("sgi/crime/render/texture-start/unlisted",
+             test_texture_start_unlisted);
+    add_case("sgi/crime/render/texture-start/inactive",
+             test_texture_start_inactive);
+    add_data_case("sgi/crime/render/texture-start/widths/0",
+                  GUINT_TO_POINTER(0), test_texture_start_widths);
+    add_data_case("sgi/crime/render/texture-start/widths/1",
+                  GUINT_TO_POINTER(1), test_texture_start_widths);
+    add_data_case("sgi/crime/render/texture-start/widths/2",
+                  GUINT_TO_POINTER(2), test_texture_start_widths);
+    add_data_case("sgi/crime/render/texture-start/widths/3",
+                  GUINT_TO_POINTER(3), test_texture_start_widths);
+    add_data_case("sgi/crime/render/texture-start/widths/4",
+                  GUINT_TO_POINTER(4), test_texture_start_widths);
+    add_data_case("sgi/crime/render/texture-start/widths/5",
+                  GUINT_TO_POINTER(5), test_texture_start_widths);
+    add_data_case("sgi/crime/render/texture-start/widths/6",
+                  GUINT_TO_POINTER(6), test_texture_start_widths);
+    add_data_case("sgi/crime/render/texture-start/widths/7",
+                  GUINT_TO_POINTER(7), test_texture_start_widths);
+    add_data_case("sgi/crime/render/texture-start/widths/8",
+                  GUINT_TO_POINTER(8), test_texture_start_widths);
+    add_case("sgi/crime/render/texture-start/aliases",
+             test_texture_start_aliases);
+    add_case("sgi/crime/render/texture-start/profiles",
+             test_texture_start_profiles);
+    add_data_case("sgi/crime/render/texture-start/rollback/0",
+                  GUINT_TO_POINTER(0), test_texture_start_rollback);
+    add_data_case("sgi/crime/render/texture-start/rollback/1",
+                  GUINT_TO_POINTER(1), test_texture_start_rollback);
+    add_data_case("sgi/crime/render/texture-start/rollback/2",
+                  GUINT_TO_POINTER(2), test_texture_start_rollback);
+    add_data_case("sgi/crime/render/texture-start/rollback/3",
+                  GUINT_TO_POINTER(3), test_texture_start_rollback);
+    add_data_case("sgi/crime/render/texture-start/rollback/4",
+                  GUINT_TO_POINTER(4), test_texture_start_rollback);
+    add_data_case("sgi/crime/render/texture-start/rollback/5",
+                  GUINT_TO_POINTER(5), test_texture_start_rollback);
+    add_data_case("sgi/crime/render/texture-start/rollback/6",
+                  GUINT_TO_POINTER(6), test_texture_start_rollback);
+    add_data_case("sgi/crime/render/texture-start/rollback/7",
+                  GUINT_TO_POINTER(7), test_texture_start_rollback);
+    add_data_case("sgi/crime/render/texture-start/rollback/8",
+                  GUINT_TO_POINTER(8), test_texture_start_rollback);
     return g_test_run();
 }
