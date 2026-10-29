@@ -220,12 +220,29 @@
 #define ODSY_INT_DEST_WIDGET_BITS 4
 
 /*
- * The driver's six-write memory-reset sequence, the first before any
- * identity read: established as driver behaviour from the shipped kernel, its
- * effect on hardware is unknown. The model accepts and logs each write rather
- * than modeling a reset.
+ * +0x1004, the memory controller configuration. ESTABLISHED as the IRIX
+ * kernel's reset: it writes bits 22:19 the widget master id first, then
+ * bit 2 four banks, bit 1 CAS latency 2 and bits 4:3 the size (0, 1, 2 for
+ * 32, 64, 128 MB) from the strap word at +0x106c, then clears, sets and
+ * clears bit 5 and sets bit 8, 400 us apart. No kernel object reads it
+ * back. INFERRED: an SDRAM controller set-up with an initialisation pulse
+ * on bit 5 and an enable on bit 8. The model has no SDRAM controller: it
+ * stores the word, reports the first write, and reports as a guest error
+ * a size, bank or latency field that disagrees with the strap it answers.
  */
-#define ODSY_RESET_CONTROL 0x1004
+#define ODSY_MEMORY_CONTROL 0x1004
+#define ODSY_MEMORY_CONTROL_LATENCY_2 (1u << 1)
+#define ODSY_MEMORY_CONTROL_FOUR_BANKS (1u << 2)
+#define ODSY_MEMORY_CONTROL_SIZE_SHIFT 3
+#define ODSY_MEMORY_CONTROL_SIZE_MASK 0x3
+
+/*
+ * +0x100c, the low-level reset: the IP30 kernel pulses it 0x200 for 1 s or
+ * 0x16d for 200 ms by host chip revision, the IP35 kernel 0x200 only, then
+ * writes 0 (ESTABLISHED). Its effect on the board is UNKNOWN; the model
+ * accepts and logs each write rather than modeling a reset.
+ */
+#define ODSY_RESET_CONTROL 0x100c
 
 /*
  * The flag interrupt's registers, as the shipped IRIX 6.5.30 kernel uses them
@@ -2406,6 +2423,7 @@ static int64_t odyssey_reg(hwaddr addr, unsigned size)
     case ODSY_CTX_SHADOW_ADDR_UPPER:
     case ODSY_CTX_SHADOW_ADDR_LOWER:
     case ODSY_RESET_CONTROL:
+    case ODSY_MEMORY_CONTROL:
     case ODSY_BACKEND_VERSION:
         return addr;
     default:
@@ -2829,6 +2847,35 @@ static bool odyssey_backend_ctl_read(SGIOdysseyState *s, hwaddr addr,
     return true;
 }
 
+/* +0x1004 (ODSY_MEMORY_CONTROL): kept, and checked against the strap. */
+static void odyssey_memory_control(SGIOdysseyState *s, uint32_t value)
+{
+    uint32_t strap = s->memory_config;
+    uint32_t size = (value >> ODSY_MEMORY_CONTROL_SIZE_SHIFT) &
+                    ODSY_MEMORY_CONTROL_SIZE_MASK;
+
+    s->memory_control = value;
+    if (!s->memory_control_reported) {
+        s->memory_control_reported = true;
+        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: memory controller "
+                      "configuration 0x%x stored; the controller is not "
+                      "modeled\n", value);
+    }
+    /* The master id goes in first, with the strap fields still zero. */
+    if (!(value & ~(0xfu << 19))) {
+        return;
+    }
+    if (size != strap >> ODSY_CONFIG_SIZE_SHIFT ||
+        !!(value & ODSY_MEMORY_CONTROL_FOUR_BANKS) !=
+        !!(strap & ODSY_CONFIG_FOUR_BANKS) ||
+        !!(value & ODSY_MEMORY_CONTROL_LATENCY_2) !=
+        !!(strap & ODSY_CONFIG_LATENCY_2)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: memory controller "
+                      "configuration 0x%x disagrees with the strap word "
+                      "0x%x\n", value, strap);
+    }
+}
+
 static uint32_t odyssey_i2c_status(uint32_t command)
 {
     return ODSY_I2C_STATUS_READY | (command != 0 ? ODSY_I2C_STATUS_DONE : 0);
@@ -2960,6 +3007,7 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
     case ODSY_CTX_SHADOW_ADDR_UPPER:
     case ODSY_CTX_SHADOW_ADDR_LOWER:
     case ODSY_RESET_CONTROL:
+    case ODSY_MEMORY_CONTROL:
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: read of the write-only "
                       "register at 0x%" HWADDR_PRIx "\n", addr);
         break;
@@ -12391,10 +12439,13 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
         odyssey_update_irq(s);
         break;
     case ODSY_RESET_CONTROL:
-        /* The driver's six-write reset sequence; see the define's comment. */
+        /* The kernel's reset pulse; see the define's comment. */
         qemu_log_mask(LOG_UNIMP, "sgi-odyssey: write of 0x%" PRIx64
                       " to the reset control register accepted; its effect "
                       "is unknown\n", value);
+        break;
+    case ODSY_MEMORY_CONTROL:
+        odyssey_memory_control(s, value);
         break;
     case ODSY_FLCTL_CONFIG:
         s->flctl_config = value;
@@ -13098,6 +13149,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
      */
     s->interrupt_asserted = false;
     s->flctl_config = ODSY_FLCTL_CONFIG_RESET;
+    s->memory_control = 0;
     s->flctl_target = 0;
     memset(s->fifo_setup, 0, sizeof(s->fifo_setup));
     s->sw_token = 0;
@@ -14461,8 +14513,8 @@ static int odyssey_work_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 51,
-    .minimum_version_id = 51,
+    .version_id = 52,
+    .minimum_version_id = 52,
     .pre_save = odyssey_work_pre_save,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -14475,6 +14527,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32(intr_flags, SGIOdysseyState),
         VMSTATE_UINT32(intr_enable, SGIOdysseyState),
         VMSTATE_UINT32(flctl_config, SGIOdysseyState),
+        VMSTATE_UINT32(memory_control, SGIOdysseyState),
         VMSTATE_UINT32(flctl_target, SGIOdysseyState),
         VMSTATE_UINT32_ARRAY(fifo_setup, SGIOdysseyState, 5),
         VMSTATE_UINT32(sw_token, SGIOdysseyState),

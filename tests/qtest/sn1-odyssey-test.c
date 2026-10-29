@@ -43,7 +43,8 @@
 #define ODSY_INT_DEST_UPPER 0x0034
 #define ODSY_INT_DEST_LOWER 0x003c
 #define ODSY_ERROR_COMMAND 0x0044
-#define ODSY_RESET_CONTROL 0x1004
+#define ODSY_RESET_CONTROL 0x100c
+#define ODSY_MEMORY_CONTROL 0x1004
 #define ODSY_INTR_FLAGS 0x1014
 #define ODSY_INTR_CLEAR 0x101c
 #define ODSY_INTR_ENABLE_SET 0x1034
@@ -1109,15 +1110,24 @@ static void test_v12_profile_memory_word_bits(void)
 }
 
 /*
- * The driver's six-write memory-reset sequence. Each write is accepted and
- * logged by name under -d unimp, rather than falling through to the generic
- * "not modeled" message, and the board keeps answering identity afterwards: the
- * model does not reset anything real, it only stops pretending the register
- * does not exist.
+ * The kernel's reset: a pulse on +0x100c (0x200 or 0x16d, then 0), then
+ * the memory controller set-up on +0x1004: the widget master id in bits
+ * 22:19, then the strap's size (bits 4:3), four-bank (bit 2) and CAS
+ * latency 2 (bit 1) fields, then bit 5 cleared, set and cleared and bit 8
+ * set. Each register is accepted and logged by name under -d unimp rather
+ * than falling through to the generic "not modeled" message, the board
+ * keeps answering identity, and a set-up that agrees with the strap word
+ * (the default V12 profile: 128 MB, four banks, CAS latency 3) raises no
+ * mismatch; one that disagrees is reported.
  */
-static void test_reset_control_accepts_six_writes(void)
+static void test_reset_and_memory_control_writes(void)
 {
-    static const uint32_t sequence[] = { 1, 0, 1, 0, 1, 0 };
+    static const uint32_t sequence[] = { 0x200, 0, 0x16d, 0 };
+    const uint32_t master = 0xb << 19;
+    const uint32_t fields = master | 2 << 3 | 1 << 2;
+    const uint32_t setup[] = {
+        master, fields, fields | 1 << 5, fields, fields | 1 << 8,
+    };
     g_autofree char *log_path = NULL;
     g_autoptr(GError) error = NULL;
     g_autofree char *log = NULL;
@@ -1131,19 +1141,32 @@ static void test_reset_control_accepts_six_writes(void)
     g_assert_cmpint(close(fd), ==, 0);
 
     quoted = g_shell_quote(log_path);
-    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    extra = g_strdup_printf(" -d unimp,guest_errors -D %s", quoted);
     qts = board_start(extra);
 
     for (size_t i = 0; i < ARRAY_SIZE(sequence); i++) {
         reg_write(qts, ODSY_RESET_CONTROL, sequence[i]);
     }
+    for (size_t i = 0; i < ARRAY_SIZE(setup); i++) {
+        reg_write(qts, ODSY_MEMORY_CONTROL, setup[i]);
+    }
     g_assert_cmphex(reg_read(qts, ODSY_IDENTITY), ==, IDENTITY_DEFAULT);
+    g_assert_cmphex(reg_read(qts, ODSY_MEMORY_CONFIG) & 0xf0000000, ==,
+                    0xa0000000);
+    /* 64 MB against the 128 MB strap. */
+    reg_write(qts, ODSY_MEMORY_CONTROL, master | 1 << 3 | 1 << 2);
     board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
     g_assert_null(strstr(log, "0x1004 is not modeled"));
+    g_assert_null(strstr(log, "0x100c is not modeled"));
     g_assert_nonnull(strstr(log, "reset control register accepted"));
+    g_assert_nonnull(strstr(log, "memory controller configuration 0x580000 "
+                                 "stored"));
+    g_assert_null(strstr(log, "configuration 0x58001"));
+    g_assert_nonnull(strstr(log, "configuration 0x58000c disagrees with the "
+                                 "strap word"));
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
@@ -22916,8 +22939,8 @@ int main(int argc, char **argv)
                    test_profile_selects_identity_and_memory);
     add_fresh_case("sn1/odyssey/v12-profile-memory-word-bits",
                    test_v12_profile_memory_word_bits);
-    add_fresh_case("sn1/odyssey/reset-control-accepts-six-writes",
-                   test_reset_control_accepts_six_writes);
+    add_fresh_case("sn1/odyssey/reset-and-memory-control-writes",
+                   test_reset_and_memory_control_writes);
     add_fresh_case("sn1/odyssey/backend-version-is-pinned",
                    test_backend_version_is_pinned);
     add_fresh_case("sn1/odyssey/board-memory-bound-is-a-guest-error",
