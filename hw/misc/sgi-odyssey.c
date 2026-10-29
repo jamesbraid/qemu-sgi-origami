@@ -804,11 +804,12 @@ static unsigned odyssey_cmd_arity(uint32_t word)
 #define ODSY_REG_PIXEL_MODE_EXT 0x1453   /* 5 operands: glyph pixel setup */
 
 /*
- * A plain 1-operand register, seen with operand 0x00120000, immediately
- * ahead of the real copy-rect trigger below and ahead of the X module's
- * pixel-readback sequence too. Its own meaning is not established beyond
- * arity; only ODSY_CMD_COPY_RECT_TRIGGER, not this register, used to be
- * mistaken for the blit entry point (see that constant's comment).
+ * Block 0x258 with one operand, 0x00120000: sent ahead of the X server's
+ * rectangle copy, ahead of every kernel DMA request and between DMA
+ * operations (ESTABLISHED as the senders). Its meaning is UNKNOWN; the
+ * model accepts it without effect. Only ODSY_CMD_COPY_RECT_TRIGGER, not
+ * this block, used to be mistaken for the blit entry point (see that
+ * constant's comment).
  */
 #define ODSY_REG_BLIT_PREFIX 0x0658
 
