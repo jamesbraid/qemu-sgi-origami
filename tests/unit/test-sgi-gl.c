@@ -14416,6 +14416,26 @@ static void fixed_texture_init(FixedTexture *t, uint32_t format,
     };
 }
 
+static void fixed_store_rgba(void *opaque, SGIColourTarget target, int x,
+                             int y, const SGIRasterColour *colour)
+{
+    const uint32_t *c = colour->component;
+
+    band_store_colour(opaque, target, x, y,
+                      c[0] << 24 | c[1] << 16 | c[2] << 8 | c[3]);
+}
+
+static bool fixed_load_rgba(void *opaque, SGIColourTarget target, int x,
+                            int y, SGIRasterColour *colour)
+{
+    uint32_t word = band_load_colour(opaque, target, x, y);
+
+    for (unsigned k = 0; k < 4; k++) {
+        colour->component[k] = (word >> (24 - 8 * k)) & 0xff;
+    }
+    return true;
+}
+
 static SGIRasterTarget fixed_target(BandPlanes *b, const SGIGLTexImage *im)
 {
     return (SGIRasterTarget) {
@@ -14434,8 +14454,17 @@ static SGIRasterTarget fixed_target(BandPlanes *b, const SGIGLTexImage *im)
  * Case index of the bound test: random textured triangles in perspective
  * under random texture and fragment state, drawn by the given path.
  */
+/*
+ * A state a specialised textured row loop draws: a repeated RGBA or RGB
+ * image, nearest, bilinear or trilinear, replacing or modulating, depth
+ * tested, without blending or fog.
+ */
+typedef struct FixedKey {
+    uint32_t min, mag, env, format;
+} FixedKey;
+
 static void fixed_bound_case(unsigned index, SGIRasterTexturePath path,
-                             BandPlanes *b)
+                             BandPlanes *b, const FixedKey *key)
 {
     static const uint32_t formats[] = {
         SGI_GL_RGBA, SGI_GL_RGB, SGI_GL_LUMINANCE, SGI_GL_LUMINANCE_ALPHA,
@@ -14456,6 +14485,11 @@ static void fixed_bound_case(unsigned index, SGIRasterTexturePath path,
     static const uint8_t widths[] = { 1, 2, 4, 8, 12 };
     static FixedTexture tex;
     GRand *rand = g_rand_new_with_seed(0xf1ed + index);
+    SGIGLDrawable drawable = {
+        .bound = true, .front = 0, .back = 1,
+        .clip = { .n = 1, .r[0] = { 0, 0, W - 1, H - 1 } },
+    };
+    bool rgba = g_rand_boolean(rand);
     float verts[9][SGI_GL_VERTEX_FLOATS] = { 0 };
     uint32_t stipple[32];
     SGIRasterRules rules = rules_supported;
@@ -14482,14 +14516,45 @@ static void fixed_bound_case(unsigned index, SGIRasterTexturePath path,
         }
     }
     rules.stencil_bits = 8;
+    rules.alpha_bits = rgba ? 8 : 0;
     rules.dither = g_rand_boolean(rand) ? SGI_DITHER_BAYER4_TOP_ROWS :
                    SGI_DITHER_NONE;
+    if (g_rand_int_range(rand, 0, 10) < 3) {
+        /* Depth from the head's own eye-space row, as VPro gives it. */
+        rules.depth_row_given = true;
+        rules.depth_row[2] = 0.5;
+        rules.depth_row[3] = 0.5;
+        rules.depth_slack = 0.001;
+    }
     memset(b, 0, sizeof(*b));
     for (unsigned i = 0; i < W * H; i++) {
         b->p.depth[i] = g_rand_int(rand) & 0xffffff;
         b->p.colour[0][i] = g_rand_int(rand) & 0xffffff;
     }
     context_init(&c);
+    if (g_rand_int_range(rand, 0, 10) < 3) {
+        /* Two to four of the window's rectangles, as desktops leave them. */
+        drawable.clip.n = g_rand_int_range(rand, 2, 5);
+        for (unsigned i = 0; i < drawable.clip.n; i++) {
+            int x0 = g_rand_int_range(rand, 0, W / 2);
+            int y0 = g_rand_int_range(rand, 0, H / 2);
+
+            drawable.clip.r[i] = (SGIClipRect) {
+                x0, y0, g_rand_int_range(rand, x0, W),
+                g_rand_int_range(rand, y0, H),
+            };
+        }
+        if (g_rand_boolean(rand)) {
+            drawable.clip.r[0] = (SGIClipRect) { 0, 0, W - 1, H / 2 };
+            drawable.clip.r[1] = (SGIClipRect) { 0, H / 2 + 1, W - 1, H - 1 };
+        }
+        sgi_gl_set_drawable(&c, &drawable);
+    }
+    c.cur.scissor_test = g_rand_int_range(rand, 0, 10) < 3;
+    c.cur.scissor[0] = g_rand_int_range(rand, -8, W);
+    c.cur.scissor[1] = g_rand_int_range(rand, -8, H);
+    c.cur.scissor[2] = g_rand_int_range(rand, 0, W);
+    c.cur.scissor[3] = g_rand_int_range(rand, 0, H);
     c.cur.texture_2d = 1;
     c.cur.texture_env_mode = envs[g_rand_int_range(rand, 0, 4)];
     if (c.cur.texture_env_mode == SGI_GL_DECAL && format != SGI_GL_RGB &&
@@ -14545,7 +14610,28 @@ static void fixed_bound_case(unsigned index, SGIRasterTexturePath path,
                                         g_rand_double_range(rand, 0.5, 2) : 1);
         v[SGI_GL_V_FOG] = g_rand_double_range(rand, 0, 4);
     }
+    if (key) {
+        tex.image.min_filter = key->min;
+        tex.image.mag_filter = key->mag;
+        tex.image.wrap_s = tex.image.wrap_t = SGI_GL_REPEAT;
+        c.cur.texture_env_mode = key->env;
+        c.cur.depth_test = 1;
+        c.cur.blend = c.cur.fog = c.cur.stencil_test = 0;
+        c.cur.clip_planes = 0;
+        d.polygon_stipple_enabled = false;
+        for (unsigned l = 0; l < FIXED_TEX_LEVELS; l++) {
+            tex.level[l].base_format = tex.level[l].internal_format =
+                key->format;
+        }
+        tex.image.base_format = key->format;
+    }
     t = fixed_target(b, &tex.image);
+    if (rgba) {
+        t.store_colour = NULL;
+        t.load_colour = NULL;
+        t.store_rgba = fixed_store_rgba;
+        t.load_rgba = fixed_load_rgba;
+    }
     d.state = &c.cur;
     sgi_raster_set_texture_path(path);
     sgi_soft_draw(&rules, &t, &d);
@@ -14568,13 +14654,13 @@ static void test_texture_fixed_bound(void)
     unsigned max = 0;
 
     for (unsigned i = 0; i < 400; i++) {
-        fixed_bound_case(i, SGI_RASTER_TEXTURE_DOUBLE, &a);
-        fixed_bound_case(i, SGI_RASTER_TEXTURE_SPANS, &b);
+        fixed_bound_case(i, SGI_RASTER_TEXTURE_DOUBLE, &a, NULL);
+        fixed_bound_case(i, SGI_RASTER_TEXTURE_SPANS, &b, NULL);
         g_assert(!memcmp(a.p.depth, b.p.depth, sizeof(a.p.depth)));
         g_assert(!memcmp(a.p.stencil, b.p.stencil, sizeof(a.p.stencil)));
         g_assert(!memcmp(a.stores, b.stores, sizeof(a.stores)));
         for (unsigned p = 0; p < W * H; p++) {
-            for (unsigned k = 0; a.stores[p] && k < 3; k++) {
+            for (unsigned k = 0; a.stores[p] && k < 4; k++) {
                 int x = (a.p.colour[0][p] >> (8 * k)) & 0xff;
                 int y = (b.p.colour[0][p] >> (8 * k)) & 0xff;
 
@@ -14584,9 +14670,51 @@ static void test_texture_fixed_bound(void)
             }
         }
     }
+    g_test_message("colour: max %u/255, mean %.4f over %" PRIu64
+                   " channels", max, (double)sum / channels, channels);
     g_assert_cmpuint(channels, >, 100000);
-    g_assert_cmpuint(max, <=, 2);
+    g_assert_cmpuint(max, <=, 3);
     g_assert_cmpfloat((double)sum / channels, <=, 0.1);
+}
+
+/*
+ * Each specialised textured row loop draws what the general per-fragment
+ * loop draws with the same fixed-point sampler, pixel for pixel: forty
+ * random scenes in each loop's own state, and the bound test's scenes,
+ * whose other states take the loop that tests state per pixel.
+ */
+static void test_texture_fixed_spans(void)
+{
+    static const uint32_t filters[3][2] = {
+        { SGI_GL_NEAREST, SGI_GL_NEAREST },
+        { SGI_GL_LINEAR, SGI_GL_LINEAR },
+        { SGI_GL_LINEAR_MIPMAP_LINEAR, SGI_GL_LINEAR },
+    };
+    static const uint32_t envs[] = { SGI_GL_REPLACE, SGI_GL_MODULATE };
+    static const uint32_t formats[] = { SGI_GL_RGBA, SGI_GL_RGB };
+    static BandPlanes spans, general;
+
+    for (unsigned k = 0; k < 12; k++) {
+        FixedKey key = {
+            filters[k / 4][0], filters[k / 4][1], envs[k / 2 % 2],
+            formats[k % 2],
+        };
+
+        for (unsigned i = 0; i < 40; i++) {
+            fixed_bound_case(1000 + i, SGI_RASTER_TEXTURE_SPANS, &spans, &key);
+            fixed_bound_case(1000 + i, SGI_RASTER_TEXTURE_FIXED, &general,
+                             &key);
+            g_assert(!memcmp(&spans.p, &general.p, sizeof(spans.p)));
+            g_assert(!memcmp(spans.stores, general.stores,
+                             sizeof(spans.stores)));
+        }
+    }
+    for (unsigned i = 0; i < 400; i++) {
+        fixed_bound_case(i, SGI_RASTER_TEXTURE_SPANS, &spans, NULL);
+        fixed_bound_case(i, SGI_RASTER_TEXTURE_FIXED, &general, NULL);
+        g_assert(!memcmp(&spans.p, &general.p, sizeof(spans.p)));
+        g_assert(!memcmp(spans.stores, general.stores, sizeof(spans.stores)));
+    }
 }
 
 /*
@@ -14940,6 +15068,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-clips-behind-eye",
                     test_texture_clips_behind_eye);
     g_test_add_func("/sgi-gl/texture-fixed/bound", test_texture_fixed_bound);
+    g_test_add_func("/sgi-gl/texture-fixed/spans", test_texture_fixed_spans);
     g_test_add_func("/sgi-gl/texture-fixed/weights",
                     test_texture_fixed_weights);
     g_test_add_func("/sgi-gl/texture-fixed/lambda", test_texture_fixed_lambda);

@@ -1374,16 +1374,19 @@ static void corpus_case(unsigned index, uint64_t *planes, uint64_t *calls)
 /*
  * Draw each textured case of the corpus by the double-precision texture
  * path and by the default one, and compare their planes: colour where
- * either path wrote it, the rest exactly.
+ * either path wrote it, the rest exactly. The default path must also
+ * draw exactly what the general per-fragment loop draws with the same
+ * sampler, its specialised row loops aside.
  */
 static void corpus_diff(unsigned count, bool verbose)
 {
     Diff all = { 0 };
-    unsigned textured = 0, inexact = 0;
+    unsigned textured = 0, inexact = 0, unlike = 0;
 
     for (unsigned i = 0; i < count; i++) {
         g_autofree Corpus *a = g_new0(Corpus, 1);
         g_autofree Corpus *b = g_new0(Corpus, 1);
+        g_autofree Corpus *g = g_new0(Corpus, 1);
         Diff diff = { 0 };
         bool exact;
 
@@ -1391,9 +1394,18 @@ static void corpus_diff(unsigned count, bool verbose)
         if (!corpus_draw(i, a)) {
             continue;
         }
+        sgi_raster_set_texture_path(SGI_RASTER_TEXTURE_FIXED);
+        corpus_draw(i, g);
         sgi_raster_set_texture_path(SGI_RASTER_TEXTURE_SPANS);
         corpus_draw(i, b);
         textured++;
+        if (memcmp(b->colour, g->colour, sizeof(b->colour)) ||
+            memcmp(b->depth, g->depth, sizeof(b->depth)) ||
+            memcmp(b->stencil, g->stencil, sizeof(b->stencil)) ||
+            memcmp(b->written, g->written, sizeof(b->written))) {
+            printf("case %u: row loops and general loop differ\n", i);
+            unlike++;
+        }
         exact = !memcmp(a->depth, b->depth, sizeof(a->depth)) &&
                 !memcmp(a->stencil, b->stencil, sizeof(a->stencil)) &&
                 !memcmp(a->written, b->written, sizeof(a->written));
@@ -1417,8 +1429,9 @@ static void corpus_diff(unsigned count, bool verbose)
             diff_print("textured", &diff, exact);
         }
     }
-    printf("corpus %u cases, %u textured, %u inexact\n", count, textured,
-           inexact);
+    printf("corpus %u cases, %u textured, %u inexact, %u where row loops "
+           "differ from the general loop\n", count, textured, inexact,
+           unlike);
     diff_print("corpus", &all, !inexact);
 }
 
