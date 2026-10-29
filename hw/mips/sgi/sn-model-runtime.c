@@ -8,6 +8,7 @@
 #include "qapi/util.h"
 #include "qemu/cutils.h"
 #include "qemu/keyval.h"
+#include "qemu/option.h"
 #include "qobject/qdict.h"
 #include "hw/mips/sgi/sgi-machines.h"
 #include "hw/nvram/sgi-elsc-nvram.h"
@@ -1129,6 +1130,30 @@ static const char *sgi_model_offered_default(const SGIMachines *machines,
     return NULL;
 }
 
+/* keyval_parse() keeps the last value, so check repeated selectors first. */
+static bool sgi_model_check_variant_once(const char *options, Error **errp)
+{
+    const char *next = options;
+    bool seen = false;
+
+    while (*next) {
+        g_autofree char *field = NULL;
+
+        next = get_opt_value(next, &field);
+        if (g_str_has_prefix(field, "variant=")) {
+            if (seen) {
+                error_setg(errp, "variant must be specified only once");
+                return false;
+            }
+            seen = true;
+        }
+        if (*next) {
+            next++;
+        }
+    }
+    return true;
+}
+
 const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
                                                   const char *options,
                                                   Error **errp)
@@ -1137,7 +1162,7 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
     const SGIModelOfferingList *entry;
     const SGIModelTopology *chassis, *view;
     const QDictEntry *option;
-    const char *product, *name, *nodes_text, *processor;
+    const char *product, *name, *nodes_text, *processor, *variant;
     uint64_t nodes = 0;
 
     if (!args) {
@@ -1148,10 +1173,12 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
         const char *key = qdict_entry_key(option);
 
         if (!g_str_equal(key, "type") && !g_str_equal(key, "topology") &&
-            !g_str_equal(key, "nodes") && !g_str_equal(key, "processor")) {
+            !g_str_equal(key, "nodes") && !g_str_equal(key, "processor") &&
+            !g_str_equal(key, "variant")) {
             error_setg(errp, "machine option '%s' is not part of a "
                        "catalogue selection; give only the machine, "
-                       "topology=, nodes= and processor=", key);
+                       "topology=, nodes=, processor= or an offered variant=",
+                       key);
             return NULL;
         }
     }
@@ -1161,6 +1188,34 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
         return NULL;
     }
     name = qdict_get_try_str(args, "topology");
+    variant = qdict_get_try_str(args, "variant");
+    if (qdict_haskey(args, "variant")) {
+        if (!variant) {
+            error_setg(errp, "variant must be a string");
+            return NULL;
+        }
+        if (!sgi_model_check_variant_once(options, errp)) {
+            return NULL;
+        }
+        if (!g_str_equal(product, "o2")) {
+            error_setg(errp, "%s does not offer variant selection", product);
+            return NULL;
+        }
+        if (!g_str_equal(variant, "o2") && !g_str_equal(variant, "o2plus")) {
+            error_setg(errp, "o2 has no variant '%s'", variant);
+            return NULL;
+        }
+        if (qdict_haskey(args, "topology") && !name) {
+            error_setg(errp, "topology must be a string");
+            return NULL;
+        }
+        if (name && !g_str_equal(name, variant)) {
+            error_setg(errp, "variant '%s' conflicts with topology '%s'",
+                       variant, name);
+            return NULL;
+        }
+        name = variant;
+    }
     if (!name) {
         name = sgi_model_offered_default(machines, product);
         if (!name) {
