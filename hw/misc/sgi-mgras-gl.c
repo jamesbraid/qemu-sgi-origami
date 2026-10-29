@@ -4923,6 +4923,19 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
     }
     mgras_gl_pixels_raster_zoom(s, px);
     uint64_t expected_words = DIV_ROUND_UP(px->w * px->bpp, 4);
+    /*
+     * A DMA draw at x zoom 0.5 or 2 keeps the unzoomed program, and its
+     * 0x8d20 counts the whole image's words, 0x40 for 16 by 4 pixels of
+     * four bytes, with the image as one DMA line and last word 0x98: the
+     * GL contract's x-zoom trace (established as the IRIX 6.5.30 client's
+     * words on a model run; bit 0 of the last word is unknown and not
+     * read). The discriminating test is gl-pixels-zoomed-dma-whole-image.
+     */
+    bool dma_whole_image = dma_only &&
+        !mgras_gl_pixels_has_routine(ge, MGRAS_GE_ROUTINE_ZOOM_Y) &&
+        !mgras_gl_pixels_has_routine(ge, MGRAS_GE_ROUTINE_ZOOM_XF) &&
+        px->format == MGRAS_GL_PIXELS_RGBA8 &&
+        row_words == expected_words * px->h;
 
     /*
      * Under the y-zoom and fractional-x writing routines 0x8d20 counts one
@@ -4937,7 +4950,7 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
     }
     if ((px->bpp > 4 && px->format != MGRAS_GL_PIXELS_FLOAT_RGB &&
          px->format != MGRAS_GL_PIXELS_FLOAT_RGBA) ||
-        (expected_words != row_words &&
+        (expected_words != row_words && !dma_whole_image &&
          (dma_only || px->format != MGRAS_GL_PIXELS_RGBA8 ||
          !mgras_gl_pixels_captured_inline_rgba_count(px->w, px->h,
                                                       row_words)) &&
