@@ -540,8 +540,12 @@
 #define ODSY_BACKEND_COUNT_MASK 0x3fff
 /*
  * A header word's tag, bits 29:28, always 0b11 in every observed record.
- * Bits 31:30 vary (the LUT ioctl paths set bit 30, init and the I2C engine
- * clear it) and carry no meaning this model needs, so they are ignored.
+ * Only header types 3 and 7 occur (ESTABLISHED as the kernel's and X
+ * server's headers): type 7, bit 30 set, carries the display-mode words,
+ * the cursor control word, X colour-map loads and a deferred cursor
+ * position; type 3 everything loaded at start-up or mode set. That bit 30
+ * asks for the write to take effect at the next vertical blank is
+ * INFERRED, weakly. MODEL CHOICE: both types take effect at once.
  */
 #define ODSY_BACKEND_TAG_SHIFT 28
 #define ODSY_BACKEND_TAG_MASK 0x3
