@@ -434,17 +434,15 @@ static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
         qdev_prop_set_uint16(parallel, "fifo-depth", 16);
     }
     /*
-     * Public IP30 wiring assigns GPIO2 as the read-only product input, which
-     * OpenBSD expects high on an Octane. A reference Octane2's PROM Command
-     * Monitor reads inputs 2 and 3 both high there, in the pin data register
-     * and in each pin register, so the Octane2 drives both high. The Octane's
-     * input 3 is unmeasured and left unwired.
+     * Inputs 2 and 3 read high. Public IP30 wiring assigns GPIO2 as a
+     * read-only product input and expects an Octane high, but an Octane2's
+     * PROM Command Monitor reads inputs 2 and 3 both high, in the pin data
+     * register and in each pin register. Nothing shows a pin differing by
+     * machine, so a classic Octane, whose inputs are unmeasured, is assumed
+     * to match. Pin 8 also reads high there and is not modelled here.
      */
-    uint32_t gpio_inputs = 1u << 2;
+    uint32_t gpio_inputs = (1u << 2) | (1u << 3);
 
-    if (!s->node->heart->gpio_classic) {
-        gpio_inputs |= 1u << 3;
-    }
     qdev_prop_set_uint32(DEVICE(pci), "gpio-input-mask", gpio_inputs);
     qdev_prop_set_uint32(DEVICE(pci), "gpio-input-values", gpio_inputs);
     qdev_prop_set_uint8(DEVICE(pci), "timekeeper-kind",
