@@ -416,8 +416,16 @@
 
 /*
  * Reset values a real Tezro V12's firmware diagnostics printed for a healthy
- * board: widget request timeout and flow-control configuration. The Buzz
- * registers above carry no such reference value, so they reset to zero.
+ * board: the widget request timeout. The Buzz registers above carry no such
+ * reference value, so they reset to zero.
+ *
+ * ODSY_FLCTL_CONFIG (+0x1070): neither IRIX kernel, the GL library nor the
+ * kernel's diagnostic requests access it at any width, and no 64-bit
+ * access spans it and +0x1074 (ESTABLISHED by search of the driver
+ * binaries). Its reset value 0x0001c000 has no recorded source. MODEL
+ * CHOICE: the model keeps it as a plain 32-bit read/write register with
+ * that reset value, for the BaseIO PROM diagnostic that reads it; the
+ * value is not hardware evidence.
  */
 #define ODSY_XT_REQ_TIMEOUT_RESET 0x000fffff
 #define ODSY_FLCTL_CONFIG_RESET 0x0001c000
@@ -455,20 +463,23 @@
 #define ODSY_CFIFO_LOW_WATER 16
 
 /*
- * 0x1074 bits 16:12: the HEART flow-control credit target number. The
- * IRIX IP30 kernel writes the number its shared flow-control code reports
- * for the board there when it attaches the board to flow control
- * (ESTABLISHED as the kernel's write). That the board addresses its
- * credit returns to that target is INFERRED from the name. Readback of
- * the whole word is INFERRED from the driver rewriting the field in place.
- * Limitation: the model stores the word and reads it back, but credits
- * still go to the node the "pi" link names, routed by widget number; the
- * HEART model has no graphics flow-control counters for a target to
- * select, so the target changes nothing, and the first write of one is
- * reported. The reset value is unknown; zero is the model's choice.
+ * 0x1074, flow-control attach. When the IRIX kernel attaches the board to
+ * flow control it stores the interrupt target shifted left 17, the HEART
+ * credit target number shifted left 12, 0xc8 and other low bits; later
+ * writes change the credit field in a kept copy and store the whole word
+ * again. Every access is a 32-bit store and none reads it back
+ * (ESTABLISHED as the IP30 and IP35 kernels' accesses). That the board
+ * addresses its credit returns and interrupts to those targets is
+ * INFERRED from the names. Limitation: the model stores the word, and
+ * answers a read with it as a model choice, but credits still go to the
+ * node the "pi" link names, routed by widget number; the HEART model has
+ * no graphics flow-control counters for a target to select, so the
+ * targets change nothing, and the first write of one is reported. The
+ * reset value is unknown; zero is the model's choice.
  */
 #define ODSY_FLCTL_TARGET_SHIFT 12
 #define ODSY_FLCTL_TARGET_MASK 0x1f
+#define ODSY_FLCTL_INTR_TARGET_SHIFT 17
 
 /*
  * FIFO set-up registers. The IRIX IP30 kernel's command-FIFO set-up stores
@@ -12355,9 +12366,10 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
         s->flctl_target = value;
         if (!s->flctl_target_reported) {
             s->flctl_target_reported = true;
-            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: flow-control credit "
-                          "target %u stored; credits still return through "
-                          "the node interface\n",
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: flow-control interrupt "
+                          "target %u and credit target %u stored; credits "
+                          "still return through the node interface\n",
+                          (uint32_t)value >> ODSY_FLCTL_INTR_TARGET_SHIFT,
                           (uint32_t)(value >> ODSY_FLCTL_TARGET_SHIFT) &
                           ODSY_FLCTL_TARGET_MASK);
         }

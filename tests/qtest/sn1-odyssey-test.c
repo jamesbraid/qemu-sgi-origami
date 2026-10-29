@@ -1739,10 +1739,12 @@ static void test_flag_interrupt_uses_routed_vector(void)
 }
 
 /*
- * 0x1074 bits 16:12 take the HEART flow-control credit target number when
- * the IP30 kernel attaches the board to flow control. The model stores
- * the word and reads it back; the target changes neither the FIFO status
- * nor the low-water mark.
+ * At flow-control attach the kernel stores the interrupt target shifted
+ * left 17, the HEART credit target number shifted left 12 and 0xc8 to
+ * 0x1074, then rewrites the credit field from its kept copy. The model
+ * stores the word and reads it back, a model choice since the kernel never
+ * reads it; the targets change neither the FIFO status nor the low-water
+ * mark, and 0x1070 keeps its own reset value.
  */
 static void test_flow_control_credit_target(void)
 {
@@ -1755,6 +1757,12 @@ static void test_flow_control_credit_target(void)
     g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10030000);
     reg_write(qts, ODSY_FLCTL_TARGET, 0x00005000);
     g_assert_cmphex(reg_read(qts, ODSY_FLCTL_TARGET), ==, 0x00005000);
+    reg_write(qts, ODSY_FLCTL_TARGET, 1u << 17 | 0x11u << 12 | 0xc8);
+    g_assert_cmphex(reg_read(qts, ODSY_FLCTL_TARGET), ==, 0x000310c8);
+    reg_write(qts, ODSY_FLCTL_TARGET, 1u << 17 | 0x0bu << 12 | 0xc8);
+    g_assert_cmphex(reg_read(qts, ODSY_FLCTL_TARGET), ==, 0x0002b0c8);
+    g_assert_cmphex(reg_read(qts, ODSY_FLCTL_CONFIG), ==, FLCTL_CONFIG_RESET);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10030000);
     board_quit(qts);
 }
 
