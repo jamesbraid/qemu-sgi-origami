@@ -598,6 +598,56 @@ static void test_packed_forms_frame(void)
 }
 
 /*
+ * The GL client's vector senders store two components at once with one
+ * 8-byte store, which need not fall on an 8-byte stream boundary:
+ * glRasterPos2sv sends 0xab and then x << 32 | y, glColor3fv a word
+ * selector, red and green as one 8-byte store and blue as a word. Each
+ * must mean what its word-store form means, so an 8-byte store is two
+ * words, the high (first in memory) word first (inferred: no source says
+ * how the host interface carries the wide store). Here every command is
+ * sent both ways, and once with an 8-byte store that ends one command
+ * and opens the next; each frames the same both times.
+ */
+static void test_doubleword_stores_are_two_words(void)
+{
+    const uint32_t x = 3, y = 0xfffffffe;
+    const uint32_t r = 0x3f000000, g = 0x3e800000, b = 0x3f800000;
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    /* glRasterPos2s, then glRasterPos2sv. */
+    kona_command(s, 0xab, (uint32_t[]){ x, y }, 2);
+    qtest_writel(s, REG_COMMAND, 0xab);
+    qtest_writeq(s, REG_COMMAND, (uint64_t)x << 32 | y);
+    /* glColor3f, then glColor3fv. */
+    kona_command(s, 0x63, (uint32_t[]){ r, g, b }, 3);
+    qtest_writel(s, REG_COMMAND, 0x63);
+    qtest_writeq(s, REG_COMMAND, (uint64_t)r << 32 | g);
+    qtest_writel(s, REG_COMMAND, b);
+    /* glColor3fv's blue and glEnd's selector share one store. */
+    qtest_writel(s, REG_COMMAND, 0x63);
+    qtest_writeq(s, REG_COMMAND, (uint64_t)r << 32 | g);
+    qtest_writeq(s, REG_COMMAND, (uint64_t)b << 32 | 0x71);
+    qtest_writel(s, REG_COMMAND, 0);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_cmpuint(count_occurrences(found, "token 0xab args 0x3 "
+                                       "0xfffffffe 0x0 argc 2\n"), ==, 2);
+    g_assert_cmpuint(count_occurrences(found, "token 0x63 args 0x3f000000 "
+                                       "0x3e800000 0x3f800000 argc 3\n"),
+                     ==, 3);
+    g_assert_cmpuint(count_occurrences(found, "token 0x71 args 0x0 0x0 0x0 "
+                                       "argc 1\n"), ==, 1);
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_kernel_command "),
+                     ==, MAKE_CURRENT_COMMANDS + 6);
+}
+
+/*
  * The textport's bitmap blit as the PROM sends it: the sync word 1, the
  * command 0xa, the six header words of an 8x1 bitmap and its one payload
  * word.
@@ -19576,6 +19626,8 @@ int main(int argc, char **argv)
              test_every_command_frames);
     add_case("sn0/origin2000/kona-3d/packed-forms-frame",
              test_packed_forms_frame);
+    add_case("sn0/origin2000/kona-3d/doubleword-stores-are-two-words",
+             test_doubleword_stores_are_two_words);
     add_case("sn0/origin2000/kona-3d/light-model-not-bitmap",
              test_light_model_not_bitmap);
     add_case("sn0/origin2000/kona-3d/migration-mid-data-run",
