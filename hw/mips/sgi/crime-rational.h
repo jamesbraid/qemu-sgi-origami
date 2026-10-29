@@ -211,10 +211,56 @@ static inline void crime_integer_divide(CrimeInteger *q, CrimeInteger *rem,
     *rem = remainder;
 }
 
+static inline uint64_t crime_gcd64(uint64_t a, uint64_t b)
+{
+    while (b) {
+        uint64_t r = a % b;
+        a = b;
+        b = r;
+    }
+    return a;
+}
+
+static inline Int128 crime_gcd128(Int128 a, Int128 b)
+{
+    while (int128_nz(b)) {
+        if (!(int128_gethi(a) | int128_gethi(b))) {
+            return int128_make64(crime_gcd64(int128_getlo(a), int128_getlo(b)));
+        }
+        Int128 r = int128_remu(a, b);
+        a = b;
+        b = r;
+    }
+    return a;
+}
+
 static inline CrimeInteger crime_integer_gcd(CrimeInteger a, CrimeInteger b)
 {
     CrimeInteger q, r;
-    while (crime_integer_bits(&b)) {
+    unsigned nb;
+
+    for (;;) {
+        nb = crime_integer_words(&b);
+        if (!nb) {
+            return a;
+        }
+        if (nb <= 4) {
+            unsigned na = crime_integer_words(&a);
+            if (na <= 2 && nb <= 2) {
+                uint64_t av = (uint64_t)a.word[1] << 32 | a.word[0];
+                uint64_t bv = (uint64_t)b.word[1] << 32 | b.word[0];
+                return crime_integer(crime_gcd64(av, bv));
+            }
+            if (na <= 4) {
+                Int128 av = int128_make128(
+                    (uint64_t)a.word[1] << 32 | a.word[0],
+                    (uint64_t)a.word[3] << 32 | a.word[2]);
+                Int128 bv = int128_make128(
+                    (uint64_t)b.word[1] << 32 | b.word[0],
+                    (uint64_t)b.word[3] << 32 | b.word[2]);
+                return crime_integer_from128(crime_gcd128(av, bv));
+            }
+        }
         crime_integer_divide(&q, &r, &a, &b);
         a = b;
         b = r;
@@ -287,10 +333,92 @@ static inline CrimeRational crime_rational(int64_t n, uint64_t d)
     return r;
 }
 
+static inline uint64_t crime_integer_low64(const CrimeInteger *a)
+{
+    return (uint64_t)a->word[1] << 32 | a->word[0];
+}
+
+static inline bool crime_rational_is64(const CrimeRational *a)
+{
+    return (a->denominator.word[0] | a->denominator.word[1]) &&
+           crime_integer_words(&a->numerator) <= 2 &&
+           crime_integer_words(&a->denominator) <= 2;
+}
+
+static inline Int128 crime_product64(uint64_t a, uint64_t b)
+{
+    uint64_t low, high;
+    mulu64(&low, &high, a, b);
+    return int128_make128(low, high);
+}
+
+static inline void crime_rational_multiply64(CrimeRational *r,
+                                             const CrimeRational *a,
+                                             const CrimeRational *b)
+{
+    uint64_t an = crime_integer_low64(&a->numerator);
+    uint64_t bn = crime_integer_low64(&b->numerator);
+    uint64_t ad = crime_integer_low64(&a->denominator);
+    uint64_t bd = crime_integer_low64(&b->denominator);
+    uint64_t ga = crime_gcd64(an, bd), gb = crime_gcd64(bn, ad);
+    Int128 n = crime_product64(an / ga, bn / gb);
+    Int128 d = crime_product64(ad / gb, bd / ga);
+    CrimeRational v = {
+        .numerator = crime_integer_from128(n),
+        .denominator = crime_integer_from128(d),
+        .negative = int128_nz(n) && (a->negative != b->negative),
+    };
+    *r = v;
+}
+
+static inline bool crime_rational_add64(CrimeRational *r,
+                                        const CrimeRational *a,
+                                        const CrimeRational *b)
+{
+    uint64_t an = crime_integer_low64(&a->numerator);
+    uint64_t bn = crime_integer_low64(&b->numerator);
+    uint64_t ad = crime_integer_low64(&a->denominator);
+    uint64_t bd = crime_integer_low64(&b->denominator);
+    uint64_t g = crime_gcd64(ad, bd);
+    Int128 left = crime_product64(an, bd / g);
+    Int128 right = crime_product64(bn, ad / g);
+    Int128 n, d = crime_product64(ad / g, bd), common;
+    bool negative = a->negative;
+    CrimeRational v;
+
+    if (a->negative == b->negative) {
+        uint64_t al = int128_getlo(left), bl = int128_getlo(right);
+        uint64_t ah = int128_gethi(left), bh = int128_gethi(right);
+        uint64_t low = al + bl, high = ah + bh, carry = low < al;
+        if (high < ah || high + carry < high) {
+            return false;
+        }
+        n = int128_make128(low, high + carry);
+    } else if (int128_ult(left, right)) {
+        n = int128_sub(right, left);
+        negative = b->negative;
+    } else {
+        n = int128_sub(left, right);
+    }
+    common = crime_gcd128(n, d);
+    v = (CrimeRational) {
+        .numerator = crime_integer_from128(int128_divu(n, common)),
+        .denominator = crime_integer_from128(int128_divu(d, common)),
+        .negative = int128_nz(n) && negative,
+    };
+    *r = v;
+    return true;
+}
+
 static inline bool crime_rational_multiply(CrimeRational *r,
                                           const CrimeRational *a,
                                      const CrimeRational *b)
 {
+    /* Every old cross-product is at most 128 bits under this guard. */
+    if (crime_rational_is64(a) && crime_rational_is64(b)) {
+        crime_rational_multiply64(r, a, b);
+        return true;
+    }
     CrimeInteger ga = crime_integer_gcd(a->numerator, b->denominator);
     CrimeInteger gb = crime_integer_gcd(b->numerator, a->denominator);
     CrimeInteger an = crime_integer_quotient(&a->numerator, &ga);
@@ -310,9 +438,43 @@ static inline bool crime_rational_multiply(CrimeRational *r,
     return true;
 }
 
+static inline bool crime_rational_equal_denominator(
+    CrimeRational *r, const CrimeRational *a, const CrimeRational *b)
+{
+    CrimeRational v = { .denominator = a->denominator,
+                        .negative = a->negative };
+
+    /* Old cross-products are exactly the valid input numerators times one. */
+    if (a->negative == b->negative) {
+        if (!crime_integer_add(&v.numerator, &a->numerator, &b->numerator)) {
+            return false;
+        }
+    } else if (crime_integer_compare(&a->numerator, &b->numerator) >= 0) {
+        crime_integer_subtract(&v.numerator, &a->numerator, &b->numerator);
+    } else {
+        crime_integer_subtract(&v.numerator, &b->numerator, &a->numerator);
+        v.negative = b->negative;
+    }
+    /* Reject an overwide signed sum before removing common factors. */
+    if (!crime_rational_valid(&v) || !crime_rational_reduce(&v)) {
+        return false;
+    }
+    *r = v;
+    return true;
+}
+
 static inline bool crime_rational_add(CrimeRational *r, const CrimeRational *a,
                                 const CrimeRational *b)
 {
+    /* Old terms fit 128 bits and their sum fits 129, safely below 512. */
+    if (crime_rational_is64(a) && crime_rational_is64(b) &&
+        crime_rational_add64(r, a, b)) {
+        return true;
+    }
+    if (!crime_integer_compare(&a->denominator, &b->denominator) &&
+        crime_rational_valid(a) && crime_rational_valid(b)) {
+        return crime_rational_equal_denominator(r, a, b);
+    }
     CrimeInteger g = crime_integer_gcd(a->denominator, b->denominator);
     CrimeInteger ad = crime_integer_quotient(&a->denominator, &g);
     CrimeInteger bd = crime_integer_quotient(&b->denominator, &g);

@@ -368,6 +368,72 @@ static bool crime_texture_tap(CrimeTexture *t, unsigned level, int64_t x,
     return true;
 }
 
+static Int128 crime_texture_weight_product(uint64_t a, uint64_t b)
+{
+    uint64_t low, high;
+    mulu64(&low, &high, a, b);
+    return int128_make128(low, high);
+}
+
+static Int128 crime_texture_weight_scale(Int128 value, uint64_t scale)
+{
+    uint64_t low, carry;
+    mulu64(&low, &carry, int128_getlo(value), scale);
+    return int128_make128(low, (uint64_t)int128_gethi(value) * scale + carry);
+}
+
+static bool crime_texture_linear128(CrimeTexture *t, unsigned level,
+                                     const int64_t index[2],
+                                     CrimeRational weights[2][2],
+                                     CrimeRational *result)
+{
+    /* lcm(1, 15, 31, 255) covers every admitted component and border. */
+    const uint64_t component_one = 7905;
+    uint64_t denominator[2], numerator[2], weight[2][2];
+    Int128 sum[4] = { 0 }, common;
+
+    for (unsigned axis = 0; axis < 2; axis++) {
+        const CrimeRational *w = &weights[axis][1];
+        denominator[axis] = (uint64_t)w->denominator.word[1] << 32 |
+                            w->denominator.word[0];
+        numerator[axis] = (uint64_t)w->numerator.word[1] << 32 |
+                          w->numerator.word[0];
+        weight[axis][0] = denominator[axis] - numerator[axis];
+        weight[axis][1] = numerator[axis];
+    }
+    common = crime_texture_weight_scale(crime_texture_weight_product(
+        denominator[0], denominator[1]), component_one);
+    for (unsigned row = 0; row < 2; row++) {
+        for (unsigned col = 0; col < 2; col++) {
+            CrimeRational tap[4];
+            Int128 w = crime_texture_weight_product(weight[0][col],
+                                                     weight[1][row]);
+            if (!int128_nz(w)) {
+                continue;
+            }
+            if (!crime_texture_tap(t, level, index[0] + col, index[1] + row,
+                                   tap)) {
+                return false;
+            }
+            for (unsigned c = 0; c < 4; c++) {
+                unsigned n = tap[c].numerator.word[0];
+                unsigned d = tap[c].denominator.word[0];
+                g_assert(d && !(component_one % d) && n <= d);
+                sum[c] = int128_add(sum[c], crime_texture_weight_scale(
+                    w, n * (component_one / d)));
+            }
+        }
+    }
+    for (unsigned c = 0; c < 4; c++) {
+        Int128 divisor = crime_gcd128(sum[c], common);
+        result[c] = (CrimeRational) {
+            .numerator = crime_integer_from128(int128_divu(sum[c], divisor)),
+            .denominator = crime_integer_from128(int128_divu(common, divisor)),
+        };
+    }
+    return true;
+}
+
 static bool crime_texture_level(CrimeTexture *t,
                                  const CrimeRational *coordinate,
                                  unsigned level, bool linear,
@@ -399,6 +465,25 @@ static bool crime_texture_level(CrimeTexture *t,
         if (!linear && wrap != 1 && index[axis] == size &&
             !crime_integer_bits(&weights[axis][1].numerator)) {
             index[axis]--;
+        }
+    }
+    if (!linear) {
+        /* A normalized tap times one plus zero has no arithmetic failure. */
+        return crime_texture_tap(t, level, index[0], index[1], result);
+    }
+    {
+        unsigned du = crime_integer_bits(&weights[0][1].denominator);
+        unsigned dv = crime_integer_bits(&weights[1][1].denominator);
+
+        /*
+         * Every old reduced denominator divides D=7905*Du*Dv. Convex
+         * component products and positive partial sums are at most D.
+         * D<2^127 proves all old signed512 checks pass, so native exact
+         * accumulation preserves failures as well as values. Decide
+         * before taps: no retry, prefetch or changed validation order.
+         */
+        if (du <= 64 && dv <= 64 && du + dv + 13 <= 127) {
+            return crime_texture_linear128(t, level, index, weights, result);
         }
     }
     for (unsigned c = 0; c < 4; c++) {
