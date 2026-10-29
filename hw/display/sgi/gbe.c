@@ -820,18 +820,18 @@ static uint64_t read_reg(void *opaque, hwaddr addr, unsigned size)
     case 0x14: return 0x666;
     case 0x58000:
         /*
-         * Revision 1 reports occupancy, which resets to zero. From revision
-         * 2 the field counts free entries of the 64-entry FIFO, saturated
-         * to six bits, which matches the GBE specification's prose; the
-         * revision split is inferred from the IRIX 6.5.30 X server, which
-         * accepts zero only below revision 2.
+         * Both revisions count free entries of the 64-entry FIFO, as the
+         * GBE specification describes. They differ only when it is empty:
+         * the six-bit field wraps 64 to 0 at revision 1 and saturates at
+         * 63 from revision 2. Both empty readings are inferred from the
+         * IRIX 6.5.30 X server, which accepts zero only below revision 2.
          *
          * Approximation: writes drain synchronously, so the queue is empty
          * at every MMIO completion and the count only ever reads its empty
          * value, 0 or 63. No drain rate is documented, so blanking-only
          * draining, a partly full queue and overflow are not modeled.
          */
-        return s->revision < 2 ? MIN(s->palette_pending, 63) :
+        return s->revision < 2 ? (64 - s->palette_pending) & 63 :
                                  MIN(64 - s->palette_pending, 63);
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
