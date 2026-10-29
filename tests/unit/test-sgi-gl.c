@@ -14588,6 +14588,15 @@ static void fixed_bound_case(unsigned index, SGIRasterTexturePath path,
     c.cur.clip_planes = g_rand_int_range(rand, 0, 10) < 1;
     c.cur.clip_plane[0][0] = 1;
     c.cur.clip_plane[0][3] = g_rand_double_range(rand, -0.5, 0.5);
+    /*
+     * The alpha test and logical operations keep the double path: the one
+     * would move the pixels written, the other a colour's every bit.
+     */
+    c.cur.alpha_test = g_rand_int_range(rand, 0, 10) < 2;
+    c.cur.alpha_func = g_rand_int_range(rand, 1, 7);
+    c.cur.alpha_ref = g_rand_double(rand);
+    c.cur.color_logic_op = !c.cur.blend && g_rand_int_range(rand, 0, 10) < 2;
+    c.cur.logic_op_mode = SGI_GL_CLEAR + 6; /* GL_XOR */
     if (g_rand_int_range(rand, 0, 10) < 1) {
         for (unsigned i = 0; i < 32; i++) {
             stipple[i] = g_rand_int(rand);
@@ -14619,6 +14628,7 @@ static void fixed_bound_case(unsigned index, SGIRasterTexturePath path,
         c.cur.texture_env_mode = key->env;
         c.cur.depth_test = 1;
         c.cur.blend = c.cur.fog = c.cur.stencil_test = 0;
+        c.cur.alpha_test = c.cur.color_logic_op = 0;
         c.cur.clip_planes = 0;
         d.polygon_stipple_enabled = false;
         for (unsigned l = 0; l < FIXED_TEX_LEVELS; l++) {
@@ -14647,7 +14657,7 @@ static void fixed_bound_case(unsigned index, SGIRasterTexturePath path,
  * double path, and its colour lies close to the double path's. The
  * design's limit is 32 of 255 on any channel and a mean of one. The
  * benchmark's comparison corpus measured 2 and 0.007, these noisier
- * scenes 2 and 0.053; the test holds them to 2 and 0.1.
+ * scenes 2 and 0.04; the test holds them to 3 and 0.1.
  */
 static void test_texture_fixed_bound(void)
 {
