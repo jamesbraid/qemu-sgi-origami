@@ -3287,6 +3287,99 @@ static void test_fill_honours_clip_rectangle(void)
     g_assert_cmphex(mgras_test_pixel(qts, 129, 229), ==, 0x66);
 }
 
+/* A rectangle fill from (x0, y0) to (x1, y1), inclusive. */
+static void mgras_fill_box(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1)
+{
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (x0 << 16) | y0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (x1 << 16) | y1));
+}
+
+/*
+ * Window mode 0x14f: the mask enables in bits 3:0 (mask k sets bit k - 1)
+ * and the mode in bits 7:4, the four masks' x and y registers from 0x147
+ * in pairs (the raster and display contract's window mode reading). Mode
+ * 1 draws inside the union of the enabled masks (inferred). Masks 1 and 3
+ * share rows 210-219 at x 110-119 and 140-149; mask 2, between them, is
+ * loaded but not enabled, and mask 4 is loaded elsewhere and not enabled.
+ * Mode 2 (0x23), which the kernel also writes, is not modelled: logged,
+ * and the fill is not clipped.
+ */
+static void test_fill_honours_union_of_screen_masks(void)
+{
+    static const uint32_t masks[4][4] = {
+        { 110, 119, 210, 219 }, { 125, 134, 210, 219 },
+        { 140, 149, 210, 219 }, { 160, 169, 240, 249 },
+    };
+
+    mgras_reset();
+    mgras_enter_context(qts);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x66));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    for (int k = 0; k < 4; k++) {
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_CLIP_X + 2 * k,
+                                   masks[k][0] << 16 | masks[k][1]));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_CLIP_Y + 2 * k,
+                                   clip_y_rows(masks[k][2], masks[k][3])));
+    }
+    /* Mode 1, masks 1 and 3. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_MODE, 0x10 | 0x1 | 0x4));
+    mgras_fill_box(100, 200, 179, 259);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 110, 210), ==, 0x66);
+    g_assert_cmphex(mgras_test_pixel(qts, 119, 219), ==, 0x66);
+    g_assert_cmphex(mgras_test_pixel(qts, 140, 210), ==, 0x66);
+    g_assert_cmphex(mgras_test_pixel(qts, 149, 219), ==, 0x66);
+    g_assert_cmphex(mgras_test_pixel(qts, 120, 215), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 130, 215), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 139, 215), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 150, 215), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 165, 245), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 115, 220), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 200), ==, 0);
+
+    /* All four enabled: masks 2 and 4 now pass as well. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_MODE, 0x1f));
+    mgras_fill_box(100, 200, 179, 259);
+    g_assert_cmphex(mgras_test_pixel(qts, 130, 215), ==, 0x66);
+    g_assert_cmphex(mgras_test_pixel(qts, 165, 245), ==, 0x66);
+    g_assert_cmphex(mgras_test_pixel(qts, 120, 215), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 200), ==, 0);
+
+    /* Mode 2 is not modelled: the fill is not clipped. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_MODE, 0x23));
+    mgras_fill_box(100, 200, 179, 259);
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 200), ==, 0x66);
+    g_assert_cmphex(mgras_test_pixel(qts, 120, 215), ==, 0x66);
+
+    /*
+     * Masks that overlap pass a pixel once: an XOR fill under masks 1
+     * and 2, mask 2 moved to x 115-124, clears column 117 in both rather
+     * than restoring it.
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_X + 2, 115u << 16 | 124u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_MODE, 0x13));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_XOR << 26));
+    mgras_fill_box(100, 200, 179, 259);
+    g_assert_cmphex(mgras_test_pixel(qts, 117, 215), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 122, 215), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 130, 215), ==, 0x66);
+}
+
 /*
  * Overlay-form draws (DRBPOINTERS 0x101c0, COLORMASKMSBS bits 6:4) run
  * inside the same per-box loop: 1,709 clipped executes in the desktop
@@ -4376,6 +4469,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/fill-honours-clip-rectangle",
         test_fill_honours_clip_rectangle, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/fill-honours-union-of-screen-masks",
+        test_fill_honours_union_of_screen_masks, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/overlay-fill-honours-clip-rectangle",
         test_overlay_fill_honours_clip_rectangle, true);
