@@ -1320,10 +1320,17 @@ static void sgi_kona_retrace(void *opaque)
  *   under cause bit 0x10: the driver's interrupt routine reads +0x800240
  *   and posts the semaphore its DMA write sleeps on. A cookie naming the
  *   video bit 0x8 sets it with no mailbox word.
- *   FAILED for an item whose sender waits sets the fatal cause bit 0x100.
- *   Approximated: what the pipe does when a transfer fails is unknown;
- *   the model makes the failure visible to the driver's handler, which
- *   dies on that bit, rather than post a completion for work not done.
+ *   FAILED for an item whose sender waits posts nothing: no mailbox word,
+ *   no cause bit, no vector, only a guest-error log line. The driver
+ *   reports a failed host DMA in three places: widget error bits (read
+ *   timeout, response error, map RAM, DMA FIFO), cause bits 0x800 and
+ *   0x40 for input- and output-DMA overflow, and its own timeout when
+ *   the completion never comes (pipe death reason 4). No single "DMA
+ *   failed" cause bit exists, and cause 0x100 is parity. Which widget
+ *   error a pipe raises for an unmapped address or invalid map entry is
+ *   inferred only (bit 8 or 13), and the model has no widget-error
+ *   vector, so it takes the third path: the completion is withheld and
+ *   the driver's timeout fires, as for a pipe whose read got no reply.
  *
  * A mailbox post then sends the general vector, after the word and the
  * cause bit, since only that vector's handler reads them. Whether the
@@ -1373,7 +1380,9 @@ void sgi_kona_publish(void *opaque, const SGICompletion *c)
     case SGI_DONE_FAILED:
         if (c->cookie != SGI_KONA_DMA_COOKIE_NONE &&
             c->cookie != SGI_KONA_DMA_COOKIE_PORT) {
-            s->int_cause |= SGI_KONA_INT_CAUSE_FATAL;
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: host DMA failed"
+                          " (reason %" PRIu64 "); completion word 0x%"
+                          PRIx32 " withheld\n", c->payload, word);
         }
         break;
     default:

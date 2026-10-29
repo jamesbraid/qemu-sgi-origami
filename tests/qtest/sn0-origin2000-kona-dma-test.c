@@ -43,7 +43,6 @@
 #define REG_INT_CAUSE     KONA_REG(0x800238)
 #define REG_MAILBOX       KONA_REG(0x800240)
 #define CAUSE_MAILBOX     0x10u
-#define CAUSE_FATAL       0x100u
 
 /*
  * fabric-hub-widget=9 targets node 0's own Hub (tests/qtest/
@@ -1152,8 +1151,9 @@ static void test_list_nested_in_slices_refused(void)
  * expects: the mailbox holds 0x100 under cause bit 0x10, and the
  * read-clear-acknowledge sequence clears both. A packet whose word 6 is 0
  * posts nothing, and neither does a display list's completion. A refused
- * packet whose sender waits sets the fatal bit 0x100 and posts no mailbox
- * word.
+ * packet whose sender waits posts nothing either: no mailbox word and no
+ * cause bit, so the driver's own timeout reports it
+ * (test_dma_failure_withheld()).
  */
 static void test_dma_completion_posts_mailbox(void)
 {
@@ -1182,8 +1182,55 @@ static void test_dma_completion_posts_mailbox(void)
     g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE), ==, 0);
 
     kona_dma_packet(qts, addr, 16, 12, 0, KONA_DMA_DONE_WORD);
-    g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE), ==, CAUSE_FATAL);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE), ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_MAILBOX), ==, 0);
+}
+
+/*
+ * A host DMA that cannot complete, here one whose total is not whole
+ * lines and one whose address word lacks its tag, is reported the
+ * one way the model can without inventing a cause bit: its completion is
+ * withheld, so the driver's timeout fires (pipe death reason 4). No
+ * single "DMA failed" cause bit exists; 0x100 is the parity cause and
+ * also the completion word, and neither may appear. The pipe then still
+ * completes a good packet.
+ */
+static void test_dma_failure_withheld(void)
+{
+    g_autofree char *log = g_strdup_printf("%s/sn0-kona-dma-XXXXXX.log",
+                                           g_get_tmp_dir());
+    g_autofree char *found = NULL;
+    uint64_t addr = dma_node_addr(DMA_POST_SRC);
+    QTestState *s;
+    int fd = g_mkstemp(log);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    s = qtest_initf("%s -d guest_errors -D %s", MACHINE_ARGS, log);
+    kona_set_dma_fb_offset(s, 0);
+    kona_write_be32_array(s, addr, dma_pixels, 4);
+    kona_dma_packet(s, addr, 16, 12, 0, KONA_DMA_DONE_WORD);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE), ==, 0);
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0);
+    kona_dma_packet_raw(s, (const uint32_t[6]) {
+        (uint32_t)(addr >> 12), (uint32_t)addr & 0xfffu, 16, 16, 0,
+        KONA_DMA_DONE_WORD,
+    });
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE), ==, 0);
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0);
+    kona_dma_packet(s, addr, 16, 16, 0, KONA_DMA_DONE_WORD);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE), ==, CAUSE_MAILBOX);
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, KONA_DMA_DONE_WORD);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_cmpint(g_unlink(log), ==, 0);
+    {
+        const char *first = strstr(found, "completion word 0x100 withheld");
+
+        g_assert_nonnull(first);
+        g_assert_nonnull(strstr(first + 1, "completion word 0x100 withheld"));
+    }
 }
 
 #define DMA_MIGRATE_SRC UINT64_C(0x12004)
@@ -1338,6 +1385,8 @@ int main(int argc, char **argv)
                    test_list_nested_and_poolless_refused);
     qtest_add_func("sn0/origin2000/kona/dma/completion-posts-mailbox",
                    test_dma_completion_posts_mailbox);
+    qtest_add_func("sn0/origin2000/kona/dma/failure-withheld",
+                   test_dma_failure_withheld);
     qtest_add_func("sn0/origin2000/kona/dma/list-calls-eight-ranges",
                    test_list_calls_eight_ranges);
     qtest_add_func("sn0/origin2000/kona/dma/migration", test_dma_migration);

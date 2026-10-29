@@ -208,12 +208,12 @@ typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
 #define SGI_KONA_INT_CAUSE_GE (1u << 5)
 
 /*
- * The general handler's video bit and one of its fatal bits, from the
- * driver's cause-bit dispatch: 0x8 calls its video interrupt handler,
- * 0x100 its fatal-error path.
+ * The general handler's video bit, from the driver's cause-bit dispatch:
+ * 0x8 calls its video interrupt handler. The model raises none of the
+ * fatal bits (0x4 FIFO overflow, 0x100 parity, 0x400 PIO overflow, 0x800
+ * input-DMA overflow); see sgi_kona_publish() for a failed host DMA.
  */
 #define SGI_KONA_INT_CAUSE_VIDEO (1u << 3)
-#define SGI_KONA_INT_CAUSE_FATAL (1u << 8)
 
 /*
  * The general status vector, bits [7:0] of SGI_KONA_INT_VECTORS
