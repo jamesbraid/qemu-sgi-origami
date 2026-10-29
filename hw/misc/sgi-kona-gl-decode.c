@@ -738,7 +738,7 @@ static const SGIKonaGLPackedPixel *sgi_kona_gl_packed_pixel(uint32_t format,
     };
 
     if (type < 8 || type - 8 >= ARRAY_SIZE(types) ||
-        (type == 8 ? format != 4 : (format != 5 && format != 10))) {
+        (type == 8 ? format != 4 : format != 5)) {
         return NULL;
     }
     return &types[type - 8];
@@ -761,6 +761,17 @@ void sgi_kona_gl_words_or_bytes(uint32_t *words, uint64_t at,
     }
 }
 
+/*
+ * Native format codes 9 and 10 are the library's 0x800c and 0x800d, CMYK and
+ * CMYKA in the public registry, with four and five components in the
+ * library's own components table. Their sizes frame the pixel data, but how
+ * the pipe turns them into colour is not known, so no conversion takes them.
+ */
+bool sgi_kona_gl_pixel_colour_format(uint32_t format)
+{
+    return format != 9 && format != 10;
+}
+
 uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type)
 {
     static const uint8_t widths[] = { 1, 1, 2, 2, 4, 4, 4 };
@@ -779,13 +790,15 @@ uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type)
         components = 1;
         break;
     case 4:                     /* RGB */
-    case 9:                     /* BGR */
         components = 3;
         break;
     case 5:                     /* RGBA */
     case 8:                     /* ABGR */
-    case 10:                    /* BGRA */
+    case 9:                     /* CMYK */
         components = 4;
+        break;
+    case 10:                    /* CMYKA */
+        components = 5;
         break;
     case 7:                     /* LUMINANCE_ALPHA */
         components = 2;
@@ -930,7 +943,8 @@ static bool sgi_kona_gl_pixel_values(uint32_t format, uint32_t type,
     uint32_t bits = 0, shift = 0;
     double r, g, b, a;
 
-    if (!sgi_kona_gl_texture_pixel_bytes(format, type)) {
+    if (!sgi_kona_gl_texture_pixel_bytes(format, type) ||
+        !sgi_kona_gl_pixel_colour_format(format)) {
         return false;
     }
     values[0] = values[1] = values[2] = 0;
@@ -1026,11 +1040,6 @@ static bool sgi_kona_gl_pixel_values(uint32_t format, uint32_t type,
         b = values[1];
         a = values[0];
         break;
-    case 9:
-    case 10:
-        r = values[2];
-        b = values[0];
-        break;
     }
     values[0] = r;
     values[1] = g;
@@ -1118,17 +1127,6 @@ bool sgi_kona_gl_pixel_rgba8(uint32_t format, uint32_t source,
         g = c2;
         b = c1;
         a = c0;
-        break;
-    case 9:                     /* BGR */
-        r = c2;
-        g = c1;
-        b = c0;
-        break;
-    case 10:                    /* BGRA */
-        r = c2;
-        g = c1;
-        b = c0;
-        a = c3;
         break;
     default:
         return false;
@@ -1601,7 +1599,8 @@ bool sgi_kona_gl_pixel_pack_double(uint32_t format, uint32_t type,
     unsigned size;
     const SGIKonaGLPackedPixel *pixel = sgi_kona_gl_packed_pixel(format, type);
 
-    if (!rgba || !out || !bytes || capacity < bytes) {
+    if (!rgba || !out || !bytes || capacity < bytes ||
+        !sgi_kona_gl_pixel_colour_format(format)) {
         return false;
     }
     size = bytes / components;
@@ -1623,9 +1622,6 @@ bool sgi_kona_gl_pixel_pack_double(uint32_t format, uint32_t type,
         for (unsigned k = 0; k < 4; k++) {
             values[k] = rgba[3 - k];
         }
-    } else if (format == 9 || format == 10) {
-        values[0] = rgba[2];
-        values[2] = rgba[0];
     }
     if (pixel) {
         uint32_t bits = 0;

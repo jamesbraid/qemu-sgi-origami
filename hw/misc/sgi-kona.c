@@ -8694,6 +8694,11 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
         }
     }
     row = sgi_kona_gl_read_row_bytes(w, format, type);
+    if (!depth && !stencil && !sgi_kona_gl_pixel_colour_format(format)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels of CMYK format %"
+                      PRIu32 " is not modelled; %s\n", format, outcome);
+        return false;
+    }
     if (!row || args[6] > 3) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels of format 0x%"
                       PRIx32 " type 0x%" PRIx32 " low bits 0x%" PRIx32
@@ -11253,7 +11258,7 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
             goto out;
         }
         for (uint32_t x = 0; x < layout.width; x++) {
-            uint32_t source[4] = { 0 };
+            uint32_t source[SGI_KONA_GL_PIXEL_WORDS_MAX] = { 0 };
             const uint8_t *bytes = line + (uint64_t)x * layout.pixel_bytes;
             uint32_t pixel = row * layout.width + x;
 
@@ -12947,7 +12952,7 @@ static void sgi_kona_gl_filter_load(SGIKonaState *s, int i,
     }
     for (uint32_t row = 0; row < h[1]; row++) {
         for (uint32_t x = 0; x < h[0]; x++) {
-            uint32_t source[4] = { 0 };
+            uint32_t source[SGI_KONA_GL_PIXEL_WORDS_MAX] = { 0 };
             double rgba[4];
 
             for (uint32_t k = 0; k < layout.pixel_bytes; k++) {
@@ -13175,7 +13180,7 @@ static void sgi_kona_gl_table_load(SGIKonaState *s, int i,
         return;
     }
     for (uint32_t x = 0; x < h[0]; x++) {
-        uint32_t source[4] = { 0 };
+        uint32_t source[SGI_KONA_GL_PIXEL_WORDS_MAX] = { 0 };
         double rgba[4];
 
         for (uint32_t k = 0; k < layout.pixel_bytes; k++) {
@@ -13900,7 +13905,7 @@ static void sgi_kona_gl_convolution_get(SGIKonaState *s, int i,
 
     if (i == SGI_KONA_CONTEXT_NONE || args[0] < 0x8010 || args[0] > 0x8012 ||
         (selector == SGI_KONA_CMD_GL_GET_SEPARABLE) != (args[0] == 0x8012) ||
-        !bpp || args[1] > 10) {
+        !bpp || args[1] > 10 || !sgi_kona_gl_pixel_colour_format(args[1])) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: convolution filter read of"
                       " target 0x%" PRIx32 " format %" PRIu32 " type %"
                       PRIu32 " refused; no reply\n", args[0], args[1],

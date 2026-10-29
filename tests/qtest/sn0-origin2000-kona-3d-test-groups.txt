@@ -73,8 +73,6 @@ read /mips64/sn0/origin2000/kona-3d/packed-read
 read /mips64/sn0/origin2000/kona-3d/pixels-dma
 read /mips64/sn0/origin2000/kona-3d/read-dma
 read /mips64/sn0/origin2000/kona-3d/read-dma-typed
-read /mips64/sn0/origin2000/kona-3d/reordered-pack
-read /mips64/sn0/origin2000/kona-3d/reordered-read
 read /mips64/sn0/origin2000/kona-3d/single-pack
 read /mips64/sn0/origin2000/kona-3d/single-pixels
 read /mips64/sn0/origin2000/kona-3d/single-read
