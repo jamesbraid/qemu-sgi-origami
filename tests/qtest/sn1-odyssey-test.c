@@ -22328,6 +22328,53 @@ static void test_cursor_moves_and_clips(void)
 }
 
 /*
+ * The cursor request writes the position, x << 16 | y with the hotspot
+ * already taken off, through a type 7 header (bit 30 set) when it defers
+ * it, and a type 3 header otherwise; both move the cursor. A deferred
+ * position flushed when control bit 5 changes arrives as four records: the
+ * control word with bit 1 clear, then with the new bit 5, then the
+ * position, then the control word with bit 0 clear. Each applies in turn,
+ * so the cursor ends hidden on the second channel, and every entry reads
+ * back as last written.
+ */
+static void test_cursor_deferred_records(void)
+{
+    QTestState *qts = board_start("");
+    uint32_t bg;
+
+    cursor_load(qts, 2, 3);
+    bg = cursor_background(qts);
+    cursor_entry(qts, ODSY_CURSOR_CONTROL, 3);
+    backend_push32(qts, ODSY_BACKEND_HDR(ODSY_CURSOR_POSITION, 1) |
+                        0x40000000u);
+    backend_push32(qts, 0x00040005);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 4, 5), ==,
+                    ODSY_CURSOR_WORD1_RGB);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 3), ==, bg);
+
+    backend_push32(qts, ODSY_BACKEND_HDR(ODSY_CURSOR_CONTROL, 1) |
+                        0x40000000u);
+    backend_push32(qts, 1);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 4, 5), ==,
+                    ODSY_CURSOR_WORD1_RGB);
+    backend_push32(qts, ODSY_BACKEND_HDR(ODSY_CURSOR_CONTROL, 1) |
+                        0x40000000u);
+    backend_push32(qts, 0x21);
+    backend_push32(qts, ODSY_BACKEND_HDR(ODSY_CURSOR_POSITION, 1) |
+                        0x40000000u);
+    backend_push32(qts, 0x00020003);
+    backend_push32(qts, ODSY_BACKEND_HDR(ODSY_CURSOR_CONTROL, 1) |
+                        0x40000000u);
+    backend_push32(qts, 0x20);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 3), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 4, 5), ==, bg);
+    g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_POSITION), ==,
+                    0x00020003);
+    g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_CONTROL), ==, 0x20);
+    board_quit(qts);
+}
+
+/*
  * Control word 5, bits 0 and 2, is the X server's crosshair: the model's
  * approximation is a one-pixel line across the raster each way through the
  * position, in colour word 1. Word 4, bit 2 alone, draws nothing.
@@ -22688,6 +22735,8 @@ int main(int argc, char **argv)
              test_cursor_glyph_and_plane);
     add_case("sn1/odyssey/cursor/moves-and-clips",
              test_cursor_moves_and_clips);
+    add_case("sn1/odyssey/cursor/deferred-records",
+             test_cursor_deferred_records);
     add_case("sn1/odyssey/cursor/crosshair", test_cursor_crosshair);
     add_case("sn1/odyssey/cursor/over-overlay", test_cursor_over_overlay);
     add_case("sn1/odyssey/cursor/reset-leaves-it-off",
