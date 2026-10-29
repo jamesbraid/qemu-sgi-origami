@@ -162,3 +162,8 @@ buffer-modes /mips64/sgi/crime/render/buffer-modes/color
 buffer-modes /mips64/sgi/crime/render/buffer-modes/transactions
 buffer-modes /mips64/sgi/crime/render/buffer-modes/diagnostics
 buffer-modes /mips64/sgi/crime/render/buffer-modes/primitives
+x-domain /mips64/sgi/crime/render/x-domain/invisible
+x-domain /mips64/sgi/crime/render/x-domain/coordinates
+x-domain /mips64/sgi/crime/render/x-domain/stipple-origins
+x-domain /mips64/sgi/crime/render/x-domain/bounds
+x-domain /mips64/sgi/crime/render/x-domain/transactions
