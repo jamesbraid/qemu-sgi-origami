@@ -516,9 +516,11 @@ static void test_dma_reset_recovery(void)
         wr(q, reg, shape | bit);
         wr(q, reg, shape);
         frame(q);
+        /* No pixel clock shows no picture (approximation). */
+        g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==, 0);
+        wr(q, 4, 3 | 3u << 14 | 1u << 20);
         g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
                         plane ? 0x123456 : 0);
-        wr(q, 4, 3 | 3u << 14 | 1u << 20);
         frame(q);
         g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
                         plane ? 0x89abcd : 0xabcdef);
@@ -887,6 +889,36 @@ static void test_dotclock_run(void)
     wr(q, VT(0), 0);
     qtest_clock_step(q, 1100);
     g_assert_cmphex(rd(q, VT(0)), ==, 11);
+    qtest_quit(q);
+}
+
+/*
+ * IRIX 6.5.30 blanks by writing CTRLSTAT 0x000aa000, which selects the
+ * external TTL clock that is absent here, and unblanks with 0x300aa000.
+ * With no pixel clock the console shows no picture (an approximation; what
+ * a monitor shows is not established) and the counters hold. Unblanking
+ * restores the same mode without any other GBE write.
+ */
+static void test_blank_without_clock(void)
+{
+    QTestState *q = start("");
+    uint32_t counter;
+
+    setup(q);
+    pixel(q, 0, 0x123456fe);
+    frame(q);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x123456);
+    wr(q, 0, 0x000aa000);
+    counter = rd(q, VT(0));
+    frame(q);
+    g_assert_cmphex(rd(q, VT(0)), ==, counter);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0);
+    g_assert_cmphex(screen(q, 31, 4, 30, 3), ==, 0);
+    wr(q, 0, 0x300aa000);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x123456);
+    frame(q);
+    g_assert_cmphex(rd(q, VT(0)), !=, counter);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x123456);
     qtest_quit(q);
 }
 
@@ -2934,6 +2966,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-gbe/dma-reset/did-cursor", test_dma_reset_did_cursor);
     qtest_add_func("/sgi-gbe/clock", test_clock);
     qtest_add_func("/sgi-gbe/dotclock-run", test_dotclock_run);
+    qtest_add_func("/sgi-gbe/blank-without-clock", test_blank_without_clock);
     qtest_add_func("/sgi-gbe/invalid-timing-reports",
                    test_invalid_timing_reports);
     qtest_add_func("/sgi-gbe/rgb8-geometry-cursor", test_rgb8_geometry);
