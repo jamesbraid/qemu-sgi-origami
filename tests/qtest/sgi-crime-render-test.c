@@ -8705,6 +8705,220 @@ static void ifb_varied_write(QTestState *s, unsigned n)
 }
 
 /*
+ * Checks drawn from Origami's O2 graphics driver evidence datasheet, which
+ * records what the IRIX 6.5.30 kernel, X server and OpenGL library write.
+ */
+#define LINEAR_A (RE + 0x1700)
+#define LINEAR_B (RE + 0x1780)
+#define EVIDENCE_A 0x400000ULL
+#define EVIDENCE_B 0x420000ULL
+#define EVIDENCE_CHUNK 0x20000U
+
+/* Map all 32 pages of one linear TLB onto themselves from @physical. */
+static void linear_identity(QTestState *s, uint64_t tlb, uint64_t physical)
+{
+    for (unsigned i = 0; i < 16; i++) {
+        uint64_t page = (physical >> 12) + 2 * i;
+
+        qtest_writeq(s, tlb + 8 * i, (0x80000000ULL | page) << 32 |
+                                     (0x80000000ULL | (page + 1)));
+    }
+}
+
+static void linear_clear(QTestState *s, uint64_t physical, uint32_t length,
+                         uint8_t value, bool ok)
+{
+    qtest_writel(s, MTE, 0x11);
+    qtest_writel(s, MTE + 8, UINT32_MAX);
+    qtest_writel(s, MTE + 0x18, value);
+    qtest_writel(s, MTE + 0x48, 1);
+    qtest_writel(s, MTE + 0x30, physical);
+    g_assert_cmpint(memtx_writel(s, MTE + 0x838, physical + length - 1) ==
+                    MEMTX_OK, ==, ok);
+}
+
+static void assert_bytes(QTestState *s, uint64_t physical,
+                         const uint8_t *expected, size_t length)
+{
+    g_autofree uint8_t *actual = g_malloc(length);
+
+    qtest_memread(s, physical, actual, length);
+    g_assert_cmpmem(actual, length, expected, length);
+}
+
+/*
+ * The kernel zeroes and copies host memory with MTE modes 0x11 (clear
+ * through linear A) and 0x897 (copy linear A to linear B), in chunks of at
+ * most 128 KiB whose SRC and DST words are physical addresses the linear
+ * TLBs map onto themselves. After a failed buffer load it zeroes every
+ * linear TLB register, which must leave no mapping behind.
+ */
+static void test_evidence_linear_identity(void)
+{
+    QTestState *s = start();
+    g_autofree uint8_t *pattern = g_malloc(EVIDENCE_CHUNK);
+    g_autofree uint8_t *fill = g_malloc(EVIDENCE_CHUNK);
+
+    for (unsigned i = 0; i < EVIDENCE_CHUNK; i++) {
+        pattern[i] = i * 7 ^ i >> 9;
+    }
+    linear_identity(s, LINEAR_A, EVIDENCE_A);
+    linear_identity(s, LINEAR_B, EVIDENCE_B);
+    qtest_memset(s, EVIDENCE_A - 16, 0x77, EVIDENCE_CHUNK + 32);
+    linear_clear(s, EVIDENCE_A, EVIDENCE_CHUNK, 0, true);
+    memset(fill, 0, EVIDENCE_CHUNK);
+    assert_bytes(s, EVIDENCE_A, fill, EVIDENCE_CHUNK);
+    g_assert_cmphex(qtest_readb(s, EVIDENCE_A - 1), ==, 0x77);
+    g_assert_cmphex(qtest_readb(s, EVIDENCE_A + EVIDENCE_CHUNK), ==, 0x77);
+
+    qtest_memwrite(s, EVIDENCE_A, pattern, EVIDENCE_CHUNK);
+    qtest_memset(s, EVIDENCE_B, 0xc3, EVIDENCE_CHUNK);
+    qtest_writel(s, MTE, 0x897);
+    qtest_writel(s, MTE + 0x20, EVIDENCE_A);
+    qtest_writel(s, MTE + 0x28, EVIDENCE_A + EVIDENCE_CHUNK - 1);
+    qtest_writel(s, MTE + 0x40, 1);
+    qtest_writel(s, MTE + 0x30, EVIDENCE_B);
+    g_assert_cmpint(memtx_writel(s, MTE + 0x838,
+                                 EVIDENCE_B + EVIDENCE_CHUNK - 1),
+                    ==, MEMTX_OK);
+    assert_bytes(s, EVIDENCE_B, pattern, EVIDENCE_CHUNK);
+
+    for (unsigned i = 0; i < 16; i++) {
+        qtest_writeq(s, LINEAR_A + 8 * i, 0);
+        qtest_writeq(s, LINEAR_B + 8 * i, 0);
+    }
+    memset(fill, 0xc3, EVIDENCE_CHUNK);
+    qtest_memset(s, EVIDENCE_B, 0xc3, EVIDENCE_CHUNK);
+    qtest_memset(s, 0, 0xc3, EVIDENCE_CHUNK);
+    /* A clear through invalid entries writes nothing, not even page 0. */
+    linear_clear(s, EVIDENCE_A, EVIDENCE_CHUNK, 0x5a, true);
+    assert_bytes(s, EVIDENCE_A, pattern, EVIDENCE_CHUNK);
+    assert_bytes(s, 0, fill, EVIDENCE_CHUNK);
+    /* A copy through them is refused before moving any byte. */
+    qtest_writel(s, MTE, 0x897);
+    g_assert_cmpint(memtx_writel(s, MTE + 0x838,
+                                 EVIDENCE_B + EVIDENCE_CHUNK - 1),
+                    !=, MEMTX_OK);
+    assert_bytes(s, EVIDENCE_B, fill, EVIDENCE_CHUNK);
+    qtest_quit(s);
+}
+
+/*
+ * The X server copies whole 256-byte blocks of 8 or 16 rows with MTE mode
+ * 0x820 (copy, source TLB B, destination TLB A, 8-bit), its SRC and DST
+ * words a byte column in bits 31:16 and a row in bits 15:0.
+ */
+static void test_evidence_mte_block_copy(void)
+{
+    QTestState *s = start();
+    uint8_t row[256], expected[256];
+
+    tile(s, 0, 0, 0x50);
+    tile(s, 1, 0, 0x60);
+    qtest_memset(s, 0x500000, 0x3c, 0x10000);
+    for (unsigned y = 0; y < 8; y++) {
+        for (unsigned x = 0; x < 256; x++) {
+            row[x] = x ^ y * 37;
+        }
+        qtest_memwrite(s, 0x600000 + y * 512, row, sizeof(row));
+    }
+    qtest_writel(s, MTE, 0x820);
+    qtest_writel(s, MTE + 8, UINT32_MAX);
+    qtest_writel(s, MTE + 0x20, xy(0, 0));
+    qtest_writel(s, MTE + 0x28, xy(255, 7));
+    qtest_writel(s, MTE + 0x40, 1);
+    qtest_writel(s, MTE + 0x48, 1);
+    qtest_writel(s, MTE + 0x30, xy(256, 8));
+    g_assert_cmpint(memtx_writel(s, MTE + 0x838, xy(511, 15)), ==, MEMTX_OK);
+    for (unsigned y = 0; y < 8; y++) {
+        for (unsigned x = 0; x < 256; x++) {
+            expected[x] = x ^ y * 37;
+        }
+        assert_bytes(s, 0x500000 + (y + 8) * 512 + 256, expected, 256);
+    }
+    memset(expected, 0x3c, sizeof(expected));
+    assert_bytes(s, 0x500000 + 7 * 512 + 256, expected, 256);
+    assert_bytes(s, 0x500000 + 16 * 512 + 256, expected, 256);
+    assert_bytes(s, 0x500000 + 8 * 512, expected, 256);
+    qtest_quit(s);
+}
+
+/*
+ * IRIX 6.5.30 drops a client's uncommitted parameters when a kernel MTE
+ * copy or clear runs between them and the client's START; that effect is
+ * inferred from the kernel's calling sequence. The model need not drop
+ * them, and keeps them: the client's later START still uses them.
+ */
+static void test_evidence_parameters_across_mte(void)
+{
+    QTestState *s = start();
+    uint8_t bytes[12];
+    uint8_t zero[64] = { 0 };
+
+    tile(s, 0, 0, 3);
+    qtest_memset(s, 0x30000, 0x5c, sizeof(bytes));
+    setup(s, 0x228, false);
+    qtest_writel(s, DE + 0xd0, 0x1234abcd);
+    qtest_writel(s, DE + 0x70, xy(1, 0));
+    linear_identity(s, LINEAR_A, EVIDENCE_A);
+    qtest_memset(s, EVIDENCE_A, 0xee, sizeof(zero));
+    linear_clear(s, EVIDENCE_A, sizeof(zero), 0, true);
+    assert_bytes(s, EVIDENCE_A, zero, sizeof(zero));
+    qtest_writel(s, DE + 0x874, xy(1, 0));
+    qtest_memread(s, 0x30000, bytes, sizeof(bytes));
+    g_assert_cmphex(ldl_be_p(bytes), ==, 0x5c5c5c5c);
+    g_assert_cmphex(ldl_be_p(bytes + 4), ==, 0x1234abcd);
+    g_assert_cmphex(ldl_be_p(bytes + 8), ==, 0x5c5c5c5c);
+    qtest_quit(s);
+}
+
+/*
+ * The OpenGL library loads fog colour, the 8.12 fog steppers and Texture.mode
+ * type codes 1, 2 and 4-8 with one or two log2 bytes per texel, and enables
+ * hardware fog with DrawMode bit 14 and AA lines with bit 12, committing an
+ * AA line by a 64-bit store to 0x15002990. The model stores the state but
+ * implements none of these stages, so a commit that asks for one is refused
+ * without drawing.
+ */
+static void test_evidence_unsupported_stages(void)
+{
+    static const unsigned types[] = { 1, 2, 4, 5, 6, 7, 8 };
+    static const uint32_t stages[] = { 1U << 14, 1U << 12 };
+    QTestState *s = triangle_start("");
+    Shape c;
+
+    native_parameters(s, true, false);
+    c = triangle_prepare(s, 0, 0, 0);
+    triangle_vertices(s, triangle_integer, NULL, false);
+    g_assert_cmpint(memtx_writel(s, DE + 0x170, 0x11223300), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(s, DE + 0x170), ==, 0x11223300);
+    for (unsigned i = 0; i < 3; i++) {
+        g_assert_cmpint(memtx_writel(s, DE + 0x178 + 8 * i, 0x000ff000),
+                        ==, MEMTX_OK);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(types); i++) {
+        for (unsigned depth = 1; depth <= 2; depth++) {
+            uint32_t mode = types[i] << 20 | depth << 18;
+
+            g_assert_cmpint(memtx_writel(s, DE + 0x110, mode), ==, MEMTX_OK);
+            g_assert_cmphex(qtest_readl(s, DE + 0x110), ==, mode);
+        }
+    }
+    qtest_writel(s, DE + 0x1b0, 3);
+    qtest_writel(s, DE + 0x1b8, UINT32_MAX);
+    for (unsigned i = 0; i < ARRAY_SIZE(stages); i++) {
+        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | stages[i]);
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR),
+                        !=, MEMTX_OK);
+        triangle_pixels(s, &c, triangle_empty, 0, 3, UINT32_MAX);
+    }
+    g_assert_cmpint(memtx_writeq(s, DE + 0x990, 0x12345678abcd0100ULL),
+                    !=, MEMTX_OK);
+    triangle_pixels(s, &c, triangle_empty, 0, 3, UINT32_MAX);
+    qtest_quit(s);
+}
+
+/*
  * The IRIX 6.5.30 kernel writes zero to the engine-status bank after
  * translation loads and at the end of context save, once it has copied the
  * entries from the status start pointer up to the write pointer. Whether
@@ -9230,6 +9444,14 @@ int main(int argc, char **argv)
     add_case("sgi/crime/render/ifb/wrap", test_ifb_wrap);
     add_case("sgi/crime/render/ifb/status-bank-zero",
              test_ifb_status_bank_zero);
+    add_case("sgi/crime/render/driver-evidence/linear-identity",
+             test_evidence_linear_identity);
+    add_case("sgi/crime/render/driver-evidence/mte-block-copy",
+             test_evidence_mte_block_copy);
+    add_case("sgi/crime/render/driver-evidence/parameters-across-mte",
+             test_evidence_parameters_across_mte);
+    add_case("sgi/crime/render/driver-evidence/unsupported-stages",
+             test_evidence_unsupported_stages);
     add_case("sgi/crime/render/ifb/atomic", test_ifb_atomic);
     add_case("sgi/crime/render/ifb/restore", test_ifb_restore);
     add_case("sgi/crime/render/ifb/migration", test_ifb_migration);
