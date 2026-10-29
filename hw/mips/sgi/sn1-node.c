@@ -169,11 +169,12 @@ uint64_t sn1_node_canonical_address(const SN1NodeState *node,
  * node's local block carries: the node itself, and its cabled peer while the
  * link is up and the two numbers differ. A number nobody reachable carries is
  * the decode error. On top, a processor's view maps the reader-relative
- * forms, which always reach its node whatever its number: the reset view, the
- * Hub special local space (uncached alias, local registers and L1 UART, local
- * boot window), the Bedrock's register alias in XIO small window 1, and
- * the cached alias, sized from the processor interface's cached-alias
- * register.
+ * forms, which always reach its node whatever its number: the firmware's
+ * references to the reset view (its memory references follow the claims;
+ * see sn1_reset_local_translate()), the Hub special local space
+ * (uncached alias, local registers and L1 UART, local boot window), the
+ * Bedrock's register alias in XIO small window 1, and the cached alias,
+ * sized from the processor interface's cached-alias register.
  *
  * On one node with number 0 every alias lands where the global map already
  * is, so the one-chassis machine decodes as before.
@@ -334,6 +335,8 @@ static void sn1_node_set_requester_ids(SN1NodeState *node)
     }
 }
 
+static void sn1_reset_local_unmap(SN1NodeState *node);
+
 static void sn1_node_number_changed(Notifier *notifier, void *data)
 {
     SN1NodeState *node = container_of(notifier, SN1NodeState, node_notifier);
@@ -341,6 +344,8 @@ static void sn1_node_number_changed(Notifier *notifier, void *data)
     sn1_node_set_requester_ids(node);
     sn1_node_update_claims(node);
     sn1_memory_mappings_refresh(node->memory_mappings, NULL);
+    /* Whether this node is 0 decides its processors' reset memory. */
+    sn1_reset_local_unmap(node);
 }
 
 static void sn1_node_cable_changed(Notifier *notifier, void *data)
@@ -649,8 +654,6 @@ static void sn1_node_init_claims(SN1NodeState *node)
             sn1_fabric_init_processor_view(&node->ni_processor[cpu][space],
                 &node->endpoint, cpu, space, &node->cpu_sysmem[cpu]);
         }
-        sn1_node_local_form(node, cpu, 0, "reset", SN1_PROM_RESET,
-                            node->model_node->flash->size);
         sn1_node_local_form(node, cpu, 1, "hub-special", SN1_SPACE_HUB,
                             SN1_HUB_LOCAL_FORMS_SIZE);
         sn1_node_local_form(node, cpu, 2, "registers",
@@ -1031,6 +1034,7 @@ void sn1_node_full_reset(SN1NodeState *node, ResetType type)
  * table).
  */
 #define TYPE_SN1_RESET_ROUTER "sn1-reset-router"
+#define TYPE_SN1_RESET_LOCAL_ROUTER "sn1-reset-local-router"
 
 enum {
     SN1_RESET_MEMORY,
@@ -1096,6 +1100,84 @@ static IOMMUTLBEntry sn1_reset_translate(IOMMUMemoryRegion *iommu,
     };
 }
 
+static void sn1_reset_local_unmap(SN1NodeState *node)
+{
+    IOMMUTLBEvent event = {
+        .type = IOMMU_NOTIFIER_UNMAP,
+        .entry = {
+            .target_as = &node->reset_claim_as,
+            .iova = 0,
+            .addr_mask = UINT64_MAX,
+            .perm = IOMMU_NONE,
+        },
+    };
+
+    if (node->reset_router_ready) {
+        memory_region_notify_iommu(&node->reset_local_router,
+                                   SN1_RESET_MEMORY, event);
+    }
+}
+
+/*
+ * The processors' reset view at node field zero. The firmware's references
+ * (sn1_reset_attrs_to_index()) reach the reader's own PROM: every node's
+ * processors fetch their own reset vector, and the stock PROM keeps
+ * executing there noncoherently. Any other reference is a memory reference,
+ * which names memory by node number. While this node carries number 0 it
+ * takes this node's own reset view, banks or PROM, as before any node is
+ * renumbered. Otherwise it takes the claim path the node's own DMA uses
+ * (sn1_fabric_init_view()), which decodes number 0 through the cable, the NI
+ * route table and the routers as for any other node-field-zero address, and
+ * answers a decode error where number 0 is out of reach.
+ */
+static IOMMUTLBEntry sn1_reset_local_translate(IOMMUMemoryRegion *iommu,
+                                               hwaddr addr,
+                                               IOMMUAccessFlags flags,
+                                               int index)
+{
+    SN1NodeState *node = container_of(iommu, SN1NodeState,
+                                      reset_local_router);
+    IOMMUTLBEntry entry = {
+        .target_as = &node->reset_prom_as,
+        .iova = addr & ~UINT64_C(0xfff),
+        .translated_addr = addr & ~UINT64_C(0xfff),
+        .addr_mask = 0xfff,
+        .perm = IOMMU_RW,
+    };
+
+    if (index == SN1_RESET_PROM) {
+        return entry;
+    }
+    if (sn1_node_number(node) == 0) {
+        entry.target_as = &node->reset_memory_as;
+        return entry;
+    }
+    entry.target_as = &node->reset_claim_as;
+    entry.translated_addr += SN1_PROM_RESET;
+    return entry;
+}
+
+/* The claim path moved: what number 0 reaches may have changed with it. */
+static void sn1_reset_claim_changed(MemoryListener *listener,
+                                    MemoryRegionSection *section)
+{
+    SN1NodeState *node = container_of(listener, SN1NodeState,
+                                      reset_claim_listener);
+
+    node->reset_claim_changed = true;
+}
+
+static void sn1_reset_claim_commit(MemoryListener *listener)
+{
+    SN1NodeState *node = container_of(listener, SN1NodeState,
+                                      reset_claim_listener);
+
+    if (node->reset_claim_changed) {
+        node->reset_claim_changed = false;
+        sn1_reset_local_unmap(node);
+    }
+}
+
 static void sn1_reset_memory_changed(MemoryListener *listener,
                                       MemoryRegionSection *section)
 {
@@ -1123,6 +1205,8 @@ static void sn1_reset_memory_commit(MemoryListener *listener)
         node->reset_memory_changed = false;
         memory_region_notify_iommu(&node->reset_router, SN1_RESET_MEMORY,
                                     event);
+        /* This node's processors reach the same banks while it is 0. */
+        sn1_reset_local_unmap(node);
     }
 }
 
@@ -1161,6 +1245,37 @@ static void sn1_node_map_reset(SN1NodeState *node, MemoryRegion *prom)
     memory_region_add_subregion_overlap(
         get_system_memory(), sn1_node_address(node, SN1_PROM_RESET),
         MEMORY_REGION(&node->reset_router), 1);
+
+    memory_region_init_iommu(&node->reset_local_router,
+                             sizeof(node->reset_local_router),
+                             TYPE_SN1_RESET_LOCAL_ROUTER, OBJECT(node),
+                             "sn1.reset-local-router", size);
+    memory_region_init(&node->reset_local_holder, OBJECT(node),
+                       "sn1.reset-local", size);
+    memory_region_add_subregion(&node->reset_local_holder, 0,
+                                MEMORY_REGION(&node->reset_local_router));
+    for (unsigned int cpu = 0; cpu < node->nr_cpus; cpu++) {
+        g_autofree char *name = g_strdup_printf("sn1.node%u.cpu%u.local-reset",
+                                                node->nasid, cpu);
+
+        memory_region_init_alias(&node->local_form[cpu][0], OBJECT(node),
+                                 name,
+                                 MEMORY_REGION(&node->reset_local_router), 0,
+                                 size);
+        memory_region_add_subregion_overlap(&node->cpu_sysmem[cpu],
+                                            SN1_PROM_RESET,
+                                            &node->local_form[cpu][0], 1);
+    }
+    address_space_init(&node->reset_claim_as, &node->fabric,
+                       "sn1.reset-claim");
+    node->reset_claim_listener = (MemoryListener) {
+        .name = "sn1.reset-claim",
+        .region_add = sn1_reset_claim_changed,
+        .region_del = sn1_reset_claim_changed,
+        .commit = sn1_reset_claim_commit,
+    };
+    memory_listener_register(&node->reset_claim_listener,
+                             &node->reset_claim_as);
 }
 
 static void sn1_reset_router_class_init(ObjectClass *klass, const void *data)
@@ -1170,6 +1285,17 @@ static void sn1_reset_router_class_init(ObjectClass *klass, const void *data)
     imrc->attrs_to_index = sn1_reset_attrs_to_index;
     imrc->num_indexes = sn1_reset_num_indexes;
     imrc->translate = sn1_reset_translate;
+    imrc->notify_flag_changed = sn1_reset_notify_flag_changed;
+}
+
+static void sn1_reset_local_router_class_init(ObjectClass *klass,
+                                              const void *data)
+{
+    IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
+
+    imrc->attrs_to_index = sn1_reset_attrs_to_index;
+    imrc->num_indexes = sn1_reset_num_indexes;
+    imrc->translate = sn1_reset_local_translate;
     imrc->notify_flag_changed = sn1_reset_notify_flag_changed;
 }
 
@@ -1206,74 +1332,87 @@ void sn1_register_reset_notifiers(SN1NodeState *const *nodes,
         expected += SN1_RESET_INDEXES;
     }
 
-    memory_region_transaction_begin();
-    for (i = 0; i < count; i++) {
-        SN1NodeState *node = nodes[i];
-        MemoryRegion *router = MEMORY_REGION(&node->reset_router);
+    /* Each node's global router, then its processors' node-zero form. */
+    for (unsigned int kind = 0; kind < 2; kind++) {
+        memory_region_transaction_begin();
+        for (i = 0; i < count; i++) {
+            SN1NodeState *node = nodes[i];
+            MemoryRegion *router = kind ?
+                MEMORY_REGION(&node->reset_local_router) :
+                MEMORY_REGION(&node->reset_router);
+            MemoryRegion *probe = kind ? &node->reset_local_probe :
+                                         &node->reset_probe;
 
-        if (!node->reset_router_ready) {
-            continue;
+            if (!node->reset_router_ready) {
+                continue;
+            }
+            memory_region_init_alias(probe, OBJECT(node),
+                                     kind ? "sn1.reset-local-router.probe" :
+                                            "sn1.reset-router.probe",
+                                     router, 0, memory_region_size(router));
+            memory_region_add_subregion(get_system_memory(),
+                                        SN1_RESET_PROBE_BASE +
+                                        i * SN1_RESET_PROBE_STRIDE,
+                                        probe);
         }
-        memory_region_init_alias(&node->reset_probe, OBJECT(node),
-                                 "sn1.reset-router.probe", router, 0,
-                                 memory_region_size(router));
-        memory_region_add_subregion(get_system_memory(),
-                                    SN1_RESET_PROBE_BASE +
-                                    i * SN1_RESET_PROBE_STRIDE,
-                                    &node->reset_probe);
-    }
-    memory_region_transaction_commit();
+        memory_region_transaction_commit();
 
-    for (i = 0; i < count; i++) {
-        SN1NodeState *node = nodes[i];
-        unsigned int registered = 0;
-        IOMMUNotifier *n;
+        for (i = 0; i < count; i++) {
+            SN1NodeState *node = nodes[i];
+            IOMMUMemoryRegion *router = kind ? &node->reset_local_router :
+                                               &node->reset_router;
+            unsigned int registered = 0;
+            IOMMUNotifier *n;
 
-        if (!node->reset_router_ready) {
-            continue;
-        }
-        CPU_FOREACH(cs) {
-            for (int asidx = 0; asidx <= cs->cc->max_as; asidx++) {
-                if (!cpu_get_address_space(cs, asidx)) {
-                    continue;
-                }
-                for (int index = 0; index < SN1_RESET_INDEXES; index++) {
-                    MemTxAttrs attrs = sn1_reset_index_attrs(index);
-                    int prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
-                    hwaddr xlat, plen = 1;
+            if (!node->reset_router_ready) {
+                continue;
+            }
+            CPU_FOREACH(cs) {
+                for (int asidx = 0; asidx <= cs->cc->max_as; asidx++) {
+                    if (!cpu_get_address_space(cs, asidx)) {
+                        continue;
+                    }
+                    for (int index = 0; index < SN1_RESET_INDEXES; index++) {
+                        MemTxAttrs attrs = sn1_reset_index_attrs(index);
+                        int prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
+                        hwaddr xlat, plen = 1;
 
-                    g_assert(sn1_reset_attrs_to_index(&node->reset_router,
-                                                      attrs) == index);
-                    WITH_RCU_READ_LOCK_GUARD() {
-                        address_space_translate_for_iotlb(cs, asidx,
-                            SN1_RESET_PROBE_BASE + i * SN1_RESET_PROBE_STRIDE,
-                            &xlat, &plen, attrs, &prot);
+                        g_assert(sn1_reset_attrs_to_index(router, attrs) ==
+                                 index);
+                        WITH_RCU_READ_LOCK_GUARD() {
+                            address_space_translate_for_iotlb(cs, asidx,
+                                SN1_RESET_PROBE_BASE +
+                                i * SN1_RESET_PROBE_STRIDE,
+                                &xlat, &plen, attrs, &prot);
+                        }
                     }
                 }
             }
+            IOMMU_NOTIFIER_FOREACH(n, router) {
+                registered++;
+            }
+            /* One per processor and index, however many views reached it. */
+            if (registered != expected) {
+                error_report("%s: %u reset router notifiers registered, "
+                             "expected %u",
+                             memory_region_name(MEMORY_REGION(router)),
+                             registered, expected);
+                exit(1);
+            }
         }
-        IOMMU_NOTIFIER_FOREACH(n, &node->reset_router) {
-            registered++;
-        }
-        /* One per processor and index, however many views reached it. */
-        if (registered != expected) {
-            error_report("%s: %u reset router notifiers registered, "
-                         "expected %u",
-                         memory_region_name(MEMORY_REGION(&node->reset_router)),
-                         registered, expected);
-            exit(1);
-        }
-    }
 
-    memory_region_transaction_begin();
-    for (i = 0; i < count; i++) {
-        if (nodes[i]->reset_router_ready) {
-            memory_region_del_subregion(get_system_memory(),
-                                        &nodes[i]->reset_probe);
-            object_unparent(OBJECT(&nodes[i]->reset_probe));
+        memory_region_transaction_begin();
+        for (i = 0; i < count; i++) {
+            MemoryRegion *probe = kind ? &nodes[i]->reset_local_probe :
+                                         &nodes[i]->reset_probe;
+
+            if (nodes[i]->reset_router_ready) {
+                memory_region_del_subregion(get_system_memory(), probe);
+                object_unparent(OBJECT(probe));
+            }
         }
+        memory_region_transaction_commit();
     }
-    memory_region_transaction_commit();
 }
 
 static const char * const sn1_prom_view_names[] = {
@@ -3098,6 +3237,8 @@ static void sn1_node_unrealize(DeviceState *dev)
 
 
     if (node->reset_router_ready) {
+        memory_listener_unregister(&node->reset_claim_listener);
+        address_space_destroy(&node->reset_claim_as);
         memory_listener_unregister(&node->reset_memory_listener);
         memory_region_del_subregion(get_system_memory(),
                                     MEMORY_REGION(&node->reset_router));
@@ -3327,6 +3468,12 @@ static const TypeInfo sn1_node_types[] = {
         .parent = TYPE_IOMMU_MEMORY_REGION,
         .instance_size = sizeof(IOMMUMemoryRegion),
         .class_init = sn1_reset_router_class_init,
+    },
+    {
+        .name = TYPE_SN1_RESET_LOCAL_ROUTER,
+        .parent = TYPE_IOMMU_MEMORY_REGION,
+        .instance_size = sizeof(IOMMUMemoryRegion),
+        .class_init = sn1_reset_local_router_class_init,
     },
     {
         .name              = TYPE_SGI_SN1_NODE,
