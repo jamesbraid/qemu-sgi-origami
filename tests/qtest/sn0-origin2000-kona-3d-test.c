@@ -598,6 +598,41 @@ static void test_packed_forms_frame(void)
 }
 
 /*
+ * A GL sender with no argument still sends one 0 word after its
+ * selector: glEnd, glPushMatrix, glPopMatrix, glLoadIdentity, glFlush,
+ * glInitNames, glPopName and glFlushRasterSGIX. Each consumes its 0, so
+ * the word cannot open a command of its own, and the command after it
+ * frames.
+ */
+static void test_argument_less_senders_take_a_zero(void)
+{
+    static const uint32_t selectors[] = {
+        0x71, 0xd9, 0xd8, 0xd2, 0xc7, 0x10c, 0xc2, 0x1cc,
+    };
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    for (size_t i = 0; i < ARRAY_SIZE(selectors); i++) {
+        kona_command(s, selectors[i], (uint32_t[]){ 0 }, 1);
+    }
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    for (size_t i = 0; i < ARRAY_SIZE(selectors); i++) {
+        g_autofree char *line = g_strdup_printf(
+            "token 0x%x args 0x0 0x0 0x0 argc 1\n", selectors[i]);
+
+        g_assert_cmpuint(count_occurrences(found, line), ==, 1);
+    }
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_kernel_command "),
+                     ==, MAKE_CURRENT_COMMANDS + ARRAY_SIZE(selectors));
+}
+
+/*
  * The GL client's vector senders store two components at once with one
  * 8-byte store, which need not fall on an 8-byte stream boundary:
  * glRasterPos2sv sends 0xab and then x << 32 | y, glColor3fv a word
@@ -19628,6 +19663,8 @@ int main(int argc, char **argv)
              test_packed_forms_frame);
     add_case("sn0/origin2000/kona-3d/doubleword-stores-are-two-words",
              test_doubleword_stores_are_two_words);
+    add_case("sn0/origin2000/kona-3d/argument-less-senders-take-a-zero",
+             test_argument_less_senders_take_a_zero);
     add_case("sn0/origin2000/kona-3d/light-model-not-bitmap",
              test_light_model_not_bitmap);
     add_case("sn0/origin2000/kona-3d/migration-mid-data-run",
