@@ -1155,7 +1155,9 @@ The IMPACT products are ``si``, ``si-t``, ``ssi``, ``mxi``, ``esi``,
 A display board reports its real channel count, two on ``dg5-2`` and
 eight on ``dg5-8``, and every channel scans out.
 Each topology's ``max-pipes`` says how many pipes it builds at once:
-four on ``onyx3400-ir``, one everywhere else. A second pipe takes
+four on ``onyx3400-ir``, two on ``onyx2-rack`` (``io3`` and, from two
+node boards, ``io7``, the graphics module's second pipe), one everywhere
+else. A second pipe takes
 another slot with a second ``-device``, and a node board controls at
 most one pipe (the Origin and Onyx2 Hardware Quick-reference Booklet,
 HMQ-380-C).

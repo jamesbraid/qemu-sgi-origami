@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# One Xtown Crosstown XIO board in a compute-module XIO slot, the host end
+# of an Onyx2 rack pipe's Crosstown cable to the graphics module's Ktown
+# (docs/system/mips/sgi/ip27.rst, Graphics module). The first pipe's Xtown
+# comes with layers/modules/ir-graphics-module.yaml; a composition fits this
+# layer into the XIO connector of the second pipe, beside the
+# layers/modules/kona-pipe.yaml instance fitted to the same connector, and
+# binds the placeholder `upstream` bus to that connector's XIO link. It
+# answers no widget of its own, so the compiler reads the pipe's XG as the
+# link's widget.
+layer_version: 1
+layer:
+  kind: module
+  id: xtown
+  requires:
+    assembly: ip27
+  data:
+    components:
+      - id: xtown
+        name: Xtown Crosstown XIO board
+        kind: board
+        hardware_kind: xtown
+        provenance: vendor-document
+        sources: ["007-3457-005 printed page 48 PDF page 72: each pipe needs its own crosstown cable from a crosstown XIO board", "007-3439-002 printed page 73 PDF page 87: the Crosstown conversion board"]
+        notes: "Presents no board record, like the first pipe's Xtown."
+
+    connections:
+      - component: xtown
+        bus: upstream
+        role: endpoint
+        provenance: vendor-document
+        sources: ["007-3457-005 printed page 48 PDF page 72: each pipe needs its own crosstown cable from a crosstown XIO board"]
+        notes: >-
+          A placeholder the composition binds to the XIO connector's XIO
+          link, which the pipe's XG answers on.

@@ -555,24 +555,49 @@ def check_catalogue(topologies: list[dict]) -> None:
                                     "slot offers")
 
 
+def _pipe_record_nodes(topology: dict) -> dict[str, int]:
+    """The node each KONA pipe record's attachment names, by its label.
+    Past each node's own first Crossbow entry, the XIO attachments place
+    the topology's boards in order."""
+    boards = topology.get("io_boards", [])
+    seen: set[int] = set()
+    nodes = {}
+    board = 0
+    for attachment in topology.get("xio_attachments", []):
+        node = attachment["node_index"]
+        if attachment["crossbar_index"] >= 0 and node not in seen:
+            seen.add(node)
+            continue
+        if board < len(boards) and boards[board].get("board_kind") == "KONA":
+            nodes[boards[board].get("label")] = node
+        board += 1
+    return nodes
+
+
 def attach_slot_requirements(topology: dict) -> None:
     """Give each XIO slot the node count it exists from: a slot whose
-    Crossbow port belongs to a node board that the smaller node
-    populations do not fit is there only from that many nodes."""
+    Crossbow port, or whose pipe record's attachment, belongs to a node
+    board that the smaller node populations do not fit is there only from
+    that many nodes."""
     graphics = topology.get("graphics")
     if not graphics:
         return
     labels = [slot.get("label") for slot in topology.get("xio_slots", [])]
+    records = _pipe_record_nodes(topology)
     populations = topology.get("node_populations", [])
     smallest = min((len(row["nodes"]) for row in populations), default=0)
     for slot in graphics["slots"]:
         placement = {item["name"]: item["value"] for item in slot["placement"]}
         name = placement.get("slot")
-        if name is None or name not in labels:
+        if name in records:
+            counts = [len(row["nodes"]) for row in populations
+                      if records[name] in row["nodes"]]
+        elif name is not None and name in labels:
+            index = labels.index(name)
+            counts = [len(row["nodes"]) for row in populations
+                      if any(item["slot"] == index
+                             for item in row.get("xio_slots", []))]
+        else:
             continue
-        index = labels.index(name)
-        counts = [len(row["nodes"]) for row in populations
-                  if any(item["slot"] == index
-                         for item in row.get("xio_slots", []))]
         if counts and min(counts) > smallest:
             slot["requires"] = {"min_nodes": min(counts)}

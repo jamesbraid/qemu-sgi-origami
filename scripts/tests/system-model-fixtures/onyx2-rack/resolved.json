@@ -638,6 +638,16 @@
       "sources": [
         "qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-one-wire"
       ]
+    },
+    {
+      "id": "io7-one-wire",
+      "kind": "one-wire",
+      "master": "io7-xg",
+      "name": "Pipe one-wire identity chain",
+      "provenance": "datasheet",
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-one-wire"
+      ]
     }
   ],
   "components": [
@@ -2487,6 +2497,100 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip27.rst",
+        "qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-kona"
+      ],
+      "hardware_kind": "kona",
+      "id": "io7-pipe",
+      "kind": "board",
+      "name": "InfiniteReality graphics pipe",
+      "notes": "The pipe's board set as one catalogue board: a geometry board (fitted per chassis), one raster manager with texture memory, and one display generator. A selected minimal population, not a captured inventory. Real pipes carry one to four raster managers.",
+      "parent": "xio-slot-7",
+      "provenance": "datasheet",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-role",
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-pipe-identity"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip27.rst",
+        "qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-kona"
+      ],
+      "hardware_kind": "xg",
+      "id": "io7-xg",
+      "identity": {
+        "widget_mfg": "0x2aa",
+        "widget_part": "0xc102",
+        "widget_revision": 0
+      },
+      "kind": "io-controller",
+      "name": "XIO-to-graphics ASIC (XG)",
+      "notes": "Sits on the geometry board, where the host path ends on both chassis (007-3454-005 printed page 28 names the XG ASIC). Parented to the pipe board here so the catalogue names the whole pipe as one board. No widget revision is captured: 0 is a placeholder, and QEMU's sgi-kona answers the identity from the device itself.",
+      "parent": "io7-pipe",
+      "provenance": "datasheet",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-pipe-identity",
+        "linux:2f9060b1db4aa2c21c248e34476d8936a2b69cf6 arch/mips/include/asm/xtalk/xwidget.h WIDGET_KONA_PART_NUM 0xc102 and WIDGET_KONA_MFGR_NUM 0x2aa"
+      ]
+    },
+    {
+      "hardware_kind": "raster-manager",
+      "id": "io7-rm",
+      "kind": "board",
+      "name": "Raster manager with texture memory",
+      "notes": "One RM/TM assembly, the minimum either chassis takes. The model presents no raster-manager record on the one-wire chain.",
+      "parent": "io7-pipe",
+      "provenance": "datasheet",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-one-wire"
+      ]
+    },
+    {
+      "hardware_kind": "display-generator",
+      "id": "io7-dg",
+      "kind": "board",
+      "name": "Display generator (DG5-2)",
+      "notes": "The model presents no display-generator record on the one-wire chain.",
+      "parent": "io7-pipe",
+      "provenance": "datasheet",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-one-wire"
+      ]
+    },
+    {
+      "hardware_kind": "geometry-board",
+      "id": "io7-ge-geometry",
+      "kind": "board",
+      "name": "GE16-4 geometry board",
+      "notes": "The XG ASIC the host reaches sits on this board; the pipe layer carries it.",
+      "parent": "io7-pipe",
+      "provenance": "datasheet",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-one-wire"
+      ]
+    },
+    {
+      "id": "io7-ge-geometry-identity",
+      "identity": {
+        "part": "030-1398-001"
+      },
+      "kind": "identity",
+      "name": "GE16-4 one-wire identity",
+      "parent": "io7-ge-geometry",
+      "provenance": "datasheet",
+      "regions": [],
+      "sources": [
+        "web:nekonomicon-16285 board list, GE16-4 io3, part 030-1398-001 revision E"
+      ]
+    },
+    {
       "hardware_kind": "xtown",
       "id": "gfx-xtown",
       "kind": "board",
@@ -2508,7 +2612,7 @@
       "id": "gfx-graphics-module",
       "kind": "chassis",
       "name": "Onyx2 graphics module",
-      "notes": "Holds up to two pipes; this layer fits one. No capture shows the graphics-module midplane's own board record.",
+      "notes": "Holds up to two pipes, both cabled here. No capture shows the graphics-module midplane's own board record.",
       "parent": "xio-slot-3",
       "provenance": "vendor-document",
       "regions": [],
@@ -2540,6 +2644,24 @@
       "regions": [],
       "sources": [
         "web:nekonomicon-16285 board list, KTOWN io3, part 030-1067-001 revision F"
+      ]
+    },
+    {
+      "hardware_kind": "xtown",
+      "id": "io7-gfx-xtown",
+      "kind": "board",
+      "name": "Xtown Crosstown XIO board",
+      "notes": "Presents no board record, like the first pipe's Xtown.",
+      "parent": "xio-slot-7",
+      "physical_slot": {
+        "kind": "io",
+        "number": 7
+      },
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3457-005 printed page 48 PDF page 72: each pipe needs its own crosstown cable from a crosstown XIO board",
+        "007-3439-002 printed page 73 PDF page 87: the Crosstown conversion board"
       ]
     }
   ],
@@ -2649,11 +2771,12 @@
       },
       {
         "component": "xio-slot-7",
-        "occupancy": "empty",
+        "occupancy": "occupied",
+        "occupant": "io7-gfx-xtown",
         "provenance": "derived",
-        "reason": "Select a module without optional boards or external fabric cables.",
+        "reason": "Fit the Xtown for pipe 1 into IO7, Crossbow 1 widget E under n2, the booklet's second-pipe slot, cabled to the second pipe of the same graphics module. The booklet pairs IO7 with IO2; the pipe follows its Xtown's slot, so IO3 with IO7 is a valid placement.",
         "sources": [
-          "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices"
+          "qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-xtown-placement"
         ]
       },
       {
@@ -2766,9 +2889,26 @@
         "prefix": "io3-ge-"
       },
       {
+        "bus_bindings": {
+          "upstream": "xbow1-io7"
+        },
+        "model": "layers/modules/kona-pipe.yaml",
+        "parent": "xio-slot-7",
+        "prefix": "io7-"
+      },
+      {
+        "bus_bindings": {
+          "pipe-one-wire": "io7-one-wire"
+        },
+        "model": "layers/modules/kona-ge16-4.yaml",
+        "parent": "io7-pipe",
+        "prefix": "io7-ge-"
+      },
+      {
         "adopt_roots": true,
         "bus_bindings": {
           "pipe-one-wire": "io3-one-wire",
+          "second-pipe-one-wire": "io7-one-wire",
           "upstream": "xbow0-io3"
         },
         "model": "layers/modules/ir-graphics-module.yaml",
@@ -2778,6 +2918,18 @@
           "number": 3
         },
         "prefix": "gfx-"
+      },
+      {
+        "bus_bindings": {
+          "upstream": "xbow1-io7"
+        },
+        "model": "layers/modules/xtown.yaml",
+        "parent": "xio-slot-7",
+        "physical_slot": {
+          "kind": "io",
+          "number": 7
+        },
+        "prefix": "io7-gfx-"
       }
     ],
     "platform": "ip27",
@@ -2922,7 +3074,6 @@
             "xio-slot-4": 1,
             "xio-slot-5": 1,
             "xio-slot-6": 1,
-            "xio-slot-7": 2,
             "xio-slot-8": 2,
             "xio-slot-9": 2
           }
@@ -2979,7 +3130,6 @@
             "xio-slot-4": 3,
             "xio-slot-5": 1,
             "xio-slot-6": 3,
-            "xio-slot-7": 2,
             "xio-slot-8": 2,
             "xio-slot-9": 2
           }
@@ -3048,7 +3198,6 @@
             "xio-slot-4": 3,
             "xio-slot-5": 1,
             "xio-slot-6": 3,
-            "xio-slot-7": 2,
             "xio-slot-8": 4,
             "xio-slot-9": 2
           }
@@ -3900,6 +4049,35 @@
       ]
     },
     {
+      "bus": "xbow1-io7",
+      "component": "io7-xg",
+      "notes": "A placeholder each instance binds to the XIO link the pipe answers on; that link's own attachment carries the widget and controlling node.",
+      "provenance": "datasheet",
+      "role": "endpoint",
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-pipe-link"
+      ]
+    },
+    {
+      "bus": "io7-one-wire",
+      "component": "io7-xg",
+      "provenance": "datasheet",
+      "role": "master",
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-one-wire"
+      ]
+    },
+    {
+      "bus": "io7-one-wire",
+      "component": "io7-ge-geometry-identity",
+      "notes": "A placeholder the composition binds to its pipe's own one-wire bus.",
+      "provenance": "datasheet",
+      "role": "endpoint",
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-one-wire"
+      ]
+    },
+    {
       "bus": "xbow0-io3",
       "component": "gfx-xtown",
       "notes": "A placeholder the composition binds to the XIO connector's XIO link. The Xtown extends that link over the cable to the pipe; it answers no widget of its own, so the compiler reads the pipe's XG, not this board, as the link's widget.",
@@ -3917,6 +4095,26 @@
       "role": "endpoint",
       "sources": [
         "qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-one-wire"
+      ]
+    },
+    {
+      "bus": "io7-one-wire",
+      "component": "gfx-ktown-identity",
+      "notes": "A placeholder the composition binds to the second pipe's own one-wire bus. The two pipes share this one Ktown; that the second pipe's chain lists it is approximated.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3457-005 printed page 14 PDF page 38: the Ktown board between the two board sets"
+      ]
+    },
+    {
+      "bus": "xbow1-io7",
+      "component": "io7-gfx-xtown",
+      "notes": "A placeholder the composition binds to the XIO connector's XIO link, which the pipe's XG answers on.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3457-005 printed page 48 PDF page 72: each pipe needs its own crosstown cable from a crosstown XIO board"
       ]
     }
   ],
@@ -4128,6 +4326,11 @@
           "serial": "0x51454d554700"
         },
         {
+          "component": "io7-xg",
+          "reason": "Synthetic graphics board identity G16, the second pipe slot's first instance under the sixteen-per-slot rule, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554710"
+        },
+        {
           "component": "mediaio-ioc3",
           "reason": "Synthetic IOC3 identity 1. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the \"EMU\" marker; not hardware evidence.",
           "serial": "0x5e7454d55001"
@@ -4166,7 +4369,7 @@
     "graphics": {
       "headless": false,
       "headless_refused": "SGI sold no Onyx2 without an InfiniteReality pipe, and an Onyx2 with no pipe is an Origin 2000, so use origin2000-deskside or origin2000-rack",
-      "max_pipes": 1,
+      "max_pipes": 2,
       "slots": [
         {
           "changeable": false,
@@ -4400,6 +4603,231 @@
               "family": "kona",
               "product": "ir2",
               "reason": "no manual or capture places a GE14 InfiniteReality2 in an Onyx2 rack"
+            }
+          ]
+        },
+        {
+          "changeable": false,
+          "description": "Xtown in XIO slot 7, cabled to the graphics module's Ktown: the rack's second InfiniteReality pipe",
+          "families": [
+            {
+              "device": "sgi-kona",
+              "family": "kona",
+              "name": "InfiniteReality",
+              "products": [
+                {
+                  "assembly": "030-1398-001",
+                  "description": "GE16 geometry board, RM9 raster managers, 64 MB texture per RM",
+                  "fidelity": "approximated",
+                  "limitations": [
+                    "io7 is taken as the graphics module's left-hand pipe, which takes at most two raster managers; which Ktown connector a second pipe uses is approximated",
+                    "presents the GE16-4 geometry board, since no InfiniteReality2E capture gives the GE16 variant",
+                    "presents the TM7 as its 64 MB texture board, which is inferred",
+                    "a DG5-2 in a rack presents the 030-1055-001 part, since no capture shows a plain DG5-2 in an Onyx2 rack"
+                  ],
+                  "name": "InfiniteReality2E",
+                  "pairing": "established",
+                  "product": "ir2e",
+                  "settings": [
+                    {
+                      "changeable": false,
+                      "default": "ge16-4",
+                      "description": "geometry board",
+                      "name": "geometry",
+                      "values": [
+                        {
+                          "description": "GE16-4, four geometry engines",
+                          "evidence": "030-1398-001",
+                          "value": "ge16-4"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "rm9",
+                      "description": "raster-manager board",
+                      "name": "rm-type",
+                      "values": [
+                        {
+                          "description": "RM9; gfxinfo names the InfiniteReality3 board RM10",
+                          "evidence": "030-1402-001",
+                          "value": "rm9"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "1",
+                      "description": "raster-manager boards in the pipe",
+                      "name": "rm-count",
+                      "values": [
+                        {
+                          "description": "one raster manager",
+                          "value": "1"
+                        },
+                        {
+                          "description": "two raster managers",
+                          "value": "2"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "64",
+                      "description": "texture memory on each raster manager, in MB",
+                      "name": "texture-mb",
+                      "values": [
+                        {
+                          "description": "64 MB",
+                          "evidence": "TM7 030-1053-001",
+                          "value": "64"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "dg5-2",
+                      "description": "display generator board",
+                      "name": "display",
+                      "values": [
+                        {
+                          "description": "DG5-2, 2 channels",
+                          "evidence": "030-1055-001",
+                          "value": "dg5-2"
+                        },
+                        {
+                          "description": "DG5-8, 8 channels",
+                          "evidence": "030-1087-001",
+                          "value": "dg5-8"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "assembly": "030-1398-001",
+                  "description": "GE16-4 geometry board, RM10 raster managers (RM9 in configmon), 256 MB texture per RM",
+                  "fidelity": "approximated",
+                  "limitations": [
+                    "io7 is taken as the graphics module's left-hand pipe, which takes at most two raster managers; which Ktown connector a second pipe uses is approximated",
+                    "a DG5-2 in a rack presents the 030-1055-001 part, since no capture shows a plain DG5-2 in an Onyx2 rack"
+                  ],
+                  "name": "InfiniteReality3",
+                  "pairing": "established",
+                  "product": "ir3",
+                  "settings": [
+                    {
+                      "changeable": false,
+                      "default": "ge16-4",
+                      "description": "geometry board",
+                      "name": "geometry",
+                      "values": [
+                        {
+                          "description": "GE16-4, four geometry engines",
+                          "evidence": "030-1398-001",
+                          "value": "ge16-4"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "rm9",
+                      "description": "raster-manager board",
+                      "name": "rm-type",
+                      "values": [
+                        {
+                          "description": "RM9; gfxinfo names the InfiniteReality3 board RM10",
+                          "evidence": "030-1402-001",
+                          "value": "rm9"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "1",
+                      "description": "raster-manager boards in the pipe",
+                      "name": "rm-count",
+                      "values": [
+                        {
+                          "description": "one raster manager",
+                          "value": "1"
+                        },
+                        {
+                          "description": "two raster managers",
+                          "value": "2"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "256",
+                      "description": "texture memory on each raster manager, in MB",
+                      "name": "texture-mb",
+                      "values": [
+                        {
+                          "description": "256 MB",
+                          "evidence": "030-1588-001",
+                          "value": "256"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "dg5-2",
+                      "description": "display generator board",
+                      "name": "display",
+                      "values": [
+                        {
+                          "description": "DG5-2, 2 channels",
+                          "evidence": "030-1055-001",
+                          "value": "dg5-2"
+                        },
+                        {
+                          "description": "DG5-8, 8 channels",
+                          "evidence": "030-1087-001",
+                          "value": "dg5-8"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "name": "io7",
+          "placement": [
+            {
+              "name": "slot",
+              "value": "io7"
+            }
+          ],
+          "refusals": [
+            {
+              "family": "kona",
+              "product": "ir2",
+              "reason": "no manual or capture places a GE14 InfiniteReality2 in an Onyx2 rack"
+            },
+            {
+              "family": "kona",
+              "product": "ir2e",
+              "reason": "the model takes io7 as the graphics module's second pipe, on the left-hand Ktown connector, which takes one or two raster managers; that placement is approximated",
+              "settings": [
+                {
+                  "name": "rm-count",
+                  "value": "4"
+                }
+              ]
+            },
+            {
+              "family": "kona",
+              "product": "ir3",
+              "reason": "the model takes io7 as the graphics module's second pipe, on the left-hand Ktown connector, which takes one or two raster managers; that placement is approximated",
+              "settings": [
+                {
+                  "name": "rm-count",
+                  "value": "4"
+                }
+              ]
             }
           ]
         }

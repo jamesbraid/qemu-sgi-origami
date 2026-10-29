@@ -3285,11 +3285,20 @@ def _compile_node_populations(model: dict, graph: dict, nodes: list[dict],
     # positions on that Crossbow.
     host_crossbar: dict[int, int] = {}
     board_nodes = set()
+    # Past each node's own first Crossbow entry, the entries place the
+    # boards in order. A KONA pipe record is a graphics slot, not a board
+    # the machine always builds: a row without its node leaves the slot
+    # out, and the graphics record says how many nodes the slot needs.
+    board = 0
     for attachment in xio_attachments:
         node = attachment["node_index"]
         if attachment["crossbar_index"] >= 0 and node not in host_crossbar:
             host_crossbar[node] = attachment["crossbar_index"]
-        else:
+            continue
+        kind = (io_boards[board].get("board_kind")
+                if board < len(io_boards) else None)
+        board += 1
+        if kind != "KONA":
             board_nodes.add(node)
     per_node_max = [max(population[index] for population in supported)
                     for index in range(len(nodes))]

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# The Onyx2 rack's graphics-module end of one pipe: the Xtown board in a
-# compute-module XIO slot, and the graphics module holding the Ktown board
-# the Crosstown cable reaches (docs/system/mips/sgi/ip27.rst, Graphics module and
+# The Onyx2 rack's graphics-module end of its pipes: the first pipe's Xtown
+# board in a compute-module XIO slot, and the graphics module holding the
+# one Ktown board every Crosstown cable reaches (docs/system/mips/sgi/ip27.rst, Graphics module and
 # How a pipe reaches the compute module). A composition fits this layer
 # into the XIO connector the Xtown occupies, with adopt_roots so both roots
 # land there, after a layers/modules/kona-pipe.yaml instance fitted to the
@@ -9,6 +9,14 @@
 # module and its pipe hang under the XIO connector because that
 # connector's link is the one the pipe answers on, and IRIX names the pipe
 # under the Xtown's slot (/hw/module/1/slot/io3/kona on the real rack).
+#
+# The second pipe's Xtown is a layers/modules/xtown.yaml instance in
+# another XIO slot, and its pipe a second layers/modules/kona-pipe.yaml
+# instance fitted there. The two pipes
+# share the graphics module's one Ktown (007-3457-005 printed page 14), so
+# the Ktown record joins the second pipe's chain too, through the
+# placeholder `second-pipe-one-wire` bus. Whether a real second pipe's
+# chain lists the Ktown is unknown; listing it is approximated.
 #
 # The Xtown and Ktown are link extenders with no widget identity a host can
 # read, so the pipe's XG is still the widget on the connector's link. The
@@ -37,7 +45,7 @@ layer:
         provenance: vendor-document
         sources: ["007-3457-005 printed page 14 PDF page 38 and printed page 31 PDF page 55: two pipes per graphics module, Ktown connectors"]
         notes: >-
-          Holds up to two pipes; this layer fits one. No capture shows the
+          Holds up to two pipes, both cabled here. No capture shows the
           graphics-module midplane's own board record.
 
       - id: ktown
@@ -77,3 +85,12 @@ layer:
           A placeholder the composition binds to its pipe's own one-wire
           bus. The real rack's IRIX lists this record beside the geometry
           board's at the pipe's path.
+      - component: ktown-identity
+        bus: second-pipe-one-wire
+        role: endpoint
+        provenance: vendor-document
+        sources: ["007-3457-005 printed page 14 PDF page 38: the Ktown board between the two board sets"]
+        notes: >-
+          A placeholder the composition binds to the second pipe's own
+          one-wire bus. The two pipes share this one Ktown; that the second
+          pipe's chain lists it is approximated.

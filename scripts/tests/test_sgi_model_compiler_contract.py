@@ -2472,27 +2472,37 @@ class RecordShapeTests(unittest.TestCase):
         # bits 3 and 2, puts the BaseIO-G at widget F and the pipe at
         # widget 8 with no Ktown on its chain; the rack's pipe answers at
         # IO3, Crossbow 0 widget F, with the Ktown record after the
-        # geometry board's.
+        # geometry board's, and its graphics module's second pipe at IO7,
+        # Crossbow 1 widget E, with the same shared Ktown.
         # Each chassis's chain starts with its own captured geometry board:
         # a GE14-4 in the deskside, a GE16-4 in the rack.
-        for name, bits, pipe_widget, baseio_widget, part, others in (
-                ("onyx2-deskside", [3, 2], 8, 15, "030-1129-002", []),
-                ("onyx2-rack", [None] * 4, 15, 8, "030-1398-001",
-                 ["030-1067-001"])):
+        for name, bits, pipes, baseio_widget, part, others in (
+                ("onyx2-deskside", [3, 2], [(0, 8)], 15, "030-1129-002", []),
+                ("onyx2-rack", [None] * 4, [(0, 15), (1, 14)], 8,
+                 "030-1398-001", ["030-1067-001"])):
             with self.subTest(configuration=name):
                 topology = json.loads(
                     render_catalogue_json([_resolved(name)]))["topologies"][0]
                 self.assertEqual(
                     [node.get("hub-slot-bits") for node in topology["nodes"]], bits)
-                boards = {board["preset"]: board for board in topology["io-boards"]}
-                self.assertEqual(set(boards), {"io6g", "kona"})
-                self.assertEqual(boards["kona"]["part"], part)
-                self.assertEqual(boards["kona"]["other-identity-parts"], others)
-                widgets = {board["component"].get("hardware_kind"):
-                           (board["crossbar_index"], board["widget"])
-                           for board in index_graph(_resolved(name))["io_boards"]}
-                self.assertEqual(widgets, {"xg": (0, pipe_widget),
-                                           "bridge": (0, baseio_widget)})
+                presets = [board["preset"] for board in topology["io-boards"]]
+                self.assertEqual(sorted(presets),
+                                 sorted(["io6g"] + ["kona"] * len(pipes)))
+                for board in topology["io-boards"]:
+                    if board["preset"] == "kona":
+                        self.assertEqual(board["part"], part)
+                        self.assertEqual(board["other-identity-parts"], others)
+                boards = index_graph(_resolved(name))["io_boards"]
+                self.assertEqual(
+                    sorted((board["crossbar_index"], board["widget"])
+                           for board in boards
+                           if board["component"].get("hardware_kind") == "xg"),
+                    pipes)
+                self.assertEqual(
+                    [(board["crossbar_index"], board["widget"])
+                     for board in boards
+                     if board["component"].get("hardware_kind") == "bridge"],
+                    [(0, baseio_widget)])
 
     def test_board_identity_override_replaces_the_shared_boards_part(self):
         # onyx2-rack reuses the Origin 2000 module layer, whose baseio

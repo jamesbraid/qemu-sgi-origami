@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # The Onyx2 rack: the eight-processor compute module with a BaseIO-G in IO1
-# and one InfiniteReality pipe whose Xtown occupies IO3, Crossbow 0 widget F,
-# where the real rack capture has it (docs/system/mips/sgi/ip27.rst, Rack compute module).
+# and the graphics module's two InfiniteReality pipe slots: pipe 0's Xtown
+# occupies IO3, Crossbow 0 widget F, where the real rack capture has it, and
+# pipe 1's IO7, Crossbow 1 widget E, which needs node board 2 (docs/system/mips/sgi/ip27.rst, Rack compute module).
 # Launch it with QEMU: -M onyx2, whose default topology this is.
 configuration_version: 1
-# The key left here backs the seventeen connector_population selections below
-# only, whose strict evidence policy requires non-empty sources for each one
+# The key left here backs the connector_population selections below only,
+# whose strict evidence policy requires non-empty sources for each one
 # regardless of provenance. It cites a page of the specs, not an independently
 # obtainable source; an empty-occupancy selection has no external document to
 # cite in the first place.
@@ -29,12 +30,25 @@ module_instances:
   prefix: io3-ge-
   parent: io3-pipe
   bus_bindings: {pipe-one-wire: io3-one-wire}
+- model: layers/modules/kona-pipe.yaml
+  prefix: io7-
+  parent: xio-slot-7
+  bus_bindings: {upstream: xbow1-io7}
+- model: layers/modules/kona-ge16-4.yaml
+  prefix: io7-ge-
+  parent: io7-pipe
+  bus_bindings: {pipe-one-wire: io7-one-wire}
 - model: layers/modules/ir-graphics-module.yaml
   prefix: gfx-
   parent: xio-slot-3
   physical_slot: {kind: io, number: 3}
   adopt_roots: true
-  bus_bindings: {upstream: xbow0-io3, pipe-one-wire: io3-one-wire}
+  bus_bindings: {upstream: xbow0-io3, pipe-one-wire: io3-one-wire, second-pipe-one-wire: io7-one-wire}
+- model: layers/modules/xtown.yaml
+  prefix: io7-gfx-
+  parent: xio-slot-7
+  physical_slot: {kind: io, number: 7}
+  bus_bindings: {upstream: xbow1-io7}
 connector_population:
 - component: router-1-external-0
   occupancy: &empty-occupancy empty
@@ -58,7 +72,16 @@ connector_population:
 - {component: xio-slot-4, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
 - {component: xio-slot-5, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
 - {component: xio-slot-6, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
-- {component: xio-slot-7, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- component: xio-slot-7
+  occupancy: occupied
+  occupant: io7-gfx-xtown
+  reason: >-
+    Fit the Xtown for pipe 1 into IO7, Crossbow 1 widget E under n2, the
+    booklet's second-pipe slot, cabled to the second pipe of the same
+    graphics module. The booklet pairs IO7 with IO2; the pipe follows its
+    Xtown's slot, so IO3 with IO7 is a valid placement.
+  provenance: derived
+  sources: [rack-pipe-placement]
 - {component: xio-slot-8, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
 - {component: xio-slot-9, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
 - {component: xio-slot-10, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}

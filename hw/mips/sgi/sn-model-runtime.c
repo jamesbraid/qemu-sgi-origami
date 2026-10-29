@@ -361,6 +361,39 @@ static bool *sgi_model_host_attachments(const SGIModelTopology *t,
     return host;
 }
 
+/*
+ * For each of @t's xio_attachments that places one of io_boards[] (every
+ * entry @host does not mark), that board's position in io_boards[], or -1.
+ */
+static int *sgi_model_attachment_boards(const SGIModelTopology *t,
+                                        const bool *host)
+{
+    size_t total = QAPI_LIST_LENGTH(t->xio_attachments);
+    int *board = g_new(int, total ? total : 1);
+    int next = 0;
+
+    for (size_t i = 0; i < total; i++) {
+        board[i] = host[i] ? -1 : next++;
+    }
+    return board;
+}
+
+/*
+ * Whether io_boards[] entry @index is a KONA pipe record: a graphics slot
+ * the machine fits only when a pipe claims it, which a row whose node
+ * board does not fit leaves out, as it leaves out an empty XIO slot.
+ */
+static bool sgi_model_pipe_record(const SGIModelTopology *t, int index)
+{
+    const SGIModelIoBoardList *entry = t->io_boards;
+
+    for (; entry && index > 0; index--) {
+        entry = entry->next;
+    }
+    return index == 0 && entry &&
+           entry->value->preset == SGI_MODEL_IO_BOARD_PRESET_KONA;
+}
+
 /* Whether @end's index fits the list its kind names in @t. */
 static bool sgi_model_xio_end_valid(const SGIModelTopology *t,
                                     const SGIModelXioEnd *end)
@@ -496,6 +529,7 @@ static bool sgi_model_check_row(const SGIModelTopology *t,
     const uint32List *cable;
     g_autofree bool *pci_host_attachment =
         g_new0(bool, attachment_total ? attachment_total : 1);
+    g_autofree int *boards = sgi_model_attachment_boards(t, host);
     size_t i;
 
     for (cable = row->cables; cable; cable = cable->next) {
@@ -559,7 +593,8 @@ static bool sgi_model_check_row(const SGIModelTopology *t,
          attachment = attachment->next, i++) {
         const SGIModelXioAttachment *a = attachment->value;
 
-        if (host[i] || pci_host_attachment[i]) {
+        if (host[i] || pci_host_attachment[i] ||
+            sgi_model_pipe_record(t, boards[i])) {
             continue;
         }
         if (!sgi_model_kept(node_map, node_total, a->node_index) ||
@@ -843,12 +878,24 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     }
     {
         SGIModelIoBoardList **tail = &view->io_boards;
+        g_autofree int *boards = sgi_model_attachment_boards(t, host);
+        g_autofree bool *absent = g_new0(bool, board_total ? board_total : 1);
 
+        /* A pipe record whose node the row leaves out goes with its node. */
+        for (i = 0; i < attachment_total; i++) {
+            if (boards[i] >= 0 && (size_t)boards[i] < board_total &&
+                attachment_map[i] < 0 && sgi_model_pipe_record(t, boards[i])) {
+                absent[boards[i]] = true;
+            }
+        }
         for (io_board = t->io_boards, i = 0; io_board;
              io_board = io_board->next, i++) {
             SGIModelIoBoard *copy;
 
             board_map[i] = -1;
+            if (absent[i]) {
+                continue;
+            }
             if (io_board->value->has_pci_host_index &&
                 pci_host_map[io_board->value->pci_host_index] < 0) {
                 continue;

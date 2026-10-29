@@ -372,7 +372,9 @@ static void test_catalogue_records(void)
         QDict *g = graphics_record(headless[i].topology);
 
         g_assert_nonnull(g);
-        g_assert_cmpint(qdict_get_int(g, "max-pipes"), ==, 1);
+        g_assert_cmpint(qdict_get_int(g, "max-pipes"), ==,
+                        g_str_equal(headless[i].topology, "onyx2-rack") ?
+                        2 : 1);
         g_assert_cmpint(qdict_get_bool(g, "headless"), ==,
                         headless[i].headless);
         if (headless[i].reason) {
@@ -1021,6 +1023,59 @@ static void test_multi_rm_count(void)
     qtest_quit(qts);
 }
 
+/*
+ * The Onyx2 rack's second pipe, Crossbow 1 widget E (io7), which node
+ * board 2 controls. Processors 2 and 3 sit on node board 2, and each
+ * processor's own I/O space reaches its own Hub's Crossbow.
+ */
+#define RACK_IO7(off)        (SPACE_IO + (UINT64_C(14) << 24) + (off))
+#define RACK_N2_CPU          2
+
+static const Launch onyx2_rack_one_node = {
+    "onyx2-rack", "onyx2,nodes=1", "-smp 2", NO_BIOS, NULL,
+};
+
+static const Launch onyx2_rack_two_nodes = {
+    "onyx2-rack", "onyx2,nodes=2", "-smp 4", NO_BIOS, NULL,
+};
+
+/*
+ * The rack's graphics module holds two pipes: io3 under node board 1 and
+ * io7 under node board 2, which a one-node rack does not have. With two
+ * node boards both fit. io7 answers its identity to node board 2's
+ * processors, and is configured to compose its packets for that node's
+ * Hub port on Crossbow 1 (widget A) and to return its credits to that
+ * node's processor interface, where io3's go to node board 1's. A DMA
+ * landing through that Hub is not exercised here.
+ */
+static void test_multi_onyx2_rack(void)
+{
+    g_autofree char *io3 = NULL, *io7 = NULL, *hub = NULL;
+    g_autofree char *io3_pi = NULL, *io7_pi = NULL;
+    QTestState *qts;
+
+    assert_refused(&onyx2_rack_one_node,
+                   "-device sgi-kona,slot=io7,product=ir3",
+                   "graphics slot io7 of topology 'onyx2-rack' exists from "
+                   "nodes=2, and this machine fits 1");
+    qts = start(&onyx2_rack_two_nodes,
+                "-device sgi-kona,slot=io3,product=ir3 "
+                "-device sgi-kona,slot=io7,product=ir3,rm-count=2");
+    io3 = qom_type(qts, "/machine/module0/io3");
+    io7 = qom_type(qts, "/machine/module0/io7");
+    g_assert_cmpstr(io3, ==, "sgi-kona");
+    g_assert_cmpstr(io7, ==, "sgi-kona");
+    g_assert_cmphex((cpu_readl(qts, RACK_N2_CPU, RACK_IO7(4)) >> 12) &
+                    0xffff, ==, 0xc102);
+    hub = qom_text(qts, "/machine/module0/io7", "fabric-hub-widget");
+    g_assert_cmpstr(hub, ==, "10");
+    io3_pi = qom_text(qts, "/machine/module0/io3", "pi");
+    io7_pi = qom_text(qts, "/machine/module0/io7", "pi");
+    g_assert_cmpstr(io3_pi, ==, "/machine/node0/hub");
+    g_assert_cmpstr(io7_pi, ==, "/machine/node1/hub");
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     QTestState *qts;
@@ -1049,6 +1104,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-graphics-pipes/multi/onyx3400-ir",
                    test_multi_onyx3400_ir);
     qtest_add_func("/sgi-graphics-pipes/multi/rm-count", test_multi_rm_count);
+    qtest_add_func("/sgi-graphics-pipes/multi/onyx2-rack",
+                   test_multi_onyx2_rack);
     for (size_t i = 0; i < G_N_ELEMENTS(launches); i++) {
         g_autofree char *path = g_strdup_printf(
             "/sgi-graphics-pipes/default/%s", launches[i].topology);
