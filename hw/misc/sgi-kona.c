@@ -18891,6 +18891,16 @@ static uint64_t sgi_kona_read_word(void *opaque, hwaddr addr,
     return value;
 }
 
+/* The host-interface reset bit: see SGI_KONA_RESET_STROBE. */
+static void sgi_kona_hip_reset(SGIKonaState *s)
+{
+    s->int_enable = 0;
+    s->reset_arg = 0;
+    s->credit_config = 0;
+    s->low_window_write = 0;
+    memset(s->map_ram, 0, s->map_ram_count * sizeof(*s->map_ram));
+}
+
 static void sgi_kona_write_word(void *opaque, hwaddr addr,
                                 uint64_t value, unsigned size)
 {
@@ -19016,6 +19026,9 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
     case SGI_KONA_RESET_STROBE:
         s->reset_strobe = value;
         trace_sgi_kona_reset_register(value);
+        if (value & 1) {
+            sgi_kona_hip_reset(s);
+        }
         break;
     case SGI_KONA_EEPROM_ENABLE:
         s->eeprom_enable = value;

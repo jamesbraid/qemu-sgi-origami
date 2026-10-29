@@ -1023,6 +1023,50 @@ static void test_named_registers_observable(void)
 }
 
 /*
+ * The kernel's host-interface reset pulse, 1, read, 0, read at +0x800300,
+ * resets what the kernel rewrites after it: the global enable at
+ * +0x800220, the flow configuration at +0x800210, the group word at +0x7c
+ * and every map RAM entry (inferred from the rewrite). Registers the
+ * kernel does not rewrite keep their values: the interrupt vectors and
+ * destination, the loader's words and the EEPROM enable.
+ */
+static void test_reset_pulse(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(s, KONA_REG(0x800220), 0x8000);
+    qtest_writel(s, KONA_REG(0x800210), 0x700);
+    qtest_writel(s, KONA_REG(0x7c), 0x23);
+    qtest_writel(s, REG_MAPRAM(0), 0x20003e80);
+    qtest_writel(s, REG_MAPRAM(5), 0x20001234);
+    qtest_writel(s, REG_INT_VECTORS, 0x3e2210);
+    qtest_writel(s, REG_INT_DEST_LOWER, 0x1800090);
+    qtest_writel(s, REG_LOADER_328, 1);
+    qtest_writel(s, KONA_REG(0x800308), 1);
+
+    qtest_writel(s, REG_RESET_STROBE, 1);
+    g_assert_cmphex(qtest_readl(s, REG_RESET_STROBE), ==, 1);
+    qtest_writel(s, REG_RESET_STROBE, 0);
+    g_assert_cmphex(qtest_readl(s, REG_RESET_STROBE), ==, 0);
+
+    g_assert_cmphex(qtest_readl(s, KONA_REG(0x800220)), ==, 0);
+    g_assert_cmphex(qtest_readl(s, KONA_REG(0x800210)), ==, 0);
+    g_assert_cmphex(qtest_readl(s, KONA_REG(0x7c)), ==, 0);
+    g_assert_cmphex(qtest_readl(s, REG_MAPRAM(0)), ==, 0);
+    g_assert_cmphex(qtest_readl(s, REG_MAPRAM(5)), ==, 0);
+    g_assert_cmphex(qtest_readl(s, REG_INT_VECTORS), ==, 0x3e2210);
+    g_assert_cmphex(qtest_readl(s, REG_INT_DEST_LOWER), ==, 0x1800090);
+    g_assert_cmphex(qtest_readl(s, REG_LOADER_328), ==, 1);
+    g_assert_cmphex(qtest_readl(s, KONA_REG(0x800308)), ==, 1);
+
+    /* A write without bit 0 resets nothing. */
+    qtest_writel(s, KONA_REG(0x800220), 0x8000);
+    qtest_writel(s, REG_RESET_STROBE, 2);
+    g_assert_cmphex(qtest_readl(s, KONA_REG(0x800220)), ==, 0x8000);
+    qtest_quit(s);
+}
+
+/*
  * The kernel driver's widget-side reset, in its order: widget control
  * +0x24 written and read back, the interrupt destination, the vectors,
  * the error register +0x6c read, cleared through +0x2c and written back,
@@ -1634,6 +1678,7 @@ int main(int argc, char **argv)
                    test_named_registers_observable);
     qtest_add_func("sn0/origin2000/kona-bringup/widget-reset-accesses",
                    test_widget_reset_accesses);
+    qtest_add_func("sn0/origin2000/kona-bringup/reset-pulse", test_reset_pulse);
     qtest_add_func("sn0/origin2000/kona-bringup/config-answer-placement",
                    test_config_answer_placement);
     qtest_add_func("sn0/origin2000/kona-bringup/config-pool-descriptors",
