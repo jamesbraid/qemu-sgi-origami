@@ -3833,6 +3833,8 @@ static SGIRasterTarget mgras_gl_raster_target(SGIMgrasState *s)
     t.opaque = s;
     t.concurrent_pixels = s->raster_bands;
     t.band_min_pixels = s->raster_band_pixels;
+    /* With the Mesa renderer opted in, frames mix it with these draws. */
+    t.mixed_frame = s->gl_renderer_opt_in;
     return t;
 }
 

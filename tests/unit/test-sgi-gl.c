@@ -14438,9 +14438,13 @@ static bool fixed_load_rgba(void *opaque, SGIColourTarget target, int x,
     return true;
 }
 
+/* Whether fixed_target() draws as a family whose frames mix in Mesa. */
+static bool fixed_mixed_frame;
+
 static SGIRasterTarget fixed_target(BandPlanes *b, const SGIGLTexImage *im)
 {
     return (SGIRasterTarget) {
+        .mixed_frame = fixed_mixed_frame,
         .store_colour = band_store_colour,
         .load_colour = band_load_colour,
         .load_depth = band_load_depth,
@@ -14870,6 +14874,33 @@ static void test_texture_fixed_weights(void)
 }
 
 /*
+ * A target that draws mixed frames samples in double, which the Mesa
+ * renderer reproduces: the weights scene, whose fixed-point pixels differ
+ * from the double path's, comes out exactly as the double path draws it.
+ */
+static void test_texture_fixed_mixed_frame(void)
+{
+    static BandPlanes mixed, exact, fixed;
+    SGIGLTexImage im = {
+        .width = 2, .height = 1, .base_format = SGI_GL_RGBA,
+        .min_filter = SGI_GL_LINEAR, .mag_filter = SGI_GL_LINEAR,
+        .wrap_s = SGI_GL_CLAMP_TO_EDGE, .wrap_t = SGI_GL_CLAMP_TO_EDGE,
+        .read_texel = fixed_black_white,
+    };
+
+    fixed_quad(&fixed, &im, SGI_RASTER_TEXTURE_SPANS, 0.11, 0.93, 0.5, 0.5,
+               1);
+    fixed_quad(&exact, &im, SGI_RASTER_TEXTURE_DOUBLE, 0.11, 0.93, 0.5, 0.5,
+               1);
+    fixed_mixed_frame = true;
+    fixed_quad(&mixed, &im, SGI_RASTER_TEXTURE_SPANS, 0.11, 0.93, 0.5, 0.5,
+               1);
+    fixed_mixed_frame = false;
+    g_assert(memcmp(&fixed.p, &exact.p, sizeof(fixed.p)));
+    g_assert(!memcmp(&mixed.p, &exact.p, sizeof(mixed.p)));
+}
+
+/*
  * Approximated: lambda from a 10-bit table of log2, and the blend
  * between two levels by its 8-bit fraction. A black 2x2 level 0 and a
  * white level 1, trilinear, with 36.6 repeats across 64 pixels: the
@@ -15136,6 +15167,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-fixed/weights",
                     test_texture_fixed_weights);
     g_test_add_func("/sgi-gl/texture-fixed/lambda", test_texture_fixed_lambda);
+    g_test_add_func("/sgi-gl/texture-fixed/mixed-frame",
+                    test_texture_fixed_mixed_frame);
     g_test_add_func("/sgi-gl/texture-fixed/choices",
                     test_texture_fixed_choices);
     g_test_add_func("/sgi-gl/texture-fixed/far-floor",

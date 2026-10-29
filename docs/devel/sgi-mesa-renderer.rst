@@ -654,6 +654,15 @@ outside the set the cases under `Proven against the scalar path`_ prove:
   by 16 texels, the largest the texture sweep draws;
 - CLEAR at 4, 8 and 10 colour bits.
 
+Textured triangles are in the set because Mesa reproduces the scalar
+path's double-precision texture sampler. By default the scalar path
+samples filled triangles' textures in fixed point instead, which differs
+in colour. A family that falls back therefore also sets ``mixed_frame``
+in its ``SGIRasterTarget``, and its scalar draws then sample in double,
+so its frames keep this equality. MGRAS, VPro and KONA set it whenever
+their Mesa route is enabled. The scalar comparisons draw through a target
+with the flag set, as such a family does.
+
 A family may instead refuse such state itself before calling. Widening the
 set needs a scalar-comparison case, or a reviewed change to the scalar
 contract.
