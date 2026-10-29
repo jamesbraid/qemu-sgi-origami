@@ -1332,6 +1332,47 @@ static void test_perspective_quad(void)
 }
 
 /*
+ * Vertex tokens are the same whatever the begin, and the pipe assembles
+ * them by the primitive the begin selected: its distributor runs the
+ * vertex entry of the bank the current begin chose, not a fixed one
+ * (inferred from the distributor's banks). The same four vertices make a
+ * triangle strip's two triangles (v0 v1 v2, v2 v1 v3) under begin 5 and a
+ * fan's (v0 v1 v2, v0 v2 v3) under begin 6, which cover different pixels.
+ */
+static void test_vertices_follow_begin(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const double v[4][3] = {
+        { -0.546, -0.48, 0 }, { 0.548, -0.491, 0 },
+        { -0.511, 0.467, 0 }, { 0.5, 0.548, 0 },
+    };
+    /* The second triangle: strip v2 v1 v3, fan v0 v2 v3. */
+    const int second[2][3] = { { 2, 1, 3 }, { 0, 2, 3 } };
+    double t1[3][3], t2[3][3];
+
+    for (int k = 0; k < 3; k++) {
+        memcpy(t1[k], v[k], sizeof(t1[k]));
+        memcpy(t2[k], v[second[mode == 6][k]], sizeof(t2[k]));
+    }
+    g_autofree Expected *e = g_new(Expected, 1);
+
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 0);
+    kona_command_f(qts, 0x63, (float[]){ 1, 1, 1 }, 3);
+    gl_begin(qts, mode);
+    for (int k = 0; k < 4; k++) {
+        kona_command_f(qts, 0x90, (float[]){ v[k][0], v[k][1], v[k][2] }, 3);
+    }
+    gl_end(qts);
+
+    expected_clear(e, 0);
+    expected_object(e, mat_identity(), mat_identity(), t1, 3, 0xffffff);
+    expected_object(e, mat_identity(), mat_identity(), t2, 3, 0xffffff);
+    assert_window_matches(qts, e);
+}
+
+/*
  * One lit flat triangle. Light 0 is directional, its position (0, 1, 0, 0)
  * sent while the modelview is glRotatef(90, 1, 0, 0), which carries it to
  * the eye direction (0, 0, 1); the modelview is the identity again before
@@ -19775,6 +19816,10 @@ int main(int argc, char **argv)
              test_rotated_triangle);
     add_case("sn0/origin2000/kona-3d/perspective-quad",
              test_perspective_quad);
+    add_data_case("sn0/origin2000/kona-3d/vertices-follow-begin-strip",
+                  GUINT_TO_POINTER(5), test_vertices_follow_begin);
+    add_data_case("sn0/origin2000/kona-3d/vertices-follow-begin-fan",
+                  GUINT_TO_POINTER(6), test_vertices_follow_begin);
     add_case("sn0/origin2000/kona-3d/lit-flat-triangle",
              test_lit_flat_triangle);
     add_case("sn0/origin2000/kona-3d/packed-colour-across-migration",
