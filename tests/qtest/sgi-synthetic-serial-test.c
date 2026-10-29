@@ -31,6 +31,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sgi-o2-product-fixture.h"
 #include "qobject/qdict.h"
 #include "qobject/qnum.h"
 #include "qobject/qlist.h"
@@ -91,6 +92,7 @@ typedef struct MachineCase {
     char *name;
     char *args;            /* -M and its options, -cpu, -smp, -m, -device */
     bool ip35;             /* takes the IP35 PROM size */
+    bool ip32;             /* has explicit caller-owned ROM and identity */
     bool storage;          /* binds the expansion configuration storage */
     bool io9;              /* needs IO9 timekeeper backends */
     bool unmarked;         /* exposes no synthetic identity */
@@ -328,6 +330,9 @@ static void test_machine_serials(const void *data)
     const MachineCase *c = data;
     g_autofree char *machine = g_strndup(c->args, strcspn(c->args, ", "));
     g_autofree char *prom = NULL;
+    g_autofree char *prom_option = NULL;
+    /* Caller bytes yield the marked ROM serial 0x51454d550001. */
+    O2ProductTest product = { .serial = "0100554d4551" };
     g_autofree char *storage = NULL;
     g_autofree char *drive = NULL;
     g_autofree char *io9_data = NULL;
@@ -347,7 +352,14 @@ static void test_machine_serials(const void *data)
         g_test_skip("machine not built in");
         return;
     }
-    prom = blank_image(c->ip35 ? IP35_PROM_SIZE : IP27_FLASH_SIZE);
+    if (c->ip32) {
+        o2_product_prepare(&product);
+        prom_option = g_strdup_printf("-M %s",
+                                      strchr(product.machine, ',') + 1);
+    } else {
+        prom = blank_image(c->ip35 ? IP35_PROM_SIZE : IP27_FLASH_SIZE);
+        prom_option = g_strdup_printf("-bios %s", prom);
+    }
     if (c->storage) {
         storage = blank_image(EXPANSION_STORAGE);
         drive = g_strdup_printf("-drive if=none,id=cfg,file=%s,format=raw",
@@ -361,15 +373,23 @@ static void test_machine_serials(const void *data)
             "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw",
             io9_data, io9_clock);
     }
-    qts = qtest_initf("-M %s -bios %s %s %s -display none -S", c->args, prom,
+    qts = qtest_initf("-M %s %s %s %s -display none -S", c->args, prom_option,
                       drive ? drive : "", io9_drives ? io9_drives : "");
     walk(qts, &inv, "/machine");
+    if (c->ip32) {
+        g_autoptr(QDict) reply = qtest_qmp(qts,
+            "{'execute':'qom-get','arguments':{'path':'/machine',"
+            "'property':'identity-test-serial'}}");
+
+        g_assert_cmpstr(qdict_get_str(reply, "return"), ==, product.serial);
+    }
     qtest_quit(qts);
 
     /*
      * Earlier profiles expose a synthetic one-wire or L1 board identity.
      * An IP53 IO9 profile can expose neither; the walk still checks any
-     * matching identity properties it does expose.
+     * matching identity properties it does expose. IP32's identity is
+     * caller-provided rather than synthesized; check its input above.
      */
     if (!c->io9 && !c->unmarked) {
         g_assert_cmpuint(inv.parts + g_hash_table_size(inv.l1_instances),
@@ -378,7 +398,11 @@ static void test_machine_serials(const void *data)
     g_hash_table_destroy(inv.roms);
     g_hash_table_destroy(inv.barcodes);
     g_hash_table_destroy(inv.l1_instances);
-    g_unlink(prom);
+    if (c->ip32) {
+        o2_product_cleanup(&product);
+    } else {
+        g_unlink(prom);
+    }
     if (io9_data) {
         g_unlink(io9_data);
         g_unlink(io9_clock);
@@ -493,6 +517,7 @@ static GPtrArray *catalogue_cases(void)
 
         c->name = g_strdup(t->data);
         c->ip35 = boot_flash_is_ip35(offering);
+        c->ip32 = g_str_equal(qdict_get_str(offering, "product"), "o2");
         c->storage = extra && extra->storage;
         c->io9 = extra && extra->io9;
         c->unmarked = extra && extra->unmarked;
@@ -500,7 +525,8 @@ static GPtrArray *catalogue_cases(void)
             "%s%s -cpu %s -smp %" PRId64 " -m %" PRId64 "M",
             qdict_get_str(offering, "machine-options"),
             extra ? extra->machine_options : "",
-            qdict_get_str(offering, "default-cpu-model"),
+            c->ip32 && g_str_equal(c->name, "o2plus") ? O2PLUS_CPU :
+                qdict_get_str(offering, "default-cpu-model"),
             qdict_get_int(offering, "smp"),
             qdict_get_int(memory, "default") *
             qdict_get_int(offering, "nodes"));

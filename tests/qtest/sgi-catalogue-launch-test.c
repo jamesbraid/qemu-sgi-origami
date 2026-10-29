@@ -1,18 +1,17 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Launch every offering query-sgi-machines lists from the catalogue's own
- * data and nothing else, the way a launcher does: the offering's
- * machine-options, one block node per storage item bound through the
- * machine property of the same name, its default -cpu, its -smp and its
- * default memory, with -nodefaults. A topology with graphics slots is
- * launched again with a pipe in its first slot, adding the graphics
- * record's machine-properties. Any input the machine needs that the
- * catalogue does not describe fails here, by topology, as does a SCSI
- * adapter the machine builds and the offering does not list.
+ * Launch every offering query-sgi-machines lists from its catalogue data:
+ * machine-options, storage bindings, processor, CPU count and memory.
+ * The IP32 recipe supplies original synthetic ROM and identity inputs and
+ * the selected CPU tuple. All launches use -nodefaults. A topology with
+ * graphics slots is launched again with a pipe in its first slot and the
+ * graphics record's machine-properties. Any other unadvertised required
+ * input fails here, as does an unlisted SCSI adapter the machine builds.
  */
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sgi-o2-product-fixture.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "qobject/qstring.h"
@@ -278,10 +277,12 @@ static void test_launch(const void *opaque)
      * A processor that lists required properties is an opt-in experiment:
      * the catalogue names the -cpu properties a launch must choose but
      * gives no values, so QEMU must refuse a launch made without them,
-     * asking for the experiment's opt-in. The Origin 3900's Cx-brick node
+     * asking for the experiment's opt-in. IP32 supplies the selected tuple
+     * through its launch recipe. The Origin 3900's Cx-brick node
      * board sets its R16000 properties itself, so that product asks for none.
      */
-    bool opt_in = qdict_haskey(qdict_get_qdict(o, "processor"),
+    bool ip32 = g_str_equal(qdict_get_str(o, "product"), "o2");
+    bool opt_in = !ip32 && qdict_haskey(qdict_get_qdict(o, "processor"),
                                "required-properties") &&
                   !g_str_equal(qdict_get_str(o, "product"), "origin3000");
     /*
@@ -300,7 +301,12 @@ static void test_launch(const void *opaque)
     g_autofree char *out = NULL, *err = NULL;
     const QListEntry *e;
     int status;
+    O2ProductTest product = { 0 };
 
+    if (ip32) {
+        o2_product_prepare(&product);
+        g_string_append(machine, strchr(product.machine, ','));
+    }
     g_ptr_array_add(args, g_strdup(qtest_qemu_binary(NULL)));
     QLIST_FOREACH_ENTRY(qdict_get_qlist(o, "storage"), e) {
         QDict *item = qobject_to(QDict, qlist_entry_obj(e));
@@ -329,7 +335,9 @@ static void test_launch(const void *opaque)
     g_ptr_array_add(args, g_strdup("-M"));
     g_ptr_array_add(args, g_strdup(machine->str));
     g_ptr_array_add(args, g_strdup("-cpu"));
-    g_ptr_array_add(args, g_strdup(qdict_get_str(o, "default-cpu-model")));
+    g_ptr_array_add(args, g_strdup(ip32 && g_str_equal(topology, "o2plus") ?
+                                    O2PLUS_CPU :
+                                    qdict_get_str(o, "default-cpu-model")));
     g_ptr_array_add(args, g_strdup("-smp"));
     g_ptr_array_add(args, g_strdup_printf("%" PRId64,
                                           qdict_get_int(o, "smp")));
@@ -351,6 +359,9 @@ static void test_launch(const void *opaque)
         &out, &err);
     for (guint i = 0; i < files->len; i++) {
         unlink(g_ptr_array_index(files, i));
+    }
+    if (ip32) {
+        o2_product_cleanup(&product);
     }
     if (opt_in) {
         g_assert_cmpint(status, !=, 0);

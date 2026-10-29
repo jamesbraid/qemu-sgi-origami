@@ -124,10 +124,12 @@ static void test_info_commands(QTestState *qts)
 static void test_machine(gconstpointer data)
 {
     const char *machine = data;
+    const char *profile = g_str_equal(machine, "o2") ?
+        ",register-test-profile=on -m 64M" : "";
     char *args;
     QTestState *qts;
 
-    args = g_strdup_printf("-S -M %s", machine);
+    args = g_strdup_printf("-S -M %s%s", machine, profile);
     qts = qtest_init(args);
 
     test_info_commands(qts);

@@ -9,6 +9,7 @@
 #include "qobject/qobject.h"
 #include "qobject/qjson.h"
 #include "sgi-launch.h"
+#include "sgi-o2-product-fixture.h"
 #include "sgi-mips-emit.h"
 #include "sn0-user-image.h"
 #include "sgi-wait.h"
@@ -8082,65 +8083,6 @@ static void test_storage_diagnostic_rejections(void)
     g_assert_cmpint(g_unlink(events), ==, 0);
     g_assert_cmpint(g_unlink(rom), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
-}
-
-#define O2PLUS_CPU "R12000,r12000-prid=0xe35,r12000-fpu-id=0x900," \
-    "r12000-reset-mode=0x11a8603,r12000-scache-bytes=2097152," \
-    "r12000-scache-block-words=16"
-
-typedef struct O2ProductTest {
-    char *dir;
-    char *rom;
-    char *identity;
-    char *machine;
-    bool plus;
-} O2ProductTest;
-
-static void o2_product_prepare(O2ProductTest *t)
-{
-    g_autofree uint8_t *rom = g_malloc0(512 * KiB);
-    uint8_t identity[128];
-
-    t->dir = g_dir_make_tmp("o2-product-XXXXXX", NULL);
-    g_assert_nonnull(t->dir);
-    t->rom = g_build_filename(t->dir, "synthetic-rom", NULL);
-    t->identity = g_build_filename(t->dir, "synthetic-identity", NULL);
-    for (unsigned i = 0; i < sizeof(identity); i++) {
-        identity[i] = (i * 37) ^ 0xa5;
-    }
-    rom[0] = 0x5a;
-    rom[512 * KiB - 1] = 0xa5;
-    g_assert_true(g_file_set_contents(t->rom, (char *)rom, 512 * KiB, NULL));
-    g_assert_true(g_file_set_contents(t->identity, (char *)identity,
-                                      sizeof(identity), NULL));
-    t->machine = g_strdup_printf(
-        "o2,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238,"
-        "rom-at29c040a-protection=disabled,"
-        "rom-at29c040a-lower-lock=unlocked,"
-        "rom-at29c040a-upper-lock=unlocked,"
-        "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
-        "identity-status=0123456789abcd,password-clear-input=0",
-        t->rom, t->identity);
-}
-
-static void o2_product_select_plus(O2ProductTest *t)
-{
-    char *machine = g_strdup_printf("%s,variant=o2plus", t->machine);
-
-    g_free(t->machine);
-    t->machine = machine;
-    t->plus = true;
-}
-
-static void o2_product_cleanup(O2ProductTest *t)
-{
-    g_assert_cmpint(g_unlink(t->rom), ==, 0);
-    g_assert_cmpint(g_unlink(t->identity), ==, 0);
-    g_assert_cmpint(g_rmdir(t->dir), ==, 0);
-    g_free(t->machine);
-    g_free(t->identity);
-    g_free(t->rom);
-    g_free(t->dir);
 }
 
 static QTestState *o2_product_start(O2ProductTest *t)

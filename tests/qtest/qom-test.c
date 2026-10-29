@@ -191,12 +191,14 @@ static void test_properties(QTestState *qts, const char *path, bool recurse)
 static void test_machine(gconstpointer data)
 {
     const char *machine = data;
+    const char *profile = g_str_equal(machine, "o2") ?
+        ",register-test-profile=on -m 64M" : "";
     QDict *response;
     QTestState *qts;
     g_autoptr(QList) paths = qlist_new();
 
-    qts = qtest_initf("-machine %s -object memory-backend-ram,id=%s,size=%d",
-                      machine, RAM_NAME, RAM_SIZE);
+    qts = qtest_initf("-machine %s%s -object memory-backend-ram,id=%s,size=%d",
+                      machine, profile, RAM_NAME, RAM_SIZE);
 
     if (g_test_slow()) {
         /* Make sure we can get the machine class properties: */

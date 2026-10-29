@@ -183,6 +183,7 @@ static void prepare_fuel(QTestState *qts)
  */
 static const Recipe recipes[] = {
     { "origin200", "-M origin200 -m 128M -smp 2", 0 },
+    { "o2", "-M o2,register-test-profile=on -m 64M -cpu R10000", 512 * 1024 },
     { "origin2000", "-M origin2000", 0 },
     { "onyx2", "-M onyx2", 0 },
     { "origin300", "-M origin300", 0x1686a8, prepare_origin300 },
@@ -937,9 +938,16 @@ static void boot(Run *r, const Recipe *recipe, Program program)
     r->view_phys = recipe->view_phys ? recipe->view_phys : VIEW_PHYS;
     build_image(image, program, r->view_phys);
     path = write_image(image, recipe->image_size);
-    prom_option = recipe->io9 ?
-        g_strdup_printf("-drive if=pflash,index=0,file=%s,format=raw", path) :
-        g_strdup_printf("-bios %s", path);
+    if (g_str_equal(recipe->machine, "o2")) {
+        prom_option = g_strdup_printf(
+            "-M rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=0,"
+            "password-clear-input=0", path);
+    } else {
+        prom_option = recipe->io9 ?
+            g_strdup_printf("-drive if=pflash,index=0,file=%s,format=raw",
+                            path) :
+            g_strdup_printf("-bios %s", path);
+    }
     if (recipe->io9) {
         io9_data = blank_io9_backend(0x8000);
         io9_clock = blank_io9_backend(16);
