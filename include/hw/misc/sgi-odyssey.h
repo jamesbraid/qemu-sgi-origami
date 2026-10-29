@@ -187,13 +187,17 @@ struct SGIOdysseyState {
      * accumulates the windows whose displayed buffer flips at the next
      * retrace; odyssey_retrace() XORs it into displayed_buffer, which the
      * driver's retrace ISR reads back. swap_control and
-     * swap_control_companion set and clear displayed_buffer bits at once (the
-     * immediate path); swap_pending is stored but inert.
+     * swap_control_companion are the last words written to the set and
+     * clear registers; swap_set and swap_clear accumulate the windows they
+     * name until the next retrace latches them into displayed_buffer.
+     * swap_pending is stored but inert.
      */
     uint32_t swap_arm;
     uint32_t swap_pending;
     uint32_t swap_control;
     uint32_t swap_control_companion;
+    uint32_t swap_set;
+    uint32_t swap_clear;
     uint32_t displayed_buffer;
 
     /*

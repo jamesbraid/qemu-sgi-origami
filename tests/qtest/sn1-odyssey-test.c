@@ -3482,12 +3482,14 @@ static void test_swap_arm_accumulates(void)
 }
 
 /*
- * The immediate path: the driver's reset clears every window to buffer 0
- * through the companion, and a swap that must not wait for retrace sets its
- * window's buffer through ODSY_SWAP_CONTROL (buffer 1) or the companion
- * (buffer 0), taking effect at once.
+ * The set and clear registers: for the window ids whose swap is due, the
+ * kernel writes those that must show buffer 1 to ODSY_SWAP_CONTROL and the
+ * rest to the companion, as its reset writes every id to the companion. The
+ * selects latch at the next retrace and not before (INFERRED), when
+ * ODSY_DISPLAYED_BUFFER reads them back; the last write for an id before
+ * the retrace wins.
  */
-static void test_swap_immediate_set_and_clear(void)
+static void test_swap_set_and_clear_at_retrace(void)
 {
     QTestState *qts = board_start("");
 
@@ -3496,12 +3498,23 @@ static void test_swap_immediate_set_and_clear(void)
     g_assert_cmphex(reg_read(qts, ODSY_DISPLAYED_BUFFER), ==, 0x00000003);
 
     reg_write(qts, ODSY_SWAP_CONTROL_COMPANION, 0xffffffff);
+    g_assert_cmphex(reg_read(qts, ODSY_DISPLAYED_BUFFER), ==, 0x00000003);
+    fire_retrace(qts);
     g_assert_cmphex(reg_read(qts, ODSY_DISPLAYED_BUFFER), ==, 0);
 
-    reg_write(qts, ODSY_SWAP_CONTROL, 0x00000010);
-    g_assert_cmphex(reg_read(qts, ODSY_DISPLAYED_BUFFER), ==, 0x00000010);
-    reg_write(qts, ODSY_SWAP_CONTROL_COMPANION, 0x00000010);
+    reg_write(qts, ODSY_SWAP_CONTROL, 0x80000010);
     g_assert_cmphex(reg_read(qts, ODSY_DISPLAYED_BUFFER), ==, 0);
+    fire_retrace(qts);
+    g_assert_cmphex(reg_read(qts, ODSY_DISPLAYED_BUFFER), ==, 0x80000010);
+    /* An idle retrace keeps the selects. */
+    fire_retrace(qts);
+    g_assert_cmphex(reg_read(qts, ODSY_DISPLAYED_BUFFER), ==, 0x80000010);
+
+    reg_write(qts, ODSY_SWAP_CONTROL_COMPANION, 0x00000010);
+    reg_write(qts, ODSY_SWAP_CONTROL, 0x00000011);
+    reg_write(qts, ODSY_SWAP_CONTROL_COMPANION, 0x80000001);
+    fire_retrace(qts);
+    g_assert_cmphex(reg_read(qts, ODSY_DISPLAYED_BUFFER), ==, 0x00000010);
     board_quit(qts);
 }
 
@@ -20051,8 +20064,8 @@ static void colour_destination(QTestState *qts)
 /*
  * Each window shows its own buffer: pixels whose main drawable id is 1 and 2
  * sit side by side over the same two buffers. A swap of window 2 changes
- * only its pixels, and the immediate set and clear registers change one
- * window each at once, without a retrace.
+ * only its pixels, and the set and clear registers change one window each
+ * at the next retrace.
  */
 static void test_buffers_display_selection_per_window(void)
 {
@@ -20076,9 +20089,13 @@ static void test_buffers_display_selection_per_window(void)
     g_assert_cmphex(odsy_test_display_pixel(qts, 75, 25), ==, 0x000000ff);
 
     reg_write(qts, ODSY_SWAP_CONTROL, 1u << 1);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 25, 25), ==, 0x00ff0000);
+    fire_retrace(qts);
     g_assert_cmphex(odsy_test_display_pixel(qts, 25, 25), ==, 0x000000ff);
     g_assert_cmphex(odsy_test_display_pixel(qts, 75, 25), ==, 0x000000ff);
     reg_write(qts, ODSY_SWAP_CONTROL_COMPANION, 1u << 2);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 75, 25), ==, 0x000000ff);
+    fire_retrace(qts);
     g_assert_cmphex(odsy_test_display_pixel(qts, 25, 25), ==, 0x000000ff);
     g_assert_cmphex(odsy_test_display_pixel(qts, 75, 25), ==, 0x00ff0000);
     board_quit(qts);
@@ -22764,8 +22781,8 @@ int main(int argc, char **argv)
                    test_swap_arm_toggles_displayed_buffer);
     add_case("sn1/odyssey/swap-arm-accumulates",
              test_swap_arm_accumulates);
-    add_case("sn1/odyssey/swap-immediate-set-and-clear",
-             test_swap_immediate_set_and_clear);
+    add_case("sn1/odyssey/swap-set-and-clear-at-retrace",
+             test_swap_set_and_clear_at_retrace);
     add_case("sn1/odyssey/buffers-hold-opposite-colours",
              test_buffers_hold_opposite_colours);
     add_case("sn1/odyssey/buffers-swap-shows-only-complete-frames",

@@ -344,8 +344,12 @@
  *     retrace. Established: the kernel driver's buffer swap writes
  *     (shadow ^ wanted) & members.
  *   ODSY_SWAP_PENDING (0x10bc): swap-group pending mask; stored, inert.
- *   ODSY_SWAP_CONTROL / _COMPANION (0x10c4/0x10cc): windows set to show
- *     buffer 1 / buffer 0 at once, the driver's immediate path. Inferred.
+ *   ODSY_SWAP_CONTROL / _COMPANION (0x10c4/0x10cc): window ids 0-31 to show
+ *     buffer 1 / buffer 0. Established: the kernel writes, for the ids
+ *     whose swap is due now, those whose new buffer bit is set to 0x10c4
+ *     and the others to 0x10cc. Inferred: the board keeps one select bit
+ *     per id and latches the written ones at the next vertical retrace,
+ *     not at once; the model does so (odyssey_retrace()).
  *   ODSY_DISPLAYED_BUFFER (0x10d4): which buffer each window shows, compared
  *     by the retrace ISR against the buffer it asked for. The driver's
  *     expectation is established; the board's encoding is inferred from it.
@@ -3860,6 +3864,12 @@ static void odyssey_retrace(void *opaque)
     SGIOdysseyState *s = opaque;
     uint32_t flips = s->swap_arm;
 
+    if (s->swap_set || s->swap_clear) {
+        s->displayed_buffer = (s->displayed_buffer | s->swap_set) &
+                              ~s->swap_clear;
+        s->swap_set = s->swap_clear = 0;
+        sgi_scanout_invalidate_all(&s->scanout);
+    }
     if (flips) {
         s->swap_arm = 0;
         s->displayed_buffer ^= flips;
@@ -12384,23 +12394,18 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
         break;
     case ODSY_SWAP_CONTROL:
         /*
-         * The immediate-swap path: the kernel driver's buffer swap writes
-         * the windows that must show buffer 1 here and those that must
-         * show buffer 0 to the companion, then completes them without
-         * waiting for a retrace, so the displayed-buffer bits follow at
-         * once. Inferred from the driver; the kernel driver's board
-         * reset's companion write of all ones leaves every window showing
-         * buffer 0.
+         * The windows that must show buffer 1 from the next retrace on
+         * (ODSY_SWAP_CONTROL above). A later write to either register for
+         * the same window replaces this one before the retrace latches it.
          */
         s->swap_control = value;
-        s->displayed_buffer |= value;
-        /* The windows now show their other buffer at once. */
-        sgi_scanout_invalidate_all(&s->scanout);
+        s->swap_set |= value;
+        s->swap_clear &= ~value;
         break;
     case ODSY_SWAP_CONTROL_COMPANION:
         s->swap_control_companion = value;
-        s->displayed_buffer &= ~value;
-        sgi_scanout_invalidate_all(&s->scanout);
+        s->swap_clear |= value;
+        s->swap_set &= ~value;
         break;
     case ODSY_DISPLAYED_BUFFER:
         /*
@@ -13037,6 +13042,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->swap_pending = 0;
     s->swap_control = 0;
     s->swap_control_companion = 0;
+    s->swap_set = s->swap_clear = 0;
     s->displayed_buffer = 0;
     s->draw_mask = ODSY_DRAW_MASK_RESET;
     s->draw_word = 0;
@@ -14383,8 +14389,8 @@ static int odyssey_work_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 49,
-    .minimum_version_id = 49,
+    .version_id = 50,
+    .minimum_version_id = 50,
     .pre_save = odyssey_work_pre_save,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -14467,6 +14473,8 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32(swap_pending, SGIOdysseyState),
         VMSTATE_UINT32(swap_control, SGIOdysseyState),
         VMSTATE_UINT32(swap_control_companion, SGIOdysseyState),
+        VMSTATE_UINT32(swap_set, SGIOdysseyState),
+        VMSTATE_UINT32(swap_clear, SGIOdysseyState),
         VMSTATE_UINT32(displayed_buffer, SGIOdysseyState),
         /*
          * The rest of a burst's operands and the window placement registers.
