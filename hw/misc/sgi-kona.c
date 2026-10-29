@@ -4769,6 +4769,11 @@ static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t,
         .screen_top = SGI_KONA_FB_HEIGHT - 1,
         .screen_rows_down = false,
         .texture = textured ? sgi_kona_texture_resolve(&s->textures) : NULL,
+        /*
+         * With the host GPU, frames mix Mesa or host-batch draws with
+         * these, and the host batch is confirmed against them.
+         */
+        .mixed_frame = s->host_gpu,
     };
     if (!textured) {
         return;

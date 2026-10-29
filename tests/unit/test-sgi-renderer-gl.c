@@ -4161,6 +4161,8 @@ static void prim_scalar_draw(PrimCase *p, PrimFixture *f)
         .opaque = f,
         .store_rgba = prim_scalar_store, .load_rgba = prim_scalar_load,
         .texture = p->state.texture_2d ? &p->image : NULL,
+        /* As a family whose frames mix Mesa and scalar draws. */
+        .mixed_frame = true,
     };
 
     prim_rules(p, &rules);
@@ -5822,7 +5824,7 @@ static void test_draw_region(void)
         SGIRasterRules rules;
         SGIRasterTarget scalar_target = {
             .opaque = &scalar, .store_rgba = region_scalar_store,
-            .load_rgba = region_scalar_load,
+            .load_rgba = region_scalar_load, .mixed_frame = true,
         };
         SGIRasterTarget mesa_target = {
             .opaque = &mesa, .resources = res, .resource_count = 1,
@@ -5994,7 +5996,7 @@ static void test_draw_region_off_resource(void)
         SGIRasterRules rules;
         SGIRasterTarget scalar_target = {
             .opaque = &scalar, .store_rgba = region_scalar_store,
-            .load_rgba = region_scalar_load,
+            .load_rgba = region_scalar_load, .mixed_frame = true,
         };
         SGIRasterTarget mesa_target = {
             .opaque = &mesa, .resources = res, .resource_count = 1,
@@ -9874,12 +9876,6 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     module_call_init(MODULE_INIT_QOM);
-    /*
-     * The Mesa renderer reproduces the double-precision texture sampler,
-     * not the fixed-point one filled triangles take by default, so the
-     * scalar side of every comparison here samples in double.
-     */
-    sgi_raster_set_texture_path(SGI_RASTER_TEXTURE_DOUBLE);
     /* Registered only on request: the CI report check rejects skips. */
     if (g_getenv("QEMU_TEST_SGI_BENCH")) {
         g_test_add_func("/sgi-renderer-gl/benchmark", test_benchmark);

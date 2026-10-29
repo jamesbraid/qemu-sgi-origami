@@ -5777,6 +5777,8 @@ static SGIRasterTarget odyssey_gl_target(SGIOdysseyState *s)
         .opaque = s,
         .concurrent_pixels = s->raster_bands,
         .band_min_pixels = s->raster_band_pixels,
+        /* With x-mesa-renderer, frames mix Mesa draws with these. */
+        .mixed_frame = s->mesa_renderer_enabled,
     };
 
     odyssey_gl_stipple_background(s, &t);

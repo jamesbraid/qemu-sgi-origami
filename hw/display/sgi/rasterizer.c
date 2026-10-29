@@ -3127,7 +3127,8 @@ typedef struct SGISoftTexPlane {
  * which convert to 8 bits exactly; levels of at most 8192 texels a side
  * and 2^22 texels; NEAREST, LINEAR or a mipmap minification filter with
  * NEAREST or LINEAR magnification; any wrap, a border image only under
- * REPEAT or CLAMP_TO_EDGE, which never reach it; no alpha test, whose
+ * REPEAT or CLAMP_TO_EDGE, which never reach it; a target that does not
+ * draw mixed frames (SGIRasterTarget.mixed_frame); no alpha test, whose
  * outcome would move with the texel's alpha; and no logical operation,
  * which turns a difference in the lowest bit into one in any. Anything
  * else, and a
@@ -3253,8 +3254,9 @@ static bool sgi_soft_fixed_setup(const SGISoftDraw *r, SGISoftFixedTex *f)
     double border[4];
 
     if (sgi_soft_texture_path == SGI_RASTER_TEXTURE_DOUBLE || !im ||
-        !r->texels || im->volume || im->one_dimensional ||
-        r->st->index_bits || r->st->alpha_test || r->logic_op) {
+        !r->texels || r->t->mixed_frame || im->volume ||
+        im->one_dimensional || r->st->index_bits || r->st->alpha_test ||
+        r->logic_op) {
         return false;
     }
     memset(f, 0, sizeof(*f));

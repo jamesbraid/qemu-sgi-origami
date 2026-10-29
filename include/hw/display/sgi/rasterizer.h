@@ -599,6 +599,14 @@ typedef struct SGIRasterTarget {
      * every callback they reach, run on band workers.
      */
     uint32_t band_min_pixels;
+    /*
+     * The family draws this target's frames partly through the Mesa
+     * renderer with SGIRenderAttemptOptions.mixed_frame, which reproduces
+     * the double-precision texture sampler. Its filled triangles then
+     * sample textures in double too, so a frame that mixes Mesa and scalar
+     * draws stays pixel-identical to one the scalar path draws alone.
+     */
+    bool mixed_frame;
 } SGIRasterTarget;
 
 /*
