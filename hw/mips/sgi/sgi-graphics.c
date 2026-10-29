@@ -13,6 +13,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
+#include "hw/core/sysbus.h"
 #include "qom/object.h"
 #include "system/system.h"
 #include "hw/mips/sgi/sgi-graphics.h"
@@ -338,13 +339,14 @@ static GHashTable *sgi_graphics_requested(DeviceState *dev,
     return values;
 }
 
-bool sgi_graphics_check_pipe(const char *machine, const SGIModelTopology *t,
-                             const SGIModelGraphics *g, uint32_t nodes,
-                             DeviceState *dev,
+bool sgi_graphics_check_pipe(SGIGraphicsPipes *pipes, DeviceState *dev,
                              SGIModelGraphicsFamilyKind family,
-                             unsigned int pipes, const char *first,
                              Error **errp)
 {
+    const char *machine = pipes->machine;
+    const SGIModelTopology *t = pipes->topology;
+    const SGIModelGraphics *g = pipes->graphics;
+    uint32_t nodes = pipes->nodes;
     const char *device = sgi_graphics_devices[family];
     const SGIModelGraphicsSlot *slot;
     const SGIModelGraphicsFamily *offer;
@@ -401,11 +403,13 @@ bool sgi_graphics_check_pipe(const char *machine, const SGIModelTopology *t,
                    machine, name, t->name, slot->requires->min_nodes, nodes);
         return false;
     }
-    if (pipes >= g->max_pipes) {
+    if (pipes->fitted->len >= g->max_pipes) {
+        const SGIGraphicsFitted *first = g_ptr_array_index(pipes->fitted, 0);
+
         error_setg(errp, "%s: topology '%s' builds at most %" PRIu32
                    " graphics pipe%s, and %s already holds one", machine,
                    t->name, g->max_pipes, g->max_pipes == 1 ? "" : "s",
-                   first);
+                   first->name);
         return false;
     }
 
@@ -543,4 +547,93 @@ DeviceState *sgi_graphics_new_default(const SGIModelGraphicsSlot *slot)
                               &error_abort);
     }
     return dev;
+}
+
+static void sgi_graphics_fitted_free(gpointer data)
+{
+    SGIGraphicsFitted *fitted = data;
+
+    g_free(fitted->name);
+    g_free(fitted);
+}
+
+bool sgi_graphics_pipes_init(SGIGraphicsPipes *p, const char *machine,
+                             const SGIModelTopology *t, uint32_t nodes,
+                             bool uncatalogued, Error **errp)
+{
+    const SGIModelGraphicsSlot *slot;
+    bool none;
+
+    p->machine = machine;
+    p->topology = t;
+    p->graphics = t ? t->graphics : NULL;
+    p->nodes = nodes;
+    p->uncatalogued = uncatalogued;
+    p->fitted = g_ptr_array_new_with_free_func(sgi_graphics_fitted_free);
+    if (uncatalogued) {
+        return true;
+    }
+    if (!sgi_graphics_vga_none(machine, &none, errp)) {
+        return false;
+    }
+    slot = none ? NULL : sgi_graphics_default_slot(p->graphics);
+    if (slot) {
+        p->default_pipe = sgi_graphics_new_default(slot);
+    }
+    return true;
+}
+
+bool sgi_graphics_pipes_pre_plug(SGIGraphicsPipes *p, DeviceState *dev,
+                                 Error **errp)
+{
+    SGIModelGraphicsFamilyKind family;
+
+    if (!sgi_graphics_pipe_family(dev, &family) || p->uncatalogued) {
+        return true;
+    }
+    return sgi_graphics_check_pipe(p, dev, family, errp);
+}
+
+void sgi_graphics_pipes_plug(SGIGraphicsPipes *p, DeviceState *dev)
+{
+    SGIModelGraphicsFamilyKind family;
+    const SGIModelGraphicsSlot *slot;
+    SGIGraphicsFitted *fitted;
+
+    if (!sgi_graphics_pipe_family(dev, &family)) {
+        return;
+    }
+    slot = sgi_graphics_pipe_slot(p->graphics, dev, family);
+    fitted = g_new0(SGIGraphicsFitted, 1);
+    fitted->dev = dev;
+    fitted->name = g_strdup(slot ? slot->name : dev->id ? dev->id :
+                            object_get_typename(OBJECT(dev)));
+    g_ptr_array_add(p->fitted, fitted);
+}
+
+void sgi_graphics_pipes_done(SGIGraphicsPipes *p)
+{
+    DeviceState *dev = p->default_pipe;
+
+    if (!dev) {
+        return;
+    }
+    p->default_pipe = NULL;
+    if (p->fitted->len) {
+        object_unref(OBJECT(dev));
+    } else {
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    }
+}
+
+void sgi_graphics_pipes_cleanup(SGIGraphicsPipes *p)
+{
+    if (p->default_pipe) {
+        object_unref(OBJECT(p->default_pipe));
+        p->default_pipe = NULL;
+    }
+    if (p->fitted) {
+        g_ptr_array_free(p->fitted, true);
+        p->fitted = NULL;
+    }
 }

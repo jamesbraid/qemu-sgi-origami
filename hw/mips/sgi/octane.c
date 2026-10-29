@@ -96,9 +96,7 @@ typedef struct OctaneMachineState {
     bool graphics_claimed[OCTANE_GRAPHICS_WIDGETS];
     MemoryRegion graphics_long[OCTANE_GRAPHICS_WIDGETS];
     bool uncatalogued_graphics;
-    DeviceState *default_pipe;
-    unsigned int pipes;
-    char *first_pipe;
+    SGIGraphicsPipes pipes;
     Notifier machine_done;
     /* Catalogue storage item name -> the block node or drive it binds. */
     GHashTable *storage;
@@ -927,14 +925,8 @@ static void octane_pre_plug(const HotplugHandler *hotplug_dev,
     OctaneMachineState *s = (OctaneMachineState *)hotplug_dev;
     SGIModelGraphicsFamilyKind family;
 
-    if (!sgi_graphics_pipe_family(dev, &family)) {
-        return;
-    }
-    if (!s->uncatalogued_graphics &&
-        !sgi_graphics_check_pipe(MACHINE_GET_CLASS(s)->name, s->model,
-                                 s->model->graphics,
-                                 QAPI_LIST_LENGTH(s->model->nodes), dev,
-                                 family, s->pipes, s->first_pipe, errp)) {
+    if (!sgi_graphics_pipe_family(dev, &family) ||
+        !sgi_graphics_pipes_pre_plug(&s->pipes, dev, errp)) {
         return;
     }
     if (family == SGI_MODEL_GRAPHICS_FAMILY_KIND_MGRAS) {
@@ -947,18 +939,8 @@ static void octane_plug(const HotplugHandler *hotplug_dev, DeviceState *dev,
                         Error **errp)
 {
     OctaneMachineState *s = (OctaneMachineState *)hotplug_dev;
-    const SGIModelGraphicsSlot *slot;
-    SGIModelGraphicsFamilyKind family;
 
-    if (!sgi_graphics_pipe_family(dev, &family)) {
-        return;
-    }
-    s->pipes++;
-    if (!s->first_pipe) {
-        slot = sgi_graphics_pipe_slot(s->model->graphics, dev, family);
-        s->first_pipe = g_strdup(slot ? slot->name : dev->id ? dev->id :
-                                 object_get_typename(OBJECT(dev)));
-    }
+    sgi_graphics_pipes_plug(&s->pipes, dev);
 }
 
 /*
@@ -973,16 +955,7 @@ static void octane_machine_done(Notifier *notifier, void *data)
     OctaneMachineState *s = container_of(notifier, OctaneMachineState,
                                          machine_done);
 
-    if (s->default_pipe) {
-        DeviceState *dev = s->default_pipe;
-
-        s->default_pipe = NULL;
-        if (s->pipes) {
-            object_unref(OBJECT(dev));
-        } else {
-            sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
-        }
-    }
+    sgi_graphics_pipes_done(&s->pipes);
     for (unsigned int i = 0; i < OCTANE_GRAPHICS_WIDGETS; i++) {
         if (sgi_xio_link_complete(&s->graphics_links[i])) {
             sgi_xbow_mark_widget_alive(s->crossbow,
@@ -1000,17 +973,10 @@ static void octane_machine_done(Notifier *notifier, void *data)
  */
 static void octane_init_graphics(OctaneMachineState *s, Error **errp)
 {
-    const SGIModelGraphicsSlot *slot;
-    bool none;
-
-    if (!s->uncatalogued_graphics) {
-        if (!sgi_graphics_vga_none(MACHINE_GET_CLASS(s)->name, &none, errp)) {
-            return;
-        }
-        slot = none ? NULL : sgi_graphics_default_slot(s->model->graphics);
-        if (slot) {
-            s->default_pipe = sgi_graphics_new_default(slot);
-        }
+    if (!sgi_graphics_pipes_init(&s->pipes, MACHINE_GET_CLASS(s)->name,
+                                 s->model, QAPI_LIST_LENGTH(s->model->nodes),
+                                 s->uncatalogued_graphics, errp)) {
+        return;
     }
     s->machine_done.notify = octane_machine_done;
     qemu_add_machine_init_done_notifier(&s->machine_done);
@@ -1110,10 +1076,7 @@ static void octane_instance_finalize(Object *obj)
     OctaneMachineState *s = (OctaneMachineState *)obj;
 
     g_free(s->topology_name);
-    g_free(s->first_pipe);
-    if (s->default_pipe) {
-        object_unref(OBJECT(s->default_pipe));
-    }
+    sgi_graphics_pipes_cleanup(&s->pipes);
     g_free(s->mac);
     if (s->storage) {
         g_hash_table_destroy(s->storage);

@@ -338,9 +338,7 @@ struct SGIMachineState {
      * register-contract tests that use the machine to carry a board.
      */
     bool uncatalogued_graphics;
-    DeviceState *default_pipe;
-    unsigned int pipes;
-    char *first_pipe;
+    SGIGraphicsPipes pipes;
     /*
      * The topology's own graphics boards (its KONA, direct Odyssey and
      * V-brick V12 records) are slots, not boards the builder fits: a pipe
@@ -9820,16 +9818,7 @@ static void sgi_machine_done(Notifier *notifier, void *data)
     g_autofree const SGIModelIoBoard **records = NULL;
     size_t slot_count, record_count, i;
 
-    if (s->default_pipe) {
-        DeviceState *dev = s->default_pipe;
-
-        s->default_pipe = NULL;
-        if (s->pipes) {
-            object_unref(OBJECT(dev));
-        } else {
-            sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
-        }
-    }
+    sgi_graphics_pipes_done(&s->pipes);
     if (s->module_start) {
         vmstate_register_any(NULL, &vmstate_sgi_machine_module_starts, s);
         s->module_starts_registered = true;
@@ -10234,21 +10223,12 @@ bool sgi_machine_ip53_experiment_authorized(MachineState *machine)
  */
 static bool sgi_machine_init_graphics(SGIMachineState *s, Error **errp)
 {
-    const SGIModelTopology *chassis = sgi_machine_chassis(MACHINE(s));
-    const SGIModelGraphicsSlot *slot;
-    bool none;
+    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
 
-    if (s->uncatalogued_graphics) {
-        return true;
-    }
-    if (!sgi_graphics_vga_none(MACHINE_GET_CLASS(s)->name, &none, errp)) {
-        return false;
-    }
-    slot = none ? NULL : sgi_graphics_default_slot(chassis->graphics);
-    if (slot) {
-        s->default_pipe = sgi_graphics_new_default(slot);
-    }
-    return true;
+    return sgi_graphics_pipes_init(&s->pipes, MACHINE_GET_CLASS(s)->name,
+                                   sgi_machine_chassis(MACHINE(s)),
+                                   QAPI_LIST_LENGTH(t->nodes),
+                                   s->uncatalogued_graphics, errp);
 }
 
 /* The machine judges the graphics pipes; every other device is its bus's. */
@@ -10271,40 +10251,19 @@ static void sgi_machine_pre_plug(const HotplugHandler *hotplug_dev,
                                  DeviceState *dev, Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(hotplug_dev);
-    const SGIModelTopology *chassis = sgi_machine_chassis(MACHINE(s));
-    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
     SGIModelGraphicsFamilyKind family;
 
-    if (!sgi_graphics_pipe_family(dev, &family)) {
+    if (!sgi_graphics_pipe_family(dev, &family) ||
+        !sgi_graphics_pipes_pre_plug(&s->pipes, dev, errp)) {
         return;
     }
-    if (!s->uncatalogued_graphics &&
-        !sgi_graphics_check_pipe(MACHINE_GET_CLASS(s)->name, chassis,
-                                 chassis->graphics,
-                                 QAPI_LIST_LENGTH(t->nodes), dev, family,
-                                 s->pipes, s->first_pipe, errp)) {
-        return;
-    }
-    sgi_machine_fill_pipe_record(s, t, dev);
+    sgi_machine_fill_pipe_record(s, sgi_machine_topology(MACHINE(s)), dev);
 }
 
 static void sgi_machine_plug(const HotplugHandler *hotplug_dev,
                              DeviceState *dev, Error **errp)
 {
-    SGIMachineState *s = SGI_MACHINE(hotplug_dev);
-    const SGIModelTopology *chassis = sgi_machine_chassis(MACHINE(s));
-    const SGIModelGraphicsSlot *slot;
-    SGIModelGraphicsFamilyKind family;
-
-    if (!sgi_graphics_pipe_family(dev, &family)) {
-        return;
-    }
-    s->pipes++;
-    if (!s->first_pipe) {
-        slot = sgi_graphics_pipe_slot(chassis->graphics, dev, family);
-        s->first_pipe = g_strdup(slot ? slot->name : dev->id ? dev->id :
-                                 object_get_typename(OBJECT(dev)));
-    }
+    sgi_graphics_pipes_plug(&SGI_MACHINE(hotplug_dev)->pipes, dev);
 }
 
 void sgi_machine_init(MachineState *machine)
@@ -10977,10 +10936,7 @@ static void sgi_machine_instance_finalize(Object *obj)
         qemu_del_vm_change_state_handler(s->module_start_vm_state);
     }
     g_free(s->node_module);
-    if (s->default_pipe) {
-        object_unref(OBJECT(s->default_pipe));
-    }
-    g_free(s->first_pipe);
+    sgi_graphics_pipes_cleanup(&s->pipes);
     g_free(s->pipe_record);
     g_free(s->pipe_claimed);
     g_free(s->pipe_record_attachment);
