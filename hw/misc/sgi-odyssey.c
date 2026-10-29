@@ -279,11 +279,26 @@
  * The DMA-sync command's (ODSY_REG_HOST_WRITE, below) host-write base: a
  * 48-bit guest physical address split the same way as int_dest_upper/lower,
  * bits 15:0 of the upper half plus all of the lower half. Write only, in
- * the host-address block (offsets 0x4000-0x405f) that is otherwise
- * unmodeled.
+ * the host-address block (offsets 0x4000-0x405f). ESTABLISHED: at start the
+ * kernel writes the physical address of a 128 KB host buffer here. INFERRED:
+ * a region the board writes shadow state into; the model writes only the
+ * 0x0a5a tag there, at the offset that command names, and nothing else.
  */
 #define ODSY_HOST_WRITE_ADDR_UPPER 0x4034
 #define ODSY_HOST_WRITE_ADDR_LOWER 0x403c
+
+/*
+ * The statistics region. The kernel writes the physical address of a 16 KB
+ * statistics buffer to 0x401c (bits 47:32) and 0x4024 (bits 31:0) when it
+ * creates one and 0 when it frees it, and the statistics request writes
+ * 0x402c = 0x88000000 with fields from its argument (ESTABLISHED as the
+ * kernel's stores). What the board writes into the buffer is UNKNOWN, so
+ * the model stores the three words, writes nothing into the buffer, and
+ * reports the first nonzero setting. Write only.
+ */
+#define ODSY_STATS_ADDR_UPPER 0x401c
+#define ODSY_STATS_ADDR_LOWER 0x4024
+#define ODSY_STATS_CONTROL 0x402c
 
 /*
  * The context-shadow address: a 48-bit guest physical address split the same
@@ -2385,6 +2400,9 @@ static int64_t odyssey_reg(hwaddr addr, unsigned size)
     case ODSY_I2C_OPT_STATUS_READ:
     case ODSY_HOST_WRITE_ADDR_UPPER:
     case ODSY_HOST_WRITE_ADDR_LOWER:
+    case ODSY_STATS_ADDR_UPPER:
+    case ODSY_STATS_ADDR_LOWER:
+    case ODSY_STATS_CONTROL:
     case ODSY_CTX_SHADOW_ADDR_UPPER:
     case ODSY_CTX_SHADOW_ADDR_LOWER:
     case ODSY_RESET_CONTROL:
@@ -2936,6 +2954,9 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
     case ODSY_ROUTE_VECTORS:
     case ODSY_HOST_WRITE_ADDR_UPPER:
     case ODSY_HOST_WRITE_ADDR_LOWER:
+    case ODSY_STATS_ADDR_UPPER:
+    case ODSY_STATS_ADDR_LOWER:
+    case ODSY_STATS_CONTROL:
     case ODSY_CTX_SHADOW_ADDR_UPPER:
     case ODSY_CTX_SHADOW_ADDR_LOWER:
     case ODSY_RESET_CONTROL:
@@ -12463,6 +12484,24 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
         odyssey_query_cancel(s);
         s->host_write_addr_lower = value;
         break;
+    case ODSY_STATS_ADDR_UPPER:
+    case ODSY_STATS_ADDR_LOWER:
+    case ODSY_STATS_CONTROL:
+        if (addr == ODSY_STATS_ADDR_UPPER) {
+            s->stats_addr_upper = value;
+        } else if (addr == ODSY_STATS_ADDR_LOWER) {
+            s->stats_addr_lower = value;
+        } else {
+            s->stats_control = value;
+        }
+        if (value && !s->stats_reported) {
+            s->stats_reported = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: statistics region word "
+                          "0x%x at 0x%" HWADDR_PRIx " stored; the board's "
+                          "writes into the region are not modeled\n",
+                          (uint32_t)value, addr);
+        }
+        break;
     case ODSY_CTX_SHADOW_ADDR_UPPER:
         odyssey_query_cancel(s);
         s->ctx_shadow_addr_upper = value;
@@ -13062,6 +13101,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->route_vectors = 0;
     s->host_write_addr_upper = 0;
     s->host_write_addr_lower = 0;
+    s->stats_addr_upper = s->stats_addr_lower = s->stats_control = 0;
     s->ctx_shadow_addr_upper = 0;
     s->ctx_shadow_addr_lower = 0;
     memset(s->buzz, 0, sizeof(s->buzz));
@@ -14416,8 +14456,8 @@ static int odyssey_work_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 50,
-    .minimum_version_id = 50,
+    .version_id = 51,
+    .minimum_version_id = 51,
     .pre_save = odyssey_work_pre_save,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -14438,6 +14478,9 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32(route_vectors, SGIOdysseyState),
         VMSTATE_UINT32(host_write_addr_upper, SGIOdysseyState),
         VMSTATE_UINT32(host_write_addr_lower, SGIOdysseyState),
+        VMSTATE_UINT32(stats_addr_upper, SGIOdysseyState),
+        VMSTATE_UINT32(stats_addr_lower, SGIOdysseyState),
+        VMSTATE_UINT32(stats_control, SGIOdysseyState),
         VMSTATE_UINT32(ctx_shadow_addr_upper, SGIOdysseyState),
         VMSTATE_UINT32(ctx_shadow_addr_lower, SGIOdysseyState),
         VMSTATE_UINT32_ARRAY(buzz, SGIOdysseyState, 6),

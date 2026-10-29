@@ -1792,6 +1792,53 @@ static void test_flow_control_credit_target(void)
 }
 
 /*
+ * The statistics region: the kernel writes a 16 KB buffer's physical
+ * address to 0x401c (bits 47:32) and 0x4024 (bits 31:0), 0x402c =
+ * 0x88000000 with the request's fields, and zeros when it frees the buffer.
+ * The model stores them, reports the first setting once, and writes nothing
+ * into the buffer, since what the board writes there is unknown.
+ */
+static void test_statistics_region_registers(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    const uint64_t buffer = 0xb90000;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-stats-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_BANKS);
+    qtest_writel(qts, buffer, 0x12345678);
+    reg_write(qts, 0x401c, 0);
+    reg_write(qts, 0x4024, (uint32_t)buffer);
+    reg_write(qts, 0x402c, 0x8800005f);
+    reg_write(qts, 0x401c, 0);
+    reg_write(qts, 0x4024, 0);
+    g_assert_cmphex(qtest_readl(qts, buffer), ==, 0x12345678);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log, "statistics region word 0xb90000 at 0x4024 "
+                                 "stored"));
+    g_assert_null(strstr(log, "statistics region word 0x8800005f"));
+    g_assert_null(strstr(log, "at 0x401c is not modeled"));
+    g_assert_null(strstr(log, "at 0x4024 is not modeled"));
+    g_assert_null(strstr(log, "at 0x402c is not modeled"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
  * The registers the stock IP35 BaseIO PROM's graphics diagnostic reads
  * before it will print a passing board version, SDRAM size and bank count:
  * the crosstalk request timeout and the six
@@ -22830,6 +22877,8 @@ int main(int argc, char **argv)
                    test_interrupt_packet_reaches_bedrock_pending);
     add_fresh_case("sn1/odyssey/flow-control-credit-target",
                    test_flow_control_credit_target);
+    add_fresh_case("sn1/odyssey/statistics-region-registers",
+                   test_statistics_region_registers);
     add_fresh_case("sn1/odyssey/baseio-prom-diagnostic-registers",
                    test_baseio_prom_diagnostic_registers);
     add_fresh_case("sn1/odyssey/unmodeled-offsets-are-visible",

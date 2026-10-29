@@ -166,6 +166,12 @@ struct SGIOdysseyState {
      */
     uint32_t host_write_addr_upper;
     uint32_t host_write_addr_lower;
+    /* The statistics buffer address (0x401c, 0x4024) and control (0x402c). */
+    uint32_t stats_addr_upper;
+    uint32_t stats_addr_lower;
+    uint32_t stats_control;
+    /* A statistics region was set up; reported once, not migrated. */
+    bool stats_reported;
 
     /*
      * The kernel driver's context switch save address (ODSY_CTX_SHADOW_ADDR_
