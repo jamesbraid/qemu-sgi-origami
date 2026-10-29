@@ -3,7 +3,7 @@ testblock = declare_dependency(dependencies: [block], sources: 'iothread.c')
 
 # Unit tests selected by the SGI Meson suite, listed by test name.
 fork_unit_tests = [
-  'test-onewire', 'test-i2c-masters', 'test-i2c-wire',
+  'test-onewire', 'test-i2c-masters', 'test-i2c-wire', 'test-crime-texture',
   'test-sgi-o2000-module-mgmt', 'test-sgi-o2000-module-mgmt-real',
   'test-sgi-router', 'test-sn0-fabric-routed',
   'test-sn1-topology',
@@ -49,6 +49,7 @@ tests = {
   'test-mul64': [],
   # all code tested by test-int128 is inside int128.h
   'test-int128': [],
+  'test-crime-texture': ['../../hw/mips/sgi/crime-texture.c'],
   'rcutorture': [],
   'test-rcu-list': [],
   'test-rcu-simpleq': [],
@@ -386,6 +387,14 @@ foreach test_name, extra: tests
   if test_name in ['test-sgi-gl', 'test-sgi-gl-vmstate'] and meson.get_compiler('c').has_link_argument('-Wl,--wrap=g_try_realloc_n')
     test_link_args = ['-Wl,--wrap=g_try_realloc_n']
     test_c_args = ['-DSGI_GL_ALLOCATION_WRAP']
+  endif
+  if test_name == 'test-crime-texture'
+    test_c_args += ['-DCRIME_TEXTURE_TEST']
+  endif
+  if test_name == 'test-crime-texture' and meson.get_compiler('c').has_link_argument('-Wl,--wrap=g_try_malloc')
+    test_link_args = ['-Wl,--wrap=g_try_malloc', '-Wl,--wrap=g_try_malloc0',
+                      '-Wl,--wrap=g_try_malloc0_n']
+    test_c_args += ['-DCRIME_TEXTURE_ALLOCATION_WRAP']
   endif
   if test_name == 'test-sgi-gl'
     test_c_args += ['-DSGI_GL_TEXTURE_TEST']

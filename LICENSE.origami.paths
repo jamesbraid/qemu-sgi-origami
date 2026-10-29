@@ -975,3 +975,11 @@ scripts/tests/test_sgi_model_ip32.py
 hw/mips/sgi/models/o2plus.yaml
 hw/mips/sgi/models/layers/modules/o2plus.yaml
 hw/mips/sgi/models/layers/products/o2plus.yaml
+hw/mips/sgi/crime-test.c
+hw/mips/sgi/crime-rational.h
+hw/mips/sgi/crime-texture.c
+hw/mips/sgi/crime-texture.h
+tests/qtest/sgi-crime-line-vectors.h
+tests/qtest/sgi-crime-line-vectors.py
+tests/qtest/sgi-crime-texture-addresses.h
+tests/unit/test-crime-texture.c

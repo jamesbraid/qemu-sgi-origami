@@ -247,3 +247,15 @@ gl-line-pairs-atomic /mips64/sgi/crime/render/gl-line/pairs-atomic
 gl-line-failures /mips64/sgi/crime/render/gl-line/failures
 gl-line-color-anchor /mips64/sgi/crime/render/gl-line/color-anchor
 gl-line-migration /mips64/sgi/crime/render/gl-line/migration
+texture-constant /mips64/sgi/crime/render/texture/constant
+texture-formats /mips64/sgi/crime/render/texture/formats
+texture-perspective /mips64/sgi/crime/render/texture/perspective
+texture-filtering /mips64/sgi/crime/render/texture/filtering
+texture-lod /mips64/sgi/crime/render/texture/lod
+texture-transactions /mips64/sgi/crime/render/texture/transactions
+texture-addresses /mips64/sgi/crime/render/texture/addresses
+texture-output-order /mips64/sgi/crime/render/texture/output-order
+texture-anchor /mips64/sgi/crime/render/texture/anchor
+texture-migration /mips64/sgi/crime/render/texture/migration
+texture-border-components /mips64/sgi/crime/render/texture/border-components
+texture-height-one /mips64/sgi/crime/render/texture/height-one
