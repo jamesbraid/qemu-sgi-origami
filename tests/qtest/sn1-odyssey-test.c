@@ -18324,6 +18324,34 @@ static void test_texture_adapter_volume_mipmap_nearest(void)
 }
 
 /*
+ * The post-filter scale and bias apply to a volume's texel too: level 0's
+ * red under R (2, -1), G (-1, 2) and B (0, 1) becomes white. The volume is
+ * RGB under GL_MODULATE, so alpha stays the white fragment's.
+ */
+static void test_texture_scale_bias_volume(void)
+{
+    const uint32_t lod[] = { 0x00011013, 0, 0, 0, 0 };
+    const uint32_t scale_bias[] = {
+        0x0001203b, 0x2000, 0xf000, 0xf000, 0x2000, 0, 0x1000, 0, 0,
+    };
+    const uint32_t white[4] = {
+        ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE,
+    };
+    QTestState *qts = board_start("");
+
+    volume_mipmap_upload(qts, -1);
+    volume_mipmap_bind(qts);
+    texture_adapter_window(qts);
+    push_user_words(qts, lod, ARRAY_SIZE(lod));
+    texture_adapter_point_3d_rgba(qts, 10, 10, 0.5f, 0.5f, 0.5f, white);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0xff0000ff);
+    push_user_words(qts, scale_bias, ARRAY_SIZE(scale_bias));
+    texture_adapter_point_3d_rgba(qts, 11, 10, 0.5f, 0.5f, 0.5f, white);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0xffffffff);
+    board_quit(qts);
+}
+
+/*
  * Each draw samples a volume's slices where texture setup found them. Give
  * the eight level-0 slices distinct colours, upload them last slice first,
  * so slice order and object order disagree, and sample every slice. Then
@@ -22963,6 +22991,8 @@ int main(int argc, char **argv)
              test_texture_max_clamp);
     add_case("sn1/odyssey/texture-adapter/scale-bias",
              test_texture_scale_bias);
+    add_case("sn1/odyssey/texture-adapter/scale-bias-volume",
+             test_texture_scale_bias_volume);
     add_case("sn1/odyssey/texture-adapter/sampler-bit17",
              test_texture_sampler_bit17);
     add_fresh_case("sn1/odyssey/texture-adapter/offset-and-unknown-table",
