@@ -1705,6 +1705,61 @@ static void test_texture_filter_curve(void)
     g_assert_cmpfloat(values[63], ==, 0);
 }
 
+/*
+ * The GL client library's spline-table producer, as the command grammar
+ * datasheet gives it: v = trunc(w * 512 + 2) >> 2, clamped to -1024 to
+ * 1023, then halved (arithmetically) until it fits a signed byte, at
+ * most three times, counting the exponent; the code is (v & 0xff) << 2
+ * | exponent.
+ */
+static uint32_t client_curve_code(double w, double *sent)
+{
+    int v = (int)(w * 512 + 2) >> 2;
+    unsigned exponent = 0;
+
+    v = MIN(MAX(v, -1024), 1023);
+    while ((v < -128 || v > 127) && exponent < 3) {
+        v >>= 1;
+        exponent++;
+    }
+    *sent = v * (double)(1 << exponent) / 128;
+    return ((uint32_t)(v & 0xff) << 2) | exponent;
+}
+
+/*
+ * Every value the producer can send decodes to exactly the mantissa
+ * times 2^exponent over 128 it encoded: 1/128 steps up to 127/128, then
+ * coarser steps, saturating at 127/16 and -8.
+ */
+static void test_texture_filter_curve_client_precision(void)
+{
+    uint32_t words[33] = { 0 };
+    double sent[64], values[64];
+
+    for (int start = -1100; start < 1100; start += 64) {
+        for (unsigned group = 0; group < 16; group++) {
+            uint64_t packed = 0;
+
+            for (unsigned j = 0; j < 4; j++) {
+                unsigned i = group * 4 + j;
+                double w = (start + (int)i) / 128.0 + 0.3 / 128;
+
+                packed |= (uint64_t)client_curve_code(w, &sent[i]) << (10 * j);
+            }
+            words[group * 2] = packed;
+            words[group * 2 + 1] = packed >> 32;
+        }
+        g_assert_true(sgi_kona_gl_texture_filter_curve(words, values));
+        for (unsigned i = 0; i < 64; i++) {
+            g_assert_cmpfloat(values[i], ==, sent[i]);
+        }
+    }
+    g_assert_cmpuint(client_curve_code(9, &sent[0]), ==, 0x1ff);
+    g_assert_cmpfloat(sent[0], ==, 127.0 * 8 / 128);
+    g_assert_cmpuint(client_curve_code(-9, &sent[0]), ==, 0x203);
+    g_assert_cmpfloat(sent[0], ==, -8);
+}
+
 static void test_texture_filter_curve_refusal(void)
 {
     uint32_t words[33] = { 0 };
@@ -3358,6 +3413,9 @@ int main(int argc, char **argv)
                     test_texture_swap_bytes);
     g_test_add_func("/sgi-kona-gl-decode/texture-filter-curve/values",
                     test_texture_filter_curve);
+    g_test_add_func(
+        "/sgi-kona-gl-decode/texture-filter-curve/client-precision",
+        test_texture_filter_curve_client_precision);
     g_test_add_func("/sgi-kona-gl-decode/texture-filter-curve/refusal",
                     test_texture_filter_curve_refusal);
     g_test_add_func("/sgi-kona-gl-decode/bitmap-pio/contiguous",
