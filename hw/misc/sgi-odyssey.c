@@ -1426,6 +1426,13 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_REG_TEX_LEVEL 0x0e80       /* 3 operands, 0x0e80 .. 0x0ebf */
 #define ODSY_REG_TEX_LEVEL0 0x0406      /* 1 operand */
 #define ODSY_REG_TEX_LOD 0x1013        /* 4 operands */
+#define ODSY_REG_TEX_SCALE_BIAS 0x203b /* 8 operands */
+/*
+ * The GL library's other two post-filter layouts: 0x083d (two words, the
+ * default context's identity) and 0x2030-0x2033 (image processing). Their
+ * words' meaning is not established, so 0x083d is reported unmodeled.
+ */
+#define ODSY_REG_POST_FILTER_DEFAULT 0x083d
 #define ODSY_REG_TEX_COLOUR_TABLE0 0x3e00
 #define ODSY_REG_TEX_COLOUR_TABLE1 0x3e10
 #define ODSY_TEX_COLOUR_TABLE_BLOCKS 16
@@ -5681,6 +5688,7 @@ typedef struct OdysseyTextureVolume {
     uint32_t first_slice, slices;
     uint32_t width, height, depth, base_format, words;
     bool colour_table_alpha, border;
+    bool colour_table, scale_bias;
     OdysseyTextureDetailWeight detail_weight;
 } OdysseyTextureVolume;
 
@@ -5908,9 +5916,9 @@ static bool odyssey_texture_read_border_level(void *opaque, uint32_t level,
 }
 
 /* Each normalized component indexes the table after filtering. */
-static void odyssey_texture_colour_table(void *opaque, double rgba[4])
+static void odyssey_texture_colour_table(const OdysseyTextureVolume *texture,
+                                         double rgba[4])
 {
-    const OdysseyTextureVolume *texture = opaque;
     const SGIOdysseyState *s = texture->s;
 
     for (unsigned channel = 0; channel < 3; channel++) {
@@ -5928,6 +5936,74 @@ static void odyssey_texture_colour_table(void *opaque, double rgba[4])
         uint32_t word = s->tex_colour_table[1][index];
 
         rgba[3] = (word & 0xfff) / 4095.0;
+    }
+}
+
+/*
+ * Post-filter scale and bias (0x203b, where texture validation sends a
+ * texture's words): eight words, a scale and a bias for each of R, G, B
+ * and A in turn, each signed 3.12 in bits 15:0. The GL library clamps both
+ * to -8 through 7.999755859375 and defaults them to 4096 (1.0) and 0
+ * (ESTABLISHED as the library's conversion). Pairing scale before bias
+ * within a channel is INFERRED from the order the datasheet names them.
+ * The library never sets bits 31:16, so a word that does is unknown state
+ * and drops the draw. The reset value is the library's default, a model
+ * choice.
+ */
+#define ODSY_TEX_SCALE_BIAS_WORDS 8
+#define ODSY_TEX_SCALE_BIAS_BITS 16
+#define ODSY_TEX_SCALE_BIAS_ONE 4096
+
+static bool odyssey_texture_scale_bias_known(const SGIOdysseyState *s)
+{
+    for (unsigned i = 0; i < ODSY_TEX_SCALE_BIAS_WORDS; i++) {
+        if (s->tex_scale_bias[i] >> ODSY_TEX_SCALE_BIAS_BITS) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool odyssey_texture_scale_bias_identity(const SGIOdysseyState *s)
+{
+    for (unsigned c = 0; c < 4; c++) {
+        if (s->tex_scale_bias[c * 2] != ODSY_TEX_SCALE_BIAS_ONE ||
+            s->tex_scale_bias[c * 2 + 1]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * GL_SGIX_texture_scale_bias applies scale, then bias, then a clamp to
+ * [0, 1] to the filtered texel, before the texture colour table and the
+ * environment. That the board follows the extension's order and clamp is
+ * INFERRED: no source gives the board's arithmetic.
+ */
+static void odyssey_texture_scale_bias(const SGIOdysseyState *s,
+                                       double rgba[4])
+{
+    for (unsigned c = 0; c < 4; c++) {
+        double scale = sextract32(s->tex_scale_bias[c * 2], 0,
+                                  ODSY_TEX_SCALE_BIAS_BITS);
+        double bias = sextract32(s->tex_scale_bias[c * 2 + 1], 0,
+                                 ODSY_TEX_SCALE_BIAS_BITS);
+
+        rgba[c] = (rgba[c] * scale + bias) / ODSY_TEX_SCALE_BIAS_ONE;
+        rgba[c] = MIN(MAX(rgba[c], 0.0), 1.0);
+    }
+}
+
+static void odyssey_texture_post_filter(void *opaque, double rgba[4])
+{
+    const OdysseyTextureVolume *texture = opaque;
+
+    if (texture->scale_bias) {
+        odyssey_texture_scale_bias(texture->s, rgba);
+    }
+    if (texture->colour_table) {
+        odyssey_texture_colour_table(texture, rgba);
     }
 }
 
@@ -6340,6 +6416,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                   filter) && !detail_filter) ||
         (s->tex_lod[0] | s->tex_lod[1] | s->tex_lod[2] | s->tex_lod[3]) &
             ~ODSY_TEX_LOD_MASK ||
+        !odyssey_texture_scale_bias_known(s) ||
         (min >= 0x40 && lo > hi) ||
         (colour_table &&
          ((colour_table_l8 && image->base_format != SGI_GL_LUMINANCE) ||
@@ -6543,6 +6620,10 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
             image->read_border_texel_3d = odyssey_texture_read_border_3d;
         }
         image->opaque = &chain->volume;
+        if (!odyssey_texture_scale_bias_identity(s)) {
+            chain->volume.scale_bias = true;
+            image->post_filter = odyssey_texture_post_filter;
+        }
         if (mipmap) {
             chain->pyramid = (SGIGLTexPyramid) {
                 .levels = chain->levels, .count = count, .base_level = 0,
@@ -6568,8 +6649,10 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     chain->volume.colour_table_alpha = colour_table_rgba8_rgba ||
                                        word == 0x11600001;
     image->opaque = &chain->volume;
-    if (colour_table) {
-        image->post_filter = odyssey_texture_colour_table;
+    chain->volume.colour_table = colour_table;
+    chain->volume.scale_bias = !odyssey_texture_scale_bias_identity(s);
+    if (chain->volume.colour_table || chain->volume.scale_bias) {
+        image->post_filter = odyssey_texture_post_filter;
     }
     for (uint32_t i = 0; i < count; i++) {
         uint32_t *entry = &s->tex_levels[(first + i) * 3];
@@ -11216,6 +11299,12 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
     case ODSY_REG_TEX_LOD:
         memcpy(s->tex_lod, s->cmd_operand, sizeof(s->tex_lod));
         break;
+    case ODSY_REG_TEX_SCALE_BIAS:
+        memcpy(s->tex_scale_bias, s->cmd_operand, sizeof(s->tex_scale_bias));
+        break;
+    case ODSY_REG_POST_FILTER_DEFAULT:
+        odyssey_cmd_unimplemented(s, tag);
+        break;
     case ODSY_REG_FIFO_SETUP_FIRST ... ODSY_REG_FIFO_SETUP_LAST:
         s->fifo_setup[tag - ODSY_REG_FIFO_SETUP_FIRST] = s->cmd_operand[0];
         break;
@@ -12907,6 +12996,10 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->tex_lod[0] = s->tex_lod[1] = 0;
     s->tex_lod[2] = 0x3100;
     s->tex_lod[3] = 0x0f00;
+    for (unsigned c = 0; c < 4; c++) {
+        s->tex_scale_bias[c * 2] = ODSY_TEX_SCALE_BIAS_ONE;
+        s->tex_scale_bias[c * 2 + 1] = 0;
+    }
     memset(s->tex_coord, 0, sizeof(s->tex_coord));
     s->tex_coord_r = 0;
     s->tex_coord_q = ODSY_F32_ONE;
@@ -14147,8 +14240,8 @@ static int odyssey_work_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 45,
-    .minimum_version_id = 45,
+    .version_id = 46,
+    .minimum_version_id = 46,
     .pre_save = odyssey_work_pre_save,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -14303,6 +14396,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
                              SGI_ODYSSEY_TEX_LEVELS * 3),
         VMSTATE_UINT32(tex_level0, SGIOdysseyState),
         VMSTATE_UINT32_ARRAY(tex_lod, SGIOdysseyState, 4),
+        VMSTATE_UINT32_ARRAY(tex_scale_bias, SGIOdysseyState, 8),
         VMSTATE_UINT32_ARRAY(tex_coord, SGIOdysseyState, 2),
         VMSTATE_UINT32(tex_coord_r, SGIOdysseyState),
         VMSTATE_UINT32(tex_coord_q, SGIOdysseyState),
