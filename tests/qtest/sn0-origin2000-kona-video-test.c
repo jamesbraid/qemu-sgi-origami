@@ -223,8 +223,9 @@ static void assert_textport_in_step(QTestState *s)
  * Framing: 0x12
  * at +0xc134cc, then 0 and 0x12 at +0xc1000c, frame as one command 0x12
  * with one data word and a checksum that verifies. The same command sent
- * as plain words at +0xc10000 frames the same way. A wrong checksum is
- * traced, and the words after it still frame from a clean start.
+ * as plain words at +0xc10000 frames the same way. A wrong checksum
+ * drops the command, as the pipe's firmware does, logged, and the words
+ * after it still frame from a clean start.
  */
 static void test_framing_and_checksum(void)
 {
@@ -246,6 +247,7 @@ static void test_framing_and_checksum(void)
 
     video_command(s, X_SERVER_VIDEO_INIT, (uint32_t[]){ 0 }, 1, 0x99);
     assert_textport_in_step(s);
+
     qtest_quit(s);
 
     found = kona_log_read(log);
@@ -259,7 +261,9 @@ static void test_framing_and_checksum(void)
                                        "sgi_kona_video_checksum_mismatch "),
                      ==, 1);
     g_assert_nonnull(strstr(found, "command 0x53 checksum 0x99 expected "
-                                   "0x53; acted on anyway"));
+                                   "0x53; dropped"));
+    g_assert_nonnull(strstr(found, "video command 0x53 checksum 0x99 is not "
+                                   "0x53; dropped"));
     g_assert_null(strstr(found, "sync word"));
     g_assert_null(strstr(found, "unknown token"));
 }
@@ -439,8 +443,8 @@ static void test_migration_mid_video_command(void)
  * 0x1f2 page, GetBoardConfig leaves page words 2 to 8 as 6, the five
  * data words (version 1, board mask 1, option mask 0, options code 0,
  * flag 0) and their sum plus 6, and writes word 0 last. Word 1 and the
- * word after the checksum are left alone. A wrong checksum on the
- * command still gets the reply. With no return page, nothing is posted.
+ * word after the checksum are left alone. A wrong checksum drops the
+ * command with no reply. With no return page, nothing is posted.
  */
 static void test_board_config_reply(void)
 {
@@ -474,13 +478,11 @@ static void test_board_config_reply(void)
     qtest_writel(s, REG_COMMAND_SLOT(0x1ff), 0xdeadbeef);
     g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 0);
 
-    /* A bad checksum still gets its reply. */
+    /* A bad checksum drops the command, as the firmware does: no reply. */
     guest_fill(s, RETURN_PAGE, 0x5a, 0x40);
     video_command(s, GET_BOARD_CONFIG, (uint32_t[]){ 0 }, 1, 0x1234);
-    g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 1);
-    for (size_t i = 0; i < ARRAY_SIZE(expected); i++) {
-        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8 + 4 * i), ==,
-                        expected[i]);
+    for (size_t i = 0; i < 10; i++) {
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 4 * i), ==, 0x5a5a5a5a);
     }
     assert_textport_in_step(s);
     qtest_quit(s);
@@ -489,9 +491,9 @@ static void test_board_config_reply(void)
     g_assert_nonnull(strstr(found, "token 0x1a6 with no return page "
                                    "registered"));
     g_assert_cmpuint(count_occurrences(found, "command 0x12 reply id 6 data "
-                                       "bytes 20"), ==, 3);
+                                       "bytes 20"), ==, 2);
     g_assert_nonnull(strstr(found, "command 0x12 checksum 0x1234 expected "
-                                   "0x12; acted on anyway"));
+                                   "0x12; dropped"));
     reply_write = strstr(found, "addr 0x320008 len 0x1c");
     g_assert_nonnull(reply_write);
     ready_write = strstr(reply_write, "addr 0x320000 len 0x4");
@@ -1312,11 +1314,11 @@ static void test_checksum_search_framing(void)
 }
 
 /*
- * A counted command whose checksum is wrong still acts: GetSyncSelects
- * (0x24), one data word, is answered with reply 11 of 24 zero bytes, and
- * the mismatch is traced.
+ * A counted command whose checksum is wrong is dropped, as the pipe's
+ * firmware drops it: GetSyncSelects (0x24), one data word, posts no reply,
+ * the mismatch is logged, and the stream after it frames.
  */
-static void test_bad_checksum_still_acts(void)
+static void test_bad_checksum_dropped(void)
 {
     g_autofree char *log = NULL;
     g_autofree char *found = NULL;
@@ -1325,15 +1327,15 @@ static void test_bad_checksum_still_acts(void)
 
     fresh_return_page(s);
     video_command(s, 0x24, (uint32_t[]){ 3 }, 1, 0xbad);
-    assert_zero_reply(s, 11, 24);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 0);
     assert_textport_in_step(s);
     qtest_quit(s);
 
     found = kona_log_read(log);
     g_assert_nonnull(strstr(found, "command 0x24 checksum 0xbad expected "
-                                   "0x27; acted on anyway"));
-    g_assert_nonnull(strstr(found, "command 0x24 reply id 11 data bytes "
-                                   "24"));
+                                   "0x27; dropped"));
+    g_assert_null(strstr(found, "command 0x24 reply id"));
+    g_assert_null(strstr(found, "sgi_kona_host_write "));
 }
 
 /*
@@ -1463,8 +1465,8 @@ int main(int argc, char **argv)
                    test_generic_replies);
     qtest_add_func("sn0/origin2000/kona-video/checksum-search-framing",
                    test_checksum_search_framing);
-    qtest_add_func("sn0/origin2000/kona-video/bad-checksum-still-acts",
-                   test_bad_checksum_still_acts);
+    qtest_add_func("sn0/origin2000/kona-video/bad-checksum-dropped",
+                   test_bad_checksum_dropped);
     qtest_add_func("sn0/origin2000/kona-video/checksum-search-abandoned",
                    test_checksum_search_abandoned);
     qtest_add_func("sn0/origin2000/kona-video/migration-mid-search",
