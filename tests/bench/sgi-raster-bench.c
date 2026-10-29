@@ -25,6 +25,13 @@
  * case's planes and one of the order and arguments of every target call,
  * and with -v a line for each case, so two builds' outputs differ where
  * and only where they drew differently.
+ *
+ *   sgi-raster-bench -d [-s scene | -c cases [-v]]
+ *
+ * draws each scene, or each textured case of the corpus, by the double
+ * precision texture path and by the default fixed-point one, and prints
+ * how far their colour lies apart and whether depth, stencil and the
+ * pixels written are identical.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -469,7 +476,8 @@ static void trilinear_texels(Bench *b)
     }
 }
 
-static void scene_run(Scene scene, unsigned repeat)
+/* Draw scene into a new bench, returning it and the milliseconds taken. */
+static Bench *scene_draw(Scene scene, double *ms)
 {
     bool rgba = scene != SCENE_COLOUR;
     const SGIRasterRules *rules = rgba ? &rules_rgba : &rules_colour;
@@ -547,10 +555,88 @@ static void scene_run(Scene scene, unsigned repeat)
         sgi_soft_draw(rules, &t, &d);
     }
     end = get_clock();
-    printf("%-8s %u %9.3f ms %016" PRIx64 "\n", scene_names[scene], repeat,
-           (end - start) / 1e6, bench_digest(b));
+    *ms = (end - start) / 1e6;
     sgi_gl_cleanup(&c);
+    return b;
+}
+
+static void scene_run(Scene scene, unsigned repeat)
+{
+    double ms;
+    Bench *b = scene_draw(scene, &ms);
+
+    printf("%-8s %u %9.3f ms %016" PRIx64 "\n", scene_names[scene], repeat,
+           ms, bench_digest(b));
     bench_cleanup(b);
+    g_free(b);
+}
+
+/*
+ * How far the fixed-point texture path's colour lies from the double
+ * path's: pixels whose colour differs, the largest difference of any
+ * channel out of 255, and the sum of every channel's difference.
+ */
+typedef struct Diff {
+    uint64_t pixels, differing, channels, sum;
+    unsigned max;
+} Diff;
+
+static void diff_colour(Diff *diff, uint32_t a, uint32_t b, unsigned channels)
+{
+    unsigned most = 0;
+
+    for (unsigned k = 0; k < channels; k++) {
+        unsigned x = (a >> (8 * k)) & 0xff, y = (b >> (8 * k)) & 0xff;
+        unsigned d = x > y ? x - y : y - x;
+
+        diff->sum += d;
+        most = MAX(most, d);
+    }
+    diff->pixels++;
+    diff->channels += channels;
+    diff->differing += most > 0;
+    diff->max = MAX(diff->max, most);
+}
+
+static void diff_print(const char *what, const Diff *diff, bool exact)
+{
+    printf("%s: %" PRIu64 " pixels, %" PRIu64 " differ, max %u/255, "
+           "mean %.4f; depth, stencil and pixels written %s\n", what,
+           diff->pixels, diff->differing, diff->max,
+           diff->channels ? (double)diff->sum / diff->channels : 0.0,
+           exact ? "identical" : "DIFFER");
+}
+
+/*
+ * Draw scene by the double-precision texture path and by the default
+ * one, and compare: the colour planes, every pixel, and the depth plane
+ * exactly.
+ */
+static void scene_diff(Scene scene)
+{
+    double ms;
+    Bench *a, *b;
+    uint64_t plane = (uint64_t)W * H * 4;
+    Diff diff = { 0 };
+    bool exact;
+
+    sgi_raster_set_texture_path(SGI_RASTER_TEXTURE_DOUBLE);
+    a = scene_draw(scene, &ms);
+    sgi_raster_set_texture_path(SGI_RASTER_TEXTURE_SPANS);
+    b = scene_draw(scene, &ms);
+    for (uint64_t i = 0; i < 2 * plane; i += 4) {
+        uint32_t x, y;
+
+        memcpy(&x, &a->mem.bytes[i], 4);
+        memcpy(&y, &b->mem.bytes[i], 4);
+        diff_colour(&diff, x, y, 4);
+    }
+    exact = !memcmp(&a->mem.bytes[2 * plane], &b->mem.bytes[2 * plane],
+                    plane);
+    diff_print(scene_names[scene], &diff, exact);
+    bench_cleanup(a);
+    bench_cleanup(b);
+    g_free(a);
     g_free(b);
 }
 
@@ -576,6 +662,8 @@ typedef struct Corpus {
      */
     uint64_t pixel_calls[CW * CH];
     uint64_t outside;
+    /* Which pixels had a colour or depth store, for comparing paths. */
+    uint8_t written[CW * CH];
     uint32_t texels[CTEX_LEVELS][(1u << CTEX_LOG2) * (1u << CTEX_LOG2)];
     /* Raw-component reads: each slot's width, and texels out of range. */
     uint8_t bits[4];
@@ -601,6 +689,9 @@ static void corpus_call(Corpus *c, unsigned kind, unsigned target, int x,
     h = fnv(fnv(h, (uint32_t)x | (uint64_t)(uint32_t)y << 32), value);
     if (x >= 0 && x < CW && y >= 0 && y < CH) {
         c->pixel_calls[y * CW + x] = fnv(c->pixel_calls[y * CW + x], h);
+        /* Colour, index, depth and RGBA stores. */
+        c->written[y * CW + x] |= (kind == 1 || kind == 3 || kind == 8) |
+                                  (kind == 5) << 1;
     } else {
         qatomic_add(&c->outside, h);
     }
@@ -1019,7 +1110,11 @@ static void corpus_state(GRand *rand, SGIGLDrawState *st)
     st->dither = corpus_chance(rand, 30);
 }
 
-static void corpus_case(unsigned index, uint64_t *planes, uint64_t *calls)
+/*
+ * Draw case index of the corpus, leaving its planes in c, which is
+ * allocated zeroed; whether the case textured is returned.
+ */
+static bool corpus_draw(unsigned index, Corpus *c)
 {
     static const SGIRasterRules base = {
         .subpixel_bits = 8,
@@ -1032,7 +1127,6 @@ static void corpus_case(unsigned index, uint64_t *planes, uint64_t *calls)
         .smooth_primitives = true,
     };
     GRand *rand = g_rand_new_with_seed(0x5ba45 + index);
-    g_autofree Corpus *c = g_new0(Corpus, 1);
     float verts[CVERTS * SGI_GL_VERTEX_FLOATS] = { 0 };
     uint32_t stipple[32];
     uint32_t modes[2] = { SGI_GL_FILL, SGI_GL_FILL };
@@ -1263,10 +1357,69 @@ static void corpus_case(unsigned index, uint64_t *planes, uint64_t *calls)
         corpus_texels(c, rand);
         sgi_soft_draw(&rules, &t, &d);
     }
-    *planes = corpus_planes(c);
-    *calls = corpus_calls(c);
     sgi_gl_cleanup(&ctx);
     g_rand_free(rand);
+    return t.texture;
+}
+
+static void corpus_case(unsigned index, uint64_t *planes, uint64_t *calls)
+{
+    g_autofree Corpus *c = g_new0(Corpus, 1);
+
+    corpus_draw(index, c);
+    *planes = corpus_planes(c);
+    *calls = corpus_calls(c);
+}
+
+/*
+ * Draw each textured case of the corpus by the double-precision texture
+ * path and by the default one, and compare their planes: colour where
+ * either path wrote it, the rest exactly.
+ */
+static void corpus_diff(unsigned count, bool verbose)
+{
+    Diff all = { 0 };
+    unsigned textured = 0, inexact = 0;
+
+    for (unsigned i = 0; i < count; i++) {
+        g_autofree Corpus *a = g_new0(Corpus, 1);
+        g_autofree Corpus *b = g_new0(Corpus, 1);
+        Diff diff = { 0 };
+        bool exact;
+
+        sgi_raster_set_texture_path(SGI_RASTER_TEXTURE_DOUBLE);
+        if (!corpus_draw(i, a)) {
+            continue;
+        }
+        sgi_raster_set_texture_path(SGI_RASTER_TEXTURE_SPANS);
+        corpus_draw(i, b);
+        textured++;
+        exact = !memcmp(a->depth, b->depth, sizeof(a->depth)) &&
+                !memcmp(a->stencil, b->stencil, sizeof(a->stencil)) &&
+                !memcmp(a->written, b->written, sizeof(a->written));
+        for (unsigned p = 0; p < 2; p++) {
+            for (unsigned k = 0; k < CW * CH; k++) {
+                if (a->written[k] & 1) {
+                    diff_colour(&diff, a->colour[p][k], b->colour[p][k], 4);
+                } else if (a->colour[p][k] != b->colour[p][k]) {
+                    exact = false;
+                }
+            }
+        }
+        inexact += !exact;
+        all.pixels += diff.pixels;
+        all.differing += diff.differing;
+        all.channels += diff.channels;
+        all.sum += diff.sum;
+        all.max = MAX(all.max, diff.max);
+        if (verbose || !exact) {
+            printf("case %u: ", i);
+            diff_print("textured", &diff, exact);
+        }
+    }
+    printf("corpus %u cases, %u textured, %u inexact\n", count, textured,
+           inexact);
+    diff_print("corpus", &all, !inexact);
 }
 
 static void corpus_run(unsigned count, bool verbose)
@@ -1352,12 +1505,15 @@ int main(int argc, char **argv)
 {
     unsigned repeats = 1, cases = 0, bands = 1;
     uint64_t min_pixels = 0;
-    bool verbose = false, sizes = false;
+    bool verbose = false, sizes = false, diff = false;
     int only = -1;
     int opt;
 
-    while ((opt = getopt(argc, argv, "s:r:c:j:m:vzh")) != -1) {
+    while ((opt = getopt(argc, argv, "s:r:c:j:m:vzdh")) != -1) {
         switch (opt) {
+        case 'd':
+            diff = true;
+            break;
         case 'j':
             bands = atoi(optarg);
             break;
@@ -1392,7 +1548,8 @@ int main(int argc, char **argv)
             break;
         default:
             fprintf(stderr, "usage: %s [-j bands] [-m min-pixels] "
-                    "[-s scene] [-r repeats] | -c cases [-v] | -z\n",
+                    "[-s scene] [-r repeats] | -c cases [-v] | -z | "
+                    "-d [-s scene | -c cases [-v]]\n",
                     argv[0]);
             return opt != 'h';
         }
@@ -1407,6 +1564,18 @@ int main(int argc, char **argv)
 #endif
     if (sizes) {
         sizes_run(repeats);
+        return 0;
+    }
+    if (diff && cases) {
+        corpus_diff(cases, verbose);
+        return 0;
+    }
+    if (diff) {
+        for (int s = 0; s < SCENE_COUNT; s++) {
+            if ((only < 0 || only == s) && s != SCENE_CLEAR) {
+                scene_diff(s);
+            }
+        }
         return 0;
     }
     if (cases) {
