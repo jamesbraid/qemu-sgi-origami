@@ -241,6 +241,32 @@ static QTestState *start_ip53_vpro(void)
     return qts;
 }
 
+/*
+ * A routed Origin 3400 whose node 0 carries the stand-in head's port over
+ * its processor-facing I/O window, at widget 0xd. Node 0's bank 0 holds
+ * the mailboxes.
+ */
+#define MD_MEMORY_CONFIG UINT64_C(0x780008)
+#define MD_BANK0_512MB UINT64_C(0x41)
+#define ROUTED_PORT_WIDGET 0xd
+
+static QTestState *start_routed(void)
+{
+    g_autofree char *prom = write_image();
+    g_autofree char *quoted = g_shell_quote(prom);
+    QTestState *qts = qtest_initf(
+        "-M origin3000,topology=origin3400 -cpu R12000 -smp 16 -m 16384 "
+        RUN "-bios %s "
+        "-device sgi-pi-gfx-test-head,id=head,"
+        "pio=/machine/node0/bedrock/io/sgi-bedrock-io-pio[0],"
+        "pio-offset=0x%x000000",
+        quoted, ROUTED_PORT_WIDGET);
+
+    unlink(prom);
+    qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_BANK0_512MB);
+    return qts;
+}
+
 static QTestState *start_ip53(void)
 {
     g_autoptr(GError) error = NULL;
@@ -774,6 +800,45 @@ static void test_ip53_fifo_store_while_another_waits(void)
 }
 
 /*
+ * On a routed machine every node-named access a processor makes goes
+ * through that processor's own view of the fabric, and all of a node's
+ * views are the node's. A processor waiting inside a board with the big
+ * lock let go, as a load waits out a drawing slice, must not stop another
+ * processor of the same node reaching its own Bedrock by number. Processor
+ * A of node 0 loads from the head's port and sleeps there; processor B
+ * loads its I/O interface's scratch 1 through the node-named form. Were the
+ * views to share the memory core's per-device re-entrancy guard, B's load
+ * would take a bus error and B would never answer.
+ */
+#define NODE0_SCRATCH (UINT64_C(0x9200000001800000) + UINT64_C(0x400158))
+#define ROUTED_PORT (UINT64_C(0x9200000000000000) | \
+                     ((uint64_t)ROUTED_PORT_WIDGET << 24))
+
+static void test_routed_node_access_while_another_waits(void)
+{
+    QTestState *qts = start_routed();
+    int64_t deadline;
+
+    head_set(qts, "sleep-ms", 3000);
+    run(qts);
+    stores_start(qts, 0, SLOT_A, ROUTED_PORT, MAILBOX_LOAD);
+    g_usleep(300 * 1000);
+    g_assert_cmpuint(qtest_readq(qts, mailbox(0, SLOT_A)), !=, 0);
+
+    deadline = g_get_monotonic_time() + 2 * G_TIME_SPAN_SECOND;
+    stores_start(qts, 0, SLOT_B, NODE0_SCRATCH, MAILBOX_LOAD);
+    while (qtest_readq(qts, mailbox(0, SLOT_B))) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    g_assert_cmpuint(qtest_readq(qts, mailbox(0, SLOT_A)), !=, 0);
+
+    head_set(qts, "sleep-ms", 0);
+    stores_wait(qts, 0, SLOT_A);
+    qtest_quit(qts);
+}
+
+/*
  * A display update reads the planes that a slice's draw writes with the
  * big lock let go, so it waits the slice out: a screendump taken while
  * x-test-slice-sleep-ms holds the board returns only after the slice.
@@ -835,5 +900,7 @@ int main(int argc, char **argv)
                    test_ip53_fifo_store_while_another_waits);
     qtest_add_func("sn1/pi-gfx/ip53-scanout-waits-for-slice",
                    test_ip53_scanout_waits_for_slice);
+    qtest_add_func("sn1/pi-gfx/routed-node-access-while-another-waits",
+                   test_routed_node_access_while_another_waits);
     return g_test_run();
 }
