@@ -49,7 +49,7 @@ board /mips64/sn1/odyssey/swap-retrace-vector
 board /mips64/sn1/odyssey/command-fifo-drawable-words
 board /mips64/sn1/odyssey/swap-arm-toggles-displayed-buffer
 board /mips64/sn1/odyssey/swap-arm-accumulates
-board /mips64/sn1/odyssey/swap-immediate-set-and-clear
+board /mips64/sn1/odyssey/swap-set-and-clear-at-retrace
 board /mips64/sn1/odyssey/buffers-hold-opposite-colours
 board /mips64/sn1/odyssey/buffers-swap-shows-only-complete-frames
 board /mips64/sn1/odyssey/buffers-display-selection-per-window
