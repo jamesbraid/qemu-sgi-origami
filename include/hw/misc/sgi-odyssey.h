@@ -348,6 +348,8 @@ struct SGIOdysseyState {
     uint32_t tex_lod[4];
     /* The 0x203b post-filter scale and bias words, R, G, B, A. */
     uint32_t tex_scale_bias[8];
+    /* The 0x0c3e texture offset words. */
+    uint32_t tex_offset[3];
     uint32_t tex_coord[2];
     uint32_t tex_coord_r;
     uint32_t tex_coord_q;

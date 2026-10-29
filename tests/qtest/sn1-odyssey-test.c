@@ -14525,6 +14525,67 @@ static void test_texture_scale_bias(void)
     board_quit(qts);
 }
 
+/*
+ * The texture offset block 0x0c3e always carries zeros from the GL
+ * library and its meaning is unknown: zeros draw, anything else drops the
+ * draw. The table at 0x3e30-0x3e3f is never sent with data; a block that
+ * arrives is consumed, keeps the stream aligned and is logged.
+ */
+static void test_texture_offset_and_unknown_table(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    const uint32_t red = 0xff0000ff;
+    const uint32_t binding[] = {
+        0x00010405, 0x10,
+        0x00011c16, 0x08000840, 4, 4, 1, 0x13000000, 0, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, 0x180000, 0x41100002, 0,
+        0x00010406, 0,
+        0x00011013, 0, 0, 0, 0,
+    };
+    const uint32_t zero_offset[] = { 0x00010c3e, 0, 0, 0 };
+    const uint32_t offset[] = { 0x00010c3e, 0, 1, 0 };
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-offset-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    texture_chain_upload_solid(qts, 0x180000, 4, 4, red);
+    texture_adapter_window(qts);
+    push_user_words(qts, binding, ARRAY_SIZE(binding));
+    push_user_words(qts, zero_offset, ARRAY_SIZE(zero_offset));
+    texture_adapter_point(qts, 10, 10, 0.5f, 0.5f);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, red);
+    push_user_words(qts, offset, ARRAY_SIZE(offset));
+    odsy_test_pixel_write(qts, 11, 10, 0x12345678);
+    texture_adapter_point(qts, 11, 10, 0.5f, 0.5f);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0x12345678);
+    push_user_words(qts, zero_offset, ARRAY_SIZE(zero_offset));
+
+    user_cmd_push(qts, 0x00013e30);
+    for (unsigned i = 0; i < 16; i++) {
+        user_cmd_push(qts, 0x00011013);
+    }
+    texture_adapter_point(qts, 12, 10, 0.5f, 0.5f);
+    g_assert_cmphex(odsy_test_pixel(qts, 12, 10), ==, red);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log,
+                            "command FIFO word 0x00003e30 is not modeled"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 static void test_texture_chain_explicit_level(void)
 {
     QTestState *qts = board_start("");
@@ -22846,6 +22907,8 @@ int main(int argc, char **argv)
              test_texture_max_clamp);
     add_case("sn1/odyssey/texture-adapter/scale-bias",
              test_texture_scale_bias);
+    add_fresh_case("sn1/odyssey/texture-adapter/offset-and-unknown-table",
+                   test_texture_offset_and_unknown_table);
     add_case("sn1/odyssey/texture-adapter/one-dimensional-mode",
              test_texture_one_dimensional_mode);
     /*
