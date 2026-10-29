@@ -13,6 +13,7 @@
 #include "qemu/timer.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2502.h"
 #include "hw/misc/sgi-board-record.h"
@@ -500,6 +501,37 @@ static void sgi_ioc3_update_gpio5(SGIIOC3State *s)
                  (s->pin_control & (1u << 5)) && !(s->pin_data & (1u << 5)));
 }
 
+/*
+ * The lightbar lamps follow the output latch of pins 0 (white) and 1 (red),
+ * high is lit. Pin direction is not consulted: its effect on the lamps is
+ * unmeasured. A guest sees the pin registers exactly as before; this only
+ * publishes the latch.
+ */
+#define SGI_IOC3_LIGHTBAR_WHITE (1u << 0)
+#define SGI_IOC3_LIGHTBAR_RED   (1u << 1)
+
+static void sgi_ioc3_pin_data_changed(SGIIOC3State *s)
+{
+    uint32_t lit = s->pin_data &
+                   (SGI_IOC3_LIGHTBAR_WHITE | SGI_IOC3_LIGHTBAR_RED);
+
+    sgi_ioc3_update_gpio5(s);
+    if (s->board->lightbar && lit != s->lightbar_lit) {
+        s->lightbar_lit = lit;
+        trace_sgi_ioc3_lightbar(s, !!(lit & SGI_IOC3_LIGHTBAR_WHITE),
+                                !!(lit & SGI_IOC3_LIGHTBAR_RED));
+    }
+}
+
+static void sgi_ioc3_get_lightbar(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    SGIIOC3State *s = SGI_IOC3(obj);
+    bool lit = s->pin_data & (uintptr_t)opaque;
+
+    visit_type_bool(v, name, &lit, errp);
+}
+
 static uint32_t sgi_ioc3_pin_data(SGIIOC3State *s)
 {
     return (s->pin_data & ~s->pin_input_mask) | s->pin_input_values;
@@ -569,7 +601,7 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
         uint32_t bit = 1u << pin;
 
         s->pin_data = (s->pin_data & ~bit) | ((val & 1) ? bit : 0);
-        sgi_ioc3_update_gpio5(s);
+        sgi_ioc3_pin_data_changed(s);
         return;
     }
 
@@ -651,7 +683,7 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case SGI_IOC3_PIN_DATA:
         s->pin_data = val;
-        sgi_ioc3_update_gpio5(s);
+        sgi_ioc3_pin_data_changed(s);
         break;
     default:
         qemu_log_mask(LOG_UNIMP,
@@ -1126,13 +1158,13 @@ static const struct {
      * a different register layout under the right name. That is why the kind
      * of clock is named here rather than a bare "has one".
      *
-     * The front-panel LEDs on two of the general-purpose pins are still a
-     * gap: this is the only board that carries them, and a guest that looks
-     * finds nothing rather than the wrong thing.
+     * The front lightbar's two lamps sit on general-purpose pins 0 and 1;
+     * no other board carries them. They are published as read-only
+     * properties, not as a sub-device.
      */
     { SGI_IOC3_SUBSYS_IP30_SYSBOARD,
       { .eth = true, .serial = { true, true }, .kbc = true,
-        .parallel = true, .onewire_identity = true,
+        .parallel = true, .onewire_identity = true, .lightbar = true,
         .timekeeper = SGI_IOC3_TIMEKEEPER_DS1685 } },
     { SGI_IOC3_SUBSYS_MENET,
       { .eth = true, .serial = { true, true },
@@ -1208,6 +1240,8 @@ static bool sgi_ioc3_resolve_population(SGIIOC3State *s, Error **errp)
         s->population_mask & SGI_IOC3_POPULATION_PARALLEL;
     population->onewire_identity =
         s->population_mask & SGI_IOC3_POPULATION_ONEWIRE_IDENTITY;
+    population->lightbar =
+        s->population_mask & SGI_IOC3_POPULATION_LIGHTBAR;
     population->timekeeper = s->timekeeper_kind;
     return true;
 }
@@ -1242,6 +1276,15 @@ static void sgi_ioc3_build(PCIDevice *dev, Error **errp)
 
     if (!sgi_ioc3_resolve_population(s, errp)) {
         return;
+    }
+
+    if (s->board->lightbar) {
+        object_property_add(OBJECT(dev), "lightbar-white", "bool",
+                            sgi_ioc3_get_lightbar, NULL, NULL,
+                            (void *)(uintptr_t)SGI_IOC3_LIGHTBAR_WHITE);
+        object_property_add(OBJECT(dev), "lightbar-red", "bool",
+                            sgi_ioc3_get_lightbar, NULL, NULL,
+                            (void *)(uintptr_t)SGI_IOC3_LIGHTBAR_RED);
     }
 
     if (s->board->timekeeper != SGI_IOC3_TIMEKEEPER_DS1685 &&
@@ -1583,6 +1626,10 @@ static void sgi_ioc3_exit(PCIDevice *dev)
     }
     sgi_ioc_sdma_finalize(&s->sdma_engine);
     timer_del(s->int_out_timer);
+    if (s->board->lightbar) {
+        object_property_del(OBJECT(dev), "lightbar-white");
+        object_property_del(OBJECT(dev), "lightbar-red");
+    }
     if (s->board->eth) {
         qdev_unrealize(DEVICE(&s->eth));
     }
@@ -1621,7 +1668,7 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     s->microlan_control = 0;
     s->pin_control = 0;
     s->pin_data = 0;
-    sgi_ioc3_update_gpio5(s);
+    sgi_ioc3_pin_data_changed(s);
     s->chip_control = 0;
     s->int_out = 0;
     s->int_out_active = 0;

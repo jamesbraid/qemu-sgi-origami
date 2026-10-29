@@ -422,7 +422,8 @@ static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
                          SGI_IOC3_POPULATION_ETHERNET |
                          SGI_IOC3_POPULATION_KEYBOARD_MOUSE |
                          SGI_IOC3_POPULATION_PARALLEL |
-                         SGI_IOC3_POPULATION_ONEWIRE_IDENTITY);
+                         SGI_IOC3_POPULATION_ONEWIRE_IDENTITY |
+                         SGI_IOC3_POPULATION_LIGHTBAR);
     {
         DeviceState *parallel = DEVICE(object_resolve_path_component(
             OBJECT(pci), "parallel"));
