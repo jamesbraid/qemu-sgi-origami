@@ -1023,6 +1023,60 @@ static void test_named_registers_observable(void)
 }
 
 /*
+ * The kernel driver's widget-side reset, in its order: widget control
+ * +0x24 written and read back, the interrupt destination, the vectors,
+ * the error register +0x6c read, cleared through +0x2c and written back,
+ * bit 17 of +0x24 set by read-modify-write, +0x74 rewritten keeping bits
+ * 16 to 27 ORed with 0x3f40, then 0xfff to the cause register and 0 to
+ * +0x800390 and +0x800398. The model raises no widget errors, so +0x6c
+ * reads 0 both times and does not clear on read. The registers the model
+ * gives no meaning (+0x6c, +0x2c, +0x74 and the two host-interface words)
+ * accept the accesses and log each as unimplemented, and the pipe still
+ * answers afterwards.
+ */
+static void test_widget_reset_accesses(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(MACHINE_ARGS, "sgi_kona_kernel_command",
+                                     "unimp", &log);
+    uint32_t control = 0x00240200 | (9u << 22) | 11 | (3u << 12);
+    uint32_t error, misc;
+
+    qtest_writel(s, KONA_REG(0x24), control);
+    g_assert_cmphex(qtest_readl(s, KONA_REG(0x24)), ==, control);
+    qtest_writel(s, REG_INT_DEST_LOWER, 0x1800090);
+    qtest_writel(s, REG_INT_DEST_UPPER, 0x98000);
+    qtest_writel(s, REG_INT_VECTORS, 0x3e2210);
+    error = qtest_readl(s, KONA_REG(0x6c));
+    g_assert_cmphex(error, ==, 0);
+    qtest_writel(s, KONA_REG(0x2c), 0);
+    g_assert_cmphex(qtest_readl(s, KONA_REG(0x6c)), ==, error);
+    qtest_writel(s, KONA_REG(0x6c), error);
+    qtest_writel(s, KONA_REG(0x24), qtest_readl(s, KONA_REG(0x24)) | 0x20000);
+    g_assert_cmphex(qtest_readl(s, KONA_REG(0x24)), ==, control | 0x20000);
+    misc = qtest_readl(s, KONA_REG(0x74));
+    qtest_writel(s, KONA_REG(0x74), (misc & 0x0fff0000) | 0x3f40);
+    qtest_writel(s, REG_INT_CAUSE, 0xfff);
+    qtest_writel(s, KONA_REG(0x800390), 0);
+    qtest_writel(s, KONA_REG(0x800398), 0);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE), ==, 0);
+    kona_command(s, 0x1e9, (uint32_t[]){ 0 }, 1);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "unimplemented read of offset 0x6c"));
+    g_assert_nonnull(strstr(found, "unimplemented write of offset 0x2c "));
+    g_assert_nonnull(strstr(found, "unimplemented write of offset 0x6c "));
+    g_assert_nonnull(strstr(found, "unimplemented read of offset 0x74"));
+    g_assert_nonnull(strstr(found, "unimplemented write of offset 0x74 "));
+    g_assert_nonnull(strstr(found, "unimplemented write of offset 0x800390 "));
+    g_assert_nonnull(strstr(found, "unimplemented write of offset 0x800398 "));
+    g_assert_null(strstr(found, "offset 0x24 "));
+    g_assert_nonnull(strstr(found, "sgi_kona_kernel_command token 0x1e9 "));
+}
+
+/*
  * The 0x1e9 answer placement: map RAM entry 0 = 0x20003e80, then
  * gfxinit's 0x1f2 0 0x9000 0x4000 and 0x1e9 0. Host page 0x3e80000 holds
  * the configuration block from byte 8 and a non-zero word 0, word 1 and
@@ -1578,6 +1632,8 @@ int main(int argc, char **argv)
                    test_activity_latch);
     qtest_add_func("sn0/origin2000/kona-bringup/named-registers-observable",
                    test_named_registers_observable);
+    qtest_add_func("sn0/origin2000/kona-bringup/widget-reset-accesses",
+                   test_widget_reset_accesses);
     qtest_add_func("sn0/origin2000/kona-bringup/config-answer-placement",
                    test_config_answer_placement);
     qtest_add_func("sn0/origin2000/kona-bringup/config-pool-descriptors",
