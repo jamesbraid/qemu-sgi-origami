@@ -143,6 +143,7 @@ ifb-ram /mips64/sgi/crime/render/ifb/ram
 ifb-transactions /mips64/sgi/crime/render/ifb/transactions
 ifb-wrap /mips64/sgi/crime/render/ifb/wrap
 ifb-status-bank-zero /mips64/sgi/crime/render/ifb/status-bank-zero
+driver-evidence /mips64/sgi/crime/render/driver-evidence
 ifb-atomic /mips64/sgi/crime/render/ifb/atomic
 ifb-restore /mips64/sgi/crime/render/ifb/restore
 ifb-migration /mips64/sgi/crime/render/ifb/migration
