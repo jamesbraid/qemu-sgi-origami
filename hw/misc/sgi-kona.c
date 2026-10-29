@@ -3516,9 +3516,12 @@ static void sgi_kona_x_initialise(SGIKonaState *s, const uint32_t *args)
  * Approximated: nothing on the wire carries the data length, so the model
  * frames by sgi_kona_video_commands[], whose counts are those of the senders
  * read. Where it gives a count, the model takes that many data words and the
- * next word as the checksum; a checksum that does not match is traced and
- * the command still acts, because what the pipe does with a bad checksum is
- * unknown. Falling back to the checksum search on a mismatch would cover the
+ * next word as the checksum. A checksum that does not match drops the
+ * command, logged, with nothing posted: the pipe's firmware compares the
+ * sum, logs a mismatch and drops the command, running and answering only a
+ * command whose sum matches (established from the firmware, which takes
+ * the length from its own 93-entry table, whose contents are not known
+ * here). Falling back to the checksum search on a mismatch would cover the
  * X server's pass-through sender, which can send other lengths; the model
  * does not, as its own choice, so a pass-through command of another length
  * misframes the words after it. Where the table gives no count (a "tables
@@ -3886,6 +3889,10 @@ static void sgi_kona_video_complete(SGIKonaState *s, uint32_t checksum)
     if (sum != checksum) {
         trace_sgi_kona_video_checksum_mismatch(s->video_command, checksum,
                                                sum);
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: video command 0x%" PRIx32
+                      " checksum 0x%" PRIx32 " is not 0x%" PRIx32
+                      "; dropped\n", s->video_command, checksum, sum);
+        return;
     }
     if (!v) {
         qemu_log_mask(LOG_UNIMP,
