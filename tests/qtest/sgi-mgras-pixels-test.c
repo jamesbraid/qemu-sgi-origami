@@ -4505,6 +4505,79 @@ static void test_gl_pixels_raster_zoom(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
+/* 0x8d20 with the words the x-zoom trace shows: words, passes, flags. */
+static void gl_pixels_draw_traced(QTestState *qts, uint32_t words,
+                                  uint32_t passes, uint32_t flags)
+{
+    const uint32_t payload[8] = {
+        words, 0, 0, passes, 0, 1, 0x49d0, flags,
+    };
+
+    gl_word(qts, GL_PIXELS_HDR);
+    for (int i = 0; i < 8; i++) {
+        gl_word(qts, payload[i]);
+    }
+}
+
+/* A 16 by 4 image of distinct pixels, bottom row first, for DMA. */
+static void gl_zoom_image(uint32_t words[4][16], uint8_t image[256])
+{
+    for (uint32_t y = 0; y < 4; y++) {
+        for (uint32_t x = 0; x < 16; x++) {
+            words[y][x] = (0x05 + 0x0f * x) << 24 | (0x10 + 0x30 * y) << 16 |
+                          0x33 << 8 | 0xff;
+            stl_be_p(&image[64 * y + 4 * x], words[y][x]);
+        }
+    }
+}
+
+/*
+ * The GL contract's x-zoom trace: at x zooms 0.5 and 2 the client keeps
+ * the unzoomed program, counts the whole image's words in 0x8d20 (0x40
+ * for 16 by 4), ends it with 0x98 and sends the image as one DMA line.
+ * The draw reaches the raster engine's zoom: at 0.5 column j takes source
+ * pixel 2j + 1 (OpenGL 1.2.1, 3.6.4), at 2 pixel j / 2, on every row.
+ */
+static void test_gl_pixels_zoomed_dma_whole_image(void)
+{
+    static const uint32_t box05[6] = { 0, 0, 7, 3, 4 << 16 | 16, 1 };
+    static const uint32_t box2[6] = { 0, 0, 31, 3, 4 << 16 | 16, 1 };
+    uint32_t words[4][16];
+    uint8_t image[256];
+
+    gl_zoom_image(words, image);
+    gl_pixels_context(qts, 0);
+
+    gl_raster_pos2f(qts, 8, 8);
+    gl_raster_zoom_records(qts, 0x200, 0x200, 0xc00080 | GL_XFRMODE_DECIMATE);
+    gl_pixels_zoom_program(qts, 0x352d, 1.0f, box05);
+    gl_pixels_draw_traced(qts, 0x40, 1, 0x98);
+    gl_pixels_dma(qts, image, sizeof(image), 256, 1, 256, 0xa7);
+    gl_pixels_fence(qts);
+    for (uint32_t y = 0; y < 4; y++) {
+        for (uint32_t j = 0; j < 9; j++) {
+            uint32_t want = j < 8 ? words[y][2 * j + 1] >> 8 : 0;
+
+            g_assert_cmphex(gl_window_pixel(qts, 8 + j, 8 + y), ==, want);
+        }
+    }
+
+    gl_raster_pos2f(qts, 8, 16);
+    gl_raster_zoom_records(qts, 0x200, 0x200, 0xc00080 | GL_XFRMODE_MAGNIFY);
+    gl_pixels_zoom_program(qts, 0x352d, 1.0f, box2);
+    gl_pixels_draw_traced(qts, 0x40, 1, 0x98);
+    gl_pixels_dma(qts, image, sizeof(image), 256, 1, 256, 0xa7);
+    gl_pixels_fence(qts);
+    for (uint32_t y = 0; y < 4; y++) {
+        for (uint32_t j = 0; j < 33; j++) {
+            uint32_t want = j < 32 ? words[y][j / 2] >> 8 : 0;
+
+            g_assert_cmphex(gl_window_pixel(qts, 8 + j, 16 + y), ==, want);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 /*
  * glReadPixels' data-port form for RGBA: records, 0xdb04 and a word, then
  * 0x8f08 and two zeros. Without the 0x8f08 nothing is read; with it the
@@ -6805,6 +6878,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-pixels-raster-zoom",
         test_gl_pixels_raster_zoom, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-zoomed-dma-whole-image",
+        test_gl_pixels_zoomed_dma_whole_image, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-readpixels-dataport-rgba",
         test_gl_readpixels_dataport_rgba, true);
