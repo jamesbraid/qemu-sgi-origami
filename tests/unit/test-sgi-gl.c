@@ -14873,6 +14873,66 @@ static void test_texture_fixed_weights(void)
     g_assert_cmpuint(differ, >, 4);
 }
 
+/* Two black then two white texels along S, or along T for a column. */
+static bool fixed_black_black_white_white(void *opaque, uint32_t x,
+                                          uint32_t y, uint32_t *rgba)
+{
+    *rgba = (opaque ? y : x) >= 2 ? 0xffffffff : 0xff;
+    return true;
+}
+
+/*
+ * A coordinate clamp below 1 bounds CLAMP in the fixed-point path as in
+ * the double one, on each axis. Two black and two white texels, the
+ * coordinate running 0 to 1 across the plane on the clamped axis, clamped
+ * to 0.5: LINEAR filtering stops halfway between the second and third
+ * texel, grey 128, where unclamped it would reach white; NEAREST stops on
+ * the third texel. The fixed path draws the double path's pixels for
+ * NEAREST, and within a step of them for LINEAR.
+ */
+static void test_texture_fixed_max_clamp(void)
+{
+    static BandPlanes fixed, exact;
+
+    for (unsigned axis = 0; axis < 2; axis++) {
+        SGIGLTexImage im = {
+            .width = axis ? 1 : 4, .height = axis ? 4 : 1,
+            .base_format = SGI_GL_RGBA,
+            .wrap_s = axis ? SGI_GL_CLAMP_TO_EDGE : SGI_GL_CLAMP,
+            .wrap_t = axis ? SGI_GL_CLAMP : SGI_GL_CLAMP_TO_EDGE,
+            .read_texel = fixed_black_black_white_white,
+            .opaque = axis ? &fixed : NULL,
+            .max_clamp = true, .max_clamp_s = axis ? 1 : 0.5,
+            .max_clamp_t = axis ? 0.5 : 1, .max_clamp_r = 1,
+        };
+
+        for (unsigned nearest = 0; nearest < 2; nearest++) {
+            im.min_filter = im.mag_filter = nearest ? SGI_GL_NEAREST :
+                                                      SGI_GL_LINEAR;
+            for (unsigned path = 0; path < 2; path++) {
+                fixed_quad(path ? &exact : &fixed, &im,
+                           path ? SGI_RASTER_TEXTURE_DOUBLE :
+                                  SGI_RASTER_TEXTURE_SPANS,
+                           axis ? 0.5 : 0, axis ? 0.5 : 1,
+                           axis ? 0 : 0.5, axis ? 1 : 0.5, 1);
+            }
+            for (int i = 0; i < W; i++) {
+                int x = axis ? 32 : i, y = axis ? i : 32;
+                uint32_t got = fixed.p.colour[0][planes_index(x, y)] & 0xff;
+                uint32_t want = exact.p.colour[0][planes_index(x, y)] & 0xff;
+
+                g_assert_cmpint(abs((int)got - (int)want), <=,
+                                nearest ? 0 : 1);
+                if (i >= W * 3 / 4) {
+                    g_assert_cmpuint(got, ==, nearest ? 0xff : 0x80);
+                }
+            }
+            g_assert(!memcmp(fixed.stores, exact.stores,
+                             sizeof(fixed.stores)));
+        }
+    }
+}
+
 /*
  * A target that draws mixed frames samples in double, which the Mesa
  * renderer reproduces: the weights scene, whose fixed-point pixels differ
@@ -15167,6 +15227,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-fixed/weights",
                     test_texture_fixed_weights);
     g_test_add_func("/sgi-gl/texture-fixed/lambda", test_texture_fixed_lambda);
+    g_test_add_func("/sgi-gl/texture-fixed/max-clamp",
+                    test_texture_fixed_max_clamp);
     g_test_add_func("/sgi-gl/texture-fixed/mixed-frame",
                     test_texture_fixed_mixed_frame);
     g_test_add_func("/sgi-gl/texture-fixed/choices",

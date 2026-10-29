@@ -3171,6 +3171,8 @@ typedef struct SGISoftFixedTex {
     uint32_t format;
     uint32_t min, mag, wrap_s, wrap_t;
     uint64_t border;                /* the border colour, in lanes */
+    /* CLAMP's upper coordinate on each axis (SGIGLTexImage.max_clamp). */
+    double upper_s, upper_t;
     /* Whether the footprint chooses the filter or level at all. */
     bool lod;
     /* Whether it chooses between filters or nearest levels. */
@@ -3265,6 +3267,8 @@ static bool sgi_soft_fixed_setup(const SGISoftDraw *r, SGISoftFixedTex *f)
     f->mag = im->mag_filter;
     f->wrap_s = im->wrap_s;
     f->wrap_t = im->wrap_t;
+    f->upper_s = im->max_clamp ? im->max_clamp_s : 1;
+    f->upper_t = im->max_clamp ? im->max_clamp_t : 1;
     mipmap = sgi_soft_texture_mipmap(f->min);
     if (f->format == SGI_GL_DEPTH_COMPONENT ||
         (f->mag != SGI_GL_NEAREST && f->mag != SGI_GL_LINEAR) ||
@@ -3537,16 +3541,24 @@ static inline int64_t sgi_soft_fixed_floor(double x)
 
 /*
  * One axis of a fixed-point position u, in 1/256 of a texel of a level n
- * texels wide, wrapped as sgi_soft_texture_axis() wraps the coordinate:
+ * texels wide, wrapped as sgi_soft_texture_axis() wraps the coordinate,
+ * with CLAMP's upper bound upper rather than 1: floor() of the clamped
+ * coordinate is the clamped floor(), so the bound is exactly the double
+ * path's.
  * for LINEAR, the first tap's index in *x0, the second's in *x1 and the
  * second's weight; for NEAREST, the tap's index in *x0.
  */
 static inline QEMU_ALWAYS_INLINE
 uint32_t sgi_soft_fixed_axis(int64_t u, uint32_t n, uint32_t wrap,
-                             bool linear, int64_t *x0, int64_t *x1)
+                             double upper, bool linear, int64_t *x0,
+                             int64_t *x1)
 {
     int64_t whole = (int64_t)n << 8;
     uint32_t a = 0;
+
+    if (wrap == SGI_GL_CLAMP && upper < 1) {
+        u = MIN(u, sgi_soft_fixed_floor(upper * whole));
+    }
 
     if (linear) {
         switch (wrap) {
@@ -3613,8 +3625,8 @@ bool sgi_soft_fixed_level(const SGISoftDraw *r, uint32_t i, uint32_t filter,
     uint32_t a, b;
 
     if (filter == SGI_GL_NEAREST) {
-        sgi_soft_fixed_axis(u, fl->width, ws, false, &x0, &x1);
-        sgi_soft_fixed_axis(v, fl->height, wt, false, &y0, &y1);
+        sgi_soft_fixed_axis(u, fl->width, ws, f->upper_s, false, &x0, &x1);
+        sgi_soft_fixed_axis(v, fl->height, wt, f->upper_t, false, &y0, &y1);
         if (!sgi_soft_fixed_tap(r, i, x0, y0, repeat, &c00)) {
             return false;
         }
@@ -3622,8 +3634,8 @@ bool sgi_soft_fixed_level(const SGISoftDraw *r, uint32_t i, uint32_t filter,
         out[1] = (c00 & SGI_SOFT_FIXED_PAIRS) << 16;
         return true;
     }
-    a = sgi_soft_fixed_axis(u, fl->width, ws, true, &x0, &x1);
-    b = sgi_soft_fixed_axis(v, fl->height, wt, true, &y0, &y1);
+    a = sgi_soft_fixed_axis(u, fl->width, ws, f->upper_s, true, &x0, &x1);
+    b = sgi_soft_fixed_axis(v, fl->height, wt, f->upper_t, true, &y0, &y1);
     if (!sgi_soft_fixed_tap(r, i, x0, y0, repeat, &c00) ||
         !sgi_soft_fixed_tap(r, i, x1, y0, repeat, &c10) ||
         !sgi_soft_fixed_tap(r, i, x0, y1, repeat, &c01) ||
