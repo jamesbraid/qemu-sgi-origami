@@ -1004,11 +1004,12 @@ static void test_shadow_and_bounds(void)
 }
 
 /*
- * Revision 1 keeps the occupancy count and revision 2 counts free entries
- * of the 64-entry FIFO in six bits. Writes drain synchronously, so every
- * read sees the empty value, 0 or 63, and each write has already reached
- * its CMAP entry. The IRIX 6.5.30 X server waits for at least 48 free there
- * and accepts zero only below revision 2 (Origami's O2 GBE datasheet).
+ * Both revisions count free entries of the 64-entry FIFO in six bits; when
+ * it is empty revision 1 wraps to 0 and revision 2 saturates at 63. Writes
+ * drain synchronously, so every read sees that empty value and each write
+ * has already reached its CMAP entry. The IRIX 6.5.30 X server waits for at
+ * least 48 free there and accepts zero only below revision 2 (Origami's O2
+ * GBE datasheet).
  */
 static void test_cmfifo_revision(void)
 {
