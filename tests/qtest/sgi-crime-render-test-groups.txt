@@ -142,6 +142,7 @@ gl-window-restore-word /mips64/sgi/crime/render/gl-window/restore-word
 ifb-ram /mips64/sgi/crime/render/ifb/ram
 ifb-transactions /mips64/sgi/crime/render/ifb/transactions
 ifb-wrap /mips64/sgi/crime/render/ifb/wrap
+ifb-status-bank-zero /mips64/sgi/crime/render/ifb/status-bank-zero
 ifb-atomic /mips64/sgi/crime/render/ifb/atomic
 ifb-restore /mips64/sgi/crime/render/ifb/restore
 ifb-migration /mips64/sgi/crime/render/ifb/migration
