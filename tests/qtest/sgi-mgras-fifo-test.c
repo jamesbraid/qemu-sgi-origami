@@ -3297,6 +3297,50 @@ static void mgras_fill_box(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1)
 }
 
 /*
+ * The same union on the per-pixel path a point takes: masks 1 and 3
+ * enabled, mask 2 between them loaded but not, as above.
+ */
+static void test_point_honours_union_of_screen_masks(void)
+{
+    static const uint32_t masks[3][2] = {
+        { 110, 119 }, { 125, 134 }, { 140, 149 },
+    };
+    static const struct {
+        uint32_t x;
+        uint32_t want;
+    } points[] = {
+        { 115, 0x00abcdef }, { 130, 0 }, { 145, 0x00abcdef }, { 150, 0 },
+    };
+
+    mgras_reset();
+    mgras_enter_context(qts);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, MGRAS_PIXEL_WORD(0x00abcdef)));
+    for (int k = 0; k < 3; k++) {
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_CLIP_X + 2 * k,
+                                   masks[k][0] << 16 | masks[k][1]));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_CLIP_Y + 2 * k, clip_y_rows(210, 219)));
+    }
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_MODE, 0x10 | 0x1 | 0x4));
+    for (size_t i = 0; i < ARRAY_SIZE(points); i++) {
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND_EXEC(REG_RE_POINT,
+                                        (points[i].x << 16) | 215u));
+    }
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+    for (size_t i = 0; i < ARRAY_SIZE(points); i++) {
+        g_assert_cmphex(mgras_test_pixel(qts, points[i].x, 215), ==,
+                        points[i].want);
+    }
+}
+
+/*
  * Window mode 0x14f: the mask enables in bits 3:0 (mask k sets bit k - 1)
  * and the mode in bits 7:4, the four masks' x and y registers from 0x147
  * in pairs (the raster and display contract's window mode reading). Mode
@@ -4472,6 +4516,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/fill-honours-union-of-screen-masks",
         test_fill_honours_union_of_screen_masks, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/point-honours-union-of-screen-masks",
+        test_point_honours_union_of_screen_masks, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/overlay-fill-honours-clip-rectangle",
         test_overlay_fill_honours_clip_rectangle, true);
