@@ -873,7 +873,9 @@ static void test_register_access(void)
         0, 8, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48,
         0x200, 0x250, 0x258, 0x270,
     };
-    const unsigned unsupported[] = { 0x248, 0x260, 0x268, 0x4048 };
+    const unsigned unsupported[] = { 0x248, 0x4048 };
+    /* Error registers with no modeled source read zero (approximation). */
+    const unsigned zero_read[] = { 0x58, 0x260, 0x268 };
     QTestState *s = start_profile(true, "");
     uint8_t byte;
     uint16_t half;
@@ -894,6 +896,15 @@ static void test_register_access(void)
         g_assert_cmpint(memtx_writel(s, address, 0), !=, MEMTX_OK);
         g_assert_cmpint(memtx_writeq(s, address + 1, 0), !=, MEMTX_OK);
         g_assert_cmphex(qtest_readq(s, address), ==, value);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(zero_read); i++) {
+        uint64_t address = BASE + zero_read[i];
+
+        wide = UINT64_MAX;
+        g_assert_cmpint(memtx_readq(s, address, &wide), ==, MEMTX_OK);
+        g_assert_cmphex(wide, ==, 0);
+        g_assert_cmpint(memtx_readl(s, address, &word), !=, MEMTX_OK);
+        g_assert_cmpint(memtx_writeq(s, address, 0), !=, MEMTX_OK);
     }
     for (unsigned i = 0; i < ARRAY_SIZE(unsupported); i++) {
         g_assert_cmpint(memtx_readq(s, BASE + unsupported[i], &wide),
@@ -2638,6 +2649,10 @@ static void test_ecc_replacement_peers(void)
                     g_assert_cmpint(memtx_load(s, BASE + 0x260, &value, 8),
                                     ==, MEMTX_OK);
                     g_assert_cmphex(value, ==, 0);
+                } else if (legacy) {
+                    g_assert_cmpint(memtx_load(s, BASE + 0x260, &value, 8),
+                                    ==, MEMTX_OK);
+                    g_assert_cmphex(value, ==, 0);
                 } else {
                     g_assert_cmpint(memtx_load(s, BASE + 0x260, &value, 8),
                                     !=, MEMTX_OK);
@@ -2651,8 +2666,8 @@ static void test_ecc_replacement_peers(void)
                     g_assert_cmpint(memtx_load(s, BASE + 0x258, &value, 8),
                                     !=, MEMTX_OK);
                 }
-                g_assert_cmpint(memtx_load(s, BASE + 0x268, &value, 8),
-                                !=, MEMTX_OK);
+                g_assert_cmpint(memtx_load(s, BASE + 0x268, &value, 8) ==
+                                MEMTX_OK, ==, legacy);
                 g_assert_cmpint(memtx_store(s, BASE + 0x268, 0, 8),
                                 !=, MEMTX_OK);
                 g_assert_cmpint(memtx_load(s, BASE + 0x248, &value, 8),

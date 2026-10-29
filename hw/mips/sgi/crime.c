@@ -1935,7 +1935,25 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
     case 0x0270:
         *value = s->ecc_replacement;
         break;
+    case 0x0058:
+    case 0x0268:
+        if (!s->legacy_software) {
+            goto unsupported;
+        }
+        /* fall through */
     case 0x0260:
+        if (s->legacy_software) {
+            /*
+             * Approximation: no VICE error source, syndrome or check-bit
+             * storage is modeled, and zero is not what hardware claims.
+             */
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-crime: error register 0x%" HWADDR_PRIx
+                          " read as zero (approximation)\n",
+                          (hwaddr)(0x14000000ULL + offset));
+            *value = 0;
+            break;
+        }
         if (s->functional_memory_transfer) {
             *value = 0;
             break;

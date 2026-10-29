@@ -475,7 +475,13 @@ static void test_healthy_memory(void)
     g_assert_cmpint(memtx_writeq(s, BASE + 0x250, 1), !=, MEMTX_OK);
     g_assert_cmpint(memtx_writeq(s, BASE + 0x258, 0), !=, MEMTX_OK);
     g_assert_cmpint(memtx_writeq(s, BASE + 0x260, 0), !=, MEMTX_OK);
-    g_assert_cmpint(memtx_readq(s, BASE + 0x268, &value), !=, MEMTX_OK);
+    /* Legacy reads the check bits as zero, an approximation. */
+    value = UINT64_MAX;
+    g_assert_cmpint(memtx_readq(s, BASE + 0x268, &value) == MEMTX_OK,
+                    ==, legacy);
+    if (legacy) {
+        g_assert_cmphex(value, ==, 0);
+    }
     g_assert_cmpint(memtx_writeq(s, BASE + 0x268, 0), !=, MEMTX_OK);
     g_assert_cmpint(memtx_store(s, BASE + 0x270, 0xa5, 8), ==, MEMTX_OK);
     g_assert_cmpint(memtx_store(s, BASE + 0x270, 0x100, 8), !=, MEMTX_OK);
