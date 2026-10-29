@@ -41,21 +41,71 @@ bool sgi_graphics_vga_none(const char *machine, bool *none, Error **errp);
 const SGIModelGraphicsSlot *sgi_graphics_default_slot(
     const SGIModelGraphics *g);
 
+/* One pipe a machine holds, by its catalogue slot or its id. */
+typedef struct SGIGraphicsFitted {
+    DeviceState *dev;
+    char *name;
+} SGIGraphicsFitted;
+
 /*
- * Check pipe @dev, of @family, against topology @t's graphics record @g
- * before it realizes, as a machine's pre-plug handler does: find the
- * slot its placement properties name, refuse a family, product or
- * setting value the slot does not offer with the catalogue's own reason,
- * refuse a slot the machine's @nodes node boards do not fit and a pipe
- * beyond the @pipes the machine already holds (@first naming the slot of
- * the first), and set every setting @dev leaves unset to the slot's
- * default. @g may be NULL, for a topology with no graphics slot.
+ * The pipes one machine holds, which the SN machines and the Octane both
+ * embed: the catalogue record they are judged against, the default pipe
+ * created at init, and every pipe plugged so far. A machine calls
+ * sgi_graphics_pipes_init() while it initializes,
+ * sgi_graphics_pipes_pre_plug() and sgi_graphics_pipes_plug() from its
+ * hotplug handler, sgi_graphics_pipes_done() once every -device exists
+ * and sgi_graphics_pipes_cleanup() when it is finalized.
  */
-bool sgi_graphics_check_pipe(const char *machine, const SGIModelTopology *t,
-                             const SGIModelGraphics *g, uint32_t nodes,
-                             DeviceState *dev,
+typedef struct SGIGraphicsPipes {
+    /* The -M name, for messages. */
+    const char *machine;
+    /* The chassis topology on SN machines, whose record graphics is. */
+    const SGIModelTopology *topology;
+    const SGIModelGraphics *graphics;
+    uint32_t nodes;
+    /* x-uncatalogued-graphics=on: no checks and no default pipe. */
+    bool uncatalogued;
+    /* Created at init, realized or dropped at done. */
+    DeviceState *default_pipe;
+    /* SGIGraphicsFitted, in plug order. */
+    GPtrArray *fitted;
+} SGIGraphicsPipes;
+
+/*
+ * Check -vga and create topology @t's default pipe, unless @uncatalogued
+ * or -vga none skips it. @nodes is the node boards the machine fits.
+ */
+bool sgi_graphics_pipes_init(SGIGraphicsPipes *p, const char *machine,
+                             const SGIModelTopology *t, uint32_t nodes,
+                             bool uncatalogued, Error **errp);
+
+/*
+ * Judge @dev before it realizes. False with @errp set for a pipe the
+ * catalogue refuses; true for an accepted pipe and for any device that
+ * is not a pipe at all.
+ */
+bool sgi_graphics_pipes_pre_plug(SGIGraphicsPipes *p, DeviceState *dev,
+                                 Error **errp);
+
+/* Count @dev, once it has realized, if it is a pipe. */
+void sgi_graphics_pipes_plug(SGIGraphicsPipes *p, DeviceState *dev);
+
+/* Realize the default pipe if no -device was a pipe, else drop it. */
+void sgi_graphics_pipes_done(SGIGraphicsPipes *p);
+
+void sgi_graphics_pipes_cleanup(SGIGraphicsPipes *p);
+
+/*
+ * Check pipe @dev, of @family, against registry @pipes before it realizes,
+ * as a machine's pre-plug handler does: find the slot its placement
+ * properties name, refuse a family, product or setting value the slot
+ * does not offer with the catalogue's own reason, refuse a slot the
+ * machine's node boards do not fit and a pipe beyond the topology's
+ * max-pipes, and set every setting @dev leaves unset to the slot's
+ * default.
+ */
+bool sgi_graphics_check_pipe(SGIGraphicsPipes *pipes, DeviceState *dev,
                              SGIModelGraphicsFamilyKind family,
-                             unsigned int pipes, const char *first,
                              Error **errp);
 
 /*
