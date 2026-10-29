@@ -14477,6 +14477,54 @@ static void test_texture_max_clamp(void)
     board_quit(qts);
 }
 
+/*
+ * Post-filter scale and bias: block 0x203b, a signed 3.12 scale then bias
+ * for each of R, G, B and A, applied to the filtered texel and clamped to
+ * [0, 1] (GL_SGIX_texture_scale_bias). A green texel under R (2, -1),
+ * G (-1, 2), B (0, 1) and A (0, 0) becomes 0, 1, 1, 0; the defaults,
+ * 4096 and 0, leave it green.
+ */
+static void test_texture_scale_bias(void)
+{
+    const uint32_t green = 0x00ff00ff;
+    const uint32_t binding[] = {
+        0x00010405, 0x10,
+        0x00011c16, 0x08000840, 4, 4, 1, 0x13000000, 0, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, 0x180000, 0x41100002, 0,
+        0x00010406, 0,
+        0x00011013, 0, 0, 0, 0,
+    };
+    const uint32_t identity[] = {
+        0x0001203b, 0x1000, 0, 0x1000, 0, 0x1000, 0, 0x1000, 0,
+    };
+    const uint32_t scale_bias[] = {
+        0x0001203b, 0x2000, 0xf000, 0xf000, 0x2000, 0, 0x1000, 0, 0,
+    };
+    const uint32_t unknown[] = {
+        0x0001203b, 0x11000, 0, 0x1000, 0, 0x1000, 0, 0x1000, 0,
+    };
+    QTestState *qts = board_start("");
+
+    texture_chain_upload_solid(qts, 0x180000, 4, 4, green);
+    texture_adapter_window(qts);
+    push_user_words(qts, binding, ARRAY_SIZE(binding));
+    texture_adapter_point(qts, 10, 10, 0.5f, 0.5f);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, green);
+    push_user_words(qts, scale_bias, ARRAY_SIZE(scale_bias));
+    texture_adapter_point(qts, 11, 10, 0.5f, 0.5f);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0x00ffff00);
+    push_user_words(qts, identity, ARRAY_SIZE(identity));
+    texture_adapter_point(qts, 12, 10, 0.5f, 0.5f);
+    g_assert_cmphex(odsy_test_pixel(qts, 12, 10), ==, green);
+    /* Bits above the 16-bit field are unknown state: the draw drops. */
+    push_user_words(qts, unknown, ARRAY_SIZE(unknown));
+    odsy_test_pixel_write(qts, 13, 10, 0x12345678);
+    texture_adapter_point(qts, 13, 10, 0.5f, 0.5f);
+    g_assert_cmphex(odsy_test_pixel(qts, 13, 10), ==, 0x12345678);
+    board_quit(qts);
+}
+
 static void test_texture_chain_explicit_level(void)
 {
     QTestState *qts = board_start("");
@@ -22796,6 +22844,8 @@ int main(int argc, char **argv)
              test_texture_lod_bias);
     add_case("sn1/odyssey/texture-adapter/max-clamp",
              test_texture_max_clamp);
+    add_case("sn1/odyssey/texture-adapter/scale-bias",
+             test_texture_scale_bias);
     add_case("sn1/odyssey/texture-adapter/one-dimensional-mode",
              test_texture_one_dimensional_mode);
     /*

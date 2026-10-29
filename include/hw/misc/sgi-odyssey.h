@@ -346,6 +346,8 @@ struct SGIOdysseyState {
     uint32_t tex_slice_width[SGI_ODYSSEY_OBJECTS + 2];
     uint32_t tex_level0;
     uint32_t tex_lod[4];
+    /* The 0x203b post-filter scale and bias words, R, G, B, A. */
+    uint32_t tex_scale_bias[8];
     uint32_t tex_coord[2];
     uint32_t tex_coord_r;
     uint32_t tex_coord_q;
