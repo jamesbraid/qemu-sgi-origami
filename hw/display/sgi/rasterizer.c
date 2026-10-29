@@ -1332,6 +1332,16 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r, bool report)
         }
         return false;
     }
+    if (im && im->max_clamp &&
+        !(im->max_clamp_s >= 0 && im->max_clamp_s <= 1 &&
+          im->max_clamp_t >= 0 && im->max_clamp_t <= 1 &&
+          im->max_clamp_r >= 0 && im->max_clamp_r <= 1)) {
+        if (report) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-gl: invalid coordinate clamp, draw dropped\n");
+        }
+        return false;
+    }
     if (im && (!isfinite(im->lod_scale_s) || im->lod_scale_s < 0 ||
                (!im->one_dimensional && (!isfinite(im->lod_scale_t) ||
                                          im->lod_scale_t < 0)) ||
@@ -1744,7 +1754,8 @@ read_failure:
 }
 
 /* Reduce finite coordinates before any float-to-integer conversion. */
-static double sgi_soft_texture_axis(double x, uint32_t n, uint32_t wrap)
+static double sgi_soft_texture_axis(double x, uint32_t n, uint32_t wrap,
+                                    double upper)
 {
     double half = 0.5 / n;
 
@@ -1756,7 +1767,7 @@ static double sgi_soft_texture_axis(double x, uint32_t n, uint32_t wrap)
     case SGI_GL_CLAMP_TO_BORDER:
         return MIN(MAX(x, -half), 1 + half);
     default:
-        return MIN(MAX(x, 0), 1);
+        return MIN(MAX(x, 0), upper);
     }
 }
 
@@ -1776,11 +1787,14 @@ static bool sgi_soft_texture_sample(const SGISoftDraw *r,
     double reference = rr;
 
     memset(texel, 0, 4 * sizeof(*texel));
-    s = sgi_soft_texture_axis(s, width, im->wrap_s);
+    s = sgi_soft_texture_axis(s, width, im->wrap_s,
+                              im->max_clamp ? im->max_clamp_s : 1);
     t = im->one_dimensional ? 0 :
-        sgi_soft_texture_axis(t, height, im->wrap_t);
+        sgi_soft_texture_axis(t, height, im->wrap_t,
+                              im->max_clamp ? im->max_clamp_t : 1);
     if (im->volume) {
-        rr = sgi_soft_texture_axis(rr, depth, im->wrap_r);
+        rr = sgi_soft_texture_axis(rr, depth, im->wrap_r,
+                                   im->max_clamp ? im->max_clamp_r : 1);
     }
     if (filter == SGI_GL_NEAREST) {
         int64_t x = floor(width * s), y = floor(height * t);
