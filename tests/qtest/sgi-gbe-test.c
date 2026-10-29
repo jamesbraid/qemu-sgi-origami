@@ -865,6 +865,31 @@ static void test_clock(void)
     qtest_quit(q);
 }
 
+/*
+ * The IRIX 6.5.30 kernel programs DOTCLOCK as (M - 1) | (N - 1) << 8 |
+ * P << 14 | 1 << 20, first with run bit 20 clear, then set, then waits
+ * 11 ms. Counters stop while the PLL is not running and then advance at
+ * reference * M / (N * 2^P).
+ */
+static void test_dotclock_run(void)
+{
+    QTestState *q = start("");
+
+    mode(q);
+    wr(q, 4, 3 | 3u << 14); /* M 4, N 1, P 3: 10 MHz, not running. */
+    g_assert_cmphex(rd(q, 4) & (3u << 22), ==, 1u << 23);
+    wr(q, VT(0), 0);
+    qtest_clock_step(q, 5000);
+    g_assert_cmphex(rd(q, VT(0)), ==, 0);
+    wr(q, 4, 3 | 3u << 14 | 1u << 20);
+    g_assert_cmphex(rd(q, 4) & (3u << 22), ==, 0);
+    qtest_clock_step(q, 11000000);
+    wr(q, VT(0), 0);
+    qtest_clock_step(q, 1100);
+    g_assert_cmphex(rd(q, VT(0)), ==, 11);
+    qtest_quit(q);
+}
+
 static void test_rgb8_geometry(void)
 {
     QTestState *q = start("");
@@ -2908,6 +2933,7 @@ int main(int argc, char **argv)
                    test_dma_reset_dma_sentinels);
     qtest_add_func("/sgi-gbe/dma-reset/did-cursor", test_dma_reset_did_cursor);
     qtest_add_func("/sgi-gbe/clock", test_clock);
+    qtest_add_func("/sgi-gbe/dotclock-run", test_dotclock_run);
     qtest_add_func("/sgi-gbe/invalid-timing-reports",
                    test_invalid_timing_reports);
     qtest_add_func("/sgi-gbe/rgb8-geometry-cursor", test_rgb8_geometry);
