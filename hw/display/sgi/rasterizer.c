@@ -367,22 +367,33 @@ static bool sgi_soft_check_index(const SGIRasterTarget *t,
 }
 
 /* x rounded to an integer by the rules' rounding. */
-static int64_t sgi_soft_round(const SGIRasterRules *r, double x)
+static inline int64_t sgi_soft_round(const SGIRasterRules *r, double x)
 {
-    double f = floor(x), frac = x - f;
+    double f, frac;
 
+    if (r->rounding != SGI_ROUND_FLOOR && r->rounding != SGI_ROUND_HALF_UP &&
+        r->rounding != SGI_ROUND_HALF_EVEN) {
+        /*
+         * llround(), without the call: x less its truncation is exact, so
+         * a fraction of a half or more rounds away from zero.
+         */
+        int64_t t = (int64_t)x;
+
+        frac = x - t;
+        return t + (frac >= 0.5) - (frac <= -0.5);
+    }
+    f = floor(x);
+    frac = x - f;
     switch (r->rounding) {
     case SGI_ROUND_FLOOR:
         return (int64_t)f;
     case SGI_ROUND_HALF_UP:
         return (int64_t)f + (frac >= 0.5);
-    case SGI_ROUND_HALF_EVEN:
+    default:
         if (frac == 0.5) {
             return (int64_t)f + ((int64_t)f & 1);
         }
         return (int64_t)f + (frac > 0.5);
-    default:
-        return llround(x);
     }
 }
 
@@ -415,7 +426,7 @@ uint32_t sgi_raster_depth_code(const SGIRasterRules *rules, double z)
  * fraction of a step rounded half up, whatever the rules' rounding: the
  * sum is truncated (OpenGL 1.2.1, 2.13.9).
  */
-static uint32_t sgi_soft_channel(const SGIRasterRules *r, double c)
+static inline uint32_t sgi_soft_channel(const SGIRasterRules *r, double c)
 {
     uint32_t max = (1u << r->color_bits) - 1;
 
@@ -509,7 +520,8 @@ static bool sgi_soft_rgba_load(const SGIRasterRules *r,
 }
 
 /* A colour, each component clamped and rounded to the rules' bits. */
-static uint32_t sgi_soft_rgb(const SGIRasterRules *r, const double c[3])
+static inline uint32_t sgi_soft_rgb(const SGIRasterRules *r,
+                                    const double c[3])
 {
     return (sgi_soft_channel(r, c[0]) << (2 * r->color_bits)) |
            (sgi_soft_channel(r, c[1]) << r->color_bits) |
@@ -876,11 +888,30 @@ static SGIRasterColour sgi_soft_rgba_result(const SGISoftDraw *r, int x, int y,
 {
     SGIRasterColour out;
     uint32_t max = (1u << r->rules->color_bits) - 1;
-    double alpha = sgi_soft_alpha(r->rules, frag->rgba[3]) /
-                   (double)sgi_soft_alpha_max(r->rules);
+    uint32_t alpha_max = sgi_soft_alpha_max(r->rules);
+    uint32_t alpha_q = sgi_soft_alpha(r->rules, frag->rgba[3]);
+    double alpha = alpha_q / (double)alpha_max;
     uint32_t rgb = r->blend ? sgi_soft_rgb(r->rules, frag->rgba) :
                               sgi_soft_store_rgb(r, x, y, frag->rgba);
 
+    if (!r->blend && !r->logic_op &&
+        r->rgba_mask == sgi_soft_rgba_mask(r->rules, SGI_GL_COLOUR_MASK_ALL)) {
+        /*
+         * sgi_soft_rgba_value()'s stored alpha, sgi_soft_alpha() of
+         * alpha_q / alpha_max scaled to the stored bits, without the round
+         * trip: alpha_q / alpha_max * alpha_max + 0.5 truncates to alpha_q
+         * for every alpha_q up to 1023.
+         */
+        uint32_t stored = (1u << r->rules->alpha_bits) - 1;
+
+        for (unsigned k = 0; k < 3; k++) {
+            out.component[k] = (rgb >> ((2 - k) * r->rules->color_bits)) &
+                               max;
+        }
+        out.component[3] = stored == alpha_max ? alpha_q :
+                           alpha_q * stored / alpha_max;
+        return out;
+    }
     out = sgi_soft_rgba_value(r->rules, rgb, alpha);
     if (r->blend) {
         double src[4], dst[4], blended[4];
