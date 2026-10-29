@@ -129,6 +129,58 @@ static void check_modules_partition_nodes(const SGIModelTopology *t)
     }
 }
 
+/* IP32 records are standalone boards, not module-owned Scalable Nodes. */
+static void check_topology_ownership(const SGIModelTopology *t)
+{
+    const SGIModelNode *node;
+
+    if (t->generation != SGI_MODEL_GENERATION_IP32) {
+        check_modules_partition_nodes(t);
+        return;
+    }
+
+    g_assert_cmpuint(node_count(t), ==, 1);
+    g_assert_null(t->modules);
+    g_assert_null(t->controllers);
+    g_assert_null(t->io_peers);
+    g_assert_null(t->io_assemblies);
+    g_assert_null(t->routers);
+    g_assert_null(t->cables);
+    g_assert_null(t->crossbars);
+    g_assert_null(t->xio_attachments);
+    g_assert_null(t->xio_slots);
+    g_assert_null(t->io_boards);
+    node = node0(t);
+    g_assert_cmpint(node->asic_kind, ==, SGI_MODEL_ASIC_KIND_CRIME);
+    g_assert_false(node->has_module_index);
+    g_assert_false(node->has_slot);
+    g_assert_false(node->has_hub_slot_bits);
+    g_assert_false(node->slave_role);
+}
+
+/* The selected O2 records fix eight 128 MiB banks, not CRIME's limits. */
+static void check_crime_node_shape(const SGIModelNode *node)
+{
+    const uint64List *bank;
+
+    g_assert_null(node->identity);
+    g_assert_null(node->heart);
+    g_assert_null(node->bedrock);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(node->cpu_slots), ==, 1);
+    g_assert_cmpuint(node->cpu_slots->value->interface, ==, 0);
+    g_assert_cmpuint(node->cpu_slots->value->slot, ==, 0);
+    g_assert_nonnull(node->cpu_slots->value->assembly);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(node->bank_mib), ==, 8);
+    for (bank = node->bank_mib; bank; bank = bank->next) {
+        g_assert_cmpuint(bank->value, ==, 128);
+    }
+    g_assert_cmpuint(QAPI_LIST_LENGTH(node->accepted_memory_mib), ==, 1);
+    g_assert_cmpuint(node->accepted_memory_mib->value, ==, 1024);
+    g_assert_nonnull(node->flash);
+    g_assert_cmpint(node->flash->kind, ==, SGI_MODEL_FLASH_KIND_OPERATOR_PROM);
+    g_assert_cmpuint(node->flash->size, ==, 524288);
+}
+
 /* The selected IP30 profiles have one CPU; this is not a HEART CPU limit. */
 static void check_heart_node_shape(const SGIModelNode *node)
 {
@@ -194,6 +246,12 @@ static void check_node_shapes(const SGIModelTopology *t)
         if (node->asic_kind == SGI_MODEL_ASIC_KIND_HEART) {
             g_assert_cmpint(t->generation, ==, SGI_MODEL_GENERATION_IP30);
             check_heart_node_shape(node);
+            continue;
+        }
+
+        if (node->asic_kind == SGI_MODEL_ASIC_KIND_CRIME) {
+            g_assert_cmpint(t->generation, ==, SGI_MODEL_GENERATION_IP32);
+            check_crime_node_shape(node);
             continue;
         }
 
@@ -803,7 +861,7 @@ static void test_every_topology_is_well_formed(void)
 
         topology_count++;
         g_assert_cmpuint(node_count(t), >, 0);
-        check_modules_partition_nodes(t);
+        check_topology_ownership(t);
         check_node_shapes(t);
         check_cables(t);
         check_io_board_presets(t);
@@ -815,6 +873,69 @@ static void test_every_topology_is_well_formed(void)
         check_bedrock_has_populated_io(t);
     }
     g_assert_cmpuint(topology_count, >, 0);
+}
+
+static void test_ip32_standalone_board(const void *data)
+{
+    const char *name = data;
+    g_autoptr(SGIMachines) catalogue = load_catalogue();
+    const SGIModelTopologyList *entry;
+    const SGIModelTopology *topology = NULL;
+
+    for (entry = catalogue->topologies; entry; entry = entry->next) {
+        if (g_str_equal(entry->value->name, name)) {
+            g_assert_null(topology);
+            topology = entry->value;
+        }
+    }
+    g_assert_nonnull(topology);
+    g_assert_cmpint(topology->generation, ==, SGI_MODEL_GENERATION_IP32);
+    check_topology_ownership(topology);
+    check_node_shapes(topology);
+    g_assert_cmpint(node0(topology)->asic_kind, ==, SGI_MODEL_ASIC_KIND_CRIME);
+}
+
+static void test_ip32_rejects_sn_ownership(const void *data)
+{
+    if (g_test_subprocess()) {
+        SGIModelNode node = { .asic_kind = SGI_MODEL_ASIC_KIND_CRIME };
+        SGIModelNodeList nodes = { .value = &node };
+        SGIModelRouterList routers = { 0 };
+        SGIModelTopology topology = {
+            .generation = SGI_MODEL_GENERATION_IP32,
+            .nodes = &nodes,
+        };
+
+        if (GPOINTER_TO_UINT(data)) {
+            topology.routers = &routers;
+        } else {
+            node.has_module_index = true;
+        }
+        check_topology_ownership(&topology);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*check_topology_ownership*");
+}
+
+/* A standalone-board exception must not permit unowned modular nodes. */
+static void test_modular_node_requires_owner(const void *data)
+{
+    if (g_test_subprocess()) {
+        SGIModelNode node = { 0 };
+        SGIModelNodeList nodes = { .value = &node };
+        SGIModelTopology topology = {
+            .generation = GPOINTER_TO_UINT(data),
+            .nodes = &nodes,
+        };
+
+        check_topology_ownership(&topology);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*check_modules_partition_nodes*claimed[i]*");
 }
 
 /* These identities are synthetic parser data, not a fitted hardware profile. */
@@ -1672,6 +1793,43 @@ static void test_resolve_selection(void)
                     "octane,topology=octane,nodes=1");
 }
 
+static void test_resolve_ip32_variants(void)
+{
+    const SGIModelOffering *offering;
+
+    offering = resolve("o2", &error_abort);
+    g_assert_cmpstr(offering->topology, ==, "o2");
+    offering = resolve("o2,variant=o2", &error_abort);
+    g_assert_cmpstr(offering->machine_options, ==, "o2");
+    offering = resolve("o2,variant=o2plus", &error_abort);
+    g_assert_cmpstr(offering->topology, ==, "o2plus");
+    g_assert_cmpstr(offering->machine_options, ==, "o2,variant=o2plus");
+    offering = resolve("o2,topology=o2plus,variant=o2plus,nodes=1",
+                       &error_abort);
+    g_assert_cmpstr(offering->topology, ==, "o2plus");
+
+    assert_refused("o2,variant=unknown", "o2 has no variant 'unknown'");
+    assert_refused("o2,variant=origin200", "o2 has no variant 'origin200'");
+    assert_refused("o2,variant=", "o2 has no variant ''");
+    assert_refused("origin200,variant=o2plus",
+                   "origin200 does not offer variant selection");
+    assert_refused("octane2,variant=o2plus",
+                   "octane2 does not offer variant selection");
+    assert_refused("o2,variant=o2plus,variant=o2plus",
+                   "variant must be specified only once");
+    assert_refused("o2,variant=o2,variant=o2plus",
+                   "variant must be specified only once");
+    assert_refused("o2,variant=o2plus,topology=o2",
+                   "variant 'o2plus' conflicts with topology 'o2'");
+    assert_refused("o2,variant=o2,topology=o2plus",
+                   "variant 'o2' conflicts with topology 'o2plus'");
+    assert_refused("o2,variant.0=o2plus", "variant must be a string");
+    assert_refused("o2,variant=o2plus,topology.0=o2plus",
+                   "topology must be a string");
+    assert_refused("o2,variant=o2plus,,variant=o2",
+                   "o2 has no variant 'o2plus,variant=o2'");
+}
+
 /* Refusals carry the machine's own wording for the same selection. */
 static void test_resolve_refusals(void)
 {
@@ -1690,7 +1848,7 @@ static void test_resolve_refusals(void)
     assert_refused("origin2000,baseio-preset=io6g",
                    "machine option 'baseio-preset' is not part of a "
                    "catalogue selection; give only the machine, "
-                   "topology=, nodes= and processor=");
+                   "topology=, nodes=, processor= or an offered variant=");
     assert_refused("topology=origin200",
                    "no machine named in 'topology=origin200'");
 }
@@ -1808,6 +1966,23 @@ int main(int argc, char **argv)
                     test_io9_hosts_and_boards_follow_projected_attachments);
     g_test_add_func("/sn-model/every-topology-is-well-formed",
                     test_every_topology_is_well_formed);
+    g_test_add_data_func("/sn-model/ip32/o2-standalone", "o2",
+                         test_ip32_standalone_board);
+    g_test_add_data_func("/sn-model/ip32/o2plus-standalone", "o2plus",
+                         test_ip32_standalone_board);
+    g_test_add_data_func("/sn-model/ip32/rejects-module-owner", NULL,
+                         test_ip32_rejects_sn_ownership);
+    g_test_add_data_func("/sn-model/ip32/rejects-router", GUINT_TO_POINTER(1),
+                         test_ip32_rejects_sn_ownership);
+    g_test_add_data_func("/sn-model/ownership/sn0-requires-module",
+                         GUINT_TO_POINTER(SGI_MODEL_GENERATION_SN0),
+                         test_modular_node_requires_owner);
+    g_test_add_data_func("/sn-model/ownership/sn1-requires-module",
+                         GUINT_TO_POINTER(SGI_MODEL_GENERATION_SN1),
+                         test_modular_node_requires_owner);
+    g_test_add_data_func("/sn-model/ownership/ip30-requires-module",
+                         GUINT_TO_POINTER(SGI_MODEL_GENERATION_IP30),
+                         test_modular_node_requires_owner);
     g_test_add_func("/sn-model/tezro-requires-explicit-topology",
                     test_tezro_requires_explicit_topology);
     g_test_add_func("/sn-model/existing-population-views",
@@ -1850,6 +2025,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sn-model/resolve/every-offering",
                     test_resolve_every_offering);
     g_test_add_func("/sn-model/resolve/selection", test_resolve_selection);
+    g_test_add_func("/sn-model/resolve/ip32-variants",
+                    test_resolve_ip32_variants);
     g_test_add_func("/sn-model/resolve/refusals", test_resolve_refusals);
     g_test_add_func("/sn-model/resolve/product-scope",
                     test_resolve_product_scope);

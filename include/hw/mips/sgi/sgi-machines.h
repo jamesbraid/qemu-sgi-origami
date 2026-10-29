@@ -107,9 +107,10 @@ void sgi_model_module_nvram_seed(const SGIModelTopology *t,
 
 /*
  * The offering a -M option string selects: "<machine>[,topology=T]
- * [,nodes=N][,processor=P]", resolved as the machine resolves it, with the
- * product's default topology from its offerings when topology= is absent
- * and the nodes' own part when processor= is. Any other option is
+ * [,nodes=N][,processor=P]", or O2's "o2[,variant=o2|o2plus]", resolved
+ * as the machine resolves it. An O2 variant selects the matching topology;
+ * otherwise the product's offerings supply the default when topology= is
+ * absent. An absent processor= selects the nodes' own part. Any other option is
  * refused, since the catalogue does not describe it. Offerings of one
  * topology, node count and processor differ only in CPU population, so
  * this returns the first; its storage and init-inputs describe them all.
