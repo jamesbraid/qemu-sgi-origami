@@ -4579,6 +4579,97 @@ static void test_gl_pixels_zoomed_dma_whole_image(void)
 }
 
 /*
+ * The x-replication program the client sends at x zooms 1.5 and 3.25
+ * (the GL contract's x-zoom trace): routine 0x3ef5 before the hand-off,
+ * whose state moves to 0xe1c, and there a table repeating each 16-byte
+ * pixel repeat times.
+ */
+static void gl_pixels_xrep_program(QTestState *qts, uint32_t repeat,
+                                   uint32_t stride, const uint32_t box[6])
+{
+    static const uint32_t program[10] = {
+        0x1f44, 0, 0x3e65, 0xd91, 0x156a, 0x1b4, 0x3ef5, 0xdf3,
+        0x352d, 0xe1c,
+    };
+    uint32_t unpack[6] = { 2, 0x4064, 0x464, 0xb, 0xc, 0x3b808081 };
+    uint32_t table[19] = { 0x1a000, 0x464, 0x464, 0xa, 0x8, 0x4, stride };
+    float z[2] = { 0, 1 };
+    uint32_t zoom[2];
+
+    for (uint32_t i = 0; i < 12; i++) {
+        /* repeat 0: two zeros, then one step a pixel, which no zoom sends. */
+        table[7 + i] = repeat ? i / repeat * 0x10 :
+                       i < 2 ? 0 : (i - 1) * 0x10;
+    }
+    memcpy(zoom, z, sizeof(zoom));
+    gl_ge_load(qts, GL_GE_CRAM, GL_GE_PROGRAM, program, 10);
+    gl_ge_load(qts, GL_GE_ERAM, GL_GE_UNPACK, unpack, 6);
+    gl_ge_load(qts, GL_GE_ERAM, 0xe1c, table, 19);
+    gl_ge_load(qts, GL_GE_CRAM, GL_GE_ZOOM, zoom, 2);
+    gl_ge_load(qts, GL_GE_ERAM, GL_GE_BOX, box, 6);
+}
+
+/*
+ * Zoom 1.5 (each pixel twice, step 341, one pass of 0x40 words) and zoom
+ * 3.25 (four times, step 315, two passes of 0x20) draw 24 and 52 columns
+ * of the 16-pixel rows, column j taking source pixel floor((j + 0.5) / z)
+ * for the raster engine's zoom z = n * 256 / step (OpenGL 1.2.1, 3.6.4).
+ * A table that does not repeat each pixel the same number of times is
+ * not modelled, and draws nothing.
+ */
+static void test_gl_pixels_x_replication(void)
+{
+    static const uint32_t box15[6] = { 0, 0, 23, 3, 4 << 16 | 32, 1 };
+    static const uint32_t box325[6] = { 0, 0, 51, 3, 4 << 16 | 64, 1 };
+    static const struct {
+        const uint32_t *box;
+        uint32_t repeat, stride, step, words, passes, width, y;
+    } cases[] = {
+        { box15, 2, 0x60, 0x155, 0x40, 1, 24, 8 },
+        { box325, 4, 0x30, 0x13b, 0x20, 2, 52, 16 },
+    };
+    uint32_t words[4][16];
+    uint8_t image[256];
+
+    gl_zoom_image(words, image);
+    gl_pixels_context(qts, 0);
+    for (size_t c = 0; c < ARRAY_SIZE(cases); c++) {
+        double z = cases[c].repeat * 256.0 / cases[c].step;
+
+        gl_raster_pos2f(qts, 8, cases[c].y);
+        gl_raster_zoom_records(qts, cases[c].step, cases[c].step,
+                               0xc00080 | GL_XFRMODE_DECIMATE);
+        gl_pixels_xrep_program(qts, cases[c].repeat, cases[c].stride,
+                               cases[c].box);
+        gl_pixels_draw_traced(qts, cases[c].words, cases[c].passes, 0x98);
+        gl_pixels_dma(qts, image, sizeof(image), 256, 1, 256, 0xa7);
+        gl_pixels_fence(qts);
+        for (uint32_t y = 0; y < 4; y++) {
+            for (uint32_t j = 0; j <= cases[c].width; j++) {
+                uint32_t want = 0;
+
+                if (j < cases[c].width) {
+                    want = words[y][gl_raster_zoom_source(j, z)] >> 8;
+                }
+
+                g_assert_cmphex(gl_window_pixel(qts, 8 + j, cases[c].y + y),
+                                ==, want);
+            }
+        }
+    }
+
+    gl_raster_pos2f(qts, 8, 24);
+    gl_raster_zoom_records(qts, 0x155, 0x155, 0xc00080 | GL_XFRMODE_DECIMATE);
+    gl_pixels_xrep_program(qts, 0, 0x60, box15);
+    gl_pixels_draw_traced(qts, 0x40, 1, 0x98);
+    gl_pixels_dma(qts, image, sizeof(image), 256, 1, 256, 0xa7);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 8, 24), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 20, 26), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * glReadPixels' data-port form for RGBA: records, 0xdb04 and a word, then
  * 0x8f08 and two zeros. Without the 0x8f08 nothing is read; with it the
  * window's pixels come back as units, red in bits 7:0, the box's top row
@@ -6881,6 +6972,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-pixels-zoomed-dma-whole-image",
         test_gl_pixels_zoomed_dma_whole_image, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-x-replication",
+        test_gl_pixels_x_replication, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-readpixels-dataport-rgba",
         test_gl_readpixels_dataport_rgba, true);

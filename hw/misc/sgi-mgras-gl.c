@@ -4614,6 +4614,67 @@ static bool mgras_gl_pixels_write_routine(uint32_t routine)
            routine == MGRAS_GE_ROUTINE_ZOOM_XF;
 }
 
+/*
+ * The x-replication program (the GL contract's x-zoom trace): at x zooms
+ * that are not whole numbers the IRIX 6.5.30 client sends the four-byte
+ * program with routine 0x3ef5 (state at 0xdf3) before the hand-off, whose
+ * state moves to 0xe1c. That block holds three words, a header of three
+ * words and a byte stride, then twelve offsets stepping 0x10, one
+ * 16-byte pixel of four float components, each repeated ceil(zoom) times:
+ * 0, 0, 0x10, 0x10, ... at 1.5 and 0, 0, 0, 0, 0x10, ... at 3.25. The box's
+ * size word then gives the replicated width (0x20 for 16 pixels at 1.5,
+ * 0x40 at 3.25), and 0x8d20's words and pass count together cover the
+ * source image (0x40 in one pass at 1.5, 0x20 in each of two at 3.25).
+ * Established as the client's words on a model run; that 0x3ef5 repeats
+ * each pixel as its table says is inferred (gr4's reading of the routine).
+ * The model does not repeat the pixels: drawing the source row at the
+ * raster engine's zoom, n * 256 / step, gives the window the pixels the
+ * OpenGL rule gives on the repeated row stepped by the factor, since
+ * floor(floor(x) / n) = floor(x / n). Returns the repeat count, or 0 for
+ * any other program or table. The discriminating test is
+ * gl-pixels-x-replication.
+ */
+#define MGRAS_GE_ROUTINE_XREP    0x3ef5
+#define MGRAS_GE_XREP_OFFSETS    7
+#define MGRAS_GE_XREP_COUNT      12
+#define MGRAS_GE_XREP_PIXEL      0x10
+
+static uint32_t mgras_gl_pixels_replication(const uint32_t *ge)
+{
+    static const uint32_t routines[] = {
+        0x1f44, 0x3e65, 0x156a, MGRAS_GE_ROUTINE_XREP, MGRAS_GE_ROUTINE_END,
+    };
+    uint32_t unpack = ge[MGRAS_GE_PIXEL_PROGRAM + 3];
+    uint32_t table = ge[MGRAS_GE_PIXEL_PROGRAM + 9];
+    const uint32_t *offset;
+    uint32_t n = 0;
+
+    for (uint32_t i = 0; i < ARRAY_SIZE(routines); i++) {
+        if (ge[MGRAS_GE_PIXEL_PROGRAM + 2 * i] != routines[i]) {
+            return 0;
+        }
+    }
+    if (unpack >= SGI_MGRAS_GE_PARAM_WORDS - 1 ||
+        ge[unpack + 1] != MGRAS_GE_UNPACK_4UB ||
+        table > SGI_MGRAS_GE_PARAM_WORDS - MGRAS_GE_XREP_OFFSETS -
+                MGRAS_GE_XREP_COUNT) {
+        return 0;
+    }
+    offset = &ge[table + MGRAS_GE_XREP_OFFSETS];
+    while (n < MGRAS_GE_XREP_COUNT && offset[n] == 0) {
+        n++;
+    }
+    if (!n) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < MGRAS_GE_XREP_COUNT; i++) {
+        if (offset[i] != i / n * MGRAS_GE_XREP_PIXEL) {
+            return 0;
+        }
+    }
+    return n;
+}
+
 static uint32_t mgras_gl_pixels_match(const uint32_t *ge, uint32_t *pairs)
 {
     uint32_t format;
@@ -4799,7 +4860,8 @@ unmodelled:
 
 /* The rectangle and form of the draw 0x8d20 starts, or false, logged. */
 static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
-                                    bool dma_only, SGIMgrasGLPixels *px)
+                                    uint32_t passes, bool dma_only,
+                                    SGIMgrasGLPixels *px)
 {
     const uint32_t *ge = s->ge_param;
     const uint32_t *box = &ge[MGRAS_GE_PIXEL_BOX];
@@ -4809,7 +4871,7 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
     int64_t h = (int64_t)(int32_t)box[3] - (int32_t)box[1] + 1;
     uint32_t pass_rows, pass;
     bool pixel_texture = mgras_gl_pixels_texture_box(s, &pass_rows, &pass);
-    uint32_t pairs, format;
+    uint32_t pairs, format, repeat = 0;
 
     /*
      * A refused draw still owns the image that follows it: its rows as
@@ -4850,6 +4912,10 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
                                              dma_only);
     if (format == MGRAS_GL_PIXELS_FORMATS) {
         format = mgras_gl_pixels_match(ge, &pairs);
+        if (format == MGRAS_GL_PIXELS_FORMATS) {
+            repeat = mgras_gl_pixels_replication(ge);
+            format = repeat ? MGRAS_GL_PIXELS_ABGR8 : format;
+        }
     } else {
         pairs = 0;
     }
@@ -4909,6 +4975,21 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
         }
         px->bpp = px->bpp ? px->bpp : 8;
         break;
+    }
+    if (repeat) {
+        /* The box's width is the repeated row's; 0x8d20 counts the source. */
+        if (!dma_only || !px->zoom_x || px->w % repeat ||
+            row_words * passes !=
+            DIV_ROUND_UP((uint64_t)px->w / repeat * px->bpp, 4) * px->h) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: x-replicated pixel draw of "
+                          "%" PRIu64 " words in %u passes for %u by %u "
+                          "pixels repeated %u times is not modelled\n",
+                          row_words, passes, px->w, px->h, repeat);
+            return false;
+        }
+        px->w /= repeat;
+        px->zoom_x = float_bits((float)px->dest_w / px->w);
+        row_words *= passes;
     }
     if (px->zoom_x && dma_only && px->bpp && (row_words * 4) % px->bpp == 0 &&
         (row_words * 4) / px->bpp != px->w &&
@@ -5024,6 +5105,7 @@ static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
         return;
     }
     if (!mgras_gl_pixels_program(s, (uint64_t)payload[0] + payload[1],
+                                 payload[3],
                                  !!(payload[7] & MGRAS_GL_PIXELS_BY_DMA), px)) {
         px->format = MGRAS_GL_PIXELS_FORMATS;
         px->bpp = 1;
