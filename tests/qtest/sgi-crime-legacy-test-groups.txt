@@ -16,6 +16,7 @@ renderer /mips64/sgi/crime/renderer/ifb/profiles
 renderer /mips64/sgi/crime/renderer/refusal
 renderer /mips64/sgi/crime/renderer/hard-stop
 renderer /mips64/sgi/crime/renderer/profiles
+renderer /mips64/sgi/crime/renderer/reset-word
 state /mips64/sgi/crime/1.5/interrupt-mask-upper-refusal
 renderer /mips64/sgi/crime/renderer/no-generated-irq
 state /mips64/sgi/crime/default/migration-sources

@@ -1733,12 +1733,18 @@ static void test_ifb_refusal(void)
         const RendererAccess *a = &probes[i].access;
 
         for (unsigned n = 0; n < (a->write ? 2 : 1); n++) {
-            QTestState *s = start_profile(true,
-                "-global sgi-crime.functional-memory-transfer=on "
-                "-device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH);
+            QTestState *s;
             uint64_t value = n ? 0x1122334455667788ULL : 0;
             uint64_t readback;
             MemTxResult result;
+
+            /* The four-byte zero write at +0x408 is admitted. */
+            if (a->write && a->offset == 0x408 && a->size == 4 && !value) {
+                continue;
+            }
+            s = start_profile(true,
+                "-global sgi-crime.functional-memory-transfer=on "
+                "-device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH);
 
             seed_ifb_state(s);
             qtest_qmp_assert_success(s, "{'execute':'cont'}");
@@ -2139,6 +2145,52 @@ static void test_transfer_mask_tiled(void)
     g_rmdir(dir);
 }
 
+/*
+ * IRIX 6.5.30 writes a four-byte zero to renderer +0x408 first in graphics
+ * initialization and in error recovery. The legacy functional profile
+ * accepts exactly that write as a logged no-op; its role is inferred and
+ * unmodeled. Reads, non-zero values and other widths still fail.
+ */
+static void test_renderer_reset_word(void)
+{
+    g_autofree char *directory = g_dir_make_tmp("crime-408-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(directory, "device.txt", NULL);
+    g_autofree char *options = g_strdup_printf(
+        "-global sgi-crime.functional-memory-transfer=on -D %s "
+        "-device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH, path);
+    QTestState *s = start_profile(true, options);
+    g_autofree char *contents = NULL;
+    g_auto(GStrv) lines = NULL;
+    unsigned count = 0;
+    uint32_t status, word;
+
+    seed_ifb_state(s);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    status = qtest_readl(s, RENDERER + 0x4000);
+    g_assert_cmpint(memtx_writel(s, RENDERER + 0x408, 0), ==, MEMTX_OK);
+    assert_run_status(s, "running");
+    assert_ifb_state(s, false);
+    g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000), ==, status);
+    g_assert_cmpint(memtx_writel(s, RENDERER + 0x408, 1), ==, MEMTX_ERROR);
+    g_assert_cmpint(memtx_readl(s, RENDERER + 0x408, &word), ==, MEMTX_ERROR);
+    g_assert_cmpint(memtx_writeq(s, RENDERER + 0x408, 0), ==, MEMTX_ERROR);
+    assert_run_status(s, "running");
+    assert_ifb_state(s, false);
+    qtest_quit(s);
+    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+    lines = g_strsplit(contents, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        if (strstr(lines[i], "accepted as a no-op")) {
+            g_assert_nonnull(strstr(lines[i], "0x15000408"));
+            g_assert_nonnull(strstr(lines[i], "4-byte zero write"));
+            count++;
+        }
+    }
+    g_assert_cmpuint(count, ==, 1);
+    g_unlink(path);
+    g_rmdir(directory);
+}
+
 static void test_renderer_profile_policy(void)
 {
     for (unsigned legacy = 0; legacy < 2; legacy++) {
@@ -2147,8 +2199,9 @@ static void test_renderer_profile_policy(void)
                 "-global sgi-crime.functional-memory-transfer=on" : "");
 
             qtest_qmp_assert_success(s, "{'execute':'cont'}");
-            g_assert_cmpint(memtx_writel(s, RENDERER + 0x408, 0),
-                            ==, MEMTX_ERROR);
+            /* Only the legacy functional profile admits the zero write. */
+            g_assert_cmpint(memtx_writel(s, RENDERER + 0x408, 0), ==,
+                            legacy && functional ? MEMTX_OK : MEMTX_ERROR);
             assert_run_status(s, legacy != functional ?
                               "internal-error" : "running");
             qtest_quit(s);
@@ -2947,6 +3000,7 @@ int main(int argc, char **argv)
     add_case("sgi/crime/renderer/hard-stop", test_renderer_hard_stop);
     add_case("sgi/crime/renderer/profiles",
                    test_renderer_profile_policy);
+    add_case("sgi/crime/renderer/reset-word", test_renderer_reset_word);
     for (unsigned i = 0; i < ARRAY_SIZE(renderer_cpu); i++) {
         g_autofree char *name = g_strdup_printf("sgi/crime/renderer/cpu/%s",
                                                renderer_cpu[i]);

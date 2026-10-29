@@ -6900,7 +6900,9 @@ static void test_native_parameters(void)
     }
     for (unsigned i = 0; i < ARRAY_SIZE(holes); i++) {
         g_assert_cmpint(memtx_read(s, RE + holes[i], &value, 4), !=, MEMTX_OK);
-        g_assert_cmpint(memtx_writel(s, RE + holes[i], 0), !=, MEMTX_OK);
+        /* Only +0x408 admits a zero write, as a logged no-op. */
+        g_assert_cmpint(memtx_writel(s, RE + holes[i], 0) == MEMTX_OK, ==,
+                        holes[i] == 0x408);
         g_assert_cmpint(memtx_writel(s, RE + holes[i], UINT32_MAX),
                         !=, MEMTX_OK);
     }
@@ -8679,7 +8681,8 @@ static void test_ifb_transactions(void)
     g_assert_cmpint(memtx_writel(s, RE + 0x1000, 1), !=, MEMTX_OK);
     g_assert_cmpint(memtx_writel(s, DE + 0x20, 1), !=, MEMTX_OK);
     g_assert_cmpint(memtx_writel(s, DE + 0x1f8, 1), !=, MEMTX_OK);
-    g_assert_cmpint(memtx_writel(s, RE + 0x408, 0), !=, MEMTX_OK);
+    /* The admitted zero write at +0x408 records no entry either. */
+    g_assert_cmpint(memtx_writel(s, RE + 0x408, 0), ==, MEMTX_OK);
     ifb_snapshot(s, &after);
     g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
     triangle_irq_levels(s, 1);
