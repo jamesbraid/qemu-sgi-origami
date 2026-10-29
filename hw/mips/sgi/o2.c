@@ -445,6 +445,7 @@ static void o2_set_gbe_external_ttl_hz(Object *obj, Visitor *v,
     O2MachineState *s = (O2MachineState *)obj;
     uint64_t hz;
 
+    s->test_properties_set = true;
     if (phase_check(PHASE_MACHINE_INITIALIZED)) {
         error_setg(errp, "gbe-external-ttl-hz cannot change once the "
                          "machine is built");
@@ -1531,6 +1532,7 @@ static void o2_init(MachineState *machine)
             "prom-private-window",
             "prom-sb64-reset",
             "gbe11-registers",
+            "gbe-external-ttl-hz",
             "gbe-one-tile-diagnostic",
             "phy-ics1890",
             "phy-address",
@@ -2235,6 +2237,11 @@ static void o2_add_test_properties(Object *obj)
     object_property_add_bool(obj, "gbe11-registers",
                              o2_get_gbe11_registers,
                              o2_set_gbe11_registers);
+    object_property_add(obj, "gbe-external-ttl-hz", "uint64",
+                        o2_get_gbe_external_ttl_hz,
+                        o2_set_gbe_external_ttl_hz, NULL, NULL);
+    object_property_set_description(obj, "gbe-external-ttl-hz",
+        "QTest-only TTL clock in Hz (0: absent)");
     object_property_add_bool(obj, "gbe-one-tile-diagnostic",
                              o2_get_gbe_one_tile_diagnostic,
                              o2_set_gbe_one_tile_diagnostic);
@@ -2337,11 +2344,6 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "rom-at29c040a-upper-lock",
                                   o2_get_rom_at29_upper_lock,
                                   o2_set_rom_at29_upper_lock);
-    object_class_property_add(oc, "gbe-external-ttl-hz", "uint64",
-                              o2_get_gbe_external_ttl_hz,
-                              o2_set_gbe_external_ttl_hz, NULL, NULL);
-    object_class_property_set_description(oc, "gbe-external-ttl-hz",
-        "Caller-selected diagnostic TTL clock in Hz (0: absent)");
     object_class_property_add_str(oc, "identity-test-serial",
                                   o2_get_identity_test_serial,
                                   o2_set_identity_test_serial);

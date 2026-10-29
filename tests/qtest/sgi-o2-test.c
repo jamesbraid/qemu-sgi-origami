@@ -8746,13 +8746,23 @@ static void test_product_external_ttl(void)
     QTestState *qts;
 
     o2_product_prepare(&t);
+    {
+        g_autofree char *override = g_strdup_printf(
+            "%s,gbe-external-ttl-hz=23000000", t.machine);
+
+        assert_o2_banked_rejected(override, "1G", "-cpu", "R10000",
+            "diagnostic properties require register-test-profile and QTest");
+    }
     qts = qtest_initf("-M %s -nodefaults -S", t.machine);
     for (unsigned pass = 0; pass < 2; pass++) {
         if (pass) {
             qtest_system_reset(qts);
         }
-        g_assert_cmpuint(o2_clock_property(qts, "/machine",
-                         "gbe-external-ttl-hz"), ==, 20000000);
+        g_autoptr(QDict) diagnostic = qtest_qmp(qts,
+            "{'execute':'qom-get','arguments':{'path':'/machine',"
+            "'property':'gbe-external-ttl-hz'}}");
+
+        g_assert_nonnull(qdict_get_qdict(diagnostic, "error"));
         g_assert_cmpuint(o2_clock_property(qts, "/machine/gbe",
                          "external-ttl-hz"), ==, 20000000);
         qtest_writel(qts, GBE + GBE_VT_1, 97 | 67 << 12);
