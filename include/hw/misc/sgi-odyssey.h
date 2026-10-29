@@ -139,6 +139,10 @@ struct SGIOdysseyState {
     uint32_t intr_flags;
     uint32_t intr_enable;
     uint32_t flctl_config;
+    /* The memory controller's configuration word (+0x1004), as written. */
+    uint32_t memory_control;
+    /* +0x1004 was programmed; reported once, not migrated. */
+    bool memory_control_reported;
     uint32_t flctl_target;
     /*
      * The FIFO set-up registers 0x6b0-0x6b3 and 0x7b5, in that order, as
