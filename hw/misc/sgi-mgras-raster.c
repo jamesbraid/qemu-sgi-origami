@@ -169,14 +169,31 @@
  * box is in screen coordinates. Ignoring it let the Icon Catalog's icon
  * shadows paint through the Background Setting panel stacked above them.
  * gxemul's BSD impactsr-bsd.h names 0x14f IMPACTSR_CMD_WINMODE without
- * giving its bits. Only 0 and 0x11 have been seen in it; which bit enables
- * the clip is not known, so clipping at exactly 0x11 is an approximation,
- * and any other value is logged and treated as off.
+ * giving its bits.
+ *
+ * The box is the first of four screen masks, each an x and a y register
+ * in the same form, at 0x147 to 0x14e. The window mode 0x14f holds the
+ * mask enables in bits 3:0, mask k setting bit k - 1, and a mode in bits
+ * 7:4. Established as the words the IRIX 6.5.30 kernel's clip set-up
+ * writes: it loads up to four of a window's visible rectangles into the
+ * masks and writes 0x11, 0x13, 0x17 or 0x1f, mode 1 whatever the count;
+ * the X server's single box is 0x11. Masks 2 to 4's registers are
+ * inferred from their order. Inferred: mode 1 draws a pixel when it lies
+ * inside any enabled mask, since the masks hold disjoint pieces of one
+ * window's visible region. The kernel also writes 0x23, masks 1 and 2
+ * under mode 2, whose meaning is unknown; that value, any other mode and
+ * mode 1 with no mask enabled are logged and leave drawing unclipped. See
+ * the raster and display contract's window mode reading. The
+ * discriminating tests are fill-honours-clip-rectangle and
+ * fill-honours-union-of-screen-masks.
  */
 #define MGRAS_RSS_CLIP_X 0x147
 #define MGRAS_RSS_CLIP_Y 0x148
 #define MGRAS_RSS_CLIP_MODE 0x14f
-#define MGRAS_CLIP_MODE_ON 0x11
+#define MGRAS_SCREEN_MASKS 4
+#define MGRAS_WINMODE_ENABLES 0xf
+#define MGRAS_WINMODE_MODE(v) (((v) >> 4) & 0xf)
+#define MGRAS_WINMODE_UNION 1
 
 
 /*
@@ -1062,18 +1079,37 @@ static uint32_t mgras_rgb_from_pixel_word(uint32_t word)
     return ((word & 0xff) << 16) | (word & 0xff00) | ((word >> 16) & 0xff);
 }
 
+/* The screen masks the window mode enables, or 0 when it does not clip. */
+static uint32_t mgras_screen_mask_enables(SGIMgrasState *s)
+{
+    uint32_t mode = s->rss[MGRAS_RSS_CLIP_MODE];
+
+    if (MGRAS_WINMODE_MODE(mode) != MGRAS_WINMODE_UNION) {
+        return 0;
+    }
+    return mode & MGRAS_WINMODE_ENABLES;
+}
+
 static bool mgras_clipped(SGIMgrasState *s, unsigned int idx)
 {
-    uint32_t cx = s->rss[MGRAS_RSS_CLIP_X];
-    uint32_t cy = s->rss[MGRAS_RSS_CLIP_Y];
+    uint32_t enables = mgras_screen_mask_enables(s);
     unsigned int x = idx % s->width;
     unsigned int row = s->height - 1 - idx / s->width;
 
-    if (s->rss[MGRAS_RSS_CLIP_MODE] != MGRAS_CLIP_MODE_ON) {
+    if (!enables) {
         return false;
     }
-    return x < (cx >> 16) || x > (cx & 0xffff) ||
-           row < (cy >> 16) || row > (cy & 0xffff);
+    for (int k = 0; k < MGRAS_SCREEN_MASKS; k++) {
+        uint32_t cx = s->rss[MGRAS_RSS_CLIP_X + 2 * k];
+        uint32_t cy = s->rss[MGRAS_RSS_CLIP_Y + 2 * k];
+
+        if ((enables & (1u << k)) &&
+            x >= (cx >> 16) && x <= (cx & 0xffff) &&
+            row >= (cy >> 16) && row <= (cy & 0xffff)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /*
@@ -1091,24 +1127,54 @@ static void mgras_put_pixel(SGIMgrasState *s, unsigned int idx, uint32_t color,
 }
 
 /*
- * mgras_clipped() for a run of one row at a time: narrow columns
- * [*x0, *x1] of index row y, both on the screen, to those the clip
- * rectangle passes. False when it passes none of them.
+ * mgras_clipped() for a run of one row at a time: the columns of x0..x1
+ * in index row y, both on the screen, that the window mode passes, as up
+ * to four disjoint spans lo[i]..hi[i] in increasing order. Returns how
+ * many.
  */
-static bool mgras_clip_row(SGIMgrasState *s, int y, int *x0, int *x1)
+static int mgras_clip_spans(SGIMgrasState *s, int y, int x0, int x1,
+                            int lo[MGRAS_SCREEN_MASKS],
+                            int hi[MGRAS_SCREEN_MASKS])
 {
-    uint32_t cx = s->rss[MGRAS_RSS_CLIP_X];
-    uint32_t cy = s->rss[MGRAS_RSS_CLIP_Y];
+    uint32_t enables = mgras_screen_mask_enables(s);
     unsigned int row = s->height - 1 - y;
+    int n = 0, merged = 0;
 
-    if (s->rss[MGRAS_RSS_CLIP_MODE] == MGRAS_CLIP_MODE_ON) {
-        if (row < (cy >> 16) || row > (cy & 0xffff)) {
-            return false;
-        }
-        *x0 = MAX(*x0, (int)(cx >> 16));
-        *x1 = MIN(*x1, (int)(cx & 0xffff));
+    if (!enables) {
+        lo[0] = x0;
+        hi[0] = x1;
+        return x0 <= x1;
     }
-    return *x0 <= *x1;
+    for (int k = 0; k < MGRAS_SCREEN_MASKS; k++) {
+        uint32_t cx = s->rss[MGRAS_RSS_CLIP_X + 2 * k];
+        uint32_t cy = s->rss[MGRAS_RSS_CLIP_Y + 2 * k];
+        int a = MAX(x0, (int)(cx >> 16)), b = MIN(x1, (int)(cx & 0xffff));
+        int i;
+
+        if (!(enables & (1u << k)) || row < (cy >> 16) ||
+            row > (cy & 0xffff) || a > b) {
+            continue;
+        }
+        /* Insert in order of the first column. */
+        for (i = n; i > 0 && lo[i - 1] > a; i--) {
+            lo[i] = lo[i - 1];
+            hi[i] = hi[i - 1];
+        }
+        lo[i] = a;
+        hi[i] = b;
+        n++;
+    }
+    /* Masks may overlap: join spans that touch so no column is drawn twice. */
+    for (int i = 0; i < n; i++) {
+        if (merged && lo[i] <= hi[merged - 1] + 1) {
+            hi[merged - 1] = MAX(hi[merged - 1], hi[i]);
+        } else {
+            lo[merged] = lo[i];
+            hi[merged] = hi[i];
+            merged++;
+        }
+    }
+    return merged;
 }
 
 /*
@@ -1117,15 +1183,12 @@ static bool mgras_clip_row(SGIMgrasState *s, int y, int *x0, int *x1)
  * clip, the mask and the op are settled once for the row rather than at
  * every pixel.
  */
-static void mgras_put_row(SGIMgrasState *s, int y, int x0, int x1,
-                          uint32_t color, uint8_t op, uint32_t mask,
-                          uint8_t format)
+static void mgras_put_span(SGIMgrasState *s, int y, int x0, int x1,
+                           uint32_t color, uint8_t op, uint32_t mask,
+                           uint8_t format)
 {
     uint32_t *front = s->front + y * s->width;
 
-    if (!(mask & 0x00ffffff) || !mgras_clip_row(s, y, &x0, &x1)) {
-        return;
-    }
     if ((op & 0xf) == 0x3) {
         uint32_t ink = color & 0x00ffffff & mask;
 
@@ -1138,6 +1201,22 @@ static void mgras_put_row(SGIMgrasState *s, int y, int x0, int x1,
         }
     }
     memset(s->format + y * s->width + x0, format, x1 - x0 + 1);
+}
+
+static void mgras_put_row(SGIMgrasState *s, int y, int x0, int x1,
+                          uint32_t color, uint8_t op, uint32_t mask,
+                          uint8_t format)
+{
+    int lo[MGRAS_SCREEN_MASKS], hi[MGRAS_SCREEN_MASKS];
+    int n;
+
+    if (!(mask & 0x00ffffff)) {
+        return;
+    }
+    n = mgras_clip_spans(s, y, x0, x1, lo, hi);
+    for (int i = 0; i < n; i++) {
+        mgras_put_span(s, y, lo[i], hi[i], color, op, mask, format);
+    }
 }
 
 
@@ -1211,13 +1290,13 @@ static void mgras_fill_overlay_rect(SGIMgrasState *s, uint32_t xy0,
     }
     for (int y = y_lo; y <= y_hi; y++) {
         uint8_t *overlay = s->overlay + y * s->width;
-        int x0 = x_lo, x1 = x_hi;
+        int lo[MGRAS_SCREEN_MASKS], hi[MGRAS_SCREEN_MASKS];
+        int n = mgras_clip_spans(s, y, x_lo, x_hi, lo, hi);
 
-        if (!mgras_clip_row(s, y, &x0, &x1)) {
-            continue;
-        }
-        for (int x = x0; x <= x1; x++) {
-            overlay[x] = mgras_logic_op(op, overlay[x], index);
+        for (int i = 0; i < n; i++) {
+            for (int x = lo[i]; x <= hi[i]; x++) {
+                overlay[x] = mgras_logic_op(op, overlay[x], index);
+            }
         }
     }
 }
@@ -1319,7 +1398,8 @@ static void mgras_draw_glyph_row(SGIMgrasState *s, bool hw_rows)
                     s->rss[MGRAS_RSS_CHAR_L];
     bool overlay = mgras_overlay_target(s);
     int y = y0 + s->glyph_row;
-    int width, lo, hi;
+    int width, n;
+    int lo[MGRAS_SCREEN_MASKS], hi[MGRAS_SCREEN_MASKS];
 
     if (x0 > x1 || y0 > y1 || x0 >= s->width || y0 >= s->height) {
         return;
@@ -1335,24 +1415,23 @@ static void mgras_draw_glyph_row(SGIMgrasState *s, bool hw_rows)
     }
     width = MIN(x1 - x0 + 1, 64);
     /* The row's clip, settled once for its columns. */
-    lo = x0;
-    hi = x0 + width - 1;
-    if (!mgras_clip_row(s, y, &lo, &hi)) {
-        return;
-    }
-    for (int i = lo - x0; i <= hi - x0; i++) {
-        unsigned int idx = y * s->width + x0 + i;
+    n = mgras_clip_spans(s, y, x0, x0 + width - 1, lo, hi);
+    for (int span = 0; span < n; span++) {
+        for (int i = lo[span] - x0; i <= hi[span] - x0; i++) {
+            unsigned int idx = y * s->width + x0 + i;
 
-        if (!((bits >> (63 - i)) & 1)) {
-            continue;
-        }
-        if (mask & 0x00ffffff) {
-            s->front[idx] = mgras_paint_pixel(op, s->front[idx], ink, mask);
-            s->format[idx] = format;
-        }
-        if (overlay) {
-            s->overlay[idx] = mgras_logic_op(op, s->overlay[idx],
-                                             mgras_overlay_ink(s));
+            if (!((bits >> (63 - i)) & 1)) {
+                continue;
+            }
+            if (mask & 0x00ffffff) {
+                s->front[idx] = mgras_paint_pixel(op, s->front[idx], ink,
+                                                  mask);
+                s->format[idx] = format;
+            }
+            if (overlay) {
+                s->overlay[idx] = mgras_logic_op(op, s->overlay[idx],
+                                                 mgras_overlay_ink(s));
+            }
         }
     }
 }
@@ -2317,9 +2396,9 @@ static void mgras_raster_rss_write(SGIMgrasState *s, uint32_t reg,
         s->public_glyph_wide_valid = false;
     }
     if (reg == MGRAS_RSS_CLIP_MODE && value != 0 &&
-        value != MGRAS_CLIP_MODE_ON) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: clip mode 0x%x not modelled, "
-                      "clip off\n", value);
+        !mgras_screen_mask_enables(s)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: window mode 0x%x not modelled, "
+                      "screen masks off\n", value);
     }
     if (reg == MGRAS_RSS_BLOCKXYSTARTI) {
 
@@ -2579,7 +2658,8 @@ static int mgras_raster_dma_run_draw(SGIMgrasState *s, SGIPixelDMA *d,
     for (int32_t row = 0; row < d->h; row++) {
         uint64_t pos = d->offset + (uint64_t)row * d->pitch;
         int y = d->y + row;
-        int x0 = d->x, x1 = d->x + d->w - 1;
+        int lo[MGRAS_SCREEN_MASKS], hi[MGRAS_SCREEN_MASKS];
+        int n;
         uint32_t *front = s->front + y * s->width;
 
         if (!sgi_dma_map_copy(&d->map, pos, bytes, bpr, false)) {
@@ -2590,42 +2670,44 @@ static int mgras_raster_dma_run_draw(SGIMgrasState *s, SGIPixelDMA *d,
          * the row's clip can be settled once: this is mgras_put_pixel()
          * and mgras_put_overlay() for each column the clip passes.
          */
-        if (!mgras_clip_row(s, y, &x0, &x1)) {
-            continue;
-        }
-        for (int32_t col = x0 - d->x; col <= x1 - d->x; col++) {
-            const uint8_t *p = bytes + col * d->guest_bpp;
-            /*
-             * bpp 1 is a bare CI8 CMAP index. bpp 4 is a big-endian
-             * 32-bit pixel with red in bits 7:0: bytes 3, 2 and 1 are
-             * red, green and blue, and byte 0 is not stored. The public
-             * drivers transfer this layout under the same pixel format
-             * (0x600) and PP1FILLMODE format bits (0x62xx) the IRIX
-             * server uses: X.Org's impact driver (impact_shadow.c,
-             * visual masks 0xff/0xff00/0xff0000) and the Linux Impact
-             * framebuffer patch (red at offset 0). The IRIX 6.5.30
-             * greeter's EZsetup icon agrees: read red-first it is cyan
-             * and blue-grey where the RAD4 reference shows yellow and
-             * orange. PACKEDCOLOR and pair-packed pixels carry the same
-             * word; see mgras_rgb_from_pixel_word().
-             */
-            uint32_t color = d->guest_bpp == 1 ? p[0] :
-                ((uint32_t)p[3] << 16) | ((uint32_t)p[2] << 8) | p[1];
-            int x = d->x + col;
+        n = mgras_clip_spans(s, y, d->x, d->x + d->w - 1, lo, hi);
+        for (int span = 0; span < n; span++) {
+            int x0 = lo[span], x1 = hi[span];
 
+            for (int32_t col = x0 - d->x; col <= x1 - d->x; col++) {
+                const uint8_t *p = bytes + col * d->guest_bpp;
+                /*
+                 * bpp 1 is a bare CI8 CMAP index. bpp 4 is a big-endian
+                 * 32-bit pixel with red in bits 7:0: bytes 3, 2 and 1 are
+                 * red, green and blue, and byte 0 is not stored. The public
+                 * drivers transfer this layout under the same pixel format
+                 * (0x600) and PP1FILLMODE format bits (0x62xx) the IRIX
+                 * server uses: X.Org's impact driver (impact_shadow.c,
+                 * visual masks 0xff/0xff00/0xff0000) and the Linux Impact
+                 * framebuffer patch (red at offset 0). The IRIX 6.5.30
+                 * greeter's EZsetup icon agrees: read red-first it is cyan
+                 * and blue-grey where the RAD4 reference shows yellow and
+                 * orange. PACKEDCOLOR and pair-packed pixels carry the same
+                 * word; see mgras_rgb_from_pixel_word().
+                 */
+                uint32_t color = d->guest_bpp == 1 ? p[0] :
+                    ((uint32_t)p[3] << 16) | ((uint32_t)p[2] << 8) | p[1];
+                int x = d->x + col;
+
+                if (mask & 0x00ffffff) {
+                    front[x] = mgras_paint_pixel(op, front[x], color, mask);
+                }
+                if (overlay) {
+                    s->overlay[y * s->width + x] =
+                        mgras_logic_op(op, s->overlay[y * s->width + x], p[0]);
+                }
+            }
             if (mask & 0x00ffffff) {
-                front[x] = mgras_paint_pixel(op, front[x], color, mask);
+                memset(s->format + y * s->width + x0,
+                       d->guest_bpp == 1 ? SGI_MGRAS_PIXEL_FORMAT_CI8 :
+                                           SGI_MGRAS_PIXEL_FORMAT_RGB,
+                       x1 - x0 + 1);
             }
-            if (overlay) {
-                s->overlay[y * s->width + x] =
-                    mgras_logic_op(op, s->overlay[y * s->width + x], p[0]);
-            }
-        }
-        if (mask & 0x00ffffff) {
-            memset(s->format + y * s->width + x0,
-                   d->guest_bpp == 1 ? SGI_MGRAS_PIXEL_FORMAT_CI8 :
-                                       SGI_MGRAS_PIXEL_FORMAT_RGB,
-                   x1 - x0 + 1);
         }
     }
     s->dirty = true;
