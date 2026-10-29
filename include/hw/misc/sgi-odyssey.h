@@ -206,6 +206,11 @@ struct SGIOdysseyState {
      * successive stores to the port.
      */
     uint32_t lut[0x2000];
+    /*
+     * Back-end entries 0x2000-0x2fff as last written through the display
+     * FIFO, read back through the read window (ODSY_BACKEND_CTL_BASE).
+     */
+    uint32_t backend_ctl[0x1000];
     uint32_t dispmode[32];
     /* The overlay ids' display modes, backend entries 0x2920 + id. */
     uint32_t overlay_mode[8];

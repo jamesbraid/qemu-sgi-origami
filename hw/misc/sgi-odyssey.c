@@ -2718,6 +2718,59 @@ static bool odyssey_cursor_read(SGIOdysseyState *s, hwaddr addr,
     return true;
 }
 
+/*
+ * Back-end entries 0x2000-0x2fff: the line and frame tables, timing,
+ * cursor, DAC, clock, I2C, genlock, scanout and display-mode entries. Every
+ * word written there is kept, and a 32-bit load at offset 4 of the entry's
+ * 8-byte slot in the read window returns it (ESTABLISHED as the kernel's
+ * reads of 0x26c0, 0x2482, 0x2483 and 0x2700 through the window, each
+ * modified and written back). That the board returns the last word
+ * written is INFERRED from those read-modify-writes; entries the board
+ * itself updates (0x2701, 0x27cd, the I2C status) answer from their own
+ * models. Reset values are UNKNOWN; the model resets them to zero.
+ *
+ * The line table (0x2000-0x23ff) and frame table (0x2400-0x247f) are only
+ * stored. APPROXIMATION: the retrace period stays the 1280x1024 60 Hz one
+ * (ODSY_FRAME_CLOCKS) rather than following the frame table's line count,
+ * since which line-table entries are timed, and the pixel clock, are not
+ * decoded.
+ *
+ * The scanout entries 0x2800 and 0x2801 (region starts in 1 KB units
+ * shifted left 9), 0x2807 (16-pixel tiles per row) and 0x2809 (depth code)
+ * are stored and not used: APPROXIMATION, the model scans out its own
+ * colour buffers (odyssey_resolve_row()) rather than locating the displayed
+ * buffer in board memory by these entries, whose role as scanout base,
+ * pitch and depth is INFERRED. The 16 x 16-pixel tiling of board memory is
+ * not modeled.
+ */
+#define ODSY_BACKEND_CTL_BASE 0x2000
+#define ODSY_BACKEND_CTL_ENTRIES 0x1000
+
+/* The entries the kernel writes (the datasheet's back-end entry table). */
+static bool odyssey_backend_ctl_known(uint32_t index)
+{
+    return (index >= 0x2000 && index <= 0x247f) ||
+           (index >= 0x2481 && index <= 0x2483) ||
+           index == 0x2600 || index == 0x2680 || index == 0x26c0 ||
+           index == 0x2700 || index == 0x2741 || index == 0x2781 ||
+           (index >= 0x27c0 && index <= 0x27cd) ||
+           (index >= 0x2800 && index <= 0x2809) ||
+           (index >= 0x2929 && index <= 0x292c) || index == 0x2b00;
+}
+
+static bool odyssey_backend_ctl_read(SGIOdysseyState *s, hwaddr addr,
+                                     unsigned size, uint64_t *value)
+{
+    hwaddr first = ODSY_BACKEND_READ_BASE + (ODSY_BACKEND_CTL_BASE << 3);
+
+    if (size != 4 || addr < first || (addr & 7) != 4 ||
+        addr >= first + (ODSY_BACKEND_CTL_ENTRIES << 3)) {
+        return false;
+    }
+    *value = s->backend_ctl[(addr - first) >> 3];
+    return true;
+}
+
 static uint32_t odyssey_i2c_status(uint32_t command)
 {
     return ODSY_I2C_STATUS_READY | (command != 0 ? ODSY_I2C_STATUS_DONE : 0);
@@ -2850,7 +2903,8 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
                       "register at 0x%" HWADDR_PRIx "\n", addr);
         break;
     default:
-        if (odyssey_cursor_read(s, addr, size, &value)) {
+        if (odyssey_cursor_read(s, addr, size, &value) ||
+            odyssey_backend_ctl_read(s, addr, size, &value)) {
             break;
         }
         odyssey_unimplemented(s, addr, size, false);
@@ -2908,12 +2962,17 @@ static void odyssey_channel_size(SGIOdysseyState *s, uint32_t index,
  * header selected. The colour lookup RAM and the per-drawable display-mode
  * registers take their words here; the two I2C command indices keep their
  * existing dispatch, so a count == 1 I2C selector still reaches the same
- * register it always did. The third I2C-unit index 0x2700 has no established
- * function and stays unimplemented, as it did before this became a stream.
+ * register it always did. Entries 0x2000-0x2fff are also kept for the read
+ * window (odyssey_backend_ctl_read()); one the kernel is not known to write
+ * is still reported.
  */
 static void odyssey_backend_data(SGIOdysseyState *s, uint32_t index,
                                  uint32_t data)
 {
+    if (index >= ODSY_BACKEND_CTL_BASE &&
+        index < ODSY_BACKEND_CTL_BASE + ODSY_BACKEND_CTL_ENTRIES) {
+        s->backend_ctl[index - ODSY_BACKEND_CTL_BASE] = data;
+    }
     /* Scanout resolves through both, so either change repaints. */
     if (index < ODSY_LUT_SIZE) {
         s->lut[index] = data & ODSY_LUT_ENTRY_MASK;
@@ -2955,7 +3014,9 @@ static void odyssey_backend_data(SGIOdysseyState *s, uint32_t index,
         s->i2c_opt_cmd = data;
         break;
     default:
-        odyssey_unimplemented(s, ODSY_BACKEND_SELECT, 8, true);
+        if (!odyssey_backend_ctl_known(index)) {
+            odyssey_unimplemented(s, ODSY_BACKEND_SELECT, 8, true);
+        }
         break;
     }
 }
@@ -12968,6 +13029,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->i2c_main_cmd = 0;
     s->i2c_opt_cmd = 0;
     memset(s->lut, 0, sizeof(s->lut));
+    memset(s->backend_ctl, 0, sizeof(s->backend_ctl));
     memset(s->dispmode, 0, sizeof(s->dispmode));
     memset(s->overlay_mode, 0, sizeof(s->overlay_mode));
     s->overlay_mode_reported = false;
@@ -14301,8 +14363,8 @@ static int odyssey_work_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 47,
-    .minimum_version_id = 47,
+    .version_id = 48,
+    .minimum_version_id = 48,
     .pre_save = odyssey_work_pre_save,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -14331,6 +14393,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32(i2c_opt_cmd, SGIOdysseyState),
         /* The display back end's colormap RAM, display modes and parser state. */
         VMSTATE_UINT32_ARRAY(lut, SGIOdysseyState, 0x2000),
+        VMSTATE_UINT32_ARRAY(backend_ctl, SGIOdysseyState, 0x1000),
         VMSTATE_UINT32_ARRAY(dispmode, SGIOdysseyState, 32),
         VMSTATE_UINT32(backend_index, SGIOdysseyState),
         VMSTATE_UINT32(backend_count, SGIOdysseyState),
