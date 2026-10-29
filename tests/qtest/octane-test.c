@@ -1008,7 +1008,8 @@ static void test_octane2_ioc3_register_header(void)
 /*
  * The reference Octane2 reads general-purpose inputs 2 and 3 high in both
  * the pin data register (0x12d includes bits 2 and 3) and the pin registers
- * (gppr2 and gppr3 are 1). OpenBSD expects input 2 high on an Octane too.
+ * (gppr2 and gppr3 are 1). The classic Octane's inputs are unmeasured and
+ * assumed to match; OpenBSD expects input 2 high on an Octane.
  */
 static void test_ioc3_product_inputs(gconstpointer data)
 {
@@ -1021,9 +1022,8 @@ static void test_ioc3_product_inputs(gconstpointer data)
 
     g_assert_cmphex(qtest_readl(qts, IOC3 + 0x48), ==, 1);
     g_assert_cmphex(qtest_readl(qts, IOC3 + 0x3c) & (1u << 2), ==, 1u << 2);
-    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x4c), ==, octane2 ? 1 : 0);
-    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x3c) & (1u << 3), ==,
-                    octane2 ? 1u << 3 : 0);
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x4c), ==, 1);
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x3c) & (1u << 3), ==, 1u << 3);
     qtest_quit(qts);
 }
 
