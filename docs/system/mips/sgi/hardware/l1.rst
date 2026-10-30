@@ -319,6 +319,18 @@ captured controller output.
        stock PROM warns below 1.12.5. 1.18.5 is the value the Origin 300
        profiles use, from an Origin 300 transcript, and passes both
        checks.
+   * - ``0x000a`` answers two integers; the first is 0 for a 400 MHz I/O
+       link and 1 for 600 MHz (``port-speed-first``, default 0).
+     - established for the meaning; approximated for the V-brick
+     - The stock IP35 PROM 6.210 compares the first integer with the speed
+       it expects for the attached brick's letter, 400 MHz for ``I``,
+       ``N`` and ``X`` and 600 MHz for ``P`` and ``V``, and warns on a
+       mismatch; an Origin 300 board skips the comparison. Every C-brick
+       answers 0, which matches its I-brick or N-brick. A V-brick's guide
+       rate, 800 MB/s per port (007-4264-002 printed page 54), reads as a
+       400 MHz link on 16 bits (inferred), while the PROM expects 600 MHz,
+       so the PROM warns for a V-brick; which a real C-brick answers is
+       unknown, and the model keeps 0.
    * - A C-brick's records: node board at component 0, two PIMMs at 1 and
        2, DIMM ``n`` at ``3 + (n >> 1) + 4 * (n & 1)``.
      - approximated

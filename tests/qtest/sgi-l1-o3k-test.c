@@ -877,6 +877,33 @@ static void test_firmware_revision(void)
     qtest_quit(s);
 }
 
+/*
+ * A C-brick answers the I/O link speed request 0x000a with a first integer
+ * of 0, a 400 MHz link, the speed the stock PROM expects for an I-brick or
+ * N-brick, whichever I/O brick is cabled; a V-brick's C-brick keeps 0 too.
+ */
+static void test_port_speed(void)
+{
+    const char *const props[] = {
+        "brick-type=cbrick,named=on,rack=1,bay=4",
+        "brick-type=ibrick,named=on,rack=1,bay=16,mac=" MAC_PROP,
+        "brick-type=cbrick,named=on,rack=1,bay=7",
+        "brick-type=vbrick,named=on,rack=1,bay=13",
+    };
+    QTestState *s = start_with(4, props, "");
+    uint8_t reply[131];
+    size_t length;
+    uint32_t speed[2] = { 0, 0 };
+
+    link_io(s, 0, 1);
+    link_io(s, 2, 3);
+    for (unsigned n = 0; n < 4; n += 2) {
+        length = rpc(s, n, LOCAL_GENERAL, 0xa, NULL, 0, 0, reply);
+        expect_pairs(reply, length, 2, speed);
+    }
+    qtest_quit(s);
+}
+
 static void test_ibrick_power_is_its_own(void)
 {
     const char *const props[] = {
@@ -1703,6 +1730,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/attached/type-four", test_type_four_requests);
     qtest_add_func("sgi-l1-o3k/refusals", test_refusals);
     qtest_add_func("sgi-l1-o3k/firmware-revision", test_firmware_revision);
+    qtest_add_func("sgi-l1-o3k/port-speed", test_port_speed);
     qtest_add_func("sgi-l1-o3k/ibrick-power", test_ibrick_power_is_its_own);
     qtest_add_func("sgi-l1-o3k/relay", test_broadcast_and_relay);
     qtest_add_func("sgi-l1-o3k/task3-line-endings",
