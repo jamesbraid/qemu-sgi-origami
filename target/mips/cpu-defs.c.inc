@@ -571,6 +571,45 @@ const mips_def_t mips_defs[] =
     },
     {
         /*
+         * Bounded functional R5000, with an observed identity and a synthetic
+         * 1 MiB secondary-cache boundary. EC/EP must come from the caller;
+         * this definition supplies neither an O2 module nor factory straps.
+         * Ordinary RAM remains coherent; there are no diagnostic cache arrays.
+         */
+        .name = "R5000",
+        .CP0_PRid = 0x00002321,
+        .CP0_Config0 = (1 << 22) | (1 << 20) | (1 << 16) |
+                       (1 << 14) | (1 << 13) | (3 << 9) | (3 << 6) |
+                       (1 << 5) | (1 << 4) | 2,
+        .CP0_Config0_rw_bitmask = 0x00001007,
+        /* Internal feature metadata: Config1 is not an R5000 register. */
+        .CP0_Config1 = (1 << CP0C1_FP) | (47 << CP0C1_MMU),
+        .CP0_PageMask_rw_bitmask = 0x01FFE000,
+        .CP0_LLAddr_rw_bitmask = 0xFFFFFFFF,
+        .CP0_LLAddr_shift = 4,
+        .SYNCI_Step = 32,
+        .CCRes = 2,
+        /* NEC U11761EJ6V0UM00, figures 7-5/7-6 and tables 7-3/7-4. */
+        .CP0_Status_rw_bitmask = 0xF653FFFF,
+        .CP1_fcr0 = 0x00002310,
+        .CP1_fcr31_rw_bitmask = 0xFF83FFFF,
+        .SEGBITS = 40,
+        .PABITS = 36,
+        .insn_flags = CPU_MIPS4,
+        .cfg = {
+            .warm_reset_preserves_registers = true,
+            .soft_reset_preserves_watch = true,
+            .pamask_full_at_reset = true,
+            .lladdr_includes_page_offset = true,
+            .sx_gates_supervisor_64_bit = true,
+            .kseg0_uses_config = true,
+            .xx_gates_cop1x_user_only = true,
+            .xx_gates_mips4 = true,
+        },
+        .mmu_type = MMU_TYPE_R4000,
+    },
+    {
+        /*
          * The Origin 200 model uses this R10000. Config0 uses the processor's
          * own layout, whose bits 24..0 come from the reset mode bits the board
          * drives. On the Origin 200 machine the board does drive
@@ -747,6 +786,7 @@ const mips_def_t mips_defs[] =
             .sx_gates_supervisor_64_bit = true,
             .xx_gates_cop1x_user_only = true,
             .xx_gates_mips4 = true,
+            .xx_mips4_fp_unimplemented = true,
             .fp_single_result_clears_upper = true,
             .fp_l_format_requires_64bit_mode = true,
             .fp_abs_chs_are_arithmetic = true,
@@ -813,6 +853,7 @@ const mips_def_t mips_defs[] =
             .sx_gates_supervisor_64_bit = true,
             .xx_gates_cop1x_user_only = true,
             .xx_gates_mips4 = true,
+            .xx_mips4_fp_unimplemented = true,
             .fp_single_result_clears_upper = true,
             .fp_l_format_requires_64bit_mode = true,
             .fp_abs_chs_are_arithmetic = true,
@@ -891,6 +932,7 @@ const mips_def_t mips_defs[] =
             .sx_gates_supervisor_64_bit = true,
             .xx_gates_cop1x_user_only = true,
             .xx_gates_mips4 = true,
+            .xx_mips4_fp_unimplemented = true,
             .fp_single_result_clears_upper = true,
             .fp_l_format_requires_64bit_mode = true,
             .fp_abs_chs_are_arithmetic = true,
@@ -970,6 +1012,7 @@ const mips_def_t mips_defs[] =
             .sx_gates_supervisor_64_bit = true,
             .xx_gates_cop1x_user_only = true,
             .xx_gates_mips4 = true,
+            .xx_mips4_fp_unimplemented = true,
             .fp_single_result_clears_upper = true,
             .fp_l_format_requires_64bit_mode = true,
             .fp_abs_chs_are_arithmetic = true,

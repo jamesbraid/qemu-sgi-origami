@@ -60,6 +60,7 @@ typedef struct DisasContext {
     bool watch_is_physical;
     bool has_cache_diagnostics;
     bool xx_gates_mips4;
+    bool xx_mips4_fp_unimplemented;
     bool fp_single_result_clears_upper;
     bool fp_l_format_requires_64bit_mode;
     bool fp_abs_chs_are_arithmetic;

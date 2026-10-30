@@ -35,6 +35,7 @@ struct mips_def_t {
     const char *name;
     int32_t CP0_PRid;
     int32_t CP0_Config0;
+    int32_t CP0_Config0_rw_bitmask;
     int32_t CP0_Config1;
     int32_t CP0_Config2;
     int32_t CP0_Config3;
