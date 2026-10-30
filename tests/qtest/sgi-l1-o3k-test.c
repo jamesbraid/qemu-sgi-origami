@@ -714,6 +714,35 @@ static void test_ibrick_attached_graphics(void)
 }
 
 /*
+ * A V-brick lists the C-brick that asks at port 1, as an I-brick does: the
+ * L1 firmware answers 0x000c from its link table whatever the brick's
+ * letter. The stock PROM never asks: an XBridge at the V-brick's widget 0
+ * keeps it out of the crossbar arbitration that sends the request. The
+ * port is the model's I-brick numbering; 0x000d keeps the unknown-request
+ * code.
+ */
+static void test_vbrick_attached(void)
+{
+    const char *const props[] = {
+        "brick-type=cbrick,named=on,rack=1,bay=7",
+        "brick-type=vbrick,named=on,rack=1,bay=10",
+    };
+    QTestState *s = start_with(2, props, "");
+    uint8_t reply[131];
+    size_t length;
+    uint32_t alone[8] = { packed(1, 7), 'C', 0, 0, 0, 0, 0, 0 };
+
+    link_io(s, 0, 1);
+    length = rpc(s, 1, LOCAL_GENERAL, 0xc, NULL, 0, 0, reply);
+    expect_pairs(reply, length, 8, alone);
+    length = rpc(s, 0, ATTACHED_IO, 0xc, NULL, 0, 0, reply);
+    expect_pairs(reply, length, 8, alone);
+    length = rpc(s, 1, LOCAL_GENERAL, 0xd, NULL, 0, 0, reply);
+    expect_code(reply, length, -101);
+    qtest_quit(s);
+}
+
+/*
  * The N-brick's one controller serves every C-brick cabled to it, reports
  * its own type letter, and answers each C-brick about that C-brick's own
  * chip.
@@ -1770,6 +1799,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/attached/bricks", test_attached_bricks);
     qtest_add_func("sgi-l1-o3k/attached/ibrick-graphics",
                    test_ibrick_attached_graphics);
+    qtest_add_func("sgi-l1-o3k/attached/vbrick", test_vbrick_attached);
     qtest_add_func("sgi-l1-o3k/attached/nbrick-graphics",
                    test_nbrick_attached_graphics);
     qtest_add_func("sgi-l1-o3k/attached/ports", test_attached_port_numbering);
