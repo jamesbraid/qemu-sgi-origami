@@ -430,18 +430,25 @@ are the composition's choices: which connector is port A, which Crosstalk
 port serves a slot, and so the V12's widget number, are unknown, and a
 PROM inventory or hardware graph of an Onyx 3000 with a V-brick would
 settle them. The V-brick has an L1 (``brick-type=vbrick``, see
-:ref:`sgi-l1-origin3000`), reached from the C-brick its cable joins; its
-type letter and records are approximations, and its XBridge answers at both
-PCI heads (widgets 14 and 15) with nothing on them, as every XBridge does.
+:ref:`sgi-l1-origin3000`), reached from the C-brick its cable joins. It
+answers ``X`` with the X-brick's power and logic board records, because
+the V-brick is an X-brick chassis and the L1 firmware takes its letter
+from the logic board's name; that is inferred, since no V-brick L1 reply
+has been captured. Its XBridge answers at both PCI heads (widgets 14 and
+15) with nothing on them, as every XBridge does: IRIX 6.5.30 needs an
+I/O brick record for each crossbar widget it sets up, the V12 included,
+and the stock PROM builds those records only from live heads.
 No source fixes an Onyx 3000 C-brick's processors, caches or memory, so each C-brick takes the Origin 3200 C-brick's fit
 (four 400 MHz R12000s with 8 MB caches and 4096 MB); that fit is a model
 choice. The V12 is fitted by default and ``-vga none`` leaves its port
 empty. The stock PROM lists the V12 as a graphics board in the second
 C-brick's module, builds the V-brick's I/O records from its heads and
-diagnoses all four processors on each node. It prints a warning that the
-link to the V-brick runs at 400 MHz where it expects 600 MHz; the model keeps
-the guide's 800 MB/s port rate. IRIX 6.5.30 boots to a login with the V12
-fitted.
+diagnoses all four processors on each node. For a brick that answers
+``X`` it expects the 400 MHz link the C-brick's L1 reports, which matches
+the guide's 800 MB/s port rate. IRIX 6.5.30 has booted to a login with
+the V12 fitted only while the V-brick answered ``V``, the letter it used
+before; that letter made the PROM warn about the link speed and IRIX warn
+once per head that the brick type was unknown.
 
 .. _sgi-sn-family-rbrick:
 

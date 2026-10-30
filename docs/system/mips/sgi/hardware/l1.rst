@@ -327,16 +327,16 @@ captured controller output.
        below 1.12.5. 1.44.0 passes both.
    * - ``0x000a`` answers two integers; the first is 0 for a 400 MHz I/O
        link and 1 for 600 MHz (``port-speed-first``, default 0).
-     - established for the meaning; approximated for the V-brick
+     - established for the meaning
      - The stock IP35 PROM 6.210 compares the first integer with the speed
        it expects for the attached brick's letter, 400 MHz for ``I``,
        ``N`` and ``X`` and 600 MHz for ``P`` and ``V``, and warns on a
        mismatch; an Origin 300 board skips the comparison. Every C-brick
-       answers 0, which matches its I-brick or N-brick. A V-brick's guide
-       rate, 800 MB/s per port (007-4264-002 printed page 54), reads as a
-       400 MHz link on 16 bits (inferred), while the PROM expects 600 MHz,
-       so the PROM warns for a V-brick; which a real C-brick answers is
-       unknown, and the model keeps 0.
+       answers 0, which matches its I-brick or N-brick, and the V-brick,
+       which answers ``X``. That agrees with the V-brick's guide rate,
+       800 MB/s per port (007-4264-002 printed page 54), which reads as a
+       400 MHz link on 16 bits (inferred). Which a real C-brick answers is
+       unknown.
    * - A C-brick's records: node board at component 0, two PIMMs at 1 and
        2, DIMM ``n`` at ``3 + (n >> 1) + 4 * (n & 1)``.
      - approximated
@@ -381,8 +381,16 @@ captured controller output.
 
 The V-brick profile (``brick-type=vbrick``) is reached from the C-brick
 its XIO cable joins, as an I-brick's is, and knows only that C-brick. The
-V-brick has its own L1 (007-4264-002 printed pages 52 and 128 to 129), but
-no source read gives its type letter, address or ID PROM contents:
+V-brick has its own L1 (007-4264-002 printed pages 52 and 128 to 129). It
+is the X-brick's chassis and midplane XBridge with V12 boards in the slots,
+and the Origin 3000 L1 firmware has no personality of its own for it: the
+firmware picks a brick's type letter from the name field of its power and
+logic board EEPROMs and installs that letter's personality. A logic board
+named ``XBRICK`` gives ``X``. The firmware's only ``V`` belongs to a
+PIC-based graphics brick of a later family, which IRIX 6.5.30 and the stock
+PROM name ``CGbrick``, and no firmware command can store ``V``. So the
+profile answers as the X-brick personality. No V-brick L1 reply has been
+captured, and its address and ID PROM contents are unknown:
 
 .. list-table::
    :header-rows: 1
@@ -391,20 +399,32 @@ no source read gives its type letter, address or ID PROM contents:
    * - Fact
      - Rating
      - Basis
-   * - ``0x0003`` answers the packed rack and bay and the letter ``V``.
+   * - ``0x0003`` answers the packed rack and bay and the letter ``X``;
+       ``brick`` prints ``type: X`` and ``config`` names the brick
+       ``001x10``.
+     - inferred
+     - That the V-brick's logic board carries the X-brick's name, which
+       would make the firmware answer ``X``, is inferred from the guides'
+       description of the shared chassis. Of the letters IRIX 6.5.30 and
+       the stock PROM handle, ``X`` alone names a brick of this chassis
+       ``Xbrick``, draws no unknown-brick-type warning at the XBridge
+       attach and matches the 400 MHz link the guide's port rate implies.
+       A V-brick's ``brick`` or ``eeprom`` output would settle it.
+   * - Two records: the power board at component 0 and the logic board,
+       named ``XBRICK``, at component 1, both read through both areas.
+       Other components answer minus 104.
+     - inferred for the components; approximated for the contents
+     - The X-brick personality registers these two records, and the stock
+       PROM and IRIX read the logic board of a brick that answers ``X`` as
+       component 1. The logic board's name is the one that gives ``X``;
+       the parts are unobserved and the serials synthetic, lettered as the
+       I-brick's. The builder sets the V-brick's ``identity-index`` to its
+       module index so its serials differ from the I-brick's.
+   * - ``0x000a`` answers 0 and 0, port A and port B at 400 MHz.
      - approximated
-     - No V-brick L1 capture exists. The stock PROM and the kernel both
-       name a brick that answers ``V`` a graphics brick of the CG kind, and
-       the kernel warns, once per PCI bridge, that the brick type is
-       unknown. Other letters were not compared after the bridges were
-       exposed, and a different letter would change the module and
-       hardware-graph names the guest prints.
-   * - One record at component 4 (a logic board, synthetic), read through
-       both areas.
-     - approximated
-     - The stock PROM asks the V-brick for this component alone, in a traced
-       run; what a fitted L1 holds there is unknown. Other components answer
-       minus 104.
+     - The X-brick personality answers with its two port speed settings,
+       which default to 400 MHz when no C-brick is attached. What a cabled
+       V-brick stores is unknown; 400 MHz agrees with the guide's rate.
    * - Operator commands, power and reset are refused as on any brick with
        no compute services.
      - approximated

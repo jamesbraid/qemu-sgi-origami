@@ -10089,6 +10089,12 @@ static void test_onyx3000_vbrick_l1_and_heads(void)
         g_assert_cmpstr(c0_profile, ==, "ibrick");
         g_assert_cmpstr(c1_profile, ==, "vbrick");
         g_assert_cmpuint(qom_get_uint(qts, c1_io, "bay"), ==, 10);
+        /*
+         * The V-brick's boards take the I-brick's serial letters, so its
+         * instance differs from the I-brick's.
+         */
+        g_assert_cmpuint(qom_get_uint(qts, c1_io, "identity-index"), !=,
+                         qom_get_uint(qts, c0_io, "identity-index"));
         /* The V-brick's L1 takes no firmware revision. */
         assert_l1_revision(qts, "/machine/node1/l1", 1, 44, 0);
         assert_l1_revision(qts, c0_io, 1, 44, 0);

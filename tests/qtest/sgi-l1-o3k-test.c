@@ -288,8 +288,16 @@ static void test_identity(void)
     expect_identity(s, 0, LOCAL_GENERAL, packed(4, 2), 'I');
     qtest_quit(s);
 
+    /*
+     * A V-brick answers X: the L1 firmware takes the letter from the logic
+     * board's name, and the V-brick is an X-brick chassis.
+     */
     s = start_one("brick-type=vbrick,named=on,rack=1,bay=10");
-    expect_identity(s, 0, LOCAL_GENERAL, packed(1, 10), 'V');
+    expect_identity(s, 0, LOCAL_GENERAL, packed(1, 10), 'X');
+    expect_command(s, 0, "brick",
+                   "rack: 001, slot: 10, partition: 0, type: X, "
+                   "source: EEPROM\n");
+    expect_command(s, 0, "config", "0: 001x10\n");
     qtest_quit(s);
 }
 
@@ -443,11 +451,27 @@ static void test_ibrick_records(void)
     qtest_quit(s);
 }
 
+/* The record's data holds @text as one of its fields. */
+static bool contains_text(const uint8_t *data, size_t length,
+                          const char *text)
+{
+    size_t n = strlen(text);
+
+    for (size_t i = 0; i + n + 1 <= length; i++) {
+        if (data[i] == (0xc0 | n) && !memcmp(data + i + 1, text, n)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /*
- * The V-brick's one record is the component the stock PROM asks for; its
- * contents are synthetic and the component number is read from a traced
- * run, not from a source. Nothing else is fitted, and a C-brick reaches it
- * through the attached I/O destination as it reaches an I-brick.
+ * The V-brick holds the X-brick personality's two records, the power board
+ * at component 0 and the logic board at 1, the component the stock PROM and
+ * IRIX read for a brick that answers X. The logic board is named XBRICK,
+ * the name that gives X; the rest is synthetic and carries no address. A
+ * C-brick reaches them through the attached I/O destination as it reaches
+ * an I-brick's, and nothing else is fitted.
  */
 static void test_vbrick_records(void)
 {
@@ -458,22 +482,31 @@ static void test_vbrick_records(void)
     QTestState *s = start_with(2, props, "");
     uint8_t reply[131];
     size_t length, data_length;
+    const uint8_t *data;
 
     link_io(s, 0, 1);
-    for (unsigned area = 1; area <= 2; area++) {
-        length = eeprom(s, 1, LOCAL_GENERAL, 4, area, 0, 64, reply);
-        eeprom_data(reply, length, &data_length);
-        g_assert_cmpuint(data_length, >, 0);
+    for (unsigned component = 0; component <= 1; component++) {
+        for (unsigned area = 1; area <= 2; area++) {
+            length = eeprom(s, 1, LOCAL_GENERAL, component, area, 0, 64,
+                            reply);
+            eeprom_data(reply, length, &data_length);
+            g_assert_cmpuint(data_length, >, 0);
+        }
+        g_assert_false(board_has_address(s, 1, LOCAL_GENERAL, component));
     }
-    /* The same record through the C-brick's attached I/O destination. */
-    length = eeprom(s, 0, ATTACHED_IO, 4, 2, 0, 64, reply);
-    eeprom_data(reply, length, &data_length);
-    /* The I-brick's components, and anything else, are absent. */
-    for (unsigned component = 0; component < 4; component++) {
+    length = eeprom(s, 1, LOCAL_GENERAL, 0, 2, 0, 64, reply);
+    data = eeprom_data(reply, length, &data_length);
+    g_assert_true(contains_text(data, data_length, "POWER"));
+    /* The same logic board through the C-brick's attached I/O address. */
+    length = eeprom(s, 0, ATTACHED_IO, 1, 2, 0, 64, reply);
+    data = eeprom_data(reply, length, &data_length);
+    g_assert_true(contains_text(data, data_length, "XBRICK"));
+    /* Nothing else is fitted, the earlier component 4 among it. */
+    for (unsigned component = 2; component <= 4; component++) {
         length = eeprom(s, 1, LOCAL_GENERAL, component, 2, 0, 16, reply);
         expect_code(reply, length, -104);
     }
-    expect_identity(s, 0, ATTACHED_IO, packed(1, 10), 'V');
+    expect_identity(s, 0, ATTACHED_IO, packed(1, 10), 'X');
     qtest_quit(s);
 }
 
@@ -886,8 +919,10 @@ static void test_firmware_revision(void)
 
 /*
  * A C-brick answers the I/O link speed request 0x000a with a first integer
- * of 0, a 400 MHz link, the speed the stock PROM expects for an I-brick or
- * N-brick, whichever I/O brick is cabled; a V-brick's C-brick keeps 0 too.
+ * of 0, a 400 MHz link, the speed the stock PROM expects for an I-brick,
+ * N-brick or X-brick, whichever I/O brick is cabled, and so for a V-brick,
+ * which answers X. The V-brick answers its own ports A and B at 400 MHz,
+ * an approximation the L1 firmware's default with no C-brick supports.
  */
 static void test_port_speed(void)
 {
@@ -904,10 +939,15 @@ static void test_port_speed(void)
 
     link_io(s, 0, 1);
     link_io(s, 2, 3);
-    for (unsigned n = 0; n < 4; n += 2) {
+    for (unsigned n = 0; n < 4; n++) {
+        if (n == 1) {
+            continue;
+        }
         length = rpc(s, n, LOCAL_GENERAL, 0xa, NULL, 0, 0, reply);
         expect_pairs(reply, length, 2, speed);
     }
+    length = rpc(s, 2, ATTACHED_IO, 0xa, NULL, 0, 0, reply);
+    expect_pairs(reply, length, 2, speed);
     qtest_quit(s);
 }
 

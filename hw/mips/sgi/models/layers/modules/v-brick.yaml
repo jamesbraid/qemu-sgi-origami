@@ -23,9 +23,12 @@ layer:
         description: >-
           The V-brick's L1, on its power board. It is modelled like the
           I-brick's: it knows only the C-brick its XIO cable joins, and that
-          C-brick's L1 reaches it over the same cable. Its brick-type
-          character, address and ID PROM contents are unknown; the model
-          answers with an approximated character and no records.
+          C-brick's L1 reaches it over the same cable. The L1 firmware has
+          no V-brick personality and takes its brick type from the board
+          EEPROM names, so a V-brick, which shares the X-brick's chassis,
+          is inferred to answer X with the X-brick's power and logic board
+          records. Its address and ID PROM contents are unknown; the
+          records are synthetic apart from the logic board's name.
         datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/l1.rst]
         sources: ["007-4264-002 printed pages 52 and 128 to 129: the V-brick has its own L1, which controls its voltage regulators and reads its ID PROMs"]
       - id: xbridge

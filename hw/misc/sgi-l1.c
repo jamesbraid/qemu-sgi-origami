@@ -95,12 +95,14 @@ static const SGIL1ProductProfile l1_profiles[] = {
      */
     { "cxbrick", 0, 0, 0, true, L1_O3K_CXBRICK },
     /*
-     * The Onyx 3000 V-brick: a graphics enclosure with its own L1, cabled
-     * to a C-brick like an I-brick. Its type character is a stated
-     * approximation (docs/system/mips/sgi/hardware/l1.rst); it carries no
-     * board records.
+     * The Onyx 3000 V-brick: the X-brick's chassis and midplane XBridge
+     * with V12 boards in its slots, and its own L1, cabled to a C-brick
+     * like an I-brick. The L1 firmware has no V-brick personality and
+     * takes its letter from the logic board's EEPROM name, so a V-brick
+     * whose logic board is named as an X-brick's answers X. That is
+     * inferred, not captured (docs/system/mips/sgi/hardware/l1.rst).
      */
-    { "vbrick", 0x56, 0, 0, false, L1_O3K_VBRICK },
+    { "vbrick", 0x58, 0, 0, false, L1_O3K_VBRICK },
 };
 
 /*
@@ -246,7 +248,7 @@ static char *l1_module_name(const SGIL1State *s)
     }
     return g_strdup_printf("%s%c%s", rack,
                            l1_is_nbrick(s) ? 'n' : l1_is_ibrick(s) ? 'i' :
-                           l1_is_vbrick(s) ? 'v' : 'c', bay);
+                           l1_is_vbrick(s) ? 'x' : 'c', bay);
 }
 
 static bool l1_restarting(const SGIL1State *s)
@@ -1580,8 +1582,7 @@ static void l1_o3k_brick_print(SGIL1State *s)
     /* A Cx-brick's letter is unknown unless supplied; "?" is the guide's. */
     l1_printf(s, "rack: %s, slot: %s, partition: %u, type: %c, "
               "source: EEPROM\r\n", rack, bay, s->partition,
-              l1_is_ibrick(s) ? (char)s->profile->identity :
-              l1_is_vbrick(s) ? 'V' :
+              l1_is_iobrick(s) ? (char)s->profile->identity :
               !l1_is_cxbrick(s) ? 'C' :
               s->brick_type_code ? (char)s->brick_type_code : '?');
 }
@@ -3071,10 +3072,15 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
          * expects for the attached brick's letter (400 for I, N and X, 600
          * for P and V) and warns on a mismatch, except on an Origin 300
          * board, which skips the check. Every profile answers 0 unless
-         * port-speed-first says otherwise; that is right for the I-brick
-         * and N-brick. The V-brick's guide rate reads as a 400 MHz link
-         * (inferred) but the PROM expects 600, so its C-brick keeps 0
-         * until that is settled.
+         * port-speed-first says otherwise; that is right for the I-brick,
+         * the N-brick and the V-brick, which answers X.
+         *
+         * An I/O brick's L1 firmware answers with its port A and port B
+         * speeds, in that order. The V-brick's 0 and 0, 400 MHz on both,
+         * are an approximation: they are the firmware's default with no
+         * C-brick attached and match the guide's 800 MB/s port rate, read
+         * as a 400 MHz link (inferred), but what a cabled V-brick stores
+         * is unknown.
          */
         field_count = 2;
         field_length = 10;
@@ -4243,9 +4249,10 @@ static void l1_o3k_dimm(SGIL1EEPROM *record, unsigned dimm)
 /*
  * The C-brick's records: the node board at component 0, the PIMMs at 1 and
  * 2, and DIMM n at 3 + (n >> 1) + 4 * (n & 1), the numbering the published
- * C-brick dump and one public driver agree on. The I-brick's: the power
- * board at 0 and the logic board at 1, which carries the base I/O Ethernet
- * address. A position not fitted has no record.
+ * C-brick dump and one public driver agree on. The I-brick's, N-brick's
+ * and V-brick's: the power board at 0 and the logic board at 1, which on an
+ * I-brick carries the base I/O Ethernet address. A position not fitted has
+ * no record.
  */
 static bool l1_build_o3k_identity(SGIL1State *s, Error **errp)
 {
@@ -4259,10 +4266,17 @@ static bool l1_build_o3k_identity(SGIL1State *s, Error **errp)
             return false;
         }
         /*
-         * The stock PROM reads one record from a V-brick, component 4 (traced
-         * on the model); the board behind it and its contents are unknown.
+         * The X-brick personality's two records, the power board at
+         * component 0 and the logic board at 1, which the stock PROM and
+         * IRIX read for a brick that answers X. The logic board is named
+         * XBRICK, the name that makes the firmware answer X. What else a
+         * fitted V-brick's EEPROMs hold is unknown: the parts stay
+         * unobserved and the serials synthetic, lettered as the I-brick's
+         * power and I/O boards. No base I/O, so no address.
          */
-        l1_o3k_board(s, 4, "LOGIC", "NOTOBSERVED0", "00", NULL, 'V',
+        l1_o3k_board(s, 0, "POWER", "NOTOBSERVED0", "00", NULL, 'S',
+                     s->identity_index, NULL);
+        l1_o3k_board(s, 1, "XBRICK", "NOTOBSERVED0", "00", NULL, 'I',
                      s->identity_index, NULL);
         return true;
     }
