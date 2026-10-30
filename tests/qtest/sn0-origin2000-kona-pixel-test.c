@@ -3571,6 +3571,45 @@ static void test_write_late_destination(gconstpointer opaque)
 }
 
 /* A slot interruption discards the source prefix before finish can commit. */
+/*
+ * An X pixel write left open when SetupFrameBuffer shrinks the managed area
+ * is dropped with it, so the state still migrates: here a 3x2 write opened
+ * at (2000, 80) of a 2560x1024 area, which then shrinks to 1280x1024 with
+ * one of its words in. A model that kept the write would carry staging
+ * bounds past the new area, which the destination refuses.
+ */
+static void test_write_open_across_shrink(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-pixel-shrink-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+
+    x_command(from, 0x1a6,
+              (uint32_t[]){ 0x08, 2560, 1024, 0, 0x08 + 2560 + 1024 }, 5);
+    pixel_setup(from, 0, 0, 3, 2, 12);
+    pixel_write(from, 2000, 80);
+    data_words(from, (uint32_t[]){ 0xfffa1b2c }, 1);
+    x_command(from, 0x1a6,
+              (uint32_t[]){ 0x08, 1280, 1024, 0, 0x08 + 1280 + 1024 }, 5);
+
+    sgi_migrate_stopped(from, uri);
+    assert_in_step(to);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 static void test_write_interrupted(void)
 {
     g_autofree char *log = NULL, *found = NULL;
@@ -3714,6 +3753,8 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(1), test_write_late_destination);
     qtest_add_func("sn0/origin2000/kona-pixel/staged-write/interrupted",
                    test_write_interrupted);
+    qtest_add_func("sn0/origin2000/kona-pixel/staged-write/"
+                   "open-across-shrink", test_write_open_across_shrink);
     qtest_add_data_func("sn0/origin2000/kona-pixel/staged-write/migration/"
                         "dma-partial", GUINT_TO_POINTER(2),
                         test_write_snapshot_migrates);
