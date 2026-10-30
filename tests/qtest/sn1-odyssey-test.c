@@ -22999,6 +22999,13 @@ static uint32_t rb_gl_word4(uint32_t cls, uint32_t code, bool sentinel)
            (size[cls] << 13) | (1u << 12) | (code << 3) | cls;
 }
 
+/* The same with word 4's two field codes, bits 23:20 and 27:24. */
+static uint32_t rb_gl_word4_f(uint32_t cls, uint32_t code, bool sentinel,
+                              uint32_t f1, uint32_t f2)
+{
+    return rb_gl_word4(cls, code, sentinel) | (f1 << 20) | (f2 << 24);
+}
+
 /* Word 7 for a board-to-host read of the given host bytes a pixel. */
 static uint32_t rb_gl_control(uint32_t bytes)
 {
@@ -23018,10 +23025,13 @@ static void test_readback_gl_read_table(void)
                             0x9a5ec3d1);
     for (unsigned i = 0; i < ARRAY_SIZE(rb_gl_table); i++) {
         uint32_t n = rb_gl_table[i].bytes;
+        /* BGRA bytes share class 2 code 2 with depth: colour fields. */
+        uint32_t colour_f1 = 2, colour_f2 = 2;
         const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A + 16, n) };
         const uint32_t sentinel[8] = {
             RB_READ_SENTINEL, 0x003f0040, 0x50, 0x10001,
-            rb_gl_word4(rb_gl_table[i].cls, rb_gl_table[i].code, true), 0, n,
+            rb_gl_word4_f(rb_gl_table[i].cls, rb_gl_table[i].code, true,
+                          colour_f1, colour_f2), 0, n,
             rb_gl_control(n),
         };
         const uint32_t object[8] = {
@@ -23112,8 +23122,7 @@ static void test_readback_gl_colour_index(void)
 /*
  * A pair the table does not name leaves the host bytes alone: a code past
  * a class's last, a class no visual has, the pixel classes the library
- * refuses (14 and 15), a 16-bit depth header, and a listed code asked for
- * at another size.
+ * refuses (14 and 15), and a listed code asked for at another size.
  */
 static void test_readback_gl_unlisted_rows(void)
 {
@@ -23123,8 +23132,6 @@ static void test_readback_gl_unlisted_rows(void)
         { 1, 15, 2 }, { 1, 11, 2 }, { 2, 7, 4 }, { 2, 13, 4 }, { 3, 0, 4 },
         { 3, 4, 4 }, { 4, 1, 4 }, { 4, 5, 8 }, { 5, 1, 4 }, { 6, 1, 4 },
         { 7, 1, 4 },
-        /* A 16-bit depth read: class 1 code 0 is not in the table. */
-        { 1, 0, 2 },
         /* A listed code at the wrong size. */
         { 1, 6, 4 }, { 2, 1, 4 }, { 2, 12, 3 }, { 3, 9, 4 }, { 1, 1, 2 },
     };
@@ -23151,13 +23158,21 @@ static void test_readback_gl_unlisted_rows(void)
 
 /*
  * Class 0 code 0 and class 2 code 2 are colour index and BGRA bytes in the
- * read table and also a stencil byte and a 32-bit depth word, with no word 4
- * bit the datasheet gives to tell them apart. The model serves the colour
- * plane and reports once that the header may be a depth or stencil read.
- * Any other row, class 2 code 4 and class 0 code 1 here, is not reported.
+ * read table and also a stencil byte and a 32-bit depth word. Word 4's field
+ * codes (bits 23:20 and 27:24) tell them apart (datasheet, "Read table"):
+ * depth and stencil send (0, 0) or (4, 0), BGRA (2, 2), (3, 2), (6, 2),
+ * (7, 3) or (2, 0); an eight-bit colour index is class 0 code 1 and not
+ * a shared row. Each case reads one window, here an RGB-mode one holding colour
+ * 0x0000007b, with the headers the datasheet lists, so a model that told
+ * them apart by the window's mode would answer every one alike. A stencil
+ * stencil header of (0, 0) is also a storage-0 index read, which only
+ * word 2 separates, so it is reported. A pair the datasheet does not list
+ * is reported too.
  */
 static unsigned readback_depth_reports(uint32_t cls, uint32_t code,
-                                       uint32_t bytes, uint8_t first)
+                                       uint32_t bytes, uint32_t mode,
+                                       uint32_t f1, uint32_t f2,
+                                       uint8_t first)
 {
     g_autoptr(GError) error = NULL;
     g_autofree char *log_path = NULL;
@@ -23167,7 +23182,8 @@ static unsigned readback_depth_reports(uint32_t cls, uint32_t code,
     const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A + 16, bytes) };
     const uint32_t hdr[8] = {
         RB_READ_SENTINEL, 0x003f0040, 0x50, 0x10001,
-        rb_gl_word4(cls, code, true), 0, bytes, rb_gl_control(bytes),
+        rb_gl_word4_f(cls, code, true, f1, f2), 0, bytes,
+        rb_gl_control(bytes),
     };
     uint8_t expect[48], got;
     unsigned n;
@@ -23182,11 +23198,10 @@ static unsigned readback_depth_reports(uint32_t cls, uint32_t code,
     qts = readback_start(extra);
     odsy_buffer_pixel_write(qts, 0, RB_ORIGIN_X + 64, RB_ORIGIN_Y + 63,
                             0x0000007b);
-    dispmode_write(qts, 0, ODSY_DISPMODE_GROUP17);
+    dispmode_write(qts, 0, mode);
     readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
     readback_run(qts, hdr, pte, 1);
     readback_run(qts, hdr, pte, 1);
-    /* The colour or index plane answers, as before the report. */
     qtest_memread(qts, RB_PAGE_A + 16, &got, 1);
     g_assert_cmphex(got, ==, first);
     board_quit(qts);
@@ -23200,13 +23215,263 @@ static unsigned readback_depth_reports(uint32_t cls, uint32_t code,
 
 static void test_readback_gl_depth_shared_rows(void)
 {
-    /* Stencil's class 0 code 0 on an index window: the index byte. */
-    g_assert_cmpuint(readback_depth_reports(0, 0, 1, 0x7b), ==, 1);
-    /* 32-bit depth's class 2 code 2: BGRA/UNSIGNED_INT_8_8_8_8_REV bytes. */
-    g_assert_cmpuint(readback_depth_reports(2, 2, 4, 0x7b), ==, 1);
-    /* Rows only colour uses are not reported. */
-    g_assert_cmpuint(readback_depth_reports(2, 4, 4, 0x00), ==, 0);
-    g_assert_cmpuint(readback_depth_reports(0, 1, 1, 0x7b), ==, 0);
+    static const struct {
+        uint32_t cls, code, bytes, f1, f2;
+        uint8_t first;      /* the first byte: 0 for depth and stencil */
+        const char *what;
+    } rgb[] = {
+        { 2, 2, 4, 4, 0, 0x00, "depth, double-buffered" },
+        { 0, 0, 1, 4, 0, 0x00, "stencil, double-buffered" },
+        { 2, 2, 4, 6, 2, 0x7b, "BGRA, double-buffered" },
+        { 2, 2, 4, 0, 0, 0x00, "depth, single-buffered" },
+        { 2, 2, 4, 2, 2, 0x7b, "BGRA, single-buffered" },
+        { 2, 2, 4, 3, 2, 0x7b, "BGRA, layout 3" },
+        { 2, 2, 4, 7, 3, 0x7b, "BGRA, storage 3 layout 4" },
+        { 2, 2, 4, 2, 0, 0x7b, "BGRA, no depth" },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(rgb); i++) {
+        g_test_message("%s", rgb[i].what);
+        g_assert_cmpuint(readback_depth_reports(rgb[i].cls, rgb[i].code,
+                                                rgb[i].bytes,
+                                                ODSY_DISPMODE_RGB,
+                                                rgb[i].f1, rgb[i].f2,
+                                                rgb[i].first), ==, 0);
+    }
+    /* A pair the datasheet does not list: colour, reported. */
+    g_assert_cmpuint(readback_depth_reports(2, 2, 4, ODSY_DISPMODE_RGB,
+                                            5, 1, 0x7b), ==, 1);
+    /* Depth fields read the same on an index-mode window. */
+    g_assert_cmpuint(readback_depth_reports(2, 2, 4, ODSY_DISPMODE_GROUP17,
+                                            4, 0, 0x00), ==, 0);
+    /*
+     * Class 0 code 0 with (0, 0) is a storage-0 index read or a stencil
+     * read of another window with the same word 4. The model keeps no
+     * storage code, so it answers with colour index whatever the window's
+     * display mode, and reports once: the index byte on an index window,
+     * and on an RGB one, where there is no index, nothing written (0xa5).
+     * (4, 0) is a stencil on any window.
+     */
+    g_assert_cmpuint(readback_depth_reports(0, 0, 1, ODSY_DISPMODE_GROUP17,
+                                            0, 0, 0x7b), ==, 1);
+    g_assert_cmpuint(readback_depth_reports(0, 0, 1, ODSY_DISPMODE_RGB,
+                                            0, 0, RB_GUARD), ==, 1);
+    g_assert_cmpuint(readback_depth_reports(0, 0, 1, ODSY_DISPMODE_GROUP17,
+                                            4, 0, 0x00), ==, 0);
+}
+
+/*
+ * Depth and stencil DMA (the datasheet's "Depth and stencil headers"). The
+ * write is the draw sentinel with word 7's format code 0 and type code 4,
+ * four bytes a pixel, and word 4's size field 1 for depth and 0 for stencil;
+ * the read is class 1 code 0 (16-bit depth), class 2 code 2 (32-bit depth)
+ * or class 0 code 0 (stencil byte).
+ */
+#define RB_ZS_DEPTH_WRITE 0x80033000u
+#define RB_ZS_STENCIL_WRITE 0x80031000u
+#define RB_ZS_X 0x40
+#define RB_ZS_Y 0x3f
+
+static void readback_zs_write(QTestState *qts, uint32_t word4, uint32_t x,
+                              uint32_t y, uint32_t w, uint32_t h,
+                              const uint32_t *words)
+{
+    const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_B, w * h * 4) };
+    const uint32_t hdr[8] = {
+        RB_DRAW_SENTINEL, (y << 16) | x, 0x50, (h << 16) | w, word4, 0,
+        w * 4, 0x40010080u,
+    };
+    uint8_t bytes[64];
+
+    g_assert_cmpuint(w * h * 4, <=, sizeof(bytes));
+    for (unsigned i = 0; i < w * h; i++) {
+        stl_be_p(&bytes[i * 4], words[i]);
+    }
+    qtest_memwrite(qts, RB_PAGE_B, bytes, w * h * 4);
+    readback_run(qts, hdr, pte, 1);
+}
+
+/* Read w x h pixels of the given class and code into out, bytes a pixel. */
+static void readback_zs_read(QTestState *qts, uint32_t cls, uint32_t code,
+                             uint32_t bytes, uint32_t x, uint32_t y,
+                             uint32_t w, uint32_t h, uint8_t *out)
+{
+    const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A, w * h * bytes) };
+    const uint32_t hdr[8] = {
+        RB_READ_SENTINEL, (y << 16) | x, 0x50, (h << 16) | w,
+        /* Stencil's field codes (4, 0): (0, 0) is shared with colour index. */
+        rb_gl_word4_f(cls, code, true, cls == 0 ? 4 : 0, 0), 0, w * bytes,
+        rb_gl_control(bytes),
+    };
+
+    readback_run(qts, hdr, pte, 1);
+    qtest_memread(qts, RB_PAGE_A, out, w * h * bytes);
+}
+
+/*
+ * A depth rectangle written and read back, both forms. Only the low 24 bits
+ * of a word are depth, so the byte above them is dropped; the 16-bit form
+ * is the word's top 16 bits of those 24. A 2x2 box checks that rows come
+ * back in the order they went, and that a neighbouring pixel is untouched
+ * (the plane starts at the far word, 0xffffff).
+ */
+static void test_readback_gl_depth_round_trip(void)
+{
+    static const uint32_t words[4] = {
+        0x00123456, 0xff00fffe, 0x00000001, 0x80abcdef,
+    };
+    QTestState *qts = readback_start("");
+    uint8_t got[16];
+
+    dispmode_write(qts, 0, ODSY_DISPMODE_GROUP17);
+    readback_zs_write(qts, RB_ZS_DEPTH_WRITE, RB_ZS_X, RB_ZS_Y, 2, 2, words);
+
+    readback_zs_read(qts, 2, 2, 4, RB_ZS_X, RB_ZS_Y, 3, 2, got);
+    for (unsigned r = 0; r < 2; r++) {
+        for (unsigned c = 0; c < 3; c++) {
+            uint32_t want = c < 2 ? words[r * 2 + c] & 0xffffff : 0xffffff;
+
+            g_assert_cmphex(ldl_be_p(&got[(r * 3 + c) * 4]), ==, want);
+        }
+    }
+    readback_zs_read(qts, 1, 0, 2, RB_ZS_X, RB_ZS_Y, 2, 2, got);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmphex(lduw_be_p(&got[i * 2]), ==,
+                        (words[i] & 0xffffff) >> 8);
+    }
+    board_quit(qts);
+}
+
+/*
+ * A stencil rectangle written and read back over an RGB window, read as
+ * class 0 code 0 with field codes (4, 0). A written word keeps its low
+ * byte. MODEL CHOICE: where the board keeps the stencil byte in a stored
+ * pixel is unknown, so the model keeps it in a plane of its own. The test
+ * pins that choice: a stencil write leaves the colour and the depth word alone
+ * (including the byte above a depth's 24 bits), and a depth write leaves
+ * the stencil alone. A model that kept stencil in depth bits 31:24 would
+ * change one of them.
+ */
+static void test_readback_gl_stencil_round_trip(void)
+{
+    static const uint32_t stencil[4] = {
+        0x00000007, 0x000000ff, 0x00000100, 0x12345678,
+    };
+    static const uint32_t depth[4] = {
+        0xff000001, 0xff000002, 0xff000003, 0xff000004,
+    };
+    QTestState *qts = readback_start("");
+    uint8_t got[16];
+
+    odsy_buffer_pixel_write(qts, 0, RB_ORIGIN_X + RB_ZS_X,
+                            RB_ORIGIN_Y + RB_ZS_Y, 0x9a5ec3d1);
+    dispmode_write(qts, 0, ODSY_DISPMODE_RGB);
+    readback_zs_write(qts, RB_ZS_STENCIL_WRITE, RB_ZS_X, RB_ZS_Y, 2, 2,
+                      stencil);
+    readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 3, 2, got);
+    g_assert_cmphex(got[0], ==, 0x07);
+    g_assert_cmphex(got[1], ==, 0xff);
+    g_assert_cmphex(got[2], ==, 0x00);
+    g_assert_cmphex(got[3], ==, 0x00);
+    g_assert_cmphex(got[4], ==, 0x78);
+    g_assert_cmphex(got[5], ==, 0x00);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, RB_ORIGIN_X + RB_ZS_X,
+                                      RB_ORIGIN_Y + RB_ZS_Y), ==, 0x9a5ec3d1);
+    readback_zs_read(qts, 1, 0, 2, RB_ZS_X, RB_ZS_Y, 2, 1, got);
+    g_assert_cmphex(lduw_be_p(got), ==, 0xffff);
+
+    readback_zs_write(qts, RB_ZS_DEPTH_WRITE, RB_ZS_X, RB_ZS_Y, 2, 2, depth);
+    readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 2, 2, got);
+    g_assert_cmphex(got[0], ==, 0x07);
+    g_assert_cmphex(got[1], ==, 0xff);
+    g_assert_cmphex(got[2], ==, 0x00);
+    g_assert_cmphex(got[3], ==, 0x78);
+    board_quit(qts);
+}
+
+/*
+ * Three DMA write behaviours that are model choices, pinned as they stand.
+ * The writes go through the same pixel test as a GL fragment, so a clip
+ * rectangle that leaves the pixel out, or a window-ID compare it fails,
+ * stores nothing. They do not apply the stencil write mask (0x0452 bits
+ * 19:12): a mask of 0 still stores the byte. And a depth write is always
+ * the 24-bit form, so a 16-bit-form word, as an RGBA 12/12/12/12 window's
+ * library would send, is stored as a 24-bit word and the 16-bit read
+ * (word >> 8) returns near zero: the round trip is broken for that visual.
+ * What the board does is unknown, so each is a MODEL CHOICE.
+ */
+static void test_readback_gl_zs_write_rules(void)
+{
+    static const uint32_t one[1] = { 0x00000055 };
+    static const uint32_t narrow[1] = { 0x0000fbfe };
+    QTestState *qts = readback_start("");
+    uint8_t got[4];
+
+    dispmode_write(qts, 0, ODSY_DISPMODE_RGB);
+
+    /* A clip rectangle that excludes the pixel: nothing is stored. */
+    window_clip(qts, (const uint32_t[][4]) { { 0, 0, 10, 10 } }, 1);
+    readback_zs_write(qts, RB_ZS_STENCIL_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, one);
+    readback_zs_write(qts, RB_ZS_DEPTH_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, narrow);
+    window_clip(qts, (const uint32_t[][4]) { { 0, 0, 1023, 1023 } }, 1);
+    readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(got[0], ==, 0);
+    readback_zs_read(qts, 1, 0, 2, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(lduw_be_p(got), ==, 0xffff);
+
+    /* A window-ID compare the pixel fails (its id is 0, the test wants 1). */
+    cmd_push(qts, ODSY_CMD_DID_COMPARE);
+    cmd_push(qts, ODSY_ID_PLANE_BASE);
+    cmd_push(qts, ODSY_ID_COMPARE_MAIN(1));
+    readback_zs_write(qts, RB_ZS_STENCIL_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, one);
+    readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(got[0], ==, 0);
+    cmd_push(qts, ODSY_CMD_DID_COMPARE);
+    cmd_push(qts, ODSY_ID_PLANE_BASE);
+    cmd_push(qts, 0);
+
+    /* The stencil write mask is ignored. */
+    set_reg(qts, ODSY_REG_WRITE_MASK, 0);
+    readback_zs_write(qts, RB_ZS_STENCIL_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, one);
+    readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(got[0], ==, 0x55);
+
+    /* A 16-bit-form depth word is stored as a 24-bit one. */
+    readback_zs_write(qts, RB_ZS_DEPTH_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, narrow);
+    readback_zs_read(qts, 1, 0, 2, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(lduw_be_p(got), ==, 0x00fb);
+    dispmode_write(qts, 0, ODSY_DISPMODE_GROUP17);
+    readback_zs_read(qts, 2, 2, 4, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(ldl_be_p(got), ==, 0xfbfe);
+    board_quit(qts);
+}
+
+/*
+ * The depth word on readback is the one the rasterizer stored: a clear of
+ * 2S (ODSY_DEPTH_2S) is 0xfffffe, and a clear whose cell is word 0x7a1234
+ * comes back as that word, in the 32-bit form with its top byte zero and in
+ * the 16-bit form as its top 16 bits.
+ */
+static void test_readback_gl_depth_word_encoding(void)
+{
+    static const uint32_t word[2] = { 0xfffffe, 0x7a1234 };
+    const uint32_t clear[2] = {
+        ODSY_DEPTH_2S, odsy_depth_clear_bits(0x7a1234),
+    };
+    QTestState *qts = readback_start("");
+    uint8_t got[4];
+
+    probe_window(qts);
+    dispmode_write(qts, 0, ODSY_DISPMODE_GROUP17);
+    for (unsigned i = 0; i < 2; i++) {
+        set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+        push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, clear[i]);
+        readback_zs_read(qts, 2, 2, 4, 0x10, 0x10, 1, 1, got);
+        g_assert_cmphex(ldl_be_p(got), ==, word[i]);
+        readback_zs_read(qts, 1, 0, 2, 0x10, 0x10, 1, 1, got);
+        g_assert_cmphex(lduw_be_p(got), ==, word[i] >> 8);
+    }
+    board_quit(qts);
 }
 
 /*
@@ -24018,6 +24283,14 @@ int main(int argc, char **argv)
                    test_readback_gl_colour_index);
     add_fresh_case("sn1/odyssey/readback/gl-depth-shared-rows",
                    test_readback_gl_depth_shared_rows);
+    add_fresh_case("sn1/odyssey/readback/gl-depth-round-trip",
+                   test_readback_gl_depth_round_trip);
+    add_fresh_case("sn1/odyssey/readback/gl-stencil-round-trip",
+                   test_readback_gl_stencil_round_trip);
+    add_fresh_case("sn1/odyssey/readback/gl-zs-write-rules",
+                   test_readback_gl_zs_write_rules);
+    add_fresh_case("sn1/odyssey/readback/gl-depth-word-encoding",
+                   test_readback_gl_depth_word_encoding);
     add_fresh_case("sn1/odyssey/readback/gl-unlisted-rows",
                    test_readback_gl_unlisted_rows);
     add_fresh_case("sn1/odyssey/readback/failures", test_readback_failures);
