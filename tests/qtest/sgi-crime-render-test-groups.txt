@@ -361,3 +361,20 @@ gl-point-output6 /mips64/sgi/crime/render/gl-point/output/6
 gl-point-output7 /mips64/sgi/crime/render/gl-point/output/7
 gl-point-output8 /mips64/sgi/crime/render/gl-point/output/8
 gl-point-output9 /mips64/sgi/crime/render/gl-point/output/9
+
+gl-point-coordinate-active /mips64/sgi/crime/render/gl-point-coordinate/active
+gl-point-coordinate-matrix /mips64/sgi/crime/render/gl-point-coordinate/matrix
+gl-point-coordinate-equivalence /mips64/sgi/crime/render/gl-point-coordinate/equivalence
+gl-point-coordinate-once /mips64/sgi/crime/render/gl-point-coordinate/once
+gl-point-coordinate-dormant /mips64/sgi/crime/render/gl-point-coordinate/dormant
+gl-point-coordinate-boundaries /mips64/sgi/crime/render/gl-point-coordinate/boundaries
+gl-point-coordinate-atomic /mips64/sgi/crime/render/gl-point-coordinate/atomic
+gl-point-coordinate-mapping-failures /mips64/sgi/crime/render/gl-point-coordinate/mapping-failures
+gl-point-coordinate-widths /mips64/sgi/crime/render/gl-point-coordinate/widths
+gl-point-coordinate-other-consumers /mips64/sgi/crime/render/gl-point-coordinate/other-consumers
+gl-point-coordinate-profiles /mips64/sgi/crime/render/gl-point-coordinate/profiles
+gl-point-coordinate-masked-failures /mips64/sgi/crime/render/gl-point-coordinate/failures/masked
+gl-point-coordinate-clipped-failures /mips64/sgi/crime/render/gl-point-coordinate/failures/clipped
+gl-point-coordinate-alpha-never-failures /mips64/sgi/crime/render/gl-point-coordinate/failures/alpha-never
+gl-point-coordinate-migration-setup /mips64/sgi/crime/render/gl-point-coordinate/migration/setup
+gl-point-coordinate-migration-committed /mips64/sgi/crime/render/gl-point-coordinate/migration/committed
