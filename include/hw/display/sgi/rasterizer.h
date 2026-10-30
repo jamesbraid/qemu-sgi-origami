@@ -50,6 +50,14 @@ typedef enum SGILineRule {
      * the subpixel grid, the minor-axis span walked in double arithmetic.
      */
     SGI_LINE_COVERAGE_DOUBLE,
+    /*
+     * One pixel per major-axis column (or row) whose centre lies between
+     * the ends, the start's side included: the minor-axis pixel holding the
+     * segment at that centre, a crossing exactly on a pixel edge taking
+     * the lower pixel, ceil(v) - 1. Width and smoothing as
+     * SGI_LINE_COVERAGE_DOUBLE.
+     */
+    SGI_LINE_CENTRE_SAMPLED,
 } SGILineRule;
 
 /*
@@ -190,7 +198,8 @@ typedef struct SGIRasterRules {
  * stencil_bits 0 to 16,
  * every rounding, dither and smooth rule, and otherwise only
  * SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN, SGI_ARITH_DOUBLE,
- * SGI_LINE_COVERAGE_DOUBLE and SGI_DITHER_SCREEN; the anchor is not
+ * SGI_LINE_COVERAGE_DOUBLE or SGI_LINE_CENTRE_SAMPLED, and
+ * SGI_DITHER_SCREEN; the anchor is not
  * checked without a dither.
  */
 bool sgi_raster_rules_supported(const SGIRasterRules *r);
@@ -698,6 +707,7 @@ typedef enum SGIRenderRefusal {
     SGI_RENDER_REFUSAL_WINDOW,          /* window matrix, drawable origin */
     SGI_RENDER_REFUSAL_GEOMETRY,        /* non-finite or out-of-range input */
     SGI_RENDER_REFUSAL_LINE_SHAPE,      /* a segment not drawn exactly */
+    SGI_RENDER_REFUSAL_LINE_RULE,       /* a head's line rule not proven */
     SGI_RENDER_REFUSAL_RESOURCE,        /* target resource layout */
     SGI_RENDER_REFUSAL_STORE_WIDTH,     /* widths not proven */
     SGI_RENDER_REFUSAL_BLEND,           /* equation, factor or width */

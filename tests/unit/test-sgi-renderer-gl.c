@@ -4215,6 +4215,8 @@ static SGIRenderResult prim_mesa_draw(SGIRenderer *renderer, PrimCase *p,
         rules.arith = SGI_ARITH_FIXED16;
     } else if (p->rules_case == 4) {
         rules.rounding = SGI_ROUND_HALF_EVEN;
+    } else if (p->rules_case == 5) {
+        rules.line_rule = SGI_LINE_CENTRE_SAMPLED;
     }
     if (p->attempt) {
         p->attempt_result = sgi_render_draw_attempt(renderer, &rules, &target,
@@ -7485,6 +7487,25 @@ static void test_attempt_outcomes(void)
     g_assert_nonnull(renderer);
     EXPECT("ok", , SGI_RENDER_DRAW_OK, SGI_RENDER_OK,
            SGI_RENDER_REFUSAL_NONE, 1, 1);
+    /*
+     * The host's line quads are proven against the diamond rule only, so a
+     * head's centre-sampled line rule is refused before any snapshot, while
+     * the same segment under the diamond rule draws.
+     */
+    prim_case_init(p, SGI_GL_LINES, 4);
+    prim_segment(p, 1.25f, 2.5f, 14.5f, 12.75f);
+    p->attempt = &plain;
+    failures += prim_attempt_expect(renderer, "diamond-rule line", p,
+                                    SGI_RENDER_DRAW_OK, SGI_RENDER_OK,
+                                    SGI_RENDER_REFUSAL_NONE, 1, 1);
+    prim_case_init(p, SGI_GL_LINES, 4);
+    prim_segment(p, 1.25f, 2.5f, 14.5f, 12.75f);
+    p->attempt = &plain;
+    p->rules_case = 5;
+    failures += prim_attempt_expect(renderer, "centre-sampled line", p,
+                                    SGI_RENDER_DRAW_REFUSED,
+                                    SGI_RENDER_UNSUPPORTED,
+                                    SGI_RENDER_REFUSAL_LINE_RULE, 0, 0);
     REFUSED("rules", p->rules_case = 1, RULES);
     REFUSED("fog", p->state.fog = 1, FOG);
     REFUSED("depth test", p->state.depth_test = 1, FRAGMENT_TESTS);

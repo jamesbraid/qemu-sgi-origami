@@ -1908,6 +1908,11 @@ static SGIRenderResult sgi_render_draw_run(
                        "in a draw is unsupported");
             return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_BLEND_OVERLAP);
         }
+        /* The host's line quads are proven against the diamond rule only. */
+        if (rules->line_rule != SGI_LINE_COVERAGE_DOUBLE) {
+            error_setg(errp, "SGI Mesa cannot draw this head's line rule");
+            return sgi_render_refuse(reason, SGI_RENDER_REFUSAL_LINE_RULE);
+        }
         status = sgi_render_lines_proven(renderer, reason, errp);
         if (status != SGI_RENDER_OK) {
             return status;
@@ -3183,6 +3188,9 @@ static const struct {
     },
     [SGI_RENDER_REFUSAL_LINE_SHAPE] = {
         "line-shape", SGI_RENDER_REFUSAL_CLASS_STATE,
+    },
+    [SGI_RENDER_REFUSAL_LINE_RULE] = {
+        "line-rule", SGI_RENDER_REFUSAL_CLASS_STATE,
     },
     [SGI_RENDER_REFUSAL_RESOURCE] = {
         "resource", SGI_RENDER_REFUSAL_CLASS_STATE,

@@ -12142,7 +12142,7 @@ static void push_bare_triangle(QTestState *qts)
 static const char *const odsy_mesa_fallback_reasons[] = {
     "rules", "dither", "primitive", "smoothing", "colour-index", "buffers",
     "fragment-tests", "fog", "facing", "clip-planes", "logic-op",
-    "polygon-offset", "window", "geometry", "line-shape",
+    "polygon-offset", "window", "geometry", "line-shape", "line-rule",
     "resource", "store-width", "blend", "blend-overlap", "texture",
     "provider", "raster-op", "mixed-frame", "host-viewport",
     "host-point-size", "host-program", "host-probe", "host-staging",
