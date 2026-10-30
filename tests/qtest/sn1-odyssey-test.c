@@ -8829,14 +8829,14 @@ static void test_command_fifo_gl_line_stipple_migration(void)
 
 /*
  * Polygon offset: 0x0404 bit 7 is the fill-polygon GL_POLYGON_OFFSET_FILL
- * enable, and 0x0458 is a signed 25-bit bias in bits 24:0, scaled by 2^-24
- * into normalized window depth (EXT_polygon_offset). Two coplanar triangles
+ * enable, and 0x0458 is a signed 25-bit count in bits 24:0 of steps of the
+ * stored depth word (the datasheet's polygon offset). Two coplanar triangles
  * under GL_LESS: without the offset the second one's equal depth ties and
  * loses; with a negative bias large enough to be unambiguous, it wins.
  */
 #define ODSY_MODE_OFFSET_FILL (1u << 7)
 #define ODSY_REG_POLYGON_OFFSET 0x00010458
-/* sextract32(word, 0, 25) / 2^24 == -0.25: large next to any rounding noise. */
+/* sextract32(word, 0, 25) == -2^22 steps: sixteen exponents' worth of word. */
 #define ODSY_OFFSET_BIAS_NEG_QUARTER 0x01c00000
 
 /* odsy_near_yellow's footprint, flattened to NDC z 0.0 (window depth 0.5). */
@@ -8877,6 +8877,123 @@ static void test_command_fifo_gl_polygon_offset(void)
                      odsy_coplanar_tri);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_RED);
 
+    board_quit(qts);
+}
+
+/*
+ * The board's depth word (docs/datasheets/odyssey.md, "Depth word"): a
+ * 6-bit exponent and an 18-bit mantissa, the value (1 + m / 2^18)
+ * 2^(e - 31), here for 2S times the eye-linear fraction, truncated.
+ */
+static uint32_t odsy_depth_word(double fraction)
+{
+    int exponent;
+    double m = frexp(fraction * 2 * 4294950912.0, &exponent);
+
+    return (uint32_t)(exponent - 1 + 31) << 18 |
+           (uint32_t)((m * 2 - 1) * (1 << 18));
+}
+
+/*
+ * The clear z operand, a float, that stores as exactly @word: the value
+ * of the middle of that word's cell, which has 20 significant bits.
+ */
+static uint32_t odsy_depth_clear_bits(uint32_t word)
+{
+    float v = ldexp((1.0 + (word & 0x3ffff) / (double)(1 << 18)) *
+                    (1.0 + 1.0 / (1 << 19)), (int)(word >> 18) - 31);
+    uint32_t bits;
+
+    memcpy(&bits, &v, sizeof(bits));
+    return bits;
+}
+
+/*
+ * 0x0458 counts steps of the stored depth word and adds them after the
+ * encode (INFERRED): a triangle at depth word w with offset k stores w + k.
+ * Against a clear 32 words nearer than the unoffset triangle, an offset of
+ * -64 passes GL_LESS and +64 fails, at two depths (0.5 and 0.75) with the
+ * same count; against one 96 nearer, -64 fails. A 25-bit field of -64
+ * is 0x1ffffc0. OpenGL's bias scale of 2^-24 of window depth moves these
+ * triangles by under a word at the first depth and so tells the two apart.
+ */
+static void test_command_fifo_gl_polygon_offset_word_steps(void)
+{
+    static const struct {
+        uint32_t z;             /* NDC z as a float: window depth (z+1)/2 */
+        double depth;
+        int offset;             /* in words, a 25-bit field */
+        int clear;              /* the clear's word, from the unoffset one */
+        uint32_t pixel;
+    } cases[] = {
+        { 0x00000000, 0.5, -64, -32, ODSY_PLANE_RED },
+        { 0x00000000, 0.5, -64, -96, ODSY_PLANE_BLUE },
+        { 0x00000000, 0.5, 64, 32, ODSY_PLANE_BLUE },
+        { 0x00000000, 0.5, 64, 96, ODSY_PLANE_RED },
+        { 0x3f000000, 0.75, -64, -32, ODSY_PLANE_RED },
+        { 0x3f000000, 0.75, -64, -96, ODSY_PLANE_BLUE },
+        { 0x3f000000, 0.75, 64, 32, ODSY_PLANE_BLUE },
+        { 0x3f000000, 0.75, 64, 96, ODSY_PLANE_RED },
+    };
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    set_reg(qts, ODSY_REG_DEPTH_FUNC, ODSY_GL_FUNC_LESS);
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        uint32_t tri[9] = {
+            0xbf4ccccd, 0xbf4ccccd, cases[i].z,
+            0x3ecccccd, 0xbf4ccccd, cases[i].z,
+            0xbe4ccccd, 0x3f19999a, cases[i].z,
+        };
+        uint32_t word = odsy_depth_word(cases[i].depth);
+
+        set_reg(qts, ODSY_REG_GL_MODE,
+                ODSY_GL_MODE_DEPTH_FLAT | ODSY_MODE_OFFSET_FILL);
+        set_reg(qts, ODSY_REG_POLYGON_OFFSET,
+                (uint32_t)cases[i].offset & 0x1ffffff);
+        set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+        push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE,
+                         odsy_depth_clear_bits(word + cases[i].clear));
+        set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_DRAW);
+        push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, tri);
+        g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, cases[i].pixel);
+    }
+    board_quit(qts);
+}
+
+/*
+ * A clear above 2S stores the largest word, 0xffffff, as the encoder
+ * saturates, one past the far plane's 0xfffffe: a triangle at the far
+ * plane (NDC z 1, depth 2S) passes GL_LESS against it. A clear of 2S
+ * stores the far word itself, which that triangle does not beat.
+ */
+static void test_command_fifo_gl_depth_clear_saturates(void)
+{
+    static const uint32_t far_tri[9] = {
+        0xbf4ccccd, 0xbf4ccccd, 0x3f800000,
+        0x3ecccccd, 0xbf4ccccd, 0x3f800000,
+        0xbe4ccccd, 0x3f19999a, 0x3f800000,
+    };
+    static const struct {
+        uint32_t clear;
+        uint32_t pixel;
+    } cases[] = {
+        { 0x50800000, ODSY_PLANE_RED },     /* 2^34 */
+        { ODSY_DEPTH_2S, ODSY_PLANE_BLUE },
+    };
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_DEPTH_FLAT);
+    set_reg(qts, ODSY_REG_DEPTH_FUNC, ODSY_GL_FUNC_LESS);
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+        push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE,
+                         cases[i].clear);
+        set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_DRAW);
+        push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, far_tri);
+        g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, cases[i].pixel);
+    }
     board_quit(qts);
 }
 
@@ -23652,6 +23769,10 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_line_stipple_migration);
     add_case("sn1/odyssey/command-fifo-gl-polygon-offset",
              test_command_fifo_gl_polygon_offset);
+    add_case("sn1/odyssey/command-fifo-gl-polygon-offset-word-steps",
+             test_command_fifo_gl_polygon_offset_word_steps);
+    add_case("sn1/odyssey/command-fifo-gl-depth-clear-saturates",
+             test_command_fifo_gl_depth_clear_saturates);
     add_case("sn1/odyssey/command-fifo-gl-clip-box",
              test_command_fifo_gl_clip_box);
     add_case("sn1/odyssey/command-fifo-gl-clip-plane",

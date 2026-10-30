@@ -2009,16 +2009,20 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 /*
  * Bits 5, 6 and 7 of the same register are GL_POLYGON_OFFSET_POINT, _LINE and
  * _FILL: glEnable/glDisable set and clear them in the library's 0x0404
- * shadow. 0x0458 carries the constant term alone -- bits 24:0 a signed value
- * in steps of 2^-24 of window depth, with no slope term -- so it is fed as a
- * factor of 0 and this bias via SGI_GL_OP_POLYGON_OFFSET_EXT.
+ * shadow. 0x0458 carries the constant term alone, with no slope term: bits
+ * 24:0 a signed count of steps of the stored depth word (docs/datasheets/
+ * odyssey.md, "Depth word" and "Polygon offset"; the library's limit
+ * +-2^24 is the difference of two 24-bit words). It is fed as a factor of 0
+ * and this bias via SGI_GL_OP_POLYGON_OFFSET_EXT, which the rules'
+ * depth_eye_float adds to the encoded word. INFERRED, not established: that
+ * the board adds the field to the encoded word and not to an eye distance.
  */
 #define ODSY_MODE_OFFSET_POINT (1u << 5)
 #define ODSY_MODE_OFFSET_LINE (1u << 6)
 #define ODSY_MODE_OFFSET_FILL (1u << 7)
 #define ODSY_REG_POLYGON_OFFSET 0x0458 /* 1 operand */
 #define ODSY_POLYGON_OFFSET_BITS 25
-#define ODSY_POLYGON_OFFSET_SCALE (1.0f / (1 << 24))
+#define ODSY_POLYGON_OFFSET_SCALE 1.0f
 
 /*
  * 0x0415 packs glPolygonMode's two faces in one word: bits 3:2 the front
@@ -5547,7 +5551,8 @@ static bool odyssey_image_burst_fmt(uint32_t reg, uint32_t *fmt)
  * do not change which pixels take the colour, and there is no depth or line
  * work). Odyssey's own subpixel grid and interpolated-colour depth are
  * unmeasured; an Odyssey rule set of its own waits on a hardware capture.
- * The floating-point depth rule is inferred, not measured.
+ * The depth word is the board's unsigned float (odyssey_gl_rules); the
+ * far-plane cut point is a model choice.
  *
  * Lines follow SGI_LINE_CENTRE_SAMPLED, the rule SGI's C simulator of the
  * board draws by: the field diagnostics' stored line frames, which SGI
@@ -5571,8 +5576,15 @@ static const SGIRasterRules odyssey_gl_rules = {
     .line_rule = SGI_LINE_CENTRE_SAMPLED,
     .alpha_test_bits = 12,
     .smooth_primitives = true,
-    /* The board's own depth format; odyssey_gl_load_combined(). */
-    .depth_float = true,
+    /*
+     * The board's depth word, 2S times the eye-linear fraction as a
+     * 6-bit-exponent, 18-bit-mantissa unsigned float (docs/datasheets/
+     * odyssey.md, "Depth word"). ESTABLISHED as the format the GL library
+     * reads back by DMA; that the board's plane holds the same bits is
+     * INFERRED.
+     */
+    .depth_eye_float = true,
+    .depth_scale = 2 * ODSY_GL_DEPTH_S,
 };
 
 /* Whether a GL fragment's colour is an index (ODSY_PROG_COLOUR_MODE). */
@@ -8713,18 +8725,26 @@ static void odyssey_gl_vertex_colour(SGIOdysseyState *s, const double xyz[3])
  * Under an orthographic matrix the z row stays row2 / (block16[3] S) - row3,
  * whose window depth is the same. Board depth is floating point in a format
  * of its own (a public statement by an SGI engineer, comp.sys.sgi.graphics,
- * 2002-10-01) whose layout is UNKNOWN; pfCity's rows put its scene at w +
- * 42.85 board units, near 0, which a fixed-point store would flatten to one
- * value, so the rules' floating-point code stands in for the board's
- * (APPROXIMATED). Whether the board interpolates depth with perspective
- * correction is UNKNOWN.
+ * 2002-10-01): a 6-bit exponent and an 18-bit mantissa, 2S times the
+ * eye-linear fraction (docs/datasheets/odyssey.md, "Depth word"). The
+ * rules' depth_eye_float stores that word, truncating. pfCity's rows put
+ * its scene at w + 42.85 board units, near 0, which a fixed-point store
+ * would flatten to one value. The board interpolates depth with
+ * perspective correction (INFERRED from SGI's raster patents).
  *
- * APPROXIMATION, polygon offset: the shared rasterizer adds a polygon's
- * offset to depth over w before multiplying w back, so under perspective
- * the offset grows with the fragment's w, where OpenGL adds a constant
- * window-depth offset. How the board offsets eye-linear depth is UNKNOWN;
- * a board capture of glPolygonOffset decals at two eye distances, or a
- * depth readback of one offset polygon, would settle it.
+ * The depth cut: a fragment outside [0, 2S] by more than the rounding slack
+ * is dropped before the test. The datasheet leaves the cut point (2S, the
+ * largest word, or 2^33) UNKNOWN; at most two steps separate them. The
+ * model cuts at 2S plus the slack. MODEL CHOICE.
+ *
+ * APPROXIMATION, polygon offset: 0x0458 is a count of steps of the stored
+ * word, added after the encode and clamped to the words 0 through 2S's,
+ * so the offset shrinks toward the near plane in proportion to d - n. That
+ * the board adds the field to the encoded word, and not to an eye
+ * distance, is INFERRED (the field's limit is the difference of two words,
+ * and the library's unit is the word's own step at the far plane); a
+ * readback of one offset polygon at two eye distances would settle it. The
+ * clamp at the far word is a MODEL CHOICE.
  *
  * APPROXIMATION, raster position: under perspective the shared projection's
  * z row is 0, so glRasterPos takes window z 0.5 whatever its eye distance,
@@ -8925,8 +8945,12 @@ static void odyssey_gl_rect(SGIOdysseyState *s)
         op.clear_buffers |= SGI_GL_COLOR_BUFFER_BIT;
     }
     if (s->gl_write_mask & ODSY_WRITE_DEPTH) {
-        d = f[6] / (2 * ODSY_GL_DEPTH_S);
-        d = MIN(MAX(d, 0.0), 1.0);
+        /*
+         * The word saturates only at 2^33 or more; a clear between 2S and
+         * that stores its own word. That the board's clear path encodes
+         * like this, rather than clamping, is inferred.
+         */
+        d = MAX(f[6] / (2 * ODSY_GL_DEPTH_S), 0.0);
         op.clear_buffers |= SGI_GL_DEPTH_BUFFER_BIT;
         op.clear_depth24 = sgi_raster_depth_code(&rules, d);
     }
@@ -13912,9 +13936,9 @@ static void odyssey_reset_hold(Object *obj, ResetType type)
     memset(s->poly_marks, 0, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT);
     /*
      * The depth plane starts at the far value, all ones (a model choice).
-     * Under the floating-point code depth 1.0 is 0xfe0000, and every code
-     * of a depth in [0, 1] is at most that, so all ones still compares as
-     * farther than any fragment.
+     * Depth 2S, the far plane, is 0xfffffe in the board's word, and every
+     * word of a depth in [0, 2S] is at most that, so all ones still
+     * compares as farther than any fragment.
      */
     for (int y = 0; y < SGI_ODYSSEY_HEIGHT; y++) {
         for (int x = 0; x < SGI_ODYSSEY_WIDTH; x++) {
