@@ -19618,6 +19618,9 @@ static void test_render_mode_feed_completes(gconstpointer opaque)
  * 3: a 16-byte target, too small for the record: overflow, nothing
  *    written.
  * 4: as 0, migrating between the two names, with the first hit pending.
+ * 5: glRasterPos3f under name 66 at depth 0.5, inside the view volume,
+ *    one record; one under name 77 at x = 3, outside it, none. Before,
+ *    a raster position made no hit.
  */
 static void test_selection_records(gconstpointer opaque)
 {
@@ -19664,6 +19667,17 @@ static void test_selection_records(gconstpointer opaque)
         select_triangle(s, 0);
         select_feed_finish(s, 16, 0x800);
         assert_select_records(s, NULL, 0);
+        break;
+    case 5:
+        kona_command(s, 0x10d, (uint32_t[]) { 66 }, 1);
+        kona_command_f(s, 0xad, (float[]) { 0.25, 0.25, 0.5 }, 3);
+        kona_command(s, 0x10d, (uint32_t[]) { 77 }, 1);
+        kona_command_f(s, 0xad, (float[]) { 3, 0, 0.5 }, 3);
+        kona_command(s, 0x10d, (uint32_t[]) { 88 }, 1);
+        select_feed_finish(s, 256 - 20, 0);
+        assert_select_records(s, (uint32_t[]) {
+            1, 1, 0xbfffffff, 0xbfffffff, 66,
+        }, 5);
         break;
     }
     assert_stencil_colour(s, 0x0000ff);
@@ -20536,6 +20550,8 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(3), test_selection_records);
     add_data_case("sn0/origin2000/kona-3d/selection-migrates",
                   GUINT_TO_POINTER(4), test_selection_records);
+    add_data_case("sn0/origin2000/kona-3d/selection-raster-pos",
+                  GUINT_TO_POINTER(5), test_selection_records);
     add_case("sn0/origin2000/kona-3d/stencil-visual/read",
              test_stencil_visual_read);
     add_case("sn0/origin2000/kona-3d/stencil-visual/copy",

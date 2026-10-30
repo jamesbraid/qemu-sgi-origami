@@ -7019,9 +7019,11 @@ static void sgi_kona_gl_select_draw(void *opaque, const SGIGLDraw *d)
  * so every draw, pixel and bitmap goes nowhere. So does a clear, which
  * the specification does not name; Mesa skips it the same way (model
  * choice; what a real pipe does with a clear in these modes is unknown).
- * In selection mode a primitive's draw finds its hit instead.
- * Limitation: a bitmap or a pixel rectangle at a valid raster position
- * makes no hit, as OpenGL has it do. The fence still answers glFinish.
+ * In selection mode a primitive's draw finds its hit instead, and so
+ * does a valid raster position (sgi_kona_gl_run()). Limitation: a bitmap
+ * or a pixel rectangle at a valid raster position makes no hit of its
+ * own; whether the pipe makes one is unknown. The fence still answers
+ * glFinish.
  */
 static void sgi_kona_gl_sink(SGIKonaState *s, SGIGLSink *sink)
 {
@@ -7528,6 +7530,27 @@ static void sgi_kona_gl_run(SGIKonaState *s, int i, SGIGLSink *sink,
         break;
     }
     sgi_gl_command(&state->gl, sink, cmd);
+    switch (cmd->op) {
+    case SGI_GL_OP_RASTER_POS2F:
+    case SGI_GL_OP_RASTER_POS3F:
+    case SGI_GL_OP_RASTER_POS4F:
+        /*
+         * In selection mode a raster position inside the view volume
+         * makes a hit at its window depth, as OpenGL 1.2.1 section 5.2
+         * has it, and the geometry program's selection has a path that
+         * records one (inferred from its microcode: the KONA geometry
+         * datasheet's feedback and selection section).
+         */
+        if (state->render.mode == SGI_KONA_GL_SELECT &&
+            !state->gl.in_begin && state->gl.raster_valid &&
+            i == s->context_current) {
+            sgi_kona_gl_select_hit(s, state->gl.raster_pos[2],
+                                   state->gl.raster_pos[2]);
+        }
+        break;
+    default:
+        break;
+    }
 }
 
 /*
