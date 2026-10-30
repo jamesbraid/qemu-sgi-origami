@@ -746,6 +746,7 @@ extern const unsigned sgi_kona_gl_num_tokens;
 #define SGI_KONA_VIDEO_VAMPIRE            0x4f
 #define SGI_KONA_VIDEO_GET_VAMPIRE        0x3a
 #define SGI_KONA_VIDEO_GET_CHANNEL_ENABLES 0x42
+#define SGI_KONA_VIDEO_PLACEMENT_RES     0x43
 #define SGI_KONA_VIDEO_GET_FORMAT_INFO    0x4a
 #define SGI_KONA_VIDEO_TEMP_BLANK         0x3c
 #define SGI_KONA_VIDEO_X_SERVER_INIT      0x53

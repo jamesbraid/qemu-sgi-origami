@@ -750,11 +750,13 @@ static uint32_t kona_config_word(QTestState *s, unsigned offset)
  * SetupFrameBuffer [width, height, depth] sizes the managed area when the
  * raster managers hold it: one raster manager holds 20,971,520 / 8 pixels
  * at Small, which 2560x1024 fills and 2560x2048 overflows. The overflow is
- * logged and the area stays; 2560x1024 sets GetResize's pan rectangle and
- * largest size. Configuration block +0x84 and +0x88, from which the X
- * server sizes its screen, keep the size of the last start (1280x1024
- * after a reset) until the firmware next starts. A side past the model's
- * 8192-pixel bound is logged on its own. A reset returns to 1280x1024.
+ * logged. Configuration block +0x84 and +0x88, from which the X server
+ * sizes its screen, keep the size of the last start (1280x1024 after a
+ * reset) until the firmware next starts, and GetResize, which answers from
+ * the channel's record as the firmware's does, does not follow
+ * SetupFrameBuffer at all: only Resize (word 7 zero) moves its pan
+ * rectangle and PlacementRes its largest and smallest sizes. A side past
+ * the model's 8192-pixel bound is logged on its own.
  */
 static void test_setup_frame_buffer_sizes_managed_area(void)
 {
@@ -765,27 +767,37 @@ static void test_setup_frame_buffer_sizes_managed_area(void)
 
     kona_register_return_page(s, RETURN_PAGE);
     video_send(s, 0x08, (uint32_t[]){ 2560, 2048, 0 }, 3);
-    video_get(s, GET_RESIZE, 1, 8, reply, 18);
-    g_assert_cmphex(reply[12], ==, 1280);
     video_send(s, 0x08, (uint32_t[]){ 9000, 200, 0 }, 3);
-    video_get(s, GET_RESIZE, 1, 8, reply, 18);
-    g_assert_cmphex(reply[12], ==, 1280);
-
     video_send(s, 0x08, (uint32_t[]){ 2560, 1024, 0 }, 3);
     video_get(s, GET_RESIZE, 1, 8, reply, 18);
     g_assert_cmphex(reply[4], ==, 0);
-    g_assert_cmphex(reply[5], ==, 1023);
-    g_assert_cmphex(reply[6], ==, 2560);
+    g_assert_cmphex(reply[5], ==, 0);
+    g_assert_cmphex(reply[6], ==, 1280);
     g_assert_cmphex(reply[7], ==, 1024);
-    g_assert_cmphex(reply[12], ==, 2560);
+    g_assert_cmphex(reply[12], ==, 1280);
     g_assert_cmphex(reply[13], ==, 1024);
     g_assert_cmphex(kona_config_word(s, 0x84), ==, 1280);
     g_assert_cmphex(kona_config_word(s, 0x88), ==, 1024);
 
-    qtest_system_reset(s);
-    kona_register_return_page(s, RETURN_PAGE);
+    video_send(s, 0x14, (uint32_t[]){ 1, 1280, 1023, 1280, 1024, 1, 1, 1 },
+               8);
     video_get(s, GET_RESIZE, 1, 8, reply, 18);
-    g_assert_cmphex(reply[12], ==, 1280);
+    g_assert_cmphex(reply[0], ==, 1280);
+    g_assert_cmphex(reply[4], ==, 0);
+    video_send(s, 0x14, (uint32_t[]){ 1, 1280, 1023, 1280, 1024, 1, 1, 0 },
+               8);
+    video_send(s, 0x43, (uint32_t[]){ 1, 0xa0, 1, 4, 1, 2560, 1024, 4, 1 },
+               9);
+    video_get(s, GET_RESIZE, 1, 8, reply, 18);
+    g_assert_cmphex(reply[4], ==, 1280);
+    g_assert_cmphex(reply[5], ==, 1023);
+    g_assert_cmphex(reply[6], ==, 1280);
+    g_assert_cmphex(reply[7], ==, 1024);
+    g_assert_cmphex(reply[12], ==, 2560);
+    g_assert_cmphex(reply[13], ==, 1024);
+    g_assert_cmphex(reply[14], ==, 4);
+    g_assert_cmphex(reply[15], ==, 1);
+
     qtest_quit(s);
     found = kona_log_read(log);
     g_assert_nonnull(strstr(found, "not enough raster managers for Small "
@@ -892,7 +904,8 @@ static GArray *two_wide_combination(uint32_t w, uint32_t h)
 /*
  * After a start that ran the firmware's built-in fallback: a 1280x1024
  * block, channel 0 running 1280x1024_60.vfo with date stamp 0x31ea4b22,
- * channel 1 named 640x486_30i.vfo with 0x31ea4b3c and blanked.
+ * channel 1 named 640x486_30i.vfo with 0x31ea4b3c, blanked, and taking
+ * the 1280x1024 rectangle at (0, 0).
  */
 static void assert_fallback(QTestState *s)
 {
@@ -913,6 +926,11 @@ static void assert_fallback(QTestState *s)
     g_assert_cmphex(reply[0], ==, 1);
     video_get(s, 0x20, 0, 9, reply, 1);
     g_assert_cmphex(reply[0], ==, 0);
+    video_get(s, GET_RESIZE, 1, 8, reply, 18);
+    g_assert_cmphex(reply[1], ==, 1023);
+    g_assert_cmphex(reply[2], ==, 1280);
+    g_assert_cmphex(reply[3], ==, 1024);
+    g_assert_cmphex(reply[12], ==, 1280);
 }
 
 /*
@@ -1101,11 +1119,12 @@ static void test_resize_reply(void)
     QTestState *s = kona_init_logged(MACHINE_ARGS, "guest_errors,unimp",
                                     &log);
     /*
-     * The input rectangle, then the whole managed area to pan over, steps
-     * of one pixel and the managed area as the largest size.
+     * The input rectangle, then the firmware's default pan rectangle 0, 0,
+     * 1280, 1024, steps of one pixel and, with no PlacementRes yet, the
+     * model's 1280x1024 as the largest size.
      */
     static const uint32_t expected[18] = {
-        0, 1023, 1280, 1024, 0, 1023, 1280, 1024, 1, 1, 1, 1, 1280, 1024,
+        0, 1023, 1280, 1024, 0, 0, 1280, 1024, 1, 1, 1, 1, 1280, 1024,
     };
     uint32_t sum = 8;
 
