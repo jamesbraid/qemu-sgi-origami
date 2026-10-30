@@ -6110,7 +6110,7 @@ static void test_gl_texture_stored_border_vmstate_version(void)
             memcmp(stream + i + 1, id, sizeof(id) - 1)) {
             continue;
         }
-        g_assert_cmphex(ldl_be_p(stream + i + sizeof(id) + 4), ==, 37);
+        g_assert_cmphex(ldl_be_p(stream + i + sizeof(id) + 4), ==, 36);
         found++;
     }
     g_assert_cmpuint(found, ==, 1);

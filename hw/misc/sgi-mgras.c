@@ -2413,7 +2413,7 @@ static const VMStateDescription vmstate_sgi_mgras_clip_id = {
 };
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 37, .minimum_version_id = 37,
+    .name = TYPE_SGI_MGRAS, .version_id = 36, .minimum_version_id = 36,
     .pre_save = mgras_pre_save,
     .pre_load = mgras_pre_load,
     .post_load = mgras_post_load,
