@@ -853,7 +853,7 @@ static void test_firmware_revision(void)
 {
     const char *const props[] = {
         "brick-type=cbrick,named=on,rack=1,bay=4,revision-major=1,"
-        "revision-minor=18,revision-patch=5",
+        "revision-minor=44,revision-patch=0",
         "brick-type=ibrick,named=on,rack=1,bay=16,mac=" MAC_PROP
         ",revision-major=1,revision-minor=7,revision-patch=2",
         "brick-type=nbrick,named=on,rack=1,bay=22,revision-major=1,"
@@ -866,7 +866,7 @@ static void test_firmware_revision(void)
     size_t length;
 
     link_io(s, 0, 1);
-    expect_revision(s, 0, LOCAL_GENERAL, 1, 18, 5);
+    expect_revision(s, 0, LOCAL_GENERAL, 1, 44, 0);
     expect_revision(s, 1, LOCAL_GENERAL, 1, 7, 2);
     expect_revision(s, 0, ATTACHED_IO, 1, 7, 2);
     expect_revision(s, 2, LOCAL_GENERAL, 1, 9, 0);
@@ -878,7 +878,7 @@ static void test_firmware_revision(void)
      * The revision is for 0x0005 only: version names no image bank and no
      * Origin 300 image label.
      */
-    expect_command(s, 0, "version", "L1 1.18.5 (Image EMU-UNKNOWN)\n");
+    expect_command(s, 0, "version", "L1 1.44.0 (Image EMU-UNKNOWN)\n");
     expect_command(s, 1, "version", "L1 1.7.2 (Image EMU-UNKNOWN)\n");
     expect_command(s, 2, "version", "L1 1.9.0 (Image EMU-UNKNOWN)\n");
     qtest_quit(s);
