@@ -428,6 +428,20 @@
 #
 # @out: options of the playback stream
 #
+# @input-path: PCM WAVE file used for capture input.
+#     It supports mono or stereo unsigned 8-bit PCM and signed
+#     little-endian 16-bit PCM at 8000-192000 frames per second.
+#     The virtual clock advances it only while capture is active.
+#     Disabling capture pauses it.  Re-enabling resumes the cursor.
+#     A reset does not rewind a voice that remains open.
+#     At EOF, input stops unless @input-loop is true.
+#     Migration does not transfer the cursor.
+#     With mixing enabled, record/replay uses the input sample hooks.
+#     With mixing off, the input format must match the capture voice.
+#
+# @input-loop: restart at the first data frame after EOF.
+#     Defaults to false.  Empty input returns no frames.
+#
 # @path: name of the wav file to record (default 'qemu.wav')
 #
 # Since: 4.0
@@ -436,6 +450,8 @@
   'data': {
     '*in':   'AudiodevPerDirectionOptions',
     '*out':  'AudiodevPerDirectionOptions',
+    '*input-path': 'str',
+    '*input-loop': 'bool',
     '*path': 'str' } }
 
 ##

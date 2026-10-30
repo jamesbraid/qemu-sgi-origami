@@ -34,3 +34,21 @@ endforeach
 test('audio-wav-drain', test_audio,
      args: ['--audiodev', 'none', '-p', '/audio/out/wav-drain'],
      suite: 'audio')
+
+test('audio-wav-input', test_audio,
+     args: ['--audiodev', 'none', '-p', '/audio/in/wav'],
+     suite: 'audio')
+
+test('audio-wav-input-clock', test_audio,
+     args: ['--audiodev', 'none', '-p', '/audio/in/wav-clock'],
+     suite: 'audio')
+
+test('audio-wav-input-no-mix', test_audio,
+     args: ['--audiodev', 'none', '-p', '/audio/in/wav-no-mix'],
+     suite: 'audio')
+
+if host_os != 'windows'
+  test('audio-wav-input-fifo', test_audio,
+       args: ['--audiodev', 'none', '-p', '/audio/in/wav-fifo'],
+       suite: 'audio', timeout: 5)
+endif

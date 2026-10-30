@@ -5,6 +5,7 @@ audio_ss.add(files(
   'audio-mixeng-be.c',
   'mixeng.c',
   'noaudio.c',
+  'wavinput.c',
   'wavaudio.c',
 ))
 
