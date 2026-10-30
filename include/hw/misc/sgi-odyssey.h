@@ -149,6 +149,13 @@ struct SGIOdysseyState {
      * last written through the command FIFO (ODSY_REG_FIFO_SETUP_*).
      */
     uint32_t fifo_setup[5];
+    /*
+     * The hardware-sync timeout in board clocks, register 0x7f0, as last
+     * written through the command FIFO (ODSY_REG_SYNC_TIMEOUT).
+     */
+    uint32_t sync_timeout;
+    /* A nonzero timeout was written; reported once, not migrated. */
+    bool sync_timeout_reported;
     /* A credit target was written; not migrated. */
     bool flctl_target_reported;
     uint32_t sw_token;
@@ -390,6 +397,8 @@ struct SGIOdysseyState {
     GArray *work_queue;
     /* The oldest waiting stores, this many, are in the FIFO and credited. */
     guint work_in_fifo;
+    /* The 32-bit words of all the waiting stores. */
+    uint32_t work_words;
     /* qtest: stores from outside a processor count as counted. */
     uint8_t test_counted_stores;
     /* qtest: each slice on the board's thread first sleeps this long. */

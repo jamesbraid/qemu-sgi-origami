@@ -84,10 +84,13 @@ fifo /mips64/sn1/odyssey/command-work-read-waits
 fifo /mips64/sn1/odyssey/command-work-status-shows-waiting-stores
 fifo /mips64/sn1/odyssey/command-work-low-water-after-drain
 fifo /mips64/sn1/odyssey/command-work-credits-at-fifo-entry
+fifo /mips64/sn1/odyssey/command-fifo-water-marks
+fifo /mips64/sn1/odyssey/command-work-credit-depth-ignores-setup
 fifo /mips64/sn1/odyssey/command-work-map-rewrite-settles
 fifo /mips64/sn1/odyssey/command-work-stop-and-reset
 fifo /mips64/sn1/odyssey/command-work-draws-on-board-thread
 fifo /mips64/sn1/odyssey/command-fifo-setup-registers
+fifo /mips64/sn1/odyssey/command-fifo-sync-timeout-register
 fifo /mips64/sn1/odyssey/command-fifo-sequencer-registers
 fifo /mips64/sn1/odyssey/command-fifo-selftest
 fifo /mips64/sn1/odyssey/command-fifo-fillrect

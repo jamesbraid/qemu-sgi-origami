@@ -467,32 +467,42 @@
 /*
  * Status register 0x1064 (odsy status0). This model's command FIFO drains
  * in the write handler or, while stores wait for the board's work, behind
- * them, and the waiting stores are its level (odyssey_fifo_level()): it
- * is always enabled, empty (bit 16) when no store waits, and below the
- * low-water mark (bit 17) while fewer than ODSY_CFIFO_LOW_WATER wait. The
- * names of bits 15, 16 and 17 (high water, empty, below low water) come
- * from the IRIX 6.5.30 IP35 kernel's status decode table. The kernel's periodic
- * gfx-credits check reads this register and treats a clear low-water or enabled
- * bit as a graphics error, so a board that never answered it (the default
- * no-register path, reading zero) drew a graphics-error alert for board 0 on
- * every check and then took its board-reset recovery path. The bit names are
- * established in the datasheet's status table; the real board's
- * timing-dependent FIFO occupancy is not modeled (see the datasheet's
- * approximation ledger).
+ * them, and the 32-bit words of the waiting stores are its level
+ * (odyssey_fifo_level()): it is always enabled, empty (bit 16) when no
+ * store waits, below the low-water mark (bit 17) while the level is under
+ * ODSY_CFIFO_LOW_WATER, and at or above the high-water mark (bit 15)
+ * once the level reaches odyssey_fifo_high_mark(). The names of bits 15,
+ * 16 and 17 (high water, empty, below low water) come from the IRIX 6.5.30
+ * kernels' status decode tables, and OpenBSD's VPro console driver names
+ * bits 15 and 17 the same way; that they compare the level against the
+ * water marks is INFERRED from those names. The kernel's periodic
+ * gfx-credits check reads this register and treats a clear low-water or
+ * enabled bit as a graphics error, so a board that never answered it (the
+ * default no-register path, reading zero) drew a graphics-error alert for
+ * board 0 on every check and then took its board-reset recovery path. The
+ * real board's timing-dependent FIFO occupancy is not modeled (see the
+ * datasheet's approximation ledger).
  */
 #define ODSY_STATUS0_FIFO_ENABLED 0x10000000
 #define ODSY_STATUS0_FIFO_LOW_WATER 0x00020000
 #define ODSY_STATUS0_FIFO_EMPTY 0x00010000
+#define ODSY_STATUS0_FIFO_HIGH_WATER 0x00008000
 #define ODSY_STATUS0_READY \
     (ODSY_STATUS0_FIFO_ENABLED | ODSY_STATUS0_FIFO_LOW_WATER | \
      ODSY_STATUS0_FIFO_EMPTY)
 
 /*
- * The command FIFO's low-water mark, in stores: below it bit 17 reads set,
- * and the level falling below it raises the low-water flag. The mark is
- * unknown; 16, a quarter of the model's FIFO depth, is the model's choice.
- * The field the driver rewrites in 0x1074 is not a mark (ODSY_FLCTL_TARGET
- * below).
+ * The command FIFO's low-water mark, in 32-bit words: below it bit 17
+ * reads set, and the level falling below it raises the low-water flag.
+ * APPROXIMATION: the kernel's set-up writes the board's mark, 24,144
+ * words, to 0x6b3, but the model keeps 16, matched to the 64 stores its
+ * credits allow (ODSY_CFIFO_DEPTH). The kernel's high-water path, entered
+ * when credits run short, sleeps the writer only if the FIFO is not below
+ * low water. With credits held to 64 stores the level stays far below
+ * 24,144 words, so the path would always find low water, raise the flag
+ * itself and return; on a Tezro V12, GLperf fill-z-trilinear then kept
+ * 0.78 to 0.94 of guest clock, against 0.99 with this mark. Test:
+ * sn1/odyssey/command-fifo-water-marks.
  */
 #define ODSY_CFIFO_LOW_WATER 16
 
@@ -516,35 +526,58 @@
 #define ODSY_FLCTL_INTR_TARGET_SHIFT 17
 
 /*
- * FIFO set-up registers. The IRIX IP30 kernel's command-FIFO set-up stores
- * five doublewords whose high word is below 0x10000: 0x6b0 = 0, 0x6b1 =
- * 256, 0x6b3 = 24144, 0x6b2 = 32192 and 0x7b5 = 1 (ESTABLISHED as the
- * kernel's stores). That such a doubleword is a register write, the high
- * word naming the register and the low word its value, is INFERRED; the
- * command parser sees the same two words either way, and takes the first
- * as a one-operand word. That 0x6b1-0x6b3 hold the FIFO water marks is
- * INFERRED only because they are the sole values the driver writes that
- * could be marks; which is which, and their units, are UNKNOWN. 0x6b0 and
- * 0x7b5 have no known meaning. Limitation: the model stores all five and
- * applies none of them. Its low-water mark stays ODSY_CFIFO_LOW_WATER.
+ * FIFO set-up registers. The IRIX kernels' command-FIFO set-up stores five
+ * doublewords whose high word names the register and the low word its
+ * value: 0x6b0 = 0, 0x6b1 = 256, 0x6b3 = 24144, 0x6b2 = 32192 and 0x7b5 =
+ * 1 (ESTABLISHED as the kernels' stores, and as the commands of the IRIX
+ * 6.5.7 standalone driver, whose constants give every value). Their
+ * meanings, ESTABLISHED by that driver: 0x6b0 is the FIFO's first tile in
+ * board memory, 0x6b1 its size in 2-bpp 16 x 16 tiles of 128 words each
+ * (256 tiles, a 128 KB FIFO of 32,768 words), 0x6b2 the high-water mark
+ * and 0x6b3 the low-water mark, both in 32-bit words of fill, and 0x7b5 = 1
+ * takes the FIFO out of bypass. The model compares the FIFO's level
+ * against a nonzero 0x6b2 as the high-water mark, for status bit 15 and
+ * flag bit 25; zero, as out of reset, is no high-water mark. It does not
+ * place the FIFO in board memory, so 0x6b0 is stored only, and it has no
+ * bypass, so neither is 0x7b5. 0x6b1 and 0x6b3 are stored only too:
+ * APPROXIMATION, the processor-interface credits keep the model's smaller
+ * depth (ODSY_CFIFO_DEPTH) rather than the FIFO's size, and the low-water
+ * mark stays the one matched to it (ODSY_CFIFO_LOW_WATER).
  */
 #define ODSY_REG_FIFO_SETUP_FIRST 0x6b0
 #define ODSY_REG_FIFO_SETUP_LAST 0x6b3
 #define ODSY_REG_FIFO_SETUP_7B5 0x7b5
+#define ODSY_FIFO_SETUP_HIGH_INDEX 2
 #define ODSY_FIFO_SETUP_7B5_INDEX 4
+
+/*
+ * 0x7f0, the hardware-sync timeout in board clocks; the kernels' FIFO
+ * set-up writes 10^9 after the program load, and when a hardware sync
+ * waits longer the board raises flags bit 1 (ESTABLISHED by the IRIX 6.5.7
+ * standalone driver). Limitation: the model has no hardware-sync wait --
+ * which command words are hardware syncs is not established, and every
+ * command it models completes in the command stream -- so the timeout is
+ * stored and can never expire, and flags bit 1 is never raised.
+ */
+#define ODSY_REG_SYNC_TIMEOUT 0x7f0
 
 /*
  * ODSY_INTR_FLAGS' low-water bit, the command-FIFO low-water interrupt
  * (the kernel's flags decode names it as the low-water flag bit). The IRIX
  * driver's high-water path sleeps the writing process, enables this source
- * and waits on it; it is raised when the FIFO's level falls to the
- * low-water mark (inferred from that role). The model raises it when the
- * waiting stores fall below ODSY_CFIFO_LOW_WATER. A store that does not
- * wait never lifts the level to the mark, so it raises nothing; the
+ * and waits on it; it is raised when the FIFO's level falls below the
+ * low-water mark (INFERRED from the name and that role). A store that does
+ * not wait never lifts the level to the mark, so it raises nothing; the
  * driver, finding the FIFO already below low water, sets the flag itself
  * through the flags register.
+ *
+ * Bit 25, FIFO high water by the same decode table, is raised when the
+ * level rises to the high-water mark. APPROXIMATION: that the flag is the
+ * comparison against 0x6b2 is INFERRED from its name only; no driver
+ * enables it, and the kernel's fatal-flag mask leaves it out.
  */
 #define ODSY_INTR_FIFO_LOW_WATER 0x00000200
+#define ODSY_INTR_FIFO_HIGH_WATER 0x02000000
 
 /*
  * SGI's MicroLAN control register, the layout the Bridge, the XBridge and
@@ -2520,25 +2553,50 @@ static void odyssey_update_irq(SGIOdysseyState *s)
     }
 }
 
-/* The command FIFO's level: the stores waiting for the board's work. */
-static guint odyssey_fifo_level(SGIOdysseyState *s)
+/*
+ * The command FIFO's level: the 32-bit words of the stores waiting for the
+ * board's work, a doubleword store counting two.
+ */
+static uint32_t odyssey_fifo_level(SGIOdysseyState *s)
 {
-    return s->work_queue ? s->work_queue->len : 0;
+    return s->work_words;
+}
+
+static uint32_t odyssey_store_words(unsigned size)
+{
+    return MAX(size / 4, 1);
+}
+
+/* The FIFO's high-water mark in words; zero is none. */
+static uint32_t odyssey_fifo_high_mark(SGIOdysseyState *s)
+{
+    return s->fifo_setup[ODSY_FIFO_SETUP_HIGH_INDEX];
 }
 
 /*
  * The FIFO's level went from 'before' to its current value. Falling below
- * the low-water mark latches the low-water flag whatever the enable mask
- * says; it reaches the driver only while the source is enabled. The
- * driver enables it from its high-water path and its handler disables it
+ * the low-water mark latches the low-water flag, and rising to the
+ * high-water mark the high-water flag, whatever the enable mask says; a
+ * flag reaches the driver only while its source is enabled. The driver
+ * enables low water from its high-water path and its handler disables it
  * again through ODSY_INTR_ENABLE_SET/_CLEAR, and the driver clears the
  * flag through ODSY_INTR_CLEAR.
  */
-static void odyssey_fifo_level_changed(SGIOdysseyState *s, guint before)
+static void odyssey_fifo_level_changed(SGIOdysseyState *s, uint32_t before)
 {
-    if (before >= ODSY_CFIFO_LOW_WATER &&
-        odyssey_fifo_level(s) < ODSY_CFIFO_LOW_WATER) {
-        s->intr_flags |= ODSY_INTR_FIFO_LOW_WATER;
+    uint32_t level = odyssey_fifo_level(s);
+    uint32_t low = ODSY_CFIFO_LOW_WATER;
+    uint32_t high = odyssey_fifo_high_mark(s);
+    uint32_t raised = 0;
+
+    if (before >= low && level < low) {
+        raised |= ODSY_INTR_FIFO_LOW_WATER;
+    }
+    if (high && before < high && level >= high) {
+        raised |= ODSY_INTR_FIFO_HIGH_WATER;
+    }
+    if (raised) {
+        s->intr_flags |= raised;
         odyssey_update_irq(s);
     }
 }
@@ -2938,11 +2996,14 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
         value = s->intr_enable;
         break;
     case ODSY_STATUS0:
-        /* The waiting stores are its level (odyssey_fifo_level()). */
+        /* The waiting words are its level (odyssey_fifo_level()). */
         value = ODSY_STATUS0_FIFO_ENABLED |
                 (odyssey_fifo_level(s) ? 0 : ODSY_STATUS0_FIFO_EMPTY) |
                 (odyssey_fifo_level(s) < ODSY_CFIFO_LOW_WATER ?
-                 ODSY_STATUS0_FIFO_LOW_WATER : 0);
+                 ODSY_STATUS0_FIFO_LOW_WATER : 0) |
+                (odyssey_fifo_high_mark(s) &&
+                 odyssey_fifo_level(s) >= odyssey_fifo_high_mark(s) ?
+                 ODSY_STATUS0_FIFO_HIGH_WATER : 0);
         break;
     case ODSY_CFIFO_SELFTEST:
         /*
@@ -11592,6 +11653,15 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
     case ODSY_REG_FIFO_SETUP_7B5:
         s->fifo_setup[ODSY_FIFO_SETUP_7B5_INDEX] = s->cmd_operand[0];
         break;
+    case ODSY_REG_SYNC_TIMEOUT:
+        s->sync_timeout = s->cmd_operand[0];
+        if (s->sync_timeout && !s->sync_timeout_reported) {
+            s->sync_timeout_reported = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: hardware-sync timeout "
+                          "%u is stored; no sync waits, so it never "
+                          "expires\n", s->sync_timeout);
+        }
+        break;
     case ODSY_GL_TEXCOORD_1F:
         s->tex_coord[0] = s->cmd_operand[0];
         s->tex_coord[1] = 0;
@@ -11989,7 +12059,7 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
     }
     if ((word >= ODSY_REG_FIFO_SETUP_FIRST &&
          word <= ODSY_REG_FIFO_SETUP_LAST) ||
-        word == ODSY_REG_FIFO_SETUP_7B5) {
+        word == ODSY_REG_FIFO_SETUP_7B5 || word == ODSY_REG_SYNC_TIMEOUT) {
         odyssey_cmd_start(s, word, 1);
         return;
     }
@@ -12644,19 +12714,25 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
 #define ODSY_WORK_QUEUE_MAX 65536
 
 /*
- * The command FIFO's depth, in stores. A processor's counted store gets
- * its credit back when the board takes it into the FIFO, not when its
- * work runs (the Bedrock PI datasheet's sizing, inferred: the IRIX
- * 6.5.30 IP35 kernel allows 32 or 188 doublewords in flight without a
- * wait and gives the board 25 ms to acknowledge any more, which fits a
- * FIFO that takes words as they arrive and drains them behind). The
- * waiting stores are the FIFO: the oldest ODSY_CFIFO_DEPTH of them are in
- * it and have been credited, and a store behind them keeps its credit
+ * The depth, in stores, within which waiting stores have their credits.
+ * A processor's counted store gets its credit back when the board takes
+ * it into the FIFO, not when its work runs (the Bedrock PI datasheet's
+ * sizing, inferred: the IRIX 6.5.30 IP35 kernel allows 32 or 188
+ * doublewords in flight without a wait and gives the board 25 ms to
+ * acknowledge any more, which fits a FIFO that takes words as they arrive
+ * and drains them behind). The oldest ODSY_CFIFO_DEPTH waiting stores are
+ * in the FIFO and credited, and a store behind them keeps its credit
  * until the work ahead has run and it moves up. A store that does not
- * wait passes through the FIFO at once and is credited at once. The
- * depth is unknown; 64 is the model's choice, and with the usual 100
- * credits and bias 68 it lets 96 stores wait before the PI stops the
- * writer.
+ * wait passes through the FIFO at once and is credited at once.
+ *
+ * APPROXIMATION: the kernel's set-up gives the FIFO 32,768 words (0x6b1),
+ * but the model keeps 64 stores. Its board is far slower than a real one,
+ * and the PI's credit back-pressure is what makes the kernel sleep the
+ * writer while the board catches up; with credits for a full FIFO's
+ * backlog the Fuel V12's fill-z-trilinear waited up to 14.5 s and forced
+ * swaps (the PI datasheet's model choices for the sleep path). With the
+ * usual 100 credits and bias 68, 96 stores wait before the PI stops the
+ * writer. Test: sn1/odyssey/command-work-credit-depth-ignores-setup.
  */
 #define ODSY_CFIFO_DEPTH 64
 
@@ -12720,7 +12796,6 @@ static void odyssey_work_admit(SGIOdysseyState *s)
         OdysseyQueuedStore *q = &g_array_index(s->work_queue,
                                                OdysseyQueuedStore,
                                                s->work_in_fifo);
-
         if (q->owed) {
             if (s->pi) {
                 sgi_pi_gfx_repay_credits(s->pi, s->parent_obj.slot, 1);
@@ -12741,13 +12816,17 @@ static void odyssey_work_append(SGIOdysseyState *s, hwaddr addr,
         .queued_at = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
     };
 
+    uint32_t before = odyssey_fifo_level(s);
+
     g_array_append_val(s->work_queue, q);
+    s->work_words += odyssey_store_words(size);
     odyssey_work_admit(s);
     if (counted && s->work_in_fifo < s->work_queue->len && s->pi) {
         g_array_index(s->work_queue, OdysseyQueuedStore,
                       s->work_queue->len - 1).owed = true;
         sgi_pi_gfx_owe_credits(s->pi, s->parent_obj.slot, 1);
     }
+    odyssey_fifo_level_changed(s, before);
     sgi_head_work_schedule(&s->work);
 }
 
@@ -12767,13 +12846,16 @@ static void odyssey_work_step(void *opaque, SGIHeadWorkBudget *b)
     while (s->work_queue->len) {
         OdysseyQueuedStore q =
             g_array_index(s->work_queue, OdysseyQueuedStore, 0);
+        uint32_t before = odyssey_fifo_level(s);
+        uint32_t words = odyssey_store_words(q.size);
 
         g_array_remove_index(s->work_queue, 0);
         /* The store leaves the FIFO, and the next waiting one moves up. */
         s->work_in_fifo--;
+        s->work_words -= words;
         odyssey_work_admit(s);
         odyssey_write_dispatch(s, q.addr, q.value, q.size);
-        odyssey_fifo_level_changed(s, s->work_queue->len + 1);
+        odyssey_fifo_level_changed(s, before);
         if (sgi_head_work_spent(b)) {
             break;
         }
@@ -13001,6 +13083,7 @@ static void odyssey_work_reset(SGIOdysseyState *s)
     }
     g_array_set_size(s->work_queue, 0);
     s->work_in_fifo = 0;
+    s->work_words = 0;
     s->work_queued_until = 0;
     sgi_head_work_idle(&s->work);
 }
@@ -13183,6 +13266,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->memory_control = 0;
     s->flctl_target = 0;
     memset(s->fifo_setup, 0, sizeof(s->fifo_setup));
+    s->sync_timeout = 0;
     s->sw_token = 0;
     s->route_dest_upper = 0;
     s->route_dest_lower = 0;
@@ -14005,7 +14089,8 @@ static void odyssey_test_get_work_waiting(Object *obj, Visitor *v,
                                           const char *name, void *opaque,
                                           Error **errp)
 {
-    uint32_t value = odyssey_fifo_level(SGI_ODYSSEY(obj));
+    SGIOdysseyState *s = SGI_ODYSSEY(obj);
+    uint32_t value = s->work_queue ? s->work_queue->len : 0;
 
     visit_type_uint32(v, name, &value, errp);
 }
@@ -14106,6 +14191,8 @@ static void odyssey_instance_init(Object *obj)
         object_property_add_uint32_ptr(obj, name, &s->fifo_setup[i],
                                        OBJ_PROP_FLAG_READ);
     }
+    object_property_add_uint32_ptr(obj, "x-test-sync-timeout",
+                                   &s->sync_timeout, OBJ_PROP_FLAG_READ);
     /* Synthetic model DID byte; this says nothing about physical WID rules. */
     object_property_add(obj, "x-test-did", "uint32", odyssey_test_get_did,
                         odyssey_test_set_did, NULL, NULL);
@@ -14564,6 +14651,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32(memory_control, SGIOdysseyState),
         VMSTATE_UINT32(flctl_target, SGIOdysseyState),
         VMSTATE_UINT32_ARRAY(fifo_setup, SGIOdysseyState, 5),
+        VMSTATE_UINT32(sync_timeout, SGIOdysseyState),
         VMSTATE_UINT32(sw_token, SGIOdysseyState),
         VMSTATE_UINT32(route_dest_upper, SGIOdysseyState),
         VMSTATE_UINT32(route_dest_lower, SGIOdysseyState),
