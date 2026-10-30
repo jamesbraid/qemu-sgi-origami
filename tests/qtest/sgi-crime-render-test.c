@@ -19772,6 +19772,882 @@ static void test_stipple_nonzero_interval(void)
     qtest_quit(s);
 }
 
+typedef struct GLSpanCase {
+    Shape pixels;
+    int start, end, row, ox, oy, invalid_color_tile;
+    unsigned buffer, direction, draw, stipple, pattern, alpha, blend, logic;
+    uint32_t prefix;
+    uint32_t foreground, plane, constant;
+    uint32_t clip;
+    uint64_t scissor, screens[5];
+    bool varying_sz;
+    SZCase sz;
+} GLSpanCase;
+
+static QTestState *gl_span_machine(const char *extra)
+{
+    QTestState *s = start_profile_ram("legacy-software", false, true, false,
+                                      extra);
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    triangle_irq_baseline(s);
+    return s;
+}
+
+static void gl_span_failure(QTestState *s, const Shape *c, const char *path,
+                              uint64_t address, uint64_t value, unsigned size)
+{
+    const unsigned registers[] = { 0x10, 0x18, 0x40, 0x48, 0x250, 0x258 };
+    uint64_t before[ARRAY_SIZE(registers)];
+
+    for (unsigned n = 0; n < ARRAY_SIZE(registers); n++) {
+        before[n] = qtest_readq(s, CRIME + registers[n]);
+    }
+    sz_atomic_failure(s, c, path, address, value, size);
+    for (unsigned n = 0; n < ARRAY_SIZE(registers); n++) {
+        g_assert_cmphex(qtest_readq(s, CRIME + registers[n]), ==, before[n]);
+    }
+    triangle_irq_levels(s, 1);
+}
+
+static GLSpanCase gl_span_case(void)
+{
+    GLSpanCase v = {
+        .pixels = { .width = 40, .height = 3, .bytes = 4, .old = 0x9d3b76a5 },
+        .start = 1, .end = 33, .row = 1, .direction = 2,
+        .buffer = 0x228, .draw = 0x451278, .stipple = 0x001f0000,
+        .pattern = 0x80000001, .foreground = 0x13579bdf,
+        .plane = UINT32_MAX, .constant = 0x9b2371d6,
+        .alpha = 0x740, .blend = 0x45, .logic = 6,
+        .invalid_color_tile = -1,
+    };
+
+    v.sz = sz_case();
+    return v;
+}
+
+static bool gl_span_pattern(const GLSpanCase *v, unsigned sample)
+{
+    unsigned k = (v->stipple >> 24) & 31;
+    unsigned m = (v->stipple >> 16) & 31;
+    unsigned r = (v->stipple >> 8) & 255;
+    unsigned repeat = (v->stipple & 255) + 1;
+    unsigned rank = (sample + r) / repeat;
+
+    return !!(v->pattern & (1U << (31 - k - rank % (m - k + 1))));
+}
+
+static uint32_t gl_span_old_sz(const GLSpanCase *v, unsigned x)
+{
+    return v->varying_sz ?
+        ((v->sz.old & 0xff000000) ^ ((x & 1) << 24)) |
+        ((v->sz.old & 0xffffff) + x % 3) : v->sz.old;
+}
+
+static bool gl_span_visible(const GLSpanCase *v, int x, int y)
+{
+    bool screen = !(v->clip & 0x3e0);
+
+    for (unsigned n = 0; n < 5; n++) {
+        if (v->clip & (1U << (5 + n))) {
+            screen |= inside_bounds(v->screens[n], x, y) ==
+                      !!(v->clip & (1U << n));
+        }
+    }
+    return x >= 0 && x < 2048 && y >= 0 && y < 2048 && screen &&
+        (!(v->draw & 0x100000) ||
+         inside_bounds(v->scissor, x - v->ox, y - v->oy));
+}
+
+static Shape gl_span_program(QTestState *s, const GLSpanCase *v)
+{
+    Shape c = v->pixels;
+    int endpoint[] = { v->start, v->end };
+
+    gl_rectangle_prepare(s, v->buffer, c.bank);
+    c.bytes = 1U << ((v->buffer >> 8) & 3);
+    c.old &= UINT32_MAX >> (32 - 8 * c.bytes);
+    map_region(s, c.bank, c.bytes, c.x, c.y,
+               c.x + c.width - 1, c.y + c.height - 1);
+    shape_memory(s, &c, NULL);
+    qtest_writel(s, DE + 0x60, 0x03000000 | v->direction << 16);
+    qtest_writel(s, DE + 0x58, xy((uint16_t)v->ox, (uint16_t)v->oy));
+    for (unsigned n = 0; n < 2; n++) {
+        int64_t x = 64 * ((int64_t)endpoint[n] - v->ox);
+        int64_t y = 64 * ((int64_t)v->row - v->oy);
+
+        g_assert_cmpint(x, >=, 0);
+        g_assert_cmpint(x, <=, 0x7ffff);
+        g_assert_cmpint(y, >=, 0);
+        g_assert_cmpint(y, <=, 0x7ffff);
+        qtest_writeq(s, DE + 0x80 + 8 * n,
+            (uint64_t)(v->prefix + x) << 32 | (v->prefix + y));
+    }
+    qtest_writel(s, DE + 0x18, v->draw);
+    qtest_writel(s, DE + 0xc0, v->stipple);
+    qtest_writel(s, DE + 0xc4, v->pattern);
+    qtest_writel(s, DE + 0xd0, v->foreground);
+    qtest_writel(s, DE + 0xd8, 0xdeadbeef);
+    qtest_writel(s, DE + 0x198, v->alpha);
+    qtest_writel(s, DE + 0x1a0, v->constant);
+    qtest_writel(s, DE + 0x1a8, v->blend);
+    qtest_writel(s, DE + 0x1b0, v->logic);
+    qtest_writel(s, DE + 0x1b8, v->plane);
+    qtest_writel(s, DE + 0x10, v->clip);
+    qtest_writeq(s, DE + 0x48, v->scissor);
+    for (unsigned n = 0; n < 5; n++) {
+        qtest_writeq(s, DE + 0x20 + 8 * n, v->screens[n]);
+    }
+    qtest_writel(s, DE + 0x1c0, v->sz.control);
+    qtest_writel(s, DE + 0x1e0, v->sz.stencil);
+    qtest_writel(s, DE + 0x1e8, v->sz.mask);
+    qtest_writeq(s, DE + 0x1c8, v->sz.start);
+    qtest_writeq(s, DE + 0x1d0, v->sz.dx);
+    qtest_writeq(s, DE + 0x1d8, v->sz.dy);
+    if (v->draw & 5) {
+        g_assert_cmpuint(c.bank, <, 2);
+        map_region(s, 2, 4, c.x, c.y, c.x + c.width - 1,
+                   c.y + c.height - 1);
+        for (unsigned y = 0; y < c.height; y++) {
+            for (unsigned x = 0; x < c.width; x++) {
+                pixel_write(s, pixel_address(2, c.x + x, c.y + y, 4), 4,
+                            gl_span_old_sz(v, c.x + x));
+            }
+        }
+    }
+    return c;
+}
+
+static void gl_span_check(QTestState *s, const GLSpanCase *v, const Shape *c)
+{
+    g_autofree uint32_t *expected = g_new(uint32_t, c->width * c->height);
+    SZCase z = v->sz;
+
+    z.draw = v->draw;
+    for (unsigned y = 0; y < c->height; y++) {
+        for (unsigned x = 0; x < c->width; x++) {
+            int px = c->x + x, py = c->y + y;
+            uint32_t old_sz = gl_span_old_sz(v, px), next_sz = old_sz;
+            bool color = true;
+            bool selected = py == v->row && px >= MIN(v->start, v->end) &&
+                px <= MAX(v->start, v->end) &&
+                gl_span_pattern(v, abs(px - v->start)) &&
+                gl_span_visible(v, px, py) &&
+                (!(v->draw & 0x800) || sz_reference_compare(v->alpha >> 8,
+                    v->foreground & 255, v->alpha & 255));
+
+            expected[y * c->width + x] = c->old;
+            if (selected && (v->draw & 5)) {
+                next_sz = sz_reference(&z, old_sz,
+                    sz_reference_depth(z.start), &color);
+            }
+            if (selected && color &&
+                (int)((py / 128) * 16 + px * c->bytes / 512) !=
+                v->invalid_color_tile) {
+                expected[y * c->width + x] = pipeline_reference(v->buffer,
+                    v->foreground, c->old, v->constant, v->blend, v->draw,
+                    v->logic, v->plane, px, py);
+            }
+            if (v->draw & 5) {
+                g_assert_cmphex(pixel_read(s,
+                    pixel_address(2, px, py, 4), 4), ==, next_sz);
+            }
+        }
+    }
+    shape_memory(s, c, expected);
+}
+
+static void gl_span_commit(QTestState *s, const GLSpanCase *v)
+{
+    Shape c = gl_span_program(s, v);
+    unsigned head = ifb_next(s);
+
+    g_assert_cmpint(memtx_writel(s, DE + 0x8c4, v->pattern), ==, MEMTX_OK);
+    ifb_head(s, (head + 1) & 63);
+    gl_span_check(s, v, &c);
+    g_assert_cmphex(qtest_readl(s, DE + 0xc0), ==, v->stipple);
+    g_assert_cmphex(qtest_readl(s, DE + 0xc4), ==, v->pattern);
+}
+
+static void test_gl_stipple_span_geometry(void)
+{
+    const unsigned lengths[] = { 1, 2, 31, 32, 33, 67, 129, 8192 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned d = 0; d < 4; d++) {
+        for (unsigned n = 0; n < ARRAY_SIZE(lengths); n++) {
+            GLSpanCase v = gl_span_case();
+            unsigned length = lengths[n];
+
+            v.direction = d;
+            v.start = d & 1 ? length + 1 : 2;
+            v.end = d & 1 ? 2 : length + 1;
+            v.ox = -4096;
+            v.oy = -4096;
+            v.pixels.width = 136;
+            v.stipple = 0x02050102;
+            v.pattern = 0x28000000;
+            v.prefix = n % 3 == 0 ? 0 : n % 3 == 1 ? 0x00800000 : 0x48000000;
+            if (length == 8192) {
+                v.start = d & 1 ? 4095 : -4096;
+                v.end = d & 1 ? -4096 : 4095;
+                v.pixels.width = 2048;
+            }
+            gl_span_commit(s, &v);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_stipple_span_patterns(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned d = 0; d < 4; d++) {
+        for (unsigned bit = 0; bit < 32; bit++) {
+            GLSpanCase v = gl_span_case();
+            uint32_t expected[35];
+            Shape c;
+
+            v.pixels.width = 35;
+            v.pixels.height = 1;
+            v.pixels.y = 1;
+            v.direction = d;
+            v.start = d & 1 ? 32 : 0;
+            v.end = d & 1 ? 0 : 32;
+            v.pattern = 1U << (31 - bit);
+            c = gl_span_program(s, &v);
+            for (unsigned x = 0; x < 35; x++) {
+                bool hit = x == (d & 1 ? 32 - bit : bit) ||
+                           (!bit && x == (d & 1 ? 0 : 32));
+
+                expected[x] = c.old ^ (hit ? v.foreground : 0);
+            }
+            g_assert_cmpint(memtx_writel(s, DE + 0x8c4, v.pattern), ==,
+                            MEMTX_OK);
+            shape_memory(s, &c, expected);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_stipple_span_phase(void)
+{
+    const uint32_t modes[] = {
+        0x001f0000, 0x02040102, 0x05050307, 0x0305feff, 0x1f1f0000,
+    };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(modes); n++) {
+        for (unsigned d = 0; d < 4; d++) {
+            for (unsigned shift = 0; shift < 4; shift++) {
+                GLSpanCase v = gl_span_case();
+                unsigned length = n == 3 ? 800 : 81;
+                int dx = d & 1 ? -1 : 1;
+
+                v.direction = d;
+                v.start = (d & 1 ? length - 4 : -3) + (int)shift;
+                v.end = v.start + dx * ((int)length - 1);
+                v.ox = -4096 + shift;
+                v.oy = -4096;
+                v.pixels.width = n == 3 ? 808 : 88;
+                v.stipple = modes[n];
+                v.pattern = 0xa961c381;
+                v.draw |= 0x100000;
+                v.scissor = bounds(4100, 4097, 4140, 4098);
+                v.clip = 0x63;
+                v.screens[0] = bounds(0, 0, 18, 3);
+                v.screens[1] = bounds(23, 0, 70, 3);
+                if (n == 3) {
+                    v.draw &= ~0x100000U;
+                    v.clip = 0;
+                }
+                Shape c = gl_span_program(s, &v);
+                g_autofree uint32_t *old = g_new(uint32_t, c.width * c.height);
+
+                g_assert_cmpint(memtx_writel(s, DE + 0x8c4, v.pattern), ==,
+                                MEMTX_OK);
+                gl_span_check(s, &v, &c);
+                for (unsigned i = 0; i < c.width * c.height; i++) {
+                    old[i] = c.old;
+                }
+                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+                shape_memory(s, &c, old);
+                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+                gl_span_check(s, &v, &c);
+                g_assert_cmphex(qtest_readl(s, DE + 0xc0), ==, v.stipple);
+                g_assert_cmphex(qtest_readl(s, DE + 0xc4), ==, v.pattern);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_stipple_span_output(gconstpointer selection)
+{
+    QTestState *s = start_indexed_state();
+    unsigned mode = gl_rectangle_modes[GPOINTER_TO_UINT(selection)];
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned logic = 0; logic < 16; logic++) {
+            for (unsigned lanes = 0; lanes < 16; lanes++) {
+                GLSpanCase v = gl_span_case();
+
+                v.pixels.width = v.pixels.height = 4;
+                v.pixels.bank = bank;
+                v.buffer = mode | (logic & 4 ? 0xffffe000U : 0);
+                v.direction = logic % 4;
+                v.start = v.direction & 1 ? 3 : 0;
+                v.end = v.direction & 1 ? 0 : 3;
+                v.row = (logic >> 2) & 3;
+                v.pattern = 0xb0000000;
+                v.foreground = 0x13579b80;
+                v.draw = 0x440280 | lanes << 3 |
+                    (logic & 1 ? 0x10000 : 0) | (lanes & 1 ? 0x1000 : 0) |
+                    (logic & 2 ? 0x100 : 0) | (lanes & 2 ? 0x400 : 0) |
+                    (logic & 8 ? 2 : 0);
+                v.blend = v.draw & 0x400 ? ((logic + lanes) % 5) << 8 |
+                          (logic % 13) << 4 | lanes % 12 : UINT32_MAX;
+                v.logic = logic;
+                v.plane = lanes & 4 ? 0xa579b3e1 : UINT32_MAX;
+                gl_span_commit(s, &v);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_stipple_span_alpha(void)
+{
+    const unsigned alphas[] = { 0, 1, 127, 128, 254, 255 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned m = 0; m < ARRAY_SIZE(gl_rectangle_modes); m++) {
+        for (unsigned f = 0; f < 8; f++) {
+            for (unsigned a = 0; a < ARRAY_SIZE(alphas); a++) {
+                for (unsigned r = 0; r < 3; r++) {
+                    GLSpanCase v = gl_span_case();
+
+                    v.pixels.width = v.pixels.height = 4;
+                    v.pixels.bank = m % 3;
+                    v.buffer = gl_rectangle_modes[m];
+                    v.start = 0;
+                    v.end = 3;
+                    v.pattern = 0xa0000000;
+                    v.foreground = 0x13579b00 | alphas[a];
+                    v.draw = 0x451d78;
+                    v.alpha = f << 8 | (r == 0 ? 0 : r == 1 ? alphas[a] : 255);
+                    gl_span_commit(s, &v);
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_stipple_span_sz(void)
+{
+    QTestState *s = start_indexed_state();
+    GLSpanCase v = gl_span_case();
+
+    v.pixels.width = v.pixels.height = 4;
+    v.start = 0;
+    v.end = 3;
+    v.pattern = 0xb0000000;
+    v.draw = 0x45177f;
+    v.foreground = 0x1153c940;
+    v.varying_sz = true;
+    for (unsigned f = 0; f < 8; f++) {
+        for (unsigned z = 16; z <= 18; z++) {
+            v.buffer = gl_rectangle_modes[(f + z) % 10];
+            v.pixels.bank = f % 2;
+            v.sz.control = f << 25;
+            v.sz.start = z * 4096;
+            v.sz.stencil = 0x62ff0003 | f << 12;
+            gl_span_commit(s, &v);
+        }
+    }
+    for (unsigned outcome = 0; outcome < 3; outcome++) {
+        for (unsigned op = 0; op < 6; op++) {
+            v.sz.control = (outcome == 1 ? 0 : 7) << 25;
+            v.sz.stencil = 0x62ff0000 | (outcome == 0 ? 0 : 7) << 12 |
+                           op << 8 | op << 4 | op;
+            v.sz.mask = 0x5a;
+            gl_span_commit(s, &v);
+        }
+    }
+    v.sz = sz_case();
+    for (unsigned comparison = 5; comparison <= 7; comparison += 2) {
+        for (unsigned replace = 0; replace < 2; replace++) {
+            for (unsigned write = 0; write < 2; write++) {
+                for (unsigned pass = 0; pass < 2; pass++) {
+                    v.draw = 0x45177d | write << 1;
+                    v.sz.mask = write ? 255 : 0;
+                    v.sz.control = (pass ? 7 : 0) << 25 | 0x01000010;
+                    v.sz.stencil = 0x62ff0002 | comparison << 12 |
+                                   (replace ? 0x20 : 0);
+                    v.sz.old = replace ? 0x62000011 : 0x53000011;
+                    gl_span_commit(s, &v);
+                }
+            }
+        }
+    }
+    v.sz = sz_case();
+    v.draw = 0x451fff;
+    v.alpha = 0x240;
+    for (unsigned edge = 0; edge < 2; edge++) {
+        v.sz.start = edge ? INT64_C(1) << 36 : -(INT64_C(1) << 36);
+        gl_span_commit(s, &v);
+    }
+    v.draw = 0x451379;
+    v.sz.control = 0xfeffffff;
+    v.sz.stencil = 0x62ff7003;
+    v.sz.start = INT64_MIN;
+    v.sz.dx = INT64_MAX;
+    v.sz.dy = -1;
+    gl_span_commit(s, &v);
+    qtest_quit(s);
+}
+
+static void test_gl_stipple_span_failures(gconstpointer selection)
+{
+    const struct {
+        unsigned offset, width;
+        uint64_t value;
+    } faults[] = {
+        { 0x60, 4, 0x03020001 }, { 0x60, 4, 0x03060000 },
+        { 0x84, 4, 65 }, { 0x8c, 4, 128 }, { 0x80, 4, 1 },
+        { 0x88, 4, 0x480c0400 }, { 0x60, 4, 0x03030000 },
+        { 0x18, 4, 0x553fff }, { 0x18, 4, 0x555fff },
+        { 0x18, 4, 0x559fff }, { 0x18, 4, 0x571fff },
+        { 0x18, 4, 0x5d1fff }, { 0x18, 4, 0x751fff },
+        { 0xc0, 4, 0x80000000 }, { 0xc0, 4, 0x40000000 },
+        { 0xc0, 4, 0x20000000 }, { 0xc0, 4, 0x00200000 },
+        { 0xc0, 4, 0x00400000 }, { 0xc0, 4, 0x00800000 },
+        { 0xc0, 4, 0x08070000 }, { 0xc0, 4, 0x03050201 },
+        { 8, 4, 0x234 }, { 8, 4, 0x328 }, { 8, 4, 0x1228 },
+        { 8, 4, 0x200 }, { 0x60, 4, 0 }, { 0x60, 4, 0x01000000 },
+        { 0x1a8, 4, 0x500 }, { 0x1a8, 4, 0xd0 },
+        { 0x1a8, 4, 0xc }, { 0x1a8, 4, 0x1000 },
+        { 0x198, 4, 0x800 }, { 0x198, 4, 0x1000 },
+        { 0x1c8, 8, (UINT64_C(1) << 36) + 1 },
+        { 0x1c8, 8, -(UINT64_C(1) << 36) - 1 },
+        { 0x1d0, 8, 1 }, { 0x1d8, 8, UINT64_MAX },
+        { 0x1c0, 4, 0x10000000 }, { 0x1e0, 4, 0x62ff7006 },
+        { 0x1e8, 4, 0x100 }, { 0x10, 4, 0x800 },
+        { 0x10, 4, 0x41 }, { 0x48, 8, 0x0002000200010003ULL },
+        { 0x1b0, 4, 16 },
+    };
+    unsigned hidden = GPOINTER_TO_UINT(selection);
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-span-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = gl_span_machine("");
+
+    for (unsigned n = 0; n < ARRAY_SIZE(faults); n++) {
+        GLSpanCase v = gl_span_case();
+        Shape c;
+
+        v.pixels.width = v.pixels.height = 4;
+        v.start = 0;
+        v.end = 3;
+        v.draw = 0x551fff;
+        v.pattern = hidden ? UINT32_MAX : 0;
+        v.alpha = hidden == 2 ? 0 : 0x740;
+        v.plane = hidden ? UINT32_MAX : 0;
+        v.scissor = hidden == 1 ? bounds(10, 10, 11, 11) : bounds(0, 0, 4, 4);
+        c = gl_span_program(s, &v);
+        g_assert_cmpint(memtx_write(s, DE + faults[n].offset,
+                                    faults[n].value, faults[n].width), ==,
+                        MEMTX_OK);
+        gl_span_failure(s, &c, path, DE + 0x8c4, v.pattern, 4);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_stipple_span_mapping(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-span-map-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned kind = 0; kind < 10; kind++) {
+        g_autofree char *log = g_strdup_printf("%s/error-%u", dir, kind);
+        g_autofree char *args = g_strdup_printf("-D %s", log);
+        g_autofree char *contents = NULL;
+        QTestState *s = gl_span_machine(args);
+        GLSpanCase v = gl_span_case();
+        Shape c;
+        bool failed = kind == 1 || kind == 2 || kind == 4 || kind == 5;
+
+        v.pixels.x = 124;
+        v.pixels.width = 10;
+        v.start = 126;
+        v.end = 130;
+        v.draw = 0x45177f;
+        v.pattern = kind ? 0xe0000000 : 0xc0000000;
+        v.sz.stencil = 0x62ff7003;
+        if (kind >= 4) {
+            v.pixels.x = 0;
+            v.pixels.width = 132;
+            v.start = 0;
+            v.end = 130;
+            v.pattern = 0x80000000;
+        }
+        if (kind == 8) {
+            v.draw |= 0x80;
+            v.plane = 0;
+        } else if (kind == 9) {
+            v.draw |= 0x800;
+            v.alpha = 0;
+        }
+        c = gl_span_program(s, &v);
+        if (kind >= 8) {
+            tile(s, 0, 0, 0x400);
+            tile(s, 0, 1, 0x400);
+            if (kind == 9) {
+                qtest_writeq(s, RE + 0x1400, 0);
+            }
+        }
+        if (kind <= 2) {
+            tile(s, 0, 1, 0x400);
+            qtest_writeq(s, RE + 0x1400,
+                qtest_readq(s, RE + 0x1400) & ~(UINT64_C(0x8000) << 32));
+        } else if (kind == 3 || kind == 6) {
+            qtest_writeq(s, RE + 0x1000,
+                qtest_readq(s, RE + 0x1000) & ~(UINT64_C(0x8000) << 32));
+            v.invalid_color_tile = 1;
+        } else if (kind == 4) {
+            tile(s, 0, 1, page_for(0, 0));
+        } else if (kind == 5) {
+            tile(s, 2, 0, page_for(0, 0));
+            tile(s, 2, 1, page_for(0, 1));
+        }
+        if (kind == 1) {
+            tile(s, 2, 1, page_for(2, 1));
+        }
+        if (kind == 7) {
+            v.pattern = 0;
+            qtest_writel(s, DE + 0xc4, 0);
+            tile(s, 0, 0, 0x400);
+            qtest_writeq(s, RE + 0x1400, 0);
+        }
+        if (failed) {
+            gl_span_failure(s, &c, path, DE + 0x8c4, v.pattern, 4);
+        } else {
+            g_assert_cmpint(memtx_writel(s, DE + 0x8c4, v.pattern), ==,
+                            MEMTX_OK);
+            gl_span_check(s, &v, &c);
+        }
+        qtest_quit(s);
+        g_assert_true(g_file_get_contents(log, &contents, NULL, NULL));
+        if (kind == 3 || kind == 6) {
+            g_assert_nonnull(strstr(contents,
+                "rectangle suppressed 1 invalid destination fragments"));
+        } else {
+            g_assert_null(strstr(contents, "suppressed"));
+        }
+        g_unlink(log);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_stipple_span_starts(void)
+{
+    Register forms[64];
+    unsigned count = gl_transfer_starts(forms);
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-span-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = gl_span_machine("");
+
+    for (unsigned n = 0; n < count; n++) {
+        const Register *r = &forms[n];
+        GLSpanCase v = gl_span_case();
+        Shape c;
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS], value;
+        bool pair = r->width == 8 && (r->offset == 0x70 ||
+                    r->offset == 0xa8 || r->offset == 0xc0);
+        unsigned head;
+
+        if (r->offset == 0xb0 || r->offset == 0xb4) {
+            continue;
+        }
+        v.pixels.width = v.pixels.height = 4;
+        v.start = 0;
+        v.end = 3;
+        v.pattern = 0xb0000000;
+        c = gl_span_program(s, &v);
+        save_paired_renderer(s, path, before);
+        value = r->offset == 0x1f0 ? 0xdeadbeef : before[192 + r->offset / 4];
+        if (pair) {
+            value = value << 32 | before[192 + r->offset / 4 + 1];
+        }
+        if (r->offset != 0x1f0) {
+            g_assert_cmpint(memtx_write(s, DE + r->offset,
+                value ^ (pair ? 0x100000001000ULL : 0x1000), r->width), ==,
+                MEMTX_OK);
+        }
+        head = ifb_next(s);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset,
+                                    value, r->width), ==, MEMTX_OK);
+        ifb_head(s, (head + 1) & 63);
+        gl_span_check(s, &v, &c);
+        save_paired_renderer(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    }
+    {
+        GLSpanCase v = gl_span_case();
+        Shape c;
+
+        v.pixels.width = v.pixels.height = 4;
+        v.start = 0;
+        v.end = 3;
+        v.pattern = 0x20000000;
+        v.stipple = 0x02030000;
+        c = gl_span_program(s, &v);
+        sz_initialize(s, &c, 0x53000011);
+        gl_span_failure(s, &c, path, DE + 0x8c0,
+                          0x08070000ffffffffULL, 8);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        gl_span_check(s, &v, &c);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_stipple_span_widths(void)
+{
+    const Register forms[] = {
+        { 0x8c0, 1 }, { 0x8c4, 2 }, { 0x8c1, 4 }, { 0x8c4, 8 },
+        { 0x8c1, 8 }, { 0x998, 4 }, { 0x9a8, 4 },
+        { 0x990, 4 }, { 0x994, 4 }, { 0x990, 8 },
+        { 0x8b0, 4 }, { 0x8b4, 4 }, { 0x9f0, 8 },
+        { 0x880, 4 }, { 0x884, 4 }, { 0x888, 4 }, { 0x88c, 4 },
+        { 0x890, 4 }, { 0x894, 4 }, { 0x880, 8 }, { 0x888, 8 }, { 0x890, 8 },
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-span-width-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = gl_span_machine("");
+    GLSpanCase v = gl_span_case();
+    Shape c;
+    uint64_t value;
+
+    v.pixels.width = v.pixels.height = 4;
+    v.start = 0;
+    v.end = 3;
+    c = gl_span_program(s, &v);
+    sz_initialize(s, &c, 0x53000011);
+    for (unsigned n = 0; n < ARRAY_SIZE(forms); n++) {
+        gl_span_failure(s, &c, path, DE + forms[n].offset,
+                          UINT64_MAX, forms[n].width);
+    }
+    for (unsigned offset = 0xc0; offset <= 0xc4; offset += 4) {
+        g_assert_cmpint(memtx_read(s, DE + 0x800 + offset, &value, 4), !=,
+                        MEMTX_OK);
+        g_assert_cmpint(memtx_read(s, DE + offset, &value, 8), !=, MEMTX_OK);
+        g_assert_cmphex(qtest_readl(s, DE + offset), ==,
+                        offset == 0xc0 ? v.stipple : v.pattern);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_stipple_span_coordinate_start_refusals(void)
+{
+    const Register forms[] = {
+        { 0x80, 4 }, { 0x84, 4 }, { 0x88, 4 }, { 0x8c, 4 },
+        { 0x90, 4 }, { 0x94, 4 },
+        { 0x80, 8 }, { 0x88, 8 }, { 0x90, 8 },
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-span-coord-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = gl_span_machine("");
+    GLSpanCase v = gl_span_case();
+    Shape c;
+    uint64_t raw[RENDER_WORDS];
+
+    v.pixels.width = v.pixels.height = 4;
+    v.start = 0;
+    v.end = 3;
+    v.pattern = 0xb0000000;
+    c = gl_span_program(s, &v);
+    sz_initialize(s, &c, 0x53000011);
+    save_paired_renderer(s, path, raw);
+    for (unsigned n = 0; n < ARRAY_SIZE(forms); n++) {
+        unsigned word = 192 + forms[n].offset / 4;
+        uint64_t value = raw[word];
+
+        /* Valid coordinates distinguish dispatch from geometry refusal. */
+        if (forms[n].width == 8) {
+            value = value << 32 | raw[word + 1];
+        }
+        gl_span_failure(s, &c, path, DE + 0x800 + forms[n].offset,
+                          value, forms[n].width);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static unsigned gl_span_start_family(const Register *r)
+{
+    if (r->offset == 0xc0 || r->offset == 0xc4 || r->offset == 0x1f0) {
+        return 0;
+    }
+    if (r->offset >= 0xe0 && r->offset <= 0x10c) {
+        return 3;
+    }
+    if (r->offset >= 0x1c0 && r->offset <= 0x1e8) {
+        return 4;
+    }
+    if (r->offset >= 0x120 && r->offset <= 0x15c) {
+        return 5;
+    }
+    return r->width == 8 ? 2 : 1;
+}
+
+static uint64_t gl_span_start_value(const GLSpanCase *v, const Register *r)
+{
+    switch (r->offset) {
+    case 8:
+        return v->buffer;
+    case 0x10:
+        return v->clip;
+    case 0x18:
+        return v->draw;
+    case 0x58:
+        return 0;
+    case 0x60:
+        return 0x03000000 | v->direction << 16;
+    case 0xc0:
+        return r->width == 8 ? (uint64_t)v->stipple << 32 | v->pattern :
+                              v->stipple;
+    case 0xc4:
+        return v->pattern;
+    case 0xd0:
+        return v->foreground;
+    case 0x1b0:
+        return v->logic;
+    default:
+        return r->width == 8 ? 0xa579b3e16c28f04dULL : 0xa579b3e1;
+    }
+}
+
+static void test_gl_stipple_span_migration(gconstpointer selection)
+{
+    Register forms[64];
+    unsigned count = gl_transfer_starts(forms);
+    const unsigned expected_forms[] = { 4, 17, 8, 12, 6, 9 };
+    unsigned family = GPOINTER_TO_UINT(selection), executed = 0;
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-span-save-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned n = 0; n < count; n++) {
+        const Register *r = &forms[n];
+        GLSpanCase v = gl_span_case();
+        Shape c;
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+        QTestState *from, *to;
+        uint32_t old[16];
+
+        if (r->offset == 0xb0 || r->offset == 0xb4 ||
+            gl_span_start_family(r) != family) {
+            continue;
+        }
+        from = start();
+        to = start_options("-incoming defer");
+        v.pixels.width = v.pixels.height = 4;
+        v.start = 0;
+        v.end = 3;
+        v.stipple = 0x02030000;
+        v.pattern = 0x20000000;
+        c = gl_span_program(from, &v);
+        if (!family) {
+            qtest_irq_intercept_out_named(from, "/machine/peripheral/crime",
+                                          "cpu-ip");
+            triangle_irq_baseline(from);
+            gl_span_failure(from, &c, path, DE + 0x8c0,
+                            0x08070000ffffffffULL, 8);
+        }
+        g_assert_cmpint(memtx_write(from, DE + 0x800 + r->offset,
+            gl_span_start_value(&v, r), r->width), ==, MEMTX_OK);
+        save_paired_renderer(from, path, before);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        sgi_migrate_stopped(from, uri);
+        sgi_wait_migration(to, "completed");
+        save_paired_renderer(to, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        gl_span_check(to, &v, &c);
+        g_assert_cmpint(memtx_writel(to, DE + 0x9f0, 0), ==, MEMTX_OK);
+        for (unsigned i = 0; i < 16; i++) {
+            old[i] = c.old;
+        }
+        shape_memory(to, &c, old);
+        qtest_system_reset(to);
+        shape_memory(to, &c, old);
+        qtest_quit(from);
+        qtest_quit(to);
+        g_unlink(sock);
+        executed++;
+    }
+    g_assert_cmpuint(executed, ==, expected_forms[family]);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_stipple_span_profiles(void)
+{
+    const Register forms[] = {
+        { 0xc0, 4 }, { 0xc4, 4 }, { 0xc0, 8 }, { 0x1f0, 4 },
+    };
+
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        QTestState *s = start_profile(legacy ? "legacy-software" : "1.5",
+                                      false, !legacy, "");
+
+        qtest_memset(s, 0x30000, 0x5a, 8);
+        for (unsigned n = 0; n < ARRAY_SIZE(forms); n++) {
+            g_assert_cmpint(memtx_write(s, DE + 0x800 + forms[n].offset,
+                0x001f000080000001ULL, forms[n].width), !=, MEMTX_OK);
+            g_assert_cmphex(qtest_readq(s, 0x30000), ==,
+                            0x5a5a5a5a5a5a5a5aULL);
+        }
+        qtest_quit(s);
+    }
+}
+
+static void test_gl_stipple_span_first(void)
+{
+    QTestState *s = start_indexed_state();
+    Shape c = gl_rectangle_prepare(s, 0x228, 0);
+    uint32_t expected[36];
+
+    c.y = 1;
+    c.width = 36;
+    c.height = 1;
+    shape_memory(s, &c, NULL);
+    sz_rectangle(s, 2, 1, 1, 33, 1);
+    qtest_writel(s, DE + 0x18, 0x451278);
+    qtest_writel(s, DE + 0x1b0, 6);
+    qtest_writel(s, DE + 0xd0, 0x13579bdf);
+    qtest_writel(s, DE + 0xd8, 0xdeadbeef);
+    qtest_writel(s, DE + 0xc0, 0x001f0000);
+    qtest_writel(s, DE + 0xc4, 0);
+    for (unsigned x = 0; x < 36; x++) {
+        expected[x] = c.old ^
+            (x == 1 || x == 32 || x == 33 ? 0x13579bdf : 0);
+    }
+    g_assert_cmpint(memtx_writel(s, DE + 0x8c4, 0x80000001), ==, MEMTX_OK);
+    shape_memory(s, &c, expected);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     take_group_paths(&argc, argv);
@@ -20521,5 +21397,65 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(1), test_gl_point_coordinate_migration);
     add_case("sgi/crime/render/stipple/nonzero-interval",
              test_stipple_nonzero_interval);
+    add_case("sgi/crime/render/gl-stipple-span/first",
+             test_gl_stipple_span_first);
+    add_case("sgi/crime/render/gl-stipple-span/geometry",
+             test_gl_stipple_span_geometry);
+    add_case("sgi/crime/render/gl-stipple-span/patterns",
+             test_gl_stipple_span_patterns);
+    add_case("sgi/crime/render/gl-stipple-span/phase",
+             test_gl_stipple_span_phase);
+    add_case("sgi/crime/render/gl-stipple-span/alpha",
+             test_gl_stipple_span_alpha);
+    add_case("sgi/crime/render/gl-stipple-span/sz",
+             test_gl_stipple_span_sz);
+    add_case("sgi/crime/render/gl-stipple-span/mapping",
+             test_gl_stipple_span_mapping);
+    add_case("sgi/crime/render/gl-stipple-span/starts",
+             test_gl_stipple_span_starts);
+    add_case("sgi/crime/render/gl-stipple-span/widths",
+             test_gl_stipple_span_widths);
+    add_case("sgi/crime/render/gl-stipple-span/coordinate-refusals",
+             test_gl_stipple_span_coordinate_start_refusals);
+    add_case("sgi/crime/render/gl-stipple-span/profiles",
+             test_gl_stipple_span_profiles);
+    add_data_case("sgi/crime/render/gl-stipple-span/failures/zero",
+                  GUINT_TO_POINTER(0), test_gl_stipple_span_failures);
+    add_data_case("sgi/crime/render/gl-stipple-span/failures/clipped",
+                  GUINT_TO_POINTER(1), test_gl_stipple_span_failures);
+    add_data_case("sgi/crime/render/gl-stipple-span/failures/alpha-never",
+                  GUINT_TO_POINTER(2), test_gl_stipple_span_failures);
+    add_data_case("sgi/crime/render/gl-stipple-span/output/0",
+                  GUINT_TO_POINTER(0), test_gl_stipple_span_output);
+    add_data_case("sgi/crime/render/gl-stipple-span/output/1",
+                  GUINT_TO_POINTER(1), test_gl_stipple_span_output);
+    add_data_case("sgi/crime/render/gl-stipple-span/output/2",
+                  GUINT_TO_POINTER(2), test_gl_stipple_span_output);
+    add_data_case("sgi/crime/render/gl-stipple-span/output/3",
+                  GUINT_TO_POINTER(3), test_gl_stipple_span_output);
+    add_data_case("sgi/crime/render/gl-stipple-span/output/4",
+                  GUINT_TO_POINTER(4), test_gl_stipple_span_output);
+    add_data_case("sgi/crime/render/gl-stipple-span/output/5",
+                  GUINT_TO_POINTER(5), test_gl_stipple_span_output);
+    add_data_case("sgi/crime/render/gl-stipple-span/output/6",
+                  GUINT_TO_POINTER(6), test_gl_stipple_span_output);
+    add_data_case("sgi/crime/render/gl-stipple-span/output/7",
+                  GUINT_TO_POINTER(7), test_gl_stipple_span_output);
+    add_data_case("sgi/crime/render/gl-stipple-span/output/8",
+                  GUINT_TO_POINTER(8), test_gl_stipple_span_output);
+    add_data_case("sgi/crime/render/gl-stipple-span/output/9",
+                  GUINT_TO_POINTER(9), test_gl_stipple_span_output);
+    add_data_case("sgi/crime/render/gl-stipple-span/migration/mode-pattern",
+                  GUINT_TO_POINTER(0), test_gl_stipple_span_migration);
+    add_data_case("sgi/crime/render/gl-stipple-span/migration/native",
+                  GUINT_TO_POINTER(1), test_gl_stipple_span_migration);
+    add_data_case("sgi/crime/render/gl-stipple-span/migration/masks-pairs",
+                  GUINT_TO_POINTER(2), test_gl_stipple_span_migration);
+    add_data_case("sgi/crime/render/gl-stipple-span/migration/shading",
+                  GUINT_TO_POINTER(3), test_gl_stipple_span_migration);
+    add_data_case("sgi/crime/render/gl-stipple-span/migration/sz",
+                  GUINT_TO_POINTER(4), test_gl_stipple_span_migration);
+    add_data_case("sgi/crime/render/gl-stipple-span/migration/texture",
+                  GUINT_TO_POINTER(5), test_gl_stipple_span_migration);
     return g_test_run();
 }
