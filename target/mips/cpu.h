@@ -39,6 +39,10 @@ typedef struct MIPSCPUConfig {
      * and Cause is left untouched by either.
      */
     bool warm_reset_reports_sr;
+    /* Warm entry only sets ERL/BEV/SR and saves ErrorEPC. */
+    bool warm_reset_preserves_registers;
+    /* Kseg0 takes its cache algorithm from Config.K0. */
+    bool kseg0_uses_config;
     /* Selected CPU models keep WatchLo across Soft Reset. */
     bool soft_reset_preserves_watch;
     /*
@@ -51,6 +55,8 @@ typedef struct MIPSCPUConfig {
     bool exception_breaks_ll_link;
     /* The LLAddr register is plain scratch that the link never writes. */
     bool lladdr_is_scratch;
+    /* LLAddr includes physical address bits below the translation page. */
+    bool lladdr_includes_page_offset;
     /*
      * A denormalized result with the flush bit clear raises Unimplemented
      * Operation.
@@ -115,6 +121,8 @@ typedef struct MIPSCPUConfig {
     bool xx_gates_cop1x_user_only;
     /* Status.XX gates MIPS IV non-COP1X instructions. */
     bool xx_gates_mips4;
+    /* Disabled MIPS IV FP instructions raise Unimplemented Operation. */
+    bool xx_mips4_fp_unimplemented;
     /*
      * Single and word format floating-point results clear upper 32 bits
      * when FR=1.
@@ -1577,6 +1585,11 @@ struct ArchCPU {
     /* Properties */
     bool is_big_endian;
     R10KCPUProfile *r10k_profile;
+    /* Required R5000 Config inputs; UINT32_MAX denotes an absent input. */
+    uint32_t r5000_ec;
+    uint32_t r5000_ep;
+    /* Load-time receipt marker, not guest or migrated state. */
+    bool r5000_modes_loaded;
     /*
      * Where an uncached or uncached-accelerated reference resolves when a
      * board links one: a second address space, selected by the

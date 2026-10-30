@@ -30,6 +30,7 @@
 #ifndef CONFIG_USER_ONLY
 #include "accel/tcg/probe.h"
 #include "exec/tlb-flags.h"
+#include "exec/target_page.h"
 
 target_ulong helper_store_transaction(CPUMIPSState *env, target_ulong value,
                                       target_ulong addr, uint32_t mem_idx,
@@ -72,6 +73,9 @@ target_ulong helper_##name(CPUMIPSState *env, target_ulong arg,               \
     assert(!(flags & TLB_INVALID_MASK));                                      \
     if (!env->cfg.lladdr_is_scratch) {                                        \
         env->CP0_LLAddr = full->phys_addr;                                    \
+        if (env->cfg.lladdr_includes_page_offset) {                           \
+            env->CP0_LLAddr |= arg & ~TARGET_PAGE_MASK;                       \
+        }                                                                    \
     }                                                                         \
     env->lladdr = arg;                                                        \
     return env->llval;                                                        \

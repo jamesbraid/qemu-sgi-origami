@@ -15334,6 +15334,7 @@ static void mips_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     ctx->watch_is_physical = env->cfg.watch_is_physical;
     ctx->has_cache_diagnostics = env->cfg.has_cache_diagnostics;
     ctx->xx_gates_mips4 = env->cfg.xx_gates_mips4;
+    ctx->xx_mips4_fp_unimplemented = env->cfg.xx_mips4_fp_unimplemented;
     ctx->fp_single_result_clears_upper =
         env->cfg.fp_single_result_clears_upper;
     ctx->fp_l_format_requires_64bit_mode =

@@ -20,9 +20,10 @@
  * mode always have it, which is exactly what the COP1X hflag tracks for that
  * processor; the MIPS IV instructions outside the COP1X opcode are refused
  * with a Reserved Instruction exception (R10000 User's Manual version 2.0,
- * section 17.4 and Table 17-4). Narrowed to the R10000: whether the VR5432
- * gates these instructions the same way has not been checked against its
- * manual, and widening the gate would change that model's behaviour.
+ * section 17.4 and Table 17-4). The R5000 selects the same ordinary
+ * instruction check from its published Status.XX rule. Floating-point
+ * exception selection remains independent below; other CPUs keep their
+ * existing behavior.
  */
 void check_mips4_enabled(DisasContext *ctx)
 {
@@ -68,7 +69,12 @@ void check_mips4_enabled_fp(DisasContext *ctx)
 {
     if (unlikely(ctx->xx_gates_mips4 &&
                  !(ctx->hflags & MIPS_HFLAG_COP1X))) {
-        gen_fp_unimplemented(ctx);
+        if (ctx->xx_mips4_fp_unimplemented) {
+            gen_fp_unimplemented(ctx);
+        } else {
+            /* R5000 functional refusal; exact silicon exception is held. */
+            gen_reserved_instruction(ctx);
+        }
     }
 }
 

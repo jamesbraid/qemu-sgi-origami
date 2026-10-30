@@ -100,13 +100,16 @@ static int get_seg_physical_address(CPUMIPSState *env, hwaddr *physical,
          * depends on the distinction while it runs with its data cache
          * standing in for memory.
          */
-        if (env->cfg.uncached_attribute && (cca == 2 || cca == 7)) {
+        if ((env->cfg.uncached_attribute || env->cfg.kseg0_uses_config) &&
+            (cca == 2 || cca == 7)) {
             attrs->mips_uncached = 1;
         }
         /* The algorithm decides which coherent request a miss makes. */
-        if (env->cfg.uncached_attribute) {
+        if (env->cfg.uncached_attribute || env->cfg.kseg0_uses_config) {
             attrs->mips_cca = cca;
-            attrs->requester_id = env->r10k->requester_id;
+            if (env->r10k) {
+                attrs->requester_id = env->r10k->requester_id;
+            }
         }
         *physical = physical_base | (real_address & segmask);
         *prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
@@ -251,10 +254,10 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
         }
 #endif
     } else if (address < KSEG1_BASE) {
-        /* The R10000 family uses Config.K0 rather than segment control. */
+        /* Selected legacy CPUs use Config.K0 rather than segment control. */
         uint16_t segctl = env->CP0_SegCtl1 >> 16;
 
-        if (env->r10k) {
+        if (env->r10k || env->cfg.kseg0_uses_config) {
             segctl = deposit32(segctl, CP0SC_C, 3, env->CP0_Config0 & 7);
         }
         ret = get_segctl_physical_address(env, physical, prot, real_address,

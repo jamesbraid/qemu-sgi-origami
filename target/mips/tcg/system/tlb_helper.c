@@ -1336,6 +1336,10 @@ hwaddr cpu_mips_translate_address(CPUMIPSState *env, target_ulong address,
 
 static void set_hflags_for_handler(CPUMIPSState *env)
 {
+    if (env->cfg.xx_gates_cop1x_user_only) {
+        /* Status already selects the handler's kernel/error mode. */
+        compute_hflags(env);
+    }
     /* Exception handlers are entered in 32-bit mode.  */
     env->hflags &= ~(MIPS_HFLAG_M16);
     /* ...except that microMIPS lets you choose.  */
@@ -1501,7 +1505,11 @@ void mips_cpu_do_interrupt(CPUState *cs)
         }
         goto set_error_EPC;
     case EXCP_NMI:
-        env->CP0_Status |= (1 << CP0St_NMI);
+        if (env->cfg.warm_reset_preserves_registers) {
+            env->CP0_Status |= (1 << CP0St_SR);
+        } else {
+            env->CP0_Status |= (1 << CP0St_NMI);
+        }
         if (env->cfg.warm_reset_reports_sr) {
             /*
              * "Both Soft Reset and NMI exceptions set the SR bit" (R10000
@@ -1533,6 +1541,7 @@ void mips_cpu_do_interrupt(CPUState *cs)
          * describes the exception that wrote EPC.
          */
         if (!env->cfg.warm_reset_reports_sr &&
+            !env->cfg.warm_reset_preserves_registers &&
             !(env->CP0_Status & (1 << CP0St_EXL))) {
             cp0_cause_update(env, 1U << CP0Ca_BD, 0);
         }

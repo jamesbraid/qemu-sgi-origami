@@ -9,6 +9,7 @@
 #include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "system/qtest.h"
+#include "system/address-spaces.h"
 #include "system/tcg.h"
 #include "cpu.h"
 
@@ -21,7 +22,36 @@ struct MipsCpuExceptionFixtureState {
     CPUState *cpu;
     qemu_irq cache_error_complete;
     uint32_t cpu_index;
+    MemoryRegion attribute_probe;
+    uint64_t attribute_probe_base;
+    MemoryRegion upper_probe;
+    uint64_t upper_probe_base;
 };
+
+/* Observe the attributes of an executed CPU load, including cached lookups. */
+static MemTxResult mips_cpu_attribute_probe_read(void *opaque, hwaddr addr,
+                                                uint64_t *value,
+                                                unsigned int size,
+                                                MemTxAttrs attrs)
+{
+    *value = attrs.mips_cca;
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps mips_cpu_attribute_probe_ops = {
+    .read_with_attrs = mips_cpu_attribute_probe_read,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+};
+
+static void mips_cpu_exception_fixture_external_irq(void *opaque, int n,
+                                                    int level)
+{
+    MipsCpuExceptionFixtureState *s = opaque;
+
+    qemu_set_irq(MIPS_CPU(s->cpu)->env.irq[n + 2], level);
+}
 
 static void mips_cpu_exception_fixture_soft_reset_work(CPUState *cs,
                                                        run_on_cpu_data data)
@@ -80,18 +110,41 @@ static void mips_cpu_exception_fixture_realize(DeviceState *dev, Error **errp)
     if (!s->cpu) {
         error_setg(errp, TYPE_MIPS_CPU_EXCEPTION_FIXTURE
                    " cannot find CPU %u", s->cpu_index);
+        return;
+    }
+    if (s->attribute_probe_base != UINT64_MAX) {
+        memory_region_init_io(&s->attribute_probe, OBJECT(s),
+                               &mips_cpu_attribute_probe_ops, s,
+                               "mips-cpu-attribute-probe", 0x1000);
+        memory_region_add_subregion(get_system_memory(),
+                                     s->attribute_probe_base,
+                                     &s->attribute_probe);
+    }
+    if (s->upper_probe_base != UINT64_MAX) {
+        memory_region_init_io(&s->upper_probe, OBJECT(s),
+                               &mips_cpu_attribute_probe_ops, s,
+                               "mips-cpu-upper-address-probe", 0x1000);
+        memory_region_add_subregion(get_system_memory(), s->upper_probe_base,
+                                     &s->upper_probe);
     }
 }
 
 static const Property mips_cpu_exception_fixture_properties[] = {
     DEFINE_PROP_UINT32("cpu-index", MipsCpuExceptionFixtureState,
                        cpu_index, 0),
+    DEFINE_PROP_UINT64("attribute-probe-base", MipsCpuExceptionFixtureState,
+                       attribute_probe_base, UINT64_MAX),
+    DEFINE_PROP_UINT64("upper-probe-base", MipsCpuExceptionFixtureState,
+                       upper_probe_base, UINT64_MAX),
 };
 
 static void mips_cpu_exception_fixture_instance_init(Object *obj)
 {
     MipsCpuExceptionFixtureState *s = MIPS_CPU_EXCEPTION_FIXTURE(obj);
 
+    qdev_init_gpio_in_named(DEVICE(obj),
+                            mips_cpu_exception_fixture_external_irq,
+                            "external-irq", 6);
     qdev_init_gpio_in_named(DEVICE(obj),
                             mips_cpu_exception_fixture_soft_reset,
                             "soft-reset", 1);

@@ -7,6 +7,7 @@ mips_ss.add(files(
   'gdbstub.c',
   'msa.c',
   'r10k_cpu.c',
+  'r5000.c',
 ))
 mips_ss.add(zlib)
 

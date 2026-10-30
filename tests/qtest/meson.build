@@ -642,7 +642,7 @@ sgi_qtests = \
    config_all_devices.has_key('CONFIG_TEST_DEVICES') ?
     ['sgi-kona-read-defense-test'] : [])
 
-qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test'] + \
+qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test', 'r5000-cpu-test'] + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['o2-r10k-cache-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_CRIME') ? ['sgi-crime-test', 'sgi-crime-mte-test', 'sgi-crime-render-test', 'sgi-crime-legacy-test', 'sgi-crime-invalid-clear-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_CRIME') and

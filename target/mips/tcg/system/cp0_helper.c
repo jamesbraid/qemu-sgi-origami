@@ -964,7 +964,9 @@ void helper_mtc0_pagemask(CPUMIPSState *env, target_ulong arg1)
         env->CP0_PageMask =
             compute_pagemask(arg1 & env->r10k->CP0_PageMask_rw_bitmask);
     } else {
-        env->CP0_PageMask = compute_pagemask(arg1);
+        uint32_t mask = env->cpu_model->CP0_PageMask_rw_bitmask;
+
+        env->CP0_PageMask = compute_pagemask(mask ? arg1 & mask : arg1);
     }
 }
 
@@ -1344,6 +1346,19 @@ target_ulong helper_mftc0_configx(CPUMIPSState *env, target_ulong idx)
 
 void helper_mtc0_config0(CPUMIPSState *env, target_ulong arg1)
 {
+    uint32_t writable = env->cpu_model->CP0_Config0_rw_bitmask;
+
+    if (writable) {
+        uint32_t old = env->CP0_Config0;
+
+        env->CP0_Config0 = (old & ~writable) | (arg1 & writable);
+        if (extract32(old ^ env->CP0_Config0, 0, 3)) {
+            /* Refresh translations, retaining all architectural TLB entries. */
+            cpu_mips_tlb_flush(env);
+        }
+        return;
+    }
+
     /*
      * The kseg0 algorithm in bits 2:0 is the only field software owns. On the
      * R10000 family everything else is hardwired or latched from the reset

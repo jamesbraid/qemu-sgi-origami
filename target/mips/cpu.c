@@ -25,6 +25,7 @@
 #include "qapi/error.h"
 #include "cpu.h"
 #include "internal.h"
+#include "r5000.h"
 #include "exec/target_page.h"
 #include "qemu/module.h"
 #include "qemu/qtree.h"
@@ -269,6 +270,7 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
     mips_r10k_cpu_reset(cpu);
     env->CP0_Config0 = deposit32(env->cpu_model->CP0_Config0,
                                  CP0C0_BE, 1, cpu->is_big_endian);
+    env->CP0_Config0 = mips_r5000_config_reset(cpu, env->CP0_Config0);
     env->CP0_Config1 = env->cpu_model->CP0_Config1;
     env->CP0_Config2 = env->cpu_model->CP0_Config2;
     env->CP0_Config3 = env->cpu_model->CP0_Config3;
@@ -609,6 +611,9 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
     MIPSCPUClass *mcc = MIPS_CPU_GET_CLASS(dev);
     Error *local_err = NULL;
 
+    if (!mips_r5000_cpu_validate(cpu, errp)) {
+        return;
+    }
     if (!mips_r10k_cpu_validate(cpu, errp)) {
         return;
     }
@@ -921,6 +926,7 @@ static void mips_cpu_cpudef_class_init(ObjectClass *oc, const void *data)
     MIPSCPUClass *mcc = MIPS_CPU_CLASS(oc);
     mcc->cpu_def = data;
     mips_r10k_cpu_class_init(oc, data);
+    mips_r5000_cpu_class_init(oc, data);
 }
 
 static void mips_register_cpudef_type(const struct mips_def_t *def)

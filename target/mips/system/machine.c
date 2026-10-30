@@ -2,6 +2,7 @@
 #include "qemu/target-info.h"
 #include "cpu.h"
 #include "internal.h"
+#include "r5000.h"
 #include "migration/cpu.h"
 #include "migration/qemu-file-types.h"
 #include "fpu_helper.h"
@@ -52,6 +53,7 @@ static int cpu_pre_load(void *opaque)
         return -EINVAL;
     }
 
+    cpu->r5000_modes_loaded = false;
     cpu->env.timer_adjacent_pending = false;
     /*
      * The Count-sample window is deliberately not migrated: the virtual
@@ -69,6 +71,9 @@ static int cpu_post_load(void *opaque, int version_id)
     MIPSCPU *cpu = opaque;
     CPUMIPSState *env = &cpu->env;
 
+    if (mips_r5000_cpu_post_load(cpu)) {
+        return -EINVAL;
+    }
     if (mips_r10k_profile_post_load(cpu)) {
         return -EINVAL;
     }
@@ -412,6 +417,38 @@ static bool mips_timer_needed(void *opaque)
     return cpu->env.timer != NULL;
 }
 
+static bool mips_r5000_modes_needed(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    return !strcmp(cpu->env.cpu_model->name, "R5000");
+}
+
+static int mips_r5000_modes_pre_load(void *opaque)
+{
+    return mips_r5000_modes_needed(opaque) ? 0 : -EINVAL;
+}
+
+static int mips_r5000_modes_post_load(void *opaque, int version_id)
+{
+    MIPS_CPU(opaque)->r5000_modes_loaded = true;
+    return 0;
+}
+
+static const VMStateDescription mips_vmstate_r5000_modes = {
+    .name = "cpu/r5000-modes",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r5000_modes_needed,
+    .pre_load = mips_r5000_modes_pre_load,
+    .post_load = mips_r5000_modes_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_EQUAL(r5000_ec, MIPSCPU),
+        VMSTATE_UINT32_EQUAL(r5000_ep, MIPSCPU),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static bool mips_nmi_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
@@ -696,6 +733,7 @@ const VMStateDescription vmstate_mips_cpu = {
         &mips_vmstate_r16000_profile,
         &mips_vmstate_r12000_profile,
         &mips_vmstate_nmi,
+        &mips_vmstate_r5000_modes,
         &mips_vmstate_timer,
         &mips_vmstate_timer_adjacent,
         &mips_vmstate_timer_ip7,
