@@ -765,8 +765,8 @@ typedef struct SGIKonaPendingSwap {
  * the flash is a raw image of exactly SGI_KONA_FLASH_SIZE bytes, flash
  * offset n at file offset n: realize reads it, and every byte the pipe
  * programs is written through, so the contents outlast the QEMU process
- * as they outlast power-off on a pipe. Without it the flash lasts as long
- * as the process.
+ * as they outlast power-off on a pipe. A read-only image is refused at
+ * realize. Without it the flash lasts as long as the process.
  */
 #define SGI_KONA_FLASH_BASE         0x800000
 /*
@@ -1680,6 +1680,14 @@ struct SGIKonaState {
     uint8_t flash[SGI_KONA_FLASH_SIZE];
     bool flash_written;
     BlockBackend *flash_blk;    /* the "drive" image, or NULL */
+    /*
+     * A migrated flash still to be written to the image once the VM runs,
+     * when the image's node is active, and whether a write to the image
+     * has failed (reported once). Neither is migrated.
+     */
+    bool flash_sync_pending;
+    bool flash_sync_failed;
+    VMChangeStateEntry *flash_vm_change;
     SGIKonaFlashOp flash_op;
 
     /*
