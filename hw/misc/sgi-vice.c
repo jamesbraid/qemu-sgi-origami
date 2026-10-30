@@ -3,10 +3,11 @@
  * VICE host/local-memory and common descriptor DMA transport.
  * Contract: Origami docs/datasheets/o2-vice-host-dma.md, SHA-256
  * 2f7d2767e0e8bf53e96ee1b60224e3f6dd6569e5e28136af09c9469e4b615615.
- * No processor execution, FIFO or image conversion is implemented here.
+ * Scalar execution is in sgi-vice-msp.c; FIFO/image operations remain held.
  */
 #include "qemu/osdep.h"
 #include "hw/core/sysbus.h"
+#include "hw/misc/sgi-vice-msp.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-clock.h"
@@ -92,6 +93,9 @@ struct SGIViceState {
     Clock *device_clock;
     Clock *msp_clock;
     QEMUTimer *timer;
+    SGIViceMsp msp;
+    bool dma_pending;
+    bool msp_servicing;
     uint32_t device_clock_hz;
     uint32_t msp_clock_hz;
     uint8_t part_id;
@@ -113,6 +117,10 @@ struct SGIViceState {
     int64_t external_reset_start;
     int64_t saved_clock;
 };
+
+static void vice_reschedule(SGIViceState *s);
+static MemTxResult vice_access(SGIViceState *s, hwaddr address,
+                               uint64_t *value, unsigned size, bool write);
 
 static MemTxResult vice_refuse(SGIViceState *s, const char *reason,
                                hwaddr address)
@@ -171,13 +179,15 @@ static void vice_schedule(SGIViceState *s, bool first)
         return;
     }
     if (first) {
-        s->next_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-        s->next_fraction = 0;
+        s->next_ns = s->msp_servicing ? s->msp.next_ns :
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        s->next_fraction = s->msp_servicing ? s->msp.next_fraction : 0;
     }
     fraction = (uint64_t)s->next_fraction + (uint32_t)period;
     s->next_ns += (period >> 32) + (fraction >> 32);
     s->next_fraction = fraction;
-    timer_mod_ns(s->timer, s->next_ns + !!s->next_fraction);
+    s->dma_pending = true;
+    vice_reschedule(s);
 }
 
 static bool vice_reset_ready(SGIViceState *s, int64_t assertion)
@@ -214,6 +224,8 @@ static void vice_channel_reset(ViceChannel *c)
 static void vice_clear(SGIViceState *s)
 {
     timer_del(s->timer);
+    s->dma_pending = false;
+    sgi_vice_msp_reset(&s->msp);
     s->config = 0;
     s->interrupt_enable = 0;
     s->interrupt_status = 0;
@@ -444,6 +456,10 @@ static void vice_phase(SGIViceState *s, unsigned channel)
         vice_refuse(s, "local DMA exceeds fitted storage", local);
         return;
     }
+    if (memory == 0 && s->msp.running) {
+        vice_refuse(s, "MSP runtime instruction DMA", local);
+        return;
+    }
     if (!c->length) {
         unsigned unit = memory == 0 ? 8 : memory < 3 ?
                         vice_memories[memory].write_unit : 8;
@@ -549,6 +565,37 @@ static void vice_phase(SGIViceState *s, unsigned channel)
     }
 }
 
+static bool vice_dma_deferred(SGIViceState *s, ViceChannel *c)
+{
+    uint64_t local;
+    int memory;
+
+    if (!c->length && (c->control & CTRL_STOP)) {
+        return false;
+    }
+    if (!c->loaded) {
+        const uint16_t *d = c->descriptors[c->descriptor];
+
+        if (d[0] & (DESC_SKIP | DESC_READ)) {
+            return false;
+        }
+        local = d[6];
+    } else {
+        bool read = c->latched[0] & DESC_READ;
+        bool local_phase = read ? c->staged : !c->staged;
+
+        if (!local_phase) {
+            return false;
+        }
+        local = c->length ? c->unit_local :
+                (uint64_t)c->latched[6] + c->cursor;
+    }
+    memory = vice_memory(local);
+    return memory >= 3 && sgi_vice_msp_reserved(&s->msp, memory - 3,
+                                               s->next_ns,
+                                               s->next_fraction);
+}
+
 static void vice_tick(void *opaque)
 {
     SGIViceState *s = opaque;
@@ -558,7 +605,9 @@ static void vice_tick(void *opaque)
         channel ^= 1;
     }
     s->next_channel = channel ^ 1;
-    vice_phase(s, channel);
+    if (!vice_dma_deferred(s, &s->channel[channel])) {
+        vice_phase(s, channel);
+    }
     if (s->unsupported) {
         /* A peer reset cannot make an unadmitted descriptor executable. */
         s->channel[channel].model_blocked = true;
@@ -590,7 +639,7 @@ static MemTxResult vice_control(SGIViceState *s, unsigned channel,
         c->reset_held = false;
         c->control = 0x10;
         s->unsupported = false;
-        if (!timer_pending(s->timer)) {
+        if (!s->dma_pending) {
             vice_schedule(s, true);
         }
         return MEMTX_OK;
@@ -626,7 +675,7 @@ static MemTxResult vice_control(SGIViceState *s, unsigned channel,
         c->remaining = 0;
         c->cursor = 0;
         c->control = value;
-        if (!timer_pending(s->timer)) {
+        if (!s->dma_pending) {
             vice_schedule(s, true);
         }
     } else {
@@ -634,6 +683,138 @@ static MemTxResult vice_control(SGIViceState *s, unsigned channel,
     }
     return MEMTX_OK;
 }
+
+static int vice_deadline_compare(int64_t a, uint32_t af,
+                                  int64_t b, uint32_t bf)
+{
+    if (a != b) {
+        return a < b ? -1 : 1;
+    }
+    return af == bf ? 0 : af < bf ? -1 : 1;
+}
+
+static void vice_reschedule(SGIViceState *s)
+{
+    bool msp = s->msp.pending && !s->msp.model_blocked;
+    int64_t ns = s->next_ns;
+    uint32_t fraction = s->next_fraction;
+
+    if (s->unsupported || s->external_reset || (!msp && !s->dma_pending)) {
+        timer_del(s->timer);
+        return;
+    }
+    if (msp && (!s->dma_pending ||
+        vice_deadline_compare(s->msp.next_ns, s->msp.next_fraction,
+                              ns, fraction) < 0)) {
+        ns = s->msp.next_ns;
+        fraction = s->msp.next_fraction;
+    }
+    timer_mod_ns(s->timer, ns + !!fraction);
+}
+
+static void vice_dispatch(void *opaque)
+{
+    SGIViceState *s = opaque;
+    bool msp = s->msp.pending && !s->msp.model_blocked;
+    int order = vice_deadline_compare(s->msp.next_ns, s->msp.next_fraction,
+                                      s->next_ns, s->next_fraction);
+    bool dma_at_same_time = s->dma_pending && msp && !order;
+
+    if (msp && (!s->dma_pending || order <= 0)) {
+        s->msp_servicing = true;
+        sgi_vice_msp_tick(&s->msp);
+        s->msp_servicing = false;
+        if (dma_at_same_time && s->dma_pending && !s->unsupported) {
+            s->dma_pending = false;
+            vice_tick(s);
+        }
+    } else if (s->dma_pending) {
+        s->dma_pending = false;
+        vice_tick(s);
+    }
+    vice_reschedule(s);
+}
+
+static bool vice_msp_fetch(void *opaque, uint16_t pc, uint32_t words[2])
+{
+    SGIViceState *s = opaque;
+    uint8_t bytes[8];
+
+    if (address_space_read(&s->local_as, pc, MEMTXATTRS_UNSPECIFIED,
+                            bytes, sizeof(bytes)) != MEMTX_OK) {
+        return false;
+    }
+    words[0] = ldl_be_p(bytes);
+    words[1] = ldl_be_p(bytes + 4);
+    return true;
+}
+
+static bool vice_msp_local(void *opaque, uint32_t address, uint32_t *value,
+                            unsigned size, bool write)
+{
+    SGIViceState *s = opaque;
+    uint8_t bytes[8];
+    MemTxResult result;
+
+    if (size != 1 && size != 2 && size != 4) {
+        return false;
+    }
+    if (write) {
+        stn_be_p(bytes, size, *value);
+        result = address_space_write(&s->local_as, address,
+                                       MEMTXATTRS_UNSPECIFIED, bytes, size);
+    } else {
+        result = address_space_read(&s->local_as, address,
+                                      MEMTXATTRS_UNSPECIFIED, bytes, size);
+        *value = ldn_be_p(bytes, size);
+    }
+    return result == MEMTX_OK;
+}
+
+static bool vice_msp_common(void *opaque, unsigned slot, uint32_t *value,
+                             bool write)
+{
+    uint64_t logical = *value;
+    MemTxResult result = vice_access(opaque, slot, &logical, 8, write);
+
+    *value = logical;
+    return result == MEMTX_OK;
+}
+
+static uint32_t vice_msp_grants(void *opaque)
+{
+    return ((SGIViceState *)opaque)->bank_grants;
+}
+
+static bool vice_msp_admitted(void *opaque)
+{
+    SGIViceState *s = opaque;
+
+    return s->stable_reference && !s->external_reset;
+}
+
+static void vice_msp_held(void *opaque, const char *reason, uint32_t pc)
+{
+    vice_refuse(opaque, reason, pc);
+}
+
+static void vice_msp_exception(void *opaque)
+{
+    SGIViceState *s = opaque;
+
+    s->interrupt_status |= BIT(3);
+    vice_irq(s);
+}
+
+static const SGIViceMspOps vice_msp_ops = {
+    .fetch = vice_msp_fetch,
+    .local = vice_msp_local,
+    .common = vice_msp_common,
+    .grants = vice_msp_grants,
+    .admitted = vice_msp_admitted,
+    .held = vice_msp_held,
+    .exception = vice_msp_exception,
+};
 
 static uint64_t vice_slice(uint64_t value, hwaddr address, unsigned size)
 {
@@ -653,6 +834,9 @@ static MemTxResult vice_memory_access(SGIViceState *s, hwaddr address,
     unsigned unit = vice_memories[memory].write_unit;
     unsigned end = vice_memories[memory].base + vice_memories[memory].size;
 
+    if (memory == 0 && s->msp.running) {
+        return vice_refuse(s, "MSP runtime instruction PIO", address);
+    }
     if (address + size > end || (write && (size < unit || size % unit))) {
         return vice_refuse(s, "partial or crossing local memory access",
                             address);
@@ -683,6 +867,7 @@ static MemTxResult vice_access(SGIViceState *s, hwaddr address,
     uint32_t *entry32 = NULL;
     uint16_t *entry16 = NULL;
     unsigned channel = 2, reg = 0;
+    bool msp_port = false;
     int memory = vice_memory(address);
 
     if ((address & (size - 1)) || (address & 7) + size > 8) {
@@ -759,6 +944,18 @@ static MemTxResult vice_access(SGIViceState *s, hwaddr address,
             }
             old = s->part_id;
             break;
+        case 0x40: case 0x48: case 0x50: case 0x58:
+        case 0x60: case 0x68: case 0x70: {
+            uint32_t logical;
+
+            if (write && (slot == 0x58 || slot == 0x68 || slot == 0x70)) {
+                return vice_refuse(s, "MSP read-only host register", address);
+            }
+            sgi_vice_msp_host_read(&s->msp, slot, &logical);
+            old = logical;
+            msp_port = true;
+            break;
+        }
         case 0x80:
         case 0x1b8:
             if (!write || !vice_whole(address, size, 4)) {
@@ -816,7 +1013,18 @@ static MemTxResult vice_access(SGIViceState *s, hwaddr address,
         return MEMTX_OK;
     }
     updated = (old & ~mask) | payload;
-    if (channel < 2) {
+    if (msp_port) {
+        if (!(mask & UINT32_MAX)) {
+            return MEMTX_OK;
+        }
+        if (!sgi_vice_msp_host_write(&s->msp, slot, updated)) {
+            return MEMTX_ERROR;
+        }
+        if (slot == 0x40 && !s->msp.model_blocked) {
+            s->unsupported = false;
+        }
+        vice_reschedule(s);
+    } else if (channel < 2) {
         if (!reg) {
             return vice_control(s, channel, updated, payload);
         }
@@ -904,6 +1112,9 @@ static int vice_post_load(void *opaque, int version_id)
     s->counter_epoch += delta;
     s->external_reset_start += delta;
     s->next_ns += delta;
+    if (!sgi_vice_msp_rebase(&s->msp, delta)) {
+        return -EINVAL;
+    }
     for (unsigned i = 0; i < 2; i++) {
         ViceChannel *c = &s->channel[i];
 
@@ -917,6 +1128,7 @@ static int vice_post_load(void *opaque, int version_id)
     if (timer_pending(s->timer)) {
         timer_mod_ns(s->timer, timer_expire_time_ns(s->timer) + delta);
     }
+    vice_reschedule(s);
     vice_irq(s);
     return 0;
 }
@@ -948,6 +1160,8 @@ static const VMStateDescription vice_vmstate = {
         VMSTATE_BOOL(unsupported, SGIViceState),
         VMSTATE_INT64(external_reset_start, SGIViceState),
         VMSTATE_TIMER_PTR(timer, SGIViceState),
+        VMSTATE_BOOL(dma_pending, SGIViceState),
+        VMSTATE_STRUCT(msp, SGIViceState, 0, vmstate_sgi_vice_msp, SGIViceMsp),
         VMSTATE_CLOCK(device_clock, SGIViceState),
         VMSTATE_CLOCK(msp_clock, SGIViceState),
         VMSTATE_END_OF_LIST()
@@ -996,7 +1210,8 @@ static void vice_init(Object *obj)
 
     s->device_clock = qdev_init_clock_in(DEVICE(s), "device-clock", NULL, s, 0);
     s->msp_clock = qdev_init_clock_in(DEVICE(s), "msp-clock", NULL, s, 0);
-    s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, vice_tick, s);
+    s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, vice_dispatch, s);
+    sgi_vice_msp_init(&s->msp, &vice_msp_ops, s, s->device_clock);
     memory_region_init_io(&s->aperture, obj, &vice_ops, s,
                           "vice-host", 0x100000);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->aperture);
