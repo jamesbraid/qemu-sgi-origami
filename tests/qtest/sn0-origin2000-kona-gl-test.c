@@ -1059,6 +1059,62 @@ static void test_probe_triangle_reversed(void)
     probe_triangle(v, "gl-probe-triangle-reversed.ppm");
 }
 
+/* A flat yellow one-pixel segment between window points a and b. */
+static void gl_segment(QTestState *s, float ax, float ay, float bx, float by)
+{
+    const float half = PROBE_SIZE / 2.0f;
+
+    kona_command(s, 0xc0, (uint32_t[]){ 0x1d00 },
+                 1);
+    kona_command(s, 0x63, (uint32_t[]){ F1, F1, F0 }, 3);
+    kona_command(s, 0x58, (uint32_t[]){ 0 }, 1);
+    kona_command(s, 0x8c, (uint32_t[]){ float_bits(ax / half - 1),
+                                        float_bits(ay / half - 1) }, 2);
+    kona_command(s, 0x8c, (uint32_t[]){ float_bits(bx / half - 1),
+                                        float_bits(by / half - 1) }, 2);
+    kona_command(s, 0x71, (uint32_t[]){ 0 }, 1);
+}
+
+/* Window pixel (x, y) of the probe's window at plane (PROBE_X, 640). */
+static bool probe_lit(uint32_t x, uint32_t y)
+{
+    return shown_pixel(qts, PROBE_X + x, 640 + y) == 0xffff00;
+}
+
+/*
+ * KONA keeps OpenGL's diamond-exit rule for one-pixel lines, which VPro
+ * replaced with its board simulator's centre-sampled rule. A horizontal
+ * segment from window x 60.0 to 70.75 lights columns 59 to 69: the start,
+ * moved left by OpenGL's perturbation, enters column 59's diamond, and the
+ * end lies inside column 70's; the centre rule would light 60 to 70. A
+ * rising segment of slope one half from (60.5, 62) crosses a row edge
+ * exactly at the centres of columns 62 and 64; the diamond rule's
+ * perturbation follows the slope up into rows 63 and 64, where the centre
+ * rule would take the lower rows 62 and 63.
+ */
+static void test_lines_diamond_rule(void)
+{
+    gl_reset();
+    gl_make_current(qts, false);
+    gl_place_window(qts, PROBE_X, 640, PROBE_SIZE);
+    gl_clear(qts, F0, F0, F1);
+    gl_segment(qts, 60.0f, 64.5f, 70.75f, 64.5f);
+    gl_flush_and_check_error(qts);
+    for (uint32_t x = 59; x <= 69; x++) {
+        g_assert_true(probe_lit(x, 64));
+    }
+    g_assert_false(probe_lit(58, 64));
+    g_assert_false(probe_lit(70, 64));
+
+    gl_clear(qts, F0, F0, F1);
+    gl_segment(qts, 60.5f, 62.0f, 68.5f, 66.0f);
+    gl_flush_and_check_error(qts);
+    g_assert_true(probe_lit(62, 63));
+    g_assert_false(probe_lit(62, 62));
+    g_assert_true(probe_lit(64, 64));
+    g_assert_false(probe_lit(64, 63));
+}
+
 /*
  * The clear case with a double-buffered visual: the window stays black
  * until the swap's 0x1e7 has been honoured at a retrace, and then shows
@@ -1318,6 +1374,8 @@ int main(int argc, char **argv)
                    test_probe_triangle_moved);
     qtest_add_func("sn0/origin2000/kona-gl/probe-triangle-reversed",
                    test_probe_triangle_reversed);
+    qtest_add_func("sn0/origin2000/kona-gl/lines-diamond-rule",
+                   test_lines_diamond_rule);
     qtest_add_func("sn0/origin2000/kona-gl/probe-clear-double-buffered",
                    test_probe_clear_double_buffered);
     qtest_add_func("sn0/origin2000/kona-gl/probe-clear-asymmetric",
