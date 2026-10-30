@@ -1889,6 +1889,11 @@ static void o2_init(MachineState *machine)
             { "r12000-scache-block-words", 16 },
         };
 
+        /* The A-only CPU interface has no qualified O2+ module admission. */
+        if (mips_r12000a_enabled(MIPS_CPU(cpu_dev))) {
+            error_report("o2plus requires r12000-variant=r12000");
+            exit(1);
+        }
         for (unsigned i = 0; i < ARRAY_SIZE(inputs); i++) {
             if (object_property_get_uint(OBJECT(cpu_dev), inputs[i].property,
                                          &error_fatal) != inputs[i].value) {
