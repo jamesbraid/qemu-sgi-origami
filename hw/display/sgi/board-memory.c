@@ -117,6 +117,28 @@ uint32_t sgi_board_memory_add_plane(SGIBoardMemory *m, const SGIPlane *plane,
     return p->id;
 }
 
+bool sgi_board_memory_resize_plane(SGIBoardMemory *m, uint32_t id,
+                                   uint32_t width, uint32_t height)
+{
+    SGIPlane *p = id < m->nplanes ? &m->planes[id] : NULL;
+    unsigned bpp;
+    uint64_t row;
+
+    if (!p || !width || !height) {
+        return false;
+    }
+    bpp = sgi_plane_bytes_per_pixel(p->format);
+    row = (uint64_t)width * bpp;
+    if (row > UINT32_MAX || row * height > p->len) {
+        return false;
+    }
+    p->width = width;
+    p->height = height;
+    p->stride = row;
+    trace_sgi_plane_resize(p->id, p->width, p->height, p->stride);
+    return true;
+}
+
 const SGIPlane *sgi_board_memory_plane(const SGIBoardMemory *m, uint32_t id)
 {
     return id < m->nplanes ? &m->planes[id] : NULL;

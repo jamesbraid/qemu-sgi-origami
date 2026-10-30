@@ -6,11 +6,13 @@
  * It provides the widget-header and subsystem-classification registers,
  * one-wire identity records, an additional register window, and a textport
  * command port. The command port uses the shared QEMU framer and adds local
- * handling for the variable-length bitmap transfer. The native 1280x1024
- * framebuffer is shown through the shared scanout, which converts only the
- * display lines drawing marked dirty. Beyond the textport, the board
- * decodes the X server's command pages, keeps per-context state, moves
- * data by DMA (hw/misc/sgi-kona-dma.c) and runs resident display lists.
+ * handling for the variable-length bitmap transfer. The managed area, the
+ * framebuffer of the video combination (1280x1024 at reset), is shown
+ * through the shared scanout, one console per display channel, which
+ * converts only the display lines drawing marked dirty. Beyond the
+ * textport, the board decodes the X server's command pages, keeps
+ * per-context state, moves data by DMA (hw/misc/sgi-kona-dma.c) and runs
+ * resident display lists.
  *
  * Values beyond the widget-header and classification fields are synthetic
  * or approximated. Identity serials and several board-record fields are
@@ -255,7 +257,8 @@ static uint32_t sgi_kona_bank_tag_plane(SGIKonaState *s, unsigned bank)
  * The plane rectangle a GL context's window covers, cut to the
  * framebuffer; false when it covers nothing there.
  */
-static bool sgi_kona_gl_window_rect(const SGIKonaGLWindow *w, SGIClipRect *r)
+static bool sgi_kona_gl_window_rect(const SGIKonaState *s,
+                                    const SGIKonaGLWindow *w, SGIClipRect *r)
 {
     int64_t x0 = w->x, y0 = w->y;
     int64_t x1 = x0 + w->width - 1, y1 = y0 + w->height - 1;
@@ -265,8 +268,8 @@ static bool sgi_kona_gl_window_rect(const SGIKonaGLWindow *w, SGIClipRect *r)
     }
     x0 = MAX(x0, 0);
     y0 = MAX(y0, 0);
-    x1 = MIN(x1, SGI_KONA_FB_WIDTH - 1);
-    y1 = MIN(y1, SGI_KONA_FB_HEIGHT - 1);
+    x1 = MIN(x1, s->fb_width - 1);
+    y1 = MIN(y1, s->fb_height - 1);
     if (x0 > x1 || y0 > y1) {
         return false;
     }
@@ -448,7 +451,7 @@ static bool sgi_kona_bank1_window(SGIKonaState *s, unsigned i,
     }
     w = &s->state[i]->window;
     return s->contexts[i].valid && w->double_buffered &&
-           w->displayed_bank && sgi_kona_gl_window_rect(w, r) &&
+           w->displayed_bank && sgi_kona_gl_window_rect(s, w, r) &&
            !sgi_kona_display_id_reused(s, i);
 }
 
@@ -626,10 +629,10 @@ static uint32_t sgi_kona_gamma_apply(SGIKonaState *s, unsigned channel,
 static void sgi_kona_resolve_managed_line(SGIKonaState *s, unsigned y,
                                           uint32_t *dst)
 {
-    int row = SGI_KONA_FB_HEIGHT - 1 - y;
+    int row = s->fb_height - 1 - y;
     SGIClipRect r;
 
-    for (unsigned x = 0; x < SGI_KONA_FB_WIDTH; x++) {
+    for (unsigned x = 0; x < s->fb_width; x++) {
         dst[x] = sgi_kona_bank_read(s, 0, x, row) & 0x00ffffff;
     }
     for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
@@ -643,7 +646,7 @@ static void sgi_kona_resolve_managed_line(SGIKonaState *s, unsigned y,
             }
         }
     }
-    for (unsigned x = 0; x < SGI_KONA_FB_WIDTH; x++) {
+    for (unsigned x = 0; x < s->fb_width; x++) {
         dst[x] = sgi_kona_desktop_compose(s, x, row, dst[x]) & 0x00ffffff;
     }
 }
@@ -695,7 +698,7 @@ static bool sgi_kona_channel_view(const SGIKonaState *s, unsigned c,
     }
     *v = (SGIKonaChannelView) {
         .x = ch->input_x,
-        .top = (int64_t)SGI_KONA_FB_HEIGHT - 1 - ch->input_y,
+        .top = (int64_t)s->fb_height - 1 - ch->input_y,
         .width = ch->input_width,
         .height = ch->input_height,
         .out_width = ch->format_width,
@@ -846,19 +849,19 @@ static void sgi_kona_channel_resolve_row(void *opaque, unsigned y,
     }
     line = v.top + (int64_t)y * v.height / v.out_height;
     if (s->video_blanked || s->channel[h->index].blanked ||
-        line < 0 || line >= SGI_KONA_FB_HEIGHT) {
+        line < 0 || line >= s->fb_height) {
         memset(dst, 0, v.out_width * sizeof(*dst));
         return;
     }
-    if (v.x == 0 && v.width == SGI_KONA_FB_WIDTH &&
-        v.out_width == SGI_KONA_FB_WIDTH) {
+    if (v.x == 0 && v.width == s->fb_width &&
+        v.out_width == s->fb_width) {
         sgi_kona_resolve_managed_line(s, line, dst);
     } else {
         sgi_kona_resolve_managed_line(s, line, s->resolve_line);
         for (uint32_t x = 0; x < v.out_width; x++) {
             int64_t sx = v.x + (int64_t)x * v.width / v.out_width;
 
-            dst[x] = sx >= 0 && sx < SGI_KONA_FB_WIDTH ?
+            dst[x] = sx >= 0 && sx < s->fb_width ?
                      s->resolve_line[sx] : 0;
         }
     }
@@ -965,6 +968,105 @@ static void sgi_kona_channels_apply(SGIKonaState *s)
 }
 
 /*
+ * The managed area.
+ *
+ * A combination's SetupFrameBuffer [width, height, pixel depth] gives the
+ * size of the one framebuffer every channel takes its rectangle from, the
+ * size the X server manages as its screen. The X server takes that size
+ * from configuration block +0x84 and +0x88 (established, the command
+ * grammar datasheet's configuration request), and a combination stored in
+ * the display generator's flash sets it through its own SetupFrameBuffer
+ * (observed: ircombine's stored 2@1280x1024_60 carries [2560, 1024, 0]).
+ * That the pipe answers the size its last SetupFrameBuffer set is
+ * inferred: no capture of a pipe running another size has its block.
+ *
+ * The planes are sized at realize for the most pixels the configured
+ * raster managers hold (sgi_kona_fb_capacity()), and laid out again with
+ * abutting rows whenever the size changes. What a size change leaves in
+ * the framebuffer is not known; the model clears it.
+ */
+static uint64_t sgi_kona_fb_capacity(const SGIKonaState *s)
+{
+    uint64_t rms = MAX(s->config.rm_count, 1);
+
+    return rms * SGI_KONA_RM_PIXEL_BYTES / (s->config.pixel_depth ? 16 : 8);
+}
+
+static bool sgi_kona_managed_fits(const SGIKonaState *s, uint32_t width,
+                                  uint32_t height)
+{
+    return width && height && width <= SGI_KONA_FB_MAX_DIMENSION &&
+           height <= SGI_KONA_FB_MAX_DIMENSION &&
+           (uint64_t)QEMU_ALIGN_UP(width, SGI_KONA_FB_TILE_WIDTH) * height <=
+           s->fb_capacity;
+}
+
+/* Lay every plane the managed area covers out at its current size. */
+static void sgi_kona_managed_layout(SGIKonaState *s)
+{
+    const uint32_t pixel_planes[] = {
+        s->plane_front, s->plane_back, s->plane_front_tag,
+        s->plane_back_tag, s->plane_depth, s->plane_stencil,
+    };
+    bool fits = true;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(pixel_planes); i++) {
+        fits &= sgi_board_memory_resize_plane(&s->mem, pixel_planes[i],
+                                              s->fb_width, s->fb_height);
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        fits &= sgi_board_memory_resize_plane(&s->desktop_mem, i,
+                                              s->fb_width, s->fb_height);
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        fits &= sgi_board_memory_resize_plane(&s->x_write_mem, i,
+                                              s->fb_width, s->fb_height);
+    }
+    /* Every size reaching here passed sgi_kona_managed_fits(). */
+    assert(fits);
+    /* Made again, at the new size, on the next accumulation operation. */
+    sgi_board_memory_cleanup(&s->accum_mem);
+    sgi_kona_mesa_resize_board_views(s->mesa_provider);
+}
+
+/*
+ * SetupFrameBuffer's size, applied: the framebuffer is cleared and every
+ * channel shown again from the new area. A size the raster managers
+ * cannot hold is logged and changes nothing; what the pipe does then is
+ * not known, and the X server's own check refuses such a combination
+ * before it is sent.
+ */
+static void sgi_kona_managed_resize(SGIKonaState *s, uint32_t width,
+                                    uint32_t height)
+{
+    if (width == s->fb_width && height == s->fb_height) {
+        return;
+    }
+    if (!sgi_kona_managed_fits(s, width, height)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: managed area %ux%u does "
+                      "not fit the %" PRIu64 " pixels the raster managers "
+                      "hold; kept at %dx%d\n", width, height,
+                      s->fb_capacity, s->fb_width, s->fb_height);
+        return;
+    }
+    trace_sgi_kona_managed_area(s->fb_width, s->fb_height, width, height);
+    s->fb_width = width;
+    s->fb_height = height;
+    sgi_kona_managed_layout(s);
+    /* The pixel planes, not the display lists that share their memory. */
+    for (uint32_t id = 0; id < s->mem.nplanes; id++) {
+        const SGIPlane *p = sgi_kona_plane(s, id);
+
+        if (id != s->plane_list) {
+            memset(s->mem.bytes + p->base, 0, p->len);
+        }
+    }
+    memset(s->desktop_mem.bytes, 0, s->desktop_mem.bytes_len);
+    memset(s->x_write_mem.bytes, 0, s->x_write_mem.bytes_len);
+    sgi_kona_channels_apply(s);
+}
+
+/*
  * Every drawing primitive shares this one colormap resolve step: command 6
  * (point), sgi_kona_fill_rect() below (command 5) and sgi_kona_bitmap_blit()'s
  * own set pixels (command 0xa) all funnel through here.
@@ -995,7 +1097,7 @@ static void sgi_kona_draw_point(SGIKonaState *s, int32_t x, int32_t y)
     /*
      * The bottom-up wire row is the plane row: the front plane is
      * bottom-origin, so the scanout maps it to display line
-     * SGI_KONA_FB_HEIGHT - 1 - y. The pixel keeps its colour-map index,
+     * managed height - 1 - y. The pixel keeps its colour-map index,
      * resolved at scanout (see sgi_kona_fb_read()).
      */
     sgi_plane_store(&s->mem, front, x, y, s->draw_color & 0xff);
@@ -1613,8 +1715,8 @@ static void sgi_kona_textport_packet(void *opaque, unsigned port_id,
         break;
     case 0x8:
         /*
-         * Screen size: accepted and traced only; the framebuffer stays
-         * fixed at SGI_KONA_FB_WIDTH x SGI_KONA_FB_HEIGHT.
+         * Screen size: accepted and traced only; the managed area is
+         * the video combination's (sgi_kona_managed_resize()).
          */
         break;
     case 0x9:
@@ -1627,7 +1729,7 @@ static void sgi_kona_textport_packet(void *opaque, unsigned port_id,
          * reply is approximated zero.
          */
         sgi_kona_mailbox_enqueue(
-            s, (uint32_t[]){ 0, 0, 0, SGI_KONA_FB_WIDTH, SGI_KONA_FB_HEIGHT },
+            s, (uint32_t[]){ 0, 0, 0, s->fb_width, s->fb_height },
             5);
         break;
     case 0x4:
@@ -2671,8 +2773,10 @@ static bool sgi_kona_unset(const char *value)
  * combination only when the raster managers' pixel memory covers it, at
  * raster managers x 20,971,520 / (height x width rounded up to 160) of at
  * least 8 for Small and 16 for Medium (established from the IRIX X server's
- * check). The model's one managed area, 1280x1024, meets Medium with any
- * raster-manager count, so the property needs only the count to hold.
+ * check). The managed area at reset, 1280x1024, meets Medium with any
+ * raster-manager count, so the property needs only the count to hold; a
+ * combination's larger area must fit the same budget
+ * (sgi_kona_managed_fits()).
  * Large and Extra-Large are refused: their visual tables add buffer
  * configurations the model has not been checked against.
  */
@@ -2970,8 +3074,8 @@ static const struct {
     { 0x14, 1 },                   /* display channel count */
     { 0x58, 0 },                   /* count of 0x8c-byte records */
     { 0x5c, 0xf },                 /* occupancy mask */
-    { 0x84, SGI_KONA_FB_WIDTH },   /* width */
-    { 0x88, SGI_KONA_FB_HEIGHT },  /* height */
+    { 0x84, SGI_KONA_FB_WIDTH },   /* width, the managed area's */
+    { 0x88, SGI_KONA_FB_HEIGHT },  /* height, the managed area's */
     { 0x8c, 0 },                   /* pixel-depth code, 0 to 3 */
 };
 
@@ -2982,8 +3086,9 @@ static const struct {
  * request section for the readers. Fields no reader is known for stay
  * zero, as do the geometry board's and Ktown's identity records, which
  * the driver keeps from its own one-wire reading whatever the pipe sends.
- * The size stays 1280x1024, the one combination the model draws; the pixel
- * depth is Small unless "pixel-depth" asks for Medium (sgi_kona_pixel_depth()).
+ * The size is the managed area's, 1280x1024 until a combination's
+ * SetupFrameBuffer changes it (sgi_kona_managed_resize()); the pixel depth
+ * is Small unless "pixel-depth" asks for Medium (sgi_kona_pixel_depth()).
  *
  * The display generator's channel count goes both at +0x14, which gfxinfo
  * prints, and at +0x44, which the combination checker in setmon, ircombine
@@ -3075,9 +3180,10 @@ static void sgi_kona_put_words(uint8_t *at, unsigned count, uint32_t word)
     }
 }
 
-static void sgi_kona_config_block(const SGIKonaConfig *c, unsigned base,
+static void sgi_kona_config_block(const SGIKonaState *s, unsigned base,
                                   uint8_t *block)
 {
+    const SGIKonaConfig *c = &s->config;
     static const uint32_t ge_words[] = {
         0, 0x14832057, 0x24731057, 0x14231057,
     };
@@ -3095,8 +3201,8 @@ static void sgi_kona_config_block(const SGIKonaConfig *c, unsigned base,
     stl_be_p(block + SGI_KONA_CFG_ACTIVE_ENGINES, c->geometry->engines);
     stl_be_p(block + SGI_KONA_CFG_ACTIVE_RMS, c->rm_count);
     stl_be_p(block + SGI_KONA_CFG_OCCUPANCY, c->geometry->occupancy);
-    stl_be_p(block + SGI_KONA_CFG_WIDTH, SGI_KONA_FB_WIDTH);
-    stl_be_p(block + SGI_KONA_CFG_HEIGHT, SGI_KONA_FB_HEIGHT);
+    stl_be_p(block + SGI_KONA_CFG_WIDTH, s->fb_width);
+    stl_be_p(block + SGI_KONA_CFG_HEIGHT, s->fb_height);
     stl_be_p(block + SGI_KONA_CFG_PIXEL_DEPTH, c->pixel_depth);
 
     stl_be_p(block + SGI_KONA_CFG_BOARD_WORD, c->geometry->board_word);
@@ -3172,12 +3278,14 @@ static void sgi_kona_build_config(SGIKonaState *s, uint8_t *block)
     memset(block, 0, SGI_KONA_CONFIG_SIZE);
 
     if (c->product) {
-        sgi_kona_config_block(c, SGI_KONA_SERIAL_BASE(s), block);
+        sgi_kona_config_block(s, SGI_KONA_SERIAL_BASE(s), block);
     } else {
         for (size_t i = 0; i < ARRAY_SIZE(sgi_kona_config_fields); i++) {
             stl_be_p(block + sgi_kona_config_fields[i].offset,
                      sgi_kona_config_fields[i].value);
         }
+        stl_be_p(block + SGI_KONA_CFG_WIDTH, s->fb_width);
+        stl_be_p(block + SGI_KONA_CFG_HEIGHT, s->fb_height);
     }
     for (size_t i = 0; i < ARRAY_SIZE(sgi_kona_pools); i++) {
         SGIKonaPoolDescriptor pool = sgi_kona_pools[i];
@@ -3708,12 +3816,12 @@ static void sgi_kona_video_reply_words(SGIKonaState *s, uint32_t command,
         words[2] = ch->input_width;
         words[3] = ch->input_height;
         words[4] = 0;
-        words[5] = SGI_KONA_FB_HEIGHT - 1;
-        words[6] = SGI_KONA_FB_WIDTH;
-        words[7] = SGI_KONA_FB_HEIGHT;
+        words[5] = s->fb_height - 1;
+        words[6] = s->fb_width;
+        words[7] = s->fb_height;
         words[8] = words[9] = words[10] = words[11] = 1;
-        words[12] = SGI_KONA_FB_WIDTH;
-        words[13] = SGI_KONA_FB_HEIGHT;
+        words[12] = s->fb_width;
+        words[13] = s->fb_height;
         break;
     case SGI_KONA_VIDEO_GET_VAMPIRE:
         words[0] = ch->source;
@@ -3856,11 +3964,16 @@ static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
     case SGI_KONA_VIDEO_BIND_TO_X_WINDOW:
         break;
     case SGI_KONA_VIDEO_SETUP_FRAME_BUFFER:
-        if (d[0] != SGI_KONA_FB_WIDTH || d[1] != SGI_KONA_FB_HEIGHT) {
-            qemu_log_mask(LOG_UNIMP, "sgi-kona: managed area %ux%u: the "
-                          "framebuffer is %ux%u\n", d[0], d[1],
-                          SGI_KONA_FB_WIDTH, SGI_KONA_FB_HEIGHT);
+        /*
+         * [width, height, pixel depth]. The depth stays the configured
+         * one: the model presents the visuals of that depth alone.
+         */
+        if (d[2] != s->config.pixel_depth) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: pixel depth %u: the pipe "
+                          "presents depth %u\n", d[2],
+                          s->config.pixel_depth);
         }
+        sgi_kona_managed_resize(s, d[0], d[1]);
         return;
     default:
         return;
@@ -4252,8 +4365,8 @@ static void sgi_kona_cursor_register(SGIKonaState *s, uint32_t value)
         int y = sgi_kona_cursor_coord(value >> 13);
 
         s->cursor_position = value;
-        if (x < -63 || x >= SGI_KONA_FB_WIDTH ||
-            y < -63 || y >= SGI_KONA_FB_HEIGHT) {
+        if (x < -63 || x >= s->fb_width ||
+            y < -63 || y >= s->fb_height) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-kona: unsupported cursor position %d,%d\n",
                           x, y);
@@ -4824,7 +4937,7 @@ static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t,
         .load_stencil = stencil_bits == 8 ? sgi_kona_gl_load_stencil : NULL,
         .store_stencil = stencil_bits == 8 ? sgi_kona_gl_store_stencil : NULL,
         .opaque = s,
-        .screen_top = SGI_KONA_FB_HEIGHT - 1,
+        .screen_top = s->fb_height - 1,
         .screen_rows_down = false,
         .texture = textured ? sgi_kona_texture_resolve(&s->textures) : NULL,
         /*
@@ -6545,7 +6658,7 @@ static void sgi_kona_gl_set_drawable(SGIKonaState *s, unsigned i)
 
     w->owned_generation = s->display_id_generation;
     w->owned_by_pixel = false;
-    if (!sgi_kona_gl_window_rect(w, &r)) {
+    if (!sgi_kona_gl_window_rect(s, w, &r)) {
         d.clip.empty = 1;
     } else if (!sgi_kona_gl_window_tests_id(w)) {
         d.clip.r[0] = r;
@@ -8080,8 +8193,7 @@ static int sgi_kona_gl_read_bank(SGIKonaState *s, unsigned i,
 static bool sgi_kona_accum_ready(SGIKonaState *s)
 {
     SGIBoardMemory *m = &s->accum_mem;
-    const uint64_t plane = (uint64_t)SGI_KONA_FB_WIDTH *
-                           SGI_KONA_FB_HEIGHT * 4;
+    const uint64_t plane = (uint64_t)s->fb_width * s->fb_height * 4;
 
     if (m->bytes) {
         return true;
@@ -8091,9 +8203,9 @@ static bool sgi_kona_accum_ready(SGIKonaState *s)
         SGIPlane p = {
             .base = k * plane,
             .len = plane,
-            .width = SGI_KONA_FB_WIDTH,
-            .height = SGI_KONA_FB_HEIGHT,
-            .stride = SGI_KONA_FB_WIDTH * 4,
+            .width = s->fb_width,
+            .height = s->fb_height,
+            .stride = s->fb_width * 4,
             .format = SGI_PLANE_RAW,
             .packing = SGI_PACK_BE_RED_LOW,
         };
@@ -8456,8 +8568,8 @@ static bool sgi_kona_gl_copy_source_ready(SGIKonaState *s, int i,
     py = (int64_t)w->y + y;
     if (bank < 0 || x < 0 || y < 0 ||
         (uint64_t)x + width > w->width || (uint64_t)y + height > w->height ||
-        px < 0 || py < 0 || px + width > SGI_KONA_FB_WIDTH ||
-        py + height > SGI_KONA_FB_HEIGHT) {
+        px < 0 || py < 0 || px + width > s->fb_width ||
+        py + height > s->fb_height) {
         return false;
     }
     *source = (SGIKonaGLCopySource) { .s = s, .window = w, .bank = bank };
@@ -8829,11 +8941,11 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     /* An 8 by 1 wire extent needs only its first pixel inside. */
     cols = wide8 && x0 >= 0 && px >= 0 ?
            MIN(w, MIN((int64_t)win->width - x0,
-                      (int64_t)SGI_KONA_FB_WIDTH - px)) : w;
+                      (int64_t)s->fb_width - px)) : w;
     if (bank < 0 || (int64_t)cols <= 0 ||
         x0 < 0 || y0 < 0 || (uint64_t)x0 + cols > win->width ||
         (uint64_t)y0 + h > win->height || px < 0 || py < 0 ||
-        px + cols > SGI_KONA_FB_WIDTH || py + h > SGI_KONA_FB_HEIGHT) {
+        px + cols > s->fb_width || py + h > s->fb_height) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels has no supported"
                       " pixel source; %s\n", outcome);
         return false;
@@ -9024,7 +9136,8 @@ static bool sgi_kona_gl_read_dma_layout(const SGIKonaGLReadDMA *d,
         return false;
     }
     if (!row || (int32_t)h[2] <= 0 || (int32_t)h[3] <= 0 ||
-        h[2] > SGI_KONA_FB_WIDTH || h[3] > SGI_KONA_FB_HEIGHT ||
+        h[2] > SGI_KONA_FB_MAX_DIMENSION ||
+        h[3] > SGI_KONA_FB_MAX_DIMENSION ||
         !sgi_kona_gl_read_dma_descriptor(d, &io, &pitch, &lines) ||
         (selector == SGI_KONA_CMD_GL_READ_PIXELS && (io & 3) != h[6])) {
         return false;
@@ -14945,8 +15058,8 @@ static void sgi_kona_x_clip(SGIKonaState *s, SGIKonaRect *r)
 {
     r->x1 = 0;
     r->y1 = 0;
-    r->x2 = SGI_KONA_FB_WIDTH;
-    r->y2 = SGI_KONA_FB_HEIGHT;
+    r->x2 = s->fb_width;
+    r->y2 = s->fb_height;
     if (s->x_clip_count) {
         const int32_t *c = (const int32_t *)s->x_clip_rects;
         int64_t x1 = INT64_MAX, y1 = INT64_MAX;
@@ -15143,7 +15256,7 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
     if (sgi_x_gc_needs_destination(&gc)) {
         for (unsigned bank = 0; bank < banks; bank++) {
             for (int y = y1; y < y2; y++) {
-                int row = SGI_KONA_FB_HEIGHT - 1 - y;
+                int row = s->fb_height - 1 - y;
                 SGIPlaneRun front_run, tag_run;
 
                 sgi_kona_x_row(memory, front[bank], x1, x2, row, &front_run);
@@ -15182,7 +15295,7 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
     }
     for (unsigned bank = 0; bank < banks; bank++) {
         for (int y = y1; y < y2; y++) {
-            int row = SGI_KONA_FB_HEIGHT - 1 - y;
+            int row = s->fb_height - 1 - y;
             bool changed = false;
             SGIPlaneRun front_run, tag_run;
 
@@ -15723,8 +15836,8 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
                setup[SGI_KONA_X_SETUP_PAD] != 0) {
         reason = "unsupported X read setup";
     } else if ((int32_t)width <= 0 || (int32_t)height <= 0 ||
-               x < 0 || y < 0 || x + width > SGI_KONA_FB_WIDTH ||
-               y + height > SGI_KONA_FB_HEIGHT) {
+               x < 0 || y < 0 || x + width > s->fb_width ||
+               y + height > s->fb_height) {
         reason = "rectangle outside the main plane";
     } else if (pitch > limit || height > limit / pitch) {
         reason = "payload exceeds the transport capacity";
@@ -15739,7 +15852,7 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
          */
         for (uint32_t r = 0; r < height; r++) {
             for (uint32_t c = 0; c < width; c++) {
-                int64_t py = SGI_KONA_FB_HEIGHT - 1 - y - r;
+                int64_t py = s->fb_height - 1 - y - r;
                 unsigned bank = fb_word ?
                                 sgi_kona_displayed_bank(s, x + c, py) : 0;
                 uint32_t tag = sgi_plane_load(&s->mem,
@@ -15769,7 +15882,7 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
         data = g_malloc0(pitch * height);
         for (uint32_t r = 0; r < height; r++) {
             for (uint32_t c = 0; c < width; c++) {
-                int64_t py = SGI_KONA_FB_HEIGHT - 1 - y - r;
+                int64_t py = s->fb_height - 1 - y - r;
                 /* A frame-buffer word reads the bank its pixel shows. */
                 unsigned bank = fb_word ?
                                 sgi_kona_displayed_bank(s, x + c, py) : 0;
@@ -15960,14 +16073,14 @@ static void sgi_kona_x_write_bounds(SGIKonaState *s, SGIKonaRect *r)
 
 static void sgi_kona_x_write_extend(SGIKonaState *s)
 {
-    int64_t x1 = CLAMP((int64_t)s->x_pixel_x, 0, SGI_KONA_FB_WIDTH);
-    int64_t y1 = CLAMP((int64_t)s->x_pixel_y, 0, SGI_KONA_FB_HEIGHT);
+    int64_t x1 = CLAMP((int64_t)s->x_pixel_x, 0, s->fb_width);
+    int64_t y1 = CLAMP((int64_t)s->x_pixel_y, 0, s->fb_height);
     int64_t x2 = CLAMP((int64_t)s->x_pixel_x +
                        s->x_pixel_setup[SGI_KONA_X_SETUP_WIDTH],
-                       0, SGI_KONA_FB_WIDTH);
+                       0, s->fb_width);
     int64_t y2 = CLAMP((int64_t)s->x_pixel_y +
                        s->x_pixel_setup[SGI_KONA_X_SETUP_HEIGHT],
-                       0, SGI_KONA_FB_HEIGHT);
+                       0, s->fb_height);
 
     if (x1 >= x2 || y1 >= y2) {
         return;
@@ -16199,8 +16312,8 @@ static bool sgi_kona_x_write_contains(SGIKonaState *s, int64_t x, int64_t y)
 {
     bool clipped = !s->x_write_clip_count;
 
-    if (x < 0 || x >= SGI_KONA_FB_WIDTH ||
-        y < 0 || y >= SGI_KONA_FB_HEIGHT) {
+    if (x < 0 || x >= s->fb_width ||
+        y < 0 || y >= s->fb_height) {
         return false;
     }
     for (uint32_t i = 0; i < s->x_write_clip_count; i++) {
@@ -16956,8 +17069,8 @@ static int sgi_kona_x_window_copy_bank(SGIKonaState *s)
         !setup[SGI_KONA_X_SETUP_WIDTH] ||
         !setup[SGI_KONA_X_SETUP_HEIGHT] ||
         position[0] || position[1] ||
-        position[2] != SGI_KONA_FB_WIDTH ||
-        position[3] != SGI_KONA_FB_HEIGHT) {
+        position[2] != s->fb_width ||
+        position[3] != s->fb_height) {
         return -1;
     }
     for (unsigned bank = 0; bank < ARRAY_SIZE(bank_gc); bank++) {
@@ -17030,20 +17143,20 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
     tag = sgi_kona_plane(s, sgi_kona_bank_tag_plane(s, bank));
     target_tag = rgb ? SGI_KONA_TAG_DIRECT : SGI_KONA_TAG_X_INDEX16;
     if (window_copy) {
-        clip = (SGIKonaRect) { 0, 0, SGI_KONA_FB_WIDTH, SGI_KONA_FB_HEIGHT };
+        clip = (SGIKonaRect) { 0, 0, s->fb_width, s->fb_height };
     } else {
         sgi_kona_x_clip(s, &clip);
     }
     i0 = MAX(MAX(0, -sx), clip.x1 - dx);
-    i1 = MIN(MIN(w, SGI_KONA_FB_WIDTH - sx), clip.x2 - dx);
+    i1 = MIN(MIN(w, s->fb_width - sx), clip.x2 - dx);
     j0 = MAX(MAX(0, -sy), clip.y1 - dy);
-    j1 = MIN(MIN(h, SGI_KONA_FB_HEIGHT - sy), clip.y2 - dy);
+    j1 = MIN(MIN(h, s->fb_height - sy), clip.y2 - dy);
     if (i0 >= i1 || j0 >= j1) {
         return;
     }
     width = i1 - i0;
     height = j1 - j0;
-    assert(width <= SGI_KONA_FB_WIDTH && height <= SGI_KONA_FB_HEIGHT);
+    assert(width <= s->fb_width && height <= s->fb_height);
     /* The checked g_try_new0 multiplication refuses before any store. */
     prepared = g_try_new0(SGIKonaXPreparedPixel, width * height);
     if (!prepared) {
@@ -17054,8 +17167,8 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
     assert(bql_locked());
     for (size_t row = 0; row < height; row++) {
         int64_t j = j0 + row;
-        int src_row = SGI_KONA_FB_HEIGHT - 1 - (sy + j);
-        int dst_row = SGI_KONA_FB_HEIGHT - 1 - (dy + j);
+        int src_row = s->fb_height - 1 - (sy + j);
+        int dst_row = s->fb_height - 1 - (dy + j);
         SGIPlaneRun src_run, src_tag_run, dst_run, dst_tag_run;
 
         sgi_kona_x_row(&s->mem, front, sx + i0, sx + i1, src_row, &src_run);
@@ -17098,7 +17211,7 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
     }
     for (size_t row = 0; row < height; row++) {
         int64_t j = j0 + row;
-        int dst_row = SGI_KONA_FB_HEIGHT - 1 - (dy + j);
+        int dst_row = s->fb_height - 1 - (dy + j);
         bool changed = false;
         SGIPlaneRun dst_run, dst_tag_run;
 
@@ -17169,7 +17282,7 @@ static void sgi_kona_x_write_commit(SGIKonaState *s)
         return;
     }
     for (unsigned y = r.y1; y < r.y2; y++) {
-        unsigned py = SGI_KONA_FB_HEIGHT - 1 - y;
+        unsigned py = s->fb_height - 1 - y;
         SGIPlaneRun valid_run, source_run, ones_run, front_run, tag_run;
 
         sgi_kona_x_row(&s->x_write_mem, valid, r.x1, r.x2, y, &valid_run);
@@ -17207,7 +17320,7 @@ static void sgi_kona_x_write_commit(SGIKonaState *s)
         }
     }
     for (unsigned y = r.y1; y < r.y2; y++) {
-        unsigned py = SGI_KONA_FB_HEIGHT - 1 - y;
+        unsigned py = s->fb_height - 1 - y;
         bool changed = false;
         SGIPlaneRun front_run, tag_run;
 
@@ -19771,21 +19884,21 @@ static bool sgi_kona_list_size_valid(SGIKonaState *s, Error **errp)
  */
 static void sgi_kona_board_memory_init(SGIKonaState *s)
 {
-    const uint64_t pixels = (uint64_t)SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT;
+    const uint64_t pixels = s->fb_capacity;
     const SGIPlane colour = {
         .len = pixels * 4,
-        .width = SGI_KONA_FB_WIDTH,
-        .height = SGI_KONA_FB_HEIGHT,
-        .stride = SGI_KONA_FB_WIDTH * 4,
+        .width = s->fb_width,
+        .height = s->fb_height,
+        .stride = s->fb_width * 4,
         .format = SGI_PLANE_RGB24,
         .packing = SGI_PACK_LE_RED_HIGH,
         .bottom_origin = true,
     };
     const SGIPlane tag = {
         .len = pixels,
-        .width = SGI_KONA_FB_WIDTH,
-        .height = SGI_KONA_FB_HEIGHT,
-        .stride = SGI_KONA_FB_WIDTH,
+        .width = s->fb_width,
+        .height = s->fb_height,
+        .stride = s->fb_width,
         .format = SGI_PLANE_TAG,
         .packing = SGI_PACK_LE_RED_LOW,
         .bottom_origin = true,
@@ -19805,9 +19918,9 @@ static void sgi_kona_board_memory_init(SGIKonaState *s)
      */
     const SGIPlane depth = {
         .len = pixels * 4,
-        .width = SGI_KONA_FB_WIDTH,
-        .height = SGI_KONA_FB_HEIGHT,
-        .stride = SGI_KONA_FB_WIDTH * 4,
+        .width = s->fb_width,
+        .height = s->fb_height,
+        .stride = s->fb_width * 4,
         .format = SGI_PLANE_Z24,
         .packing = SGI_PACK_LE_RED_LOW,
         .bottom_origin = true,
@@ -19846,9 +19959,9 @@ static void sgi_kona_board_memory_init(SGIKonaState *s)
     p = (SGIPlane) {
         .base = base,
         .len = pixels,
-        .width = SGI_KONA_FB_WIDTH,
-        .height = SGI_KONA_FB_HEIGHT,
-        .stride = SGI_KONA_FB_WIDTH,
+        .width = s->fb_width,
+        .height = s->fb_height,
+        .stride = s->fb_width,
         .format = SGI_PLANE_S8,
         .packing = SGI_PACK_LE_RED_LOW,
         .bottom_origin = true,
@@ -19897,6 +20010,9 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
     sgi_kona_flash_init(s);
     s->arm_high_count = SGI_KONA_ARM_HIGH_WORDS;
 
+    s->fb_capacity = sgi_kona_fb_capacity(s);
+    s->fb_width = SGI_KONA_FB_WIDTH;
+    s->fb_height = SGI_KONA_FB_HEIGHT;
     sgi_kona_board_memory_init(s);
     planes = (SGIKonaMesaPlanes) {
         .front = s->plane_front,
@@ -19919,16 +20035,14 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
     address_space_init(&s->fabric_as, s->fabric, "sgi-kona.fabric");
     sgi_kona_dma_init(&s->dma, s);
     /* RAW32 is model storage for DID16, two overlay16 planes and popup2. */
-    sgi_board_memory_init(&s->desktop_mem,
-                          (uint64_t)SGI_KONA_FB_WIDTH *
-                          SGI_KONA_FB_HEIGHT * 16);
+    sgi_board_memory_init(&s->desktop_mem, s->fb_capacity * 16);
     for (unsigned i = 0; i < 4; i++) {
         SGIPlane plane = {
-            .base = (uint64_t)i * SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT * 4,
-            .len = (uint64_t)SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT * 4,
-            .width = SGI_KONA_FB_WIDTH,
-            .height = SGI_KONA_FB_HEIGHT,
-            .stride = SGI_KONA_FB_WIDTH * 4,
+            .base = (uint64_t)i * s->fb_capacity * 4,
+            .len = s->fb_capacity * 4,
+            .width = s->fb_width,
+            .height = s->fb_height,
+            .stride = s->fb_width * 4,
             .format = SGI_PLANE_RAW,
             .packing = SGI_PACK_LE_RED_LOW,
             .bottom_origin = true,
@@ -19936,17 +20050,15 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
 
         sgi_board_memory_add_plane(&s->desktop_mem, &plane, &error_abort);
     }
-    sgi_board_memory_init(&s->x_write_mem,
-                          (uint64_t)SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT * 9);
+    sgi_board_memory_init(&s->x_write_mem, s->fb_capacity * 9);
     for (unsigned i = 0; i < 3; i++) {
         unsigned bytes = i == 1 ? 1 : 4;
         SGIPlane plane = {
-            .base = (uint64_t)SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT *
-                    (i == 0 ? 0 : i == 1 ? 4 : 5),
-            .len = (uint64_t)SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT * bytes,
-            .width = SGI_KONA_FB_WIDTH,
-            .height = SGI_KONA_FB_HEIGHT,
-            .stride = SGI_KONA_FB_WIDTH * bytes,
+            .base = s->fb_capacity * (i == 0 ? 0 : i == 1 ? 4 : 5),
+            .len = s->fb_capacity * bytes,
+            .width = s->fb_width,
+            .height = s->fb_height,
+            .stride = s->fb_width * bytes,
             .format = i == 1 ? SGI_PLANE_TAG : SGI_PLANE_RAW,
             .packing = SGI_PACK_LE_RED_LOW,
         };
@@ -19989,8 +20101,8 @@ static void sgi_kona_test_get_pixel(Object *obj, Visitor *v, const char *name,
     SGIKonaState *s = SGI_KONA(obj);
     uint32_t value = 0;
 
-    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_KONA_FB_WIDTH &&
-        s->test_pixel_y < SGI_KONA_FB_HEIGHT) {
+    if (DEVICE(obj)->realized && s->test_pixel_x < s->fb_width &&
+        s->test_pixel_y < s->fb_height) {
         value = sgi_kona_fb_read(s, s->test_pixel_x, s->test_pixel_y);
     }
     visit_type_uint32(v, name, &value, errp);
@@ -20014,8 +20126,8 @@ static void sgi_kona_test_get_pixel_row(Object *obj, Visitor *v,
         uint32_t x = s->test_pixel_x + i;
         uint32_t value = 0;
 
-        if (DEVICE(obj)->realized && x < SGI_KONA_FB_WIDTH &&
-            s->test_pixel_y < SGI_KONA_FB_HEIGHT) {
+        if (DEVICE(obj)->realized && x < s->fb_width &&
+            s->test_pixel_y < s->fb_height) {
             value = sgi_kona_fb_read(s, x, s->test_pixel_y);
         }
         g_string_append_printf(str, "%08x", value);
@@ -20121,11 +20233,17 @@ static char *sgi_kona_test_plane_digest(SGIKonaState *s, unsigned plane)
         p->len > memory->bytes_len - p->base) {
         return NULL;
     }
+    /* The rows the plane is laid out in, not the room past them. */
     return g_compute_checksum_for_data(G_CHECKSUM_SHA256,
-                                       memory->bytes + p->base, p->len);
+                                       memory->bytes + p->base,
+                                       MIN(p->len,
+                                           (uint64_t)p->stride * p->height));
 }
 
-/* Complete plane bytes, for preservation and migration comparisons. */
+/*
+ * The plane's laid-out bytes, for preservation and migration
+ * comparisons.
+ */
 static void sgi_kona_test_get_plane_digest(Object *obj, Visitor *v,
                                            const char *name, void *opaque,
                                            Error **errp)
@@ -20851,6 +20969,9 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
      * draws the console has already shown, and restarts the retrace
      * phase.
      */
+    s->fb_width = SGI_KONA_FB_WIDTH;
+    s->fb_height = SGI_KONA_FB_HEIGHT;
+    sgi_kona_managed_layout(s);
     memset(s->mem.bytes, 0, s->mem.bytes_len);
     memset(s->desktop_mem.bytes, 0, s->desktop_mem.bytes_len);
     /* Made again, cleared, on the next accumulation operation. */
@@ -21009,6 +21130,10 @@ static int sgi_kona_cursor_pre_load(void *opaque)
      */
     sgi_kona_channels_reset(s);
     memset(s->video_data, 0, sizeof(s->video_data));
+    /* And the managed-area one only once a combination resized it. */
+    s->fb_width = SGI_KONA_FB_WIDTH;
+    s->fb_height = SGI_KONA_FB_HEIGHT;
+    sgi_kona_managed_layout(s);
     return 0;
 }
 
@@ -21038,9 +21163,9 @@ static bool sgi_kona_x_write_state_valid(SGIKonaState *s)
         s->x_pixel_stride != stride || s->x_pixel_words != words ||
         s->x_pixel_remaining > words ||
         s->x_write_x1 < 0 || s->x_write_x1 > s->x_write_x2 ||
-        s->x_write_x2 > SGI_KONA_FB_WIDTH ||
+        s->x_write_x2 > s->fb_width ||
         s->x_write_y1 < 0 || s->x_write_y1 > s->x_write_y2 ||
-        s->x_write_y2 > SGI_KONA_FB_HEIGHT ||
+        s->x_write_y2 > s->fb_height ||
         s->x_write_clip_count > SGI_KONA_X_CLIP_MAX_RECTS ||
         s->x_write_stipple_width > SGI_KONA_X_STIPPLE_MAX ||
         s->x_write_stipple_height > SGI_KONA_X_STIPPLE_MAX ||
@@ -21056,8 +21181,8 @@ static bool sgi_kona_x_write_state_valid(SGIKonaState *s)
     if (!consumed && s->x_pixel_prev) {
         return false;
     }
-    for (unsigned y = 0; y < SGI_KONA_FB_HEIGHT; y++) {
-        for (unsigned x = 0; x < SGI_KONA_FB_WIDTH; x++) {
+    for (unsigned y = 0; y < s->fb_height; y++) {
+        for (unsigned x = 0; x < s->fb_width; x++) {
             uint32_t present = sgi_plane_load(&s->x_write_mem, valid, x, y);
             uint32_t value = sgi_plane_load(&s->x_write_mem, source, x, y);
             uint32_t one = sgi_plane_load(&s->x_write_mem, ones, x, y);
@@ -21519,6 +21644,39 @@ static const VMStateDescription vmstate_sgi_kona_channels = {
         VMSTATE_STRUCT_VARRAY_UINT32(channel_scanout, SGIKonaState,
                                      channel_scanouts, 1, vmstate_sgi_scanout,
                                      SGIScanout),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* The managed area, once a combination's SetupFrameBuffer resized it. */
+static bool sgi_kona_managed_area_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    return s->fb_width != SGI_KONA_FB_WIDTH ||
+           s->fb_height != SGI_KONA_FB_HEIGHT;
+}
+
+static int sgi_kona_managed_area_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    if (!sgi_kona_managed_fits(s, s->fb_width, s->fb_height)) {
+        return -EINVAL;
+    }
+    sgi_kona_managed_layout(s);
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_managed_area = {
+    .name = TYPE_SGI_KONA "/managed-area",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_managed_area_needed,
+    .post_load = sgi_kona_managed_area_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT32(fb_width, SGIKonaState),
+        VMSTATE_INT32(fb_height, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -24699,6 +24857,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_flash,
         &vmstate_sgi_kona_flash_op_open,
         &vmstate_sgi_kona_gl_level1,
+        &vmstate_sgi_kona_managed_area,
         &vmstate_sgi_kona_channels,
         &vmstate_sgi_kona_video_data,
         &vmstate_sgi_kona_accum,

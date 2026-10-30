@@ -134,6 +134,14 @@ unsigned sgi_plane_bytes_per_pixel(SGIPlaneFormat format);
  */
 uint32_t sgi_board_memory_add_plane(SGIBoardMemory *m, const SGIPlane *plane,
                                     Error **errp);
+/*
+ * Lay plane id out again as width x height pixels in rows that abut, within
+ * the bytes it was given. The contents are not moved: a family calls this
+ * when its framebuffer's geometry changes and treats what was stored as
+ * lost. False, changing nothing, when the size does not fit.
+ */
+bool sgi_board_memory_resize_plane(SGIBoardMemory *m, uint32_t id,
+                                   uint32_t width, uint32_t height);
 const SGIPlane *sgi_board_memory_plane(const SGIBoardMemory *m, uint32_t id);
 
 static inline bool sgi_plane_contains(const SGIPlane *p, int x, int y)

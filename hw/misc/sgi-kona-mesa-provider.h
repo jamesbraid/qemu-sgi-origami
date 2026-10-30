@@ -58,6 +58,12 @@ const SGIRenderResourceOps *sgi_kona_mesa_resource_ops(void);
  */
 void sgi_kona_mesa_refresh_board_views(SGIKonaMesaProvider *provider);
 
+/*
+ * Call under BQL after the board planes were laid out at a new size: the six
+ * board backings take their planes' sizes, as new snapshots.
+ */
+void sgi_kona_mesa_resize_board_views(SGIKonaMesaProvider *provider);
+
 bool sgi_kona_mesa_bind_texture(SGIKonaMesaProvider *provider,
                                 const SGIKonaMesaTextureView *view,
                                 Error **errp);

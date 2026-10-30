@@ -157,8 +157,8 @@ static void sgi_kona_dma_framebuffer(SGIKonaState *s,
                                      uint64_t cookie)
 {
     SGIKonaDma *d = &s->dma;
-    uint32_t top = d->test_fb_offset / SGI_KONA_FB_WIDTH;
-    uint32_t x0 = d->test_fb_offset % SGI_KONA_FB_WIDTH;
+    uint32_t top = d->test_fb_offset / s->fb_width;
+    uint32_t x0 = d->test_fb_offset % s->fb_width;
     uint32_t w = per_line / 4;
 
     /*
@@ -169,8 +169,8 @@ static void sgi_kona_dma_framebuffer(SGIKonaState *s,
      * A line wider than the plane goes on to the shared layer, which
      * refuses it.
      */
-    if (top >= SGI_KONA_FB_HEIGHT || lines > SGI_KONA_FB_HEIGHT - top ||
-        (w <= SGI_KONA_FB_WIDTH && x0 + w > SGI_KONA_FB_WIDTH)) {
+    if (top >= s->fb_height || lines > s->fb_height - top ||
+        (w <= s->fb_width && x0 + w > s->fb_width)) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: dma of %u lines of %u pixels at "
                       "framebuffer offset %u runs off the framebuffer; "
@@ -190,7 +190,7 @@ static void sgi_kona_dma_framebuffer(SGIKonaState *s,
             .dir = d->test_reverse ? SGI_DMA_FROM_PLANE : SGI_DMA_TO_PLANE,
             .plane = s->plane_front,
             .x = x0,
-            .y = SGI_KONA_FB_HEIGHT - 1 - (top + r),
+            .y = s->fb_height - 1 - (top + r),
             .w = w,
             .h = 1,
             .pitch = per_line,

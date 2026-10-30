@@ -248,7 +248,8 @@ static void test_layout(void)
     scene(s);
     control(s, FIXTURE_LAYOUT_SAVE, 0);
     control(s, FIXTURE_LAYOUT_LOAD, 0);
-    new_size = field(s, FIXTURE_LAYOUT_OLD_SIZE) + 1280 * 1024;
+    /* The stencil plane: a byte for each pixel one raster manager holds. */
+    new_size = field(s, FIXTURE_LAYOUT_OLD_SIZE) + 20971520 / 8;
     g_assert_cmpint((int64_t)field(s, FIXTURE_SAVE_RESULT), ==, 0);
     g_assert_cmpint((int64_t)field(s, FIXTURE_RESULT), ==, 0);
     g_assert_cmpuint(field(s, FIXTURE_ERROR), ==, 0);

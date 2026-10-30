@@ -1042,9 +1042,27 @@ typedef enum SGIKonaBitmapState {
 #define SGI_KONA_X_STIPPLE_MAX     32
 #define SGI_KONA_X_STIPPLE_NONE    UINT32_MAX
 
-/* The native framebuffer this increment publishes as a display surface. */
+/*
+ * The managed area, the one framebuffer every display channel takes its
+ * rectangle from, at reset: 1280x1024, the format the PROM falls back to.
+ * A combination's SetupFrameBuffer changes it (s->fb_width, s->fb_height;
+ * see sgi_kona_managed_resize()).
+ */
 #define SGI_KONA_FB_WIDTH  1280
 #define SGI_KONA_FB_HEIGHT 1024
+
+/*
+ * The raster managers' pixel memory, from the X server's combination check
+ * (established): a combination fits when raster managers x 20,971,520 /
+ * (height x width rounded up to SGI_KONA_FB_TILE_WIDTH) is at least 8 for
+ * Small pixel depth and 16 for Medium. The model sizes its planes for the
+ * largest managed area that check lets the configured pipe hold. The
+ * largest width or height is the model's bound, there so a guest value
+ * cannot ask for a line buffer larger than any shipped combination needs.
+ */
+#define SGI_KONA_RM_PIXEL_BYTES   20971520
+#define SGI_KONA_FB_TILE_WIDTH    160
+#define SGI_KONA_FB_MAX_DIMENSION 8192
 
 /*
  * Display channels: the most a display generator drives (the 030-1087-001 board
@@ -1977,7 +1995,17 @@ struct SGIKonaState {
     SGIScanout channel_scanout[SGI_KONA_MAX_CHANNELS - 1];
     SGIKonaChannelHook channel_hook[SGI_KONA_MAX_CHANNELS];
     uint32_t channel_scanouts;  /* consoles past channel 0's, from config */
-    uint32_t resolve_line[SGI_KONA_FB_WIDTH];
+    uint32_t resolve_line[SGI_KONA_FB_MAX_DIMENSION];
+
+    /*
+     * The managed area's size, which the planes in mem, desktop_mem and
+     * x_write_mem are laid out for, and the most pixels they can hold
+     * (fb_capacity, from the configuration at realize). Migrated in the
+     * managed-area subsection when it is not the reset size. Signed, so
+     * that coordinates compared with them compare as signed numbers.
+     */
+    int32_t fb_width, fb_height;
+    uint64_t fb_capacity;
 
     /*
      * Display-list work that outlasts the store that started it. A list a
