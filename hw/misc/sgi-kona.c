@@ -1037,6 +1037,8 @@ static void sgi_kona_managed_layout(SGIKonaState *s)
  * not known, and the X server's own check refuses such a combination
  * before it is sent.
  */
+static void sgi_kona_x_write_clear(SGIKonaState *s);
+
 static void sgi_kona_managed_resize(SGIKonaState *s, uint32_t width,
                                     uint32_t height)
 {
@@ -1051,6 +1053,27 @@ static void sgi_kona_managed_resize(SGIKonaState *s, uint32_t width,
         return;
     }
     trace_sgi_kona_managed_area(s->fb_width, s->fb_height, width, height);
+    /*
+     * An X pixel write still open would stage past the new area, so it is
+     * dropped, as a reset drops it. The X server is not known to resize
+     * while one is open.
+     */
+    if (s->x_pixel_open) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: managed area resized "
+                      "with an X pixel write open; the write is dropped\n");
+    }
+    sgi_kona_x_write_clear(s);
+    memset(s->x_pixel_setup, 0, sizeof(s->x_pixel_setup));
+    s->x_pixel_open = false;
+    s->x_pixel_x = 0;
+    s->x_pixel_y = 0;
+    s->x_pixel_bpp = 0;
+    s->x_pixel_stride = 0;
+    s->x_pixel_words = 0;
+    s->x_pixel_remaining = 0;
+    s->x_pixel_owner = SGI_KONA_CONTEXT_NONE;
+    s->x_pixel_owner_generation = 0;
+    s->x_pixel_prev = 0;
     s->fb_width = width;
     s->fb_height = height;
     sgi_kona_managed_layout(s);
