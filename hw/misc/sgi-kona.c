@@ -3460,8 +3460,8 @@ static bool sgi_kona_flash_init(SGIKonaState *s, Error **errp)
 
 /*
  * Write flash bytes [offset, offset + len) through to the "drive" image.
- * A failed write is the host's, not the guest's: it is reported and the
- * bytes stay in the flash.
+ * A failed write is the host's, not the guest's: it is reported once and
+ * the bytes stay in the flash, which from then on runs ahead of the image.
  */
 static void sgi_kona_flash_sync(SGIKonaState *s, uint64_t offset,
                                 uint64_t len)
@@ -3470,8 +3470,28 @@ static void sgi_kona_flash_sync(SGIKonaState *s, uint64_t offset,
         return;
     }
     len = MIN(len, SGI_KONA_FLASH_SIZE - offset);
-    if (blk_pwrite(s->flash_blk, offset, len, &s->flash[offset], 0) < 0) {
-        error_report("sgi-kona: write to the flash image failed");
+    if (blk_pwrite(s->flash_blk, offset, len, &s->flash[offset], 0) < 0 &&
+        !s->flash_sync_failed) {
+        s->flash_sync_failed = true;
+        error_report("sgi-kona: write to the flash image failed; later "
+                     "writes may be lost from the image too");
+    }
+}
+
+/*
+ * A migrated flash reaches the destination's image only once the VM runs:
+ * during incoming migration the image's node is not yet active, so
+ * post_load only marks the write, as pflash_cfi01 defers its own. With an
+ * image the source shares, the write puts back the same bytes.
+ */
+static void sgi_kona_flash_vm_change(void *opaque, bool running,
+                                     RunState state)
+{
+    SGIKonaState *s = opaque;
+
+    if (running && s->flash_sync_pending) {
+        s->flash_sync_pending = false;
+        sgi_kona_flash_sync(s, 0, SGI_KONA_FLASH_SIZE);
     }
 }
 
@@ -20420,6 +20440,10 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
      * space only after that last fallible step. Finalize owns its teardown.
      */
     address_space_init(&s->fabric_as, s->fabric, "sgi-kona.fabric");
+    if (s->flash_blk) {
+        s->flash_vm_change =
+            qemu_add_vm_change_state_handler(sgi_kona_flash_vm_change, s);
+    }
     sgi_kona_dma_init(&s->dma, s);
     /* RAW32 is model storage for DID16, two overlay16 planes and popup2. */
     sgi_board_memory_init(&s->desktop_mem, s->fb_capacity * 16);
@@ -25029,8 +25053,8 @@ static int sgi_kona_flash_post_load(void *opaque, int version_id)
     SGIKonaState *s = opaque;
 
     s->flash_written = true;
-    /* The destination's image takes the contents the source had. */
-    sgi_kona_flash_sync(s, 0, SGI_KONA_FLASH_SIZE);
+    /* The destination's image takes them when the VM runs. */
+    s->flash_sync_pending = s->flash_blk != NULL;
     return 0;
 }
 
@@ -25277,6 +25301,12 @@ static DeviceUnrealize sgi_kona_parent_unrealize;
 
 static void sgi_kona_unrealize(DeviceState *dev)
 {
+    SGIKonaState *s = SGI_KONA(dev);
+
+    if (s->flash_vm_change) {
+        qemu_del_vm_change_state_handler(s->flash_vm_change);
+        s->flash_vm_change = NULL;
+    }
     sgi_kona_work_cleanup(SGI_KONA(dev));
     sgi_kona_renderer_stop(SGI_KONA(dev));
     sgi_kona_parent_unrealize(dev);

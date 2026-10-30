@@ -1172,6 +1172,11 @@ static void test_migration_carries_start(void)
     migration_carries_start(false);
 }
 
+static void test_migration_carries_start_and_flash(void)
+{
+    migration_carries_start(true);
+}
+
 /*
  * A flash image that is not the flash's 512 KiB is refused at realize. The
  * parent makes a 4 KiB image and names it to the child in the environment.
@@ -1930,6 +1935,9 @@ int main(int argc, char **argv)
                    test_flash_image_size_refused);
     qtest_add_func("sn0/origin2000/kona-video/migration-carries-start",
                    test_migration_carries_start);
+    qtest_add_func("sn0/origin2000/kona-video/"
+                   "migration-carries-start-and-flash",
+                   test_migration_carries_start_and_flash);
     qtest_add_func("sn0/origin2000/kona-video/zero-data-replies",
                    test_zero_data_replies);
     qtest_add_func("sn0/origin2000/kona-video/migration-mid-video-command",
