@@ -990,6 +990,107 @@ static void test_bad_stored_combination_falls_back(void)
 }
 
 /*
+ * A combination stored in the flash outlasts the QEMU process when the
+ * flash has a "drive" image, as it outlasts power-off on a pipe: the write
+ * reaches the image at once (its marker and count at flash offset
+ * 0x20000), and a second process on the same image runs it when the loader
+ * releases the ARM, leaving the configuration block 2560 wide and channel
+ * 1 running.
+ */
+static void test_stored_combination_survives_restart(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("sn0-kona-flash-XXXXXX", NULL);
+    g_autofree char *image = g_build_filename(dir, "flash.raw", NULL);
+    g_autofree uint8_t *zero = g_malloc0(0x80000);
+    g_autoptr(GArray) stream = g_array_new(false, false, sizeof(uint32_t));
+    uint32_t format[383] = { 1, 1, 0x31323830, 0x78313032, 0x345f3630,
+                             0x2e76666f };
+    g_autofree char *args = NULL;
+    gchar *contents = NULL;
+    gsize length = 0;
+    uint32_t reply[19];
+    QTestState *s;
+
+    g_assert_nonnull(dir);
+    g_assert_true(g_file_set_contents(image, (const char *)zero, 0x80000,
+                                      NULL));
+    args = g_strdup_printf(
+        "-M origin2000,nodes=1,x-uncatalogued-graphics=on -smp 1 -m 64M "
+        "-drive if=none,id=dgflash,format=raw,file=%s "
+        "-device '{\"driver\":\"sgi-kona\",\"id\":\"kona0\","
+        "\"slot\":\"io4\",\"fabric-hub-widget\":9,"
+        "\"other-identity-parts\":[],\"product\":\"ir2\","
+        "\"display\":\"dg5-2\",\"drive\":\"dgflash\"}'", image);
+
+    format[19] = 60 << 16;
+    format[23] = 1024;
+    format[24] = 1280;
+    stream_command(stream, 0x18, (uint32_t[]){ 1 }, 1);
+    stream_command(stream, 0x08, (uint32_t[]){ 2560, 1024, 0 }, 3);
+    stream_command(stream, 0x16, format, ARRAY_SIZE(format));
+    stream_command(stream, 0x14,
+                   (uint32_t[]){ 1, 1280, 1023, 1280, 1024, 1, 1, 0 }, 8);
+    stream_command(stream, 0x17, (uint32_t[]){ 1, 0, 1 }, 3);
+
+    s = qtest_init(args);
+    flash_store_combination(s, stream);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(image, &contents, &length, NULL));
+    g_assert_cmpuint(length, ==, 0x80000);
+    g_assert_cmphex((uint32_t)ldl_be_p(contents + 0x20000), ==, 0xfacefeed);
+    g_assert_cmphex((uint32_t)ldl_be_p(contents + 0x20004), ==, stream->len);
+    g_assert_cmphex((uint32_t)ldl_be_p(contents + 0x20008), ==, 0x18);
+    g_free(contents);
+
+    s = qtest_init(args);
+    kona_register_return_page(s, RETURN_PAGE);
+    g_assert_cmphex(kona_config_word(s, 0x84), ==, 1280);
+    qtest_writel(s, KONA_REG(0x800328), 1);
+    g_assert_cmphex(kona_config_word(s, 0x84), ==, 2560);
+    video_get(s, GET_CHANNEL_CONFIG, 1, 7, reply, 19);
+    g_assert_cmphex(reply[0], ==, 0xd);
+    qtest_quit(s);
+
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+/*
+ * A flash image that is not the flash's 512 KiB is refused at realize. The
+ * parent makes a 4 KiB image and names it to the child in the environment.
+ */
+static void test_flash_image_size_refused(void)
+{
+    g_autofree char *dir = NULL;
+    g_autofree char *image = NULL;
+    g_autofree uint8_t *zero = NULL;
+
+    if (g_test_subprocess()) {
+        qtest_quit(qtest_initf(
+            "%s -drive if=none,id=dgflash,format=raw,file=%s "
+            "-global sgi-kona.drive=dgflash", MACHINE_ARGS,
+            g_getenv("SN0_KONA_FLASH_IMAGE")));
+        return;
+    }
+    dir = g_dir_make_tmp("sn0-kona-flash-XXXXXX", NULL);
+    g_assert_nonnull(dir);
+    image = g_build_filename(dir, "flash.raw", NULL);
+    zero = g_malloc0(0x1000);
+    g_assert_true(g_file_set_contents(image, (const char *)zero, 0x1000,
+                                      NULL));
+    g_setenv("SN0_KONA_FLASH_IMAGE", image, true);
+    g_test_trap_subprocess(NULL, 0, G_TEST_SUBPROCESS_INHERIT_STDIN);
+    g_unsetenv("SN0_KONA_FLASH_IMAGE");
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*the flash image is 4096 bytes, not the "
+                              "required 524288*");
+}
+
+/*
  * Every other Get answers its reply id, zero data at its reply size and
  * a checksum equal to the id, then word 0. GetOutputPedestal is the
  * smallest (one word); the rest follow the model's video command table.
@@ -1706,6 +1807,11 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-video/"
                    "bad-stored-combination-falls-back",
                    test_bad_stored_combination_falls_back);
+    qtest_add_func("sn0/origin2000/kona-video/"
+                   "stored-combination-survives-restart",
+                   test_stored_combination_survives_restart);
+    qtest_add_func("sn0/origin2000/kona-video/flash-image-size-refused",
+                   test_flash_image_size_refused);
     qtest_add_func("sn0/origin2000/kona-video/zero-data-replies",
                    test_zero_data_replies);
     qtest_add_func("sn0/origin2000/kona-video/migration-mid-video-command",

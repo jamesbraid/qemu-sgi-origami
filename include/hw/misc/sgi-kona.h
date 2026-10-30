@@ -23,6 +23,7 @@
 #include "hw/display/sgi/x-gc.h"
 #include "hw/misc/sgi-command-port.h"
 #include "hw/misc/sgi-kona-dma.h"
+#include "hw/misc/sgi-kona-flash.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/misc/sgi-kona-ports.h"
 #include "hw/misc/sgi-kona-texture.h"
@@ -751,26 +752,23 @@ typedef struct SGIKonaPendingSwap {
  * The pipe's flash EEPROM, which IRIX's EEPROM programming tool programs with
  * SGI_KONA_CMD_EEPROM ("The flash EEPROM operation, 0x1ec, and the EEPROM
  * programming tool" in the command grammar datasheet). 512 KiB, inferred from
- * the erase length and the header's place in the last 256-byte group: the boot
- * image from offset 0, the video combination at SGI_KONA_FLASH_COMBO behind its
- * marker and word count, and a twelve-word header at SGI_KONA_FLASH_HEADER
- * whose word 7 is the state the PROM and kernel accept only as 2. The indirect
- * port reads it big-endian at internal SGI_KONA_FLASH_BASE plus the flash
- * offset (inferred: the PROM's header address is that sum); the ARM's own
- * byte-wide programming accesses are not modelled, so host writes there are
- * dropped.
+ * the erase length and the header's place in the last 256-byte group; its
+ * layout is in hw/misc/sgi-kona-flash.h. The indirect port reads it
+ * big-endian at internal SGI_KONA_FLASH_BASE plus the flash offset
+ * (inferred: the PROM's header address is that sum); the ARM's own
+ * byte-wide programming accesses are not modelled, so host writes there
+ * are dropped.
  *
  * Approximated: no factory image was ever captured, so the model starts
  * the flash zero with header state 2. It keeps its contents across
- * system reset and migration, as flash does.
+ * system reset and migration, as flash does. With the "drive" property
+ * the flash is a raw image of exactly SGI_KONA_FLASH_SIZE bytes, flash
+ * offset n at file offset n: realize reads it, and every byte the pipe
+ * programs is written through, so the contents outlast the QEMU process
+ * as they outlast power-off on a pipe. Without it the flash lasts as long
+ * as the process.
  */
 #define SGI_KONA_FLASH_BASE         0x800000
-#define SGI_KONA_FLASH_SIZE         0x80000
-#define SGI_KONA_FLASH_COMBO        0x20000
-#define SGI_KONA_FLASH_COMBO_MARKER 0xfacefeed
-#define SGI_KONA_FLASH_HEADER       0x7ff00
-#define SGI_KONA_FLASH_STATE        (SGI_KONA_FLASH_HEADER + 7 * 4)
-#define SGI_KONA_FLASH_STATE_GOOD   2
 /*
  * The identification word op 5 answers: the manufacturer and device codes
  * in bytes 0 and 1, from the example readout in SGI's InfiniteReality
@@ -1677,6 +1675,7 @@ struct SGIKonaState {
      */
     uint8_t flash[SGI_KONA_FLASH_SIZE];
     bool flash_written;
+    BlockBackend *flash_blk;    /* the "drive" image, or NULL */
     SGIKonaFlashOp flash_op;
 
     /*

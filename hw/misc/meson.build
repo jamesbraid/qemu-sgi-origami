@@ -56,7 +56,8 @@ system_ss.add(when: 'CONFIG_SGI_MGRAS',
               if_true: files('sgi-mgras.c', 'sgi-mgras-raster.c',
                              'sgi-mgras-display.c', 'sgi-mgras-gl.c',
                              'sgi-mgras-texture.c'))
-system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona.c'))
+system_ss.add(when: 'CONFIG_SGI_KONA',
+              if_true: files('sgi-kona.c', 'sgi-kona-flash-image.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-texture.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-gl-decode.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-dma.c'))
