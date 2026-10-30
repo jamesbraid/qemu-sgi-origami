@@ -12982,6 +12982,23 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
             trace_sgi_kona_gl_iris_rule(i, r->colour_normal, r->lmc);
         }
         return;
+    case SGI_KONA_CMD_GL_IGLOO_SWAPTMESH:
+        /*
+         * IRIS GL's swaptmesh, sent as the caller makes it. The
+         * distributor exchanges its two retained strip vertices and
+         * flips the strip's parity; outside a triangle strip the token
+         * does nothing (field values established, meanings inferred:
+         * the KONA geometry datasheet's vertex history).
+         */
+        if (i != SGI_KONA_CONTEXT_NONE) {
+            SGIGLSink sink;
+
+            sgi_kona_gl_sink(s, &sink);
+            sgi_kona_gl_run(s, i, &sink,
+                            &(SGIGLCmd) { SGI_GL_OP_EXCHANGE_TMESH, 0, args });
+        }
+        trace_sgi_kona_gl_command(selector, i);
+        return;
     case SGI_KONA_CMD_GL_VIEWPORT:
     case SGI_KONA_CMD_GL_SCISSOR:
     case SGI_KONA_CMD_GL_DISABLE:

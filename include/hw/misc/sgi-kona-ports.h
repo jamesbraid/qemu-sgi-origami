@@ -521,8 +521,9 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  * parameter word, and swap-tmesh 0x81a0 as 0x1a9 and a literal 0. Full
  * screen 0x819e is a kernel request and viewport offset 0x819f sends
  * nothing. The model carries out colour-normal and LMC colour (see
- * sgi_kona_gl_iris_vertex()); what the pipe does with the other three is
- * unknown, so the model frames and consumes them.
+ * sgi_kona_gl_iris_vertex()) and swap-tmesh (see sgi_kona_gl_packet());
+ * what the pipe does with the other two is unknown, so the model frames
+ * and consumes them.
  */
 #define SGI_KONA_CMD_GL_IGLOO_IRISGL_MODE 0x112
 #define SGI_KONA_CMD_GL_IGLOO_LMC_COLOR   0x113
