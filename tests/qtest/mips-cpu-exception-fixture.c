@@ -173,9 +173,13 @@ static void fixture_halted_set(Object *obj, bool value, Error **errp)
 static char *fixture_translation_key(Object *obj, Error **errp)
 {
     MipsCpuExceptionFixtureState *s = MIPS_CPU_EXCEPTION_FIXTURE(obj);
-    TCGTBCPUState key =
-        CPU_GET_CLASS(s->cpu)->tcg_ops->get_tb_cpu_state(s->cpu);
+    TCGTBCPUState key;
 
+    if (!DEVICE(obj)->realized || !s->cpu) {
+        error_setg(errp, "translation key requires a realized CPU fixture");
+        return NULL;
+    }
+    key = CPU_GET_CLASS(s->cpu)->tcg_ops->get_tb_cpu_state(s->cpu);
     return g_strdup_printf("%" PRIx64 " %u %u", (uint64_t)key.pc, key.flags,
                             s->cpu->tcg_cflags);
 }
