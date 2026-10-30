@@ -50,6 +50,8 @@
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
+#include "system/block-backend.h"
 #include "hw/core/resettable.h"
 #include "migration/vmstate.h"
 #include "migration/qemu-file.h"
@@ -3417,12 +3419,58 @@ static const uint8_t sgi_kona_flash_op_words[] = {
     [SGI_KONA_FLASH_OP_IDENTIFY] = 1,
 };
 
-/* The starting image: zero, with the header state the PROM accepts. */
-static void sgi_kona_flash_init(SGIKonaState *s)
+/*
+ * The starting image: zero, with the header state the PROM accepts, or
+ * the "drive" image, which must be the flash's size.
+ */
+static bool sgi_kona_flash_init(SGIKonaState *s, Error **errp)
 {
-    memset(s->flash, 0, sizeof(s->flash));
-    stl_be_p(&s->flash[SGI_KONA_FLASH_STATE], SGI_KONA_FLASH_STATE_GOOD);
+    int64_t length;
+
+    sgi_kona_flash_fresh_image(s->flash);
     s->flash_written = false;
+    if (!s->flash_blk) {
+        return true;
+    }
+    length = blk_getlength(s->flash_blk);
+    if (length < 0) {
+        error_setg_errno(errp, -length, "sgi-kona: cannot read the size of "
+                         "the flash image");
+        return false;
+    }
+    if (length != SGI_KONA_FLASH_SIZE) {
+        error_setg(errp, "sgi-kona: the flash image is %" PRId64 " bytes, "
+                   "not the required %u", length, SGI_KONA_FLASH_SIZE);
+        return false;
+    }
+    if (blk_set_perm(s->flash_blk, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
+                     BLK_PERM_ALL, errp) < 0) {
+        return false;
+    }
+    if (blk_pread(s->flash_blk, 0, SGI_KONA_FLASH_SIZE, s->flash, 0) < 0) {
+        error_setg(errp, "sgi-kona: cannot read the flash image");
+        return false;
+    }
+    /* The image may differ from the starting one: migration carries it. */
+    s->flash_written = true;
+    return true;
+}
+
+/*
+ * Write flash bytes [offset, offset + len) through to the "drive" image.
+ * A failed write is the host's, not the guest's: it is reported and the
+ * bytes stay in the flash.
+ */
+static void sgi_kona_flash_sync(SGIKonaState *s, uint64_t offset,
+                                uint64_t len)
+{
+    if (!s->flash_blk || offset >= SGI_KONA_FLASH_SIZE) {
+        return;
+    }
+    len = MIN(len, SGI_KONA_FLASH_SIZE - offset);
+    if (blk_pwrite(s->flash_blk, offset, len, &s->flash[offset], 0) < 0) {
+        error_report("sgi-kona: write to the flash image failed");
+    }
 }
 
 /* The big-endian word at flash offset `offset`, or 0 past the end. */
@@ -3457,6 +3505,7 @@ static void sgi_kona_flash_store(SGIKonaState *s, uint32_t word)
             f->outside = true;
         }
     }
+    sgi_kona_flash_sync(s, f->flash_addr, sizeof(bytes));
     f->flash_addr += 4;
     s->flash_written = true;
 }
@@ -20304,6 +20353,9 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
     if (!sgi_kona_list_size_valid(s, errp)) {
         return false;
     }
+    if (!sgi_kona_flash_init(s, errp)) {
+        return false;
+    }
 
     sgi_command_port_init(&s->textport, &sgi_kona_textport_ops, s,
                           SGI_KONA_PORT_TEXTPORT, sgi_kona_textport_selectors,
@@ -20320,7 +20372,6 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
     s->map_ram_count = SGI_KONA_MAPRAM_ENTRIES;
 
     s->arm_high = g_new0(uint32_t, SGI_KONA_ARM_HIGH_WORDS);
-    sgi_kona_flash_init(s);
     s->arm_high_count = SGI_KONA_ARM_HIGH_WORDS;
 
     s->fb_capacity = sgi_kona_fb_capacity(s);
@@ -21350,6 +21401,8 @@ static const Property sgi_kona_properties[] = {
     DEFINE_PROP_STRING("geometry", SGIKonaState, geometry),
     DEFINE_PROP_STRING("rm-type", SGIKonaState, rm_type),
     DEFINE_PROP_UINT32("rm-count", SGIKonaState, rm_count, 0),
+    /* The flash EEPROM's raw image; see SGI_KONA_FLASH_SIZE. */
+    DEFINE_PROP_DRIVE("drive", SGIKonaState, flash_blk),
     DEFINE_PROP_UINT32("texture-mb", SGIKonaState, texture_mb, 0),
     DEFINE_PROP_UINT32("channels", SGIKonaState, channels, 0),
     DEFINE_PROP_STRING("display", SGIKonaState, display),
@@ -24945,6 +24998,8 @@ static int sgi_kona_flash_post_load(void *opaque, int version_id)
     SGIKonaState *s = opaque;
 
     s->flash_written = true;
+    /* The destination's image takes the contents the source had. */
+    sgi_kona_flash_sync(s, 0, SGI_KONA_FLASH_SIZE);
     return 0;
 }
 
