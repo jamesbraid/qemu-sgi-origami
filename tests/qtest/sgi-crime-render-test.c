@@ -1903,7 +1903,7 @@ static bool reference_color(const Shape *c, unsigned sample, uint32_t *color)
         unsigned repeat = (c->stipple_mode >> 8) & 255;
         unsigned period = (c->stipple_mode & 255) + 1;
         unsigned rank = (sample + repeat) / period;
-        unsigned position = (first + rank) % (last + 1);
+        unsigned position = first + rank % (last - first + 1);
 
         bit = !!(c->pattern & (1U << (31 - position)));
     }
@@ -19729,6 +19729,49 @@ static void test_gl_line_coordinate_refusals(gconstpointer selection)
     g_rmdir(dir);
 }
 
+static void test_stipple_nonzero_interval(void)
+{
+    const bool drawn[20] = {
+        [1] = true, [2] = true, [6] = true, [7] = true,
+        [8] = true, [9] = true, [10] = true, [11] = true,
+        [15] = true, [16] = true, [17] = true,
+    };
+    QTestState *s = start_indexed_state();
+    Shape c = shape_default();
+    uint32_t expected[20];
+
+    c.primitive = 0x03020000;
+    c.y = 1;
+    c.width = 20;
+    c.height = 1;
+    c.bytes = 4;
+    c.old = 0x9d3b76a5;
+    map_region(s, 0, 4, 0, 1, 19, 1);
+    shape_memory(s, &c, NULL);
+    setup(s, 0x228, false);
+    qtest_writel(s, DE + 0x18, 0x40278);
+    qtest_writel(s, DE + 0x70, xy(1, 1));
+    qtest_writel(s, DE + 0x74, xy(17, 1));
+    qtest_writel(s, DE + 0xd0, 0x13579bdf);
+    qtest_writel(s, DE + 0xd8, 0x2468ace0);
+    qtest_writel(s, DE + 0x1b0, 6);
+    /* K=2, M=4, R=1, Q=2: runs 11,000,111,111,000,111. */
+    qtest_writel(s, DE + 0xc0, 0x02040102);
+    for (unsigned x = 0; x < 20; x++) {
+        expected[x] = c.old ^ (drawn[x] ? 0x13579bdf : 0);
+    }
+    g_assert_cmpint(memtx_writel(s, DE + 0x8c4, 0x28000000), ==, MEMTX_OK);
+    shape_memory(s, &c, expected);
+    g_assert_cmphex(qtest_readl(s, DE + 0xc0), ==, 0x02040102);
+    g_assert_cmphex(qtest_readl(s, DE + 0xc4), ==, 0x28000000);
+    g_assert_cmpint(memtx_writel(s, DE + 0x8c4, 0x28000000), ==, MEMTX_OK);
+    for (unsigned x = 0; x < 20; x++) {
+        expected[x] = c.old;
+    }
+    shape_memory(s, &c, expected);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     take_group_paths(&argc, argv);
@@ -20476,5 +20519,7 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(0), test_gl_point_coordinate_migration);
     add_data_case("sgi/crime/render/gl-point-coordinate/migration/committed",
                   GUINT_TO_POINTER(1), test_gl_point_coordinate_migration);
+    add_case("sgi/crime/render/stipple/nonzero-interval",
+             test_stipple_nonzero_interval);
     return g_test_run();
 }
