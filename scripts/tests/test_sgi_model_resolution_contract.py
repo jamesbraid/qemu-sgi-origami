@@ -3214,7 +3214,7 @@ class Origin3000BrickTests(unittest.TestCase):
              "xbrick-slot-3-xio", "xbrick-slot-4-xio"])
         self.assertFalse([bid for bid, item in buses.items()
                           if item["kind"] == "pci"])
-        self.assertNotIn("brick_type", components["xbrick-brick"])
+        self.assertEqual(components["xbrick-brick"]["brick_type"], "X")
 
     def test_origin3200_xbrick_hangs_the_xbrick_off_the_second_cbrick(self):
         model = self.resolve(self.ORIGIN3200_XBRICK)
@@ -3284,6 +3284,7 @@ class Origin3000BrickTests(unittest.TestCase):
                          0xa)
         self.assertEqual(components["pbrick-port-b"]["parent"],
                          "pbrick-u0-crossbar")
+        self.assertEqual(components["pbrick-brick"]["brick_type"], "P")
 
     def test_pbrick_layer_puts_two_slots_on_each_chips_buses(self):
         model = self.resolve(self.ORIGIN3200_PBRICK)

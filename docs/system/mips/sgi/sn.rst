@@ -341,9 +341,13 @@ connector ``XIO 10`` or ``XIO 11`` is port A is unknown, because the
 sources disagree. The slots stay unresolved in the catalogue, since no
 X-brick board has a reviewed contract. The builder test places Origin
 2000 PCI carrier cards in three slots as stand-ins, each reached only
-from the cabled C-brick at its slot's port. Unknown: the brick's L1 type
-character, the XBridge revision, and the widget numbers a C-brick sees
-for the slots, which only an X-brick widget inventory would settle.
+from the cabled C-brick at its slot's port. The layer records the
+brick's L1 type letter as ``X`` (``0x58``, Linux ``ksys/l1.h``), which
+IRIX 6.5.30 and the stock IP35 PROM 6.210 name an ``Xbrick`` with module
+class ``x``, expecting a 400 MHz link; this is the software's
+expectation, not a capture of a fitted brick, and nothing is built from
+it yet. Unknown: the XBridge revision, and the widget numbers a C-brick
+sees for the slots, which only an X-brick widget inventory would settle.
 
 .. _sgi-sn-family-pbrick:
 
@@ -361,7 +365,11 @@ second C-brick at U0 port A, the same way ``origin3200-xbrick`` places
 the X-brick. The builder still refuses the four links, so no P-brick is
 built: whether U1 and U2 present each head on its own link, which head
 rides which link, the PCI device number of each slot and the slots'
-interrupt wiring all lack a reviewed contract.
+interrupt wiring all lack a reviewed contract. The layer records the
+brick's L1 type letter as ``P`` (``0x50``, Linux ``ksys/l1.h``), which
+IRIX 6.5.30 and the stock IP35 PROM 6.210 name a ``Pbrick`` with module
+class ``p``, expecting a 600 MHz link; as for the X-brick, it is the
+software's expectation, and nothing is built from it yet.
 
 .. _sgi-sn-family-ixpx:
 

@@ -14,10 +14,11 @@ layer:
         name: P-brick
         kind: module
         provenance: vendor-document
-        sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]
-        notes: >-
-          The L1 manual's type letter for the P-brick is outside the L1
-          contract's established set, so the layer carries no brick_type.
+        # The character the P-brick's L1 reports. IRIX 6.5.30 and the stock
+        # IP35 PROM name a brick that answers P a Pbrick (module class p),
+        # a software expectation, not a capture of a fitted brick.
+        brick_type: P
+        sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)", "linux-history:381ab1f53816 include/asm-ia64/sn/ksys/l1.h line 265: brick type P is 0x50"]
       - id: u0
         name: XBridge U0
         kind: pci-host-bridge

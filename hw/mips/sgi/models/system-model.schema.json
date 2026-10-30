@@ -2110,7 +2110,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 1,
-          "description": "The character a module's L1 returns as its brick type, carried on the module's root component. Only established characters are accepted: 4 (0x34) for the Origin 300's IP45 and C (0x43) for the C-brick's IP35. A brick whose character no source establishes leaves it unset."
+          "description": "The character a module's L1 returns as its brick type, carried on the module's root component. Only established characters are accepted: 4 (0x34) for the Origin 300's IP45, C (0x43) for the C-brick's IP35, P (0x50) for the P-brick and X (0x58) for the X-brick. A brick whose character no source establishes leaves it unset."
         },
         "hardware_kind": { "$ref": "#/$defs/identifier", "description": "Stable hardware identity used by generated consumers. This names the part family, not a driver or implementation type." },
         "ds1742_fresh_year_base": {
