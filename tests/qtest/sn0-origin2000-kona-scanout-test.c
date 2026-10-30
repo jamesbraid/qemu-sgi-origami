@@ -442,7 +442,10 @@ static void test_migration_carries_scanout(void)
  * front and back colour banks of 1280x1024 32-bit words (format RGB24,
  * 2), a byte-per-pixel tag plane for each (format TAG, 6), 15 MiB of list
  * words in 4096-byte rows (format RAW, 9) and a 1280x1024 depth plane of
- * 32-bit words (format Z24, 4). The list size follows the
+ * 32-bit words (format Z24, 4). Each pixel plane is laid out for the
+ * 1280x1024 managed area at reset but holds 2,621,440 pixels, the most one
+ * raster manager holds at Small pixel depth (20,971,520 / 8), so a
+ * combination's larger managed area fits. The list size follows the
  * "list-memory-size" property, and a size that is not a whole number of
  * rows is refused at realize.
  */
@@ -453,30 +456,30 @@ static void test_planes_declared(void)
     g_autofree char *found = NULL;
     QTestState *s;
     static const char *const planes[] = {
-        "plane 0 base 0x0 len 0x500000 1280x1024 stride 5120 format 2",
-        "plane 1 base 0x500000 len 0x500000 1280x1024 stride 5120 format 2",
-        "plane 2 base 0xa00000 len 0x140000 1280x1024 stride 1280 format 6",
-        "plane 3 base 0xb40000 len 0x140000 1280x1024 stride 1280 format 6",
-        "plane 4 base 0xc80000 len 0xf00000 1024x3840 stride 4096 format 9",
-        "plane 5 base 0x1b80000 len 0x500000 1280x1024 stride 5120 format 4",
+        "plane 0 base 0x0 len 0xa00000 1280x1024 stride 5120 format 2",
+        "plane 1 base 0xa00000 len 0xa00000 1280x1024 stride 5120 format 2",
+        "plane 2 base 0x1400000 len 0x280000 1280x1024 stride 1280 format 6",
+        "plane 3 base 0x1680000 len 0x280000 1280x1024 stride 1280 format 6",
+        "plane 4 base 0x1900000 len 0xf00000 1024x3840 stride 4096 format 9",
+        "plane 5 base 0x2800000 len 0xa00000 1280x1024 stride 5120 format 4",
     };
 
     static const struct {
         const char *line;
         unsigned count;
     } internal[] = {
-        { "plane 6 base 0x2080000 len 0x140000 1280x1024 stride 1280 format 5",
+        { "plane 6 base 0x3200000 len 0x280000 1280x1024 stride 1280 "
+          "format 5", 1 },
+        { "plane 0 base 0x0 len 0xa00000 1280x1024 stride 5120 format 9", 2 },
+        { "plane 1 base 0xa00000 len 0xa00000 1280x1024 stride 5120 "
+          "format 9", 1 },
+        { "plane 2 base 0x1400000 len 0xa00000 1280x1024 stride 5120 "
+          "format 9", 1 },
+        { "plane 3 base 0x1e00000 len 0xa00000 1280x1024 stride 5120 "
+          "format 9", 1 },
+        { "plane 1 base 0xa00000 len 0x280000 1280x1024 stride 1280 format 6",
           1 },
-        { "plane 0 base 0x0 len 0x500000 1280x1024 stride 5120 format 9", 2 },
-        { "plane 1 base 0x500000 len 0x500000 1280x1024 stride 5120 format 9",
-          1 },
-        { "plane 2 base 0xa00000 len 0x500000 1280x1024 stride 5120 format 9",
-          1 },
-        { "plane 3 base 0xf00000 len 0x500000 1280x1024 stride 5120 format 9",
-          1 },
-        { "plane 1 base 0x500000 len 0x140000 1280x1024 stride 1280 format 6",
-          1 },
-        { "plane 2 base 0x640000 len 0x500000 1280x1024 stride 5120 format 9",
+        { "plane 2 base 0xc80000 len 0xa00000 1280x1024 stride 5120 format 9",
           1 },
     };
 
@@ -498,9 +501,9 @@ static void test_planes_declared(void)
                     " -D %s", MACHINE_ARGS, log);
     qtest_quit(s);
     found = kona_log_read(log);
-    g_assert_nonnull(strstr(found, "plane 4 base 0xc80000 len 0x200000 "
+    g_assert_nonnull(strstr(found, "plane 4 base 0x1900000 len 0x200000 "
                                    "1024x512 stride 4096 format 9"));
-    g_assert_nonnull(strstr(found, "plane 5 base 0xe80000 len 0x500000 "
+    g_assert_nonnull(strstr(found, "plane 5 base 0x1b00000 len 0xa00000 "
                                    "1280x1024 stride 5120 format 4"));
     g_rmdir(dir);
 }
@@ -1201,6 +1204,91 @@ static void test_migration_refuses_mismatched_channel_mode(void)
     g_rmdir(dir);
 }
 
+/*
+ * Two 1280x1024 channels side by side over a 2560x1024 managed area, as
+ * the shipped 2@1280x1024_60 combination loads them: SetupFrameBuffer
+ * [2560, 1024, Small], then channel 0 at (0, 0) and channel 1 at
+ * (1280, 0). The managed area is grey, orange from column 1280 on, with
+ * a blue point at column 2000, display line 23.
+ */
+static void kona_two_heads(QTestState *s)
+{
+    kona_video(s, 0x08, (uint32_t[]){ 2560, 1024, 0 }, 3);
+    kona_load_channel(s, 0, 1280, 1024, 0, 0, 1280, 1024);
+    kona_load_channel(s, 1, 1280, 1024, 1280, 0, 1280, 1024);
+    kona_load_colour(s, 1, 0x40, 0x40, 0x40);
+    kona_load_colour(s, 2, 0xc0, 0x80, 0x40);
+    kona_load_colour(s, 3, 0x00, 0x00, 0xff);
+    kona_textport_push(s, 0x2, (uint32_t[]){ 1 }, 1);
+    kona_textport_push(s, 0x5, (uint32_t[]){ 0, 0, 2559, 1023 }, 4);
+    kona_textport_push(s, 0x2, (uint32_t[]){ 2 }, 1);
+    kona_textport_push(s, 0x5, (uint32_t[]){ 1280, 0, 2559, 1023 }, 4);
+    kona_textport_push(s, 0x2, (uint32_t[]){ 3 }, 1);
+    kona_textport_push(s, 0x6, (uint32_t[]){ 2000, wire_line(23) }, 2);
+}
+
+/* Head 1 shows columns 1280-2559 of the 2560x1024 area kona_two_heads(). */
+static void assert_second_head(QTestState *s, const char *dir)
+{
+    g_autofree uint8_t *frame = NULL;
+    unsigned w, h;
+
+    frame = kona_screendump_head(s, dir, 1, &w, &h);
+    g_assert_cmpuint(w, ==, 1280);
+    g_assert_cmpuint(h, ==, 1024);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 0, 0), ==, 0xc08040);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 720, 23), ==, 0x0000ff);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 721, 23), ==, 0xc08040);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 1279, 1023), ==, 0xc08040);
+}
+
+/*
+ * A combination's SetupFrameBuffer sizes the managed area the channels
+ * take their rectangles from. With [2560, 1024], channel 1's rectangle
+ * at (1280, 0) is inside it: head 1 shows the right half, with the blue
+ * point at (2000, 23) at its (720, 23), and head 0 the left half. A
+ * model whose managed area stays 1280x1024 shows head 1 black and drops
+ * the drawing past column 1279.
+ */
+static void test_combination_widens_managed_area(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    g_autofree uint8_t *frame = NULL;
+    unsigned w, h;
+    QTestState *s = qtest_init(DG5_2_ARGS);
+
+    kona_two_heads(s);
+    assert_second_head(s, dir);
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmpuint(w, ==, 1280);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 0, 0), ==, 0x404040);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 1279, 1023), ==, 0x404040);
+    qtest_quit(s);
+    g_rmdir(dir);
+}
+
+/*
+ * The managed area crosses a migration with the pixels drawn in it: the
+ * destination's head 1 shows the same right half.
+ */
+static void test_migration_carries_managed_area(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    g_autofree char *dest_args = NULL;
+    QTestState *from, *to;
+
+    from = qtest_init(DG5_2_ARGS);
+    kona_two_heads(from);
+    dest_args = g_strdup_printf("%s -incoming %s", DG5_2_ARGS, uri);
+    to = qtest_init(dest_args);
+    sgi_migrate_stopped(from, uri);
+    assert_second_head(to, dir);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1264,6 +1352,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-scanout/"
                    "migration-refuses-mismatched-channel-mode",
                    test_migration_refuses_mismatched_channel_mode);
+    qtest_add_func("sn0/origin2000/kona-scanout/"
+                   "combination-widens-managed-area",
+                   test_combination_widens_managed_area);
+    qtest_add_func("sn0/origin2000/kona-scanout/"
+                   "migration-carries-managed-area",
+                   test_migration_carries_managed_area);
 
     ret = g_test_run();
     qtest_quit(qts);

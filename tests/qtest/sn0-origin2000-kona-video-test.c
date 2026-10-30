@@ -729,6 +729,63 @@ static void test_one_channel_load_leaves_channel_off(void)
     g_free(kona_log_read(log));
 }
 
+/* Configuration block word `offset`, as the pipe would answer 0x1e9. */
+static uint32_t kona_config_word(QTestState *s, unsigned offset)
+{
+    QDict *resp = qtest_qmp(s,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': 'x-test-config-block'}}", KONA_QOM_PATH);
+    const char *hex = qdict_get_str(resp, "return");
+    char word[9] = { 0 };
+    uint32_t value;
+
+    g_assert_cmpuint(strlen(hex), >=, 2 * (offset + 4));
+    memcpy(word, hex + 2 * offset, 8);
+    value = g_ascii_strtoull(word, NULL, 16);
+    qobject_unref(resp);
+    return value;
+}
+
+/*
+ * SetupFrameBuffer [width, height, depth] sizes the managed area when the
+ * raster managers hold it: one raster manager holds 20,971,520 / 8 pixels
+ * at Small, which 2560x1024 fills and 2560x2048 overflows. The overflow is
+ * logged and changes nothing; 2560x1024 changes the configuration block's
+ * width and height (+0x84, +0x88), from which the X server sizes its
+ * screen, and GetResize's pan rectangle and largest size. A reset returns
+ * to 1280x1024.
+ */
+static void test_setup_frame_buffer_sizes_managed_area(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_dg("dg5-2", &log);
+    uint32_t reply[18];
+
+    kona_register_return_page(s, RETURN_PAGE);
+    video_send(s, 0x08, (uint32_t[]){ 2560, 2048, 0 }, 3);
+    g_assert_cmphex(kona_config_word(s, 0x84), ==, 1280);
+    g_assert_cmphex(kona_config_word(s, 0x88), ==, 1024);
+
+    video_send(s, 0x08, (uint32_t[]){ 2560, 1024, 0 }, 3);
+    g_assert_cmphex(kona_config_word(s, 0x84), ==, 2560);
+    g_assert_cmphex(kona_config_word(s, 0x88), ==, 1024);
+    video_get(s, GET_RESIZE, 1, 8, reply, 18);
+    g_assert_cmphex(reply[4], ==, 0);
+    g_assert_cmphex(reply[5], ==, 1023);
+    g_assert_cmphex(reply[6], ==, 2560);
+    g_assert_cmphex(reply[7], ==, 1024);
+    g_assert_cmphex(reply[12], ==, 2560);
+    g_assert_cmphex(reply[13], ==, 1024);
+
+    qtest_system_reset(s);
+    g_assert_cmphex(kona_config_word(s, 0x84), ==, 1280);
+    g_assert_cmphex(kona_config_word(s, 0x88), ==, 1024);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "managed area 2560x2048 does not fit"));
+}
+
 /*
  * Every other Get answers its reply id, zero data at its reply size and
  * a checksum equal to the id, then word 0. GetOutputPedestal is the
@@ -1435,6 +1492,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-video/"
                    "one-channel-load-leaves-channel-off",
                    test_one_channel_load_leaves_channel_off);
+    qtest_add_func("sn0/origin2000/kona-video/"
+                   "setup-frame-buffer-sizes-managed-area",
+                   test_setup_frame_buffer_sizes_managed_area);
     qtest_add_func("sn0/origin2000/kona-video/zero-data-replies",
                    test_zero_data_replies);
     qtest_add_func("sn0/origin2000/kona-video/migration-mid-video-command",

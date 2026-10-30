@@ -235,10 +235,14 @@ static void roundtrip(KonaReadFixture *s, unsigned request)
     roundtrip_state(s);
 }
 
-/* Check the seven-plane layout; return where the stencil plane starts. */
+/*
+ * Check the seven-plane layout; return where the stencil plane starts. Each
+ * pixel plane holds the most pixels the raster managers can, laid out for
+ * the 1280x1024 managed area the pipe starts with.
+ */
 static uint64_t layout_check(SGIKonaState *k)
 {
-    const uint64_t pixels = (uint64_t)SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT;
+    const uint64_t pixels = k->fb_capacity;
     const uint64_t lengths[] = {
         4 * pixels, 4 * pixels, pixels, pixels, k->list_memory_size,
         4 * pixels, pixels,
