@@ -331,12 +331,13 @@
       "id": "rbrick-brick",
       "kind": "module",
       "name": "R-brick",
-      "notes": "The L1 brick-type character is not set: no reviewed L1 contract gives the R-brick's. The rear L1 PORT, which carries the USB hub's upstream link to the rack's L2, the two fans and the power board's +48 Vdc domain are not modelled.",
+      "notes": "The layer sets no brick_type because the machine's router L1 profile already answers R (0x52) for every router L1, the letter the stock IP35 PROM and IRIX 6.5.30 expect from a router's L1; that is the software's expectation, not a capture of a fitted R-brick. The rear L1 PORT, which carries the USB hub's upstream link to the rack's L2, the two fans and the power board's +48 Vdc domain are not modelled.",
       "parent": "rack",
       "provenance": "vendor-document",
       "regions": [],
       "sources": [
-        "007-4240-002 printed pages 191 to 194 and 007-4311-002 printed page 36: one router ASIC with eight NUMAlink 3 ports, an L1 controller, a USB hub, a power board and two fans; no processors, memory or I/O"
+        "007-4240-002 printed pages 191 to 194 and 007-4311-002 printed page 36: one router ASIC with eight NUMAlink 3 ports, an L1 controller, a USB hub, a power board and two fans; no processors, memory or I/O",
+        "linux-history:381ab1f53816 include/asm-ia64/sn/ksys/l1.h line 266: brick type R is 0x52"
       ]
     },
     {
