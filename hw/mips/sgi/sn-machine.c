@@ -6650,15 +6650,12 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
         if (vbrick) {
             qdev_prop_set_uint8(l1, "identity-index", controller->module_index);
         }
-        /* A V-brick's L1 takes no firmware revision. */
-        if (!vbrick) {
-            qdev_prop_set_int32(l1, "revision-major",
-                                s->l1_config[index].revision[0]);
-            qdev_prop_set_int32(l1, "revision-minor",
-                                s->l1_config[index].revision[1]);
-            qdev_prop_set_int32(l1, "revision-patch",
-                                s->l1_config[index].revision[2]);
-        }
+        qdev_prop_set_int32(l1, "revision-major",
+                            s->l1_config[index].revision[0]);
+        qdev_prop_set_int32(l1, "revision-minor",
+                            s->l1_config[index].revision[1]);
+        qdev_prop_set_int32(l1, "revision-patch",
+                            s->l1_config[index].revision[2]);
         if (mac) {
             qdev_prop_set_string(l1, "mac", mac);
         }
@@ -11341,8 +11338,8 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
                                   sgi_machine_set_l1_revision);
     object_class_property_set_description(oc, "l1-revision",
         "Override the catalogue's L1 firmware revision, as decimal "
-        "major.minor.patch, for every node L1 and every Origin 3000 I-brick "
-        "and N-brick L1; a V-brick's L1 takes none.");
+        "major.minor.patch, for every node L1 and every Origin 3000 I-brick, "
+        "N-brick and V-brick L1.");
 
     object_class_property_add(oc, "bedrock-revision", "uint8",
                               sgi_machine_get_bedrock_revision,

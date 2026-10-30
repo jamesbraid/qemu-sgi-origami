@@ -278,10 +278,10 @@ with its own rack, slot, type and records (007-4240-002 printed pages 69,
 72, 118 and 128). The profiles reuse this page's request encoding, framing
 and task-6 request codes, which the public Linux and OpenBSD headers name
 for the Origin 3000 products; that a fitted C-brick frames bytes the same
-way is *unknown*. ``brick-type-code`` is refused. The C-brick, I-brick and
-N-brick profiles answer request ``0x0005`` with the firmware revision
-``revision-*`` configures and minus 104 without one; the V-brick profile
-refuses ``revision-*``.
+way is *unknown*. ``brick-type-code`` is refused. The C-brick, I-brick,
+N-brick and V-brick profiles answer request ``0x0005`` with the firmware
+revision ``revision-*`` configures and minus 104 without one; every brick
+personality of the L1 firmware answers it with the firmware's revision.
 
 Ratings follow :ref:`sgi-ip30`; the choices below are approximations, not
 captured controller output.
@@ -310,10 +310,10 @@ captured controller output.
        identity request on a C-brick is unknown. The case of the I-brick
        letter is the model's choice.
    * - The machine configures firmware revision 1.44.0 on every C-brick,
-       I-brick and N-brick L1 for request ``0x0005``, and the machine's
-       ``l1-revision`` replaces it; neither reaches a V-brick's L1, which
-       takes no revision. ``version`` prints the number as ``L1
-       1.44.0 (Image EMU-UNKNOWN)``, naming no image bank or product image.
+       I-brick, N-brick and V-brick L1 for request ``0x0005``, and the
+       machine's ``l1-revision`` replaces it. ``version`` prints the
+       number as ``L1 1.44.0 (Image EMU-UNKNOWN)``, naming no image bank
+       or product image.
      - established for the firmware; inferred for a fitted brick
      - Every brick image packaged in the IRIX 6.5.30 L1 firmware composite
        is version 1.44.0 and answers ``0x0005`` with 1, 44 and 0 whatever
