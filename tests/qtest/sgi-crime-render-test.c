@@ -16366,7 +16366,8 @@ static void test_gl_transfer_widths(gconstpointer selection)
         0x80, 0x84, 0x88, 0x8c, 0x90, 0x94,
         0x134, 0x160, 0x168, 0x170, 0x178, 0x180, 0x188, 0x190, 0x194,
     };
-    unsigned selected = GPOINTER_TO_UINT(selection), kind = selected / 3;
+    unsigned selected = GPOINTER_TO_UINT(selection);
+    unsigned group = selected / 3, part = selected % 3, kind = group / 3;
     Register forms[64];
     unsigned count = gl_transfer_starts(forms);
     g_autofree char *dir =
@@ -16379,7 +16380,7 @@ static void test_gl_transfer_widths(gconstpointer selection)
         const Register *r = &forms[n];
         bool pair = r->offset == 0x70 || r->offset == 0xa8 || r->offset == 0xc0;
 
-        if (n % 3 != selected % 3) {
+        if (n % 3 != group % 3 || (n / 3) % 3 != part) {
             continue;
         }
         for (unsigned width = 1; width <= 8; width *= 2) {
@@ -16396,14 +16397,14 @@ static void test_gl_transfer_widths(gconstpointer selection)
         }
     }
     for (unsigned n = 0; n < ARRAY_SIZE(forbidden); n++) {
-        if (n % 3 == selected % 3) {
+        if (n % 3 == group % 3 && (n / 3) % 3 == part) {
             gl_transfer_failure(s, path, DE + 0x800 + forbidden[n],
                                 0, 4, false, false);
             gl_transfer_failure(s, path, DE + 0x800 + forbidden[n],
                                 0, 8, false, false);
         }
     }
-    if (selected % 3 == 0) {
+    if (group % 3 == 0 && part == 0) {
         gl_transfer_failure(s, path, DE + 0x8a0, 0, 8, false, false);
         gl_transfer_failure(s, path, DE + 0x8b0, 0, 8, false, false);
         gl_transfer_failure(s, path, DE + 0x1f8, 1, 4, false, false);
@@ -20295,24 +20296,60 @@ int main(int argc, char **argv)
     add_case("sgi/crime/render/gl-transfer/starts", test_gl_transfer_starts);
     add_case("sgi/crime/render/gl-transfer/refusals",
              test_gl_transfer_refusals);
-    add_data_case("sgi/crime/render/gl-transfer/widths/0",
+    add_data_case("sgi/crime/render/gl-transfer/widths/0/0",
                   GUINT_TO_POINTER(0), test_gl_transfer_widths);
-    add_data_case("sgi/crime/render/gl-transfer/widths/1",
+    add_data_case("sgi/crime/render/gl-transfer/widths/0/1",
                   GUINT_TO_POINTER(1), test_gl_transfer_widths);
-    add_data_case("sgi/crime/render/gl-transfer/widths/2",
+    add_data_case("sgi/crime/render/gl-transfer/widths/0/2",
                   GUINT_TO_POINTER(2), test_gl_transfer_widths);
-    add_data_case("sgi/crime/render/gl-transfer/widths/3",
+    add_data_case("sgi/crime/render/gl-transfer/widths/1/0",
                   GUINT_TO_POINTER(3), test_gl_transfer_widths);
-    add_data_case("sgi/crime/render/gl-transfer/widths/4",
+    add_data_case("sgi/crime/render/gl-transfer/widths/1/1",
                   GUINT_TO_POINTER(4), test_gl_transfer_widths);
-    add_data_case("sgi/crime/render/gl-transfer/widths/5",
+    add_data_case("sgi/crime/render/gl-transfer/widths/1/2",
                   GUINT_TO_POINTER(5), test_gl_transfer_widths);
-    add_data_case("sgi/crime/render/gl-transfer/widths/6",
+    add_data_case("sgi/crime/render/gl-transfer/widths/2/0",
                   GUINT_TO_POINTER(6), test_gl_transfer_widths);
-    add_data_case("sgi/crime/render/gl-transfer/widths/7",
+    add_data_case("sgi/crime/render/gl-transfer/widths/2/1",
                   GUINT_TO_POINTER(7), test_gl_transfer_widths);
-    add_data_case("sgi/crime/render/gl-transfer/widths/8",
+    add_data_case("sgi/crime/render/gl-transfer/widths/2/2",
                   GUINT_TO_POINTER(8), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/3/0",
+                  GUINT_TO_POINTER(9), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/3/1",
+                  GUINT_TO_POINTER(10), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/3/2",
+                  GUINT_TO_POINTER(11), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/4/0",
+                  GUINT_TO_POINTER(12), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/4/1",
+                  GUINT_TO_POINTER(13), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/4/2",
+                  GUINT_TO_POINTER(14), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/5/0",
+                  GUINT_TO_POINTER(15), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/5/1",
+                  GUINT_TO_POINTER(16), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/5/2",
+                  GUINT_TO_POINTER(17), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/6/0",
+                  GUINT_TO_POINTER(18), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/6/1",
+                  GUINT_TO_POINTER(19), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/6/2",
+                  GUINT_TO_POINTER(20), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/7/0",
+                  GUINT_TO_POINTER(21), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/7/1",
+                  GUINT_TO_POINTER(22), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/7/2",
+                  GUINT_TO_POINTER(23), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/8/0",
+                  GUINT_TO_POINTER(24), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/8/1",
+                  GUINT_TO_POINTER(25), test_gl_transfer_widths);
+    add_data_case("sgi/crime/render/gl-transfer/widths/8/2",
+                  GUINT_TO_POINTER(26), test_gl_transfer_widths);
     add_case("sgi/crime/render/gl-transfer/order", test_gl_transfer_order);
     add_case("sgi/crime/render/gl-transfer/mixed-overlap",
              test_gl_transfer_mixed_overlap);
