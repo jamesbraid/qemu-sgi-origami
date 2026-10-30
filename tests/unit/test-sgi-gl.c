@@ -6626,6 +6626,73 @@ static void test_wide_coverage(void)
     }
 }
 
+/*
+ * SGI_LINE_CENTRE_SAMPLED against the diamond-exit rule. An end past a
+ * column centre but inside that pixel's diamond: the centre rule lights the
+ * column, the diamond rule does not. A minor-axis crossing exactly on a
+ * pixel edge: the centre rule takes the lower pixel whichever way the
+ * segment slopes, where the diamond rule's perturbation follows the slope.
+ * A vertical segment on a column edge takes the column to its left under
+ * both.
+ */
+static void test_line_centre_sampled(void)
+{
+    static const SGIRasterRules centre_rules = {
+        .subpixel_bits = 8,
+        .color_bits = 8,
+        .depth_bits = 24,
+        .stencil_bits = 8,
+        .rounding = SGI_ROUND_HALF_AWAY,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE,
+        .line_rule = SGI_LINE_CENTRE_SAMPLED,
+    };
+    static const struct {
+        float ax, ay, bx, by;
+        bool diamond_differs;
+        unsigned n;
+        int px[5], py[5];
+    } cases[] = {
+        { 1, 3.5, 5.75, 3.5, true, 5,
+          { 1, 2, 3, 4, 5 }, { 3, 3, 3, 3, 3 } },
+        /* Reversed, the end inside a diamond is the start: both agree. */
+        { 5.75, 3.5, 1, 3.5, false, 5,
+          { 1, 2, 3, 4, 5 }, { 3, 3, 3, 3, 3 } },
+        { 1.5, 2, 5.5, 4, true, 4, { 1, 2, 3, 4 }, { 1, 2, 2, 3 } },
+        { 4, 1, 4, 5, false, 4, { 3, 3, 3, 3 }, { 1, 2, 3, 4 } },
+    };
+    FragScene f;
+
+    g_assert_true(sgi_raster_rules_supported(&centre_rules));
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        for (int rule = 0; rule < 2; rule++) {
+            unsigned matched = 0;
+
+            frag_init(&f);
+            if (!rule) {
+                f.rec.rules = &centre_rules;
+            }
+            frag_command(&f, SGI_GL_OP_BEGIN,
+                         (uint32_t[]) { SGI_GL_LINES }, 1);
+            wide_vertex(&f, cases[i].ax, cases[i].ay);
+            wide_vertex(&f, cases[i].bx, cases[i].by);
+            frag_command(&f, SGI_GL_OP_END, NULL, 0);
+            for (unsigned k = 0; k < cases[i].n; k++) {
+                matched += frag_pixel(&f, cases[i].px[k],
+                                      cases[i].py[k]) == 0xffffff;
+            }
+            if (!rule) {
+                g_assert_cmpuint(matched, ==, cases[i].n);
+                g_assert_cmpuint(frag_count(&f, 0xffffff), ==, cases[i].n);
+            } else {
+                g_assert_cmpint(matched == cases[i].n &&
+                                frag_count(&f, 0xffffff) == cases[i].n, ==,
+                                !cases[i].diamond_differs);
+            }
+        }
+    }
+}
+
 /* Directed diagonal ties are x-major, including slopes exactly +/- one. */
 static void test_wide_diagonal(void)
 {
@@ -15397,6 +15464,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/polygon-smooth-clipping",
                     test_polygon_smooth_clipping);
     g_test_add_func("/sgi-gl/wide-coverage", test_wide_coverage);
+    g_test_add_func("/sgi-gl/line-centre-sampled", test_line_centre_sampled);
     g_test_add_func("/sgi-gl/wide-diagonal", test_wide_diagonal);
     g_test_add_func("/sgi-gl/wide-state", test_wide_state);
     g_test_add_func("/sgi-gl/line-integer-endpoints",

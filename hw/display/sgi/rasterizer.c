@@ -337,7 +337,8 @@ bool sgi_raster_rules_supported(const SGIRasterRules *r)
            r->rounding <= SGI_ROUND_HALF_AWAY &&
            r->tie_rule == SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN &&
            r->arith == SGI_ARITH_DOUBLE &&
-           r->line_rule == SGI_LINE_COVERAGE_DOUBLE &&
+           (r->line_rule == SGI_LINE_COVERAGE_DOUBLE ||
+            r->line_rule == SGI_LINE_CENTRE_SAMPLED) &&
            r->dither <= SGI_DITHER_BAYER4_TOP_ROWS &&
            r->smooth_rule <= SGI_SMOOTH_TWO_PIXEL_FILTER &&
            (r->dither == SGI_DITHER_NONE ||
@@ -4935,9 +4936,9 @@ static bool sgi_soft_diamond_contains(int64_t x, int64_t y, int64_t half)
  * relative coordinates below 2^30, even for INT32_MAX width. Segment deltas
  * are at most 2^29, so the difference of two products fits signed 64 bits.
  */
-static bool sgi_soft_line_covers(const SGISoftVertex *a,
-                                 const SGISoftVertex *b, int64_t px,
-                                 int64_t py, int sub)
+static bool sgi_soft_line_diamond_covers(const SGISoftVertex *a,
+                                         const SGISoftVertex *b, int64_t px,
+                                         int64_t py, int sub)
 {
     const int64_t half = 1 << (sub - 1);
     int64_t cx = px * (1 << sub) + half;
@@ -4963,6 +4964,58 @@ static bool sgi_soft_line_covers(const SGISoftVertex *a,
            sgi_soft_limit_sign(dy - ey, 0, -1) * (dy > 0 ? 1 : -1) >= 0 &&
            sgi_soft_limit_abs(dx * ey - ex * dy, -dy, dx,
                               half * llabs(dy));
+}
+
+/* floor(n / d) for d > 0. */
+static inline int64_t sgi_soft_floor_div(int64_t n, int64_t d)
+{
+    return n / d - (n % d < 0);
+}
+
+/*
+ * SGI_LINE_CENTRE_SAMPLED: one pixel per major-axis column (row) whose
+ * centre lies between the ends, the start included and the end not, the
+ * minor-axis pixel the one holding the segment at that centre, an exact
+ * crossing on a pixel edge going to the lower pixel, ceil(v) - 1. On the
+ * snapped grid, with the minor coordinate at the centre v = n + t / den
+ * exactly: the minor pixel is ceil(v / 2^sub) - 1. Coordinate differences
+ * are at most 2^29 (sgi_soft_line_diamond_covers()), so t fits; the minor
+ * base, shifted by the width, stays below 2^43.
+ */
+static bool sgi_soft_line_centre_covers(const SGISoftVertex *a,
+                                        const SGISoftVertex *b, int64_t px,
+                                        int64_t py, int sub)
+{
+    const int64_t one = 1 << sub, half = one >> 1;
+    bool x_major = llabs(b->x - a->x) >= llabs(b->y - a->y);
+    int64_t la = x_major ? a->x : a->y, lb = x_major ? b->x : b->y;
+    int64_t na = x_major ? a->y : a->x, nb = x_major ? b->y : b->x;
+    int64_t c = (x_major ? px : py) * one + half;
+    int64_t den = lb - la, t, v, minor;
+
+    if (den > 0 ? c < la || c >= lb : c > la || c <= lb) {
+        return false;
+    }
+    t = (nb - na) * (c - la);
+    if (den < 0) {
+        t = -t;
+        den = -den;
+    }
+    /* v = na + floor(t / den) plus a fraction that is zero or not. */
+    v = na + sgi_soft_floor_div(t, den);
+    minor = t % den ? sgi_soft_floor_div(v, one) :
+                      -sgi_soft_floor_div(-v, one) - 1;
+    return (x_major ? py : px) == minor;
+}
+
+static bool sgi_soft_line_covers(const SGIRasterRules *rules,
+                                 const SGISoftVertex *a,
+                                 const SGISoftVertex *b, int64_t px,
+                                 int64_t py, int sub)
+{
+    return rules->line_rule == SGI_LINE_CENTRE_SAMPLED ?
+           sgi_soft_line_centre_covers(a, b, px, py, sub) :
+           sgi_soft_line_diamond_covers(a, b, px, py, sub);
 }
 
 /*
@@ -5395,7 +5448,7 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
                     (double)a.y / (1 << sub), (double)b.x / (1 << sub),
                     (double)b.y / (1 << sub), r->smooth_line_width,
                     base_x, base_y) :
-                sgi_soft_line_covers(&shifted_a, &shifted_b,
+                sgi_soft_line_covers(r->rules, &shifted_a, &shifted_b,
                                      base_x, base_y, sub) ? 1 : 0;
 
             if (!(coverage > 0)) {
@@ -5567,7 +5620,7 @@ bool sgi_raster_line_span(const SGIRasterRules *rules,
         }
         for (int64_t n = (int64_t)floor(MIN(f0, f1) / (1 << sub)) - 1;
              n <= (int64_t)floor(MAX(f0, f1) / (1 << sub)) + 1; n++) {
-            count += sgi_soft_line_covers(&sa, &sb, x_major ? m : n,
+            count += sgi_soft_line_covers(rules, &sa, &sb, x_major ? m : n,
                                           x_major ? n : m, sub);
         }
         if (!count) {
