@@ -998,6 +998,15 @@ typedef enum SGIGLOp {
      * floats; GL_TEXTURE_GEN_MODE's mode is its enumerant as a float.
      */
     SGI_GL_OP_TEX_GEN,
+    /*
+     * IRIS GL swaptmesh where the client sends it as the caller made it,
+     * inside an open triangle strip: the strip's two retained vertices
+     * exchange places and its parity flips, so the triangle of the next
+     * vertex is unchanged and the vertex after that keeps the older of
+     * the two instead of the newer. SGI_GL_OP_SWAP_TMESH is the same
+     * request sent one vertex later.
+     */
+    SGI_GL_OP_EXCHANGE_TMESH,
 } SGIGLOp;
 
 /*

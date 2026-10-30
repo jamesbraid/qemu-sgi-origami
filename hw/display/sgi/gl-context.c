@@ -745,6 +745,7 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_TEX_ENV] = 5,
     [SGI_GL_OP_TEX_GEN] = 6,
     [SGI_GL_OP_SWAP_TMESH] = 0,
+    [SGI_GL_OP_EXCHANGE_TMESH] = 0,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -3266,6 +3267,30 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         /* Two swaps before a vertex undo each other. */
         c->strip_swap ^= 1;
         return;
+    case SGI_GL_OP_EXCHANGE_TMESH: {
+        float older[SGI_GL_VERTEX_FLOATS];
+
+        /* Outside a triangle strip the request does nothing. */
+        if (!c->in_begin || c->begin_mode != SGI_GL_TRIANGLE_STRIP) {
+            return;
+        }
+        if (c->nheld < 2) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: a mesh exchange before "
+                          "the strip's second vertex ignored\n");
+            return;
+        }
+        /*
+         * held[0] and held[1] are the strip's older and newer retained
+         * vertices. Exchanged, with the parity flipped, the next vertex
+         * still makes the triangle it would have, in the same order,
+         * and the shift after it keeps the vertex that was the older.
+         */
+        memcpy(older, c->held[0], sizeof(older));
+        sgi_gl_hold(c, 0, c->held[1]);
+        sgi_gl_hold(c, 1, older);
+        c->strip_odd = !c->strip_odd;
+        return;
+    }
     case SGI_GL_OP_END:
         if (!c->in_begin && c->polygon.enabled) {
             return;
