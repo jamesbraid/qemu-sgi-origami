@@ -2256,7 +2256,7 @@ static bool crime_render_sz_state(const uint64_t *p, unsigned opcode,
     if (!sz->depth && !sz->stencil) {
         return true;
     }
-    if ((opcode != 0 && opcode != 2 && opcode != 3) || (draw & 0x200000) ||
+    if (opcode > 3 || (draw & 0x200000) ||
         !(draw & 0x400000)) {
         return false;
     }
@@ -2268,7 +2268,7 @@ static bool crime_render_sz_state(const uint64_t *p, unsigned opcode,
             sz->start < -CRIME_Z_LIMIT || sz->start > CRIME_Z_LIMIT ||
             sz->dx < -CRIME_Z_LIMIT || sz->dx > CRIME_Z_LIMIT ||
             sz->dy < -CRIME_Z_LIMIT || sz->dy > CRIME_Z_LIMIT ||
-            (opcode != 2 && (sz->dx || sz->dy))) {
+            ((opcode == 0 || opcode == 3) && (sz->dx || sz->dy))) {
             return false;
         }
     }
@@ -2531,8 +2531,40 @@ static bool crime_triangle_shade(const uint64_t *p,
 
 typedef struct CrimeLineFragment {
     int x, y;
-    uint32_t color;
+    uint32_t color, depth;
 } CrimeLineFragment;
+
+typedef struct CrimeLineFragments {
+    CrimeLineFragment *data;
+    unsigned len, capacity;
+} CrimeLineFragments;
+
+static void crime_line_fragments_clear(CrimeLineFragments *fragments)
+{
+    g_free(fragments->data);
+}
+
+G_DEFINE_AUTO_CLEANUP_CLEAR_FUNC(CrimeLineFragments, crime_line_fragments_clear)
+
+static bool crime_gl_line_depth(const CrimeRenderSZ *sz,
+                                const CrimeGLLine *line, int x, int y,
+                                uint32_t *depth)
+{
+    int64_t n, z;
+
+    *depth = 0;
+    if (!sz->depth) {
+        return true;
+    }
+    n = 64 * sz->start + sz->dx * (64 * x - line->vertex[0][0]) +
+        sz->dy * (64 * y - line->vertex[0][1]);
+    z = crime_line_floor(n, 64);
+    if (z < -CRIME_Z_LIMIT || z > CRIME_Z_LIMIT) {
+        return false;
+    }
+    *depth = CLAMP(crime_line_floor(z, 4096), 0, 0xffffff);
+    return true;
+}
 
 static bool crime_gl_line_color(const uint64_t *p, const CrimeGLLine *line,
                                   int x, int y, unsigned coverage,
@@ -2571,32 +2603,50 @@ static bool crime_gl_line_color(const uint64_t *p, const CrimeGLLine *line,
 }
 
 static bool crime_gl_line_emit(const uint64_t *p, const CrimeGLLine *line,
-                                 GArray *fragments, int x, int y,
-                                 unsigned coverage)
+                                 const CrimeRenderSZ *sz,
+                                 CrimeLineFragments *fragments,
+                                 int x, int y, unsigned coverage, bool enabled)
 {
     CrimeLineFragment fragment = { .x = x, .y = y };
 
-    if (!crime_gl_line_color(p, line, x, y, coverage, &fragment.color)) {
+    if (!crime_gl_line_color(p, line, x, y, coverage, &fragment.color) ||
+        !crime_gl_line_depth(sz, line, x, y, &fragment.depth)) {
         return false;
     }
-    if (x >= 0 && y >= 0 && x < 2048 && y < 2048) {
+    if (enabled && x >= 0 && y >= 0 && x < 2048 && y < 2048) {
         if (fragments->len >= 2048 * 2048) {
             return false;
         }
-        g_array_append_val(fragments, fragment);
+        if (fragments->len == fragments->capacity) {
+            unsigned capacity = fragments->capacity ?
+                                fragments->capacity * 2 : 64;
+            CrimeLineFragment *data = g_try_realloc_n(
+                fragments->data, capacity, sizeof(*data));
+
+            if (!data) {
+                return false;
+            }
+            fragments->data = data;
+            fragments->capacity = capacity;
+        }
+        fragments->data[fragments->len++] = fragment;
     }
     return true;
 }
 
 static bool crime_gl_line_band(const uint64_t *p, const CrimeGLLine *line,
-                                 GArray *fragments, int major, int first,
-                                 int last)
+                                 const CrimeRenderSZ *sz,
+                                 CrimeLineFragments *fragments,
+                                 int major, int first, int last, bool enabled)
 {
-    for (int minor = first; minor <= last; minor++) {
+    int step = line->xmajor ? -1 : 1;
+
+    for (int minor = line->xmajor ? last : first;
+         minor >= first && minor <= last; minor += step) {
         int x = line->xmajor ? major : minor;
         int y = line->xmajor ? minor : major;
 
-        if (!crime_gl_line_emit(p, line, fragments, x, y, 255)) {
+        if (!crime_gl_line_emit(p, line, sz, fragments, x, y, 255, enabled)) {
             return false;
         }
     }
@@ -2604,7 +2654,8 @@ static bool crime_gl_line_band(const uint64_t *p, const CrimeGLLine *line,
 }
 
 static bool crime_gl_line_generate(const uint64_t *p, const CrimeGLLine *line,
-                                     GArray *fragments)
+                                     const CrimeRenderSZ *sz,
+                                     CrimeLineFragments *fragments)
 {
     unsigned major_axis = line->xmajor ? 0 : 1, minor_axis = 1 - major_axis;
     int first, last;
@@ -2639,7 +2690,8 @@ static bool crime_gl_line_generate(const uint64_t *p, const CrimeGLLine *line,
                 }
                 coverage = MIN(255, float64_to_uint32_round_to_zero(
                     float64_mul(area, int64_to_float64(256, &fs), &fs), &fs));
-                if (!crime_gl_line_emit(p, line, fragments, x, y, coverage)) {
+                if (!crime_gl_line_emit(p, line, sz, fragments, x, y,
+                                         coverage, true)) {
                     return false;
                 }
             }
@@ -2652,14 +2704,22 @@ static bool crime_gl_line_generate(const uint64_t *p, const CrimeGLLine *line,
                               line->vertex[0][minor_axis];
         int64_t minor_start = line->vertex[0][minor_axis] +
             (line->xmajor ? 32 : -32) * (int64_t)(line->width - 1);
+        bool stipple = p[0x18 / 4] & 0x80000;
+        unsigned mode = p[0xc0 / 4];
+        unsigned start_bit = (mode >> 24) & 31, bit = start_bit;
+        unsigned last_bit = (mode >> 16) & 31;
+        unsigned repeat = (mode >> 8) & 255, max_repeat = mode & 255;
+        int step = delta > 0 ? 1 : -1;
 
         first = crime_line_floor(MIN(a, b), 64) - 1;
         last = crime_line_floor(MAX(a, b), 64) + 1;
-        for (int major = first; major <= last; major++) {
+        for (int major = delta > 0 ? first : last;
+             major >= first && major <= last; major += step) {
             int64_t numerator = minor_start * delta +
                                 minor_delta * (64 * major - a);
             int64_t denominator = delta * 64;
             int center, lo = INT_MAX, hi = INT_MIN;
+            bool enabled = !stipple || (p[0xc4 / 4] & (1U << (31 - bit)));
 
             if (denominator < 0) {
                 numerator = -numerator;
@@ -2677,8 +2737,8 @@ static bool crime_gl_line_generate(const uint64_t *p, const CrimeGLLine *line,
                 begin = line->xmajor ? minor - (int)line->width + 1 : minor;
                 end = line->xmajor ? minor : minor + (int)line->width - 1;
                 if (lo != INT_MAX && begin > hi + 1) {
-                    if (!crime_gl_line_band(p, line, fragments,
-                                            major, lo, hi)) {
+                    if (!crime_gl_line_band(p, line, sz, fragments,
+                                            major, lo, hi, enabled)) {
                         return false;
                     }
                     lo = INT_MAX;
@@ -2687,8 +2747,17 @@ static bool crime_gl_line_generate(const uint64_t *p, const CrimeGLLine *line,
                 hi = MAX(hi, end);
             }
             if (lo != INT_MAX &&
-                !crime_gl_line_band(p, line, fragments, major, lo, hi)) {
+                !crime_gl_line_band(p, line, sz, fragments, major, lo, hi,
+                                     enabled)) {
                 return false;
+            }
+            if (lo != INT_MAX && stipple) {
+                if (repeat < max_repeat) {
+                    repeat++;
+                } else {
+                    repeat = 0;
+                    bit = bit == last_bit ? start_bit : bit + 1;
+                }
             }
         }
     }
@@ -2743,7 +2812,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     CrimeTriangleOutput output = { 0 };
     CrimeRenderSZ sz = { 0 };
     CrimeGLLine line = { 0 };
-    g_autoptr(GArray) line_fragments = NULL;
+    g_auto(CrimeLineFragments) line_fragments = { 0 };
     g_autoptr(CrimeTexture) texture = NULL;
     g_autofree CrimeRenderPixel *pixels = NULL;
     g_autoptr(GArray) bounded_pixels = NULL;
@@ -2792,7 +2861,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     gl_line = (p[0x60 / 4] >> 24) == 1 && (draw & 0x400000);
     gl_point = !(p[0x60 / 4] >> 24) && (draw & 0x400000);
     native_gl = triangle || gl_rectangle || gl_line || gl_point;
-    if ((draw & ~(gl_line ? 0x511ff8U :
+    if ((draw & ~(gl_line ? (draw & 0x1000 ? 0x511ff8U : 0x590fffU) :
                  gl_rectangle || gl_point ? 0x511fffU :
                     triangle ? (0x5b97ffU | (sz_active ? 0x800U : 0)) :
                                0x3e0affU)) ||
@@ -2816,6 +2885,12 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
             return crime_transfer_fail(offset, "unsupported texture state");
         }
     }
+    if (gl_line && (draw & 0x80007) && words &&
+        (index == 0x190 / 4 || index == 0x194 / 4 ||
+         crime_render_texture_start(index * 4))) {
+        return crime_transfer_fail(offset,
+                                   "unsupported composed GL line START");
+    }
     if (words && (index == 0x190 / 4 || index == 0x194 / 4) && !gl_line) {
         return crime_transfer_fail(offset, "AA START requires native GL line");
     }
@@ -2836,7 +2911,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                                (int)(p[0x58 / 4] & 0xffff);
     stipple = (geometry.opcode == 1 && (draw & 0x80000)) ||
               (geometry.opcode == 3 && (draw & 0x40000));
-    if (alpha && (copy || stipple ||
+    if (alpha && (copy || (stipple && !gl_line) ||
                   (!gl_line && !gl_rectangle && !gl_point &&
                    (p[0x8 / 4] & 0x3ffU) != 0x228))) {
         return crime_transfer_fail(offset, "unsupported alpha primitive");
@@ -2962,12 +3037,11 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     plane &= native_gl ? output.mask : UINT32_MAX >> (32 - 8 * bytes);
     alpha_pass = !alpha || crime_render_alpha_pass(p[0xd0 / 4], p[0x198 / 4]);
     if (gl_line) {
-        line_fragments = g_array_new(false, false, sizeof(CrimeLineFragment));
         if (!crime_gl_line_state(p, &line) ||
-            !crime_gl_line_generate(p, &line, line_fragments)) {
+            !crime_gl_line_generate(p, &line, &sz, &line_fragments)) {
             return crime_transfer_fail(offset, "invalid GL line producer");
         }
-        geometry.samples = geometry.capacity = line_fragments->len;
+        geometry.samples = geometry.capacity = line_fragments.len;
     }
     if (geometry.opcode <= 1 && !native_gl) {
         bounded_pixels = g_array_new(false, false, sizeof(CrimeRenderPixel));
@@ -2983,9 +3057,10 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         uint32_t color = p[0xd0 / 4], fragment_depth = 0;
         uint32_t linear = transfer ? linear_first +
             (i / geometry.width) * linear_pitch + i % geometry.width : 0;
-        bool foreground = !stipple || (p[0xc4 / 4] & (1U << (31 - bit)));
+        bool foreground = gl_line || !stipple ||
+                          (p[0xc4 / 4] & (1U << (31 - bit)));
 
-        if (stipple) {
+        if (stipple && !gl_line) {
             if (repeat < max_repeat) {
                 repeat++;
             } else {
@@ -3000,12 +3075,12 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
             color = p[0xd8 / 4];
         }
         if (gl_line) {
-            CrimeLineFragment *fragment = &g_array_index(
-                line_fragments, CrimeLineFragment, i);
+            CrimeLineFragment *fragment = &line_fragments.data[i];
 
             cx = fragment->x;
             cy = fragment->y;
             color = fragment->color;
+            fragment_depth = fragment->depth;
             alpha_pass = !alpha ||
                          crime_render_alpha_pass(color, p[0x198 / 4]);
         } else {
@@ -3025,7 +3100,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
             alpha_pass = !alpha ||
                          crime_render_alpha_pass(color, p[0x198 / 4]);
         }
-        if (sz_active && !crime_render_sz_depth(&sz, &geometry,
+        if (sz_active && !gl_line && !crime_render_sz_depth(&sz, &geometry,
                                                  cx, cy, &fragment_depth)) {
             return crime_transfer_fail(offset, "depth arithmetic overflow");
         }
