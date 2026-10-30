@@ -12,10 +12,11 @@ layer:
         name: X-brick
         kind: module
         provenance: vendor-document
-        sources: ["108-0240-002 printed pages 2-32 and 2-33, Figure 2-25: one XBridge; ports A (10) and B (11) to compute nodes; four XIO slots on ports 8, 9, C and D"]
-        notes: >-
-          The brick's L1 type character is unknown, so the layer carries no
-          brick_type.
+        # The character the X-brick's L1 reports. IRIX 6.5.30 and the stock
+        # IP35 PROM name a brick that answers X an Xbrick (module class x),
+        # a software expectation, not a capture of a fitted brick.
+        brick_type: X
+        sources: ["108-0240-002 printed pages 2-32 and 2-33, Figure 2-25: one XBridge; ports A (10) and B (11) to compute nodes; four XIO slots on ports 8, 9, C and D", "linux-history:381ab1f53816 include/asm-ia64/sn/ksys/l1.h line 267: brick type X is 0x58"]
       - id: xbridge
         name: XBridge
         kind: pci-host-bridge

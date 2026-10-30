@@ -1081,10 +1081,11 @@ def validate_xio_cables(model: dict[str, Any]) -> None:
             raise ResolutionError(f"XIO cable '{cid}' ends share no XIO bus")
 
 
-# The L1 brick-type characters a source establishes, by the board that
-# reports them. Every other brick's character is unknown until its own L1
-# contract supplies it, so a guessed letter cannot reach a guest.
-ESTABLISHED_BRICK_TYPES = {"4": "IP45", "C": "IP35"}
+# The L1 brick-type characters a source establishes, by the board or brick
+# that reports them. Every other brick's character is unknown until its own
+# L1 contract supplies it, so a guessed letter cannot reach a guest.
+ESTABLISHED_BRICK_TYPES = {"4": "IP45", "C": "IP35", "P": "P-brick",
+                           "X": "X-brick"}
 
 
 def validate_brick_types(model: dict[str, Any]) -> None:
@@ -1105,7 +1106,7 @@ def validate_brick_types(model: dict[str, Any]) -> None:
         if letter not in ESTABLISHED_BRICK_TYPES:
             raise ResolutionError(
                 f"component '{cid}' brick_type '{letter}' is not an "
-                "established L1 brick type (4 or C)")
+                "established L1 brick type (4, C, P or X)")
 
 
 def validate_synthetic_identities(model: dict[str, Any]) -> None:
