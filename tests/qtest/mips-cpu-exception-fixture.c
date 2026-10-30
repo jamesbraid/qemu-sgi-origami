@@ -8,6 +8,7 @@
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
+#include "qemu/cutils.h"
 #include "system/qtest.h"
 #include "system/address-spaces.h"
 #include "system/tcg.h"
@@ -51,6 +52,74 @@ static void mips_cpu_exception_fixture_external_irq(void *opaque, int n,
     MipsCpuExceptionFixtureState *s = opaque;
 
     qemu_set_irq(MIPS_CPU(s->cpu)->env.irq[n + 2], level);
+}
+
+/* Synthetic reports exercise capture only, never a production ECC detector. */
+static void mips_cpu_exception_fixture_secondary_report(Object *obj,
+                                                       const char *value,
+                                                       Error **errp)
+{
+    MipsCpuExceptionFixtureState *s = MIPS_CPU_EXCEPTION_FIXTURE(obj);
+    g_auto(GStrv) words = g_strsplit(value, " ", -1);
+    uint64_t fields[4];
+    R12000SecondaryReport report;
+
+    if (!DEVICE(obj)->realized || !s->cpu || g_strv_length(words) != 4) {
+        error_setg(errp, "expected realized fixture and "
+                   "path error cacheop syndrome");
+        return;
+    }
+    for (unsigned int i = 0; i < 4; i++) {
+        if (qemu_strtou64(words[i], NULL, 0, &fields[i]) ||
+            fields[i] > UINT32_MAX) {
+            error_setg(errp, "invalid secondary report field");
+            return;
+        }
+    }
+    if (fields[2] > 1) {
+        error_setg(errp, "cacheop must be zero or one");
+        return;
+    }
+    report = (R12000SecondaryReport) {
+        .path = fields[0], .error = fields[1], .cache_op = fields[2],
+        .syndrome = fields[3],
+    };
+    mips_r12000a_report_secondary_error(MIPS_CPU(s->cpu), &report, errp);
+}
+
+static char *mips_cpu_exception_fixture_syndrome(Object *obj, Error **errp)
+{
+    MipsCpuExceptionFixtureState *s = MIPS_CPU_EXCEPTION_FIXTURE(obj);
+    MIPSCPU *cpu = s->cpu ? MIPS_CPU(s->cpu) : NULL;
+
+    return g_strdup_printf("%u", cpu && cpu->r10k_profile ?
+                            cpu->r10k_profile->r12000a_syndrome : 0);
+}
+
+static bool mips_cpu_exception_fixture_captured(Object *obj, Error **errp)
+{
+    MipsCpuExceptionFixtureState *s = MIPS_CPU_EXCEPTION_FIXTURE(obj);
+    MIPSCPU *cpu = s->cpu ? MIPS_CPU(s->cpu) : NULL;
+
+    return cpu && cpu->r10k_profile && cpu->r10k_profile->r12000a_captured;
+}
+
+static void mips_cpu_exception_fixture_cold_reset_work(CPUState *cs,
+                                                      run_on_cpu_data data)
+{
+    cpu_reset(cs);
+    cs->halted = 0;
+}
+
+static void mips_cpu_exception_fixture_cold_reset(void *opaque, int n,
+                                                  int level)
+{
+    MipsCpuExceptionFixtureState *s = opaque;
+
+    if (level) {
+        async_run_on_cpu(s->cpu, mips_cpu_exception_fixture_cold_reset_work,
+                          RUN_ON_CPU_NULL);
+    }
 }
 
 static void mips_cpu_exception_fixture_soft_reset_work(CPUState *cs,
@@ -146,6 +215,9 @@ static void mips_cpu_exception_fixture_instance_init(Object *obj)
                             mips_cpu_exception_fixture_external_irq,
                             "external-irq", 6);
     qdev_init_gpio_in_named(DEVICE(obj),
+                            mips_cpu_exception_fixture_cold_reset,
+                            "cold-reset", 1);
+    qdev_init_gpio_in_named(DEVICE(obj),
                             mips_cpu_exception_fixture_soft_reset,
                             "soft-reset", 1);
     qdev_init_gpio_in_named(DEVICE(obj),
@@ -160,6 +232,12 @@ static void mips_cpu_exception_fixture_class_init(ObjectClass *oc,
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
+    object_class_property_add_str(oc, "secondary-report", NULL,
+                                  mips_cpu_exception_fixture_secondary_report);
+    object_class_property_add_str(oc, "secondary-syndrome",
+                                  mips_cpu_exception_fixture_syndrome, NULL);
+    object_class_property_add_bool(oc, "syndrome-captured",
+                                   mips_cpu_exception_fixture_captured, NULL);
     dc->realize = mips_cpu_exception_fixture_realize;
     dc->hotpluggable = false;
     device_class_set_props(dc, mips_cpu_exception_fixture_properties);

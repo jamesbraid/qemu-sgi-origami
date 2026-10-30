@@ -122,6 +122,13 @@ uint32_t cpu_mips_get_r10k_perf(CPUMIPSState *env, unsigned sel)
     if ((sel & 1) && mips_r10k_perf_counting(env, sel >> 1)) {
         v += mips_r10k_perf_cycles(env);
     }
+    if (sel == 0 && mips_r12000a_enabled(env_archcpu(env))) {
+        BQL_LOCK_GUARD();
+        R10KCPUProfile *profile = env_archcpu(env)->r10k_profile;
+
+        /* This field is independent of counter overflow and lower controls. */
+        v = (v & 0x007fffff) | ((uint32_t)profile->r12000a_syndrome << 23);
+    }
     return v;
 }
 

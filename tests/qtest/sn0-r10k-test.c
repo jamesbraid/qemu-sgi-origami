@@ -8,6 +8,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
+#include "qemu/cutils.h"
 #include "libqtest.h"
 #include "sgi-migrate.h"
 #include "sgi-mips-emit.h"
@@ -3436,9 +3437,655 @@ static void test_r10k_tlb_asid(gconstpointer opaque)
     qtest_quit(qts);
 }
 
+/* R12000A fixtures test capture, never a physical secondary ECC detector. */
+#define A_STATE 0x100000
+#define A_FIXTURE "/machine/peripheral/a-fixture"
+
+typedef struct ACPU {
+    QTestState *qts;
+    uint32_t next;
+    char *image;
+} ACPU;
+
+static char *a_cpu_options(const char *variant, unsigned int ec,
+                            unsigned int sc)
+{
+    uint32_t mode = (0x011a8603 & ~((15u << 9) | (7u << 19))) |
+                    (ec << 9) | (sc << 19);
+
+    return g_strdup_printf("R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
+        "r12000-reset-mode=0x%x,r12000-scache-bytes=2097152,"
+        "r12000-scache-block-words=16%s%s", mode,
+        variant ? ",r12000-variant=" : "", variant ? variant : "");
+}
+
+static void a_wait_entry(ACPU *a, unsigned int old)
+{
+    SgiWait wait;
+
+    qtest_qmp_assert_success(a->qts, "{'execute':'cont'}");
+    sgi_wait_start(&wait, "R12000A synthetic reset entry");
+    while (qtest_readl(a->qts, A_STATE + 8) == old) {
+        sgi_wait_pause(&wait, 1000);
+    }
+    qtest_qmp_assert_success(a->qts, "{'execute':'stop'}");
+    qtest_qmp_eventwait(a->qts, "STOP");
+}
+
+static ACPU a_start(const char *cpu, const char *extra, bool run)
+{
+    static const uint32_t code[] = {
+        0x3c1aa010, 0x40088000, 0xaf480020, /* mailbox and Config */
+        0x8f480008, 0x25080001, 0xaf480008, /* entry count */
+        0x8f5b0000, 0x1360fffe, 0, 0xaf400000, /* request */
+        0x0360f809, 0, 0x24080001, 0xaf480004, 0x1000fff7, 0,
+    };
+    static const uint32_t fault[] = {
+        0x40086800, 0xaf48007c, 0x24080001, 0xaf480004, 0x1000ffff, 0,
+    };
+    ACPU a = { .next = 0x200000 };
+    uint8_t image[IMAGE_SIZE] = { 0 };
+    g_autofree char *quoted = NULL;
+    int fd;
+
+    stl_be_p(image, 0x0bf00010); /* Skip Malta's board word at offset 0x10. */
+    for (unsigned int i = 0; i < ARRAY_SIZE(code); i++) {
+        stl_be_p(image + 0x40 + i * 4, code[i]);
+    }
+    for (unsigned int vec = 0x200; vec <= 0x380; vec += 0x80) {
+        for (unsigned int i = 0; i < ARRAY_SIZE(fault); i++) {
+            stl_be_p(image + vec + i * 4, fault[i]);
+        }
+    }
+    fd = g_file_open_tmp("r12000a-cpu-XXXXXX", &a.image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, sizeof(image)), ==, sizeof(image));
+    close(fd);
+    quoted = g_shell_quote(a.image);
+    a.qts = qtest_initf("-M malta -m 64M -cpu %s -bios %s -nic none "
+        "-accel tcg -S -device mips-cpu-exception-fixture,id=a-fixture %s",
+        cpu, quoted, extra);
+    if (run) {
+        a_wait_entry(&a, 0);
+    }
+    return a;
+}
+
+static void a_quit(ACPU *a)
+{
+    qtest_quit(a->qts);
+    g_unlink(a->image);
+    g_free(a->image);
+}
+
+static void a_execute(ACPU *a, const uint32_t *words, size_t count)
+{
+    uint8_t bytes[256];
+    SgiWait wait;
+
+    g_assert_cmpuint((count + 2) * 4, <=, sizeof(bytes));
+    for (unsigned int i = 0; i < count; i++) {
+        stl_be_p(bytes + i * 4, words[i]);
+    }
+    stl_be_p(bytes + count * 4, 0x03e00008);
+    stl_be_p(bytes + count * 4 + 4, 0);
+    qtest_memwrite(a->qts, a->next, bytes, (count + 2) * 4);
+    qtest_writel(a->qts, A_STATE + 4, 0);
+    qtest_writel(a->qts, A_STATE + 0x7c, 0);
+    qtest_writel(a->qts, A_STATE, 0xa0000000 | a->next);
+    a->next += 0x1000;
+    qtest_qmp_assert_success(a->qts, "{'execute':'cont'}");
+    sgi_wait_start(&wait, "R12000A synthetic command");
+    while (!qtest_readl(a->qts, A_STATE + 4)) {
+        sgi_wait_pause(&wait, 1000);
+    }
+    qtest_qmp_assert_success(a->qts, "{'execute':'stop'}");
+    qtest_qmp_eventwait(a->qts, "STOP");
+    g_assert_cmphex(qtest_readl(a->qts, A_STATE + 0x7c) & 0x7c, ==, 0);
+}
+
+static void a_write(ACPU *a, unsigned int reg, unsigned int sel, uint32_t value)
+{
+    uint32_t code[] = {
+        mips_lui(R_T0, value >> 16), mips_ori(R_T0, R_T0, value),
+        mips_mtc0(R_T0, reg) | sel, 0, 0, 0, 0,
+    };
+
+    a_execute(a, code, ARRAY_SIZE(code));
+}
+
+static void a_snapshot(ACPU *a, uint32_t out[7])
+{
+    static const uint32_t code[] = {
+        0x4008c800, 0xaf480040, 0x4008c801, 0xaf480044,
+        0x4008c802, 0xaf480048, 0x4008c803, 0xaf48004c,
+        0x40086800, 0xaf480050, 0x40088000, 0xaf480054,
+        0x40084800, 0xaf480058, 0x4028c800, 0xff480060,
+    };
+
+    a_execute(a, code, ARRAY_SIZE(code));
+    for (unsigned int i = 0; i < 7; i++) {
+        out[i] = qtest_readl(a->qts, A_STATE + 0x40 + i * 4);
+    }
+}
+
+static uint32_t a_syndrome(ACPU *a)
+{
+    uint32_t out[7];
+
+    a_snapshot(a, out);
+    return out[0] >> 23;
+}
+
+static bool a_captured(QTestState *qts, const char *path)
+{
+    g_autoptr(QDict) value = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'syndrome-captured'}}", path);
+
+    g_assert_null(qdict_get(value, "error"));
+    return qdict_get_bool(value, "return");
+}
+
+static void a_report(QTestState *qts, const char *path, unsigned int origin,
+                      unsigned int error, unsigned int cacheop,
+                      unsigned int syndrome, bool valid)
+{
+    g_autofree char *report = g_strdup_printf("%u %u %u %u", origin, error,
+                                             cacheop, syndrome);
+    g_autoptr(QDict) result = qtest_qmp(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'secondary-report','value':%s}}", path, report);
+
+    if (valid) {
+        g_assert_null(qdict_get(result, "error"));
+    } else {
+        g_assert_nonnull(qdict_get_qdict(result, "error"));
+    }
+}
+
+static void a_expect_rejected(const char *cpu, const char *reason)
+{
+    const char *args[] = { qtest_qemu_binary(NULL), "-M", "malta", "-cpu", cpu,
+        "-display", "none", "-S", NULL };
+    g_autofree char *error = NULL;
+    int status;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                               NULL, &error, &status, NULL));
+    g_assert_false(g_spawn_check_exit_status(status, NULL));
+    g_assert_nonnull(strstr(error, reason));
+}
+
+static void test_r12000a_variant(void)
+{
+    static const char *variants[] = { NULL, "r12000", "vr12000a" };
+    static const char *fields[] = {
+        "r12000-prid=0xe12", "r12000-fpu-id=0x4567",
+        "r12000-reset-mode=0x11a8603", "r12000-scache-bytes=2097152",
+        "r12000-scache-block-words=16",
+    };
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(variants); i++) {
+        g_autofree char *cpu = a_cpu_options(variants[i], 3, 3);
+        ACPU a = a_start(cpu, "", true);
+        g_autofree char *path = cpu_qom_path(a.qts);
+        g_autoptr(QDict) value = qtest_qmp(a.qts,
+            "{'execute':'qom-get','arguments':{'path':%s,"
+            "'property':'r12000-variant'}}", path);
+        g_autoptr(QDict) changed = qtest_qmp(a.qts,
+            "{'execute':'qom-set','arguments':{'path':%s,"
+            "'property':'r12000-variant','value':'vr12000a'}}", path);
+
+        g_assert_cmpstr(qdict_get_str(value, "return"), ==,
+                        variants[i] ? variants[i] : "r12000");
+        g_assert_nonnull(qdict_get_qdict(changed, "error"));
+        a_quit(&a);
+    }
+    for (unsigned int missing = 0; missing < ARRAY_SIZE(fields); missing++) {
+        GString *cpu = g_string_new("R12000,r12000-variant=vr12000a");
+
+        for (unsigned int i = 0; i < ARRAY_SIZE(fields); i++) {
+            if (i != missing) {
+                g_string_append_printf(cpu, ",%s", fields[i]);
+            }
+        }
+        a_expect_rejected(cpu->str, "R12000 requires");
+        g_string_free(cpu, true);
+    }
+    a_expect_rejected("R12000,r12000-variant=400mhz", "requires r12000");
+    a_expect_rejected("R10000,r12000-variant=vr12000a", "not found");
+}
+
+static void test_r12000a_clock_codes(void)
+{
+    for (unsigned int a = 0; a < 2; a++) {
+        for (unsigned int ec = 0; ec < 16; ec++) {
+            g_autofree char *cpu = a_cpu_options(a ? "vr12000a" : NULL, ec, 3);
+
+            if (ec < 3 || ec > (a ? 12 : 11)) {
+                a_expect_rejected(cpu, "reserved encoding");
+            } else {
+                ACPU instance = a_start(cpu, "", true);
+                uint32_t config = qtest_readl(instance.qts, A_STATE + 0x20);
+
+                g_assert_cmpuint((config >> 9) & 15, ==, ec);
+                a_write(&instance, 16, 0, 0xffffffff);
+                uint32_t out[7];
+                a_snapshot(&instance, out);
+                g_assert_cmphex(out[5] & ~7u, ==, config & ~7u);
+                qtest_system_reset(instance.qts);
+                a_wait_entry(&instance, 1);
+                g_assert_cmphex(qtest_readl(instance.qts, A_STATE + 0x20), ==,
+                                config);
+                a_quit(&instance);
+            }
+        }
+        for (unsigned int sc = 0; sc < 8; sc++) {
+            g_autofree char *cpu = a_cpu_options(a ? "vr12000a" : NULL, 3, sc);
+
+            if (sc < 2 || sc == 6) {
+                a_expect_rejected(cpu, "reserved encoding");
+            } else {
+                ACPU instance = a_start(cpu, "", true);
+
+                /* SC=7 remains a silicon-test encoding, not a factory fit. */
+                g_assert_cmpuint((qtest_readl(instance.qts, A_STATE + 0x20)
+                                  >> 19) & 7, ==, sc);
+                a_quit(&instance);
+            }
+        }
+    }
+}
+
+static void test_r12000a_capture(void)
+{
+    static const struct {
+        unsigned int path, error, cacheop, syndrome;
+    } ignore[] = {
+        { 0, 0, 0, 0 }, { 1, 0, 0, 0x1ff },
+        { 0, 1, 1, 0x123 }, { 1, 2, 1, 0x42 },
+        { 2, 1, 0, 0x55 }, { 2, 2, 0, 0x77 },
+    };
+    g_autofree char *cpu = a_cpu_options("vr12000a", 3, 3);
+    ACPU a = a_start(cpu, "", true);
+
+    g_assert_cmpuint(a_syndrome(&a), ==, 0);
+    g_assert_false(a_captured(a.qts, A_FIXTURE));
+    a_report(a.qts, A_FIXTURE, 0, 0, 0, 0, true);
+    g_assert_false(a_captured(a.qts, A_FIXTURE));
+    a_report(a.qts, A_FIXTURE, 0, 1, 0, 0, true);
+    g_assert_true(a_captured(a.qts, A_FIXTURE));
+    g_assert_cmpuint(a_syndrome(&a), ==, 0);
+    for (unsigned int bit = 0; bit < 9; bit++) {
+        a_report(a.qts, A_FIXTURE, bit & 1, bit & 1 ? 1 : 2, 0,
+                 1u << bit, true);
+        g_assert_cmpuint(a_syndrome(&a), ==, 1u << bit);
+    }
+    a_report(a.qts, A_FIXTURE, 0, 1, 0, 0x155, true);
+    for (unsigned int i = 0; i < ARRAY_SIZE(ignore); i++) {
+        a_report(a.qts, A_FIXTURE, ignore[i].path, ignore[i].error,
+                 ignore[i].cacheop, ignore[i].syndrome, true);
+        g_assert_cmpuint(a_syndrome(&a), ==, 0x155);
+        /* Nondestructive polling. */
+        g_assert_cmpuint(a_syndrome(&a), ==, 0x155);
+    }
+    a_report(a.qts, A_FIXTURE, 1, 2, 0, 0x1ff, true);
+    g_assert_cmpuint(a_syndrome(&a), ==, 0x1ff);
+    a_report(a.qts, A_FIXTURE, 0, 1, 0, 0, true);
+    g_assert_cmpuint(a_syndrome(&a), ==, 0);
+    g_assert_true(a_captured(a.qts, A_FIXTURE));
+    a_report(a.qts, A_FIXTURE, 1, 1, 0, 0x123, true);
+    a_report(a.qts, A_FIXTURE, 0, 2, 0, 2, true);
+    /* The last qualifying event wins in reported order. */
+    g_assert_cmpuint(a_syndrome(&a), ==, 2);
+    a_report(a.qts, A_FIXTURE, 3, 1, 0, 1, false);
+    a_report(a.qts, A_FIXTURE, 0, 3, 0, 1, false);
+    a_report(a.qts, A_FIXTURE, 0, 1, 2, 1, false);
+    a_report(a.qts, A_FIXTURE, 0, 1, 0, 512, false);
+    g_assert_cmpuint(a_syndrome(&a), ==, 2);
+    g_assert_true(a_captured(a.qts, A_FIXTURE));
+    a_quit(&a);
+}
+
+static void test_r12000a_control_isolation(void)
+{
+    static const uint32_t upper[] = { 0, 0xff800000, 0x55000000, 0x00800000 };
+    static const uint32_t lower[] = { 0, 0x10, 0x3e, 0x3ff };
+    g_autofree char *cpu = a_cpu_options("vr12000a", 3, 3);
+    ACPU a = a_start(cpu, "", true);
+    uint32_t out[7];
+
+    a_write(&a, 26, 0, 0xffffffff); /* CP0 ECC is not a syndrome input. */
+    g_assert_cmpuint(a_syndrome(&a), ==, 0);
+    a_write(&a, 25, 0, 0xff800010);
+    g_assert_cmpuint(a_syndrome(&a), ==, 0);
+    g_assert_false(a_captured(a.qts, A_FIXTURE));
+    a_write(&a, 25, 1, 0x12345678);
+    /* Common unsupported event storage, without adding an event. */
+    a_write(&a, 25, 2, 0x3f);
+    a_write(&a, 25, 3, 0x22334455);
+    a_report(a.qts, A_FIXTURE, 0, 1, 0, 0x100, true);
+    for (unsigned int i = 0; i < ARRAY_SIZE(upper); i++) {
+        a_write(&a, 25, 0, upper[i] | lower[i]);
+        a_snapshot(&a, out);
+        g_assert_cmphex(out[0], ==, 0x80000000 | lower[i]);
+        /* Preserve the common four-pair model's unsupported DMFC0 response. */
+        g_assert_cmphex(qtest_readq(a.qts, A_STATE + 0x60), ==, UINT64_MAX);
+        g_assert_cmphex(out[1], ==, 0x12345678);
+        g_assert_cmphex(out[2], ==, 0x3f);
+        g_assert_cmphex(out[3], ==, 0x22334455);
+        /* Syndrome bit 31 is independent of overflow IP7. */
+        g_assert_cmphex(out[4] & 0x8000, ==, 0);
+    }
+    for (unsigned int ctr = 1; ctr < 4; ctr++) {
+        uint32_t code[] = {
+            mips_mfc0(R_T0, 25) | (ctr * 2), 0xaf480070,
+            mips_mfc0(R_T0, 25) | (ctr * 2 + 1), 0xaf480074,
+        };
+
+        a_write(&a, 25, ctr * 2, 0xff80003f);
+        a_write(&a, 25, ctr * 2 + 1, 0x12345678 + ctr);
+        a_execute(&a, code, ARRAY_SIZE(code));
+        g_assert_cmphex(qtest_readl(a.qts, A_STATE + 0x70), ==, 0x3f);
+        g_assert_cmphex(qtest_readl(a.qts, A_STATE + 0x74), ==,
+                        0x12345678 + ctr);
+    }
+    a_write(&a, 26, 0, 0);
+    g_assert_cmpuint(a_syndrome(&a), ==, 0x100);
+    a_quit(&a);
+    g_clear_pointer(&cpu, g_free);
+    cpu = a_cpu_options(NULL, 3, 3);
+    a = a_start(cpu, "", true);
+    a_report(a.qts, A_FIXTURE, 0, 1, 0, 0x1ff, false);
+    a_write(&a, 25, 0, 0xff800010);
+    a_snapshot(&a, out);
+    g_assert_cmphex(out[0], ==, 0x10);
+    a_quit(&a);
+}
+
+static void test_r12000a_resets(void)
+{
+    g_autofree char *cpu = a_cpu_options("vr12000a", 3, 3);
+    ACPU a = a_start(cpu, "", true);
+    g_autofree char *path = cpu_qom_path(a.qts);
+
+    a_report(a.qts, A_FIXTURE, 1, 2, 0, 0x1a5, true);
+    for (unsigned int kind = 0; kind < 4; kind++) {
+        if (kind == 0) {
+            qtest_system_reset(a.qts);
+        } else {
+            const char *wire = kind == 1 ? "cold-reset" :
+                               kind == 2 ? "soft-reset" : "nmi";
+            const char *owner = kind == 3 ? path : A_FIXTURE;
+
+            qtest_set_irq_in(a.qts, owner, wire, 0, 1);
+            qtest_set_irq_in(a.qts, owner, wire, 0, 0);
+        }
+        a_wait_entry(&a, kind + 1);
+        g_assert_cmpuint(a_syndrome(&a), ==, 0x1a5);
+        g_assert_true(a_captured(a.qts, A_FIXTURE));
+    }
+    a_quit(&a);
+    a = a_start(cpu, "", true);
+    g_assert_cmpuint(a_syndrome(&a), ==, 0);
+    g_assert_false(a_captured(a.qts, A_FIXTURE));
+    a_quit(&a);
+}
+
+static unsigned int a_private_syndrome(QTestState *qts, const char *path)
+{
+    g_autoptr(QDict) value = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'secondary-syndrome'}}", path);
+
+    unsigned int result;
+
+    g_assert_null(qdict_get(value, "error"));
+    g_assert_cmpint(qemu_strtoui(qdict_get_str(value, "return"), NULL, 10,
+                                &result), ==, 0);
+    return result;
+}
+
+static void test_r12000a_instance_isolation(void)
+{
+    static const char second[] = "/machine/peripheral/a-second";
+    g_autofree char *cpu = a_cpu_options("vr12000a", 3, 3);
+    ACPU a = a_start(cpu, "-smp 2 -device mips-cpu-exception-fixture,"
+                          "id=a-second,cpu-index=1", false);
+
+    /* Two paused CPU instances in one process catch process-global state. */
+    a_report(a.qts, A_FIXTURE, 0, 1, 0, 0x1aa, true);
+    g_assert_cmpuint(a_private_syndrome(a.qts, A_FIXTURE), ==, 0x1aa);
+    g_assert_cmpuint(a_private_syndrome(a.qts, second), ==, 0);
+    g_assert_false(a_captured(a.qts, second));
+    a_report(a.qts, second, 1, 2, 0, 0x55, true);
+    g_assert_cmpuint(a_private_syndrome(a.qts, A_FIXTURE), ==, 0x1aa);
+    g_assert_cmpuint(a_private_syndrome(a.qts, second), ==, 0x55);
+    a_report(a.qts, A_FIXTURE, 0, 2, 0, 0, true);
+    g_assert_cmpuint(a_private_syndrome(a.qts, A_FIXTURE), ==, 0);
+    g_assert_true(a_captured(a.qts, A_FIXTURE));
+    g_assert_cmpuint(a_private_syndrome(a.qts, second), ==, 0x55);
+    a_quit(&a);
+}
+
+static uint64_t a_clock_period(QTestState *qts, const char *path)
+{
+    g_autoptr(QDict) value = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'qtest-clock-period'}}", path);
+
+    g_assert_null(qdict_get(value, "error"));
+    return qdict_get_int(value, "return");
+}
+
+static void test_r12000a_count_clock(void)
+{
+    uint64_t baseline = 0;
+
+    for (unsigned int i = 0; i < 3; i++) {
+        g_autofree char *cpu = a_cpu_options(i ? "vr12000a" : NULL,
+                                            i == 2 ? 12 : 3, 3);
+        QTestState *qts = qtest_initf("-M malta -m 64M -cpu %s -S", cpu);
+        g_autofree char *path = cpu_qom_path(qts);
+        g_autofree char *input = g_strdup_printf("%s/clk-in", path);
+        g_autofree char *count = g_strdup_printf("%s/clk-count", path);
+        uint64_t period = a_clock_period(qts, input);
+
+        g_assert_cmpuint(period, >, 0);
+        g_assert_cmpuint(a_clock_period(qts, count), ==, period * 2);
+        if (i) {
+            g_assert_cmpuint(period, ==, baseline);
+        }
+        baseline = period;
+        qtest_quit(qts);
+    }
+}
+
+static void a_wait_rejected(ACPU *a)
+{
+    SgiWait wait;
+
+    sgi_wait_start(&wait, "rejected R12000 variant migration");
+    while (qtest_probe_child(a->qts)) {
+        sgi_wait_pause(&wait, 1000);
+    }
+}
+
+static void test_r12000a_migration(void)
+{
+    for (unsigned int state = 0; state < 4; state++) {
+        g_autofree char *cpu = a_cpu_options(state ? "vr12000a" : NULL, 3, 3);
+        g_autofree char *dir = g_dir_make_tmp("r12000a-migrate-XXXXXX", NULL);
+        g_autofree char *socket = g_build_filename(dir, "state.sock", NULL);
+        g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+        g_autofree char *incoming = g_strdup_printf("-incoming %s", uri);
+        ACPU from = a_start(cpu, "", true);
+        ACPU to = a_start(cpu, incoming, false);
+        uint32_t syndrome = state == 3 ? 0x155 : 0;
+        uint32_t out[7];
+
+        if (state >= 2) {
+            a_report(from.qts, A_FIXTURE, 1, 1, 0, syndrome, true);
+        }
+        a_write(&from, 25, 0, 0x10);
+        a_write(&from, 25, 1, 0x12345678);
+        sgi_migrate_stopped(from.qts, uri);
+        sgi_wait_migration(to.qts, "completed");
+        a_snapshot(&to, out);
+        g_assert_cmphex(out[0], ==, (syndrome << 23) | 0x10);
+        g_assert_cmphex(out[1], ==, 0x12345678);
+        g_assert_cmphex(out[4] & 0x8000, ==, 0);
+        g_assert_cmpint(a_captured(to.qts, A_FIXTURE), ==, state >= 2);
+        qtest_system_reset(to.qts);
+        a_wait_entry(&to, 1);
+        a_snapshot(&to, out);
+        g_assert_cmphex(out[0], ==, syndrome << 23);
+        g_assert_cmphex(out[1], ==, 0);
+        g_assert_cmpint(a_captured(to.qts, A_FIXTURE), ==, state >= 2);
+        a_quit(&from);
+        a_quit(&to);
+        g_unlink(socket);
+        g_assert_cmpint(g_rmdir(dir), ==, 0);
+    }
+}
+
+static void test_r12000a_migration_mismatch(void)
+{
+    for (unsigned int kind = 0; kind < 5; kind++) {
+        g_autofree char *from_cpu = kind >= 3 ? g_strdup("R10000") :
+            a_cpu_options(kind == 1 ? NULL : "vr12000a", 3, 3);
+        g_autofree char *to_cpu = a_cpu_options(
+            kind == 0 || kind == 4 ? NULL : "vr12000a", kind == 2 ? 4 : 3, 3);
+        g_autofree char *dir = g_dir_make_tmp("r12000a-refuse-XXXXXX", NULL);
+        g_autofree char *socket = g_build_filename(dir, "state.sock", NULL);
+        g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+        g_autofree char *incoming = g_strdup_printf("-incoming %s", uri);
+        ACPU from = a_start(from_cpu, "", false);
+        ACPU to = a_start(to_cpu, incoming, false);
+
+        qtest_set_expected_status(to.qts, 1);
+        qtest_qmp_assert_success(from.qts,
+            "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+        a_wait_rejected(&to);
+        a_quit(&from);
+        a_quit(&to);
+        g_unlink(socket);
+        g_assert_cmpint(g_rmdir(dir), ==, 0);
+    }
+}
+
+/* Locate the exact same-build subsection, avoiding its JSON description. */
+static size_t a_profile_offset(const uint8_t *data, size_t len, size_t *header)
+{
+    static const char name[] = "cpu/r12000-profile";
+    size_t found = 0;
+    unsigned int hits = 0;
+
+    for (size_t i = 2; i + sizeof(name) - 1 + 4 + 24 <= len; i++) {
+        if (data[i - 2] == 5 && data[i - 1] == sizeof(name) - 1 &&
+            !memcmp(data + i, name, sizeof(name) - 1) &&
+            ldl_be_p(data + i + sizeof(name) - 1) == 1) {
+            found = i;
+            hits++;
+        }
+    }
+    g_assert_cmpuint(hits, ==, 1);
+    *header = found - 2;
+    return found + sizeof(name) - 1 + 4;
+}
+
+static void test_r12000a_migration_malformed(void)
+{
+    g_autofree char *cpu = a_cpu_options("vr12000a", 3, 3);
+    g_autofree char *dir = g_dir_make_tmp("r12000a-stream-XXXXXX", NULL);
+    g_autofree char *stream = g_build_filename(dir, "baseline", NULL);
+    g_autofree char *quoted = g_shell_quote(stream);
+    g_autofree char *uri = g_strdup_printf("exec:cat > %s", quoted);
+    g_autofree char *contents = NULL;
+    ACPU from = a_start(cpu, "", true);
+    gsize length;
+    size_t body, header;
+
+    a_report(from.qts, A_FIXTURE, 0, 2, 0, 0x155, true);
+    sgi_migrate_stopped(from.qts, uri);
+    a_quit(&from);
+    g_assert_true(g_file_get_contents(stream, &contents, &length, NULL));
+    body = a_profile_offset((uint8_t *)contents, length, &header);
+    g_assert_cmphex(ldl_be_p(contents + body + 8), ==, 0x011a8603);
+    g_assert_cmpuint((uint8_t)contents[body + 20], ==, 1);
+    g_assert_cmphex(lduw_be_p(contents + body + 21), ==, 0x155);
+    g_assert_cmpuint((uint8_t)contents[body + 23], ==, 1);
+    for (unsigned int kind = 0; kind < 6; kind++) {
+        g_autofree char *file = g_strdup_printf("%s/input-%u", dir, kind);
+        g_autofree char *copy = g_memdup2(contents, length);
+        g_autofree char *input = g_shell_quote(file);
+        g_autofree char *read_uri = g_strdup_printf("exec:cat %s", input);
+        ACPU to;
+        size_t size = length;
+
+        switch (kind) {
+        case 1:
+            copy[body + 20] = 2; /* Unknown variant. */
+            break;
+        case 2:
+            stw_be_p(copy + body + 21, 0x200);
+            break;
+        case 3:
+            copy[body + 23] = 2; /* Not a boolean byte. */
+            break;
+        case 4:
+            copy[body + 23] = 0; /* Initial state cannot be nonzero. */
+            break;
+        case 5:
+            memmove(copy + header, copy + body + 24, length - body - 24);
+            size -= body + 24 - header;
+            break;
+        default:
+            break;
+        }
+        g_assert_true(g_file_set_contents(file, copy, size, NULL));
+        to = a_start(cpu, "-incoming defer", false);
+        if (kind) {
+            qtest_set_expected_status(to.qts, 1);
+        }
+        if (kind) {
+            qtest_qmp_send(to.qts,
+                "{'execute':'migrate-incoming',"
+                "'arguments':{'uri':%s}}", read_uri);
+            a_wait_rejected(&to);
+        } else {
+            qtest_qmp_assert_success(to.qts,
+                "{'execute':'migrate-incoming',"
+                "'arguments':{'uri':%s}}", read_uri);
+            sgi_wait_migration(to.qts, "completed");
+            g_assert_cmpuint(a_syndrome(&to), ==, 0x155);
+            g_assert_true(a_captured(to.qts, A_FIXTURE));
+        }
+        a_quit(&to);
+        g_unlink(file);
+    }
+    g_unlink(stream);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/r12000a/variant", test_r12000a_variant);
+    qtest_add_func("/r12000a/clock-codes", test_r12000a_clock_codes);
+    qtest_add_func("/r12000a/capture-interface", test_r12000a_capture);
+    qtest_add_func("/r12000a/control-isolation",
+                   test_r12000a_control_isolation);
+    qtest_add_func("/r12000a/resets", test_r12000a_resets);
+    qtest_add_func("/r12000a/instance-isolation",
+                   test_r12000a_instance_isolation);
+    qtest_add_func("/r12000a/count-clock", test_r12000a_count_clock);
+    qtest_add_func("/r12000a/migration", test_r12000a_migration);
+    qtest_add_func("/r12000a/migration-mismatch",
+                   test_r12000a_migration_mismatch);
+    qtest_add_func("/r12000a/migration-malformed",
+                   test_r12000a_migration_malformed);
 
     qtest_add_func("/sn0/nmi/entry-and-retrigger",
                    test_nmi_entry_and_retrigger);

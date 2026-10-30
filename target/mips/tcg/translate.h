@@ -59,6 +59,7 @@ typedef struct DisasContext {
     bool prefetch_requests;
     bool watch_is_physical;
     bool has_cache_diagnostics;
+    bool r12000a;
     bool xx_gates_mips4;
     bool xx_mips4_fp_unimplemented;
     bool fp_single_result_clears_upper;
