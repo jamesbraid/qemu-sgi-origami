@@ -22045,20 +22045,26 @@ static const VMStateDescription vmstate_sgi_kona_channels = {
     },
 };
 
-/* The managed area, once a combination's SetupFrameBuffer resized it. */
+/*
+ * The managed area and the size configuration block +0x84 and +0x88
+ * latched at the last start, once either left the reset size.
+ */
 static bool sgi_kona_managed_area_needed(void *opaque)
 {
     SGIKonaState *s = opaque;
 
     return s->fb_width != SGI_KONA_FB_WIDTH ||
-           s->fb_height != SGI_KONA_FB_HEIGHT;
+           s->fb_height != SGI_KONA_FB_HEIGHT ||
+           s->cfg_width != SGI_KONA_FB_WIDTH ||
+           s->cfg_height != SGI_KONA_FB_HEIGHT;
 }
 
 static int sgi_kona_managed_area_post_load(void *opaque, int version_id)
 {
     SGIKonaState *s = opaque;
 
-    if (!sgi_kona_managed_fits(s, s->fb_width, s->fb_height)) {
+    if (!sgi_kona_managed_fits(s, s->fb_width, s->fb_height) ||
+        !sgi_kona_managed_fits(s, s->cfg_width, s->cfg_height)) {
         return -EINVAL;
     }
     sgi_kona_managed_layout(s);
@@ -22074,6 +22080,8 @@ static const VMStateDescription vmstate_sgi_kona_managed_area = {
     .fields = (const VMStateField[]) {
         VMSTATE_INT32(fb_width, SGIKonaState),
         VMSTATE_INT32(fb_height, SGIKonaState),
+        VMSTATE_INT32(cfg_width, SGIKonaState),
+        VMSTATE_INT32(cfg_height, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
 };

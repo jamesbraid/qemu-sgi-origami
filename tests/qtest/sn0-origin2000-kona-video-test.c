@@ -1075,6 +1075,103 @@ static void test_stored_combination_survives_restart(void)
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
+/* The DG5-2 pipe with no flash image. */
+static char *kona_dg5_2_args(void)
+{
+    return g_strdup(
+        "-M origin2000,nodes=1,x-uncatalogued-graphics=on -smp 1 -m 64M "
+        "-device '{\"driver\":\"sgi-kona\",\"id\":\"kona0\","
+        "\"slot\":\"io4\",\"fabric-hub-widget\":9,"
+        "\"other-identity-parts\":[],\"product\":\"ir2\","
+        "\"display\":\"dg5-2\"}'");
+}
+
+/* The DG5-2 pipe with its flash in @image, as drive "dgflash". */
+static char *kona_flash_args(const char *image)
+{
+    return g_strdup_printf(
+        "-M origin2000,nodes=1,x-uncatalogued-graphics=on -smp 1 -m 64M "
+        "-drive if=none,id=dgflash,format=raw,file=%s "
+        "-device '{\"driver\":\"sgi-kona\",\"id\":\"kona0\","
+        "\"slot\":\"io4\",\"fabric-hub-widget\":9,"
+        "\"other-identity-parts\":[],\"product\":\"ir2\","
+        "\"display\":\"dg5-2\",\"drive\":\"dgflash\"}'", image);
+}
+
+/*
+ * A start's state crosses a migration: after the stored 2560x1024
+ * combination runs, the destination's configuration block still says 2560
+ * and channel 1 runs. With @drives, each pipe has its own flash image, and
+ * the destination's, written only once its VM runs (its block node is not
+ * active while the stream loads), then holds the combination too.
+ */
+static void migration_carries_start(bool drives)
+{
+    g_autofree char *dir = g_dir_make_tmp("sn0-kona-flash-mig-XXXXXX", NULL);
+    g_autofree char *from_image = g_build_filename(dir, "from.raw", NULL);
+    g_autofree char *to_image = g_build_filename(dir, "to.raw", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    g_autofree uint8_t *zero = g_malloc0(0x80000);
+    g_autofree char *from_args = NULL;
+    g_autofree char *to_args = NULL;
+    g_autofree char *dest_args = NULL;
+    g_autoptr(GArray) stream = two_wide_combination(2560, 1024);
+    uint32_t reply[19];
+    QTestState *from, *to;
+
+    g_assert_nonnull(dir);
+    if (drives) {
+        g_assert_true(g_file_set_contents(from_image, (const char *)zero,
+                                          0x80000, NULL));
+        g_assert_true(g_file_set_contents(to_image, (const char *)zero,
+                                          0x80000, NULL));
+        from_args = kona_flash_args(from_image);
+        to_args = kona_flash_args(to_image);
+    } else {
+        from_args = kona_dg5_2_args();
+        to_args = kona_dg5_2_args();
+    }
+    dest_args = g_strdup_printf("%s -incoming %s", to_args, uri);
+
+    from = qtest_init(from_args);
+    flash_store_combination(from, stream);
+    qtest_writel(from, KONA_REG(0x800328), 1);
+    g_assert_cmphex(kona_config_word(from, 0x84), ==, 2560);
+    to = qtest_init(dest_args);
+    sgi_migrate_stopped(from, uri);
+    sgi_migrate_resume(to);
+
+    g_assert_cmphex(kona_config_word(to, 0x84), ==, 2560);
+    g_assert_cmphex(kona_config_word(to, 0x88), ==, 1024);
+    kona_register_return_page(to, RETURN_PAGE);
+    video_get(to, GET_CHANNEL_CONFIG, 1, 7, reply, 19);
+    g_assert_cmphex(reply[0], ==, 0xd);
+    qtest_quit(to);
+    qtest_quit(from);
+
+    if (drives) {
+        gchar *contents = NULL;
+        gsize length = 0;
+
+        g_assert_true(g_file_get_contents(to_image, &contents, &length,
+                                          NULL));
+        g_assert_cmpuint(length, ==, 0x80000);
+        g_assert_cmphex((uint32_t)ldl_be_p(contents + 0x20000), ==,
+                        0xfacefeed);
+        g_assert_cmphex((uint32_t)ldl_be_p(contents + 0x20004), ==,
+                        stream->len);
+        g_free(contents);
+        g_assert_cmpint(g_unlink(from_image), ==, 0);
+        g_assert_cmpint(g_unlink(to_image), ==, 0);
+    }
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+static void test_migration_carries_start(void)
+{
+    migration_carries_start(false);
+}
+
 /*
  * A flash image that is not the flash's 512 KiB is refused at realize. The
  * parent makes a 4 KiB image and names it to the child in the environment.
@@ -1831,6 +1928,8 @@ int main(int argc, char **argv)
                    test_stored_combination_survives_restart);
     qtest_add_func("sn0/origin2000/kona-video/flash-image-size-refused",
                    test_flash_image_size_refused);
+    qtest_add_func("sn0/origin2000/kona-video/migration-carries-start",
+                   test_migration_carries_start);
     qtest_add_func("sn0/origin2000/kona-video/zero-data-replies",
                    test_zero_data_replies);
     qtest_add_func("sn0/origin2000/kona-video/migration-mid-video-command",
