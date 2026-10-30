@@ -659,9 +659,9 @@ static void set_gfx_bay(QTestState *s, unsigned owner, unsigned bay)
  * An I-brick lists the C-brick that asks and, when that C-brick's chip has a
  * graphics brick on its other port, the G-brick, as the C-brick's own reply
  * lists a brick. The same request through the C-brick's attached I/O address
- * reaches it. Without a graphics brick the C-brick alone is listed, so the
- * stock PROM's crossbar arbitration finds its one compute brick; 0x000d
- * keeps the unknown-request code.
+ * reaches it. Without a graphics brick the C-brick alone is listed; 0x000d
+ * keeps the unknown-request code. The stock PROM never sends 0x000c to an
+ * I-brick, whose widget 0 is an XBridge.
  */
 static void test_ibrick_attached_graphics(void)
 {

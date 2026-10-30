@@ -1088,20 +1088,21 @@ static void l1_o3k_attached_put(uint8_t *fields, unsigned slot,
 }
 
 /*
- * The same request on an I/O brick. The stock IP35 PROM's crossbar
- * arbitration on a C-brick asks the I/O brick which bricks sit on it, packs
- * the first two entries into module identifiers and makes master the
- * Crosstown2 port whose entry is the one compute brick; an error reply
- * abandons the arbitration. What a real I/O brick answers is not published
- * (approximation): the model lists the requesting C-brick at port 1 and,
- * when that C-brick's chip has a graphics brick on its other port, the
- * graphics brick at port 2, each as the C-brick's reply lists a brick, and
- * leaves the other ports empty. An I-brick answers 0x000c so with or
- * without a graphics brick, and so does a V-brick: the L1 firmware answers
- * 0x000c from its link table whatever the brick's letter, and a V-brick
- * runs the X-brick personality. Without a graphics brick, 0x000d on either,
- * and both requests on an N-brick, keep the unknown-request code: that PROM
- * never asks an N-brick, and nothing settles the others.
+ * The same request on an I/O brick. The stock IP35 PROM sends it only from
+ * its crossbar arbitration, which it enters only when the attached brick's
+ * widget 0 reports a crossbow part (0xd000 or 0xd100). The I-brick's and
+ * V-brick's widget 0 is an XBridge, so that PROM never asks either one, on
+ * hardware or here; the reply is for other callers (see
+ * docs/system/mips/sgi/hardware/l1.rst). What a real I/O brick answers is
+ * not published (approximation): the model lists the requesting C-brick at
+ * port 1 and, when that C-brick's chip has a graphics brick on its other
+ * port, the graphics brick at port 2, each as the C-brick's reply lists a
+ * brick, and leaves the other ports empty. An I-brick answers 0x000c so
+ * with or without a graphics brick, and so does a V-brick: the L1 firmware
+ * answers 0x000c from its link table whatever the brick's letter, and a
+ * V-brick runs the X-brick personality. Without a graphics brick, 0x000d on
+ * either, and both requests on an N-brick, keep the unknown-request code:
+ * that PROM never asks an N-brick, and nothing settles the others.
  */
 static void l1_iobrick_attached(SGIL1State *s, SGIL1State *recipient,
                                 uint8_t channel, bool low_ports)

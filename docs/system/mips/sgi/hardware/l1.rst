@@ -357,23 +357,23 @@ captured controller output.
    * - What an I-brick, V-brick or N-brick lists in ``0x000c``, and its
        type letters.
      - approximated
-     - The stock IP35 PROM 6.210 sends ``0x000c`` to the attached I/O
-       address from its crossbar arbitration on a C-brick whose I/O brick
-       is not an N-brick. It reads only the first two entries: the
-       Crosstown2 port whose entry is the one compute brick becomes the
-       crossbar's master, and an error reply abandons the arbitration
-       (established from that PROM, a software expectation, not a
-       hardware reply). An I-brick answers with the C-brick that asked at
-       port 1 and, when that C-brick's chip has a G-brick on its other
-       port, the G-brick at port 2, in the C-brick's own reply shape, with
-       letters ``C`` and ``G``; the other ports are empty. A V-brick
-       answers as an I-brick does, because the L1 firmware answers
-       ``0x000c`` from its link table whatever the brick's letter. An
-       N-brick answers so only with a G-brick, and the unknown-request
-       code otherwise, which that PROM never asks for. Without a G-brick,
-       ``0x000d`` on any of them keeps the unknown-request code. Which
-       ports and letters a real brick uses are unknown; a G-brick's entry only
-       has to be other than a compute brick's. The N-brick
+     - The L1 firmware answers ``0x000c`` from its link table whatever
+       the brick's letter. The stock IP35 PROM 6.210 sends it to the
+       attached I/O address only from its crossbar arbitration, which it
+       enters only when the widget at the node's widget-0 window reports
+       a crossbow part, ``0xd000`` or ``0xd100`` (OpenBSD ``xbowdevs``
+       names them XXBow and PXBow); there, an error reply
+       abandons the arbitration. An I-brick's and a V-brick's widget 0 is
+       an XBridge, so that PROM never asks either one, on hardware or on
+       the model (established from that PROM; boots of the ``onyx3000``
+       topology log no ``0x000c``). An I-brick or V-brick answers with
+       the C-brick that asked at port 1 and, when that C-brick's chip has
+       a G-brick on its other port, the G-brick at port 2, in the
+       C-brick's own reply shape, with letters ``C`` and ``G``; the other
+       ports are empty. An N-brick answers so only with a G-brick, and the
+       unknown-request code otherwise. Without a G-brick, ``0x000d`` on
+       any of them keeps the unknown-request code. Which ports and letters
+       a real brick uses are unknown. The N-brick
        profile reports ``N``, a candidate from the command set's brick
        type list (007-4240-002 printed page 235); the PROM stops printing
        ``Unexpected I/O brick type`` for it, which shows the letter is
