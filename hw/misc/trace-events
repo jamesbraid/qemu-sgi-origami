@@ -74,6 +74,7 @@ sgi_kona_flash_op(uint32_t op) "EEPROM operation %u"
 sgi_kona_flash_reply_buffer(uint64_t addr, bool mapped) "addr 0x%" PRIx64 " mapped=%d"
 sgi_kona_flash_write(uint32_t type, uint32_t addr, uint32_t words, uint32_t status) "type %u flash 0x%05x words %u status %u"
 sgi_kona_flash_read(uint32_t addr, uint32_t bytes) "flash 0x%05x bytes 0x%x"
+sgi_kona_flash_combination(uint32_t words) "running the stored combination, %u words"
 # A command framed whole whose display state the model does not keep.
 sgi_kona_command_unmodelled(uint32_t token, unsigned int argc) "token 0x%x argc %u consumed, not modelled"
 # The kernel's forced bracket suspended context's open user command; it

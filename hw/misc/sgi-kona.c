@@ -876,10 +876,11 @@ static void sgi_kona_channel_resolve_row(void *opaque, unsigned y,
  * display datasheet), and every other channel is off.
  *
  * Approximated: a real display generator starts the combination stored
- * in its own memory, which ircombine and setmon -x write; the model holds
- * none, so it starts the single-channel combination every captured pipe
- * can show. Nothing is known of what a reset does to a running
- * combination.
+ * in its flash, which ircombine and setmon -x write, at power-up; the
+ * model runs a stored one only when graphics is initialized (see
+ * sgi_kona_flash_run_combination()), so a reset starts the
+ * single-channel combination every captured pipe can show. Nothing is
+ * known of what a reset does to a running combination.
  */
 static void sgi_kona_channels_default(SGIKonaChannel *channel)
 {
@@ -4138,6 +4139,81 @@ static void sgi_kona_video_word(SGIKonaState *s, uint32_t word)
                                               s->video_have);
         s->video_open = false;
     }
+}
+
+/*
+ * The video format combination stored in the flash (op 1 type 1, behind
+ * SGI_KONA_FLASH_COMBO_MARKER and its word count), run when the ARM is
+ * released after a firmware load: ircombine and setmon store a
+ * combination there to be "used the next time graphics is initialized or
+ * the system is powered up" (ircombine(1G)), and gfxinit, which
+ * initializes graphics, reads none of it back (observed), so the pipe
+ * runs it itself (inferred). Its words are video commands framed as on
+ * the command page after 0x1a6, the command, its data words and their
+ * checksum (observed in the X server's stored combinations, every
+ * checksum matching), and each is applied as one sent there would be.
+ *
+ * Approximated: when the pipe runs it, and that it runs on whatever the
+ * display shows rather than from a reset state (each stored combination
+ * starts by disabling every channel). A command that would answer, or one
+ * the stored words end inside, stops the run, logged: no stored
+ * combination has either. Nothing runs at a system reset, which leaves
+ * the 1280x1024 single-channel display the PROM expects until graphics
+ * is initialized.
+ */
+static void sgi_kona_flash_run_combination(SGIKonaState *s)
+{
+    uint32_t at = SGI_KONA_FLASH_COMBO + 8, count, end;
+    uint32_t saved_data[SGI_KONA_VIDEO_MAX_DATA_WORDS];
+    bool saved_open = s->video_open;
+    uint32_t saved_command = s->video_command;
+    uint32_t saved_have = s->video_have;
+    uint32_t saved_first = s->video_first;
+    uint32_t saved_tail_sum = s->video_tail_sum;
+
+    if (sgi_kona_flash_load(s, SGI_KONA_FLASH_COMBO) !=
+        SGI_KONA_FLASH_COMBO_MARKER) {
+        return;
+    }
+    count = sgi_kona_flash_load(s, SGI_KONA_FLASH_COMBO + 4);
+    if (count > SGI_KONA_FLASH_MAX_WORDS) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: stored combination of %"
+                      PRIu32 " words is longer than a write stores; not "
+                      "run\n", count);
+        return;
+    }
+    trace_sgi_kona_flash_combination(count);
+    memcpy(saved_data, s->video_data, sizeof(saved_data));
+    end = at + 4 * count;
+    while (at < end) {
+        uint32_t command = sgi_kona_flash_load(s, at);
+        const SGIKonaVideoCommand *v = sgi_kona_video_lookup(command);
+
+        at += 4;
+        if (v && v->reply_id != SGI_KONA_VIDEO_NO_REPLY) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: stored combination "
+                          "asks video command 0x%" PRIx32 " for a reply; "
+                          "stopped\n", command);
+            break;
+        }
+        sgi_kona_video_open(s, command);
+        while (s->video_open && at < end) {
+            sgi_kona_video_word(s, sgi_kona_flash_load(s, at));
+            at += 4;
+        }
+        if (s->video_open) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: stored combination "
+                          "ends inside video command 0x%" PRIx32 "\n",
+                          command);
+            break;
+        }
+    }
+    s->video_open = saved_open;
+    s->video_command = saved_command;
+    s->video_have = saved_have;
+    s->video_first = saved_first;
+    s->video_tail_sum = saved_tail_sum;
+    memcpy(s->video_data, saved_data, sizeof(saved_data));
 }
 
 /*
@@ -19289,6 +19365,9 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
     case SGI_KONA_LOADER_328:
         s->loader_328 = value;
         trace_sgi_kona_loader_register(addr, value);
+        if (value == 1) {
+            sgi_kona_flash_run_combination(s);
+        }
         break;
     case SGI_KONA_DMA_FIFO_PUSH:
         s->activity = true;

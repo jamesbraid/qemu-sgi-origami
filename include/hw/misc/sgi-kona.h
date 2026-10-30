@@ -853,8 +853,11 @@ typedef struct SGIKonaPendingSwap {
  * Written 5 and 1 by the loader after the load, never read. A stock tool's
  * register table names +0x8003b0 a 4-bit transaction FIFO high-water mark and
  * +0x800328 ARM unstall; both names are inferred from that table.
- * Stored and traced, no behaviour: in particular the model does not wait
- * for the unstall before answering commands.
+ * Stored and traced. A write of 1 to +0x800328 runs the video format
+ * combination stored in the flash, as the released ARM would (see
+ * sgi_kona_flash_run_combination()); otherwise no behaviour, and in
+ * particular the model does not wait for the unstall before answering
+ * commands.
  */
 #define SGI_KONA_LOADER_3B0 0x8003b0
 #define SGI_KONA_LOADER_328 0x800328
