@@ -5472,6 +5472,17 @@ static bool odyssey_image_burst_fmt(uint32_t reg, uint32_t *fmt)
  * work). Odyssey's own subpixel grid and interpolated-colour depth are
  * unmeasured; an Odyssey rule set of its own waits on a hardware capture.
  * The floating-point depth rule is inferred, not measured.
+ *
+ * Lines follow SGI_LINE_CENTRE_SAMPLED, the rule SGI's C simulator of the
+ * board draws by: the field diagnostics' stored line frames, which SGI
+ * shipped as pass/fail checksums for real boards, are rebuilt to their
+ * CRCs only with centre sampling along the major axis and an exact
+ * minor-axis edge crossing taking the lower pixel (ESTABLISHED for the
+ * simulator; INFERRED for the board). Those frames test the edge rule on
+ * y-major lines only and do not test end pixels: that x-major lines take
+ * the lower pixel too, and that a centre exactly at an end belongs to the
+ * start and not the end, are the model's choices. Lines with this rule are
+ * drawn by the scalar rasterizer; the Mesa renderer refuses them.
  */
 static const SGIRasterRules odyssey_gl_rules = {
     .subpixel_bits = 8,
@@ -5481,7 +5492,7 @@ static const SGIRasterRules odyssey_gl_rules = {
     .rounding = SGI_ROUND_HALF_AWAY,
     .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
     .arith = SGI_ARITH_DOUBLE,
-    .line_rule = SGI_LINE_COVERAGE_DOUBLE,
+    .line_rule = SGI_LINE_CENTRE_SAMPLED,
     .alpha_test_bits = 12,
     .smooth_primitives = true,
     /* The board's own depth format; odyssey_gl_load_combined(). */

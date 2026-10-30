@@ -8466,6 +8466,77 @@ static void test_command_fifo_gl_line_point_size(void)
     board_quit(qts);
 }
 
+/* The plane row column x is lit yellow in, within rows y0 to y1, or -1. */
+static int odsy_yellow_row(QTestState *qts, uint32_t x, uint32_t y0,
+                           uint32_t y1)
+{
+    for (uint32_t y = y0; y <= y1; y++) {
+        if (odsy_test_pixel(qts, x, y) == ODSY_PLANE_YELLOW) {
+            return y;
+        }
+    }
+    return -1;
+}
+
+/*
+ * One-pixel lines take the rule of SGI's simulator of the board: a pixel
+ * per major-axis column whose centre lies between the ends, and a
+ * minor-axis crossing exactly on a pixel edge in the lower pixel. A
+ * horizontal line from window x 60.0 to 70.75 lights columns 60 to 70,
+ * eleven pixels; OpenGL's diamond-exit rule leaves out column 70, whose
+ * diamond holds the end. The probe window's transform turns y over, so
+ * the second line, falling to the right in normalized coordinates, rises
+ * at slope one half in window coordinates: it crosses a row edge exactly at
+ * every other column centre, and each of those columns shares its row
+ * with the column before; the diamond rule's perturbation, which follows
+ * the slope, would lift it to the row above. A vertical line exactly on
+ * the edge between columns 63 and 64 lights column 63.
+ */
+static void test_command_fifo_gl_line_centre_sampled(void)
+{
+    static const uint32_t horizontal[6] = {
+        0xbd800000, 0x3c000000, 0xbf000000,
+        0x3dd80000, 0x3c000000, 0xbf000000,
+    };
+    static const uint32_t slope_half[6] = {
+        0xbd600000, 0x3d000000, 0xbf000000,
+        0x3d900000, 0xbd000000, 0xbf000000,
+    };
+    static const uint32_t vertical[6] = {
+        0x00000000, 0xbd800000, 0xbf000000,
+        0x00000000, 0x3d800000, 0xbf000000,
+    };
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT);
+
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_line_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, horizontal);
+    g_assert_cmpuint(odsy_count_yellow(qts, 310, 330, 314, 326), ==, 11);
+    g_assert_cmpint(odsy_yellow_row(qts, 256 + 70, 314, 326), >=, 0);
+    g_assert_cmpint(odsy_yellow_row(qts, 256 + 71, 314, 326), <, 0);
+
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_line_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, slope_half);
+    g_assert_cmpuint(odsy_count_yellow(qts, 310, 330, 310, 330), ==, 8);
+    for (uint32_t x = 256 + 61; x <= 256 + 65; x += 2) {
+        int row = odsy_yellow_row(qts, x, 310, 330);
+
+        g_assert_cmpint(row, >=, 0);
+        g_assert_cmpint(odsy_yellow_row(qts, x + 1, 310, 330), ==, row);
+    }
+
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_line_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, vertical);
+    g_assert_cmpuint(odsy_count_yellow(qts, 256 + 63, 256 + 63, 310, 330),
+                     ==, 8);
+    g_assert_cmpuint(odsy_count_yellow(qts, 256 + 64, 256 + 64, 310, 330),
+                     ==, 0);
+
+    board_quit(qts);
+}
+
 static void test_command_fifo_gl_point_smoothing(void)
 {
     static const uint32_t centre_point[3] = {
@@ -23384,6 +23455,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_polygon_mode);
     add_case("sn1/odyssey/command-fifo-gl-line-point-size",
              test_command_fifo_gl_line_point_size);
+    add_case("sn1/odyssey/command-fifo-gl-line-centre-sampled",
+             test_command_fifo_gl_line_centre_sampled);
     add_case("sn1/odyssey/command-fifo-gl-point-smoothing",
              test_command_fifo_gl_point_smoothing);
     add_case("sn1/odyssey/command-fifo-gl-line-smoothing",
