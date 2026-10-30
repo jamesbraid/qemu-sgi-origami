@@ -97,6 +97,12 @@ Each store starts from one of these:
   the Origin 2000 build writes configuration 0 and the module number the
   topology selects for that module, and the store keeps 0 at 0x70b.
 
+``kona-flash``
+  An InfiniteReality pipe's 524288-byte flash EEPROM as a new pipe's
+  model starts it: zeroes, apart from the big-endian header state word 2
+  at 0x7ff1c, which the PROM requires before it accepts the pipe. A
+  combination ircombine stores later goes at 0x20000.
+
 ``zero``
   Zero-filled. A selected system Timekeeper, as Origin 300 and Fuel fit,
   and Octane's NVRAM and every clock record start this way.

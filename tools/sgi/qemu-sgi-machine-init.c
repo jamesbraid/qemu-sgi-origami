@@ -21,6 +21,7 @@
 #include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/prom-image.h"
 #include "hw/mips/sgi/sgi-machines.h"
+#include "hw/misc/sgi-kona-flash.h"
 #include "hw/nvram/sgi-elsc-nvram.h"
 #include "hw/rtc/m48t35-ip27.h"
 
@@ -275,6 +276,10 @@ static void build_item(const SGIModelStorageItem *item,
         sgi_elsc_nvram_fresh_image(buf, config, module_number, clock);
         return;
     }
+    case SGI_MODEL_STORAGE_INITIAL_KONA_FLASH:
+        g_assert(item->size == SGI_KONA_FLASH_SIZE);
+        sgi_kona_flash_fresh_image(buf);
+        return;
     case SGI_MODEL_STORAGE_INITIAL_IO_PROM:
         data = g_bytes_get_data(image->file, &length);
         sgi_io6_initial_flash(buf, item->size, data, length);
@@ -507,6 +512,13 @@ static bool create_machine(const SGIModelOffering *offering,
             error_setg(errp, "%s lists %s, which is no %u-byte module "
                        "controller NVRAM", offering->machine_options,
                        item->name, SGI_ELSC_NVRAM_BYTES);
+            return false;
+        }
+        if (item->initial == SGI_MODEL_STORAGE_INITIAL_KONA_FLASH &&
+            item->size != SGI_KONA_FLASH_SIZE) {
+            error_setg(errp, "%s lists %s, which is no %u-byte pipe flash",
+                       offering->machine_options, item->name,
+                       SGI_KONA_FLASH_SIZE);
             return false;
         }
         if ((item->initial != SGI_MODEL_STORAGE_INITIAL_BOOT_PROM &&

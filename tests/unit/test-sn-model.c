@@ -1948,6 +1948,17 @@ static void test_storage_board_rules(void)
                     sgi_model_module_nvram_index(fitted, module->value));
             }
         }
+        /* Each graphics slot an InfiniteReality pipe fits, its flash. */
+        for (SGIModelGraphicsSlotList *slot = t->graphics ?
+             t->graphics->slots : NULL; slot; slot = slot->next) {
+            for (SGIModelGraphicsFamilyList *f = slot->value->families; f;
+                 f = f->next) {
+                if (f->value->family == SGI_MODEL_GRAPHICS_FAMILY_KIND_KONA) {
+                    g_string_append_printf(expected, "%s-kona-flash ",
+                                           slot->value->name);
+                }
+            }
+        }
         for (item = offering->storage; item; item = item->next) {
             if (!g_str_has_prefix(item->value->name, "node")) {
                 g_string_append_printf(actual, "%s ", item->value->name);

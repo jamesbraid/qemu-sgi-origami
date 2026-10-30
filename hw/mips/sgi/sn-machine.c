@@ -10341,10 +10341,42 @@ static const HotplugHandler *sgi_machine_get_hotplug_handler(
 }
 
 /*
+ * An InfiniteReality pipe's flash EEPROM from its slot's <slot>-kona-flash
+ * store, when one is bound: the store belongs to the slot, as the pipe's
+ * flash belongs to the board in it, so it backs the default pipe or a
+ * -device alike. A pipe that names its own drive as well is refused.
+ */
+static bool sgi_machine_bind_pipe_flash(SGIMachineState *s, DeviceState *dev,
+                                        Error **errp)
+{
+    g_autofree char *slot = NULL;
+    g_autofree char *item = NULL;
+    g_autofree char *own = NULL;
+    const char *node;
+
+    if (!object_dynamic_cast(OBJECT(dev), TYPE_SGI_KONA)) {
+        return true;
+    }
+    slot = object_property_get_str(OBJECT(dev), "slot", &error_abort);
+    item = g_strdup_printf("%s-kona-flash", slot);
+    node = sgi_machine_storage_node(s, item);
+    if (!node) {
+        return true;
+    }
+    own = object_property_get_str(OBJECT(dev), "drive", &error_abort);
+    if (own && *own) {
+        error_setg(errp, "%s: %s and the pipe's drive %s both back the "
+                   "pipe's flash", MACHINE_GET_CLASS(s)->name, item, own);
+        return false;
+    }
+    return object_property_set_str(OBJECT(dev), "drive", node, errp);
+}
+
+/*
  * Every pipe, a -device or the default, before it realizes: checked
  * against the catalogue with every unset setting filled from the slot's
  * defaults, then given what the topology's own pipe record in that slot
- * fixes (sgi_machine_fill_pipe_record()).
+ * fixes (sgi_machine_fill_pipe_record()) and its slot's flash store.
  */
 static void sgi_machine_pre_plug(const HotplugHandler *hotplug_dev,
                                  DeviceState *dev, Error **errp)
@@ -10353,7 +10385,8 @@ static void sgi_machine_pre_plug(const HotplugHandler *hotplug_dev,
     SGIModelGraphicsFamilyKind family;
 
     if (!sgi_graphics_pipe_family(dev, &family) ||
-        !sgi_graphics_pipes_pre_plug(&s->pipes, dev, errp)) {
+        !sgi_graphics_pipes_pre_plug(&s->pipes, dev, errp) ||
+        !sgi_machine_bind_pipe_flash(s, dev, errp)) {
         return;
     }
     sgi_machine_fill_pipe_record(s, sgi_machine_topology(MACHINE(s)), dev);
@@ -10943,6 +10976,9 @@ static bool sgi_machine_storage_bindable(const SGIMachineClass *smc,
         !qemu_strtoui(name + strlen("io"), &end, 10, &index) &&
         g_str_equal(end, "-flash")) {
         return t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_HUB;
+    }
+    if (g_str_has_suffix(name, "-kona-flash")) {
+        return true;
     }
     if (g_str_has_prefix(name, "module") &&
         !qemu_strtoui(name + strlen("module"), &end, 10, &index) &&

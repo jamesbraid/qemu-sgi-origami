@@ -2267,11 +2267,15 @@
 #     from its block of the validity marker, the password ``none``,
 #     its configuration byte and the module number
 #
+# @kona-flash: the flash EEPROM a new InfiniteReality pipe starts
+#     with: zero-filled apart from the header's state word, which the
+#     PROM requires to read 2
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelStorageInitial',
   'data': ['zero', 'boot-prom', 'io-prom', 'ip27-nvram',
-           'controller-nvram'] }
+           'controller-nvram', 'kona-flash'] }
 
 ##
 # @SGIModelStorageItem:
@@ -2279,15 +2283,16 @@
 # One writable persistent store of a machine: a node's boot flash, an
 # I/O board's PROM flash, a Timekeeper's or an IO9 DS1742's NVRAM, the
 # clock record kept beside it, an expansion module's configuration
-# storage, or a module system controller's configuration NVRAM.  A
+# storage, a module system controller's configuration NVRAM, or the
+# flash EEPROM of the InfiniteReality pipe in a graphics slot.  A
 # launcher creates one file per item, attaches it as a block node
 # named @name and binds that node through the machine property of the
 # same name.
 #
 # @name: the store's name: ``node<N>-flash``, ``io<N>-flash``,
 #     ``nvram<N>``, ``nvram<N>-clock``, ``ds1742-<board>-data``,
-#     ``ds1742-<board>-clock``, ``<module>-flash`` or
-#     ``module<N>-nvram``
+#     ``ds1742-<board>-clock``, ``<module>-flash``,
+#     ``module<N>-nvram`` or ``<slot>-kona-flash``
 #
 # @size: the store's exact size in bytes; a clock record may instead
 #     be larger

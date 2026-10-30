@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "b450eb39f2b546b4456a6dfdd0bffef68883715b8100d19ad8360a849962b169"
+    "5ee0c26bb5bc2a29144e80fb1633271d9f16eb9658c29d51c278903069090838"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -563,7 +563,8 @@ class StorageTests(unittest.TestCase):
                 for item in offering["storage"]:
                     self.assertFalse(item["read-only"])
                     self.assertTrue(item["initial"] in {"zero", "ip27-nvram",
-                                                        "controller-nvram"}
+                                                        "controller-nvram",
+                                                        "kona-flash"}
                                     or item["initial"] in inputs)
                 for resource in offering["resources"]:
                     self.assertIn(resource["kind"],
