@@ -3574,6 +3574,13 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
         if (crime_render_state_access(offset, size)) {
             return crime_render_state_write(s, offset, value, size);
         }
+        if (reg && reg->offset >= 0x080 && reg->offset <= 0x094 &&
+            !(s->render.parameter[0x60 / 4] >> 24) &&
+            (s->render.parameter[0x18 / 4] & 0x400000) &&
+            (size == 4 || (size == 8 && !(offset & 7)))) {
+            return crime_render_de_commit(s, offset, reg->offset / 4,
+                                           value, size / 4);
+        }
         if (reg && (!reg->native_only ||
                     (reg->offset >= 0xe0 && reg->offset <= 0x10c) ||
                     (reg->offset >= 0x1c0 && reg->offset <= 0x1e8) ||

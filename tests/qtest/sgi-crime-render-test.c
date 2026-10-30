@@ -18038,7 +18038,7 @@ static void test_gl_point_start_refusals(void)
     const Register forms[] = {
         { 0x990, 4 }, { 0x994, 4 }, { 0x990, 8 },
         { 0x998, 4 }, { 0x9a0, 4 }, { 0x9a8, 4 },
-        { 0x8b0, 4 }, { 0x8b4, 4 }, { 0x880, 8 },
+        { 0x8b0, 4 }, { 0x8b4, 4 },
         { 0x8e0, 8 }, { 0x9f0, 8 }, { 0x8d0, 8 },
         { 0x9c8, 4 }, { 0x9c0, 8 }, { 0x820, 4 },
     };
@@ -18131,6 +18131,695 @@ static void test_gl_point_clock(void)
         }
         /* Chosen source color, not a reconstruction of the failed payload. */
         g_assert_cmpint(memtx_writel(s, DE + 0x8d0, 0x1153c940), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+}
+
+typedef struct PointCoordinateStart {
+    unsigned offset, width, x, y;
+    uint64_t value;
+} PointCoordinateStart;
+
+static const PointCoordinateStart point_coordinate_starts[] = {
+    { 0x80, 4, 2, 2, 0x4804009f },
+    { 0x84, 4, 1, 0, 0x48040020 },
+    { 0x88, 4, 1, 2, 0x7fc01234 },
+    { 0x8c, 4, 1, 2, 0xdead5678 },
+    { 0x90, 4, 1, 2, 0xa579b3e1 },
+    { 0x94, 4, 1, 2, 0x6c28f04d },
+    { 0x80, 8, 2, 0, 0x4804009f48040020ULL },
+    { 0x88, 8, 1, 2, 0x7fc01234dead5678ULL },
+    { 0x90, 8, 1, 2, 0xa579b3e16c28f04dULL },
+};
+
+static QTestState *point_coordinate_machine(void)
+{
+    QTestState *s = start_indexed_state();
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    triangle_irq_baseline(s);
+    return s;
+}
+
+static Shape point_coordinate_prepare(QTestState *s, unsigned mode,
+                                        unsigned bank)
+{
+    Shape c = gl_point_prepare(s, mode, bank);
+
+    gl_point_vertex(s, 90, 153, -4096, -4096, 0x48000000);
+    qtest_writel(s, DE + 0x18, 0x411278);
+    qtest_writel(s, DE + 0xd0, 0x13579bdf);
+    qtest_writel(s, DE + 0x1b0, 6);
+    return c;
+}
+
+static void point_coordinate_pixels(QTestState *s, const Shape *c,
+                                      unsigned mode, int x, int y,
+                                      uint32_t source, unsigned draw)
+{
+    uint32_t expected[16];
+
+    for (unsigned j = 0; j < 4; j++) {
+        for (unsigned i = 0; i < 4; i++) {
+            expected[4 * j + i] = (int)i == x && (int)j == y ?
+                pipeline_reference(mode, source, c->old, 0, 0x45,
+                                   draw, 6, UINT32_MAX, i, j) : c->old;
+        }
+    }
+    shape_memory(s, c, expected);
+}
+
+static void point_coordinate_publish(uint64_t words[RENDER_WORDS],
+                                       const PointCoordinateStart *r)
+{
+    words[192 + r->offset / 4] = r->width == 8 ? r->value >> 32 : r->value;
+    if (r->width == 8) {
+        words[192 + r->offset / 4 + 1] = (uint32_t)r->value;
+    }
+}
+
+static void point_coordinate_failure(QTestState *s, const Shape *c,
+                                       const char *path, uint64_t address,
+                                       uint64_t value, unsigned width)
+{
+    const unsigned registers[] = { 0x10, 0x18, 0x40, 0x48, 0x250, 0x258 };
+    uint64_t before[ARRAY_SIZE(registers)];
+
+    for (unsigned i = 0; i < ARRAY_SIZE(registers); i++) {
+        before[i] = qtest_readq(s, CRIME + registers[i]);
+    }
+    sz_atomic_failure(s, c, path, address, value, width);
+    for (unsigned i = 0; i < ARRAY_SIZE(registers); i++) {
+        g_assert_cmphex(qtest_readq(s, CRIME + registers[i]), ==, before[i]);
+    }
+    triangle_irq_levels(s, 1);
+}
+
+static void test_gl_point_coordinate_matrix(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-point-coords-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = point_coordinate_machine();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(point_coordinate_starts); n++) {
+        const PointCoordinateStart *r = &point_coordinate_starts[n];
+        unsigned mode = gl_rectangle_modes[n];
+        Shape c = point_coordinate_prepare(s, mode, n % 3);
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+        unsigned head;
+
+        save_paired_renderer(s, path, before);
+        point_coordinate_pixels(s, &c, mode, -1, -1, 0, 0);
+        head = ifb_next(s);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset,
+                                    r->value, r->width), ==, MEMTX_OK);
+        ifb_head(s, (head + 1) & 63);
+        point_coordinate_pixels(s, &c, mode, r->x, r->y, 0x13579bdf, 0x411278);
+        save_paired_renderer(s, path, after);
+        point_coordinate_publish(before, r);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        qtest_readl(s, STATUS);
+        qtest_writel(s, DE + 0x1f0, 0xdeadbeef);
+        qtest_writel(s, DE + 0x1f8, 0);
+        point_coordinate_pixels(s, &c, mode, r->x, r->y, 0x13579bdf, 0x411278);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_coordinate_equivalence(void)
+{
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-point-equivalent-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = point_coordinate_machine();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(point_coordinate_starts); n++) {
+        const PointCoordinateStart *r = &point_coordinate_starts[n];
+        uint64_t reference[RENDER_WORDS];
+
+        for (unsigned trigger = 0; trigger < 4; trigger++) {
+            Shape c = point_coordinate_prepare(s, 0x227, 0);
+            SZCase v = sz_case();
+            uint64_t after[RENDER_WORDS];
+            unsigned head;
+
+            sz_initialize(s, &c, v.old);
+            v.draw = 0x411fff;
+            v.stencil = 0x62ff7003;
+            sz_program(s, &v);
+            qtest_writel(s, DE + 0x198, 0x240);
+            if (trigger) {
+                g_assert_cmpint(memtx_write(s, DE + r->offset,
+                    r->value, r->width), ==, MEMTX_OK);
+            }
+            if (trigger == 1) {
+                qtest_writeq(s, DE + 0x1c8, 17 * 4096);
+            } else if (trigger == 2) {
+                qtest_writel(s, DE + 0xd0, 0xdeadbeef);
+            }
+            point_coordinate_pixels(s, &c, 0x227, -1, -1, 0, 0);
+            head = ifb_next(s);
+            if (!trigger) {
+                g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset,
+                    r->value, r->width), ==, MEMTX_OK);
+            } else if (trigger == 1) {
+                g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, v.start), ==,
+                                MEMTX_OK);
+            } else {
+                g_assert_cmpint(memtx_writel(s, DE +
+                    (trigger == 2 ? 0x8d0 : 0x9f0),
+                    trigger == 2 ? v.color : 0xdeadbeef), ==, MEMTX_OK);
+            }
+            ifb_head(s, (head + 1) & 63);
+            point_coordinate_pixels(s, &c, 0x227, r->x, r->y, v.color, v.draw);
+            for (unsigned y = 0; y < 4; y++) {
+                for (unsigned x = 0; x < 4; x++) {
+                    g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                        ==, x == r->x && y == r->y ? 0x54000012 : v.old);
+                }
+            }
+            save_paired_renderer(s, path, after);
+            if (!trigger) {
+                memcpy(reference, after, sizeof(reference));
+            } else {
+                g_assert_cmpmem(reference, sizeof(reference),
+                                after, sizeof(after));
+            }
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_coordinate_once(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-point-once-XXXXXX", NULL);
+    g_autofree char *log = g_build_filename(dir, "errors", NULL);
+    g_autofree char *args = g_strdup_printf("-D %s", log);
+    g_autofree char *contents = NULL;
+    QTestState *s = start_profile_ram("legacy-software", false, true, false,
+                                      args);
+
+    for (unsigned n = 0; n < ARRAY_SIZE(point_coordinate_starts); n++) {
+        const PointCoordinateStart *r = &point_coordinate_starts[n];
+
+        for (unsigned kind = 0; kind < 3; kind++) {
+            Shape c = point_coordinate_prepare(s, 0x227, 0);
+            SZCase v = sz_case();
+            unsigned head;
+
+            sz_initialize(s, &c, v.old);
+            v.draw = 0x41177f;
+            v.stencil = 0x62ff7003;
+            sz_program(s, &v);
+            if (kind == 1) {
+                qtest_writel(s, DE + 0x18, v.draw | 0x80);
+                qtest_writel(s, DE + 0x1b8, 0);
+                tile(s, 0, 0, 0x7fff);
+            } else if (kind == 2) {
+                qtest_writeq(s, RE + 0x1000, 0x7fff000000000000ULL);
+            }
+            head = ifb_next(s);
+            g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset,
+                r->value, r->width), ==, MEMTX_OK);
+            ifb_head(s, (head + 1) & 63);
+            point_coordinate_pixels(s, &c, 0x227,
+                kind ? -1 : (int)r->x, r->y, v.color, v.draw);
+            for (unsigned y = 0; y < 4; y++) {
+                for (unsigned x = 0; x < 4; x++) {
+                    g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                        ==, x == r->x && y == r->y ? 0x54000012 : v.old);
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, NULL));
+    {
+        g_auto(GStrv) summaries = g_strsplit(contents,
+            "point suppressed 1 invalid destination fragments", -1);
+
+        g_assert_cmpuint(g_strv_length(summaries), ==, 10);
+    }
+    g_unlink(log);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_coordinate_dormant(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-point-dormant-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = point_coordinate_machine();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(point_coordinate_starts); n++) {
+        const PointCoordinateStart *r = &point_coordinate_starts[n];
+        Shape c;
+
+        if (r->offset == 0x80 || r->offset == 0x84) {
+            continue;
+        }
+        c = point_coordinate_prepare(s, 0x228, 0);
+        sz_initialize(s, &c, 0x53000011);
+        qtest_writeq(s, DE + 0x88, 0x480400c048040080ULL);
+        qtest_writeq(s, DE + 0x90, 0x4804004048040000ULL);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset,
+            r->value, r->width), ==, MEMTX_OK);
+        point_coordinate_pixels(s, &c, 0x228, 1, 2, 0x13579bdf, 0x411278);
+        qtest_writel(s, DE + 0x60, r->offset < 0x90 ? 0x01000000 : 0x02020000);
+        qtest_writel(s, DE + 0x18, 0x400278);
+        point_coordinate_failure(s, &c, path, DE + 0x9f0, 0, 4);
+        qtest_writeq(s, DE + 0x88, 0x480400c048040080ULL);
+        qtest_writeq(s, DE + 0x90, 0x4804004048040000ULL);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_coordinate_boundaries(void)
+{
+    const struct {
+        int x64, y64, ox, oy, x, y;
+    } vectors[] = {
+        { 31, 32, -4096, -4096, 0, 0 },
+        { 32, 33, -4096, -4096, 1, 1 },
+        { -32, -31, -4096, -4096, 0, 0 },
+        { -33, -32, -4096, -4096, -1, -1 },
+        { 2047 * 64 + 31, 2047 * 64 + 32, 0, 0, 2047, 2047 },
+        { 2047 * 64 + 32, 2047 * 64 + 33, 0, 0, 2048, 2048 },
+        { 90, 153, 0, 0, 1, 2 },
+        { 90, 153, 1, 2, 1, 2 },
+        { 84 * 64 + 31, 84 * 64 + 32, -4064, -4064, 84, 84 },
+    };
+    const uint32_t prefixes[] = { 0, 0x00800000, 0x48000000 };
+    QTestState *s = point_coordinate_machine();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(point_coordinate_starts); n++) {
+        for (unsigned v = 0; v < ARRAY_SIZE(vectors); v++) {
+            for (unsigned clip = 0; clip < 3; clip++) {
+                const PointCoordinateStart *r = &point_coordinate_starts[n];
+                uint32_t prefix = prefixes[v % 3];
+                uint32_t raw_x = prefix + (int64_t)vectors[v].x64 -
+                                 64 * (int64_t)vectors[v].ox;
+                uint32_t raw_y = prefix + (int64_t)vectors[v].y64 -
+                                 64 * (int64_t)vectors[v].oy;
+                uint64_t value = r->offset == 0x80 ? raw_x :
+                                 r->offset == 0x84 ? raw_y : r->value;
+                Shape c = point_coordinate_prepare(s, 0x228, 0);
+                uint32_t expected[16];
+                bool visible = clip != 1;
+
+                c.x = vectors[v].x >= 2047 ? 2044 :
+                      vectors[v].x >= 84 ? 83 : 0;
+                c.y = vectors[v].y >= 2047 ? 2044 :
+                      vectors[v].y >= 84 ? 83 : 0;
+                map_region(s, 0, 4, c.x, c.y, c.x + 3, c.y + 3);
+                shape_memory(s, &c, NULL);
+                gl_point_vertex(s, vectors[v].x64, vectors[v].y64,
+                                vectors[v].ox, vectors[v].oy, prefix);
+                if (r->offset == 0x80 && r->width == 8) {
+                    value = (uint64_t)raw_x << 32 | raw_y;
+                    qtest_writeq(s, DE + 0x80, 0);
+                } else if (r->offset <= 0x84) {
+                    qtest_writel(s, DE + r->offset, 0);
+                }
+                if (clip == 1) {
+                    int wx = vectors[v].x - vectors[v].ox;
+                    int wy = vectors[v].y - vectors[v].oy;
+
+                    qtest_writel(s, DE + 0x18, 0x511278);
+                    qtest_writeq(s, DE + 0x48,
+                                bounds(wx + 1, wy, wx + 2, wy + 1));
+                } else if (clip == 2) {
+                    qtest_writel(s, DE + 0x10, 0x63);
+                    qtest_writeq(s, DE + 0x20, bounds(0, 0, 2048, 2048));
+                    qtest_writeq(s, DE + 0x28, bounds(0, 0, 2048, 2048));
+                }
+                for (unsigned y = 0; y < 4; y++) {
+                    for (unsigned x = 0; x < 4; x++) {
+                        expected[4 * y + x] = c.old ^
+                            (visible && (int)(c.x + x) == vectors[v].x &&
+                             (int)(c.y + y) == vectors[v].y ? 0x13579bdf : 0);
+                    }
+                }
+                g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset,
+                                            value, r->width), ==, MEMTX_OK);
+                shape_memory(s, &c, expected);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_point_coordinate_failures(gconstpointer selection)
+{
+    const struct {
+        unsigned offset, width;
+        uint64_t value;
+    } faults[] = {
+        { 0x60, 4, 1 }, { 0x60, 4, 0x80000 },
+        { 0x18, 4, 0x513fff }, { 0x18, 4, 0x515fff },
+        { 0x18, 4, 0x519fff }, { 0x18, 4, 0x531fff },
+        { 8, 4, 0x234 }, { 8, 4, 0x328 }, { 8, 4, 0x1228 },
+        { 0x80, 4, 0x480c0400 }, { 0x84, 4, 0x80000 },
+        { 0x10, 4, 0x800 }, { 0x10, 4, 0x41 },
+        { 0x20, 8, 0x0002000200010003ULL },
+        { 0x48, 8, 0x0002000200010003ULL },
+        { 0x1a8, 4, 0x500 }, { 0x1a8, 4, 0xd0 },
+        { 0x1a8, 4, 0xc }, { 0x1a8, 4, 0x1000 },
+        { 0x198, 4, 0x800 }, { 0x198, 4, 0x1000 },
+        { 0x1c8, 8, (UINT64_C(1) << 36) + 1 },
+        { 0x1c8, 8, -(UINT64_C(1) << 36) - 1 },
+        { 0x1d0, 8, 1 }, { 0x1d8, 8, UINT64_MAX },
+        { 0x1c0, 4, 0x10000000 }, { 0x1e0, 4, 0x62ff7006 },
+        { 0x1e8, 4, 0x100 }, { 0x1c0, 4, 0x01000000 },
+        { 0x1b0, 4, 16 },
+    };
+    unsigned hidden = GPOINTER_TO_UINT(selection);
+    g_autofree char *dir = g_dir_make_tmp("crime-coordinate-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = point_coordinate_machine();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(faults); n++) {
+        const PointCoordinateStart *r = &point_coordinate_starts[
+            faults[n].offset == 0x80 || faults[n].offset == 0x84 ? 8 : n % 9];
+        Shape c = point_coordinate_prepare(s, 0x227, 0);
+        SZCase v = sz_case();
+
+        sz_initialize(s, &c, v.old);
+        v.draw = 0x511fff;
+        v.plane = hidden ? UINT32_MAX : 0;
+        sz_program(s, &v);
+        qtest_writel(s, DE + 0x198, hidden == 2 ? 0 : 0x740);
+        qtest_writeq(s, DE + 0x48, bounds(0, 0, 8192, 8192));
+        qtest_writel(s, DE + 0x10, 0x21);
+        qtest_writeq(s, DE + 0x20, bounds(0, 0, 4, 4));
+        if (hidden == 1) {
+            qtest_writeq(s, DE + 0x20, bounds(10, 10, 11, 11));
+        }
+        g_assert_cmpint(memtx_write(s, DE + faults[n].offset,
+            faults[n].value, faults[n].width), ==, MEMTX_OK);
+        point_coordinate_failure(s, &c, path, DE + 0x800 + r->offset,
+                                 r->value, r->width);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_coordinate_atomic(void)
+{
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-coordinate-atomic-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = point_coordinate_machine();
+
+    for (unsigned kind = 0; kind < 4; kind++) {
+        Shape c = point_coordinate_prepare(s, 0x228, 0);
+        PointCoordinateStart r = point_coordinate_starts[kind == 3 ? 8 : 6];
+
+        sz_initialize(s, &c, 0x53000011);
+        if (!kind) {
+            r.value = 0x4804009f7fc01234ULL;
+        } else if (kind == 1) {
+            r = point_coordinate_starts[0];
+            qtest_writel(s, DE + 0x84, 0x7fc01234);
+        } else {
+            if (kind == 2) {
+                r = point_coordinate_starts[1];
+            }
+            qtest_writel(s, DE + 0x80, 0x7fc01234);
+        }
+        point_coordinate_failure(s, &c, path, DE + 0x800 + r.offset,
+                                 r.value, r.width);
+        if (kind == 1) {
+            qtest_writel(s, DE + 0x84, 0x48040099);
+        } else if (kind >= 2) {
+            qtest_writel(s, DE + 0x80, 0x4804005a);
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        point_coordinate_pixels(s, &c, 0x228, 1, 2, 0x13579bdf, 0x411278);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_coordinate_mapping_failures(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-coordinate-map-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = point_coordinate_machine();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(point_coordinate_starts); n++) {
+        const PointCoordinateStart *r = &point_coordinate_starts[n];
+
+        for (unsigned kind = 0; kind < 3; kind++) {
+            Shape c = point_coordinate_prepare(s, 0x228, 0);
+            SZCase v = sz_case();
+
+            sz_initialize(s, &c, v.old);
+            v.draw = 0x41177f;
+            v.stencil = 0x62ff7003;
+            sz_program(s, &v);
+            if (!kind) {
+                tile(s, 0, 0, 0x400);
+            } else if (kind == 1) {
+                qtest_writeq(s, RE + 0x1000, 0x7fff000000000000ULL);
+                qtest_writeq(s, RE + 0x1400, 0);
+            } else {
+                tile(s, 0, 0, 0x4000 | page_for(0, 0));
+                tile(s, 2, 0, page_for(0, 0));
+            }
+            point_coordinate_failure(s, &c, path, DE + 0x800 + r->offset,
+                                     r->value, r->width);
+            tile(s, 0, 0, page_for(0, 0));
+            tile(s, 2, 0, page_for(2, 0));
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            point_coordinate_pixels(s, &c, 0x228, 1, 2, v.color, v.draw);
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_coordinate_widths(void)
+{
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-coordinate-width-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = point_coordinate_machine();
+    Shape c = point_coordinate_prepare(s, 0x228, 0);
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    IfbSnapshot a, b;
+
+    sz_initialize(s, &c, 0x53000011);
+    save_paired_renderer(s, path, before);
+    ifb_snapshot(s, &a);
+    for (unsigned offset = 0x80; offset <= 0x94; offset += 4) {
+        for (unsigned size = 1; size <= 8; size *= 2) {
+            uint64_t value;
+
+            g_assert_cmpint(memtx_read(s, DE + 0x800 + offset,
+                                       &value, size), !=, MEMTX_OK);
+            g_assert_cmpint(memtx_read(s, DE + offset, &value, size), !=,
+                            MEMTX_OK);
+            if (size < 4 || (size == 8 && (offset & 7))) {
+                point_coordinate_failure(s, &c, path, DE + 0x800 + offset,
+                                          UINT64_MAX, size);
+            }
+        }
+        for (unsigned delta = 1; delta < 4; delta++) {
+            point_coordinate_failure(s, &c, path, DE + 0x800 + offset + delta,
+                                      UINT32_MAX, 4);
+        }
+        if (!(offset & 7)) {
+            for (unsigned delta = 1; delta < 8; delta++) {
+                point_coordinate_failure(s, &c, path,
+                    DE + 0x800 + offset + delta, UINT64_MAX, 8);
+            }
+        }
+    }
+    point_coordinate_failure(s, &c, path, DE + 0x87c, UINT64_MAX, 8);
+    point_coordinate_failure(s, &c, path, DE + 0x898, UINT32_MAX, 4);
+    save_paired_renderer(s, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    ifb_snapshot(s, &b);
+    g_assert_cmpmem(&a, sizeof(a), &b, sizeof(b));
+    {
+        g_autoptr(QDict) reply = qtest_qmp(s,
+            "{'execute':'qom-set','arguments':{'path':%s,'property':'request',"
+            "'value':'store -1 0x15002880 00000000000000000000000000000000'}}",
+            MEMTX_TEST_PATH);
+
+        /* The existing scalar test interface refuses 16 bytes before MMIO. */
+        g_assert_true(qdict_haskey(reply, "error"));
+        g_assert_nonnull(strstr(qdict_get_str(qdict_get_qdict(reply, "error"),
+            "desc"), "Transaction size must be 1, 2, 4 or 8 bytes"));
+    }
+    ifb_snapshot(s, &b);
+    g_assert_cmpmem(&a, sizeof(a), &b, sizeof(b));
+    save_paired_renderer(s, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    point_coordinate_pixels(s, &c, 0x228, -1, -1, 0, 0);
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_coordinate_other_consumers(void)
+{
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-coordinate-consumer-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = point_coordinate_machine();
+
+    for (unsigned kind = 0; kind < 5; kind++) {
+        for (unsigned n = 0; n < ARRAY_SIZE(point_coordinate_starts); n++) {
+            const PointCoordinateStart *r = &point_coordinate_starts[n];
+            Shape c = pipeline_prepare(s, 0x228, 0);
+
+            sz_initialize(s, &c, 0x53000011);
+            if (kind == 0) {
+                setup(s, 0x228, false);
+                qtest_writel(s, DE + 0x60, 0);
+                qtest_writel(s, DE + 0x70, xy(1, 2));
+            } else if (kind == 1) {
+                c = gl_line_prepare(s, false);
+            } else if (kind == 3) {
+                c = gl_rectangle_prepare(s, 0x228, 0);
+            } else if (kind == 4) {
+                gl_transfer_probe(s, 2);
+            }
+            uint64_t raw[RENDER_WORDS], value;
+
+            save_paired_renderer(s, path, raw);
+            value = raw[192 + r->offset / 4];
+            if (r->width == 8) {
+                value = value << 32 | raw[192 + r->offset / 4 + 1];
+            }
+            point_coordinate_failure(s, &c, path, DE + 0x800 + r->offset,
+                                     value, r->width);
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_coordinate_profiles(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        QTestState *s = start_profile(legacy ? "legacy-software" : "1.5",
+                                      false, !legacy, "");
+
+        qtest_memset(s, 0x30000, 0x5a, 16);
+        for (unsigned n = 0; n < ARRAY_SIZE(point_coordinate_starts); n++) {
+            const PointCoordinateStart *r = &point_coordinate_starts[n];
+
+            g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset,
+                                        r->value, r->width), !=, MEMTX_OK);
+            g_assert_cmphex(qtest_readq(s, 0x30000), ==, 0x5a5a5a5a5a5a5a5aULL);
+            g_assert_cmphex(qtest_readq(s, 0x30008), ==, 0x5a5a5a5a5a5a5a5aULL);
+        }
+        qtest_quit(s);
+    }
+}
+
+static void test_gl_point_coordinate_migration(gconstpointer selection)
+{
+    bool committed = GPOINTER_TO_UINT(selection);
+    g_autofree char *dir = g_dir_make_tmp("crime-coordinate-save-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned n = 0; n < ARRAY_SIZE(point_coordinate_starts); n++) {
+        const PointCoordinateStart *r = &point_coordinate_starts[n];
+        QTestState *from = start(), *to = start_options("-incoming defer");
+        Shape c = point_coordinate_prepare(from, 0x228, 0);
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+        uint32_t expected[16];
+
+        if (committed) {
+            g_assert_cmpint(memtx_write(from, DE + 0x800 + r->offset,
+                r->value, r->width), ==, MEMTX_OK);
+        }
+        save_paired_renderer(from, path, before);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        sgi_migrate_stopped(from, uri);
+        sgi_wait_migration(to, "completed");
+        save_paired_renderer(to, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        point_coordinate_pixels(to, &c, 0x228,
+            committed ? (int)r->x : -1, r->y, 0x13579bdf, 0x411278);
+        if (!committed) {
+            g_assert_cmpint(memtx_write(to, DE + 0x800 + r->offset,
+                r->value, r->width), ==, MEMTX_OK);
+            point_coordinate_pixels(to, &c, 0x228,
+                                     r->x, r->y, 0x13579bdf, 0x411278);
+        }
+        g_assert_cmpint(memtx_writel(to, DE + 0x9f0, 0), ==, MEMTX_OK);
+        for (unsigned i = 0; i < 16; i++) {
+            expected[i] = c.old;
+        }
+        shape_memory(to, &c, expected);
+        qtest_system_reset(to);
+        shape_memory(to, &c, expected);
+        save_paired_renderer(to, path, after);
+        for (unsigned i = 0; i < RENDER_WORDS; i++) {
+            g_assert_cmphex(after[i], ==, 0);
+        }
+        qtest_quit(from);
+        qtest_quit(to);
+        g_unlink(sock);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_coordinate_active(void)
+{
+    const struct {
+        unsigned offset, width, x, y;
+        uint64_t value;
+    } vectors[] = {
+        { 0x880, 4, 85, 84, 0x48040d5a },
+        { 0x884, 4, 84, 87, 0x48040dd9 },
+        { 0x880, 8, 85, 87, 0x48040d5a48040dd9ULL },
+    };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(vectors); n++) {
+        Shape c = gl_point_prepare(s, 0x228, 0);
+        uint32_t expected[35];
+
+        c.x = c.y = 83;
+        c.width = 5;
+        c.height = 7;
+        shape_memory(s, &c, NULL);
+        qtest_writel(s, DE + 0x18, 0x411278);
+        qtest_writel(s, DE + 0x1b0, 6);
+        qtest_writel(s, DE + 0xd0, 0x13579bdf);
+        qtest_writel(s, DE + 0x58, 0xf020f020);
+        qtest_writeq(s, DE + 0x80, 0x48040d1a48040d19ULL);
+        for (unsigned y = 0; y < c.height; y++) {
+            for (unsigned x = 0; x < c.width; x++) {
+                expected[y * c.width + x] = c.old ^
+                    (c.x + x == vectors[n].x && c.y + y == vectors[n].y ?
+                     0x13579bdf : 0);
+            }
+        }
+        g_assert_cmpint(memtx_write(s, DE + vectors[n].offset,
+            vectors[n].value, vectors[n].width), ==, MEMTX_OK);
         shape_memory(s, &c, expected);
     }
     qtest_quit(s);
@@ -18750,5 +19439,37 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(8), test_gl_point_output);
     add_data_case("sgi/crime/render/gl-point/output/9",
                   GUINT_TO_POINTER(9), test_gl_point_output);
+    add_case("sgi/crime/render/gl-point-coordinate/active",
+             test_gl_point_coordinate_active);
+    add_case("sgi/crime/render/gl-point-coordinate/matrix",
+             test_gl_point_coordinate_matrix);
+    add_case("sgi/crime/render/gl-point-coordinate/equivalence",
+             test_gl_point_coordinate_equivalence);
+    add_case("sgi/crime/render/gl-point-coordinate/once",
+             test_gl_point_coordinate_once);
+    add_case("sgi/crime/render/gl-point-coordinate/dormant",
+             test_gl_point_coordinate_dormant);
+    add_case("sgi/crime/render/gl-point-coordinate/boundaries",
+             test_gl_point_coordinate_boundaries);
+    add_case("sgi/crime/render/gl-point-coordinate/atomic",
+             test_gl_point_coordinate_atomic);
+    add_case("sgi/crime/render/gl-point-coordinate/mapping-failures",
+             test_gl_point_coordinate_mapping_failures);
+    add_case("sgi/crime/render/gl-point-coordinate/widths",
+             test_gl_point_coordinate_widths);
+    add_case("sgi/crime/render/gl-point-coordinate/other-consumers",
+             test_gl_point_coordinate_other_consumers);
+    add_case("sgi/crime/render/gl-point-coordinate/profiles",
+             test_gl_point_coordinate_profiles);
+    add_data_case("sgi/crime/render/gl-point-coordinate/failures/masked",
+                  GUINT_TO_POINTER(0), test_gl_point_coordinate_failures);
+    add_data_case("sgi/crime/render/gl-point-coordinate/failures/clipped",
+                  GUINT_TO_POINTER(1), test_gl_point_coordinate_failures);
+    add_data_case("sgi/crime/render/gl-point-coordinate/failures/alpha-never",
+                  GUINT_TO_POINTER(2), test_gl_point_coordinate_failures);
+    add_data_case("sgi/crime/render/gl-point-coordinate/migration/setup",
+                  GUINT_TO_POINTER(0), test_gl_point_coordinate_migration);
+    add_data_case("sgi/crime/render/gl-point-coordinate/migration/committed",
+                  GUINT_TO_POINTER(1), test_gl_point_coordinate_migration);
     return g_test_run();
 }
