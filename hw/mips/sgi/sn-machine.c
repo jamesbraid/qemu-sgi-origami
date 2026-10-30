@@ -11332,7 +11332,8 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
                                   sgi_machine_set_l1_revision);
     object_class_property_set_description(oc, "l1-revision",
         "Override the catalogue's L1 firmware revision, as decimal "
-        "major.minor.patch, for every node L1.");
+        "major.minor.patch, for every node L1 and every Origin 3000 I-brick "
+        "and N-brick L1; a V-brick's L1 takes none.");
 
     object_class_property_add(oc, "bedrock-revision", "uint8",
                               sgi_machine_get_bedrock_revision,

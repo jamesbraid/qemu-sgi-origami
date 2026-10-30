@@ -311,7 +311,8 @@ captured controller output.
        letter is the model's choice.
    * - The machine configures firmware revision 1.44.0 on every C-brick,
        I-brick and N-brick L1 for request ``0x0005``, and the machine's
-       ``l1-revision`` replaces it. ``version`` prints the number as ``L1
+       ``l1-revision`` replaces it; neither reaches a V-brick's L1, which
+       takes no revision. ``version`` prints the number as ``L1
        1.44.0 (Image EMU-UNKNOWN)``, naming no image bank or product image.
      - established for the firmware; inferred for a fitted brick
      - Every brick image packaged in the IRIX 6.5.30 L1 firmware composite
