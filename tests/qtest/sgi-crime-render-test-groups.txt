@@ -409,3 +409,5 @@ gl-line-composed-lengths /mips64/sgi/crime/render/gl-line/composed-lengths
 gl-line-composed-allocation /mips64/sgi/crime/render/gl-line/composed-allocation
 gl-line-composed-alpha /mips64/sgi/crime/render/gl-line/composed-alpha
 gl-line-composed-depth-bounds /mips64/sgi/crime/render/gl-line/composed-depth-bounds
+gl-line-coordinate-refusals-plain /mips64/sgi/crime/render/gl-line/coordinate-refusals/plain
+gl-line-coordinate-refusals-composed /mips64/sgi/crime/render/gl-line/coordinate-refusals/composed
