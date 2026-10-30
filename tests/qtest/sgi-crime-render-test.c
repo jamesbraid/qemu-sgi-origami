@@ -8194,7 +8194,15 @@ static void test_alpha_admission(void)
         }
         c.draw |= 1U << bit;
         alpha_prepare(s, &c, 0);
-        alpha_failure(s, &c, path, DE + 0x9f0, 0, 4);
+        if (bit == 22) {
+            g_autofree uint32_t *expected = alpha_expected(&c, false);
+
+            /* Native GL rectangles can now consume foreground alpha. */
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            shape_memory(s, &c, expected);
+        } else {
+            alpha_failure(s, &c, path, DE + 0x9f0, 0, 4);
+        }
     }
     for (unsigned primitive = 1; primitive <= 3; primitive++) {
         Shape c = alpha_shape();
@@ -12266,8 +12274,8 @@ static void test_sz_rect_controls(void)
         0x228, 0x218, 0x124, 0x224, 0x225, 0x226, 0x227,
     };
     const unsigned unsupported[] = {
-        0x8, 0x10, 0x20, 0x40, 0x100, 0x200, 0x400, 0x800,
-        0x1000, 0x2000, 0x4000, 0x8000, 0x200000,
+        0x2000, 0x4000, 0x8000, 0x20000, 0x40000, 0x80000,
+        0x200000, 0x800000,
     };
     g_autofree char *dir = g_dir_make_tmp("crime-sz-rect-state-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "state", NULL);
@@ -16706,6 +16714,1427 @@ static void test_shade_start_family(void)
     g_rmdir(dir);
 }
 
+static const unsigned gl_rectangle_modes[] = {
+    0x228, 0x229, 0x218, 0x219, 0x124,
+    0x125, 0x224, 0x225, 0x226, 0x227,
+};
+
+static Shape gl_rectangle_prepare(QTestState *s, unsigned mode, unsigned bank)
+{
+    Shape c = pipeline_prepare(s, mode, bank);
+
+    sz_rectangle(s, 2, 0, 0, 3, 3);
+    qtest_writel(s, DE, UINT32_MAX);
+    qtest_writel(s, DE + 0x50, UINT32_MAX);
+    qtest_writeq(s, DE + 0x70, UINT64_MAX);
+    qtest_writeq(s, DE + 0x90, UINT64_MAX);
+    for (unsigned offset = 0xe0; offset <= 0x108; offset += 8) {
+        qtest_writeq(s, DE + offset, UINT64_MAX);
+    }
+    qtest_writeq(s, DE + 0x190, UINT64_MAX);
+    qtest_writel(s, DE + 0x198, UINT32_MAX);
+    qtest_writel(s, DE + 0x1b8, 0);
+    return c;
+}
+
+static void test_gl_rectangle_geometry(void)
+{
+    const uint32_t prefixes[] = { 0, 0x00800000, 0x48000000 };
+    const int origins[] = { -4096, 0, 2 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned direction = 0; direction < 4; direction++) {
+        for (unsigned form = 0; form < 3; form++) {
+            for (unsigned o = 0; o < 3; o++) {
+                Shape c = gl_rectangle_prepare(s, 0x228, 0);
+                unsigned base = origins[o] < 0 ? 4096 : 0;
+                unsigned low = base + origins[o] + 1, high = low + 2;
+                unsigned x0 = base + (direction & 1 ? 3 : 1);
+                unsigned x1 = base + (direction & 1 ? 1 : 3);
+                unsigned y0 = base + (direction & 2 ? 1 : 3);
+                unsigned y1 = base + (direction & 2 ? 3 : 1);
+                uint32_t expected[64];
+                uint64_t scissor = bounds(base + 1, base + 2,
+                                           base + 3, base + 4);
+                uint64_t a = bounds(low, low, low + 2, high + 1);
+                uint64_t b = bounds(low + 1, low, high + 1, high + 1);
+
+                c.width = c.height = 8;
+                map_region(s, 0, 4, 0, 0, 7, 7);
+                shape_memory(s, &c, NULL);
+                qtest_writel(s, DE + 0x60, 0x03000000 | direction << 16);
+                qtest_writel(s, DE + 0x58,
+                            xy((uint16_t)origins[o], (uint16_t)origins[o]));
+                qtest_writeq(s, DE + 0x80,
+                    (uint64_t)(prefixes[form] + x0 * 64) << 32 |
+                    (prefixes[form] + y0 * 64));
+                qtest_writeq(s, DE + 0x88,
+                    (uint64_t)(prefixes[form] + x1 * 64) << 32 |
+                    (prefixes[form] + y1 * 64));
+                qtest_writel(s, DE + 0x18, 0x511278);
+                qtest_writel(s, DE + 0xd0, 0x13579bdf);
+                qtest_writel(s, DE + 0x1b0, 6);
+                qtest_writel(s, DE + 0x10, 0x63);
+                qtest_writeq(s, DE + 0x20, a);
+                qtest_writeq(s, DE + 0x28, b);
+                qtest_writeq(s, DE + 0x48, scissor);
+                for (unsigned y = 0; y < 8; y++) {
+                    for (unsigned x = 0; x < 8; x++) {
+                        bool covered = x >= low && x <= high &&
+                            y >= low && y <= high &&
+                            inside_bounds(scissor, x - origins[o],
+                                          y - origins[o]) &&
+                            (inside_bounds(a, x, y) || inside_bounds(b, x, y));
+
+                        expected[8 * y + x] = c.old ^
+                            (covered ? 0x13579bdf : 0);
+                    }
+                }
+                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+                shape_memory(s, &c, expected);
+            }
+        }
+    }
+    for (unsigned direction = 0; direction < 4; direction++) {
+        Shape c = gl_rectangle_prepare(s, 0x228, 0);
+        uint32_t expected[16];
+
+        sz_rectangle(s, direction, 1, 2, 1, 2);
+        qtest_writel(s, DE + 0xd0, 0x13579bdf);
+        for (unsigned i = 0; i < 16; i++) {
+            expected[i] = i == 9 ? 0x13579bdf : c.old;
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+    }
+    /* Clip each framebuffer edge after composing a signed origin. */
+    for (unsigned corner = 0; corner < 4; corner++) {
+        Shape c = gl_rectangle_prepare(s, 0x228, 0);
+        int lo_x = corner & 1 ? 2045 : -1;
+        int lo_y = corner & 2 ? 2045 : -1;
+        uint32_t expected[16];
+
+        c.x = corner & 1 ? 2044 : 0;
+        c.y = corner & 2 ? 2044 : 0;
+        map_region(s, 0, 4, c.x, c.y, c.x + 3, c.y + 3);
+        shape_memory(s, &c, NULL);
+        qtest_writel(s, DE + 0x58, 0xf000f000);
+        sz_rectangle(s, 2, lo_x + 4096, lo_y + 4096,
+                     lo_x + 4101, lo_y + 4101);
+        qtest_writel(s, DE + 0xd0, 0x13579bdf);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                expected[4 * y + x] = (int)(c.x + x) >= lo_x &&
+                    (int)(c.x + x) <= lo_x + 5 &&
+                    (int)(c.y + y) >= lo_y &&
+                    (int)(c.y + y) <= lo_y + 5 ? 0x13579bdf : c.old;
+            }
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_rectangle_output(gconstpointer selection)
+{
+    unsigned mode = gl_rectangle_modes[GPOINTER_TO_UINT(selection)];
+    QTestState *s = start_indexed_state();
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned logic = 0; logic < 16; logic++) {
+            for (unsigned lanes = 0; lanes < 16; lanes++) {
+                unsigned upper = logic & 4 ? 0xffffe000U : 0;
+                Shape c = gl_rectangle_prepare(s, mode | upper, bank);
+                unsigned draw = 0x400280 | lanes << 3 |
+                    (logic & 1 ? 0x1000 : 0) |
+                    (logic & 2 ? 0x10000 : 0) |
+                    (lanes & 1 ? 0x100 : 0) |
+                    (lanes & 2 ? 0x400 : 0) | (logic & 4 ? 2 : 0);
+                unsigned function = ((logic + lanes) % 5) << 8 |
+                    (logic % 13) << 4 | lanes % 12;
+                uint32_t plane = lanes & 4 ? 0xa579b3e1 : UINT32_MAX;
+
+                if (!(draw & 0x400)) {
+                    function = UINT32_MAX;
+                }
+                pipeline_check(s, &c, mode, 0x13579b80, 0x9b2371d6,
+                               function, draw, logic, plane);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_rectangle_alpha(void)
+{
+    const unsigned alphas[] = { 0, 1, 127, 254, 255 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned m = 0; m < ARRAY_SIZE(gl_rectangle_modes); m++) {
+        for (unsigned function = 0; function < 8; function++) {
+            for (unsigned a = 0; a < ARRAY_SIZE(alphas); a++) {
+                for (unsigned r = 0; r < 3; r++) {
+                    unsigned mode = gl_rectangle_modes[m];
+                    Shape c = gl_rectangle_prepare(s, mode, m % 3);
+                    unsigned reference = r == 0 ? 0 : r == 1 ? alphas[a] : 255;
+                    bool pass = sz_reference_compare(function, alphas[a],
+                                                      reference);
+                    unsigned draw = 0x411d78;
+                    uint32_t source = 0x13579b00 | alphas[a], expected[16];
+
+                    qtest_writel(s, DE + 0x18, draw);
+                    qtest_writel(s, DE + 0x198, function << 8 | reference);
+                    qtest_writel(s, DE + 0x1a8, 0x45);
+                    qtest_writel(s, DE + 0xd0, source);
+                    if (!pass) {
+                        tile(s, m % 3, 0, 0x7fff);
+                    }
+                    for (unsigned y = 0; y < 4; y++) {
+                        for (unsigned x = 0; x < 4; x++) {
+                            expected[4 * y + x] = pass ? pipeline_reference(
+                                mode, source, c.old, 0, 0x45, draw,
+                                3, UINT32_MAX, x, y) : c.old;
+                        }
+                    }
+                    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==,
+                                    MEMTX_OK);
+                    shape_memory(s, &c, expected);
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_rectangle_sz(void)
+{
+    QTestState *s = start_indexed_state();
+    SZCase v = sz_case();
+
+    v.rectangle = true;
+    for (unsigned function = 0; function < 8; function++) {
+        for (unsigned value = 16; value <= 18; value++) {
+            v.draw = 0x41177f;
+            v.mode = gl_rectangle_modes[(function + value) % 10];
+            v.bank = function % 2;
+            v.control = function << 25;
+            v.start = value * 4096;
+            v.stencil = 0x62ff7003;
+            sz_run(s, &v);
+        }
+    }
+    for (unsigned outcome = 0; outcome < 3; outcome++) {
+        for (unsigned operation = 0; operation < 6; operation++) {
+            for (unsigned old = 0; old < 3; old++) {
+                v.draw = 0x41177f;
+                v.control = (outcome == 1 ? 0 : 7) << 25;
+                v.old = (old == 0 ? 0 : old == 1 ? 0x53 : 255) << 24 | 17;
+                v.stencil = 0x62ff0000 | (outcome == 0 ? 0 : 7) << 12 |
+                    operation << 8 | operation << 4 | operation;
+                v.mask = 0x5a;
+                sz_run(s, &v);
+            }
+        }
+    }
+    v = sz_case();
+    v.rectangle = true;
+    v.draw = 0x41177f;
+    for (unsigned function = 5; function <= 7; function += 2) {
+        for (unsigned materialize = 0; materialize < 2; materialize++) {
+            for (unsigned write = 0; write < 2; write++) {
+                for (unsigned pass = 0; pass < 2; pass++) {
+                    for (unsigned equal = 0; equal < 2; equal++) {
+                        v.draw = (v.draw & ~2U) | write << 1;
+                        v.mask = write ? 255 : 0;
+                        v.control = (pass ? 7 : 0) << 25 | 0x01000010;
+                        v.stencil = 0x62ff0002 | function << 12 |
+                                    (materialize ? 0x20 : 0);
+                        v.old = (equal ? 0x62 : 0x53) << 24 | 17;
+                        sz_run(s, &v);
+                    }
+                }
+            }
+        }
+    }
+    for (unsigned edge = 0; edge < 2; edge++) {
+        v = sz_case();
+        v.rectangle = true;
+        v.draw = 0x41177f;
+        v.start = edge ? INT64_C(1) << 36 : -(INT64_C(1) << 36);
+        sz_run(s, &v);
+    }
+    v = sz_case();
+    v.rectangle = true;
+    v.draw = 0x411fff;
+    qtest_writel(s, DE + 0x198, 0x240);
+    sz_run(s, &v);
+    /* Stencil alone never consumes the full-width dormant Z plane. */
+    {
+        Shape c = gl_rectangle_prepare(s, 0x227, 0);
+        uint32_t expected[16];
+
+        sz_initialize(s, &c, 0x53000011);
+        v.draw = 0x411379;
+        v.control = 0xfeffffff;
+        v.stencil = 0x62ff7003;
+        v.start = INT64_MIN;
+        v.dx = INT64_MAX;
+        v.dy = -1;
+        sz_program(s, &v);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                expected[4 * y + x] = pipeline_reference(0x227, v.color,
+                    c.old, 0, 0x45, v.draw, 6, v.plane, x, y);
+            }
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+        g_assert_cmphex(pixel_read(s, pixel_address(2, 1, 1, 4), 4), ==,
+                        0x54000011);
+    }
+    /* NEVER alpha precedes strict SZ access, but cannot hide bad Z state. */
+    {
+        Shape c = gl_rectangle_prepare(s, 0x227, 0);
+        uint32_t expected[16];
+
+        sz_initialize(s, &c, 0x53000011);
+        v = sz_case();
+        v.draw = 0x411fff;
+        sz_program(s, &v);
+        qtest_writel(s, DE + 0x198, 0);
+        qtest_writeq(s, RE + 0x1400, 0);
+        tile(s, 0, 0, 0x7fff);
+        for (unsigned i = 0; i < 16; i++) {
+            expected[i] = c.old;
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+        g_assert_cmphex(pixel_read(s, pixel_address(2, 1, 1, 4), 4), ==,
+                        0x53000011);
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_rectangle_failures(void)
+{
+    const unsigned unsupported[] = {
+        0x2000, 0x4000, 0x8000, 0x20000, 0x40000, 0x80000,
+        0x200000, 0x800000, 0x1000000, 0x80000000,
+    };
+    const Register triggers[] = {
+        { 0x8d0, 4 }, { 0x870, 8 }, { 0x8a8, 8 }, { 0x8c0, 8 },
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-rect-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned bad = 0; bad < 28 + ARRAY_SIZE(unsupported); bad++) {
+        Shape c = gl_rectangle_prepare(s, 0x227, 0);
+        SZCase v = sz_case();
+
+        v.draw = 0x511fff;
+        v.plane = 0;
+        sz_initialize(s, &c, v.old);
+        sz_program(s, &v);
+        qtest_writel(s, DE + 0x198, 0);
+        qtest_writeq(s, DE + 0x48, bounds(10, 10, 11, 11));
+        switch (bad) {
+        case 0:
+            qtest_writel(s, DE + 8, 0x234);
+            break;
+        case 1:
+            qtest_writel(s, DE + 8, 0x328);
+            break;
+        case 2:
+            qtest_writel(s, DE + 0x60, 0x03020001);
+            break;
+        case 3:
+            qtest_writel(s, DE + 0x60, 0x03060000);
+            break;
+        case 4:
+            qtest_writel(s, DE + 0x80, 1);
+            break;
+        case 5:
+            qtest_writel(s, DE + 0x84, 0x480c0000);
+            break;
+        case 6:
+            qtest_writel(s, DE + 0x88, 0x7fc00000);
+            break;
+        case 7:
+            sz_rectangle(s, 2, 3, 3, 0, 0);
+            break;
+        case 8:
+            qtest_writel(s, DE + 0x10, 0x800);
+            break;
+        case 9:
+            qtest_writel(s, DE + 0x10, 0x41);
+            break;
+        case 10:
+            qtest_writel(s, DE + 0x10, 0x20);
+            qtest_writeq(s, DE + 0x20, bounds(2, 2, 1, 3));
+            break;
+        case 11:
+            qtest_writeq(s, DE + 0x48, bounds(2, 2, 1, 3));
+            break;
+        case 12:
+            qtest_writel(s, DE + 0x1a8, 0x500);
+            break;
+        case 13:
+            qtest_writel(s, DE + 0x1a8, 0xd0);
+            break;
+        case 14:
+            qtest_writel(s, DE + 0x1a8, 0xc);
+            break;
+        case 15:
+            qtest_writel(s, DE + 0x1a8, 0x1000);
+            break;
+        case 16:
+            qtest_writel(s, DE + 0x198, 0x800);
+            break;
+        case 17:
+            qtest_writel(s, DE + 0x198, 0x1000);
+            break;
+        case 18:
+            qtest_writeq(s, DE + 0x1c8, (INT64_C(1) << 36) + 1);
+            break;
+        case 19:
+            qtest_writeq(s, DE + 0x1c8, -(INT64_C(1) << 36) - 1);
+            break;
+        case 20:
+            qtest_writeq(s, DE + 0x1d0, 1);
+            break;
+        case 21:
+            qtest_writeq(s, DE + 0x1d8, -1);
+            break;
+        case 22:
+            qtest_writel(s, DE + 0x1c0, 0x10000000);
+            break;
+        case 23:
+            qtest_writel(s, DE + 0x1e0, 0x62ff7006);
+            break;
+        case 24:
+            qtest_writel(s, DE + 0x1e8, 0x100);
+            break;
+        case 25:
+            qtest_writel(s, DE + 0x1c0, 0x01000000);
+            break;
+        case 26:
+            qtest_writel(s, DE + 0x1b0, 16);
+            break;
+        case 27:
+            qtest_writel(s, DE + 8, 0x1228);
+            break;
+        default:
+            qtest_writel(s, DE + 0x18, v.draw | unsupported[bad - 28]);
+            break;
+        }
+        const Register *trigger = &triggers[bad % ARRAY_SIZE(triggers)];
+
+        sz_atomic_failure(s, &c, path, DE + trigger->offset,
+            trigger->width == 4 ? 0xf13579bd : 0xa579b3e16c28f04dULL,
+            trigger->width);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_rectangle_mappings(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-rect-map-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *log = g_build_filename(dir, "errors", NULL);
+    g_autofree char *options = g_strdup_printf("-D %s", log);
+    g_autofree char *contents = NULL;
+    QTestState *s = start_profile_ram("legacy-software", false, true, false,
+                                      options);
+
+    for (unsigned kind = 0; kind < 14; kind++) {
+        Shape c = gl_rectangle_prepare(s, 0x228, 0);
+        SZCase v = sz_case();
+        uint32_t expected[258];
+        bool failed = (kind >= 2 && kind <= 5) || kind == 8 || kind == 10;
+
+        c.width = 258;
+        c.height = 1;
+        map_region(s, 0, 4, 0, 0, 257, 0);
+        shape_memory(s, &c, NULL);
+        sz_initialize(s, &c, v.old);
+        v.draw = 0x41177f;
+        v.stencil = 0x62ff7003;
+        sz_program(s, &v);
+        sz_rectangle(s, 2, 0, 0, 257, 0);
+        qtest_writeq(s, RE + 0x1000, 0x00007fff00000000ULL);
+        /* Reprogram explicitly: invalid middle payload must not become RAM. */
+        tile(s, 0, 0, page_for(0, 0));
+        tile(s, 0, 2, page_for(0, 2));
+        switch (kind) {
+        case 1:
+            qtest_writeq(s, RE + 0x1000, 0x7fff7fff7fff0000ULL);
+            break;
+        case 2:
+            tile(s, 0, 2, 0x400);
+            break;
+        case 3:
+            tile(s, 0, 2, page_for(0, 0));
+            break;
+        case 4:
+            qtest_writeq(s, RE + 0x1000, 0x7fff7fff7fff0000ULL);
+            qtest_writeq(s, RE + 0x1400, 0);
+            break;
+        case 5:
+            tile(s, 2, 0, page_for(0, 0));
+            break;
+        case 6:
+            qtest_writel(s, DE + 0x18, v.draw | 0x800);
+            qtest_writel(s, DE + 0x198, 0);
+            qtest_writeq(s, RE + 0x1400, 0);
+            tile(s, 0, 0, 0x7fff);
+            break;
+        case 7:
+            qtest_writel(s, DE + 0x1c0, 0);
+            tile(s, 0, 0, 0x7fff);
+            break;
+        case 8:
+            tile(s, 0, 2, 0x4000 | page_for(0, 0));
+            break;
+        case 9:
+            qtest_writel(s, DE + 0x18, v.draw & ~3U);
+            tile(s, 2, 2, page_for(2, 0));
+            break;
+        case 10:
+            tile(s, 2, 2, page_for(2, 0));
+            break;
+        case 11:
+        case 12:
+            qtest_writel(s, DE + 0x18,
+                        (kind == 11 ? v.draw : v.draw & ~7U) | 0x80);
+            qtest_writel(s, DE + 0x1b8, 0);
+            tile(s, 0, 0, 0x7fff);
+            break;
+        case 13:
+            qtest_writel(s, DE + 8, 0x227);
+            qtest_writel(s, DE + 0x18, (v.draw & ~0x7fU) | 0x18);
+            tile(s, 0, 0, 0x7fff);
+            break;
+        }
+        if (failed) {
+            sz_atomic_failure(s, &c, path, DE + 0x8d0, 0xf13579bd, 4);
+            continue;
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        for (unsigned x = 0; x < c.width; x++) {
+            bool colored = (kind == 0 || kind == 9) && (x < 128 || x >= 256);
+
+            expected[x] = colored ? pipeline_reference(0x228, v.color,
+                c.old, 0, 0x45, v.draw, 6, v.plane, x, 0) : c.old;
+            g_assert_cmphex(pixel_read(s, pixel_address(2, x, 0, 4), 4), ==,
+                kind == 6 || kind == 9 || kind >= 12 ? v.old :
+                kind == 7 ? 0x53000011 : 0x54000012);
+        }
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, NULL));
+    g_assert_nonnull(strstr(contents, "rectangle suppressed 128 invalid"));
+    g_assert_nonnull(strstr(contents, "rectangle suppressed 258 invalid"));
+    {
+        g_auto(GStrv) summaries = g_strsplit(contents,
+            "invalid destination fragments", -1);
+
+        g_assert_cmpuint(g_strv_length(summaries), ==, 4);
+    }
+    g_unlink(log);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_rectangle_starts(void)
+{
+    Register forms[64];
+    unsigned count = gl_transfer_starts(forms);
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-rect-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < count; n++) {
+        const Register *form = &forms[n];
+        Shape c = gl_rectangle_prepare(s, 0x228, 0);
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS], value;
+        bool pair = form->width == 8 && (form->offset == 0x70 ||
+            form->offset == 0xa8 || form->offset == 0xc0);
+        uint32_t expected[16];
+
+        if (form->offset == 0xb0 || form->offset == 0xb4) {
+            continue;
+        }
+        qtest_writel(s, DE + 0x18, 0x411278);
+        qtest_writel(s, DE + 0xd0, 0x13579bdf);
+        qtest_writel(s, DE + 0x1b0, 6);
+        save_paired_renderer(s, path, before);
+        value = form->offset == 0x1f0 ? 0xdeadbeef :
+                before[192 + form->offset / 4];
+        if (pair) {
+            value = value << 32 | before[192 + form->offset / 4 + 1];
+        }
+        if (form->offset != 0x1f0) {
+            g_assert_cmpint(memtx_write(s, DE + form->offset,
+                value ^ (pair ? 0x100000001000ULL : 0x1000), form->width), ==,
+                MEMTX_OK);
+        }
+        g_test_message("rectangle START +0x%x width %u", form->offset,
+                       form->width);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + form->offset,
+                                    value, form->width), ==, MEMTX_OK);
+        for (unsigned i = 0; i < 16; i++) {
+            expected[i] = c.old ^ 0x13579bdf;
+        }
+        shape_memory(s, &c, expected);
+        save_paired_renderer(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        g_assert_cmpint(memtx_read(s, DE + 0x800 + form->offset,
+                                   &value, form->width), !=, MEMTX_OK);
+        g_assert_cmpint(memtx_write(s, DE + 0x801 + form->offset,
+                                    value, form->width), !=, MEMTX_OK);
+        for (unsigned poll = 0; poll < 2; poll++) {
+            qtest_readl(s, STATUS);
+            qtest_writel(s, DE + 0x1f0, 0xdeadbeef);
+            qtest_writel(s, DE + 0x1f8, 0);
+        }
+        shape_memory(s, &c, expected);
+        save_paired_renderer(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_rectangle_start_refusals(void)
+{
+    const Register forms[] = {
+        { 0x990, 4 }, { 0x994, 4 }, { 0x990, 8 },
+        { 0x998, 4 }, { 0x9a0, 4 }, { 0x9a8, 4 },
+        { 0x8b0, 4 }, { 0x8b4, 4 }, { 0x880, 8 },
+        { 0x8e0, 8 }, { 0x9f0, 8 }, { 0x8d0, 8 },
+        { 0x9c8, 4 }, { 0x9c0, 8 }, { 0x820, 4 },
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-rect-width-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    Shape c = gl_rectangle_prepare(s, 0x227, 0);
+
+    sz_initialize(s, &c, 0x53000011);
+    qtest_writel(s, DE + 0x18, 0x411578);
+    qtest_writel(s, DE + 0x1a8, 0x45);
+    for (unsigned n = 0; n < ARRAY_SIZE(forms); n++) {
+        sz_atomic_failure(s, &c, path, DE + forms[n].offset,
+                          0xa579b3e16c28f04dULL, forms[n].width);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_rectangle_allocation(void)
+{
+#ifdef CONFIG_LINUX
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-rect-alloc-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *log = g_build_filename(dir, "errors", NULL);
+    g_autofree char *args = g_strdup_printf("-D %s", log);
+    QTestState *s = start_profile_ram("legacy-software", false, true, false,
+                                      args);
+    Shape c = gl_rectangle_prepare(s, 0x227, 0);
+    g_autofree char *stat_path =
+        g_strdup_printf("/proc/%ld/statm", (long)qtest_pid(s));
+    g_autofree char *stat = NULL, *errors = NULL;
+    struct rlimit before, limited;
+    unsigned long long pages;
+
+    sz_initialize(s, &c, 0x53000011);
+    sz_rectangle(s, 2, 0, 0, 2047, 2047);
+    qtest_writel(s, DE + 0x18, 0x411578);
+    qtest_writel(s, DE + 0x1a8, 0x45);
+    g_assert_true(g_file_get_contents(stat_path, &stat, NULL, NULL));
+    g_assert_cmpint(sscanf(stat, "%llu", &pages), ==, 1);
+    g_assert_cmpint(prlimit(qtest_pid(s), RLIMIT_AS, NULL, &before), ==, 0);
+    limited = before;
+    limited.rlim_cur = pages * (uint64_t)qemu_real_host_page_size() + 16 * MiB;
+    g_assert_cmpuint(limited.rlim_cur, <=, before.rlim_max);
+    g_assert_cmpint(prlimit(qtest_pid(s), RLIMIT_AS, &limited, NULL), ==, 0);
+    sz_atomic_failure(s, &c, path, DE + 0x8d0, 0xf13579bd, 4);
+    g_assert_cmpint(prlimit(qtest_pid(s), RLIMIT_AS, &before, NULL), ==, 0);
+    qtest_quit(s);
+    g_assert_true(g_file_get_contents(log, &errors, NULL, NULL));
+    g_assert_nonnull(strstr(errors, "primitive allocation failed"));
+    g_unlink(log);
+    g_unlink(path);
+    g_rmdir(dir);
+#else
+    g_test_skip("requires Linux per-process address-space limits");
+#endif
+}
+
+static void test_gl_rectangle_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-rect-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *from = start(), *to = start_options("-incoming defer");
+    Shape c = gl_rectangle_prepare(from, 0x227, 0);
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    uint32_t expected[16];
+
+    qtest_writel(from, DE + 0x18, 0x411378);
+    qtest_writel(from, DE + 0x1b0, 6);
+    qtest_writel(from, DE + 0xd0, 0x13579bdf);
+    g_assert_cmpint(memtx_writel(from, DE + 0x9f0, 0), ==, MEMTX_OK);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            expected[4 * y + x] = pipeline_reference(0x227, 0x13579bdf,
+                c.old, 0, 0, 0x411378, 6, UINT32_MAX, x, y);
+        }
+    }
+    qtest_writel(from, DE + 0x80, 0x7fc00000);
+    save_paired_renderer(from, path, before);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    save_paired_renderer(to, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    shape_memory(to, &c, expected);
+    qtest_writel(to, DE + 0x80, 0);
+    g_assert_cmpint(memtx_writel(to, DE + 0x9f0, 0), ==, MEMTX_OK);
+    for (unsigned i = 0; i < 16; i++) {
+        expected[i] = c.old;
+    }
+    shape_memory(to, &c, expected);
+    qtest_system_reset(to);
+    shape_memory(to, &c, expected);
+    save_renderer(to, path, after);
+    for (unsigned i = 0; i < RENDER_WORDS; i++) {
+        g_assert_cmphex(after[i], ==, 0);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(sock);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_rectangle_clock(void)
+{
+    QTestState *s = start_indexed_state();
+    Shape c = pipeline_prepare(s, 0x227, 0);
+    uint32_t expected[60];
+
+    c.x = 79;
+    c.y = 37;
+    c.width = 6;
+    c.height = 10;
+    shape_memory(s, &c, NULL);
+    qtest_writel(s, DE + 0x18, 0x00411578);
+    qtest_writel(s, DE + 0x60, 0x03020000);
+    qtest_writel(s, DE + 0x58, 0xf020f020);
+    qtest_writeq(s, DE + 0x80, 0x48040c0048040180ULL);
+    qtest_writeq(s, DE + 0x88, 0x48040cc048040340ULL);
+    qtest_writel(s, DE + 0xd0, 0xccccccff);
+    qtest_writel(s, DE + 0x1a8, 0x45);
+    qtest_writel(s, DE + 0x1b8, 0);
+    qtest_writel(s, DE + 0x10, 0x21);
+    qtest_writeq(s, DE + 0x20, bounds(32, 32, 132, 132));
+    for (unsigned y = 0; y < c.height; y++) {
+        for (unsigned x = 0; x < c.width; x++) {
+            bool covered = x >= 1 && x <= 4 && y >= 1 && y <= 8;
+
+            expected[y * c.width + x] = covered ? pipeline_reference(
+                0x227, 0xccccccff, c.old, 0, 0x45, 0x411578,
+                3, UINT32_MAX, c.x + x, c.y + y) : c.old;
+        }
+    }
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0xdeadbeef), ==, MEMTX_OK);
+    shape_memory(s, &c, expected);
+    qtest_quit(s);
+}
+
+static Shape gl_point_prepare(QTestState *s, unsigned mode, unsigned bank)
+{
+    Shape c = gl_rectangle_prepare(s, mode, bank);
+
+    qtest_writel(s, DE + 0x60, 0);
+    qtest_writeq(s, DE + 0x80, UINT64_C(90) << 32 | 153);
+    qtest_writeq(s, DE + 0x88, UINT64_MAX);
+    qtest_writel(s, DE + 0xa0, UINT32_MAX);
+    qtest_writeq(s, DE + 0xa8, UINT64_MAX);
+    qtest_writeq(s, DE + 0xc0, UINT64_MAX);
+    qtest_writel(s, DE + 0xd8, UINT32_MAX);
+    return c;
+}
+
+static void gl_point_vertex(QTestState *s, int x64, int y64,
+                              int ox, int oy, uint32_t prefix)
+{
+    int64_t ux = x64 - 64 * (int64_t)ox;
+    int64_t uy = y64 - 64 * (int64_t)oy;
+
+    g_assert_cmpint(ux, >=, 0);
+    g_assert_cmpint(ux, <=, 0x7ffff);
+    g_assert_cmpint(uy, >=, 0);
+    g_assert_cmpint(uy, <=, 0x7ffff);
+    qtest_writel(s, DE + 0x58, xy((uint16_t)ox, (uint16_t)oy));
+    qtest_writeq(s, DE + 0x80,
+        (uint64_t)(prefix + ux) << 32 | (prefix + uy));
+}
+
+static void gl_point_check(QTestState *s, const Shape *c, unsigned mode,
+                             int x, int y, uint32_t source, unsigned draw,
+                             unsigned function, unsigned logic, uint32_t plane)
+{
+    uint32_t expected[16];
+
+    shape_memory(s, c, NULL);
+    qtest_writel(s, DE + 0x18, draw);
+    qtest_writel(s, DE + 0x1a0, 0x9b2371d6);
+    qtest_writel(s, DE + 0x1a8, function);
+    qtest_writel(s, DE + 0x1b0, logic);
+    qtest_writel(s, DE + 0x1b8, plane);
+    for (unsigned j = 0; j < 4; j++) {
+        for (unsigned i = 0; i < 4; i++) {
+            expected[4 * j + i] = (int)i == x && (int)j == y ?
+                pipeline_reference(mode, source, c->old, 0x9b2371d6,
+                    function, draw, logic, plane, i, j) : c->old;
+        }
+    }
+    g_assert_cmpint(memtx_writel(s, DE + 0x8d0, source), ==, MEMTX_OK);
+    shape_memory(s, c, expected);
+}
+
+static void test_gl_point_cells(void)
+{
+    const uint32_t prefixes[] = { 0, 0x00800000, 0x48000000 };
+    QTestState *s = start_indexed_state();
+    Shape c = gl_point_prepare(s, 0x228, 0);
+
+    c.width = c.height = 2;
+    qtest_writel(s, DE + 0x18, 0x411078);
+    for (unsigned form = 0; form < 4; form++) {
+        bool negative = form == 3;
+        uint32_t prefix = prefixes[form % 3];
+
+        for (unsigned fy = 0; fy < 64; fy++) {
+            for (unsigned fx = 0; fx < 64; fx++) {
+                uint32_t expected[4];
+                int x = negative ? (fx >= 32 ? 0 : -1) : (fx >= 32);
+                int y = negative ? (fy > 32 ? 0 : -1) : (fy > 32);
+
+                shape_memory(s, &c, NULL);
+                gl_point_vertex(s, (negative ? -64 : 0) + fx,
+                    (negative ? -64 : 0) + fy, -4096, -4096, prefix);
+                for (unsigned j = 0; j < 2; j++) {
+                    for (unsigned i = 0; i < 2; i++) {
+                        expected[2 * j + i] = (int)i == x && (int)j == y ?
+                            0x13579bdf : c.old;
+                    }
+                }
+                g_assert_cmpint(memtx_writel(s, DE + 0x8d0, 0x13579bdf), ==,
+                                MEMTX_OK);
+                shape_memory(s, &c, expected);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_point_edges(void)
+{
+    const struct {
+        int x64, y64, ox, oy, x, y;
+    } vectors[] = {
+        { -33, 0, -4096, -4096, -1, 0 },
+        { -32, 0, -4096, -4096, 0, 0 },
+        { -31, 0, -4096, -4096, 0, 0 },
+        { 0, -33, -4096, -4096, 0, -1 },
+        { 0, -32, -4096, -4096, 0, -1 },
+        { 0, -31, -4096, -4096, 0, 0 },
+        { 2047 * 64 + 31, 2047 * 64, 0, 0, 2047, 2047 },
+        { 2047 * 64 + 32, 2047 * 64, 0, 0, 2048, 2047 },
+        { 2047 * 64, 2047 * 64 + 32, 0, 0, 2047, 2047 },
+        { 2047 * 64, 2047 * 64 + 33, 0, 0, 2047, 2048 },
+        { -32768 * 64, 0, -32768, 0, -32768, 0 },
+        { 40958 * 64 + 63, 0, 32767, 0, 40959, 0 },
+    };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(vectors); n++) {
+        Shape c = gl_point_prepare(s, 0x228, 0);
+        uint32_t expected[4];
+
+        c.width = c.height = 2;
+        c.x = vectors[n].x >= 2047 ? 2046 : 0;
+        c.y = vectors[n].y >= 2047 ? 2046 : 0;
+        map_region(s, 0, 4, c.x, c.y, c.x + 1, c.y + 1);
+        shape_memory(s, &c, NULL);
+        gl_point_vertex(s, vectors[n].x64, vectors[n].y64,
+                        vectors[n].ox, vectors[n].oy, 0x48000000);
+        for (unsigned y = 0; y < 2; y++) {
+            for (unsigned x = 0; x < 2; x++) {
+                expected[2 * y + x] = (int)(c.x + x) == vectors[n].x &&
+                    (int)(c.y + y) == vectors[n].y ? 0x13579bdf : c.old;
+            }
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, 0x13579bdf), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_point_clipping(void)
+{
+    const uint32_t prefixes[] = { 0, 0x00800000, 0x48000000 };
+    const int origins[] = { -4096, -4064, 0, 80 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned encoding = 0; encoding < 12; encoding++) {
+        for (unsigned flags = 0; flags < 32; flags++) {
+            for (unsigned clip = 0; clip < 5; clip++) {
+                Shape c = gl_point_prepare(s, 0x228, 0);
+                int ox = origins[encoding % 4];
+                int oy = origins[(encoding + 1) % 4];
+                int x = flags & 1 ? 85 : 84;
+                int y = flags & 2 ? 85 : 84;
+                bool visible = clip == 0 || clip == 3 || clip == 4 ||
+                    (clip == 1 ? x == 84 && y == 84 : x != 84 || y != 84);
+                uint32_t draw = 0x400278 | (flags & 8 ? 0x1000 : 0) |
+                                (flags & 16 ? 0x10000 : 0);
+                uint32_t expected[16];
+
+                c.x = c.y = 83;
+                shape_memory(s, &c, NULL);
+                gl_point_vertex(s, 84 * 64 + (flags & 1 ? 32 : 31),
+                    84 * 64 + (flags & 2 ? 33 : 32), ox, oy,
+                    prefixes[encoding / 4]);
+                qtest_writel(s, DE + 0x60,
+                            (flags % 4) << 16 | (flags & 4 ? 0x40000 : 0));
+                qtest_writel(s, DE + 0x1b0, 6);
+                qtest_writel(s, DE + 0x10, clip == 0 ? 0 :
+                    clip == 1 ? 0x21 : clip == 2 ? 0x20 : 0x63 |
+                    (clip == 4 ? 0x400 : 0));
+                qtest_writeq(s, DE + 0x20, bounds(84, 84,
+                                                  clip >= 3 ? 86 : 85,
+                                                  clip >= 3 ? 86 : 85));
+                qtest_writeq(s, DE + 0x28, bounds(84, 84, 85, 86));
+                if (clip == 1) {
+                    draw |= 0x100000;
+                    qtest_writeq(s, DE + 0x48,
+                        bounds(84 - ox, 84 - oy, 85 - ox, 85 - oy));
+                }
+                qtest_writel(s, DE + 0x18, draw);
+                for (unsigned j = 0; j < 4; j++) {
+                    for (unsigned i = 0; i < 4; i++) {
+                        expected[4 * j + i] = c.old ^
+                            (visible && c.x + i == x && c.y + j == y ?
+                             0x13579bdf : 0);
+                    }
+                }
+                g_assert_cmpint(memtx_writel(s, DE + 0x8d0, 0x13579bdf), ==,
+                                MEMTX_OK);
+                shape_memory(s, &c, expected);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_point_output(gconstpointer selection)
+{
+    unsigned mode = gl_rectangle_modes[GPOINTER_TO_UINT(selection)];
+    QTestState *s = start_indexed_state();
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned logic = 0; logic < 16; logic++) {
+            for (unsigned lanes = 0; lanes < 16; lanes++) {
+                unsigned upper = logic & 4 ? 0xffffe000U : 0;
+                Shape c = gl_point_prepare(s, mode | upper, bank);
+                unsigned x = logic % 4, y = lanes % 4;
+                unsigned draw = 0x400280 | lanes << 3 |
+                    (logic & 1 ? 0x10000 : 0) | (lanes & 1 ? 0x1000 : 0) |
+                    (logic & 2 ? 0x100 : 0) | (lanes & 2 ? 0x400 : 0) |
+                    (logic & 8 ? 2 : 0);
+                unsigned function = draw & 0x400 ?
+                    ((logic + lanes) % 5) << 8 | (logic % 13) << 4 |
+                    lanes % 12 : UINT32_MAX;
+                uint32_t plane = lanes & 4 ? 0xa579b3e1 : UINT32_MAX;
+
+                gl_point_vertex(s, x * 64 + 31, y * 64 + 32,
+                                -4096, -4096, 0x48000000);
+                qtest_writel(s, DE + 0x60,
+                            (logic % 4) << 16 | (lanes & 1 ? 0x40000 : 0));
+                gl_point_check(s, &c, mode, x, y, 0x13579b80, draw,
+                               function, logic, plane);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_point_alpha(void)
+{
+    const unsigned alphas[] = { 0, 1, 127, 128, 254, 255 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned m = 0; m < ARRAY_SIZE(gl_rectangle_modes); m++) {
+        for (unsigned function = 0; function < 8; function++) {
+            for (unsigned a = 0; a < ARRAY_SIZE(alphas); a++) {
+                for (unsigned r = 0; r < 3; r++) {
+                    unsigned mode = gl_rectangle_modes[m];
+                    Shape c = gl_point_prepare(s, mode, m % 3);
+                    unsigned reference = r == 0 ? 0 : r == 1 ? alphas[a] : 255;
+                    bool pass = sz_reference_compare(function, alphas[a],
+                                                      reference);
+
+                    qtest_writel(s, DE + 0xd0, 0xccccccff);
+                    qtest_writel(s, DE + 0x198, function << 8 | reference);
+                    if (!pass) {
+                        tile(s, m % 3, 0, 0x7fff);
+                    }
+                    gl_point_check(s, &c, mode, pass ? 1 : -1, 2,
+                        0x13579b00 | alphas[a], 0x411d78, 0x45, 3,
+                        UINT32_MAX);
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void gl_point_sz_run(QTestState *s, const SZCase *v)
+{
+    Shape c = gl_point_prepare(s, v->mode, v->bank);
+    uint32_t expected[16];
+    bool color;
+    uint32_t z = sz_reference_depth(v->start);
+    uint32_t sz = sz_reference(v, v->old, z, &color);
+
+    sz_initialize(s, &c, v->old);
+    sz_program(s, v);
+    qtest_writel(s, DE + 0x198, 0x240);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            expected[4 * y + x] = x == 1 && y == 2 && color ?
+                pipeline_reference(v->mode, v->color, c.old, 0, 0x45,
+                    v->draw, 6, v->plane, x, y) : c.old;
+        }
+    }
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    shape_memory(s, &c, expected);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4), ==,
+                            x == 1 && y == 2 ? sz : v->old);
+        }
+    }
+}
+
+static void test_gl_point_sz(void)
+{
+    QTestState *s = start_indexed_state();
+    SZCase v = sz_case();
+
+    for (unsigned function = 0; function < 8; function++) {
+        for (unsigned value = 16; value <= 18; value++) {
+            v.draw = 0x41177f;
+            v.mode = gl_rectangle_modes[(function + value) % 10];
+            v.bank = function % 2;
+            v.control = function << 25;
+            v.start = value * 4096;
+            v.stencil = 0x62ff7003;
+            gl_point_sz_run(s, &v);
+        }
+    }
+    for (unsigned outcome = 0; outcome < 3; outcome++) {
+        for (unsigned operation = 0; operation < 6; operation++) {
+            for (unsigned old = 0; old < 3; old++) {
+                v.draw = 0x41177f;
+                v.control = (outcome == 1 ? 0 : 7) << 25;
+                v.old = (old == 0 ? 0 : old == 1 ? 0x53 : 255) << 24 | 17;
+                v.stencil = 0x62ff0000 | (outcome == 0 ? 0 : 7) << 12 |
+                    operation << 8 | operation << 4 | operation;
+                v.mask = 0x5a;
+                gl_point_sz_run(s, &v);
+            }
+        }
+    }
+    v = sz_case();
+    for (unsigned function = 5; function <= 7; function += 2) {
+        for (unsigned replace = 0; replace < 2; replace++) {
+            for (unsigned write = 0; write < 2; write++) {
+                for (unsigned pass = 0; pass < 2; pass++) {
+                    for (unsigned equal = 0; equal < 2; equal++) {
+                        v.draw = 0x41177d | write << 1;
+                        v.mask = write ? 255 : 0;
+                        v.control = (pass ? 7 : 0) << 25 | 0x01000010;
+                        v.stencil = 0x62ff0002 | function << 12 |
+                                    (replace ? 0x20 : 0);
+                        v.old = (equal ? 0x62 : 0x53) << 24 | 17;
+                        gl_point_sz_run(s, &v);
+                    }
+                }
+            }
+        }
+    }
+    for (unsigned edge = 0; edge < 2; edge++) {
+        v = sz_case();
+        v.draw = 0x411fff;
+        v.start = edge ? INT64_C(1) << 36 : -(INT64_C(1) << 36);
+        gl_point_sz_run(s, &v);
+    }
+    v = sz_case();
+    v.draw = 0x411379;
+    v.control = 0xfeffffff;
+    v.start = INT64_MIN;
+    v.dx = INT64_MAX;
+    v.dy = -1;
+    v.stencil = 0x62ff7003;
+    gl_point_sz_run(s, &v);
+}
+
+static void test_gl_point_failures(gconstpointer selection)
+{
+    const Register triggers[] = {
+        { 0x8d0, 4 }, { 0x870, 8 }, { 0x8a8, 8 }, { 0x8c0, 8 },
+    };
+    const unsigned primitives[] = {
+        1U << 0, 1U << 1, 1U << 2, 1U << 3,
+        1U << 4, 1U << 5, 1U << 6, 1U << 7,
+        1U << 8, 1U << 9, 1U << 10, 1U << 11,
+        1U << 12, 1U << 13, 1U << 14, 1U << 15,
+        31, 65535, 1U << 19, 1U << 20, 1U << 21, 1U << 22, 1U << 23,
+    };
+    const struct {
+        unsigned offset, width;
+        uint64_t value;
+    } faults[] = {
+        { 8, 4, 0x234 }, { 8, 4, 0x328 }, { 8, 4, 0x1228 },
+        { 8, 4, 0x22a }, { 0x80, 4, 0x480c0400 },
+        { 0x84, 4, 0x80000 }, { 0x10, 4, 0x800 },
+        { 0x10, 4, 0x41 }, { 0x20, 8, 0x0002000200010003ULL },
+        { 0x48, 8, 0x0002000200010003ULL },
+        { 0x1a8, 4, 0x500 }, { 0x1a8, 4, 0xd0 },
+        { 0x1a8, 4, 0xc }, { 0x1a8, 4, 0x1000 },
+        { 0x198, 4, 0x800 }, { 0x198, 4, 0x1000 },
+        { 0x1c8, 8, (UINT64_C(1) << 36) + 1 },
+        { 0x1c8, 8, -(UINT64_C(1) << 36) - 1 },
+        { 0x1d0, 8, 1 }, { 0x1d8, 8, UINT64_MAX },
+        { 0x1c0, 4, 0x10000000 }, { 0x1e0, 4, 0x62ff7006 },
+        { 0x1e8, 4, 0x100 }, { 0x1c0, 4, 0x01000000 },
+        { 0x1b0, 4, 16 },
+    };
+    unsigned count = ARRAY_SIZE(primitives) + ARRAY_SIZE(faults) + 32;
+    unsigned hidden = GPOINTER_TO_UINT(selection);
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-point-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < count; n++) {
+        if (n >= ARRAY_SIZE(primitives) + ARRAY_SIZE(faults) &&
+            (0x511fffU & (1U << (n - ARRAY_SIZE(primitives) -
+                                ARRAY_SIZE(faults))))) {
+            continue;
+        }
+        Shape c = gl_point_prepare(s, 0x227, 0);
+        SZCase v = sz_case();
+        const Register *trigger = &triggers[n % ARRAY_SIZE(triggers)];
+
+        sz_initialize(s, &c, v.old);
+        v.draw = 0x511fff;
+        v.plane = hidden ? UINT32_MAX : 0;
+        sz_program(s, &v);
+        qtest_writel(s, DE + 0x198, hidden == 2 ? 0 : 0x740);
+        qtest_writeq(s, DE + 0x48, bounds(0, 0, 4, 4));
+        qtest_writel(s, DE + 0x10, 0x21);
+        qtest_writeq(s, DE + 0x20, bounds(0, 0, 4, 4));
+        if (hidden == 1) {
+            gl_point_vertex(s, 2048 * 64, 0, 0, 0, 0);
+        }
+        if (n < ARRAY_SIZE(primitives)) {
+            qtest_writel(s, DE + 0x60, primitives[n]);
+        } else if (n < ARRAY_SIZE(primitives) + ARRAY_SIZE(faults)) {
+            unsigned f = n - ARRAY_SIZE(primitives);
+
+            g_assert_cmpint(memtx_write(s, DE + faults[f].offset,
+                faults[f].value, faults[f].width), ==, MEMTX_OK);
+        } else {
+            unsigned bit = n - ARRAY_SIZE(primitives) - ARRAY_SIZE(faults);
+
+            qtest_writel(s, DE + 0x18, v.draw | (1U << bit));
+        }
+        sz_atomic_failure(s, &c, path, DE + trigger->offset,
+            trigger->width == 4 ? 0x1153c940 : 0xa579b3e16c28f04dULL,
+            trigger->width);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_mappings(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-point-map-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *log = g_build_filename(dir, "errors", NULL);
+    g_autofree char *args = g_strdup_printf("-D %s", log);
+    g_autofree char *contents = NULL;
+    QTestState *s = start_profile_ram("legacy-software", false, true, false,
+                                      args);
+
+    for (unsigned kind = 0; kind < 10; kind++) {
+        Shape c = gl_point_prepare(s, 0x227, 0);
+        SZCase v = sz_case();
+        uint32_t expected[16];
+        bool failure = kind >= 1 && kind <= 4;
+        uint32_t want_sz = kind == 6 || kind == 9 ? v.old :
+                           kind == 5 ? 0x54000011 : 0x54000012;
+
+        sz_initialize(s, &c, v.old);
+        v.draw = 0x41177f;
+        v.stencil = 0x62ff7003;
+        sz_program(s, &v);
+        switch (kind) {
+        case 0:
+            qtest_writeq(s, RE + 0x1000, 0x7fff000000000000ULL);
+            break;
+        case 1:
+            tile(s, 0, 0, 0x400);
+            break;
+        case 2:
+            qtest_writeq(s, RE + 0x1000, 0x7fff000000000000ULL);
+            qtest_writeq(s, RE + 0x1400, 0);
+            break;
+        case 3:
+            tile(s, 2, 0, page_for(0, 0));
+            break;
+        case 4:
+            tile(s, 0, 0, 0x4000 | page_for(0, 0));
+            tile(s, 2, 0, page_for(0, 0));
+            break;
+        case 5:
+            qtest_writel(s, DE + 0x1e0, 0x62ff0302);
+            tile(s, 0, 0, 0x7fff);
+            break;
+        case 6:
+            qtest_writel(s, DE + 0x18, v.draw | 0x800);
+            qtest_writel(s, DE + 0x198, 0);
+            qtest_writeq(s, RE + 0x1400, 0);
+            tile(s, 0, 0, 0x7fff);
+            break;
+        case 7:
+            qtest_writel(s, DE + 0x18, v.draw | 0x80);
+            qtest_writel(s, DE + 0x1b8, 0);
+            tile(s, 0, 0, 0x7fff);
+            break;
+        case 8:
+            qtest_writel(s, DE + 0x18, v.draw & ~0x78U);
+            tile(s, 0, 0, 0x7fff);
+            break;
+        case 9:
+            qtest_writel(s, DE + 0x18, (v.draw & ~0x7fU) | 0x18);
+            tile(s, 0, 0, 0x7fff);
+            break;
+        }
+        if (failure) {
+            sz_atomic_failure(s, &c, path, DE + 0x8d0, 0x1153c940, 4);
+            continue;
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, 0x1153c940), ==, MEMTX_OK);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                expected[4 * y + x] = c.old;
+                g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4), ==,
+                                x == 1 && y == 2 ? want_sz : v.old);
+            }
+        }
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, NULL));
+    {
+        g_auto(GStrv) summaries = g_strsplit(contents,
+            "point suppressed 1 invalid destination fragments", -1);
+
+        g_assert_cmpuint(g_strv_length(summaries), ==, 2);
+    }
+    g_unlink(log);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_starts(void)
+{
+    Register forms[64];
+    unsigned count = gl_transfer_starts(forms);
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-point-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < count; n++) {
+        const Register *form = &forms[n];
+        Shape c = gl_point_prepare(s, 0x228, 0);
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS], value;
+        bool pair = form->width == 8 && (form->offset == 0x70 ||
+            form->offset == 0xa8 || form->offset == 0xc0);
+        uint32_t expected[16];
+
+        if (form->offset == 0xb0 || form->offset == 0xb4) {
+            continue;
+        }
+        qtest_writel(s, DE + 0x18, 0x411278);
+        qtest_writel(s, DE + 0xd0, 0x13579bdf);
+        qtest_writel(s, DE + 0x1b0, 6);
+        save_paired_renderer(s, path, before);
+        value = form->offset == 0x1f0 ? 0xdeadbeef :
+                before[192 + form->offset / 4];
+        if (pair) {
+            value = value << 32 | before[192 + form->offset / 4 + 1];
+        }
+        if (form->offset != 0x1f0) {
+            g_assert_cmpint(memtx_write(s, DE + form->offset,
+                value ^ (pair ? 0x100000001000ULL : 0x1000), form->width), ==,
+                MEMTX_OK);
+        }
+        for (unsigned i = 0; i < 16; i++) {
+            expected[i] = c.old;
+        }
+        shape_memory(s, &c, expected);
+        g_test_message("point START +0x%x width %u", form->offset, form->width);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + form->offset,
+                                    value, form->width), ==, MEMTX_OK);
+        expected[9] ^= 0x13579bdf;
+        shape_memory(s, &c, expected);
+        save_paired_renderer(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        g_assert_cmpint(memtx_read(s, DE + 0x800 + form->offset,
+                                   &value, form->width), !=, MEMTX_OK);
+        g_assert_cmpint(memtx_write(s, DE + 0x801 + form->offset,
+                                    value, form->width), !=, MEMTX_OK);
+        qtest_readl(s, STATUS);
+        qtest_writel(s, DE + 0x1f0, 0xdeadbeef);
+        qtest_writel(s, DE + 0x1f8, 0);
+        shape_memory(s, &c, expected);
+        save_paired_renderer(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_start_refusals(void)
+{
+    const Register forms[] = {
+        { 0x990, 4 }, { 0x994, 4 }, { 0x990, 8 },
+        { 0x998, 4 }, { 0x9a0, 4 }, { 0x9a8, 4 },
+        { 0x8b0, 4 }, { 0x8b4, 4 }, { 0x880, 8 },
+        { 0x8e0, 8 }, { 0x9f0, 8 }, { 0x8d0, 8 },
+        { 0x9c8, 4 }, { 0x9c0, 8 }, { 0x820, 4 },
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-point-width-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    Shape c = gl_point_prepare(s, 0x227, 0);
+
+    sz_initialize(s, &c, 0x53000011);
+    qtest_writel(s, DE + 0x18, 0x411578);
+    qtest_writel(s, DE + 0x1a8, 0x45);
+    for (unsigned n = 0; n < ARRAY_SIZE(forms); n++) {
+        sz_atomic_failure(s, &c, path, DE + forms[n].offset,
+                          0xa579b3e16c28f04dULL, forms[n].width);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_migration(void)
+{
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-gl-point-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *from = start(), *to = start_options("-incoming defer");
+    Shape c = gl_point_prepare(from, 0x227, 0);
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    uint32_t expected[16];
+
+    qtest_writel(from, DE + 0x18, 0x411378);
+    qtest_writel(from, DE + 0x1b0, 6);
+    g_assert_cmpint(memtx_writel(from, DE + 0x8d0, 0x13579bdf), ==, MEMTX_OK);
+    for (unsigned i = 0; i < 16; i++) {
+        expected[i] = i == 9 ? pipeline_reference(0x227, 0x13579bdf,
+            c.old, 0, 0, 0x411378, 6, UINT32_MAX, 1, 2) : c.old;
+    }
+    qtest_writel(from, DE + 0x60, 1);
+    save_paired_renderer(from, path, before);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    save_paired_renderer(to, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    shape_memory(to, &c, expected);
+    qtest_writel(to, DE + 0x60, 0);
+    g_assert_cmpint(memtx_writel(to, DE + 0x9f0, 0), ==, MEMTX_OK);
+    for (unsigned i = 0; i < 16; i++) {
+        expected[i] = c.old;
+    }
+    shape_memory(to, &c, expected);
+    qtest_system_reset(to);
+    shape_memory(to, &c, expected);
+    save_renderer(to, path, after);
+    for (unsigned i = 0; i < RENDER_WORDS; i++) {
+        g_assert_cmphex(after[i], ==, 0);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(sock);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_point_clock(void)
+{
+    QTestState *s = start_indexed_state();
+    Shape c = gl_rectangle_prepare(s, 0x227, 0);
+    uint32_t expected[9];
+
+    c.x = c.y = 83;
+    c.width = c.height = 3;
+    c.old = 0x8e7b5aa5;
+    qtest_writel(s, DE + 0x60, 0);
+    qtest_writel(s, DE + 0x58, 0xf020f020);
+    qtest_writeq(s, DE + 0x80, 0x48040d1a48040d19ULL);
+    qtest_writel(s, DE + 0x10, 0x21);
+    qtest_writeq(s, DE + 0x20, bounds(32, 32, 132, 132));
+    qtest_writel(s, DE + 0x1a8, 0x45);
+    for (unsigned dither = 0; dither < 2; dither++) {
+        shape_memory(s, &c, NULL);
+        qtest_writel(s, DE + 0xd0, 0xccccccff);
+        qtest_writel(s, DE + 0x18, 0x411478 | dither << 8);
+        for (unsigned i = 0; i < 9; i++) {
+            expected[i] = i == 4 ?
+                (dither ? 0x8e3b5aa5 : 0x8a1a5aa5) : c.old;
+        }
+        /* Chosen source color, not a reconstruction of the failed payload. */
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, 0x1153c940), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     take_group_paths(&argc, argv);
@@ -17236,5 +18665,89 @@ int main(int argc, char **argv)
              test_gl_transfer_envelopes);
     add_case("sgi/crime/render/gl-transfer/allocation",
              test_gl_transfer_allocation);
+    add_case("sgi/crime/render/gl-rectangle/clock", test_gl_rectangle_clock);
+    add_case("sgi/crime/render/gl-rectangle/geometry",
+             test_gl_rectangle_geometry);
+    add_case("sgi/crime/render/gl-rectangle/alpha",
+             test_gl_rectangle_alpha);
+    add_case("sgi/crime/render/gl-rectangle/sz",
+             test_gl_rectangle_sz);
+    add_case("sgi/crime/render/gl-rectangle/failures",
+             test_gl_rectangle_failures);
+    add_case("sgi/crime/render/gl-rectangle/mappings",
+             test_gl_rectangle_mappings);
+    add_case("sgi/crime/render/gl-rectangle/starts",
+             test_gl_rectangle_starts);
+    add_case("sgi/crime/render/gl-rectangle/start-refusals",
+             test_gl_rectangle_start_refusals);
+    add_case("sgi/crime/render/gl-rectangle/migration",
+             test_gl_rectangle_migration);
+    add_data_case("sgi/crime/render/gl-rectangle/output/0",
+                  GUINT_TO_POINTER(0), test_gl_rectangle_output);
+    add_data_case("sgi/crime/render/gl-rectangle/output/1",
+                  GUINT_TO_POINTER(1), test_gl_rectangle_output);
+    add_data_case("sgi/crime/render/gl-rectangle/output/2",
+                  GUINT_TO_POINTER(2), test_gl_rectangle_output);
+    add_data_case("sgi/crime/render/gl-rectangle/output/3",
+                  GUINT_TO_POINTER(3), test_gl_rectangle_output);
+    add_data_case("sgi/crime/render/gl-rectangle/output/4",
+                  GUINT_TO_POINTER(4), test_gl_rectangle_output);
+    add_data_case("sgi/crime/render/gl-rectangle/output/5",
+                  GUINT_TO_POINTER(5), test_gl_rectangle_output);
+    add_data_case("sgi/crime/render/gl-rectangle/output/6",
+                  GUINT_TO_POINTER(6), test_gl_rectangle_output);
+    add_data_case("sgi/crime/render/gl-rectangle/output/7",
+                  GUINT_TO_POINTER(7), test_gl_rectangle_output);
+    add_data_case("sgi/crime/render/gl-rectangle/output/8",
+                  GUINT_TO_POINTER(8), test_gl_rectangle_output);
+    add_data_case("sgi/crime/render/gl-rectangle/output/9",
+                  GUINT_TO_POINTER(9), test_gl_rectangle_output);
+    add_case("sgi/crime/render/gl-rectangle/allocation",
+             test_gl_rectangle_allocation);
+    add_case("sgi/crime/render/gl-point/clock", test_gl_point_clock);
+    add_case("sgi/crime/render/gl-point/cells",
+             test_gl_point_cells);
+    add_case("sgi/crime/render/gl-point/edges",
+             test_gl_point_edges);
+    add_case("sgi/crime/render/gl-point/clipping",
+             test_gl_point_clipping);
+    add_case("sgi/crime/render/gl-point/alpha",
+             test_gl_point_alpha);
+    add_case("sgi/crime/render/gl-point/sz",
+             test_gl_point_sz);
+    add_data_case("sgi/crime/render/gl-point/failures/masked",
+                  GUINT_TO_POINTER(0), test_gl_point_failures);
+    add_data_case("sgi/crime/render/gl-point/failures/clipped",
+                  GUINT_TO_POINTER(1), test_gl_point_failures);
+    add_data_case("sgi/crime/render/gl-point/failures/alpha-never",
+                  GUINT_TO_POINTER(2), test_gl_point_failures);
+    add_case("sgi/crime/render/gl-point/mappings",
+             test_gl_point_mappings);
+    add_case("sgi/crime/render/gl-point/starts",
+             test_gl_point_starts);
+    add_case("sgi/crime/render/gl-point/start-refusals",
+             test_gl_point_start_refusals);
+    add_case("sgi/crime/render/gl-point/migration",
+             test_gl_point_migration);
+    add_data_case("sgi/crime/render/gl-point/output/0",
+                  GUINT_TO_POINTER(0), test_gl_point_output);
+    add_data_case("sgi/crime/render/gl-point/output/1",
+                  GUINT_TO_POINTER(1), test_gl_point_output);
+    add_data_case("sgi/crime/render/gl-point/output/2",
+                  GUINT_TO_POINTER(2), test_gl_point_output);
+    add_data_case("sgi/crime/render/gl-point/output/3",
+                  GUINT_TO_POINTER(3), test_gl_point_output);
+    add_data_case("sgi/crime/render/gl-point/output/4",
+                  GUINT_TO_POINTER(4), test_gl_point_output);
+    add_data_case("sgi/crime/render/gl-point/output/5",
+                  GUINT_TO_POINTER(5), test_gl_point_output);
+    add_data_case("sgi/crime/render/gl-point/output/6",
+                  GUINT_TO_POINTER(6), test_gl_point_output);
+    add_data_case("sgi/crime/render/gl-point/output/7",
+                  GUINT_TO_POINTER(7), test_gl_point_output);
+    add_data_case("sgi/crime/render/gl-point/output/8",
+                  GUINT_TO_POINTER(8), test_gl_point_output);
+    add_data_case("sgi/crime/render/gl-point/output/9",
+                  GUINT_TO_POINTER(9), test_gl_point_output);
     return g_test_run();
 }
