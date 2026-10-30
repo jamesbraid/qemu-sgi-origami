@@ -126,6 +126,25 @@ enum {
     R12000_PROFILE_FIELDS,
 };
 
+typedef enum R12000SecondaryPath {
+    R12000_SECONDARY_REFILL,
+    R12000_SECONDARY_WRITEBACK,
+    R12000_SECONDARY_OTHER,
+} R12000SecondaryPath;
+
+typedef enum R12000SecondaryError {
+    R12000_SECONDARY_GOOD,
+    R12000_SECONDARY_CORRECTED,
+    R12000_SECONDARY_UNCORRECTABLE,
+} R12000SecondaryError;
+
+typedef struct R12000SecondaryReport {
+    R12000SecondaryPath path;
+    R12000SecondaryError error;
+    bool cache_op;
+    uint32_t syndrome;
+} R12000SecondaryReport;
+
 /* Immutable configuration and the definition copy owned by this CPU. */
 typedef struct R10KCPUProfile {
     /* r10000-prid or r14000-prid: the PRId reset installs. */
@@ -133,6 +152,15 @@ typedef struct R10KCPUProfile {
     uint32_t values[R12000_PROFILE_FIELDS];
     bool set[R12000_PROFILE_FIELDS];
     uint32_t migration_profile[R12000_PROFILE_FIELDS];
+    bool r12000a;
+    /* Fresh-instance zero is policy, not a physical healthy/reset value. */
+    uint16_t r12000a_syndrome;
+    bool r12000a_captured;
+    /* Incoming staging, validated before publishing the captured state. */
+    uint8_t migration_r12000_variant;
+    uint16_t migration_r12000_syndrome;
+    uint8_t migration_r12000_captured;
+    bool migration_r12000_profile_seen;
     bool r16000_experimental;
     uint32_t r16000_reset_mode;
     uint32_t r16000_scache_bytes;
@@ -285,5 +313,16 @@ void r10k_cpu_set_bus_handler(MIPSCPU *cpu,
                               R10KBusSystemRequestFn handler,
                               void *opaque);
 void r10k_cpu_set_requester_id(MIPSCPU *cpu, uint16_t requester_id);
+bool mips_r12000a_enabled(const MIPSCPU *cpu);
+#ifndef CONFIG_USER_ONLY
+/*
+ * Consume a qualified detector report before its notification/completion.
+ * No matching production detector is wired yet. This neither detects nor
+ * corrects ECC and must not be connected to the R10000 ECC decoder.
+ */
+bool mips_r12000a_report_secondary_error(MIPSCPU *cpu,
+                                        const R12000SecondaryReport *report,
+                                        Error **errp);
+#endif
 
 #endif /* MIPS_R10K_H */

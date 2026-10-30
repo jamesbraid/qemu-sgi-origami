@@ -11,6 +11,7 @@
 #ifndef CONFIG_USER_ONLY
 #include "qemu/error-report.h"
 #include "system/system.h"
+#include "qemu/main-loop.h"
 #endif
 
 /*
@@ -193,10 +194,68 @@ static void mips_r12000_property_set(Object *obj, Visitor *v,
     cpu->r10k_profile->set[field] = true;
 }
 
+bool mips_r12000a_enabled(const MIPSCPU *cpu)
+{
+    return cpu->r10k_profile && cpu->r10k_profile->r12000a;
+}
+
+static char *mips_r12000_variant_get(Object *obj, Error **errp)
+{
+    return g_strdup(mips_r12000a_enabled(MIPS_CPU(obj)) ?
+                    "vr12000a" : "r12000");
+}
+
+static void mips_r12000_variant_set(Object *obj, const char *value,
+                                     Error **errp)
+{
+    MIPSCPU *cpu = MIPS_CPU(obj);
+
+    if (DEVICE(obj)->realized || cpu->r10k_profile->valid) {
+        error_setg(errp, "r12000-variant cannot change after CPU realization");
+        return;
+    }
+    if (strcmp(value, "r12000") && strcmp(value, "vr12000a")) {
+        error_setg(errp, "r12000-variant requires r12000 or vr12000a");
+        return;
+    }
+    cpu->r10k_profile->r12000a = !strcmp(value, "vr12000a");
+}
+
+#ifndef CONFIG_USER_ONLY
+bool mips_r12000a_report_secondary_error(MIPSCPU *cpu,
+                                        const R12000SecondaryReport *report,
+                                        Error **errp)
+{
+    BQL_LOCK_GUARD();
+
+    if (!DEVICE(cpu)->realized || !mips_r12000a_enabled(cpu)) {
+        error_setg(errp, "secondary syndrome capture requires "
+                   "realized vr12000a");
+        return false;
+    }
+    if (!report || report->syndrome > 0x1ff ||
+        (unsigned)report->path > R12000_SECONDARY_OTHER ||
+        (unsigned)report->error > R12000_SECONDARY_UNCORRECTABLE) {
+        error_setg(errp, "invalid R12000A secondary-data report");
+        return false;
+    }
+    if (!report->cache_op && report->error != R12000_SECONDARY_GOOD &&
+        (report->path == R12000_SECONDARY_REFILL ||
+         report->path == R12000_SECONDARY_WRITEBACK)) {
+        /* BQL publishes the value and internal bookkeeping together. */
+        cpu->r10k_profile->r12000a_syndrome = report->syndrome;
+        cpu->r10k_profile->r12000a_captured = true;
+    }
+    return true;
+}
+#endif
+
 static bool mips_r12000_validate(MIPSCPU *cpu, Error **errp)
 {
     R10KCPUProfile *profile = cpu->r10k_profile;
     uint32_t mode, bytes, words, ec, sc, k0, dsd;
+    /* Explicit A adds EC=12 (PClk/SysClk=7), not a secondary divisor. */
+    uint32_t max_ec = profile->r12000a ? 12 : 11;
 
     for (unsigned int i = 0; i < R12000_PROFILE_FIELDS; i++) {
         if (!profile->set[i]) {
@@ -215,7 +274,7 @@ static bool mips_r12000_validate(MIPSCPU *cpu, Error **errp)
         error_setg(errp, "r12000-prid requires implementation 0x0e");
     } else if (mode & ~0x01ffffffu) {
         error_setg(errp, "r12000-reset-mode exceeds 25 bits");
-    } else if (k0 < 2 || k0 == 6 || ec < 3 || ec > 11 ||
+    } else if (k0 < 2 || k0 == 6 || ec < 3 || ec > max_ec ||
                sc < 2 || sc == 6 || (dsd != 0 && dsd != 4)) {
         error_setg(errp, "r12000-reset-mode has a reserved encoding");
     } else if (((mode >> CP0C0_BE) & 1) != cpu->is_big_endian) {
@@ -401,6 +460,11 @@ void mips_r10k_cpu_class_init(ObjectClass *oc, const void *data)
             "Board processor mode bits, Config0 bits 24:0 from reset");
     }
     if (!strcmp(def->name, "R12000")) {
+        object_class_property_add_str(oc, "r12000-variant",
+                                       mips_r12000_variant_get,
+                                       mips_r12000_variant_set);
+        object_class_property_set_description(oc, "r12000-variant",
+            "Common R12000 or bounded NEC VR12000A interface; no ECC detector");
         for (uintptr_t i = 0; i < R12000_PROFILE_FIELDS; i++) {
             object_class_property_add(oc, r12000_property_names[i], "uint32",
                                       mips_r12000_property_get,
