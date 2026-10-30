@@ -17800,6 +17800,7 @@ static void test_gl_point_sz(void)
     v.dy = -1;
     v.stencil = 0x62ff7003;
     gl_point_sz_run(s, &v);
+    qtest_quit(s);
 }
 
 static void test_gl_point_failures(gconstpointer selection)
