@@ -787,6 +787,21 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
         return false;
     }
 
+    /*
+     * The Bridge is soldered to the system board rather than carried by an
+     * XIO board, so nothing else connects the Crossbow's reset for its port.
+     * The Bridge specification says its core reset is driven from the link
+     * reset it receives, without naming a revision. This machine's Bridge is
+     * revision C and the specification describes revision D, so that path
+     * is inferred for revision C. A guest link reset of widget 15 therefore
+     * reaches the Bridge as it would a board's Bridge.
+     */
+    if (!sgi_xio_port_reset_output(OBJECT(xbow), 15,
+            sgi_xio_port_reset_input(OBJECT(bridge), 0))) {
+        error_setg(errp, "cannot connect the Bridge to the Crossbow's "
+                   "link reset");
+        return false;
+    }
 
     memory_region_init_alias(proxy_route, OBJECT(machine),
                              "octane.bridge-fabric-route",
