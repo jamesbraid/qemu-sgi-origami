@@ -466,8 +466,10 @@ names ports 2 to 5. Resolution refuses a node cabled to any other
 port, and the builder refuses such a cable in a topology it is handed,
 with the message "node '<id>' is cabled to router '<id>' port <n>; it
 takes a node only on ports 2, 3, 4, 5". A cable to another router may
-use any port. The layer sets no L1 brick-type character, since no
-reviewed L1 contract gives the R-brick's.
+use any port. The layer sets no L1 brick-type character: the router L1
+profile answers ``R`` (``0x52``) for every router's L1, which is what the
+stock IP35 PROM 6.210 and IRIX 6.5.30 expect from a router's controller
+(their expectation, not a capture of a fitted R-brick).
 
 The ``origin3400`` composition is the guide's 8- to 16-processor
 interconnect drawn with one R-brick (007-4311-002 printed page 55): four
