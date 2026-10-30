@@ -786,6 +786,59 @@ static void test_setup_frame_buffer_sizes_managed_area(void)
     g_assert_nonnull(strstr(found, "managed area 2560x2048 does not fit"));
 }
 
+/* LoadFormat for `channel`, 1280x1024 at 60 Hz, named `name`. */
+static void load_named_format(QTestState *s, uint32_t channel,
+                              const char *name, uint32_t datestamp)
+{
+    uint32_t format[383] = { channel, 1 };
+    char padded[64] = { 0 };
+
+    g_assert_cmpuint(strlen(name), <, sizeof(padded));
+    memcpy(padded, name, strlen(name));
+    for (unsigned w = 0; w < 16; w++) {
+        format[2 + w] = ldl_be_p(padded + 4 * w);
+    }
+    format[18] = datestamp;
+    format[19] = 60 << 16;
+    format[23] = 1024;
+    format[24] = 1280;
+    video_send(s, 0x16, format, ARRAY_SIZE(format));
+}
+
+/*
+ * LoadFormat carries the format file's name in words 2-17 and its date
+ * stamp in word 18, which GetChannelConfig answers in words 1-16 and 17;
+ * the X server looks the name up to print and use the channel's output
+ * size and rate. DisableChannel forgets it.
+ */
+static void test_load_format_names_channel(void)
+{
+    g_autofree char *log = NULL;
+    QTestState *s = kona_init_dg("dg5-2", &log);
+    uint32_t reply[19];
+
+    kona_register_return_page(s, RETURN_PAGE);
+    video_send(s, 0x18, (uint32_t[]){ 1 }, 1);
+    load_named_format(s, 1, "1280x1024_60.vfo", 0x6ae3c3e4);
+    video_get(s, GET_CHANNEL_CONFIG, 1, 7, reply, 19);
+    g_assert_cmphex(reply[0], ==, 0xd);
+    g_assert_cmphex(reply[1], ==, 0x31323830);
+    g_assert_cmphex(reply[2], ==, 0x78313032);
+    g_assert_cmphex(reply[3], ==, 0x345f3630);
+    g_assert_cmphex(reply[4], ==, 0x2e76666f);
+    g_assert_cmphex(reply[5], ==, 0);
+    g_assert_cmphex(reply[17], ==, 0x6ae3c3e4);
+
+    video_send(s, 0x18, (uint32_t[]){ 1 }, 1);
+    video_get(s, GET_CHANNEL_CONFIG, 1, 7, reply, 19);
+    g_assert_cmphex(reply[0], ==, 0x1);
+    for (unsigned w = 1; w < 18; w++) {
+        g_assert_cmphex(reply[w], ==, 0);
+    }
+    qtest_quit(s);
+    g_free(kona_log_read(log));
+}
+
 /*
  * Every other Get answers its reply id, zero data at its reply size and
  * a checksum equal to the id, then word 0. GetOutputPedestal is the
@@ -1495,6 +1548,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-video/"
                    "setup-frame-buffer-sizes-managed-area",
                    test_setup_frame_buffer_sizes_managed_area);
+    qtest_add_func("sn0/origin2000/kona-video/load-format-names-channel",
+                   test_load_format_names_channel);
     qtest_add_func("sn0/origin2000/kona-video/zero-data-replies",
                    test_zero_data_replies);
     qtest_add_func("sn0/origin2000/kona-video/migration-mid-video-command",
