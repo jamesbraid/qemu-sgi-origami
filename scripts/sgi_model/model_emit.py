@@ -885,6 +885,10 @@ def _board_node(topology: dict, board: dict) -> int:
         host["xio_attachment_index"]]["node_index"]
 
 
+# The InfiniteReality pipe's flash EEPROM (include/hw/misc/sgi-kona-flash.h).
+_KONA_FLASH_BYTES = 0x80000
+
+
 def _storage_for(topology: dict, harness: dict, product: dict,
                  fitted: list[int]) -> list[dict]:
     """Every writable persistent store a launch fitting the `fitted` node
@@ -892,7 +896,7 @@ def _storage_for(topology: dict, harness: dict, product: dict,
     order a launcher creates them: each node's boot flash, each BASEIO
     PROM flash, each Timekeeper NVRAM with its clock record, each IO9
     DS1742 with its clock record, then each module system controller's
-    configuration NVRAM. The
+    configuration NVRAM, then each InfiniteReality slot's flash. The
     name is the file name, the block node name and the machine property
     a launcher binds the store through. `initial` names what a new
     machine's store starts from: an `init-inputs` image, the fresh IP27
@@ -960,6 +964,14 @@ def _storage_for(topology: dict, harness: dict, product: dict,
         storage.append({"name": f"module{index}-nvram",
                         "size": _CONTROLLER_NVRAM_BYTES,
                         "read-only": False, "initial": "controller-nvram"})
+    # Each graphics slot that takes an InfiniteReality pipe keeps that
+    # pipe's flash EEPROM, named for the slot, so a combination ircombine
+    # stores outlasts the process as it outlasts power-off on a pipe.
+    for slot in (topology.get("graphics") or {}).get("slots", []):
+        if any(family["family"] == "kona" for family in slot["families"]):
+            storage.append({"name": f"{slot['name']}-kona-flash",
+                            "size": _KONA_FLASH_BYTES,
+                            "read-only": False, "initial": "kona-flash"})
     return storage
 
 

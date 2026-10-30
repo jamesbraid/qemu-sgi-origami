@@ -1004,6 +1004,52 @@ static void test_multi_onyx3400_ir(void)
 }
 
 /*
+ * A graphics slot's <slot>-kona-flash store backs the flash of whichever
+ * InfiniteReality pipe sits in it: the default pipe, or a -device there
+ * with no drive of its own. A -device that names its own drive as well is
+ * refused, and so is a store of another size than the 512 KiB flash.
+ */
+static void test_multi_onyx3400_ir_slot_flash(void)
+{
+    const Launch *l = launch_for("onyx3400-ir");
+    g_autofree char *image = temporary("sgi-pipes-kona-flash-XXXXXX",
+                                       0x80000, 0);
+    g_autofree char *small = temporary("sgi-pipes-kona-small-XXXXXX",
+                                       0x1000, 0);
+    g_autofree char *bound = g_strdup_printf(
+        "-blockdev driver=file,filename=%s,node-name=pipeflash "
+        "-machine gbrick0-pipe0-pipe-kona-flash=pipeflash", image);
+    g_autofree char *both = g_strdup_printf(
+        "%s -blockdev driver=file,filename=%s,node-name=ownflash "
+        "-device sgi-kona,slot=gbrick0-pipe0-pipe,drive=ownflash", bound,
+        small);
+    g_autofree char *wrong = g_strdup_printf(
+        "-blockdev driver=file,filename=%s,node-name=pipeflash "
+        "-machine gbrick0-pipe0-pipe-kona-flash=pipeflash", small);
+    g_autofree char *device = g_strdup_printf(
+        "%s -device sgi-kona,slot=gbrick0-pipe0-pipe", bound);
+    const char *path = "/machine/module5/gbrick0-pipe0-pipe";
+    char *drive;
+    QTestState *qts;
+
+    qts = start(l, bound);
+    drive = qom_text(qts, path, "drive");
+    g_assert_cmpstr(drive, ==, "pipeflash");
+    g_free(drive);
+    qtest_quit(qts);
+    qts = start(l, device);
+    drive = qom_text(qts, path, "drive");
+    g_assert_cmpstr(drive, ==, "pipeflash");
+    g_free(drive);
+    qtest_quit(qts);
+    assert_refused(l, both, "gbrick0-pipe0-pipe-kona-flash and the pipe's "
+                   "drive ownflash both back the pipe's flash");
+    assert_refused(l, wrong, "gbrick0-pipe0-pipe-kona-flash");
+    unlink(image);
+    unlink(small);
+}
+
+/*
  * Every chip a pipe sits behind presents its two PCI heads, widgets 14 and
  * 15, to the C-brick cabled to it, whether the chip is the I-brick's or one
  * of the N-brick's. The crossbar reports both links alive and the C-brick
@@ -1460,6 +1506,8 @@ int main(int argc, char **argv)
                    test_multi_onyx3400_ir);
     qtest_add_func("/sgi-graphics-pipes/multi/onyx3400-ir-heads",
                    test_multi_onyx3400_ir_heads);
+    qtest_add_func("/sgi-graphics-pipes/multi/onyx3400-ir-slot-flash",
+                   test_multi_onyx3400_ir_slot_flash);
     qtest_add_func("/sgi-graphics-pipes/multi/rm-count", test_multi_rm_count);
     qtest_add_func("/sgi-graphics-pipes/multi/identity", test_multi_identity);
     qtest_add_func("/sgi-graphics-pipes/multi/migration",

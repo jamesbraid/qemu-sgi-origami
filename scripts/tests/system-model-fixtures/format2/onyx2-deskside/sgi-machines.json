@@ -215,6 +215,12 @@
           "name": "module0-nvram",
           "read-only": false,
           "size": 2048
+        },
+        {
+          "initial": "kona-flash",
+          "name": "io4-kona-flash",
+          "read-only": false,
+          "size": 524288
         }
       ],
       "supported-guests": [
@@ -438,6 +444,12 @@
           "name": "module0-nvram",
           "read-only": false,
           "size": 2048
+        },
+        {
+          "initial": "kona-flash",
+          "name": "io4-kona-flash",
+          "read-only": false,
+          "size": 524288
         }
       ],
       "supported-guests": [
@@ -661,6 +673,12 @@
           "name": "module0-nvram",
           "read-only": false,
           "size": 2048
+        },
+        {
+          "initial": "kona-flash",
+          "name": "io4-kona-flash",
+          "read-only": false,
+          "size": 524288
         }
       ],
       "supported-guests": [
@@ -876,6 +894,12 @@
           "name": "module0-nvram",
           "read-only": false,
           "size": 2048
+        },
+        {
+          "initial": "kona-flash",
+          "name": "io4-kona-flash",
+          "read-only": false,
+          "size": 524288
         }
       ],
       "supported-guests": [
@@ -1091,6 +1115,12 @@
           "name": "module0-nvram",
           "read-only": false,
           "size": 2048
+        },
+        {
+          "initial": "kona-flash",
+          "name": "io4-kona-flash",
+          "read-only": false,
+          "size": 524288
         }
       ],
       "supported-guests": [

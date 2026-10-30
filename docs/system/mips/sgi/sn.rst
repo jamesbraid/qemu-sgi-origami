@@ -38,7 +38,9 @@ read here. Each offering names the ``-M`` value that selects it
 PROM flash ``io<N>-flash``, Timekeeper NVRAM ``nvram<N>`` and its clock
 record ``nvram<N>-clock``, an IO9 board's DS1742 ``ds1742-<board>-data``
 and its clock record ``ds1742-<board>-clock``, module system controller
-configuration NVRAM ``module<N>-nvram``, each with its exact size and
+configuration NVRAM ``module<N>-nvram``, the flash EEPROM of the
+InfiniteReality pipe in a graphics slot ``<slot>-kona-flash``, each with
+its exact size and
 what a new machine's copy starts from) and the firmware images that
 initial content is built from (``init-inputs``).
 Nine products stand on this base:
@@ -1289,6 +1291,15 @@ The machines bind these items today:
   Origin 200 module's embedded ELSC, and each Origin 2000 or Onyx2
   module's MSC. A bound file's contents are used as they are; only a
   store with no file starts from the controller's first power-up state.
+- ``<slot>-kona-flash`` for each graphics slot that takes an ``sgi-kona``
+  pipe (``io3``, ``io4`` or ``io7`` on ``onyx2``, ``gbrick<G>-pipe<P>-pipe``
+  on ``onyx3400-ir``): the pipe's 512 KiB flash EEPROM as a raw image,
+  flash offset n at file offset n. The machine gives it to whichever
+  ``sgi-kona`` sits in the slot, the default pipe or a ``-device``, unless
+  that device names its own ``drive``. Every byte the pipe programs is
+  written through, so a video combination ``ircombine`` stores there runs
+  at the next graphics initialization in a later process too. A new
+  machine's is zero apart from the header state the PROM requires.
 
 The older forms still work but are deprecated, and giving both forms for
 one store is refused: ``-drive if=pflash,unit=N`` for node N's flash;
