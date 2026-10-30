@@ -1325,11 +1325,19 @@ static bool l1_cx_select(SGIL1State *s, const char *word)
     return true;
 }
 
+/*
+ * An Origin 3000 profile matches no particular L1 image: the revision it is
+ * given is an approximation made for request 0x0005, so the line names no
+ * image bank and no product label.
+ */
 static void l1_version(SGIL1State *s)
 {
     if (s->revision_major < 0) {
         l1_printf(s, "L1 protocol responder; "
                   "firmware revision unavailable\r\n");
+    } else if (s->profile->o3k) {
+        l1_printf(s, "L1 %d.%d.%d (Image EMU-UNKNOWN)\r\n",
+                  s->revision_major, s->revision_minor, s->revision_patch);
     } else {
         l1_printf(s, "L1 %d.%d.%d (Image A) [Fuel/PE/O300 1MB image]\r\n",
                   s->revision_major, s->revision_minor, s->revision_patch);

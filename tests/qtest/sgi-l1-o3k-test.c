@@ -874,6 +874,13 @@ static void test_firmware_revision(void)
     expect_code(reply, length, -104);
     length = rpc(s, 4, LOCAL_GENERAL, 5, NULL, 0, 0, reply);
     expect_code(reply, length, -104);
+    /*
+     * The revision is for 0x0005 only: version names no image bank and no
+     * Origin 300 image label.
+     */
+    expect_command(s, 0, "version", "L1 1.18.5 (Image EMU-UNKNOWN)\n");
+    expect_command(s, 1, "version", "L1 1.7.2 (Image EMU-UNKNOWN)\n");
+    expect_command(s, 2, "version", "L1 1.9.0 (Image EMU-UNKNOWN)\n");
     qtest_quit(s);
 }
 

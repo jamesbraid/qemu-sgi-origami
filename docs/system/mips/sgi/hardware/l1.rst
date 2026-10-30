@@ -310,7 +310,9 @@ captured controller output.
        identity request on a C-brick is unknown. The case of the I-brick
        letter is the model's choice.
    * - The machine configures firmware revision 1.18.5 on every C-brick,
-       I-brick and N-brick L1, and the machine's ``l1-revision`` replaces it.
+       I-brick and N-brick L1 for request ``0x0005``, and the machine's
+       ``l1-revision`` replaces it. ``version`` prints the number as ``L1 1.18.5
+       (Image EMU-UNKNOWN)``, naming no image bank or product image.
      - approximated
      - No fitted brick's revision is published. IRIX 6.5.30 labels each
        module's and I/O brick's hardware-graph entry with the reply, its
@@ -318,7 +320,8 @@ captured controller output.
        node with R14000 processors the kernel wants at least 1.3.20; the
        stock PROM warns below 1.12.5. 1.18.5 is the value the Origin 300
        profiles use, from an Origin 300 transcript, and passes both
-       checks.
+       checks. The approximation covers that request only: these profiles
+       model no particular L1 image.
    * - ``0x000a`` answers two integers; the first is 0 for a 400 MHz I/O
        link and 1 for 600 MHz (``port-speed-first``, default 0).
      - established for the meaning; approximated for the V-brick
