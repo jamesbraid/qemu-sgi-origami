@@ -6641,6 +6641,15 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
         object_unref(OBJECT(l1));
         qdev_prop_set_string(l1, "brick-type",
                              nbrick ? "nbrick" : vbrick ? "vbrick" : "ibrick");
+        /*
+         * A V-brick's power and logic boards take the I-brick's serial
+         * letters, so its module index keeps the two bricks' serials apart.
+         * That holds only while the index is nonzero: the I-brick and
+         * N-brick L1s keep index 0 with the same letters.
+         */
+        if (vbrick) {
+            qdev_prop_set_uint8(l1, "identity-index", controller->module_index);
+        }
         /* A V-brick's L1 takes no firmware revision. */
         if (!vbrick) {
             qdev_prop_set_int32(l1, "revision-major",
