@@ -13335,6 +13335,204 @@ static void test_mipmap_projective_triangle(void)
                    texture_rgb(1 - a, a, 0));
 }
 
+/*
+ * The quad level-of-detail rule needs a triangle whose pixels disagree.
+ * s grows by a quarter of a base texel's width per pixel along x and along
+ * y, so one pixel's derivatives are 1 texel per pixel (level 0, red) but a
+ * quad's diagonal differences are 2 (level 1, green). Window vertices
+ * (16,16), (16+size,16), (16,16+size); s is 0, size/4, size/4 in units of
+ * the 4-texel base level.
+ */
+static void quad_lod_affine_triangle(MipmapFixture *f, int size)
+{
+    const float n = size / 32.0f, k = size / 4.0f;
+
+    frag_command(&f->scene, SGI_GL_OP_BEGIN,
+                 (uint32_t[]) { SGI_GL_TRIANGLES }, 1);
+    texture_vertex(&f->scene, -0.5f, -0.5f, 1, 0, 0, 1);
+    texture_vertex(&f->scene, -0.5f + n, -0.5f, 1, k, 0, 1);
+    texture_vertex(&f->scene, -0.5f, -0.5f + n, 1, k, 0, 1);
+    frag_command(&f->scene, SGI_GL_OP_END, NULL, 0);
+}
+
+static void quad_lod_init(MipmapFixture *f, bool quad)
+{
+    mipmap_init(f, SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST, -1000,
+                1000);
+    f->image.quad_lod = quad;
+}
+
+/* Each rule runs under every way a filled triangle samples. */
+typedef struct QuadLodCase {
+    SGIRasterTexturePath path;
+    void (*test)(void);
+} QuadLodCase;
+
+static void quad_lod_run(gconstpointer data)
+{
+    const QuadLodCase *c = data;
+
+    sgi_raster_set_texture_path(c->path);
+    c->test();
+    sgi_raster_set_texture_path(SGI_RASTER_TEXTURE_SPANS);
+}
+
+static void test_mipmap_quad_diagonal(void)
+{
+    MipmapFixture f;
+
+    /* Per pixel: a texel per pixel, level 0. */
+    quad_lod_init(&f, false);
+    quad_lod_affine_triangle(&f, 16);
+    g_assert_cmphex(frag_pixel(&f.scene, 17, 17), ==, texture_rgb(1, 0, 0));
+
+    /* Per quad, by the diagonals: two texels, level 1. */
+    quad_lod_init(&f, true);
+    quad_lod_affine_triangle(&f, 16);
+    for (int y = 16; y < 18; y++) {
+        for (int x = 16; x < 18; x++) {
+            g_assert_cmphex(frag_pixel(&f.scene, x, y), ==,
+                            texture_rgb(0, 1, 0));
+        }
+    }
+    g_assert_cmphex(frag_pixel(&f.scene, 19, 18), ==, texture_rgb(0, 1, 0));
+}
+
+/* 1D follows the rule: the t differences are zero, the s ones decide. */
+static void test_mipmap_quad_one_dimensional(void)
+{
+    MipmapFixture f;
+
+    texture_1d_init(&f, SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST);
+    quad_lod_affine_triangle(&f, 16);
+    g_assert_cmphex(frag_pixel(&f.scene, 17, 17), ==, texture_rgb(1, 0, 0));
+    texture_1d_init(&f, SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST);
+    f.image.quad_lod = true;
+    quad_lod_affine_triangle(&f, 16);
+    g_assert_cmphex(frag_pixel(&f.scene, 17, 17), ==, texture_rgb(0, 1, 0));
+}
+
+/* 3D keeps its per-pixel derivative whatever the flag says. */
+static bool quad_volume_read(void *opaque, uint32_t level, uint32_t x,
+                             uint32_t y, uint32_t z, uint32_t *rgba)
+{
+    static const uint32_t colours[3] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff,
+    };
+    *rgba = colours[level];
+    return true;
+}
+
+static void test_mipmap_quad_volume_unchanged(void)
+{
+    SGIGLTexLevel levels[3];
+    SGIGLTexPyramid pyramid = {
+        .levels = levels, .count = 3, .max_level = 2,
+        .min_lod = -1000, .max_lod = 1000,
+    };
+    SGIGLTexImage image = {
+        .volume = true, .pyramid = &pyramid,
+        .min_filter = SGI_GL_NEAREST_MIPMAP_NEAREST,
+        .mag_filter = SGI_GL_NEAREST,
+        .wrap_s = SGI_GL_REPEAT, .wrap_t = SGI_GL_REPEAT,
+        .wrap_r = SGI_GL_REPEAT,
+    };
+    MipmapFixture f;
+
+    for (unsigned i = 0; i < 3; i++) {
+        levels[i] = (SGIGLTexLevel) {
+            .level = i, .width = 4 >> i, .height = 4 >> i,
+            .depth = 4 >> i, .base_format = SGI_GL_RGBA,
+            .internal_format = SGI_GL_RGBA,
+            .read_texel_3d = quad_volume_read, .opaque = &levels[i],
+        };
+    }
+    for (unsigned quad = 0; quad < 2; quad++) {
+        mipmap_init(&f, SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST,
+                    -1000, 1000);
+        image.quad_lod = quad;
+        f.scene.rec.target.texture = &image;
+        enable(&f.scene.c, SGI_GL_TEXTURE_2D, false);
+        enable(&f.scene.c, SGI_GL_TEXTURE_3D, true);
+        quad_lod_affine_triangle(&f, 16);
+        g_assert_cmphex(frag_pixel(&f.scene, 17, 17), ==,
+                        texture_rgb(1, 0, 0));
+    }
+}
+
+/*
+ * MODEL CHOICE under test: a covered pixel's quad takes the plane's values
+ * at all four pixel centres, covered or not. This triangle covers only the
+ * quad's first pixel, yet gets the level the larger triangle gives it.
+ */
+static void test_mipmap_quad_uncovered_neighbours(void)
+{
+    MipmapFixture f;
+
+    quad_lod_init(&f, true);
+    quad_lod_affine_triangle(&f, 2);
+    g_assert_cmphex(frag_pixel(&f.scene, 16, 16), ==, texture_rgb(0, 1, 0));
+    g_assert_cmphex(frag_pixel(&f.scene, 17, 16), ==, 0);
+    g_assert_cmphex(frag_pixel(&f.scene, 16, 17), ==, 0);
+}
+
+/*
+ * A projective triangle whose footprint grows along x from a quarter to
+ * four texels a pixel, so a per-pixel level changes mid-quad somewhere.
+ * A quad's four pixels must agree, quads aligning to even window
+ * coordinates (MODEL CHOICE: not known for the board), and the levels
+ * must still differ between quads.
+ */
+static void quad_shared(int origin)
+{
+    MipmapFixture f;
+    uint32_t first = 0;
+    bool differ = false;
+
+    quad_lod_init(&f, true);
+    f.scene.c.cur.drawable.origin[0] = origin;
+    frag_command(&f.scene, SGI_GL_OP_BEGIN,
+                 (uint32_t[]) { SGI_GL_TRIANGLES }, 1);
+    texture_vertex(&f.scene, -0.75f, -0.75f, 1, 0, 0, 1);
+    texture_vertex(&f.scene, 0.25f, -0.75f, 1, 2, 0, 0.25f);
+    texture_vertex(&f.scene, -0.75f, 0.25f, 1, 0, 0, 1);
+    frag_command(&f.scene, SGI_GL_OP_END, NULL, 0);
+    for (int y = 8; y < 40; y += 2) {
+        for (int x = 8 + origin; x < 40 + origin; x += 2) {
+            uint32_t c = frag_pixel(&f.scene, x, y);
+
+            if (!c || !frag_pixel(&f.scene, x + 1, y) ||
+                !frag_pixel(&f.scene, x, y + 1) ||
+                !frag_pixel(&f.scene, x + 1, y + 1)) {
+                continue;
+            }
+            g_assert_cmphex(frag_pixel(&f.scene, x + 1, y), ==, c);
+            g_assert_cmphex(frag_pixel(&f.scene, x, y + 1), ==, c);
+            g_assert_cmphex(frag_pixel(&f.scene, x + 1, y + 1), ==, c);
+            first = first ?: c;
+            differ |= c != first;
+        }
+    }
+    g_assert_true(first);
+    g_assert_true(differ);
+}
+
+static void test_mipmap_quad_shared(void)
+{
+    quad_shared(0);
+}
+
+/*
+ * The drawable origin is odd, so window column 16 is plane column 17. Quads
+ * still group on window coordinates (MODEL CHOICE: the board's choice
+ * between window and screen is unknown): a grouping on plane columns would
+ * split these pairs.
+ */
+static void test_mipmap_quad_window_aligned(void)
+{
+    quad_shared(1);
+}
+
 #ifdef SGI_GL_TEXTURE_TEST
 #include "tests/unit/sgi-gl-texture-test.h"
 
@@ -15452,6 +15650,44 @@ int main(int argc, char **argv)
                     test_mipmap_zero_footprint);
     g_test_add_func("/sgi-gl/mipmap-projective-triangle",
                     test_mipmap_projective_triangle);
+    {
+        static const struct {
+            const char *name;
+            void (*test)(void);
+        } quad_tests[] = {
+            { "diagonal", test_mipmap_quad_diagonal },
+            { "one-dimensional", test_mipmap_quad_one_dimensional },
+            { "volume-unchanged", test_mipmap_quad_volume_unchanged },
+            { "uncovered-neighbours", test_mipmap_quad_uncovered_neighbours },
+            { "shared", test_mipmap_quad_shared },
+            { "window-aligned", test_mipmap_quad_window_aligned },
+        };
+        static const struct {
+            const char *name;
+            SGIRasterTexturePath path;
+        } quad_paths[] = {
+            { "spans", SGI_RASTER_TEXTURE_SPANS },
+            { "fixed", SGI_RASTER_TEXTURE_FIXED },
+            { "double", SGI_RASTER_TEXTURE_DOUBLE },
+        };
+        static QuadLodCase quad_cases[ARRAY_SIZE(quad_tests) *
+                                      ARRAY_SIZE(quad_paths)];
+
+        for (unsigned i = 0; i < ARRAY_SIZE(quad_tests); i++) {
+            for (unsigned j = 0; j < ARRAY_SIZE(quad_paths); j++) {
+                QuadLodCase *c = &quad_cases[i * ARRAY_SIZE(quad_paths) + j];
+                char *name = g_strdup_printf("/sgi-gl/mipmap-quad/%s/%s",
+                                             quad_tests[i].name,
+                                             quad_paths[j].name);
+
+                *c = (QuadLodCase) {
+                    .path = quad_paths[j].path, .test = quad_tests[i].test,
+                };
+                g_test_add_data_func(name, c, quad_lod_run);
+                g_free(name);
+            }
+        }
+    }
     g_test_add_func("/sgi-gl/texture-coordinates", test_texture_coordinates);
     g_test_add_func("/sgi-gl/texture-sampling", test_texture_sampling);
     g_test_add_func("/sgi-gl/texture-max-clamp", test_texture_max_clamp);

@@ -415,6 +415,14 @@ typedef struct SGIGLTexImage {
      */
     bool max_clamp;
     double max_clamp_s, max_clamp_t, max_clamp_r;
+    /*
+     * Select the mipmap level of a filled triangle's fragments once for
+     * each aligned 2x2 pixel quad, from the quad's diagonal differences,
+     * instead of from each pixel's own derivatives. Applies to 1D and 2D
+     * images only; a volume ignores it. The Odyssey board's rule
+     * (docs/datasheets/odyssey.md, "Mipmap level of detail").
+     */
+    bool quad_lod;
 } SGIGLTexImage;
 
 /*
