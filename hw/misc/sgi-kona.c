@@ -891,7 +891,8 @@ static void sgi_kona_channels_default(SGIKonaChannel *channel)
         channel[c] = (SGIKonaChannel) {
             .source = c,
             .pan = { 0, 0, SGI_KONA_FB_WIDTH, SGI_KONA_FB_HEIGHT },
-            .placement = { SGI_KONA_FB_WIDTH, SGI_KONA_FB_HEIGHT },
+            .placement = { 1, 1, 1, 1, SGI_KONA_FB_WIDTH,
+                           SGI_KONA_FB_HEIGHT },
         };
     }
     channel[0].enabled = true;
@@ -3912,11 +3913,10 @@ static bool sgi_kona_video_names_channel(uint32_t command)
  *   largest size and 14-15 the smallest. As the firmware answers it, all
  *   from the channel's record and none from SetupFrameBuffer: 4-7 the
  *   rectangle the last Resize whose word 7 was 0 copied, 0, 0, 1280, 1024
- *   before any; 12-15 PlacementRes words 5-8. Approximated: the steps are
- *   1, where the firmware keeps record words the datasheet does not trace
- *   to a setter, and a channel with no PlacementRes yet answers 1280x1024
- *   largest and 0x0 smallest, where the firmware's record default is not
- *   known.
+ *   after a start's rebuild; 8-15 PlacementRes words 1-8. Approximated: a
+ *   channel with no PlacementRes yet answers steps of 1, 1280x1024 largest
+ *   and 0x0 smallest, where the firmware's value before any PlacementRes
+ *   is not known; on the firmware a start always runs one.
  * - GetVampire: word 0 the physical channel whose timing this one takes,
  *   the one Vampire last named; the channel itself after reset.
  * - GetChannelEnables: word 1 whether the channel is enabled.
@@ -3949,8 +3949,7 @@ static void sgi_kona_video_reply_words(SGIKonaState *s, uint32_t command,
         words[2] = ch->input_width;
         words[3] = ch->input_height;
         memcpy(&words[4], ch->pan, sizeof(ch->pan));
-        words[8] = words[9] = words[10] = words[11] = 1;
-        memcpy(&words[12], ch->placement, sizeof(ch->placement));
+        memcpy(&words[8], ch->placement, sizeof(ch->placement));
         break;
     case SGI_KONA_VIDEO_GET_VAMPIRE:
         words[0] = ch->source;
@@ -4083,7 +4082,7 @@ static void sgi_kona_setup_frame_buffer(SGIKonaState *s, uint32_t width,
  *   flicker, 0]: the input rectangle, and GetResize's pan rectangle when
  *   word 7 is 0.
  * - PlacementRes [channel, x code, y code, w3, 1, largest width, height,
- *   smallest width, height]: GetResize words 12-15.
+ *   smallest width, height]: GetResize words 8-15.
  * - Channel blanking [channel, blank]: nonzero shows the channel black.
  * - Channel gamma map [channel, map]: the gamma map the channel shows
  *   through.
@@ -4187,7 +4186,7 @@ static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
         }
         break;
     case SGI_KONA_VIDEO_PLACEMENT_RES:
-        memcpy(ch->placement, &d[5], sizeof(ch->placement));
+        memcpy(ch->placement, &d[1], sizeof(ch->placement));
         return;
     case SGI_KONA_VIDEO_CHANNEL_BLANKING:
         ch->blanked = d[1] != 0;
@@ -4441,9 +4440,8 @@ static void sgi_kona_dg_append_format(GArray *image, uint32_t channel,
  * are built, so not the clock, encoder, gamma, sync, gain, pedestal and
  * phase settings, the cursor priorities, which the fallback sets to 0 as
  * the model's reset does, or the commands for option channel 30;
- * LoadFormat's words past the size and rate are zero; and PlacementRes,
- * whose largest size the datasheet gives as 1280x1024 for channel 0, takes
- * the shipped 2@1280x1024_60's other words, and channel 1 the same.
+ * and LoadFormat's words past the size and rate are zero. Both channels'
+ * Resize and PlacementRes words are the firmware's.
  */
 static GArray *sgi_kona_dg_fallback(void)
 {
@@ -4468,11 +4466,10 @@ static GArray *sgi_kona_dg_fallback(void)
                        (uint32_t[]){ 1, 0, 640, 486, 1, 5, 3 }, 7);
     sgi_kona_dg_append(image, SGI_KONA_VIDEO_RESIZE,
                        (uint32_t[]){ 1, 0, 1023, 1280, 1024, 1, 1, 0 }, 8);
-    for (uint32_t c = 0; c < 2; c++) {
-        sgi_kona_dg_append(image, SGI_KONA_VIDEO_PLACEMENT_RES,
-                           (uint32_t[]){ c, 0xa0, 1, 4, 1, 1280, 1024, 4, 1 },
-                           9);
-    }
+    sgi_kona_dg_append(image, SGI_KONA_VIDEO_PLACEMENT_RES,
+                       (uint32_t[]){ 0, 4, 1, 4, 1, 1280, 1024, 4, 1 }, 9);
+    sgi_kona_dg_append(image, SGI_KONA_VIDEO_PLACEMENT_RES,
+                       (uint32_t[]){ 1, 4, 1, 4, 1, 2048, 2048, 640, 486 }, 9);
     sgi_kona_dg_append(image, SGI_KONA_VIDEO_CHANNEL_BLANKING,
                        (uint32_t[]){ 1, 1 }, 2);
     sgi_kona_dg_append(image, SGI_KONA_VIDEO_ENABLE_CHANNEL,
@@ -22047,7 +22044,7 @@ static const VMStateDescription vmstate_sgi_kona_channel = {
         VMSTATE_UINT32_ARRAY(format_name, SGIKonaChannel,
                              SGI_KONA_FORMAT_NAME_WORDS),
         VMSTATE_UINT32_ARRAY(pan, SGIKonaChannel, 4),
-        VMSTATE_UINT32_ARRAY(placement, SGIKonaChannel, 4),
+        VMSTATE_UINT32_ARRAY(placement, SGIKonaChannel, 8),
         VMSTATE_END_OF_LIST()
     },
 };

@@ -1075,8 +1075,8 @@ typedef enum SGIKonaBitmapState {
  * gamma_map the gamma-map command's, source the channel Vampire names,
  * cursor_priority CursorPriority's and format_name the name LoadFormat
  * carried; pan is the rectangle Resize last copied for GetResize and
- * placement PlacementRes's largest and smallest sizes; see the video setters
- * in sgi-kona.c.
+ * placement PlacementRes's words 1-8, the steps and sizes; see the video
+ * setters in sgi-kona.c.
  */
 #define SGI_KONA_MAX_CHANNELS 8
 
@@ -1102,7 +1102,7 @@ typedef struct SGIKonaChannel {
     uint32_t source;
     uint32_t format_name[SGI_KONA_FORMAT_NAME_WORDS];
     uint32_t pan[4];            /* GetResize words 4-7 */
-    uint32_t placement[4];      /* GetResize words 12-15 */
+    uint32_t placement[8];      /* GetResize words 8-15 */
 } SGIKonaChannel;
 
 /* What a channel's scanout hooks are handed: not guest state. */
