@@ -3057,7 +3057,16 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
         field_length = 5;
         break;
     case 0xa:
-        /* The first integer selects a PROM display branch, not link speed. */
+        /*
+         * The I/O link speed: a first integer of 0 means 400 MHz, any other
+         * 600 MHz. The stock IP35 PROM compares it with the speed it
+         * expects for the attached brick's letter (400 for I, N and X, 600
+         * for P and V) and warns on a mismatch, except on an Origin 300
+         * board, which skips the check. Every profile answers 0 unless
+         * port-speed-first says otherwise; that is right for the I-brick
+         * and N-brick. The V-brick's guide rate is a 400 MHz link but the
+         * PROM expects 600, so its C-brick keeps 0 until that is settled.
+         */
         field_count = 2;
         field_length = 10;
         memset(fields, 0, field_length);
