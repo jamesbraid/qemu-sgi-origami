@@ -1682,6 +1682,304 @@ static void test_same_time_priority(void)
     }
 }
 
+
+static void test_partial_fetch_pc(void)
+{
+    const uint32_t words[] = {
+        I(13, 0, 2, 0x1122), I(9, 2, 3, 7), I(13, 0, 1, 0x8000),
+        I(43, 1, 3, 0), BREAK, 0, 0
+    };
+    const uint32_t prime[] = {
+        I(13, 0, 1, 0x8000), I(13, 0, 2, 0x1357), BREAK, 0, 0
+    };
+    static const struct {
+        unsigned offset, size;
+        uint64_t value;
+        unsigned initial;
+    } writes[] = {
+        {0x57, 1, 4, 0x2000}, {0x56, 1, 0x20, 0x2104},
+        {0x50, 1, 0xa5, 0x2004}, {0x51, 1, 0xa5, 0x2004},
+        {0x52, 1, 0xa5, 0x2004}, {0x53, 1, 0xa5, 0x2004},
+        {0x54, 1, 0xa5, 0x2004}, {0x55, 1, 0xa5, 0x2004},
+        {0x50, 2, 0xa17c, 0x2004}, {0x52, 2, 0xa17c, 0x2004},
+        {0x54, 2, 0xa17c, 0x2004}, {0x56, 2, 0x2007, 0x2004},
+        {0x50, 4, 0xdeadbeef, 0x2004},
+        {0x54, 4, 0x9abc2007, 0x2004},
+        {0x50, 8, UINT64_C(0xabcdef019abc2007), 0x2004}
+    };
+    QTestState *s = start("");
+
+    for (unsigned halted = 0; halted < 2; halted++) {
+        for (unsigned n = 0; n < G_N_ELEMENTS(writes); n++) {
+            uint64_t decode = 0;
+
+            reg(s, 0x40, 0);
+            program(s, 0x2000, words, G_N_ELEMENTS(words));
+            if (halted) {
+                program(s, 0x2200, prime, G_N_ELEMENTS(prime));
+                launch(s, 0x2200);
+                finish(s);
+                decode = 0x2208;
+                reg(s, 0x48, 0);
+                reg(s, 0xe008, 8);
+            } else {
+                qtest_clock_step(s, 267);
+                reg(s, 0x100, 7);
+            }
+            qtest_writel(s, BASE + 0x8000, 0xcccccccc);
+            reg(s, 0x50, writes[n].initial);
+            g_assert_cmphex(rd(s, 0x50), ==, decode);
+            g_assert_cmpint(memtx_store(s, BASE + writes[n].offset,
+                writes[n].value, writes[n].size), ==, MEMTX_OK);
+            g_assert_cmphex(rd(s, 0x50), ==, decode);
+            reg(s, 0x40, 3);
+            finish(s);
+            g_test_message("partial PC: halted=%u write=%u", halted, n);
+            g_assert_cmphex(qtest_readl(s, BASE + 0x8000), ==,
+                            halted ? 0x135e : 7);
+            g_assert_cmphex(rd(s, 0x68), ==, 0x2010);
+            g_assert_cmphex(rd(s, 0x70), ==, 8);
+        }
+    }
+    qtest_quit(s);
+}
+
+static const struct { unsigned offset, size; } control_padding[] = {
+    {0x40, 1}, {0x41, 1}, {0x42, 1}, {0x43, 1},
+    {0x44, 1}, {0x45, 1}, {0x46, 1},
+    {0x40, 2}, {0x42, 2}, {0x44, 2}, {0x40, 4}
+};
+
+static void control_padding_writes(QTestState *s)
+{
+    uint64_t control = rd(s, 0x40), decode = rd(s, 0x50);
+    uint64_t counter = rd(s, 0x108);
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(control_padding); i++) {
+        g_assert_cmpint(memtx_store(s, BASE + control_padding[i].offset, 0,
+                                   control_padding[i].size), ==, MEMTX_OK);
+        g_assert_cmphex(rd(s, 0x40), ==, control);
+        g_assert_cmphex(rd(s, 0x50), ==, decode);
+        g_assert_cmphex(rd(s, 0x108), ==, counter);
+    }
+}
+
+static void test_control_padding_running(void)
+{
+    QTestState *s = start("");
+    const uint32_t loop[] = { I(4, 0, 0, -1), 0, 0 };
+
+    program(s, 0x2000, loop, G_N_ELEMENTS(loop));
+    launch(s, 0x2000);
+    qtest_clock_step(s, 101);
+    control_padding_writes(s);
+    g_assert_cmphex(rd(s, 0x48), ==, 0);
+    g_assert_cmphex(rd(s, 0x160), ==, 0);
+    reg(s, 0x40, 2);
+    finish(s);
+    control_padding_writes(s);
+    g_assert_cmpint(memtx_store(s, BASE + 0x40, 3, 8), !=, MEMTX_OK);
+    assert_held(s);
+    g_assert_cmphex(rd(s, 0x40), ==, 2);
+    qtest_quit(s);
+}
+
+static void test_control_padding_drain(void)
+{
+    QTestState *s = start("");
+    const uint32_t words[] = {
+        I(13, 0, 1, 0x8000), I(13, 0, 2, 0x3197), I(43, 1, 2, 0),
+        BREAK, 0, 0
+    };
+    int64_t epoch;
+
+    program(s, 0x2000, words, G_N_ELEMENTS(words));
+    epoch = launch(s, 0x2000);
+    tick(s, epoch, 5);
+    g_assert_cmphex(rd(s, 0x48), ==, 4);
+    g_assert_cmphex(rd(s, 0x40), ==, 3);
+    g_assert_cmphex(rd(s, 0x8000), ==, 0);
+    control_padding_writes(s);
+    tick(s, epoch, 6);
+    g_assert_cmphex(qtest_readl(s, BASE + 0x8000), ==, 0x3197);
+    g_assert_cmphex(rd(s, 0x40), ==, 3);
+    tick(s, epoch, 7);
+    g_assert_cmphex(rd(s, 0x40), ==, 2);
+    control_padding_writes(s);
+    g_assert_cmphex(rd(s, 0x160), ==, 8);
+    qtest_quit(s);
+}
+
+static void test_pc_padding_no_fresh(void)
+{
+    static const struct { unsigned offset, size; } padding[] = {
+        {0x50, 1}, {0x51, 1}, {0x52, 1}, {0x53, 1}, {0x54, 1}, {0x55, 1},
+        {0x50, 2}, {0x52, 2}, {0x54, 2}, {0x50, 4}
+    };
+    const uint32_t words[] = { BREAK, 0, 0 };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(padding); i++) {
+        QTestState *s = start("");
+        uint64_t decode;
+
+        program(s, 0x2000, words, G_N_ELEMENTS(words));
+        launch(s, 0x2000);
+        finish(s);
+        decode = rd(s, 0x50);
+        reg(s, 0x48, 0);
+        reg(s, 0xe008, 8);
+        g_assert_cmpint(memtx_store(s, BASE + padding[i].offset, 0,
+                                   padding[i].size), ==, MEMTX_OK);
+        g_assert_cmphex(rd(s, 0x50), ==, decode);
+        g_assert_cmphex(rd(s, 0x40), ==, 2);
+        g_assert_cmpint(memtx_store(s, BASE + 0x40, 3, 8), !=, MEMTX_OK);
+        assert_held(s);
+        g_assert_cmphex(rd(s, 0x40), ==, 2);
+        g_assert_cmphex(rd(s, 0x48), ==, 0);
+        g_assert_cmphex(rd(s, 0x160), ==, 0);
+        qtest_quit(s);
+    }
+}
+
+static void test_partial_control_events(void)
+{
+    static const struct { unsigned offset, size; } fields[] = {
+        {0x47, 1}, {0x46, 2}, {0x44, 4}, {0x40, 8}
+    };
+    const uint32_t loop[] = { I(4, 0, 0, -1), 0, 0 };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(fields); i++) {
+        QTestState *s = start("");
+
+        program(s, 0x2000, loop, G_N_ELEMENTS(loop));
+        qtest_clock_step(s, 267);
+        reg(s, 0x50, 0x2000);
+        g_assert_cmpint(memtx_store(s, BASE + fields[i].offset, 3,
+                                   fields[i].size), ==, MEMTX_OK);
+        qtest_clock_step(s, 34);
+        g_assert_cmphex(rd(s, 0x40), ==, 3);
+        g_assert_cmpint(memtx_store(s, BASE + fields[i].offset, 2,
+                                   fields[i].size), ==, MEMTX_OK);
+        finish(s);
+        g_assert_cmphex(rd(s, 0x48), ==, 0);
+        g_assert_cmphex(rd(s, 0x160), ==, 0);
+        qtest_quit(s);
+    }
+    QTestState *s = start("");
+    program(s, 0x2000, loop, G_N_ELEMENTS(loop));
+    launch(s, 0x2000);
+    g_assert_cmpint(memtx_store(s, BASE + 0x44, 1, 1), !=, MEMTX_OK);
+    assert_held(s);
+    g_assert_cmphex(rd(s, 0x40), ==, 3);
+    qtest_quit(s);
+}
+
+static void test_partial_scalar_registers(void)
+{
+    QTestState *s = start("");
+    static const unsigned readonly[] = { 0x58, 0x68, 0x70 };
+    uint64_t value;
+
+    reg(s, 0x48, 0x5a);
+    g_assert_cmpint(memtx_store(s, BASE + 0x4e, 0, 1), ==, MEMTX_OK);
+    g_assert_cmphex(rd(s, 0x48), ==, 0x5a);
+    g_assert_cmpint(memtx_store(s, BASE + 0x4f, 0xa5, 1), ==, MEMTX_OK);
+    g_assert_cmphex(rd(s, 0x48), ==, 0xa5);
+    g_assert_cmpint(memtx_store(s, BASE + 0x4e, 0xbeef, 2), ==, MEMTX_OK);
+    g_assert_cmphex(rd(s, 0x48), ==, 0xef);
+    g_assert_cmpint(memtx_store(s, BASE + 0x4c, 0x12345678, 4), ==, MEMTX_OK);
+    g_assert_cmphex(rd(s, 0x48), ==, 0x78);
+    reg(s, 0x60, 0x12345678);
+    g_assert_cmpint(memtx_store(s, BASE + 0x66, 0xab, 1), ==, MEMTX_OK);
+    g_assert_cmphex(rd(s, 0x60), ==, 0x1234ab78);
+    g_assert_cmpint(memtx_store(s, BASE + 0x67, 0x9f, 1), ==, MEMTX_OK);
+    g_assert_cmphex(rd(s, 0x60), ==, 0x1234ab98);
+    g_assert_cmpint(memtx_store(s, BASE + 0x66, 0xcafe, 2), ==, MEMTX_OK);
+    g_assert_cmphex(rd(s, 0x60), ==, 0x1234caf8);
+    g_assert_cmpint(memtx_store(s, BASE + 0x64, 0xffeeddcc, 4), ==, MEMTX_OK);
+    g_assert_cmphex(rd(s, 0x60), ==, 0xffeeddc8);
+    for (unsigned i = 0; i < G_N_ELEMENTS(readonly); i++) {
+        g_assert_cmpint(memtx_store(s, BASE + readonly[i] + 7, 0xa5, 1),
+                       !=, MEMTX_OK);
+        g_assert_cmpint(memtx_load(s, BASE + readonly[i], &value, 8),
+                       ==, MEMTX_OK);
+        g_assert_cmphex(value, ==, 0);
+    }
+    qtest_quit(s);
+}
+
+
+static void test_active_pc_write_masks(void)
+{
+    static const struct { unsigned offset, size; } padding[] = {
+        {0x50, 1}, {0x51, 1}, {0x52, 1}, {0x53, 1}, {0x54, 1}, {0x55, 1},
+        {0x50, 2}, {0x52, 2}, {0x54, 2}, {0x50, 4}
+    };
+    const uint32_t words[] = { I(4, 0, 0, -1), 0, 0 };
+    QTestState *s = start("");
+    uint64_t decode, counter;
+
+    program(s, 0x2000, words, G_N_ELEMENTS(words));
+    launch(s, 0x2000);
+    qtest_clock_step(s, 101);
+    decode = rd(s, 0x50);
+    counter = rd(s, 0x108);
+    for (unsigned i = 0; i < G_N_ELEMENTS(padding); i++) {
+        g_assert_cmpint(memtx_store(s, BASE + padding[i].offset, 0xa5,
+                                   padding[i].size), ==, MEMTX_OK);
+        g_assert_cmphex(rd(s, 0x40), ==, 3);
+        g_assert_cmphex(rd(s, 0x50), ==, decode);
+        g_assert_cmphex(rd(s, 0x108), ==, counter);
+    }
+    g_assert_cmpint(memtx_store(s, BASE + 0x57, 0, 1), !=, MEMTX_OK);
+    assert_held(s);
+    g_assert_cmphex(rd(s, 0x50), ==, decode);
+    g_assert_cmphex(rd(s, 0x40), ==, 3);
+    qtest_quit(s);
+}
+
+static void test_partial_pc_migration(void)
+{
+    g_autofree char *dir = g_strdup("/tmp/vice-msp-partial-XXXXXX");
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = start("");
+    QTestState *to = start("-incoming defer");
+    const uint32_t prime[] = {
+        I(13, 0, 1, 0x8000), I(13, 0, 2, 0x1357), BREAK, 0, 0
+    };
+    const uint32_t words[] = {
+        I(13, 0, 2, 0x1122), I(9, 2, 3, 7), I(13, 0, 1, 0x8000),
+        I(43, 1, 3, 0), BREAK, 0, 0
+    };
+
+    g_assert_nonnull(g_mkdtemp(dir));
+    socket = g_build_filename(dir, "socket", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    program(from, 0x2200, prime, G_N_ELEMENTS(prime));
+    launch(from, 0x2200);
+    finish(from);
+    reg(from, 0x48, 0);
+    reg(from, 0xe008, 8);
+    program(from, 0x2000, words, G_N_ELEMENTS(words));
+    reg(from, 0x50, 0x2000);
+    g_assert_cmpint(memtx_store(from, BASE + 0x57, 4, 1), ==, MEMTX_OK);
+    g_assert_cmphex(rd(from, 0x50), ==, 0x2208);
+    transfer_state(from, to, uri);
+    g_assert_cmphex(rd(to, 0x50), ==, 0x2208);
+    g_assert_cmpint(memtx_store(to, BASE + 0x55, 0xa5, 1), ==, MEMTX_OK);
+    g_assert_cmphex(rd(to, 0x50), ==, 0x2208);
+    reg(to, 0x40, 3);
+    qtest_clock_timers(to, true);
+    finish(to);
+    g_assert_cmphex(qtest_readl(to, BASE + 0x8000), ==, 0x135e);
+    g_assert_cmphex(rd(to, 0x68), ==, 0x2010);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1738,5 +2036,20 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-vice-msp/loop-polling", test_loop_polling);
     qtest_add_func("/sgi-vice-msp/interlock-classes", test_interlock_classes);
     qtest_add_func("/sgi-vice-msp/same-time-priority", test_same_time_priority);
+    qtest_add_func("/sgi-vice-msp/partial-fetch-pc", test_partial_fetch_pc);
+    qtest_add_func("/sgi-vice-msp/control-padding-running",
+                   test_control_padding_running);
+    qtest_add_func("/sgi-vice-msp/control-padding-drain",
+                   test_control_padding_drain);
+    qtest_add_func("/sgi-vice-msp/pc-padding-no-fresh",
+                   test_pc_padding_no_fresh);
+    qtest_add_func("/sgi-vice-msp/partial-control-events",
+                   test_partial_control_events);
+    qtest_add_func("/sgi-vice-msp/partial-scalar-registers",
+                   test_partial_scalar_registers);
+    qtest_add_func("/sgi-vice-msp/active-pc-write-masks",
+                   test_active_pc_write_masks);
+    qtest_add_func("/sgi-vice-msp/partial-pc-migration",
+                   test_partial_pc_migration);
     return g_test_run();
 }

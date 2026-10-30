@@ -951,8 +951,10 @@ static MemTxResult vice_access(SGIViceState *s, hwaddr address,
             if (write && (slot == 0x58 || slot == 0x68 || slot == 0x70)) {
                 return vice_refuse(s, "MSP read-only host register", address);
             }
-            sgi_vice_msp_host_read(&s->msp, slot, &logical);
-            old = logical;
+            if (!write) {
+                sgi_vice_msp_host_read(&s->msp, slot, &logical);
+                old = logical;
+            }
             msp_port = true;
             break;
         }
@@ -1017,10 +1019,10 @@ static MemTxResult vice_access(SGIViceState *s, hwaddr address,
         if (!(mask & UINT32_MAX)) {
             return MEMTX_OK;
         }
-        if (!sgi_vice_msp_host_write(&s->msp, slot, updated)) {
+        if (!sgi_vice_msp_host_write(&s->msp, slot, payload, mask)) {
             return MEMTX_ERROR;
         }
-        if (slot == 0x40 && !s->msp.model_blocked) {
+        if (slot == 0x40 && (mask & 3) && !s->msp.model_blocked) {
             s->unsupported = false;
         }
         vice_reschedule(s);

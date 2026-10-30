@@ -126,7 +126,8 @@ void sgi_vice_msp_init(SGIViceMsp *m, const SGIViceMspOps *ops,
 void sgi_vice_msp_reset(SGIViceMsp *m);
 void sgi_vice_msp_tick(SGIViceMsp *m);
 bool sgi_vice_msp_host_read(SGIViceMsp *m, unsigned slot, uint32_t *value);
-bool sgi_vice_msp_host_write(SGIViceMsp *m, unsigned slot, uint32_t value);
+bool sgi_vice_msp_host_write(SGIViceMsp *m, unsigned slot, uint32_t value,
+                             uint32_t mask);
 bool sgi_vice_msp_reserved(SGIViceMsp *m, unsigned bank,
                            int64_t ns, uint32_t fraction);
 bool sgi_vice_msp_rebase(SGIViceMsp *m, int64_t delta);
