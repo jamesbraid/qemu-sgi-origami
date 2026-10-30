@@ -378,3 +378,20 @@ gl-point-coordinate-clipped-failures /mips64/sgi/crime/render/gl-point-coordinat
 gl-point-coordinate-alpha-never-failures /mips64/sgi/crime/render/gl-point-coordinate/failures/alpha-never
 gl-point-coordinate-migration-setup /mips64/sgi/crime/render/gl-point-coordinate/migration/setup
 gl-point-coordinate-migration-committed /mips64/sgi/crime/render/gl-point-coordinate/migration/committed
+
+gl-line-depth-stipple /mips64/sgi/crime/render/gl-line/depth-stipple
+gl-line-composed-vectors /mips64/sgi/crime/render/gl-line/composed-vectors
+gl-line-sz-composition /mips64/sgi/crime/render/gl-line/sz-composition
+gl-line-composed-clipping /mips64/sgi/crime/render/gl-line/composed-clipping
+gl-line-composed-failures /mips64/sgi/crime/render/gl-line/composed-failures
+gl-line-composed-starts /mips64/sgi/crime/render/gl-line/composed-starts
+gl-line-composed-mappings /mips64/sgi/crime/render/gl-line/composed-mappings
+gl-line-composed-migration /mips64/sgi/crime/render/gl-line/composed-migration
+gl-line-composed-widths0 /mips64/sgi/crime/render/gl-line/composed-widths/0
+gl-line-composed-widths1 /mips64/sgi/crime/render/gl-line/composed-widths/1
+gl-line-composed-widths2 /mips64/sgi/crime/render/gl-line/composed-widths/2
+gl-line-composed-widths3 /mips64/sgi/crime/render/gl-line/composed-widths/3
+gl-line-composed-lengths /mips64/sgi/crime/render/gl-line/composed-lengths
+gl-line-composed-allocation /mips64/sgi/crime/render/gl-line/composed-allocation
+gl-line-composed-alpha /mips64/sgi/crime/render/gl-line/composed-alpha
+gl-line-composed-depth-bounds /mips64/sgi/crime/render/gl-line/composed-depth-bounds

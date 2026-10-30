@@ -14170,6 +14170,55 @@ static Shape gl_line_prepare(QTestState *s, bool aa)
     return c;
 }
 
+static void test_gl_line_depth_stipple(void)
+{
+    QTestState *s = start_indexed_state();
+    const int a[] = { 0, 64 }, b[] = { 8 * 64, 64 };
+
+    for (unsigned reverse = 0; reverse < 2; reverse++) {
+        Shape c = gl_line_prepare(s, false);
+        SZCase v = sz_case();
+        uint32_t expected[48];
+
+        c.width = 12;
+        map_region(s, 0, 4, 0, 0, 11, 3);
+        shape_memory(s, &c, NULL);
+        sz_initialize(s, &c, v.old);
+        v.draw = TRIANGLE_DRAW | 0x80000 | 7;
+        v.stencil = 0x62ff7002;
+        v.dx = 4096;
+        v.dy = 8192;
+        v.start += reverse ? 8 * v.dx : 0;
+        sz_program(s, &v);
+        gl_line_vertices(s, reverse ? b : a, reverse ? a : b, 0, 0, 0);
+        qtest_writel(s, DE + 0x60, 0x01000040);
+        qtest_writeq(s, DE + 0xc0, UINT64_C(0x02040102) << 32 | 0x28000000);
+        for (unsigned repetition = 0; repetition < 2; repetition++) {
+            for (unsigned y = 0; y < 4; y++) {
+                for (unsigned x = 0; x < 12; x++) {
+                    int i = reverse ? 7 - (int)x : (int)x;
+                    bool selected = i >= 0 && i < 8 &&
+                                    (i < 2 || i >= 5) && (y == 1 || y == 2);
+                    uint32_t z = 0x62000000 | (18 + x + 2 * ((int)y - 1));
+
+                    expected[12 * y + x] = selected ? v.color : c.old;
+                    if (repetition) {
+                        g_assert_cmphex(pixel_read(s,
+                            pixel_address(2, x, y, 4), 4), ==,
+                            selected ? z : v.old);
+                    }
+                }
+            }
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0xdeadbeef),
+                            ==, MEMTX_OK);
+            shape_memory(s, &c, expected);
+            g_assert_cmphex(qtest_readl(s, DE + 0xc0), ==, 0x02040102);
+            g_assert_cmphex(qtest_readl(s, DE + 0xc4), ==, 0x28000000);
+        }
+    }
+    qtest_quit(s);
+}
+
 static void test_gl_line_pairs_atomic(void)
 {
     const unsigned pairs[] = { 0xe0, 0xe8, 0xf0, 0xf8, 0x100, 0x108, 0x190 };
@@ -18825,6 +18874,819 @@ static void test_gl_point_coordinate_active(void)
     qtest_quit(s);
 }
 
+/* Coverage comes from the independent rational fixtures, not the device. */
+static void test_gl_line_composed_vectors(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(gl_nonaa_vectors); n++) {
+        const GLNonAAVector *v = &gl_nonaa_vectors[n];
+        Shape c = pipeline_prepare(s, 0x228, n % 2);
+        SZCase sz = sz_case();
+        uint32_t expected[256], zs[256];
+        bool major[16] = { false }, enabled[16] = { false };
+        bool xmajor = abs(v->b[0] - v->a[0]) >= abs(v->b[1] - v->a[1]);
+        bool reverse = v->b[xmajor ? 0 : 1] < v->a[xmajor ? 0 : 1];
+        unsigned bit = 2, repeat = 1;
+
+        c.width = c.height = 16;
+        map_region(s, c.bank, 4, 0, 0, 15, 15);
+        shape_memory(s, &c, NULL);
+        sz_initialize(s, &c, sz.old);
+        sz.draw = TRIANGLE_DRAW | 0x180007;
+        sz.stencil = 0x62ff7002;
+        sz.start = 100 * 4096;
+        sz.dx = 4096;
+        sz.dy = -8192;
+        sz_program(s, &sz);
+        qtest_writeq(s, DE + 0x48, bounds(4096, 4096, 4112, 4112));
+        gl_line_vertices(s, v->a, v->b, -4096, -4096, 0x48000000);
+        qtest_writel(s, DE + 0x60, 0x01000000 | v->halfwidth |
+                    (n % 4) << 16 | (n & 1) << 18);
+        qtest_writeq(s, DE + 0xc0, UINT64_C(0x02040102) << 32 | 0x28000000);
+        for (unsigned y = 0; y < 16; y++) {
+            for (unsigned x = 0; x < 16; x++) {
+                if (v->rows[y] & (1U << x)) {
+                    major[xmajor ? x : y] = true;
+                }
+            }
+        }
+        for (unsigned j = 0; j < 16; j++) {
+            unsigned m = reverse ? 15 - j : j;
+
+            if (!major[m]) {
+                continue;
+            }
+            enabled[m] = 0x28000000 & (1U << (31 - bit));
+            if (repeat++ == 2) {
+                repeat = 0;
+                bit = bit == 4 ? 2 : bit + 1;
+            }
+        }
+        for (unsigned y = 0; y < 16; y++) {
+            for (unsigned x = 0; x < 16; x++) {
+                bool selected = (v->rows[y] & (1U << x)) &&
+                                enabled[xmajor ? x : y];
+                int64_t z = 64 * sz.start +
+                    sz.dx * (64 * (int64_t)x - v->a[0]) +
+                    sz.dy * (64 * (int64_t)y - v->a[1]);
+                int64_t sample = z / 64 - (z % 64 < 0);
+
+                expected[16 * y + x] = selected ? sz.color : c.old;
+                zs[16 * y + x] = selected ? 0x62000000 |
+                    sz_reference_depth(sample) : sz.old;
+            }
+        }
+        g_test_message("composed line vector %u", n);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+        for (unsigned y = 0; y < 16; y++) {
+            for (unsigned x = 0; x < 16; x++) {
+                g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                                ==, zs[16 * y + x]);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void gl_line_sz_alpha_run(QTestState *s, const SZCase *v, bool smooth,
+                                  unsigned alpha_test)
+{
+    const int a[] = { 32, 80 }, b[] = { 224, 80 };
+    const int starts[] = { 100 * 4096, 80 * 4096, 60 * 4096, 128 * 4096 };
+    const int dx[] = { 4096, -8192, 12288, -16384 };
+    const int dy[] = { 8192, 4096, -4096, -8192 };
+    Shape c = pipeline_prepare(s, v->mode, v->bank);
+    uint32_t expected[16], zs[16];
+
+    sz_initialize(s, &c, v->old);
+    sz_program(s, v);
+    pipeline_shade(s, starts, dx, dy);
+    gl_line_vertices(s, a, b, -4096, -4096, 0x48000000);
+    qtest_writel(s, DE + 0x60, 0x01000060);
+    qtest_writel(s, DE + 0x18, v->draw | (smooth ? 0x10000 : 0));
+    qtest_writel(s, DE + 0x198, alpha_test);
+    qtest_writeq(s, DE + 0xc0, UINT64_C(0x02040102) << 32 | UINT32_MAX);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            bool covered = x >= 1 && y <= 2, pass;
+            int64_t n = v->draw & 4 ? 64 * v->start +
+                v->dx * (64 * (int64_t)x - a[0]) +
+                v->dy * (64 * (int64_t)y - a[1]) : 0;
+            int64_t z = n / 64 - (n % 64 < 0);
+            uint32_t source = smooth ?
+                gl_line_reference_color(starts, dx, dy, a, x, y) : v->color;
+            uint32_t old = sz_reference(v, v->old,
+                                        sz_reference_depth(z), &pass);
+
+            bool alpha = !(v->draw & 0x800) || sz_reference_compare(
+                alpha_test >> 8, source & 255, alpha_test & 255);
+
+            zs[4 * y + x] = covered && alpha ? old : v->old;
+            expected[4 * y + x] = covered && alpha && pass ? pipeline_reference(
+                v->mode, source, c.old, 0, 0x45, v->draw, 6,
+                v->plane, x, y) : c.old;
+        }
+    }
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    shape_memory(s, &c, expected);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                            ==, zs[4 * y + x]);
+        }
+    }
+}
+
+static void gl_line_sz_run(QTestState *s, const SZCase *v, bool smooth)
+{
+    gl_line_sz_alpha_run(s, v, smooth, 0x740);
+}
+
+static void test_gl_line_sz_composition(void)
+{
+    QTestState *s = start_indexed_state();
+    SZCase v = sz_case();
+
+    for (unsigned function = 0; function < 8; function++) {
+        for (unsigned value = 16; value <= 18; value++) {
+            v.draw = TRIANGLE_DRAW | 0x80707;
+            v.control = function << 25;
+            v.start = value * 4096;
+            v.dx = 4096;
+            v.dy = -8192;
+            v.mode = gl_rectangle_modes[(function + value) % 10];
+            v.bank = function % 2;
+            v.stencil = 0x62ff7003;
+            gl_line_sz_run(s, &v, true);
+        }
+    }
+    for (unsigned outcome = 0; outcome < 3; outcome++) {
+        for (unsigned operation = 0; operation < 6; operation++) {
+            v = sz_case();
+            v.draw = TRIANGLE_DRAW | 0x80007;
+            v.control = (outcome == 1 ? 0 : 7) << 25;
+            v.stencil = 0x62ff0000 | (outcome == 0 ? 0 : 7) << 12 |
+                operation << 8 | operation << 4 | operation;
+            v.mask = 0x5a;
+            gl_line_sz_run(s, &v, false);
+        }
+    }
+    for (unsigned function = 5; function <= 7; function += 2) {
+        for (unsigned materialize = 0; materialize < 2; materialize++) {
+            for (unsigned write = 0; write < 2; write++) {
+                for (unsigned pass = 0; pass < 2; pass++) {
+                    for (unsigned equal = 0; equal < 2; equal++) {
+                        v = sz_case();
+                        v.draw = TRIANGLE_DRAW | 0x80005 | write << 1;
+                        v.mask = write ? 255 : 0;
+                        v.control = (pass ? 7 : 0) << 25 | 0x01000010;
+                        v.stencil = 0x62ff0002 | function << 12 |
+                                    (materialize ? 0x20 : 0);
+                        v.old = (equal ? 0x62 : 0x53) << 24 | 17;
+                        gl_line_sz_run(s, &v, true);
+                    }
+                }
+            }
+        }
+    }
+    for (unsigned edge = 0; edge < 2; edge++) {
+        v = sz_case();
+        v.draw |= 0x80000;
+        v.start = edge ? INT64_C(1) << 36 : -(INT64_C(1) << 36);
+        gl_line_sz_run(s, &v, false);
+    }
+    v = sz_case();
+    v.draw = TRIANGLE_DRAW | 0x80001;
+    v.start = INT64_MIN;
+    v.dx = INT64_MAX;
+    v.dy = INT64_MIN;
+    v.stencil = 0x62ff7002;
+    gl_line_sz_run(s, &v, true);
+    qtest_quit(s);
+}
+
+static void test_gl_line_composed_clipping(void)
+{
+    QTestState *s = start_indexed_state();
+    const int a[] = { -3 * 64, 64 }, b[] = { 9 * 64, 64 };
+
+    for (unsigned cut = 0; cut < 4; cut++) {
+        Shape c = pipeline_prepare(s, 0x228, 0);
+        SZCase v = sz_case();
+        uint32_t expected[48];
+        uint64_t box = bounds(4097, 4096, 4103, 4100);
+
+        c.width = 12;
+        map_region(s, 0, 4, 0, 0, 11, 3);
+        shape_memory(s, &c, NULL);
+        sz_initialize(s, &c, v.old);
+        v.draw = TRIANGLE_DRAW | 0x80007 | (cut == 1 ? 0x100000 : 0);
+        v.stencil = 0x62ff7003;
+        sz_program(s, &v);
+        gl_line_vertices(s, a, b, -4096, -4096, 0);
+        qtest_writel(s, DE + 0x60, 0x01000040);
+        qtest_writeq(s, DE + 0xc0, UINT64_C(0x02040102) << 32 | 0x28000000);
+        qtest_writeq(s, DE + 0x48, box);
+        if (cut == 2) {
+            qtest_writel(s, DE + 0x10, 0x63);
+            qtest_writeq(s, DE + 0x20, bounds(1, 0, 7, 4));
+            qtest_writeq(s, DE + 0x28, bounds(2, 0, 6, 4));
+        }
+        if (cut == 3) {
+            qtest_writel(s, DE + 0x18, v.draw | 0x800);
+            qtest_writel(s, DE + 0x198, 0);
+            tile(s, 0, 0, 0x7fff);
+            tile(s, 2, 0, 0x7fff);
+        }
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 12; x++) {
+                unsigned i = x + 3;
+                /* Sequence 11 000 111 111 0 before framebuffer clipping. */
+                bool selected = x < 9 && i >= 5 && i <= 10 &&
+                    (y == 1 || y == 2) && cut != 3 &&
+                    (!(cut == 1 || cut == 2) || (x >= 1 && x < 7));
+
+                expected[12 * y + x] = selected ? v.color : c.old;
+            }
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 12; x++) {
+                bool selected = expected[12 * y + x] != c.old;
+
+                g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                                ==, selected ? 0x54000012 : v.old);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_line_composed_failures(void)
+{
+    const int64_t limit = INT64_C(1) << 36;
+    const uint32_t modes[] = { 0x04020102, 0x02040302, 0x22040102,
+                               0x02240102 };
+    const unsigned held[] = { 0x1000, 0x2000, 0x4000, 0x8000, 0x20000,
+                              0x40000, 0x200000, 0x800000, 0x1000000 };
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-line-composed-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < 24; n++) {
+        Shape c = gl_line_prepare(s, false);
+        SZCase v = sz_case();
+        const int a[] = { 32, 80 }, b[] = { 224, 80 };
+
+        sz_initialize(s, &c, v.old);
+        v.draw = TRIANGLE_DRAW | 0x80007;
+        v.stencil = 0x62ff7003;
+        sz_program(s, &v);
+        gl_line_vertices(s, a, b, 0, 0, 0);
+        qtest_writel(s, DE + 0x60, 0x01000060);
+        qtest_writeq(s, DE + 0xc0, UINT64_C(0x02040102) << 32 | UINT32_MAX);
+        if (n < 4) {
+            qtest_writel(s, DE + 0xc0, modes[n]);
+            qtest_writel(s, DE + 0xc4, n & 1 ? 0 : UINT32_MAX);
+        } else if (n < 13) {
+            qtest_writel(s, DE + 0x18, v.draw | held[n - 4]);
+        } else if (n < 19) {
+            unsigned word = (n - 13) / 2;
+            qtest_writeq(s, DE + 0x1c8 + 8 * word,
+                         n & 1 ? limit + 1 : -limit - 1);
+        } else if (n < 22) {
+            /* A later geometric overflow remains illegal under each discard. */
+            qtest_writeq(s, DE + 0x1c8, limit - 8192);
+            qtest_writeq(s, DE + 0x1d0, 8192);
+            if (n == 19) {
+                qtest_writel(s, DE + 0xc4, 0);
+            } else if (n == 20) {
+                qtest_writel(s, DE + 0x18, v.draw | 0x800);
+                qtest_writel(s, DE + 0x198, 0);
+            } else {
+                qtest_writel(s, DE + 0x18, v.draw | 0x100000);
+                qtest_writeq(s, DE + 0x48, bounds(10, 10, 11, 11));
+            }
+        } else {
+            const int starts[] = { (1 << 20) - 2, 0, 0, 0 };
+            const int dx[] = { 2, 0, 0, 0 }, dy[] = { 0, 0, 0, 0 };
+
+            qtest_writel(s, DE + 0x18, v.draw | 0x10000);
+            pipeline_shade(s, starts, dx, dy);
+            qtest_writel(s, DE + 0xc4, 0);
+            if (n == 23) {
+                qtest_writel(s, DE + 0x18, v.draw | 0x10800);
+                qtest_writel(s, DE + 0x198, 0);
+            }
+        }
+        g_test_message("composed line semantic refusal %u", n);
+        sz_atomic_failure(s, &c, path, DE + 0x8d0, 0xf13579bd, 4);
+    }
+    /* Failed triggering companions are not published. */
+    {
+        Shape c = gl_line_prepare(s, false);
+        SZCase v = sz_case();
+
+        sz_initialize(s, &c, v.old);
+        v.draw |= 0x80000;
+        sz_program(s, &v);
+        qtest_writeq(s, DE + 0xc0, UINT64_C(0x02040102) << 32 | UINT32_MAX);
+        sz_atomic_failure(s, &c, path, DE + 0x8c0,
+                          UINT64_C(0x04020102) << 32 | 0x13579bdf, 8);
+        sz_atomic_failure(s, &c, path, DE + 0x9d8, limit + 1, 8);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_line_composed_starts(void)
+{
+    Register forms[64];
+    unsigned count = gl_transfer_starts(forms);
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-line-composed-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    const int a[] = { 0, 64 }, b[] = { 192, 64 };
+    const int starts[] = { 0x11 * 4096, 0x53 * 4096,
+                           0xc9 * 4096, 0x40 * 4096 };
+    const int zero[] = { 0, 0, 0, 0 };
+
+    for (unsigned smooth = 0; smooth < 2; smooth++) {
+        for (unsigned n = 0; n < count; n++) {
+            const Register *f = &forms[n];
+            Shape c = gl_line_prepare(s, false);
+            SZCase v = sz_case();
+            uint64_t before[RENDER_WORDS], after[RENDER_WORDS], value;
+            bool pair = f->width == 8 && (f->offset == 0x70 ||
+                f->offset == 0xa8 || f->offset == 0xc0);
+            uint32_t expected[16];
+
+            if (f->offset == 0xb0 || f->offset == 0xb4 ||
+                (f->offset >= 0x110 && f->offset <= 0x15c)) {
+                continue;
+            }
+            sz_initialize(s, &c, v.old);
+            v.draw = TRIANGLE_DRAW | 0x80207 | (smooth ? 0x10000 : 0);
+            v.stencil = 0x62ff7003;
+            sz_program(s, &v);
+            pipeline_shade(s, starts, zero, zero);
+            gl_line_vertices(s, a, b, 0, 0, 0);
+            qtest_writel(s, DE + 0x60, 0x01000040);
+            qtest_writeq(s, DE + 0xc0, UINT64_C(0x02040102) << 32 | UINT32_MAX);
+            save_paired_renderer(s, path, before);
+            value = f->offset == 0x1f0 ? 0xdeadbeef :
+                    before[192 + f->offset / 4];
+            if (pair) {
+                value = value << 32 | before[192 + f->offset / 4 + 1];
+            }
+            if (f->offset != 0x1f0) {
+                g_assert_cmpint(memtx_write(s, DE + f->offset,
+                    value ^ (pair ? 0x100000001000ULL : 0x1000), f->width),
+                    ==, MEMTX_OK);
+            }
+            g_test_message("line START +0x%x width %u smooth %u",
+                           f->offset, f->width, smooth);
+            g_assert_cmpint(memtx_write(s, DE + 0x800 + f->offset,
+                                        value, f->width), ==, MEMTX_OK);
+            for (unsigned y = 0; y < 4; y++) {
+                for (unsigned x = 0; x < 4; x++) {
+                    bool covered = x < 3 && (y == 1 || y == 2);
+
+                    expected[4 * y + x] = c.old ^ (covered ? v.color : 0);
+                    g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                                    ==, covered ? 0x54000012 : v.old);
+                }
+            }
+            shape_memory(s, &c, expected);
+            save_paired_renderer(s, path, after);
+            g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+            for (unsigned poll = 0; poll < 3; poll++) {
+                qtest_readl(s, STATUS);
+                qtest_readl(s, DE + 0xc0);
+                qtest_readl(s, DE + 0xc4);
+                qtest_writel(s, DE + 0x1f0, UINT32_MAX);
+                qtest_writel(s, DE + 0x1f8, 0);
+            }
+            shape_memory(s, &c, expected);
+            save_paired_renderer(s, path, after);
+            g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_line_composed_widths(gconstpointer selection)
+{
+    const Register held[] = {
+        { 0x880, 4 }, { 0x884, 4 }, { 0x888, 4 }, { 0x88c, 4 },
+        { 0x890, 4 }, { 0x894, 4 }, { 0x880, 8 }, { 0x888, 8 },
+        { 0x990, 4 }, { 0x994, 4 }, { 0x990, 8 },
+        { 0x910, 4 }, { 0x918, 8 }, { 0x920, 8 }, { 0x928, 8 },
+        { 0x930, 4 }, { 0x934, 4 }, { 0x938, 8 }, { 0x940, 8 },
+        { 0x948, 8 }, { 0x950, 8 }, { 0x958, 4 }, { 0x95c, 4 },
+        { 0x960, 4 }, { 0x998, 4 }, { 0x9a0, 4 }, { 0x9a8, 4 },
+        { 0x8b0, 4 }, { 0x8b4, 4 },
+    };
+    Register forms[64];
+    unsigned count = gl_transfer_starts(forms);
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-line-composed-width-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    Shape c = gl_line_prepare(s, false);
+    SZCase v = sz_case();
+    uint64_t value;
+
+    sz_initialize(s, &c, v.old);
+    v.draw |= 0x80000;
+    sz_program(s, &v);
+    qtest_writeq(s, DE + 0xc0, UINT64_C(0x02040102) << 32 | UINT32_MAX);
+    unsigned group = GPOINTER_TO_UINT(selection);
+
+    for (unsigned n = 0; group == 0 && n < ARRAY_SIZE(held); n++) {
+        sz_atomic_failure(s, &c, path, DE + held[n].offset,
+                          0xa579b3e16c28f04dULL, held[n].width);
+    }
+    for (unsigned n = count * group / 4; n < count * (group + 1) / 4; n++) {
+        const Register *f = &forms[n];
+        uint64_t address = DE + 0x800 + f->offset;
+
+        if (f->offset == 0xb0 || f->offset == 0xb4 ||
+            (f->offset >= 0x110 && f->offset <= 0x15c)) {
+            continue;
+        }
+        for (unsigned width = 1; width <= 8; width *= 2) {
+            bool admitted_pair = width == 8 && (f->offset == 0x70 ||
+                f->offset == 0xa8 || f->offset == 0xc0);
+
+            unsigned native_width = f->offset == 0x70 || f->offset == 0xa8 ||
+                                    f->offset == 0xc0 ? 4 : f->width;
+
+            if (width != native_width && !admitted_pair) {
+                sz_atomic_failure(s, &c, path, address, UINT64_MAX, width);
+            }
+            g_assert_cmpint(memtx_read(s, address, &value, width),
+                            !=, MEMTX_OK);
+        }
+        for (unsigned delta = 1; delta < 4; delta++) {
+            sz_atomic_failure(s, &c, path, address + delta,
+                              UINT64_MAX, f->width);
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_line_composed_mappings(void)
+{
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-line-composed-map-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    const int a[] = { 0, 0 }, b[] = { 132 * 64, 0 };
+
+    for (unsigned kind = 0; kind < 11; kind++) {
+        Shape c = pipeline_prepare(s, 0x228, 0);
+        SZCase v = sz_case();
+        uint32_t expected[132];
+
+        c.width = 132;
+        c.height = 1;
+        map_region(s, 0, 4, 0, 0, 131, 0);
+        shape_memory(s, &c, NULL);
+        sz_initialize(s, &c, v.old);
+        v.draw = TRIANGLE_DRAW | 0x80007;
+        v.stencil = 0x62ff7002;
+        sz_program(s, &v);
+        gl_line_vertices(s, a, b, 0, 0, 0);
+        qtest_writel(s, DE + 0x60, 0x01000020);
+        qtest_writeq(s, DE + 0xc0, UINT64_C(0x02040102) << 32 | UINT32_MAX);
+        switch (kind) {
+        case 0:
+            tile(s, 0, 1, 0x7fff);
+            break;
+        case 1:
+            qtest_writeq(s, RE + 0x1000 + 2 * 0x200,
+                qtest_readq(s, RE + 0x1000 + 2 * 0x200) &
+                ~(UINT64_C(0x8000) << 32));
+            break;
+        case 2:
+            tile(s, 0, 1, page_for(0, 0));
+            break;
+        case 3:
+            tile(s, 2, 1, page_for(2, 0));
+            break;
+        case 4:
+            tile(s, 2, 0, page_for(0, 0));
+            break;
+        case 5:
+            qtest_writeq(s, RE + 0x1000 + 0 * 0x200,
+                qtest_readq(s, RE + 0x1000 + 0 * 0x200) &
+                ~(UINT64_C(0x8000) << 32));
+            break;
+        case 6:
+            qtest_writel(s, DE + 0xc4, 0);
+            tile(s, 0, 0, 0x7fff);
+            tile(s, 2, 0, 0x7fff);
+            break;
+        case 7:
+            qtest_writel(s, DE + 0x18, v.draw | 0x800);
+            qtest_writel(s, DE + 0x198, 0);
+            tile(s, 0, 0, 0x7fff);
+            tile(s, 2, 0, 0x7fff);
+            break;
+        case 8:
+            qtest_writel(s, DE + 0x1c0, 0);
+            qtest_writel(s, DE + 0x1e0, 0x62ff7030);
+            tile(s, 0, 0, 0x7fff);
+            break;
+        case 9:
+            qtest_writel(s, DE + 0x18, (v.draw & ~0x7bU) | 4);
+            tile(s, 2, 1, page_for(2, 0));
+            break;
+        case 10:
+            qtest_writeq(s, RE + 0x1000 + 0 * 0x200,
+                qtest_readq(s, RE + 0x1000 + 0 * 0x200) &
+                ~(UINT64_C(0x8000) << 48));
+            qtest_writeq(s, RE + 0x1000 + 0 * 0x200,
+                qtest_readq(s, RE + 0x1000 + 0 * 0x200) &
+                ~(UINT64_C(0x8000) << 32));
+            qtest_writeq(s, RE + 0x1000 + 2 * 0x200,
+                qtest_readq(s, RE + 0x1000 + 2 * 0x200) &
+                ~(UINT64_C(0x8000) << 32));
+            break;
+        }
+        g_test_message("line mapping case %u", kind);
+        if (kind < 5 || kind == 10) {
+            sz_atomic_failure(s, &c, path, DE + 0x8d0, 0xf13579bd, 4);
+            continue;
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        for (unsigned x = 0; x < 132; x++) {
+            expected[x] = kind == 5 && x < 128 ? v.color : c.old;
+            if (kind != 9) {
+                uint32_t z = kind == 5 ? 0x62000012 :
+                             kind == 8 ? 0x54000011 : v.old;
+
+                g_assert_cmphex(pixel_read(s, pixel_address(2, x, 0, 4), 4),
+                                ==, z);
+            }
+        }
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_line_composed_migration(void)
+{
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-line-composed-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *from = start(), *to = start_options("-incoming defer");
+    Shape c = gl_line_prepare(from, false);
+    SZCase v = sz_case();
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    uint32_t expected[16];
+
+    sz_initialize(from, &c, v.old);
+    v.draw = TRIANGLE_DRAW | 0x80207;
+    v.stencil = 0x62ff7003;
+    v.dx = 4096;
+    sz_program(from, &v);
+    qtest_writel(from, DE + 0x60, 0x01000040);
+    qtest_writeq(from, DE + 0xc0, UINT64_C(0x02040102) << 32 | 0x28000000);
+    g_assert_cmpint(memtx_writel(from, DE + 0x9f0, 0), ==, MEMTX_OK);
+    qtest_writel(from, DE + 0xc0, 0xe0e00000);
+    sz_atomic_failure(from, &c, path, DE + 0x8c4, UINT32_MAX, 4);
+    qtest_writeq(from, DE + 0x190, UINT64_MAX);
+    qtest_writeq(from, DE + 0x90, UINT64_MAX);
+    save_paired_renderer(from, path, before);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    save_paired_renderer(to, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            bool selected = x < 2 && (y == 1 || y == 2);
+
+            expected[4 * y + x] = c.old ^ (selected ? v.color : 0);
+            g_assert_cmphex(pixel_read(to, pixel_address(2, x, y, 4), 4), ==,
+                            selected ? 0x54000000 | (18 + x) : v.old);
+        }
+    }
+    shape_memory(to, &c, expected);
+    sz_atomic_failure(to, &c, path, DE + 0x9f0, 0, 4);
+    qtest_writel(to, DE + 0xc0, 0x02040102);
+    g_assert_cmpint(memtx_writel(to, DE + 0x9f0, 0), ==, MEMTX_OK);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            bool selected = x < 2 && (y == 1 || y == 2);
+
+            expected[4 * y + x] = c.old;
+            g_assert_cmphex(pixel_read(to, pixel_address(2, x, y, 4), 4), ==,
+                            selected ? 0x55000000 | (18 + x) : v.old);
+        }
+    }
+    shape_memory(to, &c, expected);
+    qtest_system_reset(to);
+    shape_memory(to, &c, expected);
+    save_renderer(to, path, after);
+    for (unsigned i = 0; i < RENDER_WORDS; i++) {
+        g_assert_cmphex(after[i], ==, 0);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(sock);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_line_composed_lengths(void)
+{
+    const unsigned lengths[] = { 0, 1, 126, 127, 128, 129, 260 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned reverse = 0; reverse < 2; reverse++) {
+        for (unsigned n = 0; n < ARRAY_SIZE(lengths); n++) {
+            Shape c = pipeline_prepare(s, 0x228, 0);
+            SZCase v = sz_case();
+            const int a[] = { 0, 64 }, b[] = { lengths[n] * 64, 64 };
+            uint32_t expected[261 * 4];
+
+            c.width = 261;
+            map_region(s, 0, 4, 0, 0, 260, 3);
+            shape_memory(s, &c, NULL);
+            sz_initialize(s, &c, v.old);
+            v.draw |= 0x80000;
+            sz_program(s, &v);
+            gl_line_vertices(s, reverse ? b : a, reverse ? a : b, 0, 0, 0);
+            qtest_writel(s, DE + 0x60, 0x01000020);
+            qtest_writeq(s, DE + 0xc0, UINT64_C(0x1e1ffeff) << 32 | 2);
+            for (unsigned y = 0; y < 4; y++) {
+                for (unsigned x = 0; x < 261; x++) {
+                    int i = reverse ? (int)lengths[n] - (int)x : (int)x;
+                    bool selected = i >= 0 && i < lengths[n] &&
+                                    (i < 2 || i >= 258) && y == 1;
+
+                    expected[261 * y + x] = selected ? v.color : c.old;
+                }
+            }
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            shape_memory(s, &c, expected);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_line_composed_allocation(void)
+{
+#ifdef CONFIG_LINUX
+    const uint64_t headroom[] = {
+        16 * MiB, 160 * MiB, 16 * MiB, 160 * MiB,
+    };
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-line-composed-alloc-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    const int a[] = { 0, 1024 * 64 }, b[] = { 2048 * 64, 1024 * 64 };
+
+    for (unsigned n = 0; n < ARRAY_SIZE(headroom); n++) {
+        g_autofree char *log = g_strdup_printf("%s/errors-%u.txt", dir, n);
+        g_autofree char *args = g_strdup_printf("-D %s", log);
+        QTestState *s = start_profile_ram("legacy-software", false,
+                                          true, false, args);
+        Shape c = gl_line_prepare(s, false);
+        SZCase v = sz_case();
+        g_autofree char *stat_path = g_strdup_printf("/proc/%ld/statm",
+                                                     (long)qtest_pid(s));
+        g_autofree char *stat = NULL, *errors = NULL;
+        struct rlimit before, limited;
+        unsigned long long pages;
+
+        sz_initialize(s, &c, v.old);
+        v.draw |= 0x180000;
+        sz_program(s, &v);
+        gl_line_vertices(s, a, b, 0, 0, 0);
+        qtest_writel(s, DE + 0x60, 0x0100ffff);
+        qtest_writeq(s, DE + 0xc0, UINT64_C(0x02040102) << 32 | UINT32_MAX);
+        qtest_writeq(s, DE + 0x48, bounds(0, 0, 4, 4));
+        g_assert_true(g_file_get_contents(stat_path, &stat, NULL, NULL));
+        g_assert_cmpint(sscanf(stat, "%llu", &pages), ==, 1);
+        g_assert_cmpint(prlimit(qtest_pid(s), RLIMIT_AS, NULL, &before), ==, 0);
+        limited = before;
+        limited.rlim_cur = pages * (uint64_t)qemu_real_host_page_size() +
+                           headroom[n];
+        g_assert_cmpuint(limited.rlim_cur, <=, before.rlim_max);
+        g_assert_cmpint(prlimit(qtest_pid(s), RLIMIT_AS, &limited, NULL),
+                        ==, 0);
+        sz_atomic_failure(s, &c, path, DE + 0x8d0, 0xf13579bd, 4);
+        g_assert_cmpint(prlimit(qtest_pid(s), RLIMIT_AS, &before, NULL), ==, 0);
+        qtest_quit(s);
+        g_assert_true(g_file_get_contents(log, &errors, NULL, NULL));
+        g_test_message("allocation %u diagnostic: %s", n, errors);
+        g_assert_nonnull(strstr(errors, n % 2 ? "primitive allocation failed" :
+                                           "invalid GL line producer"));
+        g_unlink(log);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+#else
+    g_test_skip("requires Linux per-process address-space limits");
+#endif
+}
+
+static void test_gl_line_composed_alpha(void)
+{
+    const unsigned references[] = { 0, 64, 128, 255 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned smooth = 0; smooth < 2; smooth++) {
+        for (unsigned function = 0; function < 8; function++) {
+            for (unsigned r = 0; r < ARRAY_SIZE(references); r++) {
+                SZCase v = sz_case();
+
+                v.draw = TRIANGLE_DRAW | 0x80f87;
+                v.draw = (v.draw & ~0x78U) | ((function * 7) % 16) << 3;
+                v.stencil = 0x62ff7003;
+                v.dx = 4096;
+                v.dy = -8192;
+                v.mode = gl_rectangle_modes[(function + r) % 10];
+                v.bank = function % 2;
+                v.plane = 0xa579b3e1;
+                gl_line_sz_alpha_run(s, &v, smooth,
+                                     function << 8 | references[r]);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_line_composed_depth_bounds(void)
+{
+    const int64_t limit = INT64_C(1) << 36;
+    const int64_t values[] = {
+        -limit, -limit + 1, -4097, -4096, -1, 0, 1, 4095, 4096, 4097,
+        INT64_C(0xffffff) * 4096 - 1, INT64_C(0xffffff) * 4096,
+        INT64_C(0xffffff) * 4096 + 4095, limit - 1, limit,
+    };
+    const int a[] = { 0, 64 }, b[] = { 64, 64 };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(values); n++) {
+        SZCase v = sz_case();
+
+        v.draw |= 0x80000;
+        v.start = values[n];
+        gl_line_sz_run(s, &v, false);
+    }
+    for (unsigned signs = 0; signs < 8; signs++) {
+        Shape c = gl_line_prepare(s, false);
+        SZCase v = sz_case();
+        uint32_t expected[16];
+
+        sz_initialize(s, &c, v.old);
+        v.draw |= 0x80000;
+        v.start = signs & 1 ? limit : -limit;
+        v.dx = signs & 2 ? limit : -limit;
+        v.dy = signs & 4 ? limit : -limit;
+        sz_program(s, &v);
+        gl_line_vertices(s, a, b, 0, 0, 0);
+        qtest_writel(s, DE + 0x60, 0x01000020);
+        qtest_writeq(s, DE + 0xc0, UINT64_C(0x02040102) << 32 | UINT32_MAX);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                bool covered = x == 0 && y == 1;
+
+                expected[4 * y + x] = covered ? v.color : c.old;
+                g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4), ==,
+                    covered ? 0x53000000 | sz_reference_depth(v.start) : v.old);
+            }
+        }
+        shape_memory(s, &c, expected);
+        /* A zero-length command consumes fields, but no nonexistent sample. */
+        gl_line_vertices(s, a, a, 0, 0, 0);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     take_group_paths(&argc, argv);
@@ -19204,6 +20066,38 @@ int main(int argc, char **argv)
     add_case("sgi/crime/render/sz/rect-clipping", test_sz_rect_clipping);
     add_case("sgi/crime/render/sz/populated-banks", test_sz_populated_banks);
     add_case("sgi/crime/render/sz/tag-literals", test_sz_tag_literals);
+    add_case("sgi/crime/render/gl-line/composed-vectors",
+             test_gl_line_composed_vectors);
+    add_case("sgi/crime/render/gl-line/sz-composition",
+             test_gl_line_sz_composition);
+    add_case("sgi/crime/render/gl-line/composed-clipping",
+             test_gl_line_composed_clipping);
+    add_case("sgi/crime/render/gl-line/composed-failures",
+             test_gl_line_composed_failures);
+    add_case("sgi/crime/render/gl-line/composed-starts",
+             test_gl_line_composed_starts);
+    add_data_case("sgi/crime/render/gl-line/composed-widths/0",
+                  GUINT_TO_POINTER(0), test_gl_line_composed_widths);
+    add_data_case("sgi/crime/render/gl-line/composed-widths/1",
+                  GUINT_TO_POINTER(1), test_gl_line_composed_widths);
+    add_data_case("sgi/crime/render/gl-line/composed-widths/2",
+                  GUINT_TO_POINTER(2), test_gl_line_composed_widths);
+    add_data_case("sgi/crime/render/gl-line/composed-widths/3",
+                  GUINT_TO_POINTER(3), test_gl_line_composed_widths);
+    add_case("sgi/crime/render/gl-line/composed-mappings",
+             test_gl_line_composed_mappings);
+    add_case("sgi/crime/render/gl-line/composed-migration",
+             test_gl_line_composed_migration);
+    add_case("sgi/crime/render/gl-line/composed-lengths",
+             test_gl_line_composed_lengths);
+    add_case("sgi/crime/render/gl-line/composed-allocation",
+             test_gl_line_composed_allocation);
+    add_case("sgi/crime/render/gl-line/composed-alpha",
+             test_gl_line_composed_alpha);
+    add_case("sgi/crime/render/gl-line/composed-depth-bounds",
+             test_gl_line_composed_depth_bounds);
+    add_case("sgi/crime/render/gl-line/depth-stipple",
+             test_gl_line_depth_stipple);
     add_case("sgi/crime/render/gl-line/first", test_gl_line_first);
     add_case("sgi/crime/render/gl-line/pair-staging",
              test_gl_line_pair_staging);
