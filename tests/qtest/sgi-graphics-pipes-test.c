@@ -1004,6 +1004,35 @@ static void test_multi_onyx3400_ir(void)
 }
 
 /*
+ * Every chip a pipe sits behind presents its two PCI heads, widgets 14 and
+ * 15, to the C-brick cabled to it, whether the chip is the I-brick's or one
+ * of the N-brick's. The crossbar reports both links alive and the C-brick
+ * reads each head's XBridge identity there. Without the heads, the stock
+ * IP35 PROM recorded no I/O brick board for the crossbar on this model, and
+ * IRIX 6.5.30 panicked bringing up a pipe behind it.
+ */
+static void test_multi_onyx3400_ir_heads(void)
+{
+    QTestState *qts = start(launch_for("onyx3400-ir"),
+                            "-device sgi-kona,slot=gbrick0-pipe0-pipe "
+                            "-device sgi-kona,slot=gbrick0-pipe1-pipe");
+
+    for (unsigned k = 0; k < 4; k++) {
+        for (unsigned widget = 14; widget <= 15; widget++) {
+            uint32_t id = cpu_readl(qts, 4 * k,
+                                    SPACE_IO + ((uint64_t)widget << 24) + 4);
+
+            g_assert_cmphex(cpu_readl(qts, 4 * k,
+                                      SPACE_IO +
+                                      IP53_XBOW_LINK_STATUS(widget)) &
+                            IP53_XBOW_LINK_ALIVE, ==, IP53_XBOW_LINK_ALIVE);
+            g_assert_cmphex((id >> 12) & 0xffff, ==, 0xd002);
+        }
+    }
+    qtest_quit(qts);
+}
+
+/*
  * A G-brick's pipe 1 takes one or two raster managers; only pipe 0 takes
  * four.
  */
@@ -1429,6 +1458,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-graphics-pipes/ip53-v12", test_ip53_v12);
     qtest_add_func("/sgi-graphics-pipes/multi/onyx3400-ir",
                    test_multi_onyx3400_ir);
+    qtest_add_func("/sgi-graphics-pipes/multi/onyx3400-ir-heads",
+                   test_multi_onyx3400_ir_heads);
     qtest_add_func("/sgi-graphics-pipes/multi/rm-count", test_multi_rm_count);
     qtest_add_func("/sgi-graphics-pipes/multi/identity", test_multi_identity);
     qtest_add_func("/sgi-graphics-pipes/multi/migration",

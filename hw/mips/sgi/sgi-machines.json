@@ -26752,19 +26752,19 @@
           "widget-revision": 2
         },
         {
-          "id": "nbrick-xbridge0",
+          "id": "nbrick-xbridge0-crossbar",
           "kind": "xbridge",
           "module-index": 8,
           "widget-revision": 2
         },
         {
-          "id": "nbrick-xbridge1",
+          "id": "nbrick-xbridge1-crossbar",
           "kind": "xbridge",
           "module-index": 8,
           "widget-revision": 2
         },
         {
-          "id": "nbrick-xbridge2",
+          "id": "nbrick-xbridge2-crossbar",
           "kind": "xbridge",
           "module-index": 8,
           "widget-revision": 2
@@ -27327,7 +27327,7 @@
           }
         },
         {
-          "attachment": 2,
+          "attachment": 8,
           "carrier": "xio-slot",
           "id": "gbrick0-pipe0-pipe",
           "label": "gbrick0-pipe0-pipe",
@@ -27340,7 +27340,7 @@
           "serial": 89358092027648
         },
         {
-          "attachment": 3,
+          "attachment": 9,
           "carrier": "xio-slot",
           "id": "gbrick0-pipe1-pipe",
           "label": "gbrick0-pipe1-pipe",
@@ -27353,7 +27353,7 @@
           "serial": 89358092027664
         },
         {
-          "attachment": 4,
+          "attachment": 10,
           "carrier": "xio-slot",
           "id": "gbrick1-pipe0-pipe",
           "label": "gbrick1-pipe0-pipe",
@@ -27366,7 +27366,7 @@
           "serial": 89358092027680
         },
         {
-          "attachment": 5,
+          "attachment": 11,
           "carrier": "xio-slot",
           "id": "gbrick1-pipe1-pipe",
           "label": "gbrick1-pipe1-pipe",
@@ -27908,6 +27908,36 @@
         {
           "crossbar-index": 0,
           "node-index": 0,
+          "widget": 15
+        },
+        {
+          "crossbar-index": 1,
+          "node-index": 1,
+          "widget": 14
+        },
+        {
+          "crossbar-index": 1,
+          "node-index": 1,
+          "widget": 15
+        },
+        {
+          "crossbar-index": 2,
+          "node-index": 2,
+          "widget": 14
+        },
+        {
+          "crossbar-index": 2,
+          "node-index": 2,
+          "widget": 15
+        },
+        {
+          "crossbar-index": 3,
+          "node-index": 3,
+          "widget": 14
+        },
+        {
+          "crossbar-index": 3,
+          "node-index": 3,
           "widget": 15
         },
         {

@@ -2402,6 +2402,21 @@ def _compile_brick_xbridge_heads(model: dict, components: dict[str, dict],
                         if item.get("kind") == "crossbar"
                         and item.get("parent") == chip)
         owners = sorted(graph["enclosure_crossbars"].get(crossbar, ()))
+        if not owners:
+            # An uncabled chip, such as an N-brick's spare pair: no node
+            # reaches it, so the machine builds neither it nor its heads.
+            # One with a card on a head would lose that I/O unseen.
+            populated = [
+                head["id"]
+                for head in components.values()
+                if head.get("parent") == chip
+                and head.get("kind") == "subfunction"
+                and _brick_head_functions(model, components, head["id"])]
+            if populated:
+                raise CompileError(
+                    f"I/O brick crossbar '{crossbar}' is cabled to no node, "
+                    f"but its head '{populated[0]}' carries a card")
+            continue
         if len(owners) != 1:
             raise CompileError(
                 f"I/O brick crossbar '{crossbar}' is cabled to "

@@ -402,6 +402,18 @@ layer:
           - component: rbrick-router
             serial: "0x51454d554e12"
             reason: Synthetic identity for this component, carrying the "QEMU" marker; not hardware evidence.
+          - component: nbrick-xbridge0
+            serial: "0x51454d554e13"
+            reason: Synthetic identity for this component, carrying the "QEMU" marker; not hardware evidence.
+          - component: nbrick-xbridge1
+            serial: "0x51454d554e14"
+            reason: Synthetic identity for this component, carrying the "QEMU" marker; not hardware evidence.
+          - component: nbrick-xbridge2
+            serial: "0x51454d554e15"
+            reason: Synthetic identity for this component, carrying the "QEMU" marker; not hardware evidence.
+          - component: nbrick-xbridge3
+            serial: "0x51454d554e16"
+            reason: Synthetic identity for this component, carrying the "QEMU" marker; not hardware evidence.
       harness:
         console: l1-uart
         prom_dialogue: ip35-l1-prompt
@@ -430,11 +442,11 @@ layer:
         description: The second tall rack, holding the G-bricks.
         sources: [007-4264-002-3400]
     connections:
-      - {component: nbrick-xbridge0, bus: c1-xio-ii, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: [007-4264-002-nbrick-cables], notes: "N-brick chip 0's port A, widget 0xA (10 decimal), on C-brick 1's XIO."}
+      - {component: nbrick-xbridge0-crossbar, bus: c1-xio-ii, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: [007-4264-002-nbrick-cables], notes: "N-brick chip 0's port A, widget 0xA (10 decimal), on C-brick 1's XIO."}
       - {component: nbrick-c-brick-0, bus: c1-xio-ii, role: endpoint, provenance: vendor-document, sources: [007-4264-002-nbrick-cables]}
-      - {component: nbrick-xbridge1, bus: c2-xio-ii, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: [007-4264-002-nbrick-cables], notes: "N-brick chip 1's port A, widget 0xA (10 decimal), on C-brick 2's XIO."}
+      - {component: nbrick-xbridge1-crossbar, bus: c2-xio-ii, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: [007-4264-002-nbrick-cables], notes: "N-brick chip 1's port A, widget 0xA (10 decimal), on C-brick 2's XIO."}
       - {component: nbrick-c-brick-1, bus: c2-xio-ii, role: endpoint, provenance: vendor-document, sources: [007-4264-002-nbrick-cables]}
-      - {component: nbrick-xbridge2, bus: c3-xio-ii, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: [007-4264-002-nbrick-cables], notes: "N-brick chip 2's port A, widget 0xA (10 decimal), on C-brick 3's XIO."}
+      - {component: nbrick-xbridge2-crossbar, bus: c3-xio-ii, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: [007-4264-002-nbrick-cables], notes: "N-brick chip 2's port A, widget 0xA (10 decimal), on C-brick 3's XIO."}
       - {component: nbrick-c-brick-2, bus: c3-xio-ii, role: endpoint, provenance: vendor-document, sources: [007-4264-002-nbrick-cables]}
       - {component: c0-bedrock, bus: rbrick-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
       - {component: c0-link-connector, bus: rbrick-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}

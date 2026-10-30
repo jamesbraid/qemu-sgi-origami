@@ -44,6 +44,18 @@ layer:
         notes: Which board serves which connector pair is not printed; board 0 serving pair 0 is this layer's choice.
       - id: xbridge0
         name: XBridge 0
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst, qemu:docs/system/mips/sgi/hardware/bridge.rst]
+        pci_host_bridge: {heads: 2}
+        provenance: vendor-document
+        parent: chip-board0
+        sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: >-
+          Only Crosstown2 ports A and B are cabled, and nothing hangs on
+          either PCI head. The chip's revision line is not established.
+      - id: xbridge0-crossbar
+        name: XBridge 0 crossbar section
         kind: crossbar
         hardware_kind: xbridge
         datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst]
@@ -55,14 +67,42 @@ layer:
             chip does. The N-brick's fitted XBridge revision is unknown; a
             widget scan of a real N-brick would settle it.
         provenance: vendor-document
-        parent: chip-board0
+        parent: xbridge0
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
-        notes: No PCI heads or Crosstalk ports are in use. The chip's revision line is not established; the identity block records the model's choice.
+      # The chip's PCI heads at ports E (14) and F (15), with no card on
+      # either: an approximation, explained in docs/system/mips/sgi/sn.rst
+      # under the Onyx 3400.
+      - id: xbridge0-bridge-e
+        name: XBridge 0 bridge at port 0xe
+        kind: subfunction
+        provenance: derived
+        parent: xbridge0
+        description: The PCI head behind widget 14, with nothing on its bus.
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: >-
+          Approximation. The N-brick Overview calls ports E and F logically
+          disconnected. On this model the stock PROM recorded no I/O brick
+          board for the C-brick's crossbar, and IRIX 6.5.30 panicked
+          bringing up a pipe behind the chip, until the chip's heads
+          decoded. Whether a real N-brick answers here is unknown.
+      - id: xbridge0-bridge-f
+        name: XBridge 0 bridge at port 0xf
+        kind: subfunction
+        provenance: derived
+        parent: xbridge0
+        description: The PCI head behind widget 15, with nothing on its bus.
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: >-
+          Approximation. The N-brick Overview calls ports E and F logically
+          disconnected. On this model the stock PROM recorded no I/O brick
+          board for the C-brick's crossbar, and IRIX 6.5.30 panicked
+          bringing up a pipe behind the chip, until the chip's heads
+          decoded. Whether a real N-brick answers here is unknown.
       - id: c-brick-0
         name: C-brick 0 connector
         kind: connector
         provenance: vendor-document
-        parent: xbridge0
+        parent: xbridge0-crossbar
         connector:
           interface: Crosstown2
           location: rear panel
@@ -76,7 +116,7 @@ layer:
         name: Graphics pipe 0 connector
         kind: connector
         provenance: vendor-document
-        parent: xbridge0
+        parent: xbridge0-crossbar
         connector:
           interface: Crosstown2
           location: rear panel
@@ -95,6 +135,18 @@ layer:
         notes: Which board serves which connector pair is not printed; board 1 serving pair 1 is this layer's choice.
       - id: xbridge1
         name: XBridge 1
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst, qemu:docs/system/mips/sgi/hardware/bridge.rst]
+        pci_host_bridge: {heads: 2}
+        provenance: vendor-document
+        parent: chip-board1
+        sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: >-
+          Only Crosstown2 ports A and B are cabled, and nothing hangs on
+          either PCI head. The chip's revision line is not established.
+      - id: xbridge1-crossbar
+        name: XBridge 1 crossbar section
         kind: crossbar
         hardware_kind: xbridge
         datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst]
@@ -106,14 +158,40 @@ layer:
             chip does. The N-brick's fitted XBridge revision is unknown; a
             widget scan of a real N-brick would settle it.
         provenance: vendor-document
-        parent: chip-board1
+        parent: xbridge1
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
-        notes: No PCI heads or Crosstalk ports are in use. The chip's revision line is not established; the identity block records the model's choice.
+      # The chip's empty PCI heads, as chip 0's.
+      - id: xbridge1-bridge-e
+        name: XBridge 1 bridge at port 0xe
+        kind: subfunction
+        provenance: derived
+        parent: xbridge1
+        description: The PCI head behind widget 14, with nothing on its bus.
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: >-
+          Approximation. The N-brick Overview calls ports E and F logically
+          disconnected. On this model the stock PROM recorded no I/O brick
+          board for the C-brick's crossbar, and IRIX 6.5.30 panicked
+          bringing up a pipe behind the chip, until the chip's heads
+          decoded. Whether a real N-brick answers here is unknown.
+      - id: xbridge1-bridge-f
+        name: XBridge 1 bridge at port 0xf
+        kind: subfunction
+        provenance: derived
+        parent: xbridge1
+        description: The PCI head behind widget 15, with nothing on its bus.
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: >-
+          Approximation. The N-brick Overview calls ports E and F logically
+          disconnected. On this model the stock PROM recorded no I/O brick
+          board for the C-brick's crossbar, and IRIX 6.5.30 panicked
+          bringing up a pipe behind the chip, until the chip's heads
+          decoded. Whether a real N-brick answers here is unknown.
       - id: c-brick-1
         name: C-brick 1 connector
         kind: connector
         provenance: vendor-document
-        parent: xbridge1
+        parent: xbridge1-crossbar
         connector:
           interface: Crosstown2
           location: rear panel
@@ -127,7 +205,7 @@ layer:
         name: Graphics pipe 1 connector
         kind: connector
         provenance: vendor-document
-        parent: xbridge1
+        parent: xbridge1-crossbar
         connector:
           interface: Crosstown2
           location: rear panel
@@ -146,6 +224,18 @@ layer:
         notes: Which board serves which connector pair is not printed; board 2 serving pair 2 is this layer's choice.
       - id: xbridge2
         name: XBridge 2
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst, qemu:docs/system/mips/sgi/hardware/bridge.rst]
+        pci_host_bridge: {heads: 2}
+        provenance: vendor-document
+        parent: chip-board2
+        sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: >-
+          Only Crosstown2 ports A and B are cabled, and nothing hangs on
+          either PCI head. The chip's revision line is not established.
+      - id: xbridge2-crossbar
+        name: XBridge 2 crossbar section
         kind: crossbar
         hardware_kind: xbridge
         datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst]
@@ -157,14 +247,40 @@ layer:
             chip does. The N-brick's fitted XBridge revision is unknown; a
             widget scan of a real N-brick would settle it.
         provenance: vendor-document
-        parent: chip-board2
+        parent: xbridge2
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
-        notes: No PCI heads or Crosstalk ports are in use. The chip's revision line is not established; the identity block records the model's choice.
+      # The chip's empty PCI heads, as chip 0's.
+      - id: xbridge2-bridge-e
+        name: XBridge 2 bridge at port 0xe
+        kind: subfunction
+        provenance: derived
+        parent: xbridge2
+        description: The PCI head behind widget 14, with nothing on its bus.
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: >-
+          Approximation. The N-brick Overview calls ports E and F logically
+          disconnected. On this model the stock PROM recorded no I/O brick
+          board for the C-brick's crossbar, and IRIX 6.5.30 panicked
+          bringing up a pipe behind the chip, until the chip's heads
+          decoded. Whether a real N-brick answers here is unknown.
+      - id: xbridge2-bridge-f
+        name: XBridge 2 bridge at port 0xf
+        kind: subfunction
+        provenance: derived
+        parent: xbridge2
+        description: The PCI head behind widget 15, with nothing on its bus.
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: >-
+          Approximation. The N-brick Overview calls ports E and F logically
+          disconnected. On this model the stock PROM recorded no I/O brick
+          board for the C-brick's crossbar, and IRIX 6.5.30 panicked
+          bringing up a pipe behind the chip, until the chip's heads
+          decoded. Whether a real N-brick answers here is unknown.
       - id: c-brick-2
         name: C-brick 2 connector
         kind: connector
         provenance: vendor-document
-        parent: xbridge2
+        parent: xbridge2-crossbar
         connector:
           interface: Crosstown2
           location: rear panel
@@ -178,7 +294,7 @@ layer:
         name: Graphics pipe 2 connector
         kind: connector
         provenance: vendor-document
-        parent: xbridge2
+        parent: xbridge2-crossbar
         connector:
           interface: Crosstown2
           location: rear panel
@@ -197,6 +313,18 @@ layer:
         notes: Which board serves which connector pair is not printed; board 3 serving pair 3 is this layer's choice.
       - id: xbridge3
         name: XBridge 3
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst, qemu:docs/system/mips/sgi/hardware/bridge.rst]
+        pci_host_bridge: {heads: 2}
+        provenance: vendor-document
+        parent: chip-board3
+        sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: >-
+          Only Crosstown2 ports A and B are cabled, and nothing hangs on
+          either PCI head. The chip's revision line is not established.
+      - id: xbridge3-crossbar
+        name: XBridge 3 crossbar section
         kind: crossbar
         hardware_kind: xbridge
         datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst]
@@ -208,14 +336,40 @@ layer:
             chip does. The N-brick's fitted XBridge revision is unknown; a
             widget scan of a real N-brick would settle it.
         provenance: vendor-document
-        parent: chip-board3
+        parent: xbridge3
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
-        notes: No PCI heads or Crosstalk ports are in use. The chip's revision line is not established; the identity block records the model's choice.
+      # The chip's empty PCI heads, as chip 0's.
+      - id: xbridge3-bridge-e
+        name: XBridge 3 bridge at port 0xe
+        kind: subfunction
+        provenance: derived
+        parent: xbridge3
+        description: The PCI head behind widget 14, with nothing on its bus.
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: >-
+          Approximation. The N-brick Overview calls ports E and F logically
+          disconnected. On this model the stock PROM recorded no I/O brick
+          board for the C-brick's crossbar, and IRIX 6.5.30 panicked
+          bringing up a pipe behind the chip, until the chip's heads
+          decoded. Whether a real N-brick answers here is unknown.
+      - id: xbridge3-bridge-f
+        name: XBridge 3 bridge at port 0xf
+        kind: subfunction
+        provenance: derived
+        parent: xbridge3
+        description: The PCI head behind widget 15, with nothing on its bus.
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: >-
+          Approximation. The N-brick Overview calls ports E and F logically
+          disconnected. On this model the stock PROM recorded no I/O brick
+          board for the C-brick's crossbar, and IRIX 6.5.30 panicked
+          bringing up a pipe behind the chip, until the chip's heads
+          decoded. Whether a real N-brick answers here is unknown.
       - id: c-brick-3
         name: C-brick 3 connector
         kind: connector
         provenance: vendor-document
-        parent: xbridge3
+        parent: xbridge3-crossbar
         connector:
           interface: Crosstown2
           location: rear panel
@@ -229,7 +383,7 @@ layer:
         name: Graphics pipe 3 connector
         kind: connector
         provenance: vendor-document
-        parent: xbridge3
+        parent: xbridge3-crossbar
         connector:
           interface: Crosstown2
           location: rear panel
@@ -240,10 +394,38 @@ layer:
             not use. The composition says which pipe is cabled here.
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstown2 ports A (10) and B (11)"]
     buses:
+      - id: heads0-xio
+        name: XBridge 0 crossbar to its PCI heads
+        kind: xio
+        master: xbridge0-crossbar
+        provenance: derived
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: Approximation. The crossbar's internal ports E (14) and F (15), one empty PCI head each; see the heads' notes.
+      - id: heads1-xio
+        name: XBridge 1 crossbar to its PCI heads
+        kind: xio
+        master: xbridge1-crossbar
+        provenance: derived
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: Approximation. The crossbar's internal ports E (14) and F (15), one empty PCI head each; see the heads' notes.
+      - id: heads2-xio
+        name: XBridge 2 crossbar to its PCI heads
+        kind: xio
+        master: xbridge2-crossbar
+        provenance: derived
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: Approximation. The crossbar's internal ports E (14) and F (15), one empty PCI head each; see the heads' notes.
+      - id: heads3-xio
+        name: XBridge 3 crossbar to its PCI heads
+        kind: xio
+        master: xbridge3-crossbar
+        provenance: derived
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
+        notes: Approximation. The crossbar's internal ports E (14) and F (15), one empty PCI head each; see the heads' notes.
       - id: c-brick-0-port-xio
         name: XBridge 0 Crosstown2 port A
         kind: xio
-        master: xbridge0
+        master: xbridge0-crossbar
         provenance: vendor-document
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
         notes: >-
@@ -252,7 +434,7 @@ layer:
       - id: c-brick-1-port-xio
         name: XBridge 1 Crosstown2 port A
         kind: xio
-        master: xbridge1
+        master: xbridge1-crossbar
         provenance: vendor-document
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
         notes: >-
@@ -261,7 +443,7 @@ layer:
       - id: c-brick-2-port-xio
         name: XBridge 2 Crosstown2 port A
         kind: xio
-        master: xbridge2
+        master: xbridge2-crossbar
         provenance: vendor-document
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
         notes: >-
@@ -270,7 +452,7 @@ layer:
       - id: c-brick-3-port-xio
         name: XBridge 3 Crosstown2 port A
         kind: xio
-        master: xbridge3
+        master: xbridge3-crossbar
         provenance: vendor-document
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
         notes: >-
@@ -279,7 +461,7 @@ layer:
       - id: graphics-pipe-0-xio
         name: XBridge 0 Crosstown2 port B
         kind: xio
-        master: xbridge0
+        master: xbridge0-crossbar
         provenance: vendor-document
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
         notes: >-
@@ -288,7 +470,7 @@ layer:
       - id: graphics-pipe-1-xio
         name: XBridge 1 Crosstown2 port B
         kind: xio
-        master: xbridge1
+        master: xbridge1-crossbar
         provenance: vendor-document
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
         notes: >-
@@ -297,7 +479,7 @@ layer:
       - id: graphics-pipe-2-xio
         name: XBridge 2 Crosstown2 port B
         kind: xio
-        master: xbridge2
+        master: xbridge2-crossbar
         provenance: vendor-document
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
         notes: >-
@@ -306,17 +488,25 @@ layer:
       - id: graphics-pipe-3-xio
         name: XBridge 3 Crosstown2 port B
         kind: xio
-        master: xbridge3
+        master: xbridge3-crossbar
         provenance: vendor-document
         sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]
         notes: >-
           The chip's port B, out to its Graphics pipe 3 connector. A
           composition attaches the pipe cabled there to this bus.
     # The C-brick a chip's port A reaches is known only to the composition.
-    # For each cabled pair k it adds the chip as bridge-upstream at widget
-    # 0xA and connector c-brick-k as an endpoint on that C-brick's XIO bus,
-    # which the XIO cable between the two connectors then shares.
+    # For each cabled pair k it adds the chip's crossbar as bridge-upstream
+    # at widget 0xA and connector c-brick-k as an endpoint on that C-brick's
+    # XIO bus, which the XIO cable between the two connectors then shares.
     connections:
+      - {component: xbridge0-bridge-e, bus: heads0-xio, role: bridge-upstream, widget: 14, provenance: derived, sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]}
+      - {component: xbridge0-bridge-f, bus: heads0-xio, role: bridge-upstream, widget: 15, provenance: derived, sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]}
+      - {component: xbridge1-bridge-e, bus: heads1-xio, role: bridge-upstream, widget: 14, provenance: derived, sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]}
+      - {component: xbridge1-bridge-f, bus: heads1-xio, role: bridge-upstream, widget: 15, provenance: derived, sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]}
+      - {component: xbridge2-bridge-e, bus: heads2-xio, role: bridge-upstream, widget: 14, provenance: derived, sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]}
+      - {component: xbridge2-bridge-f, bus: heads2-xio, role: bridge-upstream, widget: 15, provenance: derived, sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]}
+      - {component: xbridge3-bridge-e, bus: heads3-xio, role: bridge-upstream, widget: 14, provenance: derived, sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]}
+      - {component: xbridge3-bridge-f, bus: heads3-xio, role: bridge-upstream, widget: 15, provenance: derived, sources: ["108-0240-002 printed pages 2-26 to 2-29: the XBridge's PCI ports E and F", "N-brick Overview, revision 10/24/01, printed pages 1 and 3 to 4: four XBridge ASICs on four boards, each exposing only Crosstown2 ports A and B; ports 8, 9, C, D, E and F are logically disconnected and the brick has no other I/O"]}
       - {component: c-brick-0, bus: c-brick-0-port-xio, role: endpoint, provenance: vendor-document, sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors"]}
       - {component: c-brick-1, bus: c-brick-1-port-xio, role: endpoint, provenance: vendor-document, sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors"]}
       - {component: c-brick-2, bus: c-brick-2-port-xio, role: endpoint, provenance: vendor-document, sources: ["007-4264-002 printed pages 58 to 60: the N-brick has four pairs of connectors, C-brick 0 to 3 to the C-bricks' XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors"]}

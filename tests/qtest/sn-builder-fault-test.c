@@ -1545,7 +1545,9 @@ static void bedrock_test_install_origin3200_xbrick(void)
 
 /*
  * An N-brick-shaped module: four C-bricks c0..c3 and one module holding
- * four XBridges, each with neither PCI nor head attachment. Chip k takes
+ * four XBridges, each with neither PCI nor head attachment. It tests the
+ * builder on headless chips; the catalogue's N-brick chips present their
+ * heads (docs/system/mips/sgi/sn.rst). Chip k takes
  * ck's cable on one Crosstown2 port, A for even k and B for odd, and a
  * board on the other, each board in a G-brick-shaped module of its own
  * kind. Board presets and identities are fixture values.
