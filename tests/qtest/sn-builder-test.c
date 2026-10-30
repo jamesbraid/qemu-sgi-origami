@@ -10095,10 +10095,10 @@ static void test_onyx3000_vbrick_l1_and_heads(void)
          */
         g_assert_cmpuint(qom_get_uint(qts, c1_io, "identity-index"), !=,
                          qom_get_uint(qts, c0_io, "identity-index"));
-        /* The V-brick's L1 takes no firmware revision. */
+        /* Every brick's L1 takes the catalogue's firmware revision. */
         assert_l1_revision(qts, "/machine/node1/l1", 1, 44, 0);
         assert_l1_revision(qts, c0_io, 1, 44, 0);
-        assert_l1_revision(qts, c1_io, -1, -1, -1);
+        assert_l1_revision(qts, c1_io, 1, 44, 0);
     }
     /* The V-brick's heads (widgets 14 and 15) answer from the C-brick. */
     for (unsigned int widget = 14; widget <= 15; widget++) {

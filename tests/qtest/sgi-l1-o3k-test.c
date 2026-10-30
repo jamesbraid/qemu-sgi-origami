@@ -906,10 +906,10 @@ static void expect_revision(QTestState *s, unsigned n, uint32_t destination,
 }
 
 /*
- * The C-brick, I-brick and N-brick profiles answer request 0x0005 with the
- * revision their machine configures, each its own; the attached I/O address
- * reaches the I-brick's. Without one the request is an error, as the
- * V-brick's and Cx-brick's always are.
+ * The C-brick, I-brick, N-brick and V-brick profiles answer request 0x0005
+ * with the revision their machine configures, each its own; the attached
+ * I/O address reaches the I-brick's and the V-brick's. Without one the
+ * request is an error, as the Cx-brick's always is.
  */
 static void test_firmware_revision(void)
 {
@@ -922,12 +922,18 @@ static void test_firmware_revision(void)
         "revision-minor=9,revision-patch=0",
         "brick-type=cbrick,named=on,rack=1,bay=7",
         "brick-type=vbrick,named=on,rack=1,bay=13",
+        "brick-type=cbrick,named=on,rack=1,bay=10",
+        "brick-type=vbrick,named=on,rack=1,bay=14,revision-major=1,"
+        "revision-minor=44,revision-patch=0",
     };
-    QTestState *s = start_with(5, props, "");
+    QTestState *s = start_with(7, props, "");
     uint8_t reply[131];
     size_t length;
 
     link_io(s, 0, 1);
+    link_io(s, 5, 6);
+    expect_revision(s, 6, LOCAL_GENERAL, 1, 44, 0);
+    expect_revision(s, 5, ATTACHED_IO, 1, 44, 0);
     expect_revision(s, 0, LOCAL_GENERAL, 1, 44, 0);
     expect_revision(s, 1, LOCAL_GENERAL, 1, 7, 2);
     expect_revision(s, 0, ATTACHED_IO, 1, 7, 2);
@@ -1675,8 +1681,6 @@ static void test_realize_refusal(gconstpointer opaque)
         { "brick-type=ibrick", "*I-brick profile needs a mac*" },
         { "brick-type=cbrick,brick-type-code=0x43",
           "*brick-type-code is not accepted*" },
-        { "brick-type=vbrick,revision-major=1,revision-minor=2,"
-          "revision-patch=3", "*revision is unknown for the vbrick*" },
         { "brick-type=cbrick,irouter-compat=on", "*Origin 300 compatibility*" },
         { "brick-type=cbrick,o300-l1cmd-compat=on",
           "*Origin 300 compatibility*" },

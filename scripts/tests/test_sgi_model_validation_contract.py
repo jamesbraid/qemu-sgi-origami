@@ -2011,7 +2011,7 @@ class Origin3000BrickValidationTests(unittest.TestCase):
         self.assertFails(
             model, "'c0-l1' L1 profile 'cbrick' takes no reported type or "
             "MAC input")
-        # A profile takes a revision, complete; a V-brick's takes none.
+        # A profile takes a revision, complete.
         model = self.model()
         controllers = model["machine"]["emulation"]["l1_controllers"]
         controllers["c0-l1"]["revision"] = {"major": 1, "minor": 0,
@@ -2022,8 +2022,7 @@ class Origin3000BrickValidationTests(unittest.TestCase):
         model = self.model()
         controllers = model["machine"]["emulation"]["l1_controllers"]
         controllers["ibrick-l1"]["profile"] = "vbrick"
-        self.assertFails(model, "'ibrick-l1' L1 profile 'vbrick' takes no "
-                         "revision")
+        self.assertEqual(self.problems(model), [])
         model = self.model()
         model["machine"]["emulation"]["l1_controllers"]["c0-l1"][
             "profile"] = "rbrick"

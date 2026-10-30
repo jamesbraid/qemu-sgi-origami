@@ -26421,7 +26421,12 @@
           "id": "vbrick-l1",
           "kind": "l1",
           "l1": {
-            "profile": "vbrick"
+            "profile": "vbrick",
+            "revision": {
+              "major": 1,
+              "minor": 44,
+              "patch": 0
+            }
           },
           "module-index": 2
         }

@@ -1546,9 +1546,6 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                         raise ResolutionError(
                             f"'{cid}' L1 profile '{entry['profile']}' takes "
                             "no reported type or MAC input")
-                    if entry["profile"] == "vbrick" and "revision" in entry:
-                        raise ResolutionError(
-                            f"'{cid}' L1 profile 'vbrick' takes no revision")
                 else:
                     required(entry, "reported_type", f"'{cid}'")
                     integer(entry["reported_type"], 255,
