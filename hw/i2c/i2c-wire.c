@@ -17,6 +17,7 @@
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/host-utils.h"
+#include "qemu/bswap.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "trace.h"
@@ -247,7 +248,23 @@ static bool i2c_slave_state_migrated(DeviceState *dev)
 static bool sgi_i2c_wire_bus_check_address(BusState *bus, DeviceState *dev,
                                            Error **errp)
 {
-    if (I2C_WIRE(bus)->wire && !i2c_slave_state_migrated(dev)) {
+    I2cWire *wire = I2C_WIRE(bus);
+
+    if (wire->untimed_private) {
+        I2CWireEndpointClass *ec = wire_endpoint(I2C_SLAVE(dev));
+
+        if (dev->hotplugged ||
+            i2c_wire_slave_count(wire) >= I2C_WIRE_MAX_SLAVES ||
+            !ec || !ec->untimed_profile ||
+            !ec->untimed_profile(I2C_SLAVE(dev)) ||
+            !I2C_SLAVE_GET_CLASS(dev)->event ||
+            !i2c_slave_state_migrated(dev)) {
+            error_setg(errp, "%s cannot join a private untimed I2C bus",
+                       object_get_typename(OBJECT(dev)));
+            return false;
+        }
+    }
+    if (wire->wire && !i2c_slave_state_migrated(dev)) {
         error_setg(errp, "%s carries no I2C slave migration state and cannot "
                    "join a timed I2C wire",
                    object_get_typename(OBJECT(dev)));
@@ -312,6 +329,51 @@ static int sgi_wire_slave_loaded(I2CBus *base, I2CSlave *slave)
 
 /* Resolved-master byte API. */
 
+int i2c_bus_validate_untimed_private(I2CBus *base, Error **errp)
+{
+    I2cWire *bus = I2C_WIRE(base);
+    BusChild *kid;
+
+    if (!bus->untimed_private || bus->master_count != 1 || bus->wire ||
+        i2c_wire_slave_count(bus) > I2C_WIRE_MAX_SLAVES ||
+        !QSIMPLEQ_EMPTY(&base->pending_masters)) {
+        error_setg(errp, "private untimed I2C requires one resolved master");
+        return -ENOTSUP;
+    }
+    QTAILQ_FOREACH(kid, &base->qbus.children, sibling) {
+        I2CSlave *slave = I2C_SLAVE(kid->child);
+        I2CWireEndpointClass *ec = wire_endpoint(slave);
+
+        if (!ec || !ec->untimed_profile || !ec->untimed_profile(slave) ||
+            !I2C_SLAVE_GET_CLASS(slave)->event ||
+            !i2c_slave_state_migrated(kid->child)) {
+            error_setg(errp, "%s is incompatible with private untimed I2C",
+                       object_get_typename(OBJECT(slave)));
+            return -ENOTSUP;
+        }
+    }
+    return 0;
+}
+
+int i2c_bus_enable_untimed_private(I2CBus *base, Error **errp)
+{
+    I2cWire *bus = I2C_WIRE(base);
+    int ret;
+
+    if (bus->wire || bus->master_count || i2c_bus_busy(base)) {
+        error_setg(errp, "private untimed I2C requires an unused bus");
+        return -EBUSY;
+    }
+    bus->untimed_private = 1;
+    bus->master_count = 1;
+    ret = i2c_bus_validate_untimed_private(base, errp);
+    if (ret < 0) {
+        bus->untimed_private = 0;
+        bus->master_count = 0;
+    }
+    return ret;
+}
+
 int i2c_bus_enable_master_ids(I2CBus *base, uint32_t count)
 {
     I2cWire *bus = I2C_WIRE(base);
@@ -332,6 +394,10 @@ int i2c_bus_start_resolved(I2CBus *base, uint32_t master)
 {
     I2cWire *bus = I2C_WIRE(base);
 
+    if (bus->untimed_private &&
+        i2c_bus_validate_untimed_private(base, NULL) < 0) {
+        return -ENOTSUP;
+    }
     if (bus->wire) {
         return -ENOTSUP;
     }
@@ -361,6 +427,9 @@ static int i2c_resolved_start_transfer(I2cWire *bus, uint8_t address,
     I2CNode *node, *next;
     bool broadcast = address == I2C_BROADCAST && !recv;
 
+    if (bus->untimed_private && bus->address_valid) {
+        return -ENOTSUP;
+    }
     if (address > 0x7f) {
         return -EINVAL;
     }
@@ -391,9 +460,13 @@ static int i2c_resolved_start_transfer(I2cWire *bus, uint8_t address,
     base->broadcast = broadcast;
     QLIST_FOREACH_SAFE(node, &base->current_devs, next, next) {
         I2CSlaveClass *sc = I2C_SLAVE_GET_CLASS(node->elt);
+        int ret = sc->event ? sc->event(node->elt, recv ? I2C_START_RECV :
+                                                        I2C_START_SEND) : 0;
 
-        if (sc->event && sc->event(node->elt, recv ? I2C_START_RECV :
-                                                   I2C_START_SEND)) {
+        if (ret < 0 && bus->untimed_private) {
+            return ret;
+        }
+        if (ret) {
             /* Address NAK removes only this receiver, without STOP. */
             QLIST_REMOVE(node, next);
             g_free(node);
@@ -407,6 +480,10 @@ int i2c_master_start_transfer(I2CBus *base, uint32_t master,
 {
     I2cWire *bus = I2C_WIRE(base);
 
+    if (bus->untimed_private &&
+        i2c_bus_validate_untimed_private(base, NULL) < 0) {
+        return -ENOTSUP;
+    }
     if (!i2c_master_owns(bus, master)) {
         return -EPERM;
     }
@@ -425,6 +502,13 @@ static int i2c_resolved_send(I2cWire *bus, uint8_t data, I2CWire *wire)
     if (QLIST_EMPTY(&base->current_devs)) {
         return -ENXIO;
     }
+    if (bus->untimed_private) {
+        QLIST_FOREACH(node, &base->current_devs, next) {
+            if (!I2C_SLAVE_GET_CLASS(node->elt)->send) {
+                return -EINVAL;
+            }
+        }
+    }
     QLIST_FOREACH(node, &base->current_devs, next) {
         I2CSlaveClass *sc = I2C_SLAVE_GET_CLASS(node->elt);
 
@@ -434,6 +518,9 @@ static int i2c_resolved_send(I2cWire *bus, uint8_t data, I2CWire *wire)
             trace_i2c_send(node->elt->address, data);
             /* Deliver once to every receiver; any ACK pulls the line low. */
             ret = sc->send(node->elt, data);
+            if (ret < 0 && bus->untimed_private) {
+                return ret;
+            }
             if (!ret) {
                 ack = true;
                 if (wire && i2c_wire_queue_service(
@@ -450,6 +537,10 @@ int i2c_master_send(I2CBus *base, uint32_t master, uint8_t data)
 {
     I2cWire *bus = I2C_WIRE(base);
 
+    if (bus->untimed_private &&
+        i2c_bus_validate_untimed_private(base, NULL) < 0) {
+        return -ENOTSUP;
+    }
     if (!i2c_master_owns(bus, master)) {
         return -EPERM;
     }
@@ -460,6 +551,10 @@ int i2c_master_recv(I2CBus *base, uint32_t master, uint8_t *data)
 {
     I2cWire *bus = I2C_WIRE(base);
 
+    if (bus->untimed_private &&
+        i2c_bus_validate_untimed_private(base, NULL) < 0) {
+        return -ENOTSUP;
+    }
     if (!i2c_master_owns(bus, master)) {
         return -EPERM;
     }
@@ -468,6 +563,10 @@ int i2c_master_recv(I2CBus *base, uint32_t master, uint8_t *data)
     }
     if (QLIST_EMPTY(&base->current_devs)) {
         return -ENXIO;
+    }
+    if (bus->untimed_private &&
+        !I2C_SLAVE_GET_CLASS(QLIST_FIRST(&base->current_devs)->elt)->recv) {
+        return -EINVAL;
     }
     *data = i2c_recv(base);
     return 0;
@@ -1115,6 +1214,10 @@ int i2c_bus_enable_wire(I2CBus *base, uint32_t count,
         error_setg(errp, "a timed I2C wire takes 1 to %u participants",
                    I2C_WIRE_MAX_MASTERS);
         return -EINVAL;
+    }
+    if (bus->untimed_private) {
+        error_setg(errp, "a private untimed I2C bus cannot enable timed lines");
+        return -ENOTSUP;
     }
     if (bus->wire || sgi_wire_bus_busy(base)) {
         error_setg(errp, "the bus already has a wire or an open transfer");
@@ -1882,10 +1985,52 @@ static const VMStateDescription vmstate_sgi_slaves = {
     },
 };
 
+static int i2c_untimed_signature(I2cWire *bus)
+{
+    g_autoptr(GChecksum) checksum = NULL;
+    BusChild *kid;
+    uint8_t digest[32];
+    gsize length = sizeof(digest);
+
+    if (!bus->untimed_private) {
+        memset(bus->untimed_signature, 0, sizeof(bus->untimed_signature));
+        return 0;
+    }
+    if (i2c_bus_validate_untimed_private(base_bus(bus), NULL) < 0) {
+        return -ENOTSUP;
+    }
+    checksum = g_checksum_new(G_CHECKSUM_SHA256);
+    QTAILQ_FOREACH(kid, &base_bus(bus)->qbus.children, sibling) {
+        I2CSlave *slave = I2C_SLAVE(kid->child);
+        I2CWireEndpointClass *ec = wire_endpoint(slave);
+        const char *name = object_get_typename(OBJECT(slave));
+        uint8_t profile[8];
+
+        stq_be_p(profile, ec->untimed_profile(slave));
+        g_checksum_update(checksum, (const guchar *)name, strlen(name) + 1);
+        g_checksum_update(checksum, &slave->address, 1);
+        g_checksum_update(checksum, profile, sizeof(profile));
+    }
+    g_checksum_get_digest(checksum, digest, &length);
+    for (unsigned i = 0; i < 4; i++) {
+        bus->untimed_signature[i] = ldq_be_p(digest + i * 8);
+    }
+    return 0;
+}
+
+static int sgi_wire_bus_pre_save(void *opaque)
+{
+    return i2c_untimed_signature(opaque);
+}
+
 static int sgi_wire_bus_pre_load(void *opaque)
 {
     I2cWire *bus = opaque;
+    int ret = i2c_untimed_signature(bus);
 
+    if (ret < 0) {
+        return ret;
+    }
     bus->masters_loaded = false;
     bus->wire_loaded = false;
     bus->wire_loading = bus->wire != NULL;
@@ -1915,9 +2060,13 @@ const VMStateDescription vmstate_sgi_i2c_wire_bus = {
     .name = "sgi-i2c-wire-bus",
     .version_id = 1,
     .minimum_version_id = 1,
+    .pre_save = sgi_wire_bus_pre_save,
     .pre_load = sgi_wire_bus_pre_load,
     .post_load = sgi_wire_bus_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_EQUAL(untimed_private, I2cWire),
+        VMSTATE_ARRAY(untimed_signature, I2cWire, 4, 0,
+                       vmstate_info_uint64_equal, uint64_t),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {

@@ -18,6 +18,7 @@
 #include "hw/mips/sgi/mace-timer.h"
 #include "mace-serial-dma.h"
 #include "mace-audio.h"
+#include "mace-i2c.h"
 #include "hw/rtc/ds1685.h"
 #include "hw/char/serial.h"
 #include "hw/core/qdev-properties.h"
@@ -86,6 +87,8 @@ struct SGIMACEState {
     MemoryRegion cpu_pci_high_view;
     MemoryRegion cpu_pci_pio_low;
     MemoryRegion cpu_pci_pio_high;
+    MACEI2C i2c;
+    bool i2c_untimed_test_profile;
     MACEAudio audio;
     MemoryRegion audio_regs;
     qemu_irq audio_ttl[2];
@@ -1049,6 +1052,7 @@ static void mace_reset_hold(Object *obj, ResetType type)
     s->uart_irq_level = 0;
     mace_serial_dma_reset(&s->serial_dma);
     mace_audio_reset(&s->audio);
+    mace_i2c_reset(&s->i2c, true);
     s->istat = 0;
     s->imask = 0;
     s->pci_control = 0;
@@ -1161,6 +1165,7 @@ static const VMStateDescription vmstate_mace = {
         VMSTATE_STRUCT_ARRAY(uart, SGIMACEState, 2, 0, vmstate_serial,
                              SerialState),
         VMSTATE_STRUCT(audio, SGIMACEState, 0, vmstate_mace_audio, MACEAudio),
+        VMSTATE_UINT8_EQUAL(i2c.enabled, SGIMACEState),
         VMSTATE_STRUCT(serial_dma, SGIMACEState, 0,
                        vmstate_mace_serial_dma, MACESerialDMA),
         VMSTATE_END_OF_LIST()
@@ -1246,6 +1251,10 @@ static void mace_realize(DeviceState *dev, Error **errp)
     DeviceState *identity;
     unsigned i;
 
+    if (s->i2c_untimed_test_profile && !qtest_enabled()) {
+        error_setg(errp, "untimed MACE I2C is restricted to the qtest profile");
+        return;
+    }
     if (s->storage_diagnostic_realized) {
         error_setg(errp, "sgi-mace storage diagnostic cannot be "
                          "realized again");
@@ -1503,6 +1512,15 @@ static void mace_realize(DeviceState *dev, Error **errp)
     qdev_pass_gpios(identity, dev, "password-clear-input");
     memory_region_add_subregion_overlap(&s->aperture, MACE_ID_BASE,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(identity), 0), 1);
+    if (s->i2c_untimed_test_profile) {
+        object_initialize_child(OBJECT(dev), "i2c-controller", &s->i2c,
+                                TYPE_SGI_MACE_I2C);
+        if (!sysbus_realize(SYS_BUS_DEVICE(&s->i2c), errp)) {
+            return;
+        }
+        memory_region_add_subregion_overlap(&s->aperture, 0x330000,
+                                            &s->i2c.regs, 1);
+    }
 }
 
 static void mace_unrealize(DeviceState *dev)
@@ -1531,6 +1549,12 @@ static void mace_unrealize(DeviceState *dev)
         object_unparent(OBJECT(ps2));
         SGI_MACE(dev)->ps2 = NULL;
     }
+    mace_i2c_cleanup(&SGI_MACE(dev)->i2c);
+    if (SGI_MACE(dev)->i2c.enabled) {
+        memory_region_del_subregion(&SGI_MACE(dev)->aperture,
+                                    &SGI_MACE(dev)->i2c.regs);
+        qdev_unrealize(DEVICE(&SGI_MACE(dev)->i2c));
+    }
     mace_audio_cleanup(&SGI_MACE(dev)->audio);
     mace_serial_dma_cleanup(&SGI_MACE(dev)->serial_dma);
     address_space_destroy(&SGI_MACE(dev)->serial_dma_as);
@@ -1553,6 +1577,8 @@ static void mace_unrealize(DeviceState *dev)
 
 static const Property mace_properties[] = {
     DEFINE_AUDIO_PROPERTIES(SGIMACEState, audio.backend),
+    DEFINE_PROP_BOOL("i2c-untimed-test-profile", SGIMACEState,
+                     i2c_untimed_test_profile, false),
     DEFINE_PROP_BOOL("password-clear-input", SGIMACEState,
                      password_clear_input, false),
     DEFINE_PROP_LINK("ram", SGIMACEState, ram, TYPE_MEMORY_REGION,

@@ -161,6 +161,7 @@ config SGI_MACE
     default y if SGI_DEVICES
     depends on SGI_DEVICES
     select DS1685
+    select I2C_WIRE
     select ICS1890
     select ONEWIRE
     select PCI

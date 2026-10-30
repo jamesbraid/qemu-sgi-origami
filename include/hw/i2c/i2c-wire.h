@@ -42,6 +42,17 @@ struct I2CWireEndpointClass {
     InterfaceClass parent_class;
 
     /*
+     * Nonzero opts into private untimed, cold-plug, sole-master transfers.
+     * All callbacks terminate synchronously, require neither wire service nor
+     * combined transactions, and carry complete endpoint migration state.
+     * The returned key identifies immutable endpoint configuration for
+     * identical-build migration. Zero rejects this profile. An address/event
+     * callback is mandatory. Missing byte callbacks reject that direction.
+     * This capability query must be side-effect-free.
+     */
+    uint64_t (*untimed_profile)(I2CSlave *s);
+
+    /*
      * Notify a wire-mode endpoint after the ninth clock completes. Returning
      * true holds SCL low for service; i2c_wire_hold(..., false) releases that
      * endpoint independently of other receivers.
@@ -92,6 +103,8 @@ struct I2cWire {
     I2CBus parent_obj;
 
     /* Opt-in configuration: stable participant IDs are 0..master_count-1. */
+    uint8_t untimed_private;
+    uint64_t untimed_signature[4];
     uint32_t master_count;
     uint32_t owner;             /* UINT32_MAX between STOP and resolved START */
     uint8_t requested_address;
@@ -131,6 +144,10 @@ struct I2cWire {
  * a child of a TYPE_I2C_WIRE.
  */
 I2CWireSlave *i2c_wire_slave_state(I2CSlave *slave);
+
+/* Private untimed buses cannot later acquire timed lines or other masters. */
+int i2c_bus_enable_untimed_private(I2CBus *bus, Error **errp);
+int i2c_bus_validate_untimed_private(I2CBus *bus, Error **errp);
 
 /*
  * Transfers for a resolved sole master, not arbitration. Configuration is fixed
