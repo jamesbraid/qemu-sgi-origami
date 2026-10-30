@@ -981,7 +981,8 @@ static void test_stored_combination_runs_at_arm_release(void)
  * A stored image is checked whole before any of it runs, and a command
  * that raises the error flag stops it: either way the built-in fallback
  * runs instead, from the default state. A bad checksum in the last command
- * keeps the first commands from running too, so the block stays 1280 wide;
+ * keeps the first commands from running too: the image's SetupFrameBuffer
+ * 2560x1024 never resizes the area;
  * a SetupFrameBuffer past the raster managers' budget raises the flag.
  */
 static void test_bad_stored_combination_falls_back(void)
@@ -1005,6 +1006,8 @@ static void test_bad_stored_combination_falls_back(void)
     found = kona_log_read(log);
     g_assert_cmpuint(count_occurrences(found, "failed to load; running "
                                               "the built-in one"), ==, 2);
+    /* The rejected image's SetupFrameBuffer 2560x1024 never ran. */
+    g_assert_null(strstr(found, "managed area 1280x1024 to 2560x1024"));
 }
 
 /*
