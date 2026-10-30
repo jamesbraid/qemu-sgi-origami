@@ -30,6 +30,8 @@ struct SGIWordTestState {
     MemoryRegion root;
     MemoryRegion backing;
     MemoryRegion windows[SGI_DMA_WORD_TEST_WINDOWS];
+    MemoryRegion split_first;
+    MemoryRegion split_second;
     MemoryRegion readonly_half;
     MemoryRegion readonly_byte;
     MemoryRegion readonly_payload;
@@ -251,6 +253,18 @@ static void word_test_realize(DeviceState *dev, Error **errp)
         memory_region_add_subregion(&s->root, i * SGI_DMA_WORD_TEST_STRIDE,
                                     &s->windows[i]);
     }
+    /* Noncontiguous backing prevents FlatView from merging the 2+6 split. */
+    memory_region_init_alias(&s->split_first, OBJECT(s), "sgi-word-split-first",
+                             &s->backing, SGI_DMA_WORD_TEST_SPLIT_FIRST, 2);
+    memory_region_init_alias(&s->split_second, OBJECT(s),
+                             "sgi-word-split-second", &s->backing,
+                             SGI_DMA_WORD_TEST_SPLIT_SECOND, 6);
+    memory_region_add_subregion_overlap(
+        &s->root, SGI_DMA_WORD_TEST_SPLIT_EIGHT * SGI_DMA_WORD_TEST_STRIDE,
+        &s->split_first, 1);
+    memory_region_add_subregion_overlap(
+        &s->root, SGI_DMA_WORD_TEST_SPLIT_EIGHT * SGI_DMA_WORD_TEST_STRIDE + 2,
+        &s->split_second, 1);
     /* The cache can extend through contiguous backing despite permissions. */
     memory_region_init_alias(&s->readonly_half, OBJECT(s), "sgi-word-ro-half",
                              &s->backing, SGI_DMA_WORD_TEST_COUNTER + 2, 2);

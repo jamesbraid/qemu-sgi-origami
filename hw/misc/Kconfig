@@ -443,3 +443,6 @@ config TSB12LV22
     bool
     default y if PCI_DEVICES
     depends on PCI
+
+config SGI_VICE
+    bool
