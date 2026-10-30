@@ -206,6 +206,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-stencil-masks-draws
 gl /mips64/sn1/odyssey/command-fifo-gl-cull-face
 gl /mips64/sn1/odyssey/command-fifo-gl-polygon-mode
 gl /mips64/sn1/odyssey/command-fifo-gl-line-point-size
+gl /mips64/sn1/odyssey/command-fifo-gl-line-centre-sampled
 gl /mips64/sn1/odyssey/command-fifo-gl-point-smoothing
 gl /mips64/sn1/odyssey/command-fifo-gl-line-smoothing
 gl /mips64/sn1/odyssey/command-fifo-gl-line-stipple
