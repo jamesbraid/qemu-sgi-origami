@@ -1071,10 +1071,18 @@ typedef enum SGIKonaBitmapState {
  * sgi_kona_channel_view() for the mapping and what is inferred. input_y counts
  * rows from the bottom of the managed area to the rectangle's top row, as
  * GetResize's word 1 and Resize's word 2 do. blanked is the blanking command's,
- * gamma_map the gamma-map command's, source the channel Vampire names and
- * cursor_priority CursorPriority's; see the video setters in sgi-kona.c.
+ * gamma_map the gamma-map command's, source the channel Vampire names,
+ * cursor_priority CursorPriority's and format_name the name LoadFormat
+ * carried; see the video setters in sgi-kona.c.
  */
 #define SGI_KONA_MAX_CHANNELS 8
+
+/*
+ * The words a channel's LoadFormat names its format by, words 2 to 18:
+ * sixteen words of the format file's name and its date stamp, which
+ * GetChannelConfig answers at words 1 to 17.
+ */
+#define SGI_KONA_FORMAT_NAME_WORDS 17
 
 typedef struct SGIKonaChannel {
     bool enabled;
@@ -1089,6 +1097,7 @@ typedef struct SGIKonaChannel {
     uint32_t gamma_map;
     uint32_t cursor_priority;
     uint32_t source;
+    uint32_t format_name[SGI_KONA_FORMAT_NAME_WORDS];
 } SGIKonaChannel;
 
 /* What a channel's scanout hooks are handed: not guest state. */

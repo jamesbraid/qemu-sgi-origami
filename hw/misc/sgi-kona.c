@@ -3775,11 +3775,16 @@ static bool sgi_kona_video_names_channel(uint32_t command)
  *   exists), option mask 0, options code 0 (no option board), flag 0.
  * - GetChannelConfig: word 0 bit 0x1 present, 0x2 the encoder (channel
  *   0), 0x4 and 0x8 together enabled and active; 18 the cursor priority.
- *   Words 1-16 would name the format, which the X server looks up as a
- *   .vfo file itself, and 17 its datestamp: no setter sends a name, so
- *   where a pipe takes them from is unknown, and the model sends none,
- *   as the real Onyx2 rack capture's channel 0 shows ("0 pixels, 0
- *   lines").
+ *   Words 1-16 name the format, which the X server looks up as a .vfo
+ *   file itself, and 17 is its datestamp. The model answers the words
+ *   2-18 of the channel's last LoadFormat, which carry the name and the
+ *   datestamp in the same order (observed in the combination the X
+ *   server stores in the display generator's flash). That the pipe
+ *   answers them from LoadFormat is inferred from that match; real
+ *   InfiniteReality gfxinfo captures print format names such as
+ *   1600x1200_72_DL.vfo, though the Onyx2 rack capture's channel 0
+ *   printed none. A channel with no LoadFormat since its DisableChannel,
+ *   and channel 0 at reset, names none.
  * - GetChannelBlanking: word 0 whether the blanking command blanks it.
  * - GetResize: words 0-3 the input rectangle (x, the top row counted from
  *   the bottom of the managed area, width, height), 4-7 the rectangle a
@@ -3808,6 +3813,7 @@ static void sgi_kona_video_reply_words(SGIKonaState *s, uint32_t command,
         break;
     case SGI_KONA_VIDEO_GET_CHANNEL_CONFIG:
         words[0] = 0x1 | (channel == 0 ? 0x2 : 0) | (ch->enabled ? 0xc : 0);
+        memcpy(&words[1], ch->format_name, sizeof(ch->format_name));
         words[18] = ch->cursor_priority;
         break;
     case SGI_KONA_VIDEO_GET_RESIZE:
@@ -3909,9 +3915,10 @@ static void sgi_kona_video_temp_blank(SGIKonaState *s, uint32_t blank)
  *
  * - DisableChannel [channel]: the channel stops; its console shows no
  *   mode, and it holds no format until the next LoadFormat.
- * - LoadFormat [channel, 1, ...]: the channel's format; words 23 and 24
- *   are the format's active lines and pixels, the channel's output size.
- *   The channel runs.
+ * - LoadFormat [channel, 1, ...]: the channel's format; words 2-17 its
+ *   file name and 18 its datestamp, kept for GetChannelConfig; words 23
+ *   and 24 the format's active lines and pixels, the channel's output
+ *   size. The channel runs.
  * - EnableChannel [channel, on, own timing]: word 1 nonzero runs a
  *   channel that holds a format; otherwise it changes nothing.
  * - Resize [channel, x, top row from the bottom, width, height, 1,
@@ -3990,6 +3997,7 @@ static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
     case SGI_KONA_VIDEO_DISABLE_CHANNEL:
         ch->enabled = false;
         ch->loaded = false;
+        memset(ch->format_name, 0, sizeof(ch->format_name));
         break;
     case SGI_KONA_VIDEO_LOAD_FORMAT:
         if (!d[23] || !d[24] || d[23] > SGI_SCANOUT_MAX_DIM ||
@@ -4001,6 +4009,7 @@ static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
         }
         ch->format_width = d[24];
         ch->format_height = d[23];
+        memcpy(ch->format_name, &d[2], sizeof(ch->format_name));
         ch->loaded = true;
         ch->enabled = true;
         break;
@@ -21612,8 +21621,8 @@ static int sgi_kona_channels_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_channel = {
     .name = TYPE_SGI_KONA "/channel-entry",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(enabled, SGIKonaChannel),
         VMSTATE_BOOL(loaded, SGIKonaChannel),
@@ -21627,6 +21636,8 @@ static const VMStateDescription vmstate_sgi_kona_channel = {
         VMSTATE_UINT32(gamma_map, SGIKonaChannel),
         VMSTATE_UINT32(cursor_priority, SGIKonaChannel),
         VMSTATE_UINT32(source, SGIKonaChannel),
+        VMSTATE_UINT32_ARRAY(format_name, SGIKonaChannel,
+                             SGI_KONA_FORMAT_NAME_WORDS),
         VMSTATE_END_OF_LIST()
     },
 };
