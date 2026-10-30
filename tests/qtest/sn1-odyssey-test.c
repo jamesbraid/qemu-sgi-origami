@@ -2051,6 +2051,45 @@ static void test_command_fifo_setup_registers(void)
 }
 
 /*
+ * The kernels write the hardware-sync timeout, 10^9 board clocks, as the
+ * doubleword 0x7f0 after the set-up. The model stores it, reports no
+ * unmodeled command word, reports once that the timeout cannot expire,
+ * and the stream stays aligned behind it.
+ */
+static void test_command_fifo_sync_timeout_register(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-sync-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    cmd_push64(qts, 0x000007f0, 1000000000);
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-sync-timeout"), ==,
+                     1000000000);
+    cmd_push64(qts, 0x000006b0, 7);
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-fifo-setup-6b0"), ==, 7);
+    /* No sync waits on the model, so the timeout flag stays clear. */
+    g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) & 0x2, ==, 0);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_null(strstr(log, "command FIFO word"));
+    g_assert_nonnull(strstr(log, "hardware-sync timeout 1000000000"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
  * Program-sequencer registers: classes 0x20 to 0x35 in the program word
  * shape (bits 31:24 the register, bit 15 set, the value in bits 9:0 and
  * bit 23). The kernel writes 0x26 = 127 and 0x2e = 896 at set-up, the GL
@@ -4141,6 +4180,114 @@ static void test_command_work_credits_at_fifo_entry(void)
     g_assert_false(work_pending(qts));
     g_assert_cmpuint(qtest_readq(qts, WORK_PI_CREDIT_A), ==,
                      1000 + stores + 3);
+    board_quit(qts);
+}
+
+/*
+ * The kernels' FIFO set-up names the FIFO's size in 2-bpp tiles of 128
+ * words (0x6b1), its high-water mark (0x6b2) and its low-water mark
+ * (0x6b3), both in 32-bit words of fill. Run all the work, so that the
+ * set-up stores have reached the board.
+ */
+#define ODSY_STATUS0_FIFO_HIGH_WATER 0x00008000
+#define ODSY_INTR_FIFO_HIGH_WATER 0x02000000
+
+static void work_finish(QTestState *qts)
+{
+    while (work_pending(qts)) {
+        qtest_clock_step(qts, 1000 * 1000);
+    }
+}
+
+static void work_fifo_setup(QTestState *qts, uint32_t tiles, uint32_t high,
+                            uint32_t low)
+{
+    cmd_push64(qts, 0x000006b1, tiles);
+    cmd_push64(qts, 0x000006b3, low);
+    cmd_push64(qts, 0x000006b2, high);
+    work_finish(qts);
+}
+
+/*
+ * Once set up, status bit 15 and flag bit 25 compare the FIFO's level in
+ * words against the written high-water mark (0x6b2), a doubleword store
+ * counting two. Bit 17 and flag bit 9 keep the model's 16-word low-water
+ * mark, matched to its 64-store credits, whatever 0x6b3 says: a low mark
+ * the level never reaches would stop the kernel sleeping the writer.
+ */
+static void test_command_fifo_water_marks(void)
+{
+    QTestState *qts = work_start();
+
+    work_fifo_setup(qts, 1, 12, 8);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10030000);
+    reg_write(qts, ODSY_INTR_CLEAR,
+              ODSY_INTR_FIFO_LOW_WATER | ODSY_INTR_FIFO_HIGH_WATER);
+
+    /* Five doublewords: ten words, above 0x6b3 but below 16. */
+    for (unsigned int i = 0; i < 5; i++) {
+        cmd_push64(qts, 0x000006b0, 0);
+    }
+    g_assert_cmpuint(work_waiting(qts), ==, 5);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10020000);
+    g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) &
+                    ODSY_INTR_FIFO_HIGH_WATER, ==, 0);
+    /* Twelve words reach the high mark and raise its flag. */
+    cmd_push64(qts, 0x000006b0, 0);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==,
+                    0x10020000 | ODSY_STATUS0_FIFO_HIGH_WATER);
+    g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) &
+                    ODSY_INTR_FIFO_HIGH_WATER, ==, ODSY_INTR_FIFO_HIGH_WATER);
+    /* Eight stores, sixteen words: no longer below low water. */
+    cmd_push64(qts, 0x000006b0, 0);
+    cmd_push64(qts, 0x000006b0, 0);
+    g_assert_cmpuint(work_waiting(qts), ==, 8);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==,
+                    0x10000000 | ODSY_STATUS0_FIFO_HIGH_WATER);
+    g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) &
+                    ODSY_INTR_FIFO_LOW_WATER, ==, 0);
+
+    /* Fourteen words: below 16, so low water is raised. */
+    work_step(qts);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==,
+                    0x10020000 | ODSY_STATUS0_FIFO_HIGH_WATER);
+    g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) &
+                    ODSY_INTR_FIFO_LOW_WATER, ==, ODSY_INTR_FIFO_LOW_WATER);
+    /* Twelve words still at the high mark, then ten below it. */
+    work_step(qts);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==,
+                    0x10020000 | ODSY_STATUS0_FIFO_HIGH_WATER);
+    work_step(qts);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10020000);
+    work_finish(qts);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10030000);
+    board_quit(qts);
+}
+
+/*
+ * The set-up's FIFO size does not widen the credits: after the kernels'
+ * set-up (256 tiles, 32,768 words) only the oldest 64 waiting stores, the
+ * model's depth, have their credits back, so the PI still holds back a
+ * writer that runs ahead of the model's slow board.
+ */
+static void test_command_work_credit_depth_ignores_setup(void)
+{
+    QTestState *qts = work_start();
+
+    work_fifo_setup(qts, 256, 32192, 24144);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-counted-stores', 'value': 1}}", BOARD);
+    qtest_writeq(qts, WORK_GFX_MAP_0, SLOT);
+    qtest_writeq(qts, WORK_PI_CREDIT_A, 1000);
+    for (unsigned int i = 0; i < 12; i++) {
+        work_push_fences(qts);
+    }
+    g_assert_cmpuint(work_waiting(qts), ==, 72);
+    g_assert_cmpuint(qtest_readq(qts, WORK_PI_CREDIT_A), ==,
+                     1000 + WORK_CFIFO_DEPTH);
+    work_finish(qts);
+    g_assert_cmpuint(qtest_readq(qts, WORK_PI_CREDIT_A), ==, 1000 + 72);
     board_quit(qts);
 }
 
@@ -23084,6 +23231,8 @@ int main(int argc, char **argv)
                    test_unmodeled_offsets_are_visible);
     add_fresh_case("sn1/odyssey/command-fifo-setup-registers",
                    test_command_fifo_setup_registers);
+    add_fresh_case("sn1/odyssey/command-fifo-sync-timeout-register",
+                   test_command_fifo_sync_timeout_register);
     add_fresh_case("sn1/odyssey/command-fifo-sequencer-registers",
                    test_command_fifo_sequencer_registers);
     add_case("sn1/odyssey/command-fifo-selftest",
@@ -23933,6 +24082,10 @@ int main(int argc, char **argv)
                    test_command_work_low_water_after_drain);
     add_fresh_case("sn1/odyssey/command-work-credits-at-fifo-entry",
                    test_command_work_credits_at_fifo_entry);
+    add_fresh_case("sn1/odyssey/command-fifo-water-marks",
+                   test_command_fifo_water_marks);
+    add_fresh_case("sn1/odyssey/command-work-credit-depth-ignores-setup",
+                   test_command_work_credit_depth_ignores_setup);
     add_fresh_case("sn1/odyssey/command-work-map-rewrite-settles",
                    test_command_work_map_rewrite_settles);
     add_fresh_case("sn1/odyssey/command-work-stop-and-reset",
