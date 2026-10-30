@@ -8625,6 +8625,8 @@ static void test_o2plus_configuration(void)
         const char *override;
         const char *reason;
     } invalid[] = {
+        { "r12000-variant=vr12000a",
+          "o2plus requires r12000-variant=r12000" },
         { "r12000-prid=0xe24", "requires r12000-prid" },
         { "r12000-fpu-id=0x901", "requires r12000-fpu-id" },
         { "r12000-reset-mode=0x11aa603", "requires r12000-reset-mode" },
@@ -8643,6 +8645,13 @@ static void test_o2plus_configuration(void)
     assert_o2_banked_rejected(t.machine, "1G", "-cpu", O2PLUS_CPU,
                               "o2 requires R10000");
     o2_product_select_plus(&t);
+    /* Omission and an explicit common capability retain product admission. */
+    for (unsigned int common = 0; common < 2; common++) {
+        qts = qtest_initf("-M %s -cpu %s%s -nodefaults -S", t.machine,
+                          O2PLUS_CPU, common ?
+                          ",r12000-variant=r12000" : "");
+        qtest_quit(qts);
+    }
     assert_o2_banked_rejected(t.machine, "1G", NULL, NULL,
                               "o2plus requires R12000");
     assert_o2_banked_rejected(t.machine, "1G", "-cpu", "R12000",
@@ -8655,6 +8664,39 @@ static void test_o2plus_configuration(void)
 
         assert_o2_banked_rejected(t.machine, "1G", "-cpu", cpu,
                                   invalid[i].reason);
+    }
+    {
+        g_autofree char *nvram = g_build_filename(t.dir, "sentinel-nvram",
+                                                 NULL);
+        g_autofree char *missing = g_build_filename(t.dir, "missing-input",
+                                                   NULL);
+        g_autofree char *block = g_strdup_printf(
+            "driver=raw,node-name=nvram0,file.driver=file,file.filename=%s",
+            nvram);
+        g_autofree char *machine = g_strdup_printf(
+            "%s,rom-image=%s,identity-eprom-file=%s", t.machine,
+            missing, missing);
+        g_autofree char *after = NULL;
+        uint8_t sentinel[512];
+        gsize size;
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", machine, "-cpu",
+            O2PLUS_CPU ",r12000-variant=vr12000a", "-m", "1G", "-nodefaults",
+            "-display", "none", "-S", "-qmp", "stdio", "-blockdev", block, NULL,
+        };
+
+        for (unsigned int i = 0; i < sizeof(sentinel); i++) {
+            sentinel[i] = (i * 29) ^ 0x5a;
+        }
+        g_assert_true(g_file_set_contents(nvram, (char *)sentinel,
+                                          sizeof(sentinel), NULL));
+        /* CPU admission precedes image reads and persistent device setup. */
+        assert_qtest_launch_rejected(args,
+                                     "o2plus requires r12000-variant=r12000");
+        g_assert_true(g_file_get_contents(nvram, &after, &size, NULL));
+        g_assert_cmpmem(after, size, sentinel, sizeof(sentinel));
+        g_assert_false(g_file_test(missing, G_FILE_TEST_EXISTS));
+        g_assert_cmpint(g_unlink(nvram), ==, 0);
     }
     {
         g_autofree char *fixture = g_strdup_printf(
