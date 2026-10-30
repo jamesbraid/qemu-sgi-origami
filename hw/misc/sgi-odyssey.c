@@ -1046,48 +1046,73 @@ static unsigned odyssey_cmd_arity(uint32_t word)
 #define ODSY_DMA_MAX_PAGES ODSY_DMA_ENTRY_PAGES
 
 /*
- * Board-to-host transfers. Every rule below is software behaviour read from
- * the kernel, the X module and the GL library; the board itself was never
- * observed, so each is an APPROXIMATION of an unknown decode.
+ * Board-to-host transfers. Each fact carries its datasheet label. The
+ * header words the GL library sends and the host bytes it expects are in
+ * docs/datasheets/odyssey.md, "Pixel transfer headers from the OpenGL
+ * library" ("Header words", "Read table"); the entry layout the kernel
+ * builds is under "Kernel DMA and the pixel-transfer request". All of it is
+ * software behaviour: the board itself was never observed, so what the board
+ * does inside is UNKNOWN wherever a rule below says so.
  *
  * - Word 7 bit 24 is the direction: set for board to host. The kernel sets
  *   it exactly when the ioctl mode's bit 0 is clear, which every reading
  *   caller uses, and sets bit 31 on the last block of every such transfer;
  *   the earlier blocks of a transfer split into pieces carry bit 24 alone.
  *   The opcode, word 0 bit 29, word 4 bit 28 and word 7 bits 31, 29, 28 and
- *   25 do not mark a read.
+ *   25 do not mark a read. APPROXIMATION: the datasheet's header table
+ *   leaves bit 24 out and its kernel section reads the same bit as the
+ *   last-entry interrupt request, so the direction rule rests on the
+ *   model's own reading of the kernel's request builder. What would settle
+ *   it: a captured board-to-host DMA with bit 24 clear and an interrupt
+ *   request, or the reverse, or the datasheet's header table listing the
+ *   bit.
  * - Word 0 with bit 29 clear is a board base in 16-byte units, as for an
  *   upload. With bit 29 set it is a sentinel resolved through the bound
- *   drawable: 0x30000019 with word 4 bits 30:28 = 1 the read drawable and
- *   0x30000010 with them 0 the draw drawable (reachable from GL's DMA image
- *   write, never captured). The low bits' board meaning is unknown.
- * - Word 4 bit 31 is set for the front buffer and clear for the back under
- *   the GL library's convention, and is consulted for sentinel reads only;
- *   address transfers always carry it set. INFERRED mapping onto the
- *   model's two buffers: front is the buffer the pixel's main drawable
- *   shows (its displayed-buffer bit, as scanout resolves it), back the
- *   other. An address read of the colour buffer reads the shown buffer.
- *   Between a swap's scheduling and the retrace that latches it, the
- *   kernel's buffer state and the displayed bit disagree; the model follows
- *   the displayed bit.
+ *   drawable: 0x30000019 the read drawable and 0x30000010 the draw drawable
+ *   ("Header words": ESTABLISHED as the library's words). Word 4 bits 30:28
+ *   = 1 with the read sentinel and 0 with the draw sentinel is the model's
+ *   own pairing; the library sets bit 28 as "drawable" (ESTABLISHED), and a
+ *   read of the draw drawable is reachable from GL's DMA image write and
+ *   never captured. The low bits' board meaning is UNKNOWN.
+ * - Word 4 bit 31 is set for the front buffer and clear for the back,
+ *   ESTABLISHED as the library's rule ("Front and back of a pixel buffer"):
+ *   clear for GL_BACK, GL_BACK_LEFT and GL_BACK_RIGHT reads of the bound
+ *   read drawable, set for every other read buffer, and forced set for a
+ *   source that is not the bound read drawable, a texture object. The model
+ *   consults it for sentinel reads only; address transfers always carry it
+ *   set. How the board resolves it is UNKNOWN. INFERRED mapping onto the
+ *   model's two buffers: front is the buffer the pixel's main drawable shows
+ *   (its displayed-buffer bit, as scanout resolves it), back the other. That
+ *   fits a window, and the datasheet says it has no basis for a double-
+ *   buffered pixel buffer, which never swaps: that case is not modeled.
+ *   An address read of the colour buffer reads the shown buffer. Between a
+ *   swap's scheduling and the retrace that latches it, the kernel's buffer
+ *   state and the displayed bit disagree; the model follows the displayed
+ *   bit.
  * - A sentinel transfer's word 1 is drawable-relative with y top-down: the
  *   current window origin is added. An address transfer's is a screen or
- *   object coordinate. INFERRED from the kernel's own clipping arithmetic.
- *   dmplay's movie write (ODSY_DMA_MOVIE_FORMAT) disagrees: its tiles fit
- *   together only with y counted up from the window's bottom. Which
- *   reading holds for the other forms is unknown; their observed writes
- *   start at y 0 and fill the window, where the two agree.
+ *   object coordinate. INFERRED from the kernel's own clipping arithmetic;
+ *   what the header's x and y carry relative to GL window coordinates is
+ *   UNKNOWN in the datasheet. dmplay's movie write (ODSY_DMA_MOVIE_FORMAT)
+ *   disagrees: its tiles fit together only with y counted up from the
+ *   window's bottom. Which reading holds for the other forms is unknown;
+ *   their observed writes start at y 0 and fill the window, where the two
+ *   agree.
  * - Word 7 bit 30 puts the bottom board row of the rectangle in host row 0.
  *   Every GL read into client memory sets it. That the board flips rows
  *   inside one block is INFERRED. The GL library sets it when the source's
  *   and destination's descriptions differ in their second word
- *   (ESTABLISHED, disassembly); the movie write sets it yet sends its top
- *   row first, so for writes to the drawable bit 30 alone does not give
- *   the row order.
- * - A GL read leaves word 7 bits 7:0 zero; its layout is word 4 bits 2:0
- *   (source class) with bits 7:3 (transfer code). An X read puts the image
- *   format byte there instead, and the X server's 24-bit word 4 code does not
- *   agree with the GL vocabulary, so the format byte is used and word 4 is not.
+ *   (ESTABLISHED, "Header words"); the movie write sets it yet sends its
+ *   top row first, so for writes to the drawable bit 30 alone does not
+ *   give the row order.
+ * - Word 7 bits 18:16 are the host bytes a pixel, through the kernel's
+ *   table 2, 4, 8, 16, 12, 1, 6, 3 (ESTABLISHED).
+ * - A GL read leaves word 7 bits 7:0 zero; the host bytes are named by word
+ *   4 bits 2:0 (class) with bits 7:3 (code), looked up in
+ *   odyssey_dma_gl_layouts[] (ESTABLISHED as the library's table, "Read
+ *   table"). An X read puts the image format byte there instead, and the X
+ *   server's 24-bit word 4 code does not agree with the GL vocabulary, so
+ *   the format byte is used and word 4 is not.
  */
 #define ODSY_DMA_HDR_FORMAT 4
 #define ODSY_DMA_TO_HOST (1u << 24)        /* word 7 */
@@ -1103,9 +1128,6 @@ static unsigned odyssey_cmd_arity(uint32_t word)
 #define ODSY_DMA_FMT_CLASS_MASK 0x7        /* word 4 bits 2:0 */
 #define ODSY_DMA_FMT_CODE_SHIFT 3          /* word 4 bits 7:3 */
 #define ODSY_DMA_FMT_CODE_MASK 0x1f
-/* The GL library's source classes for 8- and 12-bit RGBA visuals. */
-#define ODSY_DMA_GL_CLASS_RGBA8 2
-#define ODSY_DMA_GL_CLASS_RGBA12 3
 /*
  * The kernel's board-memory manager pages an object out to its backing
  * store in host memory and back in with raw copies of the object's texels.
@@ -1145,6 +1167,7 @@ enum {
     ODSY_DMA_REPORT_INDEX_OBJECT = 1u << 9,
     ODSY_DMA_REPORT_COLOUR_OVER_INDEX = 1u << 10,
     ODSY_DMA_REPORT_RAW64 = 1u << 11,
+    ODSY_DMA_REPORT_DEPTH_SHARED = 1u << 12,
 };
 
 /*
@@ -10011,50 +10034,160 @@ static bool odyssey_dma_report(SGIOdysseyState *s, uint32_t reason)
 }
 
 /*
- * A read's host bytes for one pixel: how many, and for each byte the plane
- * word's channel it carries (0 red to 3 alpha of the 0xRRGGBBAA word), a
- * zero byte, or the word as a colour index.
+ * A read's host bytes for one pixel: how many, and the fields they hold.
+ * A field takes one channel of the plane word (0 red to 3 alpha of the
+ * 0xRRGGBBAA word), or the word itself as a colour index, and sits at bit
+ * shift from the least significant end of the pixel's big-endian bytes. A
+ * channel field of width w carries the top w bits of the stored byte, and
+ * a field wider than eight bits repeats them down to fill it, the rule
+ * scanout applies to a narrow visual (odyssey_display_channel()). Bits no
+ * field covers are zero.
  */
-#define ODSY_DMA_BYTE_ZERO 4
-#define ODSY_DMA_BYTE_INDEX 5
+#define ODSY_DMA_CHAN_INDEX 4
+
+typedef struct OdysseyDMAField {
+    uint8_t chan;
+    uint8_t shift;
+    uint8_t width;
+} OdysseyDMAField;
 
 typedef struct OdysseyDMALayout {
+    uint8_t cls;
     uint8_t code;
     uint8_t bytes;
-    uint8_t from[8];
+    OdysseyDMAField f[4];
+    bool maybe_depth;   /* header shared with a depth or stencil read */
 } OdysseyDMALayout;
 
+#define ODSY_R 0
+#define ODSY_G 1
+#define ODSY_B 2
+#define ODSY_A 3
+#define ODSY_FIELD(c, sh, w) { ODSY_##c, sh, w }
+#define ODSY_INDEX(w) { ODSY_DMA_CHAN_INDEX, 0, w }
+
 /*
- * GL reads from a 12-bit-a-channel RGBA window (source class 3), by
- * transfer code, as the library defines the host bytes. The model keeps
- * eight bits a channel, so a byte read returns them as stored and a
- * 16-bit read replicates each byte. APPROXIMATION: how the board narrows a
- * 12-bit channel to eight bits is unknown; the stored byte stands for the
- * channel's value at the model's precision.
+ * GL reads, by word 4's class and code, as the library defines the host
+ * bytes (the datasheet's "Read table"). The class and code name a GL
+ * format and type, and the bytes are that pair's packing, big-endian
+ * (INFERRED from the library treating what it receives as that pair).
+ * Several pairs share one code where their bytes are the same; a row
+ * lists one. The 5/6/5, 4/4/4/4 and 5/5/5/1 rows are the same for any
+ * visual, since only the code is read. Codes 8 and 9 of classes 2 and 3
+ * would be 7 and 10 under the library's 4:2:2 read mode, which
+ * glReadPixels never sets, and that mode is not modeled.
+ *
+ * APPROXIMATION: the model keeps eight bits a channel in every plane, so a
+ * narrower field takes the top bits of the stored byte, a wider one repeats
+ * them, and a byte read returns the stored byte whatever the visual's width.
+ * How the board narrows or widens a pixel is UNKNOWN (the table fixes the
+ * bytes handed back, not the board's storage). What would settle it: a
+ * board read of a pixel written with known wide data, or a datasheet fact
+ * for the board's narrow-pixel storage. A class 0 code 1 or 0 row
+ * is colour index for a window and could also be a luminance or alpha
+ * texture, which are not modeled; so is class 1 code 2. A depth or stencil
+ * read shares class 0 code 0 (one-byte stencil) and class 2 code 2 (32-bit
+ * depth) and its header carries no discriminator the datasheet gives, so
+ * those rows are marked maybe_depth: they are served as colour and
+ * reported once, because depth and stencil are not modeled. A word 4
+ * field-code rule for depth and stencil would split them.
  */
 static const OdysseyDMALayout odyssey_dma_gl_layouts[] = {
-    { 1, 4, { 0, 1, 2, 3 } },   /* RGBA, UNSIGNED_BYTE: R, G, B, A */
-    { 6, 4, { 3, 2, 1, 0 } },   /* A, B, G, R */
-    { 2, 3, { 0, 1, 2 } },      /* RGB, UNSIGNED_BYTE */
-    { 7, 3, { 2, 1, 0 } },      /* BGR, UNSIGNED_BYTE */
-    { 9, 8, { 0, 0, 1, 1, 2, 2, 3, 3 } }, /* RGBA, UNSIGNED_SHORT */
-};
+    /* Class 0: eight-bit colour index. */
+    { 0, 0, 1, { ODSY_INDEX(8) }, true },
+    { 0, 1, 1, { ODSY_INDEX(8) } },
 
-/* An eight-bit RGBA visual uses code 8 for RGBA/UNSIGNED_BYTE. */
-static const OdysseyDMALayout odyssey_dma_gl_rgba8_layout = {
-    8, 4, { 0, 1, 2, 3 },
+    /* Class 1: 4/4/4/4, 5/5/5/1 and 5/6/5 packed shorts, RGBA8 bytes. */
+    { 1, 6, 2, { ODSY_FIELD(R, 0, 4), ODSY_FIELD(G, 4, 4),
+                 ODSY_FIELD(B, 8, 4), ODSY_FIELD(A, 12, 4) } },
+    { 1, 8, 2, { ODSY_FIELD(B, 12, 4), ODSY_FIELD(G, 8, 4),
+                 ODSY_FIELD(R, 4, 4), ODSY_FIELD(A, 0, 4) } },
+    { 1, 7, 2, { ODSY_FIELD(B, 0, 4), ODSY_FIELD(G, 4, 4),
+                 ODSY_FIELD(R, 8, 4), ODSY_FIELD(A, 12, 4) } },
+    { 1, 13, 2, { ODSY_FIELD(R, 12, 4), ODSY_FIELD(G, 8, 4),
+                  ODSY_FIELD(B, 4, 4), ODSY_FIELD(A, 0, 4) } },
+    { 1, 1, 4, { ODSY_FIELD(R, 24, 8), ODSY_FIELD(G, 16, 8),
+                 ODSY_FIELD(B, 8, 8), ODSY_FIELD(A, 0, 8) } },
+    { 1, 5, 2, { ODSY_FIELD(B, 11, 5), ODSY_FIELD(G, 6, 5),
+                 ODSY_FIELD(R, 1, 5), ODSY_FIELD(A, 0, 1) } },
+    { 1, 3, 2, { ODSY_FIELD(B, 0, 5), ODSY_FIELD(G, 5, 5),
+                 ODSY_FIELD(R, 10, 5), ODSY_FIELD(A, 15, 1) } },
+    { 1, 9, 2, { ODSY_FIELD(R, 0, 5), ODSY_FIELD(G, 5, 5),
+                 ODSY_FIELD(B, 10, 5), ODSY_FIELD(A, 15, 1) } },
+    { 1, 10, 2, { ODSY_FIELD(R, 11, 5), ODSY_FIELD(G, 5, 6),
+                  ODSY_FIELD(B, 0, 5) } },
+    { 1, 4, 2, { ODSY_FIELD(B, 11, 5), ODSY_FIELD(G, 5, 6),
+                 ODSY_FIELD(R, 0, 5) } },
+    { 1, 12, 2, { ODSY_FIELD(R, 11, 5), ODSY_FIELD(G, 6, 5),
+                  ODSY_FIELD(B, 1, 5), ODSY_FIELD(A, 0, 1) } },
+    /* Class 1: twelve-bit colour index, a big-endian short. */
+    { 1, 14, 2, { ODSY_INDEX(12) } },
+
+    /* Class 2: RGBA 8/8/8/8 bytes and 5/6/5, and 10/10/10/2. */
+    { 2, 1, 3, { ODSY_FIELD(R, 16, 8), ODSY_FIELD(G, 8, 8),
+                 ODSY_FIELD(B, 0, 8) } },
+    { 2, 2, 4, { ODSY_FIELD(A, 24, 8), ODSY_FIELD(R, 16, 8),
+                 ODSY_FIELD(G, 8, 8), ODSY_FIELD(B, 0, 8) }, true },
+    { 2, 3, 3, { ODSY_FIELD(B, 16, 8), ODSY_FIELD(G, 8, 8),
+                 ODSY_FIELD(R, 0, 8) } },
+    { 2, 4, 4, { ODSY_FIELD(B, 24, 8), ODSY_FIELD(G, 16, 8),
+                 ODSY_FIELD(R, 8, 8), ODSY_FIELD(A, 0, 8) } },
+    { 2, 9, 2, { ODSY_FIELD(B, 11, 5), ODSY_FIELD(G, 5, 6),
+                 ODSY_FIELD(R, 0, 5) } },
+    { 2, 10, 2, { ODSY_FIELD(R, 11, 5), ODSY_FIELD(G, 5, 6),
+                  ODSY_FIELD(B, 0, 5) } },
+    { 2, 11, 4, { ODSY_FIELD(A, 24, 8), ODSY_FIELD(B, 16, 8),
+                  ODSY_FIELD(G, 8, 8), ODSY_FIELD(R, 0, 8) } },
+    { 2, 8, 4, { ODSY_FIELD(R, 24, 8), ODSY_FIELD(G, 16, 8),
+                 ODSY_FIELD(B, 8, 8), ODSY_FIELD(A, 0, 8) } },
+    { 2, 12, 4, { ODSY_FIELD(R, 0, 10), ODSY_FIELD(G, 10, 10),
+                  ODSY_FIELD(B, 20, 10), ODSY_FIELD(A, 30, 2) } },
+    { 2, 0, 4, { ODSY_FIELD(R, 22, 10), ODSY_FIELD(G, 12, 10),
+                 ODSY_FIELD(B, 2, 10), ODSY_FIELD(A, 0, 2) } },
+
+    /* Class 3: RGBA 12/12/12/12, eight bits stored a channel. */
+    { 3, 1, 4, { ODSY_FIELD(R, 24, 8), ODSY_FIELD(G, 16, 8),
+                 ODSY_FIELD(B, 8, 8), ODSY_FIELD(A, 0, 8) } },
+    { 3, 2, 3, { ODSY_FIELD(R, 16, 8), ODSY_FIELD(G, 8, 8),
+                 ODSY_FIELD(B, 0, 8) } },
+    { 3, 3, 4, { ODSY_FIELD(R, 0, 10), ODSY_FIELD(G, 10, 10),
+                 ODSY_FIELD(B, 20, 10), ODSY_FIELD(A, 30, 2) } },
+    { 3, 5, 8, { ODSY_FIELD(A, 48, 16), ODSY_FIELD(B, 32, 16),
+                 ODSY_FIELD(G, 16, 16), ODSY_FIELD(R, 0, 16) } },
+    { 3, 6, 4, { ODSY_FIELD(A, 24, 8), ODSY_FIELD(B, 16, 8),
+                 ODSY_FIELD(G, 8, 8), ODSY_FIELD(R, 0, 8) } },
+    { 3, 7, 3, { ODSY_FIELD(B, 16, 8), ODSY_FIELD(G, 8, 8),
+                 ODSY_FIELD(R, 0, 8) } },
+    { 3, 8, 6, { ODSY_FIELD(R, 32, 16), ODSY_FIELD(G, 16, 16),
+                 ODSY_FIELD(B, 0, 16) } },
+    { 3, 9, 8, { ODSY_FIELD(R, 48, 16), ODSY_FIELD(G, 32, 16),
+                 ODSY_FIELD(B, 16, 16), ODSY_FIELD(A, 0, 16) } },
+
+    /* Class 4: RGBA 16-bit texture objects. */
+    { 4, 2, 4, { ODSY_FIELD(R, 24, 8), ODSY_FIELD(G, 16, 8),
+                 ODSY_FIELD(B, 8, 8), ODSY_FIELD(A, 0, 8) } },
+    { 4, 0, 8, { ODSY_FIELD(R, 48, 16), ODSY_FIELD(G, 32, 16),
+                 ODSY_FIELD(B, 16, 16), ODSY_FIELD(A, 0, 16) } },
 };
 
 /*
  * X reads, by word 7's format byte: the upload decode
  * (odyssey_decode_pixel()) run backwards. The luminance code is not
- * invertible and no read of it has been seen, so it is refused.
+ * invertible and no read of it has been seen, so it is refused. The ABGR
+ * read returns alpha zero, which no field covers.
  */
 static const OdysseyDMALayout odyssey_dma_x_layouts[] = {
-    { ODSY_IMAGE_CODE_ABGR, 4, { ODSY_DMA_BYTE_ZERO, 2, 1, 0 } },
-    { ODSY_IMAGE_CODE_RGBA, 4, { 0, 1, 2, 3 } },
-    { ODSY_IMAGE_CODE_RGB, 3, { 0, 1, 2 } },
-    { ODSY_IMAGE_CODE_CI, 1, { ODSY_DMA_BYTE_INDEX } },
+    { 0, ODSY_IMAGE_CODE_ABGR, 4, { ODSY_FIELD(B, 16, 8),
+                                    ODSY_FIELD(G, 8, 8),
+                                    ODSY_FIELD(R, 0, 8) } },
+    { 0, ODSY_IMAGE_CODE_RGBA, 4, { ODSY_FIELD(R, 24, 8),
+                                    ODSY_FIELD(G, 16, 8),
+                                    ODSY_FIELD(B, 8, 8),
+                                    ODSY_FIELD(A, 0, 8) } },
+    { 0, ODSY_IMAGE_CODE_RGB, 3, { ODSY_FIELD(R, 16, 8),
+                                   ODSY_FIELD(G, 8, 8),
+                                   ODSY_FIELD(B, 0, 8) } },
+    { 0, ODSY_IMAGE_CODE_CI, 1, { ODSY_INDEX(8) } },
 };
 
 /* The read's layout, or NULL (reported once) when it is not modeled. */
@@ -10075,16 +10208,22 @@ static const OdysseyDMALayout *odyssey_dma_read_layout(SGIOdysseyState *s,
                 l = &odyssey_dma_x_layouts[i];
             }
         }
-    } else if (cls == ODSY_DMA_GL_CLASS_RGBA12) {
+    } else {
         for (i = 0; i < ARRAY_SIZE(odyssey_dma_gl_layouts); i++) {
-            if (odyssey_dma_gl_layouts[i].code == code) {
+            if (odyssey_dma_gl_layouts[i].cls == cls &&
+                odyssey_dma_gl_layouts[i].code == code) {
                 l = &odyssey_dma_gl_layouts[i];
             }
         }
-    } else if (cls == ODSY_DMA_GL_CLASS_RGBA8 && code == 8) {
-        l = &odyssey_dma_gl_rgba8_layout;
     }
     if (l && l->bytes == bpp) {
+        if (l->maybe_depth &&
+            odyssey_dma_report(s, ODSY_DMA_REPORT_DEPTH_SHARED)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: DMA read with word 4 0x%x "
+                          "(class %u, code %u) may be a depth or stencil "
+                          "read, which is not modeled; the colour or index "
+                          "plane is returned\n", fmt, cls, code);
+        }
         return l;
     }
     if (odyssey_dma_report(s, ODSY_DMA_REPORT_LAYOUT)) {
@@ -10093,6 +10232,18 @@ static const OdysseyDMALayout *odyssey_dma_read_layout(SGIOdysseyState *s,
                       "pixel is not modeled\n", xcode, fmt, cls, code, bpp);
     }
     return NULL;
+}
+
+/* Field f of plane word word: a channel's top bits, or the index itself. */
+static uint64_t odyssey_dma_field(uint32_t word, const OdysseyDMAField *f)
+{
+    uint32_t b;
+
+    if (f->chan == ODSY_DMA_CHAN_INDEX) {
+        return word;
+    }
+    b = (word >> (24 - 8 * f->chan)) & 0xff;
+    return (uint64_t)(((b << 8) | b) >> (16 - f->width));
 }
 
 /*
@@ -10231,9 +10382,10 @@ static int odyssey_dma_map_piece(const SGIDMABus *bus, OdysseyDMAPiece *p,
  * A colour-index byte is the plane word itself, taken only where scanout
  * would take that word as an index: a colour-buffer pixel whose main
  * drawable's display mode is an index group (odyssey_resolve_row()), with a
- * word that fits eight bits. INFERRED as the scanout rule is. Anything else
- * refuses the whole read, reported once: a pixel of an RGB-mode drawable, a
- * 12-bit index above 0xff, the synthetic RGB word the screen-aligned GL
+ * word that fits the layout's index width, eight or twelve bits. INFERRED
+ * as the scanout rule is. Anything else refuses the whole read, reported
+ * once: a pixel of an RGB-mode drawable, an index wider than the layout,
+ * the synthetic RGB word the screen-aligned GL
  * rectangle's index path stores, or any board-memory object, which records
  * no display mode. A colour layout over an index-mode pixel returns the raw
  * index word's bytes as colour and is reported once: no inverse colormap is
@@ -10244,7 +10396,7 @@ static bool odyssey_dma_read_pack(SGIOdysseyState *s,
                                   const OdysseyDMALayout *l, uint32_t w,
                                   uint32_t h, bool bottom_up, uint8_t *out)
 {
-    bool index_read = l->from[0] == ODSY_DMA_BYTE_INDEX;
+    bool index_read = l->f[0].chan == ODSY_DMA_CHAN_INDEX;
 
     if (index_read && src->obj >= 0) {
         if (odyssey_dma_report(s, ODSY_DMA_REPORT_INDEX_OBJECT)) {
@@ -10261,16 +10413,20 @@ static bool odyssey_dma_read_pack(SGIOdysseyState *s,
             int64_t x = src->x + c, y = src->y + board_row;
             uint32_t word = odyssey_dma_read_pixel(s, src, x, y);
             uint32_t group = ODSY_GAMMA_GROUP;
+            uint64_t pixel;
 
             if (src->obj < 0) {
                 group = odyssey_display_group(s, odyssey_main_id(s, x, y));
             }
-            if (index_read && (group >= ODSY_GAMMA_GROUP || word > 0xff)) {
+            if (index_read && (group >= ODSY_GAMMA_GROUP ||
+                               word >> l->f[0].width)) {
                 if (odyssey_dma_report(s, ODSY_DMA_REPORT_INDEX)) {
                     qemu_log_mask(LOG_UNIMP, "sgi-odyssey: DMA index read at "
                                   "(%" PRId64 ", %" PRId64 ") finds word "
-                                  "0x%x in display-mode group %u, not an "
-                                  "eight-bit index\n", x, y, word, group);
+                                  "0x%x in display-mode group %u, not %s "
+                                  "index\n", x, y, word, group,
+                                  l->f[0].width == 8 ? "an eight-bit" :
+                                  "a 12-bit");
                 }
                 return false;
             }
@@ -10281,12 +10437,13 @@ static bool odyssey_dma_read_pack(SGIOdysseyState *s,
                               "pixel (display-mode group %u); its word 0x%x "
                               "is returned as colour\n", x, y, group, word);
             }
+            pixel = 0;
+            for (unsigned int k = 0; k < ARRAY_SIZE(l->f) && l->f[k].width;
+                 k++) {
+                pixel |= odyssey_dma_field(word, &l->f[k]) << l->f[k].shift;
+            }
             for (unsigned int b = 0; b < l->bytes; b++) {
-                uint8_t from = l->from[b];
-
-                *out++ = from == ODSY_DMA_BYTE_INDEX ? word :
-                         from == ODSY_DMA_BYTE_ZERO ? 0 :
-                         word >> (24 - 8 * from);
+                *out++ = pixel >> (8 * (l->bytes - 1 - b));
             }
         }
     }

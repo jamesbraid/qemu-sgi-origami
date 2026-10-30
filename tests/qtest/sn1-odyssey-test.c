@@ -21683,8 +21683,8 @@ static void test_readback_raw_texture_paging(void)
  * R, alpha zero -- the layout the upload path decodes for that byte --
  * and leaves the plane alone. The same header with bit 24 clear paints the
  * host bytes and writes nothing to the guest. With a zero format byte the
- * GL vocabulary applies, where this word 4 (class 2, code 0xb) is not
- * modeled: the read is refused and writes nothing.
+ * GL vocabulary applies, where this word 4 (class 2, code 0xb) is the GL
+ * read table's A, B, G, R bytes, not the X read's.
  */
 static void test_readback_direction(void)
 {
@@ -21718,10 +21718,14 @@ static void test_readback_direction(void)
     g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0x332211ffu);
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
 
-    /* A zero format byte with this word 4: refused, nothing written. */
+    /* A zero format byte with this word 4: the GL read table's code. */
     readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
     hdr[7] = 0x33010000;
     readback_run(qts, hdr, pte, 1);
+    expect[16] = 0xff;
+    expect[17] = 0x11;
+    expect[18] = 0x22;
+    expect[19] = 0x33;
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
     g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0x332211ffu);
 
@@ -22936,6 +22940,276 @@ static void test_readback_gl_layouts(void)
 }
 
 /*
+ * The GL read table (docs/datasheets/odyssey.md, "Read table"): word 4's
+ * class (bits 2:0) and code (bits 7:3) name the host bytes. Each row below
+ * reads one pixel, red 0x9a, green 0x5e, blue 0xc3, alpha 0xd1, and checks
+ * the bytes against the GL packing of the row's format and type (written
+ * from the GL packing rules, not from the model's tables; every alternative
+ * pair the datasheet lists for a code gives the same bytes). Packed
+ * channels keep their top bits, and a 10-bit channel repeats them: the
+ * planes hold eight bits a channel. The same rows read from a board-memory
+ * object, as a texture readback does.
+ */
+static const struct {
+    uint32_t cls, code;
+    const char *pair;
+    uint32_t bytes;
+    uint8_t want[8];
+} rb_gl_table[] = {
+    { 1, 6, "RGBA/US4444R", 2, { 0xdc, 0x59 } },
+    { 1, 8, "BGRA/US4444", 2, { 0xc5, 0x9d } },
+    { 1, 7, "BGRA/US4444R", 2, { 0xd9, 0x5c } },
+    { 1, 13, "RGBA/US4444", 2, { 0x95, 0xcd } },
+    { 1, 1, "RGBA/UB", 4, { 0x9a, 0x5e, 0xc3, 0xd1 } },
+    { 1, 5, "BGRA/US5551", 2, { 0xc2, 0xe7 } },
+    { 1, 3, "BGRA/US1555R", 2, { 0xcd, 0x78 } },
+    { 1, 9, "RGBA/US1555R", 2, { 0xe1, 0x73 } },
+    { 1, 10, "RGB/US565", 2, { 0x9a, 0xf8 } },
+    { 1, 4, "BGR/US565", 2, { 0xc2, 0xf3 } },
+    { 1, 12, "RGBA/US5551", 2, { 0x9a, 0xf1 } },
+    { 2, 1, "RGB/UB", 3, { 0x9a, 0x5e, 0xc3 } },
+    { 2, 2, "BGRA/UI8888R", 4, { 0xd1, 0x9a, 0x5e, 0xc3 } },
+    { 2, 3, "BGR/UB", 3, { 0xc3, 0x5e, 0x9a } },
+    { 2, 4, "BGRA/UB", 4, { 0xc3, 0x5e, 0x9a, 0xd1 } },
+    { 2, 9, "RGB/US565R", 2, { 0xc2, 0xf3 } },
+    { 2, 10, "RGB/US565", 2, { 0x9a, 0xf8 } },
+    { 2, 11, "RGBA/UI8888R", 4, { 0xd1, 0xc3, 0x5e, 0x9a } },
+    { 2, 8, "RGBA/UB", 4, { 0x9a, 0x5e, 0xc3, 0xd1 } },
+    { 2, 12, "RGBA/UI2101010R", 4, { 0xf0, 0xf5, 0xe6, 0x6a } },
+    { 2, 0, "RGBA/UI1010102", 4, { 0x9a, 0x97, 0x9c, 0x3f } },
+    { 3, 1, "RGBA/UB", 4, { 0x9a, 0x5e, 0xc3, 0xd1 } },
+    { 3, 2, "RGB/UB", 3, { 0x9a, 0x5e, 0xc3 } },
+    { 3, 3, "RGBA/UI2101010R", 4, { 0xf0, 0xf5, 0xe6, 0x6a } },
+    { 3, 5, "ABGR_EXT/US", 8,
+      { 0xd1, 0xd1, 0xc3, 0xc3, 0x5e, 0x5e, 0x9a, 0x9a } },
+    { 3, 6, "ABGR_EXT/UB", 4, { 0xd1, 0xc3, 0x5e, 0x9a } },
+    { 3, 7, "BGR/UB", 3, { 0xc3, 0x5e, 0x9a } },
+    { 3, 8, "RGB/US", 6, { 0x9a, 0x9a, 0x5e, 0x5e, 0xc3, 0xc3 } },
+    { 3, 9, "RGBA/US", 8, { 0x9a, 0x9a, 0x5e, 0x5e, 0xc3, 0xc3, 0xd1, 0xd1 } },
+    { 4, 2, "RGBA/UB", 4, { 0x9a, 0x5e, 0xc3, 0xd1 } },
+    { 4, 0, "RGBA/US", 8, { 0x9a, 0x9a, 0x5e, 0x5e, 0xc3, 0xc3, 0xd1, 0xd1 } },
+};
+
+/* Word 4 as the library builds it: front, drawable, depth code 3, size. */
+static uint32_t rb_gl_word4(uint32_t cls, uint32_t code, bool sentinel)
+{
+    static const uint8_t size[] = { 0, 0, 1, 2, 2 };
+
+    return (sentinel ? 0x90000000u : 0x80000000u) | (3u << 16) |
+           (size[cls] << 13) | (1u << 12) | (code << 3) | cls;
+}
+
+/* Word 7 for a board-to-host read of the given host bytes a pixel. */
+static uint32_t rb_gl_control(uint32_t bytes)
+{
+    static const uint8_t bpp[] = { 0, 5, 0, 7, 1, 0, 6, 0, 2, 0, 0, 0, 4 };
+
+    return 0xf3000000u | ((uint32_t)bpp[bytes] << 16);
+}
+
+static void test_readback_gl_read_table(void)
+{
+    const uint64_t up_pte[] = { ODSY_DMA_PTE(RB_PAGE_A + 16, 4) };
+    const uint8_t texel[4] = { 0x9a, 0x5e, 0xc3, 0xd1 };
+    QTestState *qts = readback_start("");
+    uint8_t expect[48];
+
+    odsy_buffer_pixel_write(qts, 0, RB_ORIGIN_X + 64, RB_ORIGIN_Y + 63,
+                            0x9a5ec3d1);
+    for (unsigned i = 0; i < ARRAY_SIZE(rb_gl_table); i++) {
+        uint32_t n = rb_gl_table[i].bytes;
+        const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A + 16, n) };
+        const uint32_t sentinel[8] = {
+            RB_READ_SENTINEL, 0x003f0040, 0x50, 0x10001,
+            rb_gl_word4(rb_gl_table[i].cls, rb_gl_table[i].code, true), 0, n,
+            rb_gl_control(n),
+        };
+        const uint32_t object[8] = {
+            0x16bc00, 0, 0x20, 0x10001,
+            rb_gl_word4(rb_gl_table[i].cls, rb_gl_table[i].code, false), 0, n,
+            rb_gl_control(n),
+        };
+        const uint32_t upload[8] = {
+            0x16bc00, 0, 0x20, 0x10001, 0x80013042, 0, 4, 0x3201004b,
+        };
+
+        g_test_message("class %u code %u %s", rb_gl_table[i].cls,
+                       rb_gl_table[i].code, rb_gl_table[i].pair);
+
+        readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
+        readback_run(qts, sentinel, pte, 1);
+        memcpy(&expect[16], rb_gl_table[i].want, n);
+        readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
+
+        qtest_memwrite(qts, RB_PAGE_A + 16, texel, sizeof(texel));
+        readback_run(qts, upload, up_pte, 1);
+        readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
+        readback_run(qts, object, pte, 1);
+        memcpy(&expect[16], rb_gl_table[i].want, n);
+        readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
+    }
+    board_quit(qts);
+}
+
+/*
+ * Colour-index reads follow the same table: class 0 (code 0 or 1) is
+ * COLOR_INDEX/UNSIGNED_BYTE for an eight-bit window and class 1 code 14 is
+ * COLOR_INDEX/UNSIGNED_SHORT for a 12-bit one, two big-endian bytes. The
+ * index comes from the plane word where scanout takes an index: group 17
+ * here for eight bits, group 0 for 12. A word that does not fit the
+ * window's width, or a pixel under an RGB mode, is refused and writes
+ * nothing.
+ */
+static void test_readback_gl_colour_index(void)
+{
+    QTestState *qts = readback_start("");
+    static const struct {
+        uint32_t cls, code, bytes;
+    } rows[] = { { 0, 0, 1 }, { 0, 1, 1 }, { 1, 14, 2 } };
+    uint8_t expect[48];
+
+    for (unsigned i = 0; i < ARRAY_SIZE(rows); i++) {
+        uint32_t n = rows[i].bytes;
+        const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A + 16, n) };
+        const uint32_t hdr[8] = {
+            RB_READ_SENTINEL, 0x003f0040, 0x50, 0x10001,
+            rb_gl_word4(rows[i].cls, rows[i].code, true), 0, n,
+            rb_gl_control(n),
+        };
+
+        odsy_buffer_pixel_write(qts, 0, RB_ORIGIN_X + 64, RB_ORIGIN_Y + 63,
+                                0x0000007b);
+        dispmode_write(qts, 0, n == 1 ? ODSY_DISPMODE_GROUP17 : 0);
+        readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
+        readback_run(qts, hdr, pte, 1);
+        expect[n == 1 ? 16 : 17] = 0x7b;
+        if (n == 2) {
+            expect[16] = 0;
+        }
+        readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
+
+        /* A 12-bit index fits a short and not a byte. */
+        odsy_buffer_pixel_write(qts, 0, RB_ORIGIN_X + 64, RB_ORIGIN_Y + 63,
+                                0x000005a3);
+        dispmode_write(qts, 0, 0);
+        readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
+        readback_run(qts, hdr, pte, 1);
+        if (n == 2) {
+            expect[16] = 0x05;
+            expect[17] = 0xa3;
+        }
+        readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
+
+        /* An RGB mode: the word is a colour, so there is no index to read. */
+        dispmode_write(qts, 0, ODSY_DISPMODE_RGB);
+        readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
+        readback_run(qts, hdr, pte, 1);
+        readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
+    }
+    board_quit(qts);
+}
+
+/*
+ * A pair the table does not name leaves the host bytes alone: a code past
+ * a class's last, a class no visual has, the pixel classes the library
+ * refuses (14 and 15), a 16-bit depth header, and a listed code asked for
+ * at another size.
+ */
+static void test_readback_gl_unlisted_rows(void)
+{
+    static const struct {
+        uint32_t cls, code, bytes;
+    } rows[] = {
+        { 1, 15, 2 }, { 1, 11, 2 }, { 2, 7, 4 }, { 2, 13, 4 }, { 3, 0, 4 },
+        { 3, 4, 4 }, { 4, 1, 4 }, { 4, 5, 8 }, { 5, 1, 4 }, { 6, 1, 4 },
+        { 7, 1, 4 },
+        /* A 16-bit depth read: class 1 code 0 is not in the table. */
+        { 1, 0, 2 },
+        /* A listed code at the wrong size. */
+        { 1, 6, 4 }, { 2, 1, 4 }, { 2, 12, 3 }, { 3, 9, 4 }, { 1, 1, 2 },
+    };
+    QTestState *qts = readback_start("");
+    uint8_t expect[48];
+
+    odsy_buffer_pixel_write(qts, 0, RB_ORIGIN_X + 64, RB_ORIGIN_Y + 63,
+                            0x9a5ec3d1);
+    for (unsigned i = 0; i < ARRAY_SIZE(rows); i++) {
+        uint32_t n = rows[i].bytes;
+        const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A + 16, n) };
+        const uint32_t hdr[8] = {
+            RB_READ_SENTINEL, 0x003f0040, 0x50, 0x10001,
+            0x90035000u | (rows[i].code << 3) | rows[i].cls, 0, n,
+            rb_gl_control(n),
+        };
+
+        readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
+        readback_run(qts, hdr, pte, 1);
+        readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
+    }
+    board_quit(qts);
+}
+
+/*
+ * Class 0 code 0 and class 2 code 2 are colour index and BGRA bytes in the
+ * read table and also a stencil byte and a 32-bit depth word, with no word 4
+ * bit the datasheet gives to tell them apart. The model serves the colour
+ * plane and reports once that the header may be a depth or stencil read.
+ * Any other row, class 2 code 4 and class 0 code 1 here, is not reported.
+ */
+static unsigned readback_depth_reports(uint32_t cls, uint32_t code,
+                                       uint32_t bytes, uint8_t first)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A + 16, bytes) };
+    const uint32_t hdr[8] = {
+        RB_READ_SENTINEL, 0x003f0040, 0x50, 0x10001,
+        rb_gl_word4(cls, code, true), 0, bytes, rb_gl_control(bytes),
+    };
+    uint8_t expect[48], got;
+    unsigned n;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-depth-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = readback_start(extra);
+    odsy_buffer_pixel_write(qts, 0, RB_ORIGIN_X + 64, RB_ORIGIN_Y + 63,
+                            0x0000007b);
+    dispmode_write(qts, 0, ODSY_DISPMODE_GROUP17);
+    readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
+    readback_run(qts, hdr, pte, 1);
+    readback_run(qts, hdr, pte, 1);
+    /* The colour or index plane answers, as before the report. */
+    qtest_memread(qts, RB_PAGE_A + 16, &got, 1);
+    g_assert_cmphex(got, ==, first);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    n = readback_count(log, "may be a depth or stencil read");
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+    return n;
+}
+
+static void test_readback_gl_depth_shared_rows(void)
+{
+    /* Stencil's class 0 code 0 on an index window: the index byte. */
+    g_assert_cmpuint(readback_depth_reports(0, 0, 1, 0x7b), ==, 1);
+    /* 32-bit depth's class 2 code 2: BGRA/UNSIGNED_INT_8_8_8_8_REV bytes. */
+    g_assert_cmpuint(readback_depth_reports(2, 2, 4, 0x7b), ==, 1);
+    /* Rows only colour uses are not reported. */
+    g_assert_cmpuint(readback_depth_reports(2, 4, 4, 0x00), ==, 0);
+    g_assert_cmpuint(readback_depth_reports(0, 1, 1, 0x7b), ==, 0);
+}
+
+/*
  * Every refusal writes nothing to the guest, creates no board-memory
  * object, still raises DMA-done when bit 31 asks for it (no completion
  * record carries a status, and the kernel's own fence ends its wait
@@ -23738,6 +24012,14 @@ int main(int argc, char **argv)
                    test_readback_greeter_caret_cell);
     add_fresh_case("sn1/odyssey/readback/gl-layouts",
                    test_readback_gl_layouts);
+    add_fresh_case("sn1/odyssey/readback/gl-read-table",
+                   test_readback_gl_read_table);
+    add_fresh_case("sn1/odyssey/readback/gl-colour-index",
+                   test_readback_gl_colour_index);
+    add_fresh_case("sn1/odyssey/readback/gl-depth-shared-rows",
+                   test_readback_gl_depth_shared_rows);
+    add_fresh_case("sn1/odyssey/readback/gl-unlisted-rows",
+                   test_readback_gl_unlisted_rows);
     add_fresh_case("sn1/odyssey/readback/failures", test_readback_failures);
     add_fresh_case("sn1/odyssey/swap-retrace-vector",
                    test_swap_retrace_vector);
