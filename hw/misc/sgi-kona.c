@@ -24511,13 +24511,13 @@ static const VMStateDescription vmstate_sgi_kona_flash_op_open = {
 
 static const VMStateDescription vmstate_sgi_kona = {
     .name = TYPE_SGI_KONA,
-    .version_id = 7,
-    .minimum_version_id = 7,
+    .version_id = 6,
+    .minimum_version_id = 6,
     .pre_save = sgi_kona_pre_save,
     .pre_load = sgi_kona_cursor_pre_load,
     .post_load = sgi_kona_post_load,
     .fields = (const VMStateField[]) {
-        /* Increment 7: the slot, which the destination's must match. */
+        /* The slot, which the destination board's must match. */
         VMSTATE_STRUCT(parent_obj, SGIKonaState, 0,
                        vmstate_sgi_xio_board_slot, SGIXioBoardState),
         VMSTATE_UINT32(widget_control, SGIKonaState),
