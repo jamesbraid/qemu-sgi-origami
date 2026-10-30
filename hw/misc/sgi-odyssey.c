@@ -9822,6 +9822,65 @@ done:
 }
 
 /*
+ * The plane a DMA transfer reads or writes: for a write, the colour plane
+ * means a header that is not a depth or stencil write.
+ *
+ * MODEL CHOICE: the model keeps depth and stencil in planes of their own, so
+ * a stencil transfer touches neither the depth word nor the colour, and the
+ * depth word's top byte is not stored. Where the board keeps the stencil
+ * byte inside a stored pixel is UNKNOWN (datasheet, "What would settle the
+ * rest"); the stencil-round-trip qtest pins this choice. A written stencil
+ * word keeps its low byte and a written depth word its low 24 bits.
+ *
+ * MODEL CHOICE, DMA writes (the gl-zs-write-rules qtest pins each): they
+ * pass odyssey_pixel_allowed(), so clip rectangles and the window-ID
+ * compare apply; they ignore the stencil write mask (0x0452 bits 19:12);
+ * and a depth write is always the 24-bit form. LIMIT: an RGBA 12/12/12/12
+ * window's library sends 16-bit-form words, which are stored as 24-bit
+ * words, so the 16-bit read returns near zero and that visual's depth does
+ * not round-trip. The board's behaviour for all three is UNKNOWN.
+ */
+enum {
+    ODSY_DMA_PLANE_COLOUR,
+    ODSY_DMA_PLANE_DEPTH,
+    ODSY_DMA_PLANE_STENCIL,
+};
+
+/*
+ * A depth or stencil write to the draw sentinel (the datasheet's "Depth and
+ * stencil headers", ESTABLISHED as the library's request): word 7 carries
+ * format code 0 and type code 4 (0x080) and the four-byte pixel code
+ * (bits 18:16 = 1); word 4 has bits 7:0 clear, bit 12 set, and a size
+ * field in bits 15:13 of 1 for depth and 0 for stencil. The other bits of
+ * word 7 (the transfer path, the descriptions-differ bit, the interrupt
+ * request) and of word 4 (the framebuffer depth code, the field codes and
+ * the draw buffer) are not read: the datasheet leaves the field codes'
+ * meaning unknown, and the planes have no use for them.
+ */
+#define ODSY_DMA_ZS_CONTROL 0x00010080u
+#define ODSY_DMA_ZS_CONTROL_MASK 0x000701ffu
+#define ODSY_DMA_ZS_SIZE_SHIFT 13
+#define ODSY_DMA_ZS_SIZE_MASK 0x7
+
+static unsigned odyssey_dma_zs_write_plane(const uint32_t *hdr)
+{
+    uint32_t fmt = hdr[ODSY_DMA_HDR_FORMAT];
+
+    if ((hdr[ODSY_DMA_HDR_CONTROL] & ODSY_DMA_ZS_CONTROL_MASK) !=
+        ODSY_DMA_ZS_CONTROL || (fmt & 0xff) || !(fmt & (1u << 12))) {
+        return ODSY_DMA_PLANE_COLOUR;
+    }
+    switch ((fmt >> ODSY_DMA_ZS_SIZE_SHIFT) & ODSY_DMA_ZS_SIZE_MASK) {
+    case 1:
+        return ODSY_DMA_PLANE_DEPTH;
+    case 0:
+        return ODSY_DMA_PLANE_STENCIL;
+    default:
+        return ODSY_DMA_PLANE_COLOUR;
+    }
+}
+
+/*
  * Source format code 0x6c: a GL DMA image write of A, B, G, R bytes, one
  * pixel a 4-byte word (word 7's low byte, bytes-per-pixel code 1). IRIS GL's
  * lrectwrite and GL_ABGR_EXT draws (ipaste, bgpaste) send it. ESTABLISHED
@@ -9923,8 +9982,9 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
     uint64_t payload_len = 0, pos = 0, out = 0;
     g_autofree uint8_t *payload = NULL;
     uint32_t left, r;
-    bool top_down;
-    unsigned psize = odyssey_dma_draw_sentinel_bytes(hdr, &top_down);
+    bool top_down = false;
+    unsigned zs = odyssey_dma_zs_write_plane(hdr);
+    unsigned psize = zs ? 4 : odyssey_dma_draw_sentinel_bytes(hdr, &top_down);
     /*
      * APPROXIMATION: the window's height, for a top-down write's
      * bottom-up y, taken from the 0x81d clip box's last row. The library
@@ -10003,6 +10063,14 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
                           (int64_t)y + h - 1 - r) + s->win_origin[1];
             uint32_t rgba;
 
+            if (zs == ODSY_DMA_PLANE_DEPTH) {
+                odyssey_gl_store_depth(s, px, py, ldl_be_p(src));
+                continue;
+            }
+            if (zs == ODSY_DMA_PLANE_STENCIL) {
+                odyssey_gl_store_stencil(s, px, py, ldl_be_p(src));
+                continue;
+            }
             if (psize == 4) {
                 rgba = (odyssey_pack_pixel(src[3], src[2], src[1]) & ~0xffu) |
                        src[0];
@@ -10020,7 +10088,9 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
             odyssey_paint_pixel(s, px, py, rgba);
         }
     }
-    sgi_scanout_invalidate_all(&s->scanout);
+    if (!zs) {
+        sgi_scanout_invalidate_all(&s->scanout);
+    }
 }
 
 /* True the first time reason (ODSY_DMA_REPORT_*) comes up: report it then. */
@@ -10057,6 +10127,7 @@ typedef struct OdysseyDMALayout {
     uint8_t bytes;
     OdysseyDMAField f[4];
     bool maybe_depth;   /* header shared with a depth or stencil read */
+    uint8_t plane;      /* ODSY_DMA_PLANE_*; the colour plane unless named */
 } OdysseyDMALayout;
 
 #define ODSY_R 0
@@ -10085,17 +10156,21 @@ typedef struct OdysseyDMALayout {
  * board read of a pixel written with known wide data, or a datasheet fact
  * for the board's narrow-pixel storage. A class 0 code 1 or 0 row
  * is colour index for a window and could also be a luminance or alpha
- * texture, which are not modeled; so is class 1 code 2. A depth or stencil
- * read shares class 0 code 0 (one-byte stencil) and class 2 code 2 (32-bit
- * depth) and its header carries no discriminator the datasheet gives, so
- * those rows are marked maybe_depth: they are served as colour and
- * reported once, because depth and stencil are not modeled. A word 4
- * field-code rule for depth and stencil would split them.
+ * texture, which are not modeled; so is class 1 code 2.
+ *
+ * Depth and stencil reads (the datasheet's "Depth and stencil headers"): a
+ * 16-bit depth is class 1 code 0, which no modeled colour read uses. A
+ * stencil byte shares class 0 code 0 and a 32-bit depth word class 2 code 2
+ * with colour index and BGRA bytes. Word 4's field codes tell them apart, so
+ * those rows are marked maybe_depth and odyssey_dma_read_plane() decides.
  */
 static const OdysseyDMALayout odyssey_dma_gl_layouts[] = {
     /* Class 0: eight-bit colour index. */
     { 0, 0, 1, { ODSY_INDEX(8) }, true },
     { 0, 1, 1, { ODSY_INDEX(8) } },
+
+    /* Class 1: 16-bit depth, the top 16 bits of the 24-bit depth word. */
+    { 1, 0, 2, { { 0 } }, false, ODSY_DMA_PLANE_DEPTH },
 
     /* Class 1: 4/4/4/4, 5/5/5/1 and 5/6/5 packed shorts, RGBA8 bytes. */
     { 1, 6, 2, { ODSY_FIELD(R, 0, 4), ODSY_FIELD(G, 4, 4),
@@ -10217,13 +10292,6 @@ static const OdysseyDMALayout *odyssey_dma_read_layout(SGIOdysseyState *s,
         }
     }
     if (l && l->bytes == bpp) {
-        if (l->maybe_depth &&
-            odyssey_dma_report(s, ODSY_DMA_REPORT_DEPTH_SHARED)) {
-            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: DMA read with word 4 0x%x "
-                          "(class %u, code %u) may be a depth or stencil "
-                          "read, which is not modeled; the colour or index "
-                          "plane is returned\n", fmt, cls, code);
-        }
         return l;
     }
     if (odyssey_dma_report(s, ODSY_DMA_REPORT_LAYOUT)) {
@@ -10315,6 +10383,58 @@ static bool odyssey_dma_read_source(SGIOdysseyState *s, const uint32_t *hdr,
         return false;
     }
     return true;
+}
+
+/*
+ * The plane a header with a shared row reads. Class 0 code 0 is colour
+ * index or a stencil byte, and class 2 code 2 is BGRA bytes or a 32-bit
+ * depth word. Word 4's two field codes, bits 23:20 (f1) and 27:24 (f2),
+ * tell them apart (datasheet, "Read table", the shared headers and the
+ * table of word 4 by window and read). ESTABLISHED as what the library
+ * sends; what the board does with the codes is unknown.
+ *
+ * Depth and stencil send (0, 0) or (4, 0). A BGRA read sends (2, 2), (3, 2),
+ * (6, 2), (7, 3) or (2, 0), so the two never share a header, except at
+ * (0, 0) for class 0: an eight-bit colour index on a storage-0 window is
+ * code 0 with those fields, and a stencil read of a storage-2 or 3 window
+ * is the same word 4 (word 2 separates them). The model cannot make that
+ * choice. It keeps no storage code for a window, and the datasheet does
+ * not say how word 2's drawable word maps to one, so it is served as
+ * colour index and reported once. A pair the datasheet does not list is
+ * served as colour and reported once. A board-memory object is never depth
+ * or stencil.
+ */
+static unsigned odyssey_dma_read_plane(SGIOdysseyState *s,
+                                       const uint32_t *hdr,
+                                       const OdysseyDMALayout *l,
+                                       const OdysseyDMASource *src)
+{
+    uint32_t fmt = hdr[ODSY_DMA_HDR_FORMAT];
+    unsigned f1 = (fmt >> 20) & 0xf, f2 = (fmt >> 24) & 0xf;
+    bool zs_fields = f2 == 0 && (f1 == 0 || f1 == 4);
+
+    if (!l->maybe_depth || src->obj >= 0) {
+        return l->plane;
+    }
+    if (l->cls == 2) {
+        if (zs_fields) {
+            return ODSY_DMA_PLANE_DEPTH;
+        }
+        if ((f2 == 2 && (f1 == 2 || f1 == 3 || f1 == 6)) ||
+            (f1 == 7 && f2 == 3) || (f1 == 2 && f2 == 0)) {
+            return ODSY_DMA_PLANE_COLOUR;
+        }
+    } else if (f1 == 4 && f2 == 0) {
+        return ODSY_DMA_PLANE_STENCIL;
+    }
+    if (odyssey_dma_report(s, ODSY_DMA_REPORT_DEPTH_SHARED)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: DMA read with word 4 0x%x "
+                      "(class %u, code %u, field codes %u and %u) may be a "
+                      "depth or stencil read or a colour read; the colour "
+                      "or index plane is returned\n", fmt, l->cls, l->code,
+                      f1, f2);
+    }
+    return ODSY_DMA_PLANE_COLOUR;
 }
 
 /*
@@ -10451,6 +10571,38 @@ static bool odyssey_dma_read_pack(SGIOdysseyState *s,
 }
 
 /*
+ * Pack a depth or stencil read: the depth plane's 24-bit word, zero
+ * extended to four bytes, or its top 16 bits for the two-byte form (the
+ * exponent and the ten leading mantissa bits, as the datasheet gives the
+ * RGBA 12/12/12/12 form), or the stencil plane's byte. Rows run in the
+ * order odyssey_dma_read_pack() gives a colour read's.
+ */
+static void odyssey_dma_read_pack_zs(SGIOdysseyState *s,
+                                     const OdysseyDMASource *src,
+                                     unsigned plane, unsigned bytes,
+                                     uint32_t w, uint32_t h, bool bottom_up,
+                                     uint8_t *out)
+{
+    for (uint32_t r = 0; r < h; r++) {
+        uint32_t board_row = bottom_up ? h - 1 - r : r;
+
+        for (uint32_t c = 0; c < w; c++) {
+            int64_t x = src->x + c, y = src->y + board_row;
+
+            if (plane == ODSY_DMA_PLANE_STENCIL) {
+                *out++ = odyssey_gl_load_stencil(s, x, y);
+            } else if (bytes == 2) {
+                stw_be_p(out, odyssey_gl_load_depth(s, x, y) >> 8);
+                out += 2;
+            } else {
+                stl_be_p(out, odyssey_gl_load_depth(s, x, y));
+                out += 4;
+            }
+        }
+    }
+}
+
+/*
  * Write the packed payload into the table's entries: rowbytes bytes a host
  * row, moving to the next entry when one is used up, then skipping skip
  * bytes that are not counted, exactly as an upload reads its source
@@ -10543,6 +10695,7 @@ static void odyssey_dma_from_board(SGIOdysseyState *s, const SGIDMABus *bus,
     OdysseyDMASource src;
     g_autofree uint8_t *payload = NULL;
     uint64_t total = 0;
+    unsigned plane;
     bool inside;
     int n, i;
 
@@ -10553,6 +10706,15 @@ static void odyssey_dma_from_board(SGIOdysseyState *s, const SGIDMABus *bus,
     }
     l = raw ? NULL : odyssey_dma_read_layout(s, hdr, bpp);
     if ((!raw && !l) || !odyssey_dma_read_source(s, hdr, &src)) {
+        return;
+    }
+    if (l && l->plane != ODSY_DMA_PLANE_COLOUR && src.obj >= 0) {
+        /* A board-memory object holds no depth: not a read the model has. */
+        if (odyssey_dma_report(s, ODSY_DMA_REPORT_LAYOUT)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: DMA read with word 4 0x%x "
+                          "of board-memory object 0x%x is not modeled\n",
+                          hdr[ODSY_DMA_HDR_FORMAT], hdr[ODSY_DMA_HDR_DEST]);
+        }
         return;
     }
     if (raw && src.obj < 0) {
@@ -10619,10 +10781,19 @@ static void odyssey_dma_from_board(SGIOdysseyState *s, const SGIDMABus *bus,
         }
         return;
     }
-    if (!odyssey_dma_read_pack(s, &src, l, w, h,
-                               hdr[ODSY_DMA_HDR_CONTROL] & ODSY_DMA_BOTTOM_UP,
-                               payload) ||
-        !odyssey_dma_read_write(s, bus, e, n, rowbytes, h, skip, payload)) {
+    plane = odyssey_dma_read_plane(s, hdr, l, &src);
+    if (plane == ODSY_DMA_PLANE_COLOUR) {
+        if (!odyssey_dma_read_pack(s, &src, l, w, h,
+                                   hdr[ODSY_DMA_HDR_CONTROL] &
+                                   ODSY_DMA_BOTTOM_UP, payload)) {
+            return;
+        }
+    } else {
+        odyssey_dma_read_pack_zs(s, &src, plane, bpp, w, h,
+                                 hdr[ODSY_DMA_HDR_CONTROL] &
+                                 ODSY_DMA_BOTTOM_UP, payload);
+    }
+    if (!odyssey_dma_read_write(s, bus, e, n, rowbytes, h, skip, payload)) {
         return;
     }
     trace_sgi_odyssey_dma_read(seq, hdr[ODSY_DMA_HDR_DEST], src.x, src.y, w, h,
@@ -10638,8 +10809,9 @@ static void odyssey_dma_from_board(SGIOdysseyState *s, const SGIDMABus *bus,
  * the FIFO -- whose row length is word 2's (16-pixel units), created when no
  * 0x1017 named it first. A zero word 0 names no buffer and is refused. An
  * upload to a sentinel (GL's DMA image write) is accepted only by the
- * draw-sentinel adapter, for the two layouts it knows
- * (odyssey_dma_draw_sentinel_bytes()). The 0xe03 opcode, which only the
+ * draw-sentinel adapter, for the colour layouts it knows
+ * (odyssey_dma_draw_sentinel_bytes()) and the depth and stencil writes
+ * (odyssey_dma_zs_write_plane()). The 0xe03 opcode, which only the
  * diagnostic region path emits, is reported and not performed.
  */
 static void odyssey_dma_descriptor(SGIOdysseyState *s, bool readback)
