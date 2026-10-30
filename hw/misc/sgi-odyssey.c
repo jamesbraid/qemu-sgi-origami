@@ -6842,6 +6842,14 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                         filter & 2 ? SGI_GL_LINEAR : SGI_GL_NEAREST;
     image->min_filter = min_filters[min >> 5];
     odyssey_texture_lod_bias(s, image);
+    /*
+     * The texture unit picks a level for each 2x2 pixel quad from its
+     * diagonal differences, for 1D and 2D textures: INFERRED from a patent
+     * (docs/datasheets/odyssey.md, "Mipmap level of detail"). A volume
+     * keeps the rasterizer's per-pixel footprint; the rasterizer ignores
+     * the flag for one.
+     */
+    image->quad_lod = !three_d;
 
     if (three_d) {
         uint32_t *entry = &s->tex_levels[first * 3];

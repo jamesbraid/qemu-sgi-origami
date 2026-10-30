@@ -15436,6 +15436,71 @@ static void test_texture_lod_bias(void)
 }
 
 /*
+ * A square whose S runs 0, 1, 2, 1 round its corners, so S grows by one
+ * base texel per pixel along x and along y of a 4-pixel side. One pixel's
+ * derivatives give a footprint of one texel (level 0), but the 2x2 quad's
+ * diagonals differ by two texels, and the quad takes level 1
+ * (docs/datasheets/odyssey.md, "Mipmap level of detail").
+ */
+static void texture_skewed_quad(QTestState *qts, uint32_t x0, uint32_t y0,
+                                uint32_t side)
+{
+    const uint32_t vertex[][4] = {
+        { x0, y0, 0, 0 }, { x0 + side, y0, ODSY_F_ONE, 0 },
+        { x0 + side, y0 + side, 0x40000000, 0 },
+        { x0, y0 + side, ODSY_F_ONE, 0 },
+    };
+
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, ODSY_CMD_GL_QUADS);
+    for (unsigned i = 0; i < ARRAY_SIZE(vertex); i++) {
+        user_cmd_push(qts, 0xc380c821);
+        user_cmd_push(qts, vertex[i][2]);
+        user_cmd_push(qts, vertex[i][3]);
+        user_cmd_push(qts, ODSY_CMD_GL_VERTEX_2I);
+        user_cmd_push(qts, vertex[i][0]);
+        user_cmd_push(qts, vertex[i][1]);
+    }
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+}
+
+static void test_texture_quad_lod(void)
+{
+    const uint32_t binding[] = {
+        0x00010405, 0x10,
+        0x00011c16, 0x08000840, 4, 4, 1, 0x13000040, 0, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, 0x180000, 0x41100002, 0,
+        0x00010e81, 0x181000, 0x41100002, 0,
+        0x00010e82, 0x182000, 0x41100002, 0,
+        0x00010406, 0,
+        ODSY_GL_COLOR_3F, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE,
+    };
+    const uint32_t lod[] = { 0x00011013, 0, 0, 0x3100, 0x0f00 };
+    const uint32_t red = 0xff0000ff, green = 0x00ff00ff, blue = 0x0000ffff;
+    QTestState *qts = board_start("");
+
+    texture_chain_upload_solid(qts, 0x180000, 4, 4, red);
+    texture_chain_upload_solid(qts, 0x181000, 2, 2, green);
+    texture_chain_upload_solid(qts, 0x182000, 1, 1, blue);
+    texture_adapter_window(qts);
+    push_user_words(qts, binding, ARRAY_SIZE(binding));
+    push_user_words(qts, lod, ARRAY_SIZE(lod));
+
+    /* Axis-aligned: both rules see a texel per pixel, level 0. */
+    texture_integer_quad(qts, 10, 20, 14, 24, false);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 21), ==, red);
+    /* Skewed: the diagonal rule sees two texels, level 1, in every quad. */
+    texture_skewed_quad(qts, 10, 10, 4);
+    for (unsigned y = 10; y < 14; y++) {
+        for (unsigned x = 10; x < 14; x++) {
+            g_assert_cmphex(odsy_test_pixel(qts, x, y), ==, green);
+        }
+    }
+    board_quit(qts);
+}
+
+/*
  * An 8x8 image, red in columns 0-3 and green in 4-7, sampled nearest at
  * S = 0.9. Sampler word 1 bits 16:0 hold the S maximum clamp in whole
  * texels (8 for the default 1.0). Under GL_CLAMP a clamp of 3 limits S to
@@ -24080,6 +24145,8 @@ int main(int argc, char **argv)
              test_texture_chain_integer_quads);
     add_case("sn1/odyssey/texture-adapter/lod-bias",
              test_texture_lod_bias);
+    add_case("sn1/odyssey/texture-adapter/quad-lod",
+             test_texture_quad_lod);
     add_case("sn1/odyssey/texture-adapter/max-clamp",
              test_texture_max_clamp);
     add_case("sn1/odyssey/texture-adapter/scale-bias",

@@ -3199,6 +3199,46 @@ typedef struct SGISoftTexPlane {
 } SGISoftTexPlane;
 
 /*
+ * The footprint of a pixel's 2x2 quad, in texels: the largest absolute s or
+ * t difference along the quad's two diagonals, pixel 1 to pixel 4 and pixel
+ * 2 to pixel 3, as the Odyssey board's texture unit takes its level of
+ * detail (docs/datasheets/odyssey.md, "Mipmap level of detail"). The
+ * quad's four pixels share the value; its base-2 logarithm is the level of
+ * detail, as for a per-pixel footprint. ns and nt scale s and t to texels.
+ *
+ * MODEL CHOICE: the datasheet leaves two things open and this takes them
+ * as follows. Quads align to even pixel columns and rows of the window
+ * the rasterizer draws in; whether the board aligns to the window or the
+ * screen is unknown. The four s and t values come from the triangle's
+ * planes at each of the quad's pixel centres, so a pixel the triangle does
+ * not cover contributes its extrapolated value; how the board treats such
+ * pixels is unknown. False where a pixel centre has no positive Q/W or a
+ * value is not finite: the caller keeps the pixel's own footprint.
+ */
+static bool sgi_soft_texture_quad_rho(const SGISoftTexPlane *g, int px,
+                                      int py, double ns, double nt,
+                                      double *rho)
+{
+    const int x0 = px & ~1, y0 = py & ~1;
+    double s[4], t[4];
+
+    for (unsigned i = 0; i < 4; i++) {
+        double x = x0 + (i & 1) + 0.5 - g->x;
+        double y = y0 + (i >> 1) + 0.5 - g->y;
+        double q = g->value[2] + x * g->dx[2] + y * g->dy[2];
+
+        if (!(q > 0)) {
+            return false;
+        }
+        s[i] = ns * (g->value[0] + x * g->dx[0] + y * g->dy[0]) / q;
+        t[i] = nt * (g->value[1] + x * g->dx[1] + y * g->dy[1]) / q;
+    }
+    *rho = MAX(MAX(fabs(s[3] - s[0]), fabs(t[3] - t[0])),
+               MAX(fabs(s[2] - s[1]), fabs(t[2] - t[1])));
+    return isfinite(*rho);
+}
+
+/*
  * Fixed-point texturing for filled triangles.
  *
  * Approximated: no source gives any family's sub-texel, filter-weight or
@@ -3280,6 +3320,8 @@ typedef struct SGISoftFixedTex {
     int32_t min_lod, max_lod;       /* in 1/256 */
     int32_t mag_below;              /* lambda at or below it magnifies */
     double ns, nt;                  /* the footprint's per-axis scales */
+    /* Lambda per 2x2 quad (SGIGLTexImage.quad_lod), not per pixel. */
+    bool quad;
 } SGISoftFixedTex;
 
 /*
@@ -3434,6 +3476,7 @@ static bool sgi_soft_fixed_setup(const SGISoftDraw *r, SGISoftFixedTex *f)
                               SGI_SOFT_FIXED_LAMBDA_MAX));
         f->ns = base->width * sgi_soft_texture_lod_scale(im->lod_scale_s);
         f->nt = base->height * sgi_soft_texture_lod_scale(im->lod_scale_t);
+        f->quad = im->quad_lod && !im->volume;
     }
     /* sgi_soft_texture_select()'s c, for these filters. */
     f->mag_below = f->mag == SGI_GL_LINEAR &&
@@ -3815,7 +3858,7 @@ static inline int32_t sgi_soft_fixed_decide(const SGISoftFixedTex *f,
 static inline QEMU_ALWAYS_INLINE
 bool sgi_soft_fixed_coords(const SGISoftFixedTex *f,
                            const SGISoftTexPlane *g, const double row[4],
-                           int px, const int32_t *flat_lambda,
+                           int px, int py, const int32_t *flat_lambda,
                            double *s, double *t, int32_t *lambda)
 {
     double x = px + 0.5 - g->x;
@@ -3833,6 +3876,14 @@ bool sgi_soft_fixed_coords(const SGISoftFixedTex *f,
     }
     if (!f->lod || flat_lambda) {
         *lambda = flat_lambda ? *flat_lambda : 0;
+        return true;
+    }
+    if (f->quad && sgi_soft_texture_quad_rho(g, px, py, f->ns, f->nt, &e)) {
+        rho2 = e * e;
+        if (!(rho2 <= DBL_MAX)) {
+            return false;
+        }
+        *lambda = sgi_soft_fixed_decide(f, rho2, sgi_soft_fixed_lambda(rho2));
         return true;
     }
     /* d(S/Q)/dx is (dS/dx - s dQ/dx) / Q, and so on. */
@@ -4067,8 +4118,11 @@ int sgi_soft_texture_row(const SGISoftDraw *r, const SGISoftTexSpan *sp,
                 continue;
             }
         }
-        if (!sgi_soft_fixed_coords(r->fixed, sp->g, sp->row, px,
-                                   sp->flat_lambda, &s, &tc, &lambda) ||
+        bool coords = sgi_soft_fixed_coords(r->fixed, sp->g, sp->row, px,
+                                            py, sp->flat_lambda, &s, &tc,
+                                            &lambda);
+
+        if (!coords ||
             !sgi_soft_fixed_sample(r, s, tc, lambda, kernel, repeat,
                                    frag.texel)) {
             return px;
@@ -4555,7 +4609,7 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     fixed = r->fixed &&
             (r->texture_base ||
              sgi_soft_texture_plane(v, sub, false, false, &gradient));
-    if (fixed && r->fixed->lod && gradient.dx[2] == 0 &&
+    if (fixed && r->fixed->lod && !r->fixed->quad && gradient.dx[2] == 0 &&
         gradient.dy[2] == 0) {
         /*
          * Q/W flat, as for the double footprint below: every fragment's
@@ -4751,7 +4805,8 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                 int32_t lambda;
 
                 frag.fixed = sgi_soft_fixed_coords(r->fixed, &gradient,
-                                                   tex_row, px, fixed_flat,
+                                                   tex_row, px, py,
+                                                   fixed_flat,
                                                    &s, &t, &lambda) &&
                              sgi_soft_fixed_sample(r, s, t, lambda,
                                                    SGI_SOFT_FIXED_ANY, false,
@@ -4812,6 +4867,15 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                     frag.texture_rho = sgi_soft_texture_derivatives(value,
                         gradient.dx, gradient.dy, tex_ns, tex_nt, tex_nr,
                         out) ? out[4] : NAN;
+                }
+                if (r->texture->quad_lod && !r->texture->volume &&
+                    isfinite(frag.texture_rho)) {
+                    double rho;
+
+                    if (sgi_soft_texture_quad_rho(&gradient, px, py, tex_ns,
+                                                  tex_nt, &rho)) {
+                        frag.texture_rho = rho;
+                    }
                 }
             }
             if (background) {
