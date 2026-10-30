@@ -4383,16 +4383,34 @@ static bool sgi_kona_dg_run(SGIKonaState *s, const uint32_t *words,
     return true;
 }
 
-/* The display generator's default state, every channel blanked. */
+/*
+ * The display generator's default state, as the datasheet lists the fields
+ * its rebuild resets for each present channel (established): the source
+ * channel, the first name word and the date stamp, the pan rectangle (0,
+ * 0, 1280, 1024), the enabled bit and gamma map 0. The input rectangle,
+ * PlacementRes's words, name words 2-16, the cursor priority and the rest
+ * keep their values. The fields the model does not hold (vertical phase,
+ * reset ratios, field mode and dominance, the control word's other bits)
+ * are not modelled. Then every channel is blanked, as the display set-up
+ * that follows does.
+ */
 static void sgi_kona_dg_default_state(SGIKonaState *s)
 {
-    for (unsigned c = 0; c < SGI_KONA_MAX_CHANNELS; c++) {
+    for (unsigned c = 0; c < sgi_kona_channel_count(s); c++) {
         SGIKonaChannel *ch = &s->channel[c];
 
         ch->enabled = false;
         ch->loaded = false;
+        ch->source = c;
+        ch->format_name[0] = 0;
+        ch->format_name[SGI_KONA_FORMAT_NAME_WORDS - 1] = 0;
+        ch->pan[0] = 0;
+        ch->pan[1] = 0;
+        ch->pan[2] = SGI_KONA_FB_WIDTH;
+        ch->pan[3] = SGI_KONA_FB_HEIGHT;
+        ch->gamma_map = 0;
+        /* The display set-up that follows blanks every channel. */
         ch->blanked = true;
-        memset(ch->format_name, 0, sizeof(ch->format_name));
     }
 }
 

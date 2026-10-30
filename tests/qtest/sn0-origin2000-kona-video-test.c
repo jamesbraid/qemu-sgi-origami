@@ -989,6 +989,58 @@ static void test_stored_combination_runs_at_arm_release(void)
 }
 
 /*
+ * A start's rebuild resets only the fields the firmware's default state
+ * names. Channel 1 loaded live with a named format, a rectangle, a
+ * PlacementRes and a cursor priority, then a start running a stored image
+ * that touches only channel 0: channel 1 is off, its first name word and
+ * date stamp are zero, its pan rectangle is 0, 0, 1280, 1024 and its
+ * source itself, while name words 2-16, its input rectangle, PlacementRes
+ * words and cursor priority keep their values.
+ */
+static void test_start_rebuild_keeps_record(void)
+{
+    g_autofree char *log = NULL;
+    g_autoptr(GArray) stream = g_array_new(false, false, sizeof(uint32_t));
+    QTestState *s = kona_init_dg("dg5-2", &log);
+    uint32_t reply[19];
+
+    kona_register_return_page(s, RETURN_PAGE);
+    video_send(s, 0x18, (uint32_t[]){ 1 }, 1);
+    load_named_format(s, 1, "1280x1024_60.vfo", 0x6ae3c3e4);
+    video_send(s, 0x14, (uint32_t[]){ 1, 640, 1023, 640, 480, 1, 1, 0 }, 8);
+    video_send(s, 0x43, (uint32_t[]){ 1, 2, 3, 4, 5, 6, 7, 8, 9 }, 9);
+    video_send(s, 0x1e, (uint32_t[]){ 1, 3 }, 2);
+    video_send(s, 0x4f, (uint32_t[]){ 1, 0, 0, 0, 0, 0, 0 }, 7);
+    stream_command(stream, 0x18, (uint32_t[]){ 0 }, 1);
+    stream_command(stream, 0x08, (uint32_t[]){ 1280, 1024, 0 }, 3);
+    flash_store_combination(s, stream);
+    qtest_writel(s, KONA_REG(0x800328), 1);
+
+    video_get(s, GET_CHANNEL_CONFIG, 1, 7, reply, 19);
+    g_assert_cmphex(reply[0], ==, 0x1);
+    g_assert_cmphex(reply[1], ==, 0);
+    g_assert_cmphex(reply[2], ==, 0x78313032);
+    g_assert_cmphex(reply[4], ==, 0x2e76666f);
+    g_assert_cmphex(reply[17], ==, 0);
+    g_assert_cmphex(reply[18], ==, 3);
+    video_get(s, GET_RESIZE, 1, 8, reply, 18);
+    g_assert_cmphex(reply[0], ==, 640);
+    g_assert_cmphex(reply[2], ==, 640);
+    g_assert_cmphex(reply[3], ==, 480);
+    g_assert_cmphex(reply[4], ==, 0);
+    g_assert_cmphex(reply[5], ==, 0);
+    g_assert_cmphex(reply[6], ==, 1280);
+    g_assert_cmphex(reply[7], ==, 1024);
+    for (unsigned w = 0; w < 8; w++) {
+        g_assert_cmphex(reply[8 + w], ==, 2 + w);
+    }
+    video_get(s, GET_VAMPIRE, 1, 16, reply, 6);
+    g_assert_cmphex(reply[0], ==, 1);
+    qtest_quit(s);
+    g_free(kona_log_read(log));
+}
+
+/*
  * A stored image is checked whole before any of it runs, and a command
  * that raises the error flag stops it: either way the built-in fallback
  * runs instead, from the default state. A bad checksum in the last command
@@ -1939,6 +1991,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-video/"
                    "stored-combination-runs-at-arm-release",
                    test_stored_combination_runs_at_arm_release);
+    qtest_add_func("sn0/origin2000/kona-video/start-rebuild-keeps-record",
+                   test_start_rebuild_keeps_record);
     qtest_add_func("sn0/origin2000/kona-video/"
                    "bad-stored-combination-falls-back",
                    test_bad_stored_combination_falls_back);
