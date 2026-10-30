@@ -29,6 +29,9 @@
 #include "qom/object.h"
 
 #include "audio_int.h"
+#include "wavinput.h"
+
+#include <sys/stat.h>
 
 #define TYPE_AUDIO_WAV "audio-wav"
 OBJECT_DECLARE_SIMPLE_TYPE(AudioWav, AUDIO_WAV)
@@ -43,6 +46,39 @@ typedef struct WAVVoiceOut {
     RateCtl rate;
     int total_samples;
 } WAVVoiceOut;
+
+typedef struct WAVVoiceIn {
+    HWVoiceIn hw;
+    WavInput *input;
+    RateCtl rate;
+} WAVVoiceIn;
+
+static bool wav_audsettings_equal(const struct audsettings *left,
+                                  const struct audsettings *right)
+{
+    return left->freq == right->freq &&
+        left->nchannels == right->nchannels &&
+        left->fmt == right->fmt &&
+        left->big_endian == right->big_endian;
+}
+
+static bool wav_input_aliases_output(const char *input_path,
+                                     const char *output_path)
+{
+    struct stat input_stat, output_stat;
+
+    if (!input_path || stat(input_path, &input_stat) < 0 ||
+        stat(output_path, &output_stat) < 0) {
+        return false;
+    }
+    if (input_stat.st_dev == output_stat.st_dev &&
+        input_stat.st_ino == output_stat.st_ino) {
+        error_report("wav: input '%s' and output '%s' are the same file",
+                     input_path, output_path);
+        return true;
+    }
+    return false;
+}
 
 static size_t wav_write_out(HWVoiceOut *hw, void *buf, size_t len)
 {
@@ -83,6 +119,10 @@ static int wav_init_out(HWVoiceOut *hw, struct audsettings *as)
     AudiodevWavOptions *wopts = &dev->u.wav;
     struct audsettings wav_as = audiodev_to_audsettings(dev->u.wav.out);
     const char *wav_path = wopts->path ?: "qemu.wav";
+
+    if (wav_input_aliases_output(wopts->input_path, wav_path)) {
+        return -1;
+    }
 
     stereo = wav_as.nchannels == 2;
     switch (wav_as.fmt) {
@@ -184,14 +224,81 @@ static void wav_enable_out(HWVoiceOut *hw, bool enable)
     }
 }
 
+static int wav_init_in(HWVoiceIn *hw, struct audsettings *as)
+{
+    WAVVoiceIn *wav = (WAVVoiceIn *)hw;
+    AudiodevWavOptions *wopts = &hw->s->dev->u.wav;
+    const char *output_path = wopts->path ?: "qemu.wav";
+    struct audsettings requested = *as;
+    Error *err = NULL;
+
+    if (!wopts->input_path) {
+        error_report("wav: capture input requires input-path");
+        return -1;
+    }
+    if (wopts->out->voices &&
+        wav_input_aliases_output(wopts->input_path, output_path)) {
+        return -1;
+    }
+    wav->input = wav_input_open(wopts->input_path, wopts->input_loop, &err);
+    if (!wav->input) {
+        error_report_err(err);
+        return -1;
+    }
+    wav_input_get_settings(wav->input, as);
+    if (!wopts->in->mixing_engine &&
+        !wav_audsettings_equal(&requested, as)) {
+        error_report("wav: input '%s' uses %d Hz, %d channels, %s; the voice "
+                     "requests %d Hz, %d channels, %s and in.mixing-engine=off "
+                     "cannot convert it",
+                     wopts->input_path, as->freq, as->nchannels,
+                     AudioFormat_str(as->fmt), requested.freq,
+                     requested.nchannels, AudioFormat_str(requested.fmt));
+        wav_input_close(wav->input);
+        wav->input = NULL;
+        return -1;
+    }
+    audio_pcm_init_info(&hw->info, as);
+    hw->samples = 1024;
+    audio_rate_start(&wav->rate);
+    return 0;
+}
+
+static void wav_fini_in(HWVoiceIn *hw)
+{
+    WAVVoiceIn *wav = (WAVVoiceIn *)hw;
+
+    if (wav->input) {
+        wav_input_close(wav->input);
+        wav->input = NULL;
+    }
+}
+
+static size_t wav_read_in(HWVoiceIn *hw, void *buf, size_t size)
+{
+    WAVVoiceIn *wav = (WAVVoiceIn *)hw;
+
+    size = audio_rate_get_bytes(&wav->rate, &hw->info, size);
+    return wav_input_read(wav->input, buf, size);
+}
+
+static void wav_enable_in(HWVoiceIn *hw, bool enable)
+{
+    WAVVoiceIn *wav = (WAVVoiceIn *)hw;
+
+    if (enable) {
+        audio_rate_start(&wav->rate);
+    }
+}
+
 static void audio_wav_class_init(ObjectClass *klass, const void *data)
 {
     AudioMixengBackendClass *k = AUDIO_MIXENG_BACKEND_CLASS(klass);
 
     k->max_voices_out = 1;
-    k->max_voices_in = 0;
+    k->max_voices_in = 1;
     k->voice_size_out = sizeof(WAVVoiceOut);
-    k->voice_size_in = 0;
+    k->voice_size_in = sizeof(WAVVoiceIn);
 
     k->init_out = wav_init_out;
     k->fini_out = wav_fini_out;
@@ -199,6 +306,12 @@ static void audio_wav_class_init(ObjectClass *klass, const void *data)
     k->buffer_get_free = audio_generic_buffer_get_free;
     k->run_buffer_out = audio_generic_run_buffer_out;
     k->enable_out = wav_enable_out;
+
+    k->init_in = wav_init_in;
+    k->fini_in = wav_fini_in;
+    k->read = wav_read_in;
+    k->run_buffer_in = audio_generic_run_buffer_in;
+    k->enable_in = wav_enable_in;
 }
 
 static const TypeInfo audio_types[] = {

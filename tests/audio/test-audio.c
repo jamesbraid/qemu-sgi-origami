@@ -14,9 +14,13 @@
 #include "glib.h"
 
 #include "audio/audio_int.h"
+#include "audio/wavinput.h"
 #include "audio-test.h"
 
 #include <math.h>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 #ifdef CONFIG_SDL
 /*
  * SDL insists on wrapping the main() function with its own implementation on
@@ -792,6 +796,527 @@ static void test_audio_out_wav_drain(void)
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
+static void write_test_wav(const char *path, uint16_t encoding,
+                           uint16_t channels, uint32_t rate, uint16_t bits,
+                           const uint8_t *data, size_t data_size,
+                           uint32_t declared_data_size, bool junk_chunk,
+                           bool pcm_extension)
+{
+    uint8_t riff[12] = { 0 };
+    uint8_t chunk[8] = { 0 };
+    uint8_t fmt[18] = { 0 };
+    size_t format_size = pcm_extension ? 18 : 16;
+    uint32_t block_align = channels * bits / 8;
+    uint32_t riff_size = 4 + (junk_chunk ? 12 : 0) + 8 + format_size +
+                         8 + declared_data_size + (declared_data_size & 1);
+    FILE *file;
+
+    memcpy(riff, "RIFF", 4);
+    stl_le_p(riff + 4, riff_size);
+    memcpy(riff + 8, "WAVE", 4);
+    stw_le_p(fmt, encoding);
+    stw_le_p(fmt + 2, channels);
+    stl_le_p(fmt + 4, rate);
+    stl_le_p(fmt + 8, rate * block_align);
+    stw_le_p(fmt + 12, block_align);
+    stw_le_p(fmt + 14, bits);
+
+    file = g_fopen(path, "wb");
+    g_assert_nonnull(file);
+    g_assert_cmpuint(fwrite(riff, sizeof(riff), 1, file), ==, 1);
+    if (junk_chunk) {
+        memcpy(chunk, "JUNK", 4);
+        stl_le_p(chunk + 4, 3);
+        g_assert_cmpuint(fwrite(chunk, sizeof(chunk), 1, file), ==, 1);
+        g_assert_cmpint(fwrite("xyz\0", 4, 1, file), ==, 1);
+    }
+    memcpy(chunk, "fmt ", 4);
+    stl_le_p(chunk + 4, format_size);
+    g_assert_cmpuint(fwrite(chunk, sizeof(chunk), 1, file), ==, 1);
+    g_assert_cmpuint(fwrite(fmt, format_size, 1, file), ==, 1);
+    memcpy(chunk, "data", 4);
+    stl_le_p(chunk + 4, declared_data_size);
+    g_assert_cmpuint(fwrite(chunk, sizeof(chunk), 1, file), ==, 1);
+    if (data_size) {
+        g_assert_cmpuint(fwrite(data, data_size, 1, file), ==, 1);
+    }
+    if (data_size == declared_data_size && (data_size & 1)) {
+        g_assert_cmpint(fputc(0, file), ==, 0);
+    }
+    g_assert_cmpint(fclose(file), ==, 0);
+}
+
+static void write_test_wav_s16(const char *path, const int16_t *samples,
+                               size_t frames, uint32_t rate, uint16_t channels,
+                               bool junk_chunk, bool pcm_extension)
+{
+    size_t sample_count = frames * channels;
+    g_autofree uint8_t *data = g_malloc(sample_count * sizeof(*samples));
+
+    for (size_t i = 0; i < sample_count; i++) {
+        stw_le_p(data + i * sizeof(*samples), samples[i]);
+    }
+    write_test_wav(path, 1, channels, rate, 16, data,
+                   sample_count * sizeof(*samples),
+                   sample_count * sizeof(*samples), junk_chunk, pcm_extension);
+}
+
+static void add_test_wav_backend(const char *id, const char *input_path,
+                                 bool loop, unsigned int output_voices,
+                                 const char *output_path)
+{
+    g_autofree char *spec = g_strdup_printf(
+        "wav,id=%s,input-path=%s,input-loop=%s,out.voices=%u,in.voices=1%s%s",
+        id, input_path, loop ? "on" : "off", output_voices,
+        output_path ? ",path=" : "", output_path ?: "");
+
+    audio_parse_option(spec);
+}
+
+static void add_test_wav_no_mix_backend(const char *id, const char *input_path,
+                                        unsigned int output_voices)
+{
+    g_autofree char *spec = g_strdup_printf(
+        "wav,id=%s,input-path=%s,out.voices=%u,in.voices=1,"
+        "in.mixing-engine=off,in.fixed-settings=off",
+        id, input_path, output_voices);
+
+    audio_parse_option(spec);
+}
+
+static void write_test_bad_wav_chunk(const char *path)
+{
+    uint8_t bytes[20] = { 0 };
+    FILE *file;
+
+    memcpy(bytes, "RIFF", 4);
+    stl_le_p(bytes + 4, 12);
+    memcpy(bytes + 8, "WAVEfmt ", 8);
+    stl_le_p(bytes + 16, UINT32_MAX);
+    file = g_fopen(path, "wb");
+    g_assert_nonnull(file);
+    g_assert_cmpuint(fwrite(bytes, sizeof(bytes), 1, file), ==, 1);
+    g_assert_cmpint(fclose(file), ==, 0);
+}
+
+static void write_test_bad_wav_format_size(const char *path)
+{
+    uint8_t bytes[38] = { 0 };
+    FILE *file;
+
+    memcpy(bytes, "RIFF", 4);
+    stl_le_p(bytes + 4, sizeof(bytes) - 8);
+    memcpy(bytes + 8, "WAVEfmt ", 8);
+    stl_le_p(bytes + 16, 17);
+    stw_le_p(bytes + 20, 1);
+    stw_le_p(bytes + 22, 1);
+    stl_le_p(bytes + 24, SAMPLE_RATE);
+    stl_le_p(bytes + 28, SAMPLE_RATE * sizeof(int16_t));
+    stw_le_p(bytes + 32, sizeof(int16_t));
+    stw_le_p(bytes + 34, 16);
+    file = g_fopen(path, "wb");
+    g_assert_nonnull(file);
+    g_assert_cmpuint(fwrite(bytes, sizeof(bytes), 1, file), ==, 1);
+    g_assert_cmpint(fclose(file), ==, 0);
+}
+
+static void test_audio_in_wav(void)
+{
+    static const int16_t short_samples[] = {
+        0x1234, -0x1234, 0x2345, -0x2345,
+        0x3456, -0x3456, 0x4567, -0x4567,
+    };
+    static const int16_t loop_samples[] = {
+        0x0102, -0x0102, 0x0304, -0x0304,
+    };
+    static const uint8_t u8_samples[] = { 0xff, 0x00, 0x00, 0xff };
+    static const uint8_t invalid_data[8] = { 0 };
+    static const struct {
+        const char *id;
+        uint16_t encoding;
+        uint16_t channels;
+        uint32_t rate;
+        uint16_t bits;
+        size_t actual_size;
+        uint32_t declared_size;
+    } invalid[] = {
+        { "bad-encoding", 3, 1, 44100, 16, 2, 2 },
+        { "bad-channels", 1, 3, 44100, 16, 6, 6 },
+        { "bad-rate", 1, 1, 7999, 16, 2, 2 },
+        { "bad-high-rate", 1, 1, 192001, 16, 2, 2 },
+        { "bad-zero-rate", 1, 1, 0, 16, 2, 2 },
+        { "bad-bits", 1, 2, 44100, 32, 8, 8 },
+        { "bad-alignment", 1, 2, 44100, 16, 3, 3 },
+        { "bad-truncation", 1, 2, 44100, 16, 4, 8 },
+    };
+    g_autofree char *directory = NULL;
+    g_autofree char *input_path = NULL;
+    g_autofree char *loop_path = NULL;
+    g_autofree char *resample_path = NULL;
+    g_autofree char *u8_path = NULL;
+    g_autofree char *alias_path = NULL;
+    g_autofree char *bad_chunk_path = NULL;
+    g_autofree char *bad_format_path = NULL;
+    g_autofree char *missing_path = NULL;
+    g_autofree char *original_contents = NULL;
+    g_autofree char *after_contents = NULL;
+    g_autofree int16_t *resample_samples = NULL;
+    uint8_t actual[1024 * CHANNELS * sizeof(int16_t)];
+    uint8_t short_actual[sizeof(short_samples)];
+    AudioBackend *be, *alias_be;
+    SWVoiceIn *voice, *alias_voice;
+    SWVoiceOut *output_voice;
+    size_t bytes, original_size, after_size;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+
+    audio_test_set_virtual_clock(0);
+    directory = g_dir_make_tmp("qemu-wav-input-XXXXXX", NULL);
+    g_assert_nonnull(directory);
+    g_assert_cmpint(g_chdir(directory), ==, 0);
+    input_path = g_build_filename(directory, "input.wav", NULL);
+    loop_path = g_build_filename(directory, "loop.wav", NULL);
+    resample_path = g_build_filename(directory, "resample.wav", NULL);
+    u8_path = g_build_filename(directory, "u8.wav", NULL);
+    alias_path = g_build_filename(directory, "input-alias.wav", NULL);
+    bad_chunk_path = g_build_filename(directory, "bad-chunk.wav", NULL);
+    bad_format_path = g_build_filename(directory, "bad-format.wav", NULL);
+    missing_path = g_build_filename(directory, "missing.wav", NULL);
+
+    write_test_wav_s16(input_path, short_samples, 4, SAMPLE_RATE, CHANNELS,
+                       true, false);
+    write_test_wav_s16(loop_path, loop_samples, 2, SAMPLE_RATE, CHANNELS,
+                       false, false);
+    resample_samples = g_new(int16_t, 32);
+    for (size_t i = 0; i < 32; i++) {
+        resample_samples[i] = 12000;
+    }
+    write_test_wav_s16(resample_path, resample_samples, 32, SAMPLE_RATE / 2,
+                       1, false, true);
+    write_test_wav(u8_path, 1, 2, SAMPLE_RATE, 8, u8_samples,
+                   sizeof(u8_samples), sizeof(u8_samples), false, false);
+#ifndef _WIN32
+    g_assert_cmpint(link(input_path, alias_path), ==, 0);
+#else
+    g_free(alias_path);
+    alias_path = g_strdup(input_path);
+#endif
+    write_test_bad_wav_chunk(bad_chunk_path);
+    write_test_bad_wav_format_size(bad_format_path);
+
+    add_test_wav_backend("wav-input", input_path, false, 0, NULL);
+    add_test_wav_backend("wav-loop", loop_path, true, 1, NULL);
+    add_test_wav_backend("wav-resample", resample_path, true, 1, NULL);
+    add_test_wav_backend("wav-u8", u8_path, false, 1, NULL);
+    add_test_wav_backend("wav-alias", input_path, false, 1, alias_path);
+    add_test_wav_backend("wav-bad-chunk", bad_chunk_path, false, 1, NULL);
+    add_test_wav_backend("wav-bad-format", bad_format_path, false, 1, NULL);
+    add_test_wav_backend("wav-missing", missing_path, false, 1, NULL);
+    for (size_t i = 0; i < ARRAY_SIZE(invalid); i++) {
+        g_autofree char *path = g_strdup_printf("%s/%s.wav", directory,
+                                                 invalid[i].id);
+        write_test_wav(path, invalid[i].encoding, invalid[i].channels,
+                       invalid[i].rate, invalid[i].bits, invalid_data,
+                       invalid[i].actual_size, invalid[i].declared_size,
+                       false, false);
+        add_test_wav_backend(invalid[i].id, path, false, 1, NULL);
+    }
+    audio_init_audiodevs();
+
+    be = audio_be_by_name("wav-input", &error_abort);
+    voice = audio_be_open_in(be, NULL, "wav-input", NULL,
+                             dummy_audio_callback, &default_test_settings);
+    g_assert_nonnull(voice);
+    audio_be_set_active_in(be, voice, true);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-wav-input-frozen");
+    g_assert_cmpuint(audio_be_read(be, voice, short_actual,
+                                   sizeof(short_actual)), ==, 0);
+    audio_test_set_virtual_clock(10 * SCALE_MS);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-wav-input");
+    bytes = audio_be_read(be, voice, short_actual, sizeof(short_actual));
+    g_assert_cmpuint(bytes, ==, sizeof(short_samples));
+    for (size_t i = 0; i < ARRAY_SIZE(short_samples); i++) {
+        g_assert_cmpint((int16_t)lduw_le_p(short_actual + i * 2), ==,
+                        short_samples[i]);
+    }
+    g_assert_cmpuint(audio_be_read(be, voice, short_actual,
+                                   sizeof(short_actual)), ==, 0);
+    audio_be_set_active_in(be, voice, false);
+    audio_be_close_in(be, voice);
+
+    be = audio_be_by_name("wav-loop", &error_abort);
+    audio_test_set_virtual_clock(0);
+    voice = audio_be_open_in(be, NULL, "wav-loop", NULL,
+                             dummy_audio_callback, &default_test_settings);
+    g_assert_nonnull(voice);
+    audio_be_set_active_in(be, voice, true);
+    audio_test_set_virtual_clock(100 * SCALE_MS);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-wav-loop");
+    bytes = audio_be_read(be, voice, actual, 6 * CHANNELS * sizeof(int16_t));
+    g_assert_cmpuint(bytes, ==, 6 * CHANNELS * sizeof(int16_t));
+    for (size_t i = 0; i < 6; i++) {
+        size_t source = (i % 2) * CHANNELS;
+        g_assert_cmpint((int16_t)lduw_le_p(actual + i * 4), ==,
+                        loop_samples[source]);
+        g_assert_cmpint((int16_t)lduw_le_p(actual + i * 4 + 2), ==,
+                        loop_samples[source + 1]);
+    }
+    audio_be_set_active_in(be, voice, false);
+    audio_be_close_in(be, voice);
+
+    be = audio_be_by_name("wav-resample", &error_abort);
+    audio_test_set_virtual_clock(0);
+    voice = audio_be_open_in(be, NULL, "wav-resample", NULL,
+                             dummy_audio_callback, &default_test_settings);
+    g_assert_nonnull(voice);
+    audio_be_set_active_in(be, voice, true);
+    audio_test_set_virtual_clock(100 * SCALE_MS);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-wav-resample");
+    bytes = audio_be_read(be, voice, actual, 16 * CHANNELS * sizeof(int16_t));
+    g_assert_cmpuint(bytes, ==, 16 * CHANNELS * sizeof(int16_t));
+    for (size_t i = 0; i < bytes / sizeof(int16_t); i++) {
+        g_assert_cmpint(ABS((int16_t)lduw_le_p(actual + i * 2) - 12000), <=, 8);
+    }
+    audio_be_set_active_in(be, voice, false);
+    audio_be_close_in(be, voice);
+
+    be = audio_be_by_name("wav-u8", &error_abort);
+    audio_test_set_virtual_clock(0);
+    voice = audio_be_open_in(be, NULL, "wav-u8", NULL,
+                             dummy_audio_callback, &default_test_settings);
+    g_assert_nonnull(voice);
+    audio_be_set_active_in(be, voice, true);
+    audio_test_set_virtual_clock(50 * SCALE_MS);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-wav-u8");
+    bytes = audio_be_read(be, voice, actual, 2 * CHANNELS * sizeof(int16_t));
+    g_assert_cmpuint(bytes, ==, 2 * CHANNELS * sizeof(int16_t));
+    g_assert_cmpint((int16_t)lduw_le_p(actual), >, 30000);
+    g_assert_cmpint((int16_t)lduw_le_p(actual + 2), <, -30000);
+    audio_be_set_active_in(be, voice, false);
+    audio_be_close_in(be, voice);
+
+    alias_be = audio_be_by_name("wav-alias", &error_abort);
+    g_assert_true(g_file_get_contents(input_path, &original_contents,
+                                      &original_size, NULL));
+    output_voice = audio_be_open_out(alias_be, NULL, "wav-alias", NULL,
+                                     dummy_audio_callback,
+                                     &default_test_settings);
+    g_assert_null(output_voice);
+    g_assert_true(g_file_get_contents(input_path, &after_contents,
+                                      &after_size, NULL));
+    g_assert_cmpuint(after_size, ==, original_size);
+    g_assert_cmpmem(after_contents, after_size,
+                    original_contents, original_size);
+    alias_voice = audio_be_open_in(alias_be, NULL, "wav-alias", NULL,
+                                   dummy_audio_callback,
+                                   &default_test_settings);
+    g_assert_null(alias_voice);
+
+    for (size_t i = 0; i < ARRAY_SIZE(invalid); i++) {
+        SWVoiceIn *bad_voice;
+        AudioBackend *bad_be = audio_be_by_name(invalid[i].id, &error_abort);
+        bad_voice = audio_be_open_in(bad_be, NULL, invalid[i].id, NULL,
+                                     dummy_audio_callback,
+                                     &default_test_settings);
+        g_assert_null(bad_voice);
+    }
+    g_assert_null(audio_be_open_in(audio_be_by_name("wav-bad-chunk",
+                                                   &error_abort),
+                                   NULL, "wav-bad-chunk", NULL,
+                                   dummy_audio_callback,
+                                   &default_test_settings));
+    g_assert_null(audio_be_open_in(audio_be_by_name("wav-bad-format",
+                                                   &error_abort),
+                                   NULL, "wav-bad-format", NULL,
+                                   dummy_audio_callback,
+                                   &default_test_settings));
+    g_assert_null(audio_be_open_in(audio_be_by_name("wav-missing",
+                                                   &error_abort),
+                                   NULL, "wav-missing", NULL,
+                                   dummy_audio_callback,
+                                   &default_test_settings));
+    g_assert_false(g_file_test("qemu.wav", G_FILE_TEST_EXISTS));
+    audio_cleanup();
+}
+
+static void test_audio_in_wav_clock(void)
+{
+    enum { INPUT_FRAMES = 2048, INPUT_BUFFER_FRAMES = 1024 };
+    g_autofree char *directory = NULL;
+    g_autofree char *path = NULL;
+    g_autofree int16_t *samples = NULL;
+    uint8_t actual[INPUT_BUFFER_FRAMES * CHANNELS * sizeof(int16_t)];
+    AudioBackend *be;
+    SWVoiceIn *voice;
+    size_t bytes;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+
+    audio_test_set_virtual_clock(0);
+    directory = g_dir_make_tmp("qemu-wav-clock-XXXXXX", NULL);
+    g_assert_nonnull(directory);
+    path = g_build_filename(directory, "clock.wav", NULL);
+    samples = g_new(int16_t, INPUT_FRAMES * CHANNELS);
+    for (size_t frame = 0; frame < INPUT_FRAMES; frame++) {
+        samples[frame * CHANNELS] = 1000 + frame;
+        samples[frame * CHANNELS + 1] = -(1000 + frame);
+    }
+    write_test_wav_s16(path, samples, INPUT_FRAMES, SAMPLE_RATE, CHANNELS,
+                       false, false);
+    add_test_wav_backend("wav-clock", path, false, 0, NULL);
+    audio_init_audiodevs();
+
+    be = audio_be_by_name("wav-clock", &error_abort);
+    voice = audio_be_open_in(be, NULL, "wav-clock", NULL,
+                             dummy_audio_callback, &default_test_settings);
+    g_assert_nonnull(voice);
+    audio_be_set_active_in(be, voice, true);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-wav-frozen-clock");
+    g_assert_cmpuint(audio_be_read(be, voice, actual, sizeof(actual)), ==, 0);
+
+    audio_test_set_virtual_clock(10 * SCALE_MS);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-wav-ten-ms");
+    bytes = audio_be_read(be, voice, actual, sizeof(actual));
+    g_assert_cmpuint(bytes, ==, 441 * CHANNELS * sizeof(int16_t));
+    g_assert_cmpint((int16_t)lduw_le_p(actual), ==, 1000);
+    g_assert_cmpint((int16_t)lduw_le_p(actual + (441 - 1) * 4), ==,
+                    1000 + 441 - 1);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-wav-no-new-time");
+    g_assert_cmpuint(audio_be_read(be, voice, actual, sizeof(actual)), ==, 0);
+
+    audio_test_set_virtual_clock(15 * SCALE_MS);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-wav-five-ms");
+    bytes = audio_be_read(be, voice, actual, sizeof(actual));
+    g_assert_cmpuint(bytes, ==, 220 * CHANNELS * sizeof(int16_t));
+    g_assert_cmpint((int16_t)lduw_le_p(actual), ==, 1000 + 441);
+    g_assert_cmpint((int16_t)lduw_le_p(actual + (220 - 1) * 4), ==,
+                    1000 + 441 + 220 - 1);
+
+    audio_be_set_active_in(be, voice, false);
+    audio_test_set_virtual_clock(1000 * SCALE_MS);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-wav-paused");
+    audio_be_set_active_in(be, voice, true);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-wav-resume-without-time");
+    g_assert_cmpuint(audio_be_read(be, voice, actual, sizeof(actual)), ==, 0);
+
+    audio_test_set_virtual_clock(1010 * SCALE_MS);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-wav-resume-ten-ms");
+    bytes = audio_be_read(be, voice, actual, sizeof(actual));
+    g_assert_cmpuint(bytes, ==, 441 * CHANNELS * sizeof(int16_t));
+    g_assert_cmpint((int16_t)lduw_le_p(actual), ==, 1000 + 441 + 220);
+    g_assert_cmpint((int16_t)lduw_le_p(actual + 2), ==,
+                    -(1000 + 441 + 220));
+    audio_be_set_active_in(be, voice, false);
+    audio_be_close_in(be, voice);
+    audio_cleanup();
+    g_assert_false(g_file_test("qemu.wav", G_FILE_TEST_EXISTS));
+}
+
+static void test_audio_in_wav_no_mix(void)
+{
+    static const uint8_t u8_samples[] = { 0xff, 0x00, 0x00, 0xff };
+    g_autofree char *directory = NULL;
+    g_autofree char *exact_path = NULL;
+    g_autofree char *rate_path = NULL;
+    g_autofree char *channels_path = NULL;
+    g_autofree char *format_path = NULL;
+    g_autofree int16_t *samples = NULL;
+    g_autofree int16_t *mono_samples = NULL;
+    uint8_t actual[1024 * CHANNELS * sizeof(int16_t)];
+    AudioBackend *be;
+    SWVoiceIn *voice;
+    size_t bytes;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+
+    audio_test_set_virtual_clock(0);
+    directory = g_dir_make_tmp("qemu-wav-nomix-XXXXXX", NULL);
+    g_assert_nonnull(directory);
+    exact_path = g_build_filename(directory, "exact.wav", NULL);
+    rate_path = g_build_filename(directory, "rate.wav", NULL);
+    channels_path = g_build_filename(directory, "channels.wav", NULL);
+    format_path = g_build_filename(directory, "format.wav", NULL);
+    samples = g_new(int16_t, 2048 * CHANNELS);
+    mono_samples = g_new(int16_t, 32);
+    for (size_t frame = 0; frame < 2048; frame++) {
+        samples[frame * CHANNELS] = 1000 + frame;
+        samples[frame * CHANNELS + 1] = -(1000 + frame);
+    }
+    for (size_t frame = 0; frame < 32; frame++) {
+        mono_samples[frame] = 1000 + frame;
+    }
+    write_test_wav_s16(exact_path, samples, 2048, SAMPLE_RATE, CHANNELS,
+                       false, false);
+    write_test_wav_s16(rate_path, samples, 32, SAMPLE_RATE / 2, CHANNELS,
+                       false, false);
+    write_test_wav_s16(channels_path, mono_samples, 32, SAMPLE_RATE, 1,
+                       false, false);
+    write_test_wav(format_path, 1, 2, SAMPLE_RATE, 8, u8_samples,
+                   sizeof(u8_samples), sizeof(u8_samples), false, false);
+
+    add_test_wav_no_mix_backend("wav-nomix-exact", exact_path, 0);
+    add_test_wav_no_mix_backend("wav-nomix-rate", rate_path, 1);
+    add_test_wav_no_mix_backend("wav-nomix-channels", channels_path, 1);
+    add_test_wav_no_mix_backend("wav-nomix-format", format_path, 1);
+    audio_init_audiodevs();
+
+    be = audio_be_by_name("wav-nomix-exact", &error_abort);
+    voice = audio_be_open_in(be, NULL, "wav-nomix-exact", NULL,
+                             dummy_audio_callback, &default_test_settings);
+    g_assert_nonnull(voice);
+    audio_be_set_active_in(be, voice, true);
+    audio_test_set_virtual_clock(100 * SCALE_MS);
+    bytes = audio_be_read(be, voice, actual, sizeof(actual));
+    g_assert_cmpuint(bytes, ==, sizeof(actual));
+    g_assert_cmpint((int16_t)lduw_le_p(actual), ==, 1000);
+    g_assert_cmpint((int16_t)lduw_le_p(actual + (1024 - 1) * 4), ==,
+                    1000 + 1024 - 1);
+    audio_be_set_active_in(be, voice, false);
+    audio_be_close_in(be, voice);
+
+    for (const char *id[] = { "wav-nomix-rate", "wav-nomix-channels",
+                              "wav-nomix-format" }, **name = id;
+         name < id + ARRAY_SIZE(id); name++) {
+        be = audio_be_by_name(*name, &error_abort);
+        voice = audio_be_open_in(be, NULL, *name, NULL,
+                                 dummy_audio_callback,
+                                 &default_test_settings);
+        g_assert_null(voice);
+    }
+    audio_cleanup();
+}
+
+#ifndef _WIN32
+static void test_audio_in_wav_fifo(void)
+{
+    g_autofree char *directory = NULL;
+    g_autofree char *path = NULL;
+    Error *err = NULL;
+    WavInput *input;
+
+    directory = g_dir_make_tmp("qemu-wav-fifo-XXXXXX", NULL);
+    g_assert_nonnull(directory);
+    path = g_build_filename(directory, "input.fifo", NULL);
+    g_assert_cmpint(mkfifo(path, 0600), ==, 0);
+    input = wav_input_open(path, false, &err);
+    g_assert_null(input);
+    g_assert_nonnull(err);
+    error_free(err);
+}
+#endif
+
 int main(int argc, char **argv)
 {
     GOptionContext *context;
@@ -860,6 +1385,12 @@ int main(int argc, char **argv)
                          test_audio_cleanup_volume);
 
     g_test_add_func("/audio/out/wav-drain", test_audio_out_wav_drain);
+    g_test_add_func("/audio/in/wav", test_audio_in_wav);
+    g_test_add_func("/audio/in/wav-clock", test_audio_in_wav_clock);
+    g_test_add_func("/audio/in/wav-no-mix", test_audio_in_wav_no_mix);
+#ifndef _WIN32
+    g_test_add_func("/audio/in/wav-fifo", test_audio_in_wav_fifo);
+#endif
 
     ret = g_test_run();
 
