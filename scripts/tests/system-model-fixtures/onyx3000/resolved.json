@@ -1411,11 +1411,12 @@
       "bus": "vbrick-port-8-xio",
       "component": "vbrick-v12",
       "controlled_by": "c1-bedrock",
-      "notes": "Port 8 is this composition's choice; which Crosstalk port serves a V12 slot is unknown.",
+      "notes": "Port 8 is this composition's choice. The V-brick shares the X-brick's chassis, whose slot map puts slot 1 at port 8 and slot 2 at port 12, so a one-pipe V12 is inferred to sit at 8 or 12; 12 is equally consistent, and no code read fixes which.",
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two pipes, each one VPro V12 board taking two of its four slots, behind its midplane XBridge"
+        "007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two pipes, each one VPro V12 board taking two of its four slots, behind its midplane XBridge",
+        "linux-mips:e5945d7f9ad6 arch/ia64/sn/io/sn1/ml_iograph.c lines 1415 to 1428: the X-brick's XIO slots 1 to 4 are widgets 8, 12, 9 and 13"
       ],
       "widget": 8
     },
@@ -2157,10 +2158,11 @@
         "vbrick-v12-connector"
       ],
       "id": "vbrick-to-v12",
-      "notes": "Port 8 is this composition's choice; which Crosstalk port serves a V12 slot is unknown.",
+      "notes": "Port 8 is this composition's choice. The V-brick shares the X-brick's chassis, whose slot map puts slot 1 at port 8 and slot 2 at port 12, so a one-pipe V12 is inferred to sit at 8 or 12; 12 is equally consistent, and no code read fixes which.",
       "provenance": "vendor-document",
       "sources": [
-        "007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two pipes, each one VPro V12 board taking two of its four slots, behind its midplane XBridge"
+        "007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two pipes, each one VPro V12 board taking two of its four slots, behind its midplane XBridge",
+        "linux-mips:e5945d7f9ad6 arch/ia64/sn/io/sn1/ml_iograph.c lines 1415 to 1428: the X-brick's XIO slots 1 to 4 are widgets 8, 12, 9 and 13"
       ]
     }
   ]
