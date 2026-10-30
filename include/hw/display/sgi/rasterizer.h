@@ -189,12 +189,39 @@ typedef struct SGIRasterRules {
      * depth_bits 10 to 30.
      */
     bool depth_float;
+    /*
+     * Stored depth is Odyssey's unsigned float, not a fraction of [0, 1]
+     * (docs/datasheets/odyssey.md, "Depth word"): the top six bits of the
+     * word an exponent e and the rest, depth_bits - 6 of them, a mantissa
+     * m with an implied leading one, so the word means
+     * (1 + m / 2^mantissa_bits) * 2^(e - 31). A window depth z in [0, 1]
+     * stores depth_scale * z, truncated to that format
+     * (sgi_raster_eye_float_encode()). Takes the place of depth_float, and
+     * needs depth_row_given and depth_bits 12 to 30. Under it a polygon
+     * offset is a signed count of steps of the stored word, added to the
+     * word after the encode, not a window-depth bias: only
+     * SGIGLDrawState.offset_bias is read, and the offset factor and units
+     * are ignored.
+     */
+    bool depth_eye_float;
+    double depth_scale;         /* the value of a stored depth at z = 1 */
 } SGIRasterRules;
+
+/*
+ * The depth word for value, an unsigned float of mantissa_bits mantissa
+ * bits and six exponent bits that mean (1 + m / 2^mantissa_bits) *
+ * 2^(e - 31). It truncates; a value below 2^-31 and a value that is not
+ * positive give 0, one of 2^33 or more the largest word.
+ */
+uint32_t sgi_raster_eye_float_encode(double value, unsigned mantissa_bits);
+/* The value a word of that format stands for. */
+double sgi_raster_eye_float_decode(uint32_t word, unsigned mantissa_bits);
 
 /*
  * Whether the rasterizer implements a rule set. It implements subpixel_bits
  * 1 to 12, color_bits 1 to 10, alpha_bits 0 to 10, depth_bits 1 to 32
- * (10 to 30 for a floating-point depth code), a finite depth row,
+ * (10 to 30 for a floating-point depth code; 12 to 30 with a depth row for
+ * the eye-linear unsigned float), a finite depth row,
  * stencil_bits 0 to 16,
  * every rounding, dither and smooth rule, and otherwise only
  * SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN, SGI_ARITH_DOUBLE,
