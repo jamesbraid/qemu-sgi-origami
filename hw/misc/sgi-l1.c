@@ -3072,8 +3072,9 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
          * for P and V) and warns on a mismatch, except on an Origin 300
          * board, which skips the check. Every profile answers 0 unless
          * port-speed-first says otherwise; that is right for the I-brick
-         * and N-brick. The V-brick's guide rate is a 400 MHz link but the
-         * PROM expects 600, so its C-brick keeps 0 until that is settled.
+         * and N-brick. The V-brick's guide rate reads as a 400 MHz link
+         * (inferred) but the PROM expects 600, so its C-brick keeps 0
+         * until that is settled.
          */
         field_count = 2;
         field_length = 10;
