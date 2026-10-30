@@ -1097,19 +1097,21 @@ static void l1_o3k_attached_put(uint8_t *fields, unsigned slot,
  * when that C-brick's chip has a graphics brick on its other port, the
  * graphics brick at port 2, each as the C-brick's reply lists a brick, and
  * leaves the other ports empty. An I-brick answers 0x000c so with or
- * without a graphics brick. Without one, 0x000d on an I-brick, and both
- * requests on an N-brick or V-brick, keep the unknown-request code: that
- * PROM never asks an N-brick, and nothing settles the others.
+ * without a graphics brick, and so does a V-brick: the L1 firmware answers
+ * 0x000c from its link table whatever the brick's letter, and a V-brick
+ * runs the X-brick personality. Without a graphics brick, 0x000d on either,
+ * and both requests on an N-brick, keep the unknown-request code: that PROM
+ * never asks an N-brick, and nothing settles the others.
  */
 static void l1_iobrick_attached(SGIL1State *s, SGIL1State *recipient,
                                 uint8_t channel, bool low_ports)
 {
     SGIL1State *host = s->reply_to ? s->reply_to : l1_host_of(s, NULL);
     uint8_t fields[40] = { 0 };
-    bool ibrick = !l1_is_nbrick(s) && !l1_is_vbrick(s);
+    bool one_host = !l1_is_nbrick(s);
 
     if (!host || !l1_named(host) ||
-        (!host->io_gfx_bay && (!ibrick || !low_ports))) {
+        (!host->io_gfx_bay && (!one_host || !low_ports))) {
         /* No source says what an I/O brick answers. */
         qemu_log_mask(LOG_UNIMP,
                       "sgi-l1: attached-brick request unavailable on the "
