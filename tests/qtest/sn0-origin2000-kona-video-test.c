@@ -839,6 +839,87 @@ static void test_load_format_names_channel(void)
     g_free(kona_log_read(log));
 }
 
+/* Append video command `command` and its checksum to `stream`. */
+static void stream_command(GArray *stream, uint32_t command,
+                           const uint32_t *data, unsigned count)
+{
+    uint32_t sum = command;
+
+    g_array_append_val(stream, command);
+    for (unsigned i = 0; i < count; i++) {
+        g_array_append_val(stream, data[i]);
+        sum += data[i];
+    }
+    g_array_append_val(stream, sum);
+}
+
+/* Store `stream` as the flash's video combination, 0x1ec 1 1 n. */
+static void flash_store_combination(QTestState *s, GArray *stream)
+{
+    kona_command(s, 0x1ec, (uint32_t[]){ 1, 1, stream->len }, 3);
+    for (unsigned i = 0; i < stream->len; i++) {
+        qtest_writel(s, REG_COMMAND, g_array_index(stream, uint32_t, i));
+    }
+}
+
+/*
+ * A combination stored in the flash, as ircombine's eeprom destination and
+ * setmon -x store it (the video commands framed as after 0x1a6), runs
+ * when the loader releases the ARM after a firmware load (+0x800328 = 1):
+ * here SetupFrameBuffer [2560, 1024], then channel 1 disabled, loaded
+ * with a named format and placed at (1280, 0). Storing it alone changes
+ * nothing. After the release the configuration block says 2560x1024,
+ * channel 1 runs (0xd) with its name, and GetResize places it. Erased
+ * with op 6, it no longer runs: after a reset and another release the
+ * area stays 1280x1024.
+ */
+static void test_stored_combination_runs_at_arm_release(void)
+{
+    g_autofree char *log = NULL;
+    g_autoptr(GArray) stream = g_array_new(false, false, sizeof(uint32_t));
+    QTestState *s = kona_init_dg("dg5-2", &log);
+    uint32_t format[383] = { 1, 1, 0x31323830, 0x78313032, 0x345f3630,
+                             0x2e76666f };
+    uint32_t reply[19];
+
+    format[19] = 60 << 16;
+    format[23] = 1024;
+    format[24] = 1280;
+    stream_command(stream, 0x18, (uint32_t[]){ 1 }, 1);
+    stream_command(stream, 0x08, (uint32_t[]){ 2560, 1024, 0 }, 3);
+    stream_command(stream, 0x16, format, ARRAY_SIZE(format));
+    stream_command(stream, 0x14,
+                   (uint32_t[]){ 1, 1280, 1023, 1280, 1024, 1, 1, 0 }, 8);
+    stream_command(stream, 0x17, (uint32_t[]){ 1, 0, 1 }, 3);
+
+    kona_register_return_page(s, RETURN_PAGE);
+    flash_store_combination(s, stream);
+    g_assert_cmphex(kona_config_word(s, 0x84), ==, 1280);
+    video_get(s, GET_CHANNEL_CONFIG, 1, 7, reply, 19);
+    g_assert_cmphex(reply[0], ==, 0x1);
+
+    qtest_writel(s, KONA_REG(0x800328), 1);
+    g_assert_cmphex(kona_config_word(s, 0x84), ==, 2560);
+    g_assert_cmphex(kona_config_word(s, 0x88), ==, 1024);
+    video_get(s, GET_CHANNEL_CONFIG, 1, 7, reply, 19);
+    g_assert_cmphex(reply[0], ==, 0xd);
+    g_assert_cmphex(reply[1], ==, 0x31323830);
+    video_get(s, GET_RESIZE, 1, 8, reply, 18);
+    g_assert_cmphex(reply[0], ==, 1280);
+    g_assert_cmphex(reply[2], ==, 1280);
+    assert_textport_in_step(s);
+
+    kona_command(s, 0x1ec, (uint32_t[]){ 6 }, 1);
+    qtest_system_reset(s);
+    qtest_writel(s, KONA_REG(0x800328), 1);
+    g_assert_cmphex(kona_config_word(s, 0x84), ==, 1280);
+    kona_register_return_page(s, RETURN_PAGE);
+    video_get(s, GET_CHANNEL_CONFIG, 1, 7, reply, 19);
+    g_assert_cmphex(reply[0], ==, 0x1);
+    qtest_quit(s);
+    g_free(kona_log_read(log));
+}
+
 /*
  * Every other Get answers its reply id, zero data at its reply size and
  * a checksum equal to the id, then word 0. GetOutputPedestal is the
@@ -1550,6 +1631,9 @@ int main(int argc, char **argv)
                    test_setup_frame_buffer_sizes_managed_area);
     qtest_add_func("sn0/origin2000/kona-video/load-format-names-channel",
                    test_load_format_names_channel);
+    qtest_add_func("sn0/origin2000/kona-video/"
+                   "stored-combination-runs-at-arm-release",
+                   test_stored_combination_runs_at_arm_release);
     qtest_add_func("sn0/origin2000/kona-video/zero-data-replies",
                    test_zero_data_replies);
     qtest_add_func("sn0/origin2000/kona-video/migration-mid-video-command",
