@@ -3065,7 +3065,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 repeat++;
             } else {
                 repeat = 0;
-                bit = bit == last ? 0 : bit + 1;
+                bit = bit == last ? first : bit + 1;
             }
         }
         if (!foreground) {
