@@ -1451,25 +1451,40 @@
       },
       "l1_controllers": {
         "c0-l1": {
-          "notes": "The C-brick profile of the L1 model; its firmware revision is unknown and not carried.",
+          "notes": "The C-brick profile of the L1 model. Its firmware revision is an approximation: no capture gives a fitted C-brick's, so it is the Origin 300 profiles' 1.18.5, which the stock PROM's 1.12.5 warning floor and IRIX 6.5.30's 1.3.20 R14000 floor both accept.",
           "profile": "cbrick",
           "provenance": "derived",
+          "revision": {
+            "major": 1,
+            "minor": 18,
+            "patch": 5
+          },
           "sources": [
             "qemu:docs/system/mips/sgi/hardware/l1.rst"
           ]
         },
         "c1-l1": {
-          "notes": "The C-brick profile of the L1 model; its firmware revision is unknown and not carried.",
+          "notes": "The C-brick profile of the L1 model. Its firmware revision is an approximation: no capture gives a fitted C-brick's, so it is the Origin 300 profiles' 1.18.5, which the stock PROM's 1.12.5 warning floor and IRIX 6.5.30's 1.3.20 R14000 floor both accept.",
           "profile": "cbrick",
           "provenance": "derived",
+          "revision": {
+            "major": 1,
+            "minor": 18,
+            "patch": 5
+          },
           "sources": [
             "qemu:docs/system/mips/sgi/hardware/l1.rst"
           ]
         },
         "ibrick-l1": {
-          "notes": "The I-brick profile of the L1 model, reached from c0's L1 over the XIO cable.",
+          "notes": "The I-brick profile of the L1 model, reached from c0's L1 over the XIO cable. Its firmware revision is the same approximation as the C-bricks'.",
           "profile": "ibrick",
           "provenance": "derived",
+          "revision": {
+            "major": 1,
+            "minor": 18,
+            "patch": 5
+          },
           "sources": [
             "qemu:docs/system/mips/sgi/hardware/l1.rst"
           ]

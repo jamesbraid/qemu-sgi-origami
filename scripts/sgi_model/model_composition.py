@@ -1533,23 +1533,25 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                 elif mask != {"mode": "fitted-banks"}:
                     raise ResolutionError(
                         f"'{cid}' installed bank mask policy is invalid")
-            elif section == "l1_controllers" and "profile" in entry:
-                # An Origin 3000 brick profile owns its type letter, and
-                # its controller firmware revision is unknown.
-                if entry["profile"] not in {"cbrick", "ibrick", "nbrick",
-                                            "vbrick"}:
-                    raise ResolutionError(
-                        f"'{cid}' names unsupported L1 profile "
-                        f"'{entry['profile']}'")
-                if set(entry) & {"reported_type", "revision",
-                                 "mac_eeprom_input"}:
-                    raise ResolutionError(
-                        f"'{cid}' L1 profile '{entry['profile']}' takes no "
-                        "reported type, revision or MAC input")
             elif section == "l1_controllers":
-                required(entry, "reported_type", f"'{cid}'")
-                integer(entry["reported_type"], 255,
-                        f"'{cid}' reported_type", 1)
+                if "profile" in entry:
+                    # An Origin 3000 brick profile owns its type letter.
+                    if entry["profile"] not in {"cbrick", "ibrick", "nbrick",
+                                                "vbrick"}:
+                        raise ResolutionError(
+                            f"'{cid}' names unsupported L1 profile "
+                            f"'{entry['profile']}'")
+                    if set(entry) & {"reported_type", "mac_eeprom_input"}:
+                        raise ResolutionError(
+                            f"'{cid}' L1 profile '{entry['profile']}' takes "
+                            "no reported type or MAC input")
+                    if entry["profile"] == "vbrick" and "revision" in entry:
+                        raise ResolutionError(
+                            f"'{cid}' L1 profile 'vbrick' takes no revision")
+                else:
+                    required(entry, "reported_type", f"'{cid}'")
+                    integer(entry["reported_type"], 255,
+                            f"'{cid}' reported_type", 1)
                 if "revision" in entry:
                     revision = entry["revision"]
                     if (not isinstance(revision, dict)

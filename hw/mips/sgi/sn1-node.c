@@ -2651,16 +2651,18 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
     if (node->l1_brick_type) {
         /*
          * A C-brick's L1 profile owns its type letter and takes no record
-         * files or firmware revision. It is named by its module's slot.
+         * files. It is named by its module's slot and reports the firmware
+         * revision its machine configures.
          */
-        if (node->l1_type_code || node->l1_revision[0] >= 0 ||
-            node->l1_mac_eeprom) {
+        if (node->l1_type_code || node->l1_mac_eeprom) {
             error_setg(errp, TYPE_SGI_SN1_NODE " L1 profile '%s' takes no "
-                       "type code, revision or MAC EEPROM",
-                       node->l1_brick_type);
+                       "type code or MAC EEPROM", node->l1_brick_type);
             goto fail_l1;
         }
         qdev_prop_set_string(node->l1, "brick-type", node->l1_brick_type);
+        qdev_prop_set_int32(node->l1, "revision-major", node->l1_revision[0]);
+        qdev_prop_set_int32(node->l1, "revision-minor", node->l1_revision[1]);
+        qdev_prop_set_int32(node->l1, "revision-patch", node->l1_revision[2]);
         if (l1_console) {
             qdev_prop_set_chr(node->l1, "chardev", l1_console);
         }

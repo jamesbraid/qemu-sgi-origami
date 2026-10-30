@@ -805,6 +805,54 @@ static void test_refusals(void)
     qtest_quit(s);
 }
 
+static void expect_revision(QTestState *s, unsigned n, uint32_t destination,
+                            uint32_t major, uint32_t minor, uint32_t patch)
+{
+    uint8_t reply[131];
+    size_t length = rpc(s, n, destination, 5, NULL, 0, 0, reply);
+
+    g_assert_cmpuint(length, ==, 21);
+    expect_code(reply, length, 0);
+    g_assert_cmpuint(reply[5], ==, 3);
+    g_assert_cmpuint(ldl_be_p(reply + 7), ==, major);
+    g_assert_cmpuint(ldl_be_p(reply + 12), ==, minor);
+    g_assert_cmpuint(ldl_be_p(reply + 17), ==, patch);
+}
+
+/*
+ * The C-brick, I-brick and N-brick profiles answer request 0x0005 with the
+ * revision their machine configures, each its own; the attached I/O address
+ * reaches the I-brick's. Without one the request is an error, as the
+ * V-brick's and Cx-brick's always are.
+ */
+static void test_firmware_revision(void)
+{
+    const char *const props[] = {
+        "brick-type=cbrick,named=on,rack=1,bay=4,revision-major=1,"
+        "revision-minor=18,revision-patch=5",
+        "brick-type=ibrick,named=on,rack=1,bay=16,mac=" MAC_PROP
+        ",revision-major=1,revision-minor=7,revision-patch=2",
+        "brick-type=nbrick,named=on,rack=1,bay=22,revision-major=1,"
+        "revision-minor=9,revision-patch=0",
+        "brick-type=cbrick,named=on,rack=1,bay=7",
+        "brick-type=vbrick,named=on,rack=1,bay=13",
+    };
+    QTestState *s = start_with(5, props, "");
+    uint8_t reply[131];
+    size_t length;
+
+    link_io(s, 0, 1);
+    expect_revision(s, 0, LOCAL_GENERAL, 1, 18, 5);
+    expect_revision(s, 1, LOCAL_GENERAL, 1, 7, 2);
+    expect_revision(s, 0, ATTACHED_IO, 1, 7, 2);
+    expect_revision(s, 2, LOCAL_GENERAL, 1, 9, 0);
+    length = rpc(s, 3, LOCAL_GENERAL, 5, NULL, 0, 0, reply);
+    expect_code(reply, length, -104);
+    length = rpc(s, 4, LOCAL_GENERAL, 5, NULL, 0, 0, reply);
+    expect_code(reply, length, -104);
+    qtest_quit(s);
+}
+
 static void test_ibrick_power_is_its_own(void)
 {
     const char *const props[] = {
@@ -1500,8 +1548,8 @@ static void test_realize_refusal(gconstpointer opaque)
         { "brick-type=ibrick", "*I-brick profile needs a mac*" },
         { "brick-type=cbrick,brick-type-code=0x43",
           "*brick-type-code is not accepted*" },
-        { "brick-type=cbrick,revision-major=1,revision-minor=2,"
-          "revision-patch=3", "*revision is unknown*" },
+        { "brick-type=vbrick,revision-major=1,revision-minor=2,"
+          "revision-patch=3", "*revision is unknown for the vbrick*" },
         { "brick-type=cbrick,irouter-compat=on", "*Origin 300 compatibility*" },
         { "brick-type=cbrick,o300-l1cmd-compat=on",
           "*Origin 300 compatibility*" },
@@ -1630,6 +1678,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/attached/unnamed", test_unnamed_attachment);
     qtest_add_func("sgi-l1-o3k/attached/type-four", test_type_four_requests);
     qtest_add_func("sgi-l1-o3k/refusals", test_refusals);
+    qtest_add_func("sgi-l1-o3k/firmware-revision", test_firmware_revision);
     qtest_add_func("sgi-l1-o3k/ibrick-power", test_ibrick_power_is_its_own);
     qtest_add_func("sgi-l1-o3k/relay", test_broadcast_and_relay);
     qtest_add_func("sgi-l1-o3k/task3-line-endings",

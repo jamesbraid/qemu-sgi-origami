@@ -4339,10 +4339,10 @@ static bool l1_build_o3k_identity(SGIL1State *s, Error **errp)
 
 /*
  * What the C-brick and I-brick profiles accept. Most refusals are inputs
- * whose meaning for these products is not established: a type code, a
- * firmware revision, the Origin 300 compatibility modes and raw record
- * files. Rack and slot start unset unless @named says the properties name
- * them. Every other profile has both.
+ * whose meaning for these products is not established: a type code, the
+ * Cx-brick's and V-brick's firmware revision, the Origin 300 compatibility
+ * modes and raw record files. Rack and slot start unset unless @named says
+ * the properties name them. Every other profile has both.
  */
 static bool l1_o3k_check(SGIL1State *s, Error **errp)
 {
@@ -4405,9 +4405,15 @@ static bool l1_o3k_check(SGIL1State *s, Error **errp)
                    "and I-brick profiles");
         return false;
     }
-    if (s->revision_major >= 0) {
-        error_setg(errp, "L1 firmware revision is unknown for the Origin "
-                   "3000 profiles");
+    /*
+     * The Cx-brick and V-brick profiles take no firmware revision, so they
+     * answer request 0x0005 with an error. The C-brick, I-brick and N-brick
+     * profiles take the one their machine configures; no capture gives a
+     * fitted brick's, so the value is the machine's choice.
+     */
+    if (s->revision_major >= 0 && (l1_is_cxbrick(s) || l1_is_vbrick(s))) {
+        error_setg(errp, "L1 firmware revision is unknown for the %s "
+                   "profile", s->profile->name);
         return false;
     }
     if (s->irouter_compat || s->o300_l1cmd_compat) {
