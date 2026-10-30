@@ -15354,6 +15354,7 @@ typedef struct GLTransferCase {
     uint32_t coordinate_class, primitive_extra, value;
     uint64_t scissor, screen[5];
     bool constant_source;
+    Register coordinate_start;
 } GLTransferCase;
 
 static GLTransferCase gl_transfer_case(void)
@@ -15369,6 +15370,46 @@ static GLTransferCase gl_transfer_case(void)
         .constant = 0x3971b580, .address = 0x12345ffd, .linear = 0x98765ffd,
         .coordinate_class = 0x48000000,
     };
+}
+
+static const Register transfer_coordinate_starts[] = {
+    { 0x80, 4 }, { 0x84, 4 }, { 0x88, 4 }, { 0x8c, 4 },
+    { 0x90, 4 }, { 0x94, 4 },
+    { 0x80, 8 }, { 0x88, 8 }, { 0x90, 8 },
+};
+
+static void transfer_coordinate_commit(QTestState *s, const Register *r)
+{
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-upload-coordinate-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    unsigned word = 192 + r->offset / 4, head;
+    uint64_t value;
+
+    save_paired_renderer(s, path, before);
+    value = r->offset >= 0x90 ? 0x7fc01234 : before[word];
+    if (r->width == 8) {
+        value = value << 32 |
+                (r->offset >= 0x90 ? 0xdead5678 : before[word + 1]);
+    }
+    /* The commit must consume new words with the untouched staged companion. */
+    g_assert_cmpint(memtx_write(s, DE + r->offset,
+        value ^ (r->width == 8 ? 0x100000001000ULL : 0x1000), r->width), ==,
+        MEMTX_OK);
+    save_paired_renderer(s, path, before);
+    head = ifb_next(s);
+    g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset, value, r->width),
+                    ==, MEMTX_OK);
+    ifb_head(s, (head + 1) & 63);
+    before[word] = r->width == 8 ? value >> 32 : value;
+    if (r->width == 8) {
+        before[word + 1] = (uint32_t)value;
+    }
+    save_paired_renderer(s, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    g_unlink(path);
+    g_rmdir(dir);
 }
 
 static uint32_t gl_transfer_source(const GLTransferCase *t,
@@ -15556,7 +15597,11 @@ static void gl_transfer_run(QTestState *s, const GLTransferCase *t)
             }
         }
     }
-    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0xdeadbeef), ==, MEMTX_OK);
+    if (t->coordinate_start.width) {
+        transfer_coordinate_commit(s, &t->coordinate_start);
+    } else {
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0xdeadbeef), ==, MEMTX_OK);
+    }
     if (download) {
         for (unsigned b = 0; b < length; b++) {
             g_assert_cmphex(qtest_readb(s,
@@ -16397,6 +16442,9 @@ static void test_gl_transfer_widths(gconstpointer selection)
         }
     }
     for (unsigned n = 0; n < ARRAY_SIZE(forbidden); n++) {
+        if (!kind && forbidden[n] >= 0x80 && forbidden[n] <= 0x94) {
+            continue;
+        }
         if (n % 3 == group % 3 && (n / 3) % 3 == part) {
             gl_transfer_failure(s, path, DE + 0x800 + forbidden[n],
                                 0, 4, false, false);
@@ -20648,6 +20696,783 @@ static void test_gl_stipple_span_first(void)
     qtest_quit(s);
 }
 
+static void test_gl_transfer_coordinate_matrix(void)
+{
+    QTestState *s = texture_start_machine();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(transfer_coordinate_starts); n++) {
+        GLTransferCase t = gl_transfer_case();
+
+        t.coordinate_start = transfer_coordinate_starts[n];
+        t.draw |= 0x200;
+        t.rop = 6;
+        t.x = 125;
+        t.y = 126;
+        t.width = 4;
+        t.height = 2;
+        t.source_mode = n & 1 ? 0x1628 : 0x1228;
+        t.destination_mode = gl_rectangle_modes[n];
+        gl_transfer_run(s, &t);
+    }
+    qtest_quit(s);
+}
+
+static uint64_t transfer_coordinate_value(const uint64_t *raw,
+                                           const Register *r)
+{
+    unsigned word = 192 + r->offset / 4;
+
+    return r->width == 8 ? raw[word] << 32 | raw[word + 1] : raw[word];
+}
+
+static void test_gl_transfer_coordinate_geometry(gconstpointer selection)
+{
+    unsigned n = GPOINTER_TO_UINT(selection);
+    const unsigned sizes[] = { 1, 31, 32, 33 };
+    QTestState *s = texture_start_machine();
+
+    for (unsigned direction = 0; direction < 4; direction++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(sizes); i++) {
+            GLTransferCase t = gl_transfer_case();
+
+            t.coordinate_start = transfer_coordinate_starts[n];
+            t.direction = direction;
+            t.width = sizes[i];
+            t.height = sizes[ARRAY_SIZE(sizes) - 1 - i];
+            t.advance = 4;
+            t.draw |= 0x200;
+            t.rop = 6;
+            t.source_mode = i & 1 ? 0x1628 : 0x1228;
+            t.destination_mode |= (i % 3) << 10;
+            t.primitive_extra = 0x00fc1234;
+            gl_transfer_run(s, &t);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_transfer_coordinate_clipping(gconstpointer selection)
+{
+    unsigned selected = GPOINTER_TO_UINT(selection);
+    const Register *r = &transfer_coordinate_starts[selected];
+    QTestState *s = texture_start_machine();
+    g_autofree char *dir = g_dir_make_tmp("crime-upload-clips-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned edge = 0; edge < 4; edge++) {
+        for (unsigned mask = 0; mask < 11; mask++) {
+            GLTransferCase t = gl_transfer_case();
+
+            t.coordinate_start = *r;
+            t.width = 5;
+            t.height = 4;
+            t.x = edge & 1 ? 2045 : -2;
+            t.y = edge & 2 ? 2046 : -1;
+            t.draw |= 0x100000 | 0x200;
+            t.rop = 6;
+            t.scissor = bounds(4095, 4096, 6143, 6143);
+            if (mask) {
+                unsigned m = (mask - 1) / 2;
+
+                t.clip = (1U << (5 + m)) | ((mask & 1) ? 1U << m : 0);
+                t.screen[m] = bounds(0, 0, 2046, 2046);
+            }
+            gl_transfer_run(s, &t);
+        }
+    }
+    /* Two enabled masks remain unsupported even when every effect is hidden. */
+    for (unsigned empty = 0; empty < 3; empty++) {
+        GLTransferCase t = gl_transfer_probe(s, 0);
+        uint64_t raw[RENDER_WORDS];
+
+        t.clip = 0x63;
+        t.screen[0] = bounds(0, 0, 3, 3);
+        t.screen[1] = bounds(4, 4, 7, 7);
+        if (empty == 1) {
+            t.draw &= ~0x78U;
+        } else if (empty == 2) {
+            t.draw |= 0x100000;
+            t.scissor = bounds(0, 0, 0, 0);
+        }
+        gl_transfer_stage(s, &t);
+        save_paired_renderer(s, path, raw);
+        gl_transfer_failure(s, path, DE + 0x800 + r->offset,
+            transfer_coordinate_value(raw, r), r->width, false, true);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_transfer_coordinate_failures(gconstpointer selection)
+{
+    unsigned selected = GPOINTER_TO_UINT(selection);
+    const Register *r = &transfer_coordinate_starts[selected];
+    const unsigned bad_draw[] = { 0, 2, 11, 12, 14, 17, 18, 19, 23 };
+    QTestState *s = texture_start_machine();
+    g_autofree char *dir = g_dir_make_tmp("crime-upload-failures-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned failure = 0; failure < 20 + ARRAY_SIZE(bad_draw); failure++) {
+        GLTransferCase t = gl_transfer_probe(s, 0);
+        uint64_t raw[RENDER_WORDS], value;
+
+        if (failure == 0) {
+            t.source_mode = 0x1218;
+        } else if (failure == 1) {
+            t.destination_mode = 0x010;
+        } else if (failure == 2 || failure == 3) {
+            t.width = failure == 2 ? 3 : 129;
+            t.height = 1;
+            t.address = 0x12345ff8;
+            map_region(s, 0, 4, 0, 0, t.width - 1, 0);
+        } else if (failure == 4) {
+            t.address = 0xfffffffd;
+        } else if (failure == 5) {
+            t.clip = 1;
+        } else if (failure == 6) {
+            t.clip = 0x400;
+        } else if (failure == 7) {
+            t.draw |= 0x400;
+            t.function = 0xd0;
+        } else if (failure == 8) {
+            t.rop = 16;
+        } else if (failure == 9) {
+            t.advance = 0;
+        } else if (failure >= 20) {
+            t.draw |= 1U << bad_draw[failure - 20];
+        }
+        gl_transfer_stage(s, &t);
+        save_paired_renderer(s, path, raw);
+        value = transfer_coordinate_value(raw, r);
+        switch (failure) {
+        case 2:
+            gl_transfer_linear_entry(s, 0, 6, 0);
+            break;
+        case 3:
+            tile(s, 0, 1, 0x7fff);
+            break;
+        case 10:
+            qtest_writel(s, DE + 0xa8, 8);
+            break;
+        case 11:
+            qtest_writel(s, DE + 0xa8, 0x20004);
+            break;
+        case 12:
+            qtest_writel(s, DE + 0xac, 0x20004);
+            break;
+        case 13: case 14: {
+            /* Poison an active word outside the trigger's whole footprint. */
+            unsigned other = r->offset < 0x88 ? 0x88 : 0x80;
+
+            qtest_writel(s, DE + other,
+                         failure == 13 ? 0x49040000 : 0x48040001);
+            break;
+        }
+        case 15:
+            gl_transfer_linear_entry(s, 0, 5, 0);
+            break;
+        case 16:
+            tile(s, 0, 0, 0x7fff);
+            break;
+        case 17:
+            qtest_writel(s, DE + 0x60, 0x03020000);
+            qtest_writel(s, DE + 0x88, 0x4803ffc0);
+            if (r->offset == 0x88) {
+                value = r->width == 8 ?
+                    0x4803ffc048040000ULL : 0x4803ffc0;
+            }
+            break;
+        case 18:
+            if (r->width == 8 && r->offset < 0x90) {
+                value = (value & 0xffffffff00000000ULL) | 0x49040000;
+            } else {
+                qtest_writel(s, DE + (r->offset < 0x88 ? 0x8c : 0x84),
+                             0x49040000);
+            }
+            break;
+        case 19:
+            qtest_writel(s, DE + 0x1a8, 0x1000);
+            qtest_writel(s, DE + 0x18, t.draw | 0x400);
+            break;
+        }
+        g_test_message("coordinate 0x%x/%u refusal %u",
+                       r->offset, r->width, failure);
+        gl_transfer_failure(s, path, DE + 0x800 + r->offset,
+                            value, r->width, false, true);
+    }
+    /* Failed pair publication cannot change a later legal NULL's geometry. */
+    for (unsigned pair = 0; pair < 2; pair++) {
+        GLTransferCase t = gl_transfer_probe(s, 0);
+
+        gl_transfer_failure(s, path, DE + 0x880 + pair * 8,
+                            0x4804004049040000ULL, 8, false, true);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        g_assert_cmphex(gl_transfer_probe_read(s, &t), ==,
+                        0x89674523 ^ 0x13579bdf);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_transfer_coordinate_widths(void)
+{
+    QTestState *s = texture_start_machine();
+    g_autofree char *dir = g_dir_make_tmp("crime-upload-widths-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    GLTransferCase t = gl_transfer_probe(s, 0);
+
+    for (unsigned offset = 0x80; offset <= 0x94; offset += 4) {
+        for (unsigned size = 1; size <= 8; size *= 2) {
+            gl_transfer_failure(s, path, DE + 0x800 + offset, 0,
+                                size, true, false);
+            gl_transfer_failure(s, path, DE + offset, 0, size, true, false);
+            if (size < 4 || (size == 8 && (offset & 7))) {
+                gl_transfer_failure(s, path, DE + 0x800 + offset, UINT64_MAX,
+                                    size, false, false);
+            }
+        }
+        for (unsigned delta = 1; delta < 4; delta++) {
+            gl_transfer_failure(s, path, DE + 0x800 + offset + delta,
+                                UINT32_MAX, 4, false, false);
+        }
+        if (!(offset & 7)) {
+            for (unsigned delta = 1; delta < 8; delta++) {
+                gl_transfer_failure(s, path, DE + 0x800 + offset + delta,
+                                    UINT64_MAX, 8, false, false);
+            }
+        }
+    }
+    gl_transfer_failure(s, path, DE + 0x87c, UINT64_MAX, 8, false, false);
+    gl_transfer_failure(s, path, DE + 0x898, UINT32_MAX, 4, false, false);
+    {
+        g_autoptr(QDict) reply = qtest_qmp(s,
+            "{'execute':'qom-set','arguments':{'path':%s,'property':'request',"
+            "'value':'store -1 0x15002880 00000000000000000000000000000000'}}",
+            MEMTX_TEST_PATH);
+
+        g_assert_true(qdict_haskey(reply, "error"));
+        g_assert_nonnull(strstr(qdict_get_str(qdict_get_qdict(reply, "error"),
+            "desc"), "Transaction size must be 1, 2, 4 or 8 bytes"));
+    }
+    g_assert_cmphex(gl_transfer_probe_read(s, &t), ==, 0x89674523);
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_transfer_coordinate_consumers(void)
+{
+    QTestState *s = texture_start_machine();
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-upload-consumers-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned kind = 1; kind <= 2; kind++) {
+        for (unsigned n = 0; n < ARRAY_SIZE(transfer_coordinate_starts); n++) {
+            const Register *r = &transfer_coordinate_starts[n];
+            uint64_t raw[RENDER_WORDS];
+
+            gl_transfer_probe(s, kind);
+            save_paired_renderer(s, path, raw);
+            gl_transfer_failure(s, path, DE + 0x800 + r->offset,
+                transfer_coordinate_value(raw, r), r->width, false, true);
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_transfer_coordinate_once(void)
+{
+    QTestState *s = texture_start_machine();
+    g_autofree char *dir = g_dir_make_tmp("crime-upload-once-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned n = 0; n < ARRAY_SIZE(transfer_coordinate_starts); n++) {
+        const Register *r = &transfer_coordinate_starts[n];
+        GLTransferCase t = gl_transfer_probe(s, 0);
+        uint64_t raw[RENDER_WORDS], value;
+
+        transfer_coordinate_commit(s, r);
+        g_assert_cmphex(gl_transfer_probe_read(s, &t), ==,
+                        0x89674523 ^ 0x13579bdf);
+        qtest_readl(s, STATUS);
+        qtest_writel(s, DE + 0x1f0, UINT32_MAX);
+        qtest_writel(s, DE + 0x1f8, 0);
+        g_assert_cmphex(gl_transfer_probe_read(s, &t), ==,
+                        0x89674523 ^ 0x13579bdf);
+        save_paired_renderer(s, path, raw);
+        value = transfer_coordinate_value(raw, r);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset,
+                                    value, r->width), ==, MEMTX_OK);
+        g_assert_cmphex(gl_transfer_probe_read(s, &t), ==, 0x89674523);
+        /* Parameter START and coordinate START commit equal complete state. */
+        gl_transfer_probe(s, 0);
+        for (unsigned offset = 0x80; offset <= 0x94; offset += 4) {
+            qtest_writel(s, DE + offset, raw[192 + offset / 4]);
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, 0xdeadbeef), ==, MEMTX_OK);
+        g_assert_cmphex(gl_transfer_probe_read(s, &t), ==,
+                        0x89674523 ^ 0x13579bdf);
+        {
+            uint64_t after[RENDER_WORDS];
+
+            save_paired_renderer(s, path, after);
+            g_assert_cmpmem(raw, sizeof(raw), after, sizeof(after));
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_transfer_coordinate_migration(gconstpointer selection)
+{
+    unsigned selected = GPOINTER_TO_UINT(selection);
+    const Register *r = &transfer_coordinate_starts[selected];
+    g_autofree char *dir = g_dir_make_tmp("crime-upload-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned phase = 0; phase < 4; phase++) {
+        QTestState *from = start();
+        QTestState *to = start_options("-incoming defer");
+        GLTransferCase t = gl_transfer_probe(from, 0);
+        GLTransferSnapshot before, after;
+        uint32_t expected = 0x89674523;
+
+        qtest_irq_intercept_out_named(to, "/machine/peripheral/crime",
+                                       "cpu-ip");
+        qtest_irq_intercept_out_named(from, "/machine/peripheral/crime",
+                                       "cpu-ip");
+        triangle_irq_baseline(from);
+        if (phase >= 2) {
+            transfer_coordinate_commit(from, r);
+            expected ^= 0x13579bdf;
+        }
+        if (phase == 3) {
+            gl_transfer_failure(from, path, DE + 0x880,
+                                0x4804004049040000ULL, 8, false, true);
+        }
+        if (!phase) {
+            qtest_system_reset(from);
+        }
+        gl_transfer_snapshot(from, path, &before);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        sgi_migrate_stopped(from, uri);
+        sgi_wait_migration(to, "completed");
+        gl_transfer_snapshot(to, path, &after);
+        g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
+        qtest_readl(to, STATUS);
+        qtest_writel(to, DE + 0x1f0, UINT32_MAX);
+        qtest_writel(to, DE + 0x1f8, 0);
+        g_assert_cmphex(gl_transfer_probe_read(to, &t), ==, expected);
+        if (!phase) {
+            t = gl_transfer_probe(to, 0);
+        }
+        g_assert_cmpint(memtx_writel(to, DE + 0x9f0, 0), ==, MEMTX_OK);
+        expected ^= 0x13579bdf;
+        g_assert_cmphex(gl_transfer_probe_read(to, &t), ==, expected);
+        qtest_system_reset(to);
+        g_assert_cmphex(gl_transfer_probe_read(to, &t), ==, expected);
+        gl_transfer_snapshot(to, path, &after);
+        for (unsigned i = 0; i < RENDER_WORDS; i++) {
+            g_assert_cmphex(after.renderer.words[i], ==, 0);
+        }
+        for (unsigned i = 0; i < 32; i++) {
+            g_assert_cmphex(after.linear[i], ==, 0);
+        }
+        qtest_quit(from);
+        qtest_quit(to);
+    }
+    g_unlink(sock);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static uint8_t transfer_mask_sample(unsigned x, unsigned row)
+{
+    const uint8_t values[] = { 0, 1, 127, 128, 254, 255 };
+
+    if (x == 0 && row == 0) {
+        return 255;
+    }
+    if (x == 31 && row == 0) {
+        return 128;
+    }
+    if (x == 0 && row == 31) {
+        return 1;
+    }
+    if (x == 31 && row == 31) {
+        return 254;
+    }
+    if (x >= 16 && x <= 18 && row >= 8 && row <= 10) {
+        return x == 17 && row == 9 ? 255 : 0;
+    }
+    return values[(3 * x + 5 * row) % ARRAY_SIZE(values)];
+}
+
+static void test_gl_transfer_coordinate_stencil(gconstpointer selection)
+{
+    unsigned n = GPOINTER_TO_UINT(selection), backing = n % 3;
+    unsigned color_bank = backing == 0 ? 1 : 0;
+    const Register *r = &transfer_coordinate_starts[n];
+    QTestState *s = start();
+    g_autofree char *dir = g_dir_make_tmp("crime-upload-stencil-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    GLTransferCase t = gl_transfer_case();
+    uint32_t stored[1024];
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    triangle_irq_baseline(s);
+    t.source_mode = n & 1 ? 0x1628 : 0x1228;
+    t.destination_mode = 0xa28;
+    t.draw = 0x600040;
+    t.width = t.height = 32;
+    t.x = t.y = 0;
+    t.direction = 0;
+    t.advance = 4;
+    color_map_linear(s);
+    for (unsigned row = 0; row < 32; row++) {
+        for (unsigned x = 0; x < 32; x++) {
+            uint32_t source = (uint32_t)transfer_mask_sample(x, row) << 24 |
+                              0x00a159e3;
+
+            color_bytes(s, true, (t.source_mode >> 10 & 7) - 4,
+                        t.address + row * 128 + 4 * x, 4, &source);
+        }
+    }
+    for (unsigned variant = 0; variant < 18; variant++) {
+        Shape c = triangle_prepare(s, color_bank, 0, 0);
+        SZCase v = sz_case();
+        uint32_t expected[64];
+
+        if (variant == 17) {
+            backing = 2;
+            t.destination_mode = n & 1 ? 0x628 : 0x228;
+            map_region(s, n & 1, 4, 0, 0, 31, 31);
+        }
+        /* Bank C may address another physical view; no private SZ store. */
+        tile(s, 2, 0, page_for(backing, 0));
+        for (unsigned y = 0; y < 32; y++) {
+            for (unsigned x = 0; x < 32; x++) {
+                uint32_t low = 0x1000 + 7 * x + 11 * y;
+
+                pixel_write(s, pixel_address(backing, x, y, 4), 4,
+                            0x53000000 | low);
+                stored[32 * y + x] = variant == 17 ? 0x53000000 | low :
+                    (uint32_t)transfer_mask_sample(x, 31 - y) << 24 | low;
+            }
+        }
+        gl_transfer_stage(s, &t);
+        qtest_writel(s, DE + 0x1e0, 0xffff2000);
+        qtest_writel(s, DE + 0x1e8, 255);
+        qtest_writel(s, DE + 0x1c0, UINT32_MAX);
+        qtest_writeq(s, DE + 0x1c8, INT64_MIN);
+        qtest_writeq(s, DE + 0x1d0, INT64_MAX);
+        transfer_coordinate_commit(s, r);
+        for (unsigned y = 0; y < 32; y++) {
+            for (unsigned x = 0; x < 32; x++) {
+                g_assert_cmphex(pixel_read(s,
+                    pixel_address(backing, x, y, 4), 4), ==,
+                    stored[32 * y + x]);
+            }
+        }
+        /* Ordinary triangles use the uploaded RAM through the same C map. */
+        c = triangle_prepare(s, color_bank, 0, 0);
+        tile(s, 2, 0, page_for(backing, 0));
+        triangle_vertices(s, triangle_integer, NULL, true);
+        v.draw = TRIANGLE_DRAW | 1;
+        v.stencil = 0xffff2000;
+        v.start = 4096;
+        v.dx = v.dy = 0;
+        if (variant == 1) {
+            v.stencil = 0x80ff2000;
+        } else if (variant == 2) {
+            v.stencil = 0x7f7f2000;
+        } else if (variant == 3) {
+            v.stencil = 0x00ff5000;
+        } else if (variant == 4) {
+            v.stencil = 0x00ff7003;
+        } else if (variant == 5) {
+            v.stencil = 0x62ff0200;
+        } else if (variant == 6) {
+            v.draw |= 4;
+            v.control = 0;
+            v.stencil = 0x00ff7010;
+        } else if (variant == 7) {
+            v.draw |= 0x800;
+            v.stencil = 0x00ff7003;
+        } else if (variant == 8) {
+            v.draw &= ~0x78U;
+            v.stencil = 0x00ff7005;
+        } else if (variant == 9) {
+            v.draw |= 6;
+            v.control = 1U << 25;
+            v.stencil = 0x00ff7004;
+        } else if (variant == 10 || variant == 12) {
+            v.draw |= 4;
+            v.control = 0x1000000 | (7U << 25) | 19;
+            if (variant == 12) {
+                v.stencil = 0xffff5002;
+                v.mask = 0;
+            }
+        } else if (variant == 11) {
+            v.draw |= 4;
+            v.start = (INT64_C(1) << 36) + 1;
+        } else if (variant == 13) {
+            v.stencil = 0x00ff7001;
+            v.mask = 15;
+        } else if (variant == 14) {
+            tile(s, 2, 0, 0x7fff);
+        } else if (variant == 15) {
+            tile(s, color_bank, 0, page_for(backing, 0));
+        } else if (variant == 16) {
+            v.draw = (v.draw | 4 | 0x800) & ~0x78U;
+            v.control = 0x1000000 | (7U << 25);
+        }
+        sz_program(s, &v);
+        qtest_writel(s, DE + 0x198, 0);
+        g_test_message("coordinate 0x%x/%u stencil variant %u",
+                       r->offset, r->width, variant);
+        if (variant == 10 || variant == 11 ||
+            (variant >= 14 && variant <= 16)) {
+            gl_transfer_failure(s, path, DE + 0x9f0, 0, 4, false, true);
+        } else {
+            if (variant == 12) {
+                /* Existing valid tag KEEP is independent of mask upload. */
+                v.draw &= ~2U;
+                qtest_writel(s, DE + 0x18, v.draw);
+            }
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        }
+        for (unsigned y = 0; y < 8; y++) {
+            for (unsigned x = 0; x < 8; x++) {
+                unsigned at = y * 32 + x;
+                bool color = false;
+
+                expected[y * 8 + x] = c.old;
+                if ((triangle_ten[y] & (1U << x)) && variant != 7 &&
+                    variant != 10 && variant != 11 &&
+                    !(variant >= 14 && variant <= 16)) {
+                    stored[at] = sz_reference(&v, stored[at], 1, &color);
+                    if (color) {
+                        expected[y * 8 + x] = pipeline_reference(0x228,
+                            v.color, c.old, 0, 0x45, v.draw, 6,
+                            UINT32_MAX, x, y);
+                    }
+                }
+            }
+        }
+        if (!variant) {
+            g_autofree char *sock =
+                g_build_filename(dir, "migration.sock", NULL);
+            g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+            QTestState *to = start_options("-incoming defer");
+            GLTransferSnapshot before, after;
+
+            qtest_irq_intercept_out_named(to, "/machine/peripheral/crime",
+                                           "cpu-ip");
+            gl_transfer_snapshot(s, path, &before);
+            qtest_qmp_assert_success(to,
+                "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+            sgi_migrate_stopped(s, uri);
+            sgi_wait_migration(to, "completed");
+            gl_transfer_snapshot(to, path, &after);
+            g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
+            qtest_quit(s);
+            s = to;
+            g_unlink(sock);
+        }
+        shape_memory(s, &c, expected);
+        if (variant == 17) {
+            qtest_system_reset(s);
+            shape_memory(s, &c, expected);
+        }
+        for (unsigned y = 0; y < 32; y++) {
+            for (unsigned x = 0; x < 32; x++) {
+                g_assert_cmphex(pixel_read(s,
+                    pixel_address(backing, x, y, 4), 4), ==,
+                    stored[32 * y + x]);
+            }
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gl_transfer_coordinate_profiles(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        QTestState *s = start_profile(legacy ? "legacy-software" : "1.5",
+                                      false, !legacy, "");
+
+        qtest_memset(s, 0x30000, 0x5a, 16);
+        for (unsigned n = 0; n < ARRAY_SIZE(transfer_coordinate_starts); n++) {
+            const Register *r = &transfer_coordinate_starts[n];
+
+            g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset,
+                r->width == 8 ? 0x4804000048040000ULL : 0x48040000,
+                r->width), !=, MEMTX_OK);
+            g_assert_cmphex(qtest_readq(s, 0x30000), ==,
+                            0x5a5a5a5a5a5a5a5aULL);
+            g_assert_cmphex(qtest_readq(s, 0x30008), ==,
+                            0x5a5a5a5a5a5a5a5aULL);
+        }
+        qtest_quit(s);
+    }
+}
+
+static void test_gl_transfer_coordinate_allocation(gconstpointer selection)
+{
+#ifdef CONFIG_LINUX
+    const uint64_t headroom[] = { 16 * MiB, 320 * MiB };
+    unsigned selected = GPOINTER_TO_UINT(selection);
+    g_autofree char *dir = g_dir_make_tmp("crime-upload-alloc-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned n = 0; n < ARRAY_SIZE(transfer_coordinate_starts); n++) {
+        const Register *r = &transfer_coordinate_starts[n];
+        g_autofree char *log = g_strdup_printf("%s/errors-%u.txt", dir, n);
+        g_autofree char *args = g_strdup_printf("-D %s", log);
+        QTestState *s = start_profile_ram("legacy-software", false,
+                                          true, false, args);
+        GLTransferCase t = gl_transfer_case();
+        g_autofree char *stat_path =
+            g_strdup_printf("/proc/%ld/statm", (long)qtest_pid(s));
+        g_autofree char *stat = NULL, *errors = NULL;
+        struct rlimit before, limited;
+        unsigned long long pages;
+        uint64_t raw[RENDER_WORDS], value;
+
+        qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+        triangle_irq_baseline(s);
+        t.width = t.height = 2048;
+        t.kx = t.ky = 16;
+        t.advance = 4;
+        t.address = 0x12345000;
+        t.x = t.y = 0;
+        gl_transfer_stage(s, &t);
+        save_paired_renderer(s, path, raw);
+        value = transfer_coordinate_value(raw, r);
+        g_assert_true(g_file_get_contents(stat_path, &stat, NULL, NULL));
+        g_assert_cmpint(sscanf(stat, "%llu", &pages), ==, 1);
+        g_assert_cmpint(prlimit(qtest_pid(s), RLIMIT_AS, NULL, &before), ==, 0);
+        limited = before;
+        limited.rlim_cur = pages * (uint64_t)qemu_real_host_page_size() +
+                           headroom[selected];
+        g_assert_cmpuint(limited.rlim_cur, <=, before.rlim_max);
+        g_assert_cmpint(prlimit(qtest_pid(s), RLIMIT_AS, &limited, NULL),
+                        ==, 0);
+        gl_transfer_failure(s, path, DE + 0x800 + r->offset,
+                            value, r->width, false, true);
+        g_assert_cmpint(prlimit(qtest_pid(s), RLIMIT_AS, &before, NULL), ==, 0);
+        qtest_quit(s);
+        g_assert_true(g_file_get_contents(log, &errors, NULL, NULL));
+        g_assert_nonnull(strstr(errors, "GL transfer plan allocation failed"));
+        g_unlink(log);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+#else
+    g_test_skip("requires Linux per-process address-space limits");
+#endif
+}
+
+static void test_gl_transfer_coordinate_formats(void)
+{
+    QTestState *s = texture_start_machine();
+
+    for (unsigned mode = 0; mode < ARRAY_SIZE(gl_rectangle_modes); mode++) {
+        for (unsigned n = 0; n < ARRAY_SIZE(transfer_coordinate_starts); n++) {
+            GLTransferCase t = gl_transfer_case();
+
+            t.coordinate_start = transfer_coordinate_starts[n];
+            t.source_mode = n & 1 ? 0x1628 : 0x1228;
+            t.destination_mode = gl_rectangle_modes[mode] |
+                                 ((mode + n) % 3) << 10;
+            t.width = 7;
+            t.height = 5;
+            t.draw |= 0x200;
+            t.rop = 6;
+            gl_transfer_run(s, &t);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_transfer_coordinate_repeats(gconstpointer selection)
+{
+    unsigned selected = GPOINTER_TO_UINT(selection);
+    QTestState *s = texture_start_machine();
+
+    for (unsigned n = selected; n < ARRAY_SIZE(transfer_coordinate_starts);
+         n += 3) {
+        for (unsigned repeat = 1; repeat <= 16; repeat++) {
+            GLTransferCase t = gl_transfer_case();
+
+            t.coordinate_start = transfer_coordinate_starts[n];
+            t.width = t.height = 33;
+            t.kx = repeat;
+            t.ky = 17 - repeat;
+            t.advance = 4 + 4 * repeat;
+            t.draw |= 0x200;
+            t.rop = 6;
+            gl_transfer_run(s, &t);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_gl_transfer_coordinate_inactive_span_source(void)
+{
+    const unsigned modes[] = { 0x1228, 0x1628 };
+    g_autofree char *dir = g_dir_make_tmp("crime-span-source-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = gl_span_machine("");
+
+    for (unsigned bank = 0; bank < ARRAY_SIZE(modes); bank++) {
+        GLSpanCase v = gl_span_case();
+        Shape c;
+        uint64_t raw[RENDER_WORDS];
+        unsigned head;
+
+        v.pixels.width = v.pixels.height = 4;
+        v.start = 0;
+        v.end = 3;
+        v.pattern = 0xb0000000;
+        c = gl_span_program(s, &v);
+        sz_initialize(s, &c, 0x53000011);
+        /* A linear source descriptor is dormant without transfer enable. */
+        qtest_writel(s, DE, modes[bank]);
+        g_assert_cmphex(v.draw & 0x600000, ==, 0x400000);
+        head = ifb_next(s);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0xdeadbeef), ==, MEMTX_OK);
+        ifb_head(s, (head + 1) & 63);
+        gl_span_check(s, &v, &c);
+        save_paired_renderer(s, path, raw);
+        g_assert_cmphex(raw[192], ==, modes[bank]);
+        g_assert_cmphex(raw[192 + 0x18 / 4] & 0x600000, ==, 0x400000);
+        for (unsigned n = 0; n < ARRAY_SIZE(transfer_coordinate_starts); n++) {
+            const Register *r = &transfer_coordinate_starts[n];
+
+            gl_span_failure(s, &c, path, DE + 0x800 + r->offset,
+                            transfer_coordinate_value(raw, r), r->width);
+        }
+        gl_span_check(s, &v, &c);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     take_group_paths(&argc, argv);
@@ -21457,5 +22282,119 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(4), test_gl_stipple_span_migration);
     add_data_case("sgi/crime/render/gl-stipple-span/migration/texture",
                   GUINT_TO_POINTER(5), test_gl_stipple_span_migration);
+    add_case("sgi/crime/render/gl-transfer-coordinate/matrix",
+             test_gl_transfer_coordinate_matrix);
+    add_case("sgi/crime/render/gl-transfer-coordinate/widths",
+             test_gl_transfer_coordinate_widths);
+    add_case("sgi/crime/render/gl-transfer-coordinate/consumers",
+             test_gl_transfer_coordinate_consumers);
+    add_case("sgi/crime/render/gl-transfer-coordinate/once",
+             test_gl_transfer_coordinate_once);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/geometry/0",
+                  GUINT_TO_POINTER(0), test_gl_transfer_coordinate_geometry);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/clipping/0",
+                  GUINT_TO_POINTER(0), test_gl_transfer_coordinate_clipping);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/failures/0",
+                  GUINT_TO_POINTER(0), test_gl_transfer_coordinate_failures);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/migration/0",
+                  GUINT_TO_POINTER(0), test_gl_transfer_coordinate_migration);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/stencil/0",
+                  GUINT_TO_POINTER(0), test_gl_transfer_coordinate_stencil);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/geometry/1",
+                  GUINT_TO_POINTER(1), test_gl_transfer_coordinate_geometry);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/clipping/1",
+                  GUINT_TO_POINTER(1), test_gl_transfer_coordinate_clipping);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/failures/1",
+                  GUINT_TO_POINTER(1), test_gl_transfer_coordinate_failures);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/migration/1",
+                  GUINT_TO_POINTER(1), test_gl_transfer_coordinate_migration);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/stencil/1",
+                  GUINT_TO_POINTER(1), test_gl_transfer_coordinate_stencil);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/geometry/2",
+                  GUINT_TO_POINTER(2), test_gl_transfer_coordinate_geometry);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/clipping/2",
+                  GUINT_TO_POINTER(2), test_gl_transfer_coordinate_clipping);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/failures/2",
+                  GUINT_TO_POINTER(2), test_gl_transfer_coordinate_failures);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/migration/2",
+                  GUINT_TO_POINTER(2), test_gl_transfer_coordinate_migration);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/stencil/2",
+                  GUINT_TO_POINTER(2), test_gl_transfer_coordinate_stencil);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/geometry/3",
+                  GUINT_TO_POINTER(3), test_gl_transfer_coordinate_geometry);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/clipping/3",
+                  GUINT_TO_POINTER(3), test_gl_transfer_coordinate_clipping);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/failures/3",
+                  GUINT_TO_POINTER(3), test_gl_transfer_coordinate_failures);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/migration/3",
+                  GUINT_TO_POINTER(3), test_gl_transfer_coordinate_migration);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/stencil/3",
+                  GUINT_TO_POINTER(3), test_gl_transfer_coordinate_stencil);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/geometry/4",
+                  GUINT_TO_POINTER(4), test_gl_transfer_coordinate_geometry);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/clipping/4",
+                  GUINT_TO_POINTER(4), test_gl_transfer_coordinate_clipping);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/failures/4",
+                  GUINT_TO_POINTER(4), test_gl_transfer_coordinate_failures);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/migration/4",
+                  GUINT_TO_POINTER(4), test_gl_transfer_coordinate_migration);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/stencil/4",
+                  GUINT_TO_POINTER(4), test_gl_transfer_coordinate_stencil);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/geometry/5",
+                  GUINT_TO_POINTER(5), test_gl_transfer_coordinate_geometry);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/clipping/5",
+                  GUINT_TO_POINTER(5), test_gl_transfer_coordinate_clipping);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/failures/5",
+                  GUINT_TO_POINTER(5), test_gl_transfer_coordinate_failures);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/migration/5",
+                  GUINT_TO_POINTER(5), test_gl_transfer_coordinate_migration);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/stencil/5",
+                  GUINT_TO_POINTER(5), test_gl_transfer_coordinate_stencil);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/geometry/6",
+                  GUINT_TO_POINTER(6), test_gl_transfer_coordinate_geometry);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/clipping/6",
+                  GUINT_TO_POINTER(6), test_gl_transfer_coordinate_clipping);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/failures/6",
+                  GUINT_TO_POINTER(6), test_gl_transfer_coordinate_failures);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/migration/6",
+                  GUINT_TO_POINTER(6), test_gl_transfer_coordinate_migration);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/stencil/6",
+                  GUINT_TO_POINTER(6), test_gl_transfer_coordinate_stencil);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/geometry/7",
+                  GUINT_TO_POINTER(7), test_gl_transfer_coordinate_geometry);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/clipping/7",
+                  GUINT_TO_POINTER(7), test_gl_transfer_coordinate_clipping);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/failures/7",
+                  GUINT_TO_POINTER(7), test_gl_transfer_coordinate_failures);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/migration/7",
+                  GUINT_TO_POINTER(7), test_gl_transfer_coordinate_migration);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/stencil/7",
+                  GUINT_TO_POINTER(7), test_gl_transfer_coordinate_stencil);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/geometry/8",
+                  GUINT_TO_POINTER(8), test_gl_transfer_coordinate_geometry);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/clipping/8",
+                  GUINT_TO_POINTER(8), test_gl_transfer_coordinate_clipping);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/failures/8",
+                  GUINT_TO_POINTER(8), test_gl_transfer_coordinate_failures);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/migration/8",
+                  GUINT_TO_POINTER(8), test_gl_transfer_coordinate_migration);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/stencil/8",
+                  GUINT_TO_POINTER(8), test_gl_transfer_coordinate_stencil);
+    add_case("sgi/crime/render/gl-transfer-coordinate/profiles",
+             test_gl_transfer_coordinate_profiles);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/allocation/0",
+                  GUINT_TO_POINTER(0), test_gl_transfer_coordinate_allocation);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/allocation/1",
+                  GUINT_TO_POINTER(1), test_gl_transfer_coordinate_allocation);
+    add_case("sgi/crime/render/gl-transfer-coordinate/formats",
+             test_gl_transfer_coordinate_formats);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/repeats/0",
+                  GUINT_TO_POINTER(0), test_gl_transfer_coordinate_repeats);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/repeats/1",
+                  GUINT_TO_POINTER(1), test_gl_transfer_coordinate_repeats);
+    add_data_case("sgi/crime/render/gl-transfer-coordinate/repeats/2",
+                  GUINT_TO_POINTER(2), test_gl_transfer_coordinate_repeats);
+    add_case("sgi/crime/render/gl-transfer-coordinate/inactive-span-source",
+             test_gl_transfer_coordinate_inactive_span_source);
     return g_test_run();
 }
