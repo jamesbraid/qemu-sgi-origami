@@ -10041,6 +10041,11 @@ static SGIXioLink *sgi_machine_claim_pipe_record(SGIMachineState *s,
         return NULL;
     }
     if (record->preset == SGI_MODEL_IO_BOARD_PRESET_VBRICK) {
+        /*
+         * Port 8 is the composition's choice. The X-brick slot map the
+         * V-brick is inferred to share puts a one-pipe V12 at port 8 or
+         * 12, and 12 is equally consistent: no source fixes which.
+         */
         sgi_xio_link_init(link, OBJECT(s), link_name,
                           OBJECT(s->vbrick_bridge), 8, board, 0);
         place->widget = 8;

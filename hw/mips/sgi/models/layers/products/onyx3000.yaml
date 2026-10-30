@@ -9,6 +9,7 @@ sources:
   007-4264-002-exclusive: "007-4264-002 printed pages 10 and 21: a system may use G-bricks or V-bricks, but not both types of bricks in the same system"
   007-4264-002-nbrick: "007-4264-002 printed pages 9 and 58 to 60: the N-brick pairs C-brick connectors with InfiniteReality graphics pipe connectors and is offered only with InfiniteReality"
   007-4264-002-vbrick: "007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two pipes, each one VPro V12 board taking two of its four slots, behind its midplane XBridge"
+  linux-mips-xbrick-slots: "linux-mips:e5945d7f9ad6 arch/ia64/sn/io/sn1/ml_iograph.c lines 1415 to 1428: the X-brick's XIO slots 1 to 4 are widgets 8, 12, 9 and 13"
   007-4264-002-cabling: "007-4264-002 printed pages 20 and 54 to 56, Figure 1-7: each V-brick XIO port is cabled to a C-brick XIO connector, and one cable serves a one-pipe V-brick"
   007-4311-002-pimm: "007-4311-002 printed page 83, section 8.1: a C-brick holds two or four processors, and a two-processor C-brick takes a second two-processor PIMM"
   007-4240-002-xio: "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick"
@@ -312,8 +313,8 @@ layer:
         widget: 8
         controlled_by: c1-bedrock
         provenance: vendor-document
-        sources: [007-4264-002-vbrick]
-        notes: Port 8 is this composition's choice; which Crosstalk port serves a V12 slot is unknown.
+        sources: [007-4264-002-vbrick, linux-mips-xbrick-slots]
+        notes: Port 8 is this composition's choice. The V-brick shares the X-brick's chassis, whose slot map puts slot 1 at port 8 and slot 2 at port 12, so a one-pipe V12 is inferred to sit at 8 or 12; 12 is equally consistent, and no code read fixes which.
       - component: vbrick-v12-connector
         bus: vbrick-port-8-xio
         role: endpoint
@@ -333,5 +334,5 @@ layer:
       - id: vbrick-to-v12
         ends: [vbrick-port-8, vbrick-v12-connector]
         provenance: vendor-document
-        sources: [007-4264-002-vbrick]
-        notes: Port 8 is this composition's choice; which Crosstalk port serves a V12 slot is unknown.
+        sources: [007-4264-002-vbrick, linux-mips-xbrick-slots]
+        notes: Port 8 is this composition's choice. The V-brick shares the X-brick's chassis, whose slot map puts slot 1 at port 8 and slot 2 at port 12, so a one-pipe V12 is inferred to sit at 8 or 12; 12 is equally consistent, and no code read fixes which.
