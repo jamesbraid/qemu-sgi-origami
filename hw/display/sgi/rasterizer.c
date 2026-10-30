@@ -323,6 +323,10 @@ bool sgi_raster_rules_supported(const SGIRasterRules *r)
            r->depth_bits >= 1 && r->depth_bits <= 32 &&
            (!r->depth_float ||
             (r->depth_bits >= 10 && r->depth_bits <= 30)) &&
+           (!r->depth_eye_float ||
+            (!r->depth_float && r->depth_row_given &&
+             r->depth_bits >= 12 && r->depth_bits <= 30 &&
+             r->depth_scale > 0 && isfinite(r->depth_scale))) &&
            (!r->depth_row_given ||
             (isfinite(r->depth_row[0]) && isfinite(r->depth_row[1]) &&
              isfinite(r->depth_row[2]) && isfinite(r->depth_row[3]))) &&
@@ -409,17 +413,107 @@ static uint32_t sgi_soft_depth_max(const SGIRasterRules *r)
  * shifted bits of a depth in [0, 1], at most 0x3f800000 >> (30 -
  * depth_bits), keep its order in depth_bits bits.
  */
+uint32_t sgi_raster_eye_float_encode(double value, unsigned mantissa_bits)
+{
+    uint32_t mantissa;
+    int exponent, e;
+
+    if (!(value > 0)) {
+        return 0;
+    }
+    if (value >= ldexp(1, 33)) {
+        return (1u << (6 + mantissa_bits)) - 1;
+    }
+    /*
+     * value = m 2^exponent with m in [0.5, 1): the biased exponent is
+     * exponent - 1 + 31.
+     */
+    frexp(value, &exponent);
+    e = exponent - 1 + 31;
+    if (e < 0) {
+        return 0;
+    }
+    mantissa = (uint32_t)floor((ldexp(value, -exponent + 1) - 1.0) *
+                               (1u << mantissa_bits));
+    return (uint32_t)e << mantissa_bits | mantissa;
+}
+
+double sgi_raster_eye_float_decode(uint32_t word, unsigned mantissa_bits)
+{
+    uint32_t mask = (1u << mantissa_bits) - 1;
+
+    return ldexp(1.0 + (double)(word & mask) / (1u << mantissa_bits),
+                 (int)(word >> mantissa_bits & 63) - 31);
+}
+
 uint32_t sgi_raster_depth_code(const SGIRasterRules *rules, double z)
 {
     float f;
     uint32_t bits;
 
+    if (rules->depth_eye_float) {
+        /* Odyssey keeps depth_scale * z; a z below 0 is not a depth. */
+        return sgi_raster_eye_float_encode(MAX(z, 0.0) * rules->depth_scale,
+                                           rules->depth_bits - 6);
+    }
     if (!rules->depth_float) {
         return (uint32_t)sgi_soft_round(rules, z * sgi_soft_depth_max(rules));
     }
     f = MIN(MAX(z, 0.0), 1.0);
     memcpy(&bits, &f, sizeof(bits));
     return bits >> (30 - rules->depth_bits);
+}
+
+/*
+ * Window depth z once an eye-float polygon offset of steps words has been
+ * added to its stored word: the word of z plus steps, clamped to the
+ * words 0 to the one for z = 1, as the depth of the middle of that word's
+ * cell, which stores as exactly that word again whatever the rounding of
+ * the divide by depth_scale. The clamp at the far word is a MODEL CHOICE:
+ * the datasheet fixes neither the sum's saturation nor whether the board
+ * keeps a word past the far plane's.
+ */
+static double sgi_soft_offset_word_depth(const SGIRasterRules *rules,
+                                         double z, double steps)
+{
+    unsigned mantissa_bits = rules->depth_bits - 6;
+    int64_t far_word = sgi_raster_depth_code(rules, 1.0);
+    int64_t word = sgi_raster_depth_code(rules, z) +
+                   (int64_t)MAX(MIN(steps, 1 << 25), -(1 << 25));
+
+    word = MAX(MIN(word, far_word), 0);
+    if (!word) {
+        return 0;
+    }
+    /* The far word's cell reaches past the far plane; z = 1 stores it. */
+    return MIN(sgi_raster_eye_float_decode(word, mantissa_bits) *
+               (1.0 + ldexp(1.0, -(int)mantissa_bits - 1)) /
+               rules->depth_scale, 1.0);
+}
+
+/*
+ * A head's window depth at a fragment: the depth row and its divisor each
+ * over w interpolate linearly in the window, so their ratio, with the
+ * polygon offset, is the row's depth there. A depth a little outside
+ * [0, 1], by the rules' slack, is clamped to it. Ordinarily the offset is
+ * in window depth and divides with the row; under the eye-linear float it
+ * counts steps of the stored word.
+ */
+static double sgi_soft_row_depth(const SGIRasterRules *rules, double z,
+                                 double offset, double depth_w)
+{
+    double slack = rules->depth_slack;
+
+    z = (z + (rules->depth_eye_float ? 0 : offset)) / depth_w;
+    if (z < 0 && z >= -slack) {
+        z = 0;
+    } else if (z > 1 && z <= 1 + slack) {
+        z = 1;
+    }
+    if (rules->depth_eye_float && offset != 0 && z >= 0 && z <= 1) {
+        z = sgi_soft_offset_word_depth(rules, z, offset);
+    }
+    return z;
 }
 
 /*
@@ -2761,19 +2855,8 @@ static void sgi_soft_fragment_coverage(const SGISoftDraw *r, int px, int py,
     double zw;
 
     if (r->rules->depth_row_given) {
-        double slack = r->rules->depth_slack;
-
-        /*
-         * Depth and its divisor, each over w, interpolate linearly in the
-         * window; their ratio is the row's depth at the fragment.
-         */
-        z = (z + offset) / depth_w;
+        z = sgi_soft_row_depth(r->rules, z, offset, depth_w);
         offset = 0;
-        if (z < 0 && z >= -slack) {
-            z = 0;
-        } else if (z > 1 && z <= 1 + slack) {
-            z = 1;
-        }
     }
     if (!(coverage > 0.0) ||
         !sgi_raster_window_depth(r->st, z, offset, &zw)) {
@@ -2835,6 +2918,21 @@ static double sgi_soft_slope(const SGISoftDraw *r, const SGISoftVertex v[3])
     return sgi_raster_depth_slope(r->st, window);
 }
 
+/*
+ * A primitive's offset from its slope: OpenGL's factor and units terms and
+ * EXT_polygon_offset's bias, or under the eye-linear float just the bias,
+ * a count of steps of the stored word with no slope term.
+ */
+static double sgi_soft_offset_value(const SGIRasterRules *rules,
+                                    const SGIGLDrawState *st, double slope)
+{
+    if (rules->depth_eye_float) {
+        return st->offset_bias;
+    }
+    return slope * st->offset_factor +
+           st->offset_units / sgi_soft_depth_max(rules) + st->offset_bias;
+}
+
 double sgi_raster_polygon_offset(const SGIRasterRules *rules,
                                   const SGIGLDrawState *st,
                                   const double window[3][3])
@@ -2842,8 +2940,9 @@ double sgi_raster_polygon_offset(const SGIRasterRules *rules,
     if (!(st->polygon_offset & SGI_GL_OFFSET_FILL)) {
         return 0;
     }
-    return sgi_raster_depth_slope(st, window) * st->offset_factor +
-           st->offset_units / sgi_soft_depth_max(rules) + st->offset_bias;
+    return sgi_soft_offset_value(rules, st,
+                                 rules->depth_eye_float ? 0 :
+                                 sgi_raster_depth_slope(st, window));
 }
 
 static double sgi_soft_offset(const SGISoftDraw *r, const SGISoftVertex v[3])
@@ -3950,15 +4049,9 @@ int sgi_soft_texture_row(const SGISoftDraw *r, const SGISoftTexSpan *sp,
         if (rules->depth_row_given) {
             double depth_w = (1.0 - b1 - b2) * v[0].depth_w +
                              b1 * v[1].depth_w + b2 * v[2].depth_w;
-            double slack = rules->depth_slack;
 
-            z = (z + off) / depth_w;
+            z = sgi_soft_row_depth(rules, z, off, depth_w);
             off = 0;
-            if (z < 0 && z >= -slack) {
-                z = 0;
-            } else if (z > 1 && z <= 1 + slack) {
-                z = 1;
-            }
         }
         if (!sgi_raster_window_depth(st, z, off, &zw) ||
             !(zw >= 0.0 && zw <= 1.0)) {
@@ -4277,15 +4370,9 @@ void sgi_soft_simple_row(const SGISoftDraw *r, const SGISoftVertex v[3],
         if (depth_row) {
             double depth_w = (1.0 - b1 - b2) * v[0].depth_w +
                              b1 * v[1].depth_w + b2 * v[2].depth_w;
-            double slack = rules->depth_slack;
 
-            z = (z + off) / depth_w;
+            z = sgi_soft_row_depth(rules, z, off, depth_w);
             off = 0;
-            if (z < 0 && z >= -slack) {
-                z = 0;
-            } else if (z > 1 && z <= 1 + slack) {
-                z = 1;
-            }
         }
         if (!sgi_raster_window_depth(st, z, off, &zw) ||
             !(zw >= 0.0 && zw <= 1.0)) {
@@ -6223,9 +6310,7 @@ static void sgi_soft_polygon_smooth(const SGISoftDraw *r,
         }
     }
     if (r->st->polygon_offset & SGI_GL_OFFSET_FILL) {
-        offset = slope * r->st->offset_factor +
-                 r->st->offset_units / sgi_soft_depth_max(r->rules) +
-                 r->st->offset_bias;
+        offset = sgi_soft_offset_value(r->rules, r->st, slope);
     }
     sgi_soft_polygon_coverage(r, v, n, flat_color,
                               *flat_index, offset);
@@ -6402,9 +6487,7 @@ static SGIGLDrawResult sgi_soft_polygon(const SGISoftDraw *r,
     offset_enable = mode == SGI_GL_LINE ? SGI_GL_OFFSET_LINE :
                                           SGI_GL_OFFSET_POINT;
     if (r->st->polygon_offset & offset_enable) {
-        offset = slope * r->st->offset_factor +
-                 r->st->offset_units / sgi_soft_depth_max(r->rules) +
-                 r->st->offset_bias;
+        offset = sgi_soft_offset_value(r->rules, r->st, slope);
     }
     for (size_t i = 0; i < n; i++) {
         SGISoftVertex next;

@@ -3076,6 +3076,251 @@ static void test_depth_float_code(void)
     g_assert_false(sgi_raster_rules_supported(&rules));
 }
 
+/*
+ * Odyssey's depth word (docs/datasheets/odyssey.md, "Depth word"): a
+ * 6-bit exponent and an 18-bit mantissa with an implied one, the value
+ * (1 + m / 2^18) 2^(e - 31), and a 10-bit-mantissa form of 16 bits. The
+ * encoder truncates, gives 0 below the range and the largest word at and
+ * above 2^33; 2S = 2^33 - 2^15 is the word 0xfffffe.
+ */
+static void test_eye_float_word(void)
+{
+    const double two_s = 8589901824.0;
+    double prev = 0;
+
+    g_assert_cmphex(sgi_raster_eye_float_encode(0, 18), ==, 0);
+    g_assert_cmphex(sgi_raster_eye_float_encode(-1, 18), ==, 0);
+    g_assert_cmphex(sgi_raster_eye_float_encode(NAN, 18), ==, 0);
+    g_assert_cmphex(sgi_raster_eye_float_encode(ldexp(1, -32), 18), ==, 0);
+    /* The smallest exponent, and the step above 2^-31. */
+    g_assert_cmphex(sgi_raster_eye_float_encode(ldexp(1, -31), 18), ==, 0);
+    g_assert_cmphex(sgi_raster_eye_float_encode(ldexp(1 + ldexp(1, -18), -31),
+                                                18), ==, 1);
+    g_assert_cmphex(sgi_raster_eye_float_encode(1, 18), ==, 31u << 18);
+    /* Truncation, not rounding, at the top of a binade and below a step. */
+    g_assert_cmphex(sgi_raster_eye_float_encode(1 + ldexp(1, -19), 18), ==,
+                    31u << 18);
+    g_assert_cmphex(sgi_raster_eye_float_encode(2 - ldexp(1, -30), 18), ==,
+                    (31u << 18) | 0x3ffff);
+    g_assert_cmphex(sgi_raster_eye_float_encode(2, 18), ==, 32u << 18);
+    g_assert_cmphex(sgi_raster_eye_float_encode(two_s, 18), ==, 0xfffffe);
+    g_assert_cmphex(sgi_raster_eye_float_encode(ldexp(1, 33) - 1, 18), ==,
+                    0xffffff);
+    g_assert_cmphex(sgi_raster_eye_float_encode(ldexp(1, 33), 18), ==,
+                    0xffffff);
+    g_assert_cmphex(sgi_raster_eye_float_encode(1e30, 18), ==, 0xffffff);
+    g_assert_cmphex(sgi_raster_eye_float_encode(INFINITY, 18), ==, 0xffffff);
+
+    g_assert_cmpfloat(sgi_raster_eye_float_decode(31u << 18, 18), ==, 1);
+    g_assert_cmpfloat(sgi_raster_eye_float_decode(0xfffffe, 18), ==, two_s);
+    g_assert_cmpfloat(sgi_raster_eye_float_decode(0, 18), ==, ldexp(1, -31));
+    g_assert_cmpfloat(sgi_raster_eye_float_decode(0xffffff, 18), ==,
+                      ldexp(1, 33) - ldexp(1, 14));
+    /* Every word's value encodes back to it, and words order as values. */
+    for (uint32_t w = 0; w <= 0xffffff; w += 0x111) {
+        double v = sgi_raster_eye_float_decode(w, 18);
+
+        g_assert_cmphex(sgi_raster_eye_float_encode(v, 18), ==, w);
+        g_assert_cmpfloat(v, >, prev);
+        prev = v;
+    }
+    /* The 16-bit form: exponent in 15:10, the top ten mantissa bits. */
+    g_assert_cmphex(sgi_raster_eye_float_encode(1, 10), ==, 31u << 10);
+    /* 2S truncates to the largest word: its mantissa is 1 - 2^-17. */
+    g_assert_cmphex(sgi_raster_eye_float_encode(two_s, 10), ==, 0xffff);
+    g_assert_cmphex(sgi_raster_eye_float_encode(1 + ldexp(1, -11), 10), ==,
+                    31u << 10);
+    g_assert_cmphex(sgi_raster_eye_float_encode(1 + ldexp(1, -10), 10), ==,
+                    (31u << 10) | 1);
+    g_assert_cmphex(sgi_raster_eye_float_encode(ldexp(1, 33), 10), ==,
+                    0xffff);
+    g_assert_cmpfloat(sgi_raster_eye_float_decode(0xffff, 10), ==,
+                      ldexp(1, 33) - ldexp(1, 22));
+    /* The top ten mantissa bits of the 24-bit word are the 16-bit word's. */
+    g_assert_cmphex(sgi_raster_eye_float_encode(12345.678, 10), ==,
+                    sgi_raster_eye_float_encode(12345.678, 18) >> 8);
+}
+
+static SGIRasterRules eye_rules(unsigned bits)
+{
+    SGIRasterRules rules = rules_supported;
+
+    rules.depth_bits = bits;
+    rules.depth_eye_float = true;
+    rules.depth_scale = 8589901824.0;
+    rules.depth_row_given = true;
+    rules.depth_row[2] = -1;
+    return rules;
+}
+
+/* A triangle across the window at constant eye depth d (row (0, 0, -1, 0)). */
+static void eye_triangle(const SGIRasterRules *rules, Planes *p,
+                         SGIGLContext *c, float d)
+{
+    const float triangle[3][SGI_GL_VERTEX_FLOATS] = {
+        { -0.9f, -0.9f, -d, 1, 1, 1, 1, 1 },
+        { 0.9f, -0.9f, -d, 1, 1, 1, 1, 1 },
+        { 0, 0.9f, -d, 1, 1, 1, 1, 1 },
+    };
+    SGIRasterTarget t = planes_target(p);
+    SGIGLDraw draw = {
+        .mode = SGI_GL_TRIANGLES, .count = 3,
+        .vertices = &triangle[0][0], .state = &c->cur,
+    };
+
+    sgi_soft_draw(rules, &t, &draw);
+}
+
+/*
+ * Stored depth in the board's format: the fraction d of 2S as the word of
+ * 2S d, supported only with a depth row; readback is the word as stored;
+ * GL_LESS compares words, so one step of the 18-bit mantissa separates
+ * depths; the 16-bit form keeps ten mantissa bits.
+ */
+static void test_eye_float_depth(void)
+{
+    static Planes p;
+    SGIGLContext c;
+    SGIRasterRules rules = eye_rules(24), rules24;
+    int mid = planes_index(W / 2, H / 3);
+
+    g_assert_true(sgi_raster_rules_supported(&rules));
+    g_assert_cmphex(sgi_raster_depth_code(&rules, 1), ==, 0xfffffe);
+    g_assert_cmphex(sgi_raster_depth_code(&rules, 0.5), ==,
+                    (62u << 18) | 0x3fffe);
+    g_assert_cmphex(sgi_raster_depth_code(&rules, 0), ==, 0);
+    /* Near 0 the format keeps depths a fixed-point store makes equal. */
+    g_assert_cmphex(sgi_raster_depth_code(&rules, ldexp(1, -33) * 2), >,
+                    0);
+    rules.depth_row_given = false;
+    g_assert_false(sgi_raster_rules_supported(&rules));
+    rules = eye_rules(24);
+    rules.depth_float = true;
+    g_assert_false(sgi_raster_rules_supported(&rules));
+    rules = eye_rules(11);
+    g_assert_false(sgi_raster_rules_supported(&rules));
+    rules = eye_rules(24);
+    rules.depth_scale = 0;
+    g_assert_false(sgi_raster_rules_supported(&rules));
+
+    /* The plane holds the word: the readback decodes to the depth. */
+    rules = eye_rules(24);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    c.cur.depth_test = 1;
+    c.cur.depth_func = SGI_GL_ALWAYS;
+    eye_triangle(&rules, &p, &c, 0.25f);
+    g_assert_cmphex(p.depth[mid], ==, sgi_raster_depth_code(&rules, 0.25));
+    g_assert_cmpfloat(sgi_raster_eye_float_decode(p.depth[mid], 18), ==,
+                      0.25 * 8589901824.0);
+    /* The far plane itself is drawn; a depth past it is cut, not saturated. */
+    rules.depth_row[2] = -2;
+    p.depth[mid] = 0x123456;
+    eye_triangle(&rules, &p, &c, 0.5f);
+    g_assert_cmphex(p.depth[mid], ==, 0xfffffe);
+    p.depth[mid] = 0x123456;
+    eye_triangle(&rules, &p, &c, 0.5001f);
+    g_assert_cmphex(p.depth[mid], ==, 0x123456);
+    /* With slack, a depth just past the far cut lands on it; more is cut. */
+    rules.depth_slack = 0.001;
+    eye_triangle(&rules, &p, &c, 0.5001f);
+    g_assert_cmphex(p.depth[mid], ==, 0xfffffe);
+    p.depth[mid] = 0x123456;
+    eye_triangle(&rules, &p, &c, 0.502f);
+    g_assert_cmphex(p.depth[mid], ==, 0x123456);
+    rules.depth_slack = 0;
+    rules.depth_row[2] = -1;
+
+    /* GL_LESS: a depth one step nearer than the plane's passes, equal not. */
+    c.cur.depth_func = SGI_GL_LESS;
+    p.depth[mid] = sgi_raster_depth_code(&rules, 0.25) + 1;
+    eye_triangle(&rules, &p, &c, 0.25f);
+    g_assert_cmphex(p.depth[mid], ==, sgi_raster_depth_code(&rules, 0.25));
+    eye_triangle(&rules, &p, &c, 0.25f);
+    g_assert_cmphex(p.depth[mid], ==, sgi_raster_depth_code(&rules, 0.25));
+    p.depth[mid] = sgi_raster_depth_code(&rules, 0.25) - 1;
+    eye_triangle(&rules, &p, &c, 0.25f);
+    g_assert_cmphex(p.depth[mid], ==, sgi_raster_depth_code(&rules, 0.25) - 1);
+
+    /* The 16-bit form, for RGBA 12/12/12/12 windows. */
+    rules = eye_rules(16);
+    g_assert_true(sgi_raster_rules_supported(&rules));
+    g_assert_cmphex(sgi_raster_depth_code(&rules, 1), ==, 0xffff);
+    c.cur.depth_func = SGI_GL_ALWAYS;
+    eye_triangle(&rules, &p, &c, 0.25f);
+    g_assert_cmphex(p.depth[mid], ==, sgi_raster_depth_code(&rules, 0.25));
+    rules24 = eye_rules(24);
+    g_assert_cmphex(p.depth[mid], ==,
+                    sgi_raster_depth_code(&rules24, 0.25) >> 8);
+}
+
+/*
+ * Polygon offset under the board's depth word: block 0x058's field is a
+ * signed count of steps of the stored word, added after the encode, with
+ * no slope term (INFERRED; the datasheet's polygon offset section). The
+ * same count moves a polygon one word step at any depth, so the eye gap
+ * it makes shrinks toward the near plane; OpenGL's units and factor are
+ * not read; the sum stays within the words 0 through the far plane's.
+ */
+static void test_eye_float_polygon_offset(void)
+{
+    static const float depths[] = { 0.25f, 0.5f, 0.75f };
+    static Planes p;
+    SGIGLContext c;
+    SGIRasterRules rules = eye_rules(24);
+    int mid = planes_index(W / 2, H / 3);
+
+    context_init(&c);
+    c.cur.depth_test = 1;
+    c.cur.depth_func = SGI_GL_ALWAYS;
+    c.cur.polygon_offset = SGI_GL_OFFSET_FILL;
+    for (unsigned i = 0; i < ARRAY_SIZE(depths); i++) {
+        uint32_t word = sgi_raster_depth_code(&rules, depths[i]);
+        static const float bias[] = { -1, 1, 4096, -4096, 0 };
+
+        for (unsigned k = 0; k < ARRAY_SIZE(bias); k++) {
+            c.cur.offset_bias = bias[k];
+            memset(&p, 0, sizeof(p));
+            eye_triangle(&rules, &p, &c, depths[i]);
+            g_assert_cmphex(p.depth[mid], ==, word + (int)bias[k]);
+        }
+    }
+    /* Units and factor are not read. */
+    c.cur.offset_bias = 0;
+    c.cur.offset_units = -1000;
+    c.cur.offset_factor = 1000;
+    eye_triangle(&rules, &p, &c, 0.5f);
+    g_assert_cmphex(p.depth[mid], ==, sgi_raster_depth_code(&rules, 0.5));
+    /* Only an enabled offset applies. */
+    c.cur.offset_bias = -4096;
+    c.cur.polygon_offset = SGI_GL_OFFSET_LINE;
+    eye_triangle(&rules, &p, &c, 0.5f);
+    g_assert_cmphex(p.depth[mid], ==, sgi_raster_depth_code(&rules, 0.5));
+    c.cur.polygon_offset = SGI_GL_OFFSET_FILL;
+    /* Clamped to the words 0 and the far plane's, not wrapped. */
+    c.cur.offset_bias = -(1 << 24);
+    eye_triangle(&rules, &p, &c, 0.5f);
+    g_assert_cmphex(p.depth[mid], ==, 0);
+    c.cur.offset_bias = (1 << 24) - 1;
+    eye_triangle(&rules, &p, &c, 0.5f);
+    g_assert_cmphex(p.depth[mid], ==, 0xfffffe);
+    /* GL_LESS at an equal depth: -1 wins, 0 and +1 lose. */
+    c.cur.depth_func = SGI_GL_LESS;
+    for (int bias = -1; bias <= 1; bias++) {
+        c.cur.offset_bias = bias;
+        p.depth[mid] = sgi_raster_depth_code(&rules, 0.5);
+        eye_triangle(&rules, &p, &c, 0.5f);
+        g_assert_cmphex(p.depth[mid], ==,
+                        sgi_raster_depth_code(&rules, 0.5) - (bias < 0));
+    }
+    /* The 16-bit form counts its own, coarser steps. */
+    rules = eye_rules(16);
+    c.cur.depth_func = SGI_GL_ALWAYS;
+    c.cur.offset_bias = -3;
+    eye_triangle(&rules, &p, &c, 0.5f);
+    g_assert_cmphex(p.depth[mid], ==, sgi_raster_depth_code(&rules, 0.5) - 3);
+}
+
 /* glRasterPos's window z goes through the depth range too (2.12). */
 static void test_depth_range_maps_the_raster_position(void)
 {
@@ -15379,6 +15624,10 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/depth-row", test_depth_row);
     g_test_add_func("/sgi-gl/depth-divisor", test_depth_divisor);
     g_test_add_func("/sgi-gl/depth-float-code", test_depth_float_code);
+    g_test_add_func("/sgi-gl/eye-float-word", test_eye_float_word);
+    g_test_add_func("/sgi-gl/eye-float-depth", test_eye_float_depth);
+    g_test_add_func("/sgi-gl/eye-float-polygon-offset",
+                    test_eye_float_polygon_offset);
     g_test_add_func("/sgi-gl/depth-range-maps-the-raster-position",
                     test_depth_range_maps_the_raster_position);
     g_test_add_func("/sgi-gl/get-enables-and-depths",
