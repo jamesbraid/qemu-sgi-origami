@@ -258,10 +258,21 @@ Stated limitations:
   takes one or two raster managers, its pipe 0 one, two or four. Each
   C-brick's L1 knows its chip's G-brick whether or not a pipe is
   fitted.
-* The N-brick's chips have no PCI heads, so the PROM's start on the
-  C-bricks cabled to it prints ``xtalk_init resulted in an exception`` and
-  ``Reading link e`` and ``Reading link f`` failures before it continues;
-  those C-bricks still join the PROM's node count and inventory.
+* Each N-brick chip presents its two PCI heads, widgets 14 and 15, with
+  nothing behind either, to the C-brick cabled to it. The N-brick Overview
+  (revision 10/24/01, printed page 3) calls the chip's ports E and F
+  logically disconnected, so this is an approximation grounded in what the
+  guest needs. On this model, the stock PROM 6.210 recorded no I/O brick
+  board for those C-bricks' crossbars until the heads decoded, and then
+  recorded an N-brick board (type 0x74, Linux ``KLTYPE_NBRICK``) at each
+  head; clearing the heads' link-alive bits alone recorded none. IRIX
+  6.5.30 looks for an I/O brick board on the node, then on its crossbar
+  peer, when it brings up a widget on the crossbar, as Linux's
+  ``io_xswitch_widget_init`` does, and panics on a failed assertion when
+  there is none, which a pipe behind the N-brick triggers. Without the
+  heads, the PROM's start on those C-bricks also failed with
+  ``xtalk_init resulted in an exception``. A widget scan of a real N-brick
+  would settle which heads answer.
 * The router's ports 1, 6, 7 and 8 are uncabled, and the PROM prints
   ``discover_object: vector read 0x2 LRI failed`` and ``erect_fences``
   messages and an EEPROM vector read error against the router.

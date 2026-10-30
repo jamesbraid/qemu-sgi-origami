@@ -3806,12 +3806,12 @@ class Onyx3400GraphicsBrickTests(unittest.TestCase):
         self.assertEqual(paths, {
             "gbrick0-pipe0": ("ibrick-port-b-xio", "ibrick-xbridge-crossbar",
                               "c0-bedrock"),
-            "gbrick0-pipe1": ("nbrick-graphics-pipe-0-xio", "nbrick-xbridge0",
-                              "c1-bedrock"),
-            "gbrick1-pipe0": ("nbrick-graphics-pipe-1-xio", "nbrick-xbridge1",
-                              "c2-bedrock"),
-            "gbrick1-pipe1": ("nbrick-graphics-pipe-2-xio", "nbrick-xbridge2",
-                              "c3-bedrock"),
+            "gbrick0-pipe1": ("nbrick-graphics-pipe-0-xio",
+                              "nbrick-xbridge0-crossbar", "c1-bedrock"),
+            "gbrick1-pipe0": ("nbrick-graphics-pipe-1-xio",
+                              "nbrick-xbridge1-crossbar", "c2-bedrock"),
+            "gbrick1-pipe1": ("nbrick-graphics-pipe-2-xio",
+                              "nbrick-xbridge2-crossbar", "c3-bedrock"),
         })
         # One pipe per C-brick (007-4424-001 printed page 1).
         self.assertEqual(len({path[2] for path in paths.values()}), 4)
@@ -3826,16 +3826,32 @@ class Onyx3400GraphicsBrickTests(unittest.TestCase):
             master = components[buses[item["bus"]]["master"]]
             self.assertNotEqual(master["kind"], "node-asic", item)
 
-    def test_nbrick_holds_four_chips_and_no_pci(self):
+    def test_nbrick_holds_four_chips_with_empty_heads(self):
         model = self.resolve()
         components = {item["id"]: item for item in model["components"]}
         chips = sorted(cid for cid, item in components.items()
                        if cid.startswith("nbrick-") and
-                       item["kind"] == "crossbar")
+                       item["kind"] == "pci-host-bridge")
         self.assertEqual(chips, [f"nbrick-xbridge{k}" for k in range(4)])
-        self.assertFalse([cid for cid, item in components.items()
-                          if cid.startswith("nbrick-") and
-                          item["kind"] == "pci-host-bridge"])
+        self.assertEqual(
+            sorted(cid for cid, item in components.items()
+                   if cid.startswith("nbrick-") and
+                   item["kind"] == "crossbar"),
+            [f"nbrick-xbridge{k}-crossbar" for k in range(4)])
+        # Each chip presents its heads at 14 and 15 with no PCI bus behind
+        # either: the brick has no other I/O (N-brick Overview printed
+        # page 1).
+        heads = sorted((item["component"], item["widget"])
+                       for item in model["connections"]
+                       if item["component"].startswith("nbrick-xbridge")
+                       and item["role"] == "bridge-upstream"
+                       and item.get("widget") in (14, 15))
+        self.assertEqual(heads, sorted(
+            (f"nbrick-xbridge{k}-bridge-{h}", w)
+            for k in range(4) for h, w in (("e", 14), ("f", 15))))
+        self.assertFalse([bus for bus in model["buses"]
+                          if bus["id"].startswith("nbrick-")
+                          and bus["kind"] == "pci"])
         # One L1 hears all four C-bricks (N-brick Overview printed page 5).
         self.assertEqual(
             [cid for cid, item in components.items()

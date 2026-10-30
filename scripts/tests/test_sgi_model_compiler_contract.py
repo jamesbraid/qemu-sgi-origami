@@ -4555,6 +4555,50 @@ class XioCableCompileTests(unittest.TestCase):
                 "nodes; its heads take one host node"):
             compile_model(model)
 
+    def test_nbrick_heads_go_to_the_node_cabled_to_each_chip(self):
+        # The Onyx 3400's N-brick cables three of its four chips. Each
+        # cabled chip's two PCI heads are hosted by the node its cable
+        # reaches; the spare chip, which no node reaches, adds none.
+        entry = compile_model(_resolved("onyx3400-ir"))
+        crossbars = [item["id"] for item in entry["crossbars"]]
+        heads = sorted(
+            (crossbars[item["crossbar_index"]], item["widget"],
+             item["node_index"])
+            for item in entry["xio_attachments"]
+            if item["crossbar_index"] >= 0 and item["widget"] in (14, 15))
+        self.assertEqual(heads, [
+            ("ibrick-xbridge-crossbar", 14, 0),
+            ("ibrick-xbridge-crossbar", 15, 0),
+            ("nbrick-xbridge0-crossbar", 14, 1),
+            ("nbrick-xbridge0-crossbar", 15, 1),
+            ("nbrick-xbridge1-crossbar", 14, 2),
+            ("nbrick-xbridge1-crossbar", 15, 2),
+            ("nbrick-xbridge2-crossbar", 14, 3),
+            ("nbrick-xbridge2-crossbar", 15, 3),
+        ])
+        self.assertNotIn("nbrick-xbridge3-crossbar", crossbars)
+
+    def test_uncabled_brick_chip_with_a_card_is_refused(self):
+        model = _resolved("onyx3400-ir")
+        card = copy.deepcopy(_component(model, "ibrick-usb"))
+        card["id"] = "nbrick-spare-usb"
+        card["parent"] = "nbrick-xbridge3"
+        model["components"].append(card)
+        model["buses"].append({
+            "id": "nbrick-spare-pci", "name": "spare chip PCI bus",
+            "kind": "pci", "master": "nbrick-xbridge3-bridge-f",
+            "provenance": "derived", "sources": ["a test fixture"]})
+        model["connections"].append({
+            "component": "nbrick-spare-usb", "bus": "nbrick-spare-pci",
+            "role": "endpoint", "pci_device": 5, "provenance": "derived",
+            "sources": ["a test fixture"]})
+        with self.assertRaisesRegex(
+                CompileError,
+                "I/O brick crossbar 'nbrick-xbridge3-crossbar' is cabled to "
+                "no node, but its head 'nbrick-xbridge3-bridge-f' carries a "
+                "card"):
+            compile_model(model)
+
     def test_io7_names_no_mac_source(self):
         model = _origin3200_fixture(ibrick_io=True)
         model["machine"]["emulation"]["io_boards"][
