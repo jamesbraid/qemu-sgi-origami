@@ -17,6 +17,7 @@
 #define TYPE_WIRE_SLAVE "i2c-wire-test-slave"
 /* Carries no migration state, so no wire may be enabled over it. */
 #define TYPE_WIRE_MUTE "i2c-wire-test-mute"
+#define TYPE_WIRE_NO_EVENT "i2c-wire-test-no-event"
 
 static int64_t virtual_time;
 
@@ -38,6 +39,7 @@ typedef struct TestSlave {
     unsigned reads_at_service[I2C_WIRE_SERVICE_COUNT];
     enum i2c_wire_service hold_service;
     uint8_t value;
+    uint64_t untimed_profile;
 } TestSlave;
 
 static int slave_event(I2CSlave *slave, enum i2c_event event)
@@ -110,6 +112,11 @@ static const VMStateDescription vmstate_test_slave = {
     },
 };
 
+static uint64_t slave_untimed_profile(I2CSlave *slave)
+{
+    return ((TestSlave *)slave)->untimed_profile;
+}
+
 static void slave_class_init(ObjectClass *oc, const void *data)
 {
     I2CSlaveClass *sc = I2C_SLAVE_CLASS(oc);
@@ -119,6 +126,7 @@ static void slave_class_init(ObjectClass *oc, const void *data)
     sc->event = slave_event;
     sc->send = slave_send;
     sc->recv = slave_recv;
+    ec->untimed_profile = slave_untimed_profile;
     ec->wire_service = slave_wire_service;
     ec->wire_address = slave_wire_address;
 }
@@ -1877,6 +1885,95 @@ static void test_enable_refuses_a_mute_slave(void)
     object_unref(OBJECT(host));
 }
 
+static void no_event_class_init(ObjectClass *oc, const void *data)
+{
+    I2C_SLAVE_CLASS(oc)->event = NULL;
+}
+
+static void test_private_untimed_admission(void)
+{
+    DeviceState *host = qdev_new(TYPE_WIRE_HOST);
+    I2CBus *bus;
+    I2CSlave *slave;
+    Error *err = NULL;
+    DeviceState *bad;
+    uint8_t byte;
+
+    qdev_realize(host, NULL, &error_abort);
+    bus = i2c_init_bus_type(TYPE_I2C_WIRE, host, "private");
+    slave = i2c_slave_create_simple(bus, TYPE_WIRE_SLAVE, 0x20);
+    g_assert_cmpint(i2c_bus_enable_untimed_private(bus, &err), ==, -ENOTSUP);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_cmpuint(i2c_bus_master_count(bus), ==, 0);
+    ((TestSlave *)slave)->untimed_profile = 1;
+    g_assert_cmpint(i2c_bus_enable_untimed_private(bus, &error_abort), ==, 0);
+    g_assert_cmpint(i2c_bus_enable_master_ids(bus, 2), ==, -EBUSY);
+    g_assert_cmpint(i2c_bus_start_resolved(bus, 1), ==, -EINVAL);
+    g_assert_cmpint(i2c_bus_enable_wire(bus, 1, NULL, NULL, &err),
+                    ==, -ENOTSUP);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    bad = qdev_new(TYPE_WIRE_SLAVE);
+    g_assert_false(qdev_realize(bad, BUS(bus), &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    object_unref(OBJECT(bad));
+    bad = qdev_new(TYPE_WIRE_MUTE);
+    g_assert_false(qdev_realize(bad, BUS(bus), &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    object_unref(OBJECT(bad));
+    bad = qdev_new(TYPE_WIRE_NO_EVENT);
+    ((TestSlave *)bad)->untimed_profile = 1;
+    err = NULL;
+    g_assert_false(qdev_realize(bad, BUS(bus), &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    object_unref(OBJECT(bad));
+    g_assert_cmpint(i2c_bus_start_resolved(bus, 0), ==, 0);
+    g_assert_cmpint(i2c_master_start_transfer(bus, 0, 0x20, true), ==, 0);
+    g_assert_cmpint(i2c_master_start_transfer(bus, 0, 0x21, true),
+                    ==, -ENOTSUP);
+    g_assert_cmpuint(((TestSlave *)slave)->starts, ==, 1);
+    g_assert_cmpuint(((TestSlave *)slave)->restarts, ==, 0);
+    g_assert_cmpint(i2c_master_recv(bus, 0, &byte), ==, 0);
+    ((TestSlave *)slave)->untimed_profile = 0;
+    g_assert_cmpint(i2c_bus_validate_untimed_private(bus, NULL), ==, -ENOTSUP);
+    g_assert_cmpint(i2c_master_recv(bus, 0, &byte), ==, -ENOTSUP);
+    g_assert_cmpuint(((TestSlave *)slave)->reads, ==, 1);
+    g_assert_cmpuint(i2c_bus_resolved_owner(bus), ==, 0);
+    g_assert_cmpint(i2c_master_nack(bus, 0), ==, 0);
+    g_assert_cmpint(i2c_master_end_transfer(bus, 0), ==, 0);
+    ((TestSlave *)slave)->untimed_profile = 1;
+    bad = qdev_new(TYPE_WIRE_SLAVE);
+    ((TestSlave *)bad)->untimed_profile = 1;
+    bad->hotplugged = 1;
+    err = NULL;
+    g_assert_false(qdev_realize(bad, BUS(bus), &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    object_unref(OBJECT(bad));
+    for (unsigned i = 1; i < I2C_WIRE_MAX_SLAVES; i++) {
+        bad = qdev_new(TYPE_WIRE_SLAVE);
+        ((TestSlave *)bad)->untimed_profile = 1;
+        qdev_realize_and_unref(bad, BUS(bus), &error_abort);
+    }
+    bad = qdev_new(TYPE_WIRE_SLAVE);
+    ((TestSlave *)bad)->untimed_profile = 1;
+    err = NULL;
+    g_assert_false(qdev_realize(bad, BUS(bus), &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    object_unref(OBJECT(bad));
+    g_assert_cmpint(i2c_bus_validate_untimed_private(bus, &error_abort), ==, 0);
+    object_unparent(OBJECT(host));
+    object_unref(OBJECT(host));
+}
+
 int main(int argc, char **argv)
 {
     const TypeInfo host = { .name = TYPE_WIRE_HOST, .parent = TYPE_DEVICE };
@@ -1901,9 +1998,16 @@ int main(int argc, char **argv)
 
     type_register_static(&host);
     type_register_static(&slave);
+    const TypeInfo no_event = {
+        .name = TYPE_WIRE_NO_EVENT, .parent = TYPE_WIRE_SLAVE,
+        .class_init = no_event_class_init,
+    };
+    type_register_static(&no_event);
     type_register_static(&mute);
     machine = object_property_add_new_container(object_get_root(), "machine");
     object_property_add_new_container(machine, "unattached");
+    g_test_add_func("/i2c-wire/private-untimed-admission",
+                    test_private_untimed_admission);
     g_test_add_func("/i2c-wire/enable-refuses-mute-slave",
                     test_enable_refuses_a_mute_slave);
     g_test_add("/i2c-wire/configuration", Fixture, NULL,
