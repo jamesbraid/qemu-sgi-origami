@@ -1086,23 +1086,28 @@ static void l1_o3k_attached_put(uint8_t *fields, unsigned slot,
 }
 
 /*
- * The same request on an I/O brick whose requesting C-brick has a graphics
- * brick on the other Crosstown2 port of its crossbar. The stock PROM's
- * crossbar arbitration asks the I/O brick which bricks sit on it once that
- * port is alive, and gives up on the I/O brick if the reply is an error.
- * What a real I/O brick answers is not published (approximation): the
- * model lists the requesting C-brick at port 1 and the graphics brick at
- * port 2, each as the C-brick's reply lists a brick, and leaves the other
- * ports empty. An I/O brick whose C-brick has no graphics brick keeps the
- * unknown-request code.
+ * The same request on an I/O brick. The stock IP35 PROM's crossbar
+ * arbitration on a C-brick asks the I/O brick which bricks sit on it, packs
+ * the first two entries into module identifiers and makes master the
+ * Crosstown2 port whose entry is the one compute brick; an error reply
+ * abandons the arbitration. What a real I/O brick answers is not published
+ * (approximation): the model lists the requesting C-brick at port 1 and,
+ * when that C-brick's chip has a graphics brick on its other port, the
+ * graphics brick at port 2, each as the C-brick's reply lists a brick, and
+ * leaves the other ports empty. An I-brick answers 0x000c so with or
+ * without a graphics brick. Without one, 0x000d on an I-brick, and both
+ * requests on an N-brick or V-brick, keep the unknown-request code: that
+ * PROM never asks an N-brick, and nothing settles the others.
  */
 static void l1_iobrick_attached(SGIL1State *s, SGIL1State *recipient,
                                 uint8_t channel, bool low_ports)
 {
     SGIL1State *host = s->reply_to ? s->reply_to : l1_host_of(s, NULL);
     uint8_t fields[40] = { 0 };
+    bool ibrick = !l1_is_nbrick(s) && !l1_is_vbrick(s);
 
-    if (!host || !host->io_gfx_bay || !l1_named(host)) {
+    if (!host || !l1_named(host) ||
+        (!host->io_gfx_bay && (!ibrick || !low_ports))) {
         /* No source says what an I/O brick answers. */
         qemu_log_mask(LOG_UNIMP,
                       "sgi-l1: attached-brick request unavailable on the "
@@ -1113,8 +1118,10 @@ static void l1_iobrick_attached(SGIL1State *s, SGIL1State *recipient,
     if (low_ports) {
         l1_o3k_attached_put(fields, L1_IBRICK_HOST_PORT - 1,
                             host->rack, host->bay, 'C');
-        l1_o3k_attached_put(fields, L1_IBRICK_GRAPHICS_PORT - 1,
-                            host->rack, host->io_gfx_bay, 'G');
+        if (host->io_gfx_bay) {
+            l1_o3k_attached_put(fields, L1_IBRICK_GRAPHICS_PORT - 1,
+                                host->rack, host->io_gfx_bay, 'G');
+        }
     }
     l1_reply_direct(recipient, channel, 0, low_ports ? 8 : 4, fields,
                     low_ports ? 40 : 20);

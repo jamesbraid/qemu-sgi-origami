@@ -598,8 +598,12 @@ static void test_attached_bricks(void)
 
     /* The I-brick knows its C-brick and nothing else. */
     expect_command(s, 1, "config", "0: 001i31\n1: 001c04\n");
-    length = rpc(s, 1, LOCAL_GENERAL, 0xc, NULL, 0, 0, reply);
-    expect_code(reply, length, -101);
+    {
+        uint32_t b_ports[8] = { packed(1, 4), 'C', 0, 0, 0, 0, 0, 0 };
+
+        length = rpc(s, 1, LOCAL_GENERAL, 0xc, NULL, 0, 0, reply);
+        expect_pairs(reply, length, 8, b_ports);
+    }
 
     /* Removing the cable returns the entry to absent. */
     qom_link(s, 0, "io-peer", "");
@@ -619,10 +623,12 @@ static void set_gfx_bay(QTestState *s, unsigned owner, unsigned bay)
 }
 
 /*
- * An I/O brick lists the C-brick that asks and, when that C-brick's chip has
- * a graphics brick on its other port, the G-brick, as the C-brick's own reply
+ * An I-brick lists the C-brick that asks and, when that C-brick's chip has a
+ * graphics brick on its other port, the G-brick, as the C-brick's own reply
  * lists a brick. The same request through the C-brick's attached I/O address
- * reaches it. Without a graphics brick the unknown-request code stays.
+ * reaches it. Without a graphics brick the C-brick alone is listed, so the
+ * stock PROM's crossbar arbitration finds its one compute brick; 0x000d
+ * keeps the unknown-request code.
  */
 static void test_ibrick_attached_graphics(void)
 {
@@ -636,12 +642,18 @@ static void test_ibrick_attached_graphics(void)
     uint8_t reply[131];
     size_t length;
     uint32_t listed[8] = { packed(1, 4), 'C', packed(1, 25), 'G', 0, 0, 0, 0 };
+    uint32_t alone[8] = { packed(1, 4), 'C', 0, 0, 0, 0, 0, 0 };
+    uint32_t other[8] = { packed(1, 7), 'C', 0, 0, 0, 0, 0, 0 };
     uint32_t high[4] = { 0 };
 
     link_io(s, 0, 1);
     link_io(s, 3, 2);
-    /* No graphics brick yet: the I-brick has nothing to list. */
+    /* No graphics brick yet: the I-brick lists its C-brick alone. */
     length = rpc(s, 1, LOCAL_GENERAL, 0xc, NULL, 0, 0, reply);
+    expect_pairs(reply, length, 8, alone);
+    length = rpc(s, 0, ATTACHED_IO, 0xc, NULL, 0, 0, reply);
+    expect_pairs(reply, length, 8, alone);
+    length = rpc(s, 1, LOCAL_GENERAL, 0xd, NULL, 0, 0, reply);
     expect_code(reply, length, -101);
     set_gfx_bay(s, 0, 25);
     length = rpc(s, 1, LOCAL_GENERAL, 0xc, NULL, 0, 0, reply);
@@ -650,8 +662,20 @@ static void test_ibrick_attached_graphics(void)
     expect_pairs(reply, length, 4, high);
     length = rpc(s, 0, ATTACHED_IO, 0xc, NULL, 0, 0, reply);
     expect_pairs(reply, length, 8, listed);
-    /* Another I-brick whose C-brick has none answers as before. */
+    /* Another I-brick whose C-brick has none lists that C-brick alone. */
     length = rpc(s, 2, LOCAL_GENERAL, 0xc, NULL, 0, 0, reply);
+    expect_pairs(reply, length, 8, other);
+    qtest_quit(s);
+
+    /* An I-brick with no named C-brick has nothing to list. */
+    s = start_with(2, (const char *const[]) {
+        "brick-type=ibrick,named=on,rack=1,bay=16,mac=" MAC_PROP,
+        "brick-type=cbrick",
+    }, "");
+    length = rpc(s, 0, LOCAL_GENERAL, 0xc, NULL, 0, 0, reply);
+    expect_code(reply, length, -101);
+    link_io(s, 1, 0);
+    length = rpc(s, 0, LOCAL_GENERAL, 0xc, NULL, 0, 0, reply);
     expect_code(reply, length, -101);
     qtest_quit(s);
 }
