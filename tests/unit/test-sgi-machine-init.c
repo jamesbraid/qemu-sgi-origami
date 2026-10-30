@@ -494,6 +494,32 @@ static void test_origin2000(void)
     remove_tree(dir);
 }
 
+/*
+ * An Onyx2 deskside's graphics slot keeps its InfiniteReality pipe's flash:
+ * 512 KiB, zero apart from the header's state word, 2 big-endian at
+ * 0x7ff1c, which the PROM requires before it accepts the pipe.
+ */
+static void test_onyx2_kona_flash(void)
+{
+    static const StoreSize stores[] = {
+        { "node0-flash", 1048576 }, { "node1-flash", 1048576 },
+        { "io0-flash", 1048576 }, { "nvram0", 32768 },
+        { "nvram0-clock", 16 }, { "module0-nvram", 2048 },
+        { "io4-kona-flash", 524288 },
+    };
+    g_autofree char *dir = create_and_check(
+        "onyx2", "onyx2,topology=onyx2-deskside,nodes=2", true, stores,
+        ARRAY_SIZE(stores));
+    gsize size;
+    g_autofree uint8_t *flash = read_store(dir, "io4-kona-flash", &size);
+
+    g_assert_cmpuint(size, ==, 524288);
+    g_assert_cmphex(ldl_be_p(flash + 0x7ff1c), ==, 2);
+    assert_all(flash, 0, 0x7ff1c, 0);
+    assert_all(flash, 0x7ff20, size, 0);
+    remove_tree(dir);
+}
+
 static void test_origin200_gigachannel(void)
 {
     static const StoreSize stores[] = {
@@ -812,6 +838,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-machine-init/origin200-processor",
                     test_origin200_processor);
     g_test_add_func("/sgi-machine-init/origin2000", test_origin2000);
+    g_test_add_func("/sgi-machine-init/onyx2-kona-flash",
+                    test_onyx2_kona_flash);
     g_test_add_func("/sgi-machine-init/origin200-gigachannel",
                     test_origin200_gigachannel);
     g_test_add_func("/sgi-machine-init/origin300", test_origin300);
