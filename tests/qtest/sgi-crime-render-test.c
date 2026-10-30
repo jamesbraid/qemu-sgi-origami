@@ -19292,8 +19292,6 @@ static void test_gl_line_composed_starts(void)
 static void test_gl_line_composed_widths(gconstpointer selection)
 {
     const Register held[] = {
-        { 0x880, 4 }, { 0x884, 4 }, { 0x888, 4 }, { 0x88c, 4 },
-        { 0x890, 4 }, { 0x894, 4 }, { 0x880, 8 }, { 0x888, 8 },
         { 0x990, 4 }, { 0x994, 4 }, { 0x990, 8 },
         { 0x910, 4 }, { 0x918, 8 }, { 0x920, 8 }, { 0x928, 8 },
         { 0x930, 4 }, { 0x934, 4 }, { 0x938, 8 }, { 0x940, 8 },
@@ -19690,6 +19688,44 @@ static void test_gl_line_composed_depth_bounds(void)
         shape_memory(s, &c, expected);
     }
     qtest_quit(s);
+}
+
+static void test_gl_line_coordinate_refusals(gconstpointer selection)
+{
+    const Register forms[] = {
+        { 0x80, 4 }, { 0x84, 4 }, { 0x88, 4 }, { 0x8c, 4 },
+        { 0x90, 4 }, { 0x94, 4 },
+        { 0x80, 8 }, { 0x88, 8 }, { 0x90, 8 },
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-line-coords-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = point_coordinate_machine();
+    bool composed = GPOINTER_TO_UINT(selection);
+
+    for (unsigned n = 0; n < ARRAY_SIZE(forms); n++) {
+        const Register *form = &forms[n];
+        Shape c = gl_line_prepare(s, false);
+        SZCase v = sz_case();
+        uint64_t value = form->width == 8 ? UINT64_C(64) << 32 | 64 : 64;
+
+        sz_initialize(s, &c, v.old);
+        v.draw = TRIANGLE_DRAW | 0x200 | (composed ? 0x80007 : 0);
+        v.stencil = 0x62ff7003;
+        sz_program(s, &v);
+        qtest_writeq(s, DE + 0x90, UINT64_C(128) << 32 | 128);
+        qtest_writeq(s, DE + 0xc0, UINT64_C(0x02040102) << 32 | UINT32_MAX);
+        g_assert_cmpint(memtx_write(s, DE + form->offset, value, form->width),
+                        ==, MEMTX_OK);
+        /* Prove this exact prospective line is valid before testing scope. */
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        g_test_message("valid line refuses coordinate START +0x%x width %u",
+                       form->offset, form->width);
+        point_coordinate_failure(s, &c, path, DE + 0x800 + form->offset,
+                                 value, form->width);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
 }
 
 int main(int argc, char **argv)
@@ -20114,6 +20150,10 @@ int main(int argc, char **argv)
              test_gl_line_composed_alpha);
     add_case("sgi/crime/render/gl-line/composed-depth-bounds",
              test_gl_line_composed_depth_bounds);
+    add_data_case("sgi/crime/render/gl-line/coordinate-refusals/plain",
+                  GUINT_TO_POINTER(0), test_gl_line_coordinate_refusals);
+    add_data_case("sgi/crime/render/gl-line/coordinate-refusals/composed",
+                  GUINT_TO_POINTER(1), test_gl_line_coordinate_refusals);
     add_case("sgi/crime/render/gl-line/depth-stipple",
              test_gl_line_depth_stipple);
     add_case("sgi/crime/render/gl-line/first", test_gl_line_first);
