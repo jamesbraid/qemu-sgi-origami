@@ -19691,6 +19691,41 @@ static void test_selection_records(gconstpointer opaque)
 }
 
 /*
+ * IRIS GL's swaptmesh reaches the pipe as 0x1a9 and a zero inside a
+ * triangle strip. The two retained vertices exchange, so after v0 v1 v2
+ * and the swap, v3 still makes 2 1 3 and v4 then makes 3 1 4 rather than
+ * 2 3 4. With the square v0 to v3 at +-0.8 and v4 at (0.95, 0), window
+ * pixel (121, 57), at (0.898, -0.102), lies in 3 1 4 and outside 2 3 4:
+ * red with the swap, the clear's blue without. Pixel (64, 64), inside the
+ * square, is red both times.
+ */
+static void test_swap_tmesh_exchanges_retained_vertices(void)
+{
+    static const float v[5][2] = {
+        { -0.8, -0.8 }, { 0.8, -0.8 }, { -0.8, 0.8 }, { 0.8, 0.8 },
+        { 0.95, 0 },
+    };
+
+    for (int swap = 0; swap < 2; swap++) {
+        gl_reset();
+        gl_make_current(qts);
+        gl_window_cleared(qts, 0, 0, 1);
+        kona_command_f(qts, 0x63, (float[]){ 1, 0, 0 }, 3);
+        gl_begin(qts, 5);
+        for (int k = 0; k < 5; k++) {
+            kona_command_f(qts, 0x90, (float[]){ v[k][0], v[k][1], 0 }, 3);
+            if (swap && k == 2) {
+                kona_command(qts, 0x1a9, (uint32_t[]){ 0 }, 1);
+            }
+        }
+        gl_end(qts);
+        g_assert_cmphex(window_colour(qts, 64, 64), ==, 0xff0000);
+        g_assert_cmphex(window_colour(qts, 121, 57), ==,
+                        swap ? 0xff0000 : 0x0000ff);
+    }
+}
+
+/*
  * glGetIntegerv(GL_NAME_STACK_DEPTH), 0x4c 0xd70, is answered on the
  * return page like the attribute stack's depth: the names on the current
  * context's stack. Unanswered, the client waits for the reply for ever,
@@ -20552,6 +20587,8 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(4), test_selection_records);
     add_data_case("sn0/origin2000/kona-3d/selection-raster-pos",
                   GUINT_TO_POINTER(5), test_selection_records);
+    add_case("sn0/origin2000/kona-3d/swap-tmesh",
+             test_swap_tmesh_exchanges_retained_vertices);
     add_case("sn0/origin2000/kona-3d/stencil-visual/read",
              test_stencil_visual_read);
     add_case("sn0/origin2000/kona-3d/stencil-visual/copy",

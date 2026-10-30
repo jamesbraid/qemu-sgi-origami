@@ -3443,7 +3443,8 @@ static void test_tex_table_usage_framed(void)
  * commands after it, and the client's later query is lost. Framed, nothing is
  * dropped, no buffer configuration is seen and the colour, index and enable
  * after them frame whole. The model keeps colour-normal and LMC colour for IRIS
- * GL's colour and normal rule and consumes the other three.
+ * GL's colour and normal rule, carries out swap-tmesh, which outside a
+ * triangle strip does nothing, and consumes the other two.
  */
 static void test_igloo_interface_framed(void)
 {
@@ -3454,7 +3455,7 @@ static void test_igloo_interface_framed(void)
         { 0x24, 0xba1 }, { 0xce, 0x203 }, { 0x112, 1 }, { 0x113, 1 },
         { 0x1be, 0 }, { 0xc7, 0 }, { 0x113, 0 }, { 0x1a9, 0 }, { 0x1c9, 1 },
     };
-    static const uint32_t igloo[] = { 0x112, 0x1a9, 0x1c9 };
+    static const uint32_t igloo[] = { 0x112, 0x1c9 };
     g_autofree char *log = NULL;
     g_autofree char *found = NULL;
     const char *activated;
@@ -3481,6 +3482,7 @@ static void test_igloo_interface_framed(void)
 
         g_assert_cmpuint(count_occurrences(activated, line), ==, 1);
     }
+    g_assert_null(strstr(activated, "token 0x1a9 argc 1 consumed"));
     g_assert_cmpuint(count_occurrences(activated, "sgi_kona_gl_iris_rule"),
                      ==, 3);
     g_assert_nonnull(strstr(activated, "colour-normal 0x0 lmc colour 0x0\n"));
