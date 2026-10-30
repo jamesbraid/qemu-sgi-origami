@@ -1270,6 +1270,18 @@ static bool crime_render_gl_rectangle(const uint64_t *p, CrimeRenderGeometry *g)
     ymin = MAX(MIN(xy[0][1], xy[1][1]), 0);
     xmax = MIN(MAX(xy[0][0], xy[1][0]), 2047);
     ymax = MIN(MAX(xy[0][1], xy[1][1]), 2047);
+    if (p[0x18 / 4] & 0x40000) {
+        if (xy[0][1] != xy[1][1]) {
+            return false;
+        }
+        /* Stipple advances from the programmed start, before clipping. */
+        g->x0 = xy[0][0];
+        g->y0 = xy[0][1];
+        g->width = abs(xy[1][0] - xy[0][0]) + 1;
+        g->samples = g->width;
+        g->capacity = ymin <= ymax && xmin <= xmax ? xmax - xmin + 1 : 0;
+        return true;
+    }
     if (xmin > xmax || ymin > ymax) {
         g->samples = g->capacity = 0;
         return true;
@@ -2806,7 +2818,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     int sx, sy, destination_x, destination_y;
     bool copy, stipple, overlap, inside, upload, download, transfer;
     bool alpha, alpha_pass, triangle, sz_active, gl_rectangle;
-    bool native_gl, gl_line, gl_point;
+    bool native_gl, gl_line, gl_point, gl_span;
     CrimeRenderClip scissor, screen[5];
     CrimeRenderGeometry geometry = { 0 };
     CrimeTriangleOutput output = { 0 };
@@ -2861,8 +2873,9 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     gl_line = (p[0x60 / 4] >> 24) == 1 && (draw & 0x400000);
     gl_point = !(p[0x60 / 4] >> 24) && (draw & 0x400000);
     native_gl = triangle || gl_rectangle || gl_line || gl_point;
+    gl_span = gl_rectangle && (draw & 0x40000);
     if ((draw & ~(gl_line ? (draw & 0x1000 ? 0x511ff8U : 0x590fffU) :
-                 gl_rectangle || gl_point ? 0x511fffU :
+                 gl_rectangle ? 0x551fffU : gl_point ? 0x511fffU :
                     triangle ? (0x5b97ffU | (sz_active ? 0x800U : 0)) :
                                0x3e0affU)) ||
         (native_gl ? (!(draw & 0x400000) ||
@@ -2911,7 +2924,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                                (int)(p[0x58 / 4] & 0xffff);
     stipple = (geometry.opcode == 1 && (draw & 0x80000)) ||
               (geometry.opcode == 3 && (draw & 0x40000));
-    if (alpha && (copy || (stipple && !gl_line) ||
+    if (alpha && (copy || (stipple && !gl_line && !gl_span) ||
                   (!gl_line && !gl_rectangle && !gl_point &&
                    (p[0x8 / 4] & 0x3ffU) != 0x228))) {
         return crime_transfer_fail(offset, "unsupported alpha primitive");
