@@ -15198,10 +15198,14 @@ static void renderer_fixture(QTestState *s)
     kona_command(s, 0xd0, (uint32_t[]){ 0x1700 }, 1);
     kona_command(s, 0xd2, (uint32_t[]){ 0 }, 1);
     kona_command_f(s, 0x63, (float[]){ 1, 0, 0 }, 3);
-    /* Canonical indexed white outside the triangle must remain indexed. */
+    /*
+     * Canonical indexed white outside the triangle must remain indexed.
+     * The textport box leaves out its left column and bottom row, so its
+     * corners sit one pixel below and left of the window.
+     */
     kona_command(s, 1, (uint32_t[]){ 3, 0x22, 1020, 1020, 1020 }, 5);
     kona_command(s, 1, (uint32_t[]){ 2, 0x22 }, 2);
-    kona_command(s, 1, (uint32_t[]){ 5, PROBE_X, PROBE_Y,
+    kona_command(s, 1, (uint32_t[]){ 5, PROBE_X - 1, PROBE_Y - 1,
                                     PROBE_X + 127, PROBE_Y + 127 }, 5);
 }
 

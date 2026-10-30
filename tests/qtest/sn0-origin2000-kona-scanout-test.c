@@ -310,11 +310,12 @@ static void test_mode_and_retrace_period(void)
 /*
  * Only the lines drawing changed are resolved again. The first screendump
  * presents every line, since nothing has been shown yet. A textport fill
- * from wire (10, 20) to (12, 22) then dirties display lines 1001 to 1003
- * and nothing else, and a four-pixel DMA transfer at the framebuffer's
- * first pixels dirties line 0 alone. A screendump with nothing drawn
- * since the last one resolves no line. A colour-map load dirties every
- * line, since any textport pixel may use the entry.
+ * with wire corners (10, 20) and (12, 22) lights rows 21 and 22, so it
+ * dirties display lines 1001 and 1002 and nothing else, and a four-pixel
+ * DMA transfer at the framebuffer's first pixels dirties line 0 alone. A
+ * screendump with nothing drawn since the last one resolves no line. A
+ * colour-map load dirties every line, since any textport pixel may use the
+ * entry.
  */
 static void test_drawing_dirties_its_lines(void)
 {
@@ -340,7 +341,7 @@ static void test_drawing_dirties_its_lines(void)
 
     found = kona_log_read(log);
     updates = scanout_updates(found);
-    g_assert_cmpstr(updates, ==, "0-1023 1001-1003 0-0 0-1023");
+    g_assert_cmpstr(updates, ==, "0-1023 1001-1002 0-0 0-1023");
     g_rmdir(dir);
 }
 
@@ -925,9 +926,9 @@ static void kona_draw_halves(QTestState *s)
     kona_load_colour(s, 2, 0xc0, 0x80, 0x40);
     kona_load_colour(s, 3, 0x00, 0x00, 0xff);
     kona_textport_push(s, 0x2, (uint32_t[]){ 1 }, 1);
-    kona_textport_push(s, 0x5, (uint32_t[]){ 0, 0, 1279, 1023 }, 4);
+    kona_textport_push(s, 0x5, (uint32_t[]){ -1, -1, 1279, 1023 }, 4);
     kona_textport_push(s, 0x2, (uint32_t[]){ 2 }, 1);
-    kona_textport_push(s, 0x5, (uint32_t[]){ 640, wire_line(479), 1279,
+    kona_textport_push(s, 0x5, (uint32_t[]){ 639, wire_line(480), 1279,
                                              1023 }, 4);
     kona_textport_push(s, 0x2, (uint32_t[]){ 3 }, 1);
     kona_textport_push(s, 0x6, (uint32_t[]){ 700, wire_line(23) }, 2);
@@ -1220,9 +1221,9 @@ static void kona_two_heads(QTestState *s)
     kona_load_colour(s, 2, 0xc0, 0x80, 0x40);
     kona_load_colour(s, 3, 0x00, 0x00, 0xff);
     kona_textport_push(s, 0x2, (uint32_t[]){ 1 }, 1);
-    kona_textport_push(s, 0x5, (uint32_t[]){ 0, 0, 2559, 1023 }, 4);
+    kona_textport_push(s, 0x5, (uint32_t[]){ -1, -1, 2559, 1023 }, 4);
     kona_textport_push(s, 0x2, (uint32_t[]){ 2 }, 1);
-    kona_textport_push(s, 0x5, (uint32_t[]){ 1280, 0, 2559, 1023 }, 4);
+    kona_textport_push(s, 0x5, (uint32_t[]){ 1279, -1, 2559, 1023 }, 4);
     kona_textport_push(s, 0x2, (uint32_t[]){ 3 }, 1);
     kona_textport_push(s, 0x6, (uint32_t[]){ 2000, wire_line(23) }, 2);
 }

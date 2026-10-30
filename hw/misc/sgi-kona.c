@@ -1161,24 +1161,26 @@ static void sgi_kona_draw_point(SGIKonaState *s, int32_t x, int32_t y)
 }
 
 /*
- * Filled rectangle (command 5): x0, y0, x1, y1, inclusive on every side.
- * Established from two independent sources: the sender's own code
- * (IO6 PROM, command 5's sender routine) pushes wire words
- * `max(a1-1,0), max(a2-1,0), a3, a4` with a3/a4 passed through unmodified,
- * and a real captured boot trace shows those same four wire words holding
- * a constant x0/x1 pair (0/1279, the full screen width) while y0/y1 vary
- * such that each call's y0 equals the previous call's y1 -- the chaining an
- * inclusive-both-ends rectangle produces, not an exclusive one (which would
- * leave a one-row gap between adjacent fills instead of the observed
- * shared boundary row).
+ * Filled rectangle (command 5): corners x0, y0, x1, y1 with x0 <= x1 and
+ * y0 <= y1, lighting columns x0 + 1 to x1 and rows y0 + 1 to y1. The
+ * raster board leaves out the left column and the bottom row of a
+ * whole-pixel box, and the IO6 PROM's sender compensates by pushing
+ * `max(a1-1,0), max(a2-1,0), a3, a4` (established: the KONA raster
+ * datasheet's fill rule, from the IRIX 6.5.7 standalone textport driver
+ * and the shipped textport firmware, which passes the corners to the
+ * raster board unchanged). A captured boot trace agrees: its fills keep x0
+ * and x1 at 0 and 1279 while each call's y0 is the previous call's y1, so
+ * adjacent fills meet with neither a gap nor an overlap. A box at the
+ * screen's left or bottom edge leaves column or row 0 unlit, as the
+ * clamped sender makes the hardware do.
  */
 static void sgi_kona_fill_rect(SGIKonaState *s, int32_t x0, int32_t y0,
                                int32_t x1, int32_t y1)
 {
-    int32_t x, y;
+    int64_t x, y;
 
-    for (y = y0; y <= y1; y++) {
-        for (x = x0; x <= x1; x++) {
+    for (y = (int64_t)y0 + 1; y <= y1; y++) {
+        for (x = (int64_t)x0 + 1; x <= x1; x++) {
             sgi_kona_draw_point(s, x, y);
         }
     }

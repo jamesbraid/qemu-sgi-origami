@@ -824,12 +824,13 @@ static void test_textport_colormap_and_point_render_pixels(void)
 }
 
 /*
- * Filled rectangle (0x5): inclusive on every side -- see
- * sgi_kona_fill_rect()'s own comment for the sender-code and
- * captured-trace evidence. A rectangle from (10,20) to (12,22) covers
- * exactly a 3x3 pixel block; one step outside each edge stays untouched.
+ * Filled rectangle (0x5): the raster board's rule for whole-pixel boxes,
+ * which leaves out the left column and the bottom row -- see
+ * sgi_kona_fill_rect()'s own comment. Corners (10, 20) and (12, 22) light
+ * columns 11 to 12 and rows 21 to 22: a 2x2 block. Column 10, row 20 and
+ * one step outside each far edge stay untouched.
  */
-static void test_textport_fill_rect_renders_inclusive_rectangle(void)
+static void test_textport_fill_rect_leaves_out_left_and_bottom(void)
 {
     kona_reset();
 
@@ -838,16 +839,16 @@ static void test_textport_fill_rect_renders_inclusive_rectangle(void)
     kona_textport_push(qts, 0x2, (uint32_t[]){ 1 }, 1);
     kona_textport_push(qts, 0x5, (uint32_t[]){ 10, 20, 12, 22 }, 4);
 
-    g_assert_cmphex(kona_test_pixel(qts, 10, 20), ==, 0x001f2f3f);
-    g_assert_cmphex(kona_test_pixel(qts, 12, 20), ==, 0x001f2f3f);
-    g_assert_cmphex(kona_test_pixel(qts, 10, 22), ==, 0x001f2f3f);
-    g_assert_cmphex(kona_test_pixel(qts, 12, 22), ==, 0x001f2f3f);
     g_assert_cmphex(kona_test_pixel(qts, 11, 21), ==, 0x001f2f3f);
+    g_assert_cmphex(kona_test_pixel(qts, 12, 21), ==, 0x001f2f3f);
+    g_assert_cmphex(kona_test_pixel(qts, 11, 22), ==, 0x001f2f3f);
+    g_assert_cmphex(kona_test_pixel(qts, 12, 22), ==, 0x001f2f3f);
 
-    g_assert_cmphex(kona_test_pixel(qts, 9, 20), ==, 0);
-    g_assert_cmphex(kona_test_pixel(qts, 13, 20), ==, 0);
-    g_assert_cmphex(kona_test_pixel(qts, 10, 19), ==, 0);
-    g_assert_cmphex(kona_test_pixel(qts, 10, 23), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 10, 21), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 10, 20), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 11, 20), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 13, 21), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 11, 23), ==, 0);
 }
 
 /*
@@ -1947,8 +1948,8 @@ int main(int argc, char **argv)
                    "textport-colormap-and-point-render-pixels",
                    test_textport_colormap_and_point_render_pixels);
     qtest_add_func("sn0/origin2000/kona/"
-                   "textport-fill-rect-renders-inclusive-rectangle",
-                   test_textport_fill_rect_renders_inclusive_rectangle);
+                   "textport-fill-rect-leaves-out-left-and-bottom",
+                   test_textport_fill_rect_leaves_out_left_and_bottom);
     qtest_add_func("sn0/origin2000/kona/textport-screen-size-is-traced-only",
                    test_textport_screen_size_is_traced_only);
     qtest_add_func("sn0/origin2000/kona/textport-bitmap-blit-renders-payload",
