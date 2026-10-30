@@ -1950,6 +1950,30 @@ static void test_octane_bridge_identity(void)
     qtest_quit(qts);
 }
 
+/*
+ * The Bridge is on the system board, so only the Crossbow's link reset for
+ * widget 15 reaches it. A register it holds is lost then, and a reset of
+ * another widget's link leaves it alone.
+ */
+static void test_octane_bridge_link_reset(void)
+{
+    const uint64_t link_reset_15 = XBOW + 0x100 + (15 - 8) * 0x40 + 0x30 + 4;
+    const uint64_t link_reset_11 = XBOW + 0x100 + (11 - 8) * 0x40 + 0x30 + 4;
+    QTestState *qts = octane_start();
+    uint32_t reset_value = qtest_readl(qts, BRIDGE_REG(0x080));
+
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x080)), ==, 8u << 20);
+    g_assert_cmpuint(memtx_writel(qts, link_reset_11, 0), ==, MEMTX_OK);
+    qtest_clock_step(qts, 20);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x080)), ==, 8u << 20);
+    g_assert_cmpuint(memtx_writel(qts, link_reset_15, 0), ==, MEMTX_OK);
+    qtest_clock_step(qts, 20);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x080)), ==, reset_value);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE + 4), ==, 0x3c00206d);
+    qtest_quit(qts);
+}
+
 static void test_octane2_heart_widget_status(void)
 {
     QTestState *qts = octane2_start_args("");
@@ -5666,6 +5690,7 @@ int main(int argc, char **argv)
     close(fd);
     qtest_add_func("/octane/widgets-and-memory", test_widgets_and_memory);
     qtest_add_func("/octane/bridge-identity", test_octane_bridge_identity);
+    qtest_add_func("/octane/bridge-link-reset", test_octane_bridge_link_reset);
     qtest_add_func("/octane/xbow-fence-lock-errors",
                    test_octane_fence_lock_errors);
     qtest_add_data_func("/octane/cpu-clock", GINT_TO_POINTER(0),
