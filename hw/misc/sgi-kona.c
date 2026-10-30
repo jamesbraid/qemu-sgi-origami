@@ -1051,6 +1051,8 @@ static void sgi_kona_managed_layout(SGIKonaState *s)
     sgi_kona_mesa_resize_board_views(s->mesa_provider);
 }
 
+static void sgi_kona_x_write_clear(SGIKonaState *s);
+
 /*
  * SetupFrameBuffer's size, applied: the framebuffer is cleared and every
  * channel shown again from the new area. A size the raster managers
@@ -1058,8 +1060,6 @@ static void sgi_kona_managed_layout(SGIKonaState *s)
  * not known, and the X server's own check refuses such a combination
  * before it is sent.
  */
-static void sgi_kona_x_write_clear(SGIKonaState *s);
-
 static void sgi_kona_managed_resize(SGIKonaState *s, uint32_t width,
                                     uint32_t height)
 {
@@ -4011,6 +4011,41 @@ static void sgi_kona_video_temp_blank(SGIKonaState *s, uint32_t blank)
 }
 
 /*
+ * SetupFrameBuffer [width, height, pixel depth], as the pipe's firmware
+ * runs it (the command grammar datasheet's "SetupFrameBuffer on the ARM",
+ * established). It never replies. A budget below Small's, or a named depth
+ * (0 to 3) the budget does not cover, raises the error flag, which stops a
+ * stored combination; -1, -2 and other values pick a depth that fits. The
+ * size is the managed area from then on, but configuration block +0x84
+ * and +0x88 take it only at the end of a start (sgi_kona_dg_start()).
+ *
+ * Approximated: the firmware stores a size past the budget all the same;
+ * the model keeps drawing the last size its planes hold, logged. And the
+ * pixel-depth code at +0x8c stays the configured one, since the model
+ * presents the visuals of that depth alone; a word naming another is
+ * logged.
+ */
+static void sgi_kona_setup_frame_buffer(SGIKonaState *s, uint32_t width,
+                                        uint32_t height, uint32_t depth)
+{
+    static const uint8_t need[] = { 8, 16, 32, 64 };
+    uint64_t budget = sgi_kona_fb_budget(s, width, height);
+
+    if (budget < need[0]) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: not enough raster "
+                      "managers for Small pixels at %ux%u\n", width, height);
+        s->dg_error = true;
+    } else if (depth < ARRAY_SIZE(need) && budget < need[depth]) {
+        s->dg_error = true;
+    }
+    if (depth < ARRAY_SIZE(need) && depth != s->config.pixel_depth) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: pixel depth %u: the pipe "
+                      "presents depth %u\n", depth, s->config.pixel_depth);
+    }
+    sgi_kona_managed_resize(s, width, height);
+}
+
+/*
  * The channel setters, as the 6.5.30 X server's combination load in the KONA X
  * driver module and its channel requests send them; the command grammar
  * datasheet's display channel section gives each word's source. Word 0 of every
@@ -4057,41 +4092,6 @@ static void sgi_kona_video_temp_blank(SGIKonaState *s, uint32_t blank)
  * LoadFormat included: each channel's console updates at the model's
  * one retrace rate.
  */
-/*
- * SetupFrameBuffer [width, height, pixel depth], as the pipe's firmware
- * runs it (the command grammar datasheet's "SetupFrameBuffer on the ARM",
- * established). It never replies. A budget below Small's, or a named depth
- * (0 to 3) the budget does not cover, raises the error flag, which stops a
- * stored combination; -1, -2 and other values pick a depth that fits. The
- * size is the managed area from then on, but configuration block +0x84
- * and +0x88 take it only at the end of a start (sgi_kona_dg_start()).
- *
- * Approximated: the firmware stores a size past the budget all the same;
- * the model keeps drawing the last size its planes hold, logged. And the
- * pixel-depth code at +0x8c stays the configured one, since the model
- * presents the visuals of that depth alone; a word naming another is
- * logged.
- */
-static void sgi_kona_setup_frame_buffer(SGIKonaState *s, uint32_t width,
-                                        uint32_t height, uint32_t depth)
-{
-    static const uint8_t need[] = { 8, 16, 32, 64 };
-    uint64_t budget = sgi_kona_fb_budget(s, width, height);
-
-    if (budget < need[0]) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: not enough raster "
-                      "managers for Small pixels at %ux%u\n", width, height);
-        s->dg_error = true;
-    } else if (depth < ARRAY_SIZE(need) && budget < need[depth]) {
-        s->dg_error = true;
-    }
-    if (depth < ARRAY_SIZE(need) && depth != s->config.pixel_depth) {
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: pixel depth %u: the pipe "
-                      "presents depth %u\n", depth, s->config.pixel_depth);
-    }
-    sgi_kona_managed_resize(s, width, height);
-}
-
 static void sgi_kona_cursor_update(SGIKonaState *s);
 
 static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
