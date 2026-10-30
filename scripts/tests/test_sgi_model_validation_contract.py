@@ -2003,18 +2003,27 @@ class Origin3000BrickValidationTests(unittest.TestCase):
         l1["system_controller"]["owner"] = "rack"
         self.assertFails(model, "schema:")
 
-    def test_brick_l1_profile_owns_its_type_and_revision(self):
+    def test_brick_l1_profile_owns_its_type(self):
         self.assertEqual(self.problems(self.model()), [])
-        for field, value in (("reported_type", 0x43),
-                             ("revision", {"major": 1, "minor": 0,
-                                           "patch": 0})):
-            with self.subTest(field=field):
-                model = self.model()
-                model["machine"]["emulation"]["l1_controllers"]["c0-l1"][
-                    field] = value
-                self.assertFails(
-                    model, "'c0-l1' L1 profile 'cbrick' takes no reported "
-                    "type, revision or MAC input")
+        model = self.model()
+        model["machine"]["emulation"]["l1_controllers"]["c0-l1"][
+            "reported_type"] = 0x43
+        self.assertFails(
+            model, "'c0-l1' L1 profile 'cbrick' takes no reported type or "
+            "MAC input")
+        # A profile takes a revision, complete; a V-brick's takes none.
+        model = self.model()
+        controllers = model["machine"]["emulation"]["l1_controllers"]
+        controllers["c0-l1"]["revision"] = {"major": 1, "minor": 0,
+                                            "patch": 0}
+        self.assertEqual(self.problems(model), [])
+        controllers["c0-l1"]["revision"] = {"major": 1, "minor": 0}
+        self.assertFails(model, "'c0-l1' requires a complete L1 revision")
+        model = self.model()
+        controllers = model["machine"]["emulation"]["l1_controllers"]
+        controllers["ibrick-l1"]["profile"] = "vbrick"
+        self.assertFails(model, "'ibrick-l1' L1 profile 'vbrick' takes no "
+                         "revision")
         model = self.model()
         model["machine"]["emulation"]["l1_controllers"]["c0-l1"][
             "profile"] = "rbrick"

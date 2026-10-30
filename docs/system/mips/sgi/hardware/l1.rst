@@ -278,8 +278,10 @@ with its own rack, slot, type and records (007-4240-002 printed pages 69,
 72, 118 and 128). The profiles reuse this page's request encoding, framing
 and task-6 request codes, which the public Linux and OpenBSD headers name
 for the Origin 3000 products; that a fitted C-brick frames bytes the same
-way is *unknown*. No firmware version is modelled: ``revision-*`` and
-``brick-type-code`` are refused, and request ``0x0005`` stays unavailable.
+way is *unknown*. ``brick-type-code`` is refused. The C-brick, I-brick and
+N-brick profiles answer request ``0x0005`` with the firmware revision
+``revision-*`` configures and minus 104 without one; the V-brick profile
+refuses ``revision-*``.
 
 Ratings follow :ref:`sgi-ip30`; the choices below are approximations, not
 captured controller output.
@@ -307,6 +309,16 @@ captured controller output.
        module name only: which controller answers the I/O side's
        identity request on a C-brick is unknown. The case of the I-brick
        letter is the model's choice.
+   * - The machine configures firmware revision 1.18.5 on every C-brick,
+       I-brick and N-brick L1, and the machine's ``l1-revision`` replaces it.
+     - approximated
+     - No fitted brick's revision is published. IRIX 6.5.30 labels each
+       module's and I/O brick's hardware-graph entry with the reply, its
+       ``numastatd`` logs an error at every start without one, and on a
+       node with R14000 processors the kernel wants at least 1.3.20; the
+       stock PROM warns below 1.12.5. 1.18.5 is the value the Origin 300
+       profiles use, from an Origin 300 transcript, and passes both
+       checks.
    * - A C-brick's records: node board at component 0, two PIMMs at 1 and
        2, DIMM ``n`` at ``3 + (n >> 1) + 4 * (n & 1)``.
      - approximated

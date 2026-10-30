@@ -208,7 +208,7 @@ typedef struct SGIMachineNodeConfig {
 } SGIMachineNodeConfig;
 
 typedef struct SGIMachineL1Config {
-    /* An Origin 3000 brick profile, which owns its type and revision. */
+    /* An Origin 3000 brick profile, which owns its type letter. */
     bool has_profile;
     SGIModelL1Profile profile;
     uint8_t reported_type;
@@ -6641,6 +6641,15 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
         object_unref(OBJECT(l1));
         qdev_prop_set_string(l1, "brick-type",
                              nbrick ? "nbrick" : vbrick ? "vbrick" : "ibrick");
+        /* A V-brick's L1 takes no firmware revision. */
+        if (!vbrick) {
+            qdev_prop_set_int32(l1, "revision-major",
+                                s->l1_config[index].revision[0]);
+            qdev_prop_set_int32(l1, "revision-minor",
+                                s->l1_config[index].revision[1]);
+            qdev_prop_set_int32(l1, "revision-patch",
+                                s->l1_config[index].revision[2]);
+        }
         if (mac) {
             qdev_prop_set_string(l1, "mac", mac);
         }
@@ -8513,11 +8522,12 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
         if (config->has_profile) {
             /*
              * A C-brick's L1 belongs to its node and an I-brick's to its
-             * module alone; neither takes a type code or revision.
+             * module alone; neither takes a type code. Both take the
+             * revision below.
              */
             if ((config->profile == SGI_MODEL_L1_PROFILE_CBRICK) !=
                 (owner_node != node_count) ||
-                config->has_reported_type || config->revision ||
+                config->has_reported_type ||
                 config->mac_eeprom_input || config->cpu_context) {
                 error_setg(errp, "topology '%s' controller '%s' has an "
                            "invalid L1 %s profile", t->name,
@@ -8527,28 +8537,25 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
             }
             resolved->has_profile = true;
             resolved->profile = config->profile;
-            for (unsigned int j = 0; j < ARRAY_SIZE(resolved->revision); j++) {
-                resolved->revision[j] = -1;
+        } else {
+            if (owner_node == node_count) {
+                error_setg(errp, "topology '%s' controller '%s' has L1 "
+                           "configuration without a modeled Bedrock node",
+                           t->name, controllers[i]->id);
+                return false;
             }
-            continue;
+            if (!sgi_machine_resolve_uint(s, t, SGI_INPUT_L1_TYPE, &used,
+                    config->has_reported_type, config->reported_type,
+                    &value, errp)) {
+                return false;
+            }
+            if (!value || value > UINT8_MAX) {
+                error_setg(errp, "%s must be nonzero and fit eight bits",
+                           sgi_machine_input_names[SGI_INPUT_L1_TYPE]);
+                return false;
+            }
+            resolved->reported_type = value;
         }
-        if (owner_node == node_count) {
-            error_setg(errp, "topology '%s' controller '%s' has L1 "
-                       "configuration without a modeled Bedrock node",
-                       t->name, controllers[i]->id);
-            return false;
-        }
-        if (!sgi_machine_resolve_uint(s, t, SGI_INPUT_L1_TYPE, &used,
-                config->has_reported_type, config->reported_type, &value,
-                errp)) {
-            return false;
-        }
-        if (!value || value > UINT8_MAX) {
-            error_setg(errp, "%s must be nonzero and fit eight bits",
-                       sgi_machine_input_names[SGI_INPUT_L1_TYPE]);
-            return false;
-        }
-        resolved->reported_type = value;
         used |= 1U << SGI_INPUT_L1_REVISION;
         if (s->l1_revision_override_set) {
             memcpy(resolved->revision, s->l1_revision_override,

@@ -26382,7 +26382,12 @@
           "id": "c0-l1",
           "kind": "l1",
           "l1": {
-            "profile": "cbrick"
+            "profile": "cbrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 0
         },
@@ -26390,7 +26395,12 @@
           "id": "c1-l1",
           "kind": "l1",
           "l1": {
-            "profile": "cbrick"
+            "profile": "cbrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 1
         },
@@ -26398,7 +26408,12 @@
           "id": "ibrick-l1",
           "kind": "l1",
           "l1": {
-            "profile": "ibrick"
+            "profile": "ibrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 3
         },
@@ -26916,7 +26931,12 @@
           "id": "c0-l1",
           "kind": "l1",
           "l1": {
-            "profile": "cbrick"
+            "profile": "cbrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 0
         },
@@ -26924,7 +26944,12 @@
           "id": "c1-l1",
           "kind": "l1",
           "l1": {
-            "profile": "cbrick"
+            "profile": "cbrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 1
         },
@@ -26932,7 +26957,12 @@
           "id": "c2-l1",
           "kind": "l1",
           "l1": {
-            "profile": "cbrick"
+            "profile": "cbrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 2
         },
@@ -26940,7 +26970,12 @@
           "id": "c3-l1",
           "kind": "l1",
           "l1": {
-            "profile": "cbrick"
+            "profile": "cbrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 3
         },
@@ -26948,7 +26983,12 @@
           "id": "ibrick-l1",
           "kind": "l1",
           "l1": {
-            "profile": "ibrick"
+            "profile": "ibrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 7
         },
@@ -26956,7 +26996,12 @@
           "id": "nbrick-l1",
           "kind": "l1",
           "l1": {
-            "profile": "nbrick"
+            "profile": "nbrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 8
         },
@@ -37354,7 +37399,12 @@
           "id": "c0-l1",
           "kind": "l1",
           "l1": {
-            "profile": "cbrick"
+            "profile": "cbrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 0
         },
@@ -37362,7 +37412,12 @@
           "id": "c1-l1",
           "kind": "l1",
           "l1": {
-            "profile": "cbrick"
+            "profile": "cbrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 1
         },
@@ -37370,7 +37425,12 @@
           "id": "ibrick-l1",
           "kind": "l1",
           "l1": {
-            "profile": "ibrick"
+            "profile": "ibrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 2
         }
@@ -37772,7 +37832,12 @@
           "id": "c0-l1",
           "kind": "l1",
           "l1": {
-            "profile": "cbrick"
+            "profile": "cbrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 0
         },
@@ -37780,7 +37845,12 @@
           "id": "c1-l1",
           "kind": "l1",
           "l1": {
-            "profile": "cbrick"
+            "profile": "cbrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 1
         },
@@ -37788,7 +37858,12 @@
           "id": "c2-l1",
           "kind": "l1",
           "l1": {
-            "profile": "cbrick"
+            "profile": "cbrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 2
         },
@@ -37796,7 +37871,12 @@
           "id": "c3-l1",
           "kind": "l1",
           "l1": {
-            "profile": "cbrick"
+            "profile": "cbrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 3
         },
@@ -37804,7 +37884,12 @@
           "id": "ibrick-l1",
           "kind": "l1",
           "l1": {
-            "profile": "ibrick"
+            "profile": "ibrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 5
         },
@@ -38712,7 +38797,12 @@
           "id": "ibrick-l1",
           "kind": "l1",
           "l1": {
-            "profile": "ibrick"
+            "profile": "ibrick",
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
           },
           "module-index": 1
         }

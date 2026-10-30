@@ -60,6 +60,26 @@ static uint64_t qom_get_uint(QTestState *qts, const char *path,
     return value;
 }
 
+static int64_t qom_get_int(QTestState *qts, const char *path,
+                           const char *prop)
+{
+    QDict *r = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
+                         "{'path': %s, 'property': %s}}", path, prop);
+    int64_t value = qdict_get_int(r, "return");
+
+    qobject_unref(r);
+    return value;
+}
+
+/* The firmware revision an L1 reports for request 0x0005; -1 for none. */
+static void assert_l1_revision(QTestState *qts, const char *path,
+                               int64_t major, int64_t minor, int64_t patch)
+{
+    g_assert_cmpint(qom_get_int(qts, path, "revision-major"), ==, major);
+    g_assert_cmpint(qom_get_int(qts, path, "revision-minor"), ==, minor);
+    g_assert_cmpint(qom_get_int(qts, path, "revision-patch"), ==, patch);
+}
+
 static bool qom_get_bool(QTestState *qts, const char *path,
                          const char *prop)
 {
@@ -9894,6 +9914,8 @@ static void test_origin3200_brick_l1s(void)
         g_assert_cmpuint(qom_get_uint(qts, l1s[i].path, "bay"), ==,
                          l1s[i].bay);
         g_assert_true(qom_get_bool(qts, l1s[i].path, "named"));
+        /* The catalogue's approximated revision, the Origin 300's. */
+        assert_l1_revision(qts, l1s[i].path, 1, 18, 5);
     }
     {
         g_autofree char *c0_peer = qom_get_str(qts, "/machine/node0/l1",
@@ -9910,6 +9932,32 @@ static void test_origin3200_brick_l1s(void)
         g_assert_cmpstr(c0_io, ==, "/machine/module2/l1");
         g_assert_cmpstr(c1_io, ==, "");
     }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * The machine's l1-revision replaces the catalogue's revision on every
+ * C-brick and I-brick L1.
+ */
+static void test_origin3200_l1_revision_override(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn-builder-origin3200-prom-XXXXXX", &prom,
+                             &error);
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M origin3000,l1-revision=1.48.1 -cpu R12000 -smp 8 "
+                      "-m 8192 -bios %s -nodefaults -display none", prom);
+    assert_l1_revision(qts, "/machine/node0/l1", 1, 48, 1);
+    assert_l1_revision(qts, "/machine/node1/l1", 1, 48, 1);
+    assert_l1_revision(qts, "/machine/module2/l1", 1, 48, 1);
     qtest_quit(qts);
     g_unlink(prom);
 }
@@ -9999,6 +10047,8 @@ static void test_onyx3400_ir_io_brick_l1s(void)
         g_assert_cmpstr(ibrick, ==, "ibrick");
         g_assert_cmpstr(nbrick, ==, "nbrick");
     }
+    assert_l1_revision(qts, c0_io, 1, 18, 5);
+    assert_l1_revision(qts, c1_io, 1, 18, 5);
     g_assert_cmpstr(c1_io, !=, c0_io);
     g_assert_cmpstr(c2_io, ==, c1_io);
     g_assert_cmpstr(c3_io, ==, c1_io);
@@ -10039,6 +10089,10 @@ static void test_onyx3000_vbrick_l1_and_heads(void)
         g_assert_cmpstr(c0_profile, ==, "ibrick");
         g_assert_cmpstr(c1_profile, ==, "vbrick");
         g_assert_cmpuint(qom_get_uint(qts, c1_io, "bay"), ==, 10);
+        /* The V-brick's L1 takes no firmware revision. */
+        assert_l1_revision(qts, "/machine/node1/l1", 1, 18, 5);
+        assert_l1_revision(qts, c0_io, 1, 18, 5);
+        assert_l1_revision(qts, c1_io, -1, -1, -1);
     }
     /* The V-brick's heads (widgets 14 and 15) answer from the C-brick. */
     for (unsigned int widget = 14; widget <= 15; widget++) {
@@ -12676,6 +12730,8 @@ int main(int argc, char **argv)
                         test_cbrick_board_on_crossbar_port);
     qtest_add_func("sn/builder/origin3200/brick-l1s",
                    test_origin3200_brick_l1s);
+    qtest_add_func("sn/builder/origin3200/l1-revision-override",
+                   test_origin3200_l1_revision_override);
     qtest_add_func("sn/builder/origin3400/routed-bricks",
                    test_origin3400_routed_bricks);
     qtest_add_func("sn/builder/onyx3000/vbrick-l1-and-heads",
