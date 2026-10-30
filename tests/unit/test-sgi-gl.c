@@ -3941,6 +3941,8 @@ static void mesh_strip(SGIGLContext *c, const SGIGLSink *sink,
     for (const char *p = script; *p; p++) {
         if (*p == 's') {
             command(c, sink, SGI_GL_OP_SWAP_TMESH, word, 0);
+        } else if (*p == 'x') {
+            command(c, sink, SGI_GL_OP_EXCHANGE_TMESH, word, 0);
         } else {
             word[0] = bits((*p - '0') / 10.0f);
             word[1] = bits(0);
@@ -3977,6 +3979,25 @@ static void test_swap_tmesh_makes_a_fan(void)
     mesh_check("012ss34", (int[]){ 0, 1, 2, 2, 1, 3, 2, 3, 4 }, 9);
     /* A swap before the first triangle has nothing to swap. */
     mesh_check("01s234", (int[]){ 0, 1, 2, 2, 1, 3, 2, 3, 4 }, 9);
+}
+
+/*
+ * The exchange form, sent where the IRIS GL caller made the swap: the
+ * two retained vertices exchange and the parity flips, so the next
+ * triangle is unchanged and the one after keeps the older vertex.
+ */
+static void test_exchange_tmesh_keeps_the_older_vertex(void)
+{
+    /* After vertices 0 and 1: 012, then 023 keeps 0, then 324. */
+    mesh_check("01x234", (int[]){ 0, 1, 2, 0, 2, 3, 3, 2, 4 }, 9);
+    /* After 012: 213 as without it, then 314 keeps 1 where 324 would. */
+    mesh_check("012x34", (int[]){ 0, 1, 2, 2, 1, 3, 3, 1, 4 }, 9);
+    /* One after each vertex from the second makes the fan 012, 023, 034. */
+    mesh_check("01x2x3x4", (int[]){ 0, 1, 2, 0, 2, 3, 0, 3, 4 }, 9);
+    /* Two in a row cancel. */
+    mesh_check("012xx34", (int[]){ 0, 1, 2, 2, 1, 3, 2, 3, 4 }, 9);
+    /* With one vertex retained there is nothing to exchange. */
+    mesh_check("0x1234", (int[]){ 0, 1, 2, 2, 1, 3, 2, 3, 4 }, 9);
 }
 
 /*
@@ -15394,6 +15415,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/lighting-two-sided-draws",
                     test_lighting_two_sided_draws);
     g_test_add_func("/sgi-gl/swap-tmesh", test_swap_tmesh_makes_a_fan);
+    g_test_add_func("/sgi-gl/exchange-tmesh",
+                    test_exchange_tmesh_keeps_the_older_vertex);
     g_test_add_func("/sgi-gl/lighting-rescale-normal-uses-a-row",
                     test_lighting_rescale_normal_uses_a_row);
     g_test_add_func("/sgi-gl/lighting-both-at-infinity",
