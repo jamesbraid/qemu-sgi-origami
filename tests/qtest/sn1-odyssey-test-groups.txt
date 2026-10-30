@@ -215,6 +215,8 @@ gl /mips64/sn1/odyssey/command-fifo-gl-line-smoothing
 gl /mips64/sn1/odyssey/command-fifo-gl-line-stipple
 gl /mips64/sn1/odyssey/command-fifo-gl-line-stipple-migration
 gl /mips64/sn1/odyssey/command-fifo-gl-polygon-offset
+gl /mips64/sn1/odyssey/command-fifo-gl-polygon-offset-word-steps
+gl /mips64/sn1/odyssey/command-fifo-gl-depth-clear-saturates
 gl /mips64/sn1/odyssey/command-fifo-gl-clip-box
 gl /mips64/sn1/odyssey/command-fifo-gl-clip-plane
 gl /mips64/sn1/odyssey/command-fifo-gl-clip-plane-eye-space
