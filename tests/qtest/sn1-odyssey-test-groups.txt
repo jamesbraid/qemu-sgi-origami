@@ -236,6 +236,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-integer-colour
 gl /mips64/sn1/odyssey/command-fifo-gl-integer-normals
 gl /mips64/sn1/odyssey/command-fifo-gl-program-record-unlit
 gl /mips64/sn1/odyssey/command-fifo-gl-program-list-lit
+gl /mips64/sn1/odyssey/command-fifo-gl-program-older-numbering
 gl /mips64/sn1/odyssey/command-fifo-gl-program-list-lit-local-viewer
 gl /mips64/sn1/odyssey/command-fifo-gl-program-list-lit-positional
 gl /mips64/sn1/odyssey/command-fifo-gl-vertex-3i-lit

@@ -9432,6 +9432,42 @@ static void test_command_fifo_gl_program_list_lit(void)
 }
 
 /*
+ * The IRIX 6.5.9 to 6.5.27 GL libraries number every routine from 891 on
+ * 99 lower, their program image having no spot routine. light.c's record
+ * and light2.c's assembled list in that numbering light the triangle as
+ * their 6.5.30 forms do.
+ */
+static void test_command_fifo_gl_program_older_numbering(void)
+{
+    static const uint32_t one_light[] = { 0x41e, 0x203, 0x467, 0x462 };
+    static const uint32_t light2_list[] = {
+        0x290, 0x2b6, 0x2cf, 0x335, 0x2de, 0x300, 0x392, 0x437, 0x203,
+        0x25e, 0x462,
+    };
+    char *log_path = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts = lit_start(&log_path);
+
+    push_constants(qts, one_light, ARRAY_SIZE(one_light));
+    push_program(qts, 0, 0x568, 0x575, 0x582);
+    push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xfe7f3fffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 300, 360), ==, 0xe37139ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x090402ffu);
+
+    push_user_words(qts, odsy_light2_data, ARRAY_SIZE(odsy_light2_data));
+    push_constants(qts, light2_list, ARRAY_SIZE(light2_list));
+    push_program(qts, 1, 0x290, 0x462, 0x462);
+    push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xd4663bffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 300, 360), ==, 0xd06237ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x652a16ffu);
+
+    log = lit_finish(qts, log_path);
+    g_assert_null(strstr(log, "geometry program"));
+}
+
+/*
  * Light 1's own record, pushed after odsy_light2_data to override it:
  * the selector and header of ODSY_GL_LIGHT_VEC_LOAD, then sixteen floats
  * in the ODSY_LIGHT_POS/HALF/ATTEN/SPOT_DIR/SPOT_COS/SPOT_EXP layout
@@ -23660,6 +23696,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_program_record_unlit);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-list-lit",
                    test_command_fifo_gl_program_list_lit);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-older-numbering",
+                   test_command_fifo_gl_program_older_numbering);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-list-lit-local-viewer",
                    test_command_fifo_gl_program_list_lit_local_viewer);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-list-lit-positional",

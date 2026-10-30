@@ -1463,6 +1463,21 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 /* How far a program list is read before it counts as unrecognised. */
 #define ODSY_PROG_LIST_MAX 64
 
+/*
+ * The routine numbering of the IRIX 6.5.9 to 6.5.27 GL libraries. Their
+ * program image is the 6.5.30 image less the 99-record spot routine at
+ * records 792 to 890 and every record from 2365 on, so they number every
+ * routine from 891 on 99 lower (ESTABLISHED: the 6.5.30 kernel's built-in
+ * copy of the program, which is that older shipped image, equals the
+ * 6.5.30 image's records 0-791 and 891-2364, and the older libraries'
+ * routine numbers are lower by the same 99). The model's routine numbers
+ * below are the 6.5.30 ones; odyssey_ucode_current() maps an older one.
+ */
+#define ODSY_UCODE_SPOT_FIRST 792
+#define ODSY_UCODE_SPOT_RECORDS 99
+/* The older image's length: records 0-791 and 891-2364 of the 6.5.30 one. */
+#define ODSY_UCODE_OLDER_RECORDS 2266
+
 #define ODSY_UCODE_END 0x4c5
 #define ODSY_UCODE_UNLIT 0x0d6
 #define ODSY_UCODE_UNLIT_2A 0x0e0
@@ -7894,19 +7909,39 @@ typedef struct OdysseyProgram {
 } OdysseyProgram;
 
 /*
+ * A routine number of the older libraries' numbering in the 6.5.30 one.
+ * A number at or past where the spot routine starts moves up past it; the
+ * older image has no spot routine, so no older number lands inside it.
+ */
+static uint32_t odyssey_ucode_current(uint32_t a)
+{
+    return a >= ODSY_UCODE_SPOT_FIRST ? a + ODSY_UCODE_SPOT_RECORDS : a;
+}
+
+/* List word i, in the 6.5.30 numbering. */
+static uint32_t odyssey_gl_list_word(SGIOdysseyState *s, uint32_t i,
+                                     bool older)
+{
+    uint32_t a = s->gl_const[i % SGI_ODYSSEY_GL_CONSTANTS];
+
+    return older ? odyssey_ucode_current(a) : a;
+}
+
+/*
  * Walk the list the engine continues through, constants[k] up to the
  * terminator. With strict, every word must be a routine this model names
  * (an assembled lit list); otherwise only the texgen and clip-plane stages
  * are picked out (a precompiled program's list, which its entries already
  * identify, so the result is not needed). False when the terminator is not
- * reached or, when strict, a word is not recognised.
+ * reached or, when strict, a word is not recognised. With older, the list
+ * is in the older libraries' numbering.
  */
 static bool odyssey_gl_walk_list(SGIOdysseyState *s, uint32_t k, bool strict,
-                                 OdysseyProgram *p)
+                                 bool older, OdysseyProgram *p)
 {
     for (unsigned int n = 0; n < ODSY_PROG_LIST_MAX; n++) {
-        uint32_t a = s->gl_const[(k + n) % SGI_ODYSSEY_GL_CONSTANTS];
-        uint32_t next = s->gl_const[(k + n + 1) % SGI_ODYSSEY_GL_CONSTANTS];
+        uint32_t a = odyssey_gl_list_word(s, k + n, older);
+        uint32_t next = odyssey_gl_list_word(s, k + n + 1, older);
 
         if (a == ODSY_UCODE_END) {
             return true;
@@ -7924,22 +7959,20 @@ static bool odyssey_gl_walk_list(SGIOdysseyState *s, uint32_t k, bool strict,
          * Other fragments retain their diagnostic; no whole program is matched.
          */
         if (a == 0x033) {
-            uint32_t third = s->gl_const[(k + n + 2) %
-                                         SGI_ODYSSEY_GL_CONSTANTS];
-            uint32_t fourth = s->gl_const[(k + n + 3) %
-                                          SGI_ODYSSEY_GL_CONSTANTS];
+            uint32_t third = odyssey_gl_list_word(s, k + n + 2, older);
+            uint32_t fourth = odyssey_gl_list_word(s, k + n + 3, older);
 
             if (next == 0x04d && third == 0x057 && fourth == 0x061 &&
-                s->gl_const[(k + n + 4) % SGI_ODYSSEY_GL_CONSTANTS] == 0x066 &&
-                s->gl_const[(k + n + 5) % SGI_ODYSSEY_GL_CONSTANTS] == 0x06c &&
-                s->gl_const[(k + n + 6) % SGI_ODYSSEY_GL_CONSTANTS] == 0x077) {
+                odyssey_gl_list_word(s, k + n + 4, older) == 0x066 &&
+                odyssey_gl_list_word(s, k + n + 5, older) == 0x06c &&
+                odyssey_gl_list_word(s, k + n + 6, older) == 0x077) {
                 p->linear_texgen = 0xf;
                 n += 6;
                 continue;
             }
             if (next == 0x04d && third == 0x061 && fourth == 0x066 &&
-                s->gl_const[(k + n + 4) % SGI_ODYSSEY_GL_CONSTANTS] == 0x06c &&
-                s->gl_const[(k + n + 5) % SGI_ODYSSEY_GL_CONSTANTS] == 0x077) {
+                odyssey_gl_list_word(s, k + n + 4, older) == 0x06c &&
+                odyssey_gl_list_word(s, k + n + 5, older) == 0x077) {
                 p->linear_texgen = 0xd;
                 n += 5;
                 continue;
@@ -8164,6 +8197,59 @@ static bool odyssey_gl_resident(const uint32_t e[3])
 }
 
 /*
+ * Recognise a resident program from its entries r[] and the list at k,
+ * all in the 6.5.30 numbering or, with older, all in the older libraries'.
+ */
+static void odyssey_gl_resident_program(SGIOdysseyState *s,
+                                        const uint32_t raw[3], uint32_t k,
+                                        bool older, OdysseyProgram *p)
+{
+    uint32_t r[3];
+
+    for (unsigned int i = 0; i < 3; i++) {
+        if (older && raw[i] >= ODSY_UCODE_OLDER_RECORDS) {
+            /* No entry of the older image. */
+            return;
+        }
+        r[i] = older ? odyssey_ucode_current(raw[i]) : raw[i];
+    }
+    if (!r[0] && !r[1] && !r[2]) {
+        p->known = true;
+    } else if (r[0] == ODSY_UCODE_UNLIT && r[1] == ODSY_UCODE_UNLIT_2A &&
+               r[2] == ODSY_UCODE_UNLIT_2C) {
+        odyssey_gl_walk_list(s, k, false, older, p);
+        p->known = true;
+    } else if (r[0] == ODSY_UCODE_UNLIT_CLIP &&
+               r[1] == ODSY_UCODE_UNLIT_CLIP_2A &&
+               r[2] == ODSY_UCODE_UNLIT_CLIP_2C) {
+        odyssey_gl_walk_list(s, k, false, older, p);
+        p->known = true;
+    } else if (odyssey_gl_lit_record(r)) {
+        odyssey_gl_walk_list(s, k, false, older, p);
+        p->known = true;
+        p->lit = true;
+    } else if (r[1] == ODSY_UCODE_END && r[2] == ODSY_UCODE_END) {
+        switch (r[0]) {
+        case ODSY_UCODE_HEAD_LOCAL_DIR:
+        case ODSY_UCODE_HEAD_LOCAL_POS:
+            p->local_viewer = true;
+            /* fall through */
+        case ODSY_UCODE_HEAD_INF_DIR:
+        case ODSY_UCODE_HEAD_INF_POS:
+            p->known = odyssey_gl_walk_list(s, k, true, older, p);
+            p->lit = true;
+            break;
+        case ODSY_UCODE_HEAD_UNLIT:
+            /* Lighting off: unlit is the correct rendering, not a guess. */
+            p->known = odyssey_gl_walk_list(s, k, true, older, p);
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+/*
  * Recognise the program the library just set (on every 0x2c write, the last
  * word of each program set, and after migration). APPROXIMATION, see
  * ODSY_UCODE_END: a precompiled program is recognised by its three entries,
@@ -8176,6 +8262,13 @@ static bool odyssey_gl_resident(const uint32_t e[3])
  * enabled lights onto the list is unknown. All-zero entries are the state
  * the GL library's context default-state setup pushes before any program
  * exists.
+ *
+ * A resident program the 6.5.30 numbering does not recognise is tried
+ * again in the older libraries' (ODSY_UCODE_SPOT_FIRST). APPROXIMATION:
+ * the model does not know which library or program image the guest runs,
+ * so a program is taken in the older numbering only when it means nothing
+ * in the current one. Window records are recognised by the 6.5.30 bodies'
+ * fingerprints only; the older libraries' window uploads are not.
  */
 static void odyssey_gl_program(SGIOdysseyState *s)
 {
@@ -8192,47 +8285,19 @@ static void odyssey_gl_program(SGIOdysseyState *s)
 
     if (window) {
         /* A precompiled lit record the library ran from the window. */
-        odyssey_gl_walk_list(s, k, false, &p);
+        odyssey_gl_walk_list(s, k, false, false, &p);
         p.known = true;
         p.lit = true;
         p.local_viewer = window->local_viewer;
         p.two_sided |= window->two_sided;
-    } else if (!resident) {
-        /* Any other uploaded program is unsupported and reported below. */
-    } else if (!r[0] && !r[1] && !r[2]) {
-        p.known = true;
-    } else if (r[0] == ODSY_UCODE_UNLIT && r[1] == ODSY_UCODE_UNLIT_2A &&
-               r[2] == ODSY_UCODE_UNLIT_2C) {
-        odyssey_gl_walk_list(s, k, false, &p);
-        p.known = true;
-    } else if (r[0] == ODSY_UCODE_UNLIT_CLIP &&
-               r[1] == ODSY_UCODE_UNLIT_CLIP_2A &&
-               r[2] == ODSY_UCODE_UNLIT_CLIP_2C) {
-        odyssey_gl_walk_list(s, k, false, &p);
-        p.known = true;
-    } else if (odyssey_gl_lit_record(r)) {
-        odyssey_gl_walk_list(s, k, false, &p);
-        p.known = true;
-        p.lit = true;
-    } else if (r[1] == ODSY_UCODE_END && r[2] == ODSY_UCODE_END) {
-        switch (r[0]) {
-        case ODSY_UCODE_HEAD_LOCAL_DIR:
-        case ODSY_UCODE_HEAD_LOCAL_POS:
-            p.local_viewer = true;
-            /* fall through */
-        case ODSY_UCODE_HEAD_INF_DIR:
-        case ODSY_UCODE_HEAD_INF_POS:
-            p.known = odyssey_gl_walk_list(s, k, true, &p);
-            p.lit = true;
-            break;
-        case ODSY_UCODE_HEAD_UNLIT:
-            /* Lighting off: unlit is the correct rendering, not a guess. */
-            p.known = odyssey_gl_walk_list(s, k, true, &p);
-            break;
-        default:
-            break;
+    } else if (resident) {
+        odyssey_gl_resident_program(s, r, k, false, &p);
+        if (!p.known) {
+            p = (OdysseyProgram) { 0 };
+            odyssey_gl_resident_program(s, r, k, true, &p);
         }
     }
+    /* Any other uploaded program is unsupported and reported below. */
 
     if (!p.known) {
         p.lit = false;
