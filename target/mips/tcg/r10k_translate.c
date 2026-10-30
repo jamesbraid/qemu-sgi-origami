@@ -263,10 +263,10 @@ static R10KCp0Result gen_perf_mfc0(DisasContext *ctx, TCGv arg, int sel,
         }
     }
 
-    if ((sel & 1) == 0 && !(sel == 0 && ctx->r12000a)) {
+    if (sel != 0 && (sel & 1) == 0) {
         gen_r10k_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[sel]));
     } else {
-        /* Counters read time; A control 0 reads independent capture state. */
+        /* Shared TBs resolve control 0's capture on the executing CPU. */
         translator_io_start(&ctx->base);
         gen_helper_mfc0_r10k_performance(arg, tcg_env, tcg_constant_i32(sel));
     }

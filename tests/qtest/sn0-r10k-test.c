@@ -3869,6 +3869,86 @@ static void test_r12000a_instance_isolation(void)
     a_quit(&a);
 }
 
+static void a_set_halted(QTestState *qts, const char *owner, bool halted)
+{
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'test-halted','value':%i}}", owner, halted);
+}
+
+static char *a_translation_key(QTestState *qts, const char *owner)
+{
+    g_autoptr(QDict) result = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'translation-key'}}", owner);
+
+    g_assert_null(qdict_get(result, "error"));
+    return g_strdup(qdict_get_str(result, "return"));
+}
+
+static void test_r12000a_mixed_execution(gconstpointer opaque)
+{
+    static const char second[] = "/machine/peripheral/a-mixed";
+    static const uint32_t code[] = {
+        0x4008c800, 0xaf480000, 0x24080001, 0xaf480004, 0x1000ffff, 0,
+    };
+    bool a_first = GPOINTER_TO_INT(opaque);
+    g_autofree char *cpu = a_cpu_options(NULL, 3, 3);
+    ACPU a = a_start(cpu, "-smp 1,maxcpus=2 "
+        "-device mips-cpu-exception-fixture,id=a-mixed,"
+        "create-r12000-variant=vr12000a", false);
+    uint8_t bytes[sizeof(code)];
+    g_autoptr(QDict) variant = qtest_qmp(a.qts,
+        "{'execute':'qom-get','arguments':"
+        "{'path':'/machine/peripheral/a-mixed/variant-cpu',"
+        "'property':'r12000-variant'}}");
+    char *keys[2];
+
+    g_assert_cmpstr(qdict_get_str(variant, "return"), ==, "vr12000a");
+    for (unsigned int i = 0; i < ARRAY_SIZE(code); i++) {
+        stl_be_p(bytes + i * 4, code[i]);
+    }
+    qtest_memwrite(a.qts, 0x200000, bytes, sizeof(bytes));
+    a_report(a.qts, second, 0, 1, 0, 0x155, true);
+    for (unsigned int i = 0; i < 2; i++) {
+        const char *owner = i ? second : A_FIXTURE;
+        g_autofree char *context = g_strdup_printf(
+            "0xffffffffa0200000 0x%" PRIx64,
+            UINT64_C(0xffffffffa0100000) + i * 0x10000);
+
+        a_set_halted(a.qts, owner, true);
+        qtest_qmp_assert_success(a.qts,
+            "{'execute':'qom-set','arguments':{'path':%s,"
+            "'property':'ram-context','value':%s}}", owner, context);
+        keys[i] = a_translation_key(a.qts, owner);
+    }
+    /* Same PC, architectural flags, cluster and TCG flags, in one process. */
+    g_assert_cmpstr(keys[0], ==, keys[1]);
+    g_free(keys[0]);
+    g_free(keys[1]);
+    for (unsigned int turn = 0; turn < 2; turn++) {
+        bool selected_a = turn == 0 ? a_first : !a_first;
+        const char *owner = selected_a ? second : A_FIXTURE;
+        uint32_t mailbox = A_STATE + (selected_a ? 0x10000 : 0);
+        uint32_t expected = selected_a ? 0xaa800000 : 0;
+        SgiWait wait;
+
+        qtest_writel(a.qts, mailbox, 0xdeadbeef);
+        qtest_writel(a.qts, mailbox + 4, 0);
+        a_set_halted(a.qts, owner, false);
+        qtest_qmp_assert_success(a.qts, "{'execute':'cont'}");
+        sgi_wait_start(&wait, "mixed-variant shared-PC control read");
+        while (!qtest_readl(a.qts, mailbox + 4)) {
+            sgi_wait_pause(&wait, 1000);
+        }
+        qtest_qmp_assert_success(a.qts, "{'execute':'stop'}");
+        qtest_qmp_eventwait(a.qts, "STOP");
+        a_set_halted(a.qts, owner, true);
+        g_assert_cmphex(qtest_readl(a.qts, mailbox), ==, expected);
+    }
+    a_quit(&a);
+}
+
 static uint64_t a_clock_period(QTestState *qts, const char *path)
 {
     g_autoptr(QDict) value = qtest_qmp(qts,
@@ -3928,6 +4008,7 @@ static void test_r12000a_migration(void)
         if (state >= 2) {
             a_report(from.qts, A_FIXTURE, 1, 1, 0, syndrome, true);
         }
+        a_write(&from, 16, 0, 7);
         a_write(&from, 25, 0, 0x10);
         a_write(&from, 25, 1, 0x12345678);
         sgi_migrate_stopped(from.qts, uri);
@@ -3936,6 +4017,7 @@ static void test_r12000a_migration(void)
         g_assert_cmphex(out[0], ==, (syndrome << 23) | 0x10);
         g_assert_cmphex(out[1], ==, 0x12345678);
         g_assert_cmphex(out[4] & 0x8000, ==, 0);
+        g_assert_cmpuint(out[5] & 7, ==, 7);
         g_assert_cmpint(a_captured(to.qts, A_FIXTURE), ==, state >= 2);
         qtest_system_reset(to.qts);
         a_wait_entry(&to, 1);
@@ -4069,6 +4151,116 @@ static void test_r12000a_migration_malformed(void)
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
+/* Strong same-build byte signatures locate registers, not mirrored metadata. */
+static void a_register_offsets(const uint8_t *data, size_t length,
+                               uint32_t config, size_t *prid, size_t *fcr0)
+{
+    unsigned int hits = 0;
+
+    for (size_t i = 0; i + 28 <= length; i++) {
+        if (ldl_be_p(data + i) == 0xe12 &&
+            ldq_be_p(data + i + 4) == UINT64_C(0xffffffff80000000) &&
+            ldq_be_p(data + i + 12) == 0 &&
+            ldl_be_p(data + i + 20) == config) {
+            *prid = i;
+            hits++;
+        }
+    }
+    g_assert_cmpuint(hits, ==, 1);
+    hits = 0;
+    for (size_t i = 512; i + 8 < *prid; i++) {
+        static const uint8_t zero_fprs[512];
+
+        if (ldl_be_p(data + i) == 0x4567 && ldl_be_p(data + i + 4) == 0 &&
+            !memcmp(data + i - 512, zero_fprs, sizeof(zero_fprs))) {
+            *fcr0 = i;
+            hits++;
+        }
+    }
+    g_assert_cmpuint(hits, ==, 1);
+}
+
+static char *a_incoming_terminal(QTestState *qts)
+{
+    SgiWait wait;
+
+    sgi_wait_start(&wait, "incoming register-image validation");
+    for (;;) {
+        g_autoptr(QDict) reply = qtest_qmp(qts, "{'execute':'query-migrate'}");
+        QDict *result = qdict_get_qdict(reply, "return");
+        const char *status = qdict_get_str(result, "status");
+
+        if (!strcmp(status, "completed") || !strcmp(status, "failed")) {
+            return g_strdup(status);
+        }
+        sgi_wait_pause(&wait, 1000);
+    }
+}
+
+static void test_r12000a_migration_register_image(void)
+{
+    g_autofree char *cpu = a_cpu_options("vr12000a", 3, 3);
+    g_autofree char *dir = g_dir_make_tmp("r12000a-registers-XXXXXX", NULL);
+    g_autofree char *stream = g_build_filename(dir, "baseline", NULL);
+    g_autofree char *quoted = g_shell_quote(stream);
+    g_autofree char *uri = g_strdup_printf("exec:cat > %s", quoted);
+    g_autofree char *contents = NULL;
+    ACPU from = a_start(cpu, "", true);
+    uint32_t out[7];
+    gsize length;
+    size_t prid = 0, fcr0 = 0, body, header;
+
+    a_report(from.qts, A_FIXTURE, 0, 2, 0, 0x155, true);
+    a_write(&from, 16, 0, 7);
+    a_write(&from, 25, 0, 0x3ff);
+    a_snapshot(&from, out);
+    sgi_migrate_stopped(from.qts, uri);
+    a_quit(&from);
+    g_assert_true(g_file_get_contents(stream, &contents, &length, NULL));
+    a_register_offsets((uint8_t *)contents, length, out[5], &prid, &fcr0);
+    body = a_profile_offset((uint8_t *)contents, length, &header);
+    /* Baseline, PRId, FCR0, then each read-only Config position 3..31. */
+    for (unsigned int kind = 0; kind < 32; kind++) {
+        g_autofree char *file = g_strdup_printf("%s/input-%u", dir, kind);
+        g_autofree char *copy = g_memdup2(contents, length);
+        g_autofree char *input = g_shell_quote(file);
+        g_autofree char *read_uri = g_strdup_printf("exec:cat %s", input);
+        g_autofree char *status = NULL;
+        bool rejected;
+        ACPU to;
+
+        if (kind == 1) {
+            stl_be_p(copy + prid, 0xe13);
+        } else if (kind == 2) {
+            stl_be_p(copy + fcr0, 0x4566);
+        } else if (kind >= 3) {
+            stl_be_p(copy + prid + 20, out[5] ^ (1u << kind));
+        }
+        g_assert_cmpmem(copy + body, 24, contents + body, 24);
+        g_assert_true(g_file_set_contents(file, copy, length, NULL));
+        to = a_start(cpu, "-incoming defer", false);
+        a_report(to.qts, A_FIXTURE, 1, 1, 0, 0x1aa, true);
+        qtest_qmp_assert_success(to.qts,
+            "{'execute':'migrate-incoming','arguments':"
+            "{'uri':%s,'exit-on-error':false}}", read_uri);
+        status = a_incoming_terminal(to.qts);
+        rejected = !strcmp(status, "failed");
+        if (rejected) {
+            /* Rejection must not publish the valid mirrored capture state. */
+            g_assert_cmpuint(a_private_syndrome(to.qts, A_FIXTURE), ==, 0x1aa);
+            g_assert_true(a_captured(to.qts, A_FIXTURE));
+        } else {
+            g_assert_cmpuint(a_private_syndrome(to.qts, A_FIXTURE), ==, 0x155);
+        }
+        a_quit(&to);
+        g_unlink(file);
+        g_test_message("register-image case %u: %s", kind, status);
+        g_assert_cmpint(rejected, ==, kind != 0);
+    }
+    g_unlink(stream);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4081,6 +4273,12 @@ int main(int argc, char **argv)
     qtest_add_func("/r12000a/instance-isolation",
                    test_r12000a_instance_isolation);
     qtest_add_func("/r12000a/count-clock", test_r12000a_count_clock);
+    qtest_add_data_func("/r12000a/mixed-common-first", GINT_TO_POINTER(0),
+                        test_r12000a_mixed_execution);
+    qtest_add_data_func("/r12000a/mixed-a-first", GINT_TO_POINTER(1),
+                        test_r12000a_mixed_execution);
+    qtest_add_func("/r12000a/migration-register-image",
+                   test_r12000a_migration_register_image);
     qtest_add_func("/r12000a/migration", test_r12000a_migration);
     qtest_add_func("/r12000a/migration-mismatch",
                    test_r12000a_migration_mismatch);

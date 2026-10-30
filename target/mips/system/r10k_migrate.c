@@ -641,6 +641,10 @@ int mips_r10k_profile_post_load(MIPSCPU *cpu)
     if (mips_r12000_profile_active(cpu)) {
         if (!profile->migration_r12000_profile_seen ||
             profile->migration_r12000_variant != profile->r12000a ||
+            env->CP0_PRid != env->cpu_model->CP0_PRid ||
+            env->active_fpu.fcr0 != env->cpu_model->CP1_fcr0 ||
+            ((env->CP0_Config0 ^ env->cpu_model->CP0_Config0) &
+             env->cpu_model->CP0_Config0_preserve_bitmask) ||
             profile->migration_r12000_syndrome > 0x1ff ||
             profile->migration_r12000_captured > 1 ||
             (!profile->migration_r12000_captured &&

@@ -7,6 +7,7 @@
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-clock.h"
 #include "qapi/error.h"
 #include "qemu/cutils.h"
 #include "system/qtest.h"
@@ -23,6 +24,7 @@ struct MipsCpuExceptionFixtureState {
     CPUState *cpu;
     qemu_irq cache_error_complete;
     uint32_t cpu_index;
+    char *create_variant;
     MemoryRegion attribute_probe;
     uint64_t attribute_probe_base;
     MemoryRegion upper_probe;
@@ -122,6 +124,115 @@ static void mips_cpu_exception_fixture_cold_reset(void *opaque, int n,
     }
 }
 
+/* Test scheduling only: both CPUs execute the same RAM instructions. */
+typedef struct FixtureContext {
+    uint64_t pc;
+    uint64_t mailbox;
+} FixtureContext;
+
+static void fixture_context_work(CPUState *cs, run_on_cpu_data data)
+{
+    const FixtureContext *context = data.host_ptr;
+
+    cpu_set_pc(cs, context->pc);
+    MIPS_CPU(cs)->env.active_tc.gpr[26] = context->mailbox;
+}
+
+static void fixture_context_set(Object *obj, const char *value, Error **errp)
+{
+    MipsCpuExceptionFixtureState *s = MIPS_CPU_EXCEPTION_FIXTURE(obj);
+    g_auto(GStrv) words = g_strsplit(value, " ", -1);
+    FixtureContext context;
+
+    if (!DEVICE(obj)->realized || g_strv_length(words) != 2 ||
+        qemu_strtou64(words[0], NULL, 0, &context.pc) ||
+        qemu_strtou64(words[1], NULL, 0, &context.mailbox) ||
+        ((context.pc | context.mailbox) & 3)) {
+        error_setg(errp, "expected realized fixture and aligned PC/mailbox");
+        return;
+    }
+    run_on_cpu(s->cpu, fixture_context_work, RUN_ON_CPU_HOST_PTR(&context));
+}
+
+static void fixture_halted_work(CPUState *cs, run_on_cpu_data data)
+{
+    cs->halted = data.host_int;
+}
+
+static void fixture_halted_set(Object *obj, bool value, Error **errp)
+{
+    MipsCpuExceptionFixtureState *s = MIPS_CPU_EXCEPTION_FIXTURE(obj);
+
+    if (!DEVICE(obj)->realized) {
+        error_setg(errp, "CPU scheduling requires realized test fixture");
+        return;
+    }
+    run_on_cpu(s->cpu, fixture_halted_work, RUN_ON_CPU_HOST_INT(value));
+}
+
+static char *fixture_translation_key(Object *obj, Error **errp)
+{
+    MipsCpuExceptionFixtureState *s = MIPS_CPU_EXCEPTION_FIXTURE(obj);
+    TCGTBCPUState key =
+        CPU_GET_CLASS(s->cpu)->tcg_ops->get_tb_cpu_state(s->cpu);
+
+    return g_strdup_printf("%" PRIx64 " %u %u", (uint64_t)key.pc, key.flags,
+                            s->cpu->tcg_cflags);
+}
+
+static bool fixture_create_variant(MipsCpuExceptionFixtureState *s,
+                                    Error **errp)
+{
+    static const char *const inputs[] = {
+        "r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
+        "r12000-scache-bytes", "r12000-scache-block-words",
+    };
+    MIPSCPU *reference = MIPS_CPU(s->cpu);
+    DeviceState *device;
+    Error *error = NULL;
+
+    if (strcmp(object_get_typename(OBJECT(reference)),
+               MIPS_CPU_TYPE_NAME("R12000"))) {
+        error_setg(errp, "mixed-variant fixture requires R12000 reference CPU");
+        return false;
+    }
+    device = qdev_new(object_get_typename(OBJECT(reference)));
+    object_property_add_child(OBJECT(s), "variant-cpu", OBJECT(device));
+    object_unref(OBJECT(device));
+    for (unsigned int i = 0; i < ARRAY_SIZE(inputs); i++) {
+        uint64_t value = object_property_get_uint(OBJECT(reference), inputs[i],
+                                                   &error);
+        if (error) {
+            goto fail;
+        }
+        object_property_set_uint(OBJECT(device), inputs[i], value, &error);
+        if (error) {
+            goto fail;
+        }
+    }
+    object_property_set_str(OBJECT(device), "r12000-variant", s->create_variant,
+                            &error);
+    if (error) {
+        goto fail;
+    }
+    object_property_set_bool(OBJECT(device), "big-endian",
+                             reference->is_big_endian, &error);
+    if (error) {
+        goto fail;
+    }
+    qdev_connect_clock_in(device, "clk-in", reference->clock);
+    if (!qdev_realize(device, NULL, &error)) {
+        goto fail;
+    }
+    s->cpu = CPU(device);
+    cpu_mips_irq_init_cpu(MIPS_CPU(device));
+    cpu_mips_clock_init(MIPS_CPU(device));
+    return true;
+fail:
+    error_propagate(errp, error);
+    return false;
+}
+
 static void mips_cpu_exception_fixture_soft_reset_work(CPUState *cs,
                                                        run_on_cpu_data data)
 {
@@ -181,6 +292,9 @@ static void mips_cpu_exception_fixture_realize(DeviceState *dev, Error **errp)
                    " cannot find CPU %u", s->cpu_index);
         return;
     }
+    if (s->create_variant && !fixture_create_variant(s, errp)) {
+        return;
+    }
     if (s->attribute_probe_base != UINT64_MAX) {
         memory_region_init_io(&s->attribute_probe, OBJECT(s),
                                &mips_cpu_attribute_probe_ops, s,
@@ -199,6 +313,8 @@ static void mips_cpu_exception_fixture_realize(DeviceState *dev, Error **errp)
 }
 
 static const Property mips_cpu_exception_fixture_properties[] = {
+    DEFINE_PROP_STRING("create-r12000-variant", MipsCpuExceptionFixtureState,
+                       create_variant),
     DEFINE_PROP_UINT32("cpu-index", MipsCpuExceptionFixtureState,
                        cpu_index, 0),
     DEFINE_PROP_UINT64("attribute-probe-base", MipsCpuExceptionFixtureState,
@@ -232,6 +348,10 @@ static void mips_cpu_exception_fixture_class_init(ObjectClass *oc,
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
+    object_class_property_add_str(oc, "ram-context", NULL, fixture_context_set);
+    object_class_property_add_bool(oc, "test-halted", NULL, fixture_halted_set);
+    object_class_property_add_str(oc, "translation-key",
+                                  fixture_translation_key, NULL);
     object_class_property_add_str(oc, "secondary-report", NULL,
                                   mips_cpu_exception_fixture_secondary_report);
     object_class_property_add_str(oc, "secondary-syndrome",
