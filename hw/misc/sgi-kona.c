@@ -990,7 +990,24 @@ static uint64_t sgi_kona_fb_capacity(const SGIKonaState *s)
 {
     uint64_t rms = MAX(s->config.rm_count, 1);
 
-    return rms * SGI_KONA_RM_PIXEL_BYTES / (s->config.pixel_depth ? 16 : 8);
+    return rms * SGI_KONA_RM_PIXEL_BYTES / 8;
+}
+
+/*
+ * The pipe firmware's budget for a managed area: raster managers x
+ * 20,971,520 / (height x width rounded up to 160). Small pixels need 8,
+ * Medium 16, Large 32, Extra-Large 64 (the command grammar datasheet's
+ * "SetupFrameBuffer on the ARM"; board sets 2 and 6 count differently, and
+ * the model presents neither).
+ */
+static uint64_t sgi_kona_fb_budget(const SGIKonaState *s, uint32_t width,
+                                   uint32_t height)
+{
+    uint64_t area = (uint64_t)QEMU_ALIGN_UP(width, SGI_KONA_FB_TILE_WIDTH) *
+                    height;
+
+    return area ? (uint64_t)MAX(s->config.rm_count, 1) *
+                  SGI_KONA_RM_PIXEL_BYTES / area : 0;
 }
 
 static bool sgi_kona_managed_fits(const SGIKonaState *s, uint32_t width,
@@ -1043,6 +1060,14 @@ static void sgi_kona_managed_resize(SGIKonaState *s, uint32_t width,
                                     uint32_t height)
 {
     if (width == s->fb_width && height == s->fb_height) {
+        return;
+    }
+    if (!width || !height || width > SGI_KONA_FB_MAX_DIMENSION ||
+        height > SGI_KONA_FB_MAX_DIMENSION) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: managed area %ux%u is past the "
+                      "model's %u-pixel bound on a side; kept at %dx%d\n",
+                      width, height, SGI_KONA_FB_MAX_DIMENSION, s->fb_width,
+                      s->fb_height);
         return;
     }
     if (!sgi_kona_managed_fits(s, width, height)) {
@@ -3225,8 +3250,8 @@ static void sgi_kona_config_block(const SGIKonaState *s, unsigned base,
     stl_be_p(block + SGI_KONA_CFG_ACTIVE_ENGINES, c->geometry->engines);
     stl_be_p(block + SGI_KONA_CFG_ACTIVE_RMS, c->rm_count);
     stl_be_p(block + SGI_KONA_CFG_OCCUPANCY, c->geometry->occupancy);
-    stl_be_p(block + SGI_KONA_CFG_WIDTH, s->fb_width);
-    stl_be_p(block + SGI_KONA_CFG_HEIGHT, s->fb_height);
+    stl_be_p(block + SGI_KONA_CFG_WIDTH, s->cfg_width);
+    stl_be_p(block + SGI_KONA_CFG_HEIGHT, s->cfg_height);
     stl_be_p(block + SGI_KONA_CFG_PIXEL_DEPTH, c->pixel_depth);
 
     stl_be_p(block + SGI_KONA_CFG_BOARD_WORD, c->geometry->board_word);
@@ -3308,8 +3333,8 @@ static void sgi_kona_build_config(SGIKonaState *s, uint8_t *block)
             stl_be_p(block + sgi_kona_config_fields[i].offset,
                      sgi_kona_config_fields[i].value);
         }
-        stl_be_p(block + SGI_KONA_CFG_WIDTH, s->fb_width);
-        stl_be_p(block + SGI_KONA_CFG_HEIGHT, s->fb_height);
+        stl_be_p(block + SGI_KONA_CFG_WIDTH, s->cfg_width);
+        stl_be_p(block + SGI_KONA_CFG_HEIGHT, s->cfg_height);
     }
     for (size_t i = 0; i < ARRAY_SIZE(sgi_kona_pools); i++) {
         SGIKonaPoolDescriptor pool = sgi_kona_pools[i];
@@ -3975,6 +4000,41 @@ static void sgi_kona_video_temp_blank(SGIKonaState *s, uint32_t blank)
  * LoadFormat included: each channel's console updates at the model's
  * one retrace rate.
  */
+/*
+ * SetupFrameBuffer [width, height, pixel depth], as the pipe's firmware
+ * runs it (the command grammar datasheet's "SetupFrameBuffer on the ARM",
+ * established). It never replies. A budget below Small's, or a named depth
+ * (0 to 3) the budget does not cover, raises the error flag, which stops a
+ * stored combination; -1, -2 and other values pick a depth that fits. The
+ * size is the managed area from then on, but configuration block +0x84
+ * and +0x88 take it only at the end of a start (sgi_kona_dg_start()).
+ *
+ * Approximated: the firmware stores a size past the budget all the same;
+ * the model keeps drawing the last size its planes hold, logged. And the
+ * pixel-depth code at +0x8c stays the configured one, since the model
+ * presents the visuals of that depth alone; a word naming another is
+ * logged.
+ */
+static void sgi_kona_setup_frame_buffer(SGIKonaState *s, uint32_t width,
+                                        uint32_t height, uint32_t depth)
+{
+    static const uint8_t need[] = { 8, 16, 32, 64 };
+    uint64_t budget = sgi_kona_fb_budget(s, width, height);
+
+    if (budget < need[0]) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: not enough raster "
+                      "managers for Small pixels at %ux%u\n", width, height);
+        s->dg_error = true;
+    } else if (depth < ARRAY_SIZE(need) && budget < need[depth]) {
+        s->dg_error = true;
+    }
+    if (depth < ARRAY_SIZE(need) && depth != s->config.pixel_depth) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: pixel depth %u: the pipe "
+                      "presents depth %u\n", depth, s->config.pixel_depth);
+    }
+    sgi_kona_managed_resize(s, width, height);
+}
+
 static void sgi_kona_cursor_update(SGIKonaState *s);
 
 static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
@@ -3995,16 +4055,7 @@ static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
     case SGI_KONA_VIDEO_BIND_TO_X_WINDOW:
         break;
     case SGI_KONA_VIDEO_SETUP_FRAME_BUFFER:
-        /*
-         * [width, height, pixel depth]. The depth stays the configured
-         * one: the model presents the visuals of that depth alone.
-         */
-        if (d[2] != s->config.pixel_depth) {
-            qemu_log_mask(LOG_UNIMP, "sgi-kona: pixel depth %u: the pipe "
-                          "presents depth %u\n", d[2],
-                          s->config.pixel_depth);
-        }
-        sgi_kona_managed_resize(s, d[0], d[1]);
+        sgi_kona_setup_frame_buffer(s, d[0], d[1], d[2]);
         return;
     default:
         return;
@@ -4021,7 +4072,6 @@ static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
     case SGI_KONA_VIDEO_DISABLE_CHANNEL:
         ch->enabled = false;
         ch->loaded = false;
-        memset(ch->format_name, 0, sizeof(ch->format_name));
         break;
     case SGI_KONA_VIDEO_LOAD_FORMAT:
         if (!d[23] || !d[24] || d[23] > SGI_SCANOUT_MAX_DIM ||
@@ -4165,77 +4215,229 @@ static void sgi_kona_video_word(SGIKonaState *s, uint32_t word)
 }
 
 /*
- * The video format combination stored in the flash (op 1 type 1, behind
- * SGI_KONA_FLASH_COMBO_MARKER and its word count), run when the ARM is
- * released after a firmware load: ircombine and setmon store a
- * combination there to be "used the next time graphics is initialized or
- * the system is powered up" (ircombine(1G)), and gfxinit, which
- * initializes graphics, reads none of it back (observed), so the pipe
- * runs it itself (inferred). Its words are video commands framed as on
- * the command page after 0x1a6, the command, its data words and their
- * checksum (observed in the X server's stored combinations, every
- * checksum matching), and each is applied as one sent there would be.
+ * Starting the pipe's firmware: what the ARM does each time the loader
+ * releases it after a firmware load (+0x800328 = 1), from the command
+ * grammar datasheet's "What the ARM does with a stored combination"
+ * (established from the shipped ARM firmware; that the release is the
+ * start is inferred). It rebuilds the display generator's default state,
+ * blanks every channel and runs the video format combination stored in the
+ * flash (op 1 type 1, behind SGI_KONA_FLASH_COMBO_MARKER and its word
+ * count) or, when the image is rejected or a command in it raises the
+ * error flag, rebuilds again and runs its built-in fallback combination.
+ * Only then does configuration block +0x84 and +0x88 take the managed
+ * size, so the X server, which sizes its screen from the block, sees the
+ * combination that ran. ircombine's eeprom destination and setmon -x store
+ * the image; gfxinit, which initializes graphics, reads none of it back.
  *
- * Approximated: when the pipe runs it, and that it runs on whatever the
- * display shows rather than from a reset state (each stored combination
- * starts by disabling every channel). A command that would answer, or one
- * the stored words end inside, stops the run, logged: no stored
- * combination has either. Nothing runs at a system reset, which leaves
- * the 1280x1024 single-channel display the PROM expects until graphics
- * is initialized.
+ * The stored words are video commands framed as on the command page after
+ * 0x1a6: the command, its data words and their checksum. The image is
+ * accepted only whole: a word count below 0x8000, and every command known,
+ * with the data-word count of the model's video command table, and its
+ * checksum matching.
+ *
+ * Approximated: the default-state rebuild is the model's reset channel
+ * state with every channel disabled and blanked and its format name
+ * cleared (the firmware's rebuild clears the name's first word and the
+ * date stamp, among other work); a command the table gives no length for
+ * rejects the image, where the firmware has a count for each; a Get in
+ * the image is run for no effect and posts no reply; a per-channel command
+ * naming a channel the board does not have is logged, where the firmware
+ * skips the option-board channels 0xc6, 0xc7 and 0xe6 until a second pass
+ * at XServerVideoInit, which the model does not run; and a system reset
+ * runs nothing, where a pipe's power-up program also runs the image before
+ * the PROM.
  */
-static void sgi_kona_flash_run_combination(SGIKonaState *s)
+static bool sgi_kona_dg_image_valid(const uint32_t *words, uint32_t count)
 {
-    uint32_t at = SGI_KONA_FLASH_COMBO + 8, count, end;
-    uint32_t saved_data[SGI_KONA_VIDEO_MAX_DATA_WORDS];
-    bool saved_open = s->video_open;
-    uint32_t saved_command = s->video_command;
-    uint32_t saved_have = s->video_have;
-    uint32_t saved_first = s->video_first;
-    uint32_t saved_tail_sum = s->video_tail_sum;
+    for (uint32_t at = 0; at < count;) {
+        uint32_t length = sgi_kona_video_data_words(words[at]);
+        uint32_t sum = words[at];
 
-    if (sgi_kona_flash_load(s, SGI_KONA_FLASH_COMBO) !=
-        SGI_KONA_FLASH_COMBO_MARKER) {
-        return;
+        if (words[at] >= sgi_kona_video_num_commands ||
+            length == SGI_KONA_VIDEO_DATA_UNKNOWN ||
+            length > SGI_KONA_VIDEO_MAX_DATA_WORDS ||
+            length + 1 >= count - at) {
+            return false;
+        }
+        for (uint32_t i = 1; i <= length; i++) {
+            sum += words[at + i];
+        }
+        if (sum != words[at + length + 1]) {
+            return false;
+        }
+        at += length + 2;
     }
-    count = sgi_kona_flash_load(s, SGI_KONA_FLASH_COMBO + 4);
-    if (count > SGI_KONA_FLASH_MAX_WORDS) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: stored combination of %"
-                      PRIu32 " words is longer than a write stores; not "
-                      "run\n", count);
-        return;
-    }
-    trace_sgi_kona_flash_combination(count);
-    memcpy(saved_data, s->video_data, sizeof(saved_data));
-    end = at + 4 * count;
-    while (at < end) {
-        uint32_t command = sgi_kona_flash_load(s, at);
+    return true;
+}
+
+/*
+ * Run a combination @valid already accepted, command by command, as the
+ * firmware's runner does; false when a command raises the error flag.
+ */
+static bool sgi_kona_dg_run(SGIKonaState *s, const uint32_t *words,
+                            uint32_t count)
+{
+    s->dg_error = false;
+    for (uint32_t at = 0; at < count;) {
+        uint32_t command = words[at];
+        uint32_t length = sgi_kona_video_data_words(command);
         const SGIKonaVideoCommand *v = sgi_kona_video_lookup(command);
 
-        at += 4;
-        if (v && v->reply_id != SGI_KONA_VIDEO_NO_REPLY) {
-            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: stored combination "
-                          "asks video command 0x%" PRIx32 " for a reply; "
-                          "stopped\n", command);
-            break;
+        memset(s->video_data, 0, sizeof(s->video_data));
+        memcpy(s->video_data, &words[at + 1], length * sizeof(uint32_t));
+        s->video_first = length ? words[at + 1] : 0;
+        trace_sgi_kona_video_command(command, v->name, s->video_first,
+                                     words[at + length + 1]);
+        if (command == SGI_KONA_VIDEO_TEMP_BLANK) {
+            sgi_kona_video_temp_blank(s, s->video_first);
         }
-        sgi_kona_video_open(s, command);
-        while (s->video_open && at < end) {
-            sgi_kona_video_word(s, sgi_kona_flash_load(s, at));
-            at += 4;
+        sgi_kona_video_setter(s, command);
+        if (s->dg_error) {
+            return false;
         }
-        if (s->video_open) {
+        at += length + 2;
+    }
+    return true;
+}
+
+/* The display generator's default state, every channel blanked. */
+static void sgi_kona_dg_default_state(SGIKonaState *s)
+{
+    for (unsigned c = 0; c < SGI_KONA_MAX_CHANNELS; c++) {
+        SGIKonaChannel *ch = &s->channel[c];
+
+        ch->enabled = false;
+        ch->loaded = false;
+        ch->blanked = true;
+        memset(ch->format_name, 0, sizeof(ch->format_name));
+    }
+}
+
+/* Append video command @command, @data and their checksum to @image. */
+static void sgi_kona_dg_append(GArray *image, uint32_t command,
+                               const uint32_t *data, unsigned count)
+{
+    uint32_t sum = command;
+
+    g_array_append_val(image, command);
+    for (unsigned i = 0; i < count; i++) {
+        g_array_append_val(image, data[i]);
+        sum += data[i];
+    }
+    g_array_append_val(image, sum);
+}
+
+/* LoadFormat for @channel, named @name and @stamp, 1280x1024 at 60 Hz. */
+static void sgi_kona_dg_append_format(GArray *image, uint32_t channel,
+                                      const char *name, uint32_t stamp)
+{
+    uint32_t format[383] = { channel, 1 };
+    char padded[64] = { 0 };
+
+    memcpy(padded, name, strlen(name));
+    for (unsigned w = 0; w < 16; w++) {
+        format[2 + w] = ldl_be_p(padded + 4 * w);
+    }
+    format[18] = stamp;
+    format[19] = 60 << 16;
+    format[20] = 1;
+    format[21] = 1065;
+    format[22] = 1680;
+    format[23] = 1024;
+    format[24] = 1280;
+    sgi_kona_dg_append(image, 0x16, format, ARRAY_SIZE(format));
+}
+
+/*
+ * The firmware's built-in fallback combination, as the datasheet's "The
+ * built-in fallback combination" gives its commands (established): a
+ * 1280x1024 managed area, channel 0 showing 1280x1024_60.vfo, channel 1
+ * named 640x486_30i.vfo with channel 0's timing, taking channel 0's timing
+ * and blanked. Approximated: only the commands the model gives meaning
+ * are built, so not the clock, encoder, gamma, sync, gain, pedestal and
+ * phase settings or the commands for option channel 30; LoadFormat's words
+ * past the size and rate are zero; channel 1's Resize, which the datasheet
+ * does not give, takes the 640x486 its Vampire names at (0, 0); and the
+ * cursor priorities, also not given, stay 0.
+ */
+static GArray *sgi_kona_dg_fallback(void)
+{
+    GArray *image = g_array_new(false, false, sizeof(uint32_t));
+
+    for (uint32_t c = 0; c < 2; c++) {
+        sgi_kona_dg_append(image, SGI_KONA_VIDEO_DISABLE_CHANNEL, &c, 1);
+        sgi_kona_dg_append(image, SGI_KONA_VIDEO_CHANNEL_BLANKING,
+                           (uint32_t[]){ c, 1 }, 2);
+    }
+    sgi_kona_dg_append(image, SGI_KONA_VIDEO_SETUP_FRAME_BUFFER,
+                       (uint32_t[]){ 1280, 1024, UINT32_MAX }, 3);
+    sgi_kona_dg_append_format(image, 0, "1280x1024_60.vfo", 0x31ea4b22);
+    sgi_kona_dg_append(image, SGI_KONA_VIDEO_VAMPIRE,
+                       (uint32_t[]){ 0, 0, 1280, 1024, 0, 5, 3 }, 7);
+    sgi_kona_dg_append(image, SGI_KONA_VIDEO_RESIZE,
+                       (uint32_t[]){ 0, 0, 1023, 1280, 1024, 1, 1, 0 }, 8);
+    sgi_kona_dg_append(image, SGI_KONA_VIDEO_CHANNEL_BLANKING,
+                       (uint32_t[]){ 0, 0 }, 2);
+    sgi_kona_dg_append_format(image, 1, "640x486_30i.vfo", 0x31ea4b3c);
+    sgi_kona_dg_append(image, SGI_KONA_VIDEO_VAMPIRE,
+                       (uint32_t[]){ 1, 0, 640, 486, 1, 5, 3 }, 7);
+    sgi_kona_dg_append(image, SGI_KONA_VIDEO_RESIZE,
+                       (uint32_t[]){ 1, 0, 1023, 640, 486, 1, 1, 0 }, 8);
+    sgi_kona_dg_append(image, SGI_KONA_VIDEO_CHANNEL_BLANKING,
+                       (uint32_t[]){ 1, 1 }, 2);
+    sgi_kona_dg_append(image, SGI_KONA_VIDEO_ENABLE_CHANNEL,
+                       (uint32_t[]){ 1, 1, 0 }, 3);
+    sgi_kona_dg_append(image, SGI_KONA_VIDEO_ENABLE_CHANNEL,
+                       (uint32_t[]){ 1, 0, 0 }, 3);
+    sgi_kona_dg_append(image, SGI_KONA_VIDEO_ENABLE_CHANNEL,
+                       (uint32_t[]){ 0, 1, 0 }, 3);
+    sgi_kona_dg_append(image, SGI_KONA_VIDEO_ENABLE_CHANNEL,
+                       (uint32_t[]){ 0, 0, 1 }, 3);
+    return image;
+}
+
+static void sgi_kona_dg_start(SGIKonaState *s)
+{
+    uint32_t saved_data[SGI_KONA_VIDEO_MAX_DATA_WORDS];
+    uint32_t saved_first = s->video_first;
+    g_autofree uint32_t *words = NULL;
+    uint32_t count = 0;
+    bool ran = false;
+
+    memcpy(saved_data, s->video_data, sizeof(saved_data));
+    sgi_kona_dg_default_state(s);
+    if (sgi_kona_flash_load(s, SGI_KONA_FLASH_COMBO) ==
+        SGI_KONA_FLASH_COMBO_MARKER) {
+        count = sgi_kona_flash_load(s, SGI_KONA_FLASH_COMBO + 4);
+        if (count >= 0x8000) {
+            count = 0;
+        }
+        words = g_new(uint32_t, MAX(count, 1));
+        for (uint32_t i = 0; i < count; i++) {
+            words[i] = sgi_kona_flash_load(s,
+                                           SGI_KONA_FLASH_COMBO + 8 + 4 * i);
+        }
+        trace_sgi_kona_flash_combination(count);
+        ran = count && sgi_kona_dg_image_valid(words, count) &&
+              sgi_kona_dg_run(s, words, count);
+        if (!ran) {
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: stored combination "
-                          "ends inside video command 0x%" PRIx32 "\n",
-                          command);
-            break;
+                          "of %u words failed to load; running the "
+                          "built-in one\n", count);
+            sgi_kona_dg_default_state(s);
         }
     }
-    s->video_open = saved_open;
-    s->video_command = saved_command;
-    s->video_have = saved_have;
+    if (!ran) {
+        g_autoptr(GArray) fallback = sgi_kona_dg_fallback();
+
+        trace_sgi_kona_dg_fallback();
+        sgi_kona_dg_run(s, (uint32_t *)fallback->data, fallback->len);
+    }
+    s->cfg_width = s->fb_width;
+    s->cfg_height = s->fb_height;
+    sgi_kona_channels_apply(s);
+    sgi_kona_cursor_update(s);
     s->video_first = saved_first;
-    s->video_tail_sum = saved_tail_sum;
     memcpy(s->video_data, saved_data, sizeof(saved_data));
 }
 
@@ -19389,7 +19591,7 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
         s->loader_328 = value;
         trace_sgi_kona_loader_register(addr, value);
         if (value == 1) {
-            sgi_kona_flash_run_combination(s);
+            sgi_kona_dg_start(s);
         }
         break;
     case SGI_KONA_DMA_FIFO_PUSH:
@@ -20124,6 +20326,8 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
     s->fb_capacity = sgi_kona_fb_capacity(s);
     s->fb_width = SGI_KONA_FB_WIDTH;
     s->fb_height = SGI_KONA_FB_HEIGHT;
+    s->cfg_width = SGI_KONA_FB_WIDTH;
+    s->cfg_height = SGI_KONA_FB_HEIGHT;
     sgi_kona_board_memory_init(s);
     planes = (SGIKonaMesaPlanes) {
         .front = s->plane_front,
@@ -21082,6 +21286,8 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
      */
     s->fb_width = SGI_KONA_FB_WIDTH;
     s->fb_height = SGI_KONA_FB_HEIGHT;
+    s->cfg_width = SGI_KONA_FB_WIDTH;
+    s->cfg_height = SGI_KONA_FB_HEIGHT;
     sgi_kona_managed_layout(s);
     memset(s->mem.bytes, 0, s->mem.bytes_len);
     memset(s->desktop_mem.bytes, 0, s->desktop_mem.bytes_len);
@@ -21244,6 +21450,8 @@ static int sgi_kona_cursor_pre_load(void *opaque)
     /* And the managed-area one only once a combination resized it. */
     s->fb_width = SGI_KONA_FB_WIDTH;
     s->fb_height = SGI_KONA_FB_HEIGHT;
+    s->cfg_width = SGI_KONA_FB_WIDTH;
+    s->cfg_height = SGI_KONA_FB_HEIGHT;
     sgi_kona_managed_layout(s);
     return 0;
 }

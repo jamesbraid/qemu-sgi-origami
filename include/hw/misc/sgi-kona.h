@@ -2020,6 +2020,17 @@ struct SGIKonaState {
     uint64_t fb_capacity;
 
     /*
+     * The managed size configuration block +0x84 and +0x88 report: the
+     * size the last start of the pipe's firmware left (see
+     * sgi_kona_dg_start()), not a live SetupFrameBuffer's. dg_error is the
+     * display generator's error flag, which an over-budget
+     * SetupFrameBuffer raises and the stored-combination runner checks;
+     * it matters only inside one start, so it is not migrated.
+     */
+    int32_t cfg_width, cfg_height;
+    bool dg_error;
+
+    /*
      * Display-list work that outlasts the store that started it. A list a
      * processor invokes runs in slices of host time, the first inside the
      * store and the rest on the board's thread (hw/display/sgi/head-work.c),
