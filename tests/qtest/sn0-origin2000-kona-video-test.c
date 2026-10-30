@@ -750,10 +750,11 @@ static uint32_t kona_config_word(QTestState *s, unsigned offset)
  * SetupFrameBuffer [width, height, depth] sizes the managed area when the
  * raster managers hold it: one raster manager holds 20,971,520 / 8 pixels
  * at Small, which 2560x1024 fills and 2560x2048 overflows. The overflow is
- * logged and changes nothing; 2560x1024 changes the configuration block's
- * width and height (+0x84, +0x88), from which the X server sizes its
- * screen, and GetResize's pan rectangle and largest size. A reset returns
- * to 1280x1024.
+ * logged and the area stays; 2560x1024 sets GetResize's pan rectangle and
+ * largest size. Configuration block +0x84 and +0x88, from which the X
+ * server sizes its screen, keep the size of the last start (1280x1024
+ * after a reset) until the firmware next starts. A side past the model's
+ * 8192-pixel bound is logged on its own. A reset returns to 1280x1024.
  */
 static void test_setup_frame_buffer_sizes_managed_area(void)
 {
@@ -764,12 +765,13 @@ static void test_setup_frame_buffer_sizes_managed_area(void)
 
     kona_register_return_page(s, RETURN_PAGE);
     video_send(s, 0x08, (uint32_t[]){ 2560, 2048, 0 }, 3);
-    g_assert_cmphex(kona_config_word(s, 0x84), ==, 1280);
-    g_assert_cmphex(kona_config_word(s, 0x88), ==, 1024);
+    video_get(s, GET_RESIZE, 1, 8, reply, 18);
+    g_assert_cmphex(reply[12], ==, 1280);
+    video_send(s, 0x08, (uint32_t[]){ 9000, 200, 0 }, 3);
+    video_get(s, GET_RESIZE, 1, 8, reply, 18);
+    g_assert_cmphex(reply[12], ==, 1280);
 
     video_send(s, 0x08, (uint32_t[]){ 2560, 1024, 0 }, 3);
-    g_assert_cmphex(kona_config_word(s, 0x84), ==, 2560);
-    g_assert_cmphex(kona_config_word(s, 0x88), ==, 1024);
     video_get(s, GET_RESIZE, 1, 8, reply, 18);
     g_assert_cmphex(reply[4], ==, 0);
     g_assert_cmphex(reply[5], ==, 1023);
@@ -777,13 +779,19 @@ static void test_setup_frame_buffer_sizes_managed_area(void)
     g_assert_cmphex(reply[7], ==, 1024);
     g_assert_cmphex(reply[12], ==, 2560);
     g_assert_cmphex(reply[13], ==, 1024);
-
-    qtest_system_reset(s);
     g_assert_cmphex(kona_config_word(s, 0x84), ==, 1280);
     g_assert_cmphex(kona_config_word(s, 0x88), ==, 1024);
+
+    qtest_system_reset(s);
+    kona_register_return_page(s, RETURN_PAGE);
+    video_get(s, GET_RESIZE, 1, 8, reply, 18);
+    g_assert_cmphex(reply[12], ==, 1280);
     qtest_quit(s);
     found = kona_log_read(log);
-    g_assert_nonnull(strstr(found, "managed area 2560x2048 does not fit"));
+    g_assert_nonnull(strstr(found, "not enough raster managers for Small "
+                                   "pixels at 2560x2048"));
+    g_assert_nonnull(strstr(found, "managed area 9000x200 is past the "
+                                   "model's 8192-pixel bound"));
 }
 
 /* LoadFormat for `channel`, 1280x1024 at 60 Hz, named `name`. */
@@ -809,7 +817,8 @@ static void load_named_format(QTestState *s, uint32_t channel,
  * LoadFormat carries the format file's name in words 2-17 and its date
  * stamp in word 18, which GetChannelConfig answers in words 1-16 and 17;
  * the X server looks the name up to print and use the channel's output
- * size and rate. DisableChannel forgets it.
+ * size and rate. DisableChannel stops the channel and keeps the name, as
+ * the pipe's firmware does; only its start-up clears it.
  */
 static void test_load_format_names_channel(void)
 {
@@ -832,9 +841,8 @@ static void test_load_format_names_channel(void)
     video_send(s, 0x18, (uint32_t[]){ 1 }, 1);
     video_get(s, GET_CHANNEL_CONFIG, 1, 7, reply, 19);
     g_assert_cmphex(reply[0], ==, 0x1);
-    for (unsigned w = 1; w < 18; w++) {
-        g_assert_cmphex(reply[w], ==, 0);
-    }
+    g_assert_cmphex(reply[1], ==, 0x31323830);
+    g_assert_cmphex(reply[17], ==, 0x6ae3c3e4);
     qtest_quit(s);
     g_free(kona_log_read(log));
 }
@@ -862,35 +870,68 @@ static void flash_store_combination(QTestState *s, GArray *stream)
     }
 }
 
-/*
- * A combination stored in the flash, as ircombine's eeprom destination and
- * setmon -x store it (the video commands framed as after 0x1a6), runs
- * when the loader releases the ARM after a firmware load (+0x800328 = 1):
- * here SetupFrameBuffer [2560, 1024], then channel 1 disabled, loaded
- * with a named format and placed at (1280, 0). Storing it alone changes
- * nothing. After the release the configuration block says 2560x1024,
- * channel 1 runs (0xd) with its name, and GetResize places it. Erased
- * with op 6, it no longer runs: after a reset and another release the
- * area stays 1280x1024.
- */
-static void test_stored_combination_runs_at_arm_release(void)
+/* The test combination: SetupFrameBuffer @w x @h, then channel 1 at x 1280. */
+static GArray *two_wide_combination(uint32_t w, uint32_t h)
 {
-    g_autofree char *log = NULL;
-    g_autoptr(GArray) stream = g_array_new(false, false, sizeof(uint32_t));
-    QTestState *s = kona_init_dg("dg5-2", &log);
+    GArray *stream = g_array_new(false, false, sizeof(uint32_t));
     uint32_t format[383] = { 1, 1, 0x31323830, 0x78313032, 0x345f3630,
                              0x2e76666f };
-    uint32_t reply[19];
 
     format[19] = 60 << 16;
     format[23] = 1024;
     format[24] = 1280;
     stream_command(stream, 0x18, (uint32_t[]){ 1 }, 1);
-    stream_command(stream, 0x08, (uint32_t[]){ 2560, 1024, 0 }, 3);
+    stream_command(stream, 0x08, (uint32_t[]){ w, h, 0 }, 3);
     stream_command(stream, 0x16, format, ARRAY_SIZE(format));
     stream_command(stream, 0x14,
                    (uint32_t[]){ 1, 1280, 1023, 1280, 1024, 1, 1, 0 }, 8);
     stream_command(stream, 0x17, (uint32_t[]){ 1, 0, 1 }, 3);
+    return stream;
+}
+
+/*
+ * After a start that ran the firmware's built-in fallback: a 1280x1024
+ * block, channel 0 running 1280x1024_60.vfo with date stamp 0x31ea4b22,
+ * channel 1 named 640x486_30i.vfo with 0x31ea4b3c and blanked.
+ */
+static void assert_fallback(QTestState *s)
+{
+    uint32_t reply[19];
+
+    g_assert_cmphex(kona_config_word(s, 0x84), ==, 1280);
+    g_assert_cmphex(kona_config_word(s, 0x88), ==, 1024);
+    video_get(s, GET_CHANNEL_CONFIG, 0, 7, reply, 19);
+    g_assert_cmphex(reply[0], ==, 0xf);
+    g_assert_cmphex(reply[1], ==, 0x31323830);
+    g_assert_cmphex(reply[4], ==, 0x2e76666f);
+    g_assert_cmphex(reply[17], ==, 0x31ea4b22);
+    video_get(s, GET_CHANNEL_CONFIG, 1, 7, reply, 19);
+    g_assert_cmphex(reply[1], ==, 0x36343078);
+    g_assert_cmphex(reply[4], ==, 0x76666f00);
+    g_assert_cmphex(reply[17], ==, 0x31ea4b3c);
+    video_get(s, 0x20, 1, 9, reply, 1);
+    g_assert_cmphex(reply[0], ==, 1);
+    video_get(s, 0x20, 0, 9, reply, 1);
+    g_assert_cmphex(reply[0], ==, 0);
+}
+
+/*
+ * A combination stored in the flash, as ircombine's eeprom destination and
+ * setmon -x store it (the video commands framed as after 0x1a6), runs when
+ * the loader releases the ARM after a firmware load (+0x800328 = 1): here
+ * SetupFrameBuffer [2560, 1024], then channel 1 loaded with a named format
+ * and placed at (1280, 0). Storing it alone changes nothing. After the
+ * release the configuration block says 2560x1024, channel 1 runs (0xd)
+ * with its name, and GetResize places it. A live SetupFrameBuffer then
+ * leaves the block alone until the next start. Erased with op 6, the next
+ * release runs the built-in fallback instead.
+ */
+static void test_stored_combination_runs_at_arm_release(void)
+{
+    g_autofree char *log = NULL;
+    g_autoptr(GArray) stream = two_wide_combination(2560, 1024);
+    QTestState *s = kona_init_dg("dg5-2", &log);
+    uint32_t reply[19];
 
     kona_register_return_page(s, RETURN_PAGE);
     flash_store_combination(s, stream);
@@ -907,17 +948,45 @@ static void test_stored_combination_runs_at_arm_release(void)
     video_get(s, GET_RESIZE, 1, 8, reply, 18);
     g_assert_cmphex(reply[0], ==, 1280);
     g_assert_cmphex(reply[2], ==, 1280);
+    video_send(s, 0x08, (uint32_t[]){ 1280, 1024, 0 }, 3);
+    g_assert_cmphex(kona_config_word(s, 0x84), ==, 2560);
     assert_textport_in_step(s);
 
     kona_command(s, 0x1ec, (uint32_t[]){ 6 }, 1);
-    qtest_system_reset(s);
     qtest_writel(s, KONA_REG(0x800328), 1);
-    g_assert_cmphex(kona_config_word(s, 0x84), ==, 1280);
-    kona_register_return_page(s, RETURN_PAGE);
-    video_get(s, GET_CHANNEL_CONFIG, 1, 7, reply, 19);
-    g_assert_cmphex(reply[0], ==, 0x1);
+    assert_fallback(s);
     qtest_quit(s);
     g_free(kona_log_read(log));
+}
+
+/*
+ * A stored image is checked whole before any of it runs, and a command
+ * that raises the error flag stops it: either way the built-in fallback
+ * runs instead, from the default state. A bad checksum in the last command
+ * keeps the first commands from running too, so the block stays 1280 wide;
+ * a SetupFrameBuffer past the raster managers' budget raises the flag.
+ */
+static void test_bad_stored_combination_falls_back(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    g_autoptr(GArray) bad_sum = two_wide_combination(2560, 1024);
+    g_autoptr(GArray) too_big = two_wide_combination(2560, 2048);
+    QTestState *s = kona_init_dg("dg5-2", &log);
+
+    kona_register_return_page(s, RETURN_PAGE);
+    g_array_index(bad_sum, uint32_t, bad_sum->len - 1)++;
+    flash_store_combination(s, bad_sum);
+    qtest_writel(s, KONA_REG(0x800328), 1);
+    assert_fallback(s);
+
+    flash_store_combination(s, too_big);
+    qtest_writel(s, KONA_REG(0x800328), 1);
+    assert_fallback(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "failed to load; running "
+                                              "the built-in one"), ==, 2);
 }
 
 /*
@@ -1634,6 +1703,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-video/"
                    "stored-combination-runs-at-arm-release",
                    test_stored_combination_runs_at_arm_release);
+    qtest_add_func("sn0/origin2000/kona-video/"
+                   "bad-stored-combination-falls-back",
+                   test_bad_stored_combination_falls_back);
     qtest_add_func("sn0/origin2000/kona-video/zero-data-replies",
                    test_zero_data_replies);
     qtest_add_func("sn0/origin2000/kona-video/migration-mid-video-command",
