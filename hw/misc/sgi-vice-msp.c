@@ -128,15 +128,22 @@ bool sgi_vice_msp_host_read(SGIViceMsp *m, unsigned slot, uint32_t *value)
     return true;
 }
 
-bool sgi_vice_msp_host_write(SGIViceMsp *m, unsigned slot, uint32_t value)
+bool sgi_vice_msp_host_write(SGIViceMsp *m, unsigned slot, uint32_t value,
+                             uint32_t mask)
 {
     int64_t elapsed;
 
     switch (slot) {
     case 0x40:
-        if (value & ~3U) {
+        if (value & mask & ~3U) {
             return held(m, "MSP reserved control", m->decode_pc);
         }
+        if (!(mask & 3)) {
+            return true;
+        }
+        /* Read-running is state, not an unwritten GO command. */
+        value = ((m->reset_held ? 0 : 2 | m->running) & ~mask) |
+                (value & mask);
         if (!(value & 2)) {
             if (!m->reset_held) {
                 sgi_vice_msp_reset(m);
@@ -150,13 +157,13 @@ bool sgi_vice_msp_host_write(SGIViceMsp *m, unsigned slot, uint32_t value)
                 (unsigned __int128)16 * clock_get(m->clock)) {
                 return held(m, "MSP short or unstable reset release", 0);
             }
-            if ((value & 1) && !m->fresh_pc) {
+            if ((mask & value & 1) && !m->fresh_pc) {
                 return held(m, "MSP start requires fresh PC", 0);
             }
             m->reset_held = false;
             m->model_blocked = false;
         }
-        if (value & 1) {
+        if (mask & value & 1) {
             if (!m->ops->admitted(m->opaque) || m->running ||
                 m->draining || !m->fresh_pc) {
                 return held(m, "MSP start admission", m->decode_pc);
@@ -175,7 +182,7 @@ bool sgi_vice_msp_host_write(SGIViceMsp *m, unsigned slot, uint32_t value)
             m->previous_dest = 0;
             m->penalty = 0;
             next_tick(m, true);
-        } else if (m->running) {
+        } else if ((mask & 1) && m->running) {
             m->draining = true;
             m->fresh_pc = false;
             if (empty(m)) {
@@ -184,17 +191,24 @@ bool sgi_vice_msp_host_write(SGIViceMsp *m, unsigned slot, uint32_t value)
         }
         return true;
     case 0x48:
-        m->flags = value;
+        mask &= 0xff;
+        m->flags = (m->flags & ~mask) | (value & mask);
         return true;
     case 0x50:
+        mask &= PC_MASK;
+        if (!mask) {
+            return true;
+        }
         if (m->running || m->draining) {
             return held(m, "MSP active fetch-PC write", m->decode_pc);
         }
-        m->fetch_pc = value & PC_MASK;
+        /* Fetch is writable; decode remains the independent read view. */
+        m->fetch_pc = (m->fetch_pc & ~mask) | (value & mask);
         m->fresh_pc = true;
         return true;
     case 0x60:
-        m->watch = value & ~7U;
+        mask &= ~7U;
+        m->watch = (m->watch & ~mask) | (value & mask);
         return true;
     default:
         return held(m, "MSP read-only register write", m->decode_pc);
