@@ -793,6 +793,8 @@ static void test_setup_frame_buffer_sizes_managed_area(void)
     g_assert_cmphex(reply[5], ==, 1023);
     g_assert_cmphex(reply[6], ==, 1280);
     g_assert_cmphex(reply[7], ==, 1024);
+    g_assert_cmphex(reply[8], ==, 0xa0);
+    g_assert_cmphex(reply[9], ==, 1);
     g_assert_cmphex(reply[12], ==, 2560);
     g_assert_cmphex(reply[13], ==, 1024);
     g_assert_cmphex(reply[14], ==, 4);
@@ -905,7 +907,8 @@ static GArray *two_wide_combination(uint32_t w, uint32_t h)
  * After a start that ran the firmware's built-in fallback: a 1280x1024
  * block, channel 0 running 1280x1024_60.vfo with date stamp 0x31ea4b22,
  * channel 1 named 640x486_30i.vfo with 0x31ea4b3c, blanked, and taking
- * the 1280x1024 rectangle at (0, 0).
+ * the 1280x1024 rectangle at (0, 0); GetResize words 8-15 are the
+ * fallback's PlacementRes words.
  */
 static void assert_fallback(QTestState *s)
 {
@@ -926,11 +929,19 @@ static void assert_fallback(QTestState *s)
     g_assert_cmphex(reply[0], ==, 1);
     video_get(s, 0x20, 0, 9, reply, 1);
     g_assert_cmphex(reply[0], ==, 0);
-    video_get(s, GET_RESIZE, 1, 8, reply, 18);
-    g_assert_cmphex(reply[1], ==, 1023);
-    g_assert_cmphex(reply[2], ==, 1280);
-    g_assert_cmphex(reply[3], ==, 1024);
-    g_assert_cmphex(reply[12], ==, 1280);
+    for (uint32_t c = 0; c < 2; c++) {
+        static const uint32_t expected[2][16] = {
+            { 0, 1023, 1280, 1024, 0, 1023, 1280, 1024,
+              4, 1, 4, 1, 1280, 1024, 4, 1 },
+            { 0, 1023, 1280, 1024, 0, 1023, 1280, 1024,
+              4, 1, 4, 1, 2048, 2048, 640, 486 },
+        };
+
+        video_get(s, GET_RESIZE, c, 8, reply, 18);
+        for (unsigned w = 0; w < 16; w++) {
+            g_assert_cmphex(reply[w], ==, expected[c][w]);
+        }
+    }
 }
 
 /*
