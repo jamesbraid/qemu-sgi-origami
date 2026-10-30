@@ -1283,11 +1283,40 @@ static bool crime_render_gl_rectangle(const uint64_t *p, CrimeRenderGeometry *g)
     return true;
 }
 
+static bool crime_render_gl_point(const uint64_t *p, CrimeRenderGeometry *g)
+{
+    int sample[2];
+
+    if (p[0x60 / 4] & ~0x70000U) {
+        return false;
+    }
+    for (unsigned axis = 0; axis < 2; axis++) {
+        int64_t field, coordinate;
+        int16_t origin = p[0x58 / 4] >> (axis ? 0 : 16);
+
+        if (!crime_render_gl_field(p[(0x80 + 4 * axis) / 4], &field)) {
+            return false;
+        }
+        coordinate = field + 64 * (int64_t)origin;
+        /* Framebuffer-Y half ties select the smaller sample index. */
+        sample[axis] = axis ? -crime_line_floor(32 - coordinate, 64) :
+                              crime_line_floor(coordinate + 32, 64);
+    }
+    g->x0 = sample[0];
+    g->y0 = sample[1];
+    g->samples = g->capacity = sample[0] >= 0 && sample[0] < 2048 &&
+                               sample[1] >= 0 && sample[1] < 2048;
+    return true;
+}
+
 static bool crime_render_geometry(const uint64_t *p, CrimeRenderGeometry *g)
 {
     uint32_t primitive = p[0x60 / 4];
 
     g->opcode = primitive >> 24;
+    if (!g->opcode && (p[0x18 / 4] & 0x400000)) {
+        return crime_render_gl_point(p, g);
+    }
     if (g->opcode == 1 && (p[0x18 / 4] & 0x400000)) {
         return !(primitive & 0x00f80000);
     }
@@ -2227,7 +2256,7 @@ static bool crime_render_sz_state(const uint64_t *p, unsigned opcode,
     if (!sz->depth && !sz->stencil) {
         return true;
     }
-    if ((opcode != 2 && opcode != 3) || (draw & 0x200000) ||
+    if ((opcode != 0 && opcode != 2 && opcode != 3) || (draw & 0x200000) ||
         !(draw & 0x400000)) {
         return false;
     }
@@ -2239,7 +2268,7 @@ static bool crime_render_sz_state(const uint64_t *p, unsigned opcode,
             sz->start < -CRIME_Z_LIMIT || sz->start > CRIME_Z_LIMIT ||
             sz->dx < -CRIME_Z_LIMIT || sz->dx > CRIME_Z_LIMIT ||
             sz->dy < -CRIME_Z_LIMIT || sz->dy > CRIME_Z_LIMIT ||
-            (opcode == 3 && (sz->dx || sz->dy))) {
+            (opcode != 2 && (sz->dx || sz->dy))) {
             return false;
         }
     }
@@ -2708,7 +2737,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     int sx, sy, destination_x, destination_y;
     bool copy, stipple, overlap, inside, upload, download, transfer;
     bool alpha, alpha_pass, triangle, sz_active, gl_rectangle;
-    bool native_gl, gl_line;
+    bool native_gl, gl_line, gl_point;
     CrimeRenderClip scissor, screen[5];
     CrimeRenderGeometry geometry = { 0 };
     CrimeTriangleOutput output = { 0 };
@@ -2761,8 +2790,10 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     triangle = (p[0x60 / 4] >> 24) == 2;
     gl_rectangle = (p[0x60 / 4] >> 24) == 3 && (draw & 0x400000);
     gl_line = (p[0x60 / 4] >> 24) == 1 && (draw & 0x400000);
-    native_gl = triangle || gl_rectangle || gl_line;
-    if ((draw & ~(gl_line ? 0x511ff8U : gl_rectangle ? 0x510087U :
+    gl_point = !(p[0x60 / 4] >> 24) && (draw & 0x400000);
+    native_gl = triangle || gl_rectangle || gl_line || gl_point;
+    if ((draw & ~(gl_line ? 0x511ff8U :
+                 gl_rectangle || gl_point ? 0x511fffU :
                     triangle ? (0x5b97ffU | (sz_active ? 0x800U : 0)) :
                                0x3e0affU)) ||
         (native_gl ? (!(draw & 0x400000) ||
@@ -2792,7 +2823,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         !crime_render_sz_state(p, geometry.opcode, &sz)) {
         return crime_transfer_fail(offset, "unsupported depth/stencil state");
     }
-    if ((triangle || gl_line) && (draw & 0x400) &&
+    if (native_gl && (draw & 0x400) &&
         ((p[0x1a8 / 4] & ~0xfffULL) ||
          ((p[0x1a8 / 4] >> 8) & 15) > 4 ||
          ((p[0x1a8 / 4] >> 4) & 15) > 12 ||
@@ -2806,7 +2837,8 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     stipple = (geometry.opcode == 1 && (draw & 0x80000)) ||
               (geometry.opcode == 3 && (draw & 0x40000));
     if (alpha && (copy || stipple ||
-                  (!gl_line && (p[0x8 / 4] & 0x3ffU) != 0x228))) {
+                  (!gl_line && !gl_rectangle && !gl_point &&
+                   (p[0x8 / 4] & 0x3ffU) != 0x228))) {
         return crime_transfer_fail(offset, "unsupported alpha primitive");
     }
     if (copy && (geometry.opcode != 3 || stipple)) {
@@ -2937,7 +2969,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         }
         geometry.samples = geometry.capacity = line_fragments->len;
     }
-    if (geometry.opcode <= 1 && !gl_line) {
+    if (geometry.opcode <= 1 && !native_gl) {
         bounded_pixels = g_array_new(false, false, sizeof(CrimeRenderPixel));
     } else {
         pixels = g_try_new(CrimeRenderPixel, geometry.capacity);
@@ -3007,7 +3039,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 cy += geometry.lower;
             }
         }
-        if (geometry.opcode <= 1 && !gl_line) {
+        if (geometry.opcode <= 1 && !native_gl) {
             int64_t left = (int64_t)cx + destination_x;
             int64_t top = (int64_t)cy + destination_y;
 
@@ -3139,9 +3171,9 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         return crime_transfer_fail(offset, "SZ memory validation failed");
     }
     /* MMIO holds the BQL, keeping prevalidated RAM mappings stable. */
-    result = triangle || gl_line || sz_active ?
+    result = native_gl || sz_active ?
         crime_render_execute_plan(offset, pixels, count, bytes,
-                                   triangle || gl_line ? &output : NULL, p,
+                                   native_gl ? &output : NULL, p,
                                    operation, sz_active) :
         crime_render_execute(offset, pixels, count, bytes, copy,
                               operation, true);
