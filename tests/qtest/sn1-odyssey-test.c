@@ -5519,10 +5519,11 @@ static void test_command_fifo_image_raster_window_origin(void)
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(1, 0x4c));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, ODSY_X_PIXEL(0xabcdef));
+    /* A GL ABGR pixel: bytes A, B, G, R. */
+    cmd_push(qts, 0x5a000000 | ODSY_X_PIXEL(0xabcdef));
     cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_object_texel(qts, 0x16c000, 2, 3), ==,
-                    0xabcdefff);
+                    0xabcdef5a);
     g_assert_cmphex(odsy_test_object_texel(qts, 0x16c000, 10, 12), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 12), ==, 0);
 
@@ -5547,8 +5548,8 @@ static void test_command_fifo_image_raster_formats(void)
     cmd_push(qts, 0x11223344);
     cmd_push(qts, 0x55667788);
     cmd_push(qts, ODSY_CMD_GL_END);
-    g_assert_cmphex(odsy_test_pixel(qts, 100, 100), ==, 0x112233ff);
-    g_assert_cmphex(odsy_test_pixel(qts, 101, 100), ==, 0x556677ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 100, 100), ==, 0x11223344);
+    g_assert_cmphex(odsy_test_pixel(qts, 101, 100), ==, 0x55667788);
 
     image_begin(qts, 200, 200, 204, 201);
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
@@ -5575,6 +5576,159 @@ static void test_command_fifo_image_raster_formats(void)
     g_assert_cmphex(odsy_test_pixel(qts, 301, 300), ==, 0x404040ff);
     g_assert_cmphex(odsy_test_pixel(qts, 302, 300), ==, 0x8c8c8cff);
     g_assert_cmphex(odsy_test_pixel(qts, 303, 300), ==, 0xffffffff);
+
+    board_quit(qts);
+}
+
+/*
+ * Source codes that carry an alpha component keep it. A GL image into the
+ * colour buffer lands with the alpha the source gave: 0x4b one 0xRRGGBBAA
+ * word a pixel, 0x48 luminance then alpha, both on the 0x11 tag.
+ */
+static void test_command_fifo_image_alpha_screen(void)
+{
+    QTestState *qts = board_start("");
+
+    image_begin(qts, 100, 100, 102, 101);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(0, 0x4b));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x116cc722);
+    cmd_push(qts, 0x55667700);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 100, 100), ==, 0x116cc722);
+    g_assert_cmphex(odsy_test_pixel(qts, 101, 100), ==, 0x55667700);
+
+    image_begin(qts, 200, 200, 202, 201);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x48));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_CI));
+    cmd_push(qts, 0x80ee40cc);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 200, 200), ==, 0x808080ee);
+    g_assert_cmphex(odsy_test_pixel(qts, 201, 200), ==, 0x404040cc);
+
+    /* 0x6b read as bytes: the same 0xRRGGBBAA word as 0x4b. */
+    image_begin(qts, 300, 300, 301, 301);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(1, 0x6b));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x1a2b3c4d);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 300, 300), ==, 0x1a2b3c4d);
+
+    /* 0x68: 16-bit luminance then 16-bit alpha. */
+    image_begin(qts, 400, 400, 401, 401);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(1, 0x68));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x8080eeee);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 400, 400), ==, 0x808080ee);
+
+    board_quit(qts);
+}
+
+/* The same rule by DMA to the colour buffer (source format 0x4b). */
+static void test_command_fifo_image_alpha_dma(void)
+{
+    QTestState *qts = board_start("");
+    const uint64_t table = 0xb80000;
+    const uint64_t page = 0xb84000;
+    uint32_t hdr[8] = {
+        0x2000, (300 << 16) | 200, 0x50, (1 << 16) | 2, 0x8223305a, 0, 8,
+        0x3201004b,
+    };
+    const uint64_t pte[] = { ODSY_DMA_PTE(page, 8) };
+    uint8_t px[8];
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_BANKS);
+    user_cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    user_cmd_push(qts, 0x2000);
+    user_cmd_push(qts, 0x50);
+    user_cmd_push(qts, 0x20006950);
+    user_cmd_push(qts, 0);
+
+    stl_be_p(&px[0], 0x116cc722);
+    stl_be_p(&px[4], 0x55667700);
+    qtest_memwrite(qts, page, px, sizeof(px));
+    dma_image_table(qts, table, hdr, pte, 1);
+    dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table);
+    g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0x116cc722u);
+    g_assert_cmphex(odsy_test_pixel(qts, 201, 300), ==, 0x55667700u);
+
+    /* 0x6b is the same word. */
+    hdr[7] = 0x3201006b;
+    stl_be_p(&px[0], 0x1a2b3c4d);
+    stl_be_p(&px[4], 0x0a0b0c0d);
+    qtest_memwrite(qts, page, px, sizeof(px));
+    dma_image_table(qts, table, hdr, pte, 1);
+    dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table);
+    g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0x1a2b3c4du);
+    g_assert_cmphex(odsy_test_pixel(qts, 201, 300), ==, 0x0a0b0c0du);
+    board_quit(qts);
+}
+
+/*
+ * Source code 0x4c (bytes A, B, G, R) into a GL texture object keeps A,
+ * both by pixel burst and by DMA. Written to the screen it still lays an
+ * opaque alpha: the X server's 24-bit images share the code with an A of
+ * zero, and what the board does with that byte in a window is not settled.
+ */
+static void test_command_fifo_image_alpha_texture(void)
+{
+    QTestState *qts = board_start("");
+    const uint64_t table = 0xb80000;
+    const uint64_t page = 0xb84000;
+    const uint32_t hdr[8] = {
+        0x0016a800, 0, 0x10, (1 << 16) | 0x100, 0x80013000, 0, 0x400,
+        0x3201004c,
+    };
+    const uint64_t pte[] = { ODSY_DMA_PTE(page, 1024) };
+    uint8_t px[8] = { 0x22, 0x6c, 0xc7, 0x11, 0x00, 0x33, 0x22, 0x44 };
+
+    /* The screen path stays opaque. */
+    image_begin(qts, 100, 100, 101, 101);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(0, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x226cc711);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 100, 100), ==, 0x11c76cff);
+
+    cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    cmd_push(qts, 0x16c000);
+    cmd_push(qts, 2);
+    cmd_push(qts, 0x080024d0);
+    cmd_push(qts, 0);
+    image_begin(qts, 2, 3, 4, 4);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x226cc711);
+    cmd_push(qts, 0x00332244);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16c000, 2, 3), ==,
+                    0x11c76c22);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16c000, 3, 3), ==,
+                    0x44223300);
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_BANKS);
+    qtest_memwrite(qts, page, px, sizeof(px));
+    dma_image_table(qts, table, hdr, pte, 1);
+    dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 0, 0), ==,
+                    0x11c76c22);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 1, 0), ==,
+                    0x44223300);
 
     board_quit(qts);
 }
@@ -22214,18 +22368,23 @@ static void test_readback_object_source(void)
     unsigned i;
 
     for (i = 0; i < 6; i++) {
-        stl_be_p(&px[4 * i], ODSY_X_PIXEL(0x102030 + i * 0x010101));
+        stl_be_p(&px[4 * i],
+                 0x5a000000 | ODSY_X_PIXEL(0x102030 + i * 0x010101));
     }
     qtest_memwrite(qts, RB_PAGE_A + 16, px, sizeof(px));
     readback_run(qts, hdr, pte, 1);
     g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 1);
     g_assert_cmphex(odsy_test_object_texel(qts, 0x16a000, 5, 1), ==,
-                    0x102030ffu);
+                    0x1020305au);
 
     readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
     hdr[7] = 0xb301004c;
     readback_run(qts, hdr, pte, 1);
+    /* The read returns A as zero, whatever the texel stores. */
     memcpy(&expect[16], px, sizeof(px));
+    for (i = 0; i < 6; i++) {
+        expect[16 + 4 * i] = 0;
+    }
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
     g_assert_true(readback_dma_done(qts));
     g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 1);
@@ -23573,6 +23732,12 @@ int main(int argc, char **argv)
              test_command_fifo_image_raster_window_origin);
     add_case("sn1/odyssey/command-fifo-image-raster-formats",
              test_command_fifo_image_raster_formats);
+    add_case("sn1/odyssey/command-fifo-image-alpha-screen",
+             test_command_fifo_image_alpha_screen);
+    add_case("sn1/odyssey/command-fifo-image-alpha-dma",
+             test_command_fifo_image_alpha_dma);
+    add_case("sn1/odyssey/command-fifo-image-alpha-texture",
+             test_command_fifo_image_alpha_texture);
     add_case("sn1/odyssey/command-fifo-image-raster-short",
              test_command_fifo_image_raster_short);
     add_case("sn1/odyssey/command-fifo-image-raster-short-incomplete",

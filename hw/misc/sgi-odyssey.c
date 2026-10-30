@@ -5206,6 +5206,30 @@ static int odyssey_image_object(SGIOdysseyState *s)
 }
 
 /*
+ * True for a source code whose pixels carry an alpha component that a write
+ * into the colour buffer stores. That the board stores the source alpha is
+ * INFERRED, from destination-alpha blending that works on an RGBA visual
+ * (datasheet, "Alpha from image writes"; the byte orders are established
+ * under "Texture source codes for 12-bit textures"). Code 0x4c is left out
+ * on purpose: the X server's 24-bit images share it with an alpha byte of
+ * zero, and whether the board writes that byte into a window's alpha planes
+ * is unsettled ("X server images under code 0x4c"), so its screen writes
+ * stay opaque. Into a texture object it keeps alpha, on the same inference.
+ */
+static bool odyssey_code_keeps_screen_alpha(uint32_t code)
+{
+    switch (code) {
+    case ODSY_IMAGE_CODE_RGBA:
+    case ODSY_IMAGE_CODE_LUM_ALPHA:
+    case ODSY_IMAGE_CODE_RGBA12:
+    case ODSY_IMAGE_CODE_LUM_ALPHA12:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*
  * Lay one image pixel, as 0xRRGGBBAA, at the raster cursor in the selected
  * buffer (odyssey_image_object()) and advance it. Each axis is a directed
  * half-open interval: increasing endpoints visit [first, last), while
@@ -5271,13 +5295,13 @@ static void odyssey_image_put(SGIOdysseyState *s, uint32_t rgba,
  * the header's group length in pixels.
  */
 static void odyssey_image_texel(SGIOdysseyState *s, uint32_t rgba,
-                                bool is_index)
+                                bool is_index, bool preserve_alpha)
 {
     if (s->image_group_len &&
         s->image_group_painted >= s->image_group_len) {
         return;
     }
-    odyssey_image_put(s, rgba, is_index, false);
+    odyssey_image_put(s, rgba, is_index, preserve_alpha);
     s->image_group_painted++;
 }
 
@@ -5341,7 +5365,11 @@ static bool odyssey_decode_pixel(SGIOdysseyState *s, uint32_t code,
 {
     switch (code) {
     case ODSY_IMAGE_CODE_ABGR:
-        *rgba = odyssey_pack_pixel(b[3], b[2], b[1]);
+        /*
+         * Alpha is kept for objects (inferred, as for the other codes
+         * that carry it); screen writes force it opaque.
+         */
+        *rgba = (odyssey_pack_pixel(b[3], b[2], b[1]) & ~0xffu) | b[0];
         return true;
     case ODSY_IMAGE_CODE_FALLBACK_XRGB:
         *rgba = odyssey_pack_pixel(b[1], b[2], b[3]);
@@ -5509,7 +5537,8 @@ static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
         /* The pixel's bytes, first byte highest, at the start of px[]. */
         stl_be_p(px, s->image_bytes << (8 * (4 - n)));
         odyssey_decode_pixel(s, code, px, &rgba);
-        odyssey_image_texel(s, rgba, odyssey_code_is_index(code));
+        odyssey_image_texel(s, rgba, odyssey_code_is_index(code),
+                            odyssey_code_keeps_screen_alpha(code));
     }
 }
 
@@ -9554,7 +9583,9 @@ static void odyssey_dma_put(SGIOdysseyState *s, int obj, int64_t x,
     }
     for (unsigned b = 0; b < ODSY_BUFFERS; b++) {
         if (odyssey_draw_buffers(s) & (1u << b)) {
-            odyssey_buffer_store(s, b, x, y, odyssey_code_is_index(code) ?
+            odyssey_buffer_store(s, b, x, y,
+                                 odyssey_code_is_index(code) ||
+                                 odyssey_code_keeps_screen_alpha(code) ?
                                  pixel : (pixel & ~0xffu) | 0xff);
         }
     }

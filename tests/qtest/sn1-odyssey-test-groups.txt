@@ -119,6 +119,9 @@ fifo /mips64/sn1/odyssey/command-fifo-image-raster-empty-extent
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-clips-descending
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-window-origin
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-formats
+fifo /mips64/sn1/odyssey/command-fifo-image-alpha-screen
+fifo /mips64/sn1/odyssey/command-fifo-image-alpha-dma
+fifo /mips64/sn1/odyssey/command-fifo-image-alpha-texture
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-short
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-short-incomplete
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-colour-index
