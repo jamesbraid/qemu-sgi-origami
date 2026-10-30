@@ -12509,13 +12509,14 @@ static void test_sz_start_forms(void)
     g_rmdir(dir);
 }
 
-static void test_sz_widths_reserved(void)
+static void test_sz_widths_reserved(gconstpointer selection)
 {
     g_autofree char *dir = g_dir_make_tmp("crime-sz-widths-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "state", NULL);
     QTestState *s = start_indexed_state();
+    unsigned group = GPOINTER_TO_UINT(selection);
 
-    for (unsigned n = 0; n < ARRAY_SIZE(sz_offsets); n++) {
+    for (unsigned n = group; n < MIN(group + 1, ARRAY_SIZE(sz_offsets)); n++) {
         SZCase v = sz_case();
         Shape c = pipeline_prepare(s, 0x228, 0);
         uint64_t value;
@@ -12542,7 +12543,8 @@ static void test_sz_widths_reserved(void)
                             !=, MEMTX_OK);
         }
     }
-    for (unsigned reserved = 0; reserved < 12; reserved++) {
+    for (unsigned reserved = 0;
+         group == ARRAY_SIZE(sz_offsets) && reserved < 12; reserved++) {
         SZCase v = sz_case();
         Shape c = pipeline_prepare(s, 0x228, 0);
 
@@ -14219,7 +14221,7 @@ static void test_gl_line_depth_stipple(void)
     qtest_quit(s);
 }
 
-static void test_gl_line_pairs_atomic(void)
+static void test_gl_line_pairs_atomic(gconstpointer selection)
 {
     const unsigned pairs[] = { 0xe0, 0xe8, 0xf0, 0xf8, 0x100, 0x108, 0x190 };
     const uint64_t invalid[] = {
@@ -14232,8 +14234,9 @@ static void test_gl_line_pairs_atomic(void)
     g_autofree char *path = g_build_filename(dir, "state", NULL);
     QTestState *s = start_indexed_state();
     uint64_t value;
+    unsigned group = GPOINTER_TO_UINT(selection);
 
-    for (unsigned n = 0; n < ARRAY_SIZE(pairs); n++) {
+    for (unsigned n = group; n < MIN(group + 1, ARRAY_SIZE(pairs)); n++) {
         Shape c = gl_line_prepare(s, true);
 
         for (unsigned width = 1; width <= 2; width *= 2) {
@@ -14257,7 +14260,8 @@ static void test_gl_line_pairs_atomic(void)
                             !=, MEMTX_OK);
         }
     }
-    for (unsigned n = 0; n < ARRAY_SIZE(invalid); n++) {
+    for (unsigned n = 0;
+         group == ARRAY_SIZE(pairs) && n < ARRAY_SIZE(invalid); n++) {
         for (unsigned empty = 0; empty < 2; empty++) {
             Shape c = gl_line_prepare(s, true);
 
@@ -14268,7 +14272,8 @@ static void test_gl_line_pairs_atomic(void)
             pipeline_failure(s, &c, path, DE + 0x990, invalid[n], 8);
         }
     }
-    for (unsigned nonaa = 0; nonaa < 2; nonaa++) {
+    for (unsigned nonaa = 0;
+         group == ARRAY_SIZE(pairs) + 1 && nonaa < 2; nonaa++) {
         for (unsigned late = 0; late < 2; late++) {
             Shape c = gl_line_prepare(s, !nonaa);
             const int a[] = { 16, 64 }, b[] = { 272, 64 };
@@ -20060,7 +20065,20 @@ int main(int argc, char **argv)
     add_case("sgi/crime/render/sz/aliases", test_sz_aliases);
     add_case("sgi/crime/render/sz/rect-controls", test_sz_rect_controls);
     add_case("sgi/crime/render/sz/start-forms", test_sz_start_forms);
-    add_case("sgi/crime/render/sz/widths-reserved", test_sz_widths_reserved);
+    add_data_case("sgi/crime/render/sz/widths-reserved/0",
+                  GUINT_TO_POINTER(0), test_sz_widths_reserved);
+    add_data_case("sgi/crime/render/sz/widths-reserved/1",
+                  GUINT_TO_POINTER(1), test_sz_widths_reserved);
+    add_data_case("sgi/crime/render/sz/widths-reserved/2",
+                  GUINT_TO_POINTER(2), test_sz_widths_reserved);
+    add_data_case("sgi/crime/render/sz/widths-reserved/3",
+                  GUINT_TO_POINTER(3), test_sz_widths_reserved);
+    add_data_case("sgi/crime/render/sz/widths-reserved/4",
+                  GUINT_TO_POINTER(4), test_sz_widths_reserved);
+    add_data_case("sgi/crime/render/sz/widths-reserved/5",
+                  GUINT_TO_POINTER(5), test_sz_widths_reserved);
+    add_data_case("sgi/crime/render/sz/widths-reserved/6",
+                  GUINT_TO_POINTER(6), test_sz_widths_reserved);
     add_case("sgi/crime/render/sz/late-faults", test_sz_late_faults);
     add_case("sgi/crime/render/sz/migration", test_sz_migration);
     add_case("sgi/crime/render/sz/rect-clipping", test_sz_rect_clipping);
@@ -20122,8 +20140,24 @@ int main(int argc, char **argv)
     add_data_case("sgi/crime/render/gl-line/output/6",
                   GUINT_TO_POINTER(6), test_gl_line_output);
     add_case("sgi/crime/render/gl-line/alpha-edges", test_gl_line_alpha_edges);
-    add_case("sgi/crime/render/gl-line/pairs-atomic",
-             test_gl_line_pairs_atomic);
+    add_data_case("sgi/crime/render/gl-line/pairs-atomic/0",
+                  GUINT_TO_POINTER(0), test_gl_line_pairs_atomic);
+    add_data_case("sgi/crime/render/gl-line/pairs-atomic/1",
+                  GUINT_TO_POINTER(1), test_gl_line_pairs_atomic);
+    add_data_case("sgi/crime/render/gl-line/pairs-atomic/2",
+                  GUINT_TO_POINTER(2), test_gl_line_pairs_atomic);
+    add_data_case("sgi/crime/render/gl-line/pairs-atomic/3",
+                  GUINT_TO_POINTER(3), test_gl_line_pairs_atomic);
+    add_data_case("sgi/crime/render/gl-line/pairs-atomic/4",
+                  GUINT_TO_POINTER(4), test_gl_line_pairs_atomic);
+    add_data_case("sgi/crime/render/gl-line/pairs-atomic/5",
+                  GUINT_TO_POINTER(5), test_gl_line_pairs_atomic);
+    add_data_case("sgi/crime/render/gl-line/pairs-atomic/6",
+                  GUINT_TO_POINTER(6), test_gl_line_pairs_atomic);
+    add_data_case("sgi/crime/render/gl-line/pairs-atomic/7",
+                  GUINT_TO_POINTER(7), test_gl_line_pairs_atomic);
+    add_data_case("sgi/crime/render/gl-line/pairs-atomic/8",
+                  GUINT_TO_POINTER(8), test_gl_line_pairs_atomic);
     add_case("sgi/crime/render/gl-line/failures", test_gl_line_failures);
     add_case("sgi/crime/render/gl-line/color-anchor",
              test_gl_line_color_anchor);
