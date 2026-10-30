@@ -309,19 +309,21 @@ captured controller output.
        module name only: which controller answers the I/O side's
        identity request on a C-brick is unknown. The case of the I-brick
        letter is the model's choice.
-   * - The machine configures firmware revision 1.18.5 on every C-brick,
+   * - The machine configures firmware revision 1.44.0 on every C-brick,
        I-brick and N-brick L1 for request ``0x0005``, and the machine's
-       ``l1-revision`` replaces it. ``version`` prints the number as ``L1 1.18.5
-       (Image EMU-UNKNOWN)``, naming no image bank or product image.
-     - approximated
-     - No fitted brick's revision is published. IRIX 6.5.30 labels each
-       module's and I/O brick's hardware-graph entry with the reply, its
-       ``numastatd`` logs an error at every start without one, and on a
-       node with R14000 processors the kernel wants at least 1.3.20; the
-       stock PROM warns below 1.12.5. 1.18.5 is the value the Origin 300
-       profiles use, from an Origin 300 transcript, and passes both
-       checks. The approximation covers that request only: these profiles
-       model no particular L1 image.
+       ``l1-revision`` replaces it. ``version`` prints the number as ``L1
+       1.44.0 (Image EMU-UNKNOWN)``, naming no image bank or product image.
+     - established for the firmware; inferred for a fitted brick
+     - Every brick image packaged in the IRIX 6.5.30 L1 firmware composite
+       is version 1.44.0 and answers ``0x0005`` with 1, 44 and 0 whatever
+       the brick. Which of its two Origin 3000 images (the 1 MB base image
+       or the 2 MB MIPS image) a brick runs depends on its L1 board's flash
+       and is inferred, so the profiles name neither; no fitted brick's
+       revision is captured. IRIX 6.5.30 labels each module's and I/O
+       brick's hardware-graph entry with the reply, its ``numastatd`` logs
+       an error at every start without one, and on a node with R14000
+       processors the kernel wants at least 1.3.20; the stock PROM warns
+       below 1.12.5. 1.44.0 passes both.
    * - ``0x000a`` answers two integers; the first is 0 for a 400 MHz I/O
        link and 1 for 600 MHz (``port-speed-first``, default 0).
      - established for the meaning; approximated for the V-brick

@@ -9914,8 +9914,8 @@ static void test_origin3200_brick_l1s(void)
         g_assert_cmpuint(qom_get_uint(qts, l1s[i].path, "bay"), ==,
                          l1s[i].bay);
         g_assert_true(qom_get_bool(qts, l1s[i].path, "named"));
-        /* The catalogue's approximated revision, the Origin 300's. */
-        assert_l1_revision(qts, l1s[i].path, 1, 18, 5);
+        /* The catalogue's revision, the 6.5.30 L1 firmware's 1.44.0. */
+        assert_l1_revision(qts, l1s[i].path, 1, 44, 0);
     }
     {
         g_autofree char *c0_peer = qom_get_str(qts, "/machine/node0/l1",
@@ -10047,8 +10047,8 @@ static void test_onyx3400_ir_io_brick_l1s(void)
         g_assert_cmpstr(ibrick, ==, "ibrick");
         g_assert_cmpstr(nbrick, ==, "nbrick");
     }
-    assert_l1_revision(qts, c0_io, 1, 18, 5);
-    assert_l1_revision(qts, c1_io, 1, 18, 5);
+    assert_l1_revision(qts, c0_io, 1, 44, 0);
+    assert_l1_revision(qts, c1_io, 1, 44, 0);
     g_assert_cmpstr(c1_io, !=, c0_io);
     g_assert_cmpstr(c2_io, ==, c1_io);
     g_assert_cmpstr(c3_io, ==, c1_io);
@@ -10090,8 +10090,8 @@ static void test_onyx3000_vbrick_l1_and_heads(void)
         g_assert_cmpstr(c1_profile, ==, "vbrick");
         g_assert_cmpuint(qom_get_uint(qts, c1_io, "bay"), ==, 10);
         /* The V-brick's L1 takes no firmware revision. */
-        assert_l1_revision(qts, "/machine/node1/l1", 1, 18, 5);
-        assert_l1_revision(qts, c0_io, 1, 18, 5);
+        assert_l1_revision(qts, "/machine/node1/l1", 1, 44, 0);
+        assert_l1_revision(qts, c0_io, 1, 44, 0);
         assert_l1_revision(qts, c1_io, -1, -1, -1);
     }
     /* The V-brick's heads (widgets 14 and 15) answer from the C-brick. */
