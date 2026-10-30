@@ -21700,8 +21700,8 @@ static int sgi_kona_channels_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_channel = {
     .name = TYPE_SGI_KONA "/channel-entry",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 1,
+    .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(enabled, SGIKonaChannel),
         VMSTATE_BOOL(loaded, SGIKonaChannel),
