@@ -2187,6 +2187,16 @@ bool sgi_pic_enable_pxbow_experiment(SGIPICState *s, uint64_t span,
      */
     qdev_prop_set_int32(DEVICE(&s->pxbow), "identity-revision",
                         PIC_PXBOW_IDENTITY_REVISION);
+    /*
+     * The stock PROM's crossbar check stores to the two read-only error
+     * address registers and expects each store to complete, with the
+     * register-access error set. A real deskside Tezro passes it, which
+     * establishes this for the integrated crossbar and not for the Origin
+     * 2000 Crossbow (docs/datasheets/xbow.md, "IP53 integrated crossbar").
+     * Whether those addresses are implemented registers is unknown.
+     */
+    qdev_prop_set_bit(DEVICE(&s->pxbow), "complete-posted-error-address-writes",
+                      true);
     qdev_prop_set_uint32(DEVICE(&s->pxbow), "part", 0xd100);
     qdev_prop_set_uint32(DEVICE(&s->pxbow), "manufacturer", 0);
     qdev_prop_set_uint16(DEVICE(&s->pxbow), "links-present", widgets);
