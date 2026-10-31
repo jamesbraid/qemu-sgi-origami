@@ -60,7 +60,7 @@ void mace_i2c_reset(MACEI2C *s, bool cold)
     }
     s->control = s->data = 0;
     s->nack = s->error = false;
-    if (cold) {
+    if (cold || s->cold_pending) {
         s->config = 0;
     }
     s->reset_pending = s->cold_pending = s->busy = false;
@@ -161,6 +161,9 @@ static MemTxResult mace_i2c_read(void *opaque, hwaddr offset, uint64_t *value,
     uint8_t byte;
     MemTxResult ret;
 
+    if (!s->enabled) {
+        return MEMTX_ERROR;
+    }
     switch (offset) {
     case 0:
     case 8:
@@ -196,6 +199,9 @@ static MemTxResult mace_i2c_write(void *opaque, hwaddr offset, uint64_t value,
     bool reset;
     int ret;
 
+    if (!s->enabled) {
+        return MEMTX_ERROR;
+    }
     switch (offset) {
     case 0:
     case 8:
@@ -258,9 +264,17 @@ static void mace_i2c_realize(DeviceState *dev, Error **errp)
     s->enabled = 1;
 }
 
-void mace_i2c_cleanup(MACEI2C *s)
+void mace_i2c_prepare_unrealize(MACEI2C *s, Error **errp)
 {
+    if (!s->enabled) {
+        return;
+    }
+    if (s->busy) {
+        error_setg(errp, "MACE I2C cannot unrealize during a byte callback");
+        return;
+    }
     mace_i2c_reset(s, true);
+    s->enabled = 0;
 }
 
 static int mace_i2c_state_valid(void *opaque)
@@ -325,10 +339,9 @@ static void mace_i2c_instance_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->regs);
 }
 
-static void mace_i2c_unrealize(DeviceState *dev)
+static void mace_i2c_pre_unrealize(DeviceState *dev, Error **errp)
 {
-    /* The MACE owner finishes its transfer before unrealizing this child. */
-    SGI_MACE_I2C(dev)->enabled = 0;
+    mace_i2c_prepare_unrealize(SGI_MACE_I2C(dev), errp);
 }
 
 static void mace_i2c_class_init(ObjectClass *oc, const void *data)
@@ -337,7 +350,7 @@ static void mace_i2c_class_init(ObjectClass *oc, const void *data)
 
     dc->user_creatable = false;
     dc->realize = mace_i2c_realize;
-    dc->unrealize = mace_i2c_unrealize;
+    dc->pre_unrealize = mace_i2c_pre_unrealize;
     dc->vmsd = &vmstate_mace_i2c;
 }
 

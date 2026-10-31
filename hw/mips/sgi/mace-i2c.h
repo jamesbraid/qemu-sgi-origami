@@ -32,6 +32,6 @@ struct MACEI2C {
 };
 
 void mace_i2c_reset(MACEI2C *s, bool cold);
-void mace_i2c_cleanup(MACEI2C *s);
+void mace_i2c_prepare_unrealize(MACEI2C *s, Error **errp);
 
 #endif

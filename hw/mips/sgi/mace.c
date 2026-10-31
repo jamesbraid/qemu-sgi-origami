@@ -89,6 +89,7 @@ struct SGIMACEState {
     MemoryRegion cpu_pci_pio_high;
     MACEI2C i2c;
     bool i2c_untimed_test_profile;
+    bool i2c_mapped;
     MACEAudio audio;
     MemoryRegion audio_regs;
     qemu_irq audio_ttl[2];
@@ -1520,7 +1521,13 @@ static void mace_realize(DeviceState *dev, Error **errp)
         }
         memory_region_add_subregion_overlap(&s->aperture, 0x330000,
                                             &s->i2c.regs, 1);
+        s->i2c_mapped = true;
     }
+}
+
+static void mace_pre_unrealize(DeviceState *dev, Error **errp)
+{
+    mace_i2c_prepare_unrealize(&SGI_MACE(dev)->i2c, errp);
 }
 
 static void mace_unrealize(DeviceState *dev)
@@ -1549,10 +1556,10 @@ static void mace_unrealize(DeviceState *dev)
         object_unparent(OBJECT(ps2));
         SGI_MACE(dev)->ps2 = NULL;
     }
-    mace_i2c_cleanup(&SGI_MACE(dev)->i2c);
-    if (SGI_MACE(dev)->i2c.enabled) {
+    if (SGI_MACE(dev)->i2c_mapped) {
         memory_region_del_subregion(&SGI_MACE(dev)->aperture,
                                     &SGI_MACE(dev)->i2c.regs);
+        SGI_MACE(dev)->i2c_mapped = false;
         qdev_unrealize(DEVICE(&SGI_MACE(dev)->i2c));
     }
     mace_audio_cleanup(&SGI_MACE(dev)->audio);
@@ -1611,6 +1618,7 @@ static void mace_class_init(ObjectClass *oc, const void *data)
 
     dc->desc = "SGI MACE 2.0 I/O controller";
     dc->realize = mace_realize;
+    dc->pre_unrealize = mace_pre_unrealize;
     dc->unrealize = mace_unrealize;
     dc->user_creatable = true;
     dc->vmsd = &vmstate_mace;

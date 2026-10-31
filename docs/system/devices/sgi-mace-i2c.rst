@@ -9,9 +9,9 @@ address map beyond the one register bank, or production wiring is selected.
 
 The profile implements the reviewed functional contract from Origami's
 ``docs/datasheets/o2-mace-i2c.md``, SHA-256
-``6f980a5c1209fdb276dc84e3f1e29b5f982b1b54650d430b289d1e63b3509417``.
+``6ad9b4d5bde2ac67a577e9746df7a55645ea6764299df4773cfb7ad737597dff``.
 The exact source-free clearance is SHA-256
-``bfc92d0a323acca0dd8d58f19d7bd1dbfb2210d7ce6f9c7c70311d4b2abc1bd4``.
+``339bf848c67f21a2127e3a342b027c8f2ea971c5b0e5c40be457cbd439594734``.
 These identify the implementation input, not physical validation.
 
 The four native big-endian 64-bit slots are configuration at offsets 0 and
@@ -19,7 +19,9 @@ The four native big-endian 64-bit slots are configuration at offsets 0 and
 Other widths, unaligned accesses and undefined offsets fail without register
 or endpoint side effects. Active sampled-input reads and physical overrides
 also fail. Endpoint NACK, protocol misuse and unsupported host capabilities
-remain distinct outcomes.
+remain distinct outcomes. An address NACK releases ownership with captured
+HOLD zero and retains the failed selection with HOLD one. Neither outcome
+retries an address implicitly.
 
 DATA synchronously transfers one actual endpoint byte. A receive returns
 that same byte without prefetch. Held receives retain a logical ACK decision
