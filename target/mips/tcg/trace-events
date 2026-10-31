@@ -28,3 +28,6 @@ mips_tlb_write(int cpu, int idx, uint64_t entryhi, uint64_t lo0, uint64_t lo1, u
 
 # system/special_helper.c
 mips_eret(int cpu, uint32_t asid, uint64_t pc, uint32_t status, uint64_t v0, uint64_t a3, bool user) "cpu %d asid 0x%x pc 0x%" PRIx64 " status 0x%08x v0 0x%" PRIx64 " a3 0x%" PRIx64 " user %d"
+
+# r10k_helper.c
+r10k_staged_page(uint64_t page, bool staged) "page 0x%" PRIx64 " staged %d"

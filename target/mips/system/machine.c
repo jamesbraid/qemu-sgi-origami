@@ -102,6 +102,10 @@ static int cpu_post_load(void *opaque, int version_id)
     cpu_mips_r10k_perf_post_load(env);
     mips_tlb_flush_caches(env);
     r10k_tlb_rebuild_active_mask(env);
+#ifdef CONFIG_TCG
+    /* The loaded arrays decide which pages hold staged lines. */
+    r10k_staged_rebuild(env);
+#endif
 
     return 0;
 }
