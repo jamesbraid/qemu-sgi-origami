@@ -4323,6 +4323,7 @@ static void test_rad_tune_plays_once(void)
     /* Frames due at 32 kHz; the position field is 14 bits wide. */
     qtest_clock_step(qts, 250000000);
     g_assert_cmpuint(octane_rad_out_frames(qts), ==, 8000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0x40000001);
 
     /*
      * The relay and DAC mute are stored; they leave the transfer alone.
@@ -4334,12 +4335,15 @@ static void test_rad_tune_plays_once(void)
     qtest_writel(qts, RAD_BAR0 + 0x88, 3);
     qtest_writel(qts, RAD_BAR0 + 0x8c, 2);
 
-    /* The early-read approximation is in test_rad_tune_early_read. */
+    /* A check at 1 s of tune time still finds the channel busy. */
     qtest_clock_step(qts, 750000000);
     g_assert_cmpuint(octane_rad_out_frames(qts), ==, 32000 % 16384);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58) & 1, ==, 1);
 
-    /* The pass is 72,064 frames, 2.252 s. */
-    qtest_clock_step(qts, 1253000000);
+    /* The pass is 72,064 frames, 2.252 s: set just before, clear just after. */
+    qtest_clock_step(qts, 1250000000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58) & 1, ==, 1);
+    qtest_clock_step(qts, 3000000);
     g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0x40000000);
     g_assert_cmpuint(octane_rad_out_frames(qts), ==, RAD_TUNE_FRAMES % 16384);
 
@@ -4361,45 +4365,6 @@ static void test_rad_tune_plays_once(void)
         g_assert_cmpint((int16_t)lduw_le_p(wav + 46 + i * 4), ==,
                         octane_rad_tune_right(i));
     }
-    g_assert_cmpint(g_unlink(path), ==, 0);
-}
-
-/*
- * Approximation: a read of 0x58 during a one-shot transfer reports it
- * finished while the rest of the buffer still plays, so a PROM check that
- * lands early, as it does without icount, sees no failure and the whole tune
- * is heard.
- */
-static void test_rad_tune_early_read(void)
-{
-    g_autofree char *path = NULL;
-    g_autofree char *wav = NULL;
-    QTestState *qts;
-    gsize length;
-    int fd = g_file_open_tmp("octane-rad-tune-XXXXXX.wav", &path, NULL);
-
-    g_assert_cmpint(fd, >=, 0);
-    close(fd);
-    qts = octane_rad_wav_start(path, RAD_TUNE_RATE, "");
-    octane_rad_tune_fill(qts, RAM + (RAD_TUNE_PCI & 0x1fffffff),
-                         RAD_TUNE_FRAMES);
-    octane_rad_tune_setup(qts, RAD_TUNE_PCI, RAD_TUNE_CTRL, false, false);
-    qtest_writel(qts, RAD_BAR0 + 0x58, 0x40000001);
-    qtest_clock_step(qts, 1000000000);
-    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0x40000000);
-    /* The transfer carries on. */
-    qtest_clock_step(qts, 250000000);
-    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 40000 % 16384);
-    qtest_writel(qts, RAD_BAR0 + 0x88, 2);
-
-    /* A late read sees the same, and the pass has ended. */
-    qtest_clock_step(qts, 1100000000);
-    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0x40000000);
-    g_assert_cmpuint(octane_rad_out_frames(qts), ==, RAD_TUNE_FRAMES % 16384);
-    qtest_clock_step(qts, 500000000);
-    qtest_quit(qts);
-    g_assert_true(g_file_get_contents(path, &wav, &length, NULL));
-    g_assert_cmpuint(octane_rad_wav_frames(wav, length), ==, RAD_TUNE_FRAMES);
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
@@ -6258,7 +6223,6 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rad-transfer-unsupported",
                    test_rad_transfer_unsupported);
     qtest_add_func("/octane/rad-tune-plays-once", test_rad_tune_plays_once);
-    qtest_add_func("/octane/rad-tune-early-read", test_rad_tune_early_read);
     qtest_add_func("/octane/rad-tune-rate", test_rad_tune_rate);
     qtest_add_func("/octane/rad-tune-unmapped", test_rad_tune_unmapped);
     qtest_add_func("/octane/rad-tune-unlinked", test_rad_tune_unlinked);
