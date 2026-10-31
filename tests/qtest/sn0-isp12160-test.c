@@ -3075,6 +3075,160 @@ static const uint16_t migrate_probe_pattern[] = {
     0x0a0a, 0x0b0b, 0x0c0c, 0x0f0f, 0x1a1a
 };
 
+/*
+ * Commands to an absent target that is still inside its selection timeout.
+ * The wait is the adapter's default 250 ms unless a case programs another;
+ * docs/datasheets/isp1040.md, "Set-selection-timeout (0x0031)", marks the
+ * millisecond unit inferred and the power-on default unknown, so these
+ * cases pin the model's choice of both, not a measured contract.
+ */
+#define WAIT_DEFAULT_NS     (250 * 1000 * 1000)
+
+static void waiting_start(void)
+{
+    isp_reset();
+    aim_window_at_memory_bar(qts);
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+}
+
+static void send_to_absent(QTestState *qts, uint32_t handle, unsigned channel)
+{
+    uint8_t cdb[6] = { SCSI_TEST_UNIT_READY };
+
+    submit_a64(qts, ring.rqst_next, handle, channel, ABSENT_TARGET, 0, cdb,
+               sizeof(cdb), 0, NULL, 0);
+}
+
+static void response_slot(QTestState *qts, unsigned slot, uint8_t *status)
+{
+    qtest_memread(qts, RESP_PHYS + slot * ISP_QUEUE_ENTRY_SIZE, status,
+                  ISP_QUEUE_ENTRY_SIZE);
+    normalise_words(status, ISP_QUEUE_ENTRY_SIZE);
+}
+
+static void expect_selection_timed_out(QTestState *qts, unsigned slot,
+                                       uint32_t handle)
+{
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    response_slot(qts, slot, status);
+    g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, handle);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_INCOMPLETE);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATUS_FLAGS), ==,
+                    ISP_STATUS_FLAG_TIMEOUT);
+}
+
+static void expect_retired_handle(QTestState *qts, unsigned slot,
+                                  uint32_t handle, uint16_t completion)
+{
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    response_slot(qts, slot, status);
+    g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, handle);
+    expect_retired(status, completion);
+}
+
+/*
+ * A recovery command owes the host an entry for a command still waiting on
+ * its selection: there is no SCSI request behind it to cancel, so the
+ * entry comes straight from the model, and the timeout that would have
+ * answered it later posts nothing.
+ */
+static void test_abort_command_retires_a_waiting_selection(const void *data)
+{
+    const uint16_t in[] = { ISP_DEVICE_WORD(0, ABSENT_TARGET, 0), 0, 0x81 };
+
+    waiting_start();
+    send_to_absent(qts, 0x81, 0);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 0);
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    expect_retired_handle(qts, 0, 0x81, ISP_IOCB_ABORTED);
+    qtest_clock_step(qts, 2 * WAIT_DEFAULT_NS);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
+}
+
+static void test_abort_target_retires_a_waiting_selection(const void *data)
+{
+    const uint16_t in[] = { ISP_DEVICE_WORD(0, ABSENT_TARGET, 0), 1 };
+
+    waiting_start();
+    send_to_absent(qts, 0x82, 0);
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_TARGET, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    expect_retired_handle(qts, 0, 0x82, ISP_IOCB_RESET);
+    qtest_clock_step(qts, 2 * WAIT_DEFAULT_NS);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
+}
+
+/* A bus reset reaches the named bus's waiting commands and no other's. */
+static void test_bus_reset_retires_a_waiting_selection(const void *data)
+{
+    const uint16_t in[] = { 3, 0 };
+
+    waiting_start();
+    send_to_absent(qts, 0x91, 0);
+    send_to_absent(qts, 0x92, 1);
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_BUS_RESET, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    expect_retired_handle(qts, 0, 0x91, ISP_IOCB_RESET);
+
+    /* Bus 1's command is still waiting, and answers at its own time. */
+    qtest_clock_step(qts, WAIT_DEFAULT_NS);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 2);
+    expect_selection_timed_out(qts, 1, 0x92);
+}
+
+/* A programmed wait of zero is no wait. */
+static void test_zero_selection_timeout_answers_at_once(const void *data)
+{
+    const uint16_t in[] = { 0, 0 };
+
+    waiting_start();
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_SET_SELECTION_TIMEOUT, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    send_to_absent(qts, 0xa1, 0);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    expect_selection_timed_out(qts, 0, 0xa1);
+}
+
+/*
+ * A reset of the machine takes the waiting command with it: the rings are
+ * built again at the same addresses, so only a timer that survived could
+ * write into them.
+ */
+static void test_reset_cancels_a_waiting_selection(const void *data)
+{
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    waiting_start();
+    send_to_absent(qts, 0xb1, 0);
+
+    waiting_start();
+    qtest_clock_step(qts, 4 * WAIT_DEFAULT_NS);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 0);
+    response_slot(qts, 0, status);
+    g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, 0);
+}
+
 /* Channel 0's delay and channel 1's, which no register hands back. */
 static const uint16_t migrate_reset_delay[] = { 7, 9 };
 
@@ -3695,6 +3849,18 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/isp12160/reused-handle-outlives-the-old-read-deadline", NULL,
         test_reused_handle_outlives_the_old_read_deadline);
+    qtest_add_data_func("sn0/isp12160/abort-command-retires-a-waiting-"
+                        "selection", NULL,
+                        test_abort_command_retires_a_waiting_selection);
+    qtest_add_data_func("sn0/isp12160/abort-target-retires-a-waiting-"
+                        "selection", NULL,
+                        test_abort_target_retires_a_waiting_selection);
+    qtest_add_data_func("sn0/isp12160/bus-reset-retires-a-waiting-selection",
+                        NULL, test_bus_reset_retires_a_waiting_selection);
+    qtest_add_data_func("sn0/isp12160/zero-selection-timeout-answers-at-once",
+                        NULL, test_zero_selection_timeout_answers_at_once);
+    qtest_add_data_func("sn0/isp12160/reset-cancels-a-waiting-selection",
+                        NULL, test_reset_cancels_a_waiting_selection);
     qtest_add_data_func("sn0/isp12160/migration-preserves-distinct-state",
                         NULL, test_migration_preserves_distinct_state);
     qtest_add_data_func(
