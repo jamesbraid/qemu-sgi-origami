@@ -112,6 +112,11 @@ struct SGIXbowState {
     uint32_t revision;
     uint32_t part;
     uint32_t manufacturer;
+    /*
+     * The revision nibble widget 0 reports, when it is not the revision
+     * that selects behaviour above; -1 reports @revision.
+     */
+    int32_t identity_revision;
 
     /*
      * Widget masks, as the properties and the descriptor spell them. These
