@@ -468,11 +468,6 @@ class LaunchPolicyFieldTests(unittest.TestCase):
         topology = json.loads(render_catalogue_json([model]))["topologies"][0]
         self.assertEqual(topology["ip53-runtime"], {
             "pic-profile": "pic-rev3-bedrock-tezro-experimental",
-            "normal-selection": {
-                "cpus": 1, "fitted-cpus": 1, "memory-mib": 4096,
-                "clock-hz": 700_000_000, "cache-mib": 4,
-                "mode-word": 0x009bad85,
-            },
             "l1-irouter-compat": True,
         })
 
