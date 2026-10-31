@@ -25,7 +25,27 @@ def classes(text, registry, tree=ROOT):
     return [cls for cls, _ in citations.classify(text, registry, tree)[1]]
 
 
+class UniqueKeyLoader(yaml.SafeLoader):
+    """Safe loader that rejects a mapping key written twice."""
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    None, None, f"duplicate key {key!r}", key_node.start_mark)
+            seen.add(key)
+        return super().construct_mapping(node, deep)
+
+
 class RegistryTests(unittest.TestCase):
+    def test_registry_names_each_source_once(self):
+        # PyYAML keeps the last of two equal keys without a warning, so a
+        # source registered twice would hide the first copy.
+        text = (INPUTS / citations.REGISTRY).read_text()
+        yaml.load(text, Loader=UniqueKeyLoader)
+
     def test_registry_matches_its_schema(self):
         registry = citations.load_registry(INPUTS)
         self.assertIn("007-3708-002", registry["documents"])
