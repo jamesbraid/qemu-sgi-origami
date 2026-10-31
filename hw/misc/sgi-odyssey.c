@@ -107,8 +107,8 @@
  * header's rectangle into the buffer its word 0 names, the screen or an
  * off-screen board-memory object (ODSY_OBJ_POOL_BYTES), or for a
  * board-to-host header writes that rectangle into the entries
- * (ODSY_DMA_TO_HOST), then raises the same completion fence the standalone
- * 0x0a5a host-write command already used -- the halfword to the guest fence
+ * (ODSY_DMA_TO_HOST), then raises the same completion fence the 0x0a5a
+ * host-write command already used -- the halfword to the guest fence
  * slot plus the softsync crosstalk interrupt -- from the head's publish()
  * hook, so there is one fence implementation. The descriptor's exact field
  * layout, the translation-table entry's bit layout and the value the board
@@ -474,8 +474,10 @@
  * once the level reaches odyssey_fifo_high_mark(). The names of bits 15,
  * 16 and 17 (high water, empty, below low water) come from the IRIX 6.5.30
  * kernels' status decode tables, and OpenBSD's VPro console driver names
- * bits 15 and 17 the same way; that they compare the level against the
- * water marks is INFERRED from those names. The kernel's periodic
+ * bits 15 and 17 the same way. Bit 17 with flag 9 as a low-water level is
+ * INFERRED; bit 15 with flag 25 rests on its name alone, and the threshold
+ * each uses is a model choice (odyssey_fifo_high_mark(),
+ * ODSY_CFIFO_LOW_WATER). The kernel's periodic
  * gfx-credits check reads this register and treats a clear low-water or
  * enabled bit as a graphics error, so a board that never answered it (the
  * default no-register path, reading zero) drew a graphics-error alert for
@@ -492,17 +494,22 @@
      ODSY_STATUS0_FIFO_EMPTY)
 
 /*
- * The command FIFO's low-water mark, in 32-bit words: below it bit 17
+ * The command FIFO's low-water threshold, in 32-bit words: below it bit 17
  * reads set, and the level falling below it raises the low-water flag.
- * APPROXIMATION: the kernel's set-up writes the board's mark, 24,144
- * words, to 0x6b3, but the model keeps 16, matched to the 64 stores its
- * credits allow (ODSY_CFIFO_DEPTH). The kernel's high-water path, entered
- * when credits run short, sleeps the writer only if the FIFO is not below
- * low water. With credits held to 64 stores the level stays far below
- * 24,144 words, so the path would always find low water, raise the flag
- * itself and return; on a Tezro V12, GLperf fill-z-trilinear then kept
- * 0.78 to 0.94 of guest clock, against 0.99 with this mark. Test:
- * sn1/odyssey/command-fifo-water-marks.
+ * That bit 17 and flag 9 report a low-water level is INFERRED, and their
+ * link to any 0x6bX value is UNKNOWN (datasheet, "Grades for withdrawn
+ * claims", rows for 0x6b0-0x6b3 and for status bits 15 and 17).
+ * MODEL CHOICE, not a hardware fact: the threshold is 16 words and
+ * independent of the 0x6bX values the kernel stores (24,144 in 0x6b3),
+ * matched to the 64 stores the model's credits allow
+ * (ODSY_CFIFO_DEPTH). The edge (bit 17 set while the level is below the
+ * threshold, the flag raised on falling below it) is a model choice too.
+ * Why 16: with credits held to 64 stores the model's level never nears a
+ * threshold as large as the stored 0x6b3, if that is a level in words,
+ * so bit 17 would always read set; on a Tezro V12, GLperf
+ * fill-z-trilinear then kept 0.78 to 0.94 of guest clock, against 0.99
+ * with this threshold. Test, a model contract and no evidence for the
+ * hardware: sn1/odyssey/command-fifo-water-marks.
  */
 #define ODSY_CFIFO_LOW_WATER 16
 
@@ -526,40 +533,46 @@
 #define ODSY_FLCTL_INTR_TARGET_SHIFT 17
 
 /*
- * FIFO set-up registers. The IRIX kernels' command-FIFO set-up stores five
- * doublewords whose high word names the register and the low word its
- * value: 0x6b0 = 0, 0x6b1 = 256, 0x6b3 = 24144, 0x6b2 = 32192 and 0x7b5 =
- * 1 (ESTABLISHED as the kernels' stores, and as the commands of the IRIX
- * 6.5.7 standalone driver, whose constants give every value). Their
- * meanings, ESTABLISHED by that driver: 0x6b0 is the FIFO's first tile in
- * board memory, 0x6b1 its size in 2-bpp 16 x 16 tiles of 128 words each
- * (256 tiles, a 128 KB FIFO of 32,768 words), 0x6b2 the high-water mark
- * and 0x6b3 the low-water mark, both in 32-bit words of fill, and 0x7b5 = 1
- * takes the FIFO out of bypass. The model compares the FIFO's level
- * against a nonzero 0x6b2 as the high-water mark, for status bit 15 and
- * flag bit 25; zero, as out of reset, is no high-water mark. It does not
- * place the FIFO in board memory, so 0x6b0 is stored only, and it has no
- * bypass, so neither is 0x7b5. 0x6b1 and 0x6b3 are stored only too:
- * APPROXIMATION, the processor-interface credits keep the model's smaller
- * depth (ODSY_CFIFO_DEPTH) rather than the FIFO's size, and the low-water
- * mark stays the one matched to it (ODSY_CFIFO_LOW_WATER).
+ * FIFO set-up registers. The IRIX 6.5.30 kernels' command-FIFO set-up
+ * stores five doublewords, read as a register number in the high word
+ * (weakly INFERRED) and a value in the low word: 0x6b0 = 0, 0x6b1 = 256,
+ * 0x6b3 = 24144, 0x6b2 = 32192
+ * and 0x7b5 = 1, written in the order 0x6b0, 0x6b1, 0x6b3, 0x6b2, 0x7b5.
+ * The values and the order are ESTABLISHED; the roles and units of the
+ * four 0x6bX words are UNKNOWN, and that their high words are register
+ * numbers is weakly INFERRED (datasheet, "Grades for withdrawn claims",
+ * row for 0x6b0 to 0x6b3). The model stores all five and gives no
+ * meaning to 0x6b0, 0x6b1, 0x6b3 or 0x7b5.
+ *
+ * MODEL CHOICE, not a hardware fact: 0x6b2 is applied as the threshold
+ * for status bit 15 and flag bit 25 -- the level reaching a
+ * nonzero 0x6b2 sets the bit and raises the flag, and zero, as out of
+ * reset, is no threshold. Neither the roles nor the link between bit 15,
+ * flag 25 and any 0x6bX value is established. The level's unit (32-bit
+ * words, a doubleword store counting two) is a model choice, as is the
+ * FIFO's depth, a model
+ * choice too, independent of the stored values (ODSY_CFIFO_DEPTH), and so
+ * is the low-water threshold (ODSY_CFIFO_LOW_WATER). The model contract
+ * is pinned by sn1/odyssey/command-fifo-water-marks and
+ * sn1/odyssey/command-fifo-high-mark-follows-6b2.
  */
 #define ODSY_REG_FIFO_SETUP_FIRST 0x6b0
 #define ODSY_REG_FIFO_SETUP_LAST 0x6b3
 #define ODSY_REG_FIFO_SETUP_7B5 0x7b5
+/* The model's own name for the 0x6b2 slot, see above. */
 #define ODSY_FIFO_SETUP_HIGH_INDEX 2
 #define ODSY_FIFO_SETUP_7B5_INDEX 4
 
 /*
- * 0x7f0, the hardware-sync timeout in board clocks; the kernels' FIFO
- * set-up writes 10^9 after the program load, and when a hardware sync
- * waits longer the board raises flags bit 1 (ESTABLISHED by the IRIX 6.5.7
- * standalone driver). Limitation: the model has no hardware-sync wait --
- * which command words are hardware syncs is not established, and every
- * command it models completes in the command stream -- so the timeout is
- * stored and can never expire, and flags bit 1 is never raised.
+ * 0x7f0. The kernels' FIFO set-up writes the doubleword 0x7f0 =
+ * 1,000,000,000 once, after the program load (the doubleword and the
+ * single write are ESTABLISHED). That the register is 0x3f0 is INFERRED;
+ * its unit and meaning are UNKNOWN: a sync timeout in board clocks, in
+ * nanoseconds or a non-timeout limit all fit (datasheet, "Grades for
+ * withdrawn claims", row for 0x7f0). The model accepts the write and
+ * records the value, runs no timer, and raises no flag because of it.
  */
-#define ODSY_REG_SYNC_TIMEOUT 0x7f0
+#define ODSY_REG_SETUP_7F0 0x7f0
 
 /*
  * ODSY_INTR_FLAGS' low-water bit, the command-FIFO low-water interrupt
@@ -572,9 +585,11 @@
  * through the flags register.
  *
  * Bit 25, FIFO high water by the same decode table, is raised when the
- * level rises to the high-water mark. APPROXIMATION: that the flag is the
- * comparison against 0x6b2 is INFERRED from its name only; no driver
- * enables it, and the kernel's fatal-flag mask leaves it out.
+ * level rises to the threshold odyssey_fifo_high_mark() gives. MODEL
+ * CHOICE: the flag's meaning rests on its name alone, and its link to
+ * 0x6b2 and its threshold and edge are UNKNOWN (datasheet, "Grades for
+ * withdrawn claims"); no driver enables it, and the kernel's fatal-flag
+ * mask leaves it out.
  */
 #define ODSY_INTR_FIFO_LOW_WATER 0x00000200
 #define ODSY_INTR_FIFO_HIGH_WATER 0x02000000
@@ -1462,12 +1477,16 @@ enum {
 #define ODSY_COLOUR_MATERIAL_SPECULAR 0x4
 #define ODSY_COLOUR_MATERIAL_EMISSION 0x8
 /*
- * Classes 0x20 to 0x35 are program-sequencer registers the host never reads
- * back; the GL library keeps a copy of each at a fixed stride, so the
- * numbering is contiguous (ESTABLISHED as the library's and kernel's
- * writers). The kernel writes 0x26 = 127 and 0x2e = 896 at set-up. The
- * model acts on the classes named above, keeps every value in gl_seq[] and
- * accepts the rest, whose meaning is UNKNOWN, without effect. Class 0x34 is
+ * Classes 0x20 to 0x35 are board registers the host never reads back; the
+ * GL library keeps a copy of each at a fixed stride, so the numbering is
+ * contiguous (ESTABLISHED as the library's and kernel's writers).
+ * "Sequencer" is not an established name for them. Class 0x27 is the
+ * microcode write address (ESTABLISHED; ODSY_PROG_PROGRAM_ADDR). The
+ * kernel writes 0x2e = 0x380 and 0x26 = 0x7f at set-up: the values are
+ * ESTABLISHED and their roles UNKNOWN (datasheet, "Grades for withdrawn
+ * claims", row for classes 0x27, 0x2e and 0x26). The model acts on the
+ * classes named above, keeps every value in gl_seq[] and accepts the
+ * rest, whose meaning is UNKNOWN, without effect. Class 0x34 is
  * stored like the rest. Its values below 0x100 with bit 23 clear are also
  * the model's matrix target select (ODSY_GL_MATRIX_SELECT_TAG), a reading
  * of the GL library's matrix validations that the datasheet does not
@@ -2612,7 +2631,10 @@ static uint32_t odyssey_store_words(unsigned size)
     return MAX(size / 4, 1);
 }
 
-/* The FIFO's high-water mark in words; zero is none. */
+/*
+ * The model's threshold in words for status bit 15 and flag 25: the stored
+ * 0x6b2, zero for none. MODEL CHOICE (see ODSY_REG_FIFO_SETUP_FIRST).
+ */
 static uint32_t odyssey_fifo_high_mark(SGIOdysseyState *s)
 {
     return s->fifo_setup[ODSY_FIFO_SETUP_HIGH_INDEX];
@@ -3847,8 +3869,8 @@ static unsigned odyssey_draw_buffers(SGIOdysseyState *s)
 }
 
 /*
- * The one completion fence, shared by the standalone 0x0a5a host-write command
- * and the DMA engine's publish() (see odyssey_publish() below): write the
+ * The one completion fence, shared by the 0x0a5a host-write command and the
+ * DMA engine's publish() (see odyssey_publish() below): write the
  * cookie's 16-bit token, big-endian, to the guest fence slot at the host-write
  * base plus twice the slot, and pulse the softsync interrupt when the cookie
  * asks. The base is the driver-programmed host_write_addr pair; the slot, token
@@ -8779,7 +8801,7 @@ static void odyssey_gl_program_word(SGIOdysseyState *s, uint32_t word)
         if ((word >> ODSY_PROG_CLASS_SHIFT) >= ODSY_PROG_PROGRAM_HALFWORD) {
             odyssey_gl_program_halfword(s, word);
         }
-        /* The other sequencer classes: kept in gl_seq[] only. */
+        /* The other classes of 0x20 to 0x35: kept in gl_seq[] only. */
         break;
     }
 }
@@ -12455,13 +12477,13 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
     case ODSY_REG_FIFO_SETUP_7B5:
         s->fifo_setup[ODSY_FIFO_SETUP_7B5_INDEX] = s->cmd_operand[0];
         break;
-    case ODSY_REG_SYNC_TIMEOUT:
+    case ODSY_REG_SETUP_7F0:
         s->sync_timeout = s->cmd_operand[0];
         if (s->sync_timeout && !s->sync_timeout_reported) {
             s->sync_timeout_reported = true;
-            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: hardware-sync timeout "
-                          "%u is stored; no sync waits, so it never "
-                          "expires\n", s->sync_timeout);
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: register 0x7f0 written "
+                          "with %u; the value is stored and its role is "
+                          "unknown, so no timer runs\n", s->sync_timeout);
         }
         break;
     case ODSY_GL_TEXCOORD_1F:
@@ -12743,8 +12765,10 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         uint32_t op0 = s->cmd_operand[0];
         uint32_t op1 = s->cmd_operand[1];
         /*
-         * The standalone host-write/sync command is the board's own DMA
-         * completion signal, so it raises the same fence the DMA engine's
+         * The host-write command's word and the halfword it writes are
+         * ESTABLISHED as the kernel's accesses; that the board treats it as
+         * its DMA completion signal is INFERRED (datasheet, DMA tag
+         * write-back). The model raises the same fence the DMA engine's
          * completion does, through the one fence implementation: op0's slot
          * and interrupt bit and op1's token become the completion cookie,
          * published to odyssey_publish() -> odyssey_fence(). op0's interrupt
@@ -12861,7 +12885,7 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
     }
     if ((word >= ODSY_REG_FIFO_SETUP_FIRST &&
          word <= ODSY_REG_FIFO_SETUP_LAST) ||
-        word == ODSY_REG_FIFO_SETUP_7B5 || word == ODSY_REG_SYNC_TIMEOUT) {
+        word == ODSY_REG_FIFO_SETUP_7B5 || word == ODSY_REG_SETUP_7F0) {
         odyssey_cmd_start(s, word, 1);
         return;
     }
@@ -13531,14 +13555,24 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
  * until the work ahead has run and it moves up. A store that does not
  * wait passes through the FIFO at once and is credited at once.
  *
- * APPROXIMATION: the kernel's set-up gives the FIFO 32,768 words (0x6b1),
- * but the model keeps 64 stores. Its board is far slower than a real one,
+ * MODEL CHOICE: the FIFO's depth, in any unit, is UNKNOWN (datasheet,
+ * "Grades for withdrawn claims"; no object names a FIFO size), and the
+ * model keeps 64 stores whatever the stored 0x6bX values say. Its board is
+ * far slower than a real one,
  * and the PI's credit back-pressure is what makes the kernel sleep the
  * writer while the board catches up; with credits for a full FIFO's
  * backlog the Fuel V12's fill-z-trilinear waited up to 14.5 s and forced
- * swaps (the PI datasheet's model choices for the sleep path). With the
- * usual 100 credits and bias 68, 96 stores wait before the PI stops the
- * writer. Test: sn1/odyssey/command-work-credit-depth-ignores-setup.
+ * swaps (the PI datasheet's model choices for the sleep path). With an
+ * IP35 credit window of 100 and bias of 68, 96 stores wait before the PI
+ * stops the writer; that figure is model-derived, assuming a 32-bit store
+ * costs a whole credit (unknown) and the bias being the level written to
+ * HEART fc_mode (inferred). The window and bias are ESTABLISHED per
+ * platform (datasheet, "Grades
+ * for withdrawn claims", host credit window and bias row): IP30 has a
+ * window of 256 credits and a bias of 69, IP35 a tunable window defaulting
+ * to 100 and a bias of 68, one credit being 8 bytes. The model's window
+ * and bias belong to the PI model and are not chosen here. Test, a model
+ * contract: sn1/odyssey/command-work-credit-depth-ignores-setup.
  */
 #define ODSY_CFIFO_DEPTH 64
 

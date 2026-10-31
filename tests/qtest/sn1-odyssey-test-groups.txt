@@ -87,6 +87,7 @@ fifo /mips64/sn1/odyssey/command-work-status-shows-waiting-stores
 fifo /mips64/sn1/odyssey/command-work-low-water-after-drain
 fifo /mips64/sn1/odyssey/command-work-credits-at-fifo-entry
 fifo /mips64/sn1/odyssey/command-fifo-water-marks
+fifo /mips64/sn1/odyssey/command-fifo-high-mark-follows-6b2
 fifo /mips64/sn1/odyssey/command-work-credit-depth-ignores-setup
 fifo /mips64/sn1/odyssey/command-work-map-rewrite-settles
 fifo /mips64/sn1/odyssey/command-work-stop-and-reset

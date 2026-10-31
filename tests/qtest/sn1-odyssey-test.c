@@ -2002,8 +2002,9 @@ static void test_command_fifo_selftest(void)
 
 /*
  * The five set-up doublewords carry a register in the high word and its
- * value in the low word. The model stores them, reports none as an
- * unmodeled command word, and keeps its own low-water mark.
+ * value in the low word. The values are established and their roles are
+ * not. The model stores them, reports none as an unmodeled command word,
+ * and keeps its own low-water threshold.
  */
 static void test_command_fifo_setup_registers(void)
 {
@@ -2051,10 +2052,10 @@ static void test_command_fifo_setup_registers(void)
 }
 
 /*
- * The kernels write the hardware-sync timeout, 10^9 board clocks, as the
- * doubleword 0x7f0 after the set-up. The model stores it, reports no
- * unmodeled command word, reports once that the timeout cannot expire,
- * and the stream stays aligned behind it.
+ * The kernels write the doubleword 0x7f0 = 10^9 after the set-up; its unit
+ * and meaning are unknown. The model stores it, runs no timer, reports no
+ * unmodeled command word, states the stored value once without giving it a
+ * role, and the stream stays aligned behind it.
  */
 static void test_command_fifo_sync_timeout_register(void)
 {
@@ -2078,23 +2079,27 @@ static void test_command_fifo_sync_timeout_register(void)
                      1000000000);
     cmd_push64(qts, 0x000006b0, 7);
     g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-fifo-setup-6b0"), ==, 7);
-    /* No sync waits on the model, so the timeout flag stays clear. */
+    /* The model runs no timer on the value, so flag bit 1 stays clear. */
+    g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) & 0x2, ==, 0);
+    qtest_clock_step(qts, 2000000000LL);
     g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) & 0x2, ==, 0);
     board_quit(qts);
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
     g_assert_null(strstr(log, "command FIFO word"));
-    g_assert_nonnull(strstr(log, "hardware-sync timeout 1000000000"));
+    g_assert_nonnull(strstr(log, "register 0x7f0 written with "
+                                     "1000000000"));
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
 /*
- * Program-sequencer registers: classes 0x20 to 0x35 in the program word
- * shape (bits 31:24 the register, bit 15 set, the value in bits 9:0 and
- * bit 23). The kernel writes 0x26 = 127 and 0x2e = 896 at set-up, the GL
- * library 0x22 to 0x25 as its context default; none of them is a command
- * the model fails to recognise, and the stream stays aligned after them.
+ * Classes 0x20 to 0x35 in the program word shape (bits 31:24 the register,
+ * bit 15 set, the value in bits 9:0 and bit 23). The kernel writes
+ * 0x26 = 0x7f and 0x2e = 0x380 at set-up, the GL library 0x22 to 0x25 as
+ * its context default; the values are established and the roles of 0x26
+ * and 0x2e are not. None of them is a command the model fails to
+ * recognise, and the stream stays aligned after them.
  */
 static void test_command_fifo_sequencer_registers(void)
 {
@@ -4210,10 +4215,9 @@ static void test_command_work_credits_at_fifo_entry(void)
 }
 
 /*
- * The kernels' FIFO set-up names the FIFO's size in 2-bpp tiles of 128
- * words (0x6b1), its high-water mark (0x6b2) and its low-water mark
- * (0x6b3), both in 32-bit words of fill. Run all the work, so that the
- * set-up stores have reached the board.
+ * The kernels' FIFO set-up stores 0x6b1, 0x6b3 and 0x6b2; their roles are
+ * unknown. Run all the work, so that the set-up stores have reached the
+ * board.
  */
 #define ODSY_STATUS0_FIFO_HIGH_WATER 0x00008000
 #define ODSY_INTR_FIFO_HIGH_WATER 0x02000000
@@ -4225,21 +4229,23 @@ static void work_finish(QTestState *qts)
     }
 }
 
-static void work_fifo_setup(QTestState *qts, uint32_t tiles, uint32_t high,
-                            uint32_t low)
+static void work_fifo_setup(QTestState *qts, uint32_t word_6b1,
+                            uint32_t high, uint32_t low)
 {
-    cmd_push64(qts, 0x000006b1, tiles);
+    cmd_push64(qts, 0x000006b1, word_6b1);
     cmd_push64(qts, 0x000006b3, low);
     cmd_push64(qts, 0x000006b2, high);
     work_finish(qts);
 }
 
 /*
- * Once set up, status bit 15 and flag bit 25 compare the FIFO's level in
- * words against the written high-water mark (0x6b2), a doubleword store
+ * MODEL CONTRACT ONLY, no evidence for the hardware: the roles of 0x6b2 and
+ * 0x6b3 are unknown. The model compares the FIFO's level in words against
+ * the written 0x6b2 for status bit 15 and flag bit 25, a doubleword store
  * counting two. Bit 17 and flag bit 9 keep the model's 16-word low-water
- * mark, matched to its 64-store credits, whatever 0x6b3 says: a low mark
- * the level never reaches would stop the kernel sleeping the writer.
+ * threshold, matched to its 64-store credits, whatever 0x6b3 says: a
+ * threshold the level never reaches would stop the kernel sleeping the
+ * writer.
  */
 static void test_command_fifo_water_marks(void)
 {
@@ -4291,10 +4297,41 @@ static void test_command_fifo_water_marks(void)
 }
 
 /*
- * The set-up's FIFO size does not widen the credits: after the kernels'
- * set-up (256 tiles, 32,768 words) only the oldest 64 waiting stores, the
- * model's depth, have their credits back, so the PI still holds back a
- * writer that runs ahead of the model's slow board.
+ * MODEL CONTRACT ONLY, no evidence for the hardware: the model applies
+ * 0x6b2 to status bit 15 and only stores 0x6b3. With 0x6b2 = 12 and
+ * 0x6b3 = 8, eight words leave bit 15 clear; swapped, they set it. Flag
+ * bit 25 is covered by command-fifo-water-marks.
+ */
+static void test_command_fifo_high_mark_follows_6b2(void)
+{
+    QTestState *qts = work_start();
+
+    work_fifo_setup(qts, 256, 12, 8);
+    for (unsigned int i = 0; i < 4; i++) {
+        cmd_push64(qts, 0x000006b0, 0);
+    }
+    g_assert_cmpuint(work_waiting(qts), ==, 4);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0) &
+                    ODSY_STATUS0_FIFO_HIGH_WATER, ==, 0);
+    work_finish(qts);
+
+    work_fifo_setup(qts, 256, 8, 12);
+    for (unsigned int i = 0; i < 4; i++) {
+        cmd_push64(qts, 0x000006b0, 0);
+    }
+    g_assert_cmpuint(work_waiting(qts), ==, 4);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0) &
+                    ODSY_STATUS0_FIFO_HIGH_WATER, ==,
+                    ODSY_STATUS0_FIFO_HIGH_WATER);
+    board_quit(qts);
+}
+
+/*
+ * MODEL CONTRACT ONLY: the FIFO's depth is unknown and the model's depth
+ * is its own choice. Stored 0x6b1 and 0x6b2 values (256 and 32192, as the
+ * kernels write them) do not widen the credits: only the oldest 64 waiting
+ * stores, the model's depth, have their credits back, so the PI still
+ * holds back a writer that runs ahead of the model's slow board.
  */
 static void test_command_work_credit_depth_ignores_setup(void)
 {
@@ -25674,6 +25711,8 @@ int main(int argc, char **argv)
                    test_command_work_credits_at_fifo_entry);
     add_fresh_case("sn1/odyssey/command-fifo-water-marks",
                    test_command_fifo_water_marks);
+    add_fresh_case("sn1/odyssey/command-fifo-high-mark-follows-6b2",
+                   test_command_fifo_high_mark_follows_6b2);
     add_fresh_case("sn1/odyssey/command-work-credit-depth-ignores-setup",
                    test_command_work_credit_depth_ignores_setup);
     add_fresh_case("sn1/odyssey/command-work-map-rewrite-settles",

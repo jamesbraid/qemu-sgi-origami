@@ -147,14 +147,16 @@ struct SGIOdysseyState {
     /*
      * The FIFO set-up registers 0x6b0-0x6b3 and 0x7b5, in that order, as
      * last written through the command FIFO (ODSY_REG_FIFO_SETUP_*).
+     * Values only: their roles are unknown.
      */
     uint32_t fifo_setup[5];
     /*
-     * The hardware-sync timeout in board clocks, register 0x7f0, as last
-     * written through the command FIFO (ODSY_REG_SYNC_TIMEOUT).
+     * Register 0x7f0 as last written through the command FIFO
+     * (ODSY_REG_SETUP_7F0). Its unit and meaning are unknown; the model
+     * records the value and runs no timer.
      */
     uint32_t sync_timeout;
-    /* A nonzero timeout was written; reported once, not migrated. */
+    /* A nonzero value was written; reported once, not migrated. */
     bool sync_timeout_reported;
     /* A credit target was written; not migrated. */
     bool flctl_target_reported;
@@ -721,7 +723,7 @@ struct SGIOdysseyState {
      */
     uint16_t gl_program_mem[SGI_ODYSSEY_GL_PROGRAM_ENTRIES * 6];
     uint32_t gl_program_addr;
-    /* The program-sequencer registers, classes 0x20 to 0x35, as written. */
+    /* The classes 0x20 to 0x35 as written; 0x27 also sets gl_program_addr. */
     uint32_t gl_seq[22];
     uint32_t gl_program_half;
     bool gl_program_mem_reported;
