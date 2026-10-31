@@ -43,11 +43,10 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_REVISION       0x01    /* the fitted Origin 200 part */
 
 /*
- * The board the chip is fitted to, named by the subsystem identity in its PCI
- * configuration space. A guest reads the subsystem dword and decides from it
- * which sub-devices the board wires up, so this identity is not decoration:
- * it selects a population. The vendor half is SGI's on every board and never
- * varies.
+ * The board the chip is fitted to, named by SGI's subsystem identity for it.
+ * The model keys each board's sub-device population by this value. The chip
+ * does not present it in configuration space, which repeats its first 32
+ * bytes from 0x20.
  */
 #define SGI_IOC3_SUBSYS_IP27_BASEIO6G   0xC300
 #define SGI_IOC3_SUBSYS_IP27_MIO        0xC301
@@ -114,15 +113,15 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_SERIAL_A       0x020178
 #define SGI_IOC3_SERIAL_B       0x020170
 
+/* The register block opens with the five configuration header dwords. */
+#define SGI_IOC3_HEADER_LAST    0x10
+/* Configuration bytes 0x20-0x3f read as a repeat of these. */
+#define SGI_IOC3_CONFIG_DECODED 0x20
+
 /*
  * The SuperIO interrupt pair has no ethernet bit; that block drives the
  * PCI pin. The enable mask has set and clear write aliases.
  */
-/* The register block opens with the five configuration header dwords. */
-#define SGI_IOC3_HEADER_LAST    0x10
-/* Configuration bytes the chip decodes; the rest of the 64 repeat them. */
-#define SGI_IOC3_CONFIG_DECODED 0x20
-
 #define SGI_IOC3_INT_STATUS     0x1c
 #define SGI_IOC3_INT_ENABLE_SET 0x20
 #define SGI_IOC3_INT_ENABLE_CLR 0x24

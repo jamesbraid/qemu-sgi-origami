@@ -27,9 +27,9 @@
  *     carrier default; the head's fitted onewire-serial is a per-unit
  *     fact the carrier passes down separately). QLogic ISP12160 at
  *     device 1, revision 6, subsystem vendor and device unobserved
- *     (0xffff:0xffff). IOC3 at device 4, revision 1, subsystem vendor
- *     0x10a9 with an explicit unobserved device placeholder (0xffff),
- *     population Ethernet, both serial ports and parallel (no
+ *     (0xffff:0xffff). IOC3 at device 4, revision 1, keyed by an
+ *     unobserved board identity placeholder (0xffff), population
+ *     Ethernet, both serial ports and parallel (no
  *     keyboard/mouse, no one-wire identity -- the board's Ethernet
  *     address comes from the brick EEPROM through the L1, not from
  *     IOC3's own part), an M48T35-compatible Timekeeper, and the DP83843
@@ -607,7 +607,7 @@ static bool baseio_g_add_mio_record(SGIBaseioState *s, Error **errp)
  * MediaIO daughtercard's own board-part record and second IOC3 at
  * device 6 -- PS/2 keyboard/mouse, two more serial ports and a parallel
  * port; no ethernet, no IOC3-level one-wire identity, no Timekeeper,
- * subsystem id 0xc301. Between the two IOC3s io6g exposes four
+ * board key 0xc301. Between the two IOC3s io6g exposes four
  * PS/2 ports total. This chip's own two serial ports are peripheral
  * connections, not a console or record backend -- device 2's IOC3
  * already owns "chardev-a"/"chardev-b"/"record-a"/"record-b" for this
@@ -668,7 +668,6 @@ static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
 #define IO8_IOC3_DEVICE           4
 #define IO8_IOC3_INTERRUPT_PIN    4
 #define IO8_IOC3_SUPERIO_PIN      0
-#define IO8_IOC3_SUBSYSTEM_VENDOR 0x10a9
 #define IO8_IOC3_SUBSYSTEM_ID_NOT_OBSERVED 0xffff
 #define IO8_IOC3_POPULATION (SGI_IOC3_POPULATION_ETHERNET | \
                             SGI_IOC3_POPULATION_SERIAL_A | \
@@ -728,11 +727,6 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
     qdev_connect_gpio_out_named(DEVICE(ioc3), "gpio5-reset-request", 0,
         qdev_get_gpio_in_named(DEVICE(&SGI_IOC3(ioc3)->eth),
                                "phy-reset", 0));
-    pci_set_word(ioc3->config + PCI_SUBSYSTEM_VENDOR_ID,
-                IO8_IOC3_SUBSYSTEM_VENDOR);
-    pci_set_word(ioc3->config + PCI_SUBSYSTEM_ID,
-                s->ioc3_subsystem_id == UINT32_MAX ?
-                IO8_IOC3_SUBSYSTEM_ID_NOT_OBSERVED : s->ioc3_subsystem_id);
     baseio_wire_xbridge_intx(chip, IO8_IOC3_DEVICE, IO8_IOC3_INTERRUPT_PIN);
     /* The chip's own internal SuperIO real-time event, not a PCI pin. */
     qdev_connect_gpio_out(DEVICE(ioc3), 0,
@@ -779,11 +773,6 @@ static bool baseio_build_io7(SGIBaseioState *s, Error **errp)
     qdev_connect_gpio_out_named(DEVICE(ioc3), "gpio5-reset-request", 0,
         qdev_get_gpio_in_named(DEVICE(&SGI_IOC3(ioc3)->eth),
                                "phy-reset", 0));
-    pci_set_word(ioc3->config + PCI_SUBSYSTEM_VENDOR_ID,
-                IO8_IOC3_SUBSYSTEM_VENDOR);
-    pci_set_word(ioc3->config + PCI_SUBSYSTEM_ID,
-                s->ioc3_subsystem_id == UINT32_MAX ?
-                IO8_IOC3_SUBSYSTEM_ID_NOT_OBSERVED : s->ioc3_subsystem_id);
     baseio_wire_xbridge_intx(chip, IO8_IOC3_DEVICE, IO8_IOC3_DEVICE);
     qdev_connect_gpio_out(DEVICE(ioc3), 0,
                           qdev_get_gpio_in_named(chip, "head-f-pin",

@@ -940,7 +940,6 @@ static void test_octane_ioc3_ethernet(bool octane2)
     qtest_quit(qts);
 }
 
-
 /*
  * The reference Octane2's PROM Command Monitor reads the onboard IOC3's
  * type 0 configuration space as 32 bytes repeated: dwords 0x20-0x3f repeat
