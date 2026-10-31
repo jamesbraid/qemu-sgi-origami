@@ -2505,9 +2505,14 @@
       },
       "l1_controllers": {
         "cx0-l1": {
-          "notes": "Approximation. The type byte is the C-brick's, because the printed letter is the same and the PROM needs a module class; the Cx-brick's real value (the profile's unknown Cx-5) would settle it. The firmware revision is unknown and not carried.",
+          "notes": "Approximation. The type byte is the C-brick's, because the printed letter is the same and the PROM needs a module class; the Cx-brick's real value (the profile's unknown Cx-5) would settle it. The firmware revision is the same approximation as the C-bricks': the 1.44.0 of every brick image in the IRIX 6.5.30 L1 firmware.",
           "provenance": "derived",
           "reported_type": 67,
+          "revision": {
+            "major": 1,
+            "minor": 44,
+            "patch": 0
+          },
           "sources": [
             "qemu:docs/system/mips/sgi/hardware/l1.rst",
             "007-4653-001 printed pages 21 and 134: 001c07 is a Cx-brick in rack 001, slot 07"

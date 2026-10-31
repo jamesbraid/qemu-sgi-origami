@@ -10161,7 +10161,15 @@ static void test_origin3900_cx_brick(void)
         g_assert_cmpuint(qom_get_uint(qts, "/machine/module0/l1",
                                       "brick-type-code"), ==, 0x43);
         g_assert_cmpstr(io_profile, ==, "ibrick");
+        /* The Cx-brick's L1 reports the catalogue's firmware revision. */
+        assert_l1_revision(qts, "/machine/module0/l1", 1, 44, 0);
     }
+    qtest_quit(qts);
+    /* The machine's l1-revision replaces it, as on the other bricks. */
+    qts = qtest_initf("-M origin3000,topology=origin3900,l1-revision=1.9.3 "
+                      "-cpu R16000 -smp 16 -m 8192 -bios %s -nodefaults "
+                      "-display none", prom);
+    assert_l1_revision(qts, "/machine/module0/l1", 1, 9, 3);
     qtest_quit(qts);
     g_unlink(prom);
 }
@@ -10208,6 +10216,7 @@ static void test_origin3900_ip59_cx_brick(void)
         unsigned int count = 0;
 
         g_assert_cmpstr(name, ==, bricks[i].board_name);
+        assert_l1_revision(qts, "/machine/module0/l1", 1, 44, 0);
         if (bricks[i].board_name[0]) {
             g_autofree char *part = qom_get_str(qts, "/machine/module0/l1",
                                                 "node-board-part");

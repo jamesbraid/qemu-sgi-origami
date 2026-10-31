@@ -4587,6 +4587,12 @@ static bool sgi_machine_supply_cx_l1(SGIMachineState *s,
     }
     qdev_prop_set_uint32(l1, "boards", boards);
     qdev_prop_set_uint32(l1, "compute-boards", compute);
+    qdev_prop_set_int32(l1, "revision-major",
+                        s->l1_config[m->controller_index].revision[0]);
+    qdev_prop_set_int32(l1, "revision-minor",
+                        s->l1_config[m->controller_index].revision[1]);
+    qdev_prop_set_int32(l1, "revision-patch",
+                        s->l1_config[m->controller_index].revision[2]);
     if (c->l1 && c->l1->cpu_context) {
         qdev_prop_set_bit(l1, "cpu-context-present", true);
         qdev_prop_set_uint32(l1, "cpu-mode-word",
