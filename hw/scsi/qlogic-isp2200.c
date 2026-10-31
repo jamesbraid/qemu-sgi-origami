@@ -22,6 +22,7 @@
 #include "qemu/timer.h"
 #include "hw/core/hotplug.h"
 #include "hw/pci/pci_device.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/pci/pci-64bit.h"
 #include "hw/scsi/scsi.h"
 #include "migration/qemu-file-types.h"
@@ -79,10 +80,54 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
 #define ISP2200_SEMAPHORE_LOCK  0x0001
 
 /*
- * Data-in is never asserted: every EEPROM read fails validation and the
- * guest falls back to built-in defaults, as with an unprogrammed part.
+ * The NVRAM register's bit-banged serial lines: clock, chip select and
+ * the data line into the EEPROM are the host's; the data line out of it
+ * is the part's.
  */
+#define ISP2200_NVRAM_CLK        0x0001
+#define ISP2200_NVRAM_CS         0x0002
+#define ISP2200_NVRAM_DI         0x0004
+#define ISP2200_NVRAM_DO         0x0008
 #define ISP2200_NVRAM_WRITE_MASK 0x0007
+
+/* A 256-byte image read as 128 little-endian words. */
+#define ISP2200_NVRAM_SIZE       256
+#define ISP2200_NVRAM_WORDS      (ISP2200_NVRAM_SIZE / 2)
+/* Eleven command bits: start bit 1, read opcode 10, eight address bits. */
+#define ISP2200_NVRAM_CMD_BITS   11
+#define ISP2200_NVRAM_OP_BITS    3
+#define ISP2200_NVRAM_OP_READ    0x6
+#define ISP2200_NVRAM_DATA_BITS  16
+
+/*
+ * Name serial bytes are 24 bits. All ones is the "never programmed" value
+ * the shipped drivers refuse, and zero is the unset property.
+ */
+#define ISP2200_NVRAM_SERIAL_MAX    0xfffffe
+
+/* Image offsets of the fields the default image sets. */
+#define ISP2200_NVRAM_OFF_VERSION       4
+#define ISP2200_NVRAM_OFF_PARAM_VERSION 6
+#define ISP2200_NVRAM_OFF_FW_OPTIONS    8
+#define ISP2200_NVRAM_OFF_FRAME_SIZE    10
+#define ISP2200_NVRAM_OFF_IOCB_COUNT    12
+#define ISP2200_NVRAM_OFF_THROTTLE      14
+#define ISP2200_NVRAM_OFF_RETRY_COUNT   16
+#define ISP2200_NVRAM_OFF_RETRY_DELAY   17
+#define ISP2200_NVRAM_OFF_PORT_NAME     18
+#define ISP2200_NVRAM_OFF_NODE_NAME     30
+#define ISP2200_NVRAM_OFF_CHECKSUM      255
+
+/* QLogic's company ID, in the middle of every name the part carries. */
+#define ISP2200_COMPANY_ID_0        0x00
+#define ISP2200_COMPANY_ID_1        0xe0
+#define ISP2200_COMPANY_ID_2        0x8b
+
+enum {
+    ISP2200_NVRAM_COMMAND,  /* Shifting in the eleven command bits. */
+    ISP2200_NVRAM_DATA,     /* Shifting a word out. */
+    ISP2200_NVRAM_IGNORE,   /* Not a read: nothing until chip deselect. */
+};
 
 #define ISP2200_HCCR_SHIFT          12
 #define ISP2200_HCCR_NOP            0x0
@@ -396,8 +441,17 @@ struct QLogicISP2200State {
     uint16_t icr;
     uint16_t semaphore;
     uint16_t nvram;
+    /* The EEPROM behind it: the image, and where a read has got to. */
+    uint8_t nvram_image[ISP2200_NVRAM_SIZE];
+    uint8_t nvram_state;
+    uint8_t nvram_bits;
+    uint16_t nvram_shift;
+    bool nvram_dout;
     uint16_t gpio_data;
     uint16_t gpio_enable;
+
+    /* Property: the low 24 bits of the NVRAM port name; 0 derives them. */
+    uint32_t nvram_serial;
 
     bool risc_int;      /* The RISC interrupt latch, ISR bit 3. */
     bool host_int;      /* HCCR bit 7: the doorbell, until cleared. */
@@ -620,6 +674,148 @@ static void isp2200_boot_rom(QLogicISP2200State *s)
     s->mbox_out[7] = ISP2200_ROM_REVISION_2200A;
 }
 
+/*
+ * Chip deselect, and reset: the part forgets any command in progress.
+ */
+static void isp2200_nvram_deselect(QLogicISP2200State *s)
+{
+    s->nvram_state = ISP2200_NVRAM_COMMAND;
+    s->nvram_bits = 0;
+    s->nvram_shift = 0;
+    s->nvram_dout = false;
+}
+
+/*
+ * A register write to the serial EEPROM port. Only the read command is
+ * modelled, clocked the way the drivers clock it: eleven command bits,
+ * most significant first, each taken on a rising clock edge with chip
+ * select high, then sixteen data bits out, most significant first, each
+ * appearing after a rising edge.
+ *
+ * Approximation: the part is a 93C66-class microwire EEPROM by inference
+ * from the command format. The model takes the first rising edge as the
+ * start bit instead of waiting for a one, drives no dummy zero before the
+ * first data bit, and does not model write, erase or the sequential read
+ * a real part continues into the next word. Whether the real part drives
+ * that dummy bit is unknown, and it only matters to a guest that sends a
+ * command shorter than eleven bits.
+ */
+static void isp2200_nvram_write(QLogicISP2200State *s, uint16_t val)
+{
+    bool rising = (val & ISP2200_NVRAM_CLK) &&
+                  !(s->nvram & ISP2200_NVRAM_CLK);
+
+    s->nvram = val & ISP2200_NVRAM_WRITE_MASK;
+    if (!(val & ISP2200_NVRAM_CS)) {
+        isp2200_nvram_deselect(s);
+        return;
+    }
+    if (!rising) {
+        return;
+    }
+
+    switch (s->nvram_state) {
+    case ISP2200_NVRAM_COMMAND:
+        s->nvram_shift = (s->nvram_shift << 1) |
+                         !!(val & ISP2200_NVRAM_DI);
+        s->nvram_bits++;
+        if (s->nvram_bits == ISP2200_NVRAM_OP_BITS &&
+            s->nvram_shift != ISP2200_NVRAM_OP_READ) {
+            qemu_log_mask(LOG_UNIMP,
+                          "qlogic-isp2200: NVRAM command 0x%x is not a "
+                          "read; only reads are modelled\n",
+                          s->nvram_shift);
+            s->nvram_state = ISP2200_NVRAM_IGNORE;
+        } else if (s->nvram_bits == ISP2200_NVRAM_CMD_BITS) {
+            unsigned word = s->nvram_shift & 0xff;
+
+            if (word < ISP2200_NVRAM_WORDS) {
+                s->nvram_shift = lduw_le_p(s->nvram_image + word * 2);
+            } else {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "qlogic-isp2200: NVRAM read of word %u past "
+                              "the image's %u words\n", word,
+                              ISP2200_NVRAM_WORDS);
+                s->nvram_shift = 0xffff;
+            }
+            s->nvram_state = ISP2200_NVRAM_DATA;
+            s->nvram_bits = 0;
+        }
+        break;
+
+    case ISP2200_NVRAM_DATA:
+        if (s->nvram_bits < ISP2200_NVRAM_DATA_BITS) {
+            s->nvram_dout = (s->nvram_shift >>
+                             (ISP2200_NVRAM_DATA_BITS - 1 -
+                              s->nvram_bits)) & 1;
+            s->nvram_bits++;
+        } else {
+            qemu_log_mask(LOG_UNIMP,
+                          "qlogic-isp2200: NVRAM clocked past one word; "
+                          "sequential read is not modelled\n");
+            s->nvram_dout = false;
+        }
+        break;
+
+    default:
+        break;
+    }
+}
+
+static uint16_t isp2200_nvram_read(QLogicISP2200State *s)
+{
+    bool dout = s->nvram_state == ISP2200_NVRAM_DATA && s->nvram_dout;
+
+    return s->nvram | (dout ? ISP2200_NVRAM_DO : 0);
+}
+
+/*
+ * The default image of the board's NVRAM. Approximation: a model choice,
+ * not a capture of any board. The fields the shipped drivers check are
+ * what the image must pass: the sum of its 256 bytes is zero modulo 256,
+ * the port name carries QLogic's company ID with a first byte of 0x20 or
+ * 0x21, and the serial bytes are neither all ones nor the whole image
+ * blank. The remaining fields are the values the public OpenBSD driver
+ * uses when it has no image, so a guest that copies them into its control
+ * block behaves as it does without one. The board's real contents are
+ * unknown.
+ */
+static void isp2200_nvram_build(QLogicISP2200State *s, uint32_t serial)
+{
+    uint8_t *img = s->nvram_image;
+    unsigned i;
+    uint8_t sum = 0;
+
+    memset(img, 0, ISP2200_NVRAM_SIZE);
+    memcpy(img, "ISP ", 4);
+    img[ISP2200_NVRAM_OFF_VERSION] = 1;
+    img[ISP2200_NVRAM_OFF_PARAM_VERSION] = 1;
+    stw_le_p(img + ISP2200_NVRAM_OFF_FW_OPTIONS, 0x0107);
+    stw_le_p(img + ISP2200_NVRAM_OFF_FRAME_SIZE, 1024);
+    stw_le_p(img + ISP2200_NVRAM_OFF_IOCB_COUNT, 256);
+    stw_le_p(img + ISP2200_NVRAM_OFF_THROTTLE, 16);
+    img[ISP2200_NVRAM_OFF_RETRY_COUNT] = 3;
+    img[ISP2200_NVRAM_OFF_RETRY_DELAY] = 5;
+
+    for (i = 0; i < 2; i++) {
+        uint8_t *name = img + (i ? ISP2200_NVRAM_OFF_NODE_NAME :
+                                   ISP2200_NVRAM_OFF_PORT_NAME);
+
+        name[0] = i ? 0x20 : 0x21;
+        name[2] = ISP2200_COMPANY_ID_0;
+        name[3] = ISP2200_COMPANY_ID_1;
+        name[4] = ISP2200_COMPANY_ID_2;
+        name[5] = serial >> 16;
+        name[6] = serial >> 8;
+        name[7] = serial;
+    }
+
+    for (i = 0; i < ISP2200_NVRAM_OFF_CHECKSUM; i++) {
+        sum += img[i];
+    }
+    img[ISP2200_NVRAM_OFF_CHECKSUM] = -sum;
+}
+
 static void isp2200_soft_reset(QLogicISP2200State *s)
 {
     trace_qlogic_isp2200_soft_reset();
@@ -638,6 +834,7 @@ static void isp2200_soft_reset(QLogicISP2200State *s)
     s->icr = 0;
     s->semaphore = 0;
     s->nvram = 0;
+    isp2200_nvram_deselect(s);
     s->risc_int = false;
     s->host_int = false;
     isp2200_update_irq(s);
@@ -2558,7 +2755,7 @@ static uint16_t isp2200_reg_value(QLogicISP2200State *s, hwaddr addr,
     case ISP2200_REG_SEMAPHORE:
         return s->semaphore;
     case ISP2200_REG_NVRAM:
-        return s->nvram;
+        return isp2200_nvram_read(s);
     case ISP2200_REG_HCCR:
         return (s->host_int ? ISP2200_HCCR_HOST_INT : 0) |
                (s->risc_reset || reset_visible ?
@@ -2644,7 +2841,7 @@ static void isp2200_reg_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
 
     case ISP2200_REG_NVRAM:
-        s->nvram = val & ISP2200_NVRAM_WRITE_MASK;
+        isp2200_nvram_write(s, val);
         break;
 
     case ISP2200_REG_HCCR:
@@ -2883,6 +3080,25 @@ static void isp2200_unplug(const HotplugHandler *hotplug_dev,
 static void isp2200_realize(PCIDevice *dev, Error **errp)
 {
     QLogicISP2200State *s = QLOGIC_ISP2200(dev);
+    uint32_t serial = s->nvram_serial;
+
+    if (serial > ISP2200_NVRAM_SERIAL_MAX) {
+        error_setg(errp, "nvram-serial 0x%x does not fit in 24 bits",
+                   serial);
+        return;
+    }
+    if (serial == 0) {
+        /*
+         * A stable name per instance: the same machine gives the same
+         * adapter the same name on every run, and two adapters in one
+         * machine differ because their paths do.
+         */
+        g_autofree char *path = object_get_canonical_path(OBJECT(dev));
+
+        serial = g_str_hash(path) % ISP2200_NVRAM_SERIAL_MAX;
+        serial += serial == 0;
+    }
+    isp2200_nvram_build(s, serial);
 
     dev->config[PCI_INTERRUPT_PIN] = 0x01;
 
@@ -3046,6 +3262,10 @@ static const VMStateDescription vmstate_isp2200 = {
         VMSTATE_UINT16(icr, QLogicISP2200State),
         VMSTATE_UINT16(semaphore, QLogicISP2200State),
         VMSTATE_UINT16(nvram, QLogicISP2200State),
+        VMSTATE_UINT8(nvram_state, QLogicISP2200State),
+        VMSTATE_UINT8(nvram_bits, QLogicISP2200State),
+        VMSTATE_UINT16(nvram_shift, QLogicISP2200State),
+        VMSTATE_BOOL(nvram_dout, QLogicISP2200State),
         VMSTATE_UINT16(gpio_data, QLogicISP2200State),
         VMSTATE_UINT16(gpio_enable, QLogicISP2200State),
         VMSTATE_BOOL(risc_int, QLogicISP2200State),
@@ -3098,6 +3318,10 @@ static const VMStateDescription vmstate_isp2200 = {
     },
 };
 
+static const Property isp2200_properties[] = {
+    DEFINE_PROP_UINT32("nvram-serial", QLogicISP2200State, nvram_serial, 0),
+};
+
 static void isp2200_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -3118,6 +3342,7 @@ static void isp2200_class_init(ObjectClass *oc, const void *data)
     hc->unplug = isp2200_unplug;
     dc->desc = "QLogic ISP2200 Fibre Channel host adapter";
     dc->vmsd = &vmstate_isp2200;
+    device_class_set_props(dc, isp2200_properties);
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
 

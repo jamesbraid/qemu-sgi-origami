@@ -109,10 +109,17 @@ because NetBSD writes its DMA-engine controls at ``0x20``, ``0x40`` and
 its own reset. The CSR's flash bits are not modelled: Linux and NetBSD
 disagree on which bit selects the flash bank.
 
-The NVRAM data-in line never carries data, so a bit-banged read
-returns zeros and fails the drivers' ``ISP`` signature check. That is
-what an unprogrammed part looks like, and both drivers fall back to
-built-in defaults. The board's real NVRAM contents are unknown.
+The NVRAM is a 256-byte serial EEPROM read through this register, one
+word at a time: eleven command bits (start, read, eight address bits), then
+sixteen data bits, most significant first, the bit on register bit 3. Only
+reads are modelled; any other command is logged and ignored. The default
+image is a model choice, not the board's contents, which are unknown. It
+starts ``ISP ``, sums to zero over its 256 bytes, and carries a port name at
+byte 18 and a node name at byte 30 with QLogic's company ID in name bytes 2
+to 4. The last three name bytes come from the ``nvram-serial`` property, or
+when it is zero from a hash of the device's QOM path, so each adapter has its
+own name and keeps it from run to run. The other fields are the values the
+public OpenBSD driver uses when it has no image.
 
 Reset and RISC control
 ======================
