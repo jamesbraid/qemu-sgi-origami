@@ -329,9 +329,8 @@ static void test_launch(const void *opaque)
     g_ptr_array_add(args, g_strdup("-M"));
     g_ptr_array_add(args, g_strdup(machine->str));
     g_ptr_array_add(args, g_strdup("-cpu"));
-    g_ptr_array_add(args, g_strdup(ip32 && g_str_equal(topology, "o2plus") ?
-                                    O2PLUS_CPU :
-                                    qdict_get_str(o, "default-cpu-model")));
+    /* The bare part: the O2+ board fits its module's values itself. */
+    g_ptr_array_add(args, g_strdup(qdict_get_str(o, "default-cpu-model")));
     g_ptr_array_add(args, g_strdup("-smp"));
     g_ptr_array_add(args, g_strdup_printf("%" PRId64,
                                           qdict_get_int(o, "smp")));

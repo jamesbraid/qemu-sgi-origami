@@ -8654,8 +8654,55 @@ static void test_o2plus_configuration(void)
     }
     assert_o2_banked_rejected(t.machine, "1G", NULL, NULL,
                               "o2plus requires R12000");
-    assert_o2_banked_rejected(t.machine, "1G", "-cpu", "R12000",
-                              "requires r12000-prid");
+    /* The board fits the module's part: -cpu R12000 alone is enough. */
+    qts = qtest_initf("-M %s -cpu R12000 -nodefaults -S", t.machine);
+    {
+        g_autoptr(QDict) cpus = qtest_qmp(qts,
+            "{'execute':'query-cpus-fast'}");
+        const char *path = qdict_get_str(qobject_to(QDict, qlist_peek(
+            qdict_get_qlist(cpus, "return"))), "qom-path");
+        static const struct {
+            const char *property;
+            const char *catalogue;
+            uint64_t value;
+        } fitted[] = {
+            { "r12000-prid", "prid", 0xe35 },
+            { "r12000-fpu-id", "fpu-prid", 0x900 },
+            { "r12000-reset-mode", "mode-bits", 0x011a8603 },
+        };
+        /* The board's copy of the module's part must stay the catalogue's. */
+        g_autoptr(QDict) machines = qtest_qmp(qts,
+            "{'execute':'query-sgi-machines'}");
+        QDict *assembly = NULL;
+        const QListEntry *entry;
+
+        QLIST_FOREACH_ENTRY(qdict_get_qlist(qdict_get_qdict(machines,
+                                                            "return"),
+                                            "topologies"), entry) {
+            QDict *topology = qobject_to(QDict, qlist_entry_obj(entry));
+
+            if (g_str_equal(qdict_get_str(topology, "name"), "o2plus")) {
+                QDict *node = qobject_to(QDict, qlist_peek(
+                    qdict_get_qlist(topology, "nodes")));
+                QDict *slot = qobject_to(QDict, qlist_peek(
+                    qdict_get_qlist(node, "cpu-slots")));
+
+                assembly = qdict_get_qdict(slot, "assembly");
+            }
+        }
+        g_assert_nonnull(assembly);
+        for (unsigned int i = 0; i < G_N_ELEMENTS(fitted); i++) {
+            g_autoptr(QDict) value = qtest_qmp(qts,
+                "{'execute':'qom-get','arguments':{'path':%s,"
+                "'property':%s}}", path, fitted[i].property);
+
+            g_assert_cmphex(qdict_get_int(value, "return"), ==,
+                            fitted[i].value);
+            g_assert_cmphex(qdict_get_int(assembly, fitted[i].catalogue), ==,
+                            fitted[i].value);
+        }
+    }
+    qtest_quit(qts);
     assert_o2_banked_rejected(t.machine, "512M", "-cpu", O2PLUS_CPU,
                               "requires exactly 1 GiB");
     for (unsigned i = 0; i < ARRAY_SIZE(invalid); i++) {
