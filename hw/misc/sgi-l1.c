@@ -5,6 +5,7 @@
  */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-l1.h"
+#include "hw/misc/sgi-l1-env.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
@@ -1590,6 +1591,27 @@ static void l1_o3k_brick_print(SGIL1State *s)
               s->brick_type_code ? (char)s->brick_type_code : '?');
 }
 
+/*
+ * The "env" report of a Chimera interface board: type 7 is the 2U board and
+ * type 9 the workstation board, and the node board's name picks IP53 or
+ * IP59. Returns false for every other brick, which keeps "env" unmodelled.
+ */
+static bool l1_chimera_env(SGIL1State *s)
+{
+    g_autofree char *text = NULL;
+
+    if (s->profile->o3k) {
+        return false;
+    }
+    text = sgi_l1_chimera_env(s->brick_type_code, s->node_board_name,
+                              s->node_power);
+    if (!text) {
+        return false;
+    }
+    l1_printf(s, "%s", text);
+    return true;
+}
+
 static int l1_run_line(SGIL1State *s, const char *text, bool console)
 {
     char line[sizeof(s->command)];
@@ -1947,6 +1969,8 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
     } else if (s->profile->o3k && argc == 1 &&
                l1_word(argv[0], "config", "cfg")) {
         l1_o3k_config(s);
+    } else if (argc == 1 && !strcmp(argv[0], "env") && l1_chimera_env(s)) {
+        /* Printed by l1_chimera_env(). */
     } else if (l1_word(argv[0], "help", "hlp")) {
         l1_printf(s, "Commands are:\r\n"
                   "     brick        display      help|hlp     l1\r\n"
