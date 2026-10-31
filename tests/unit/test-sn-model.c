@@ -1590,16 +1590,27 @@ static void test_tezro_requires_explicit_topology(void)
     g_autoptr(SGIMachines) catalogue = load_catalogue();
     const SGIModelTopologyList *topology;
     const SGIModelOfferingList *offering;
-    bool tower_found = false;
+    const SGIModelTopology *one, *many;
+    unsigned int boards = 0;
     bool tezro_found = false;
 
     for (topology = catalogue->topologies; topology;
          topology = topology->next) {
-        if (!strcmp(topology->value->name, "tezro-tower-multi")) {
-            tower_found = true;
+        if (!strcmp(topology->value->name, "tezro")) {
+            boards++;
         }
     }
-    g_assert_true(tower_found);
+    /* One record for each interface board, chosen by the CPU count. */
+    g_assert_cmpuint(boards, ==, 2);
+    one = sgi_model_product_variant(catalogue, "tezro", "tezro", 1);
+    many = sgi_model_product_variant(catalogue, "tezro", "tezro", 2);
+    g_assert(sgi_model_product_variant(catalogue, "tezro", "tezro", 4) ==
+             many);
+    g_assert(one != many);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(one->pci_host_bridges), ==, 1);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(many->pci_host_bridges), ==, 2);
+    g_assert_false(one->has_machine_default);
+    g_assert_true(many->has_machine_default && many->machine_default);
     for (offering = catalogue->offerings; offering;
          offering = offering->next) {
         if (!strcmp(offering->value->product, "onyx350")) {
@@ -1608,7 +1619,7 @@ static void test_tezro_requires_explicit_topology(void)
         if (strcmp(offering->value->product, "tezro")) {
             continue;
         }
-        if (!strcmp(offering->value->topology, "tezro-tower-multi")) {
+        if (!strcmp(offering->value->topology, "tezro")) {
             tezro_found = true;
         }
         g_assert_null(offering->value->default_topology);
@@ -1861,10 +1872,20 @@ static void test_resolve_product_scope(void)
 
     for (entry = catalogue->topologies; entry; entry = entry->next) {
         const SGIModelTopology *t = entry->value;
+        const uint32List *count = t->node_populations->value->
+            supported_cpu_populations->value->cpus_per_node;
+        unsigned int cpus = 0;
 
+        for (; count; count = count->next) {
+            cpus += count->value;
+        }
         g_assert_true(sgi_model_topology_matches_product(t, t->product));
-        g_assert_true(sgi_model_product_topology(catalogue, t->product,
-                                                 t->name) == t);
+        g_assert_cmpstr(sgi_model_product_topology(catalogue, t->product,
+                                                   t->name)->name, ==,
+                        t->name);
+        /* A board variant shares its name; -smp tells it apart. */
+        g_assert_true(sgi_model_product_variant(catalogue, t->product,
+                                                t->name, cpus) == t);
     }
     g_assert_null(sgi_model_product_topology(catalogue, "origin200",
                                              "origin2000-rack"));

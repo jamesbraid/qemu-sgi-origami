@@ -70,9 +70,7 @@ static const TopologyExtra topology_extras[] = {
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "tezro-rack", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "tezro-tower-multi", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
-      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "tezro-tower-one", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+    { "tezro", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "origin350-ip59", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
@@ -494,30 +492,98 @@ static gint compare_names(gconstpointer a, gconstpointer b, gpointer unused)
     return strcmp(a, b);
 }
 
-/* One case per catalogue topology, from its largest offering. */
+/*
+ * Whether catalogue topology @record accepts @smp CPUs in all, and in
+ * *@smallest the smallest total it accepts.
+ */
+static bool record_accepts(QDict *record, int64_t smp, int64_t *smallest)
+{
+    const QListEntry *row, *population, *count;
+    bool accepts = false;
+
+    *smallest = -1;
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(record, "node-populations"), row) {
+        QDict *r = qobject_to(QDict, qlist_entry_obj(row));
+
+        QLIST_FOREACH_ENTRY(qdict_get_qlist(r, "supported-cpu-populations"),
+                            population) {
+            QDict *p = qobject_to(QDict, qlist_entry_obj(population));
+            int64_t total = 0;
+
+            QLIST_FOREACH_ENTRY(qdict_get_qlist(p, "cpus-per-node"), count) {
+                total += qnum_get_int(qobject_to(QNum,
+                                                 qlist_entry_obj(count)));
+            }
+            accepts |= total == smp;
+            if (*smallest < 0 || total < *smallest) {
+                *smallest = total;
+            }
+        }
+    }
+    return accepts;
+}
+
+/*
+ * A topology with board variants is a record per board under one name,
+ * and each board is its own case, named for the smallest CPU total it
+ * accepts: tezro-1cpu and tezro-2cpu.
+ */
+static char *offering_case_name(QList *records, QDict *offering)
+{
+    const char *topology = qdict_get_str(offering, "topology");
+    int64_t smp = qdict_get_int(offering, "smp");
+    int64_t smallest = -1, record_smallest;
+    unsigned int count = 0;
+    const QListEntry *entry;
+
+    QLIST_FOREACH_ENTRY(records, entry) {
+        QDict *record = qobject_to(QDict, qlist_entry_obj(entry));
+
+        if (!g_str_equal(qdict_get_str(record, "name"), topology)) {
+            continue;
+        }
+        count++;
+        if (record_accepts(record, smp, &record_smallest)) {
+            smallest = record_smallest;
+        }
+    }
+    g_assert_cmpint(smallest, >, 0);
+    return count > 1 ?
+        g_strdup_printf("%s-%" PRId64 "cpu", topology, smallest) :
+        g_strdup(topology);
+}
+
+/* One case per catalogue topology record, from its largest offering. */
 static GPtrArray *catalogue_cases(void)
 {
     QTestState *qts = qtest_init("-M none");
     g_autoptr(QDict) reply = qtest_qmp(qts,
         "{'execute': 'query-sgi-machines'}");
-    QList *offerings = qdict_get_qlist(qdict_get_qdict(reply, "return"),
-                                       "offerings");
-    g_autoptr(GHashTable) largest = g_hash_table_new(g_str_hash, g_str_equal);
+    QDict *catalogue = qdict_get_qdict(reply, "return");
+    QList *offerings = qdict_get_qlist(catalogue, "offerings");
+    QList *records = qdict_get_qlist(catalogue, "topologies");
+    g_autoptr(GHashTable) largest = g_hash_table_new_full(
+        g_str_hash, g_str_equal, g_free, NULL);
+    g_autoptr(GHashTable) offered = g_hash_table_new(g_str_hash, g_str_equal);
     g_autoptr(GList) topologies = NULL;
     GPtrArray *cases = g_ptr_array_new();
     const QListEntry *entry;
 
     QLIST_FOREACH_ENTRY(offerings, entry) {
         QDict *offering = qobject_to(QDict, qlist_entry_obj(entry));
-        const char *topology = qdict_get_str(offering, "topology");
-        QDict *best = g_hash_table_lookup(largest, topology);
+        char *name = offering_case_name(records, offering);
+        QDict *best = g_hash_table_lookup(largest, name);
 
+        g_hash_table_add(offered,
+                         (gpointer)qdict_get_str(offering, "topology"));
         if (!best || larger_offering(offering, best)) {
-            g_hash_table_insert(largest, (gpointer)topology, offering);
+            g_hash_table_insert(largest, name, offering);
+        } else {
+            g_free(name);
         }
     }
     for (size_t i = 0; i < G_N_ELEMENTS(topology_extras); i++) {
-        if (!g_hash_table_contains(largest, topology_extras[i].topology)) {
+        if (!g_hash_table_contains(offered, topology_extras[i].topology)) {
             g_error("launch extra names topology %s, which the catalogue "
                     "does not offer", topology_extras[i].topology);
         }
@@ -526,7 +592,8 @@ static GPtrArray *catalogue_cases(void)
                                        compare_names, NULL);
     for (GList *t = topologies; t; t = t->next) {
         QDict *offering = g_hash_table_lookup(largest, t->data);
-        const TopologyExtra *extra = topology_extra(t->data);
+        const TopologyExtra *extra =
+            topology_extra(qdict_get_str(offering, "topology"));
         QDict *memory = qdict_get_qdict(offering, "memory-per-node-mib");
         MachineCase *c = g_new0(MachineCase, 1);
 

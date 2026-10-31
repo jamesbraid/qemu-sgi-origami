@@ -598,7 +598,7 @@ static QTestState *pic_tezro_runtime_start(bool incoming, char **bios_path,
         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw",
         io9_data, io9_clock);
     QTestState *qts = qtest_initf(
-        "-M tezro,topology=tezro-tower-multi,nodes=1,"
+        "-M tezro,topology=tezro,nodes=1,"
         "ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
         "nvram0-clock=sgi-ds1742-clock-io9 %s -bios %s %s -S",
         incoming_arg, bios, io9_drives);

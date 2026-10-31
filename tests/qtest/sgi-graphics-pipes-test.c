@@ -76,7 +76,7 @@ static const Launch launches[] = {
       "nvram0-clock=sgi-ds1742-clock-io9",
       "-cpu R16000,r16000-experimental=on,r16000-reset-mode=0x009caf85,"
       "r16000-scache-bytes=0x800000 -smp 4 -m 8G", SN1_PROM, NULL, true },
-    { "tezro-tower-multi", "tezro,topology=tezro-tower-multi,"
+    { "tezro", "tezro,topology=tezro,"
       "nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9",
       "-cpu R16000,r16000-experimental=on,r16000-reset-mode=0x009bad85,"
@@ -180,10 +180,23 @@ static QDict *find(QList *list, const char *key, const char *value)
     return NULL;
 }
 
+/*
+ * Topology @name's record: of a topology's board variants, the machine
+ * default, which on the Tezro is the board with the graphics slot.
+ */
 static QDict *topology_record(const char *name)
 {
-    QDict *t = find(qdict_get_qlist(catalogue, "topologies"), "name", name);
+    QDict *t = NULL;
+    const QListEntry *e;
 
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(catalogue, "topologies"), e) {
+        QDict *d = qobject_to(QDict, qlist_entry_obj(e));
+
+        if (g_str_equal(qdict_get_str(d, "name"), name) &&
+            (!t || qdict_get_try_bool(d, "machine-default", false))) {
+            t = d;
+        }
+    }
     g_assert_nonnull(t);
     return t;
 }
@@ -359,7 +372,7 @@ static void test_catalogue_records(void)
           "with no pipe is an Origin 2000, so use origin2000-deskside or "
           "origin2000-rack" },
         { "onyx350-compat", true, NULL },
-        { "tezro-tower-multi", true, NULL },
+        { "tezro", true, NULL },
         { "fuel", false,
           "every Fuel has its VPro graphics slot at widget 13" },
     };
@@ -843,7 +856,7 @@ static char *temporary(const char *name, gsize size, uint8_t fill)
 static void test_ip53_v12(void)
 {
     static const char *const topologies[] = {
-        "onyx350-compat", "tezro-tower-multi",
+        "onyx350-compat", "tezro",
     };
     const uint64_t vpro = SPACE_IO + UINT64_C(12) * UINT64_C(0x1000000);
     const uint64_t bedrock = SPACE_IO + UINT64_C(0x01800000);

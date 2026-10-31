@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The Tezro takes one of two interface boards (007-4564-001 printed
+# pages 26-31): a one-processor board with two PCI-X buses and one XIO
+# connector, and a two/four-processor board with four buses and a
+# second XIO connector. Each variant compiles to its own record named
+# tezro; the machine picks the board from -smp.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip53-tezro.yaml
+variants:
+  - id: one-processor
+    layers:
+      - layers/modules/tezro-serial-compat-module.yaml
+      - layers/products/tezro-one-processor.yaml
+  - id: two-four-processor
+    default: true
+    layers:
+      - layers/products/tezro-two-four-processor.yaml

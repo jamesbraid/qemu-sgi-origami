@@ -3950,9 +3950,9 @@ class CompositionVariantTests(unittest.TestCase):
         "variants": [
             {"id": "one-processor",
              "layers": ["layers/modules/tezro-serial-compat-module.yaml",
-                        "layers/products/tezro-tower-one.yaml"]},
+                        "layers/products/tezro-one-processor.yaml"]},
             {"id": "two-four-processor", "default": True,
-             "layers": ["layers/products/tezro-tower-multi.yaml"]},
+             "layers": ["layers/products/tezro-two-four-processor.yaml"]},
         ],
     }
 
@@ -3961,29 +3961,27 @@ class CompositionVariantTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         root = pathlib.Path(directory.name)
         shutil.copytree(INPUTS, root, dirs_exist_ok=True)
-        # The variants take the composition's product name, which the IP53
-        # profile table pairs with the multi board's profile.
-        one = root / "layers/products/tezro-tower-one.yaml"
-        one.write_text(one.read_text().replace(
-            "tezro-tower-one-serial-compat", "tezro-tower-multi-serial-compat"))
-        path = root / "tezro-tower-multi.yaml"
+        path = root / "tezro.yaml"
         path.write_text(yaml.safe_dump(document))
         return path
 
+    def test_the_tezro_composition_is_its_authored_variants(self):
+        self.assertEqual(
+            yaml.safe_load((INPUTS / "tezro.yaml").read_text()), self.VARIANTS)
+
     def test_each_variant_resolves_under_the_composition_name(self):
-        path = self.write(self.VARIANTS)
+        path = INPUTS / "tezro.yaml"
         models = _resolver.load_system_models(path)
         self.assertEqual(
             [(model["composition"]["product"], model["composition"]["variant"])
              for model in models],
-            [("tezro-tower-multi", {"id": "one-processor", "default": False}),
-             ("tezro-tower-multi",
-              {"id": "two-four-processor", "default": True})])
+            [("tezro", {"id": "one-processor", "default": False}),
+             ("tezro", {"id": "two-four-processor", "default": True})])
         self.assertEqual(
             [[layer["id"] for layer in model["composition"]["layers"]
               if layer["kind"] in ("module", "product")] for model in models],
-            [["tezro-serial-compat-module", "tezro-tower-one"],
-             ["tezro-tower-multi"]])
+            [["tezro-serial-compat-module", "tezro-one-processor"],
+             ["tezro-two-four-processor"]])
         checked = schema(path.parent)
         for variant in ("one-processor", "two-four-processor"):
             with self.subTest(variant=variant):

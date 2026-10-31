@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "1409ddb66c19702dde0be117dcb54dc44fde1da4eb22ab5faae9436c5aa2bb82"
+    "81ff261af0d1f161cb9121978e8a0669a7c1bb8993dadf4af561f66f21dcdc7f"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -140,8 +140,11 @@ class GeneratorTests(unittest.TestCase):
             EXPECTED_CATALOGUE_SHA256)
         checked = load_checked_system_models(
             discover_model_paths(INPUTS), model_root=INPUTS)
+        # The manifest names a board variant after its composition.
         resolved = {
-            path.stem: model for path, model in checked
+            path.stem + (f"/{model['composition']['variant']['id']}"
+                         if "variant" in model["composition"] else ""): model
+            for path, model in checked
             if path.stem in IMPLEMENTED_TOPOLOGIES
             and model["machine"]["model_role"] == "emulation-target"
             and model["machine"]["emulation"]["lifecycle"] == "implemented"
@@ -209,8 +212,8 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 158)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 50)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 157)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 49)
         self.assertEqual(len(layers), 106)
 
         for path in layers:
@@ -598,7 +601,7 @@ class StorageTests(unittest.TestCase):
         DS1744-compatible profiles start their backed image from zeroes."""
         ds1744_topologies = {
             "origin350", "onyx350-compat", "onyx4-host-serial-compat",
-            "tezro-tower-one", "tezro-tower-multi", "tezro-rack",
+            "tezro", "tezro-rack",
             "origin350-ip59", "onyx350-ip59", "onyx4-host-ip59",
             "tezro-tower-one-ip59", "tezro-tower-multi-ip59",
             "tezro-rack-ip59",
@@ -911,8 +914,7 @@ class FuelTests(unittest.TestCase):
         ip53_words = {
             "origin350": 0x569cad85,
             "onyx350-compat": 0x569caf85,
-            "tezro-tower-one": 0x549bad85,
-            "tezro-tower-multi": 0x549bad85,
+            "tezro": 0x549bad85,
             "tezro-rack": 0x549bad85,
             "onyx4-host-serial-compat": 0x4aedb385,
             # The IP59 profiles all share the 1 GHz, 16 MB word.
@@ -1073,12 +1075,14 @@ class Origin350ClockPolicyTests(unittest.TestCase):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
         names = {"origin350", "onyx350-compat", "onyx4-host-serial-compat",
-                 "tezro-tower-one", "tezro-tower-multi", "tezro-rack"}
-        topologies = {row["name"]: row for row in catalogue["topologies"]
-                      if row["name"] in names}
-        self.assertEqual(set(topologies), names)
+                 "tezro", "tezro-rack"}
+        # Both Tezro boards share one name, so check every record.
+        topologies = [(row["name"], row) for row in catalogue["topologies"]
+                      if row["name"] in names]
+        self.assertEqual({name for name, _row in topologies}, names)
+        self.assertEqual(len(topologies), len(names) + 1)
 
-        for name, topology in topologies.items():
+        for name, topology in topologies:
             with self.subTest(topology=name):
                 board = next(row for row in topology["io-boards"]
                              if row["id"] == "io9")

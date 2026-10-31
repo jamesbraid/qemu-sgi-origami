@@ -3,7 +3,7 @@
 layer_version: 1
 layer:
   kind: product
-  id: tezro-tower-four
+  id: tezro-reference
   requires: {assembly: ip53-tezro}
   topology:
     min_nodes: 1
@@ -23,14 +23,16 @@ layer:
     sources: ["007-4564-001 printed page 27: four-processor option"]
   data:
     machine:
-      name: Tezro tower, four processors
+      name: Tezro, four processors
       model_role: reference
       notes: >-
-        This reference selects four R16000 processors from the documented
-        two- or four-processor tower family. The interface board has eight
+        This reference selects four R16000 processors on the documented
+        two/four-processor interface board, the board the tezro emulation
+        topology's two-four-processor variant builds. The interface board has eight
         PCI-X slots on four buses, with IO9 fixed at bus 1 slot 1. Bus 4
         slot 2 shares an opening with the second XIO slot. The one-processor
-        tower has a different interface board. Bedrock and PIC revision,
+        board, the tezro topology's other variant, is a different
+        interface board. Bedrock and PIC revision,
         widget placement, PCI device numbers, and fitted DIMMs are unknown.
         The overview on printed page 29 says three PCI buses, but the
         detailed bus list and slot figure on printed pages 38-39 enumerate
