@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * R10000-family floating-point behaviours split out of the shared FP helpers:
  * Unimplemented Operation for denormalized results, denormal inputs to
@@ -11,7 +11,7 @@
  * set rather than in an R10000 system file. The shared FP helpers call the
  * input-denormal check for ADD.S and DIV.S and the result-denormal and CVT.L
  * checks here. Each check is inert unless the CPU model sets its config flag.
- * update_fcr31() is the shared FP result epilogue, reused from fpu_helper.c.
+ * update_fcr31() is the shared FP result epilogue every FP helper ends with.
  */
 
 #include "qemu/osdep.h"
@@ -43,7 +43,10 @@ void helper_raise_fp_unimplemented(CPUMIPSState *env)
 static G_NORETURN void raise_unimplemented_operation(CPUMIPSState *env,
                                                      uintptr_t pc)
 {
-    set_float_exception_flags(0, &env->active_fpu.fp_status);
+    float_status *st = &env->active_fpu.fp_status;
+
+    /* Nothing the refused operation computed may reach the FCSR. */
+    set_float_exception_flags(0, st);
     SET_FP_CAUSE(env->active_fpu.fcr31, FP_UNIMPLEMENTED);
     do_raise_exception(env, EXCP_FPE, pc);
 }
@@ -94,85 +97,77 @@ void check_cvt_l_result(CPUMIPSState *env, uint64_t ret, bool invalid,
 }
 
 /*
- * The same operations with the R10000's semantics. There ABS.fmt and
- * NEG.fmt are arithmetic — "This operation is arithmetic; a NaN operand
- * signals invalid operation" (VR10000 Instruction Set User's Manual,
- * ABS.fmt and NEG.fmt) — so a NaN operand signals Invalid, trapping when
- * the enable is set and otherwise delivering the default quiet NaN.
+ * ABS.fmt and NEG.fmt with the R10000's semantics. There they are
+ * arithmetic — "This operation is arithmetic; a NaN operand signals
+ * invalid operation" (VR10000 Instruction Set User's Manual, ABS.fmt and
+ * NEG.fmt) — so a NaN operand signals Invalid, trapping when the enable
+ * is set and otherwise delivering the default quiet NaN, and with FS set a
+ * denormalized result flushes to a zero of the same sign.
+ *
+ * One body per width serves both operations; it is forced inline so each
+ * helper keeps the cost of a hand-written one, with @negate folded away.
+ * @ra is the helper's own return address.
  */
-uint64_t helper_float_abs_d_r10k(CPUMIPSState *env, uint64_t fdt0)
+static inline QEMU_ALWAYS_INLINE
+uint64_t r10k_sign_op_d(CPUMIPSState *env, uint64_t src, bool negate,
+                        uintptr_t ra)
 {
-    uint64_t dt2;
+    float_status *st = &env->active_fpu.fp_status;
+    uint64_t res;
 
-    if (float64_is_any_nan(fdt0)) {
-        float_raise(float_flag_invalid, &env->active_fpu.fp_status);
-        dt2 = float64_default_nan(&env->active_fpu.fp_status);
+    if (unlikely(float64_is_any_nan(src))) {
+        float_raise(float_flag_invalid, st);
+        res = float64_default_nan(st);
     } else {
-        dt2 = float64_abs(fdt0);
+        res = negate ? float64_chs(src) : float64_abs(src);
         if ((env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
-            float64_is_denormal(dt2)) {
-            /* Arithmetic, so the FS flush applies; the sign survives. */
-            dt2 &= 1ULL << 63;
+            float64_is_denormal(res)) {
+            res &= 1ULL << 63;     /* keep only the sign bit */
         }
     }
-    check_denormal_result_d(env, dt2, GETPC());
-    update_fcr31(env, GETPC());
-    return dt2;
+    check_denormal_result_d(env, res, ra);
+    update_fcr31(env, ra);
+    return res;
+}
+
+static inline QEMU_ALWAYS_INLINE
+uint32_t r10k_sign_op_s(CPUMIPSState *env, uint32_t src, bool negate,
+                        uintptr_t ra)
+{
+    float_status *st = &env->active_fpu.fp_status;
+    uint32_t res;
+
+    if (unlikely(float32_is_any_nan(src))) {
+        float_raise(float_flag_invalid, st);
+        res = float32_default_nan(st);
+    } else {
+        res = negate ? float32_chs(src) : float32_abs(src);
+        if ((env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
+            float32_is_denormal(res)) {
+            res &= 1U << 31;       /* keep only the sign bit */
+        }
+    }
+    check_denormal_result_s(env, res, ra);
+    update_fcr31(env, ra);
+    return res;
+}
+
+uint64_t helper_float_abs_d_r10k(CPUMIPSState *env, uint64_t fdt0)
+{
+    return r10k_sign_op_d(env, fdt0, false, GETPC());
 }
 
 uint32_t helper_float_abs_s_r10k(CPUMIPSState *env, uint32_t fst0)
 {
-    uint32_t wt2;
-
-    if (float32_is_any_nan(fst0)) {
-        float_raise(float_flag_invalid, &env->active_fpu.fp_status);
-        wt2 = float32_default_nan(&env->active_fpu.fp_status);
-    } else {
-        wt2 = float32_abs(fst0);
-        if ((env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
-            float32_is_denormal(wt2)) {
-            wt2 &= 1U << 31;
-        }
-    }
-    check_denormal_result_s(env, wt2, GETPC());
-    update_fcr31(env, GETPC());
-    return wt2;
+    return r10k_sign_op_s(env, fst0, false, GETPC());
 }
 
 uint64_t helper_float_chs_d_r10k(CPUMIPSState *env, uint64_t fdt0)
 {
-    uint64_t dt2;
-
-    if (float64_is_any_nan(fdt0)) {
-        float_raise(float_flag_invalid, &env->active_fpu.fp_status);
-        dt2 = float64_default_nan(&env->active_fpu.fp_status);
-    } else {
-        dt2 = float64_chs(fdt0);
-        if ((env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
-            float64_is_denormal(dt2)) {
-            dt2 &= 1ULL << 63;
-        }
-    }
-    check_denormal_result_d(env, dt2, GETPC());
-    update_fcr31(env, GETPC());
-    return dt2;
+    return r10k_sign_op_d(env, fdt0, true, GETPC());
 }
 
 uint32_t helper_float_chs_s_r10k(CPUMIPSState *env, uint32_t fst0)
 {
-    uint32_t wt2;
-
-    if (float32_is_any_nan(fst0)) {
-        float_raise(float_flag_invalid, &env->active_fpu.fp_status);
-        wt2 = float32_default_nan(&env->active_fpu.fp_status);
-    } else {
-        wt2 = float32_chs(fst0);
-        if ((env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
-            float32_is_denormal(wt2)) {
-            wt2 &= 1U << 31;
-        }
-    }
-    check_denormal_result_s(env, wt2, GETPC());
-    update_fcr31(env, GETPC());
-    return wt2;
+    return r10k_sign_op_s(env, fst0, true, GETPC());
 }
