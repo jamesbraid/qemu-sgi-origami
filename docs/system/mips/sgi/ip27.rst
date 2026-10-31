@@ -942,7 +942,7 @@ exists only for this chassis:
      - ``io1``
      - BaseIO-G
 
-*Software expectation*, from the stock PROM's table
+*software expectation*, from the stock PROM's table
 (:src:`ip27-prom-6.156 0x1fcd1dd0`); its node-slot-to-widget table
 (:src:`ip27-prom-6.156 0x1fcd1ea8`) and I/O-slot-to-widget table
 (:src:`ip27-prom-6.156 0x1fcd1f88`) give the same rows from the other
@@ -1069,7 +1069,7 @@ through Crossbow 0, nodes 2 and 4 reach slots 7 to 12 through Crossbow
      - ``io3``
      - ``io9``
 
-*Software expectation*, from the stock PROM's tables
+*software expectation*, from the stock PROM's tables
 (:src:`ip27-prom-6.156 0x1fcd1df0` for Crossbow 0,
 :src:`ip27-prom-6.156 0x1fcd1e10` for Crossbow 1). The booklet's
 ``xbstat`` table (:src:`origin-onyx2-quick-reference-booklet p. 250`)
@@ -1300,7 +1300,7 @@ IRIX reads the pipe's board records through the pipe itself.
      - not applicable
      - no record in the board list
 
-*Observed* in :src:`irixnet-post-32192`, :src:`sgistuff-collection-2200`
+*observed* in :src:`irixnet-post-32192`, :src:`sgistuff-collection-2200`
 and :src:`nekonomicon-16285`. IRIX lists the rack's Ktown record at
 ``/hw/module/1/slot/io3/kona``, the Xtown's XIO slot, beside the GE
 record, and lists only the GE record at the deskside's ``io4/kona``. The

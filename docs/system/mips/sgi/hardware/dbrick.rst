@@ -2,9 +2,12 @@
 
 .. _sgi-dbrick:
 
-===================================
-SGI D-brick Fibre Channel enclosure
-===================================
+=====================================
+D-brick: Fibre Channel disk enclosure
+=====================================
+
+Used in the Origin 3000 and Onyx 3000 systems described in
+:ref:`sgi-sn`.
 
 The D-brick is the Origin 3000 and Onyx 3000 JBOD enclosure: twelve bays
 of dual-ported Fibre Channel disks behind two loop resiliency circuit

@@ -123,7 +123,7 @@ Identity
 
 The Crosstown and cabinet records are human-readable fields in ``hinv -vm``,
 not raw one-wire bytes. That post adds ``Group ff Capability ffffffff
-Variety ff`` for each record. *Observed* in three systems across two
+Variety ff`` for each record. *observed* in three systems across two
 sources.
 
 .. _sgi-gigachannel-composition:
@@ -282,34 +282,34 @@ Each item is real-hardware output unless it names another source.
   ``/hw/module/1/slot/io7/xbox_dualxtown`` as ``XBOX_DUALXTOWN`` part
   030-1252-001 rev F, and lists ``XBOX_EXT`` part 030-1264-001 rev C beside
   the ``IP29`` record under ``/hw/module/1/slot/io1/MotherBoard``.
-  *Observed* in three systems across two sources
+  *observed* in three systems across two sources
   (:src:`preterhuman-origin-200`, :src:`usenet-pigot-3edc9a71`). The wiring of the one-wire lines is
   *unknown*; see :ref:`sgi-gigachannel-record-wiring`.
 - **Base I/O location.** With a cabinet the base I/O is
   ``/hw/module/1/slot/io1``. A plain Origin 200 reports
-  ``slot/MotherBoard``. *Observed* :src:`nekonomicon-16726704`,
+  ``slot/MotherBoard``. *observed* :src:`nekonomicon-16726704`,
   :src:`usenet-rasey-384c6090`. The upgrade guide's example disagrees (see
   the link table).
 - **Bridge inventory.** The PROM's ``hinv -v`` prints ``PCI_XIO Origin 200
   IO Board, Module 1, Slot io7`` with ``ASIC BRIDGE Rev 4, (widget 8)``,
   and IRIX prints ``Origin PCI XIO board, module 1 slot 7: Revision 4``.
   The Crossbow does not appear as an inventory line in any capture.
-  *Observed* :src:`nekonomicon-16726704`. The upgrade guide's listing
+  *observed* :src:`nekonomicon-16726704`. The upgrade guide's listing
   prints the PROM lines too, *established* :src:`108-0187-001 p. 3-8`.
 - **I/O PROM load message.** On a GIGAchannel the PROM prints ``Loading
   BASEIO prom from XBOX Flashprom....`` followed by ``DONE``. Origin 2000
   systems print ``Loading BASEIO prom ....``. In the 2012 capture the
   BASEIO PROM that follows reports the build dated Nov 18, 2003, 11:26:28,
   the build that ships as the BaseIO card's flash image, not the build
-  stored inside the node PROM (11:05:48). *Observed*
+  stored inside the node PROM (11:05:48). *observed*
   :src:`nekonomicon-16726704`, :src:`usenet-rasey-384c6090`.
 - **Loopback inventory.** In loopback the PROM inventory matches the
   pre-upgrade one except for the added 030-1264-001 record, with the base
   I/O at ``Slot MotherBoard`` and ``ASIC BRIDGE Rev 3, (widget 8)``.
-  *Established* :src:`108-0187-001 pp. 2-9 to 2-11`.
+  *established* :src:`108-0187-001 pp. 2-9 to 2-11`.
 - **IRIX releases.** IRIX 6.4 needs a patch installed before the hardware,
   and installing the hardware first prevents boot. IRIX 6.5 needs none.
-  *Established* by the release note for patch SG0003174 on SGI's
+  *established* by the release note for patch SG0003174 on SGI's
   *Origin200 GIGAchannel System Disk Patch Supplement* CD, part
   812-0788-001, which cites SGI document 007-3907-001. No public copy is
   registered. The patch payload was not examined.
@@ -546,21 +546,21 @@ Power, reset and link behaviour
 - **Power.** The cabinet's rear switch arms it. It turns on only when the
   attached module turns on, and the module's front power switch also turns
   it off. The Crosstown LEDs by each connector light when the link is up.
-  *Established* :src:`108-0187-001 p. 3-7`, :src:`007-3709-002 p. 2`. That
+  *established* :src:`108-0187-001 p. 3-7`, :src:`007-3709-002 p. 2`. That
   the XIO cables carry this control is *inferred*, since only they and a
   ground strap join the chassis.
 - **Order.** SGI's power-on order is Origin Vault, cabinet, slave module,
   master module. Turning on a chassis with the XIO cables not properly
-  connected "may not function correctly". *Established*
+  connected "may not function correctly". *established*
   :src:`007-3708-002 p. 81`.
 - **Blower failure.** A blower failure shuts down the whole server,
   cabinet and CPU modules, immediately. The cabinet's only blower status is
-  its front LED. *Established* :src:`007-3708-002 pp. 30-32, 134`. How the
+  its front LED. *established* :src:`007-3708-002 pp. 30-32, 134`. How the
   module learns of it is *unknown*.
 - **Missing cable.** A module "cannot boot" without the cabinet or a
   loopback cable. What the PROM prints and where it stops are *unknown*.
 - **Loose XIO board.** A loose board lever lets the server boot, but the
-  board "may not be recognized". *Established*
+  board "may not be recognized". *established*
   :src:`007-3708-002 p. 79`.
 - **Link training.** No cabinet-specific rule was found. The Crossbow's link
   reset, width negotiation and alive state apply (:doc:`xbow`). Whether the

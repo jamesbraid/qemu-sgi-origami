@@ -535,7 +535,7 @@ bitmap header's field order, are the model's reading of the IO6 PROM's
 command sends, an *approximation*: no specification states them. The PROM
 reads graphics-information words 3 and 4 as width and height, and falls
 back to 1280x1024 when they are negative, a *software expectation*; the
-other three words are *approximated* as zero. The PROM waits for the
+other three words are zero, an *approximation*. The PROM waits for the
 credit register to read zero before each command, up to 5,000 reads, a
 *software expectation*.
 
@@ -647,7 +647,7 @@ identity record for each raster manager, texture board, display board
 and option. The chip identity words are those of the captured pipes
 (:src:`irixnet-post-32192`, :src:`nekonomicon-16285`), *observed*; the
 words that differ between captures follow the geometry board, one
-*inferred* and one *approximated*. Record serials are synthetic. The
+*inferred* and one an *approximation*. Record serials are synthetic. The
 geometry and Ktown records stay zero: the kernel keeps its own one-wire
 reading of them.
 

@@ -139,7 +139,7 @@ and ``tezro`` only (:ref:`sgi-sn-launch-metadata`).
 Access paths
 ============
 
-Software reaches the chip three ways. *Software expectation*, from the
+Software reaches the chip three ways. *software expectation*, from the
 public drivers.
 
 BAR0
@@ -169,7 +169,7 @@ BAR0 accepts 32-bit aligned reads and writes. It accepts one other
 access: a byte read inside ``0x0410``-``0x0417``, the first station-address
 register pair, which returns the addressed byte of the stored
 little-endian register. All other widths and misaligned accesses fail
-the memory transaction. *Approximation*: the widths the real part accepts
+the memory transaction. *approximation*: the widths the real part accepts
 are *unknown*.
 
 .. _sgi-bcm570x-registers:
@@ -357,13 +357,13 @@ expectation*. The model complements every value written
 to this word. The magic therefore reads back as ``0xb49a89ab`` whether the
 driver writes it before the global reset, as OpenBSD and Linux do, or
 after, as the IRIX 6.5.30 ``tg`` driver does. A second write flips the
-word again. The model has no bootcode delay. *Software expectation*,
+word again. The model has no bootcode delay. *software expectation*,
 *approximation*.
 
 The register is ``0x5034``, the firmware progress word. It reads
 ``0xffffffff`` in every state. The IRIX 6.5.30 ``tg`` driver stops
 attaching when it reads zero, so the model never returns zero.
-*Software expectation*. Which real progress values the bootcode
+*software expectation*. Which real progress values the bootcode
 reports is *unknown*.
 
 Two resets exist.

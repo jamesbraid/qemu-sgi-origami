@@ -364,7 +364,7 @@ check the memory half: ``reset-page-is-node-zeros`` on an Origin 3200 from
 every processor, and ``routed-reset-page-follows-the-route`` on an
 Origin 3400 whose route to node 0 is written after numbering.
 
-*Unknown*: how an IP45 board's reset request selects flash rather than
+*unknown*: how an IP45 board's reset request selects flash rather than
 memory, the fitted flash part, the full chip-select range and what answers
 outside the payload. A public IP45 decoder description or a measurement
 on an identified board would settle them.

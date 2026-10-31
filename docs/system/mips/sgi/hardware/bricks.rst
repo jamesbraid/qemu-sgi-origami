@@ -2,9 +2,9 @@
 
 .. _sgi-bricks:
 
-==============================================
-Origin 3000 bricks and the NUMAlink module
-==============================================
+======================================================
+Bricks: Origin 3000 enclosures and the NUMAlink module
+======================================================
 
 The Origin 3000 and Onyx 3000 generation builds a system from separate
 rack-mounted enclosures called bricks, joined by NUMAlink 3 and Crosstown2
@@ -988,7 +988,7 @@ connector label to a port would settle it. The layer records the brick's
 L1 type letter as ``X`` (``0x58``, Linux ``ksys/l1.h``), which IRIX 6.5.30
 and the stock IP35 PROM 6.210 name an X-brick with module class ``x``,
 expecting a 400 MHz link, *software expectation*. Nothing is built from
-the letter yet. *Unknown* are the XBridge revision and the widget numbers
+the letter yet. *unknown* are the XBridge revision and the widget numbers
 a C-brick sees for the slots, which only an X-brick widget inventory
 would settle.
 
