@@ -12,6 +12,13 @@
 #include "qapi/error.h"
 
 /*
+ * The catalogue version this reader understands: 2, under which records
+ * that share a topology name differ by board. A reader of another
+ * version would take the first record of a name, so it must refuse.
+ */
+#define SGI_MACHINES_VERSION 2
+
+/*
  * The embedded catalogue, parsed on first use and kept for the process
  * lifetime. Never NULL and never returns after a parse failure: a malformed
  * embedded catalogue is a build defect, not a runtime one.

@@ -2686,7 +2686,8 @@
 #
 # @schema: catalogue schema name (``sgi-machines``)
 #
-# @version: catalogue schema version
+# @version: catalogue schema version.  2 adds the record and offering
+#     @board, under which records share a topology name
 #
 # @topologies: every configuration the builder can construct
 #

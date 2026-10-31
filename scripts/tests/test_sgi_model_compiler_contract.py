@@ -784,13 +784,15 @@ class Ip53CpuContextTests(unittest.TestCase):
     def test_full_firmware_word_and_node_clocks_reach_the_l1(self):
         for name, word, cpu_hz, reset in (
                 ("origin350", 0x569cad85, 700_000_000, 0x009cad85),
-                ("onyx350-compat", 0x569caf85, 800_000_000, 0x009caf85),
+                ("onyx350/ip53", 0x569caf85, 800_000_000, 0x009caf85),
                 ("tezro/one-processor", 0x549bad85, 700_000_000, 0x009bad85),
                 ("tezro/two-four-processor", 0x549bad85, 700_000_000,
                  0x009bad85),
                 ("tezro-rack", 0x549bad85, 700_000_000, 0x009bad85),
-                ("onyx4-host-serial-compat", 0x4aedb385, 1_000_000_000,
-                 0x00edb385)):
+                ("onyx4-host", 0x4aedb385, 1_000_000_000, 0x00edb385),
+                ("origin350/ip59", 0x4aedb385, 1_000_000_000, 0x00edb385),
+                ("tezro/two-four-processor-ip59", 0x4aedb385,
+                 1_000_000_000, 0x00edb385)):
             with self.subTest(profile=name):
                 model = _resolved(name)
                 firmware = model["machine"]["firmware_config"]
@@ -3601,7 +3603,7 @@ class CatalogueJsonTests(unittest.TestCase):
     """
 
     def test_ip53_v12_slot_is_optional_with_no_default(self):
-        assemblies = {"onyx350-compat": "030-1909-008",
+        assemblies = {"onyx350": "030-1909-008",
                       "tezro": "030-1884-002"}
         catalogue = json.loads(render_catalogue_json(
             [_resolved(name) for name in assemblies]))
@@ -3624,16 +3626,16 @@ class CatalogueJsonTests(unittest.TestCase):
 
     def test_cx_brick_offerings_need_no_cpu_properties(self):
         catalogue = json.loads(render_catalogue_json(
-            [_resolved("origin3900"), _resolved("origin3900-ip59")]))
-        self.assertEqual({offering["topology"]
+            [_resolved("origin3900/ip53"), _resolved("origin3900/ip59")]))
+        self.assertEqual({(offering["topology"], offering["board"])
                           for offering in catalogue["offerings"]},
-                         {"origin3900", "origin3900-ip59"})
+                         {("origin3900", "ip53"), ("origin3900", "ip59")})
         for offering in catalogue["offerings"]:
             self.assertNotIn("required-properties", offering["processor"])
 
     def test_no_ip53_offering_asks_for_cpu_properties(self):
         profile_names = (
-            "origin350", "onyx350-compat", "onyx4-host-serial-compat",
+            "origin350", "onyx350", "onyx4-host",
             "tezro/one-processor", "tezro/two-four-processor", "tezro-rack",
         )
         catalogue = json.loads(render_catalogue_json(
@@ -3646,8 +3648,8 @@ class CatalogueJsonTests(unittest.TestCase):
         self.assertEqual(
             sorted((item["topology"], tuple(item["cpus-per-node"]))
                    for item in offerings),
-            sorted([("origin350", (4,)), ("onyx350-compat", (4,)),
-                    ("onyx4-host-serial-compat", (4,)),
+            sorted([("origin350", (4,)), ("onyx350", (4,)),
+                    ("onyx4-host", (4,)),
                     ("tezro", (1,)), ("tezro", (2,)), ("tezro", (4,)),
                     ("tezro-rack", (1,)), ("tezro-rack", (2,)),
                     ("tezro-rack", (4,))]))
@@ -3703,7 +3705,7 @@ class CatalogueJsonTests(unittest.TestCase):
     def test_document_shape(self):
         catalogue = json.loads(render_catalogue_json([_resolved("origin200")]))
         self.assertEqual(catalogue["schema"], "sgi-machines")
-        self.assertEqual(catalogue["version"], 1)
+        self.assertEqual(catalogue["version"], 2)
         self.assertEqual(set(catalogue), {
             "schema", "version", "topologies", "offerings", "references"})
         self.assertEqual(catalogue["references"], [])

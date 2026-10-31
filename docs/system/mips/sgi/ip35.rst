@@ -583,7 +583,7 @@ Onyx 350 captured module           four 800 MHz R16000  8 GiB   8 MiB       0x00
 Tezro, one-processor board         one 700 MHz R16000   4 GiB   4 MiB       0x009bad85
 Tezro, two/four-processor board    four 700 MHz R16000  4 GiB   4 MiB       0x009bad85
 Tezro rack, first enclosure        one 700 MHz R16000   4 GiB   4 MiB       0x009bad85
-Onyx 4 host candidate              four 1 GHz R16000    8 GiB   16 MiB      0x00edb385
+Onyx 4 host candidate (IP59)       four 1 GHz R16000    8 GiB   16 MiB      0x00edb385
 =================================  ===================  ======  ==========  ==========
 
 The Tezro 4 GiB is a selected memory kit, not a measured population. Every
@@ -599,10 +599,12 @@ two/four-processor board also accepts two processors, the Tezro rack two
 or four. A population, memory size or processor the topology does not
 describe is refused, and so is a ``maxcpus`` above the ``-smp`` count,
 which would fit sockets the profile was never checked against. These are
-software inputs, not measured silicon values. The Onyx 350 and Onyx 4 rows project a captured module into a
-single-module host. The
-Onyx 4 capture reports an IP59 board in a system called Onyx 350; assigning
-that module to the Onyx 4 host is an inference. Its profile uses the IP53
+software inputs, not measured silicon values. The Onyx 350 and Onyx 4 rows
+project a captured module into a single-module host. The Onyx 4 capture
+reports an IP59 board in a system called Onyx 350; assigning that module to
+the Onyx 4 host is an inference. The ``onyx4-host`` topology therefore builds
+only the IP59 board, its default and only record: no source gives the Onyx 4
+host an IP53 processor tuple, so ``board=ip53`` is refused there. Its profile uses the IP53
 guest-board path as a compatibility mapping, not a physical IP59 schematic.
 The public IP59 module inventory reports HUB revision 2 at 200 MHz.
 Mapping that report to Bedrock revision 2 is a profile choice; raw NI and
@@ -662,28 +664,31 @@ captures show: the node-board record, and the processor tuple of 1.0 GHz
 R16000 revision 3.0 with a 16 MB secondary cache at one third of the CPU clock
 (333 MHz, ``Tap 0x15``).
 
-Every IP53 product has an IP59 topology, selected with ``topology=``. The IP53
-topologies are unchanged and stay the defaults, except for ``onyx4-host``,
-which now defaults to the IP59 topology.
+Each IP53 topology also builds the IP59, selected with ``board=ip59``; the
+IP53 stays the default board. The ``onyx4-host`` topology builds only the
+IP59, which is therefore its default.
 
-===========================  =================================  ======
-Topology                     Machine                            Memory
-===========================  =================================  ======
-``origin350-ip59``           ``origin350``                      2 GiB
-``onyx350-ip59``             ``onyx350``                        8 GiB
-``tezro-tower-one-ip59``     ``tezro``, one processor           4 GiB
-``tezro-tower-multi-ip59``   ``tezro``, two or four             4 GiB
-``tezro-rack-ip59``          ``tezro``, rack first enclosure    4 GiB
-``onyx4-host-ip59``          ``onyx4-host``                     8 GiB
-``origin3900-ip59``          ``origin3000``, one Cx-brick       2 GiB per board
-===========================  =================================  ======
+=====================  =================================  ======  ==============
+Topology               Machine                            Memory  Default board
+=====================  =================================  ======  ==============
+``origin350``          ``origin350``                      2 GiB   ``ip53``
+``onyx350``            ``onyx350``                        8 GiB   ``ip53``
+``tezro``              ``tezro``, two or four processors  4 GiB   ``ip53``
+``tezro-rack``         ``tezro``, rack first enclosure    4 GiB   ``ip53``
+``onyx4-host``         ``onyx4-host``                     8 GiB   ``ip59`` (only)
+``origin3900``         ``origin3000``, one Cx-brick       2 GiB   ``ip53``
+                                                          per
+                                                          board
+=====================  =================================  ======  ==============
 
 The L1 reports the node board from its record, as it does for IP53. A
 four-processor node reports ``IP59_4CPU``, part ``030-1989-003``, revision
 ``-C``, the most common revision in the captures. A two-processor node reports
-``IP59_2CPU``, part ``030-2059-002``, revision ``A``. A one-processor Tezro
-keeps the L1's generic record: no capture shows a one-processor IP59 board, so
-its part and revision are unknown. Serials and barcodes use the
+``IP59_2CPU``, part ``030-2059-002``, revision ``A``. No capture shows a
+one-processor IP59 board, so its record is unknown, and the ``tezro``
+topology builds the IP59 only on the two/four-processor interface board:
+``board=ip59`` with ``-smp 1`` is refused. For the same reason the rack's
+first enclosure takes two or four IP59 processors. Serials and barcodes use the
 synthetic scheme; part names and revisions are the captured values.
 
 The reset-mode word ``0x00edb385`` and the flash configuration word
@@ -700,9 +705,8 @@ whether the part is an R16000A.
 The PROM payload is the same 6.210 image the IP53 profiles use; real IP59
 boards ran 6.210 and 6.211.
 
-An Origin 3900 Cx-brick is all IP53 or all IP59: ``origin3900-ip59`` fits four
-IP59 node boards, and the IP53 and IP59 node boards cannot be mixed within one
-brick. The Cx-brick's L1 reports the IP59_4CPU record for every board. No
+An Origin 3900 Cx-brick is all IP53 or all IP59: ``board=ip59`` fits four
+IP59 node boards, and the generator refuses a record that mixes the two. The Cx-brick's L1 reports the IP59_4CPU record for every board. No
 Cx-brick capture is held; the choice rests on the inferred upgrade history, the
 public IP-number table that lists the Origin 3900 against IP59, and IRIX
 treating IP53 and IP59 nodes alike. Whether

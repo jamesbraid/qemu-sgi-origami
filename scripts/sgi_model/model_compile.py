@@ -3721,12 +3721,8 @@ def _compile_ip35_firmware(model: dict) -> dict:
     """
     machine = model["machine"]
     firmware = machine.get("emulation", {}).get("ip35_firmware")
-    ip53_products = {
-        "origin350", "onyx4-host-serial-compat", "onyx350-compat",
-        "tezro", "tezro-rack",
-        "origin350-ip59", "onyx4-host-ip59", "onyx350-ip59",
-        "tezro-tower-one-ip59", "tezro-tower-multi-ip59", "tezro-rack-ip59",
-    }
+    ip53_products = {"origin350", "onyx4-host", "onyx350", "tezro",
+                     "tezro-rack"}
     if (firmware is None and
             model.get("composition", {}).get("product") in ip53_products):
         firmware = machine.get("firmware_config")

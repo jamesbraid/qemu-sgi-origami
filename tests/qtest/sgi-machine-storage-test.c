@@ -848,7 +848,7 @@ static void test_module_nvram_refusals(void)
 #define DS1742_CLOCK_SIZE 16
 
 /* Onyx 350 selects a DS1744-compatible IO9 timekeeper through nvram0. */
-#define ONYX350 "onyx350,topology=onyx350-compat"
+#define ONYX350 "onyx350,topology=onyx350"
 #define DS1744_SIZE 32768
 
 static void test_ds1744_bound(void)

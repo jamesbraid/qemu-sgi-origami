@@ -14,6 +14,7 @@
 #include "qapi/qapi-visit-sgi-machines.h"
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/util.h"
+#include "qemu/error-report.h"
 #include "qobject/qjson.h"
 #include "qobject/qobject.h"
 #include "hw/mips/sgi/sgi-machines.h"
@@ -40,6 +41,13 @@ static void sgi_machines_load(void)
     visit_type_SGIMachines(v, NULL, &machines, &error_fatal);
     visit_free(v);
     qobject_unref(qobj);
+    /* A build defect, as a parse failure is: the catalogue is embedded. */
+    if (machines->version != SGI_MACHINES_VERSION) {
+        error_report("SGI machine catalogue version %u, but this build "
+                     "reads version %u", machines->version,
+                     SGI_MACHINES_VERSION);
+        abort();
+    }
 }
 
 const SGIMachines *sgi_machines(void)
