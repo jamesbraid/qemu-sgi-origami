@@ -191,7 +191,8 @@ property value.
 A launch without ``topology=`` builds the product's default topology,
 except for ``onyx350`` and ``tezro``. Those two refuse a launch that
 does not name one: ``onyx350-compat``, or one of ``tezro-tower-one``,
-``tezro-tower-multi`` and ``tezro-rack``. An IP53 machine admits one
+``tezro-tower-multi`` and ``tezro-rack``, or the ``-ip59`` topology of
+any of them (:ref:`sgi-ip59-profiles`). An IP53 machine admits one
 resolved tuple of processors, memory and I/O per profile without
 ``ip53-experimental=on``, and any other tuple needs it
 (:ref:`sgi-ip53-serial-profiles`).
