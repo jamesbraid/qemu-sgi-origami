@@ -131,7 +131,8 @@ adapter's own loop ID as well as a port's. A loop ID with no port, and
 ports only), get ``0x4005``, as does either while the loop is down. The
 ``qlogic_isp2200_approximate_reply`` trace event marks each of these
 replies. The NVRAM skips zero bits before the start bit, and reads of word
-addresses 128 and above return ``0xffff``.
+addresses 128 and above return ``0xffff``. The default port name's serial
+is FNV-1a over the device's QOM path, modulo ``0xfffffe``, plus one.
 
 Reset and RISC control
 ======================

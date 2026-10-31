@@ -2334,9 +2334,67 @@ static void test_nvram_edges(void *obj, void *data, QGuestAllocator *alloc)
     isp_close(&t);
 }
 
+/*
+ * Approximation: without the property the port name's serial is FNV-1a
+ * over the device's QOM path, modulo 0xfffffe, plus one. A second adapter
+ * on the same machine therefore has another name, the same adapter keeps
+ * its name across a reset, and the value is pinned to the algorithm so a
+ * constant, or a different hash, fails. The path comes from the id.
+ */
+static uint32_t fnv1a_serial(const char *path)
+{
+    uint32_t hash = 0x811c9dc5u;
+
+    for (; *path; path++) {
+        hash = (hash ^ (uint8_t)*path) * 0x01000193u;
+    }
+    return hash % 0xfffffe + 1;
+}
+
+static uint32_t nvram_serial_read(Isp *t)
+{
+    uint16_t w11 = nvram_read_word(t, 11), w12 = nvram_read_word(t, 12);
+
+    return ((uint32_t)(w11 >> 8) << 16) | ((w12 & 0xff) << 8) | (w12 >> 8);
+}
+
+static void test_nvram_default_serial(void *obj, void *data,
+                                      QGuestAllocator *alloc)
+{
+    uint32_t first, second;
+    QPCIDevice *dev2;
+    Isp t, u;
+
+    isp_open(&t, obj, alloc);
+    u = t;
+    dev2 = qpci_device_find(t.dev->bus, QPCI_DEVFN(5, 0));
+    g_assert_nonnull(dev2);
+    qpci_device_enable(dev2);
+    u.dev = dev2;
+    u.io = qpci_iomap(dev2, 0, NULL);
+
+    first = nvram_serial_read(&t);
+    second = nvram_serial_read(&u);
+    g_assert_cmphex(first, ==, fnv1a_serial("/machine/peripheral/isp0"));
+    g_assert_cmphex(second, ==, fnv1a_serial("/machine/peripheral/isp1"));
+    g_assert_cmphex(first, !=, second);
+
+    isp_soft_reset(&t);
+    g_assert_cmphex(nvram_serial_read(&t), ==, first);
+    qpci_iounmap(dev2, u.io);
+    g_free(dev2);
+    isp_close(&t);
+}
+
 static void *nvram_serial_setup(GString *cmd_line, void *arg)
 {
     g_string_append(cmd_line, " -global qlogic-isp2200.nvram-serial=0x123456");
+    return arg;
+}
+
+static void *nvram_two_setup(GString *cmd_line, void *arg)
+{
+    g_string_append(cmd_line, " -device qlogic-isp2200,addr=05.0,id=isp1");
     return arg;
 }
 
@@ -4942,6 +5000,9 @@ static void isp2200_register_nodes(void)
     QOSGraphTestOptions serial_opts = {
         .before = nvram_serial_setup,
     };
+    QOSGraphTestOptions two_opts = {
+        .before = nvram_two_setup,
+    };
     QOSGraphTestOptions low_opts = {
         .before = loop_test_setup,
         .arg = (void *)&low_config,
@@ -5027,6 +5088,8 @@ static void isp2200_register_nodes(void)
     qos_add_test("nvram-serial", "qlogic-isp2200", test_nvram_serial,
                  &serial_opts);
     qos_add_test("nvram-edges", "qlogic-isp2200", test_nvram_edges, NULL);
+    qos_add_test("nvram-default-serial", "qlogic-isp2200",
+                 test_nvram_default_serial, &two_opts);
     qos_add_test("window-linux-order", "qlogic-isp2200",
                  test_window_linux_order, NULL);
     qos_add_test("window-openbsd-init", "qlogic-isp2200",

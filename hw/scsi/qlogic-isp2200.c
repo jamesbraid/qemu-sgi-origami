@@ -3152,6 +3152,22 @@ static void isp2200_unplug(const HotplugHandler *hotplug_dev,
     isp2200_end_recovery(s, was_recovering);
 }
 
+/*
+ * 32-bit FNV-1a over the string's bytes: offset basis 0x811c9dc5, prime
+ * 0x01000193. Defined here, not borrowed from a library, because the
+ * port name a guest sees must not change when a library does. The serial
+ * is the hash modulo 0xfffffe, plus one, so it is never zero or all ones.
+ */
+static uint32_t isp2200_fnv1a(const char *str)
+{
+    uint32_t hash = 0x811c9dc5u;
+
+    for (; *str; str++) {
+        hash = (hash ^ (uint8_t)*str) * 0x01000193u;
+    }
+    return hash;
+}
+
 static void isp2200_realize(PCIDevice *dev, Error **errp)
 {
     QLogicISP2200State *s = QLOGIC_ISP2200(dev);
@@ -3166,12 +3182,12 @@ static void isp2200_realize(PCIDevice *dev, Error **errp)
         /*
          * A stable name per instance: the same machine gives the same
          * adapter the same name on every run, and two adapters in one
-         * machine differ because their paths do.
+         * machine differ because their paths do (a hash can still
+         * collide; the serial property sets one explicitly).
          */
         g_autofree char *path = object_get_canonical_path(OBJECT(dev));
 
-        serial = g_str_hash(path) % ISP2200_NVRAM_SERIAL_MAX;
-        serial += serial == 0;
+        serial = isp2200_fnv1a(path) % ISP2200_NVRAM_SERIAL_MAX + 1;
     }
     isp2200_nvram_build(s, serial);
 
