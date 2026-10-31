@@ -2355,7 +2355,7 @@ static char *env_mask_readings(const char *text)
         size_t cut = 0;
 
         if ((strstr(*line, "Enabled") || strstr(*line, "Wait Pwr")) &&
-            !strstr(*line, "%/")) {
+            !strstr(*line, "%/") && !strstr(*line, "Not currently")) {
             cut = !strncmp(*line, "FAN", 3) ? 12 :
                   (*line)[n - 1] == 'F' ? 8 : 7;
         }
@@ -2446,14 +2446,18 @@ static void test_env(gconstpointer opaque)
     close(fd);
 }
 
-static void test_env_unpowered(void)
+/*
+ * The state column of every row reads "Wait Pwr" with the node off, and
+ * the rows keep their format. The BEDROCK sensor is on the node, so it
+ * prints "Not currently available" in place of its four values (L1
+ * datasheet, "With the node unpowered").
+ */
+static void test_env_unpowered(gconstpointer opaque)
 {
-    static const EnvCase c = {
-        "57", "IP59_4CPU", "030-1989-003", "-C", ENV_WS_IP59
-    };
+    const EnvCase *c = opaque;
     g_autofree char *text = NULL;
     g_autofree char *masked = NULL;
-    g_auto(GStrv) rows = g_strsplit(c.expected, "\r\n", -1);
+    g_auto(GStrv) rows = g_strsplit(c->expected, "\r\n", -1);
     GString *expected = g_string_new(NULL);
     g_autofree char *waiting = NULL;
     int fd;
@@ -2469,13 +2473,18 @@ static void test_env_unpowered(void)
                                                                "  Wait Pwr",
                                            pieces);
 
+        if (strstr(line, " 6 BEDROCK ")) {
+            g_free(line);
+            line = g_strdup(" 6 BEDROCK          Wait Pwr  "
+                            "Not currently available");
+        }
         g_string_append(expected, line);
         if (row[1]) {
             g_string_append(expected, "\r\n");
         }
     }
     waiting = g_string_free(expected, FALSE);
-    env_start(&fd, &s, &c, ",auto-power=off");
+    env_start(&fd, &s, c, ",auto-power=off");
     console_send(fd, "env\r");
     text = console_read_until(fd, PROMPT);
     masked = env_mask_readings(text);
@@ -7391,7 +7400,10 @@ int main(int argc, char **argv)
                         test_env);
     qtest_add_data_func("sn1/l1/env/2u-ip59", &env_2u_ip59, test_env);
     qtest_add_data_func("sn1/l1/env/2u-ip53", &env_2u_ip53, test_env);
-    qtest_add_func("sn1/l1/env/unpowered", test_env_unpowered);
+    qtest_add_data_func("sn1/l1/env/unpowered/workstation-ip59",
+                        &env_ws_ip59, test_env_unpowered);
+    qtest_add_data_func("sn1/l1/env/unpowered/2u-ip59", &env_2u_ip59,
+                        test_env_unpowered);
     qtest_add_func("sn1/l1/env/unmodelled", test_env_unmodelled);
     qtest_add_func("sn1/l1/power", test_power);
     qtest_add_func("sn1/l1/node-reset", test_node_reset);

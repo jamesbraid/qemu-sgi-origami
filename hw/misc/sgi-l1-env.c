@@ -45,6 +45,8 @@ typedef struct EnvTemp {
     const char *name;
     bool present;
     unsigned reading_c;
+    /* A sensor on the node cannot be read while the node has no power. */
+    bool on_node;
 } EnvTemp;
 
 typedef struct EnvZone {
@@ -188,13 +190,13 @@ static const EnvTemp ws_temps[2][7] = {
         { "INTERFACE 0", true, 36 }, { "INTERFACE 1", true, 31 },
         { "INTERFACE 2", true, 31 }, { "INTERFACE 3", true, 38 },
         { "ODYSSEY", true, 42 }, { "NODE", true, 50 },
-        { "BEDROCK", true, 50 },
+        { "BEDROCK", true, 50, true },
     },
     [ENV_IP59] = {
         { "INTERFACE 0", true, 40 }, { "INTERFACE 1", true, 34 },
         { "INTERFACE 2", true, 34 }, { "INTERFACE 3", true, 41 },
         { "ODYSSEY", true, 45 }, { "NODE", true, 50 },
-        { "BEDROCK", true, 47 },
+        { "BEDROCK", true, 47, true },
     },
 };
 
@@ -202,7 +204,7 @@ static const EnvTemp u2_temps[] = {
     { "INTERFACE 0", true, 11 }, { "INTERFACE 1", true, 11 },
     { "INTERFACE 2", true, 12 }, { "PCI RISER", true, 16 },
     { "ODYSSEY", false, 0 }, { "NODE", true, 14 },
-    { "BEDROCK", true, 13 },
+    { "BEDROCK", true, 13, true },
 };
 
 /* The cooling zones follow each workstation board's captured firmware. */
@@ -264,11 +266,12 @@ static void env_fan_row(GString *out, unsigned index, const EnvFan *fan,
 
 /*
  * "%2d %-14s %10s  " opens a temperature row. A sensor under automatic fan
- * control shows only its fault limit.
+ * control shows only its fault limit, and one that cannot be read shows
+ * that it is unavailable.
  */
 static void env_temp_row(GString *out, unsigned index, const EnvTemp *temp,
-                         const char *state, bool autofan, unsigned fault_c,
-                         unsigned reading_c)
+                         const char *state, bool autofan, bool available,
+                         unsigned fault_c, unsigned reading_c)
 {
     if (!temp->present) {
         g_string_append_printf(out, "%2u %-14s <not present>\r\n", index,
@@ -276,6 +279,10 @@ static void env_temp_row(GString *out, unsigned index, const EnvTemp *temp,
         return;
     }
     g_string_append_printf(out, "%2u %-14s %10s  ", index, temp->name, state);
+    if (!available) {
+        g_string_append(out, "Not currently available\r\n");
+        return;
+    }
     if (autofan) {
         g_string_append_printf(out, "  [Autofan Control]   %3uC/%3uF  ",
                                fault_c, env_fahrenheit(fault_c));
@@ -365,7 +372,8 @@ static void env_temps(GString *out, const EnvTemp *temps, unsigned count,
         unsigned fault_c = autofan ? (bedrock ? 85 : 76) : 55;
 
         env_temp_row(out, i, &temps[i], powered ? "Enabled" : ENV_WAIT_POWER,
-                     autofan, fault_c, powered ? temps[i].reading_c : 0);
+                     autofan, powered || !temps[i].on_node, fault_c,
+                     powered ? temps[i].reading_c : 0);
     }
 }
 
