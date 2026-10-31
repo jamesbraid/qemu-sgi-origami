@@ -645,7 +645,17 @@ VPro board reports the class the IP35 PROM ties to that type, and the PROM's
 environment reset then chooses the graphics console, as it does for the Tezro
 types. The ``tezro`` and ``tezro-rack`` profiles select ``0x39`` and ``0x51``
 respectively, following the published Linux IP35 machine-name mapping.
-Physical L1 type replies remain unmeasured. The public captures do not establish the selected clocks,
+Physical L1 type replies remain unmeasured.
+
+The Tezro's L1 reports the node board the published Tezro inventories print
+(``docs/datasheets/ip53-tezro-node-board-identity.md``): ``IP53_4CPU``, part
+``030-1868-001``, revision ``-C``, with four processors on slices A to D, and
+``IP53_2CPU``, part ``030-1869-001``, revision ``-C``, with two on slices A
+and C. No inventory shows a one-processor board, so one processor keeps the
+L1's generic record. The rack's first enclosure takes the tower's record for
+its processor count, an inference.
+
+The public captures do not establish the selected clocks,
 an installed flash image, or the complete PIC and IO9 interrupt wiring.
 
 .. _sgi-ip59-profiles:

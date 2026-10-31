@@ -4431,11 +4431,27 @@ static void test_machine_node_board_profiles(void)
         { "tezro,topology=tezro,l1-type-code=55", "4G", 1,
           "0x009bad85", "0x400000", NULL, NULL, NULL, 0x37,
           { 1, 48, 1 }, 0x549bad85, 700, 200 },
+        /*
+         * The IP53 Tezro boards the published inventories show
+         * (docs/datasheets/ip53-tezro-node-board-identity.md); no
+         * one-processor board has been captured, so one processor keeps
+         * the generic record. The rack's first enclosure takes the
+         * tower's record for its processor count.
+         */
         { "tezro,topology=tezro", "4G", 4,
-          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39,
+          "0x009bad85", "0x400000", "IP53_4CPU", "030-1868-001", "-C", 0x39,
+          { 1, 48, 1 }, 0x549bad85, 700, 200 },
+        { "tezro,topology=tezro", "4G", 2,
+          "0x009bad85", "0x400000", "IP53_2CPU", "030-1869-001", "-C", 0x39,
           { 1, 48, 1 }, 0x549bad85, 700, 200 },
         { "tezro,topology=tezro-rack", "4G", 1,
           "0x009bad85", "0x400000", NULL, NULL, NULL, 0x51,
+          { 1, 48, 1 }, 0x549bad85, 700, 200 },
+        { "tezro,topology=tezro-rack", "4G", 4,
+          "0x009bad85", "0x400000", "IP53_4CPU", "030-1868-001", "-C", 0x51,
+          { 1, 48, 1 }, 0x549bad85, 700, 200 },
+        { "tezro,topology=tezro-rack", "4G", 2,
+          "0x009bad85", "0x400000", "IP53_2CPU", "030-1869-001", "-C", 0x51,
           { 1, 48, 1 }, 0x549bad85, 700, 200 },
         /*
          * The IP59 node boards: the captured four-processor record, and
@@ -4812,7 +4828,7 @@ static void test_ip53_cpu_context_migration(void)
         { "tezro,topology=tezro", "4G", 1, "0x009bad85",
           "0x400000", 700, 0x549bad85, NULL, NULL, NULL },
         { "tezro,topology=tezro", "4G", 4, "0x009bad85",
-          "0x400000", 700, 0x549bad85, NULL, NULL, NULL },
+          "0x400000", 700, 0x549bad85, "IP53_4CPU", "030-1868-001", "-C" },
         { "tezro,topology=tezro-rack", "4G", 1, "0x009bad85",
           "0x400000", 700, 0x549bad85, NULL, NULL, NULL },
         { "onyx4-host,topology=onyx4-host", "8G", 4,

@@ -352,6 +352,16 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``nekonomicon-16726704``
    *Nekochan forum archive thread 16726704, "Building an Onyx 200. Success"*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/3/16726704/1.html>`__ SHA-256 ``2bb21cea6c6b6f4838d021ae874aed1657eb63260c71ff0126b0ef210ee3119f``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-web-nekonomicon-16726767:
+
+``nekonomicon-16726767``
+   *Nekochan forum archive thread 16726767, Tezro inventory*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16726767/1.html>`__ SHA-256 ``a3360e7032e6dbd5d86ca5fe808304da80306ca3b795e4c53241ed64f52f4876``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-web-nekonomicon-16727444:
+
+``nekonomicon-16727444``
+   *Nekochan forum archive thread 16727444, two- and four-processor Tezro inventories*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16727444/1.html>`__ SHA-256 ``dd61dbffab59b16e8e1ce12325aab216b10f1b5ba0afbbece0cd164459d357b2``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-web-nekonomicon-16727514:
 
 ``nekonomicon-16727514``
@@ -361,6 +371,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``nekonomicon-16727716``
    *Nekochan forum archive thread 16727716, "Origin is sick"*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/3/16727716/1.html>`__ SHA-256 ``599c1184414c9aee5eb5e5beae3ee0d294ef00bf6448ae211ef4377ad07dc074``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-web-nekonomicon-16728583:
+
+``nekonomicon-16728583``
+   *Nekochan forum archive thread 16728583, Tezro inventory*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16728583/1.html>`__ SHA-256 ``74869e0aee1a25911acda8049809a5d229caa3f3f0ffe43b94c4bb1df1bc0202``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-web-nekonomicon-16729141:
 
@@ -416,6 +431,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``preterhuman-origin-200``
    *SGI Origin 200*. Higher Intellect wiki. Web post, cited by section. `<https://wiki.preterhuman.net/SGI_Origin_200>`__ SHA-256 ``7e952adb35a1a913c08d8671192ac3f3ff7b7d8de27c1a86d87ba84913323fb4``. Public web page; may be quoted.
+
+.. _sgi-ref-web-preterhuman-tezro:
+
+``preterhuman-tezro``
+   *SGI Tezro*. Higher Intellect wiki. Web post, cited by section. `<https://wiki.preterhuman.net/SGI_Tezro>`__ SHA-256 ``19715ac0971e26881330f8aae5c009e86ddb182ef8fd21c3a647896aaacb15f0``. Public web page; may be quoted.
 
 .. _sgi-ref-web-r10000-users-manual-2-0:
 
