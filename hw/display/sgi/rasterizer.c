@@ -3202,14 +3202,14 @@ typedef struct SGISoftTexPlane {
  * The footprint of a pixel's 2x2 quad, in texels: the largest absolute s or
  * t difference along the quad's two diagonals, pixel 1 to pixel 4 and pixel
  * 2 to pixel 3, as the Odyssey board's texture unit takes its level of
- * detail (docs/datasheets/odyssey.md, "Mipmap level of detail"). The
- * quad's four pixels share the value; its base-2 logarithm is the level of
- * detail, as for a per-pixel footprint. ns and nt scale s and t to texels.
+ * detail. The quad's four pixels share the value; its base-2 logarithm is
+ * the level of detail, as for a per-pixel footprint. ns and nt scale s and
+ * t to texels.
  *
- * MODEL CHOICE: the datasheet leaves two things open and this takes them
- * as follows. Quads align to even pixel columns and rows of the window
- * the rasterizer draws in; whether the board aligns to the window or the
- * screen is unknown. The four s and t values come from the triangle's
+ * MODEL CHOICE: the Odyssey datasheet leaves two things open and this
+ * takes them as follows. Quads align to even pixel columns and rows of the
+ * window the rasterizer draws in; whether the board aligns to the window or
+ * the screen is unknown. The four s and t values come from the triangle's
  * planes at each of the quad's pixel centres, so a pixel the triangle does
  * not cover contributes its extrapolated value; how the board treats such
  * pixels is unknown. False where a pixel centre has no positive Q/W or a
