@@ -5617,6 +5617,25 @@ static uint32_t odyssey_gl_decode(const OdysseyGLLayout *l, const uint8_t *b)
     return (odyssey_pack_pixel(c[0], c[1], c[2]) & ~0xffu) | c[3];
 }
 
+/*
+ * The source code of a transfer header's word. Its low byte is the code
+ * the burst path knows; the type code's top bit (bit 8) belongs to the
+ * packed and 12-bit types, which would alias onto a lower code and paint
+ * the wrong layout. Type 0xb is the 12-bit drawable's byte form of the
+ * codes the burst path already takes, so it keeps the low byte. Any other
+ * type with bit 8 set keeps the full nine bits, which no case matches, so
+ * the burst is refused.
+ */
+static uint32_t odyssey_image_header_code(uint32_t word)
+{
+    uint32_t type = (word >> ODSY_GL_TYPE_SHIFT) & ODSY_GL_TYPE_MASK;
+
+    if ((word & 0x100) && type != 0xb) {
+        return word & 0x1ff;
+    }
+    return word & ODSY_IMAGE_CODE_MASK;
+}
+
 /* Bytes a pixel of a source format takes, 0 for an unknown code. */
 static unsigned odyssey_pixel_bytes(uint32_t code)
 {
@@ -5648,9 +5667,8 @@ static unsigned odyssey_pixel_bytes(uint32_t code)
  * every odyssey_pixel_bytes() bytes, so a three-byte pixel may span two
  * words. A bounded group's trailing padding (past image_group_len) is
  * dropped with any partial pixel, so the raster position stays exact. A
- * header with a code this model does not know falls back on the burst tag's
- * format, 0x11 one 0x00RRGGBB pixel a word and 0x10 four indices, and is
- * reported once.
+ * header with a code this model does not know paints nothing and is
+ * reported once: the burst tag does not say how a pixel is laid out.
  */
 static bool odyssey_image_pairing_supported(uint32_t code, uint32_t fmt)
 {
@@ -5724,12 +5742,9 @@ static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
         if (!s->image_code_reported) {
             s->image_code_reported = true;
             qemu_log_mask(LOG_UNIMP, "sgi-odyssey: image source format 0x%x "
-                          "is not modeled; laid out by the burst tag\n",
-                          code);
+                          "is not modeled; the burst is dropped\n", code);
         }
-        code = s->image_fmt == ODSY_IMAGE_FMT_RGB ?
-               ODSY_IMAGE_CODE_FALLBACK_XRGB : ODSY_IMAGE_CODE_CI;
-        n = odyssey_pixel_bytes(code);
+        return;
     }
     stl_be_p(b, word);
     for (i = 0; i < 4; i++) {
@@ -12529,7 +12544,7 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         s->image_group_len = glen == ODSY_IMAGE_HEADER_GROUP_MASK ?
                              ODSY_IMAGE_HEADER_GROUP_FULL : glen;
         s->image_group_painted = 0;
-        s->image_code = s->cmd_operand[0] & ODSY_IMAGE_CODE_MASK;
+        s->image_code = odyssey_image_header_code(s->cmd_operand[0]);
         s->image_nbytes = 0;
         s->image_bytes = 0;
         break;

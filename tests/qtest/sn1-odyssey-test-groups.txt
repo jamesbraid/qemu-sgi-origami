@@ -114,6 +114,7 @@ fifo /mips64/sn1/odyssey/command-fifo-pattern-quad-opaque
 fifo /mips64/sn1/odyssey/command-fifo-integer-logic-op
 fifo /mips64/sn1/odyssey/command-fifo-fill-runs-match-pixel-rules
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-rgb
+fifo /mips64/sn1/odyssey/command-fifo-image-raster-unknown-code
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-descending
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-mixed-directions
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-empty-extent
