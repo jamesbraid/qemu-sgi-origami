@@ -8,8 +8,9 @@ Base I/O boards: IP29, BaseIO, BaseIO-G, IO7, IO-8 and Fuel
 
 Used in :ref:`sgi-ip27` (the Origin 200 IP29 board and the Origin 2000
 and Onyx2 BaseIO and BaseIO-G cards), :ref:`sgi-ip35` (the Origin 300
-IO-8 and the Fuel system board) and the Origin 3000 I-brick
-(:ref:`sgi-bricks`, reference only). The IP53 machines' IO9 is not one of
+IO-8 and the Fuel system board) and the Origin 3000 I-brick's IO7, which
+the ``origin3000`` machine builds as the ``io7`` preset
+(:ref:`sgi-bricks-ibrick`). The IP53 machines' IO9 is not one of
 these presets (:ref:`sgi-ip35-ip53-io9`).
 
 Every SGI Origin and Onyx2 family machine carries its console, boot

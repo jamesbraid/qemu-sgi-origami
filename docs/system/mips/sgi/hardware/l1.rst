@@ -9,8 +9,9 @@ L1: system controller
 Used in :ref:`sgi-ip35` (Origin 300 and Fuel), :ref:`sgi-ip53` (Origin
 350, Onyx 350, Tezro and the Onyx4 host), the Origin 300 PCI expansion
 module (:doc:`pci-expansion`) and NUMAlink module
-(:ref:`sgi-bricks-numalink-module`), and the Origin 3000 bricks
-(:ref:`sgi-bricks`), which QEMU describes for reference only.
+(:ref:`sgi-bricks-numalink-module`), and the Origin 3000 and Onyx 3000
+C-, I-, N-, V-, R- and CX-bricks (:ref:`sgi-bricks`), which the
+``origin3000`` machine's topologies build.
 
 .. seealso::
 
@@ -1176,16 +1177,19 @@ migrated. Migration works only between identical builds.
 
 .. _sgi-l1-origin3000:
 
-Origin 3000 C-brick and I-brick profiles
-========================================
+Origin 3000 C-brick, I-brick, N-brick and V-brick profiles
+==========================================================
 
 ``brick-type=cbrick`` and ``brick-type=ibrick`` model the L1 of the Origin
-3000 compute brick and system I/O brick. Each brick has its own controller
+3000 compute brick and system I/O brick. ``brick-type=nbrick`` models the
+Onyx 3000 N-brick's and ``brick-type=vbrick`` the Onyx 3000 V-brick's,
+described after the table. Each brick has its own controller
 with its own rack, slot, type and records (:src:`007-4240-002 p. 69, 72, 118, 128`). The profiles reuse this page's request encoding, framing
 and task-6 request codes, which the public Linux and OpenBSD headers name
 for the Origin 3000 products; that a fitted C-brick frames bytes the same
-way is *unknown*. No firmware version is modelled: ``revision-*`` and
-``brick-type-code`` are refused, and request ``0x0005`` stays unavailable.
+way is *unknown*. ``brick-type-code`` is refused. Request ``0x0005``
+answers the firmware revision ``revision-*`` configures, and minus 104
+without one.
 
 Facts are rated as described in :ref:`sgi-ratings`; the choices below are approximations, not
 captured controller output.
@@ -1213,6 +1217,32 @@ captured controller output.
        module name only: which controller answers the I/O side's
        identity request on a C-brick is unknown. The case of the I-brick
        letter is the model's choice.
+   * - The machine configures firmware revision 1.44.0 on every C-brick,
+       I-brick, N-brick and V-brick L1 for request ``0x0005``, and the
+       machine's ``l1-revision`` replaces it. ``version`` prints
+       ``L1 1.44.0 (Image EMU-UNKNOWN)``, naming no image bank or product
+       image.
+     - established for the firmware; inferred for a fitted brick
+     - Every brick image in the L1 firmware IRIX 6.5.30 ships is version
+       1.44.0 and answers ``0x0005`` with 1, 44 and 0 whatever the brick.
+       Which of its two Origin 3000 images a brick runs depends on its L1
+       board's flash, so the profiles name neither. No fitted brick's
+       revision is captured. IRIX 6.5.30 labels each module's and I/O
+       brick's hardware graph entry with the reply and logs an error at
+       each start without one, and on a node with R14000 processors it
+       wants at least 1.3.20. The stock IP35 PROM warns below 1.12.5.
+       1.44.0 passes both, *software expectation*.
+   * - ``0x000a`` answers two integers. The first is 0 for a 400 MHz I/O
+       link and 1 for 600 MHz (``port-speed-first``, default 0).
+     - established for the meaning
+     - The stock IP35 PROM 6.210 compares the first integer with the speed
+       it expects for the attached brick's letter, 400 MHz for ``I``,
+       ``N`` and ``X`` and 600 MHz for ``P`` and ``V``, and warns on a
+       mismatch. An Origin 300 board skips the comparison. Every C-brick
+       answers 0, which matches its I-brick, N-brick or V-brick. That
+       agrees with the V-brick's 800 MB/s port rate
+       (:src:`007-4264-002 p. 54`), which reads as a 400 MHz link on 16
+       bits (inferred). Which a real C-brick answers is unknown.
    * - A C-brick's records: node board at component 0, two PIMMs at 1 and
        2, DIMM ``n`` at ``3 + (n >> 1) + 4 * (n & 1)``.
      - approximation
@@ -1228,8 +1258,81 @@ captured controller output.
      - unknown
      - The guides number it differently by edition (:src:`007-3938-001 p. 41`,
        :src:`007-4240-002 p. 105-106`), so ``io-port`` and ``c-port``
-       configure it. An I-brick answers ``0x000c`` and
-       ``0x000d`` with the unknown-request code.
+       configure it. An I/O brick's own answer is the next row.
+   * - What an I-brick, V-brick or N-brick lists in ``0x000c``, and its
+       type letters.
+     - approximation
+     - The L1 firmware answers ``0x000c`` from its link table whatever the
+       brick's letter. The stock IP35 PROM 6.210 sends it to the attached
+       I/O address only during crossbar arbitration, which it enters only
+       when the widget at the node's widget-0 window reports a crossbow
+       part, ``0xd000`` or ``0xd100`` (OpenBSD ``xbowdevs`` names them
+       XXBow and PXBow), and there an error reply abandons the
+       arbitration. An I-brick's and a V-brick's widget 0 is an XBridge,
+       so that PROM never asks either one (software expectation). An
+       I-brick or V-brick answers with the C-brick that asked at port 1
+       and, when that C-brick's chip has a G-brick on its other port, the
+       G-brick at port 2, in the C-brick's own reply shape, with letters
+       ``C`` and ``G``. The other ports are empty. An N-brick answers so
+       only with a G-brick, and the unknown-request code otherwise.
+       Without a G-brick, ``0x000d`` keeps the unknown-request code on any
+       of them. Which ports and letters a real brick uses are unknown.
+       The N-brick reports ``N``, a candidate from the command set's brick
+       type list (:src:`007-4240-002 p. 235`). The stock PROM accepts the
+       letter, which does not show it is the hardware's. One N-brick
+       controller serves all its C-bricks (N-brick Overview, revision
+       10/24/01, printed page 5) and answers each about its own chip.
+
+The V-brick profile (``brick-type=vbrick``) is reached from the C-brick
+its XIO cable joins, as an I-brick's is, and knows only that C-brick. The
+V-brick has its own L1 (:src:`007-4264-002 p. 52, 128-129`),
+*established*. It is the X-brick's chassis and midplane XBridge with V12
+boards in the slots. The Origin 3000 L1 firmware has no personality of
+its own for it: it picks a brick's type letter from the name field of the
+power and logic board EEPROMs and installs that letter's personality, and
+a logic board named ``XBRICK`` gives ``X``. Its only ``V`` belongs to a
+later PIC-based graphics brick, and no firmware command can store ``V``,
+*software expectation*. So the profile answers as the X-brick
+personality. No V-brick L1 reply has been captured, and its address and
+ID PROM contents are *unknown*:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 12 58
+
+   * - Fact
+     - Rating
+     - Basis
+   * - ``0x0003`` answers the packed rack and bay and the letter ``X``.
+       ``brick`` prints ``type: X`` and ``config`` names the brick
+       ``001x10``.
+     - inferred
+     - That the V-brick's logic board carries the X-brick's name is
+       inferred from the guides' description of the shared chassis. Of
+       the letters IRIX 6.5.30 and the stock PROM handle, ``X`` alone
+       names a brick of this chassis an X-brick, draws no unknown brick
+       type warning at the XBridge attach and matches the 400 MHz link the
+       guide's port rate implies. A V-brick's ``brick`` or ``eeprom``
+       output would settle it.
+   * - Two records: the power board at component 0 and the logic board,
+       named ``XBRICK``, at component 1, both read through both areas.
+       Other components answer minus 104.
+     - inferred for the components; approximation for the contents
+     - The X-brick personality registers these two records, and the stock
+       PROM and IRIX read the logic board of a brick that answers ``X`` as
+       component 1. The parts are unobserved and the serials synthetic,
+       lettered as the I-brick's. The builder sets the V-brick's
+       ``identity-index`` to its module index so its serials differ from
+       the I-brick's.
+   * - ``0x000a`` answers 0 and 0, port A and port B at 400 MHz.
+     - approximation
+     - The X-brick personality answers with its two port speed settings,
+       which default to 400 MHz when no C-brick is attached. What a cabled
+       V-brick stores is unknown. 400 MHz agrees with the guide's rate.
+   * - Operator commands, power and reset are refused as on any brick
+       with no compute services.
+     - approximation
+     - No command output of a V-brick is published.
 
 What the model chooses, and the limit of each choice:
 
@@ -1244,11 +1347,12 @@ What the model chooses, and the limit of each choice:
   format, baud rate or detection. A C-brick has two links: ``peer`` for the
   other C-brick and ``io-peer`` for its I-brick. Both are checked against the
   two profiles: a C-brick pairs only with a C-brick, and ``io-peer`` joins a
-  C-brick to an I-brick. The check holds whether the link is given with the
-  device (it runs when the device realizes) or set afterwards (it runs when
-  the link is set). An I-brick takes one C-brick: the fitted system's cabling
-  of a second is unknown, so a second is refused with an error, and the first
-  link stays. After ``reboot_l1`` a brick answers no peer for one second of
+  C-brick to an I-brick, N-brick or V-brick. The check holds whether the
+  link is given with the device (it runs when the device realizes) or set
+  afterwards (it runs when the link is set). An I-brick takes one C-brick:
+  the fitted system's cabling of a second is unknown, so a second is
+  refused with an error, and the first link stays. An N-brick takes
+  several. The model does not count its connectors. After ``reboot_l1`` a brick answers no peer for one second of
   virtual time.
 - ``power`` and ``reset`` on an I-brick act on that brick only; a C-brick
   keeps the single-node power and reset behaviour above. ``*`` runs a
@@ -1338,13 +1442,13 @@ Origin 3900 Cx-brick profile
 ``brick-type=cxbrick`` models the one L1 of a Cx-brick, the Origin 3900
 and Onyx 3000 brick that holds one to four IP53 node boards behind a single
 controller on its router board (*SGI Origin 3900 Server User's Guide*
-007-4653-001 p. 52-60; *Cx-brick Addendum*
+:src:`007-4653-001 p. 52-60`; *Cx-brick Addendum*
 :src:`007-4572-001 p. 2-18`). ``boards`` names the fitted node boards
 and ``compute-boards`` those with processors, one bit per board 0 to 3. Each fitted board reaches
 the controller through its own UART window, ``sgi-l1-uart`` with
 ``transport-index`` the board number. Identity, naming and restart follow
 the C-brick profile above: a brick starts unnamed and prints ``---c--``
-(007-4653-001 p. 144).
+(:src:`007-4653-001 p. 144`).
 
 Request codes, the request layout and the framing follow the C-brick rule.
 The profile serves the codes the Linux v2.6.0 ``ksys/l1.h`` header names
@@ -1366,21 +1470,21 @@ fitted Cx-brick uses is *unknown*, and each ``0x2001`` is logged as such.
    * - One L1 per Cx-brick, holding the brick's module and partition
        identifiers, one display and one log.
      - established
-     - :src:`007-4426-001 p. 12`; 007-4653-001 p. 108, 112.
+     - :src:`007-4426-001 p. 12`; :src:`007-4653-001 p. 108, 112`.
    * - The console names twenty subchannels: ``0A`` to ``3D`` and
        ``console0`` to ``console3``, the number being the node board.
      - established for the names; inferred for ``console2``,
        ``console3`` and the board numbering
-     - 007-3938-004 p. 16-18; 007-4653-001 p. 114-115.
+     - 007-3938-004 p. 16-18; :src:`007-4653-001 p. 114-115`.
    * - ``select`` at power-on prints ``console input: 001c07 console0``.
      - established
-     - 007-4653-001 p. 114-115.
+     - :src:`007-4653-001 p. 114-115`.
    * - ``select filter on`` passes only the selected target's output.
      - established at brick level; inferred for a board inside a brick
-     - 007-4653-001 p. 115.
+     - :src:`007-4653-001 p. 115`.
    * - ``power``, ``reset`` and ``nmi`` act on the whole brick.
      - inferred
-     - Every printed unit is the brick (007-4653-001 p. 58, 108, 113).
+     - Every printed unit is the brick (:src:`007-4653-001 p. 58, 108, 113`).
    * - How the four Bedrocks reach the L1, the integers a Cx-brick uses on
        the wire for the twenty names, its type character and its record
        layout.
@@ -1408,7 +1512,7 @@ What the model chooses, and the limit of each choice:
   board without processors prints the guide's ``no response from 001c07
   junk bus console UART:UART_TIMEOUT``, or for a processor subchannel
   ``no response from 001c07 Junk bus CPU2B system not responding``
-  (007-4653-001 p. 115 and 141), and stays in L1 mode.
+  (:src:`007-4653-001 p. 115, 141`), and stays in L1 mode.
 - Power, reset and NMI requests from any window, and from the prompt, act on
   every board at once and log one entry. The machine's own reset carries
   them out, so the router is reset with the rest, where the profile's
@@ -1417,14 +1521,23 @@ What the model chooses, and the limit of each choice:
   processors are wired to them.
 - Board ``n``'s window reads board ``n``'s synthetic node board record at
   component 0; every other component answers minus 104. The DIMM, router
-  board and power entry module records are not modelled.
+  board and power entry module records are not modelled. With
+  ``cpu-context-present`` each board's record carries the CPU context the
+  Origin 350's carries, which the stock PROM compares with its flash.
+- Board ``n``'s window answers the identity requests with the brick's slot
+  plus ``n``, and the serial request with the brick's serial and ``.n``,
+  because the stock PROM refuses two modules at one slot and tells hubs
+  apart by the serial. No source says how a Cx-brick numbers its boards or
+  what it returns, so this is an approximation.
 - The brick has no default type character: ``0x0003`` answers minus 104
   until ``brick-type-code`` supplies one, and ``brick`` prints the type as
   ``?``. The firmware revision is unknown, so ``revision-*`` is refused.
-- Peer links are refused. The I/O bricks on the XIO ports, the neighbouring
-  Cx-brick, the L2 and the ``iia`` to ``iid``, ``nia`` and ``nib`` commands
-  are not modelled; an attached-brick destination answers the router's error
-  reply and the commands are reported as unknown.
+- A neighbouring Cx-brick link is refused. The L2, the neighbouring
+  Cx-brick and the ``iia`` to ``iid``, ``nia`` and ``nib`` commands are not
+  modelled. One I-brick may be named as ``io-peer``: the attached I/O
+  brick request then goes to it in the C-brick's request form, because the
+  addressing of a Cx-brick's four I/O ports is unknown. Without a peer an
+  attached-brick destination answers the router's error reply.
 
 Measurements
 ============

@@ -19,7 +19,7 @@ models chip revision 2.0 as the PCI host bridge ``sgi-mace`` in
 ``hw/mips/sgi/mace-id.c`` and the audio interface in
 ``hw/mips/sgi/mace-audio.c``. The Ethernet MAC is a child device on its
 own page (:doc:`mace-ethernet`), the clock is the DS1685 model
-(:doc:`ds1685`) and the codec is on :doc:`ad1843`. The O2 test profile
+(:doc:`ds1685`) and the codec is on :doc:`ad1843`. The ``o2`` machine
 (:ref:`sgi-ip32`) fits MACE.
 
 Facts are rated as described in :ref:`sgi-ratings`.
@@ -99,7 +99,8 @@ below.
      - Modelled (`PS/2 ports`_).
    * - ``0x330000``
      - I2C
-     - Absent. Same as the future block.
+     - Absent from every machine. A test-only register model exists
+       (`I2C bus interface`_).
    * - ``0x340000``
      - UST and compare timers, with the compare registers aliased at
        ``0x350000``, ``0x360000`` and ``0x370000``
@@ -247,7 +248,7 @@ Devices exist at PCI device numbers 1, 2 and 3 only. The captures show
 the two onboard SCSI controllers at devices 1 and 2
 (:src:`dmesgd-2432 ahc0`, :src:`dmesgd-5290 ahc0`), *observed*, and Linux
 routes their interrupts for devices 1 and 2 (``irq_tab_mace`` in
-``fixup-ip32.c``). The O2 test profile
+``fixup-ip32.c``). The ``o2`` machine
 fits an AIC-7880 at each (:doc:`aic7880`).
 
 The model refuses some configuration writes with ``LOG_UNIMP`` and a bus
@@ -373,7 +374,7 @@ expectation*.
 
 The model reverses the roles, as an *approximation*. The view at
 ``0x40000000`` is the one that swaps bytes: with the machine's
-``pci-native-word-swap`` option, which the O2 test profile turns on, an
+``pci-native-word-swap`` option, which the ``o2`` machine turns on, an
 access of *n* bytes (*n* of 1, 2 or 4) goes to the address xor ``4 - n``
 within the word. The low 1 GiB view is an unswapped alias of the same
 memory. Without the option the view at ``0x40000000`` is an unswapped
@@ -628,9 +629,9 @@ match; which one is the real clock tree is *unknown*.
 
 The model uses QEMU's 16550A with a 16-byte FIFO and a base clock of
 115200 baud, which is a 1.8432 MHz clock, as an *approximation*. Port 1
-connects to the machine's one ``-serial`` backend through the ``chardev-a``
-property. ``chardev-b`` exists on the device and the O2 test profile
-accepts one host serial backend only. Interrupts set status bits 20 and
+connects to the machine's first ``-serial`` backend through the
+``chardev-a`` property, and port 2 to the second through ``chardev-b``.
+The register test profile accepts one host serial backend only. Interrupts set status bits 20 and
 26. The specification's extra register at the scratch address when
 DLAB is set (the IR encoder select and clock prescaler) is absent: access
 logs ``LOG_UNIMP``, reads 0 and drops writes.
@@ -714,7 +715,7 @@ The Super I/O part carries an EPP/ECP parallel port at ``0x380000`` and
 :src:`sgi-mace-2.0-spec p. 122, 133`, *established*. NetBSD attaches
 ``lpt0`` at offset ``0x380000`` on a real O2 (:src:`dmesgd-5290 lpt0`),
 *observed*. The model has no parallel port: accesses to the range log
-``LOG_UNIMP`` and read 0, and the O2 test profile fits no parallel device
+``LOG_UNIMP`` and read 0, and the ``o2`` machine fits no parallel device
 (``no_parallel`` in ``o2.c`` only drops the default parallel port; an
 explicit ``-parallel`` is not refused by this machine).
 
@@ -910,7 +911,7 @@ The model plays output 1 on the codec's DAC1 line output as 48 kHz
 signed 16-bit stereo through one host output voice and takes a single host
 input voice at the same format into the codec's AUX1 input. Other codec
 outputs are modelled internally and are not played, an *approximation*.
-``sgi-mace`` has the standard ``audiodev`` property; the O2 test profile
+``sgi-mace`` has the standard ``audiodev`` property; the ``o2`` machine
 does not set it, so without a backend the codec runs against virtual time
 and produces no host sound. The GPIOs ``volume`` (two inputs),
 ``audio-pwrdwn`` and ``audio-pdmnft`` (inputs) and ``audio-ttl`` (two
@@ -965,6 +966,54 @@ state embedded. The Ethernet MAC, PS/2 ports, identity line and clock are
 child devices with their own state. A stream loaded into a different
 build is not supported. The identity diagnostic blocks migration.
 
+.. _sgi-mace-i2c:
+
+I2C bus interface
+=================
+
+MACE has a two-wire I2C master at peripheral offset ``0x330000``
+(:src:`sgi-mace-2.0-spec p. 149-150`), *established*. No machine maps
+it: the ``o2`` machine leaves the block absent, and which I2C devices an
+O2 board carries is *unknown*. ``sgi-mace`` has a register model of the
+master, ``hw/mips/sgi/mace-i2c.c``, which only the qtests can turn on,
+with ``-device sgi-mace,i2c-untimed-test-profile=on``. The device refuses
+the property outside QTest.
+
+The model has four 64-bit registers: configuration at offsets 0 and 8,
+CONTROL at ``0x10`` and DATA at ``0x18``. Only aligned 8-byte accesses
+are accepted. Any other width or offset is a bus error with no side
+effect. Reading the configuration while a transfer owns the bus logs
+``LOG_UNIMP`` and fails, because the model has no sampled line state.
+
+The model transfers whole bytes with no wire timing, an
+*approximation*:
+
+- A DATA write when the bus is idle sends a START and the address byte,
+  and records whether the target acknowledged. Later DATA writes send
+  one byte each. A DATA read returns the next received byte, with no
+  read-ahead.
+- CONTROL's hold bit keeps the bus after a byte. With it clear, the byte
+  ends with a STOP. The last byte of a receive is answered with a NACK
+  before the STOP.
+- An address NACK sets the NACK status. With hold clear the bus is
+  released. With hold set the failed selection is kept until software
+  ends it. Neither retries the address.
+- DATA used against the current direction, or before a target has
+  acknowledged, is a protocol error: the model ends the transfer, sets a
+  sticky error status, logs ``LOG_GUEST_ERROR`` and returns a bus error.
+- Configuration bit 0 requests a local reset of the interface, applied
+  at the next byte boundary when a byte is in flight.
+
+The bus behind it, named ``i2c``, takes at most 32 endpoints, added before
+the machine starts, and each must declare that it supports byte-at-once
+transfers. The only such endpoint is the qtest fixture
+``tests/qtest/fixtures/sgi-mace-i2c.c``, which stands for no O2 part.
+Migration saves the owned transfer, the pending receive acknowledge and
+each endpoint's state, and refuses a stream whose endpoint list differs.
+
+Not modelled: repeated START, clock stretching, arbitration, standard and
+fast mode timing, the line override bits, and the sampled line inputs.
+
 .. _sgi-mace-measurements:
 
 Measurements
@@ -978,7 +1027,7 @@ project. Published captures are listed under `Identity and placement`_.
 Model limits
 ============
 
-- The model has no parallel port, I2C interface, video inputs or output,
+- The model has no parallel port, machine I2C interface, video inputs or output,
   PCI interrupt inputs 3 to 7, PCI I/O windows, DP-RAM, game port or UST
   test mode. Accesses log ``LOG_UNIMP`` and read zero.
 - The PCI error flags other than master abort, the interrupt-test bit,
@@ -1016,6 +1065,9 @@ Tests
 - ``tests/qtest/sgi-mace-audio-test.c`` covers the controller registers,
   the codec model, power timing, thresholds, DMA formats, faults and wrap,
   timestamps, mixing and migration.
+- ``tests/qtest/sgi-mace-i2c-test.c`` covers the I2C register slots,
+  receive, transmit, NACK, errors, reset, force-idle, an empty bus,
+  migration and unrealize.
 - ``tests/qtest/sgi-mace-dma-test.c`` covers the bus-master address views
   on 64 MiB, 128 MiB and 1 GiB RAM layouts.
 - ``tests/qtest/sgi-mace-id-test.c``, ``tests/qtest/sgi-o2-id-test.c`` and

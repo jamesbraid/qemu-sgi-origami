@@ -257,7 +257,10 @@ Components and connections
      - Crossbow widget 15
      - *established*: OpenBSD ``ip30.h`` (``IP30_BRIDGE_WIDGET``); the
        OpenBSD capture finds the Bridge at widget 15 and prints "Bridge
-       revision 3"
+       revision 3". A Crossbow link reset of widget 15 resets the Bridge's
+       core, as on an XIO board. The Bridge specification describes that
+       path for revision D, the Octane2's, *established*; for the Octane's
+       revision C it is *inferred* (:ref:`sgi-bridge-reset`)
    * - Two QLogic SCSI controllers
      - onboard PCI devices 0 and 1, function 0
      - *observed* in the OpenBSD capture (ISP1020 revision 5);
@@ -326,13 +329,21 @@ reads 1 in pin register 2 and bit 2 set in the pin data register at
 ``0x3c`` after PROM start-up (:ref:`measured <sgi-ioc3-octane2-pins>`); pin register 3
 also reads 1. This is *established* for that board. OpenBSD's rule would name it an Octane, so
 the comment does not hold for this board, and what the pin senses is
-*unknown*. The measurement of the modelled product outweighs the driver
-comment, so ``octane2`` drives IOC3 inputs 2 and 3 high, as the
-reference board reads them. ``octane`` drives input 2 high, per
-OpenBSD, and leaves input 3 unwired because it is unmeasured. Whether the
-inputs are board straps or floating pull-ups is *unknown*. OpenBSD will
-name the ``octane2`` machine an Octane, as it would the reference unit if
-it samples the same pin.
+*unknown*. The measurement outweighs the driver comment, so both
+machines drive IOC3 inputs 2 and 3 high, as the reference board reads
+them. No input tells the two products apart. The classic Octane's inputs
+are unmeasured, so matching the Octane2 there is an *approximation*. Pin
+8 also reads high on the reference Octane2 and is not modelled. Whether
+the inputs are board straps or floating pull-ups is *unknown*. OpenBSD
+names both machines an Octane, as it would the reference unit if it
+samples the same pin.
+
+The board's IOC3 drives the front lightbar from pins 0 (white) and 1
+(red), high meaning lit. Red's polarity is *established* for the
+reference Octane2, and white's follows mainline Linux's LED driver, a
+*software expectation*. The IOC3
+publishes the two lamps as read-only properties (:doc:`hardware/ioc3`).
+The board has no other lamp model.
 
 The onboard IOC3 repeats its first 32 configuration bytes in the next 32,
 as the reference Octane2's chip does, so a guest reads no subsystem
@@ -366,7 +377,10 @@ windows and the memory offset:
    * - ``0x1fe00000``
      - alternate PROM aperture, widget 15 offset ``0xe00000``
    * - ``0x20000000``
-     - first SDRAM address
+     - first SDRAM address. The model makes the first 16 KiB,
+       ``0x20000000`` to ``0x20003fff``, fail with a bus error and log
+       ``LOG_UNIMP``, above every bank view and ECC overlay, an
+       *approximation*: what a real HEART answers there is *unknown*
 
 .. _sgi-ip30-space-selection:
 
@@ -473,11 +487,12 @@ Missing devices
   single-processor (:ref:`sgi-ip30-topology`).
 - The expansion Bridge and its four PCI slots. Its widget number is
   *unknown*, so no slot is offered.
-- The front-panel LEDs on IOC3 general-purpose pins; writes reach no
-  device. OpenBSD names pins 0 and 1 the white and red lights
-  (``ip30.h``), a *software expectation*. The reference Octane2 runs
-  both pins as outputs, pin 0 high and pin 1 low, at the PROM menu
-  (:ref:`sgi-ioc3-octane2-pins`).
+- A visible front lightbar. The IOC3's pins 0 and 1, which OpenBSD
+  names the white and red lights (``ip30.h``, a *software expectation*),
+  reach only the IOC3's ``lightbar-white`` and ``lightbar-red``
+  properties and a trace event (:ref:`sgi-ip30-components`). The
+  reference Octane2 runs both pins as outputs, pin 0 high and pin 1 low,
+  at the PROM menu (:ref:`sgi-ioc3-octane2-pins`).
 
 .. _sgi-ip30-firmware:
 

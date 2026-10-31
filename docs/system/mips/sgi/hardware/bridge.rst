@@ -1224,7 +1224,11 @@ translation entries and latched errors and re-aims the windows. The core
 is released at once, not held until the link is determined, and the event
 logs ``LOG_UNIMP``. Pin levels are kept, because the devices driving them
 are not reset. Nothing reaches the PCI side: no source says the Bridge
-pulses its PCI reset outputs, so cards keep their programming.
+pulses its PCI reset outputs, so cards keep their programming. The
+Octane machines wire the Crossbow's widget 15 reset to the onboard
+Bridge the same way XIO boards are wired. The path is *established* for
+the Octane2's revision 4 (D) Bridge and *inferred* for the Octane's
+revision 3.
 
 The slots do not support hot plug; a card must be present when the machine
 is built. A device past slot 7 is refused when it is added.

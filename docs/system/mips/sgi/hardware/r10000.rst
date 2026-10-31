@@ -7,9 +7,10 @@ R10000 family: processors
 =========================
 
 Used in :ref:`sgi-ip27` (R10000 and R12000), :ref:`sgi-ip30` (R10000
-and R12000), :ref:`sgi-ip35` (R14000), :ref:`sgi-ip53` (R16000) and the
-Origin 3000 C-brick (:ref:`sgi-bricks`, R12000 and R14000, reference
-only).
+and R12000), :ref:`sgi-ip32` (R10000, and R12000 on the O2+),
+:ref:`sgi-ip35` (R14000), :ref:`sgi-ip53` (R16000), and the Origin 3000
+C-brick (R12000) and CX-brick (R16000) the ``origin3000`` machine builds
+(:ref:`sgi-bricks`).
 
 The R10000, R12000, R14000 and R16000 are the 64-bit MIPS IV processors
 of SGI's Octane, Origin and Onyx machines. QEMU models them as the
@@ -70,12 +71,13 @@ Family members and selection
      - Reset mode input
      - Default secondary cache
    * - ``R10000``
-     - ``octane``, ``origin200``, ``origin2000``, ``onyx2``, ``o2-test``
+     - ``octane``, ``origin200``, ``origin2000``, ``onyx2``, ``o2``
      - ``r10000-prid``, default ``0x00000926``
      - ``reset-mode``, optional
      - 1 MiB, 128-byte blocks
    * - ``R12000``
-     - ``octane2``; ``origin200`` with its 270 MHz processor
+     - ``octane2``; ``origin200`` with its 270 MHz processor;
+       ``origin3000`` C-bricks; ``o2`` with ``variant=o2plus``
      - ``r12000-prid`` and ``r12000-fpu-id``, required
      - ``r12000-reset-mode``, required
      - none: ``r12000-scache-bytes`` and ``r12000-scache-block-words``
@@ -86,7 +88,7 @@ Family members and selection
      - ``reset-mode``, optional
      - 2 MiB
    * - ``R16000``
-     - the IP53 machines
+     - the IP53 machines; ``origin3000`` with ``topology=origin3900``
      - fixed ``0x00000f50``
      - ``r16000-reset-mode``, required
      - set by ``r16000-scache-bytes``, required
