@@ -1206,8 +1206,8 @@ What each topology offers today:
      - ``widget-13``
      - ``v12``
      - ``v12``
-   * - ``tezro`` with two or four processors, ``onyx350-compat``, and their
-       ``-ip59`` topologies
+   * - ``tezro``, ``onyx350-compat``, ``tezro-tower-multi-ip59`` and
+       ``onyx350-ip59``
      - ``widget-12`` on the PIC fabric
      - none
      - ``v12``
