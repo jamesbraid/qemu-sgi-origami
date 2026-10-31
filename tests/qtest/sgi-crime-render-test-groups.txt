@@ -539,3 +539,4 @@ sz-empty-nonempty8 /mips64/sgi/crime/render/sz/empty-nonempty/8
 sz-empty-starts /mips64/sgi/crime/render/sz/empty-starts
 sz-empty-migration /mips64/sgi/crime/render/sz/empty-migration
 sz-empty-transport /mips64/sgi/crime/render/sz/empty-transport
+sz-empty-parameter-free /mips64/sgi/crime/render/sz/empty-parameter-free

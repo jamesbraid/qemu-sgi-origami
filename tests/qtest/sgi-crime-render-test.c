@@ -12359,6 +12359,41 @@ static void test_sz_empty_starts(void)
     g_rmdir(dir);
 }
 
+static void test_sz_empty_parameter_free(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-empty-commit-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    Shape c = triangle_prepare(s, 0, 0, 0);
+    SZCase v = sz_case();
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    unsigned head;
+
+    sz_initialize(s, &c, v.old);
+    triangle_vertices(s, sz_empty_triangles[0], NULL, true);
+    v.start = INT64_MIN;
+    v.dx = INT64_MAX;
+    v.dy = INT64_C(0x1000001000000000);
+    sz_program(s, &v);
+    save_paired_renderer(s, path, before);
+    head = ifb_next(s);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    ifb_head(s, (head + 1) % 64);
+    ifb_entry(s, head, 0x323e00000000ULL, 0);
+    save_paired_renderer(s, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    sz_empty_unchanged(s, &c, v.old);
+
+    triangle_vertices(s, sz_one_triangle, NULL, true);
+    sz_atomic_failure(s, &c, path, DE + 0x9f0, 0, 4);
+    triangle_vertices(s, sz_empty_triangles[0], NULL, true);
+    qtest_writel(s, DE + 0x1c0, v.control | 0x10000000);
+    sz_atomic_failure(s, &c, path, DE + 0x9f0, 0, 4);
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 static void test_sz_empty_migration(void)
 {
     g_autofree char *dir = g_dir_make_tmp("crime-empty-migrate-XXXXXX", NULL);
@@ -22260,6 +22295,8 @@ int main(int argc, char **argv)
     add_data_case("sgi/crime/render/sz/empty-nonempty/8",
                   GUINT_TO_POINTER(8), test_sz_empty_nonempty);
     add_case("sgi/crime/render/sz/empty-starts", test_sz_empty_starts);
+    add_case("sgi/crime/render/sz/empty-parameter-free",
+             test_sz_empty_parameter_free);
     add_case("sgi/crime/render/sz/empty-migration", test_sz_empty_migration);
     add_case("sgi/crime/render/sz/planes", test_sz_planes);
     add_case("sgi/crime/render/sz/fragment-order", test_sz_fragment_order);
