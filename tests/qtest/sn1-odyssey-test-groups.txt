@@ -147,6 +147,7 @@ fifo /mips64/sn1/odyssey/command-fifo-image-alpha-dma
 fifo /mips64/sn1/odyssey/command-fifo-image-alpha-texture
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-short
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-short-incomplete
+fifo /mips64/sn1/odyssey/command-fifo-image-row-end-padding
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-colour-index
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-colour-index-groups
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-colour-index16

@@ -6110,6 +6110,118 @@ static void test_command_fifo_image_raster_short_incomplete(void)
     board_quit(qts);
 }
 
+/* Send words as pixel bursts of at most 16 words under one tag. */
+static void image_bursts(QTestState *qts, uint32_t fmt, const uint32_t *words,
+                         unsigned count)
+{
+    while (count) {
+        unsigned n = MIN(count, 16u);
+
+        cmd_push(qts, ODSY_IMAGE_BURST(n, fmt));
+        for (unsigned i = 0; i < n; i++) {
+            cmd_push(qts, words[i]);
+        }
+        words += n;
+        count -= n;
+    }
+}
+
+/* Component i of row r pixel p; an index pixel uses component 0. */
+static uint8_t row_comp(unsigned r, unsigned p, unsigned i)
+{
+    return (i == 0 ? 0x10 + 0x40 * r : 0x30 + 0x20 * (i - 1)) + p;
+}
+
+/*
+ * A row's bytes, then 0x5a to a word boundary. A component takes `copies`
+ * bytes: its value repeated, or for an index 0x01 and then its value.
+ */
+static unsigned row_words(uint32_t *words, unsigned r, unsigned w,
+                          unsigned comps, unsigned copies)
+{
+    uint8_t row[300];
+    unsigned len = 0;
+
+    for (unsigned p = 0; p < w; p++) {
+        for (unsigned i = 0; i < comps; i++, len += copies) {
+            memset(row + len, comps == 1 ? 1 : row_comp(r, p, i), copies);
+            row[len + copies - 1] = row_comp(r, p, i);
+        }
+    }
+    for (; len % 4; len++) {
+        row[len] = 0x5a;
+    }
+    for (unsigned i = 0; i < len; i += 4) {
+        words[i / 4] = ldl_be_p(row + i);
+    }
+    return len / 4;
+}
+
+/*
+ * A pixel that completes a row ends its burst word whatever the header
+ * counts, so a row's pad must not shift the next row behind the same
+ * header. Index codes 0x41 and 0x61 are ended by the header count alone.
+ */
+static void test_command_fifo_image_row_end_padding(void)
+{
+    static const struct {
+        uint32_t code, fmt;
+        unsigned width, comps, copies;
+    } cases[] = {
+        { 0x69, ODSY_IMAGE_FMT_SHORT, 13, 3, 2 },
+        { 0x49, ODSY_IMAGE_FMT_RGB, 93, 3, 1 },
+        { 0x41, ODSY_IMAGE_FMT_CI, 13, 1, 1 },
+        { 0x61, ODSY_IMAGE_FMT_CI, 13, 1, 2 },
+    };
+    QTestState *qts = board_start("");
+    unsigned base = 100;
+
+    for (unsigned c = 0; c < ARRAY_SIZE(cases); c++) {
+        unsigned w = cases[c].width, comps = cases[c].comps;
+        bool index = comps == 1;
+
+        /* A header per row, and for RGB codes both rows behind one. */
+        for (unsigned one = 0; one <= !index; one++, base += 100) {
+            uint32_t words[140];
+            unsigned n = row_words(words, 0, w, comps, cases[c].copies);
+
+            row_words(words + n, 1, w, comps, cases[c].copies);
+            if (index) {
+                index_fill(qts, 1, base, base, base + w + 1, base + 2);
+            }
+            image_begin(qts, base, base, base + w, base + 2);
+            for (unsigned r = 0; r < 2; r++) {
+                if (!one || r == 0) {
+                    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+                    cmd_push(qts, ODSY_IMAGE_HEADER_OP(index ? w : 0,
+                                                       cases[c].code));
+                    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+                }
+                image_bursts(qts, cases[c].fmt, words + r * n, n);
+            }
+            cmd_push(qts, ODSY_CMD_GL_END);
+            for (unsigned r = 0; r < 2; r++) {
+                for (unsigned p = 0; p < w; p += w - 1) {
+                    uint32_t want = row_comp(r, p, 0) << 24 |
+                                    row_comp(r, p, 1) << 16 |
+                                    row_comp(r, p, 2) << 8 | 0xff;
+
+                    if (index) {
+                        want = row_comp(r, p, 0);
+                        if (cases[c].copies == 2) {
+                            want += 0x100;
+                        }
+                    }
+                    g_assert_cmphex(odsy_test_pixel(qts, base + p, base + r),
+                                    ==, want);
+                }
+            }
+        }
+    }
+
+    board_quit(qts);
+}
+
 /*
  * BEGIN-0xa image raster, format 0x10: four colour indices per word. This pins
  * the colormap lookup, index 0 painted like any other index (black in the X
@@ -26106,6 +26218,8 @@ int main(int argc, char **argv)
              test_command_fifo_image_raster_short);
     add_case("sn1/odyssey/command-fifo-image-raster-short-incomplete",
              test_command_fifo_image_raster_short_incomplete);
+    add_case("sn1/odyssey/command-fifo-image-row-end-padding",
+             test_command_fifo_image_row_end_padding);
     add_case("sn1/odyssey/command-fifo-image-raster-colour-index",
              test_command_fifo_image_raster_colour_index);
     add_case("sn1/odyssey/command-fifo-image-raster-colour-index-groups",

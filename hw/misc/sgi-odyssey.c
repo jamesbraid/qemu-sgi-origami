@@ -5459,11 +5459,12 @@ static bool odyssey_code_keeps_screen_alpha(uint32_t code)
  * buffer (odyssey_image_object()) and advance it. Each axis is a directed
  * half-open interval: increasing endpoints visit [first, last), while
  * decreasing endpoints visit [first - 1, last]. Payload advances along X,
- * then along Y.
+ * then along Y. True when the pixel completed a row of the box.
  */
-static void odyssey_image_put(SGIOdysseyState *s, uint32_t rgba,
+static bool odyssey_image_put(SGIOdysseyState *s, uint32_t rgba,
                               bool is_index, bool preserve_alpha)
 {
+    bool row_end = false;
     bool x_decreasing = s->image_x2 < s->image_x1;
     bool y_decreasing = s->image_y2 < s->image_y1;
     bool y_finished = y_decreasing ?
@@ -5473,7 +5474,7 @@ static void odyssey_image_put(SGIOdysseyState *s, uint32_t rgba,
 
     if (s->image_x2 == s->image_x1 || s->image_y2 == s->image_y1 ||
         y_finished) {
-        return;
+        return false;
     }
     obj = odyssey_image_object(s);
     if (obj >= 0) {
@@ -5501,6 +5502,7 @@ static void odyssey_image_put(SGIOdysseyState *s, uint32_t rgba,
     if ((x_decreasing && s->image_cur_x == s->image_x2) ||
         (!x_decreasing && s->image_cur_x == s->image_x2 - 1)) {
         s->image_cur_x = x_decreasing ? s->image_x1 - 1 : s->image_x1;
+        row_end = true;
         if (y_decreasing) {
             s->image_cur_y = s->image_cur_y == s->image_y2 ? UINT32_MAX :
                              s->image_cur_y - 1;
@@ -5513,21 +5515,25 @@ static void odyssey_image_put(SGIOdysseyState *s, uint32_t rgba,
         s->image_cur_x++;
     }
     sgi_scanout_invalidate_all(&s->scanout);
+    return row_end;
 }
 
 /*
  * One byte-stream texel of the open image at the raster cursor, bounded by
- * the header's group length in pixels.
+ * the header's group length in pixels. True when it completed a row.
  */
-static void odyssey_image_texel(SGIOdysseyState *s, uint32_t rgba,
+static bool odyssey_image_texel(SGIOdysseyState *s, uint32_t rgba,
                                 bool is_index, bool preserve_alpha)
 {
+    bool row_end;
+
     if (s->image_group_len &&
         s->image_group_painted >= s->image_group_len) {
-        return;
+        return false;
     }
-    odyssey_image_put(s, rgba, is_index, preserve_alpha);
+    row_end = odyssey_image_put(s, rgba, is_index, preserve_alpha);
     s->image_group_painted++;
+    return row_end;
 }
 
 static uint32_t odyssey_unorm16_to_8(uint32_t v)
@@ -5937,12 +5943,25 @@ static bool odyssey_image_pairing_supported(uint32_t code, uint32_t fmt)
 }
 
 /*
+ * The library pads each row to a word, so the rest of the burst word after a
+ * row-ending pixel is dropped; the board's own handling is inferred.
+ */
+static bool odyssey_row_end_pads_word(uint32_t code)
+{
+    unsigned bytes = odyssey_pixel_bytes(code);
+
+    return odyssey_texel12_components(code) ||
+           ((bytes == 2 || bytes == 3) && code != ODSY_IMAGE_CODE_CI16);
+}
+
+/*
  * One data word of a pixel burst, laid out by the transfer header's format
  * code (ODSY_IMAGE_CODE_*): its bytes join a stream that yields a pixel
  * every odyssey_pixel_bytes() bytes, so a three-byte pixel may span two
  * words. A bounded group's trailing padding (past image_group_len) is
- * dropped with any partial pixel, so the raster position stays exact. A
- * header with a code this model does not know paints nothing and is
+ * dropped with any partial pixel, so the raster position stays exact, and so
+ * is the rest of a word after a row-ending pixel (odyssey_row_end_pads_word()).
+ * A header with a code this model does not know paints nothing and is
  * reported once: the burst tag does not say how a pixel is laid out.
  */
 static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
@@ -5966,6 +5985,7 @@ static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
         unsigned comps = odyssey_texel12_components(code);
         uint16_t halves[4];
         unsigned held = MIN(s->image_nbytes, 2u);
+        bool row_end;
 
         if (s->image_group_len &&
             s->image_group_painted >= s->image_group_len) {
@@ -5984,9 +6004,14 @@ static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
             for (i = 0; i < comps; i++) {
                 stw_be_p(px + 2 * i, halves[i]);
             }
-            odyssey_image_put(s, odyssey_decode_texel12(code, px, true),
-                              false, true);
+            row_end = odyssey_image_put(s, odyssey_decode_texel12(code, px,
+                                                                   true),
+                                        false, true);
             held = 0;
+            if (row_end && odyssey_row_end_pads_word(code)) {
+                /* The rest of the word is row-end padding. */
+                break;
+            }
         }
         s->image_bytes = held > 1 ? (uint32_t)halves[0] << 16 | halves[1] :
                          held ? halves[0] : 0;
@@ -6022,8 +6047,12 @@ static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
         /* The pixel's bytes, first byte highest, at the start of px[]. */
         stl_be_p(px, s->image_bytes << (8 * (4 - n)));
         odyssey_decode_pixel(s, code, px, &rgba);
-        odyssey_image_texel(s, rgba, odyssey_code_is_index(code),
-                            odyssey_code_keeps_screen_alpha(code));
+        if (odyssey_image_texel(s, rgba, odyssey_code_is_index(code),
+                                odyssey_code_keeps_screen_alpha(code)) &&
+            odyssey_row_end_pads_word(code)) {
+            s->image_bytes = 0;
+            break;
+        }
     }
 }
 
