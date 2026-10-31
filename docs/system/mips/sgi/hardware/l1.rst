@@ -1550,15 +1550,13 @@ What the model chooses, and the limit of each choice:
     nothing. Type and timing bytes stay zero and are not interpreted. The
     population of a real Cx-brick is unknown. Byte 99 marks the board.
 - Board ``n``'s window answers the identity requests with the brick's slot
-  plus ``n``, and the serial request with the brick's serial and ``.n``,
-  because the stock PROM refuses two modules at one slot and tells hubs
-  apart by the serial. The router board records datasheet specifies the
-  real answer, which is the serial of the board record the port names; the
-  model does not implement it yet and logs the gap as unimplemented. This
-  is an approximation.
-- The datasheet gives a Cx-brick the type letter ``6``, but the model does
-  not implement it yet: ``0x0003`` answers minus 104 until
-  ``brick-type-code`` supplies one, and ``brick`` prints the type as ``?``.
+  plus ``n``, because the stock PROM refuses two modules at one slot. Request
+  ``0x0003`` returns the personality letter ``6`` (``brick-type-code``
+  overrides it), and ``brick`` prints it. Request ``0x0004`` returns the
+  serial of the board record the port names: node ``n``'s synthetic serial
+  on link ``n`` and the ``ROUTER`` record's on the router window, which is
+  also the brick's serial; the ``brick-serial`` property does not reach the
+  guest. The serials are the model's synthetic ones.
 - Request ``0x0005`` answers the firmware revision ``revision-*``
   configures, 1.44.0 in the Origin 3900 catalogue entries as on the other
   brick profiles, and minus 104 without one. ``version`` prints it as

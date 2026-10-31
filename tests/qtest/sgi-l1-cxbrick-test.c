@@ -307,39 +307,55 @@ static void test_identity(void)
     }
     rig_stop(&rig);
 
-    /* Without a supplied letter the brick has no type to give. */
+    /* Without a supplied letter the brick gives personality 6's, '6'. */
     rig_start(&rig, NAMED, 0x5, false, "");
     length = rpc(&rig, 2, LOCAL_GENERAL, 3, NULL, 0, 0, reply);
-    g_assert_cmpuint(length, ==, 6);
-    expect_code(reply, length, -104);
+    g_assert_cmpuint(length, ==, 16);
+    expect_code(reply, length, 0);
+    g_assert_cmphex(ldl_be_p(reply + 7), ==, (1 << 6) | 9);
+    g_assert_cmphex(ldl_be_p(reply + 12), ==, 0x36);
     rig_stop(&rig);
 
-    /* An unnamed brick is ---c--, with the guide's unknown-type letter. */
+    /* An unnamed brick is ---c--, and its type is '6'. */
     rig_start(&rig, "brick-type=cxbrick", 0x3, false, "");
     expect_command(&rig, 1, "config", "0: ---c--\n");
     expect_command(&rig, 0, "brick",
-                   "rack: ---, slot: --, partition: 0, type: ?, "
+                   "rack: ---, slot: --, partition: 0, type: 6, "
                    "source: EEPROM\n");
     rig_stop(&rig);
 }
 
 /*
- * Each board's serial request is answered with the brick's serial and the
- * board number, so a PROM that tells nodes apart by that serial finds four
- * (an approximation; no source says what a Cx-brick returns).
+ * Router board records datasheet "Other answers from the same handler": on
+ * letter 6 the brick-serial request (0x0004) answers per position, the
+ * board serial of NODE n on node link n. The brick-serial property is not
+ * what a node link returns. The serials are the model's synthetic ones,
+ * "EMUN" and the board's index, identity-index * 4 + n.
  */
 static void test_board_serials(void)
 {
+    static const char *const first[] = { "EMUN00", "EMUN01", "EMUN02",
+                                         "EMUN03" };
+    static const char *const third[] = { "EMUN08", "EMUN09", "EMUN10",
+                                         "EMUN11" };
     CxRig rig;
     uint8_t reply[131];
 
     rig_start(&rig, NAMED ",brick-serial=CXTEST", 0xf, false, "");
     for (unsigned board = 0; board < 4; board++) {
-        g_autofree char *expected = g_strdup_printf("CXTEST.%u", board);
         size_t length = rpc(&rig, board, LOCAL_GENERAL, 4, NULL, 0, 0, reply);
 
         expect_code(reply, length, 0);
-        g_assert_cmpstr((const char *)reply + 7, ==, expected);
+        g_assert_cmpstr((const char *)reply + 7, ==, first[board]);
+    }
+    rig_stop(&rig);
+
+    rig_start(&rig, NAMED ",identity-index=2", 0xf, false, "");
+    for (unsigned board = 0; board < 4; board++) {
+        size_t length = rpc(&rig, board, LOCAL_GENERAL, 4, NULL, 0, 0, reply);
+
+        expect_code(reply, length, 0);
+        g_assert_cmpstr((const char *)reply + 7, ==, third[board]);
     }
     rig_stop(&rig);
 }
@@ -764,7 +780,7 @@ static void test_router_window_record(void)
 
     window = qtest_init("-M none -cpu R10000 -S "
                         "-device sgi-l1,id=l1c,brick-type=router,"
-                        "router-board=cxbrick "
+                        "router-board=cxbrick,brick-serial=CXTEST "
                         "-device sgi-l1-uart,id=l1u0,controller=l1c");
     qtest_sysbus_mmio_map(window, "/machine/peripheral/l1u0", 0, BASE);
     for (unsigned area = 1; area <= 2; area++) {
@@ -783,6 +799,19 @@ static void test_router_window_record(void)
             g_assert_true(has_text(bytes, "NOTOBSERVED0"));
             g_assert_true(has_text(bytes, "\xc2" "00"));
         }
+    }
+    /*
+     * The router port's brick-serial request is the ROUTER record's serial,
+     * not a configured brick serial (datasheet: on letter 6 the brick serial
+     * is the ROUTER record's).
+     */
+    {
+        uint8_t request[8] = { 0x10, 0x0f, 0xff, 0xf0, 0x06, 0, 4, 0 };
+
+        sgi_l1_test_send(window, BASE, request, sizeof(request), false);
+        length = sgi_l1_test_receive(window, BASE, reply, 131);
+        expect_code(reply, length, 0);
+        g_assert_cmpstr((const char *)reply + 7, ==, "EMUR00");
     }
     for (unsigned i = 0; i < G_N_ELEMENTS(absent); i++) {
         window_read(window, absent[i].component, absent[i].area, 0, reply,
