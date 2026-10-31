@@ -1949,35 +1949,6 @@
             'target-controller-index': 'uint32' } }
 
 ##
-# @SGIModelIp53NormalSelection:
-#
-# The resolved launch an IP53 runtime profile once singled out as its
-# normal one.  QEMU no longer reads it: every population the topology
-# accepts runs the profile.
-#
-# @cpus: the -smp count the launch requests
-#
-# @fitted-cpus: how many processor slots the node fits
-#
-# @memory-mib: the memory size the launch requests, in MiB
-#
-# @clock-hz: every fitted processor's clock
-#
-# @cache-mib: every fitted processor's secondary cache size
-#
-# @mode-word: every fitted processor's R16000 reset mode word
-#
-# Since: 11.2
-##
-{ 'struct': 'SGIModelIp53NormalSelection',
-  'data': { 'cpus': 'uint32',
-            'fitted-cpus': 'uint32',
-            'memory-mib': 'uint64',
-            'clock-hz': 'uint64',
-            'cache-mib': 'uint32',
-            'mode-word': 'uint32' } }
-
-##
 # @SGIModelIp53NodeBoard:
 #
 # One node-board identity an IP53 profile's L1 reports for a node.
@@ -2007,9 +1978,6 @@
 # @pic-profile: the compatibility profile every PIC host of the
 #     topology selects
 #
-# @normal-selection: the launch the profile once singled out; QEMU
-#     no longer reads it
-#
 # @l1-irouter-compat: whether the node's L1 answers the
 #     router-compatible command set and reports a first port speed
 #
@@ -2021,7 +1989,6 @@
 ##
 { 'struct': 'SGIModelIp53Runtime',
   'data': { 'pic-profile': 'SGIModelPicCompatibilityProfile',
-            '*normal-selection': 'SGIModelIp53NormalSelection',
             'l1-irouter-compat': 'bool',
             '*node-boards': ['SGIModelIp53NodeBoard'] } }
 

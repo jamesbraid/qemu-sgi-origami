@@ -30543,14 +30543,6 @@
             "revision": "-D"
           }
         ],
-        "normal-selection": {
-          "cache-mib": 8,
-          "clock-hz": 800000000,
-          "cpus": 4,
-          "fitted-cpus": 4,
-          "memory-mib": 8192,
-          "mode-word": 10268549
-        },
         "pic-profile": "pic-rev3-bedrock-experimental"
       },
       "junk-uart": -1,
@@ -30832,14 +30824,6 @@
             "revision": "-C"
           }
         ],
-        "normal-selection": {
-          "cache-mib": 16,
-          "clock-hz": 1000000000,
-          "cpus": 4,
-          "fitted-cpus": 4,
-          "memory-mib": 8192,
-          "mode-word": 15577989
-        },
         "pic-profile": "pic-rev3-bedrock-experimental"
       },
       "junk-uart": -1,
@@ -31085,14 +31069,6 @@
             "revision": "-C"
           }
         ],
-        "normal-selection": {
-          "cache-mib": 16,
-          "clock-hz": 1000000000,
-          "cpus": 4,
-          "fitted-cpus": 4,
-          "memory-mib": 8192,
-          "mode-word": 15577989
-        },
         "pic-profile": "pic-rev3-bedrock-experimental"
       },
       "junk-uart": -1,
@@ -31331,14 +31307,6 @@
       },
       "ip53-runtime": {
         "l1-irouter-compat": true,
-        "normal-selection": {
-          "cache-mib": 16,
-          "clock-hz": 1000000000,
-          "cpus": 4,
-          "fitted-cpus": 4,
-          "memory-mib": 8192,
-          "mode-word": 15577989
-        },
         "pic-profile": "pic-rev3-bedrock-experimental"
       },
       "junk-uart": -1,
@@ -41164,14 +41132,6 @@
             "revision": "-C"
           }
         ],
-        "normal-selection": {
-          "cache-mib": 16,
-          "clock-hz": 1000000000,
-          "cpus": 4,
-          "fitted-cpus": 4,
-          "memory-mib": 2048,
-          "mode-word": 15577989
-        },
         "pic-profile": "pic-rev3-bedrock-experimental"
       },
       "junk-uart": -1,
@@ -41417,14 +41377,6 @@
             "revision": "-C"
           }
         ],
-        "normal-selection": {
-          "cache-mib": 8,
-          "clock-hz": 700000000,
-          "cpus": 4,
-          "fitted-cpus": 4,
-          "memory-mib": 2048,
-          "mode-word": 10268037
-        },
         "pic-profile": "pic-rev3-bedrock-experimental"
       },
       "junk-uart": -1,
@@ -43007,14 +42959,6 @@
             "revision": "A"
           }
         ],
-        "normal-selection": {
-          "cache-mib": 16,
-          "clock-hz": 1000000000,
-          "cpus": 1,
-          "fitted-cpus": 4,
-          "memory-mib": 4096,
-          "mode-word": 15577989
-        },
         "pic-profile": "pic-rev3-bedrock-tezro-experimental"
       },
       "junk-uart": -1,
@@ -43262,14 +43206,6 @@
       },
       "ip53-runtime": {
         "l1-irouter-compat": true,
-        "normal-selection": {
-          "cache-mib": 4,
-          "clock-hz": 700000000,
-          "cpus": 1,
-          "fitted-cpus": 4,
-          "memory-mib": 4096,
-          "mode-word": 10202501
-        },
         "pic-profile": "pic-rev3-bedrock-tezro-experimental"
       },
       "junk-uart": -1,
@@ -43566,14 +43502,6 @@
             "revision": "A"
           }
         ],
-        "normal-selection": {
-          "cache-mib": 16,
-          "clock-hz": 1000000000,
-          "cpus": 4,
-          "fitted-cpus": 4,
-          "memory-mib": 4096,
-          "mode-word": 15577989
-        },
         "pic-profile": "pic-rev3-bedrock-tezro-experimental"
       },
       "junk-uart": -1,
@@ -43841,14 +43769,6 @@
             "revision": "A"
           }
         ],
-        "normal-selection": {
-          "cache-mib": 16,
-          "clock-hz": 1000000000,
-          "cpus": 1,
-          "fitted-cpus": 1,
-          "memory-mib": 4096,
-          "mode-word": 15577989
-        },
         "pic-profile": "pic-rev3-bedrock-tezro-experimental"
       },
       "junk-uart": -1,
@@ -44087,14 +44007,6 @@
       },
       "ip53-runtime": {
         "l1-irouter-compat": true,
-        "normal-selection": {
-          "cache-mib": 4,
-          "clock-hz": 700000000,
-          "cpus": 1,
-          "fitted-cpus": 1,
-          "memory-mib": 4096,
-          "mode-word": 10202501
-        },
         "pic-profile": "pic-rev3-bedrock-tezro-experimental"
       },
       "junk-uart": -1,
@@ -44331,14 +44243,6 @@
       },
       "ip53-runtime": {
         "l1-irouter-compat": true,
-        "normal-selection": {
-          "cache-mib": 4,
-          "clock-hz": 700000000,
-          "cpus": 4,
-          "fitted-cpus": 4,
-          "memory-mib": 4096,
-          "mode-word": 10202501
-        },
         "pic-profile": "pic-rev3-bedrock-tezro-experimental"
       },
       "junk-uart": -1,

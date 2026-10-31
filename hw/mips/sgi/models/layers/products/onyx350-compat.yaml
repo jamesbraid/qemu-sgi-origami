@@ -79,13 +79,6 @@ layer:
         # place of comparing topology names.
         ip53_runtime:
           pic_profile: pic-rev3-bedrock-experimental
-          normal_selection:
-            cpus: 4
-            fitted_cpus: 4
-            memory_mib: 8192
-            clock_hz: 800000000
-            cache_mib: 8
-            mode_word: 0x009caf85
           l1_irouter_compat: true
           node_boards:
             - processors: 4

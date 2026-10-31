@@ -346,20 +346,6 @@
                   "enum": ["pic-rev3-bedrock-experimental", "pic-rev3-bedrock-tezro-experimental"],
                   "description": "The compatibility profile every PIC host selects once the IP53 runtime is authorized."
                 },
-                "normal_selection": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["cpus", "fitted_cpus", "memory_mib", "clock_hz", "cache_mib", "mode_word"],
-                  "description": "The launch this profile once singled out as normal. QEMU no longer reads it.",
-                  "properties": {
-                    "cpus": { "type": "integer", "minimum": 1 },
-                    "fitted_cpus": { "type": "integer", "minimum": 1 },
-                    "memory_mib": { "type": "integer", "minimum": 1 },
-                    "clock_hz": { "type": "integer", "minimum": 1 },
-                    "cache_mib": { "type": "integer", "minimum": 1 },
-                    "mode_word": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
-                  }
-                },
                 "l1_irouter_compat": { "type": "boolean" },
                 "node_boards": {
                   "type": "array",
