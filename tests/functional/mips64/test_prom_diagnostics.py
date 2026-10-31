@@ -4,7 +4,7 @@
 # factory sequence and to sash64, and judge every diagnostic against an
 # expected-failure ledger
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 Boot the IP27 PROM through its factory diagnostics, then netboot sash64
 over SLIRP and inspect the resulting console transcript. The verdict

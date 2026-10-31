@@ -1,6 +1,6 @@
 # The Origin 200 test matrix: manifest format and parser
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 The matrix manifest is a pipe-delimited table, one cell per line: `#`
 comments and blank lines are ignored, and each row's pipe-separated

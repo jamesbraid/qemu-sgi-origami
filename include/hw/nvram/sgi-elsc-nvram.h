@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The configuration NVRAM of an SGI Origin 200 or Origin 2000 module system
  * controller: one 2048-byte store on the module's management I2C bus.

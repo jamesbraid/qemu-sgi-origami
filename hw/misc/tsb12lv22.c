@@ -1,7 +1,7 @@
 /*
  * TI TSB12LV22 revision-01 standalone register model (SLLS290, July 1998).
  * PHY, ROM, bus, cycle scheduling, power transitions and DMA are unsupported.
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 #include "qemu/osdep.h"
 #include "hw/pci/pci_device.h"

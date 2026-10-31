@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * AT&T/Lucent OHCI USB controller, the two-port part SGI's I/O boards
  * carry. It is a plain pci-ohci with fixed PCI identifiers; the

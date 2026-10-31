@@ -6,7 +6,7 @@
 # confirming the IP/TCP/UDP layers processed it via netstat protocol stats,
 # and confirming eg's own received-packet counter climbed over the transfer.
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 This test exercises the transport layers eg carries and measures
 performance:

@@ -1,7 +1,7 @@
 /*
  * Standalone TI TSB12LV22 revision-01 register contract, TI SLLS290.
  * No PHY, bus, ROM, DMA engine or product profile is present.
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Run qemu-sgi-machine-init as a launcher does and check what it accepts,
  * what it refuses and what it leaves behind. All images are synthetic.
