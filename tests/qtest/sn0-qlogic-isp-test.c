@@ -156,6 +156,9 @@
 #define RING_PHYS                   0x00100000u
 #define RING_IOVA                   (0xa500000000000000ULL | RING_PHYS)
 #define RING_ENTRIES                4
+
+/* The selection timeout an adapter holds until a guest programs one. */
+#define ABSENT_TARGET_WAIT_NS       (250 * 1000 * 1000)
 #define RESP_PHYS                   0x00110000u
 #define RESP_IOVA                   (0xa500000000000000ULL | RESP_PHYS)
 #define BRIDGE_DIRECT_MAP_REG       (BRIDGE_BASE + 0x080 + REG_DATA)
@@ -594,6 +597,8 @@ static void test_a64_ring_is_word_value(const void *data)
 
     /* Publish one entry and let the adapter run it. */
     isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
+    /* The adapter answers an absent target once its default wait is over. */
+    qtest_clock_step(qts, ABSENT_TARGET_WAIT_NS);
 
     /*
      * The completion reads back through the same correction; raw, the type
@@ -961,6 +966,8 @@ static void test_a64_ring_missing_target(const void *data)
     qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
 
     isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
+    /* The adapter answers an absent target once its default wait is over. */
+    qtest_clock_step(qts, ABSENT_TARGET_WAIT_NS);
     g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
 
     qtest_memread(qts, RESP_PHYS, status, sizeof(status));
@@ -1021,6 +1028,8 @@ static void test_ring_missing_target(const void *data)
     qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
 
     isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
+    /* The adapter answers an absent target once its default wait is over. */
+    qtest_clock_step(qts, ABSENT_TARGET_WAIT_NS);
     g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
 
     qtest_memread(qts, RESP_PHYS, status, sizeof(status));
@@ -1465,6 +1474,8 @@ static void test_a_refused_status_write_raises_no_interrupt(const void *data)
     qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
 
     isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
+    /* The adapter answers an absent target once its default wait is over. */
+    qtest_clock_step(qts, ABSENT_TARGET_WAIT_NS);
 
     /*
      * The request itself was readable and is consumed; only its completion is
@@ -1520,6 +1531,8 @@ static void test_status_pairs_survive_word_reversal(const void *data)
     qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
 
     isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
+    /* The adapter answers an absent target once its default wait is over. */
+    qtest_clock_step(qts, ABSENT_TARGET_WAIT_NS);
     g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
 
     qtest_memread(qts, RESP_PHYS, status, sizeof(status));

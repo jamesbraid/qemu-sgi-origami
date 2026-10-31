@@ -1343,6 +1343,9 @@ static void test_submission_while_locked_is_ignored(const void *data)
 /* Both disks sit at the same target number, one on each channel. */
 #define DISK_TARGET             1
 #define EMPTY_TARGET            5
+
+/* The selection timeout an adapter holds until a guest programs one. */
+#define EMPTY_TARGET_WAIT_NS    (250 * 1000 * 1000)
 /* A second empty target, so the answer is not one target number's. */
 #define ABSENT_TARGET           6
 
@@ -1823,6 +1826,7 @@ static void test_response_queue_high_word_participates(const void *data)
 
     /* The entry was consumed, so the quiet ring below is the refusal. */
     g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 1);
+    qtest_clock_step(qts, EMPTY_TARGET_WAIT_NS);
 
     qtest_memread(qts, RESP_PHYS, slot0, sizeof(slot0));
     g_assert_cmpmem(slot0, sizeof(slot0), sentinel, sizeof(sentinel));
@@ -2118,6 +2122,7 @@ static void test_cursor_roles_are_distinct(const void *data)
     }
 
     g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 3);
+    qtest_clock_step(qts, EMPTY_TARGET_WAIT_NS);
     g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 3);
 
     /* A partial release: the read still answers the producer. */

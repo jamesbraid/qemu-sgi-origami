@@ -297,6 +297,16 @@ enum {
 #define ISP_STATUS_FLAG_TIMEOUT           0x0040
 
 /*
+ * The unit of the set-selection-timeout value in mailbox 1, and what an
+ * adapter waits before a guest programs one. Milliseconds is Linux's
+ * qla1280 convention; docs/datasheets/isp1040.md in the origami repository
+ * is where the unit is recorded, and this constant is the one place that
+ * changes if the datasheet settles on another.
+ */
+#define ISP_SELECTION_TIMEOUT_UNIT_NS   (1000 * 1000)
+#define ISP_SELECTION_TIMEOUT_DEFAULT   250
+
+/*
  * A completion held for response-ring room, a case only a model with no
  * bus latency reaches; the SCSIRequest is already finished.
  */
@@ -311,6 +321,19 @@ typedef struct QLogicISPPendingStatus {
     uint8_t sense[ISP_STATUS_SENSE_MAX];
     int32_t sense_len;
 } QLogicISPPendingStatus;
+
+/*
+ * A command waiting out a selection timeout, as it travels in a migration
+ * stream. The deadline is on the virtual clock, which the stream carries
+ * across, so it stays an absolute time.
+ */
+typedef struct QLogicISPSelectionWire {
+    uint32_t handle;
+    uint8_t channel;
+    uint8_t target;
+    uint8_t lun;
+    int64_t deadline;
+} QLogicISPSelectionWire;
 
 /*
  * The most completions the model can hold: one per command of the budget
@@ -364,6 +387,7 @@ typedef struct QLogicISPChannel {
     QLogicISPState *dev;
     uint8_t index;
     uint16_t reset_delay;   /* What this bus waits after a reset. */
+    uint16_t select_timeout;    /* Selection timeout, in the unit above. */
 } QLogicISPChannel;
 
 struct QLogicISPState {
@@ -411,6 +435,14 @@ struct QLogicISPState {
     QLogicISPPendingStatus held_wire[QLOGIC_ISP_HELD_MAX];
 
     /*
+     * Commands waiting out a selection timeout, in the same counted-array
+     * form and under the same bound: each is outstanding, and the budget
+     * caps how many can be.
+     */
+    uint32_t selection_count;
+    QLogicISPSelectionWire selection_wire[QLOGIC_ISP_HELD_MAX];
+
+    /*
      * A command finishing on its own frees one of the announced budget's
      * slots, and the ring may be stalled on it. Resuming here rather than
      * from the completion callback keeps the consume loop out of the SCSI
@@ -456,6 +488,13 @@ struct QLogicISPRequest {
     uint8_t channel;
     uint8_t target;
     uint8_t lun;
+    /*
+     * A command to an absent target has no SCSIRequest: sreq is NULL and
+     * this timer posts its completion once the selection timeout has run
+     * out. The deadline is on the virtual clock, in nanoseconds.
+     */
+    QEMUTimer *timer;
+    int64_t deadline;
     QTAILQ_ENTRY(QLogicISPRequest) next;
 };
 
@@ -482,6 +521,26 @@ static void qlogic_isp_drop_pending_status(QLogicISPState *s)
     while ((pending = QTAILQ_FIRST(&s->pending_status)) != NULL) {
         QTAILQ_REMOVE(&s->pending_status, pending, next);
         g_free(pending);
+    }
+}
+
+/* Frees a request that never became a SCSIRequest, timer included. */
+static void qlogic_isp_free_selection(QLogicISPRequest *req)
+{
+    timer_free(req->timer);
+    QTAILQ_REMOVE(&req->dev->requests, req, next);
+    g_free(req);
+}
+
+/* Discards every command still waiting out a selection timeout. */
+static void qlogic_isp_drop_selections(QLogicISPState *s)
+{
+    QLogicISPRequest *req, *next;
+
+    QTAILQ_FOREACH_SAFE(req, &s->requests, next, next) {
+        if (req->sreq == NULL) {
+            qlogic_isp_free_selection(req);
+        }
     }
 }
 
@@ -520,7 +579,11 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     /* Every channel setting is reprogrammed by the attach that follows. */
     for (i = 0; i < QLOGIC_ISP_MAX_CHANNELS; i++) {
         s->chan[i].reset_delay = 0;
+        s->chan[i].select_timeout = ISP_SELECTION_TIMEOUT_DEFAULT;
     }
+
+    /* The reset takes the adapter's pending selections with it. */
+    qlogic_isp_drop_selections(s);
 
     /* Zeroed so a stale ring cannot be acted on. */
     s->rqst_base = 0;
@@ -687,6 +750,12 @@ static uint16_t qlogic_isp_ram_dump(QLogicISPState *s)
     return ISP_MBOX_COMPLETE;
 }
 
+static void qlogic_isp_post_status(QLogicISPState *s, uint32_t handle,
+                                   uint16_t scsi_status, uint16_t completion,
+                                   uint16_t state_flags, uint16_t status_flags,
+                                   uint32_t resid, const uint8_t *sense,
+                                   int sense_len);
+
 /*
  * Every outstanding request the selector names, retired with the given
  * completion; -1 matches any target, LUN or handle. Cancelling one waits
@@ -716,6 +785,20 @@ static unsigned qlogic_isp_retire(QLogicISPState *s, int channel, int target,
             }
             if (handle >= 0 && req->handle != (uint32_t)handle) {
                 continue;
+            }
+
+            /*
+             * Nothing to cancel behind a command still waiting out its
+             * selection timeout: the host is owed the entry now, in place
+             * of the timeout's own.
+             */
+            if (req->sreq == NULL) {
+                qlogic_isp_post_status(s, req->handle, 0, completion,
+                                       0, 0, 0, NULL, 0);
+                qlogic_isp_free_selection(req);
+                retired++;
+                again = true;
+                break;
             }
 
             /* Read back by the cancel callback, which posts the entry. */
@@ -934,12 +1017,29 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
     case ISP_MBOX_CMD_SET_ASYNC_DATA_SETUP:
     case ISP_MBOX_CMD_SET_ACTIVE_NEGATION:
     case ISP_MBOX_CMD_SET_TAG_AGE_LIMIT:
-    case ISP_MBOX_CMD_SET_SELECTION_TIMEOUT:
     case ISP_MBOX_CMD_SET_INITIATOR_ID:
     case ISP_MBOX_CMD_SET_TARGET_PARAMETERS:
     case ISP_MBOX_CMD_SET_DEVICE_QUEUE:
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
+
+    /*
+     * One value, in mailbox 1. Which bus it is for is not carried anywhere
+     * the datasheet records, so it is taken for every bus of the adapter;
+     * a guest that programs each bus in turn still ends up with its last
+     * value, which is the same on both buses in every driver read.
+     */
+    case ISP_MBOX_CMD_SET_SELECTION_TIMEOUT: {
+        const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
+        unsigned int i;
+
+        for (i = 0; i < info->nchannels; i++) {
+            s->chan[i].select_timeout = s->mailbox[1];
+        }
+        trace_qlogic_isp_selection_timeout(s->mailbox[1]);
+        s->mailbox[0] = ISP_MBOX_COMPLETE;
+        break;
+    }
 
     /* IRIX's bus-reset delay setter: mailbox 1 and 2 are per channel. */
     case ISP_MBOX_CMD_SET_RESET_DELAY_PARAMS: {
@@ -1825,6 +1925,63 @@ static uint64_t qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
 }
 
 /*
+ * The selection of an absent target ends in the timeout bit, so the
+ * answer is the adapter giving up: it can only come once the guest's
+ * selection timeout has run out on the virtual clock, not when the entry
+ * is read. The command counts as outstanding until then, which is what
+ * keeps the request ring's budget honest while it waits.
+ */
+static void qlogic_isp_selection_expired(void *opaque)
+{
+    QLogicISPRequest *req = opaque;
+    QLogicISPState *s = req->dev;
+    const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
+    uint32_t handle = req->handle;
+
+    qlogic_isp_free_selection(req);
+    qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
+                           ISP_STATE_FLAG_GOT_BUS,
+                           info->missing_target_timeout ?
+                           ISP_STATUS_FLAG_TIMEOUT : 0,
+                           0, NULL, 0);
+    /* A slot of the announced budget is free again. */
+    replay_bh_schedule_event(s->resume_bh);
+}
+
+static void qlogic_isp_missing_target(QLogicISPState *s, uint32_t handle,
+                                      uint8_t channel, uint8_t target,
+                                      uint8_t lun)
+{
+    const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
+    uint16_t timeout = s->chan[channel].select_timeout;
+    QLogicISPRequest *req;
+
+    /* A guest that programmed no wait gets the answer at once. */
+    if (timeout == 0) {
+        qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
+                               ISP_STATE_FLAG_GOT_BUS,
+                               info->missing_target_timeout ?
+                               ISP_STATUS_FLAG_TIMEOUT : 0,
+                               0, NULL, 0);
+        return;
+    }
+
+    req = g_new0(QLogicISPRequest, 1);
+    req->dev = s;
+    req->handle = handle;
+    req->channel = channel;
+    req->target = target;
+    req->lun = lun;
+    req->deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                    (int64_t)timeout * ISP_SELECTION_TIMEOUT_UNIT_NS;
+    req->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, qlogic_isp_selection_expired,
+                              req);
+    QTAILQ_INSERT_TAIL(&s->requests, req, next);
+    timer_mod(req->timer, req->deadline);
+    trace_qlogic_isp_selection_wait(handle, channel, target, lun, timeout);
+}
+
+/*
  * Returns false when the fabric refused the CDB read: the walk stops on
  * the entry and nothing is posted -- the part documents no status for a
  * refused transfer, and the Bridge reports it on its own error path.
@@ -1879,11 +2036,7 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
          * every absent target is logged as a hard error. Both parts set
          * it; the per-part field keeps that a stated choice.
          */
-        qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
-                               ISP_STATE_FLAG_GOT_BUS,
-                               info->missing_target_timeout ?
-                               ISP_STATUS_FLAG_TIMEOUT : 0,
-                               0, NULL, 0);
+        qlogic_isp_missing_target(s, handle, channel, target, lun);
         return true;
     }
 
@@ -2003,11 +2156,7 @@ static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     sdev = scsi_device_find(&s->chan[channel].bus, channel, target, lun);
     if (!sdev) {
         /* The same missing-target answer as the 32-bit path. */
-        qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
-                               ISP_STATE_FLAG_GOT_BUS,
-                               info->missing_target_timeout ?
-                               ISP_STATUS_FLAG_TIMEOUT : 0,
-                               0, NULL, 0);
+        qlogic_isp_missing_target(s, handle, channel, target, lun);
         return true;
     }
 
@@ -2498,7 +2647,8 @@ void qlogic_isp_handle_legacy_cmdline(DeviceState *dev)
 /*
  * In-flight requests need no walk: unrealize purges each child device's
  * queue first and each cancellation frees our wrapper. Held completions
- * are the one allocation not tied to a SCSIRequest.
+ * and commands waiting out a selection timeout are the allocations not
+ * tied to a SCSIRequest.
  */
 static void qlogic_isp_exit(PCIDevice *dev)
 {
@@ -2506,6 +2656,7 @@ static void qlogic_isp_exit(PCIDevice *dev)
 
     qemu_bh_delete(s->resume_bh);
     qlogic_isp_drop_pending_status(s);
+    qlogic_isp_drop_selections(s);
 }
 
 /*
@@ -2535,6 +2686,136 @@ static const VMStateDescription vmstate_qlogic_isp_isp12160 = {
 };
 
 /* One completion the guest has not been given room for. */
+static bool qlogic_isp_selection_state_needed(void *opaque)
+{
+    QLogicISPState *s = opaque;
+    QLogicISPRequest *req;
+    unsigned int i;
+
+    for (i = 0; i < QLOGIC_ISP_MAX_CHANNELS; i++) {
+        if (s->chan[i].select_timeout != ISP_SELECTION_TIMEOUT_DEFAULT) {
+            return true;
+        }
+    }
+    QTAILQ_FOREACH(req, &s->requests, next) {
+        if (req->sreq == NULL) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Flatten the waiting commands into the array the stream carries. */
+static bool qlogic_isp_selection_pre_save(void *opaque, Error **errp)
+{
+    QLogicISPState *s = opaque;
+    QLogicISPRequest *req;
+
+    s->selection_count = 0;
+    QTAILQ_FOREACH(req, &s->requests, next) {
+        QLogicISPSelectionWire *wire;
+
+        if (req->sreq != NULL) {
+            continue;
+        }
+        /* Outstanding commands are capped by the announced budget. */
+        assert(s->selection_count < QLOGIC_ISP_HELD_MAX);
+        wire = &s->selection_wire[s->selection_count++];
+        wire->handle = req->handle;
+        wire->channel = req->channel;
+        wire->target = req->target;
+        wire->lun = req->lun;
+        wire->deadline = req->deadline;
+    }
+    return true;
+}
+
+/* Checked before the array beside it is read, as the held count is. */
+static bool qlogic_isp_selection_count_valid(void *opaque, int version_id)
+{
+    QLogicISPState *s = opaque;
+
+    return s->selection_count < QLOGIC_ISP_HELD_MAX;
+}
+
+/*
+ * Rearm the waiting commands. A deadline already past fires on the next
+ * clock check, which is when the source would have answered.
+ */
+static bool qlogic_isp_selection_post_load(void *opaque, int version_id,
+                                           Error **errp)
+{
+    QLogicISPState *s = opaque;
+    uint32_t i;
+
+    for (i = 0; i < s->selection_count; i++) {
+        const QLogicISPSelectionWire *wire = &s->selection_wire[i];
+        QLogicISPRequest *req;
+
+        if (wire->channel >= QLOGIC_ISP_GET_CLASS(s)->info->nchannels) {
+            error_setg(errp, "qlogic-isp: waiting command on channel %u",
+                       wire->channel);
+            return false;
+        }
+        req = g_new0(QLogicISPRequest, 1);
+        req->dev = s;
+        req->handle = wire->handle;
+        req->channel = wire->channel;
+        req->target = wire->target;
+        req->lun = wire->lun;
+        req->deadline = wire->deadline;
+        req->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                  qlogic_isp_selection_expired, req);
+        QTAILQ_INSERT_TAIL(&s->requests, req, next);
+        timer_mod(req->timer, req->deadline);
+    }
+
+    memset(s->selection_wire, 0,
+           s->selection_count * sizeof(s->selection_wire[0]));
+    s->selection_count = 0;
+    return true;
+}
+
+static const VMStateDescription vmstate_qlogic_isp_selection_wire = {
+    .name = "qlogic-isp/selection-wire",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(handle, QLogicISPSelectionWire),
+        VMSTATE_UINT8(channel, QLogicISPSelectionWire),
+        VMSTATE_UINT8(target, QLogicISPSelectionWire),
+        VMSTATE_UINT8(lun, QLogicISPSelectionWire),
+        VMSTATE_INT64(deadline, QLogicISPSelectionWire),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * The programmed selection timeout and the commands waiting on it. Carried
+ * only when either differs from a freshly reset adapter, so a stream from
+ * a guest that never touched either stays what it was.
+ */
+static const VMStateDescription vmstate_qlogic_isp_selection = {
+    .name = "qlogic-isp/selection",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = qlogic_isp_selection_state_needed,
+    .pre_save_errp = qlogic_isp_selection_pre_save,
+    .post_load_errp = qlogic_isp_selection_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT16(chan[0].select_timeout, QLogicISPState),
+        VMSTATE_UINT16(chan[1].select_timeout, QLogicISPState),
+        VMSTATE_UINT32(selection_count, QLogicISPState),
+        VMSTATE_VALIDATE("waiting command count within the ring rule",
+                         qlogic_isp_selection_count_valid),
+        VMSTATE_STRUCT_VARRAY_UINT32(selection_wire, QLogicISPState,
+                                     selection_count, 0,
+                                     vmstate_qlogic_isp_selection_wire,
+                                     QLogicISPSelectionWire),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_qlogic_isp_pending_status = {
     .name = "qlogic-isp/pending-status",
     .version_id = 1,
@@ -2573,9 +2854,16 @@ static bool qlogic_isp_pre_save(void *opaque, Error **errp)
 static bool qlogic_isp_pre_load(void *opaque, Error **errp)
 {
     QLogicISPState *s = opaque;
+    unsigned int i;
 
     qlogic_isp_drop_pending_status(s);
     s->held_count = 0;
+    qlogic_isp_drop_selections(s);
+    s->selection_count = 0;
+    /* A stream that omits the subsection means the reset value. */
+    for (i = 0; i < QLOGIC_ISP_MAX_CHANNELS; i++) {
+        s->chan[i].select_timeout = ISP_SELECTION_TIMEOUT_DEFAULT;
+    }
 
     return true;
 }
@@ -2657,6 +2945,7 @@ static const VMStateDescription vmstate_qlogic_isp = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_qlogic_isp_isp12160,
+        &vmstate_qlogic_isp_selection,
         NULL
     }
 };
