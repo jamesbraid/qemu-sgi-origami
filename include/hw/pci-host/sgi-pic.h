@@ -30,6 +30,12 @@ bool sgi_pic_enable_pxbow_experiment(SGIPICState *s, uint64_t span,
 bool sgi_pic_attach_pxbow_packet_endpoint(SGIPICState *s,
                                           MemoryRegion *packet_face,
                                           Error **errp);
+/*
+ * Put a second PIC on @owner's crossbar at link @widget, before either
+ * realizes. Its windows are then reached through that crossbar.
+ */
+bool sgi_pic_join_pxbow(SGIPICState *s, SGIPICState *owner,
+                        unsigned int widget, Error **errp);
 MemoryRegion *sgi_pic_pxbow_widget_zero(SGIPICState *s);
 SGIXbowState *sgi_pic_pxbow(SGIPICState *s);
 MemoryRegion *sgi_pic_routed_widget(SGIPICState *s, unsigned int widget,

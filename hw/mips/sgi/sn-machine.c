@@ -4745,6 +4745,24 @@ static bool sgi_machine_build_board_cables(SGIMachineState *s,
     return true;
 }
 
+/* The PIC host that carries the IO9 board and so owns widget 0, or -1. */
+static ssize_t sgi_machine_ip53_crossbar_owner(const SGIModelTopology *t,
+                                               size_t host_count)
+{
+    const SGIModelIoBoardList *board_entry;
+
+    for (board_entry = t->io_boards; board_entry;
+         board_entry = board_entry->next) {
+        const SGIModelIoBoard *board = board_entry->value;
+
+        if (board->preset == SGI_MODEL_IO_BOARD_PRESET_IO9 &&
+            board->has_pci_host_index && board->pci_host_index < host_count) {
+            return board->pci_host_index;
+        }
+    }
+    return -1;
+}
+
 static bool sgi_machine_create_pic_hosts(SGIMachineState *s,
                                          const SGIModelTopology *t,
                                          Error **errp)
@@ -4752,6 +4770,7 @@ static bool sgi_machine_create_pic_hosts(SGIMachineState *s,
     g_autofree const SGIModelPciHostBridge **hosts = NULL;
     g_autofree const SGIModelXioAttachment **attachments = NULL;
     size_t host_count, attachment_count, i;
+    ssize_t owner = -1;
 
     hosts = sgi_model_pci_host_bridge_array(t->pci_host_bridges, &host_count);
     attachments = sgi_model_xio_attachment_array(t->xio_attachments,
@@ -4759,6 +4778,9 @@ static bool sgi_machine_create_pic_hosts(SGIMachineState *s,
     s->pic_hosts = g_new0(DeviceState *, host_count);
     s->pic_links = g_new0(SGIXioLink, host_count);
     s->pic_host_count = host_count;
+    if (s->ip53_experiment_authorized) {
+        owner = sgi_machine_ip53_crossbar_owner(t, host_count);
+    }
 
     for (i = 0; i < host_count; i++) {
         const SGIModelPciHostBridge *host = hosts[i];
@@ -4814,7 +4836,15 @@ static bool sgi_machine_create_pic_hosts(SGIMachineState *s,
                                 req64_slots[0]);
             qdev_prop_set_uint8(DEVICE(pic), "req64-slots-head1",
                                 req64_slots[1]);
-            if (!sgi_pic_enable_pxbow_experiment(
+            /*
+             * A PIC on the node of the one that owns widget 0 is another
+             * link of that crossbar, joined below. It has no crossbar of
+             * its own.
+             */
+            if ((owner < 0 || (size_t)owner == i ||
+                 attachments[hosts[owner]->xio_attachment_index]->node_index
+                     != attachment->node_index) &&
+                !sgi_pic_enable_pxbow_experiment(
                     pic, SGI_BEDROCK_IO_PIO_SIZE, errp)) {
                 return false;
             }
@@ -4824,6 +4854,17 @@ static bool sgi_machine_create_pic_hosts(SGIMachineState *s,
             qdev_prop_set_bit(DEVICE(pic), "bedrock-interrupts", true);
         }
         s->pic_hosts[i] = DEVICE(pic);
+    }
+    for (i = 0; owner >= 0 && i < host_count; i++) {
+        SGIPICState *pic = SGI_PIC(s->pic_hosts[i]);
+        const SGIModelXioAttachment *attachment =
+            attachments[hosts[i]->xio_attachment_index];
+
+        if (!sgi_pic_pxbow(pic) &&
+            !sgi_pic_join_pxbow(pic, SGI_PIC(s->pic_hosts[owner]),
+                                attachment->widget, errp)) {
+            return false;
+        }
     }
     return true;
 }
@@ -5031,7 +5072,7 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
         sgi_xio_link_init(&s->pic_links[i], OBJECT(s), link_name,
                           OBJECT(bedrock_io), 0, OBJECT(pic), 0);
         if (!sgi_xio_link_connect(&s->pic_links[i], errp) ||
-            (s->ip53_experiment_authorized &&
+            (sgi_pic_pxbow(pic) &&
              !sgi_pic_attach_pxbow_packet_endpoint(
                  pic, sgi_xio_port_packet_face(OBJECT(bedrock_io), 0),
                  errp)) ||
@@ -9235,11 +9276,19 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 error_setg(errp, "IP53 PXBOW composition has no PIC host");
                 return false;
             }
-            pxbow_revision = sgi_pic_pxbow_revision(
-                SGI_PIC(s->pic_hosts[0]));
-            for (i = 1; i < s->pic_host_count; i++) {
-                if (sgi_pic_pxbow_revision(
-                        SGI_PIC(s->pic_hosts[i])) != pxbow_revision) {
+            bool seen = false;
+
+            /* A PIC on another PIC's crossbar has none of its own. */
+            for (i = 0; i < s->pic_host_count; i++) {
+                SGIPICState *pic = SGI_PIC(s->pic_hosts[i]);
+
+                if (!sgi_pic_pxbow(pic)) {
+                    continue;
+                }
+                if (!seen) {
+                    pxbow_revision = sgi_pic_pxbow_revision(pic);
+                    seen = true;
+                } else if (sgi_pic_pxbow_revision(pic) != pxbow_revision) {
                     error_setg(errp, "IP53 PIC hosts have different PXBOW "
                                "revisions");
                     return false;
