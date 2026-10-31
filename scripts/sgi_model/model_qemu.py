@@ -27,6 +27,7 @@ from .registry import (
     REFERENCE_TOPOLOGIES,
 )
 from .model_validation import load_checked_system_models, discover_model_paths
+from .system_model import is_default_variant, model_variant
 
 SN_MODEL_JSON = "hw/mips/sgi/sn-model.json"
 SGI_MACHINES_JSON = "hw/mips/sgi/sgi-machines.json"
@@ -60,6 +61,32 @@ def _check_default_topology(topologies: list[dict], machine_names: dict[str, str
             f"{sorted(names)} with none named for the product; the catalogue "
             "needs an explicit default"
         )
+
+
+def _check_variant_totals(topologies: list[dict]) -> None:
+    """Require records sharing a name to accept disjoint CPU totals.
+
+    A composition's board variants all compile under its one name; QEMU
+    picks the record whose supported CPU totals contain -smp, so no total
+    may select two of them.
+    """
+    owners: dict[tuple[str, int], int] = {}
+    for index, topology in enumerate(topologies):
+        for total in {sum(population)
+                      for population in topology["supported_cpu_populations"]}:
+            other = owners.setdefault((topology["name"], total), index)
+            if other != index:
+                raise ValueError(
+                    f"topology '{topology['name']}' has two variants that "
+                    f"both accept {total} CPUs; QEMU selects a variant by "
+                    "its CPU total")
+
+
+def _model_key(path: pathlib.Path, model: dict) -> str:
+    """A resolved model's name in the manifest: its composition's, with
+    the board variant after it for a composition that declares several."""
+    variant = model_variant(model)
+    return path.stem if variant is None else f"{path.stem}/{variant}"
 
 
 def render_qemu_inputs(model_root: pathlib.Path, *,
@@ -99,14 +126,14 @@ def render_qemu_inputs(model_root: pathlib.Path, *,
         entry = compile_model(model)
         topologies.append(entry)
         machine_names[entry["name"]] = machine_name
-        source_models[path.stem] = model
+        source_models[_model_key(path, model)] = model
 
     if not topologies:
         raise ValueError(f"no model profiles for QEMU machine selection: {sorted(machines)}")
 
     product_models = {
         name: next(model for _path, model in checked
-                   if _path.stem == filename)
+                   if _path.stem == filename and is_default_variant(model))
         for name, filename in PRODUCT_MODELS.items()
     }
     reference_models = {
@@ -115,6 +142,7 @@ def render_qemu_inputs(model_root: pathlib.Path, *,
         and model["machine"].get("model_role") == "reference"
     }
     _check_default_topology(topologies, machine_names, product_models)
+    _check_variant_totals(topologies)
     check_catalogue(topologies)
     catalogue = render_catalogue_json(
         list(source_models.values()), product_models=product_models,

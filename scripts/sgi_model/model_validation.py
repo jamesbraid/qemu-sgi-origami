@@ -20,7 +20,9 @@ import jsonschema
 import yaml
 
 from .exceptions import ResolutionError
-from .system_model import contains_observed_hardware, load_system_model
+from .system_model import (
+    contains_observed_hardware, load_system_model, load_system_models,
+)
 SHARED_ASIC_KINDS = {
     "node-asic", "pci-host-bridge", "io-controller", "storage-hba",
     "flash", "rtc", "bus-controller", "system-controller",
@@ -572,9 +574,11 @@ def check(path: pathlib.Path, schema: dict, *, model: dict | None = None) -> lis
     """Return a list of problems; empty means the model is good."""
     if model is None:
         try:
-            model = load_system_model(path)
+            models = load_system_models(path)
         except ResolutionError as exc:
             return [f"resolution: {exc}"]
+        return [problem for model in models
+                for problem in check(path, schema, model=model)]
 
     if not isinstance(model, dict) or "model_version" not in model:
         return []  # not a system model
@@ -618,13 +622,7 @@ def discover_model_paths(model_root: pathlib.Path) -> list[pathlib.Path]:
     return paths
 
 
-def load_checked_system_model(path: pathlib.Path, *, model_schema: dict) -> dict:
-    """Resolve one public model and check its schema and graph structure."""
-    path = pathlib.Path(path)
-    try:
-        model = load_system_model(path)
-    except ResolutionError as exc:
-        raise ModelValidationError(path, [f"resolution: {exc}"]) from exc
+def _checked(path: pathlib.Path, model: dict, model_schema: dict) -> dict:
     if not isinstance(model, dict) or "model_version" not in model:
         raise ModelValidationError(path, ["not a system model"])
     problems = check(path, model_schema, model=model)
@@ -633,14 +631,33 @@ def load_checked_system_model(path: pathlib.Path, *, model_schema: dict) -> dict
     return model
 
 
+def load_checked_system_model(path: pathlib.Path, *, model_schema: dict,
+                              variant: str | None = None) -> dict:
+    """Resolve one public model, the named board variant or the default
+    one, and check its schema and graph structure."""
+    path = pathlib.Path(path)
+    try:
+        model = load_system_model(path, variant)
+    except ResolutionError as exc:
+        raise ModelValidationError(path, [f"resolution: {exc}"]) from exc
+    return _checked(path, model, model_schema)
+
+
 def load_checked_system_models(paths: list[pathlib.Path], *,
                                model_root: pathlib.Path) -> list[tuple[pathlib.Path, dict]]:
-    """Load the selected public models with one shared schema."""
+    """Load the selected public models with one shared schema: one entry
+    for each board variant of a composition that declares several, all
+    with that composition's path."""
     model_schema = schema(model_root)
-    models = [
-        (pathlib.Path(path), load_checked_system_model(path, model_schema=model_schema))
-        for path in paths
-    ]
+    models = []
+    for path in paths:
+        path = pathlib.Path(path)
+        try:
+            resolved = load_system_models(path)
+        except ResolutionError as exc:
+            raise ModelValidationError(path, [f"resolution: {exc}"]) from exc
+        models.extend((path, _checked(path, model, model_schema))
+                      for model in resolved)
     return models
 
 

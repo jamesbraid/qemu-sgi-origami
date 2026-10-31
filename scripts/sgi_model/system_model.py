@@ -1293,16 +1293,106 @@ def _validate_resolved_system_model(model: dict[str, Any]) -> dict[str, Any]:
     return model_composition.check_composition(model)
 
 
-def _load_system_model(
-        model_path: pathlib.Path) -> dict[str, Any]:
+_IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]*$")
+
+
+def _resolve_variants(
+        path: pathlib.Path, document: dict[str, Any]) -> list[dict[str, Any]]:
+    """Resolve a composition, once per board variant when it declares some.
+
+    A product sold with more than one board for the same machine (the
+    Tezro's one-processor and two/four-processor interface boards) is one
+    composition whose `variants` each add their own layers to the shared
+    ones. Every variant resolves to a complete model of its own and
+    compiles to its own topology record, but all of them take the
+    composition's file name as their product, which is the topology name
+    QEMU and launchers select. The emulator tells the records apart by the
+    CPU totals each accepts. Exactly one variant is the default: the one a
+    caller that names no variant gets, and the one the machine describes
+    itself from.
+    """
+    variants = document.get("variants")
+    if variants is None:
+        return [resolve_system_model(path, document)]
+    label = f"composition '{path}'"
+    if not _IDENTIFIER.match(path.stem):
+        raise ResolutionError(
+            f"{label} declares variants, so its file name must be a "
+            "topology identifier")
+    if not isinstance(variants, list) or len(variants) < 2:
+        raise ResolutionError(f"{label} variants must list at least two")
+    shared = document.get("layers", [])
+    if not isinstance(shared, list):
+        raise ResolutionError(f"{label} has an invalid layer list")
+    models = []
+    seen: set[str] = set()
+    for variant in variants:
+        if not isinstance(variant, dict):
+            raise ResolutionError(
+                f"{label} has a variant that is not a mapping")
+        unknown = sorted(set(variant) - {"id", "default", "layers"})
+        if unknown:
+            raise ResolutionError(
+                f"{label} variant has unsupported field '{unknown[0]}'")
+        ident = variant.get("id")
+        if not isinstance(ident, str) or not _IDENTIFIER.match(ident):
+            raise ResolutionError(f"{label} variant has an invalid id")
+        if ident in seen:
+            raise ResolutionError(f"{label} lists variant '{ident}' twice")
+        seen.add(ident)
+        default = variant.get("default", False)
+        if not isinstance(default, bool):
+            raise ResolutionError(
+                f"{label} variant '{ident}' default must be a boolean")
+        layers = variant.get("layers")
+        if not isinstance(layers, list) or not layers:
+            raise ResolutionError(f"{label} variant '{ident}' has no layers")
+        composition = {key: copy.deepcopy(value)
+                       for key, value in document.items() if key != "variants"}
+        composition["layers"] = list(shared) + list(layers)
+        model = resolve_system_model(path, composition)
+        model["composition"]["product"] = path.stem
+        model["composition"]["variant"] = {"id": ident, "default": default}
+        models.append(model)
+    if sum(model["composition"]["variant"]["default"] for model in models) != 1:
+        raise ResolutionError(f"{label} must mark exactly one variant default")
+    return models
+
+
+def _load_system_models(model_path: pathlib.Path) -> list[dict[str, Any]]:
     document = _read_yaml(model_path, "model")
     if "configuration_version" not in document:
         raise ResolutionError("system model input must be a layered composition")
-    model = resolve_system_model(model_path, document)
-    return _validate_resolved_system_model(model)
+    return [_validate_resolved_system_model(model)
+            for model in _resolve_variants(model_path, document)]
 
 
-def load_system_model(path: str | pathlib.Path) -> dict[str, Any]:
-    """Resolve and validate a layered system-model composition."""
-    model_path = pathlib.Path(path).resolve()
-    return _load_system_model(model_path)
+def load_system_models(path: str | pathlib.Path) -> list[dict[str, Any]]:
+    """Resolve and validate every variant of a layered composition, or its
+    one model when it declares no variants."""
+    return _load_system_models(pathlib.Path(path).resolve())
+
+
+def model_variant(model: dict[str, Any]) -> str | None:
+    """The board variant a resolved model is, or None for a composition
+    that declares no variants."""
+    variant = model.get("composition", {}).get("variant")
+    return None if variant is None else variant["id"]
+
+
+def is_default_variant(model: dict[str, Any]) -> bool:
+    """Whether a resolved model is its composition's default: always, for
+    a composition that declares no variants."""
+    variant = model.get("composition", {}).get("variant")
+    return variant is None or variant["default"]
+
+
+def load_system_model(path: str | pathlib.Path,
+                      variant: str | None = None) -> dict[str, Any]:
+    """Resolve and validate a layered system-model composition: the named
+    board variant, or the default one when @variant is None."""
+    for model in load_system_models(path):
+        if (is_default_variant(model) if variant is None
+                else model_variant(model) == variant):
+            return model
+    raise ResolutionError(f"composition '{path}' has no variant '{variant}'")

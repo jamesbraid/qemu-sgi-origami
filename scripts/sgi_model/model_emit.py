@@ -19,6 +19,7 @@ import re
 
 from .model_compile import CompileError, compile_model
 from .registry import IP53_RUNTIME_PROFILES
+from .system_model import model_variant
 
 
 def render_manifest(source_models: dict[str, dict], outputs: dict[str, str]) -> str:
@@ -1414,11 +1415,13 @@ def render_catalogue_json(models: list[dict], *,
         _validate_export_profiles(model, topology)
         machine_name = model["machine"]["emulation"]["machine_name"]
         # The -M machine describes itself from its product's own base
-        # model, whether or not the product also requires topology=.
+        # model, whether or not the product also requires topology=; of a
+        # composition's board variants, from its default one.
+        base = product_models[machine_name]
         topologies.append(_render_topology(
             topology, machine_name,
-            topology["name"] ==
-            product_models[machine_name]["composition"]["product"]))
+            topology["name"] == base["composition"]["product"]
+            and model_variant(model) == model_variant(base)))
         offerings.extend(_offerings_for(model, topology, product_models))
     catalogue = {
         "schema": "sgi-machines",

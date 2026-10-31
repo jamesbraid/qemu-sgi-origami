@@ -1269,6 +1269,16 @@
         "platform": { "$ref": "#/$defs/identifier" },
         "assembly": { "$ref": "#/$defs/identifier" },
         "product": { "$ref": "#/$defs/identifier" },
+        "variant": {
+          "type": "object",
+          "required": ["id", "default"],
+          "additionalProperties": false,
+          "description": "The board variant this model is, for a composition that declares several. Every variant shares the composition's product name; the emulator selects among them by the CPU totals each accepts.",
+          "properties": {
+            "id": { "$ref": "#/$defs/identifier" },
+            "default": { "type": "boolean", "description": "Whether this is the variant a caller naming none gets." }
+          }
+        },
         "layers": {
           "type": "array",
           "minItems": 3,
