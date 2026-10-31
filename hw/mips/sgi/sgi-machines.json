@@ -28462,12 +28462,14 @@
       },
       "ip53-runtime": {
         "l1-irouter-compat": true,
-        "node-board": {
-          "name": "IP53_4CPU",
-          "part": "030-2013-001",
-          "processors": 4,
-          "revision": "-D"
-        },
+        "node-boards": [
+          {
+            "name": "IP53_4CPU",
+            "part": "030-2013-001",
+            "processors": 4,
+            "revision": "-D"
+          }
+        ],
         "normal-selection": {
           "cache-mib": 8,
           "clock-hz": 800000000,
@@ -38540,12 +38542,14 @@
       },
       "ip53-runtime": {
         "l1-irouter-compat": true,
-        "node-board": {
-          "name": "IP53_4CPU",
-          "part": "030-1868-001",
-          "processors": 4,
-          "revision": "-C"
-        },
+        "node-boards": [
+          {
+            "name": "IP53_4CPU",
+            "part": "030-1868-001",
+            "processors": 4,
+            "revision": "-C"
+          }
+        ],
         "normal-selection": {
           "cache-mib": 8,
           "clock-hz": 700000000,

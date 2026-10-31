@@ -87,11 +87,11 @@ layer:
             cache_mib: 8
             mode_word: 0x009caf85
           l1_irouter_compat: true
-          node_board:
-            processors: 4
-            name: IP53_4CPU
-            part: "030-2013-001"
-            revision: "-D"
+          node_boards:
+            - processors: 4
+              name: IP53_4CPU
+              part: "030-2013-001"
+              revision: "-D"
         pic_profiles:
           pic: pic-rev3-bedrock-experimental
         synthetic_identities:
