@@ -227,6 +227,21 @@ class IP53RuntimeExportTests(unittest.TestCase):
                         model["composition"]["population"]["cpus_per_node"],
                         [4],
                     )
+                # Both Tezro boards take the optional V12 at widget 12; on
+                # the one-processor board the placement is inferred. The
+                # rack offers none.
+                if variant is None:
+                    self.assertNotIn("graphics", topology)
+                else:
+                    [slot] = topology["graphics"]["slots"]
+                    self.assertEqual(slot["name"], "widget-12")
+                    [product] = slot["families"][0]["products"]
+                    self.assertEqual(product["product"], "v12")
+                    self.assertEqual("limitations" in product,
+                                     variant == "one-processor")
+                    self.assertEqual(product["pairing"],
+                                     "inferred" if variant == "one-processor"
+                                     else "established")
                 if variant == "one-processor":
                     self.assertEqual(sum(
                         slot["assembly"] is not None

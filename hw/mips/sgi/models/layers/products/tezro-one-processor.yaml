@@ -42,6 +42,28 @@ layer:
       cache_mib: 4
     slots:
     - cpu0
+  # The tower guide (007-4564-001 printed pages 29-30) gives this board one
+  # XIO connector for a VPro board, so it takes the same optional V12 as
+  # the two/four-processor board, fitted by -device only. The pairing is
+  # graded inferred: the guide supports a VPro fit here but names no widget
+  # or route, and no assembly number is captured. Widget 12 behind the
+  # widget-0 PIC's crossbow is the two/four-processor board's captured
+  # placement.
+  graphics:
+    max_pipes: 1
+    headless: true
+    slots:
+      - name: widget-12
+        description: "VPro at PIC widget 12, a placement inferred from the two/four-processor board's captured configuration"
+        placement: {slot: widget-12}
+        families:
+          - family: odyssey
+            products:
+              - product: v12
+                fidelity: implemented
+                pairing: inferred
+                limitations:
+                  - "widget 12 behind the widget-0 PIC's crossbow is inferred from the two/four-processor board's captured placement, since the guide gives this board a VPro XIO connector but no widget or route"
   data:
     machine:
       name: Tezro, one-processor board serial compatibility profile
@@ -50,8 +72,8 @@ layer:
         and locates IO9 at bus 1, slot 1. The 700 MHz/4 MiB CPU tuple, reset candidate, 4 GiB logical
         memory map, Bedrock and L1 identities, PIC revision and placement, PCI function identities, and
         interrupt routes are emulator choices adapted from the deskside software inputs.
-        They do not describe a measured tower or rack configuration. Graphics and the rack second enclosure
-        are omitted.
+        They do not describe a measured tower or rack configuration. The optional V12 at widget 12 is
+        an inferred placement. The rack second enclosure is omitted.
       firmware_config:
         processor_reset_mode: 0x009bad85
         processor_firmware_word: 0x549bad85
