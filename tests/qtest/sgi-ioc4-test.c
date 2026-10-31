@@ -171,7 +171,7 @@ static void test_ps2_adapter(void)
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
     g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0);
     reg_write(qts, KBC_CONTROL, UINT32_MAX);
-    g_assert_cmphex(reg_read(qts, KBC_CONTROL), ==, 0x00fcfffc);
+    g_assert_cmphex(reg_read(qts, KBC_CONTROL), ==, 0x00fc3cc0);
     reg_write(qts, KBC_CONTROL, 0);
     qtest_readb(qts, BAR + KBC_CONTROL);
     qtest_writew(qts, BAR + KBC_KBD_TRANSMIT, 0xff);
@@ -308,6 +308,7 @@ static void ioc4_send_ps2_key_state(QTestState *qts, const char *qcode,
 static void test_ps2_driver_sequence(void)
 {
     g_autofree char *log = ioc4_log_file_new();
+    g_autofree char *contents = NULL;
     QTestState *qts = ioc4_start_ps2(false, log);
     uint32_t csr, val;
 
@@ -317,6 +318,12 @@ static void test_ps2_driver_sequence(void)
     csr |= 0x00300000;
     reg_write(qts, KBC_CONTROL, csr);
     g_assert_cmphex(reg_read(qts, KBC_CONTROL), ==, 0x00300000);
+    /* Status bits are not storage: a write to them is dropped and logged. */
+    reg_write(qts, KBC_CONTROL, 0x00300000 | 0xc33f);
+    g_assert_cmphex(reg_read(qts, KBC_CONTROL), ==, 0x00300000);
+    reg_write(qts, KBC_CONTROL, 0x00300000 | 0x3cc0);
+    g_assert_cmphex(reg_read(qts, KBC_CONTROL), ==, 0x00303cc0);
+    reg_write(qts, KBC_CONTROL, 0x00300000);
     reg_write(qts, 0x14, KBC_OTHER_IRQ);
 
     /* A reset reply is two characters, so the clamp holds the second back. */
@@ -365,7 +372,10 @@ static void test_ps2_driver_sequence(void)
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
 
     qtest_quit(qts);
-    g_free(ioc4_log_file_take(log));
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(strstr(contents, "read-only KBC status bits 0xc33f"));
+    /* The read-modify-write that preserved status bits logged nothing. */
+    g_assert_null(strstr(contents, "read-only KBC status bits 0x0\n"));
 }
 
 static QTestState *ioc4_start_readback(bool incoming, bool enabled)

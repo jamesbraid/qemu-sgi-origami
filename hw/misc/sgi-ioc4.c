@@ -39,7 +39,12 @@
 #define SGI_IOC4_KBC_BASE 0x200
 #define SGI_IOC4_KBC_SIZE SGI_IOC3_KBC_MMIO_SIZE
 #define SGI_IOC4_KBC_IRQ 0x40
-#define SGI_IOC4_KBC_WRITE_PENDING 0x03
+/*
+ * Control-register bits that report state on the controller: write-pending
+ * (0, 1), the last write's line-control bit (2, 3), the data and clock line
+ * levels (4, 5, 8, 9) and the state machines' idle flags (14, 15).
+ */
+#define SGI_IOC4_KBC_STATUS 0x0000c33f
 #define SGI_IOC4_KBC_RX_MASK 0xe0ffffff
 #define SGI_IOC4_ATA_READBACK 0x148
 #define SGI_IOC4_DMA_BASE 0x300
@@ -540,6 +545,16 @@ static bool sgi_ioc4_kbc_accepts(void *opaque, hwaddr addr, unsigned size,
     return true;
 }
 
+/*
+ * What the status bits read. The model does not simulate the lines, so
+ * every one reads clear: write-pending because a transmit finishes inside
+ * the register write, the rest as an unreviewed approximation.
+ */
+static uint32_t sgi_ioc4_kbc_status(SGIIOC4State *s)
+{
+    return 0;
+}
+
 static MemTxResult sgi_ioc4_kbc_read(void *opaque, hwaddr addr, uint64_t *value,
                                      unsigned size, MemTxAttrs attrs)
 {
@@ -550,7 +565,7 @@ static MemTxResult sgi_ioc4_kbc_read(void *opaque, hwaddr addr, uint64_t *value,
     result = memory_region_dispatch_read(s->kbc_mmio, addr, &raw,
                                          size_memop(size) | MO_LE, attrs);
     if (addr == SGI_IOC3_KBC_CONTROL) {
-        *value = raw & ~SGI_IOC4_KBC_WRITE_PENDING;
+        *value = (raw & ~SGI_IOC4_KBC_STATUS) | sgi_ioc4_kbc_status(s);
     } else {
         *value = raw & SGI_IOC4_KBC_RX_MASK;
     }
@@ -563,7 +578,15 @@ static MemTxResult sgi_ioc4_kbc_write(void *opaque, hwaddr addr, uint64_t value,
     SGIIOC4State *s = opaque;
 
     if (addr == SGI_IOC3_KBC_CONTROL) {
-        value &= ~SGI_IOC4_KBC_WRITE_PENDING;
+        uint32_t changed = (value ^ sgi_ioc4_kbc_status(s)) &
+                           SGI_IOC4_KBC_STATUS;
+
+        if (changed) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-ioc4: write to read-only KBC status bits "
+                          "0x%x ignored\n", changed);
+        }
+        value &= ~SGI_IOC4_KBC_STATUS;
     }
     return memory_region_dispatch_write(s->kbc_mmio, addr, value,
                                        size_memop(size) | MO_LE, attrs);
