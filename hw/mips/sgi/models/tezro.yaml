@@ -15,7 +15,7 @@ variants:
   - id: one-processor
     board: ip53
     layers:
-      - layers/modules/tezro-serial-compat-module.yaml
+      - layers/modules/ip53-tezro-module.yaml
       - layers/products/tezro-one-processor.yaml
   - id: two-four-processor
     board: ip53
@@ -25,4 +25,4 @@ variants:
   - id: two-four-processor-ip59
     board: ip59
     layers:
-      - layers/products/tezro-tower-multi-ip59.yaml
+      - layers/products/tezro-two-four-processor-ip59.yaml

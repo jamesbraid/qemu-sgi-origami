@@ -91,7 +91,7 @@ hw/mips/sgi/models/layers/modules/fuel-base.yaml
 hw/mips/sgi/models/layers/modules/fuel-vpro.yaml
 hw/mips/sgi/models/layers/modules/i-brick.yaml
 hw/mips/sgi/models/layers/modules/ip27-node-board.yaml
-hw/mips/sgi/models/layers/modules/ip53-onyx350-compat-module.yaml
+hw/mips/sgi/models/layers/modules/ip53-onyx350-module.yaml
 hw/mips/sgi/models/layers/modules/ip53-origin350-module.yaml
 hw/mips/sgi/models/layers/modules/ip59-cx-brick.yaml
 hw/mips/sgi/models/layers/modules/ip59-onyx350-module.yaml
@@ -120,7 +120,7 @@ hw/mips/sgi/models/layers/modules/p-brick.yaml
 hw/mips/sgi/models/layers/modules/pci-carrier.yaml
 hw/mips/sgi/models/layers/modules/pci-shoehorn.yaml
 hw/mips/sgi/models/layers/modules/r-brick.yaml
-hw/mips/sgi/models/layers/modules/tezro-serial-compat-module.yaml
+hw/mips/sgi/models/layers/modules/ip53-tezro-module.yaml
 hw/mips/sgi/models/layers/modules/x-brick.yaml
 hw/mips/sgi/models/layers/products/fuel.yaml
 hw/mips/sgi/models/layers/products/octane.yaml
@@ -128,7 +128,7 @@ hw/mips/sgi/models/layers/products/octane2.yaml
 hw/mips/sgi/models/layers/products/onyx2-deskside.yaml
 hw/mips/sgi/models/layers/products/onyx2-rack.yaml
 hw/mips/sgi/models/layers/products/onyx350-base.yaml
-hw/mips/sgi/models/layers/products/onyx350-compat.yaml
+hw/mips/sgi/models/layers/products/onyx350.yaml
 hw/mips/sgi/models/layers/products/onyx350-ip59.yaml
 hw/mips/sgi/models/layers/products/onyx350-observed-module.yaml
 hw/mips/sgi/models/layers/products/onyx4-host-g2.yaml
@@ -158,7 +158,7 @@ hw/mips/sgi/models/layers/products/tezro-rack-ip59.yaml
 hw/mips/sgi/models/layers/products/tezro-one-processor.yaml
 hw/mips/sgi/models/layers/products/tezro-rack.yaml
 hw/mips/sgi/models/layers/products/tezro-rack-two-enclosure.yaml
-hw/mips/sgi/models/layers/products/tezro-tower-multi-ip59.yaml
+hw/mips/sgi/models/layers/products/tezro-two-four-processor-ip59.yaml
 hw/mips/sgi/models/layers/products/tezro-reference.yaml
 hw/mips/sgi/models/layers/products/tezro-two-four-processor.yaml
 hw/mips/sgi/models/octane.yaml

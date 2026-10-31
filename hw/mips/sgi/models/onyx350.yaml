@@ -11,8 +11,8 @@ variants:
     board: ip53
     default: true
     layers:
-      - layers/modules/ip53-onyx350-compat-module.yaml
-      - layers/products/onyx350-compat.yaml
+      - layers/modules/ip53-onyx350-module.yaml
+      - layers/products/onyx350.yaml
   - id: ip59
     board: ip59
     layers:

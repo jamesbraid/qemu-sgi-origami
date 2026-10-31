@@ -12,7 +12,7 @@ layer:
   id: tezro-one-processor
   requires:
     assembly: ip53-tezro
-    module: tezro-serial-compat-module
+    module: ip53-tezro-module
   topology:
     min_nodes: 1
     max_nodes: 1
