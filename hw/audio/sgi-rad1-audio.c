@@ -1780,6 +1780,20 @@ static MemTxResult sgi_rad1_octane_read(void *opaque, hwaddr addr,
         }
         if (addr == SGI_RAD1_AUDIO_REG_ANALOG_OUT_EN) {
             *value = s->analog_out_en;
+            /*
+             * Approximation: report a one-shot transfer finished as soon as
+             * the guest looks, and keep playing the rest of the buffer.
+             * Without icount the virtual clock follows host time, and the
+             * emulated work before the PROM's check is compressed, so the
+             * check can land before the 2.252 s pass ends (datasheet, boot
+             * tune fact 13). Reading it busy would print a failure for a tune
+             * that plays in full. The IRIX ring path and a later restart are
+             * unaffected.
+             */
+            if (s->chan[SGI_RAD1_AUDIO_CH_OUT].running &&
+                sgi_rad1_octane_out_form(s) == SGI_RAD1_OCTANE_OUT_ONCE) {
+                *value &= ~SGI_RAD1_AUDIO_ENABLE_BIT;
+            }
             trace_sgi_rad1_octane_output_status_read(*value,
                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
                 s->chan[SGI_RAD1_AUDIO_CH_OUT].frames,
