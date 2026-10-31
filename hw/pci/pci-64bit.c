@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Conventional PCI 64-bit data path; see include/hw/pci/pci-64bit.h. */
 
 #include "qemu/osdep.h"
