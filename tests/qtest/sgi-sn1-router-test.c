@@ -937,6 +937,120 @@ static void test_experimental_zero_reset_restore(void)
     g_assert_cmpint(g_unlink(prom), ==, 0);
 }
 
+static uint64_t ordinary_vector(QTestState *s, uint64_t address, bool write,
+                                uint64_t data)
+{
+    const uint64_t lb = UINT64_C(0x20600000);
+    const uint64_t params = address | (UINT64_C(0x5a) << 40);
+    const uint64_t sentinel = UINT64_C(0xdeadbeefdeadbeef);
+
+    qtest_readq(s, lb + 0xc038);
+    qtest_writeq(s, lb + 0xc030, sentinel);
+    qtest_writeq(s, lb + 0xc008, 0);
+    qtest_writeq(s, lb + 0xc010, data);
+    qtest_writeq(s, lb + 0xc000, params | write);
+    g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==,
+                    (UINT64_C(1) << 63) | params | write);
+    return qtest_readq(s, lb + 0xc030);
+}
+
+/* One lock, read-modify-write of nine registers, unlock. */
+static void fence_pass(QTestState *s, const uint64_t reg[9], bool clear,
+                       uint64_t ports)
+{
+    g_assert_cmpuint(ordinary_vector(s, 0x518, false, 0) & 1, ==, 0);
+    g_assert_cmpuint(ordinary_vector(s, 0x518, false, 0) & 1, ==, 1);
+    for (unsigned i = 0; i < 9; i++) {
+        uint64_t v = ordinary_vector(s, reg[i], false, 0);
+
+        v = clear ? v | ports : v & ~ports;
+        ordinary_vector(s, reg[i], true, v);
+    }
+    ordinary_vector(s, 0x118, true, 0);
+}
+
+/*
+ * Rbrick datasheet, "Partition reset fences", discriminating check, on an
+ * ordinary-profile router reached over the vector path.
+ */
+static void test_reset_fence_masks(void)
+{
+    uint64_t reg[9] = { 0x10 };
+    uint64_t seed[9] = { 0xff };
+    char *logname = NULL;
+    char *log;
+    char *args;
+    int fd = g_file_open_tmp("sgi-sn1-router-XXXXXX", &logname, NULL);
+    QTestState *s;
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    args = g_strdup_printf(ARGS " -m 256M "
+        "-object memory-backend-ram,id=dma,size=2M "
+        "-device sgi-bedrock,id=a,revision=2,dma-memory=/objects/dma/dma[0] "
+        "-device sgi-net-cable,id=c,end0=a,end1=r,end1-index=1 "
+        "-D %s -d unimp,guest_errors", logname);
+    s = qtest_init(args);
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/a','property':'net-cable',"
+        "'value':'/machine/peripheral/c'}}");
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/r','property':'port1-cable',"
+        "'value':'/machine/peripheral/c'}}");
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/a", 0, 0x20000000);
+
+    /* Step 1: distinct seeds, read back per register. */
+    for (unsigned l = 1; l <= 8; l++) {
+        reg[l] = bank[l - 1] + 0x18;
+        seed[l] = 0x10 * l + 7;
+    }
+    for (unsigned i = 0; i < 9; i++) {
+        ordinary_vector(s, reg[i], true, seed[i]);
+    }
+    for (unsigned i = 0; i < 9; i++) {
+        g_assert_cmphex(ordinary_vector(s, reg[i], false, 0) & 0xff, ==,
+                        seed[i]);
+    }
+
+    /* Step 2: fence 0xe1. */
+    fence_pass(s, reg, false, 0xe1);
+    for (unsigned i = 0; i < 9; i++) {
+        g_assert_cmphex(ordinary_vector(s, reg[i], false, 0) & 0xff, ==,
+                        seed[i] & ~0xe1 & 0xff);
+    }
+
+    /* Step 3: clear with the complement. */
+    fence_pass(s, reg, true, 0x1e);
+    for (unsigned i = 0; i < 9; i++) {
+        g_assert_cmphex(ordinary_vector(s, reg[i], false, 0) & 0xff, ==,
+                        0x1e);
+    }
+
+    /* A linear stride would land on 0x11018: refused, masks untouched. */
+    expect_ordinary_vector_refusal(s, 0x11018, false);
+    expect_ordinary_vector_refusal(s, 0x11018, true);
+    for (unsigned i = 0; i < 9; i++) {
+        g_assert_cmphex(ordinary_vector(s, reg[i], false, 0) & 0xff, ==,
+                        0x1e);
+    }
+    qtest_quit(s);
+
+    /* The only refusals logged are the deliberate ones at 0x11018. */
+    g_assert_true(g_file_get_contents(logname, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "0x11018"));
+    for (char *p = strstr(log, "refusing"); p; p = strstr(p + 1, "refusing")) {
+        const char *eol = strchr(p, '\n');
+        char *line = g_strndup(p, eol ? eol - p : strlen(p));
+
+        g_assert_nonnull(strstr(line, "0x11018"));
+        g_free(line);
+    }
+    g_free(log);
+    unlink(logname);
+    g_free(logname);
+    g_free(args);
+}
+
 static void test_registers(void)
 {
     QTestState *s = qtest_init(ARGS);
@@ -1121,7 +1235,7 @@ static void test_port_reset_vector(void)
         g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==, valid | params);
         g_assert_cmphex(qtest_readq(s, lb + 0xc030), ==, 0);
 
-        qtest_readq(s, BASE + bank[0] + 0x18);
+        qtest_readq(s, BASE + bank[0] + 0x10);
         g_assert_cmpuint(get(s, "failure"), ==, 4);
         qtest_readq(s, BASE + 9);
         g_assert_cmpuint(get(s, "failure"), ==, 4);
@@ -1190,7 +1304,7 @@ static void test_global_port_def_vector(void)
         g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==, valid | params);
         g_assert_cmphex(qtest_readq(s, lb + 0xc030), ==, 0);
 
-        qtest_readq(s, BASE + bank[0] + 0x18);
+        qtest_readq(s, BASE + bank[0] + 0x10);
         g_assert_cmpuint(get(s, "failure"), ==, 4);
         qtest_readq(s, BASE + 0x19);
         g_assert_cmpuint(get(s, "failure"), ==, 4);
@@ -1984,6 +2098,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/sn1-router/registers", test_registers);
+    qtest_add_func("/sgi/sn1-router/reset-fence-masks",
+                   test_reset_fence_masks);
     qtest_add_func("/sgi/sn1-router/experimental-status-write",
                    test_experimental_status_write);
     qtest_add_func("/sgi/sn1-router/experimental-local-reset",

@@ -8115,7 +8115,7 @@ static void test_routed_ordinary_port_refusals(void)
         0x10000, 0x10800, 0x20000, 0x20800,
         0x30000, 0x30800, 0x40000, 0x40800,
     };
-    static const uint64_t offsets[] = { 0x10, 0x18 };
+    static const uint64_t offsets[] = { 0x10 };
     const char *adapter = "/machine/peripheral/router-test";
     QTestState *qts = qtest_init(
         "-M none -cpu R10000 -device sgi-sn1-router,id=router "

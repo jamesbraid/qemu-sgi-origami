@@ -348,8 +348,8 @@ Model limits:
   takes one or two raster managers and its pipe 0 one, two or four. Each
   C-brick's L1 knows its chip's G-brick whether or not a pipe is fitted.
 * The router's ports 1, 6, 7 and 8 are uncabled, and the PROM prints
-  ``discover_object: vector read 0x2 LRI failed`` and ``erect_fences``
-  messages and an EEPROM vector read error against the router.
+  ``discover_object: vector read 0x2 LRI failed`` and an EEPROM vector
+  read error against the router.
 
 .. _sgi-bricks-cxbrick:
 
