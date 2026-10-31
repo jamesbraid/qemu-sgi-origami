@@ -1131,7 +1131,9 @@ def _processor(model: dict, cpu: dict) -> dict:
                 + ("" if board_word is None else
                    f" against the firmware block's {board_word:#010x}"))
         return {
-            "id": f"r16000-{clock_mhz}mhz",
+            # As for the other parts, the cache is part of the name: the
+            # Origin 350 and the Tezro both run 700 MHz, with 8 and 4 MiB.
+            "id": f"r16000-{clock_mhz}mhz-{cache_mib}mb",
             "kind": "R16000",
             "clock_hz": clock_mhz * 1_000_000,
             "cache_mib": cache_mib,

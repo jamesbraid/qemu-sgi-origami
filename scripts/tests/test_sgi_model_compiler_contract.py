@@ -255,7 +255,7 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
         processor["mode_bits"] = _mode_bits(model, {}, processor)
 
         self.assertEqual(processor, {
-            "id": "r16000-700mhz", "kind": "R16000",
+            "id": "r16000-700mhz-8mb", "kind": "R16000",
             "clock_hz": 700_000_000, "cache_mib": 8,
             "mode_bits": 0x009cad85,
         })

@@ -4110,6 +4110,29 @@ class CompositionVariantTests(unittest.TestCase):
             _check_variant_totals([record("ip53", 1), record("ip59", 1),
                                    record("ip59", 1, 2)])
 
+    def test_catalogue_refuses_one_processor_id_for_two_processors(self):
+        from sgi_model.model_qemu import _check_processor_ids
+
+        def record(name, cache_mib):
+            assembly = {"id": "r16000-700mhz-8mb", "kind": "R16000",
+                        "cache_mib": cache_mib}
+            return {"name": name, "board": "ip53", "nodes": [
+                {"cpu_slots": [{"assembly": assembly}, {"assembly": None}]}]}
+
+        _check_processor_ids([record("origin350", 8), record("origin3900", 8)])
+        with self.assertRaisesRegex(ValueError, "names two different"):
+            _check_processor_ids([record("origin350", 8), record("tezro", 4)])
+        # A Cx-brick authors no firmware block; sharing the Origin 350's id
+        # holds its reset word to the one the Origin 350's block checks.
+        cx_brick = record("origin3900", 8)
+        cx_brick["nodes"][0]["cpu_slots"][0]["assembly"]["mode_bits"] = (
+            0x009caf85)
+        origin350 = record("origin350", 8)
+        origin350["nodes"][0]["cpu_slots"][0]["assembly"]["mode_bits"] = (
+            0x009cad85)
+        with self.assertRaisesRegex(ValueError, "names two different"):
+            _check_processor_ids([origin350, cx_brick])
+
     def test_catalogue_refuses_variants_sharing_a_cpu_total(self):
         from sgi_model.model_qemu import _check_variant_totals
 
