@@ -1608,17 +1608,39 @@ struct ArchCPU {
     bool count_sample_window;
 #ifndef CONFIG_USER_ONLY
     MemoryRegion cache_memory;
+    /*
+     * What serves the pages that hold staged secondary-cache lines on an
+     * R10000-family processor (r10k_helper.c). It is a space of its own,
+     * MIPSASIdx_STAGED, so it adds nothing to the other two.
+     */
+    MemoryRegion staged_window;
     AddressSpace cache_backing_as;
     bool cache_memory_initialized;
 #endif
 };
 
-/* Address-space indices: cached references first, uncached ones second. */
+/*
+ * Address-space indices: cached references first, uncached ones second.
+ * The third exists only on the R10000 family, for cached references to a
+ * page that holds a staged secondary-cache line.
+ */
 enum {
     MIPSASIdx_CACHED = 0,
     MIPSASIdx_UNCACHED = 1,
-    MIPSASIdx_MAX = MIPSASIdx_UNCACHED,
+    MIPSASIdx_STAGED = 2,
+    MIPSASIdx_MAX = MIPSASIdx_STAGED,
 };
+
+/*
+ * A cached algorithm (3 to 5) together with the uncached attribute names a
+ * reference bound for MIPSASIdx_STAGED. Translation never produces that
+ * pairing otherwise: it sets the uncached attribute only for algorithms 2
+ * and 7.
+ */
+static inline bool mips_attrs_staged(MemTxAttrs attrs)
+{
+    return attrs.mips_uncached && attrs.mips_cca >= 3 && attrs.mips_cca <= 5;
+}
 
 /**
  * MIPSCPUClass:

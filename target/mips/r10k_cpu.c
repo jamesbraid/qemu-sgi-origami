@@ -589,6 +589,10 @@ void mips_r10k_cpu_reset(MIPSCPU *cpu)
             memset(r10k->scache_data, 0, alloc_size);
             memset(r10k->scache_ecc, 0,
                    (alloc_size / 16) * sizeof(uint16_t));
+#if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
+            /* No line survives a reset, so no page stays staged. */
+            r10k_staged_rebuild(env);
+#endif
         }
         r10k->CP0_TagLo_rw_bitmask = env->cpu_model->CP0_TagLo_rw_bitmask;
         r10k->CP0_ECC_rw_bitmask = env->cpu_model->CP0_ECC_rw_bitmask;

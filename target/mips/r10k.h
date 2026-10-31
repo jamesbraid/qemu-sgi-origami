@@ -302,7 +302,21 @@ typedef struct R10KState {
     uint8_t *scache_mru;
     uint64_t *scache_data;
     uint16_t *scache_ecc;
+
+    /*
+     * Pages that hold at least one staged secondary-cache line, keyed by
+     * physical page number, each mapped to its line count. Derived from the
+     * tag array above, so it is neither migrated nor part of reset's
+     * clearing: reset and an incoming migration rebuild it.
+     * r10k_helper.c explains the view this index drives.
+     */
+    GHashTable *staged_pages;
+    /* Set unless cache-data-visibility is on: the two views are exclusive. */
+    bool staging;
 } R10KState;
+
+/* The staged-line window spans more than the R10000 family's 40-bit space. */
+#define R10K_STAGED_SPAN       (UINT64_C(1) << 48)
 
 #if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
 void r10k_cache_memory_init(MIPSCPU *cpu);

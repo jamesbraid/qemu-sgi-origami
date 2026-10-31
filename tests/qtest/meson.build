@@ -642,7 +642,8 @@ sgi_qtests = \
    config_all_devices.has_key('CONFIG_TEST_DEVICES') ?
     ['sgi-kona-read-defense-test'] : [])
 
-qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test', 'r5000-cpu-test'] + \
+qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test', 'r5000-cpu-test',
+                                              'r10k-cache-index-ops-test'] + \
   (config_all_devices.has_key('CONFIG_SGI_VICE') ?
     ['sgi-vice-test', 'sgi-vice-msp-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['o2-r10k-cache-test'] : []) + \

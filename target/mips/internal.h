@@ -202,6 +202,11 @@ void mips_r10k_cpu_unrealize(MIPSCPU *cpu);
 void mips_r10k_cpu_finalize(MIPSCPU *cpu);
 void r10k_tlb_note_active(CPUMIPSState *env, int idx, bool active);
 void r10k_tlb_rebuild_active_mask(CPUMIPSState *env);
+#if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
+/* r10k_helper.c: the pages that hold staged secondary-cache lines. */
+void r10k_staged_rebuild(CPUMIPSState *env);
+bool r10k_staged_page(CPUMIPSState *env, hwaddr paddr, MemTxAttrs attrs);
+#endif
 
 /* r10k_migrate.c: the R10000-family state carried behind env->r10k. */
 extern const VMStateDescription mips_vmstate_r10k;

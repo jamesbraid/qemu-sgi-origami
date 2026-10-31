@@ -671,7 +671,7 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
     cpu_reset(cs);
 #ifndef CONFIG_USER_ONLY
 #ifdef CONFIG_TCG
-    if (cpu->cache_data_visibility) {
+    if (env->r10k) {
         r10k_cache_memory_init(cpu);
     }
 #endif
@@ -686,6 +686,12 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
         cpu_address_space_init(cs, MIPSASIdx_UNCACHED, "cpu-uncached",
                                cpu->uncached_memory ?: cs->memory);
     }
+#ifdef CONFIG_TCG
+    if (env->r10k && env->r10k->staging) {
+        cpu_address_space_init(cs, MIPSASIdx_STAGED, "cpu-staged",
+                               &cpu->staged_window);
+    }
+#endif
 #endif
     qemu_init_vcpu(cs);
 
@@ -762,6 +768,9 @@ static int mips_asidx_from_attrs(CPUState *cs, MemTxAttrs attrs)
 {
     MIPSCPU *cpu = MIPS_CPU(cs);
 
+    if (cpu->env.r10k && cpu->env.r10k->staging && mips_attrs_staged(attrs)) {
+        return MIPSASIdx_STAGED;
+    }
     return attrs.mips_uncached &&
            (cpu->uncached_memory || cpu->cache_data_visibility) ?
            MIPSASIdx_UNCACHED : MIPSASIdx_CACHED;

@@ -14827,6 +14827,14 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
             ctx->has_cache_diagnostics) {
             gen_cache_operation(ctx, rt, rs, imm);
         }
+        if (ctx->has_cache_diagnostics && ctx->base.is_jmp == DISAS_NEXT) {
+            /*
+             * An index operation can stage or end a line, which moves
+             * the pages translation reads. Leave the block so code that
+             * follows is looked up again.
+             */
+            ctx->base.is_jmp = DISAS_STOP;
+        }
         /* Treat as NOP. */
         break;
     case OPC_PREF:
