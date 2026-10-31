@@ -9900,13 +9900,13 @@ static void check_coupled_admission_trace(const char *path, bool write,
         if (!event || sscanf(event,
             "aic7880_dma devfn 0x%x addr 0x%x len %u to_memory %u result %d",
             &devfn, &address, &count, &direction, &result) != 5 ||
-            address < 0x20008 || address >= 0x20208) {
+            address < 0x2000f || address >= 0x2020f) {
             continue;
         }
         g_assert_cmphex(devfn, ==, PCI_DEVFN);
         g_assert_cmpuint(direction, ==, !write);
         g_assert_cmpint(result, ==, MEMTX_OK);
-        g_assert_cmphex(address, ==, 0x20008 + credited);
+        g_assert_cmphex(address, ==, 0x2000f + credited);
         g_assert_cmpuint(count, >, 0);
         credited += count;
         g_assert_cmpuint(credited, <=, expected);
@@ -9971,7 +9971,7 @@ static void test_coupled_pci_admission(void)
         bool io = mode & 2;
         uint8_t cdb[10] = { write ? 0x2a : 0x28, 0, 0, 0, 0,
                             write ? 1 : 0, 0, 0, 1, 0 };
-        uint8_t program[128] = { 0 }, pattern[512], guarded[528], got[528];
+        uint8_t program[128] = { 0 }, pattern[512], guarded[535], got[535];
         g_autofree char *path = NULL;
         g_autofree char *trace_path = NULL;
         QTestState *qts;
@@ -9995,11 +9995,11 @@ static void test_coupled_pci_admission(void)
         status = config_readl(qts, 4) & 0xffff0000;
         memset(guarded, 0xa5, sizeof(guarded));
         if (write) {
-            memcpy(guarded + 8, pattern, sizeof(pattern));
+            memcpy(guarded + 15, pattern, sizeof(pattern));
         }
         qtest_memwrite(qts, 0x20000, guarded, sizeof(guarded));
         qtest_writeb(qts, REG_BASE + 0x87, 4);
-        host_dma_program(qts, 0x20008, 512);
+        host_dma_program(qts, 0x2000f, 512);
         qtest_writeb(qts, REG_BASE + 0x08, 0);
         qtest_writeb(qts, REG_BASE + 0x09, 2);
         qtest_writeb(qts, REG_BASE + 0x0a, 0);
@@ -10012,7 +10012,7 @@ static void test_coupled_pci_admission(void)
         }
         qtest_writeb(qts, REG_BASE + 0x93, write ? 4 : 0);
         qtest_writeb(qts, REG_BASE + 0x93, write ? 0x0c : 8);
-        g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x20108);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x2010f);
         g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 256);
         check_coupled_admission_trace(trace_path, write, 256);
         config_writew(qts, 4, 2);
@@ -10020,7 +10020,7 @@ static void test_coupled_pci_admission(void)
         if (!write) {
             coupled_wait(qts, 0x94, 2);
         }
-        g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x20108);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x2010f);
         g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 256);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 0x0b, ==,
                         write ? 1 : 2);
@@ -10038,7 +10038,7 @@ static void test_coupled_pci_admission(void)
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 0x0a, ==, 0);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 8, ==, 0);
-        g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x20108);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x2010f);
         g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 256);
         config_writew(qts, 4, io ? 5 : 6);
         for (unsigned i = 0; i < 1000; i++) {
@@ -10054,15 +10054,15 @@ static void test_coupled_pci_admission(void)
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 0x0a, ==, 2);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
-        g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x20208);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x2020f);
         g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 0);
         g_assert_cmphex(host_dma_read_bytes(qts, 0x08, 3), ==, 0);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 9, ==, 9);
         check_coupled_admission_trace(trace_path, write, 512);
         qtest_memread(qts, 0x20000, got, sizeof(got));
-        g_assert_cmpmem(got, 8, guarded, 8);
-        g_assert_cmpmem(got + 8, 512, pattern, 512);
-        g_assert_cmpmem(got + 520, 8, guarded + 520, 8);
+        g_assert_cmpmem(got, 15, guarded, 15);
+        g_assert_cmpmem(got + 15, 512, pattern, 512);
+        g_assert_cmpmem(got + 527, 8, guarded + 527, 8);
         qtest_quit(qts);
         if (write) {
             fd = open(path, O_RDONLY);
