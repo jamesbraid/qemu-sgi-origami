@@ -511,13 +511,54 @@ static void test_vbrick_records(void)
 }
 
 /*
+ * Reads a record area the way the stock PROM does: 64-byte chunks until the
+ * remaining count reaches 0. The area must be a whole number of eight-byte
+ * units, byte 1 counts them, and every byte sums to 0 modulo 256.
+ */
+static GByteArray *read_area(QTestState *s, unsigned component, unsigned area)
+{
+    GByteArray *bytes = g_byte_array_new();
+    uint8_t reply[131];
+    size_t length, data_length;
+    uint32_t remaining;
+
+    do {
+        const uint8_t *data;
+
+        length = eeprom(s, 0, LOCAL_GENERAL, component, area, bytes->len, 64,
+                        reply);
+        data = eeprom_data(reply, length, &data_length);
+        g_assert_cmpuint(data_length, >, 0);
+        g_assert_cmpuint(data_length, <=, 64);
+        g_byte_array_append(bytes, data, data_length);
+        remaining = ldl_be_p(reply + 7);
+        g_assert_cmpuint(bytes->len, <=, 512);
+    } while (remaining);
+    g_assert_cmpuint(bytes->len, >, 8);
+    g_assert_cmpuint(bytes->data[1], >, 0);
+    g_assert_cmpuint(bytes->len, ==, 8u * bytes->data[1]);
+    return bytes;
+}
+
+static void expect_area_checksum(const GByteArray *bytes)
+{
+    uint8_t sum = 0;
+
+    for (guint i = 0; i < bytes->len; i++) {
+        sum += bytes->data[i];
+    }
+    g_assert_cmphex(sum, ==, 0);
+}
+
+/*
  * A router L1 holds its board record at component 1, where the stock PROM
  * reads the chassis and board areas at router initialisation. The record is
  * named ROUTER and carries the part and revision the product's owner
  * inventories report: 030-1634-002 revision B for an Origin 3400 R-brick and
  * 030-1634-003 revision A for the Origin 300 and 350 NUMAlink module. The
- * serial is synthetic. A router with no board named keeps no record, which
- * is the Cx-brick router's case.
+ * Cx-brick router has no inventory: its record carries the model's
+ * not-observed placeholders, which must not be either product's part. The
+ * serial is synthetic. A router with no board named keeps no record.
  */
 static void expect_router_board(const char *board, const char *part,
                                 const char *revision)
@@ -526,20 +567,24 @@ static void expect_router_board(const char *board, const char *part,
                                              "router-board=%s", board);
     QTestState *s = start_one(props);
     uint8_t reply[131];
-    size_t length, data_length;
-    const uint8_t *data;
+    size_t length, board_length = 0;
 
     for (unsigned area = 1; area <= 2; area++) {
-        length = eeprom(s, 0, LOCAL_GENERAL, 1, area, 0, 64, reply);
-        eeprom_data(reply, length, &data_length);
-        g_assert_cmpuint(data_length, >, 0);
+        g_autoptr(GByteArray) bytes = read_area(s, 1, area);
+
+        expect_area_checksum(bytes);
+        if (area == 2) {
+            board_length = bytes->len;
+            g_assert_true(contains_text(bytes->data, bytes->len, "ROUTER"));
+            g_assert_true(contains_text(bytes->data, bytes->len, part));
+            g_assert_true(contains_text(bytes->data, bytes->len, revision));
+            g_assert_true(contains_text(bytes->data, bytes->len, "EMUR00"));
+        }
     }
-    length = eeprom(s, 0, LOCAL_GENERAL, 1, 2, 0, 64, reply);
-    data = eeprom_data(reply, length, &data_length);
-    g_assert_true(contains_text(data, data_length, "ROUTER"));
-    g_assert_true(contains_text(data, data_length, part));
-    g_assert_true(contains_text(data, data_length, revision));
     g_assert_false(board_has_address(s, 0, LOCAL_GENERAL, 1));
+    /* An offset at the area's length is past its end. */
+    length = eeprom(s, 0, LOCAL_GENERAL, 1, 2, board_length, 16, reply);
+    expect_code(reply, length, -105);
     length = eeprom(s, 0, LOCAL_GENERAL, 0, 2, 0, 16, reply);
     expect_code(reply, length, -104);
     length = eeprom(s, 0, LOCAL_GENERAL, 2, 2, 0, 16, reply);
@@ -555,6 +600,7 @@ static void test_router_records(void)
 
     expect_router_board("rbrick", "030-1634-002", "B");
     expect_router_board("numalink-module", "030-1634-003", "A");
+    expect_router_board("cxbrick", "NOTOBSERVED0", "00");
 
     s = start_one("brick-type=router");
     length = eeprom(s, 0, LOCAL_GENERAL, 1, 2, 0, 16, reply);
@@ -1738,7 +1784,7 @@ static void test_realize_refusal(gconstpointer opaque)
           "*Origin 300 compatibility*" },
         { "brick-type=cbrick,dimm-mask=0x1ff", "*dimm-mask*" },
         { "brick-type=cbrick,pimm-mask=4", "*pimm-mask*" },
-        { "brick-type=router,router-board=cxbrick", "*router-board*" },
+        { "brick-type=router,router-board=nosuch", "*router-board*" },
         { "brick-type=cbrick,router-board=rbrick", "*router-board*" },
         { "brick-type=router,router-board=rbrick,node-board-name=X",
           "*node board identity needs a name, part and revision*" },

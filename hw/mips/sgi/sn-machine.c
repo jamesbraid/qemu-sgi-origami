@@ -6619,8 +6619,9 @@ static unsigned int sgi_machine_pipe_brick_number(
  * The router board record a catalogue router carries. The R-brick of the
  * Origin 3400 and Onyx 3400 and the NUMAlink module of the Origin 300 and
  * 350 each have a part their inventories report. The Cx-brick router has
- * none: no inventory of its router board has been read, so its L1 keeps no
- * record rather than borrow another product's part.
+ * none: no inventory of its router board has been read, so its record is
+ * an approximation that carries placeholder text, not another product's
+ * part.
  */
 static const char *sgi_machine_router_board(const char *id)
 {
@@ -7428,6 +7429,7 @@ static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
             qdev_prop_set_uint32(l1, "bay",
                                  model_module->initial_module_number +
                                  SGI_L1_CX_BOARDS);
+            qdev_prop_set_string(l1, "router-board", "cxbrick");
             if (!qdev_realize(l1, NULL, errp)) {
                 return false;
             }
