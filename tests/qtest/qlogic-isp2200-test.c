@@ -2132,39 +2132,110 @@ static void test_bus_master_disabled(void *obj, void *data,
     isp_close(&t);
 }
 
-/*
- * Approximation: no NVRAM image. A read clocked the way OpenBSD
- * clocks it returns words that do not start with "ISP ".
- */
-static void test_nvram_read_fails(void *obj, void *data,
-                                  QGuestAllocator *alloc)
+/* One word of the NVRAM, clocked the way the drivers clock it. */
+static uint16_t nvram_read_word(Isp *t, unsigned word)
 {
-    uint16_t words[2] = { 0 };
-    unsigned w, bit;
+    uint16_t cmd = (6 << 8) | word, val = 0;
+    unsigned bit;
+
+    wr(t, REG_NVRAM, 0x0002);
+    for (bit = 0; bit < 11; bit++) {
+        uint16_t out = (cmd & (1 << (10 - bit))) ? 0x0004 : 0;
+
+        wr(t, REG_NVRAM, 0x0002 | out);
+        wr(t, REG_NVRAM, 0x0003 | out);
+        wr(t, REG_NVRAM, 0x0002 | out);
+    }
+    for (bit = 0; bit < 16; bit++) {
+        wr(t, REG_NVRAM, 0x0003);
+        val = (val << 1) | !!(rd(t, REG_NVRAM) & 0x0008);
+        wr(t, REG_NVRAM, 0x0002);
+    }
+    wr(t, REG_NVRAM, 0);
+    return val;
+}
+
+static void nvram_read_image(Isp *t, uint8_t *img)
+{
+    unsigned w;
+
+    for (w = 0; w < 128; w++) {
+        stw_le_p(img + w * 2, nvram_read_word(t, w));
+    }
+}
+
+/*
+ * Approximation: the default image is a model choice, not a capture. It
+ * has to pass the checks the shipped drivers make, read the way they
+ * read: 256 bytes summing to zero, an eight-byte port name at byte 18
+ * with QLogic's company ID in name bytes 2 to 4, a first name byte of
+ * 0x20 or 0x21, and serial bytes that are not all ones. A model that
+ * returns one word for every address, or an all-zero image, fails.
+ */
+static void test_nvram_default_image(void *obj, void *data,
+                                     QGuestAllocator *alloc)
+{
+    uint8_t img[256], sum = 0;
+    unsigned i;
     Isp t;
 
     isp_open(&t, obj, alloc);
-    for (w = 0; w < 2; w++) {
-        uint16_t cmd = (6 << 8) | w;
-
-        wr(&t, REG_NVRAM, 0x0002);
-        for (bit = 0; bit < 11; bit++) {
-            uint16_t out = (cmd & (1 << (10 - bit))) ? 0x0004 : 0;
-
-            wr(&t, REG_NVRAM, 0x0002 | out);
-            wr(&t, REG_NVRAM, 0x0003 | out);
-            wr(&t, REG_NVRAM, 0x0002 | out);
-        }
-        for (bit = 0; bit < 16; bit++) {
-            wr(&t, REG_NVRAM, 0x0003);
-            words[w] = (words[w] << 1) | !!(rd(&t, REG_NVRAM) & 0x0008);
-            wr(&t, REG_NVRAM, 0x0002);
-        }
-        wr(&t, REG_NVRAM, 0);
+    g_assert_cmphex(nvram_read_word(&t, 0), ==, 0x5349);
+    g_assert_cmphex(nvram_read_word(&t, 1), ==, 0x2050);
+    nvram_read_image(&t, img);
+    for (i = 0; i < sizeof(img); i++) {
+        sum += img[i];
     }
-    g_assert_false(words[0] == 0x4953 && words[1] == 0x5020);
-    g_assert_false(words[0] == 0x5349 && words[1] == 0x2050);
+    g_assert_cmpuint(sum, ==, 0);
+    g_assert_cmpmem(img, 4, "ISP ", 4);
+    g_assert_cmpuint(img[4], >=, 1);
+    g_assert_true(img[18] == 0x20 || img[18] == 0x21);
+    g_assert_cmphex(img[20], ==, 0x00);
+    g_assert_cmphex(img[21], ==, 0xe0);
+    g_assert_cmphex(img[22], ==, 0x8b);
+    g_assert_cmphex(img[19], !=, 0xff);
+    g_assert_false(img[23] == 0xff && img[24] == 0xff && img[25] == 0xff);
+    g_assert_true(img[23] || img[24] || img[25]);
+    /* Words 9 and 127 are the port name's first pair and the checksum. */
+    g_assert_cmphex(nvram_read_word(&t, 9), ==, lduw_le_p(img + 18));
+    g_assert_cmphex(nvram_read_word(&t, 127), ==, lduw_le_p(img + 254));
     isp_close(&t);
+}
+
+/*
+ * Approximation: the serial bytes of the port name come from the
+ * nvram-serial property, and without it from the device's path, so two
+ * adapters in one machine differ and one adapter keeps its name from
+ * run to run. Both sides of that are pinned, with the image still
+ * summing to zero.
+ */
+static void test_nvram_serial(void *obj, void *data, QGuestAllocator *alloc)
+{
+    uint8_t img[256], again[256], sum = 0;
+    unsigned i;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    nvram_read_image(&t, img);
+    nvram_read_image(&t, again);
+    g_assert_cmpmem(img, sizeof(img), again, sizeof(again));
+    g_assert_cmphex(img[23], ==, 0x12);
+    g_assert_cmphex(img[24], ==, 0x34);
+    g_assert_cmphex(img[25], ==, 0x56);
+    /* The node name carries the same serial. */
+    g_assert_cmpmem(img + 32, 6, img + 20, 6);
+    g_assert_cmphex(img[30], ==, 0x20);
+    for (i = 0; i < sizeof(img); i++) {
+        sum += img[i];
+    }
+    g_assert_cmpuint(sum, ==, 0);
+    isp_close(&t);
+}
+
+static void *nvram_serial_setup(GString *cmd_line, void *arg)
+{
+    g_string_append(cmd_line, " -global qlogic-isp2200.nvram-serial=0x123456");
+    return arg;
 }
 
 /* Three commands through, so both request pointers read 3. */
@@ -4703,6 +4774,9 @@ static void isp2200_register_nodes(void)
         .before = loop_test_setup,
         .arg = (void *)&dbrick_full_config,
     };
+    QOSGraphTestOptions serial_opts = {
+        .before = nvram_serial_setup,
+    };
     QOSGraphTestOptions low_opts = {
         .before = loop_test_setup,
         .arg = (void *)&low_config,
@@ -4783,8 +4857,10 @@ static void isp2200_register_nodes(void)
                  test_request_dma_error_waits, NULL);
     qos_add_test("bus-master-disabled", "qlogic-isp2200",
                  test_bus_master_disabled, NULL);
-    qos_add_test("nvram-read-fails", "qlogic-isp2200", test_nvram_read_fails,
-                 NULL);
+    qos_add_test("nvram-default-image", "qlogic-isp2200",
+                 test_nvram_default_image, NULL);
+    qos_add_test("nvram-serial", "qlogic-isp2200", test_nvram_serial,
+                 &serial_opts);
     qos_add_test("window-linux-order", "qlogic-isp2200",
                  test_window_linux_order, NULL);
     qos_add_test("window-openbsd-init", "qlogic-isp2200",
