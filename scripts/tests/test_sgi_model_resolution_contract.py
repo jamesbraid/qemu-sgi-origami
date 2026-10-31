@@ -3939,5 +3939,108 @@ class Onyx3400IrTargetTests(unittest.TestCase):
                                     "nbrick-l1": "nbrick"})
 
 
+class CompositionVariantTests(unittest.TestCase):
+    """A composition that declares board variants resolves once per
+    variant, every one under the composition's own name."""
+
+    VARIANTS = {
+        "configuration_version": 1,
+        "layers": ["layers/architectures/sn1.yaml",
+                   "layers/assemblies/ip53-tezro.yaml"],
+        "variants": [
+            {"id": "one-processor",
+             "layers": ["layers/modules/tezro-serial-compat-module.yaml",
+                        "layers/products/tezro-tower-one.yaml"]},
+            {"id": "two-four-processor", "default": True,
+             "layers": ["layers/products/tezro-tower-multi.yaml"]},
+        ],
+    }
+
+    def write(self, document):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = pathlib.Path(directory.name)
+        shutil.copytree(INPUTS, root, dirs_exist_ok=True)
+        # The variants take the composition's product name, which the IP53
+        # profile table pairs with the multi board's profile.
+        one = root / "layers/products/tezro-tower-one.yaml"
+        one.write_text(one.read_text().replace(
+            "tezro-tower-one-serial-compat", "tezro-tower-multi-serial-compat"))
+        path = root / "tezro-tower-multi.yaml"
+        path.write_text(yaml.safe_dump(document))
+        return path
+
+    def test_each_variant_resolves_under_the_composition_name(self):
+        path = self.write(self.VARIANTS)
+        models = _resolver.load_system_models(path)
+        self.assertEqual(
+            [(model["composition"]["product"], model["composition"]["variant"])
+             for model in models],
+            [("tezro-tower-multi", {"id": "one-processor", "default": False}),
+             ("tezro-tower-multi",
+              {"id": "two-four-processor", "default": True})])
+        self.assertEqual(
+            [[layer["id"] for layer in model["composition"]["layers"]
+              if layer["kind"] in ("module", "product")] for model in models],
+            [["tezro-serial-compat-module", "tezro-tower-one"],
+             ["tezro-tower-multi"]])
+        checked = schema(path.parent)
+        for variant in ("one-processor", "two-four-processor"):
+            with self.subTest(variant=variant):
+                model = load_checked_system_model(
+                    path, model_schema=checked, variant=variant)
+                self.assertEqual(_resolver.model_variant(model), variant)
+        self.assertEqual(
+            _resolver.model_variant(_resolver.load_system_model(path)),
+            "two-four-processor")
+        with self.assertRaisesRegex(_resolver.ResolutionError,
+                                    "has no variant 'four-processor'"):
+            _resolver.load_system_model(path, "four-processor")
+
+    def test_a_composition_without_variants_is_its_own_default(self):
+        model = _resolver.load_system_model(INPUTS / "origin350.yaml")
+        self.assertNotIn("variant", model["composition"])
+        self.assertIsNone(_resolver.model_variant(model))
+        self.assertTrue(_resolver.is_default_variant(model))
+
+    def test_exactly_one_variant_is_the_default(self):
+        for defaults in ((False, False), (True, True)):
+            document = copy.deepcopy(self.VARIANTS)
+            for variant, default in zip(document["variants"], defaults):
+                variant["default"] = default
+            with self.subTest(defaults=defaults), self.assertRaisesRegex(
+                    _resolver.ResolutionError,
+                    "must mark exactly one variant default"):
+                _resolver.load_system_models(self.write(document))
+
+    def test_malformed_variants_are_refused(self):
+        changes = (
+            (lambda d: d["variants"].pop(), "must list at least two"),
+            (lambda d: d["variants"][0].update(model_role="reference"),
+             "unsupported field 'model_role'"),
+            (lambda d: d["variants"][1].update(id="one-processor"),
+             "lists variant 'one-processor' twice"),
+            (lambda d: d["variants"][0].update(id="One"), "invalid id"),
+            (lambda d: d["variants"][0].update(layers=[]), "has no layers"),
+        )
+        for change, message in changes:
+            document = copy.deepcopy(self.VARIANTS)
+            change(document)
+            with self.subTest(message=message), self.assertRaisesRegex(
+                    _resolver.ResolutionError, message):
+                _resolver.load_system_models(self.write(document))
+
+    def test_catalogue_refuses_variants_sharing_a_cpu_total(self):
+        from sgi_model.model_qemu import _check_variant_totals
+
+        one = {"name": "tezro", "supported_cpu_populations": [[1]]}
+        many = {"name": "tezro", "supported_cpu_populations": [[4], [2]]}
+        _check_variant_totals([one, many])
+        with self.assertRaisesRegex(ValueError, "both accept 2 CPUs"):
+            _check_variant_totals([
+                one, many,
+                {"name": "tezro", "supported_cpu_populations": [[2]]}])
+
+
 if __name__ == "__main__":
     unittest.main()
