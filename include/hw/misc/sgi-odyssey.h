@@ -442,6 +442,14 @@ struct SGIOdysseyState {
     uint32_t query_captured[5][5];
     uint32_t query_current_valid;
     uint32_t query_captured_valid;
+    /*
+     * The raster latch: the index, colour and texture-coordinate records as
+     * they stood when the raster-position stream last completed, which 0x4c3
+     * answers in place of the live ones. raster_latch_valid has a bit per
+     * record, set when that record was a supported one at latch time.
+     */
+    uint32_t raster_latch[3][5];
+    uint32_t raster_latch_valid;
     uint32_t query_stage;
     /* The open query's kind (word 0x4c0 + kind); unmigrated, like the stage. */
     uint32_t query_kind;

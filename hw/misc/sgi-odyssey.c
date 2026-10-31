@@ -10910,12 +10910,14 @@ enum {
  * path then sends that colour as the glyph rectangle's colour, so with no
  * answer every glyph drew in whatever stale words sat there.
  *
+ * The raster index, colour and texture coordinate come from the raster
+ * latch (below), beside the live kind-0 records.
+ *
  * APPROXIMATION: the board's raster colour is the current colour after
- * lighting; this model answers with the current colour and index records
- * unlit, and with the current texture coordinate untransformed, beside the
- * kind-0 records. Lit raster colours, kinds 1 and 2 and any raster-position
- * result the library may read elsewhere are not modeled. A capture of the
- * shadow page after a lit glRasterPos would settle the lit case.
+ * lighting; this model answers with the latched colour and index records
+ * unlit, and with the latched texture coordinate untransformed. Lit raster
+ * colours, kinds 1 and 2 and any raster-position result the library may read
+ * elsewhere are not modeled.
  */
 #define ODSY_QUERY_KIND_RASTER 3
 #define ODSY_QUERY_RASTER_INDEX 0x928
@@ -10936,11 +10938,74 @@ static const uint32_t odyssey_query_defaults[5][5] = {
     [ODSY_QUERY_EDGE] = { 0x2f00c02e },
 };
 
+/*
+ * The raster latch. glRasterPos computes its position on the host, so the
+ * board sees only the program and matrix upload and then four class-0
+ * blocks, 0x3cf8 to 0x3cfb. The GL library later reads the raster colour,
+ * index and texture coordinate back with 0x4c3, possibly after the
+ * application has changed the current colour, and expects the values from
+ * glRasterPos time. The latch is INFERRED from that reliance; which word
+ * triggers it is UNKNOWN.
+ *
+ * ASSUMPTION: the latch takes the live records when the last of those four
+ * blocks, 0x3cfb, has been consumed. It is the only candidate and the only
+ * place that decides the moment, odyssey_cmd_word()'s skip completion calls
+ * odyssey_raster_latch_take() and nothing else does.
+ *
+ * APPROXIMATION: before the first latch the records hold the GL initial
+ * values (index 1; colour 1, 1, 1 in its three-float form; texture
+ * coordinate 0, 0 in its two-float form), as a context with no raster
+ * position set would hold.
+ * Reset restores them. Lit raster colours are UNKNOWN and not modeled.
+ */
+#define ODSY_RASTER_TRIGGER 0x3cfb
+
+enum {
+    ODSY_RASTER_INDEX,
+    ODSY_RASTER_COLOUR,
+    ODSY_RASTER_TEXCOORD,
+};
+
+static const unsigned odyssey_raster_record[] = {
+    [ODSY_RASTER_INDEX] = ODSY_QUERY_INDEX,
+    [ODSY_RASTER_COLOUR] = ODSY_QUERY_COLOUR,
+    [ODSY_RASTER_TEXCOORD] = ODSY_QUERY_TEXCOORD,
+};
+
+static void odyssey_raster_latch_reset(SGIOdysseyState *s)
+{
+    unsigned i;
+
+    for (i = 0; i < ARRAY_SIZE(odyssey_raster_record); i++) {
+        memcpy(s->raster_latch[i],
+               odyssey_query_defaults[odyssey_raster_record[i]],
+               sizeof(s->raster_latch[i]));
+    }
+    s->raster_latch_valid = (1u << ARRAY_SIZE(odyssey_raster_record)) - 1;
+}
+
+static void odyssey_raster_latch_take(SGIOdysseyState *s)
+{
+    unsigned i;
+
+    s->raster_latch_valid = 0;
+    for (i = 0; i < ARRAY_SIZE(odyssey_raster_record); i++) {
+        unsigned record = odyssey_raster_record[i];
+
+        memcpy(s->raster_latch[i], s->query_current[record],
+               sizeof(s->raster_latch[i]));
+        if (s->query_current_valid & (1u << record)) {
+            s->raster_latch_valid |= 1u << i;
+        }
+    }
+}
+
 static void odyssey_query_records_reset(SGIOdysseyState *s)
 {
     memcpy(s->query_current, odyssey_query_defaults,
            sizeof(s->query_current));
     s->query_current_valid = 0x1f;
+    odyssey_raster_latch_reset(s);
 }
 
 static void odyssey_query_cancel(SGIOdysseyState *s)
@@ -11204,17 +11269,30 @@ static void odyssey_query_finish(SGIOdysseyState *s, uint32_t sequence)
             }
         }
     }
-    for (i = 0; s->query_kind == ODSY_QUERY_KIND_RASTER && i < 2; i++) {
-        const uint32_t *rec = s->query_captured[i ? ODSY_QUERY_COLOUR :
-                                                    ODSY_QUERY_INDEX];
-        uint64_t at = s->query_base + (i ? ODSY_QUERY_RASTER_COLOUR :
-                                           ODSY_QUERY_RASTER_INDEX);
+    if (s->query_kind == ODSY_QUERY_KIND_RASTER) {
+        /* Index at +0x928, colour at +0x93c, texture coordinate at +0x950. */
+        static const unsigned at[] = {
+            [ODSY_RASTER_INDEX] = ODSY_QUERY_RASTER_INDEX,
+            [ODSY_RASTER_COLOUR] = ODSY_QUERY_RASTER_COLOUR,
+            [ODSY_RASTER_TEXCOORD] = 0x950,
+        };
 
-        for (j = 0; j < 1 + odyssey_cmd_arity(rec[0]); j++) {
-            if (sgi_odyssey_publish_be32(&bus, at + 4 * j, rec[j])) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                              "sgi-odyssey: raster query payload failed\n");
-                return;
+        if (s->raster_latch_valid != 7) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-odyssey: unsupported raster-position record\n");
+            return;
+        }
+        for (i = 0; i < ARRAY_SIZE(at); i++) {
+            const uint32_t *rec = s->raster_latch[i];
+
+            for (j = 0; j < 1 + odyssey_cmd_arity(rec[0]); j++) {
+                if (sgi_odyssey_publish_be32(&bus, s->query_base + at[i] +
+                                             4 * j, rec[j])) {
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                                  "sgi-odyssey: raster query payload "
+                                  "failed\n");
+                    return;
+                }
             }
         }
     }
@@ -12713,6 +12791,7 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
                  odyssey_cmd_arity(word));
         odyssey_cmd_report(s, word, note);
         s->cmd_state = ODSY_CMD_SKIP;
+        s->cmd_tag = word;
         s->cmd_operand_count = odyssey_cmd_arity(word);
         s->cmd_operand_index = 0;
     } else if (odyssey_cmd_arity(word)) {
@@ -12752,6 +12831,9 @@ static void odyssey_cmd_word(SGIOdysseyState *s, uint32_t word)
     case ODSY_CMD_SKIP:
         if (++s->cmd_operand_index == s->cmd_operand_count) {
             s->cmd_state = ODSY_CMD_IDLE;
+            if (s->cmd_tag == ODSY_RASTER_TRIGGER) {
+                odyssey_raster_latch_take(s);
+            }
         }
         break;
     case ODSY_CMD_OPERANDS:
@@ -14997,6 +15079,37 @@ static const VMStateDescription vmstate_odyssey_clip_eye = {
     },
 };
 
+/* Sent once a position stream has latched; reset restores the defaults. */
+static bool odyssey_raster_latch_needed(void *opaque)
+{
+    SGIOdysseyState *s = opaque;
+    unsigned i;
+
+    if (s->raster_latch_valid != 7) {
+        return true;
+    }
+    for (i = 0; i < ARRAY_SIZE(odyssey_raster_record); i++) {
+        if (memcmp(s->raster_latch[i],
+                   odyssey_query_defaults[odyssey_raster_record[i]],
+                   sizeof(s->raster_latch[i]))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const VMStateDescription vmstate_odyssey_raster_latch = {
+    .name = "sgi-odyssey/raster-latch",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = odyssey_raster_latch_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_2DARRAY(raster_latch, SGIOdysseyState, 3, 5),
+        VMSTATE_UINT32(raster_latch_valid, SGIOdysseyState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_odyssey_colour_material = {
     .name = "sgi-odyssey/colour-material",
     .version_id = 1,
@@ -15014,6 +15127,7 @@ static int odyssey_pre_load(void *opaque)
 
     /* An absent subsection replaces any destination state with defaults. */
     odyssey_back_material_reset(opaque);
+    odyssey_raster_latch_reset(s);
     s->gl_colour_material = 0;
     memset(s->const_colour, 0, sizeof(s->const_colour));
     s->blend_word = 0;
@@ -15056,6 +15170,15 @@ static int odyssey_post_load(void *opaque, int version_id)
     for (unsigned i = 0; i < ARRAY_SIZE(s->query_current); i++) {
         if (odyssey_cmd_arity(s->query_current[i][0]) >
             ARRAY_SIZE(s->query_current[i]) - 1) {
+            return -EINVAL;
+        }
+    }
+    if (s->raster_latch_valid & ~7u) {
+        return -EINVAL;
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(s->raster_latch); i++) {
+        if (odyssey_cmd_arity(s->raster_latch[i][0]) >
+            ARRAY_SIZE(s->raster_latch[i]) - 1) {
             return -EINVAL;
         }
     }
@@ -15311,6 +15434,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         &vmstate_odyssey_polygon,
         &vmstate_odyssey_back_material,
         &vmstate_odyssey_colour_material,
+        &vmstate_odyssey_raster_latch,
         &vmstate_odyssey_window_tail,
         &vmstate_odyssey_overlay,
         &vmstate_odyssey_const_colour,
