@@ -519,3 +519,23 @@ gl-transfer-coordinate-repeats0 /mips64/sgi/crime/render/gl-transfer-coordinate/
 gl-transfer-coordinate-repeats1 /mips64/sgi/crime/render/gl-transfer-coordinate/repeats/1
 gl-transfer-coordinate-repeats2 /mips64/sgi/crime/render/gl-transfer-coordinate/repeats/2
 gl-transfer-coordinate-inactive-span-source /mips64/sgi/crime/render/gl-transfer-coordinate/inactive-span-source
+
+sz-empty-geometry0 /mips64/sgi/crime/render/sz/empty-geometry/0
+sz-empty-geometry1 /mips64/sgi/crime/render/sz/empty-geometry/1
+sz-empty-geometry2 /mips64/sgi/crime/render/sz/empty-geometry/2
+sz-empty-geometry3 /mips64/sgi/crime/render/sz/empty-geometry/3
+sz-empty-geometry4 /mips64/sgi/crime/render/sz/empty-geometry/4
+sz-empty-geometry5 /mips64/sgi/crime/render/sz/empty-geometry/5
+sz-empty-controls /mips64/sgi/crime/render/sz/empty-controls
+sz-empty-nonempty0 /mips64/sgi/crime/render/sz/empty-nonempty/0
+sz-empty-nonempty1 /mips64/sgi/crime/render/sz/empty-nonempty/1
+sz-empty-nonempty2 /mips64/sgi/crime/render/sz/empty-nonempty/2
+sz-empty-nonempty3 /mips64/sgi/crime/render/sz/empty-nonempty/3
+sz-empty-nonempty4 /mips64/sgi/crime/render/sz/empty-nonempty/4
+sz-empty-nonempty5 /mips64/sgi/crime/render/sz/empty-nonempty/5
+sz-empty-nonempty6 /mips64/sgi/crime/render/sz/empty-nonempty/6
+sz-empty-nonempty7 /mips64/sgi/crime/render/sz/empty-nonempty/7
+sz-empty-nonempty8 /mips64/sgi/crime/render/sz/empty-nonempty/8
+sz-empty-starts /mips64/sgi/crime/render/sz/empty-starts
+sz-empty-migration /mips64/sgi/crime/render/sz/empty-migration
+sz-empty-transport /mips64/sgi/crime/render/sz/empty-transport

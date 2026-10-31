@@ -12020,6 +12020,392 @@ static void sz_atomic_failure(QTestState *s, const Shape *c, const char *path,
     g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
 }
 
+/* The first two have integer candidates but no sample inside all edges. */
+static const int sz_empty_triangles[][3][2] = {
+    { {65, 65}, {129, 65}, {65, 129} },
+    { {63, 66}, {66, 63}, {66, 66} },
+    { {65, 64}, {95, 64}, {65, 128} },
+    { {64, 64}, {128, 128}, {192, 192} },
+    { {-128, 64}, {-64, 64}, {-128, 128} },
+    { {131072, 64}, {131136, 64}, {131072, 128} },
+};
+static const int sz_one_triangle[3][2] = {
+    {64, 64}, {128, 64}, {64, 128},
+};
+
+static void sz_empty_unchanged(QTestState *s, const Shape *c, uint32_t old)
+{
+    triangle_pixels(s, c, triangle_empty, 0, 3, UINT32_MAX);
+    for (unsigned y = 0; y < c->height; y++) {
+        for (unsigned x = 0; x < c->width; x++) {
+            g_assert_cmphex(pixel_read(s, pixel_address(2, x, y, 4), 4),
+                            ==, old);
+        }
+    }
+}
+
+static void test_sz_empty_geometry(gconstpointer selection)
+{
+    const unsigned reverse[] = {0, 2, 1};
+    unsigned n = GPOINTER_TO_UINT(selection);
+    QTestState *s = start_indexed_state();
+    Shape c = triangle_prepare(s, 0, 0, 0);
+    SZCase v = sz_case();
+    int vertices[3][2];
+
+    sz_initialize(s, &c, v.old);
+    qtest_writel(s, DE + 0x58, xy(-2, 3));
+    v.start = INT64_MIN;
+    v.dx = INT64_MAX;
+    v.dy = INT64_C(0x1000001000000000);
+    sz_program(s, &v);
+    for (unsigned i = 0; i < 3; i++) {
+        vertices[i][0] = sz_empty_triangles[n][i][0] + 2 * 64;
+        vertices[i][1] = sz_empty_triangles[n][i][1] - 3 * 64;
+    }
+    for (unsigned k = 0; k < 8; k++) {
+        triangle_vertices(s, vertices, k & 4 ? reverse : NULL, k & 1);
+        qtest_writel(s, DE + 0x60, 0x02000000 | (k % 4) << 16);
+        g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, UINT64_MAX), ==, MEMTX_OK);
+    }
+    sz_empty_unchanged(s, &c, v.old);
+    /* Neither ordinary nor tag SZ may translate an inaccessible mapping. */
+    for (unsigned mode = 0; !selection && mode < 3; mode++) {
+        c = triangle_prepare(s, 0, 0, 0);
+        v = sz_case();
+
+        sz_initialize(s, &c, v.old);
+        triangle_vertices(s, sz_empty_triangles[0], NULL, true);
+        v.start = INT64_MIN;
+        v.dx = INT64_MAX;
+        v.dy = INT64_C(0x1000001000000000);
+        if (mode == 1) {
+            v.draw |= 1;
+            v.control |= 0x1000000;
+            v.stencil = 0x62ff7002;
+        } else if (mode == 2) {
+            v.draw = TRIANGLE_DRAW | 1;
+            v.control = 0xf0000000;
+        }
+        sz_program(s, &v);
+        tile(s, 0, 0, 0x7fff);
+        tile(s, 2, 0, 0x7fff);
+        g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, INT64_MIN), ==, MEMTX_OK);
+    }
+    qtest_quit(s);
+}
+
+static void test_sz_empty_transport(void)
+{
+    const int64_t limit = INT64_C(1) << 36;
+    const int64_t values[] = {
+        -limit, limit, -limit - 1, limit + 1, INT64_MIN, INT64_MAX,
+        INT64_C(0x1000001000000000), -1,
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-empty-z-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    Shape c = triangle_prepare(s, 0, 0, 0);
+    SZCase v = sz_case();
+
+    sz_initialize(s, &c, v.old);
+    triangle_vertices(s, sz_empty_triangles[0], NULL, true);
+    for (unsigned word = 0; word < 3; word++) {
+        uint64_t expected[RENDER_WORDS], after[RENDER_WORDS];
+
+        sz_program(s, &v);
+        save_paired_renderer(s, path, expected);
+        for (unsigned k = 0; k < ARRAY_SIZE(values); k++) {
+            g_assert_cmpint(memtx_writeq(s, DE + 0x9c8 + 8 * word, values[k]),
+                            ==, MEMTX_OK);
+            expected[192 + (0x1c8 + 8 * word) / 4] = values[k];
+            save_paired_renderer(s, path, after);
+            g_assert_cmpmem(expected, sizeof(expected), after, sizeof(after));
+        }
+    }
+    sz_empty_unchanged(s, &c, v.old);
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_sz_empty_controls(void)
+{
+    static const struct {
+        unsigned offset, width;
+        uint64_t value;
+    } invalid[] = {
+        {0x18, 4, TRIANGLE_DRAW | 0x80000006},
+        {0x80, 4, 0x7fc00000},
+        {0x60, 4, 0x02080000},
+        {0x08, 4, 0x220},
+        {0x10, 4, 1},
+        {0x48, 8, UINT64_C(0x0002000100000000)},
+        {0x1c0, 4, 0xf0000000},
+        {0x1e0, 4, 0x62ff7006},
+        {0x1e8, 4, 0x100},
+        {0x1c0, 4, 0x01000000},
+        {0x198, 4, 0x800},
+        {0x1a8, 4, 0x1000},
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-empty-control-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(invalid); n++) {
+        Shape c = triangle_prepare(s, 0, 0, 0);
+        SZCase v = sz_case();
+
+        sz_initialize(s, &c, v.old);
+        triangle_vertices(s, sz_empty_triangles[0], NULL, true);
+        v.draw |= 0x100c01;
+        v.start = INT64_MIN;
+        sz_program(s, &v);
+        qtest_writeq(s, DE + 0x48, bounds(0, 0, 7, 7));
+        qtest_writel(s, DE + 0x198, 0x700);
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, v.color), ==, MEMTX_OK);
+        g_assert_cmpint(memtx_write(s, DE + invalid[n].offset,
+                                    invalid[n].value, invalid[n].width),
+                        ==, MEMTX_OK);
+        sz_atomic_failure(s, &c, path, DE + 0x8d0, 0xcdef0123, 4);
+    }
+    /* Dormant SZ words remain raw and become active only on a later draw. */
+    {
+        Shape c = triangle_prepare(s, 0, 0, 0);
+        SZCase v = sz_case();
+
+        sz_initialize(s, &c, v.old);
+        triangle_vertices(s, sz_empty_triangles[0], NULL, false);
+        v.draw &= ~7U;
+        v.control = v.stencil = v.mask = UINT32_MAX;
+        v.start = INT64_MIN;
+        v.dx = INT64_MAX;
+        v.dy = -1;
+        sz_program(s, &v);
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, v.color), ==, MEMTX_OK);
+        triangle_vertices(s, sz_one_triangle, NULL, true);
+        sz_atomic_failure(s, &c, path, DE + 0x818, v.draw | 4, 4);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_sz_empty_nonempty(gconstpointer selection)
+{
+    const int64_t limit = INT64_C(1) << 36;
+    const int64_t invalid[] = {-limit - 1, limit + 1, INT64_MIN, INT64_MAX};
+    g_autofree char *dir = g_dir_make_tmp("crime-empty-active-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    {
+        unsigned discard = GPOINTER_TO_UINT(selection);
+
+        for (unsigned word = 0; word < 3; word++) {
+            for (unsigned k = 0; k < ARRAY_SIZE(invalid); k++) {
+                Shape c;
+                SZCase v = sz_case();
+
+                if (discard && (word != discard % 3 || k != discard % 4)) {
+                    continue;
+                }
+                c = triangle_prepare(s, 0, 0, 0);
+                sz_initialize(s, &c, v.old);
+                triangle_vertices(s, sz_empty_triangles[0], NULL, true);
+                switch (discard) {
+                case 0:
+                    break;
+                case 1:
+                    v.draw |= 0x100000;
+                    qtest_writeq(s, DE + 0x48, bounds(4, 4, 7, 7));
+                    break;
+                case 2:
+                    qtest_writel(s, DE + 0x10, 0x21);
+                    qtest_writeq(s, DE + 0x20, bounds(4, 4, 7, 7));
+                    break;
+                case 3:
+                    v.draw |= 0x800;
+                    qtest_writel(s, DE + 0x198, 0);
+                    break;
+                case 4:
+                    v.draw &= ~2U;
+                    break;
+                case 5:
+                    v.draw |= 0x80;
+                    v.plane = 0;
+                    break;
+                case 6:
+                    v.draw |= 1;
+                    v.stencil = 0;
+                    break;
+                case 7:
+                    v.control = 0;
+                    break;
+                case 8:
+                    qtest_writeq(s, RE + 0x1000,
+                                 qtest_readq(s, RE + 0x1000) &
+                                 ~UINT64_C(0x8000000000000000));
+                    break;
+                }
+                sz_program(s, &v);
+                g_assert_cmpint(memtx_writeq(s, DE + 0x9c8 + 8 * word,
+                                            invalid[k]), ==, MEMTX_OK);
+                /* Translating by (-1,-1)/64 changes only geometric coverage. */
+                triangle_vertices(s, sz_one_triangle, NULL, true);
+                sz_atomic_failure(s, &c, path, DE + 0x8d0, 0xaabbccdd, 4);
+            }
+        }
+    }
+    /* A one-sample draw with valid coefficients proves the positive fixture. */
+    if (!selection) {
+        Shape c = triangle_prepare(s, 0, 0, 0);
+        SZCase v = sz_case();
+        const uint8_t one[8] = {0, 2};
+
+        sz_initialize(s, &c, v.old);
+        triangle_vertices(s, sz_one_triangle, NULL, true);
+        sz_program(s, &v);
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, v.color), ==, MEMTX_OK);
+        triangle_pixels(s, &c, one, v.color, 3, UINT32_MAX);
+        g_assert_cmphex(pixel_read(s, pixel_address(2, 1, 1, 4), 4),
+                        ==, 0x53000012);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_sz_empty_starts(void)
+{
+    static const struct {
+        unsigned offset, width;
+        uint64_t value;
+    } starts[] = {
+        {0x00, 4, 0x12345678}, {0x08, 4, 0x228},
+        {0x10, 4, 0}, {0x18, 4, TRIANGLE_DRAW | 6},
+        {0x20, 8, UINT64_C(0x0000000000080008)},
+        {0x48, 8, UINT64_C(0x0000000000080008)},
+        {0x50, 4, 0x12345678}, {0x58, 4, 0xf000f000},
+        {0x60, 4, 0x02020000},
+        {0x70, 4, 0x12345678}, {0x70, 8, UINT64_C(0x0123456789abcdef)},
+        {0x74, 4, 0x87654321}, {0x78, 4, 0x13579bdf},
+        {0xa0, 4, 0x11223344}, {0xac, 4, 0x55667788},
+        {0xa8, 4, 3}, {0xa8, 8, UINT64_C(0x1122334455667788)},
+        {0xc0, 4, 0}, {0xc0, 8, UINT64_C(0x1234567887654321)},
+        {0xc4, 4, 0x55aa55aa}, {0xd0, 4, 0xabcdef01},
+        {0xd8, 4, 0x97531246}, {0x1b0, 4, 6}, {0x1b8, 4, 0},
+        {0xe0, 4, 0x11223344}, {0xe4, 4, 0x11223344},
+        {0xe8, 4, 0x11223344}, {0xec, 4, 0x11223344},
+        {0xf0, 4, 0x11223344}, {0xf4, 4, 0x11223344},
+        {0xf8, 4, 0x11223344}, {0xfc, 4, 0x11223344},
+        {0x100, 4, 0x11223344}, {0x104, 4, 0x11223344},
+        {0x108, 4, 0x11223344}, {0x10c, 4, 0x11223344},
+        {0x120, 8, UINT64_C(0xfedcba9876543210)},
+        {0x128, 8, UINT64_C(0xfedcba9876543210)},
+        {0x130, 4, 0x11223344},
+        {0x138, 8, UINT64_C(0xfedcba9876543210)},
+        {0x140, 8, UINT64_C(0xfedcba9876543210)},
+        {0x148, 8, UINT64_C(0xfedcba9876543210)},
+        {0x150, 8, UINT64_C(0xfedcba9876543210)},
+        {0x158, 4, 0x11223344}, {0x15c, 4, 0x55667788},
+        {0x1c0, 4, 0x0e000000},
+        {0x1c8, 8, INT64_MIN}, {0x1d0, 8, INT64_MAX},
+        {0x1d8, 8, UINT64_C(0x1000001000000000)},
+        {0x1e0, 4, 0x62ff7000}, {0x1e8, 4, 0x7f},
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-empty-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    Shape c = triangle_prepare(s, 0, 0, 0);
+    SZCase v = sz_case();
+    uint64_t expected[RENDER_WORDS], after[RENDER_WORDS];
+
+    sz_initialize(s, &c, v.old);
+    triangle_vertices(s, sz_empty_triangles[0], NULL, true);
+    v.start = INT64_MIN;
+    sz_program(s, &v);
+    save_paired_renderer(s, path, expected);
+    for (unsigned n = 0; n < ARRAY_SIZE(starts); n++) {
+        unsigned index = 192 + starts[n].offset / 4;
+        bool paired = starts[n].width == 8 &&
+                      (starts[n].offset == 0x70 || starts[n].offset == 0xa8 ||
+                       starts[n].offset == 0xc0);
+
+        g_assert_cmpint(memtx_write(s, DE + starts[n].offset,
+                                    starts[n].value ^ 1, starts[n].width),
+                        ==, MEMTX_OK);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + starts[n].offset,
+                                    starts[n].value, starts[n].width),
+                        ==, MEMTX_OK);
+        save_paired_renderer(s, path, after);
+        expected[index] = paired ? starts[n].value >> 32 : starts[n].value;
+        if (paired) {
+            expected[index + 1] = (uint32_t)starts[n].value;
+        }
+        g_assert_cmpmem(expected, sizeof(expected), after, sizeof(after));
+        sz_empty_unchanged(s, &c, v.old);
+        /* Control errors still roll back either word of a paired START. */
+        if (starts[n].offset == 0x18 || starts[n].offset == 0x1c8 ||
+            (starts[n].offset == 0x70 && paired)) {
+            qtest_writel(s, DE + 0x10, 1);
+            sz_atomic_failure(s, &c, path, DE + 0x800 + starts[n].offset,
+                              starts[n].value ^ 1, starts[n].width);
+            qtest_writel(s, DE + 0x10, 0);
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_sz_empty_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-empty-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned committed = 0; committed < 2; committed++) {
+        QTestState *from = start(), *to = start_options("-incoming defer");
+        Shape c = triangle_prepare(from, 0, 0, 0);
+        SZCase v = sz_case();
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+
+        sz_initialize(from, &c, v.old);
+        triangle_vertices(from, sz_empty_triangles[0], NULL, true);
+        v.start = INT64_MIN;
+        v.dx = INT64_MAX;
+        v.dy = INT64_C(0x1000001000000000);
+        sz_program(from, &v);
+        if (committed) {
+            g_assert_cmpint(memtx_writeq(from, DE + 0x9c8, UINT64_MAX),
+                            ==, MEMTX_OK);
+        }
+        save_paired_renderer(from, path, before);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        sgi_migrate_stopped(from, uri);
+        sgi_wait_migration(to, "completed");
+        save_paired_renderer(to, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        sz_empty_unchanged(to, &c, v.old);
+        triangle_vertices(to, sz_one_triangle, NULL, true);
+        sz_atomic_failure(to, &c, path, DE + 0x8d0, v.color, 4);
+        qtest_system_reset(to);
+        save_paired_renderer(to, path, after);
+        for (unsigned word = 0; word < 3; word++) {
+            g_assert_cmphex(after[192 + (0x1c8 + 8 * word) / 4], ==, 0);
+        }
+        sz_empty_unchanged(to, &c, v.old);
+        qtest_quit(from);
+        qtest_quit(to);
+        g_unlink(sock);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 static void test_sz_transport(void)
 {
     const int64_t limit = INT64_C(1) << 36;
@@ -21841,6 +22227,40 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(7), test_sz_tags);
     add_case("sgi/crime/render/sz/gl-rectangles", test_sz_gl_rectangles);
     add_case("sgi/crime/render/sz/transport", test_sz_transport);
+    add_data_case("sgi/crime/render/sz/empty-geometry/0",
+                  GUINT_TO_POINTER(0), test_sz_empty_geometry);
+    add_data_case("sgi/crime/render/sz/empty-geometry/1",
+                  GUINT_TO_POINTER(1), test_sz_empty_geometry);
+    add_data_case("sgi/crime/render/sz/empty-geometry/2",
+                  GUINT_TO_POINTER(2), test_sz_empty_geometry);
+    add_data_case("sgi/crime/render/sz/empty-geometry/3",
+                  GUINT_TO_POINTER(3), test_sz_empty_geometry);
+    add_data_case("sgi/crime/render/sz/empty-geometry/4",
+                  GUINT_TO_POINTER(4), test_sz_empty_geometry);
+    add_data_case("sgi/crime/render/sz/empty-geometry/5",
+                  GUINT_TO_POINTER(5), test_sz_empty_geometry);
+    add_case("sgi/crime/render/sz/empty-transport", test_sz_empty_transport);
+    add_case("sgi/crime/render/sz/empty-controls", test_sz_empty_controls);
+    add_data_case("sgi/crime/render/sz/empty-nonempty/0",
+                  GUINT_TO_POINTER(0), test_sz_empty_nonempty);
+    add_data_case("sgi/crime/render/sz/empty-nonempty/1",
+                  GUINT_TO_POINTER(1), test_sz_empty_nonempty);
+    add_data_case("sgi/crime/render/sz/empty-nonempty/2",
+                  GUINT_TO_POINTER(2), test_sz_empty_nonempty);
+    add_data_case("sgi/crime/render/sz/empty-nonempty/3",
+                  GUINT_TO_POINTER(3), test_sz_empty_nonempty);
+    add_data_case("sgi/crime/render/sz/empty-nonempty/4",
+                  GUINT_TO_POINTER(4), test_sz_empty_nonempty);
+    add_data_case("sgi/crime/render/sz/empty-nonempty/5",
+                  GUINT_TO_POINTER(5), test_sz_empty_nonempty);
+    add_data_case("sgi/crime/render/sz/empty-nonempty/6",
+                  GUINT_TO_POINTER(6), test_sz_empty_nonempty);
+    add_data_case("sgi/crime/render/sz/empty-nonempty/7",
+                  GUINT_TO_POINTER(7), test_sz_empty_nonempty);
+    add_data_case("sgi/crime/render/sz/empty-nonempty/8",
+                  GUINT_TO_POINTER(8), test_sz_empty_nonempty);
+    add_case("sgi/crime/render/sz/empty-starts", test_sz_empty_starts);
+    add_case("sgi/crime/render/sz/empty-migration", test_sz_empty_migration);
     add_case("sgi/crime/render/sz/planes", test_sz_planes);
     add_case("sgi/crime/render/sz/fragment-order", test_sz_fragment_order);
     add_case("sgi/crime/render/sz/aliases", test_sz_aliases);

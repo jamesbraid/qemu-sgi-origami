@@ -2272,17 +2272,8 @@ static bool crime_render_sz_state(const uint64_t *p, unsigned opcode,
         !(draw & 0x400000)) {
         return false;
     }
-    if (sz->depth) {
-        sz->start = (int64_t)p[0x1c8 / 4];
-        sz->dx = (int64_t)p[0x1d0 / 4];
-        sz->dy = (int64_t)p[0x1d8 / 4];
-        if ((sz->control & 0xf0000000U) ||
-            sz->start < -CRIME_Z_LIMIT || sz->start > CRIME_Z_LIMIT ||
-            sz->dx < -CRIME_Z_LIMIT || sz->dx > CRIME_Z_LIMIT ||
-            sz->dy < -CRIME_Z_LIMIT || sz->dy > CRIME_Z_LIMIT ||
-            ((opcode == 0 || opcode == 3) && (sz->dx || sz->dy))) {
-            return false;
-        }
+    if (sz->depth && (sz->control & 0xf0000000U)) {
+        return false;
     }
     if (sz->stencil && ((sz->mode & 0x8000) || (sz->mask & ~0xffU) ||
         ((sz->mode >> 8) & 15) > 5 || ((sz->mode >> 4) & 15) > 5 ||
@@ -2304,6 +2295,21 @@ static bool crime_render_sz_state(const uint64_t *p, unsigned opcode,
         }
     }
     return true;
+}
+
+static bool crime_render_sz_coefficients(const uint64_t *p, unsigned opcode,
+                                           CrimeRenderSZ *sz)
+{
+    if (!sz->depth) {
+        return true;
+    }
+    sz->start = (int64_t)p[0x1c8 / 4];
+    sz->dx = (int64_t)p[0x1d0 / 4];
+    sz->dy = (int64_t)p[0x1d8 / 4];
+    return sz->start >= -CRIME_Z_LIMIT && sz->start <= CRIME_Z_LIMIT &&
+           sz->dx >= -CRIME_Z_LIMIT && sz->dx <= CRIME_Z_LIMIT &&
+           sz->dy >= -CRIME_Z_LIMIT && sz->dy <= CRIME_Z_LIMIT &&
+           ((opcode != 0 && opcode != 3) || (!sz->dx && !sz->dy));
 }
 
 static bool crime_render_sz_depth(const CrimeRenderSZ *sz,
@@ -2818,7 +2824,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     int sx, sy, destination_x, destination_y;
     bool copy, stipple, overlap, inside, upload, download, transfer;
     bool alpha, alpha_pass, triangle, sz_active, gl_rectangle;
-    bool native_gl, gl_line, gl_point, gl_span;
+    bool native_gl, gl_line, gl_point, gl_span, sz_validated = false;
     CrimeRenderClip scissor, screen[5];
     CrimeRenderGeometry geometry = { 0 };
     CrimeTriangleOutput output = { 0 };
@@ -2908,7 +2914,9 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         return crime_transfer_fail(offset, "AA START requires native GL line");
     }
     if (((draw & 7) && (copy || !native_gl)) ||
-        !crime_render_sz_state(p, geometry.opcode, &sz)) {
+        !crime_render_sz_state(p, geometry.opcode, &sz) ||
+        (!triangle &&
+         !crime_render_sz_coefficients(p, geometry.opcode, &sz))) {
         return crime_transfer_fail(offset, "unsupported depth/stencil state");
     }
     if (native_gl && (draw & 0x400) &&
@@ -3102,6 +3110,14 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         if (triangle) {
             if (!crime_render_triangle_inside(&geometry, cx, cy)) {
                 continue;
+            }
+            /* Empty geometry consumes no numerical Z, before any discard. */
+            if (!sz_validated) {
+                if (!crime_render_sz_coefficients(p, geometry.opcode, &sz)) {
+                    return crime_transfer_fail(offset,
+                                               "unsupported depth/stencil state");
+                }
+                sz_validated = true;
             }
             if ((draw & 0x10000) &&
                 !crime_triangle_shade(p, &geometry, cx, cy, &color)) {
