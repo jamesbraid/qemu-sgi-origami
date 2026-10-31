@@ -96,7 +96,7 @@ void sgi_head_work_relock(SGIHeadWork *w)
  * A slice runs on the head's own thread, not the main loop's: the main
  * loop raises the processors' timer interrupts, and a draw there would
  * hold it for as long as the draw takes, delaying the scheduler tick past
- * what IRIX makes up.
+ * what the guest scheduler makes up.
  */
 static void sgi_head_work_timer(void *opaque)
 {

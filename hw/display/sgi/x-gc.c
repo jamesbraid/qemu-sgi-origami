@@ -27,7 +27,7 @@ static uint32_t index_mask(uint32_t word)
 /*
  * Whether a 12-bit colour field is a widened component: an 8-bit one
  * b << 4 | b >> 4 for 24-bit TrueColor, a 10-bit one c << 2 | c >> 8 for
- * 30-bit TrueColor, as the IRIX X server's GC builder widens them.
+ * 30-bit TrueColor, as an X server's GC builder widens them.
  */
 static bool canonical_component(unsigned component, bool rgb30)
 {
@@ -104,7 +104,7 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
     uint32_t plane = w[6] & 0x3c;
     uint32_t mask_word = w[4] & ~0x80000000U;
     /*
-     * The IRIX X server's GC builder copies the buffer selector in op
+     * An X server's GC builder copies the buffer selector in op
      * bits 1:0 into bits 3:2 for a format with bit 0x80000. What
      * the second copy selects is unknown; a copy equal to the first is
      * read as the same selection, and any other value is deferred.
