@@ -28,6 +28,7 @@ docs/system/mips/sgi/references.rst
 docs/system/mips/sgi/hardware/qlogic-isp.rst
 docs/system/mips/sgi/hardware/router.rst
 docs/system/mips/sgi/sn.rst
+docs/system/mips/sgi/vocabulary.rst
 docs/system/mips/sgi/hardware/xbow.rst
 docs/system/mips/sgi/hardware/xbridge.rst
 hw/1wire/Kconfig

@@ -19,6 +19,7 @@ chip or board each, with the evidence behind every modelled behaviour.
    ip32
    ip35
    prom-image
+   vocabulary
    references
 
 Hardware
