@@ -146,6 +146,7 @@ Graphics
    hardware/odyssey
    hardware/kona
    hardware/gbe
+   hardware/vice
    hardware/psitech-rad1
    hardware/psitech-rad4
 
