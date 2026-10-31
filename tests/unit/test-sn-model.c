@@ -1874,15 +1874,19 @@ static void test_resolve_product_scope(void)
         const SGIModelTopology *t = entry->value;
         const uint32List *count = t->node_populations->value->
             supported_cpu_populations->value->cpus_per_node;
+        const SGIModelTopologyList *first = catalogue->topologies;
         unsigned int cpus = 0;
 
         for (; count; count = count->next) {
             cpus += count->value;
         }
+        while (strcmp(first->value->name, t->name)) {
+            first = first->next;
+        }
         g_assert_true(sgi_model_topology_matches_product(t, t->product));
-        g_assert_cmpstr(sgi_model_product_topology(catalogue, t->product,
-                                                   t->name)->name, ==,
-                        t->name);
+        /* Of a topology's board variants, the name finds the first. */
+        g_assert_true(sgi_model_product_topology(catalogue, t->product,
+                                                 t->name) == first->value);
         /* A board variant shares its name; -smp tells it apart. */
         g_assert_true(sgi_model_product_variant(catalogue, t->product,
                                                 t->name, cpus) == t);

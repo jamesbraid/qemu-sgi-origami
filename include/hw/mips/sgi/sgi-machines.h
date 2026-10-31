@@ -49,7 +49,12 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp);
 bool sgi_model_topology_matches_product(const SGIModelTopology *t,
                                         const char *product);
 
-/* @machines' topology named @name if it is one of @product's, or NULL. */
+/*
+ * @machines' first topology named @name if it is one of @product's, or
+ * NULL. A topology with board variants has a record per board under the
+ * one name; this returns the first, whatever its board, and only
+ * sgi_model_product_variant() tells them apart.
+ */
 const SGIModelTopology *sgi_model_product_topology(
     const SGIMachines *machines, const char *product, const char *name);
 
@@ -126,6 +131,10 @@ void sgi_model_module_nvram_seed(const SGIModelTopology *t,
  * refused, since the catalogue does not describe it. Offerings of one
  * topology, node count and processor differ only in CPU population, so
  * this returns the first; its storage and init-inputs describe them all.
+ * The option string carries no CPU count, so for a topology with board
+ * variants the offering may be any board's: those differ in more than
+ * population, and a caller that needs one board must match the -smp
+ * itself.
  */
 const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
                                                   const char *options,
