@@ -242,8 +242,34 @@ static void write_register(void *opaque, hwaddr addr, uint64_t value,
     update_irq(s);
 }
 
+/*
+ * The stock IP35 PROM writes its window base into both BARs without sizing
+ * either, and then reaches the OHCI registers at offset 0 of that window.
+ * TI says nothing about two BARs at one base. That the OHCI file answers
+ * there is an approximation. The evidence is only that the PROM code
+ * reaches the OHCI registers at the shared base and that published
+ * inventories show the controller working under IRIX, which may move the
+ * BARs first; the PROM-time decode is unproven. Silicon evidence of the
+ * BAR decode, such as a TI note on the extension decode or a real
+ * I-brick's PROM console showing this probe succeed, would settle it.
+ *
+ * QEMU maps equal-priority BARs in an arbitrary order; route accesses that
+ * land on the extension aperture back to the OHCI file in that case. The
+ * extension contents themselves stay unknown.
+ */
+static bool shares_ohci_base(TSB12LV22State *s)
+{
+    PCIDevice *dev = PCI_DEVICE(s);
+    pcibus_t base = pci_get_bar_addr(dev, 1);
+
+    return base != PCI_BAR_UNMAPPED && base == pci_get_bar_addr(dev, 0);
+}
+
 static uint64_t extension_read(void *opaque, hwaddr addr, unsigned size)
 {
+    if (shares_ohci_base(opaque)) {
+        return read_register(opaque, addr, size);
+    }
     unsupported(addr, 0);
     return 0;
 }
@@ -251,6 +277,10 @@ static uint64_t extension_read(void *opaque, hwaddr addr, unsigned size)
 static void extension_write(void *opaque, hwaddr addr, uint64_t value,
                             unsigned size)
 {
+    if (shares_ohci_base(opaque)) {
+        write_register(opaque, addr, value, size);
+        return;
+    }
     unsupported(addr, value);
 }
 

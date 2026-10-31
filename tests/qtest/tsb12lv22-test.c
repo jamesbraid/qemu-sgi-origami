@@ -122,6 +122,22 @@ static void test_pci_decode(void)
 }
 
 /*
+ * The stock IP35 PROM writes one base into both BARs and then drives the
+ * OHCI registers there. A pass needs the OHCI file, not the extension
+ * aperture that QEMU maps in front of it, to answer at the shared base.
+ */
+static void test_shared_base(void)
+{
+    TestOHCI t = open_card("");
+
+    qpci_config_writel(t.dev, PCI_BASE_ADDRESS_1, t.bar[0].addr);
+    g_assert_cmphex(read_reg(&t, 0x00), ==, 0x00010000);
+    write_reg(&t, 0x88, 0x00020000);
+    g_assert_cmphex(read_reg(&t, 0x88), ==, 0x00020000);
+    close_card(&t);
+}
+
+/*
  * Malta's GT64120 maps PCI memory with an alias. Unlike the Bridge's
  * 32-bit transport, this existing host lets raw widths reach the card.
  * The index register is little-endian; its big-endian PCI data view swaps.
@@ -390,6 +406,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("tsb12lv22/pci", test_pci);
     qtest_add_func("tsb12lv22/pci-decode", test_pci_decode);
+    qtest_add_func("tsb12lv22/shared-base", test_shared_base);
     qtest_add_func("tsb12lv22/access-width", test_access_width);
     qtest_add_func("tsb12lv22/defaults", test_defaults);
     qtest_add_func("tsb12lv22/masks", test_masks);
