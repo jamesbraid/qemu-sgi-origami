@@ -91,10 +91,11 @@ static const SGIL1ProductProfile l1_profiles[] = {
     { "nbrick", 0x4e, 0, 0, false, L1_O3K_IBRICK },
     /*
      * The Origin 3900 and Onyx 3000 Cx-brick: one L1 for one to four IP53
-     * node boards. Its type character is unknown, so it has no default;
-     * brick-type-code supplies one.
+     * node boards. The L1 firmware's personality for it is 6, and request
+     * 0x0003 returns that letter (router board records datasheet, "Other
+     * answers from the same handler"); brick-type-code overrides it.
      */
-    { "cxbrick", 0, 0, 0, true, L1_O3K_CXBRICK },
+    { "cxbrick", 0x36, 0, 0, true, L1_O3K_CXBRICK },
     /*
      * The Onyx 3000 V-brick: the X-brick's chassis and midplane XBridge
      * with V12 boards in its slots, and its own L1, cabled to a C-brick
@@ -1301,21 +1302,34 @@ static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
         l1_reply_direct(recipient, channel, 0, 2, fields, 10);
         return true;
     case 4:
-        if (!s->brick_serial || !s->brick_serial[0]) {
+        if (l1_is_cxbrick(s) ||
+            (s->router_board && !strcmp(s->router_board, "cxbrick"))) {
+            /*
+             * Letter 6 answers per port with the serial of the board record
+             * the port names: NODE n on node link n, ROUTER on the router
+             * port, which also serves as the brick's serial. These are the
+             * synthetic serials the records carry.
+             */
+            char serial[SGI_SYNTHETIC_TEXT_MIN_WIDTH + 1];
+
+            if (l1_is_cxbrick(s)) {
+                sgi_synthetic_text_serial(serial,
+                                          SGI_SYNTHETIC_TEXT_MIN_WIDTH, 'N',
+                                          s->identity_index * 4 + s->cx_link);
+            } else {
+                sgi_synthetic_text_serial(serial,
+                                          SGI_SYNTHETIC_TEXT_MIN_WIDTH, 'R',
+                                          s->identity_index);
+            }
+            fields[0] = 1;
+            pstrcpy((char *)fields + 1, sizeof(fields) - 1, serial);
+            l1_reply_direct(recipient, channel, 0, 1, fields,
+                            2 + strlen(serial));
+        } else if (!s->brick_serial || !s->brick_serial[0]) {
             l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
         } else {
             fields[0] = 1;
-            if (l1_is_cxbrick(s)) {
-                qemu_log_mask(LOG_UNIMP,
-                              "sgi-l1: cxbrick serial request answered with "
-                              "the brick serial and the link, not the "
-                              "board's serial the firmware returns\n");
-                snprintf((char *)fields + 1, sizeof(fields) - 1, "%s.%u",
-                         s->brick_serial, s->cx_link);
-            } else {
-                pstrcpy((char *)fields + 1, sizeof(fields) - 1,
-                        s->brick_serial);
-            }
+            pstrcpy((char *)fields + 1, sizeof(fields) - 1, s->brick_serial);
             l1_reply_direct(recipient, channel, 0, 1, fields,
                              2 + strlen((char *)fields + 1));
         }
@@ -1680,12 +1694,10 @@ static void l1_o3k_brick_print(SGIL1State *s)
     } else {
         g_strlcpy(bay, "--", sizeof(bay));
     }
-    /* A Cx-brick's letter is unknown unless supplied; "?" is the guide's. */
     l1_printf(s, "rack: %s, slot: %s, partition: %u, type: %c, "
               "source: EEPROM\r\n", rack, bay, s->partition,
               l1_is_iobrick(s) ? (char)s->profile->identity :
-              !l1_is_cxbrick(s) ? 'C' :
-              s->brick_type_code ? (char)s->brick_type_code : '?');
+              !l1_is_cxbrick(s) ? 'C' : (char)l1_brick_type_character(s));
 }
 
 /*
@@ -2716,6 +2728,10 @@ static void l1_o300_board_fields(SGIL1State *s, unsigned component,
     l1_o300_ascii_field(&cursor, end, fields[4]);
 }
 
+/*
+ * The compatibility modes that reach this text are refused at realize for
+ * the Origin 3000 profiles, so a Cx-brick never prints brick-serial here.
+ */
 static char *l1_o300_command_text(SGIL1State *s, const char *command)
 {
     const char *brick_serial = s->brick_serial && s->brick_serial[0] ?
