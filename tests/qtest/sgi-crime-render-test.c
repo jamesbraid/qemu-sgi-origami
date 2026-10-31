@@ -12414,6 +12414,8 @@ static void test_sz_empty_migration(void)
         uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
 
         sz_initialize(from, &c, v.old);
+        /* Anchor at vertex 2 so restored Dy contributes at sample (1, 1). */
+        qtest_writel(from, DE + 0x60, 0x02000000);
         triangle_vertices(from, sz_empty_triangles[0], NULL, true);
         v.start = INT64_MIN;
         v.dx = INT64_MAX;
