@@ -9830,7 +9830,8 @@ done:
  * depth word's top byte is not stored. Where the board keeps the stencil
  * byte inside a stored pixel is UNKNOWN (datasheet, "What would settle the
  * rest"); the stencil-round-trip qtest pins this choice. A written stencil
- * word keeps its low byte and a written depth word its low 24 bits.
+ * word keeps its index (bits 23:16) and a written depth word its low 24
+ * bits.
  *
  * MODEL CHOICE, DMA writes (the gl-zs-write-rules qtest pins each): they
  * pass odyssey_pixel_allowed(), so clip rectangles and the window-ID
@@ -9873,12 +9874,14 @@ static bool odyssey_dma_zs_write(const uint32_t *hdr)
  * One pixel of a depth or stencil write, chosen by register 0x0452. The
  * meaning of the bits is ESTABLISHED (the datasheet's "Depth and stencil by
  * pixel burst"): bit 24 enables depth, bits 19:12 are the stencil write
- * mask. INFERRED, not stated by the datasheet: the word is depth (its low
- * 24 bits) when bit 24 is set, and merges into the stencil byte as
- * (word & mask) | (old & ~mask), ordinary write-mask semantics. A word may
- * take both planes when both are enabled; that is a MODEL CHOICE, with the
- * stencil byte taken from the word's low byte to fit the model's plane
- * split (the gl-zs-write-enables qtest pins it). LIMIT: whether the
+ * mask. A stencil download packs the index in bits 23:16 with no mask, and
+ * the burst copies the word unchanged (ESTABLISHED, datasheet). INFERRED:
+ * the word is depth (its low 24 bits) when bit 24 is set, and the index
+ * merges into the stencil byte as (index & mask) | (old & ~mask), ordinary
+ * write-mask semantics. MODEL CHOICE: the mask applies to the index bits in
+ * the same positions; LIMIT: how the board aligns the mask bits to the index
+ * is UNKNOWN. A word may take both planes when both are enabled, also a
+ * MODEL CHOICE (the gl-zs-write-enables qtest pins both). LIMIT: whether the
  * depth-test and stencil-test bits of 0x0404 gate the write is UNKNOWN; the
  * model applies neither.
  */
@@ -9894,7 +9897,9 @@ static void odyssey_dma_zs_write_pixel(SGIOdysseyState *s, int64_t x,
     if (mask) {
         uint32_t old = odyssey_gl_load_stencil(s, x, y);
 
-        odyssey_gl_store_stencil(s, x, y, (word & mask) | (old & ~mask));
+        uint32_t idx = (word >> 16) & 0xff;
+
+        odyssey_gl_store_stencil(s, x, y, (idx & mask) | (old & ~mask));
     }
 }
 
