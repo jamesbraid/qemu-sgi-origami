@@ -684,6 +684,14 @@ static void test_dimm_numbering(void)
     }
     /* A linear numbering would put DIMM 1 at component 4. */
     g_assert_cmpint(dimm_at(s, 4), !=, 1);
+    /* The board marker the Cx-brick's SPDs carry is 0 on a C-brick. */
+    length = eeprom(s, 0, LOCAL_GENERAL, 3, 4, 99, 1, reply);
+    g_assert_cmpuint(length, ==, 13);
+    g_assert_cmpuint(reply[12], ==, 0);
+    /* The rank density byte the Cx-brick fills in is 0 here too. */
+    length = eeprom(s, 0, LOCAL_GENERAL, 3, 4, 31, 1, reply);
+    g_assert_cmpuint(length, ==, 13);
+    g_assert_cmpuint(reply[12], ==, 0);
     /* Past the table, and in the unfitted region, nothing answers. */
     length = eeprom(s, 0, LOCAL_GENERAL, 11, 4, 0, 16, reply);
     expect_code(reply, length, -104);

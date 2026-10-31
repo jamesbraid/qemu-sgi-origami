@@ -953,6 +953,37 @@ static void l1_selected_format(SGIL1State *s, SGIL1State *recipient,
     l1_reply_direct(recipient, channel, 0, count, fields, count * 5);
 }
 
+/* The chunk of a present record that a read at @offset asks for. */
+static void l1_eeprom_reply(SGIL1State *recipient, uint8_t channel,
+                            const SGIL1EEPROM *record, uint32_t offset,
+                            uint32_t requested)
+{
+    uint8_t fields[122];
+    unsigned length;
+
+    /* An offset at or past the area is out of range. */
+    if (offset >= record->length) {
+        l1_reply_direct(recipient, channel, -105, 0, NULL, 0);
+        return;
+    }
+    length = MIN(requested, record->length - offset);
+    if (length > 116) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: EEPROM reply exceeds frame capacity\n");
+        l1_reply_direct(recipient, channel, -105, 0, NULL, 0);
+        return;
+    }
+    fields[0] = 0;
+    stl_be_p(fields + 1, record->length - offset - length);
+    if (requested) {
+        fields[5] = 0x80 | length;
+        memcpy(fields + 6, record->data + offset, length);
+        l1_reply_direct(recipient, channel, 0, 2, fields, 6 + length);
+    } else {
+        l1_reply_direct(recipient, channel, 0, 1, fields, 5);
+    }
+}
+
 static void l1_eeprom(SGIL1State *s, SGIL1State *recipient, uint8_t channel,
                       const uint8_t *args)
 {
@@ -960,9 +991,8 @@ static void l1_eeprom(SGIL1State *s, SGIL1State *recipient, uint8_t channel,
     uint32_t area = ldl_be_p(args + 6);
     uint32_t offset = ldl_be_p(args + 11);
     uint32_t requested = ldl_be_p(args + 16);
-    unsigned index, length;
+    unsigned index;
     SGIL1EEPROM *record;
-    uint8_t fields[122];
 
     trace_sgi_l1_eeprom(s->profile->name, component, area, offset, requested);
     if (args[0] || args[5] || args[10] || args[15]) {
@@ -999,50 +1029,113 @@ static void l1_eeprom(SGIL1State *s, SGIL1State *recipient, uint8_t channel,
         l1_reply_direct(recipient, channel, -107, 0, NULL, 0);
         return;
     }
-    /* An offset at or past the area is out of range. */
-    if (offset >= record->length) {
-        l1_reply_direct(recipient, channel, -105, 0, NULL, 0);
-        return;
-    }
-    length = MIN(requested, record->length - offset);
-    if (length > 116) {
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-l1: EEPROM reply exceeds frame capacity\n");
-        l1_reply_direct(recipient, channel, -105, 0, NULL, 0);
-        return;
-    }
-    fields[0] = 0;
-    stl_be_p(fields + 1, record->length - offset - length);
-    if (requested) {
-        fields[5] = 0x80 | length;
-        memcpy(fields + 6, record->data + offset, length);
-        l1_reply_direct(recipient, channel, 0, 2, fields, 6 + length);
-    } else {
-        l1_reply_direct(recipient, channel, 0, 1, fields, 5);
-    }
+    l1_eeprom_reply(recipient, channel, record, offset, requested);
 }
 
+static void l1_o3k_dimm(SGIL1EEPROM *record, unsigned board, unsigned dimm,
+                        uint8_t density);
+
 /*
- * A Cx-brick board link reads its own board's records at component 0, the
- * number a one-node module uses; the model keeps board n's at n. Another
- * board's records, the router board's and the power entry module's are
- * not given to it, a model choice.
+ * The Cx-brick's EEPROM components, as the firmware's personality for it
+ * numbers them (router board records datasheet, "Personality 6"): 0 the
+ * power inlet, 1 the router board, then for each node board a board record
+ * followed by its eight DIMM SPDs in the order 0, 2, 4, 6, 1, 3, 5, 7. Board
+ * n's record is component 2 + 9 * n. Thirty-eight entries.
+ *
+ * The firmware numbers a request by the port it arrived on (the datasheet's
+ * "Component numbers by requesting port"; the port to board mapping is
+ * inferred). A node board's link n asks for component c and gets table entry:
+ *   c = 0     2 + 9n, its own node record
+ *   c = 1     3 + 9n, its own DIMM 0 (not the router)
+ *   c >= 2    c + 9n, so 3 to 10 are its own DIMMs and larger numbers reach
+ *             other boards' entries; 38 and up are absent
+ * The router's own port is the router-window L1, whose router-profile
+ * records answer component 1 and nothing else. This L1 has no router port,
+ * so the router record and the power inlet (reachable only from that port)
+ * are not served here.
+ *
+ * Model choices, all approximations:
+ *  - The port to board mapping (link n is node board n) is inferred.
+ *  - The power inlet is absent: its record contents are unknown, and the
+ *    PROM never asks for it.
+ *  - SPDs exist only for the DIMMs the catalogue fits: 2048 MiB per node as
+ *    two 1 GiB DIMMs in slots 0 and 1, the only fit the Origin 3900 offers.
+ *    The population of a real Cx-brick is unknown. An SPD has a valid
+ *    checksum, byte 13 zero (the PROM's memory self-test decides the width),
+ *    and byte 31 the 1 GiB rank density the PROM takes only if its memory
+ *    probe finds nothing. All other type and timing bytes stay zero; the
+ *    PROM does not read them.
+ *
+ * This does not go through l1_eeprom(): the selected-record overlay and the
+ * invalid-area answer (minus 107) are unreachable here, since the Origin
+ * 3000 profiles take no record files and mark no area invalid.
  */
+#define L1_CX_NODE_STRIDE 9
+#define L1_CX_COMPONENTS (2 + SGI_L1_CX_BOARDS * L1_CX_NODE_STRIDE)
+/* The DIMM slots the catalogue's memory fit populates, and their density. */
+#define L1_CX_FITTED_DIMMS 0x03
+#define L1_CX_SPD_DENSITY_1GB 0x01
+
 static void l1_cx_eeprom(SGIL1State *s, SGIL1State *recipient,
                          uint8_t channel, const uint8_t *args)
 {
-    uint8_t copy[20];
+    static const uint8_t dimm_order[8] = { 0, 2, 4, 6, 1, 3, 5, 7 };
+    uint32_t asked = ldl_be_p(args + 1);
+    uint32_t component = asked;
+    uint32_t area = ldl_be_p(args + 6);
+    uint32_t offset = ldl_be_p(args + 11);
+    uint32_t requested = ldl_be_p(args + 16);
+    SGIL1EEPROM spd = { 0 };
+    const SGIL1EEPROM *record;
+    unsigned slot, board, dimm;
 
-    memcpy(copy, args, sizeof(copy));
-    if (!copy[0] && ldl_be_p(copy + 1)) {
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-l1: cxbrick component %u has no record on board "
-                      "%u's link\n", ldl_be_p(copy + 1), s->cx_link);
+    if (asked >= L1_CX_COMPONENTS) {
+        /* Absent on any link; the offset below cannot wrap. */
+        trace_sgi_l1_cx_eeprom(asked, asked);
         l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
         return;
     }
-    stl_be_p(copy + 1, s->cx_link);
-    l1_eeprom(s, recipient, channel, copy);
+    if (component < 2) {
+        component = (component ? 3 : 2) + L1_CX_NODE_STRIDE * s->cx_link;
+    } else {
+        component += L1_CX_NODE_STRIDE * s->cx_link;
+    }
+    trace_sgi_l1_cx_eeprom(asked, component);
+    trace_sgi_l1_eeprom(s->profile->name, component, area, offset, requested);
+    if (args[0] || args[5] || args[10] || args[15]) {
+        l1_reply_direct(recipient, channel, -100, 0, NULL, 0);
+        return;
+    }
+    board = (component - 2) / L1_CX_NODE_STRIDE;
+    slot = (component - 2) % L1_CX_NODE_STRIDE;
+    dimm = slot ? dimm_order[slot - 1] : 0;
+    if (component >= L1_CX_COMPONENTS || !l1_cx_fitted_board(s, board) ||
+        (slot && !(L1_CX_FITTED_DIMMS & (1u << dimm)))) {
+        l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
+        return;
+    }
+    if (area > 4) {
+        l1_reply_direct(recipient, channel, -105, 0, NULL, 0);
+        return;
+    }
+    if (!slot) {
+        /* A node board record: areas 1 and 2 only. */
+        if (area != 1 && area != 2) {
+            l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
+            return;
+        }
+        record = &s->records[(area == 1 ? 0 : 16) + board];
+    } else {
+        /* A DIMM: an SPD, area 4 only, made when it is asked for. */
+        if (area != 4) {
+            l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
+            return;
+        }
+        l1_o3k_dimm(&spd, board, dimm, L1_CX_SPD_DENSITY_1GB);
+        record = &spd;
+    }
+    l1_eeprom_reply(recipient, channel, record, offset, requested);
+    g_free(spd.data);
 }
 
 /* A destination nobody serves gets the router's own error reply. */
@@ -1213,6 +1306,10 @@ static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
         } else {
             fields[0] = 1;
             if (l1_is_cxbrick(s)) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-l1: cxbrick serial request answered with "
+                              "the brick serial and the link, not the "
+                              "board's serial the firmware returns\n");
                 snprintf((char *)fields + 1, sizeof(fields) - 1, "%s.%u",
                          s->brick_serial, s->cx_link);
             } else {
@@ -4300,18 +4397,23 @@ static void l1_o3k_board(SGIL1State *s, unsigned component,
 
 /*
  * A synthetic JEDEC-style SPD. Only the length and size bytes, the checksum
- * the model validates, and a position marker in the assembly serial bytes
- * are set; the type and timing bytes are unknown and stay zero.
+ * the model validates, and a position marker are set: the assembly serial
+ * bytes name the DIMM and the next byte the node board (a Cx-brick's; 0 on
+ * a C-brick). Byte 31 is the rank density the Cx-brick supplies (0 on a
+ * C-brick). The type and timing bytes are unknown and stay zero.
  */
-static void l1_o3k_dimm(SGIL1EEPROM *record, unsigned dimm)
+static void l1_o3k_dimm(SGIL1EEPROM *record, unsigned board, unsigned dimm,
+                        uint8_t density)
 {
     uint8_t *spd = g_malloc0(128);
     uint8_t sum = 0;
 
     spd[0] = 128;
     spd[1] = 8;
+    spd[31] = density;
     memcpy(spd + 95, "EMU", 3);
     spd[98] = dimm;
+    spd[99] = board;
     for (unsigned i = 0; i < 63; i++) {
         sum += spd[i];
     }
@@ -4406,10 +4508,9 @@ static bool l1_build_o3k_identity(SGIL1State *s, Error **errp)
      */
     if (l1_is_cxbrick(s)) {
         /*
-         * One node board record per fitted board, board n's at component
-         * n; the board link maps its own to component 0. The DIMM, router
-         * board and power entry module records are not modeled: their
-         * layout is unknown.
+         * One node board record per fitted board, board n's at slot n;
+         * l1_cx_eeprom numbers them as the firmware's table does and makes
+         * the DIMMs' SPDs on demand.
          */
         SGIL1CPUContext cpu_context = {
             .mode_word = s->cpu_mode_word,
@@ -4445,7 +4546,7 @@ static bool l1_build_o3k_identity(SGIL1State *s, Error **errp)
     for (unsigned dimm = 0; dimm < 8; dimm++) {
         if (s->dimm_mask & (1u << dimm)) {
             l1_o3k_dimm(&s->records[32 + 3 + (dimm >> 1) + 4 * (dimm & 1)],
-                        dimm);
+                        0, dimm, 0);
         }
     }
     return true;

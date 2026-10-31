@@ -7412,12 +7412,13 @@ static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
 
         if (cx_brick && s->controllers[owner]) {
             /*
-             * A Cx-brick's router sits on its one L1's board, and the stock
-             * PROM reads the router's identity through the router's UART
-             * window, which no source describes for a Cx-brick. Approximate
-             * it with a router-profile L1 behind the window, sharing the
-             * brick's serial and taking the slot after its four boards' (the
-             * PROM refuses two modules at one slot). It is not
+             * A Cx-brick's router is the fifth port of its one L1, and the
+             * stock PROM reads the router's record through the router's UART
+             * window; the L1 numbers that port's component 1 as the ROUTER
+             * record. Approximate the port with a router-profile L1 behind
+             * the window, sharing the brick's serial and taking the slot
+             * after its four boards' (the PROM refuses two modules at one
+             * slot). It is not
              * a second controller of the brick: it is not listed among the
              * topology's controllers and no node reaches it.
              */
