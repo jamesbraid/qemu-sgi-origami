@@ -630,3 +630,57 @@ types. The Tezro tower and rack profiles select ``0x39`` and ``0x51``
 respectively, following the published Linux IP35 machine-name mapping.
 Physical L1 type replies remain unmeasured. The public captures do not establish the selected clocks,
 an installed flash image, or the complete PIC and IO9 interrupt wiring.
+
+.. _sgi-ip59-profiles:
+
+IP59 node board profiles
+------------------------
+
+The IP59 is the 1 GHz generation of the IP53 compute board: the same
+four-socket, eight-DIMM 2U design with one Bedrock (the inventory prints
+``HUB ... Revision 2 Speed 200.00 Mhz``) and the same IO9 and interface boards.
+It is inferred to have been sold as an upgrade for the Origin 350, Onyx 350
+and Tezro; one owner reports fitting a quad 1 GHz board into an Onyx 4 G2N
+brick. The model therefore builds each IP59
+product from the IP53 assembly, PIC and IO9, and changes only what the
+captures show: the node-board record, and the processor tuple of 1.0 GHz
+R16000 revision 3.0 with a 16 MB secondary cache at one third of the CPU clock
+(333 MHz, ``Tap 0x15``).
+
+The 2U products, the Onyx 4 host and the Tezro have an IP59 topology, selected with ``topology=``. The IP53
+topologies are unchanged and stay the defaults, except for ``onyx4-host``,
+which now defaults to the IP59 topology.
+
+===========================  =================================  ======
+Topology                     Machine                            Memory
+===========================  =================================  ======
+``origin350-ip59``           ``origin350``                      2 GiB
+``onyx350-ip59``             ``onyx350``                        8 GiB
+``tezro-tower-one-ip59``     ``tezro``, one processor           4 GiB
+``tezro-tower-multi-ip59``   ``tezro``, two or four             4 GiB
+``tezro-rack-ip59``          ``tezro``, rack first enclosure    4 GiB
+``onyx4-host-ip59``          ``onyx4-host``                     8 GiB
+===========================  =================================  ======
+
+The L1 reports the node board from its record, as it does for IP53. A
+four-processor node reports ``IP59_4CPU``, part ``030-1989-003``, revision
+``-C``, the most common revision in the captures. A two-processor node reports
+``IP59_2CPU``, part ``030-2059-002``, revision ``A``. A one-processor Tezro
+keeps the L1's generic record: no capture shows a one-processor IP59 board, so
+its part and revision are unknown. Serials and barcodes use the
+synthetic scheme; part names and revisions are the captured values.
+
+The reset-mode word ``0x009dad85`` and the flash configuration word
+``0x569dad85`` are synthetic inputs, as for the Onyx 4 host before them: no
+published updater row covers a 1 GHz, 16 MB part, the held PROM has no such
+row, and no raw Config0 or processor revision register has been read from a
+1 GHz module. The model does not claim to know whether the part is an R16000A.
+The PROM payload is the same 6.210 image the IP53 profiles use; real IP59
+boards ran 6.210 and 6.211.
+
+The IP59 L1 differs from the IP53's in firmware tables the model does not
+carry: three further fans (``N0 LEFT``, ``N0 CNTR`` and ``N0 RIGHT``), IP59
+sensor names and limits, and different expander names. The L1 model does not
+produce environment readings, so none of this is visible to a guest.
+Separate IP59 modules may be mixed with IP53 modules in one NUMAlink system
+as real systems were; the one-node profiles here do not build such a system.

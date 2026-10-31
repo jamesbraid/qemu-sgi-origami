@@ -1,0 +1,275 @@
+# SPDX-License-Identifier: BSD-3-Clause
+layer_version: 1
+sources:
+  ip59-node-board: "web:irixnet-thread-2263  module 001c01 of the captured system: Part:030-1989-003;Name:IP59_4CPU;Revision:-C, four 1.0 GHz R16000 revision 3.0 with 16 MB secondary cache"
+  tezro-deskside-trial: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected 1 GHz and 16 MiB Tezro runtime inputs"
+  tezro-deskside-trial-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
+  tezro-board-guide: '007-4564-001 printed pages 26-29 and 38; 007-4643-003 printed pages 21-29: supported processor populations and PCI/IO9 location'
+  tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Tezro tower and rack software limits"
+layer:
+  kind: module
+  id: ip59-tezro-module
+  requires:
+    architecture: sn1
+    assembly: ip53-tezro
+  data:
+    components:
+    - id: chassis
+      name: Tezro processor enclosure
+      kind: chassis
+      provenance: vendor-document
+      sources:
+      - tezro-deskside-trial
+    - id: ip59-board
+      name: IP59 board in selected compatibility model
+      kind: board
+      hardware_kind: ip53
+      parent: chassis
+      provenance: derived
+      sources:
+      - tezro-board-guide
+      - tezro-software-choice-limit
+    - id: bedrock
+      name: Bedrock
+      kind: node-asic
+      hardware_kind: bedrock
+      datasheet_contracts:
+      - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi
+      - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb
+      - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni
+      - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io
+      - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md
+      - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb
+      parent: ip59-board
+      node_asic:
+        processor_interfaces: 2
+        cpus_per_interface: 2
+      identity:
+        ni_revision: 2
+        widget_revision: 2
+        clock_mhz: 200
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: cpu0
+      name: R16000
+      kind: cpu
+      hardware_kind: r16000
+      parent: bedrock
+      identity:
+        cache_clock_mhz: 333
+        r16000_reset_mode: 0x009dad85
+        r16000_scache_bytes: 16777216
+        required_properties:
+        - r16000-experimental
+        - r16000-reset-mode
+        - r16000-scache-bytes
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: memory
+      name: node memory
+      kind: memory
+      parent: bedrock
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: l1
+      name: L1 system controller
+      kind: system-controller
+      hardware_kind: l1
+      datasheet_contracts:
+      - qemu:docs/system/mips/sgi/hardware/l1.rst
+      system_controller:
+        kind: l1
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: pic-board-f
+      name: PIC board at widget 15
+      kind: board
+      parent: chassis
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: pic-xio-f
+      name: PIC at widget 15
+      kind: pci-host-bridge
+      hardware_kind: pic
+      datasheet_contracts:
+      - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-pic
+      parent: pic-board-f
+      pci_host_bridge:
+        heads: 2
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: io9
+      name: IO9 compatibility device
+      kind: board
+      hardware_kind: io9
+      parent: chassis
+      identity:
+        part: 030-1771-005-A
+      provenance: derived
+      sources:
+      - tezro-software-choice-limit
+      notes: The part identifies the selected deskside-compatible IO9 software input; tower and rack fitment is unknown.
+    - id: ioc4
+      name: IOC4
+      kind: io-controller
+      hardware_kind: ioc4
+      datasheet_contracts:
+      - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-ioc4
+      parent: io9
+      identity:
+        pci_revision: 83
+      ioc4:
+        clock_hz: 66666667
+        serial_dma_experimental: true
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+      - tezro-deskside-trial-review
+    - id: ds1744
+      name: DS1744-compatible timekeeper
+      kind: rtc
+      hardware_kind: ds1744
+      datasheet_contracts:
+      - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-ds1744
+      parent: io9
+      fresh_year_base: 1968
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+      - tezro-deskside-trial-review
+      notes: Synthetic 32 KiB timekeeper geometry selected for this software profile. The fitted IO9 part and physical address wiring remain unknown. The guest driver's 1968 year convention applies to a fresh seed, not to the physical part identity.
+    - id: isp12160
+      name: QLogic ISP12160
+      kind: subfunction
+      hardware_kind: isp12160
+      parent: io9
+      identity:
+        pci_revision: 6
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+      - tezro-deskside-trial-review
+    - id: bcm5701
+      name: Broadcom BCM5701
+      kind: subfunction
+      hardware_kind: bcm5701
+      parent: io9
+      identity:
+        pci_revision: 0
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+      - tezro-deskside-trial-review
+    buses:
+    - id: sysad0
+      name: SysAD
+      kind: sysad
+      master: cpu0
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: xio
+      name: XIO
+      kind: xio
+      master: bedrock
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - id: io9-pci
+      name: IO9 PCI bus
+      kind: pci
+      master: pic-xio-f
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    connections:
+    - component: bedrock
+      bus: sysad0
+      role: endpoint
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - component: cpu0
+      bus: sysad0
+      role: master
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - component: bedrock
+      bus: xio
+      role: master
+      widget: 10
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - component: pic-xio-f
+      bus: xio
+      role: bridge-upstream
+      widget: 15
+      controlled_by: bedrock
+      xio:
+        physical_attachment: direct-link
+        enumerated_widget: 15
+        discovery_widget: 15
+        decoded_widgets:
+        - 15
+        identity_aliases:
+        - widget: 15
+          roles:
+          - enumerated
+          - discovery
+          - decoded
+          - legacy
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - component: pic-xio-f
+      bus: io9-pci
+      role: bridge-downstream
+      pci_head: 0
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+    - component: ioc4
+      bus: io9-pci
+      role: endpoint
+      pci_device: 1
+      pci_function: 0
+      intx_pin: inta
+      pic_input: 0
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+      - tezro-deskside-trial-review
+    - component: isp12160
+      bus: io9-pci
+      role: endpoint
+      pci_device: 3
+      pci_function: 0
+      intx_pin: inta
+      pic_input: 2
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+      - tezro-deskside-trial-review
+    - component: bcm5701
+      bus: io9-pci
+      role: endpoint
+      pci_device: 4
+      pci_function: 0
+      intx_pin: inta
+      pic_input: 3
+      provenance: derived
+      sources:
+      - tezro-deskside-trial
+      - tezro-deskside-trial-review
+    links:
+    - kind: ioc4-clock
+      source: ds1744
+      target: ioc4

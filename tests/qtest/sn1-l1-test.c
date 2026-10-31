@@ -4232,6 +4232,35 @@ static void test_machine_node_board_profiles(void)
         { "onyx4-host,topology=onyx4-host-serial-compat", "8G", 4,
           "0x009dad85", "0x1000000", NULL, NULL, NULL, 0x37,
           { 1, 18, 5 }, 0x569dad85, 1000, 200 },
+        /*
+         * The IP59 node boards: the captured four-processor record, and
+         * the two-processor one where the topology fits two.
+         */
+        { "origin350,topology=origin350-ip59", "2G", 4,
+          "0x009dad85", "0x1000000", "IP59_4CPU", "030-1989-003", "-C", 0x37,
+          { 1, 18, 5 }, 0x569dad85, 1000, 200 },
+        { "onyx350,topology=onyx350-ip59", "8G", 4,
+          "0x009dad85", "0x1000000", "IP59_4CPU", "030-1989-003", "-C", 0x38,
+          { 1, 18, 5 }, 0x569dad85, 1000, 200 },
+        { "onyx4-host,topology=onyx4-host-ip59", "8G", 4,
+          "0x009dad85", "0x1000000", "IP59_4CPU", "030-1989-003", "-C", 0x37,
+          { 1, 18, 5 }, 0x569dad85, 1000, 200 },
+        { "tezro,topology=tezro-tower-multi-ip59", "4G", 4,
+          "0x009dad85", "0x1000000", "IP59_4CPU", "030-1989-003", "-C", 0x39,
+          { 1, 48, 1 }, 0x569dad85, 1000, 200 },
+        { "tezro,topology=tezro-tower-multi-ip59", "4G", 2,
+          "0x009dad85", "0x1000000", "IP59_2CPU", "030-2059-002", "A", 0x39,
+          { 1, 48, 1 }, 0x569dad85, 1000, 200 },
+        { "tezro,topology=tezro-tower-one-ip59", "4G", 1,
+          "0x009dad85", "0x1000000", NULL, NULL, NULL, 0x39,
+          { 1, 48, 1 }, 0x569dad85, 1000, 200 },
+        { "tezro,topology=tezro-rack-ip59", "4G", 4,
+          "0x009dad85", "0x1000000", "IP59_4CPU", "030-1989-003", "-C", 0x51,
+          { 1, 48, 1 }, 0x569dad85, 1000, 200 },
+        /* The rack Tezro is where the two-processor board was captured. */
+        { "tezro,topology=tezro-rack-ip59", "4G", 2,
+          "0x009dad85", "0x1000000", "IP59_2CPU", "030-2059-002", "A", 0x51,
+          { 1, 48, 1 }, 0x569dad85, 1000, 200 },
     };
     int fd;
 

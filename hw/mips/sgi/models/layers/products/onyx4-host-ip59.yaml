@@ -1,0 +1,181 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# One-node Onyx 4 host with an IP59 node board.
+layer_version: 1
+sources:
+  ip59-node-board: "web:irixnet-thread-2263  module 001c01 of the captured system: Part:030-1989-003;Name:IP59_4CPU;Revision:-C, four 1.0 GHz R16000 revision 3.0 with 16 MB secondary cache"
+  ip59-two-cpu-board: "web:nekonomicon-16719032  Tezro rack: IP59_2CPU 030-2059-002 revision A, two 1.0 GHz R16000 on slices A and C"
+  ip59-identity: "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf share/man/man4/man4.sgi/intro.4 lines 113-114: IP59 is the 1GHz IP53 design, listed for the Origin 350, Onyx 350 and Tezro"
+  ip53-product-capacity: "007-4566-001 printed pages 68-75 and 114-120: IP53 two/four R16000 configurations, 2 or 4 processors, 8 DIMM slots and 512 MiB or 1 GiB DIMMs"
+  ip53-runtime-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected CPU, memory, and reset inputs"
+  ip53-flash-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected 6.210 flash payload and seed policy"
+  ip53-platform-driver: "openbsd-sgi revision 2df91d80c104636deeef8124252ddd5951b55fbf: sys/arch/sgi/sgi/ip27_machdep.c:166-185 and sys/arch/sgi/sgi/ip27.h:43-46"
+  ip53-platform-contract: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected platform software identity 0x2001 and limits"
+  ip53-platform-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected platform software identity 0x2001 and limits"
+  ip53-l1-contract: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected local controller 0x37 input and limits"
+  ip53-l1-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected local controller 0x37 input and limits"
+  ip53-clock-year-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected fresh-clock seed and limits"
+  onyx4-host-hinv: "web:irixnet-thread-2263  source date 2021-06-19, module 001c01 IP59_4CPU CPU, memory, and IO9 inventory"
+  onyx4-host-guide: "SGI Onyx4 UltimateVision User's Guide 007-4634-002 printed pages 21-23: host boot module retains IO9"
+  onyx4-host-contract: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 4 host candidate and compatibility limit"
+layer:
+  kind: product
+  id: onyx4-host-ip59
+  requires: {assembly: ip53}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[4]]
+    provenance: derived
+    sources: [onyx4-host-hinv, onyx4-host-guide, onyx4-host-contract,
+              ip53-runtime-review]
+  population:
+    nodes: 1
+    cpus_per_node: [4]
+    provenance: derived
+    sources: [onyx4-host-hinv, onyx4-host-contract]
+  cpu_selection:
+    default: {clock_mhz: 1000, cache_mib: 16}
+    slots: [cpu0, cpu1, cpu2, cpu3]
+  memory_kits_per_node: [kit-8192-at-banks-0-7-onyx350-observed]
+  data:
+    machine:
+      name: Onyx 4 host with an IP59 node board
+      model_role: emulation-target
+      notes: >-
+        One-node serial host selected from public inventory module 001c01, an
+        IP59_4CPU board with four 1 GHz R16000 processors, 16 MiB secondary
+        caches, 8 GiB and one IO9. The capture labels its system Onyx 350;
+        selecting that module as an Onyx 4 host is an inference. The node
+        board is the captured IP59_4CPU, part 030-1989-003, revision C, with
+        four 1.0 GHz R16000 processors and 16 MB secondary caches; the L1
+        reports it from its node-board record. The IP59 is the 1 GHz
+        generation of the IP53 compute board and shares its Bedrock, PIC and
+        IO9 hardware, so the model builds it with the IP53 family's guest-
+        board path. The reset word 0x009dad85 and the PROM seed are synthetic
+        inputs, not measured values. The eight-bank memory placement and the
+        PIC and IO9 inputs are software choices. No G2, G2N or NUMAlink peer
+        is modelled.
+      firmware_config:
+        processor_reset_mode: 0x009dad85
+        processor_firmware_word: 0x569dad85
+        machine_type: 0x00000000
+        flash_read_cycles: 16
+        flash_write_cycles: 16
+        provenance: derived
+        sources: [ip53-runtime-review, ip53-flash-review]
+      emulation:
+        machine_name: onyx4-host
+        display_description: Onyx 4 host, IP59 node board
+        profile: ip59-onyx4-host
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib: [8192]
+        # How the emulator and launchers run this IP53 profile, read in
+        # place of comparing topology names.
+        ip53_runtime:
+          pic_profile: pic-rev3-bedrock-experimental
+          normal_selection:
+            cpus: 4
+            fitted_cpus: 4
+            memory_mib: 8192
+            clock_hz: 1000000000
+            cache_mib: 16
+            mode_word: 0x009dad85
+          l1_irouter_compat: true
+          node_boards:
+            - processors: 4
+              name: IP59_4CPU
+              part: "030-1989-003"
+              revision: "-C"
+        pic_profiles:
+          pic: pic-rev3-bedrock-experimental
+        synthetic_identities:
+          - component: bedrock
+            serial: "0x51454d554e00"
+            reason: >-
+              Stable synthetic Bedrock identity for this selected emulation
+              experiment; no physical board serial is supplied.
+        bedrock_nodes:
+          bedrock:
+            board_id_word: 8193
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask: {mode: fitted-banks}
+            provenance: derived
+            sources: [ip53-platform-driver, ip53-platform-contract,
+                     ip53-platform-review, "hw/mips/sgi/sn1-node.c",
+                     "hw/mips/sgi/sn-machine.c"]
+            notes: >-
+              Selects subtype 2 under the public OpenBSD product mapping. The
+              retained low twelve bits, 0x001, are an unmeasured software
+              choice. This does not identify an observed IP53 reset state.
+              The installed bank mask follows the synthetic bank placement
+              above.
+        l1_controllers:
+          l1:
+            reported_type: 55
+            revision: {major: 1, minor: 18, patch: 5}
+            provenance: derived
+            sources: [ip53-l1-contract, ip53-l1-review]
+            notes: >-
+              Product-specific software approximation for the selected local
+              controller, inferred from the 2U_INT_53 product context. This
+              does not establish a physical response, reset value or the
+              identity of a separately queried I/O controller.
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - name: processor reset execution view
+              address: "0x1fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: bounded high LBOOT execution alias
+              address: "0x100_1fc0_0000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+          second_selection:
+            address: "0x100_1a000000"
+            size: "0x0080_0000"
+          provenance: derived
+          sources: [ip53-flash-review]
+          notes: >-
+            This path and digest identify the raw original base payload accepted
+            by the existing launcher. The launcher constructs the experiment
+            seed from this payload and records that configured seed's separate
+            hash. The reset and execution views are software choices, not claims
+            about IP53 physical decode or fitted flash.
+      harness:
+        console: l1-uart
+        console_records:
+          - {kind: console, node_id: bedrock, argument: "-serial chardev:l1", launcher_name: l1}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_0", launcher_name: ioc4-serial-0}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_1", launcher_name: ioc4-serial-1}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_2", launcher_name: ioc4-serial-2}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_3", launcher_name: ioc4-serial-3}
+        launch_recipe: ip53-discovery
+        prom_dialogue: none
+        default_cpu_model: R16000
+        disk_bus: scsi.0
+        netboot_adapter: unsupported
+        smdk:
+          package_path: assets/boot/smdk
+          tftp_mode: fixed
+          diagnostic_mac_bootarg: false
+          requires_boot_flash: false
+          requires_network_identity: false
+          discovery_prerequisites: []
+        default_topology: onyx4-host-ip59
+        requires_per_node_flash: false
+        has_managed_boot_flash: true
+        operator_firmware: true
+        firmware_bytes: 1476264
+        identity_inputs: []
+        supported_guests: []
+        install_media: []
+        provenance: derived
+        sources: [ip53-runtime-review, ip53-flash-review]
+  evidence_policy: strict

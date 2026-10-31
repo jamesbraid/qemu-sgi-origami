@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "f94406bd61131546ecf9ad27de8575556cb2cf3580a4bb36ac8b0cc9b387c1d6"
+    "d112fb3fb28707d54477fce8b0819be7bb4ac883bb696b2a66b3ea56515b89c3"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -209,9 +209,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 139)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 43)
-        self.assertEqual(len(layers), 94)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 155)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 49)
+        self.assertEqual(len(layers), 104)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -599,6 +599,9 @@ class StorageTests(unittest.TestCase):
         ds1744_topologies = {
             "origin350", "onyx350-compat", "onyx4-host-serial-compat",
             "tezro-tower-one", "tezro-tower-multi", "tezro-rack",
+            "origin350-ip59", "onyx350-ip59", "onyx4-host-ip59",
+            "tezro-tower-one-ip59", "tezro-tower-multi-ip59",
+            "tezro-rack-ip59",
         }
         for offering in self.catalogue["offerings"]:
             nvram = {item["initial"] for item in offering["storage"]
@@ -912,6 +915,13 @@ class FuelTests(unittest.TestCase):
             "tezro-tower-multi": 0x549bad85,
             "tezro-rack": 0x549bad85,
             "onyx4-host-serial-compat": 0x569dad85,
+            # The IP59 profiles all share the 1 GHz, 16 MB word.
+            "origin350-ip59": 0x569dad85,
+            "onyx350-ip59": 0x569dad85,
+            "onyx4-host-ip59": 0x569dad85,
+            "tezro-tower-one-ip59": 0x569dad85,
+            "tezro-tower-multi-ip59": 0x569dad85,
+            "tezro-rack-ip59": 0x569dad85,
         }
         for topology in catalogue["topologies"]:
             product = topology["product"]

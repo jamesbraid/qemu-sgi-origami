@@ -318,6 +318,15 @@ documents:
       sha256: 535bda2d0de4ee9a86d79c0d1ebbb1d54ceadd52677d3395e430f50f39ebfcc7
 
 web:
+  nekonomicon-16719032:
+    title: "Nekochan forum archive thread 16719032, two-module rack Tezro inventory"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/16719032/1.html
+      sha256: a211c43f1a350be3f8726f694a21533a73baedf04b173ca0b26c2ec821a36b4d
   nekonomicon-16724207:
     title: "Nekochan forum archive thread 16724207, two-module Origin 350 inventory"
     publisher: "Nekochan forum archive"

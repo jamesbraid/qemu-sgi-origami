@@ -322,6 +322,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``nekonomicon-16285``
    *Nekochan forum archive thread 16285, Onyx2 rack IRIX listings*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16285/1.html>`__ SHA-256 ``d830c5c3bf9570d8ae365cedfa0e2d8f4aa1fe299a3c45506ea6fa4e933f41f8``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-web-nekonomicon-16719032:
+
+``nekonomicon-16719032``
+   *Nekochan forum archive thread 16719032, two-module rack Tezro inventory*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16719032/1.html>`__ SHA-256 ``a211c43f1a350be3f8726f694a21533a73baedf04b173ca0b26c2ec821a36b4d``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-web-nekonomicon-16723250:
 
 ``nekonomicon-16723250``

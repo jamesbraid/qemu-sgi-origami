@@ -6213,7 +6213,406 @@
         4
       ],
       "default-cpu-model": "R16000",
-      "default-topology": "onyx4-host-serial-compat",
+      "dimms-per-node": [
+        8
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Onyx 350 IP59 profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "onyx350,topology=onyx350-ip59,nodes=1",
+      "memory-per-node-mib": {
+        "accepted": [
+          8192
+        ],
+        "default": 8192
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "bcm5701-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-experimental",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-scache-bytes",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 16,
+        "clock-hz": 1000000000,
+        "id": "r16000-1000mhz",
+        "part": "R16000"
+      },
+      "product": "onyx350",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "onyx350-ip59"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "default-topology": "onyx4-host-ip59",
+      "dimms-per-node": [
+        8
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Onyx 4 host with an IP59 node board",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "onyx4-host,topology=onyx4-host-ip59,nodes=1",
+      "memory-per-node-mib": {
+        "accepted": [
+          8192
+        ],
+        "default": 8192
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "unsupported",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-experimental",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-scache-bytes",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 16,
+        "clock-hz": 1000000000,
+        "id": "r16000-1000mhz",
+        "part": "R16000"
+      },
+      "product": "onyx4-host",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "onyx4-host-ip59"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "default-topology": "onyx4-host-ip59",
       "dimms-per-node": [
         8
       ],
@@ -20701,6 +21100,205 @@
         2
       ],
       "disk-bus": "scsi.0",
+      "display-name": "Origin 350 IP59 profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "origin350,topology=origin350-ip59,nodes=1",
+      "memory-per-node-mib": {
+        "accepted": [
+          2048
+        ],
+        "default": 2048
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "unsupported",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-experimental",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-scache-bytes",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 16,
+        "clock-hz": 1000000000,
+        "id": "r16000-1000mhz",
+        "part": "R16000"
+      },
+      "product": "origin350",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin350-ip59"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "default-topology": "origin350",
+      "dimms-per-node": [
+        2
+      ],
+      "disk-bus": "scsi.0",
       "display-name": "Origin 350 IP53 software profile",
       "firmware": {
         "argument": "-bios",
@@ -21146,6 +21744,616 @@
       ],
       "synthesized-firmware-toggle": false,
       "topology": "origin3900"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        1
+      ],
+      "default-cpu-model": "R16000",
+      "dimms-per-node": [
+        6
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Tezro rack first enclosure IP59 profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "tezro,topology=tezro-rack-ip59,nodes=1",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "bcm5701-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-experimental",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-scache-bytes",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 16,
+        "clock-hz": 1000000000,
+        "id": "r16000-1000mhz",
+        "part": "R16000"
+      },
+      "product": "tezro",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 1,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "tezro-rack-ip59"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        2
+      ],
+      "default-cpu-model": "R16000",
+      "dimms-per-node": [
+        6
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Tezro rack first enclosure IP59 profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "tezro,topology=tezro-rack-ip59,nodes=1",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "bcm5701-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-experimental",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-scache-bytes",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 16,
+        "clock-hz": 1000000000,
+        "id": "r16000-1000mhz",
+        "part": "R16000",
+        "required-properties": [
+          "r16000-experimental",
+          "r16000-reset-mode",
+          "r16000-scache-bytes"
+        ]
+      },
+      "product": "tezro",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 2,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "tezro-rack-ip59"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "dimms-per-node": [
+        6
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Tezro rack first enclosure IP59 profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "tezro,topology=tezro-rack-ip59,nodes=1",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "bcm5701-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-experimental",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-scache-bytes",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 16,
+        "clock-hz": 1000000000,
+        "id": "r16000-1000mhz",
+        "part": "R16000",
+        "required-properties": [
+          "r16000-experimental",
+          "r16000-reset-mode",
+          "r16000-scache-bytes"
+        ]
+      },
+      "product": "tezro",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "tezro-rack-ip59"
     },
     {
       "console": "l1-uart",
@@ -21799,6 +23007,411 @@
         6
       ],
       "disk-bus": "scsi.0",
+      "display-name": "Tezro tower, two/four-processor IP59 profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "tezro,topology=tezro-tower-multi-ip59,nodes=1",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "bcm5701-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-experimental",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-scache-bytes",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 16,
+        "clock-hz": 1000000000,
+        "id": "r16000-1000mhz",
+        "part": "R16000"
+      },
+      "product": "tezro",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "tezro-tower-multi-ip59"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        2
+      ],
+      "default-cpu-model": "R16000",
+      "dimms-per-node": [
+        6
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Tezro tower, two/four-processor IP59 profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "tezro,topology=tezro-tower-multi-ip59,nodes=1",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "bcm5701-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-experimental",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-scache-bytes",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 16,
+        "clock-hz": 1000000000,
+        "id": "r16000-1000mhz",
+        "part": "R16000",
+        "required-properties": [
+          "r16000-experimental",
+          "r16000-reset-mode",
+          "r16000-scache-bytes"
+        ]
+      },
+      "product": "tezro",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 2,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "tezro-tower-multi-ip59"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "dimms-per-node": [
+        6
+      ],
+      "disk-bus": "scsi.0",
       "display-name": "Tezro tower, two/four-processor serial compatibility profile",
       "firmware": {
         "argument": "-bios",
@@ -22161,6 +23774,206 @@
       "supported-guests": [],
       "synthesized-firmware-toggle": false,
       "topology": "tezro-tower-multi"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        1
+      ],
+      "default-cpu-model": "R16000",
+      "dimms-per-node": [
+        6
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Tezro tower, one-processor IP59 profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "tezro,topology=tezro-tower-one-ip59,nodes=1",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "bcm5701-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-experimental",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-scache-bytes",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 16,
+        "clock-hz": 1000000000,
+        "id": "r16000-1000mhz",
+        "part": "R16000"
+      },
+      "product": "tezro",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 1,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "tezro-tower-one-ip59"
     },
     {
       "console": "l1-uart",
@@ -28651,6 +30464,548 @@
               "cpu-mode-word": 1453174149,
               "hub-clock-hz": 200000000
             },
+            "reported-type": 56,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
+          "module-index": 0
+        }
+      ],
+      "crossbars": [],
+      "description": "SGI Onyx 350 (IP59), approximate software profile",
+      "generation": "sn1",
+      "graphics": {
+        "headless": true,
+        "max-pipes": 1,
+        "slots": [
+          {
+            "changeable": false,
+            "description": "VPro at PIC widget 12 in the captured graphics configuration",
+            "families": [
+              {
+                "device": "sgi-odyssey",
+                "family": "odyssey",
+                "name": "VPro",
+                "products": [
+                  {
+                    "assembly": "030-1909-008",
+                    "description": "second generation, 128 MB board memory",
+                    "fidelity": "implemented",
+                    "name": "VPro V12",
+                    "pairing": "established",
+                    "product": "v12",
+                    "settings": []
+                  }
+                ]
+              }
+            ],
+            "name": "widget-12",
+            "placement": [
+              {
+                "name": "slot",
+                "value": "widget-12"
+              }
+            ]
+          }
+        ]
+      },
+      "io-boards": [
+        {
+          "carrier": "machine-placed",
+          "id": "io9",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1771-006",
+          "pci-functions": [
+            {
+              "clock-hz": 33333333,
+              "intx-pin": "inta",
+              "kind": "ioc4",
+              "pci-device": 1,
+              "pci-function": 0,
+              "pic-input": 0,
+              "revision": 83,
+              "serial-dma-experimental": true
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "isp12160",
+              "pci-device": 3,
+              "pci-function": 0,
+              "pic-input": 2,
+              "revision": 6
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "bcm5701",
+              "pci-device": 4,
+              "pci-function": 0,
+              "pic-input": 3,
+              "revision": 0
+            }
+          ],
+          "pci-head": 0,
+          "pci-host-index": 0,
+          "populated": true,
+          "preset": "io9",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "ds1744",
+            "year-base": 1968
+          }
+        }
+      ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1453174149,
+        "machine-type": 0
+      },
+      "ip53-runtime": {
+        "l1-irouter-compat": true,
+        "node-boards": [
+          {
+            "name": "IP59_4CPU",
+            "part": "030-1989-003",
+            "processors": 4,
+            "revision": "-C"
+          }
+        ],
+        "normal-selection": {
+          "cache-mib": 16,
+          "clock-hz": 1000000000,
+          "cpus": 4,
+          "fitted-cpus": 4,
+          "memory-mib": 8192,
+          "mode-word": 10333573
+        },
+        "pic-profile": "pic-rev3-bedrock-experimental"
+      },
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "onyx350-ip59",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                4
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            8192
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "bedrock": {
+            "board-id-word": 8193,
+            "initiator-region": 0,
+            "installed-bank-mask": 255,
+            "local-region": 0
+          },
+          "board-kind": "ip53",
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "bedrock",
+          "identity": {
+            "clock-hz": 200000000,
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 89358092029440,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "pci-host-bridges": [
+        {
+          "compatibility-profile": "pic-rev3-bedrock-experimental",
+          "id": "pic",
+          "kind": "pic",
+          "xio-attachment-index": 0
+        }
+      ],
+      "product": "onyx350",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-slots": []
+    },
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "l1",
+          "kind": "l1",
+          "l1": {
+            "cpu-context": {
+              "cpu-clock-hz": 1000000000,
+              "cpu-mode-word": 1453174149,
+              "hub-clock-hz": 200000000
+            },
+            "reported-type": 55,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
+          "module-index": 0
+        }
+      ],
+      "crossbars": [],
+      "description": "Onyx 4 host, IP59 node board",
+      "generation": "sn1",
+      "io-boards": [
+        {
+          "carrier": "machine-placed",
+          "id": "io9",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1771-006",
+          "pci-functions": [
+            {
+              "clock-hz": 33333333,
+              "intx-pin": "inta",
+              "kind": "ioc4",
+              "pci-device": 1,
+              "pci-function": 0,
+              "pic-input": 0,
+              "revision": 83,
+              "serial-dma-experimental": true
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "isp12160",
+              "pci-device": 3,
+              "pci-function": 0,
+              "pic-input": 2,
+              "revision": 6
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "bcm5701",
+              "pci-device": 4,
+              "pci-function": 0,
+              "pic-input": 3,
+              "revision": 0
+            }
+          ],
+          "pci-head": 0,
+          "pci-host-index": 0,
+          "populated": true,
+          "preset": "io9",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "ds1744",
+            "year-base": 1968
+          }
+        }
+      ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1453174149,
+        "machine-type": 0
+      },
+      "ip53-runtime": {
+        "l1-irouter-compat": true,
+        "node-boards": [
+          {
+            "name": "IP59_4CPU",
+            "part": "030-1989-003",
+            "processors": 4,
+            "revision": "-C"
+          }
+        ],
+        "normal-selection": {
+          "cache-mib": 16,
+          "clock-hz": 1000000000,
+          "cpus": 4,
+          "fitted-cpus": 4,
+          "memory-mib": 8192,
+          "mode-word": 10333573
+        },
+        "pic-profile": "pic-rev3-bedrock-experimental"
+      },
+      "junk-uart": -1,
+      "machine-default": true,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "onyx4-host-ip59",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                4
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            8192
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "bedrock": {
+            "board-id-word": 8193,
+            "initiator-region": 0,
+            "installed-bank-mask": 255,
+            "local-region": 0
+          },
+          "board-kind": "ip53",
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "bedrock",
+          "identity": {
+            "clock-hz": 200000000,
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 89358092029440,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "pci-host-bridges": [
+        {
+          "compatibility-profile": "pic-rev3-bedrock-experimental",
+          "id": "pic",
+          "kind": "pic",
+          "xio-attachment-index": 0
+        }
+      ],
+      "product": "onyx4-host",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-slots": []
+    },
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "l1",
+          "kind": "l1",
+          "l1": {
+            "cpu-context": {
+              "cpu-clock-hz": 1000000000,
+              "cpu-mode-word": 1453174149,
+              "hub-clock-hz": 200000000
+            },
             "reported-type": 55,
             "revision": {
               "major": 1,
@@ -28727,7 +31082,6 @@
         "pic-profile": "pic-rev3-bedrock-experimental"
       },
       "junk-uart": -1,
-      "machine-default": true,
       "modules": [
         {
           "controller-index": 0,
@@ -38473,6 +40827,259 @@
           "kind": "l1",
           "l1": {
             "cpu-context": {
+              "cpu-clock-hz": 1000000000,
+              "cpu-mode-word": 1453174149,
+              "hub-clock-hz": 200000000
+            },
+            "reported-type": 55,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
+          "module-index": 0
+        }
+      ],
+      "crossbars": [],
+      "description": "SGI Origin 350 (IP59), approximate software profile",
+      "generation": "sn1",
+      "io-boards": [
+        {
+          "carrier": "machine-placed",
+          "id": "io9",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1771-005",
+          "pci-functions": [
+            {
+              "clock-hz": 33333333,
+              "intx-pin": "inta",
+              "kind": "ioc4",
+              "pci-device": 1,
+              "pci-function": 0,
+              "pic-input": 0,
+              "revision": 83,
+              "serial-dma-experimental": true
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "isp12160",
+              "pci-device": 3,
+              "pci-function": 0,
+              "pic-input": 2,
+              "revision": 6
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "bcm5701",
+              "pci-device": 4,
+              "pci-function": 0,
+              "pic-input": 3,
+              "revision": 0
+            }
+          ],
+          "pci-head": 0,
+          "pci-host-index": 0,
+          "populated": true,
+          "preset": "io9",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "ds1744",
+            "year-base": 1968
+          }
+        }
+      ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1453174149,
+        "machine-type": 0
+      },
+      "ip53-runtime": {
+        "l1-irouter-compat": true,
+        "node-boards": [
+          {
+            "name": "IP59_4CPU",
+            "part": "030-1989-003",
+            "processors": 4,
+            "revision": "-C"
+          }
+        ],
+        "normal-selection": {
+          "cache-mib": 16,
+          "clock-hz": 1000000000,
+          "cpus": 4,
+          "fitted-cpus": 4,
+          "memory-mib": 2048,
+          "mode-word": 10333573
+        },
+        "pic-profile": "pic-rev3-bedrock-experimental"
+      },
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "origin350-ip59",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                4
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            2048
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            1024,
+            1024,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "bedrock": {
+            "board-id-word": 8193,
+            "initiator-region": 0,
+            "installed-bank-mask": 3,
+            "local-region": 0
+          },
+          "board-kind": "ip53",
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "bedrock",
+          "identity": {
+            "clock-hz": 200000000,
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 89358092029440,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "pci-host-bridges": [
+        {
+          "compatibility-profile": "pic-rev3-bedrock-experimental",
+          "id": "pic",
+          "kind": "pic",
+          "xio-attachment-index": 0
+        }
+      ],
+      "product": "origin350",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-slots": []
+    },
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "l1",
+          "kind": "l1",
+          "l1": {
+            "cpu-context": {
               "cpu-clock-hz": 700000000,
               "cpu-mode-word": 1453108613,
               "hub-clock-hz": 200000000
@@ -39384,6 +41991,275 @@
           "kind": "l1",
           "l1": {
             "cpu-context": {
+              "cpu-clock-hz": 1000000000,
+              "cpu-mode-word": 1453174149,
+              "hub-clock-hz": 200000000
+            },
+            "reported-type": 81,
+            "revision": {
+              "major": 1,
+              "minor": 48,
+              "patch": 1
+            }
+          },
+          "module-index": 0
+        }
+      ],
+      "crossbars": [],
+      "description": "SGI Tezro rack first enclosure IP59 profile",
+      "generation": "sn1",
+      "io-boards": [
+        {
+          "carrier": "machine-placed",
+          "id": "io9",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1771-005-A",
+          "pci-functions": [
+            {
+              "clock-hz": 66666667,
+              "intx-pin": "inta",
+              "kind": "ioc4",
+              "pci-device": 1,
+              "pci-function": 0,
+              "pic-input": 0,
+              "revision": 83,
+              "serial-dma-experimental": true
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "isp12160",
+              "pci-device": 3,
+              "pci-function": 0,
+              "pic-input": 2,
+              "revision": 6
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "bcm5701",
+              "pci-device": 4,
+              "pci-function": 0,
+              "pic-input": 3,
+              "revision": 0
+            }
+          ],
+          "pci-head": 0,
+          "pci-host-index": 0,
+          "populated": true,
+          "preset": "io9",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "ds1744",
+            "year-base": 1968
+          }
+        }
+      ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1453174149,
+        "machine-type": 0
+      },
+      "ip53-runtime": {
+        "l1-irouter-compat": true,
+        "node-boards": [
+          {
+            "name": "IP59_4CPU",
+            "part": "030-1989-003",
+            "processors": 4,
+            "revision": "-C"
+          },
+          {
+            "name": "IP59_2CPU",
+            "part": "030-2059-002",
+            "processors": 2,
+            "revision": "A"
+          }
+        ],
+        "normal-selection": {
+          "cache-mib": 16,
+          "clock-hz": 1000000000,
+          "cpus": 1,
+          "fitted-cpus": 4,
+          "memory-mib": 4096,
+          "mode-word": 10333573
+        },
+        "pic-profile": "pic-rev3-bedrock-tezro-experimental"
+      },
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "tezro-rack-ip59",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                1
+              ]
+            },
+            {
+              "cpus-per-node": [
+                2
+              ]
+            },
+            {
+              "cpus-per-node": [
+                4
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            1024,
+            1024,
+            512,
+            512,
+            512,
+            512,
+            0,
+            0
+          ],
+          "bedrock": {
+            "board-id-word": 8193,
+            "initiator-region": 0,
+            "installed-bank-mask": 63,
+            "local-region": 0
+          },
+          "board-kind": "ip53",
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "bedrock",
+          "identity": {
+            "clock-hz": 200000000,
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 89358092029440,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "pci-host-bridges": [
+        {
+          "compatibility-profile": "pic-rev3-bedrock-tezro-experimental",
+          "id": "pic-xio-f",
+          "kind": "pic",
+          "xio-attachment-index": 0
+        }
+      ],
+      "product": "tezro",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-slots": []
+    },
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "l1",
+          "kind": "l1",
+          "l1": {
+            "cpu-context": {
               "cpu-clock-hz": 700000000,
               "cpu-mode-word": 1419488645,
               "hub-clock-hz": 200000000
@@ -39622,6 +42498,316 @@
       "product": "tezro",
       "routers": [],
       "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-slots": []
+    },
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "l1",
+          "kind": "l1",
+          "l1": {
+            "cpu-context": {
+              "cpu-clock-hz": 1000000000,
+              "cpu-mode-word": 1453174149,
+              "hub-clock-hz": 200000000
+            },
+            "reported-type": 57,
+            "revision": {
+              "major": 1,
+              "minor": 48,
+              "patch": 1
+            }
+          },
+          "module-index": 0
+        }
+      ],
+      "crossbars": [],
+      "description": "SGI Tezro tower, two/four-processor IP59 profile",
+      "generation": "sn1",
+      "graphics": {
+        "headless": true,
+        "max-pipes": 1,
+        "slots": [
+          {
+            "changeable": false,
+            "description": "VPro at PIC widget 12 in the captured graphics configuration",
+            "families": [
+              {
+                "device": "sgi-odyssey",
+                "family": "odyssey",
+                "name": "VPro",
+                "products": [
+                  {
+                    "assembly": "030-1884-002",
+                    "description": "second generation, 128 MB board memory",
+                    "fidelity": "implemented",
+                    "name": "VPro V12",
+                    "pairing": "established",
+                    "product": "v12",
+                    "settings": []
+                  }
+                ]
+              }
+            ],
+            "name": "widget-12",
+            "placement": [
+              {
+                "name": "slot",
+                "value": "widget-12"
+              }
+            ]
+          }
+        ]
+      },
+      "io-boards": [
+        {
+          "carrier": "machine-placed",
+          "id": "io9",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1771-005-A",
+          "pci-functions": [
+            {
+              "clock-hz": 66666667,
+              "intx-pin": "inta",
+              "kind": "ioc4",
+              "pci-device": 1,
+              "pci-function": 0,
+              "pic-input": 0,
+              "revision": 83,
+              "serial-dma-experimental": true
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "isp12160",
+              "pci-device": 3,
+              "pci-function": 0,
+              "pic-input": 2,
+              "revision": 6
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "bcm5701",
+              "pci-device": 4,
+              "pci-function": 0,
+              "pic-input": 3,
+              "revision": 0
+            }
+          ],
+          "pci-head": 0,
+          "pci-host-index": 1,
+          "populated": true,
+          "preset": "io9",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "ds1744",
+            "year-base": 1968
+          }
+        }
+      ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1453174149,
+        "machine-type": 0
+      },
+      "ip53-runtime": {
+        "l1-irouter-compat": true,
+        "node-boards": [
+          {
+            "name": "IP59_4CPU",
+            "part": "030-1989-003",
+            "processors": 4,
+            "revision": "-C"
+          },
+          {
+            "name": "IP59_2CPU",
+            "part": "030-2059-002",
+            "processors": 2,
+            "revision": "A"
+          }
+        ],
+        "normal-selection": {
+          "cache-mib": 16,
+          "clock-hz": 1000000000,
+          "cpus": 4,
+          "fitted-cpus": 4,
+          "memory-mib": 4096,
+          "mode-word": 10333573
+        },
+        "pic-profile": "pic-rev3-bedrock-tezro-experimental"
+      },
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "tezro-tower-multi-ip59",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                4
+              ]
+            },
+            {
+              "cpus-per-node": [
+                2
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            1024,
+            1024,
+            512,
+            512,
+            512,
+            512,
+            0,
+            0
+          ],
+          "bedrock": {
+            "board-id-word": 8193,
+            "initiator-region": 0,
+            "installed-bank-mask": 63,
+            "local-region": 0
+          },
+          "board-kind": "ip53",
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "bedrock",
+          "identity": {
+            "clock-hz": 200000000,
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 89358092029440,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "pci-host-bridges": [
+        {
+          "compatibility-profile": "pic-rev3-bedrock-tezro-experimental",
+          "id": "pic-xio-b",
+          "kind": "pic",
+          "xio-attachment-index": 0
+        },
+        {
+          "compatibility-profile": "pic-rev3-bedrock-tezro-experimental",
+          "id": "pic-xio-f",
+          "kind": "pic",
+          "xio-attachment-index": 1
+        }
+      ],
+      "product": "tezro",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 11
+        },
         {
           "crossbar-index": -1,
           "node-index": 0,
@@ -39919,6 +43105,229 @@
           "node-index": 0,
           "widget": 11
         },
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-slots": []
+    },
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "l1",
+          "kind": "l1",
+          "l1": {
+            "cpu-context": {
+              "cpu-clock-hz": 1000000000,
+              "cpu-mode-word": 1453174149,
+              "hub-clock-hz": 200000000
+            },
+            "reported-type": 57,
+            "revision": {
+              "major": 1,
+              "minor": 48,
+              "patch": 1
+            }
+          },
+          "module-index": 0
+        }
+      ],
+      "crossbars": [],
+      "description": "SGI Tezro tower, one-processor IP59 profile",
+      "generation": "sn1",
+      "io-boards": [
+        {
+          "carrier": "machine-placed",
+          "id": "io9",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1771-005-A",
+          "pci-functions": [
+            {
+              "clock-hz": 66666667,
+              "intx-pin": "inta",
+              "kind": "ioc4",
+              "pci-device": 1,
+              "pci-function": 0,
+              "pic-input": 0,
+              "revision": 83,
+              "serial-dma-experimental": true
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "isp12160",
+              "pci-device": 3,
+              "pci-function": 0,
+              "pic-input": 2,
+              "revision": 6
+            },
+            {
+              "intx-pin": "inta",
+              "kind": "bcm5701",
+              "pci-device": 4,
+              "pci-function": 0,
+              "pic-input": 3,
+              "revision": 0
+            }
+          ],
+          "pci-head": 0,
+          "pci-host-index": 0,
+          "populated": true,
+          "preset": "io9",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "ds1744",
+            "year-base": 1968
+          }
+        }
+      ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1453174149,
+        "machine-type": 0
+      },
+      "ip53-runtime": {
+        "l1-irouter-compat": true,
+        "node-boards": [
+          {
+            "name": "IP59_4CPU",
+            "part": "030-1989-003",
+            "processors": 4,
+            "revision": "-C"
+          },
+          {
+            "name": "IP59_2CPU",
+            "part": "030-2059-002",
+            "processors": 2,
+            "revision": "A"
+          }
+        ],
+        "normal-selection": {
+          "cache-mib": 16,
+          "clock-hz": 1000000000,
+          "cpus": 1,
+          "fitted-cpus": 1,
+          "memory-mib": 4096,
+          "mode-word": 10333573
+        },
+        "pic-profile": "pic-rev3-bedrock-tezro-experimental"
+      },
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "tezro-tower-one-ip59",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                1
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            1024,
+            1024,
+            512,
+            512,
+            512,
+            512,
+            0,
+            0
+          ],
+          "bedrock": {
+            "board-id-word": 8193,
+            "initiator-region": 0,
+            "installed-bank-mask": 63,
+            "local-region": 0
+          },
+          "board-kind": "ip53",
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-mib": 16,
+                "clock-hz": 1000000000,
+                "id": "r16000-1000mhz",
+                "kind": "R16000",
+                "mode-bits": 10333573,
+                "required-properties": [
+                  "r16000-experimental",
+                  "r16000-reset-mode",
+                  "r16000-scache-bytes"
+                ]
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "bedrock",
+          "identity": {
+            "clock-hz": 200000000,
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 89358092029440,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "pci-host-bridges": [
+        {
+          "compatibility-profile": "pic-rev3-bedrock-tezro-experimental",
+          "id": "pic-xio-f",
+          "kind": "pic",
+          "xio-attachment-index": 0
+        }
+      ],
+      "product": "tezro",
+      "routers": [],
+      "xio-attachments": [
         {
           "crossbar-index": -1,
           "node-index": 0,

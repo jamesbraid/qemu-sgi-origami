@@ -3603,6 +3603,19 @@ static void test_ip53_normal_selection_profiles(void)
           4 * MiB, 700000000, 1 },
         { "onyx4-host,topology=onyx4-host-serial-compat", "4", "8G",
           0x009dad85, 16 * MiB, 1000000000, 4 },
+        /* The IP59 node boards: 1 GHz R16000 with a 16 MiB cache. */
+        { "origin350,topology=origin350-ip59", "4", "2G", 0x009dad85,
+          16 * MiB, 1000000000, 4 },
+        { "onyx350,topology=onyx350-ip59", "4", "8G", 0x009dad85,
+          16 * MiB, 1000000000, 4 },
+        { "tezro,topology=tezro-tower-one-ip59", "1", "4G", 0x009dad85,
+          16 * MiB, 1000000000, 1 },
+        { "tezro,topology=tezro-tower-multi-ip59", "4", "4G", 0x009dad85,
+          16 * MiB, 1000000000, 4 },
+        { "tezro,topology=tezro-rack-ip59", "1", "4G", 0x009dad85,
+          16 * MiB, 1000000000, 1 },
+        { "onyx4-host,topology=onyx4-host-ip59", "4", "8G", 0x009dad85,
+          16 * MiB, 1000000000, 4 },
     };
     static const char *const selectors[] = { NULL, "off", "on" };
 

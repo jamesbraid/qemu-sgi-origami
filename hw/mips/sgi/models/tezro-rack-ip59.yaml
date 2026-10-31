@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: BSD-3-Clause
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip53-tezro.yaml
+  - layers/modules/ip59-tezro-module.yaml
+  - layers/products/tezro-rack-ip59.yaml

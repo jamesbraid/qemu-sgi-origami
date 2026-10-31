@@ -10,7 +10,7 @@ PRODUCT_MODELS = {
     "origin300": "origin300",
     "origin3000": "origin3200",
     "origin350": "origin350",
-    "onyx4-host": "onyx4-host-serial-compat",
+    "onyx4-host": "onyx4-host-ip59",
     "onyx350": "onyx350-compat",
     "tezro": "tezro-tower-multi",
     "onyx2": "onyx2-rack",
@@ -33,11 +33,17 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin300-numalink-pci-expansion",
     "origin300-pci-expansion",
     "origin350",
+    "origin350-ip59",
     "onyx4-host-serial-compat",
+    "onyx4-host-ip59",
     "onyx350-compat",
+    "onyx350-ip59",
     "tezro-tower-one",
     "tezro-tower-multi",
     "tezro-rack",
+    "tezro-tower-one-ip59",
+    "tezro-tower-multi-ip59",
+    "tezro-rack-ip59",
 )
 
 # Authored reference compositions are useful for comparing product topology,
@@ -53,3 +59,25 @@ REFERENCE_TOPOLOGIES = (
     "onyx4-host-g2",
     "onyx4-host-g2n",
 )
+
+# The IP53-family runtime profiles: catalogue product id to the QEMU machine
+# name and the emulation profile it must carry. The ip59 entries are the same
+# boards with the 1 GHz generation's node board and processors.
+IP53_RUNTIME_PROFILES = {
+    "origin350": ("origin350", "ip53-origin350"),
+    "origin350-ip59": ("origin350", "ip59-origin350"),
+    "onyx4-host-serial-compat": (
+        "onyx4-host", "ip53-onyx4-host-serial-compat"),
+    "onyx4-host-ip59": ("onyx4-host", "ip59-onyx4-host"),
+    "onyx350-compat": ("onyx350", "ip53-onyx350-compat"),
+    "onyx350-ip59": ("onyx350", "ip59-onyx350"),
+    "tezro-tower-one": ("tezro", "tezro-tower-one-serial-compat"),
+    "tezro-tower-multi": ("tezro", "tezro-tower-multi-serial-compat"),
+    "tezro-rack": ("tezro", "tezro-rack-serial-compat"),
+    "tezro-tower-one-ip59": ("tezro", "ip59-tezro-tower-one"),
+    "tezro-tower-multi-ip59": ("tezro", "ip59-tezro-tower-multi"),
+    "tezro-rack-ip59": ("tezro", "ip59-tezro-rack"),
+}
+TEZRO_RUNTIME_PRODUCTS = frozenset(
+    product for product, (machine, _) in IP53_RUNTIME_PROFILES.items()
+    if machine == "tezro")
