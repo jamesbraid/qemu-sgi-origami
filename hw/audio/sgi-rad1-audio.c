@@ -347,6 +347,7 @@ static uint32_t sgi_rad1_audio_flags_word(SGIRad1AudioState *s)
 }
 
 static void sgi_rad1_audio_sync_all(SGIRad1AudioState *s);
+static bool sgi_rad1_octane_pass_end(SGIRad1AudioChannel *c);
 
 /* A channel's current DMA pointer, low 32 bits of the PCI address. */
 static uint32_t sgi_rad1_audio_chan_pointer(SGIRad1AudioChannel *c)
@@ -949,6 +950,9 @@ static bool sgi_rad1_audio_chan_move(SGIRad1AudioChannel *c, uint64_t frames)
         if (c->offset >= c->len) {
             c->offset = 0;
             trace_sgi_rad1_audio_wrap(sgi_rad1_audio_chan_index(c), c->base);
+            if (sgi_rad1_octane_pass_end(c)) {
+                break;
+            }
         }
     }
     return true;
@@ -1065,7 +1069,9 @@ static void sgi_rad1_audio_chan_start(SGIRad1AudioChannel *c)
                       ci->name, len, sgi_rad1_audio_frame_bytes(c));
         return;
     }
-    if (tag != ci->tag) {
+    /* The Octane output's bits 6:3 are a link, checked with its form. */
+    if (!(c->dev->octane && c == &c->dev->chan[SGI_RAD1_AUDIO_CH_OUT]) &&
+        tag != ci->tag) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-rad1-audio: %s control word 0x%x carries tag %u, "
                       "not the channel type %u\n",
@@ -1547,6 +1553,85 @@ static unsigned sgi_rad1_octane_out_gen(SGIRad1AudioState *s)
            SGI_RAD1_OCTANE_CG_OUT_ALT : SGI_RAD1_OCTANE_CG_OUT;
 }
 
+/* The descriptor forms the analog output accepts. */
+typedef enum SGIRad1OctaneOutForm {
+    SGI_RAD1_OCTANE_OUT_BAD,
+    /* IRIX's 4 KiB ring: the working descriptor links to an identical one. */
+    SGI_RAD1_OCTANE_OUT_RING,
+    /* End of descriptor set: play the buffer once and stop. */
+    SGI_RAD1_OCTANE_OUT_ONCE,
+    /* No end of descriptor, and a link to a descriptor not modelled. */
+    SGI_RAD1_OCTANE_OUT_UNLINKED,
+} SGIRad1OctaneOutForm;
+
+/*
+ * Classify the working output descriptor. The chip's other descriptor RAM
+ * entries are not modelled except the one IRIX links to, so a link anywhere
+ * else is a link to an unprogrammed entry.
+ */
+static SGIRad1OctaneOutForm sgi_rad1_octane_out_form(SGIRad1AudioState *s)
+{
+    const uint32_t *bank = s->dma_bank;
+    uint32_t ctrl = bank[SGI_RAD1_AUDIO_DMA_IDX(SGI_RAD1_AUDIO_REG_OUT_A_CTRL)];
+    uint32_t units = (0u - (ctrl >> SGI_RAD1_AUDIO_CTRL_LEN_SHIFT)) &
+                     SGI_RAD1_AUDIO_CTRL_LEN_MASK;
+
+    if (!(bank[SGI_RAD1_AUDIO_DMA_IDX(SGI_RAD1_AUDIO_REG_OUT_A_ADDR_LO)] ||
+          bank[SGI_RAD1_AUDIO_DMA_IDX(SGI_RAD1_AUDIO_REG_OUT_A_ADDR_HI)]) ||
+        !units ||
+        (uint64_t)units * SGI_RAD1_AUDIO_DMA_UNIT_BYTES >
+        SGI_RAD1_AUDIO_DMA_MAX_BYTES) {
+        return SGI_RAD1_OCTANE_OUT_BAD;
+    }
+    if (ctrl & SGI_RAD1_AUDIO_CTRL_END) {
+        return SGI_RAD1_OCTANE_OUT_ONCE;
+    }
+    if (sgi_rad1_octane_ring_valid(s, SGI_RAD1_OCTANE_RING_OUTPUT,
+                                   0xfffff008)) {
+        return SGI_RAD1_OCTANE_OUT_RING;
+    }
+    if (ctrl == 0xfffff008) {
+        /* IRIX's word, but its second descriptor does not match. */
+        return SGI_RAD1_OCTANE_OUT_BAD;
+    }
+    return SGI_RAD1_OCTANE_OUT_UNLINKED;
+}
+
+/*
+ * The output reached the end of its descriptor. With end of descriptor set the
+ * channel stops and clears its start bit, as the chip does. A link to an
+ * unprogrammed descriptor is reported and the channel stops with the start bit
+ * still set, so it does not look like a finished transfer. The position fields
+ * hold in both cases.
+ */
+static bool sgi_rad1_octane_pass_end(SGIRad1AudioChannel *c)
+{
+    SGIRad1AudioState *s = c->dev;
+
+    if (!s->octane || c != &s->chan[SGI_RAD1_AUDIO_CH_OUT]) {
+        return false;
+    }
+    switch (sgi_rad1_octane_out_form(s)) {
+    case SGI_RAD1_OCTANE_OUT_ONCE:
+        s->analog_out_en &= ~SGI_RAD1_AUDIO_ENABLE_BIT;
+        sgi_rad1_audio_chan_stop(c, "end-of-descriptor");
+        return true;
+    case SGI_RAD1_OCTANE_OUT_UNLINKED:
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-rad1-octane: analog output descriptor links to "
+                      "descriptor %u, which is not modelled; "
+                      "unsupported, output stopped\n",
+                      (s->dma_bank[SGI_RAD1_AUDIO_DMA_IDX(
+                          SGI_RAD1_AUDIO_REG_OUT_A_CTRL)] >>
+                       SGI_RAD1_AUDIO_CTRL_TAG_SHIFT) &
+                      SGI_RAD1_AUDIO_CTRL_TAG_MASK);
+        sgi_rad1_audio_chan_stop(c, "unprogrammed-link");
+        return true;
+    default:
+        return false;
+    }
+}
+
 /* A generator's rate; 44.1 kHz until a guest loads it (power-on unknown). */
 static uint32_t sgi_rad1_octane_cg_rate(SGIRad1AudioState *s, unsigned gen)
 {
@@ -1695,6 +1780,10 @@ static MemTxResult sgi_rad1_octane_read(void *opaque, hwaddr addr,
         }
         if (addr == SGI_RAD1_AUDIO_REG_ANALOG_OUT_EN) {
             *value = s->analog_out_en;
+            trace_sgi_rad1_octane_output_status_read(*value,
+                qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                s->chan[SGI_RAD1_AUDIO_CH_OUT].frames,
+                s->chan[SGI_RAD1_AUDIO_CH_OUT].running);
             return MEMTX_OK;
         }
         if (addr == SGI_RAD1_AUDIO_REG_STATUS_DMA_CTRL) {
@@ -1789,12 +1878,30 @@ static MemTxResult sgi_rad1_octane_write(void *opaque, hwaddr addr,
                     SGI_RAD1_OCTANE_OUT_SEL_GEN1 ||
                     (value & ~SGI_RAD1_AUDIO_ENABLE_BIT) ==
                     SGI_RAD1_OCTANE_OUT_SEL_GEN2)) {
-            if (!(value & SGI_RAD1_AUDIO_ENABLE_BIT) ||
-                sgi_rad1_octane_ring_valid(s, SGI_RAD1_OCTANE_RING_OUTPUT,
-                                           0xfffff008)) {
-                SGIRad1AudioChannel *c = &s->chan[SGI_RAD1_AUDIO_CH_OUT];
+            SGIRad1OctaneOutForm form = sgi_rad1_octane_out_form(s);
 
-                /* Bring the channel up to date before the rate can change. */
+            if (!(value & SGI_RAD1_AUDIO_ENABLE_BIT) ||
+                form != SGI_RAD1_OCTANE_OUT_BAD) {
+                SGIRad1AudioChannel *c = &s->chan[SGI_RAD1_AUDIO_CH_OUT];
+                uint32_t ctrl = s->dma_bank[SGI_RAD1_AUDIO_DMA_IDX(
+                    SGI_RAD1_AUDIO_REG_OUT_A_CTRL)];
+
+                if ((value & SGI_RAD1_AUDIO_ENABLE_BIT) &&
+                    form == SGI_RAD1_OCTANE_OUT_ONCE &&
+                    (ctrl >> SGI_RAD1_AUDIO_CTRL_TAG_SHIFT) &
+                    SGI_RAD1_AUDIO_CTRL_TAG_MASK) {
+                    qemu_log_mask(LOG_UNIMP,
+                                  "sgi-rad1-octane: analog output control "
+                                  "0x%x has end of descriptor set with a "
+                                  "nonzero next-descriptor index; the index "
+                                  "is taken as ignored (inferred)\n", ctrl);
+                }
+                /*
+                 * Model policy: a write with bit 0 set, after a pass ended or
+                 * after a stop at an unprogrammed link, starts the buffer
+                 * again from its base; what the chip does is not documented.
+                 * Bring the channel up to date before the rate can change.
+                 */
                 sgi_rad1_audio_chan_sync(c);
                 s->analog_out_en = value;
                 sgi_rad1_octane_cg_apply(s);

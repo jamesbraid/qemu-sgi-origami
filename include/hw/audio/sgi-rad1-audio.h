@@ -314,6 +314,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_ENABLE_BIT           0x1u
 #define SGI_RAD1_AUDIO_CTRL_TAG_SHIFT       3
 #define SGI_RAD1_AUDIO_CTRL_TAG_MASK        0xfu
+/*
+ * Control word bit 2, end of descriptor: the transfer stops after this
+ * descriptor and the channel clears its own start bit. With it clear, bits
+ * 6:3 name the next descriptor in the chip's descriptor RAM (the "tag" above).
+ */
+#define SGI_RAD1_AUDIO_CTRL_END             0x4u
 #define SGI_RAD1_AUDIO_CTRL_LEN_SHIFT       7
 #define SGI_RAD1_AUDIO_CTRL_LEN_MASK        0x1ffffffu
 #define SGI_RAD1_AUDIO_DMA_UNIT_BYTES       128

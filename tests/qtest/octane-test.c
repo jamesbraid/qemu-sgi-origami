@@ -4213,6 +4213,308 @@ static void test_rad_clock_select(void)
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
+/*
+ * The stock PROM's boot tune, as software behaviour from its datasheet: the
+ * register order of the Rev 4.17 image, a one-shot descriptor with end of
+ * descriptor set (4504 units of 128 bytes, 72,064 frames) and generator 2
+ * loaded for 32 kHz.
+ */
+#define RAD_TUNE_PCI        0xa1000000ULL
+#define RAD_TUNE_CTRL       0xfff73404u
+#define RAD_TUNE_FRAMES     72064u
+#define RAD_TUNE_RATE       32000u
+
+/* Left and right samples of tune frame i; the low byte of each word is junk. */
+static int16_t octane_rad_tune_left(unsigned i)
+{
+    return (int16_t)(i * 7 + 1);
+}
+
+static int16_t octane_rad_tune_right(unsigned i)
+{
+    return (int16_t)(i * 13 + 2);
+}
+
+static void octane_rad_tune_fill(QTestState *qts, uint64_t ram,
+                                 unsigned frames)
+{
+    g_autofree uint8_t *buf = g_malloc(frames * 8);
+
+    for (unsigned i = 0; i < frames; i++) {
+        stl_be_p(buf + i * 8, ((uint32_t)(uint16_t)octane_rad_tune_left(i)
+                               << 8) | 0x5a);
+        stl_be_p(buf + i * 8 + 4,
+                 ((uint32_t)(uint16_t)octane_rad_tune_right(i) << 8) | 0xa5);
+    }
+    qtest_memwrite(qts, ram, buf, frames * 8);
+}
+
+/* Steps 1 to 11 of the PROM's sequence, up to the relay unmute. */
+static void octane_rad_tune_setup(QTestState *qts, uint64_t pci,
+                                  uint32_t ctrl, bool select_first,
+                                  bool withhold_select)
+{
+    octane_rad_clock_map(qts);
+    qtest_writel(qts, RAD_BAR0 + 0x7c, 0xc0c0c0c0);
+    qtest_writel(qts, RAD_BAR0 + 0x70, 0x480);
+    qtest_writel(qts, RAD_BAR0 + 0x80, 0xfffffffe);
+    qtest_writel(qts, RAD_BAR0 + 0x78, 0x00fac688);
+    qtest_writel(qts, RAD_BAR0 + 0x74, 0x08000010);
+    qtest_writel(qts, RAD_BAR0 + 0x80, 0xffffcbfc);
+    qtest_writel(qts, RAD_BAR0 + 0xa4, 0x0000ffff);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x40000000);
+    if (select_first && !withhold_select) {
+        qtest_writel(qts, RAD_BAR0 + RAD_CG_ALT_MUX, 1);
+    }
+    qtest_writel(qts, RAD_BAR0 + 0xa0, 0x40000405);
+    if (!select_first && !withhold_select) {
+        qtest_writel(qts, RAD_BAR0 + RAD_CG_ALT_MUX, 1);
+    }
+    qtest_clock_step(qts, 1000000);
+    qtest_writel(qts, RAD_BAR0 + 0x80, 0xffff8bfc);
+    qtest_writel(qts, RAD_BAR0 + 0x8c, 2);
+    qtest_writel(qts, RAD_BAR0 + 0x4c, 0x03000000);
+    qtest_clock_step(qts, 10000000);
+    qtest_writel(qts, RAD_BAR0 + 0x524, pci >> 32);
+    qtest_writel(qts, RAD_BAR0 + 0x4f8, pci);
+    qtest_writel(qts, RAD_BAR0 + 0x4fc, ctrl);
+    qtest_writel(qts, RAD_BAR0 + 0x88, 3);
+}
+
+static QTestState *octane_rad_wav_start(const char *path, uint32_t rate,
+                                        const char *extra)
+{
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *args = g_strdup_printf(
+        "-audiodev wav,id=radwav,path=%s,out.frequency=%u,out.channels=2,"
+        "out.format=s16 -global sgi-rad1-octane.audiodev=radwav %s",
+        quoted, rate, extra);
+    QTestState *qts = octane_start_args(args);
+
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    return qts;
+}
+
+static unsigned octane_rad_wav_frames(const char *wav, gsize length)
+{
+    g_assert_cmpuint(length, >=, 44);
+    g_assert_cmpuint(ldl_le_p(wav + 40), ==, length - 44);
+    return (length - 44) / 4;
+}
+
+/* The tune plays once at 32 kHz, then the channel clears its start bit. */
+static void test_rad_tune_plays_once(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *wav = NULL;
+    QTestState *qts;
+    gsize length;
+    int fd = g_file_open_tmp("octane-rad-tune-XXXXXX.wav", &path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    qts = octane_rad_wav_start(path, RAD_TUNE_RATE, "");
+    octane_rad_clock_map(qts);
+    octane_rad_tune_fill(qts, RAM + (RAD_TUNE_PCI & 0x1fffffff),
+                         RAD_TUNE_FRAMES);
+    octane_rad_tune_setup(qts, RAD_TUNE_PCI, RAD_TUNE_CTRL, false, false);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x40000001);
+
+    /* Frames due at 32 kHz; the position field is 14 bits wide. */
+    qtest_clock_step(qts, 250000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 8000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0x40000001);
+
+    /*
+     * The relay and DAC mute are stored; they leave the transfer alone.
+     */
+    qtest_writel(qts, RAD_BAR0 + 0x88, 2);
+    qtest_writel(qts, RAD_BAR0 + 0x8c, 3);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x88), ==, 2);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x8c), ==, 3);
+    qtest_writel(qts, RAD_BAR0 + 0x88, 3);
+    qtest_writel(qts, RAD_BAR0 + 0x8c, 2);
+
+    /* A check at 1 s of tune time still finds the channel busy. */
+    qtest_clock_step(qts, 750000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 32000 % 16384);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58) & 1, ==, 1);
+
+    /* The pass is 72,064 frames, 2.252 s: set just before, clear just after. */
+    qtest_clock_step(qts, 1250000000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58) & 1, ==, 1);
+    qtest_clock_step(qts, 3000000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0x40000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, RAD_TUNE_FRAMES % 16384);
+
+    /* The positions hold once the channel has stopped. */
+    qtest_writel(qts, RAD_BAR0 + 0x88, 2);
+    qtest_clock_step(qts, 1000000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, RAD_TUNE_FRAMES % 16384);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x18), ==,
+                    (RAD_TUNE_FRAMES % 16384) << 4);
+    qtest_quit(qts);
+
+    /* Every frame reached the backend, left and right, once and in order. */
+    g_assert_true(g_file_get_contents(path, &wav, &length, NULL));
+    g_assert_cmpuint(ldl_le_p(wav + 24), ==, RAD_TUNE_RATE);
+    g_assert_cmpuint(octane_rad_wav_frames(wav, length), ==, RAD_TUNE_FRAMES);
+    for (unsigned i = 0; i < RAD_TUNE_FRAMES; i++) {
+        g_assert_cmpint((int16_t)lduw_le_p(wav + 44 + i * 4), ==,
+                        octane_rad_tune_left(i));
+        g_assert_cmpint((int16_t)lduw_le_p(wav + 46 + i * 4), ==,
+                        octane_rad_tune_right(i));
+    }
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+/* The rate is 32 kHz in either order, and 29.4 kHz while the select is out. */
+static void test_rad_tune_rate(void)
+{
+    static const struct {
+        bool select_first;
+        bool withhold;
+        unsigned frames;
+    } cases[] = {
+        { false, false, 8000 },
+        { true, false, 8000 },
+        { false, true, 7350 },
+    };
+    QTestState *qts = octane_start();
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        qtest_system_reset(qts);
+        octane_rad_tune_setup(qts, 0xa0100000, RAD_TUNE_CTRL,
+                              cases[i].select_first, cases[i].withhold);
+        qtest_writel(qts, RAD_BAR0 + 0x58, 0x40000001);
+        qtest_clock_step(qts, 250000000);
+        g_assert_cmpuint(octane_rad_out_frames(qts), ==, cases[i].frames);
+    }
+    qtest_quit(qts);
+}
+
+/* The buffer at an unmapped widget address publishes nothing. */
+static void test_rad_tune_unmapped(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *wav = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    gsize length;
+    int fd = g_file_open_tmp("octane-rad-tune-XXXXXX.wav", &path, NULL);
+    int lfd = g_file_open_tmp("octane-rad-tune-XXXXXX", &log_path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(lfd, >=, 0);
+    close(fd);
+    close(lfd);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d guest_errors -D %s", quoted);
+    qts = octane_rad_wav_start(path, RAD_TUNE_RATE, extra);
+    octane_rad_tune_setup(qts, 0xa0100000, RAD_TUNE_CTRL, false, false);
+    /* The direct window now points at a widget with no memory behind it. */
+    qtest_writel(qts, BRIDGE_REG(0x080), 9u << 20);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x40000001);
+    qtest_clock_step(qts, 250000000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x2c), ==, 0);
+
+    /* The channel stopped on the error and stays stopped. */
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+    qtest_clock_step(qts, 250000000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x2c), ==, 0);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(path, &wav, &length, NULL));
+    g_assert_cmpuint(octane_rad_wav_frames(wav, length), ==, 0);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "analog output DMA at 0xa0100000 failed"));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
+ * Without end of descriptor the control word links to a descriptor the model
+ * does not hold. The first lap plays; the link is reported as unsupported,
+ * the channel stops and its start bit is left alone.
+ */
+static void test_rad_tune_unlinked(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *wav = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    gsize length;
+    int fd = g_file_open_tmp("octane-rad-tune-XXXXXX.wav", &path, NULL);
+    int lfd = g_file_open_tmp("octane-rad-tune-XXXXXX", &log_path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(lfd, >=, 0);
+    close(fd);
+    close(lfd);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d unimp -D %s", quoted);
+    qts = octane_rad_wav_start(path, RAD_TUNE_RATE, extra);
+    octane_rad_tune_fill(qts, RAM + 0x100000, RAD_TUNE_FRAMES);
+    octane_rad_tune_setup(qts, 0xa0100000, RAD_TUNE_CTRL & ~4u, false, false);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x40000001);
+    qtest_clock_step(qts, 2300000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, RAD_TUNE_FRAMES % 16384);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0x40000001);
+    qtest_clock_step(qts, 1000000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, RAD_TUNE_FRAMES % 16384);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(path, &wav, &length, NULL));
+    g_assert_cmpuint(octane_rad_wav_frames(wav, length), ==, RAD_TUNE_FRAMES);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "links to descriptor 0, which is not "
+                                 "modelled"));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/* A nonzero index beside end of descriptor is ignored, and logged. */
+static void test_rad_tune_index_ignored(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int lfd = g_file_open_tmp("octane-rad-tune-XXXXXX", &log_path, NULL);
+
+    g_assert_cmpint(lfd, >=, 0);
+    close(lfd);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d unimp -D %s", quoted);
+    qts = octane_start_args(extra);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+
+    /* 512 frames at 32 kHz take 16 ms. */
+    octane_rad_tune_setup(qts, 0xa0100000, 0xfffff004 | (7 << 3), false,
+                          false);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x40000001);
+    qtest_clock_step(qts, 100000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 512);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0x40000000);
+
+    /* Index 0 is the form every known writer uses and needs no report. */
+    qtest_writel(qts, RAD_BAR0 + 0x4fc, 0xfffff004);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x40000001);
+    qtest_clock_step(qts, 100000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 1024);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0x40000000);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "control 0xfffff03c has end of descriptor"));
+    g_assert_null(strstr(log, "control 0xfffff004"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 static void test_rad_ust_clock(void)
 {
     QTestState *qts = octane_start();
@@ -5920,6 +6222,12 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rad-transfer-failures", test_rad_transfer_failures);
     qtest_add_func("/octane/rad-transfer-unsupported",
                    test_rad_transfer_unsupported);
+    qtest_add_func("/octane/rad-tune-plays-once", test_rad_tune_plays_once);
+    qtest_add_func("/octane/rad-tune-rate", test_rad_tune_rate);
+    qtest_add_func("/octane/rad-tune-unmapped", test_rad_tune_unmapped);
+    qtest_add_func("/octane/rad-tune-unlinked", test_rad_tune_unlinked);
+    qtest_add_func("/octane/rad-tune-index-ignored",
+                   test_rad_tune_index_ignored);
     qtest_add_func("/octane/rad-clock-select", test_rad_clock_select);
     qtest_add_func("/octane/rad-ust-clock", test_rad_ust_clock);
     qtest_add_func("/octane/rad-ust-word-and-wrap",
