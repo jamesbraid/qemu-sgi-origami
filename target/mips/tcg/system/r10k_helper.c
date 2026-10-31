@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The R10000 family's system helpers: the CACHE instruction's operations
  * over the cache arrays the CPU state carries, the physical
@@ -957,8 +957,9 @@ void helper_r10k_prefetch(CPUMIPSState *env, target_ulong addr, uint32_t hint)
 void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                    uintptr_t ra)
 {
-    uint32_t cache_type = extract32(op, 0, 2);
-    uint32_t cache_operation = extract32(op, 2, 3);
+    /* The op field's low two bits name the cache, its top three the op. */
+    uint32_t cache_type = op & 0x3;
+    uint32_t cache_operation = (op >> 2) & 0x7;
     hwaddr paddr;
 
     /*
@@ -1308,33 +1309,35 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
  */
 void r10k_invalidate_conflicts(CPUMIPSState *env, int idx)
 {
-#if defined(TARGET_MIPS64)
-    target_ulong mask, VPN;
-    uint16_t ASID;
-    bool G, conflict = false, translating = false;
-    uint64_t scan_mask;
+#ifdef TARGET_MIPS64
+    /*
+     * The incoming entry as the fill will store it: the page mask widened
+     * to the even/odd pair of the smallest page, the VPN2 clipped to the
+     * implemented segment bits.
+     */
+    target_ulong pair_mask = env->CP0_PageMask | ~(TARGET_PAGE_MASK << 1);
+    target_ulong new_vpn = env->CP0_EntryHi & (TARGET_PAGE_MASK << 1) &
+                           env->SEGMask;
+    uint16_t new_asid = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
+    /* Global only when both EntryLo halves carry their G bit. */
+    bool new_global = (env->CP0_EntryLo0 & 1) & (env->CP0_EntryLo1 & 1);
+    bool conflict = false, translating = false;
+    uint64_t scan_mask = env->tlb_active_mask;
 
-    /* 1k pages are not supported. */
-    mask = env->CP0_PageMask | ~(TARGET_PAGE_MASK << 1);
-    VPN = env->CP0_EntryHi & (TARGET_PAGE_MASK << 1) & env->SEGMask;
-    ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
-    G = env->CP0_EntryLo0 & env->CP0_EntryLo1 & 1;
-
-    scan_mask = env->tlb_active_mask;
     if (idx < 64) {
         scan_mask &= ~(1ULL << idx);
     }
 
     while (scan_mask) {
         int i = ctz64(scan_mask);
-        scan_mask &= scan_mask - 1;
-        r4k_tlb_t *tlb = &env->tlb->mmu.r4k.tlb[i];
-        target_ulong both = mask | tlb->PageMask;
+        r4k_tlb_t *other = env->tlb->mmu.r4k.tlb + i;
+        target_ulong both = pair_mask | other->PageMask;
 
-        if ((tlb->VPN & ~both) != (VPN & ~both)) {
+        scan_mask &= scan_mask - 1;
+        if ((other->VPN & ~both) != (new_vpn & ~both)) {
             continue;
         }
-        if (!G && !tlb->G && tlb->ASID != ASID) {
+        if (!new_global && !other->G && other->ASID != new_asid) {
             continue;
         }
         /*
@@ -1346,8 +1349,8 @@ void r10k_invalidate_conflicts(CPUMIPSState *env, int idx)
          * invalidated and still recorded, but flushing for them would
          * throw away every cached translation to remove none.
          */
-        translating |= tlb->V0 || tlb->V1;
-        tlb->EHINV = 1;
+        translating |= other->V0 || other->V1;
+        other->EHINV = 1;
         env->tlb_active_mask &= ~(1ULL << i);
         conflict = true;
     }
@@ -1612,17 +1615,18 @@ target_ulong helper_mfc0_r10k_performance(CPUMIPSState *env, uint32_t sel)
  */
 static void r10k_helper_tlbwi(CPUMIPSState *env)
 {
-    int idx = r4k_tlbwi_prepare(env);
+    int slot = r4k_tlbwi_prepare(env);
 
-    r4k_invalidate_tlb(env, idx, 0);
-    r10k_invalidate_conflicts(env, idx);
-    r4k_fill_tlb(env, idx);
+    /* The indexed write keeps no shadow of the entry it replaces. */
+    r4k_invalidate_tlb(env, slot, false);
+    r10k_invalidate_conflicts(env, slot);
+    r4k_fill_tlb(env, slot);
 }
 
 static void r10k_helper_tlbwr(CPUMIPSState *env)
 {
-    int r = cpu_mips_get_random(env);
-    const r4k_tlb_t *old = &env->tlb->mmu.r4k.tlb[r];
+    int victim = cpu_mips_get_random(env);
+    const r4k_tlb_t *old = env->tlb->mmu.r4k.tlb + victim;
 
     /*
      * The replaced entry may live on as a shadow so QEMU's own TLB keeps
@@ -1632,12 +1636,12 @@ static void r10k_helper_tlbwr(CPUMIPSState *env)
      * takes TLB Refill. So only an entry whose halves both translate is
      * kept; any other is discarded outright.
      */
-    r4k_invalidate_tlb(env, r, old->V0 && old->V1);
+    r4k_invalidate_tlb(env, victim, old->V0 && old->V1);
     if (r4k_shadow_covers_staged(env)) {
         r4k_mips_tlb_flush_extra(env, env->tlb->nb_tlb);
     }
-    r10k_invalidate_conflicts(env, r);
-    r4k_fill_tlb(env, r);
+    r10k_invalidate_conflicts(env, victim);
+    r4k_fill_tlb(env, victim);
 }
 
 /*
@@ -1647,16 +1651,37 @@ static void r10k_helper_tlbwr(CPUMIPSState *env)
  */
 static void r10k_helper_tlbr(CPUMIPSState *env)
 {
-    uint16_t ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
-    r4k_tlb_t *tlb;
-    int idx;
-
-    idx = (env->CP0_Index & ~0x80000000) % env->tlb->nb_tlb;
-    tlb = &env->tlb->mmu.r4k.tlb[idx];
+    target_ulong asid_mask = env->CP0_EntryHi_ASID_mask;
+    uint16_t asid_before = env->CP0_EntryHi & asid_mask;
+    /* Index bit 31 is the probe-failure flag, not part of the index. */
+    const r4k_tlb_t *entry = env->tlb->mmu.r4k.tlb +
+        extract32(env->CP0_Index, 0, 31) % env->tlb->nb_tlb;
 
     r4k_mips_tlb_flush_extra(env, env->tlb->nb_tlb);
 
-    if (tlb->EHINV) {
+    /*
+     * PageMask keeps the entry's own mask on every read, conflicting
+     * entries included: a read-back loads PageMask like any other read,
+     * and a guest that sets PageMask once and relies on read-backs
+     * restoring the one size it ever writes would otherwise inherit a
+     * 4 Kbyte mask for its next TLB write.
+     */
+    env->CP0_PageMask = entry->PageMask;
+
+    if (likely(!entry->EHINV)) {
+        /*
+         * The TLBR pseudocode (R10000 User's Manual version 2.0, section
+         * 14.35) reads EntryHi as the entry and-not its page mask word, so
+         * virtual page number bits a guest wrote under a large page's mask
+         * present as zeroes. The fill keeps the entry as written, and lookup
+         * masks at compare time, so only this architectural read-back needs
+         * the clearing.
+         */
+        env->CP0_EntryHi = (entry->VPN & ~(target_ulong)entry->PageMask) |
+                           entry->ASID;
+        env->CP0_MemoryMapID = entry->MMID;
+        r4k_tlbr_load_entrylo(env, entry);
+    } else {
         /*
          * This processor has no EHINV bit, but r10k_invalidate_conflicts()
          * marks a conflicting entry this way to take it out of matching, so
@@ -1666,35 +1691,14 @@ static void r10k_helper_tlbr(CPUMIPSState *env)
          * feature. Once stuck, the fill helper reads it back as "write an
          * invalid entry" and every later TLB write is silently thrown away.
          * Present the EntryHi and EntryLo of such an entry as zeroes.
-         *
-         * The PageMask register keeps the entry's own stale mask: a
-         * read-back loads PageMask like any other read, and a guest that
-         * sets PageMask once and relies on read-backs restoring the one
-         * size it ever writes would otherwise inherit a 4 Kbyte mask for
-         * its next TLB write.
          */
         env->CP0_EntryHi = 0;
-        env->CP0_PageMask = tlb->PageMask;
         env->CP0_EntryLo0 = 0;
         env->CP0_EntryLo1 = 0;
-    } else {
-        /*
-         * The TLBR pseudocode (R10000 User's Manual version 2.0, section
-         * 14.35) reads EntryHi as the entry and-not its page mask word, so
-         * virtual page number bits a guest wrote under a large page's mask
-         * present as zeroes. The fill keeps the entry as written, and lookup
-         * masks at compare time, so only this architectural read-back needs
-         * the clearing.
-         */
-        env->CP0_EntryHi = (tlb->VPN & ~(target_ulong)tlb->PageMask) |
-                           tlb->ASID;
-        env->CP0_MemoryMapID = tlb->MMID;
-        env->CP0_PageMask = tlb->PageMask;
-        r4k_tlbr_load_entrylo(env, tlb);
     }
 
     /* The read replaces EntryHi, ASID included, as a write to it would. */
-    if ((env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask) != ASID) {
+    if ((env->CP0_EntryHi & asid_mask) != asid_before) {
         r10k_asid_changed(env);
     }
 }
