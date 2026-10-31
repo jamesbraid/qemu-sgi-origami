@@ -1951,8 +1951,9 @@
 ##
 # @SGIModelIp53NormalSelection:
 #
-# The one resolved launch an IP53 runtime profile accepts without
-# ``ip53-experimental=on``.
+# The resolved launch an IP53 runtime profile once singled out as its
+# normal one.  QEMU no longer reads it: every population the topology
+# accepts runs the profile.
 #
 # @cpus: the -smp count the launch requests
 #
@@ -2004,10 +2005,10 @@
 # runtime profile.
 #
 # @pic-profile: the compatibility profile every PIC host of the
-#     topology selects once the IP53 runtime is authorized
+#     topology selects
 #
-# @normal-selection: the launch admitted without
-#     ``ip53-experimental=on``; absent where every launch needs it
+# @normal-selection: the launch the profile once singled out; QEMU
+#     no longer reads it
 #
 # @l1-irouter-compat: whether the node's L1 answers the
 #     router-compatible command set and reports a first port speed

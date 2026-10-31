@@ -189,17 +189,17 @@ static const Recipe recipes[] = {
     { "origin300", "-M origin300", 0x1686a8, prepare_origin300 },
     { "origin3000", "-M origin3000 -cpu R12000", 0x1686a8,
       prepare_origin3000 },
-    { "origin350", "-M origin350,topology=origin350,ip53-experimental=on,"
+    { "origin350", "-M origin350,topology=origin350,"
       "nvram0=sgi-ds1742-data-io9,nvram0-clock=sgi-ds1742-clock-io9",
       16 * 1024 * 1024, prepare_ip53, 0, true },
-    { "onyx350", "-M onyx350,topology=onyx350-compat,ip53-experimental=on,"
+    { "onyx350", "-M onyx350,topology=onyx350-compat,"
       "nvram0=sgi-ds1742-data-io9,nvram0-clock=sgi-ds1742-clock-io9",
       16 * 1024 * 1024, prepare_ip53, 0, true },
-    { "tezro", "-M tezro,topology=tezro,ip53-experimental=on,"
+    { "tezro", "-M tezro,topology=tezro,"
       "nvram0=sgi-ds1742-data-io9,nvram0-clock=sgi-ds1742-clock-io9",
       16 * 1024 * 1024, prepare_ip53, 0, true },
     { "onyx4-host", "-M onyx4-host,topology=onyx4-host-serial-compat,"
-      "ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+      "nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9",
       16 * 1024 * 1024, prepare_ip53, 0, true },
     /* IP30 has only 16 KiB of low RAM; the SN state address is unmapped. */

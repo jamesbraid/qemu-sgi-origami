@@ -522,7 +522,7 @@ class LaunchPolicyFieldTests(unittest.TestCase):
         with self.assertRaisesRegex(CompileError, "IP53 node boards"):
             compile_model(model)
 
-    def test_normal_offering_follows_the_normal_selection(self):
+    def test_ip53_runtime_offerings_need_no_cpu_properties(self):
         def offerings(model):
             catalogue = json.loads(render_catalogue_json([model]))
             return catalogue["offerings"]
@@ -530,7 +530,10 @@ class LaunchPolicyFieldTests(unittest.TestCase):
         model = _resolved("origin350")
         self.assertTrue(all("required-properties" not in item["processor"]
                             for item in offerings(model)))
-        del model["machine"]["emulation"]["ip53_runtime"]["normal_selection"]
+        # Without its runtime profile the topology's R16000s are the
+        # caller's to configure.
+        del model["machine"]["emulation"]["ip53_runtime"]
+        del model["machine"]["emulation"]["pic_profiles"]
         self.assertTrue(all("required-properties" in item["processor"]
                             for item in offerings(model)))
 
@@ -3625,7 +3628,7 @@ class CatalogueJsonTests(unittest.TestCase):
             self.assertEqual((product["product"], product["assembly"]),
                              ("v12", assembly), name)
 
-    def test_only_six_cleared_ip53_offerings_drop_cpu_requirements(self):
+    def test_no_ip53_offering_asks_for_cpu_properties(self):
         profile_names = (
             "origin350", "onyx350-compat", "onyx4-host-serial-compat",
             "tezro/one-processor", "tezro/two-four-processor", "tezro-rack",
@@ -3634,37 +3637,26 @@ class CatalogueJsonTests(unittest.TestCase):
             [_resolved(name) for name in profile_names]))
         offerings = [item for item in catalogue["offerings"]
                      if item.get("launch-recipe") == "ip53-discovery"]
-        required_properties = [
-            "r16000-experimental", "r16000-reset-mode",
-            "r16000-scache-bytes",
-        ]
-        normal = {
-            ("origin350", "origin350", (4,)),
-            ("onyx350", "onyx350-compat", (4,)),
-            ("onyx4-host", "onyx4-host-serial-compat", (4,)),
-            ("tezro", "tezro", (1,)),
-            ("tezro", "tezro", (4,)),
-            ("tezro", "tezro-rack", (1,)),
-        }
         topologies = {item["name"]: item for item in catalogue["topologies"]}
-        actual_normal = set()
+        # Every population each topology accepts is offered, and none asks
+        # the caller for the R16000 properties the machine fits itself.
+        self.assertEqual(
+            sorted((item["topology"], tuple(item["cpus-per-node"]))
+                   for item in offerings),
+            sorted([("origin350", (4,)), ("onyx350-compat", (4,)),
+                    ("onyx4-host-serial-compat", (4,)),
+                    ("tezro", (1,)), ("tezro", (2,)), ("tezro", (4,)),
+                    ("tezro-rack", (1,)), ("tezro-rack", (2,)),
+                    ("tezro-rack", (4,))]))
         for offering in offerings:
-            key = (offering["product"], offering["topology"],
-                   tuple(offering["cpus-per-node"]))
-            if "required-properties" not in offering["processor"]:
-                actual_normal.add(key)
-                assembly = topologies[key[1]]["nodes"][0]["cpu-slots"][0][
-                    "assembly"]
-                self.assertEqual(
-                    assembly["required-properties"], required_properties, key,
-                )
-            else:
-                self.assertEqual(
-                    offering["processor"]["required-properties"],
-                    required_properties, key,
-                )
-        self.assertEqual(actual_normal, normal)
-        self.assertEqual(len(offerings), 9)
+            key = (offering["topology"], tuple(offering["cpus-per-node"]))
+            self.assertNotIn("required-properties", offering["processor"],
+                             key)
+            assembly = topologies[key[0]]["nodes"][0]["cpu-slots"][0][
+                "assembly"]
+            self.assertEqual(assembly["required-properties"], [
+                "r16000-experimental", "r16000-reset-mode",
+                "r16000-scache-bytes"], key)
 
         # The two Tezro boards are two records under one name; the
         # two/four-processor one is the machine default.

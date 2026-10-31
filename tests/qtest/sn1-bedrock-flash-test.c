@@ -799,7 +799,7 @@ static QTestState *ip53_tcg_flash_start(const char *image,
     g_autofree char *quoted_data = g_shell_quote(data);
     g_autofree char *quoted_clock = g_shell_quote(clock);
 
-    return qtest_initf("-M origin350,ip53-experimental=on,"
+    return qtest_initf("-M origin350,"
                        "nvram0=sgi-ds1742-data-io9,"
                        "nvram0-clock=sgi-ds1742-clock-io9 -m 2G -smp 4 "
                        "-cpu R16000,r16000-experimental=on,"
@@ -824,7 +824,7 @@ static QTestState *ip53_tcg_static_start(const char *bios,
     g_autofree char *quoted_data = g_shell_quote(data);
     g_autofree char *quoted_clock = g_shell_quote(clock);
 
-    return qtest_initf("-M origin350,ip53-experimental=on,"
+    return qtest_initf("-M origin350,"
                        "nvram0=sgi-ds1742-data-io9,"
                        "nvram0-clock=sgi-ds1742-clock-io9 -m 2G -smp 4 "
                        "-cpu R16000,r16000-experimental=on,"

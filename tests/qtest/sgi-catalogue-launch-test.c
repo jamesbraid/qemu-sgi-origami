@@ -274,17 +274,11 @@ static void test_launch(const void *opaque)
     QDict *machine_properties = graphics ?
         qdict_get_qdict(graphics, "machine-properties") : NULL;
     /*
-     * A processor that lists required properties is an opt-in experiment:
-     * the catalogue names the -cpu properties a launch must choose but
-     * gives no values, so QEMU must refuse a launch made without them,
-     * asking for the experiment's opt-in. IP32 supplies the selected tuple
-     * through its launch recipe. The Origin 3900's Cx-brick node
-     * board sets its R16000 properties itself, so that product asks for none.
+     * Every offering launches as the catalogue gives it, with no -cpu
+     * properties: an IP53 runtime profile and the Origin 3900's Cx-brick
+     * node board both fit their R16000s themselves.
      */
     bool ip32 = g_str_equal(qdict_get_str(o, "product"), "o2");
-    bool opt_in = !ip32 && qdict_haskey(qdict_get_qdict(o, "processor"),
-                               "required-properties") &&
-                  !g_str_equal(qdict_get_str(o, "product"), "origin3000");
     /*
      * An Origin 2000 with a pipe needs a keyboard for its X server, which
      * only the BaseIO-G's MediaIO carries: the catalogue launch must
@@ -362,11 +356,6 @@ static void test_launch(const void *opaque)
     }
     if (ip32) {
         o2_product_cleanup(&product);
-    }
-    if (opt_in) {
-        g_assert_cmpint(status, !=, 0);
-        g_assert_nonnull(strstr(err, "requires ip53-experimental=on"));
-        return;
     }
     if (status) {
         g_test_message("%s refused: %s", machine->str, err);

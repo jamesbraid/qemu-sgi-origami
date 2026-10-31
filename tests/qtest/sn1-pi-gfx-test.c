@@ -61,7 +61,7 @@
 #define ONE_NODE "-M origin300 -cpu R14000 -smp 2 "
 #define TWO_NODES "-M origin300,topology=origin300-two-chassis " \
                   "-cpu R14000 -smp 4 -m 1024 "
-#define IP53_NODE "-M origin350,ip53-experimental=on," \
+#define IP53_NODE "-M origin350," \
                   "nvram0=sgi-ds1742-data-io9," \
                   "nvram0-clock=sgi-ds1742-clock-io9 " \
                   "-cpu R16000,r16000-experimental=on," \

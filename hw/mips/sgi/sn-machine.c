@@ -359,9 +359,9 @@ struct SGIMachineState {
 
     bool debug_leds;
     bool junk_uart_present;
-    bool ip53_experimental;
     bool origin300_l1cmd_compat;
-    bool ip53_experiment_authorized;
+    /* The topology's IP53 runtime profile applies to this machine. */
+    bool ip53_runtime_enabled;
     size_t ip53_widget_zero_host;
     bool ip53_widget_zero_host_valid;
     /*
@@ -1310,36 +1310,33 @@ static const SGIModelTopology *sgi_machine_chassis(MachineState *machine)
 
 static bool sgi_machine_preflight_io_descriptors(
     const SGIModelTopology *t, bool allow_ip53_fixture,
-    bool allow_ip53_experiment, bool tezro, Error **errp);
+    bool allow_ip53_runtime, bool tezro, Error **errp);
 
 /*
- * The profile a PIC host must select: the IP53 runtime profile's own once
- * that runtime is authorized, which only a topology carrying one can be.
+ * The profile a PIC host must select: the IP53 runtime profile's own when
+ * that profile applies, which only a topology carrying one can.
  */
 static SGIModelPicCompatibilityProfile sgi_machine_ip53_pic_profile(
-    const SGIModelTopology *t, bool runtime_experiment)
+    const SGIModelTopology *t, bool runtime)
 {
-    if (runtime_experiment) {
+    if (runtime) {
         g_assert(t->ip53_runtime);
         return t->ip53_runtime->pic_profile;
     }
     return SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK;
 }
 
-static bool sgi_machine_ip53_experiment_policy(
+/*
+ * Whether the topology's IP53 runtime profile applies: always for a
+ * catalogue topology that carries one, never for a qtest fixture topology,
+ * which builds IP53 boards without it.
+ */
+static bool sgi_machine_ip53_runtime_policy(
     SGIMachineState *s, SGIMachineClass *smc, const SGIModelTopology *t,
-    bool *allow_ip53_experiment, Error **errp)
+    bool *allow_ip53_runtime, Error **errp)
 {
     bool onyx350 = g_strcmp0(smc->product, "onyx350") == 0;
     bool tezro = g_strcmp0(smc->product, "tezro") == 0;
-    /*
-     * The catalogue marks which topologies are IP53 runtime profiles and
-     * which of those admit a normal launch; topology= is product-scoped, so
-     * the topology found is already this product's own.
-     */
-    bool registered_ip53_product = t->ip53_runtime != NULL;
-    bool normal_candidate = registered_ip53_product &&
-                            t->ip53_runtime->normal_selection != NULL;
 
     if (onyx350 && !s->topology_name) {
         error_setg(errp, "Onyx 350 runtime trial requires explicit "
@@ -1350,80 +1347,9 @@ static bool sgi_machine_ip53_experiment_policy(
         error_setg(errp, "Tezro runtime profile requires explicit topology selection");
         return false;
     }
-
-    if (smc->test_topology && qtest_enabled()) {
-        if (s->ip53_experimental) {
-            error_setg(errp, "qtest fixture topology cannot enable the "
-                       "IP53 runtime experiment");
-            return false;
-        }
-        *allow_ip53_experiment = false;
-        return true;
-    }
-    if (s->ip53_experimental &&
-        (!registered_ip53_product || smc->test_topology)) {
-        error_setg(errp, "ip53-experimental=on requires a registered IP53 "
-                   "runtime profile");
-        return false;
-    }
-    if (registered_ip53_product && !s->ip53_experimental &&
-        !normal_candidate) {
-        error_setg(errp, "%s requires ip53-experimental=on", smc->product);
-        return false;
-    }
-    *allow_ip53_experiment = s->ip53_experimental || normal_candidate;
+    *allow_ip53_runtime = !(smc->test_topology && qtest_enabled()) &&
+                          t->ip53_runtime != NULL;
     return true;
-}
-
-/*
- * The normal-selection exception is deliberately a complete resolved tuple.
- * Keep the early product/topology admission above broad enough to resolve the
- * descriptor, then authorize its IP53 behavior only after population and
- * memory selection have been checked.
- */
-static bool sgi_machine_ip53_normal_tuple(
-    const SGIModelTopology *t, MachineState *machine,
-    const unsigned int *requested, unsigned int node_count,
-    const SGIModelNode **nodes, const SGIModelProcessor *processor,
-    const SGIModelProcessorOption *processor_option)
-{
-    const SGIModelIp53NormalSelection *profile =
-        t->ip53_runtime ? t->ip53_runtime->normal_selection : NULL;
-    const SGIModelCpuSlotList *slot;
-    unsigned int fitted_count = 0;
-
-    if (!profile || node_count != 1 ||
-        machine->smp.cpus != machine->smp.max_cpus ||
-        !processor ||
-        (processor_option && processor_option->assembly != processor)) {
-        return false;
-    }
-    if (machine->smp.cpus != profile->cpus ||
-        requested[0] != profile->cpus ||
-        machine->ram_size != profile->memory_mib * MiB ||
-        processor->clock_hz != profile->clock_hz ||
-        processor->cache_mib != profile->cache_mib ||
-        !processor->has_mode_bits ||
-        processor->mode_bits != profile->mode_word ||
-        g_strcmp0(processor->kind, "R16000")) {
-        return false;
-    }
-    for (slot = nodes[0]->cpu_slots; slot; slot = slot->next) {
-        const SGIModelProcessor *assembly = slot->value->assembly;
-
-        if (!assembly) {
-            continue;
-        }
-        if (g_strcmp0(assembly->kind, "R16000") ||
-            assembly->clock_hz != profile->clock_hz ||
-            assembly->cache_mib != profile->cache_mib ||
-            !assembly->has_mode_bits ||
-            assembly->mode_bits != profile->mode_word) {
-            return false;
-        }
-        fitted_count++;
-    }
-    return fitted_count == profile->fitted_cpus;
 }
 
 static bool sgi_machine_controller_module_owned(const SGIModelController *c)
@@ -2192,7 +2118,7 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
     SGIMachineState *s = SGI_MACHINE(machine);
     SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
     const SGIModelTopology *chassis = sgi_machine_chassis(machine);
-    bool allow_ip53_experiment;
+    bool allow_ip53_runtime;
     bool allow_ip53_fixture = smc->test_topology && qtest_enabled();
 
     if (!chassis) {
@@ -2204,8 +2130,8 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
         !sgi_machine_validate_module_controllers(chassis, errp) ||
         !sgi_machine_validate_xio_cables(chassis, errp) ||
         !sgi_machine_validate_router_ports(chassis, errp) ||
-        !sgi_machine_ip53_experiment_policy(
-            s, smc, chassis, &allow_ip53_experiment, errp)) {
+        !sgi_machine_ip53_runtime_policy(
+            s, smc, chassis, &allow_ip53_runtime, errp)) {
         return NULL;
     }
     /* -smp, applied after properties, may pick another board variant. */
@@ -2215,7 +2141,7 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
         s->view_chassis = chassis;
     }
     if (!s->view || !sgi_machine_preflight_io_descriptors(
-            s->view, allow_ip53_fixture, allow_ip53_experiment,
+            s->view, allow_ip53_fixture, allow_ip53_runtime,
             g_strcmp0(smc->product, "tezro") == 0, errp)) {
         s->view = NULL;
         return NULL;
@@ -4820,7 +4746,7 @@ static bool sgi_machine_create_pic_hosts(SGIMachineState *s,
     s->pic_hosts = g_new0(DeviceState *, host_count);
     s->pic_links = g_new0(SGIXioLink, host_count);
     s->pic_host_count = host_count;
-    if (s->ip53_experiment_authorized) {
+    if (s->ip53_runtime_enabled) {
         owner = sgi_machine_ip53_crossbar_owner(t, host_count);
     }
 
@@ -4841,7 +4767,7 @@ static bool sgi_machine_create_pic_hosts(SGIMachineState *s,
 
         object_property_add_child(OBJECT(s), child_name, OBJECT(pic));
         object_unref(OBJECT(pic));
-        if (s->ip53_experiment_authorized) {
+        if (s->ip53_runtime_enabled) {
             const SGIModelXioAttachment *attachment =
                 attachments[host->xio_attachment_index];
 
@@ -4925,7 +4851,7 @@ static bool sgi_machine_set_pic_widget_views(SGIMachineState *s,
     hosts = sgi_model_pci_host_bridge_array(t->pci_host_bridges, &host_count);
     attachments = sgi_model_xio_attachment_array(t->xio_attachments,
                                                   &attachment_count);
-    if (s->ip53_experiment_authorized) {
+    if (s->ip53_runtime_enabled) {
         const SGIModelIoBoardList *board_entry;
 
         for (board_entry = t->io_boards; board_entry;
@@ -4954,7 +4880,7 @@ static bool sgi_machine_set_pic_widget_views(SGIMachineState *s,
         if (attachment->node_index != node_index) {
             continue;
         }
-        if (s->ip53_experiment_authorized) {
+        if (s->ip53_runtime_enabled) {
             SGIPICState *pic = SGI_PIC(s->pic_hosts[i]);
             MemoryRegion *widget_zero = sgi_pic_pxbow_widget_zero(pic);
             MemoryRegion *routed = sgi_pic_routed_widget(
@@ -5089,7 +5015,7 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
     attachments = sgi_model_xio_attachment_array(t->xio_attachments,
                                                   &attachment_count);
     nodes = sgi_model_node_array(t->nodes, &node_count);
-    if (s->ip53_experiment_authorized &&
+    if (s->ip53_runtime_enabled &&
         host_count > SGI_BEDROCK_PI_LEVEL_SOURCES / SGI_PIC_LEVEL_SOURCES) {
         error_setg(errp, "IP53 PIC count exceeds the supported interrupt "
                    "source count");
@@ -5122,7 +5048,7 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
             !sgi_xio_link_connect(&s->pic_links[i], errp)) {
             return false;
         }
-        if (s->ip53_experiment_authorized) {
+        if (s->ip53_runtime_enabled) {
             SGIBedrockState *bedrock = SGI_BEDROCK(node->bedrock);
 
             sgi_pic_set_bedrock_pi(pic, 0, &bedrock->pi[0],
@@ -8148,7 +8074,7 @@ static bool sgi_machine_topology_has_ip53(const SGIModelTopology *t)
 
 static bool sgi_machine_validate_board_kinds(const SGIModelTopology *t,
                                             bool allow_ip53,
-                                            bool runtime_experiment,
+                                            bool runtime,
                                             Error **errp)
 {
     const SGIModelNodeList *entry;
@@ -8177,7 +8103,7 @@ static bool sgi_machine_validate_board_kinds(const SGIModelTopology *t,
                            t->name, node->id);
                 return false;
             }
-            if (runtime_experiment && node->identity->clock_hz != 200000000) {
+            if (runtime && node->identity->clock_hz != 200000000) {
                 error_setg(errp, "IP53 runtime profile requires a "
                            "200000000 Hz Bedrock clock");
                 return false;
@@ -8190,7 +8116,7 @@ static bool sgi_machine_validate_board_kinds(const SGIModelTopology *t,
 /* Validate optional XIO and PCI board references before config resolution. */
 static bool sgi_machine_preflight_io_descriptors(
     const SGIModelTopology *t, bool allow_ip53_fixture,
-    bool allow_ip53_experiment, bool tezro, Error **errp)
+    bool allow_ip53_runtime, bool tezro, Error **errp)
 {
     g_autofree const SGIModelIoBoard **boards = NULL;
     g_autofree const SGIModelPciHostBridge **hosts = NULL;
@@ -8221,7 +8147,7 @@ static bool sgi_machine_preflight_io_descriptors(
 
     boards = sgi_model_io_board_array(t->io_boards, &board_count);
     hosts = sgi_model_pci_host_bridge_array(t->pci_host_bridges, &host_count);
-    if (tezro && allow_ip53_experiment) {
+    if (tezro && allow_ip53_runtime) {
         if (host_count == 0 || host_count > 2) {
             error_setg(errp, "Tezro runtime profile requires one or two PIC hosts");
             return false;
@@ -8254,8 +8180,8 @@ static bool sgi_machine_preflight_io_descriptors(
         }
         if (host->has_compatibility_profile &&
             host->compatibility_profile !=
-                sgi_machine_ip53_pic_profile(t, allow_ip53_experiment)) {
-            if (allow_ip53_experiment) {
+                sgi_machine_ip53_pic_profile(t, allow_ip53_runtime)) {
+            if (allow_ip53_runtime) {
                 error_setg(errp, "topology '%s' PCI host '%s' must select "
                            "its authored runtime PIC profile", t->name,
                            host->id);
@@ -8492,14 +8418,14 @@ static bool sgi_machine_preflight_io_descriptors(
         }
     }
 
-    if (has_ip53 && ((!allow_ip53_fixture && !allow_ip53_experiment) ||
+    if (has_ip53 && ((!allow_ip53_fixture && !allow_ip53_runtime) ||
                      !all_ip53 || !host_count || !has_io9)) {
-        error_setg(errp, "topology '%s' IP53 construction requires the "
-                   "runtime experiment permission or a qtest fixture",
+        error_setg(errp, "topology '%s' IP53 construction requires an "
+                   "IP53 runtime profile or a qtest fixture",
                    t->name);
         return false;
     }
-    if (allow_ip53_experiment &&
+    if (allow_ip53_runtime &&
         (!has_ip53 || !all_ip53 || node_count != 1 ||
          host_count != expected_host_count ||
          io9_count != 1)) {
@@ -8509,7 +8435,7 @@ static bool sgi_machine_preflight_io_descriptors(
         return false;
     }
     if (host_count || has_io9) {
-        if ((!allow_ip53_fixture && !allow_ip53_experiment) ||
+        if ((!allow_ip53_fixture && !allow_ip53_runtime) ||
             !has_ip53 || !all_ip53 ||
             !host_count || !has_io9) {
             error_setg(errp, "topology '%s' has unsupported PIC/IO9 "
@@ -8520,13 +8446,13 @@ static bool sgi_machine_preflight_io_descriptors(
             if (!hosts[i]->has_compatibility_profile ||
                 hosts[i]->compatibility_profile !=
                     sgi_machine_ip53_pic_profile(t,
-                                                 allow_ip53_experiment)) {
+                                                 allow_ip53_runtime)) {
                 error_setg(errp, "topology '%s' PCI host '%s' has no "
                            "compatibility profile", t->name, hosts[i]->id);
                 return false;
             }
         }
-        if (allow_ip53_experiment &&
+        if (allow_ip53_runtime &&
             (node_count != 1 || host_count != expected_host_count)) {
             error_setg(errp, "IP53 runtime profile requires one node and "
                        "%zu PIC host%s", expected_host_count,
@@ -8935,7 +8861,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     size_t io_board_count = 0, crossbar_count = 0, node_count_check;
     uint64_t ram_offset = 0;
     SGIModelAsicKind kind;
-    bool allow_ip53_experiment = false;
+    bool allow_ip53_runtime = false;
     bool allow_ip53_fixture = smc->test_topology && qtest_enabled();
 
     if (!sgi_machine_settle_default_ram(machine, errp)) {
@@ -8972,13 +8898,13 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         g_string_free(names, true);
         return false;
     }
-    if (!sgi_machine_ip53_experiment_policy(
-            s, smc, t, &allow_ip53_experiment, errp)) {
+    if (!sgi_machine_ip53_runtime_policy(
+            s, smc, t, &allow_ip53_runtime, errp)) {
         return false;
     }
     if (!sgi_machine_validate_board_kinds(
-            t, allow_ip53_fixture || allow_ip53_experiment,
-            allow_ip53_experiment, errp) ||
+            t, allow_ip53_fixture || allow_ip53_runtime,
+            allow_ip53_runtime, errp) ||
         !sgi_machine_resolve_config(s, t, errp) ||
         !sgi_storage_check(s->storage, MACHINE_GET_CLASS(s)->name,
                            SGI_MACHINE_GET_CLASS(s)->product, t, errp)) {
@@ -9238,17 +9164,18 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         }
     }
 
-    if (allow_ip53_experiment && !s->ip53_experimental &&
-        !sgi_machine_ip53_normal_tuple(
-            t, machine, requested, node_count, nodes, s->processor,
-            s->processor_option)) {
-        error_setg(errp, "%s: topology '%s' does not match an approved normal "
-                   "IP53 serial profile tuple; pass ip53-experimental=on for "
-                   "an already-admitted experimental profile", mc->name,
-                   t->name);
+    /*
+     * An IP53 runtime profile fits exactly the processors -smp names:
+     * maxcpus must not add fitted sockets the profile was never checked
+     * against (docs/system/mips/sgi/ip35.rst).
+     */
+    if (allow_ip53_runtime && machine->smp.max_cpus != machine->smp.cpus) {
+        error_setg(errp, "%s: topology '%s' fits only the -smp %u processors; "
+                   "maxcpus=%u would fit more sockets", mc->name, t->name,
+                   machine->smp.cpus, machine->smp.max_cpus);
         return false;
     }
-    s->ip53_experiment_authorized = allow_ip53_experiment;
+    s->ip53_runtime_enabled = allow_ip53_runtime;
 
     /*
      * The boot-progress indicator is a Hub trace event; Bedrock has no
@@ -9316,7 +9243,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     if (s->ip53_fingerprint_enabled) {
         uint8_t pxbow_revision = 0;
 
-        if (allow_ip53_experiment) {
+        if (allow_ip53_runtime) {
             size_t i;
 
             if (!s->pic_host_count) {
@@ -9343,7 +9270,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             }
         }
         if (!sgi_machine_ip53_fingerprint(t, s->node_config, s->l1_config,
-                                          allow_ip53_experiment,
+                                          allow_ip53_runtime,
                                           pxbow_revision,
                                           s->ip53_local_fingerprint, errp)) {
             return false;
@@ -10400,9 +10327,9 @@ static bool sgi_machine_claim_xio_fabric(Object *obj, Object *board,
     return true;
 }
 
-bool sgi_machine_ip53_experiment_authorized(MachineState *machine)
+bool sgi_machine_ip53_runtime_enabled(MachineState *machine)
 {
-    return SGI_MACHINE(machine)->ip53_experiment_authorized;
+    return SGI_MACHINE(machine)->ip53_runtime_enabled;
 }
 
 /*
@@ -10807,22 +10734,6 @@ static bool sgi_machine_get_junk_uart(Object *obj, Error **errp)
 static void sgi_machine_set_junk_uart(Object *obj, bool value, Error **errp)
 {
     SGI_MACHINE(obj)->junk_uart_present = value;
-}
-
-static bool sgi_machine_get_ip53_experimental(Object *obj, Error **errp)
-{
-    return SGI_MACHINE(obj)->ip53_experimental;
-}
-
-static void sgi_machine_set_ip53_experimental(Object *obj, bool value,
-                                              Error **errp)
-{
-    SGIMachineState *s = SGI_MACHINE(obj);
-
-    if (sgi_machine_built("ip53-experimental", errp)) {
-        return;
-    }
-    s->ip53_experimental = value;
 }
 
 static bool sgi_machine_get_origin300_l1cmd_compat(Object *obj, Error **errp)
@@ -11399,14 +11310,6 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "Fit the junk-bus UART, a manufacturing/bring-up serial port a "
         "shipped machine does not have. Off by default; on, it takes the "
         "fourth character device (serial_hd index 3).");
-
-    object_class_property_add_bool(oc, "ip53-experimental",
-                                   sgi_machine_get_ip53_experimental,
-                                   sgi_machine_set_ip53_experimental);
-    object_class_property_set_description(oc, "ip53-experimental",
-        "Permit a registered IP53-backed software experiment. The Onyx 4 "
-        "host serial trial uses IP53 guest compatibility behavior. Off by "
-        "default and immutable after the machine is built.");
 
     object_class_property_add_bool(oc, "origin300-l1cmd-compat",
                                    sgi_machine_get_origin300_l1cmd_compat,
