@@ -4,8 +4,8 @@ sources:
   ip59-node-board: "web:irixnet-thread-2263  module 001c01 of the captured system: Part:030-1989-003;Name:IP59_4CPU;Revision:-C, four 1.0 GHz R16000 revision 3.0 with 16 MB secondary cache"
   ip59-two-cpu-board: "web:nekonomicon-16719032  Tezro rack: IP59_2CPU 030-2059-002 revision A, two 1.0 GHz R16000 on slices A and C"
   ip59-identity: "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf share/man/man4/man4.sgi/intro.4 lines 113-114: IP59 is the 1GHz IP53 design, listed for the Origin 350, Onyx 350 and Tezro"
-  tezro-deskside-trial: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
-  tezro-deskside-trial-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
+  tezro-runtime-inputs: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
+  tezro-runtime-inputs-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
   tezro-l1-version-compatibility: "web:ip35-patch-sg0007149 SG0007149 README identifies IP35 support; decoded L1 member has image identifier 1.48.1"
   tezro-board-guide: '007-4564-001 printed pages 26-29 and 38; 007-4643-003 printed pages 21-29: supported processor populations and PCI/IO9 location'
   tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro tower and rack software limits"
@@ -33,7 +33,7 @@ layer:
     - tezro-board-guide
     - tezro-software-choice-limit
   memory_kits_per_node:
-  - kit-4096-at-banks-0-5-tezro-deskside
+  - kit-4096-at-banks-0-5-tezro
   cpu_selection:
     default:
       clock_mhz: 1000
@@ -81,8 +81,8 @@ layer:
         flash_write_cycles: 16
         provenance: derived
         sources:
-        - tezro-deskside-trial
-        - tezro-deskside-trial-review
+        - tezro-runtime-inputs
+        - tezro-runtime-inputs-review
       emulation:
         machine_name: tezro
         display_description: SGI Tezro tower, two/four-processor IP59 profile
@@ -121,8 +121,8 @@ layer:
               mode: fitted-banks
             provenance: derived
             sources:
-            - tezro-deskside-trial
-            - tezro-deskside-trial-review
+            - tezro-runtime-inputs
+            - tezro-runtime-inputs-review
             notes: Board word 0x2001 is a trial software input selected for this trial. It is not established as the physical Tezro board value.
         l1_controllers:
           l1:
@@ -155,7 +155,7 @@ layer:
             size: '0x0080_0000'
           provenance: derived
           sources:
-          - tezro-deskside-trial
+          - tezro-runtime-inputs
           notes: The launch recipe applies the Tezro row-17 seed to this selected base payload. The payload and seed are software inputs; their hashes do not establish installed Tezro firmware or flash wiring.
       harness:
         console: l1-uart
@@ -202,8 +202,8 @@ layer:
         install_media: [netboot]
         provenance: derived
         sources:
-        - tezro-deskside-trial
-        - tezro-deskside-trial-review
+        - tezro-runtime-inputs
+        - tezro-runtime-inputs-review
     evidence_policy: strict
     components:
     - id: chassis
@@ -211,7 +211,7 @@ layer:
       kind: chassis
       provenance: vendor-document
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - id: ip59-board
       name: IP59 board in selected compatibility model
       kind: board
@@ -242,7 +242,7 @@ layer:
         clock_mhz: 200
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - id: cpu0
       name: R16000
       kind: cpu
@@ -254,7 +254,7 @@ layer:
         r16000_scache_bytes: 16777216
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - id: cpu1
       name: R16000
       kind: cpu
@@ -266,7 +266,7 @@ layer:
         r16000_scache_bytes: 16777216
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - id: cpu2
       name: R16000
       kind: cpu
@@ -278,7 +278,7 @@ layer:
         r16000_scache_bytes: 16777216
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - id: cpu3
       name: R16000
       kind: cpu
@@ -290,14 +290,14 @@ layer:
         r16000_scache_bytes: 16777216
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - id: memory
       name: node memory
       kind: memory
       parent: bedrock
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - id: l1
       name: L1 system controller
       kind: system-controller
@@ -308,21 +308,21 @@ layer:
         kind: l1
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - id: pic-board-b
       name: PIC board at widget 11
       kind: board
       parent: chassis
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - id: pic-board-f
       name: PIC board at widget 15
       kind: board
       parent: chassis
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - id: pic-xio-b
       name: PIC at widget 11
       kind: pci-host-bridge
@@ -334,7 +334,7 @@ layer:
         heads: 2
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - id: pic-xio-f
       name: PIC at widget 15
       kind: pci-host-bridge
@@ -346,7 +346,7 @@ layer:
         heads: 2
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - id: io9
       name: IO9 compatibility device
       kind: board
@@ -372,8 +372,8 @@ layer:
         serial_dma_experimental: true
       provenance: derived
       sources:
-      - tezro-deskside-trial
-      - tezro-deskside-trial-review
+      - tezro-runtime-inputs
+      - tezro-runtime-inputs-review
     - id: ds1744
       name: DS1744-compatible timekeeper
       kind: rtc
@@ -384,8 +384,8 @@ layer:
       fresh_year_base: 1968
       provenance: derived
       sources:
-      - tezro-deskside-trial
-      - tezro-deskside-trial-review
+      - tezro-runtime-inputs
+      - tezro-runtime-inputs-review
       notes: Synthetic 32 KiB timekeeper geometry selected for this software profile. The fitted IO9 part and physical address wiring remain unknown. The guest driver's 1968 year convention applies to a fresh seed, not to the physical part identity.
     - id: isp12160
       name: QLogic ISP12160
@@ -396,8 +396,8 @@ layer:
         pci_revision: 6
       provenance: derived
       sources:
-      - tezro-deskside-trial
-      - tezro-deskside-trial-review
+      - tezro-runtime-inputs
+      - tezro-runtime-inputs-review
     - id: bcm5701
       name: Broadcom BCM5701
       kind: subfunction
@@ -407,8 +407,8 @@ layer:
         pci_revision: 0
       provenance: derived
       sources:
-      - tezro-deskside-trial
-      - tezro-deskside-trial-review
+      - tezro-runtime-inputs
+      - tezro-runtime-inputs-review
     buses:
     - id: sysad0
       name: SysAD
@@ -416,59 +416,59 @@ layer:
       master: cpu0
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - id: xio
       name: XIO
       kind: xio
       master: bedrock
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - id: io9-pci
       name: IO9 PCI bus
       kind: pci
       master: pic-xio-f
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     connections:
     - component: bedrock
       bus: sysad0
       role: endpoint
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - component: cpu0
       bus: sysad0
       role: master
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - component: cpu1
       bus: sysad0
       role: master
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - component: cpu2
       bus: sysad0
       role: master
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - component: cpu3
       bus: sysad0
       role: master
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - component: bedrock
       bus: xio
       role: master
       widget: 10
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - component: pic-xio-b
       bus: xio
       role: bridge-upstream
@@ -489,7 +489,7 @@ layer:
           - legacy
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - component: pic-xio-f
       bus: xio
       role: bridge-upstream
@@ -510,14 +510,14 @@ layer:
           - legacy
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - component: pic-xio-f
       bus: io9-pci
       role: bridge-downstream
       pci_head: 0
       provenance: derived
       sources:
-      - tezro-deskside-trial
+      - tezro-runtime-inputs
     - component: ioc4
       bus: io9-pci
       role: endpoint
@@ -527,8 +527,8 @@ layer:
       pic_input: 0
       provenance: derived
       sources:
-      - tezro-deskside-trial
-      - tezro-deskside-trial-review
+      - tezro-runtime-inputs
+      - tezro-runtime-inputs-review
     - component: isp12160
       bus: io9-pci
       role: endpoint
@@ -538,8 +538,8 @@ layer:
       pic_input: 2
       provenance: derived
       sources:
-      - tezro-deskside-trial
-      - tezro-deskside-trial-review
+      - tezro-runtime-inputs
+      - tezro-runtime-inputs-review
     - component: bcm5701
       bus: io9-pci
       role: endpoint
@@ -549,8 +549,8 @@ layer:
       pic_input: 3
       provenance: derived
       sources:
-      - tezro-deskside-trial
-      - tezro-deskside-trial-review
+      - tezro-runtime-inputs
+      - tezro-runtime-inputs-review
     links:
     - kind: ioc4-clock
       source: ds1744

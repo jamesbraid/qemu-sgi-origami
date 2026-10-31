@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 layer_version: 1
 sources:
-  tezro-deskside-trial: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
-  tezro-deskside-trial-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
+  tezro-runtime-inputs: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
+  tezro-runtime-inputs-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
   tezro-l1-version-compatibility: "web:ip35-patch-sg0007149 SG0007149 README identifies IP35 support; decoded L1 member has image identifier 1.48.1"
   tezro-board-guide: '007-4564-001 printed pages 26-29 and 38; 007-4643-003 printed pages 21-29: supported
     processor populations and PCI/IO9 location'
@@ -33,7 +33,7 @@ layer:
     - tezro-board-guide
     - tezro-software-choice-limit
   memory_kits_per_node:
-  - kit-4096-at-banks-0-5-tezro-deskside
+  - kit-4096-at-banks-0-5-tezro
   cpu_selection:
     default:
       clock_mhz: 700
@@ -58,8 +58,8 @@ layer:
         flash_write_cycles: 16
         provenance: derived
         sources:
-        - tezro-deskside-trial
-        - tezro-deskside-trial-review
+        - tezro-runtime-inputs
+        - tezro-runtime-inputs-review
       emulation:
         machine_name: tezro
         display_description: SGI Tezro rack first enclosure serial compatibility profile
@@ -88,8 +88,8 @@ layer:
               mode: fitted-banks
             provenance: derived
             sources:
-            - tezro-deskside-trial
-            - tezro-deskside-trial-review
+            - tezro-runtime-inputs
+            - tezro-runtime-inputs-review
             notes: Board word 0x2001 is a software input selected for this profile. It is not established
               as the physical Tezro board value.
         l1_controllers:
@@ -123,7 +123,7 @@ layer:
             size: '0x0080_0000'
           provenance: derived
           sources:
-          - tezro-deskside-trial
+          - tezro-runtime-inputs
           notes: The launch recipe applies the Tezro row-17 seed to this selected base payload. The payload and
             seed are software inputs; their hashes do not establish installed Tezro firmware or flash
             wiring.
@@ -172,6 +172,6 @@ layer:
         install_media: []
         provenance: derived
         sources:
-        - tezro-deskside-trial
-        - tezro-deskside-trial-review
+        - tezro-runtime-inputs
+        - tezro-runtime-inputs-review
     evidence_policy: strict
