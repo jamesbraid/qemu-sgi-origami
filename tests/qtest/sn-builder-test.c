@@ -10611,6 +10611,29 @@ static void test_origin3900_cx_brick(void)
         /* The Cx-brick's L1 reports the catalogue's firmware revision. */
         assert_l1_revision(qts, "/machine/module0/l1", 1, 44, 0);
     }
+    {
+        /*
+         * The launch names no R16000 property: the Cx-brick node boards
+         * fit every processor with their own reset mode and cache.
+         */
+        g_autoptr(QDict) response = qtest_qmp(
+            qts, "{'execute':'query-cpus-fast'}");
+        const QListEntry *entry;
+        unsigned int cpu_count = 0;
+
+        QLIST_FOREACH_ENTRY(qdict_get_qlist(response, "return"), entry) {
+            const char *path = qdict_get_str(
+                qobject_to(QDict, qlist_entry_obj(entry)), "qom-path");
+
+            g_assert_true(qom_get_bool(qts, path, "r16000-experimental"));
+            g_assert_cmphex(qom_get_uint(qts, path, "r16000-reset-mode"), ==,
+                            0x009cad85);
+            g_assert_cmphex(qom_get_uint(qts, path, "r16000-scache-bytes"),
+                            ==, 0x800000);
+            cpu_count++;
+        }
+        g_assert_cmpuint(cpu_count, ==, 16);
+    }
     qtest_quit(qts);
     /* The machine's l1-revision replaces it, as on the other bricks. */
     qts = qtest_initf("-M origin3000,topology=origin3900,l1-revision=1.9.3 "

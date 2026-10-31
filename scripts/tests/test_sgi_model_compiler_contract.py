@@ -3623,6 +3623,15 @@ class CatalogueJsonTests(unittest.TestCase):
             self.assertEqual((product["product"], product["assembly"]),
                              ("v12", assembly), name)
 
+    def test_cx_brick_offerings_need_no_cpu_properties(self):
+        catalogue = json.loads(render_catalogue_json(
+            [_resolved("origin3900"), _resolved("origin3900-ip59")]))
+        self.assertEqual({offering["topology"]
+                          for offering in catalogue["offerings"]},
+                         {"origin3900", "origin3900-ip59"})
+        for offering in catalogue["offerings"]:
+            self.assertNotIn("required-properties", offering["processor"])
+
     def test_no_ip53_offering_asks_for_cpu_properties(self):
         profile_names = (
             "origin350", "onyx350-compat", "onyx4-host-serial-compat",
