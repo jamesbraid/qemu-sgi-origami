@@ -1092,6 +1092,58 @@ const SGIModelTopology *sgi_model_product_topology(
     return NULL;
 }
 
+static bool sgi_model_topology_accepts_cpus(const SGIModelTopology *t,
+                                            unsigned int cpus)
+{
+    const SGIModelNodePopulationList *row;
+
+    for (row = t->node_populations; row; row = row->next) {
+        const SGIModelCpuPopulationList *population;
+
+        for (population = row->value->supported_cpu_populations; population;
+             population = population->next) {
+            const uint32List *count;
+            unsigned int total = 0;
+
+            for (count = population->value->cpus_per_node; count;
+                 count = count->next) {
+                total += count->value;
+            }
+            if (total == cpus) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+const SGIModelTopology *sgi_model_product_variant(
+    const SGIMachines *machines, const char *product, const char *name,
+    unsigned int cpus)
+{
+    const SGIModelTopologyList *entry;
+    const SGIModelTopology *first = NULL, *machine_default = NULL;
+
+    for (entry = machines->topologies; entry; entry = entry->next) {
+        const SGIModelTopology *t = entry->value;
+
+        if (strcmp(t->name, name) ||
+            !sgi_model_topology_matches_product(t, product)) {
+            continue;
+        }
+        if (sgi_model_topology_accepts_cpus(t, cpus)) {
+            return t;
+        }
+        if (!first) {
+            first = t;
+        }
+        if (!machine_default && t->has_machine_default && t->machine_default) {
+            machine_default = t;
+        }
+    }
+    return machine_default ? machine_default : first;
+}
+
 /* "1, 2, 3 or 4": a chassis's accepted node counts, for a refusal. */
 static char *sgi_model_accepted_node_counts(const SGIModelTopology *t)
 {

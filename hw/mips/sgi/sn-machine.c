@@ -276,6 +276,8 @@ struct SGIMachineState {
     uint32_t nodes_requested;
     /* The topology this machine builds: one row of its chassis. */
     const SGIModelTopology *view;
+    /* The chassis record @view is a row of. */
+    const SGIModelTopology *view_chassis;
     char *baseio_preset;
     /* io-prom: an original I/O PROM image for the BASEIO flash parts. */
     char *io_prom;
@@ -1279,6 +1281,14 @@ static bool sgi_machine_set_expansion_inputs(SGIMachineState *s,
  * The compiled catalogue holds every product's topologies in one list,
  * so a name match alone is not enough: topology= is product-scoped
  * (origin200 never builds origin2000's wiring).
+ *
+ * A topology with board variants has one record per board under the one
+ * name, told apart by the CPU totals each accepts, so -smp picks the
+ * board. Instance init, and a property read before QEMU applies -smp,
+ * see machine_initfn()'s smp.cpus, which is mc->default_cpus: the default
+ * population of the product's machine-default record, so they resolve
+ * that record. A count no variant accepts resolves the machine-default
+ * record too, which then refuses it.
  */
 static const SGIModelTopology *sgi_machine_chassis(MachineState *machine)
 {
@@ -1294,7 +1304,8 @@ static const SGIModelTopology *sgi_machine_chassis(MachineState *machine)
     if (!name || !smc->product) {
         return NULL;
     }
-    return sgi_model_product_topology(sgi_machines(), smc->product, name);
+    return sgi_model_product_variant(sgi_machines(), smc->product, name,
+                                     machine->smp.cpus);
 }
 
 static bool sgi_machine_preflight_io_descriptors(
@@ -2197,9 +2208,11 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
             s, smc, chassis, &allow_ip53_experiment, errp)) {
         return NULL;
     }
-    if (!s->view) {
+    /* -smp, applied after properties, may pick another board variant. */
+    if (!s->view || s->view_chassis != chassis) {
         s->view = sgi_model_resolve_population(chassis, s->nodes_requested,
                                                errp);
+        s->view_chassis = chassis;
     }
     if (!s->view || !sgi_machine_preflight_io_descriptors(
             s->view, allow_ip53_fixture, allow_ip53_experiment,
@@ -2587,23 +2600,52 @@ static const SGIModelCpuPopulation *sgi_machine_find_population_by_total(
     return match;
 }
 
-/* "1, 2 or 4": the topology's accepted totals, for a refusal message. */
-static char *sgi_machine_accepted_totals(const SGIModelTopology *t)
+/* The smallest total @row accepts above @last, if below *@next. */
+static void sgi_machine_next_total(const SGIModelNodePopulation *row,
+                                   unsigned int last, unsigned int *next)
+{
+    const SGIModelCpuPopulationList *entry;
+
+    for (entry = row->supported_cpu_populations; entry; entry = entry->next) {
+        unsigned int total = sgi_machine_population_total(entry->value);
+
+        if (total > last && total < *next) {
+            *next = total;
+        }
+    }
+}
+
+/*
+ * "1, 2 or 4": the totals @product's topology @t accepts with its node
+ * count, over every board variant of that name, for a refusal message.
+ */
+static char *sgi_machine_accepted_totals(const char *product,
+                                         const SGIModelTopology *t)
 {
     GString *out = g_string_new(NULL);
-    const SGIModelCpuPopulationList *entry;
+    size_t node_count = QAPI_LIST_LENGTH(sgi_machine_view_row(t)->nodes);
     unsigned int last = 0;
 
     /* Each pass appends the next larger total, so each appears once. */
     for (;;) {
+        const SGIModelTopologyList *variant;
         unsigned int next = UINT_MAX;
 
-        for (entry = sgi_machine_view_row(t)->supported_cpu_populations;
-             entry; entry = entry->next) {
-            unsigned int total = sgi_machine_population_total(entry->value);
+        sgi_machine_next_total(sgi_machine_view_row(t), last, &next);
+        for (variant = product ? sgi_machines()->topologies : NULL; variant;
+             variant = variant->next) {
+            const SGIModelNodePopulationList *row;
 
-            if (total > last && total < next) {
-                next = total;
+            if (strcmp(variant->value->name, t->name) ||
+                !sgi_model_topology_matches_product(variant->value,
+                                                    product)) {
+                continue;
+            }
+            for (row = variant->value->node_populations; row;
+                 row = row->next) {
+                if (QAPI_LIST_LENGTH(row->value->nodes) == node_count) {
+                    sgi_machine_next_total(row->value, last, &next);
+                }
             }
         }
         if (next == UINT_MAX) {
@@ -9033,7 +9075,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             return false;
         }
         if (!population) {
-            g_autofree char *totals = sgi_machine_accepted_totals(t);
+            g_autofree char *totals =
+                sgi_machine_accepted_totals(smc->product, t);
 
             error_setg(errp, "%s: topology '%s' accepts %s CPUs, not %u%s",
                       mc->name, t->name, totals, machine->smp.cpus,
@@ -11043,7 +11086,9 @@ static bool sgi_machine_storage_bindable(const SGIMachineClass *smc,
                                          const char *name)
 {
     const SGIModelTopology *t = smc->default_topology ?
-        sgi_model_find_topology(smc->default_topology) : NULL;
+        sgi_model_product_variant(sgi_machines(), smc->product,
+                                  smc->default_topology,
+                                  smc->parent_class.default_cpus) : NULL;
     unsigned int index;
     const char *end;
 
@@ -11119,8 +11164,11 @@ static void sgi_machine_instance_init(Object *obj)
 {
     MachineState *machine = MACHINE(obj);
     SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(obj);
+    /* machine_initfn() has set smp.cpus to the class's default_cpus. */
     const SGIModelTopology *t = smc->default_topology ?
-        sgi_model_find_topology(smc->default_topology) : NULL;
+        sgi_model_product_variant(sgi_machines(), smc->product,
+                                  smc->default_topology,
+                                  machine->smp.cpus) : NULL;
 
     SGI_MACHINE(obj)->debug_leds = true;
     /*
