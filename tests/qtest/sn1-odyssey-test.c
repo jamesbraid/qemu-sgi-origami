@@ -4061,6 +4061,32 @@ static void test_command_work_read_waits(void)
 }
 
 /*
+ * The flow-control target store (+0x1074) is a direct register write: the
+ * kernel stores it, issues a sync and clears +0x107c with no wait on the
+ * FIFO (datasheet, "Flags, status and flow control"). The store does not
+ * finish the queued command work. Only the store is pinned: a read of the
+ * register waits like any other.
+ */
+static void test_flow_control_store_no_drain(void)
+{
+    const uint32_t target = 1u << 17 | 0x1bu << 12 | 0xc8;
+    QTestState *qts = work_start();
+
+    work_push_fences(qts);
+    g_assert_true(work_pending(qts));
+    reg_write(qts, ODSY_FLCTL_TARGET, target);
+    g_assert_true(work_pending(qts));
+    /* The queued fences are still there to run, and run afterwards. */
+    g_assert_cmphex(qtest_readw(qts, 0xb70000 + 6), ==, 0);
+    while (work_pending(qts)) {
+        qtest_clock_step(qts, 1000 * 1000);
+    }
+    g_assert_cmphex(qtest_readw(qts, 0xb70000 + 6), ==, 0xa5a5);
+    g_assert_cmphex(reg_read(qts, ODSY_FLCTL_TARGET), ==, target);
+    board_quit(qts);
+}
+
+/*
  * While stores wait the FIFO is neither empty nor below low water, in
  * the status the kernel's credit flow control reads before it sleeps on
  * the low-water interrupt; it reads ready again once they have run.
@@ -25497,6 +25523,8 @@ int main(int argc, char **argv)
                    test_command_work_orders_context_switch);
     add_fresh_case("sn1/odyssey/command-work-read-waits",
                    test_command_work_read_waits);
+    add_fresh_case("sn1/odyssey/flow-control-store-no-drain",
+                   test_flow_control_store_no_drain);
     add_fresh_case("sn1/odyssey/command-work-status-shows-waiting-stores",
                    test_command_work_status_shows_waiting_stores);
     add_fresh_case("sn1/odyssey/command-work-low-water-after-drain",
