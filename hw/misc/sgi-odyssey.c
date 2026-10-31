@@ -1061,12 +1061,10 @@ static unsigned odyssey_cmd_arity(uint32_t word)
 #define ODSY_DMA_MAX_PAGES ODSY_DMA_ENTRY_PAGES
 
 /*
- * Board-to-host transfers. Each fact carries its datasheet label. The
- * header words the GL library sends and the host bytes it expects are in
- * docs/datasheets/odyssey.md, "Pixel transfer headers from the OpenGL
- * library" ("Header words", "Read table"); the entry layout the kernel
- * builds is under "Kernel DMA and the pixel-transfer request". All of it is
- * software behaviour: the board itself was never observed, so what the board
+ * Board-to-host transfers. Each fact carries its grade. The header words
+ * the GL library sends and the host bytes it expects, and the entry layout
+ * the kernel builds, are software-visible. All of it is software behaviour:
+ * the board itself was never observed, so what the board
  * does inside is UNKNOWN wherever a rule below says so.
  *
  * - Word 7 bit 24 is the direction: set for board to host. The kernel sets
@@ -2054,10 +2052,9 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * Bits 5, 6 and 7 of the same register are GL_POLYGON_OFFSET_POINT, _LINE and
  * _FILL: glEnable/glDisable set and clear them in the library's 0x0404
  * shadow. 0x0458 carries the constant term alone, with no slope term: bits
- * 24:0 a signed count of steps of the stored depth word (docs/datasheets/
- * odyssey.md, "Depth word" and "Polygon offset"; the library's limit
- * +-2^24 is the difference of two 24-bit words). It is fed as a factor of 0
- * and this bias via SGI_GL_OP_POLYGON_OFFSET_EXT, which the rules'
+ * 24:0 a signed count of steps of the stored depth word (the library's
+ * limit +-2^24 is the difference of two 24-bit words). It is fed as a
+ * factor of 0 and this bias via SGI_GL_OP_POLYGON_OFFSET_EXT, which the rules'
  * depth_eye_float adds to the encoded word. INFERRED, not established: that
  * the board adds the field to the encoded word and not to an eye distance.
  */
@@ -5079,8 +5076,8 @@ static bool odyssey_object_region_written(const SGIOdysseyState *s,
 }
 
 /*
- * Mark object i as the most recently selected. Model policy (odyssey.md,
- * "Board-memory object store"): an upload or a grow selects an object. A
+ * Mark object i as the most recently selected. Model policy: an upload or a
+ * grow selects an object. A
  * draw that samples it does not, so a texture drawn every frame but never
  * uploaded again is still the first forgotten.
  */
@@ -6074,10 +6071,9 @@ static const SGIRasterRules odyssey_gl_rules = {
     .smooth_primitives = true,
     /*
      * The board's depth word, 2S times the eye-linear fraction as a
-     * 6-bit-exponent, 18-bit-mantissa unsigned float (docs/datasheets/
-     * odyssey.md, "Depth word"). ESTABLISHED as the format the GL library
-     * reads back by DMA; that the board's plane holds the same bits is
-     * INFERRED.
+     * 6-bit-exponent, 18-bit-mantissa unsigned float. ESTABLISHED as the
+     * format the GL library reads back by DMA; that the board's plane holds
+     * the same bits is INFERRED.
      */
     .depth_eye_float = true,
     .depth_scale = 2 * ODSY_GL_DEPTH_S,
@@ -7311,10 +7307,9 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     odyssey_texture_lod_bias(s, image);
     /*
      * The texture unit picks a level for each 2x2 pixel quad from its
-     * diagonal differences, for 1D and 2D textures: INFERRED from a patent
-     * (docs/datasheets/odyssey.md, "Mipmap level of detail"). A volume
-     * keeps the rasterizer's per-pixel footprint; the rasterizer ignores
-     * the flag for one.
+     * diagonal differences, for 1D and 2D textures: INFERRED from a patent.
+     * A volume keeps the rasterizer's per-pixel footprint; the rasterizer
+     * ignores the flag for one.
      */
     image->quad_lod = !three_d;
 
@@ -7559,13 +7554,12 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         }
         object = odyssey_object_find(s, base);
         /*
-         * Model policy (odyssey.md, "Board-memory object store", partly
-         * written level): an ordinary 2D level whose object holds some but
-         * not all of its rows is present. The object grows to the level's
-         * height and the unwritten rows read 0, which GL leaves undefined.
-         * A level with no object, or an object with no rows, is still
-         * missing, and a stored-border level, which is checked for every
-         * texel it needs, is not grown.
+         * Model policy for a partly written level: an ordinary 2D level
+         * whose object holds some but not all of its rows is present. The
+         * object grows to the level's height and the unwritten rows read 0,
+         * which GL leaves undefined. A level with no object, or an object with
+         * no rows, is still missing, and a stored-border level, which is
+         * checked for every texel it needs, is not grown.
          */
         if (object >= 0 && !require_backing && !bordered &&
             rows == level_height && s->obj_width[object] >= level_width &&
@@ -8657,8 +8651,7 @@ static bool odyssey_gl_lit_record(const uint32_t e[3])
  * The precompiled lit programs the GL library runs from the per-context
  * program window. The library holds the geometry engine's whole shipped
  * program image, which the kernel maps for it, 12 bytes an entry; the table
- * below fits only the IRIX 6.5.30 IP30 image of 2,794 entries, SHA-256
- * a0201d88cf23752cd35ac60c25f2c1b05cfab3253e5991db09006bd1b85b0375. For a
+ * below fits only the IRIX 6.5.30 IP30 image of 2,794 entries. For a
  * record, it takes the lowest address b among the record's entries and
  * list that reaches the window (a + 0x32 > 0x738), uploads min(image
  * length - b, 0xc7) image entries from b into the window at 0x738 through
@@ -9272,7 +9265,7 @@ static void odyssey_gl_vertex_colour(SGIOdysseyState *s, const double xyz[3])
  * whose window depth is the same. Board depth is floating point in a format
  * of its own (a public statement by an SGI engineer, comp.sys.sgi.graphics,
  * 2002-10-01): a 6-bit exponent and an 18-bit mantissa, 2S times the
- * eye-linear fraction (docs/datasheets/odyssey.md, "Depth word"). The
+ * eye-linear fraction. The
  * rules' depth_eye_float stores that word, truncating. pfCity's rows put
  * its scene at w + 42.85 board units, near 0, which a fixed-point store
  * would flatten to one value. The board interpolates depth with

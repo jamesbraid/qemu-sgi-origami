@@ -57,9 +57,9 @@ typedef struct SGIRenderer SGIRenderer;
 #define SGI_ODYSSEY_GL_CONSTANTS 2048
 /*
  * Off-screen board-memory objects the model keeps (texture levels). Model
- * policy (odyssey.md, "Board-memory object store"): large enough for the
- * guests reported so far, not a board limit. The per-object state is 32
- * bytes, so the table is held statically: about 512 KiB.
+ * policy: large enough for the guests reported so far, not a board limit.
+ * The per-object state is 32 bytes, so the table is held statically: about 512
+ * KiB.
  */
 #define SGI_ODYSSEY_OBJECTS 16384
 #define SGI_ODYSSEY_OBJ_POOL_BYTES (128 * 1024 * 1024)
