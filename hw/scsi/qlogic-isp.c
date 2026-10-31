@@ -298,10 +298,15 @@ enum {
 
 /*
  * The unit of the set-selection-timeout value in mailbox 1, and what an
- * adapter waits before a guest programs one. Milliseconds is Linux's
- * qla1280 convention; docs/datasheets/isp1040.md in the origami repository
- * is where the unit is recorded, and this constant is the one place that
- * changes if the datasheet settles on another.
+ * adapter waits before a guest programs one. Evidence status, from
+ * docs/datasheets/isp1040.md in the origami repository, "Set-selection-
+ * timeout (0x0031)": the operand layout is established; the millisecond
+ * unit is inferred, from three drivers defaulting to 250 and from Sun's
+ * isp(7D), not from a vendor document; the chip's own power-on default is
+ * unknown, so 250 is an approximation that only affects a guest that never
+ * programs a value; whether a non-zero retry count lengthens the wait is
+ * unknown, and the wait is modelled as one attempt. This constant is the
+ * one place the unit changes if the datasheet settles on another.
  */
 #define ISP_SELECTION_TIMEOUT_UNIT_NS   (1000 * 1000)
 #define ISP_SELECTION_TIMEOUT_DEFAULT   250
@@ -324,15 +329,16 @@ typedef struct QLogicISPPendingStatus {
 
 /*
  * A command waiting out a selection timeout, as it travels in a migration
- * stream. The deadline is on the virtual clock, which the stream carries
- * across, so it stays an absolute time.
+ * stream. What is left of the wait travels, not the deadline: the loader
+ * re-arms it from its own virtual clock, which is right whether or not
+ * that clock carries the source's value over.
  */
 typedef struct QLogicISPSelectionWire {
     uint32_t handle;
     uint8_t channel;
     uint8_t target;
     uint8_t lun;
-    int64_t deadline;
+    int64_t remaining;
 } QLogicISPSelectionWire;
 
 /*
@@ -1922,6 +1928,18 @@ static uint64_t qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
     return described;
 }
 
+/* The answer for a selection that found no target. */
+static void qlogic_isp_post_missing_target(QLogicISPState *s, uint32_t handle)
+{
+    const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
+
+    qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
+                           ISP_STATE_FLAG_GOT_BUS,
+                           info->missing_target_timeout ?
+                           ISP_STATUS_FLAG_TIMEOUT : 0,
+                           0, NULL, 0);
+}
+
 /*
  * The selection of an absent target ends in the timeout bit, so the
  * answer is the adapter giving up: it can only come once the guest's
@@ -1933,15 +1951,10 @@ static void qlogic_isp_selection_expired(void *opaque)
 {
     QLogicISPRequest *req = opaque;
     QLogicISPState *s = req->dev;
-    const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
     uint32_t handle = req->handle;
 
     qlogic_isp_free_selection(req);
-    qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
-                           ISP_STATE_FLAG_GOT_BUS,
-                           info->missing_target_timeout ?
-                           ISP_STATUS_FLAG_TIMEOUT : 0,
-                           0, NULL, 0);
+    qlogic_isp_post_missing_target(s, handle);
     /* A slot of the announced budget is free again. */
     replay_bh_schedule_event(s->resume_bh);
 }
@@ -1950,17 +1963,12 @@ static void qlogic_isp_missing_target(QLogicISPState *s, uint32_t handle,
                                       uint8_t channel, uint8_t target,
                                       uint8_t lun)
 {
-    const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
     uint16_t timeout = s->chan[channel].select_timeout;
     QLogicISPRequest *req;
 
     /* A guest that programmed no wait gets the answer at once. */
     if (timeout == 0) {
-        qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
-                               ISP_STATE_FLAG_GOT_BUS,
-                               info->missing_target_timeout ?
-                               ISP_STATUS_FLAG_TIMEOUT : 0,
-                               0, NULL, 0);
+        qlogic_isp_post_missing_target(s, handle);
         return;
     }
 
@@ -2683,7 +2691,6 @@ static const VMStateDescription vmstate_qlogic_isp_isp12160 = {
     }
 };
 
-/* One completion the guest has not been given room for. */
 static bool qlogic_isp_selection_state_needed(void *opaque)
 {
     QLogicISPState *s = opaque;
@@ -2723,7 +2730,8 @@ static bool qlogic_isp_selection_pre_save(void *opaque, Error **errp)
         wire->channel = req->channel;
         wire->target = req->target;
         wire->lun = req->lun;
-        wire->deadline = req->deadline;
+        wire->remaining = MAX(req->deadline -
+                              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), 0);
     }
     return true;
 }
@@ -2736,10 +2744,7 @@ static bool qlogic_isp_selection_count_valid(void *opaque, int version_id)
     return s->selection_count < QLOGIC_ISP_HELD_MAX;
 }
 
-/*
- * Rearm the waiting commands. A deadline already past fires on the next
- * clock check, which is when the source would have answered.
- */
+/* Rearm the waiting commands for what was left of their wait. */
 static bool qlogic_isp_selection_post_load(void *opaque, int version_id,
                                            Error **errp)
 {
@@ -2761,7 +2766,8 @@ static bool qlogic_isp_selection_post_load(void *opaque, int version_id,
         req->channel = wire->channel;
         req->target = wire->target;
         req->lun = wire->lun;
-        req->deadline = wire->deadline;
+        req->deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                        wire->remaining;
         req->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                   qlogic_isp_selection_expired, req);
         QTAILQ_INSERT_TAIL(&s->requests, req, next);
@@ -2783,7 +2789,7 @@ static const VMStateDescription vmstate_qlogic_isp_selection_wire = {
         VMSTATE_UINT8(channel, QLogicISPSelectionWire),
         VMSTATE_UINT8(target, QLogicISPSelectionWire),
         VMSTATE_UINT8(lun, QLogicISPSelectionWire),
-        VMSTATE_INT64(deadline, QLogicISPSelectionWire),
+        VMSTATE_INT64(remaining, QLogicISPSelectionWire),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -2814,6 +2820,7 @@ static const VMStateDescription vmstate_qlogic_isp_selection = {
     }
 };
 
+/* One completion the guest has not been given room for. */
 static const VMStateDescription vmstate_qlogic_isp_pending_status = {
     .name = "qlogic-isp/pending-status",
     .version_id = 1,

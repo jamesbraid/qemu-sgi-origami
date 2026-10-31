@@ -3229,6 +3229,54 @@ static void test_reset_cancels_a_waiting_selection(const void *data)
     g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, 0);
 }
 
+/*
+ * A command waiting on its selection travels with what is left of its
+ * wait: 30 ms of the 100 ms programmed here pass before the
+ * migration, and the destination answers after the other 70 and not
+ * before.
+ */
+static void test_migration_carries_a_waiting_selection(const void *data)
+{
+    const uint16_t wait_ms[] = { 100, 100 };
+    g_autofree char *dir = g_dir_make_tmp("isp12160-select-XXXXXX", NULL);
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_nonnull(dir);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+
+    from = qtest_init(MACHINE);
+    aim_window_at_memory_bar(from);
+    qtest_memset(from, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(from, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(from, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+    g_assert_cmphex(isp_mbox(from, ISP_MBOX_CMD_SET_SELECTION_TIMEOUT,
+                             wait_ms, ARRAY_SIZE(wait_ms)), ==,
+                    ISP_MBOX_COMPLETE);
+    isp_mbox_ack(from);
+
+    send_to_absent(from, 0xc1, 0);
+    qtest_clock_step(from, 30 * 1000 * 1000);
+    g_assert_cmphex(isp_readw(from, ISP_REG_RESPONSE_QUEUE), ==, 0);
+
+    to = qtest_initf("%s -incoming %s", MACHINE, uri);
+    qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    sgi_migrate_resume(to);
+
+    g_assert_cmphex(isp_readw(to, ISP_REG_RESPONSE_QUEUE), ==, 0);
+    qtest_clock_step(to, 70 * 1000 * 1000 - 1);
+    g_assert_cmphex(isp_readw(to, ISP_REG_RESPONSE_QUEUE), ==, 0);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(isp_readw(to, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    expect_selection_timed_out(to, 0, 0xc1);
+
+    qtest_quit(to);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 /* Channel 0's delay and channel 1's, which no register hands back. */
 static const uint16_t migrate_reset_delay[] = { 7, 9 };
 
@@ -3861,6 +3909,8 @@ int main(int argc, char **argv)
                         NULL, test_zero_selection_timeout_answers_at_once);
     qtest_add_data_func("sn0/isp12160/reset-cancels-a-waiting-selection",
                         NULL, test_reset_cancels_a_waiting_selection);
+    qtest_add_data_func("sn0/isp12160/migration-carries-a-waiting-selection",
+                        NULL, test_migration_carries_a_waiting_selection);
     qtest_add_data_func("sn0/isp12160/migration-preserves-distinct-state",
                         NULL, test_migration_preserves_distinct_state);
     qtest_add_data_func(

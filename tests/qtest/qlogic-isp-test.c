@@ -1687,6 +1687,12 @@ static void test_state_flags_track_sense_phase(void *obj, void *data,
     qpci_iounmap(dev, io);
 }
 
+/*
+ * The selection timeout cases pin the model's choices: docs/datasheets/
+ * isp1040.md, "Set-selection-timeout (0x0031)", marks the millisecond unit
+ * inferred, the chip's power-on default (250 here) unknown and the effect
+ * of a retry count on the wait unknown.
+ */
 #define ISP_ABSENT_HANDLE   0x9
 #define ISP_MS_NS           (1000 * 1000)
 
