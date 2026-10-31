@@ -20,7 +20,6 @@ layer:
     min_nodes: 1
     max_nodes: 1
     supported_cpu_populations:
-    - - 1
     - - 2
     - - 4
     provenance: derived
@@ -30,7 +29,7 @@ layer:
   population:
     nodes: 1
     cpus_per_node:
-    - 1
+    - 2
     provenance: derived
     sources:
     - tezro-board-guide
@@ -51,9 +50,9 @@ layer:
         Tezro rack first enclosure with an IP59 node board. The four-processor
         board is the captured IP59_4CPU, part 030-1989-003, revision C; the
         two-processor board is the IP59_2CPU, part 030-2059-002, revision A,
-        captured in a rack Tezro. A one-processor node keeps the L1's generic
-        board record: no capture shows a one-processor IP59 board, so its
-        part and revision are unknown. The reset word 0x00edb385 and the flash word 0x4aedb385 are inferred inputs derived to reproduce the captured 333 MHz cache clock and tap 0x15 (SCClkDiv 5, SysClkDiv 9, tap bit 22 set), not measured values. The 4 GiB logical memory map, Bedrock and L1
+        captured in a rack Tezro. No capture shows a one-processor IP59 board,
+        so its record is unknown and the IP59 enclosure takes two or four
+        processors. The reset word 0x00edb385 and the flash word 0x4aedb385 are inferred inputs derived to reproduce the captured 333 MHz cache clock and tap 0x15 (SCClkDiv 5, SysClkDiv 9, tap bit 22 set), not measured values. The 4 GiB logical memory map, Bedrock and L1
         identities, PIC placement and interrupt routes are emulator choices
         adapted from the IP53 Tezro profile. Graphics and the rack second
         enclosure are omitted.
@@ -167,10 +166,7 @@ layer:
           argument: -serial chardev:ioc4_serial_3
           launcher_name: ioc4-serial-3
         launch_recipe: ip53-discovery
-        prom_dialogue: none
         default_cpu_model: R16000
-        disk_bus: scsi.0
-        netboot_adapter: unsupported
         smdk:
           package_path: assets/boot/smdk
           tftp_mode: fixed
@@ -178,14 +174,11 @@ layer:
           requires_boot_flash: false
           requires_network_identity: false
           discovery_prerequisites: []
-        default_topology: tezro-rack-ip59
         requires_per_node_flash: false
         has_managed_boot_flash: true
         operator_firmware: true
         firmware_bytes: 1476264
         identity_inputs: []
-        supported_guests: []
-        install_media: []
         provenance: derived
         sources:
         - tezro-runtime-inputs

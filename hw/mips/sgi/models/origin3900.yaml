@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Origin 3900 composition: one Cx-brick and an I-brick. Resolve before
-# validation or generation.
+# Origin 3900 composition: one Cx-brick and an I-brick, with IP53 node
+# boards or their 1 GHz successor, the IP59; every node of a record has
+# the same board. board= picks the node board. Resolve before validation
+# or generation.
 configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip53.yaml
-  - layers/products/origin3900.yaml
 connector_population:
   - component: cx0-numalink-a
     occupancy: empty
@@ -47,25 +48,57 @@ connector_population:
     reason: The I-brick's port B is left uncabled; one cable to node board 0 is fitted.
     provenance: vendor-document
     sources: ["108-0240-002 printed pages 2-28 and 2-29: I-brick ports A and B go to compute nodes"]
-module_instances:
-  - model: layers/modules/cx-brick.yaml
-    prefix: cx0-
-    parent: rack
-    observed_hardware:
-      mode: projected
-      sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock]
-      note: >-
-        The Bedrock identity, revision 2 at 200 MHz, is what every
-        published Origin 3000 and Origin 350 inventory reports; no inventory
-        of a Cx-brick exists, so it is not a capture of this brick.
-  - model: layers/modules/i-brick.yaml
-    prefix: ibrick-
-    parent: rack
-    bus_bindings: {host-port-a-xio: cx0-node0-xio-ii}
-    observed_hardware:
-      mode: direct
-      sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]
-      note: >-
-        The IO7 device identities are the closure record's own three
-        independent owners' IRIX inventories, reused directly for this
-        reference I-brick rather than a distinct capture of this exact set.
+variants:
+  - id: ip53
+    board: ip53
+    default: true
+    layers:
+      - layers/products/origin3900.yaml
+    module_instances:
+      - model: layers/modules/cx-brick.yaml
+        prefix: cx0-
+        parent: rack
+        observed_hardware:
+          mode: projected
+          sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock]
+          note: >-
+            The Bedrock identity, revision 2 at 200 MHz, is what every
+            published Origin 3000 and Origin 350 inventory reports; no inventory
+            of a Cx-brick exists, so it is not a capture of this brick.
+      - model: layers/modules/i-brick.yaml
+        prefix: ibrick-
+        parent: rack
+        bus_bindings: {host-port-a-xio: cx0-node0-xio-ii}
+        observed_hardware:
+          mode: direct
+          sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]
+          note: >-
+            The IO7 device identities are the closure record's own three
+            independent owners' IRIX inventories, reused directly for this
+            reference I-brick rather than a distinct capture of this exact set.
+  - id: ip59
+    board: ip59
+    layers:
+      - layers/products/origin3900-ip59.yaml
+    module_instances:
+      - model: layers/modules/ip59-cx-brick.yaml
+        prefix: cx0-
+        parent: rack
+        observed_hardware:
+          mode: projected
+          sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock]
+          note: >-
+            The Bedrock identity, revision 2 at 200 MHz, is what every
+            published Origin 3000 and Origin 350 inventory reports; no inventory
+            of a Cx-brick exists, so it is not a capture of this brick.
+      - model: layers/modules/i-brick.yaml
+        prefix: ibrick-
+        parent: rack
+        bus_bindings: {host-port-a-xio: cx0-node0-xio-ii}
+        observed_hardware:
+          mode: direct
+          sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]
+          note: >-
+            The IO7 device identities are the closure record's own three
+            independent owners' IRIX inventories, reused directly for this
+            reference I-brick rather than a distinct capture of this exact set.

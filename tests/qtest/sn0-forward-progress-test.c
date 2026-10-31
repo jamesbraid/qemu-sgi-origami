@@ -191,13 +191,13 @@ static const Recipe recipes[] = {
     { "origin350", "-M origin350,topology=origin350,"
       "nvram0=sgi-ds1742-data-io9,nvram0-clock=sgi-ds1742-clock-io9",
       16 * 1024 * 1024, prepare_ip53, 0, true },
-    { "onyx350", "-M onyx350,topology=onyx350-compat,"
+    { "onyx350", "-M onyx350,topology=onyx350,"
       "nvram0=sgi-ds1742-data-io9,nvram0-clock=sgi-ds1742-clock-io9",
       16 * 1024 * 1024, prepare_ip53, 0, true },
     { "tezro", "-M tezro,topology=tezro,"
       "nvram0=sgi-ds1742-data-io9,nvram0-clock=sgi-ds1742-clock-io9",
       16 * 1024 * 1024, prepare_ip53, 0, true },
-    { "onyx4-host", "-M onyx4-host,topology=onyx4-host-serial-compat,"
+    { "onyx4-host", "-M onyx4-host,topology=onyx4-host,"
       "nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9",
       16 * 1024 * 1024, prepare_ip53, 0, true },

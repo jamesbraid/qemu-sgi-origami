@@ -1,7 +1,19 @@
 # SPDX-License-Identifier: BSD-3-Clause
+# The Tezro rack's first enclosure, with an IP53 node board or its 1 GHz
+# successor, the IP59. board= picks the node board.
 configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip53-tezro.yaml
-  - layers/modules/tezro-serial-compat-module.yaml
-  - layers/products/tezro-rack.yaml
+variants:
+  - id: ip53
+    board: ip53
+    default: true
+    layers:
+      - layers/modules/tezro-serial-compat-module.yaml
+      - layers/products/tezro-rack.yaml
+  - id: ip59
+    board: ip59
+    layers:
+      - layers/modules/ip59-tezro-module.yaml
+      - layers/products/tezro-rack-ip59.yaml

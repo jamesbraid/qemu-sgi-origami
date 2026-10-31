@@ -70,7 +70,7 @@ static const Launch launches[] = {
       "/machine/module0/widget-11" },
     { "fuel", "fuel", "-cpu R14000 -smp 1 -m 512M",
       SN1_PROM, "/machine/module0/graphics-slot" },
-    { "onyx350-compat", "onyx350,topology=onyx350-compat,"
+    { "onyx350", "onyx350,topology=onyx350,"
       "nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9",
       "-cpu R16000,reset-mode=0x009caf85"
@@ -370,7 +370,7 @@ static void test_catalogue_records(void)
           "SGI sold no Onyx2 without an InfiniteReality pipe, and an Onyx2 "
           "with no pipe is an Origin 2000, so use origin2000-deskside or "
           "origin2000-rack" },
-        { "onyx350-compat", true, NULL },
+        { "onyx350", true, NULL },
         { "tezro", true, NULL },
         { "fuel", false,
           "every Fuel has its VPro graphics slot at widget 13" },
@@ -855,7 +855,7 @@ static char *temporary(const char *name, gsize size, uint8_t fill)
 static void test_ip53_v12(void)
 {
     static const char *const topologies[] = {
-        "onyx350-compat", "tezro",
+        "onyx350", "tezro",
     };
     const uint64_t vpro = SPACE_IO + UINT64_C(12) * UINT64_C(0x1000000);
     const uint64_t bedrock = SPACE_IO + UINT64_C(0x01800000);

@@ -19,7 +19,7 @@ sources:
   onyx4-host-contract: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 4 host candidate and compatibility limit"
 layer:
   kind: product
-  id: onyx4-host-ip59
+  id: onyx4-host
   requires: {assembly: ip53}
   topology:
     min_nodes: 1

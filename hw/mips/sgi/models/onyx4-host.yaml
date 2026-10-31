@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Onyx 4 host with an IP59 node board. The default and only record is the
+# IP59: no source gives the Onyx 4 host an IP53 processor tuple, so the
+# topology offers no IP53 board.
+configuration_version: 1
+board: ip59
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip53.yaml
+  - layers/modules/ip59-onyx4-host-module.yaml
+  - layers/products/onyx4-host.yaml

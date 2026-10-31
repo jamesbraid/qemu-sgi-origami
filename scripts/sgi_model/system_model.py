@@ -1350,7 +1350,8 @@ def _resolve_variants(
         if not isinstance(variant, dict):
             raise ResolutionError(
                 f"{label} has a variant that is not a mapping")
-        unknown = sorted(set(variant) - {"id", "default", "layers", "board"})
+        unknown = sorted(set(variant) - {
+            "id", "default", "layers", "board", "module_instances"})
         if unknown:
             raise ResolutionError(
                 f"{label} variant has unsupported field '{unknown[0]}'")
@@ -1372,6 +1373,11 @@ def _resolve_variants(
         composition["layers"] = list(shared) + list(layers)
         if "board" in variant:
             composition["board"] = variant["board"]
+        # A variant may place its own modules, as the Origin 3900's IP59
+        # Cx-brick does in place of the IP53 one.
+        if "module_instances" in variant:
+            composition["module_instances"] = copy.deepcopy(
+                variant["module_instances"])
         model = resolve_system_model(path, composition)
         model["composition"]["product"] = path.stem
         model["composition"]["variant"] = {"id": ident, "default": default}

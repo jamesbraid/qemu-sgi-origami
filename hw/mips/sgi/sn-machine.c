@@ -1393,8 +1393,8 @@ static bool sgi_machine_ip53_runtime_policy(
     bool tezro = g_strcmp0(smc->product, "tezro") == 0;
 
     if (onyx350 && !s->topology_name) {
-        error_setg(errp, "Onyx 350 runtime trial requires explicit "
-                   "topology=onyx350-compat selection");
+        error_setg(errp, "Onyx 350 runtime profile requires explicit "
+                   "topology=onyx350 selection");
         return false;
     }
     if (tezro && !s->topology_name) {

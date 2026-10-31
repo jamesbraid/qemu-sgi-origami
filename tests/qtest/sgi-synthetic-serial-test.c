@@ -63,26 +63,13 @@ static const TopologyExtra topology_extras[] = {
     { "fuel", FUEL_IDENTITY },
     { "origin350", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "onyx350-compat", ",nvram0=sgi-ds1742-data-io9,"
+    { "onyx350", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "onyx4-host-serial-compat", ","
-      "nvram0=sgi-ds1742-data-io9,"
+    { "onyx4-host", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "tezro-rack", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "tezro", ",nvram0=sgi-ds1742-data-io9,"
-      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "origin350-ip59", ",nvram0=sgi-ds1742-data-io9,"
-      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "onyx350-ip59", ",nvram0=sgi-ds1742-data-io9,"
-      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "onyx4-host-ip59", ",nvram0=sgi-ds1742-data-io9,"
-      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "tezro-rack-ip59", ",nvram0=sgi-ds1742-data-io9,"
-      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "tezro-tower-multi-ip59", ",nvram0=sgi-ds1742-data-io9,"
-      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "tezro-tower-one-ip59", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "origin300-numalink-pci-expansion",
       STORAGE_BINDING, true },
@@ -94,7 +81,6 @@ static const TopologyExtra topology_extras[] = {
     { "origin3200", "", .unmarked = true },
     { "origin3400", "", .unmarked = true },
     { "origin3900", "", .unmarked = true },
-    { "origin3900-ip59", "", .unmarked = true },
     /* The Origin 3200's bricks again, with a V12 beside them. */
     { "onyx3000", "", .unmarked = true },
 };
@@ -522,22 +508,34 @@ static bool record_accepts(QDict *record, int64_t smp, int64_t *smallest)
 }
 
 /*
- * A topology with board variants is a record per board under one name,
- * and each board is its own case, named for the smallest CPU total it
- * accepts: tezro-1cpu and tezro-2cpu.
+ * A topology with several node boards or board variants is a record per
+ * board under one name, and each is its own case: named for its node
+ * board where the topology takes more than one, and for the smallest CPU
+ * total it accepts where one board has several variants, as in
+ * tezro-ip53-1cpu, tezro-ip53-2cpu and tezro-ip59.
  */
 static char *offering_case_name(QList *records, QDict *offering)
 {
     const char *topology = qdict_get_str(offering, "topology");
+    const char *board = qdict_haskey(offering, "board") ?
+                        qdict_get_str(offering, "board") : NULL;
     int64_t smp = qdict_get_int(offering, "smp");
     int64_t smallest = -1, record_smallest;
     unsigned int count = 0;
+    bool boards_differ = false;
+    g_autofree char *base = NULL;
     const QListEntry *entry;
 
     QLIST_FOREACH_ENTRY(records, entry) {
         QDict *record = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *record_board = qdict_haskey(record, "board") ?
+                                   qdict_get_str(record, "board") : NULL;
 
         if (!g_str_equal(qdict_get_str(record, "name"), topology)) {
+            continue;
+        }
+        if (g_strcmp0(record_board, board)) {
+            boards_differ = true;
             continue;
         }
         count++;
@@ -546,9 +544,11 @@ static char *offering_case_name(QList *records, QDict *offering)
         }
     }
     g_assert_cmpint(smallest, >, 0);
+    base = boards_differ ? g_strdup_printf("%s-%s", topology, board) :
+           g_strdup(topology);
     return count > 1 ?
-        g_strdup_printf("%s-%" PRId64 "cpu", topology, smallest) :
-        g_strdup(topology);
+        g_strdup_printf("%s-%" PRId64 "cpu", base, smallest) :
+        g_steal_pointer(&base);
 }
 
 /* One case per catalogue topology record, from its largest offering. */

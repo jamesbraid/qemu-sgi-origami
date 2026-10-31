@@ -18,7 +18,7 @@ import json
 import re
 
 from .model_compile import CompileError, compile_model
-from .registry import IP53_RUNTIME_PROFILES
+from .registry import ip53_runtime_profile
 from .system_model import model_variant
 
 
@@ -1147,9 +1147,8 @@ def _processor_choices(topology: dict) -> list[dict]:
 
 
 def _is_ip53_runtime_profile(model: dict) -> bool:
-    product = model.get("composition", {}).get("product")
     emulation = model.get("machine", {}).get("emulation", {})
-    expected = IP53_RUNTIME_PROFILES.get(product)
+    expected = ip53_runtime_profile(model)
     return (expected is not None
             and emulation.get("machine_name") == expected[0]
             and emulation.get("profile") == expected[1]
@@ -1394,7 +1393,9 @@ def render_catalogue_json(models: list[dict], *,
         offerings.extend(_offerings_for(model, topology, product_models))
     catalogue = {
         "schema": "sgi-machines",
-        "version": 1,
+        # 2: records sharing a topology name differ by board, and
+        # machine-options spell board= on multi-board topologies.
+        "version": 2,
         # QAPI's optional-member convention: an absent key, never a JSON
         # null, so both sections drop their None values; the harness reads
         # them with .get().

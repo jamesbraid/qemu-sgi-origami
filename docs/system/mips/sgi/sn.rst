@@ -738,7 +738,7 @@ Onyx2 deskside. ``-M <product>,topology=help`` lists the rest:
      - 1
      - 4 (fixed)
      - 2048 MiB (fixed)
-   * - ``onyx350-compat`` (default)
+   * - ``onyx350`` (default)
      - ``onyx350``
      - 1
      - 4 (fixed)
@@ -748,30 +748,17 @@ Onyx2 deskside. ``-M <product>,topology=help`` lists the rest:
      - 1
      - 1, 2 or 4
      - 4096 MiB (fixed)
-   * - ``onyx4-host-ip59`` (default)
+   * - ``onyx4-host`` (default)
      - ``onyx4-host``
      - 1
      - 4 (fixed)
      - 8192 MiB (fixed)
-   * - ``onyx4-host-serial-compat``
-     - ``onyx4-host``
-     - 1
-     - 4 (fixed)
-     - 8192 MiB (fixed)
-   * - ``origin350-ip59``, ``onyx350-ip59``, ``tezro-tower-one-ip59``,
-       ``tezro-tower-multi-ip59``, ``tezro-rack-ip59``
-     - as the IP53 topology of the same name
-     - 1
-     - as the IP53 topology
-     - as the IP53 topology
-   * - ``origin3900-ip59``
-     - ``origin3000``
-     - 4 node boards in one Cx-brick
-     - 4 per board
-     - 2048 MiB per board
 
-The ``-ip59`` topologies carry the 1 GHz IP59 node board; see
-:ref:`sgi-ip59-profiles`.
+``board=`` selects a topology's node board where it takes more than one:
+``origin350``, ``onyx350``, ``tezro``, ``tezro-rack`` and ``origin3900``
+build the IP53 by default and the 1 GHz IP59 with ``board=ip59``, at the
+same memory; ``onyx4-host`` builds only the IP59, and the IP59 Tezro takes
+two or four processors. See :ref:`sgi-ip59-profiles`.
 
 ``-M origin200,topology=origin200-dual`` selects the second row.
 
@@ -1206,8 +1193,7 @@ What each topology offers today:
      - ``widget-13``
      - ``v12``
      - ``v12``
-   * - ``tezro``, ``onyx350-compat``, ``tezro-tower-multi-ip59`` and
-       ``onyx350-ip59``
+   * - ``tezro`` and ``onyx350``, on either board
      - ``widget-12`` on the PIC fabric
      - none
      - ``v12``

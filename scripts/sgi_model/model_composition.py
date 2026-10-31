@@ -18,7 +18,7 @@ import re
 from typing import Any
 
 from .exceptions import ResolutionError
-from .registry import IP53_RUNTIME_PROFILES, TEZRO_RUNTIME_PRODUCTS
+from .registry import TEZRO_RUNTIME_PRODUCTS, ip53_runtime_profile
 
 
 EXCLUSION_FIELDS = {"match", "reason", "provenance", "sources", "evidence_gap"}
@@ -1385,7 +1385,7 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
         if (component.get("kind") != "pci-host-bridge"
                 or component.get("hardware_kind") != "pic"):
             raise ResolutionError(f"component '{cid}' is not a PIC host")
-        expected = IP53_RUNTIME_PROFILES.get(product)
+        expected = ip53_runtime_profile(model)
         experiment = (
             expected is not None
             and emulation.get("machine_name") == expected[0]

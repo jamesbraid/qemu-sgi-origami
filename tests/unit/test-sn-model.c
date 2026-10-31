@@ -624,6 +624,7 @@ static SGIMachines *load_catalogue(void)
     visit_type_SGIMachines(v, NULL, &catalogue, &error_abort);
     visit_free(v);
     qobject_unref(qobj);
+    g_assert_cmpuint(catalogue->version, ==, SGI_MACHINES_VERSION);
     return catalogue;
 }
 
@@ -1600,14 +1601,31 @@ static void test_tezro_requires_explicit_topology(void)
             boards++;
         }
     }
-    /* One record for each interface board, chosen by the CPU count. */
-    g_assert_cmpuint(boards, ==, 2);
+    /*
+     * One IP53 record for each interface board, chosen by the CPU count,
+     * and one IP59 record, for the two/four-processor board only.
+     */
+    g_assert_cmpuint(boards, ==, 3);
     one = sgi_model_product_variant(catalogue, "tezro", "tezro", NULL, 1);
     many = sgi_model_product_variant(catalogue, "tezro", "tezro", NULL, 2);
     g_assert(sgi_model_product_variant(catalogue, "tezro", "tezro", NULL,
                                        4) ==
              many);
     g_assert(one != many);
+    g_assert_cmpstr(one->board, ==, "ip53");
+    g_assert_cmpstr(many->board, ==, "ip53");
+    {
+        const SGIModelTopology *ip59 = sgi_model_product_variant(
+            catalogue, "tezro", "tezro", "ip59", 2);
+
+        g_assert_cmpstr(ip59->board, ==, "ip59");
+        g_assert_cmpuint(QAPI_LIST_LENGTH(ip59->pci_host_bridges), ==, 2);
+        g_assert(sgi_model_product_variant(catalogue, "tezro", "tezro",
+                                           "ip59", 4) == ip59);
+        /* No record accepts one IP59 processor; the first is the refuser. */
+        g_assert(sgi_model_product_variant(catalogue, "tezro", "tezro",
+                                           "ip59", 1) == ip59);
+    }
     g_assert_cmpuint(QAPI_LIST_LENGTH(one->pci_host_bridges), ==, 1);
     g_assert_cmpuint(QAPI_LIST_LENGTH(many->pci_host_bridges), ==, 2);
     g_assert_false(one->has_machine_default);

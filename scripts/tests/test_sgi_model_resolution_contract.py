@@ -3432,7 +3432,13 @@ class Origin3900Tests(unittest.TestCase):
                        "bridge-upstream"), self.attachments(model))
 
     def resolve_with(self, change):
-        composition = yaml.safe_load(self.ORIGIN3900.read_text())
+        # The IP53 board's variant, as one composition.
+        document = yaml.safe_load(self.ORIGIN3900.read_text())
+        variant = document.pop("variants")[0]
+        composition = dict(
+            document, layers=document["layers"] + variant["layers"],
+            module_instances=variant["module_instances"],
+            board=variant["board"])
         change(composition)
         return _resolver.resolve_system_model(self.ORIGIN3900, composition)
 
@@ -3948,12 +3954,21 @@ class CompositionVariantTests(unittest.TestCase):
         "layers": ["layers/architectures/sn1.yaml",
                    "layers/assemblies/ip53-tezro.yaml"],
         "variants": [
-            {"id": "one-processor",
+            {"id": "one-processor", "board": "ip53",
              "layers": ["layers/modules/tezro-serial-compat-module.yaml",
                         "layers/products/tezro-one-processor.yaml"]},
-            {"id": "two-four-processor", "default": True,
+            {"id": "two-four-processor", "board": "ip53", "default": True,
              "layers": ["layers/products/tezro-two-four-processor.yaml"]},
+            {"id": "two-four-processor-ip59", "board": "ip59",
+             "layers": ["layers/products/tezro-tower-multi-ip59.yaml"]},
         ],
+    }
+    # The IP53 interface boards alone, naming no node board.
+    UNNAMED = {
+        **VARIANTS,
+        "variants": [{key: value for key, value in variant.items()
+                      if key != "board"}
+                     for variant in VARIANTS["variants"][:2]],
     }
 
     def write(self, document):
@@ -3976,14 +3991,17 @@ class CompositionVariantTests(unittest.TestCase):
             [(model["composition"]["product"], model["composition"]["variant"])
              for model in models],
             [("tezro", {"id": "one-processor", "default": False}),
-             ("tezro", {"id": "two-four-processor", "default": True})])
+             ("tezro", {"id": "two-four-processor", "default": True}),
+             ("tezro", {"id": "two-four-processor-ip59", "default": False})])
         self.assertEqual(
             [[layer["id"] for layer in model["composition"]["layers"]
               if layer["kind"] in ("module", "product")] for model in models],
             [["tezro-serial-compat-module", "tezro-one-processor"],
-             ["tezro-two-four-processor"]])
+             ["tezro-two-four-processor"],
+             ["tezro-tower-multi-ip59"]])
         checked = schema(path.parent)
-        for variant in ("one-processor", "two-four-processor"):
+        for variant in ("one-processor", "two-four-processor",
+                        "two-four-processor-ip59"):
             with self.subTest(variant=variant):
                 model = load_checked_system_model(
                     path, model_schema=checked, variant=variant)
@@ -4011,14 +4029,14 @@ class CompositionVariantTests(unittest.TestCase):
         self.assertNotEqual(check_schema(default, checked), [])
 
     def test_a_composition_without_variants_is_its_own_default(self):
-        model = _resolver.load_system_model(INPUTS / "origin350.yaml")
+        model = _resolver.load_system_model(INPUTS / "onyx4-host.yaml")
         self.assertNotIn("variant", model["composition"])
         self.assertIsNone(_resolver.model_variant(model))
         self.assertTrue(_resolver.is_default_variant(model))
 
     def test_exactly_one_variant_is_the_default(self):
         for defaults in ((False, False), (True, True)):
-            document = copy.deepcopy(self.VARIANTS)
+            document = copy.deepcopy(self.UNNAMED)
             for variant, default in zip(document["variants"], defaults):
                 variant["default"] = default
             with self.subTest(defaults=defaults), self.assertRaisesRegex(
@@ -4037,36 +4055,34 @@ class CompositionVariantTests(unittest.TestCase):
             (lambda d: d["variants"][0].update(layers=[]), "has no layers"),
         )
         for change, message in changes:
-            document = copy.deepcopy(self.VARIANTS)
+            document = copy.deepcopy(self.UNNAMED)
             change(document)
             with self.subTest(message=message), self.assertRaisesRegex(
                     _resolver.ResolutionError, message):
                 _resolver.load_system_models(self.write(document))
 
     def test_a_variant_names_its_board(self):
-        document = copy.deepcopy(self.VARIANTS)
-        document["variants"][0]["board"] = "ip59"
-        document["variants"][1]["board"] = "ip53"
-        models = _resolver.load_system_models(self.write(document))
+        models = _resolver.load_system_models(INPUTS / "tezro.yaml")
         self.assertEqual(
             [(model["composition"]["board"],
               model["composition"]["default_board"],
               model["composition"]["boards"],
               _resolver.declared_board(model)) for model in models],
-            [("ip59", "ip53", ["ip53", "ip59"], "ip59"),
-             ("ip53", "ip53", ["ip53", "ip59"], "ip53")])
+            [("ip53", "ip53", ["ip53", "ip59"], "ip53"),
+             ("ip53", "ip53", ["ip53", "ip59"], "ip53"),
+             ("ip59", "ip53", ["ip53", "ip59"], "ip59")])
 
     def test_a_composition_names_one_board_for_all(self):
-        document = copy.deepcopy(self.VARIANTS)
-        document["board"] = "ip59"
+        document = copy.deepcopy(self.UNNAMED)
+        document["board"] = "ip53"
         models = _resolver.load_system_models(self.write(document))
         self.assertEqual(
             [(model["composition"]["board"],
               model["composition"]["default_board"],
               model["composition"]["boards"]) for model in models],
-            [("ip59", "ip59", ["ip59"])] * 2)
+            [("ip53", "ip53", ["ip53"])] * 2)
         self.assertIsNone(_resolver.declared_board(
-            _resolver.load_system_model(INPUTS / "origin350.yaml")))
+            _resolver.load_system_model(INPUTS / "origin200.yaml")))
 
     def test_a_board_must_be_named_by_all_or_none(self):
         changes = (
@@ -4075,7 +4091,7 @@ class CompositionVariantTests(unittest.TestCase):
             (lambda d: d.update(board="IP59"), "names invalid board 'IP59'"),
         )
         for change, message in changes:
-            document = copy.deepcopy(self.VARIANTS)
+            document = copy.deepcopy(self.UNNAMED)
             change(document)
             with self.subTest(message=message), self.assertRaisesRegex(
                     _resolver.ResolutionError, message):

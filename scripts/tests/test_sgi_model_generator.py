@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "53ba86d9d233c1d0860b21cef05c543ec1bc67928a44d8e0b5eaa4079446a760"
+    "cb7c88f4d9f052437ed2de2523d09e3c1c7d33e22987be4b5aa93d2b0f6a00f8"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -35,15 +35,15 @@ from sgi_model.registry import (
 
 
 class GeneratorTests(unittest.TestCase):
-    def test_onyx4_host_serial_profile_names_its_ip53_compatibility(self):
+    def test_onyx4_host_builds_only_the_ip59(self):
         catalogue = json.loads(
             render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"])
-        topology = next(
-            item for item in catalogue["topologies"]
-            if item["name"] == "onyx4-host-serial-compat")
+        [topology] = [item for item in catalogue["topologies"]
+                      if item["name"] == "onyx4-host"]
 
         self.assertEqual(topology["product"], "onyx4-host")
-        self.assertIn("IP53-backed", topology["description"])
+        self.assertEqual((topology["board"], topology["default-board"]),
+                         ("ip59", "ip59"))
         self.assertEqual(len(topology["nodes"]), 1)
         node = topology["nodes"][0]
         self.assertEqual(node["board-kind"], "ip53")
@@ -212,9 +212,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 157)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 49)
-        self.assertEqual(len(layers), 106)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 147)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 42)
+        self.assertEqual(len(layers), 103)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -522,19 +522,30 @@ class StorageTests(unittest.TestCase):
         cls.catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
 
-    def default_processor(self, name):
+    def default_processor(self, name, board=None):
         topology = next(item for item in self.catalogue["topologies"]
-                        if item["name"] == name)
+                        if item["name"] == name
+                        and item.get("board") == board)
         return topology["nodes"][0]["cpu-slots"][0]["assembly"]["id"]
+
+    def boards(self, name):
+        return {item.get("board") for item in self.catalogue["topologies"]
+                if item["name"] == name}
 
     def test_every_offering_lists_consistent_storage(self):
         for offering in self.catalogue["offerings"]:
             with self.subTest(options=offering["machine-options"]):
                 # processor= appears only where the module is not the
                 # topology's own, so the default keeps its old spelling.
+                board = offering.get("board")
                 processor = ("" if offering["processor"]["id"] ==
-                             self.default_processor(offering["topology"])
+                             self.default_processor(offering["topology"],
+                                                    board)
                              else f",processor={offering['processor']['id']}")
+                # board= appears wherever the topology takes two boards.
+                board_option = (f",board={board}"
+                                if len(self.boards(offering["topology"])) > 1
+                                else "")
                 if offering.get("launch-recipe") == "ip32":
                     self.assertEqual(offering["machine-options"],
                                      "o2" if offering["topology"] == "o2"
@@ -547,7 +558,7 @@ class StorageTests(unittest.TestCase):
                 self.assertEqual(
                     offering["machine-options"],
                     f"{offering['product']},topology={offering['topology']}"
-                    f",nodes={offering['nodes']}{processor}")
+                    f",nodes={offering['nodes']}{board_option}{processor}")
                 if offering.get("launch-recipe") == "ip53-discovery":
                     self.assertEqual(offering["firmware"]["kind"], "ip35-prom")
                 else:
@@ -600,11 +611,7 @@ class StorageTests(unittest.TestCase):
         selected system Timekeeper turns that fixture off. The IP53
         DS1744-compatible profiles start their backed image from zeroes."""
         ds1744_topologies = {
-            "origin350", "onyx350-compat", "onyx4-host-serial-compat",
-            "tezro", "tezro-rack",
-            "origin350-ip59", "onyx350-ip59", "onyx4-host-ip59",
-            "tezro-tower-one-ip59", "tezro-tower-multi-ip59",
-            "tezro-rack-ip59",
+            "origin350", "onyx350", "onyx4-host", "tezro", "tezro-rack",
         }
         for offering in self.catalogue["offerings"]:
             nvram = {item["initial"] for item in offering["storage"]
@@ -920,23 +927,21 @@ class FuelTests(unittest.TestCase):
                 self.assertNotIn("reset-mode", " ".join(cpu))
 
     def test_ip35_firmware_names_each_product_machine_type(self):
-        """Origin 300, Fuel and the Tezro trial keep reset-mode words; the
-        six selected IP53 profiles use type zero and full firmware words."""
+        """Origin 300 and Fuel keep reset-mode words; the IP53-family
+        profiles use type zero and full firmware words, one per board."""
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
         ip53_words = {
-            "origin350": 0x569cad85,
-            "onyx350-compat": 0x569caf85,
-            "tezro": 0x549bad85,
-            "tezro-rack": 0x549bad85,
-            "onyx4-host-serial-compat": 0x4aedb385,
-            # The IP59 profiles all share the 1 GHz, 16 MB word.
-            "origin350-ip59": 0x4aedb385,
-            "onyx350-ip59": 0x4aedb385,
-            "onyx4-host-ip59": 0x4aedb385,
-            "tezro-tower-one-ip59": 0x4aedb385,
-            "tezro-tower-multi-ip59": 0x4aedb385,
-            "tezro-rack-ip59": 0x4aedb385,
+            ("origin350", "ip53"): 0x569cad85,
+            ("onyx350", "ip53"): 0x569caf85,
+            ("tezro", "ip53"): 0x549bad85,
+            ("tezro-rack", "ip53"): 0x549bad85,
+            # The IP59 boards all share the 1 GHz, 16 MB word.
+            ("origin350", "ip59"): 0x4aedb385,
+            ("onyx350", "ip59"): 0x4aedb385,
+            ("onyx4-host", "ip59"): 0x4aedb385,
+            ("tezro", "ip59"): 0x4aedb385,
+            ("tezro-rack", "ip59"): 0x4aedb385,
         }
         for topology in catalogue["topologies"]:
             product = topology["product"]
@@ -948,14 +953,13 @@ class FuelTests(unittest.TestCase):
                     "machine-type": 0,
                     "cpu-mode-word": 0x5414a785})
                 continue
-            if topology["name"] in ("origin3900", "origin3900-ip59"):
-                # The Cx-brick reuses the Origin 350's IP53 firmware word,
-                # or the IP59 products' when it carries IP59 boards.
+            if topology["name"] == "origin3900":
+                # The Cx-brick reuses the Origin 350's firmware word for
+                # its board.
                 self.assertEqual(topology["ip35-firmware"], {
                     "machine-type": 0,
                     "cpu-mode-word": ip53_words[
-                        "origin350-ip59" if topology["name"].endswith("ip59")
-                        else "origin350"]})
+                        ("origin350", topology["board"])]})
                 continue
             if product not in ("origin300", "fuel", "origin350",
                                "onyx350", "tezro", "onyx4-host"):
@@ -965,9 +969,10 @@ class FuelTests(unittest.TestCase):
                 if product in {"origin300", "fuel"}:
                     machine_type = 2 if product == "fuel" else 1
                     expected_mode = 0x549aa985
-                elif topology["name"] in ip53_words:
+                elif (topology["name"], topology.get("board")) in ip53_words:
                     machine_type = 0
-                    expected_mode = ip53_words[topology["name"]]
+                    expected_mode = ip53_words[
+                        (topology["name"], topology["board"])]
                 else:
                     machine_type = 1
                     expected_mode = topology["nodes"][0]["cpu-slots"][0][
@@ -1088,13 +1093,14 @@ class Origin350ClockPolicyTests(unittest.TestCase):
     def test_ip53_catalogue_selects_backed_ds1744_timekeepers(self):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
-        names = {"origin350", "onyx350-compat", "onyx4-host-serial-compat",
-                 "tezro", "tezro-rack"}
-        # Both Tezro boards share one name, so check every record.
+        names = {"origin350", "onyx350", "onyx4-host", "tezro", "tezro-rack"}
+        # Board variants and node boards share a name, so check every
+        # record: two per product, three for the Tezro, one for the
+        # Onyx 4 host.
         topologies = [(row["name"], row) for row in catalogue["topologies"]
                       if row["name"] in names]
         self.assertEqual({name for name, _row in topologies}, names)
-        self.assertEqual(len(topologies), len(names) + 1)
+        self.assertEqual(len(topologies), 2 * len(names))
 
         for name, topology in topologies:
             with self.subTest(topology=name):

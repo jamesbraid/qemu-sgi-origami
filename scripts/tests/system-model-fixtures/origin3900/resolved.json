@@ -1550,6 +1550,11 @@
   "composition": {
     "architecture": "sn1",
     "assembly": "ip53",
+    "board": "ip53",
+    "boards": [
+      "ip53",
+      "ip59"
+    ],
     "connector_population": [
       {
         "component": "cx0-numalink-a",
@@ -1624,6 +1629,7 @@
         ]
       }
     ],
+    "default_board": "ip53",
     "layers": [
       {
         "id": "sn1",
@@ -1790,6 +1796,10 @@
           "part": "r16000"
         }
       ]
+    },
+    "variant": {
+      "default": true,
+      "id": "ip53"
     }
   },
   "connections": [

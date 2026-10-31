@@ -236,15 +236,9 @@ layer:
             reason: Synthetic router descriptor identity; no physical barcode is claimed.
       harness:
         console: l1-uart
-        prom_dialogue: ip35-l1-prompt
         default_cpu_model: R16000
         # The I-brick's Fibre Channel card's private loop: a boot disk
         # there is a loop port, named by the launcher's port_wwn and wwn.
-        disk_bus: scsi.0
-        netboot_adapter: ioc3-ethernet
-        default_topology: origin3200
-        supported_guests: [irix]
-        install_media: [netboot]
         provenance: derived
         sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-metadata]
     evidence_policy: strict
