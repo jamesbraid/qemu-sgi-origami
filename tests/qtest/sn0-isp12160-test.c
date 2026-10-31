@@ -140,6 +140,7 @@ static const uint16_t bank_selections[] = {
 #define ISP_MBOX_CMD_LOAD_RAM_A64           0x0009
 #define ISP_MBOX_CMD_GET_FIRMWARE_STATUS    0x001f
 #define ISP_MBOX_CMD_GET_TARGET_PARAMETERS  0x0028
+#define ISP_MBOX_CMD_SET_SELECTION_TIMEOUT  0x0031
 #define ISP_MBOX_CMD_SET_RESET_DELAY_PARAMS 0x003a
 #define ISP_MBOX_CMD_INIT_REQ_QUEUE_A64     0x0052
 
@@ -2377,6 +2378,52 @@ static void test_missing_target_on_each_channel(const void *data)
 }
 
 /*
+ * Mailbox 1 of set-selection-timeout is bus 0's wait and mailbox 2 bus 1's,
+ * so one absent target on each bus is answered at its own bus's time.
+ */
+static void test_selection_timeout_is_per_channel(const void *data)
+{
+    uint8_t cdb[6] = { SCSI_TEST_UNIT_READY };
+    const uint16_t waits_ms[2] = { 30, 80 };
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    isp_reset();
+
+    aim_window_at_memory_bar(qts);
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_SET_SELECTION_TIMEOUT,
+                             waits_ms, 2), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+
+    submit_a64(qts, 0, 0x00000071, 0, ABSENT_TARGET, 0, cdb, sizeof(cdb), 0,
+               NULL, 0);
+    submit_a64(qts, 1, 0x00000072, 1, ABSENT_TARGET, 0, cdb, sizeof(cdb), 0,
+               NULL, 0);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 2);
+
+    qtest_clock_step(qts, 30 * 1000 * 1000 - 1);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    qtest_memread(qts, RESP_PHYS, status, sizeof(status));
+    normalise_words(status, sizeof(status));
+    g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, 0x71);
+
+    qtest_clock_step(qts, 50 * 1000 * 1000 - 1);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 2);
+    qtest_memread(qts, RESP_PHYS + ISP_QUEUE_ENTRY_SIZE, status,
+                  sizeof(status));
+    normalise_words(status, sizeof(status));
+    g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, 0x72);
+}
+
+/*
  * A refused command on one channel beside a good one on the other, both
  * published together. The failure must stay on its own channel: the other
  * command's payload arrives whole, and the refused command's own medium is
@@ -3618,6 +3665,8 @@ int main(int argc, char **argv)
         test_zero_data_command_reports_no_data_phase);
     qtest_add_data_func("sn0/isp12160/check-condition-carries-real-sense",
                         NULL, test_check_condition_carries_real_sense);
+    qtest_add_data_func("sn0/isp12160/selection-timeout-is-per-channel", NULL,
+                        test_selection_timeout_is_per_channel);
     qtest_add_data_func("sn0/isp12160/missing-target-on-each-channel", NULL,
                         test_missing_target_on_each_channel);
     qtest_add_data_func(
