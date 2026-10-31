@@ -5324,6 +5324,69 @@ static void test_command_fifo_image_raster_rgb(void)
     board_quit(qts);
 }
 
+/*
+ * A burst whose header names a source format the model has no layout for
+ * paints nothing and is reported once, rather than guessing a layout from
+ * the burst tag. The code here is RED bytes (format 4, type 2), which no
+ * burst case decodes; the box stays as it was and the next header with a
+ * known code paints again.
+ */
+static void test_command_fifo_image_raster_unknown_code(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-burst-code-XXXXXX.log", &log_path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    /*
+     * The second pass is RGB 5_6_5 (format 9, type 0xa: code 0x149), whose
+     * low byte 0x49 is the byte RGB code and would alias it.
+     */
+    for (unsigned i = 0; i < 2; i++) {
+        image_begin(qts, 100, 100, 102, 102);
+        cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+        cmd_push(qts, ODSY_IMAGE_HEADER_OP(0, i ? 0x149 : 0x44));
+        cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+        cmd_push(qts, ODSY_IMAGE_BURST(4, ODSY_IMAGE_FMT_RGB));
+        cmd_push(qts, ODSY_X_PIXEL(0x112233));
+        cmd_push(qts, ODSY_X_PIXEL(0x445566));
+        cmd_push(qts, ODSY_X_PIXEL(0x778899));
+        cmd_push(qts, ODSY_X_PIXEL(0xaabbcc));
+        cmd_push(qts, ODSY_CMD_GL_END);
+    }
+    g_assert_cmphex(odsy_test_pixel(qts, 100, 100), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 101, 101), ==, 0);
+
+    image_begin(qts, 100, 100, 102, 102);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(0, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, ODSY_X_PIXEL(0x112233));
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 100, 100), ==, 0x112233ff);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(count_occurrences(log, "image source format 0x44"), ==,
+                     1);
+    /* One report in all: the second code does not get its own. */
+    g_assert_cmpuint(count_occurrences(log, "image source format"), ==, 1);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 /* Decreasing box endpoints walk the same payload in the opposite directions. */
 static void test_command_fifo_image_raster_descending(void)
 {
@@ -24748,6 +24811,8 @@ int main(int argc, char **argv)
              test_command_fifo_fill_runs_match_pixel_rules);
     add_case("sn1/odyssey/command-fifo-image-raster-rgb",
              test_command_fifo_image_raster_rgb);
+    add_fresh_case("sn1/odyssey/command-fifo-image-raster-unknown-code",
+                   test_command_fifo_image_raster_unknown_code);
     add_case("sn1/odyssey/command-fifo-image-raster-descending",
              test_command_fifo_image_raster_descending);
     add_case("sn1/odyssey/command-fifo-image-raster-mixed-directions",
