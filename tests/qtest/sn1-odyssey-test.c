@@ -12746,6 +12746,108 @@ static void test_object_store_packs_many_objects(void)
     board_quit(qts);
 }
 
+/*
+ * A plain 2D RGBA level of width x height at base, rows units 16-texel units
+ * wide: clamp to edge, nearest, replace.
+ */
+static void partial_level_bind(QTestState *qts, uint32_t base, uint32_t units,
+                               uint32_t width, uint32_t height)
+{
+    const uint32_t words[] = {
+        0x00010405, 0x10,
+        0x00011c16, 0x08000000 | (ctz32(width) << 10) | (ctz32(height) << 5),
+        width, height, 1, 0x13001400, 0, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, base, 0x41100000 | units, 0,
+        0x00010406, 0,
+    };
+
+    push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
+/* Draw the level's column 0 at row, which texture_adapter_point() samples. */
+static uint32_t partial_level_row(QTestState *qts, int x, uint32_t width,
+                                  uint32_t height, uint32_t row)
+{
+    texture_adapter_point(qts, x, 10, 0.5f / width, (row + 0.5f) / height);
+    return odsy_test_pixel(qts, x, 10);
+}
+
+/*
+ * A partly written ordinary 2D level is present. The 512x256 level's object
+ * holds 200 rows: the object grows to the level's height, row 199 reads its
+ * texel, and rows nobody wrote read 0. Model policy (odyssey.md,
+ * "Board-memory object store"). It fails on a model that takes the 200-row
+ * object as a missing level, which draws untextured.
+ */
+static void test_texture_partial_level_is_present(void)
+{
+    QTestState *qts = board_start("");
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_BANKS);
+    dma_object_texel(qts, 0x16b800, 32, 0, 199, 0x112233ff);
+    dma_object_texel(qts, 0x16b800, 32, 0, 100, 0x44556677);
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 1);
+    texture_adapter_window(qts);
+    partial_level_bind(qts, 0x16b800, 32, 512, 256);
+    g_assert_cmphex(partial_level_row(qts, 10, 512, 256, 100), ==,
+                    0x44556677);
+    g_assert_cmphex(partial_level_row(qts, 11, 512, 256, 199), ==,
+                    0x112233ff);
+    g_assert_cmphex(partial_level_row(qts, 12, 512, 256, 220), ==, 0);
+    g_assert_cmphex(partial_level_row(qts, 13, 512, 256, 255), ==, 0);
+    board_quit(qts);
+}
+
+/*
+ * A level whose object holds no rows stays missing and draws untextured; one
+ * written row makes it present, grown to the level's height. Model policy
+ * (odyssey.md, "Board-memory object store"): the hardware is unknown.
+ */
+static void test_texture_level_without_rows_is_missing(void)
+{
+    QTestState *qts = board_start("");
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_BANKS);
+    object_store_select(qts, 0x16b800, 32);
+    texture_adapter_window(qts);
+    partial_level_bind(qts, 0x16b800, 32, 512, 256);
+    g_assert_cmphex(partial_level_row(qts, 10, 512, 256, 100), ==,
+                    ODSY_PLANE_YELLOW);
+    dma_object_texel(qts, 0x16b800, 32, 0, 0, 0x112233ff);
+    texture_adapter_window(qts);
+    partial_level_bind(qts, 0x16b800, 32, 512, 256);
+    g_assert_cmphex(partial_level_row(qts, 11, 512, 256, 0), ==, 0x112233ff);
+    g_assert_cmphex(partial_level_row(qts, 12, 512, 256, 100), ==, 0);
+    board_quit(qts);
+}
+
+/*
+ * A draw that grows a partly written level does not select it. The 512x256
+ * level holds 200 rows and is uploaded first, so it is the oldest; the table
+ * is filled, the level is drawn (which grows it) and one more object forgets
+ * the level, not the next-oldest.
+ */
+static void test_object_store_draw_grow_is_not_use(void)
+{
+    g_autofree char *log_path = NULL;
+    QTestState *qts = object_store_log_board(&log_path);
+
+    dma_object_texel(qts, 0x16b800, 32, 0, 199, 0x112233ff);
+    object_store_fill(qts);
+    texture_adapter_window(qts);
+    partial_level_bind(qts, 0x16b800, 32, 512, 256);
+    g_assert_cmphex(partial_level_row(qts, 10, 512, 256, 199), ==,
+                    0x112233ff);
+    g_assert_cmphex(partial_level_row(qts, 11, 512, 256, 255), ==, 0);
+    object_store_select(qts, 0x300000 + (ODSY_TEST_OBJECTS - 1) * 0x20, 1);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16b800, 0, 199), ==, 0);
+    board_quit(qts);
+    object_store_log_forgot(log_path, 0x16b800, 0x300000);
+}
+
 /* Save a board to a file and return the stream's size in bytes. */
 static gint64 object_store_save(QTestState *from, const char *path)
 {
@@ -17293,6 +17395,10 @@ static void texture_public_border_upload_3d(QTestState *qts,
             if (stored && missing == 3 && z == 0 && y == 0) {
                 row_width--;
             }
+            /* Missing 4: slice 1 stops after its first two stored rows. */
+            if (stored && missing == 4 && z == 1 && y == 2) {
+                break;
+            }
             upload_row(qts, 0x4b, row, row_width);
         }
         upload_end(qts);
@@ -17829,6 +17935,27 @@ static void test_texture_public_border_3d_nearest(void)
 static void test_texture_public_border_3d_linear(void)
 {
     texture_public_border_sample_3d(true);
+}
+
+/*
+ * A stored volume's slice with only some of its required rows is not given
+ * the partly written 2D level rule: the object is not grown to fill it, the
+ * volume stays incomplete and the draw takes the incomplete-image fallback,
+ * which leaves the pixel as it was. The rule is model policy for ordinary
+ * 2D levels only (odyssey.md, "Board-memory object store").
+ */
+static void test_stored_volume_partial_slice_keeps_fallback(void)
+{
+    QTestState *qts = board_start("");
+
+    texture_public_border_upload_3d(qts, 2, 2, 2, true, 4);
+    texture_adapter_window(qts);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    texture_public_border_bind_3d(qts, 2, 2, 2, true, false);
+    odsy_test_pixel_write(qts, 10, 10, 0x123456ff);
+    texture_adapter_point_3d(qts, 10, 10, 0.25f, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x123456ff);
+    board_quit(qts);
 }
 
 static void test_texture_public_border_3d_incomplete(void)
@@ -21236,13 +21363,20 @@ static void test_texture_adapter_storage_dimensions(void)
     push_user_words(qts, sampler, ARRAY_SIZE(sampler));
     texture_adapter_point(qts, 10, 10, 0.4375f, 0.5f);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0xffffffff);
-    /* An eight-wide object has only one row: two rows are incomplete. */
+    /*
+     * An eight-wide object has only one row, and two rows are asked for: the
+     * level is partly written, so it is present (odyssey.md, "Board-memory
+     * object store", model policy). Its written row reads its texel and the
+     * row nobody wrote reads 0.
+     */
     sampler[0] = 0x08000c20;
     sampler[2] = 2;
     user_cmd_push(qts, 0x00011c16);
     push_user_words(qts, sampler, ARRAY_SIZE(sampler));
     texture_adapter_point(qts, 11, 10, 0.25f, 0.25f);
-    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, ODSY_PLANE_YELLOW);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0x0000ffff);
+    texture_adapter_point(qts, 13, 10, 0.25f, 0.75f);
+    g_assert_cmphex(odsy_test_pixel(qts, 13, 10), ==, 0);
     /* A supported image wider than its object stride also falls back. */
     sampler[0] = 0x08001800;
     sampler[1] = 64;
@@ -25970,6 +26104,14 @@ int main(int argc, char **argv)
                    test_object_store_keeps_4096_objects);
     add_fresh_case("sn1/odyssey/object-store-capacity-is-16384",
                    test_object_store_capacity_is_16384);
+    add_fresh_case("sn1/odyssey/texture-partial-level-is-present",
+                   test_texture_partial_level_is_present);
+    add_fresh_case("sn1/odyssey/texture-level-without-rows-is-missing",
+                   test_texture_level_without_rows_is_missing);
+    add_fresh_case("sn1/odyssey/stored-volume-partial-slice-keeps-fallback",
+                   test_stored_volume_partial_slice_keeps_fallback);
+    add_fresh_case("sn1/odyssey/object-store-draw-grow-is-not-use",
+                   test_object_store_draw_grow_is_not_use);
     add_fresh_case("sn1/odyssey/object-store-packs-many-objects",
                    test_object_store_packs_many_objects);
     add_fresh_case("sn1/odyssey/object-store-sampling-is-not-use",

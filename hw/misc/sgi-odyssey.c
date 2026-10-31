@@ -5315,6 +5315,21 @@ static bool odyssey_object_rows(SGIOdysseyState *s, int i, uint32_t rows)
     return true;
 }
 
+/*
+ * Grow object i to rows rows for a draw that samples it. The grow is the
+ * model's, not an upload's, so it leaves the object's recency alone: a draw
+ * does not select what it samples.
+ */
+static bool odyssey_object_rows_for_draw(SGIOdysseyState *s, int i,
+                                         uint32_t rows)
+{
+    uint64_t stamp = s->obj_stamp[i];
+    bool ok = odyssey_object_rows(s, i, rows);
+
+    s->obj_stamp[i] = stamp;
+    return ok;
+}
+
 /* Object i's texel (x, y) as 0xRRGGBBAA; outside its rows or width, dropped. */
 static void odyssey_object_store(SGIOdysseyState *s, int i, uint32_t x,
                                  uint32_t y, uint32_t rgba)
@@ -7492,6 +7507,9 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     if (chain->volume.colour_table || chain->volume.scale_bias) {
         image->post_filter = odyssey_texture_post_filter;
     }
+    uint32_t grown_base[SGI_GL_TEX_LEVELS_MAX] = { 0 };
+    bool grown = false;
+
     for (uint32_t i = 0; i < count; i++) {
         uint32_t *entry = &s->tex_levels[(first + i) * 3];
         uint32_t level_width = MAX(1, width >> i);
@@ -7540,6 +7558,25 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
             continue;
         }
         object = odyssey_object_find(s, base);
+        /*
+         * Model policy (odyssey.md, "Board-memory object store", partly
+         * written level): an ordinary 2D level whose object holds some but
+         * not all of its rows is present. The object grows to the level's
+         * height and the unwritten rows read 0, which GL leaves undefined.
+         * A level with no object, or an object with no rows, is still
+         * missing, and a stored-border level, which is checked for every
+         * texel it needs, is not grown.
+         */
+        if (object >= 0 && !require_backing && !bordered &&
+            rows == level_height && s->obj_width[object] >= level_width &&
+            (!stride_units || s->obj_width[object] == stride_units * 16) &&
+            s->obj_rows[object] && s->obj_rows[object] < rows) {
+            odyssey_object_rows_for_draw(s, object, rows);
+            grown = true;
+        }
+        if (rows == level_height && !require_backing && !bordered) {
+            grown_base[i] = base;
+        }
         if (object < 0 || s->obj_width[object] < level_width ||
             (stride_units && s->obj_width[object] != stride_units * 16) ||
             s->obj_rows[object] < rows ||
@@ -7580,6 +7617,26 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
             chain->levels[i].read_border_texel =
                 odyssey_texture_read_border_level;
         }
+    }
+    /*
+     * A later level's grow may have packed the store or forgotten an
+     * earlier level's object: look each grown-from level up again.
+     */
+    for (uint32_t i = 0; grown && i < count; i++) {
+        uint32_t level_height = MAX(1, height >> i);
+        int object;
+
+        if (!grown_base[i] || !chain->levels[i].read_texel) {
+            continue;
+        }
+        object = odyssey_object_find(s, grown_base[i]);
+        if (object < 0 || s->obj_rows[object] < level_height) {
+            memset(&chain->storage[i], 0, sizeof(chain->storage[i]));
+            chain->levels[i].read_texel = NULL;
+            continue;
+        }
+        chain->storage[i].offset = s->obj_offset[object];
+        chain->storage[i].words = s->obj_used;
     }
     chain->pyramid = (SGIGLTexPyramid) {
         .levels = chain->levels, .count = count, .base_level = 0,
