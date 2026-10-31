@@ -12411,6 +12411,76 @@ static void dma_object_texel(QTestState *qts, uint32_t base, uint32_t units,
     dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table);
 }
 
+/* The model's object table size (SGI_ODYSSEY_OBJECTS), a model policy. */
+#define ODSY_TEST_OBJECTS 16384
+
+/* Select (create) the object at base, units 16-texel units wide. */
+static void object_store_select(QTestState *qts, uint32_t base,
+                                uint32_t units)
+{
+    user_cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    user_cmd_push(qts, base);
+    user_cmd_push(qts, units);
+    user_cmd_push(qts, 0x080024d0);
+    user_cmd_push(qts, 0);
+}
+
+/*
+ * The table holds 4096 objects and the first is still found: selecting it
+ * again returns the same object and its texel, so the object count does not
+ * move. Model policy (odyssey.md, "Board-memory object store"); the 1024
+ * table forgot the first object after the 1025th select.
+ */
+static void test_object_store_keeps_4096_objects(void)
+{
+    const uint32_t first = 0x16b000;
+    QTestState *qts = board_start("");
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_BANKS);
+    dma_object_texel(qts, first, 1, 0, 0, 0x112233ff);
+    for (uint32_t i = 1; i < 4096; i++) {
+        object_store_select(qts, first + i * 0x100, 1);
+    }
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==,
+                     4096);
+    g_assert_cmphex(odsy_test_object_texel(qts, first, 0, 0), ==,
+                    0x112233ff);
+    object_store_select(qts, first, 1);
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==,
+                     4096);
+    g_assert_cmphex(odsy_test_object_texel(qts, first, 0, 0), ==,
+                    0x112233ff);
+    board_quit(qts);
+}
+
+/*
+ * The capacity is 16384 and not less or more: with that many objects the
+ * first (the least recently selected) still reads its texel, and the 16385th
+ * select forgets it and takes its slot.
+ */
+static void test_object_store_capacity_is_16384(void)
+{
+    const uint32_t first = 0x16b000;
+    QTestState *qts = board_start("");
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_BANKS);
+    dma_object_texel(qts, first, 1, 0, 0, 0x112233ff);
+    for (uint32_t i = 1; i < ODSY_TEST_OBJECTS; i++) {
+        object_store_select(qts, first + i * 0x100, 1);
+    }
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==,
+                     16384);
+    g_assert_cmphex(odsy_test_object_texel(qts, first, 0, 0), ==,
+                    0x112233ff);
+    object_store_select(qts, first + ODSY_TEST_OBJECTS * 0x100, 1);
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==,
+                     16384);
+    g_assert_cmphex(odsy_test_object_texel(qts, first, 0, 0), ==, 0);
+    board_quit(qts);
+}
+
 /*
  * The object store recycles. Two 4096-texel-wide objects of 3000 rows
  * take most of the 128 MiB store; reshaping the first leaves its rows
@@ -12464,17 +12534,15 @@ static void test_object_store_reclaims(void)
     g_assert_cmphex(odsy_test_object_texel(qts, 0x400000, 7, 2999), ==,
                     0x44444444);
 
-    for (uint32_t i = 0; i < 1024; i++) {
-        user_cmd_push(qts, ODSY_CMD_DEST_SELECT);
-        user_cmd_push(qts, 0x600000 + i * 0x100);
-        user_cmd_push(qts, 2);
-        user_cmd_push(qts, 0x080024d0);
-        user_cmd_push(qts, 0);
+    for (uint32_t i = 0; i < ODSY_TEST_OBJECTS; i++) {
+        object_store_select(qts, 0x600000 + i * 0x20, 2);
     }
     g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==,
-                     1024);
-    dma_object_texel(qts, 0x600000 + 1023 * 0x100, 2, 2, 2, 0x66666666);
-    g_assert_cmphex(odsy_test_object_texel(qts, 0x600000 + 1023 * 0x100,
+                     ODSY_TEST_OBJECTS);
+    dma_object_texel(qts, 0x600000 + (ODSY_TEST_OBJECTS - 1) * 0x20, 2, 2,
+                     2, 0x66666666);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x600000 +
+                                           (ODSY_TEST_OBJECTS - 1) * 0x20,
                                            2, 2), ==, 0x66666666);
     /* The large objects were the least recently used, so they went first. */
     g_assert_cmphex(odsy_test_object_texel(qts, 0x500000, 8, 3999), ==, 0);
@@ -12485,7 +12553,7 @@ static void test_object_store_reclaims(void)
     g_assert_no_error(error);
     g_assert_nonnull(strstr(log, "board-memory store is full; the least "
                             "recently used object, 0x300000, is forgotten"));
-    g_assert_nonnull(strstr(log, "more than 1024 board-memory objects; the "
+    g_assert_nonnull(strstr(log, "more than 16384 board-memory objects; the "
                             "least recently used, 0x200000, is forgotten"));
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
@@ -25737,6 +25805,10 @@ int main(int argc, char **argv)
                    test_object_store_grows_without_forgetting);
     add_fresh_case("sn1/odyssey/object-store-migrates-used-part",
                    test_object_store_migrates_used_part);
+    add_fresh_case("sn1/odyssey/object-store-keeps-4096-objects",
+                   test_object_store_keeps_4096_objects);
+    add_fresh_case("sn1/odyssey/object-store-capacity-is-16384",
+                   test_object_store_capacity_is_16384);
     add_case("sn1/odyssey/texture-adapter/rgba12-byte-upload",
              test_texture_adapter_rgba12_byte_upload);
     add_case("sn1/odyssey/texture-adapter/nearest",
