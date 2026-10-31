@@ -1540,6 +1540,13 @@ static int sgi_rad1_octane_startup_index(hwaddr addr)
     return -1;
 }
 
+/* The generator that paces the analog output, named by bits 30:29 of 0x58. */
+static unsigned sgi_rad1_octane_out_gen(SGIRad1AudioState *s)
+{
+    return (s->analog_out_en & SGI_RAD1_OCTANE_OUT_SEL_GEN2) ?
+           SGI_RAD1_OCTANE_CG_OUT_ALT : SGI_RAD1_OCTANE_CG_OUT;
+}
+
 /* A generator's rate; 44.1 kHz until a guest loads it (power-on unknown). */
 static uint32_t sgi_rad1_octane_cg_rate(SGIRad1AudioState *s, unsigned gen)
 {
@@ -1595,7 +1602,7 @@ static void sgi_rad1_octane_cg_apply(SGIRad1AudioState *s)
                                  s, SGI_RAD1_OCTANE_CG_IN));
     sgi_rad1_octane_set_rate(&s->chan[SGI_RAD1_AUDIO_CH_OUT],
                              sgi_rad1_octane_cg_rate(
-                                 s, SGI_RAD1_OCTANE_CG_OUT));
+                                 s, sgi_rad1_octane_out_gen(s)));
 }
 
 /* Called after the word at @addr has been stored in octane_startup. */
@@ -1778,14 +1785,20 @@ static MemTxResult sgi_rad1_octane_write(void *opaque, hwaddr addr,
                 return MEMTX_OK;
             }
         } else if (addr == SGI_RAD1_AUDIO_REG_ANALOG_OUT_EN &&
-                   (value == 0x20000000 || value == 0x20000001)) {
-            if (value == 0x20000000 ||
+                   ((value & ~SGI_RAD1_AUDIO_ENABLE_BIT) ==
+                    SGI_RAD1_OCTANE_OUT_SEL_GEN1 ||
+                    (value & ~SGI_RAD1_AUDIO_ENABLE_BIT) ==
+                    SGI_RAD1_OCTANE_OUT_SEL_GEN2)) {
+            if (!(value & SGI_RAD1_AUDIO_ENABLE_BIT) ||
                 sgi_rad1_octane_ring_valid(s, SGI_RAD1_OCTANE_RING_OUTPUT,
                                            0xfffff008)) {
                 SGIRad1AudioChannel *c = &s->chan[SGI_RAD1_AUDIO_CH_OUT];
 
-                sgi_rad1_audio_enable_write(c, value);
+                /* Bring the channel up to date before the rate can change. */
+                sgi_rad1_audio_chan_sync(c);
                 s->analog_out_en = value;
+                sgi_rad1_octane_cg_apply(s);
+                sgi_rad1_audio_enable_write(c, value);
                 trace_sgi_rad1_octane_output_control(value,
                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), c->start_ns,
                     c->frames, c->running);
@@ -2161,7 +2174,7 @@ static int sgi_rad1_octane_post_load(void *opaque, int version_id)
     s->chan[SGI_RAD1_AUDIO_CH_IN].freq =
         sgi_rad1_octane_cg_rate(s, SGI_RAD1_OCTANE_CG_IN);
     s->chan[SGI_RAD1_AUDIO_CH_OUT].freq =
-        sgi_rad1_octane_cg_rate(s, SGI_RAD1_OCTANE_CG_OUT);
+        sgi_rad1_octane_cg_rate(s, sgi_rad1_octane_out_gen(s));
     sgi_rad1_audio_retune_voice(&s->chan[SGI_RAD1_AUDIO_CH_IN]);
     sgi_rad1_audio_retune_voice(&s->chan[SGI_RAD1_AUDIO_CH_OUT]);
 
