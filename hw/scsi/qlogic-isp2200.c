@@ -708,13 +708,17 @@ static void isp2200_nvram_deselect(QLogicISP2200State *s)
  * select high, then sixteen data bits out, most significant first, each
  * appearing after a rising edge.
  *
- * Approximation: the part is a 93C66-class microwire EEPROM by inference
- * from the command format. The model takes the first rising edge as the
- * start bit instead of waiting for a one, drives no dummy zero before the
- * first data bit, and does not model write, erase or the sequential read
- * a real part continues into the next word. Whether the real part drives
- * that dummy bit is unknown, and it only matters to a guest that sends a
- * command shorter than eleven bits.
+ * Approximation: the command format (start bit, two opcode bits, an
+ * eight-bit address) fits a 93C56- or 93C66-class microwire EEPROM in
+ * 16-bit mode; 128 words is a 93C56's size. The reviewed datasheet infers
+ * "93C66-class" from the format alone, so the part is not identified. The
+ * model skips zero bits before the start bit, as a microwire part waits
+ * for a one (also inferred), drives no dummy zero before the first data
+ * bit, and does not model write, erase or the sequential read a real part
+ * continues into the next word. A word address of 128 or more reads
+ * 0xffff and logs, whatever a larger part would hold there. Whether the
+ * real part drives a dummy bit is unknown, and it only matters to a guest
+ * that sends a command shorter than eleven bits.
  */
 static void isp2200_nvram_write(QLogicISP2200State *s, uint16_t val)
 {
@@ -732,6 +736,9 @@ static void isp2200_nvram_write(QLogicISP2200State *s, uint16_t val)
 
     switch (s->nvram_state) {
     case ISP2200_NVRAM_COMMAND:
+        if (s->nvram_bits == 0 && !(val & ISP2200_NVRAM_DI)) {
+            break;
+        }
         s->nvram_shift = (s->nvram_shift << 1) |
                          !!(val & ISP2200_NVRAM_DI);
         s->nvram_bits++;
