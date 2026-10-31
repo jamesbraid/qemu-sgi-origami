@@ -6073,7 +6073,7 @@
       "processor": {
         "cache-mib": 8,
         "clock-hz": 800000000,
-        "id": "r16000-800mhz",
+        "id": "r16000-800mhz-8mb",
         "part": "R16000"
       },
       "product": "onyx350",
@@ -6262,7 +6262,7 @@
       "processor": {
         "cache-mib": 16,
         "clock-hz": 1000000000,
-        "id": "r16000-1000mhz",
+        "id": "r16000-1000mhz-16mb",
         "part": "R16000"
       },
       "product": "onyx350",
@@ -6450,7 +6450,7 @@
       "processor": {
         "cache-mib": 16,
         "clock-hz": 1000000000,
-        "id": "r16000-1000mhz",
+        "id": "r16000-1000mhz-16mb",
         "part": "R16000"
       },
       "product": "onyx4-host",
@@ -6638,7 +6638,7 @@
       "processor": {
         "cache-mib": 16,
         "clock-hz": 1000000000,
-        "id": "r16000-1000mhz",
+        "id": "r16000-1000mhz-16mb",
         "part": "R16000"
       },
       "product": "onyx4-host",
@@ -21102,7 +21102,7 @@
       "processor": {
         "cache-mib": 16,
         "clock-hz": 1000000000,
-        "id": "r16000-1000mhz",
+        "id": "r16000-1000mhz-16mb",
         "part": "R16000"
       },
       "product": "origin350",
@@ -21290,7 +21290,7 @@
       "processor": {
         "cache-mib": 8,
         "clock-hz": 700000000,
-        "id": "r16000-700mhz",
+        "id": "r16000-700mhz-8mb",
         "part": "R16000"
       },
       "product": "origin350",
@@ -21449,7 +21449,7 @@
       "processor": {
         "cache-mib": 16,
         "clock-hz": 1000000000,
-        "id": "r16000-1000mhz",
+        "id": "r16000-1000mhz-16mb",
         "part": "R16000"
       },
       "product": "origin3000",
@@ -21723,7 +21723,7 @@
       "processor": {
         "cache-mib": 8,
         "clock-hz": 700000000,
-        "id": "r16000-700mhz",
+        "id": "r16000-700mhz-8mb",
         "part": "R16000"
       },
       "product": "origin3000",
@@ -22027,7 +22027,7 @@
       "processor": {
         "cache-mib": 16,
         "clock-hz": 1000000000,
-        "id": "r16000-1000mhz",
+        "id": "r16000-1000mhz-16mb",
         "part": "R16000"
       },
       "product": "tezro",
@@ -22216,7 +22216,7 @@
       "processor": {
         "cache-mib": 16,
         "clock-hz": 1000000000,
-        "id": "r16000-1000mhz",
+        "id": "r16000-1000mhz-16mb",
         "part": "R16000"
       },
       "product": "tezro",
@@ -22405,7 +22405,7 @@
       "processor": {
         "cache-mib": 16,
         "clock-hz": 1000000000,
-        "id": "r16000-1000mhz",
+        "id": "r16000-1000mhz-16mb",
         "part": "R16000"
       },
       "product": "tezro",
@@ -22594,7 +22594,7 @@
       "processor": {
         "cache-mib": 4,
         "clock-hz": 700000000,
-        "id": "r16000-700mhz",
+        "id": "r16000-700mhz-4mb",
         "part": "R16000"
       },
       "product": "tezro",
@@ -22783,7 +22783,7 @@
       "processor": {
         "cache-mib": 4,
         "clock-hz": 700000000,
-        "id": "r16000-700mhz",
+        "id": "r16000-700mhz-4mb",
         "part": "R16000"
       },
       "product": "tezro",
@@ -22972,7 +22972,7 @@
       "processor": {
         "cache-mib": 4,
         "clock-hz": 700000000,
-        "id": "r16000-700mhz",
+        "id": "r16000-700mhz-4mb",
         "part": "R16000"
       },
       "product": "tezro",
@@ -23161,7 +23161,7 @@
       "processor": {
         "cache-mib": 16,
         "clock-hz": 1000000000,
-        "id": "r16000-1000mhz",
+        "id": "r16000-1000mhz-16mb",
         "part": "R16000"
       },
       "product": "tezro",
@@ -23350,7 +23350,7 @@
       "processor": {
         "cache-mib": 16,
         "clock-hz": 1000000000,
-        "id": "r16000-1000mhz",
+        "id": "r16000-1000mhz-16mb",
         "part": "R16000"
       },
       "product": "tezro",
@@ -23539,7 +23539,7 @@
       "processor": {
         "cache-mib": 16,
         "clock-hz": 1000000000,
-        "id": "r16000-1000mhz",
+        "id": "r16000-1000mhz-16mb",
         "part": "R16000"
       },
       "product": "tezro",
@@ -23728,7 +23728,7 @@
       "processor": {
         "cache-mib": 4,
         "clock-hz": 700000000,
-        "id": "r16000-700mhz",
+        "id": "r16000-700mhz-4mb",
         "part": "R16000"
       },
       "product": "tezro",
@@ -23917,7 +23917,7 @@
       "processor": {
         "cache-mib": 4,
         "clock-hz": 700000000,
-        "id": "r16000-700mhz",
+        "id": "r16000-700mhz-4mb",
         "part": "R16000"
       },
       "product": "tezro",
@@ -24106,7 +24106,7 @@
       "processor": {
         "cache-mib": 4,
         "clock-hz": 700000000,
-        "id": "r16000-700mhz",
+        "id": "r16000-700mhz-4mb",
         "part": "R16000"
       },
       "product": "tezro",
@@ -30351,7 +30351,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 800000000,
-                "id": "r16000-800mhz",
+                "id": "r16000-800mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268549
               },
@@ -30362,7 +30362,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 800000000,
-                "id": "r16000-800mhz",
+                "id": "r16000-800mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268549
               },
@@ -30373,7 +30373,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 800000000,
-                "id": "r16000-800mhz",
+                "id": "r16000-800mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268549
               },
@@ -30384,7 +30384,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 800000000,
-                "id": "r16000-800mhz",
+                "id": "r16000-800mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268549
               },
@@ -30613,7 +30613,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -30624,7 +30624,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -30635,7 +30635,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -30646,7 +30646,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -30841,7 +30841,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -30852,7 +30852,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -30863,7 +30863,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -30874,7 +30874,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -31060,7 +31060,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -31071,7 +31071,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -31082,7 +31082,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -31093,7 +31093,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -40891,7 +40891,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -40902,7 +40902,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -40913,7 +40913,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -40924,7 +40924,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41119,7 +41119,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -41130,7 +41130,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -41141,7 +41141,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -41152,7 +41152,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -41424,7 +41424,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41435,7 +41435,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41446,7 +41446,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41457,7 +41457,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41509,7 +41509,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41520,7 +41520,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41531,7 +41531,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41542,7 +41542,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41594,7 +41594,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41605,7 +41605,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41616,7 +41616,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41627,7 +41627,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41679,7 +41679,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41690,7 +41690,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41701,7 +41701,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -41712,7 +41712,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -42008,7 +42008,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42019,7 +42019,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42030,7 +42030,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42041,7 +42041,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42093,7 +42093,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42104,7 +42104,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42115,7 +42115,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42126,7 +42126,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42178,7 +42178,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42189,7 +42189,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42200,7 +42200,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42211,7 +42211,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42263,7 +42263,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42274,7 +42274,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42285,7 +42285,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42296,7 +42296,7 @@
               "assembly": {
                 "cache-mib": 8,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-8mb",
                 "kind": "R16000",
                 "mode-bits": 10268037
               },
@@ -42536,7 +42536,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -42547,7 +42547,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -42558,7 +42558,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -42569,7 +42569,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -42765,7 +42765,7 @@
               "assembly": {
                 "cache-mib": 4,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
                 "mode-bits": 10202501
               },
@@ -42776,7 +42776,7 @@
               "assembly": {
                 "cache-mib": 4,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
                 "mode-bits": 10202501
               },
@@ -42787,7 +42787,7 @@
               "assembly": {
                 "cache-mib": 4,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
                 "mode-bits": 10202501
               },
@@ -42798,7 +42798,7 @@
               "assembly": {
                 "cache-mib": 4,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
                 "mode-bits": 10202501
               },
@@ -43038,7 +43038,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -43049,7 +43049,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -43060,7 +43060,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -43071,7 +43071,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -43282,7 +43282,7 @@
               "assembly": {
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
-                "id": "r16000-1000mhz",
+                "id": "r16000-1000mhz-16mb",
                 "kind": "R16000",
                 "mode-bits": 15577989
               },
@@ -43517,7 +43517,7 @@
               "assembly": {
                 "cache-mib": 4,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
                 "mode-bits": 10202501
               },
@@ -43756,7 +43756,7 @@
               "assembly": {
                 "cache-mib": 4,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
                 "mode-bits": 10202501
               },
@@ -43767,7 +43767,7 @@
               "assembly": {
                 "cache-mib": 4,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
                 "mode-bits": 10202501
               },
@@ -43778,7 +43778,7 @@
               "assembly": {
                 "cache-mib": 4,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
                 "mode-bits": 10202501
               },
@@ -43789,7 +43789,7 @@
               "assembly": {
                 "cache-mib": 4,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz",
+                "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
                 "mode-bits": 10202501
               },

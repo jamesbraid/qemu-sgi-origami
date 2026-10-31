@@ -87,6 +87,30 @@ def _check_variant_totals(topologies: list[dict]) -> None:
                     + "; QEMU selects a variant by its CPU total")
 
 
+def _check_processor_ids(topologies: list[dict]) -> None:
+    """Require one R16000 id to name one processor everywhere.
+
+    Offerings and launchers select a processor by its id, so two fitted
+    processors that share an id must agree on every fact. Only the R16000
+    is held to it so far: the Fuel's and the Origin 300's 500 MHz R14000
+    share an id with different PRId revisions.
+    """
+    seen: dict[str, str] = {}
+    # SN records, the ones that name a board, share processor ids.
+    for topology in (item for item in topologies if "board" in item):
+        for node in topology["nodes"]:
+            for slot in node["cpu_slots"]:
+                assembly = slot["assembly"]
+                if not assembly or assembly["kind"] != "R16000":
+                    continue
+                facts = json.dumps(assembly, sort_keys=True)
+                if seen.setdefault(assembly["id"], facts) != facts:
+                    raise ValueError(
+                        f"processor id '{assembly['id']}' names two "
+                        f"different processors (topology "
+                        f"'{topology['name']}')")
+
+
 def _model_key(path: pathlib.Path, model: dict) -> str:
     """A resolved model's name in the manifest: its composition's, with
     the board variant after it for a composition that declares several."""
@@ -148,6 +172,7 @@ def render_qemu_inputs(model_root: pathlib.Path, *,
     }
     _check_default_topology(topologies, machine_names, product_models)
     _check_variant_totals(topologies)
+    _check_processor_ids(topologies)
     check_catalogue(topologies)
     catalogue = render_catalogue_json(
         list(source_models.values()), product_models=product_models,
