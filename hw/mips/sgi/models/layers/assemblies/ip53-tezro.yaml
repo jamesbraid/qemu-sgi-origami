@@ -24,7 +24,7 @@ layer:
       The slot limits describe the processor-bearing board, not all memory
       positions across two rack enclosures.
   memory_kits:
-    - id: kit-4096-at-banks-0-5-tezro-deskside
+    - id: kit-4096-at-banks-0-5-tezro
       dimms: 6
       dimm_mib: 512
       banks: [1024, 1024, 512, 512, 512, 512]
