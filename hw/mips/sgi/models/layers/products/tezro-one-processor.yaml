@@ -22,6 +22,10 @@ layer:
     sources:
     - tezro-board-guide
     - tezro-software-choice-limit
+    # One PIC at widget 15 is inferred, not printed: the guide gives this
+    # board two PCI-X buses and one XIO connector, which one two-head PIC
+    # carries, but no inventory of a one-processor Tezro has been examined.
+    grade: inferred
   population:
     nodes: 1
     cpus_per_node:

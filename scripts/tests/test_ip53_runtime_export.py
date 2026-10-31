@@ -208,6 +208,12 @@ class IP53RuntimeExportTests(unittest.TestCase):
                 ))
                 self.assertEqual(len(topology["pci_host_bridges"]), facts["pics"])
                 self.assertEqual(len(topology["io_boards"]), 1)
+                # The one-processor board's one PIC is inferred from its
+                # two PCI-X buses, not shown by an inventory.
+                self.assertEqual(
+                    [row["grade"] for row in topology["node_populations"]],
+                    ["INFERRED" if variant == "one-processor"
+                     else "ESTABLISHED"])
                 if variant in {"one-processor", None}:
                     self.assertEqual(model["composition"]["population"]["cpus_per_node"], [1])
                     # These profiles author cpu0 as fitted. The rack also

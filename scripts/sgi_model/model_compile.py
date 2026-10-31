@@ -3278,10 +3278,15 @@ def _compile_node_populations(model: dict, graph: dict, nodes: list[dict],
     chassis carries every node slot, Router and link any row fits, and a
     row names its own part of them. A product that authors none accepts
     exactly its composition: one row fitting everything, graded
-    established like the rest of its strictly checked model.
+    established like the rest of its strictly checked model unless its
+    topology names a weaker grade.
     """
-    authored = (model["composition"].get("topology") or {}).get("node_populations")
+    product_topology = model["composition"].get("topology") or {}
+    authored = product_topology.get("node_populations")
     links = graph["links"]
+    if authored and "grade" in product_topology:
+        raise CompileError(
+            "authored node-population rows carry their own grades")
     if authored and graph.get("io_peers"):
         raise CompileError("authored node-population rows with I/O peers are unsupported")
     if not authored:
@@ -3292,7 +3297,8 @@ def _compile_node_populations(model: dict, graph: dict, nodes: list[dict],
             "xio_slots": [{"slot": index, "controlling_node": slot["controlling_node"]}
                             for index, slot in enumerate(xio_slots)],
             "supported_cpu_populations": [list(item) for item in supported],
-            "grade": "ESTABLISHED",
+            "grade": _EVIDENCE_GRADES[
+                product_topology.get("grade", "established")],
         }]
 
     node_by_slot: dict[int, int] = {}
