@@ -5345,7 +5345,8 @@ static void test_ip53_widget_zero_pxbow_identity(void)
     g_assert_cmphex((identity >> 12) & 0xffff, ==, 0xd100);
     g_assert_cmphex((identity >> 1) & 0x7ff, ==, 0);
     g_assert_cmphex(identity & 1, ==, 1);
-    g_assert_cmphex((identity >> 28) & 0xf, ==, 5);
+    /* The word says revision 3; the behaviour input stays revision 5. */
+    g_assert_cmphex(identity, ==, 0x3d100001);
     g_assert_cmpuint(qom_get_uint(fixture->qts, pxbow, "revision"), ==, 5);
     g_assert_cmpuint(qom_get_uint(fixture->qts, pxbow, "part"), ==, 0xd100);
     g_assert_cmpuint(qom_get_uint(fixture->qts, pxbow, "manufacturer"), ==,
@@ -5407,6 +5408,83 @@ static void test_ip53_widget_zero_pxbow_identity(void)
     }
 
     ip53_runtime_test_stop(fixture);
+}
+
+/*
+ * Widget zero reports revision 3 on every IP53-family composition, as real
+ * machines print, while the Crossbow behaviour input keeps its revision 5
+ * (docs/datasheets/pic.md, "Widget-zero identity revision").
+ *
+ * The word is checked with the 32-bit read the PROM issues. The model
+ * refuses an aligned 64-bit read of widget zero's identity, which the
+ * datasheet's test list asks for. That refusal is the Crossbow model's own
+ * access rule and goes beyond the sheet, so this test does not assert it.
+ */
+static void test_ip53_widget_zero_reports_revision_three(void)
+{
+    static const struct {
+        const char *machine;
+        const char *cpus;
+        const char *memory;
+        const char *mode;
+    } compositions[] = {
+        { "origin350,topology=origin350", "4", "2G", "0x009cad85" },
+        { "onyx350,topology=onyx350-compat", "4", "8G", "0x009caf85" },
+        { "tezro,topology=tezro-tower-one", "1", "4G", "0x009bad85" },
+        { "tezro,topology=tezro-tower-multi", "4", "4G", "0x009bad85" },
+        { "tezro,topology=tezro-rack", "1", "4G", "0x009bad85" },
+        { "onyx4-host,topology=onyx4-host-serial-compat", "4", "8G",
+          "0x00edb385" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(compositions); i++) {
+        g_autofree char *machine = g_strdup_printf(
+            "%s,ip53-experimental=on", compositions[i].machine);
+        IP53RuntimeTestFixture *fixture =
+            ip53_runtime_test_start_with_binary_profile(
+                NULL, machine, NULL, compositions[i].cpus,
+                compositions[i].memory, compositions[i].mode);
+        QTestState *qts = fixture->qts;
+        uint32_t identity = 0;
+
+        for (unsigned int pass = 0; pass < 2; pass++) {
+            g_assert_true(nasid_test_cpu_readl(qts, 0, IP53_IO_SPACE + 4,
+                                               &identity));
+            g_assert_cmphex(identity, ==, 0x3d100001);
+            qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+        }
+        ip53_runtime_test_stop(fixture);
+    }
+}
+
+/* The reported identity revision is configuration and survives migration. */
+static void test_ip53_widget_zero_revision_survives_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn-builder-ip53-id-migrate-XXXXXX",
+                                          &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    IP53RuntimeTestFixture *from, *to;
+    uint32_t identity = 0;
+
+    g_assert_no_error(error);
+    from = ip53_runtime_test_start("origin350,ip53-experimental=on", NULL);
+    to = ip53_runtime_test_start("origin350,ip53-experimental=on",
+                                 "-incoming defer");
+    qtest_qmp_assert_success(to->qts,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from->qts,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from->qts, "completed", 30);
+    sgi_wait_migration_status(to->qts, "completed", 30);
+    g_assert_true(nasid_test_cpu_readl(to->qts, 0, IP53_IO_SPACE + 4,
+                                       &identity));
+    g_assert_cmphex(identity, ==, 0x3d100001);
+    ip53_runtime_test_stop(to);
+    ip53_runtime_test_stop(from);
+    g_unlink(socket);
+    g_rmdir(dir);
 }
 
 static void test_ip53_widget_zero_status_source(void)
@@ -12947,6 +13025,10 @@ int main(int argc, char **argv)
                    test_ip53_other_products_host_widget);
     qtest_add_func("sn/builder/ip53-widget-zero-pxbow-identity",
                    test_ip53_widget_zero_pxbow_identity);
+    qtest_add_func("sn/builder/ip53-widget-zero-reports-revision-three",
+                   test_ip53_widget_zero_reports_revision_three);
+    qtest_add_func("sn/builder/ip53-widget-zero-revision-survives-migration",
+                   test_ip53_widget_zero_revision_survives_migration);
     qtest_add_func("sn/builder/ip53-widget-zero-status-source",
                    test_ip53_widget_zero_status_source);
     qtest_add_func("sn/builder/ip53-pxbow-route-fences-and-interrupt",
