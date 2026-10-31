@@ -510,6 +510,58 @@ static void test_vbrick_records(void)
     qtest_quit(s);
 }
 
+/*
+ * A router L1 holds its board record at component 1, where the stock PROM
+ * reads the chassis and board areas at router initialisation. The record is
+ * named ROUTER and carries the part and revision the product's owner
+ * inventories report: 030-1634-002 revision B for an Origin 3400 R-brick and
+ * 030-1634-003 revision A for the Origin 300 and 350 NUMAlink module. The
+ * serial is synthetic. A router with no board named keeps no record, which
+ * is the Cx-brick router's case.
+ */
+static void expect_router_board(const char *board, const char *part,
+                                const char *revision)
+{
+    g_autofree char *props = g_strdup_printf("brick-type=router,"
+                                             "router-board=%s", board);
+    QTestState *s = start_one(props);
+    uint8_t reply[131];
+    size_t length, data_length;
+    const uint8_t *data;
+
+    for (unsigned area = 1; area <= 2; area++) {
+        length = eeprom(s, 0, LOCAL_GENERAL, 1, area, 0, 64, reply);
+        eeprom_data(reply, length, &data_length);
+        g_assert_cmpuint(data_length, >, 0);
+    }
+    length = eeprom(s, 0, LOCAL_GENERAL, 1, 2, 0, 64, reply);
+    data = eeprom_data(reply, length, &data_length);
+    g_assert_true(contains_text(data, data_length, "ROUTER"));
+    g_assert_true(contains_text(data, data_length, part));
+    g_assert_true(contains_text(data, data_length, revision));
+    g_assert_false(board_has_address(s, 0, LOCAL_GENERAL, 1));
+    length = eeprom(s, 0, LOCAL_GENERAL, 0, 2, 0, 16, reply);
+    expect_code(reply, length, -104);
+    length = eeprom(s, 0, LOCAL_GENERAL, 2, 2, 0, 16, reply);
+    expect_code(reply, length, -104);
+    qtest_quit(s);
+}
+
+static void test_router_records(void)
+{
+    uint8_t reply[131];
+    QTestState *s;
+    size_t length;
+
+    expect_router_board("rbrick", "030-1634-002", "B");
+    expect_router_board("numalink-module", "030-1634-003", "A");
+
+    s = start_one("brick-type=router");
+    length = eeprom(s, 0, LOCAL_GENERAL, 1, 2, 0, 16, reply);
+    expect_code(reply, length, -104);
+    qtest_quit(s);
+}
+
 static void test_cbrick_records(void)
 {
     QTestState *s = start_one("brick-type=cbrick,named=on,rack=1,bay=4");
@@ -1686,6 +1738,10 @@ static void test_realize_refusal(gconstpointer opaque)
           "*Origin 300 compatibility*" },
         { "brick-type=cbrick,dimm-mask=0x1ff", "*dimm-mask*" },
         { "brick-type=cbrick,pimm-mask=4", "*pimm-mask*" },
+        { "brick-type=router,router-board=cxbrick", "*router-board*" },
+        { "brick-type=cbrick,router-board=rbrick", "*router-board*" },
+        { "brick-type=router,router-board=rbrick,node-board-name=X",
+          "*node board identity needs a name, part and revision*" },
         { "brick-type=cbrick,io-port=2,c-port=2", "*different ports*" },
         { "brick-type=cbrick,io-port=6", "*port must be*" },
         { "brick-type=cbrick,identity-index=50", "*identity-index*" },
@@ -1798,6 +1854,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/retention", test_retention);
     qtest_add_func("sgi-l1-o3k/records/ibrick", test_ibrick_records);
     qtest_add_func("sgi-l1-o3k/records/vbrick", test_vbrick_records);
+    qtest_add_func("sgi-l1-o3k/records/router", test_router_records);
     qtest_add_func("sgi-l1-o3k/records/cbrick", test_cbrick_records);
     qtest_add_func("sgi-l1-o3k/records/dimm-numbering", test_dimm_numbering);
     qtest_add_func("sgi-l1-o3k/attached/bricks", test_attached_bricks);

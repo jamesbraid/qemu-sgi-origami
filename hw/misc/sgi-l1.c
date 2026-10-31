@@ -4095,6 +4095,34 @@ static bool l1_io8_board_mac(const SGIL1EEPROM *record, uint8_t mac[6])
     return memcmp(mac, "\0\0\0\0\0\0", 6) && !(mac[0] & 1);
 }
 
+/*
+ * The router board each product fits, as owner inventories print it. An
+ * R-brick of an Origin 3400 reports 030-1634-002 revision B, and the
+ * Origin 300 and 350 NUMAlink module 030-1634-003 revision A. A product
+ * whose router board no inventory has been read for names none and gets no
+ * record.
+ */
+typedef struct SGIL1RouterBoard {
+    const char *name;
+    const char *part;
+    const char *revision;
+} SGIL1RouterBoard;
+
+static const SGIL1RouterBoard l1_router_boards[] = {
+    { "rbrick", "030-1634-002", "B" },
+    { "numalink-module", "030-1634-003", "A" },
+};
+
+static const SGIL1RouterBoard *l1_router_board(const char *name)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(l1_router_boards); i++) {
+        if (!strcmp(name, l1_router_boards[i].name)) {
+            return &l1_router_boards[i];
+        }
+    }
+    return NULL;
+}
+
 static bool l1_component_selected(SGIL1State *s, unsigned component)
 {
     return component < ARRAY_SIZE(s->selected) &&
@@ -4236,6 +4264,18 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
             l1_build_board_area(&s->records[17], s->node_board_name,
                                 s->node_board_part, s->node_board_revision,
                                 s->board_mac, 'N', s->identity_index, NULL);
+        }
+    }
+    if (s->router_board && !l1_component_selected(s, 1)) {
+        const SGIL1RouterBoard *board = l1_router_board(s->router_board);
+
+        if (!s->records[1].length) {
+            l1_build_chassis_area(&s->records[1]);
+        }
+        if (!s->records[17].length) {
+            l1_build_board_area(&s->records[17], "ROUTER", board->part,
+                                board->revision, NULL, 'R',
+                                s->identity_index, NULL);
         }
     }
     return true;
@@ -4417,6 +4457,13 @@ static bool l1_o3k_check(SGIL1State *s, Error **errp)
     static const unsigned ports[] = { 1, 2, 3, 4, 5, 10 };
     bool io_known = false, c_known = false;
 
+    if (s->router_board &&
+        (strcmp(s->profile->name, "router") ||
+         !l1_router_board(s->router_board))) {
+        error_setg(errp, "L1 router-board must be rbrick or numalink-module "
+                   "and needs the router profile");
+        return false;
+    }
     if (!s->profile->o3k) {
         if (s->named) {
             error_setg(errp, "L1 named applies to the Origin 3000 "
@@ -5239,6 +5286,7 @@ static const Property l1_properties[] = {
     DEFINE_PROP_UINT8("identity-index", SGIL1State, identity_index, 0),
     DEFINE_PROP_STRING("node-board-revision", SGIL1State,
                        node_board_revision),
+    DEFINE_PROP_STRING("router-board", SGIL1State, router_board),
     DEFINE_PROP_STRING("brick-serial", SGIL1State, brick_serial),
     DEFINE_PROP_UINT32("processors", SGIL1State, processors, 2),
     DEFINE_PROP_STRING("brick-type", SGIL1State, brick_type),
