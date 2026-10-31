@@ -431,7 +431,7 @@ Those profiles are software constructions for the Origin 350 and Tezro, and
 for proposed captured Onyx 350 compatibility work. They do not establish that
 every selected device, setting, or connection matches a physical board.
 Chip-level behavior and evidence limits are stated below; the detailed
-reviewed Origami contracts remain the authority for experiment-specific
+reviewed Origami contracts remain the authority for profile-specific
 policies.
 
 .. _sgi-ip53-pic:
@@ -447,7 +447,7 @@ profiles. The two-head layout is selected from those software sources.
 The Origin 350, Tezro, and proposed Onyx 350 profiles select PIC widgets and
 direct-DMA settings as explicit software inputs. In particular, the supported
 direct-DMA fields and the direct64 path are emulator policies for those
-experiments. They do not establish the complete PIC revision 3 register
+profiles. They do not establish the complete PIC revision 3 register
 contract, reset image, or physical Bedrock-to-PIC wiring. Unsupported fields
 and untranslated DMA remain observable. See the PIC model and qtests for the
 implemented boundary.
@@ -460,7 +460,7 @@ IOC4 on IO9
 The selected IO9 component uses one IOC4 PCI function, with PCI identity
 ``0x10a9:0x100a``. The profile selects the existing QEMU revision value
 ``0x53``; this is not a measured revision for either selected IO9 board.
-The experiment profiles enable the existing serial-DMA option. The Origin
+The profiles enable the existing serial-DMA option. The Origin
 350 and proposed Onyx 350 profiles choose a 33,333,333 Hz clock; Tezro chooses
 66,666,667 Hz. These are software inputs, not claims about board straps or
 the complete IOC4 reset state.
