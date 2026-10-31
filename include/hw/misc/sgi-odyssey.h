@@ -428,6 +428,8 @@ struct SGIOdysseyState {
     uint8_t *overlay;
     bool gl_aux_reported;
     bool aux_mask_reported;
+    bool aux_copy_mask_reported;
+    bool aux_copy_mixed_reported;
     bool aux_image_reported;
 
     /*

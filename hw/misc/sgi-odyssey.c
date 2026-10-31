@@ -1782,8 +1782,10 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  */
 #define ODSY_CMD_COPY_RECT_TRIGGER 0x00002031
 #define ODSY_CMD_COPY_RECT_WORDS 8
+#define ODSY_CMD_COPY_RECT_SRC_BASE_INDEX 0
 #define ODSY_CMD_COPY_RECT_SRC_INDEX 1
 #define ODSY_CMD_COPY_RECT_SIZE_INDEX 3
+#define ODSY_CMD_COPY_RECT_DST_BASE_INDEX 5
 #define ODSY_CMD_COPY_RECT_DST_INDEX 6
 #define ODSY_COPY_RECT_SOURCE_SHIFT 12
 #define ODSY_COPY_RECT_DEST_SHIFT 20
@@ -4664,6 +4666,87 @@ static void odyssey_copy_rect_buffer(SGIOdysseyState *s, unsigned source,
     }
 }
 
+/*
+ * A rectangle copy inside the id and overlay plane (datasheet, "Rectangle
+ * copies inside the id and overlay plane"). The X server's tiled fill sends
+ * 0x2031 copies whose two base words both hold the id-plane base, under the
+ * id-plane destination select, and expects them to replicate what the
+ * preceding image draw wrote there. Colour buffer 0 holds none of it.
+ *
+ * INFERRED: the board performs such a copy in the id and overlay planes,
+ * changing the overlay byte under drawing mask 0xc and the id byte under 0x3,
+ * through the 0x1023 plane mask, and leaves the colour buffers alone. It is
+ * the only reading under which the replicas can appear, the same grade as the
+ * integer primitives there. That the copy honours either mask at all is
+ * INFERRED from the software sending them.
+ *
+ * MODEL POLICY: overlap is staged through a copy of the source rectangle, so
+ * the source is read as it was before the copy (memmove semantics). The
+ * hardware's overlap and direction are UNKNOWN; the tile fill never overlaps.
+ * A source pixel outside the plane reads zero, as the colour copy does, and a
+ * destination pixel outside it is dropped. Like the colour copy, the window
+ * rectangles and the id test do not apply (APPROXIMATION, as there).
+ *
+ * UNKNOWN: a drawing mask naming both buffers; the model copies both bytes.
+ */
+static void odyssey_copy_rect_aux(SGIOdysseyState *s)
+{
+    uint32_t sx = s->copy_src & 0xffff;
+    uint32_t sy = (s->copy_src >> 16) & 0xffff;
+    uint32_t w = s->copy_size & 0xffff;
+    uint32_t h = (s->copy_size >> 16) & 0xffff;
+    uint32_t dx = s->copy_dst & 0xffff;
+    uint32_t dy = (s->copy_dst >> 16) & 0xffff;
+    uint32_t w_clip = dx < SGI_ODYSSEY_WIDTH ?
+                      MIN(w, SGI_ODYSSEY_WIDTH - dx) : 0;
+    uint32_t h_clip = dy < SGI_ODYSSEY_HEIGHT ?
+                      MIN(h, SGI_ODYSSEY_HEIGHT - dy) : 0;
+    uint8_t mask = (s->plane_write_mask >> ODSY_PLANE_MASK_SHIFT) & 0xff;
+    unsigned buffers = odyssey_draw_buffers(s);
+    g_autofree uint8_t *stage = NULL;
+
+    if (!(buffers & ((1u << ODSY_AUX_ID_BUFFER) |
+                     (1u << ODSY_AUX_OVERLAY_BUFFER)))) {
+        if (!s->aux_copy_mask_reported) {
+            s->aux_copy_mask_reported = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: id-plane rectangle copy "
+                          "with drawing mask 0x%x selects neither the id nor "
+                          "the overlay byte; dropped\n", s->draw_mask);
+        }
+        return;
+    }
+    if (!w_clip || !h_clip) {
+        return;
+    }
+    stage = g_malloc((size_t)w_clip * h_clip);
+    for (unsigned b = 0; b < 2; b++) {
+        uint8_t *plane = b == ODSY_AUX_ID_BUFFER ? s->did : s->overlay;
+
+        if (!(buffers & (1u << b))) {
+            continue;
+        }
+        for (uint32_t row = 0; row < h_clip; row++) {
+            for (uint32_t col = 0; col < w_clip; col++) {
+                uint64_t y = (uint64_t)sy + row;
+                uint64_t x = (uint64_t)sx + col;
+
+                stage[(size_t)row * w_clip + col] =
+                    x < SGI_ODYSSEY_WIDTH && y < SGI_ODYSSEY_HEIGHT ?
+                    plane[y * SGI_ODYSSEY_WIDTH + x] : 0;
+            }
+        }
+        for (uint32_t row = 0; row < h_clip; row++) {
+            uint8_t *dst = &plane[(uint64_t)(dy + row) * SGI_ODYSSEY_WIDTH +
+                                  dx];
+
+            for (uint32_t col = 0; col < w_clip; col++) {
+                dst[col] = (dst[col] & ~mask) |
+                           (stage[(size_t)row * w_clip + col] & mask);
+            }
+        }
+    }
+}
+
 static bool odyssey_copy_rect_to_object(SGIOdysseyState *s);
 
 static void odyssey_copy_rect(SGIOdysseyState *s)
@@ -4685,6 +4768,35 @@ static void odyssey_copy_rect(SGIOdysseyState *s)
     if (source != format_source || dest != format_dest) {
         odyssey_cmd_unimplemented(s, ODSY_CMD_COPY_RECT_TRIGGER);
         return;
+    }
+
+    /*
+     * Inside the id and overlay plane (odyssey_copy_rect_aux()): both bases
+     * at the id-plane base the last 0x1017 select named (INFERRED: the X
+     * server forms both copy bases from the base it selected the plane by,
+     * so the select's own base, not a fixed constant, is compared). One base
+     * there and the other not is UNKNOWN in the datasheet: it moves nothing
+     * and is reported once, not run silently in colour buffer 0.
+     */
+    if (odyssey_dest_is_id_planes(s) && s->dest_base) {
+        uint32_t src_base = s->cmd_operand[ODSY_CMD_COPY_RECT_SRC_BASE_INDEX];
+        uint32_t dst_base = s->cmd_operand[ODSY_CMD_COPY_RECT_DST_BASE_INDEX];
+
+        if (src_base == s->dest_base && dst_base == s->dest_base) {
+            odyssey_copy_rect_aux(s);
+            sgi_scanout_invalidate_all(&s->scanout);
+            return;
+        }
+        if (src_base == s->dest_base || dst_base == s->dest_base) {
+            if (!s->aux_copy_mixed_reported) {
+                s->aux_copy_mixed_reported = true;
+                qemu_log_mask(LOG_UNIMP, "sgi-odyssey: rectangle copy with "
+                              "bases 0x%x and 0x%x, one at the id-plane base "
+                              "0x%x, is not modeled; dropped\n",
+                              src_base, dst_base, s->dest_base);
+            }
+            return;
+        }
     }
 
     /*
@@ -14148,6 +14260,8 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->cursor_reported = 0;
     s->gl_aux_reported = false;
     s->aux_mask_reported = false;
+    s->aux_copy_mask_reported = false;
+    s->aux_copy_mixed_reported = false;
     s->aux_image_reported = false;
     s->backend_index = 0;
     s->backend_count = 0;
@@ -14803,6 +14917,45 @@ static void odyssey_test_set_did(Object *obj, Visitor *v, const char *name,
     sgi_scanout_invalidate_all(&s->scanout);
 }
 
+static void odyssey_test_get_overlay(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    SGIOdysseyState *s = SGI_ODYSSEY(obj);
+    uint32_t value = 0;
+
+    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_ODYSSEY_WIDTH &&
+        s->test_pixel_y < SGI_ODYSSEY_HEIGHT) {
+        value = s->overlay[s->test_pixel_y * SGI_ODYSSEY_WIDTH +
+                           s->test_pixel_x];
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void odyssey_test_set_overlay(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    SGIOdysseyState *s = SGI_ODYSSEY(obj);
+    uint32_t value;
+
+    if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    if (!DEVICE(obj)->realized) {
+        error_setg(errp, "sgi-odyssey: x-test-overlay needs a realized "
+                   "device");
+        return;
+    }
+    if (s->test_pixel_x >= SGI_ODYSSEY_WIDTH ||
+        s->test_pixel_y >= SGI_ODYSSEY_HEIGHT || value > UINT8_MAX) {
+        error_setg(errp, "sgi-odyssey: x-test-overlay is out of range");
+        return;
+    }
+    s->overlay[s->test_pixel_y * SGI_ODYSSEY_WIDTH + s->test_pixel_x] = value;
+    sgi_scanout_invalidate_all(&s->scanout);
+}
+
 /* Check the fallible destination callback without creating invalid draws. */
 static void odyssey_test_get_rgba_readable(Object *obj, Visitor *v,
                                           const char *name, void *opaque,
@@ -15043,6 +15196,9 @@ static void odyssey_instance_init(Object *obj)
     /* Synthetic model DID byte; this says nothing about physical WID rules. */
     object_property_add(obj, "x-test-did", "uint32", odyssey_test_get_did,
                         odyssey_test_set_did, NULL, NULL);
+    object_property_add(obj, "x-test-overlay", "uint32",
+                        odyssey_test_get_overlay, odyssey_test_set_overlay,
+                        NULL, NULL);
     object_property_add(obj, "x-test-rgba-readable", "bool",
                         odyssey_test_get_rgba_readable, NULL, NULL, NULL);
     object_property_add(obj, "x-test-display-pixel", "uint32",

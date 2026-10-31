@@ -13456,6 +13456,361 @@ static void test_command_fifo_dest_select_flags(void)
     board_quit(qts);
 }
 
+#define ODSY_ID_PLANE_BASE 0x142000
+#define ODSY_TEST_WIDTH 1280
+#define ODSY_TEST_HEIGHT 1024
+
+/*
+ * Rectangle copies inside the id and overlay plane (datasheet, "Rectangle
+ * copies inside the id and overlay plane"). The X server's tiled fill sends
+ * 0x2031 copies with both base words at the id-plane base under the id-plane
+ * destination select; the board performs them in the overlay byte (drawing
+ * mask 0xc) or the id byte (0x3) under the plane mask, leaving colour alone.
+ * That routing is INFERRED, and the overlap staging is model policy.
+ */
+static void odsy_buffer_pixel_write(QTestState *qts, uint32_t buffer,
+                                    uint32_t x, uint32_t y, uint32_t value);
+
+static void odsy_did_write(QTestState *qts, uint32_t x, uint32_t y,
+                           uint32_t value)
+{
+    odsy_test_pixel_select(qts, x, y);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-did', 'value': %u}}", BOARD, value);
+}
+
+static void odsy_overlay_write(QTestState *qts, uint32_t x, uint32_t y,
+                               uint32_t value)
+{
+    odsy_test_pixel_select(qts, x, y);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-overlay', 'value': %u}}", BOARD, value);
+}
+
+static uint32_t odsy_overlay(QTestState *qts, uint32_t x, uint32_t y)
+{
+    odsy_test_pixel_select(qts, x, y);
+    return odsy_qom_get_uint(qts, "x-test-overlay");
+}
+
+/* Drawing mask, plane mask and a 0x1017 select naming base with word. */
+static void idcopy_setup(QTestState *qts, uint32_t buffers, uint32_t mask,
+                         uint32_t base, uint32_t word)
+{
+    draw_mask(qts, buffers);
+    cmd_push(qts, ODSY_CMD_PLANE_MASK);
+    cmd_push(qts, mask << 12);
+    cmd_push(qts, 1);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0xff);
+    cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    cmd_push(qts, base);
+    cmd_push(qts, 0x50);
+    cmd_push(qts, word);
+    cmd_push(qts, 0);
+}
+
+/* A 0x2031 copy block with word 0 base0 and word 5 base5. */
+static void idcopy_send(QTestState *qts, uint32_t base0, uint32_t base5,
+                        uint32_t sx, uint32_t sy, uint32_t w, uint32_t h,
+                        uint32_t dx, uint32_t dy)
+{
+    cmd_push(qts, ODSY_CMD_COPY_RECT_PREFIX);
+    cmd_push(qts, ODSY_CMD_COPY_RECT_PREFIX_ARG);
+    cmd_push(qts, ODSY_CMD_COPY_RECT_TRIGGER);
+    cmd_push(qts, base0);
+    cmd_push(qts, (sy << 16) | sx);
+    cmd_push(qts, 0x80502050);
+    cmd_push(qts, (h << 16) | w);
+    cmd_push(qts, 0x82223042);
+    cmd_push(qts, base5);
+    cmd_push(qts, (dy << 16) | dx);
+    cmd_push(qts, 0x3222204b);
+    cmd_push(qts, ODSY_CMD_QUICK_FLUSH_1);
+    cmd_push(qts, ODSY_CMD_QUICK_FLUSH_ARG);
+    cmd_push(qts, ODSY_CMD_STROBE);
+    cmd_push(qts, ODSY_CMD_STROBE);
+}
+
+static void idcopy_send_id(QTestState *qts, uint32_t sx, uint32_t sy,
+                           uint32_t w, uint32_t h, uint32_t dx, uint32_t dy)
+{
+    idcopy_send(qts, ODSY_ID_PLANE_BASE, ODSY_ID_PLANE_BASE, sx, sy, w, h,
+                dx, dy);
+}
+
+/* Case 1: the routing, and the id byte under drawing mask 0x3. */
+static void test_command_fifo_copy_id_plane(void)
+{
+    QTestState *qts = board_start("");
+
+    for (unsigned i = 0; i < 4; i++) {
+        odsy_overlay_write(qts, 30 + i, 40, 0x10 + i);
+        odsy_did_write(qts, 30 + i, 40, 0x20 + i);
+        for (unsigned y = 40; y < 42; y++) {
+            odsy_buffer_pixel_write(qts, 0, 60 + i, y, 0x01010101 * (i + 1));
+            odsy_buffer_pixel_write(qts, 1, 60 + i, y, 0x02020202 * (i + 1));
+        }
+    }
+    idcopy_setup(qts, 0xc, 0xff, ODSY_ID_PLANE_BASE, ODSY_DEST_ID_PLANES);
+    idcopy_send_id(qts, 30, 40, 4, 1, 60, 41);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmphex(odsy_overlay(qts, 60 + i, 41), ==, 0x10 + i);
+        g_assert_cmphex(odsy_did(qts, 60 + i, 41), ==, 0);
+        for (unsigned y = 40; y < 42; y++) {
+            g_assert_cmphex(odsy_buffer_pixel(qts, 0, 60 + i, y), ==,
+                            0x01010101 * (i + 1));
+            g_assert_cmphex(odsy_buffer_pixel(qts, 1, 60 + i, y), ==,
+                            0x02020202 * (i + 1));
+        }
+    }
+    g_assert_cmphex(odsy_overlay(qts, 60, 40), ==, 0);
+
+    /* Under 0x3 the id byte moves and the overlay byte does not. */
+    idcopy_setup(qts, 0x3, 0xff, ODSY_ID_PLANE_BASE, ODSY_DEST_ID_PLANES);
+    idcopy_send_id(qts, 30, 40, 4, 1, 80, 41);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmphex(odsy_did(qts, 80 + i, 41), ==, 0x20 + i);
+        g_assert_cmphex(odsy_overlay(qts, 80 + i, 41), ==, 0);
+        g_assert_cmphex(odsy_buffer_pixel(qts, 0, 80 + i, 41), ==, 0);
+    }
+    board_quit(qts);
+}
+
+/* The copy reaches the scanout: the replica shows through the overlay. */
+static void test_command_fifo_copy_id_plane_refreshes_scanout(void)
+{
+    QTestState *qts = overlay_menu_start();
+
+    odsy_overlay_write(qts, 110, 110, 2);
+    g_assert_cmphex(odsy_shown(qts, 120, 111), ==, 0x0000ffffu);
+    idcopy_setup(qts, 0xc, 0xff, ODSY_ID_PLANE_BASE, ODSY_DEST_ID_PLANES);
+    idcopy_send_id(qts, 110, 110, 1, 1, 120, 111);
+    g_assert_cmphex(odsy_shown(qts, 120, 111), ==, 0x00ff00ffu);
+    board_quit(qts);
+}
+
+/*
+ * Case 2, MODEL POLICY ONLY: an overlapping copy reads the source as it was
+ * before the copy. The hardware's overlap is unknown.
+ */
+static void test_command_fifo_copy_id_plane_overlap(void)
+{
+    static const struct {
+        bool column;
+        uint32_t from, to;
+        uint8_t seed[6], want[6];
+    } c[] = {
+        { false, 0, 2, { 1, 2, 3, 4, 0, 0 }, { 1, 2, 1, 2, 3, 4 } },
+        { false, 2, 0, { 0, 0, 1, 2, 3, 4 }, { 1, 2, 3, 4, 3, 4 } },
+        { true, 0, 2, { 1, 2, 3, 4, 0, 0 }, { 1, 2, 1, 2, 3, 4 } },
+        { true, 2, 0, { 0, 0, 1, 2, 3, 4 }, { 1, 2, 3, 4, 3, 4 } },
+    };
+    QTestState *qts = board_start("");
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(c); i++) {
+        for (unsigned k = 0; k < 6; k++) {
+            uint32_t x = c[i].column ? 100 + i : 10 + k;
+            uint32_t y = c[i].column ? 10 + k : 10 + i;
+
+            odsy_overlay_write(qts, x, y, c[i].seed[k]);
+        }
+    }
+    idcopy_setup(qts, 0xc, 0xff, ODSY_ID_PLANE_BASE, ODSY_DEST_ID_PLANES);
+    for (unsigned i = 0; i < G_N_ELEMENTS(c); i++) {
+        if (c[i].column) {
+            idcopy_send_id(qts, 100 + i, 10 + c[i].from, 1, 4, 100 + i,
+                           10 + c[i].to);
+        } else {
+            idcopy_send_id(qts, 10 + c[i].from, 10 + i, 4, 1, 10 + c[i].to,
+                           10 + i);
+        }
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(c); i++) {
+        for (unsigned k = 0; k < 6; k++) {
+            uint32_t x = c[i].column ? 100 + i : 10 + k;
+            uint32_t y = c[i].column ? 10 + k : 10 + i;
+
+            g_assert_cmphex(odsy_overlay(qts, x, y), ==, c[i].want[k]);
+        }
+    }
+    board_quit(qts);
+}
+
+/* Case 3, and the sheet's 0x07 control: only the plane mask's bits change. */
+static void test_command_fifo_copy_id_plane_plane_mask(void)
+{
+    QTestState *qts = board_start("");
+
+    odsy_overlay_write(qts, 5, 5, 0x05);
+    odsy_overlay_write(qts, 6, 5, 0xff);
+    odsy_overlay_write(qts, 7, 5, 0x00);
+    odsy_overlay_write(qts, 20, 5, 0xf0);
+    odsy_overlay_write(qts, 21, 5, 0x00);
+    odsy_overlay_write(qts, 22, 5, 0xff);
+    idcopy_setup(qts, 0xc, 0x0f, ODSY_ID_PLANE_BASE, ODSY_DEST_ID_PLANES);
+    idcopy_send_id(qts, 5, 5, 1, 1, 20, 5);
+    g_assert_cmphex(odsy_overlay(qts, 20, 5), ==, 0xf5);
+
+    idcopy_setup(qts, 0xc, 0x07, ODSY_ID_PLANE_BASE, ODSY_DEST_ID_PLANES);
+    idcopy_send_id(qts, 6, 5, 1, 1, 21, 5);
+    idcopy_send_id(qts, 7, 5, 1, 1, 22, 5);
+    g_assert_cmphex(odsy_overlay(qts, 21, 5), ==, 0x07);
+    g_assert_cmphex(odsy_overlay(qts, 22, 5), ==, 0xf8);
+    board_quit(qts);
+}
+
+/* Case 4: which byte a drawing mask selects, and a mask selecting neither. */
+static void test_command_fifo_copy_id_plane_mask_selection(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-copy-mask-XXXXXX.log", &log_path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    odsy_overlay_write(qts, 10, 10, 0x77);
+    odsy_did_write(qts, 10, 10, 0x55);
+    odsy_buffer_pixel_write(qts, 0, 10, 10, 0x11111111);
+    odsy_buffer_pixel_write(qts, 1, 10, 10, 0x22222222);
+
+    idcopy_setup(qts, 0xc, 0xff, ODSY_ID_PLANE_BASE, ODSY_DEST_ID_PLANES);
+    idcopy_send_id(qts, 10, 10, 1, 1, 30, 10);
+    g_assert_cmphex(odsy_overlay(qts, 30, 10), ==, 0x77);
+    g_assert_cmphex(odsy_did(qts, 30, 10), ==, 0);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 30, 10), ==, 0);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 30, 10), ==, 0);
+
+    idcopy_setup(qts, 0x3, 0xff, ODSY_ID_PLANE_BASE, ODSY_DEST_ID_PLANES);
+    idcopy_send_id(qts, 10, 10, 1, 1, 40, 10);
+    g_assert_cmphex(odsy_overlay(qts, 40, 10), ==, 0);
+    g_assert_cmphex(odsy_did(qts, 40, 10), ==, 0x55);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 40, 10), ==, 0);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 40, 10), ==, 0);
+
+    /* Neither byte: nothing moves, reported once. */
+    idcopy_setup(qts, 0, 0xff, ODSY_ID_PLANE_BASE, ODSY_DEST_ID_PLANES);
+    idcopy_send_id(qts, 10, 10, 1, 1, 50, 10);
+    idcopy_send_id(qts, 10, 10, 1, 1, 51, 10);
+    g_assert_cmphex(odsy_overlay(qts, 50, 10), ==, 0);
+    g_assert_cmphex(odsy_did(qts, 50, 10), ==, 0);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 50, 10), ==, 0);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(count_substr(log, "id-plane rectangle copy with "
+                                       "drawing mask 0x0 selects neither"),
+                     ==, 1);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/* Case 5: only both bases at the id base under the id select are routed. */
+static void test_command_fifo_copy_id_plane_dispatch(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-copy-dispatch-XXXXXX.log", &log_path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    odsy_buffer_pixel_write(qts, 0, 10, 10, 0xa1a1a1a1);
+    odsy_buffer_pixel_write(qts, 1, 10, 10, 0xb2b2b2b2);
+    odsy_overlay_write(qts, 10, 10, 0x77);
+
+    /* Both bases at the id base, destination select the colour buffer. */
+    idcopy_setup(qts, 0x3, 0xff, 0, ODSY_DEST_COLOUR_INDEX);
+    idcopy_send_id(qts, 10, 10, 1, 1, 20, 10);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 20, 10), ==, 0xa1a1a1a1);
+    g_assert_cmphex(odsy_overlay(qts, 20, 10), ==, 0);
+
+    /* One base at the id base: nothing moves, reported once. */
+    idcopy_setup(qts, 0xf, 0xff, ODSY_ID_PLANE_BASE, ODSY_DEST_ID_PLANES);
+    idcopy_send(qts, ODSY_ID_PLANE_BASE, 0x2000, 10, 10, 1, 1, 21, 10);
+    idcopy_send(qts, 0x2000, ODSY_ID_PLANE_BASE, 10, 10, 1, 1, 22, 10);
+    for (unsigned x = 21; x < 23; x++) {
+        g_assert_cmphex(odsy_buffer_pixel(qts, 0, x, 10), ==, 0);
+        g_assert_cmphex(odsy_buffer_pixel(qts, 1, x, 10), ==, 0);
+        g_assert_cmphex(odsy_overlay(qts, x, 10), ==, 0);
+    }
+
+    /* Zero bases under a zero select base are a colour copy. */
+    idcopy_setup(qts, 0x3, 0xff, 0, ODSY_DEST_ID_PLANES);
+    idcopy_send(qts, 0, 0, 10, 10, 1, 1, 23, 10);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 23, 10), ==, 0xa1a1a1a1);
+    g_assert_cmphex(odsy_overlay(qts, 23, 10), ==, 0);
+
+    /* Both bases at the colour base with the id planes selected. */
+    idcopy_setup(qts, 0x3, 0xff, ODSY_ID_PLANE_BASE, ODSY_DEST_ID_PLANES);
+    idcopy_send(qts, 0x2000, 0x2000, 10, 10, 1, 1, 24, 10);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 24, 10), ==, 0xa1a1a1a1);
+    g_assert_cmphex(odsy_overlay(qts, 24, 10), ==, 0);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(count_substr(log, "one at the id-plane base"), ==, 1);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/* Case 6: the plane bounds clip both the read and the write. */
+static void test_command_fifo_copy_id_plane_clipping(void)
+{
+    const uint32_t right = ODSY_TEST_WIDTH - 1;
+    const uint32_t bottom = ODSY_TEST_HEIGHT - 1;
+    QTestState *qts = board_start("");
+
+    /* Destination past the right edge: only the last columns land. */
+    odsy_overlay_write(qts, 0, 5, 1);
+    odsy_overlay_write(qts, 1, 5, 2);
+    odsy_overlay_write(qts, 2, 5, 3);
+    odsy_overlay_write(qts, 0, 6, 9);
+    idcopy_setup(qts, 0xc, 0xff, ODSY_ID_PLANE_BASE, ODSY_DEST_ID_PLANES);
+    idcopy_send_id(qts, 0, 5, 3, 1, right - 1, 5);
+    g_assert_cmphex(odsy_overlay(qts, right - 1, 5), ==, 1);
+    g_assert_cmphex(odsy_overlay(qts, right, 5), ==, 2);
+    /* The next row's first pixel is not written by the overflow. */
+    g_assert_cmphex(odsy_overlay(qts, 0, 6), ==, 9);
+
+    /* Source past the right edge: the next row's bytes are not read. */
+    odsy_overlay_write(qts, right, 20, 0x11);
+    odsy_overlay_write(qts, 0, 21, 0x22);
+    idcopy_send_id(qts, right, 20, 2, 1, 100, 20);
+    g_assert_cmphex(odsy_overlay(qts, 100, 20), ==, 0x11);
+    g_assert_cmphex(odsy_overlay(qts, 101, 20), ==, 0);
+
+    /* Destination past the bottom row: no row beyond the plane. */
+    odsy_overlay_write(qts, 200, 30, 0x33);
+    odsy_overlay_write(qts, 200, 31, 0x44);
+    idcopy_send_id(qts, 200, 30, 1, 2, 200, bottom);
+    g_assert_cmphex(odsy_overlay(qts, 200, bottom), ==, 0x33);
+    g_assert_cmphex(odsy_overlay(qts, 200, 0), ==, 0);
+    g_assert_cmphex(odsy_overlay(qts, 201, 0), ==, 0);
+    board_quit(qts);
+}
+
 /*
  * The 0x840 drawable-id test. When a window's visible region needs more than
  * four rectangles, the X server sends its bounding rectangle alone and the
@@ -13467,7 +13822,6 @@ static void test_command_fifo_dest_select_flags(void)
  * pixels alone. With bit 16 clear nothing is tested, whatever else the word
  * holds; the low-field form (mask 0x07) compares only the id's low field.
  */
-#define ODSY_ID_PLANE_BASE 0x142000
 #define ODSY_ID_COMPARE_ON 0x00010000u
 #define ODSY_ID_COMPARE_MAIN(id) (ODSY_ID_COMPARE_ON | 0xf800u | ((id) << 3))
 
@@ -25166,6 +25520,20 @@ int main(int argc, char **argv)
              test_command_fifo_gl_float_colour_integer_vertices);
     add_case("sn1/odyssey/scanout-overlay-planes",
              test_scanout_overlay_planes);
+    add_case("sn1/odyssey/command-fifo-copy-id-plane",
+             test_command_fifo_copy_id_plane);
+    add_case("sn1/odyssey/command-fifo-copy-id-plane-refreshes-scanout",
+             test_command_fifo_copy_id_plane_refreshes_scanout);
+    add_case("sn1/odyssey/command-fifo-copy-id-plane-overlap",
+             test_command_fifo_copy_id_plane_overlap);
+    add_case("sn1/odyssey/command-fifo-copy-id-plane-plane-mask",
+             test_command_fifo_copy_id_plane_plane_mask);
+    add_case("sn1/odyssey/command-fifo-copy-id-plane-mask-selection",
+             test_command_fifo_copy_id_plane_mask_selection);
+    add_case("sn1/odyssey/command-fifo-copy-id-plane-dispatch",
+             test_command_fifo_copy_id_plane_dispatch);
+    add_case("sn1/odyssey/command-fifo-copy-id-plane-clipping",
+             test_command_fifo_copy_id_plane_clipping);
     add_case("sn1/odyssey/scanout-overlay-unselected-mask",
              test_scanout_overlay_unselected_mask);
     add_case("sn1/odyssey/gl-aux-refusals-reported-once",

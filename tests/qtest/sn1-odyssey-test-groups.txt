@@ -104,6 +104,13 @@ fifo /mips64/sn1/odyssey/command-fifo-copyrect-overlapping-shift
 fifo /mips64/sn1/odyssey/command-fifo-copyrect-large-offscreen
 fifo /mips64/sn1/odyssey/command-fifo-copyrect-ignores-window-clip
 fifo /mips64/sn1/odyssey/command-fifo-copyrect-prefix-is-a-register
+fifo /mips64/sn1/odyssey/command-fifo-copy-id-plane
+fifo /mips64/sn1/odyssey/command-fifo-copy-id-plane-refreshes-scanout
+fifo /mips64/sn1/odyssey/command-fifo-copy-id-plane-overlap
+fifo /mips64/sn1/odyssey/command-fifo-copy-id-plane-plane-mask
+fifo /mips64/sn1/odyssey/command-fifo-copy-id-plane-mask-selection
+fifo /mips64/sn1/odyssey/command-fifo-copy-id-plane-dispatch
+fifo /mips64/sn1/odyssey/command-fifo-copy-id-plane-clipping
 fifo /mips64/sn1/odyssey/command-fifo-host-write-sync
 fifo /mips64/sn1/odyssey/command-fifo-dma-trace
 fifo /mips64/sn1/odyssey/command-fifo-dma-page-table
