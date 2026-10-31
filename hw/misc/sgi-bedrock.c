@@ -1979,11 +1979,11 @@ static const char *bedrock_net_describe(Object *port, unsigned int index)
  * the firmware's targets (the revision word and the scratch registers)
  * depend on neither.
  *
- * A request that makes this node launch back into the sender while the
- * sender's own launch is in flight re-enters the sender's local block,
- * which the memory core's per-device re-entrancy guard refuses: that access
- * fails, so the inner launch latches an address error and QEMU warns once.
- * The firmware never builds such a bounce.
+ * A request routed back to its own launcher, as a router does when the
+ * walk reaches the port the launcher's cable is on, performs on the
+ * launcher's registers while its launch is still on the stack. The local
+ * block's register window allows that re-entry and refuses only a second
+ * launch from inside the first.
  */
 bool sgi_bedrock_available(SGIBedrockState *s)
 {

@@ -41,6 +41,7 @@
 /* Hub-relative offsets, as the parameters register's address field holds. */
 #define HUB_REVISION        UINT64_C(0x600000)
 #define HUB_SCRATCH(n)      (UINT64_C(0x608000) + (n) * 8)
+#define HUB_VECTOR_PARAMS   UINT64_C(0x60c000)
 
 #define TYPE_WRITE          UINT64_C(1)
 #define WRITE_ID(n)         ((uint64_t)(n) << 32)
@@ -81,7 +82,8 @@ static void cable_down(QTestState *s, const char *path, bool down)
         "{'path':%s,'property':'down','value':%i}}", path, down);
 }
 
-static QTestState *routers_start(const char *target_options)
+static QTestState *routers_start_extra(const char *target_options,
+                                       const char *extra)
 {
     QTestState *s = qtest_initf(MACHINE_BASE
         "-device sgi-l1,id=l1,brick-type=router "
@@ -93,7 +95,7 @@ static QTestState *routers_start(const char *target_options)
         "-device sgi-net-cable,id=middle,end0=" RA_PATH
         ",end0-index=5,end1=" RB_PATH ",end1-index=7 "
         "-device sgi-net-cable,id=target,end0=" RB_PATH
-        ",end0-index=4,end1=" B_PATH " -S", target_options);
+        ",end0-index=4,end1=" B_PATH " -S %s", target_options, extra);
 
     attach(s, A_PATH, "net-cable", "/machine/peripheral/source");
     attach(s, B_PATH, "net-cable", "/machine/peripheral/target");
@@ -104,6 +106,11 @@ static QTestState *routers_start(const char *target_options)
     qtest_sysbus_mmio_map(s, A_PATH, 0, A_BASE);
     qtest_sysbus_mmio_map(s, B_PATH, 0, B_BASE);
     return s;
+}
+
+static QTestState *routers_start(const char *target_options)
+{
+    return routers_start_extra(target_options, "");
 }
 
 static void set_down(QTestState *s, bool down)
@@ -436,6 +443,58 @@ static void test_two_router_vector_reply(void)
     qtest_quit(s);
 }
 
+/*
+ * A router port cabled to the launcher itself. The firmware walks every port
+ * of a router it finds, and the walk reaches the launcher through the router
+ * and back. The request performs on the launcher's own registers and the
+ * reply is valid; the launcher's local block is already mid-launch when the
+ * request arrives.
+ */
+static void test_router_loopback_reads_the_launcher(void)
+{
+    QTestState *s = routers_start("");
+    const uint64_t params = HUB_REVISION | REQUEST_ID(0x1c8);
+    uint64_t status;
+
+    status = vector_launch(s, A_BASE, 0x2, params, 0);
+    assert_good_reply(status, params);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==,
+                    qtest_readq(s, LB(A_BASE, REVISION)));
+    qtest_quit(s);
+}
+
+/*
+ * A looped write that lands on the launcher's own vector parameters would
+ * start a second launch from inside the first. The second is refused and
+ * the first still ends with its own reply, type and echo included.
+ */
+static void test_router_loopback_refuses_a_nested_launch(void)
+{
+    g_autofree char *log = g_strdup_printf("%s/sn1-link-nested-XXXXXX.log",
+                                           g_get_tmp_dir());
+    g_autofree char *extra = NULL;
+    g_autofree char *found = NULL;
+    const uint64_t inner = HUB_REVISION | REQUEST_ID(0x123);
+    const uint64_t params = HUB_VECTOR_PARAMS | REQUEST_ID(0x7b) | TYPE_WRITE;
+    QTestState *s;
+    uint64_t status;
+    int fd = g_mkstemp(log);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    extra = g_strdup_printf("-d guest_errors -D %s", log);
+    s = routers_start_extra("", extra);
+
+    status = vector_launch(s, A_BASE, 0x2, params, inner);
+    assert_good_reply(status, params);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_nonnull(strstr(found, "vector launch from inside a vector "
+                                   "launch refused"));
+    g_assert_cmpint(unlink(log), ==, 0);
+}
+
 static void test_routed_powered_off_target_has_no_reply(void)
 {
     QTestState *s = routers_start(",x-test-power-off=on");
@@ -572,6 +631,10 @@ int main(int argc, char **argv)
                    test_unsupported_vector_type);
     qtest_add_func("sn1/bedrock-link/two-router-vector-reply",
                    test_two_router_vector_reply);
+    qtest_add_func("sn1/bedrock-link/router-loopback-reads-the-launcher",
+                   test_router_loopback_reads_the_launcher);
+    qtest_add_func("sn1/bedrock-link/router-loopback-refuses-a-nested-launch",
+                   test_router_loopback_refuses_a_nested_launch);
     qtest_add_func("sn1/bedrock-link/routed-powered-off-target-no-reply",
                    test_routed_powered_off_target_has_no_reply);
     qtest_add_func("sn1/bedrock-link/router-uart-vector",
