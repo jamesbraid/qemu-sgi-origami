@@ -762,6 +762,8 @@ static void aic7880_host_dma(AIC7880State *s)
         return;
     }
     if (from_memory) {
+        unsigned first;
+
         len = MIN(count, sizeof(s->host_fifo) - s->host_fifo_len);
         if (!len) {
             return;
@@ -772,17 +774,24 @@ static void aic7880_host_dma(AIC7880State *s)
         if (!success) {
             return;
         }
-        for (unsigned i = 0; i < len; i++) {
-            s->host_fifo[s->host_fifo_write++] = data[i];
+        first = MIN(len, sizeof(s->host_fifo) - s->host_fifo_write);
+        memcpy(s->host_fifo + s->host_fifo_write, data, first);
+        if (len > first) {
+            memcpy(s->host_fifo, data + first, len - first);
         }
+        s->host_fifo_write += len;
         s->host_fifo_len += len;
     } else {
+        unsigned first;
+
         len = MIN(count, s->host_fifo_len);
         if (!len) {
             return;
         }
-        for (unsigned i = 0; i < len; i++) {
-            data[i] = s->host_fifo[(uint8_t)(s->host_fifo_read + i)];
+        first = MIN(len, sizeof(s->host_fifo) - s->host_fifo_read);
+        memcpy(data, s->host_fifo + s->host_fifo_read, first);
+        if (len > first) {
+            memcpy(data + first, s->host_fifo, len - first);
         }
         s->host_dma_active = true;
         success = aic7880_dma_attempt(s, pci, addr, true, data, len);

@@ -578,6 +578,7 @@ static void test_host_dma_read_capacity(void)
     for (unsigned i = 0; i < ARRAY_SIZE(counts); i++) {
         check_host_dma_read_stream(qts, 0, counts[i]);
     }
+    check_host_dma_read_stream(qts, 7, 256);
     qtest_quit(qts);
 }
 
@@ -970,6 +971,7 @@ static void test_host_dma_write_capacity(void)
     for (unsigned i = 0; i < G_N_ELEMENTS(counts); i++) {
         check_host_dma_write_stream(0, counts[i]);
     }
+    check_host_dma_write_stream(7, 256);
 }
 
 static void test_host_dma_write_failed_prefix(void)
