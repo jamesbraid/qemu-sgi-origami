@@ -1687,25 +1687,23 @@ static void test_state_flags_track_sense_phase(void *obj, void *data,
     qpci_iounmap(dev, io);
 }
 
+#define ISP_ABSENT_HANDLE   0x9
+#define ISP_MS_NS           (1000 * 1000)
+
 /*
- * Linux walks state_flags on an incomplete completion to pick which
- * failure to report; a missing device must say bus reached, nothing past
- * it.
+ * Queues up, an optional selection timeout programmed (0xffff leaves the
+ * adapter's default), and one command sent to a target nothing is attached
+ * at. Returns the response ring's address, which reads as zero until the
+ * completion is written.
  */
-static void test_no_device_incomplete_state_flags(void *obj, void *data,
-                                                   QGuestAllocator *alloc)
+static uint64_t isp_send_to_absent_target(QPCIDevice *dev, QPCIBar io,
+                                          QGuestAllocator *alloc,
+                                          uint16_t timeout_ms)
 {
-    QQlogicIsp *isp = obj;
-    QPCIDevice *dev = &isp->dev;
-    QPCIBar io;
-    QTestState *qts;
+    QTestState *qts = dev->bus->qts;
     uint64_t rqst_addr, resp_addr;
     uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
-    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
-
-    qpci_device_enable(dev);
-    io = qpci_iomap(dev, 0, NULL);
-    qts = dev->bus->qts;
+    uint8_t blank[ISP_QUEUE_ENTRY_SIZE] = { 0 };
 
     /*
      * Two entries, not one: a one-entry ring wraps producer 1 back onto
@@ -1713,6 +1711,7 @@ static void test_no_device_incomplete_state_flags(void *obj, void *data,
      */
     rqst_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
     resp_addr = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
+    qtest_memwrite(qts, resp_addr, blank, sizeof(blank));
 
     g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
                                    2, rqst_addr), ==, ISP_MBOX_COMPLETE);
@@ -1721,10 +1720,18 @@ static void test_no_device_incomplete_state_flags(void *obj, void *data,
                                    2, resp_addr), ==, ISP_MBOX_COMPLETE);
     qlogic_isp_ack(dev, io);
 
+    if (timeout_ms != 0xffff) {
+        qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_SELECTION_TIMEOUT,
+                              timeout_ms, 0, 0);
+        g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                        ISP_MBOX_COMPLETE);
+        qlogic_isp_ack(dev, io);
+    }
+
     memset(entry, 0, sizeof(entry));
     entry[0] = ISP_ENTRY_TYPE_REQUEST;
     entry[1] = 1;
-    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x9);
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, ISP_ABSENT_HANDLE);
     /* Target 5, lun 0: nothing this qos-graph node attaches there. */
     isp_put16(entry, ISP_REQ_OFF_DEVICE, 5 << 8);
     isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
@@ -1732,15 +1739,134 @@ static void test_no_device_incomplete_state_flags(void *obj, void *data,
 
     qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
     qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+    return resp_addr;
+}
+
+static bool isp_completion_posted(QTestState *qts, uint64_t resp_addr)
+{
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
 
     qtest_memread(qts, resp_addr, status, sizeof(status));
-    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x9);
+    return isp_get32(status, ISP_STATUS_OFF_HANDLE) == ISP_ABSENT_HANDLE;
+}
+
+/*
+ * Linux walks state_flags on an incomplete completion to pick which
+ * failure to report; a missing device must say bus reached, nothing past
+ * it. A selection of an absent target ends when the guest's selection timeout
+ * runs out, not when the entry is read. With no timeout programmed the
+ * adapter waits its default of 250 ms of virtual time.
+ */
+static void test_no_device_incomplete_state_flags(void *obj, void *data,
+                                                   QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t resp_addr;
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    resp_addr = isp_send_to_absent_target(dev, io, alloc, 0xffff);
+
+    qtest_clock_step(qts, 250 * ISP_MS_NS - 1);
+    g_assert_false(isp_completion_posted(qts, resp_addr));
+    qtest_clock_step(qts, 1);
+    g_assert_true(isp_completion_posted(qts, resp_addr));
+
+    qtest_memread(qts, resp_addr, status, sizeof(status));
     g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
                     ISP_IOCB_INCOMPLETE);
     g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_STATE_FLAGS), ==,
                     ISP_STATE_FLAG_GOT_BUS);
 
     qlogic_isp_ack(dev, io);
+    qpci_iounmap(dev, io);
+}
+
+/* The value the guest programs sets the delay, shorter or longer. */
+static void test_selection_timeout_sets_the_delay(void *obj, void *data,
+                                                  QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t resp_addr;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    /* Shorter than the default: done long before 250 ms. */
+    resp_addr = isp_send_to_absent_target(dev, io, alloc, 40);
+    qtest_clock_step(qts, 40 * ISP_MS_NS - 1);
+    g_assert_false(isp_completion_posted(qts, resp_addr));
+    qtest_clock_step(qts, 1);
+    g_assert_true(isp_completion_posted(qts, resp_addr));
+    qlogic_isp_ack(dev, io);
+
+    qpci_iounmap(dev, io);
+}
+
+static void test_selection_timeout_longer_than_default(void *obj, void *data,
+                                                       QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t resp_addr;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    /* Past the default, so a fixed 250 ms would already have answered. */
+    resp_addr = isp_send_to_absent_target(dev, io, alloc, 600);
+    qtest_clock_step(qts, 250 * ISP_MS_NS);
+    g_assert_false(isp_completion_posted(qts, resp_addr));
+    qtest_clock_step(qts, 350 * ISP_MS_NS - 1);
+    g_assert_false(isp_completion_posted(qts, resp_addr));
+    qtest_clock_step(qts, 1);
+    g_assert_true(isp_completion_posted(qts, resp_addr));
+    qlogic_isp_ack(dev, io);
+
+    qpci_iounmap(dev, io);
+}
+
+/* A soft reset cancels the wait: nothing is posted afterwards. */
+static void test_soft_reset_cancels_selection_wait(void *obj, void *data,
+                                                   QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t resp_addr;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    resp_addr = isp_send_to_absent_target(dev, io, alloc, 40);
+    qpci_io_writew(dev, io, ISP_REG_BUS_CTRL, ISP_BUS_CTRL_SOFT_RESET);
+
+    /*
+     * The reset zeroed the rings, which alone would swallow a late
+     * completion; building the response ring again at the same address
+     * leaves only a surviving timer able to write into it.
+     */
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   2, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    qtest_clock_step(qts, 1000 * ISP_MS_NS);
+    g_assert_false(isp_completion_posted(qts, resp_addr));
+
     qpci_iounmap(dev, io);
 }
 
@@ -3058,6 +3184,12 @@ static void qlogic_isp_register_nodes(void)
     qos_add_test("linux-product-id-check", "qlogic-isp1040",
                  test_linux_product_id_check, NULL);
     qos_add_test("soft-reset", "qlogic-isp1040", test_soft_reset, NULL);
+    qos_add_test("selection-timeout-sets-the-delay", "qlogic-isp1040",
+                 test_selection_timeout_sets_the_delay, NULL);
+    qos_add_test("selection-timeout-longer-than-default", "qlogic-isp1040",
+                 test_selection_timeout_longer_than_default, NULL);
+    qos_add_test("soft-reset-cancels-selection-wait", "qlogic-isp1040",
+                 test_soft_reset_cancels_selection_wait, NULL);
     qos_add_test("bus-cfg1", "qlogic-isp1040", test_bus_cfg1, NULL);
     qos_add_test("dma-block-cfg", "qlogic-isp1040", test_dma_block_cfg, NULL);
     qos_add_test("dma-block-ctrl-is-inert", "qlogic-isp1040",
