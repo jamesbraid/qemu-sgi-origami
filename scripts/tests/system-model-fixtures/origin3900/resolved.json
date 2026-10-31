@@ -496,7 +496,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -533,7 +533,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -570,7 +570,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -607,7 +607,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -719,7 +719,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -756,7 +756,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -793,7 +793,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -830,7 +830,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -942,7 +942,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -979,7 +979,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -1016,7 +1016,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -1053,7 +1053,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -1165,7 +1165,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -1202,7 +1202,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -1239,7 +1239,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -1276,7 +1276,7 @@
       "provenance": "derived",
       "regions": [],
       "sources": [
-        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
       ]
     },
     {
@@ -2419,7 +2419,7 @@
           "notes": "The IOC3 subsystem field is the unobserved placeholder, and no source gives where the IO7's Ethernet address comes from. The IEEE 1394 link controller is left out, a stated limitation: its PHY and bus are not modelled.",
           "provenance": "derived",
           "sources": [
-            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick",
+            "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick",
             "hw/misc/tsb12lv22.c"
           ]
         }
@@ -2430,7 +2430,7 @@
         "notes": "Approximation. The Origin 350's full firmware word for the 700 MHz, 8 MB R16000 fit; no Cx-brick flash block has been captured.",
         "provenance": "derived",
         "sources": [
-          "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected 6.210 flash payload and seed policy"
+          "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected 6.210 flash payload and seed policy"
         ]
       },
       "l1_controllers": {
