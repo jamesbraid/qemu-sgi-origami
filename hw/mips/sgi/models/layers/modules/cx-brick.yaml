@@ -10,7 +10,7 @@ sources:
   cx-numalink-labels: "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
   cx-xio: "007-4572-001 printed page 10: XIO 2 to node 2, XIO 1 to node 1, XIO 3 to node 3 and XIO 0 to node 0"
   cx-bedrock-identity: "web:nekonomicon-16729141  an Origin 350 hinv -v reports ASIC BEDROCK Rev 2 at 200 MHz; every published Origin 3000 inventory reports the same for a C-brick"
-  cx-r16000-fit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+  cx-r16000-fit: "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
   cx-l1: "007-4572-001 printed pages 5 and 10: the Cx-brick has one L1 controller, on the router board, with a front display, a console connector and a USB L1 port"
   cx-router-ports: "007-4572-001 printed pages 4 and 11: the external connectors are NUMAlink 1 Port A, 8 Port H, 7 Port G and 6 Port F, so ports 1, 8, 7 and 6 are external; 007-4311-002 printed pages 36 and 37: a C-brick takes router port 2, 3, 4 or 5"
 layer:
