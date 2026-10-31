@@ -320,6 +320,9 @@
 #define ODSY_I2C_OPT_CMD 0x233a00
 #define ODSY_I2C_OPT_STATUS 0x233a08
 #define ODSY_I2C_OPT_SELECTOR 0x39d00001u
+#define ODSY_I2C_MAIN_CMD 0x233c00
+#define ODSY_I2C_MAIN_STATUS 0x233c08
+#define ODSY_I2C_MAIN_SELECTOR 0x39e00001u
 #define ODSY_BACKEND_VERSION 0x23380c
 
 /*
@@ -2280,6 +2283,42 @@ static void test_i2c_reset_state_poll_terminates(void)
     state = (reg_read(qts, ODSY_I2C_OPT_STATUS) & ODSY_I2C_STATE_MASK)
             >> ODSY_I2C_STATE_SHIFT;
     g_assert_true(state == 0 || state == 0xa);
+
+    board_quit(qts);
+}
+
+/*
+ * Starts with 0xaa or 0xab set status bit 8 on both ports; 0x26 and a data
+ * byte of 0xaa without a start still acknowledge.
+ */
+static void test_compositor_address_bytes_are_refused(void)
+{
+    static const struct {
+        uint32_t selector;
+        uint64_t cmd;
+        uint64_t status;
+    } ports[] = {
+        { ODSY_I2C_MAIN_SELECTOR, ODSY_I2C_MAIN_CMD, ODSY_I2C_MAIN_STATUS },
+        { ODSY_I2C_OPT_SELECTOR, ODSY_I2C_OPT_CMD, ODSY_I2C_OPT_STATUS },
+    };
+    QTestState *qts = board_start("");
+
+    for (int i = 0; i < ARRAY_SIZE(ports); i++) {
+        /* Start with address byte 0xaa (write) and 0xab (read). */
+        i2c_push(qts, ports[i].selector, 0x000013aa);
+        g_assert_cmphex(reg_read(qts, ports[i].status), ==, 0x00400300);
+        i2c_push(qts, ports[i].selector, 0x000013ab);
+        g_assert_cmphex(reg_read(qts, ports[i].status), ==, 0x00400300);
+        g_assert_cmphex(reg_read(qts, ports[i].cmd), ==, 0x000013ab);
+
+        /* Clock part at 0x26: acknowledged. */
+        i2c_push(qts, ports[i].selector, 0x00001326);
+        g_assert_cmphex(reg_read(qts, ports[i].status), ==, 0x00400200);
+
+        /* A data byte of 0xaa, no start: not an address byte. */
+        i2c_push(qts, ports[i].selector, 0x000012aa);
+        g_assert_cmphex(reg_read(qts, ports[i].status), ==, 0x00400200);
+    }
 
     board_quit(qts);
 }
@@ -25995,6 +26034,8 @@ int main(int argc, char **argv)
              test_i2c_opt_port_ddc_register_read);
     add_case("sn1/odyssey/i2c-reset-state-poll-terminates",
              test_i2c_reset_state_poll_terminates);
+    add_case("sn1/odyssey/compositor-address-bytes-are-refused",
+             test_compositor_address_bytes_are_refused);
     add_case("sn1/odyssey/framebuffer-pixel-reaches-scanout",
              test_framebuffer_pixel_reaches_display_and_screendump);
     add_fresh_case("sn1/odyssey/backend-tables-and-readback",

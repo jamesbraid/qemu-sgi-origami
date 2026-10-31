@@ -61,8 +61,9 @@ Sources
   read as shipped binaries, as software expectations. This page credits
   them only for the identity and memory-word decode, the back-end
   version word, the id-plane layout, the shadow-page replay layout, the
-  backing-store transfer forms, the ``0x0a5a`` fence word and one DMA
-  header bit. Every other register role on this
+  backing-store transfer forms, the ``0x0a5a`` fence word, one DMA
+  header bit, and the compositor probe's address bytes and acknowledge-bit
+  reading. Every other register role on this
   page is stated as what the model does.
 - Reference frames rendered by the board vendor's own software model of the
   board. This page credits them only for the colour store, a *software
@@ -536,9 +537,18 @@ The model decodes these indices:
 - ``0x2740`` and ``0x2780``: the option and main I2C command words.
   Their read-back is at ``0x233a00`` and ``0x233c00``, and status at
   ``0x233a08`` and ``0x233c08``. Status reads bit 22 (ready) always and
-  bit 9 (done) when the last command was nonzero. No device sits on
-  either bus, so every transfer acknowledges and returns zero
-  (*approximation*). A guest polling for completion sees it at once;
+  bit 9 (done) when the last command was nonzero. Bit 8 is no
+  acknowledge: the model sets it when the last command word starts a
+  transfer (bit 8) whose address byte (bits 7:0) is ``0xaa`` or
+  ``0xab``, and otherwise leaves it clear. The driver's compositor probe
+  addresses a compositor with those two bytes and reads bit 8 clear as an
+  acknowledge, both a *software expectation*, so with the bit set the
+  probe should fail and gfxinfo should print no compositor line, as in
+  most published listings: of 99 gfxinfo records from real boards, 95
+  print none (*observed*, for example :src:`usenet-au03s8`). No device
+  sits on either bus, so every other transfer acknowledges and returns
+  zero (*approximation*). What a real board with no compositor does on
+  the wire is *unknown*. A guest polling for completion sees it at once;
   this says nothing about the board's PLL, DDC EEPROM or monitor.
 - ``0x2802`` and ``0x2803``: the display channel's width and height
   (:ref:`sgi-odyssey-channel`).

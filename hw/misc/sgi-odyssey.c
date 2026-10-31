@@ -14,8 +14,9 @@
  * -- for the two entries the IP35 driver's I2C engine touches: the main and
  * opt port command/status pairs. Every other index in that file stays
  * unimplemented. The I2C engines model no downstream device: a non-zero
- * command word always transfers and always acknowledges, so ACK always reads
- * acknowledged and DATA and the 13:10 engine-state field always read zero.
+ * command word always transfers and acknowledges, except a start with the
+ * compositor's address byte (0xaa or 0xab). DATA and the 13:10 engine-state
+ * field always read zero.
  * That clears the driver's attach-time polling loop without asserting what a
  * real PLL, DDC EEPROM or EDID ROM would answer.
  *
@@ -790,12 +791,18 @@
  * Status bits this model computes at read time: DONE set whenever the last
  * command word written was non-zero, READY set unconditionally, since no
  * transfer takes simulated time and the engine is always idle when the
- * guest looks. ACK, DATA and the 13:10 engine-state field are not stored:
- * no downstream device is modeled, so a transfer always acknowledges and
- * always answers zero, and the reset poll for state 0 or 0xa never blocks.
+ * guest looks. NACK (bit 8) follows odyssey_i2c_status(). DATA and the
+ * 13:10 engine-state field are not stored: with no downstream device a
+ * transfer answers zero, and the reset poll for state 0 or 0xa never blocks.
  */
+#define ODSY_I2C_STATUS_NACK (1u << 8)
 #define ODSY_I2C_STATUS_DONE (1u << 9)
 #define ODSY_I2C_STATUS_READY (1u << 22)
+/* Command bit 8 starts a transfer; 0xaa and 0xab are the compositor's bytes. */
+#define ODSY_I2C_CMD_START (1u << 8)
+#define ODSY_I2C_CMD_BYTE_MASK 0xffu
+#define ODSY_I2C_COMPOSITOR_WRITE 0xaa
+#define ODSY_I2C_COMPOSITOR_READ 0xab
 
 /*
  * The command FIFO: the guest's only path to painting the framebuffer.
@@ -3031,9 +3038,24 @@ static void odyssey_memory_control(SGIOdysseyState *s, uint32_t value)
     }
 }
 
+/*
+ * No compositor is fitted, so a start with its address byte is not
+ * acknowledged. Every other transfer acknowledges (approximation).
+ */
 static uint32_t odyssey_i2c_status(uint32_t command)
 {
-    return ODSY_I2C_STATUS_READY | (command != 0 ? ODSY_I2C_STATUS_DONE : 0);
+    uint32_t status = ODSY_I2C_STATUS_READY;
+    uint32_t addr = command & ODSY_I2C_CMD_BYTE_MASK;
+
+    if (command != 0) {
+        status |= ODSY_I2C_STATUS_DONE;
+    }
+    if ((command & ODSY_I2C_CMD_START) &&
+        (addr == ODSY_I2C_COMPOSITOR_WRITE ||
+         addr == ODSY_I2C_COMPOSITOR_READ)) {
+        status |= ODSY_I2C_STATUS_NACK;
+    }
+    return status;
 }
 
 static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
