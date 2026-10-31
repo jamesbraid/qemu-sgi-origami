@@ -41,6 +41,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIPICHead, SGI_PIC_HEAD)
 #define PIC_ACCESS_LOG_LIMIT 32
 #define PIC_SHORT_DEVICE_BASE 0x200
 #define PIC_INT_PCI_MASTER_TIMEOUT BIT_ULL(11)
+#define PIC_PXBOW_IDENTITY_REVISION 3
 #define TYPE_SGI_PIC_IOMMU "sgi-pic-iommu"
 #define TYPE_SGI_PIC_FIXTURE "sgi-pic-fixture"
 #define TYPE_SGI_PIC_V1_TEST "sgi-pic-v1-test"
@@ -2178,6 +2179,14 @@ bool sgi_pic_enable_pxbow_experiment(SGIPICState *s, uint64_t span,
     widgets = BIT(s->pxbow_host_widget) | BIT(s->pxbow_pic_widget);
     qdev_prop_set_uint64(DEVICE(&s->pxbow), "span", span);
     qdev_prop_set_uint32(DEVICE(&s->pxbow), "revision", s->pxbow_revision);
+    /*
+     * Widget zero reports revision 3 on IP53-family machines, which is
+     * what every real capture prints, while the reused Crossbow model keeps
+     * the behaviour its revision input selects (docs/datasheets/pic.md,
+     * "Widget-zero identity revision"). The part stays inferred.
+     */
+    qdev_prop_set_int32(DEVICE(&s->pxbow), "identity-revision",
+                        PIC_PXBOW_IDENTITY_REVISION);
     qdev_prop_set_uint32(DEVICE(&s->pxbow), "part", 0xd100);
     qdev_prop_set_uint32(DEVICE(&s->pxbow), "manufacturer", 0);
     qdev_prop_set_uint16(DEVICE(&s->pxbow), "links-present", widgets);
