@@ -1,6 +1,7 @@
 {
   "offerings": [
     {
+      "board": "ip34",
       "console": "l1-uart",
       "consoles": [
         {
@@ -824,6 +825,7 @@
       "topology": "octane2"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1053,6 +1055,7 @@
       "topology": "onyx2-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1282,6 +1285,7 @@
       "topology": "onyx2-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1511,6 +1515,7 @@
       "topology": "onyx2-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1732,6 +1737,7 @@
       "topology": "onyx2-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1953,6 +1959,7 @@
       "topology": "onyx2-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2204,6 +2211,7 @@
       "topology": "onyx2-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2455,6 +2463,7 @@
       "topology": "onyx2-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2706,6 +2715,7 @@
       "topology": "onyx2-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2957,6 +2967,7 @@
       "topology": "onyx2-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -3208,6 +3219,7 @@
       "topology": "onyx2-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -3451,6 +3463,7 @@
       "topology": "onyx2-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -3694,6 +3707,7 @@
       "topology": "onyx2-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -3937,6 +3951,7 @@
       "topology": "onyx2-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -4180,6 +4195,7 @@
       "topology": "onyx2-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -4415,6 +4431,7 @@
       "topology": "onyx2-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -4650,6 +4667,7 @@
       "topology": "onyx2-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -4885,6 +4903,7 @@
       "topology": "onyx2-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -5112,6 +5131,7 @@
       "topology": "onyx2-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -5339,6 +5359,7 @@
       "topology": "onyx2-rack"
     },
     {
+      "board": "ip35",
       "console": "l1-uart",
       "consoles": [
         {
@@ -5610,6 +5631,7 @@
       "topology": "onyx3000"
     },
     {
+      "board": "ip35",
       "console": "l1-uart",
       "consoles": [
         {
@@ -5933,6 +5955,7 @@
       "topology": "onyx3400-ir"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -6121,6 +6144,7 @@
       "topology": "onyx350-compat"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -6309,6 +6333,7 @@
       "topology": "onyx350-ip59"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -6496,6 +6521,7 @@
       "topology": "onyx4-host-ip59"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -6683,6 +6709,7 @@
       "topology": "onyx4-host-serial-compat"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -6931,6 +6958,7 @@
       "topology": "origin200-dual"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -7179,6 +7207,7 @@
       "topology": "origin200-dual"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -7431,6 +7460,7 @@
       "topology": "origin200-dual"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -7687,6 +7717,7 @@
       "topology": "origin200-dual"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -7867,6 +7898,7 @@
       "topology": "origin200-gigachannel-loopback"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -8047,6 +8079,7 @@
       "topology": "origin200-gigachannel-loopback"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -8227,6 +8260,7 @@
       "topology": "origin200-gigachannel-loopback"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -8407,6 +8441,7 @@
       "topology": "origin200-gigachannel-loopback"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -8591,6 +8626,7 @@
       "topology": "origin200-gigachannel-loopback"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -8779,6 +8815,7 @@
       "topology": "origin200-gigachannel-loopback"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -8970,6 +9007,7 @@
       "topology": "origin200-gigachannel"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -9161,6 +9199,7 @@
       "topology": "origin200-gigachannel"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -9352,6 +9391,7 @@
       "topology": "origin200-gigachannel"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -9543,6 +9583,7 @@
       "topology": "origin200-gigachannel"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -9738,6 +9779,7 @@
       "topology": "origin200-gigachannel"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -9937,6 +9979,7 @@
       "topology": "origin200-gigachannel"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -10117,6 +10160,7 @@
       "topology": "origin200"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -10297,6 +10341,7 @@
       "topology": "origin200"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -10477,6 +10522,7 @@
       "topology": "origin200"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -10657,6 +10703,7 @@
       "topology": "origin200"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -10841,6 +10888,7 @@
       "topology": "origin200"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -11029,6 +11077,7 @@
       "topology": "origin200"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -11272,6 +11321,7 @@
       "topology": "origin2000-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -11515,6 +11565,7 @@
       "topology": "origin2000-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -11758,6 +11809,7 @@
       "topology": "origin2000-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -12001,6 +12053,7 @@
       "topology": "origin2000-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -12244,6 +12297,7 @@
       "topology": "origin2000-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -12479,6 +12533,7 @@
       "topology": "origin2000-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -12714,6 +12769,7 @@
       "topology": "origin2000-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -12949,6 +13005,7 @@
       "topology": "origin2000-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -13184,6 +13241,7 @@
       "topology": "origin2000-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -13411,6 +13469,7 @@
       "topology": "origin2000-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -13638,6 +13697,7 @@
       "topology": "origin2000-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -13865,6 +13925,7 @@
       "topology": "origin2000-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -14084,6 +14145,7 @@
       "topology": "origin2000-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -14303,6 +14365,7 @@
       "topology": "origin2000-deskside"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -14546,6 +14609,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -14789,6 +14853,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -15032,6 +15097,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -15275,6 +15341,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -15518,6 +15585,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -15753,6 +15821,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -15988,6 +16057,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -16223,6 +16293,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -16458,6 +16529,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -16685,6 +16757,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -16912,6 +16985,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -17139,6 +17213,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -17358,6 +17433,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -17577,6 +17653,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -17826,6 +17903,7 @@
       "topology": "origin300-numalink-pci-expansion"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -18075,6 +18153,7 @@
       "topology": "origin300-numalink-pci-expansion"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -18324,6 +18403,7 @@
       "topology": "origin300-numalink-pci-expansion"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -18573,6 +18653,7 @@
       "topology": "origin300-numalink-pci-expansion"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -18765,6 +18846,7 @@
       "topology": "origin300-pci-expansion"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -18957,6 +19039,7 @@
       "topology": "origin300-pci-expansion"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -19206,6 +19289,7 @@
       "topology": "origin300-two-chassis"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -19455,6 +19539,7 @@
       "topology": "origin300-two-chassis"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -19704,6 +19789,7 @@
       "topology": "origin300-two-chassis"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -19953,6 +20039,7 @@
       "topology": "origin300-two-chassis"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -20139,6 +20226,7 @@
       "topology": "origin300"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -20325,6 +20413,7 @@
       "topology": "origin300"
     },
     {
+      "board": "ip35",
       "console": "l1-uart",
       "consoles": [
         {
@@ -20596,6 +20685,7 @@
       "topology": "origin3200"
     },
     {
+      "board": "ip35",
       "console": "l1-uart",
       "consoles": [
         {
@@ -20895,6 +20985,7 @@
       "topology": "origin3400"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -21082,6 +21173,7 @@
       "topology": "origin350-ip59"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -21269,6 +21361,7 @@
       "topology": "origin350"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -21542,6 +21635,7 @@
       "topology": "origin3900-ip59"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -21815,6 +21909,7 @@
       "topology": "origin3900"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -22003,6 +22098,7 @@
       "topology": "tezro-rack-ip59"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -22191,6 +22287,7 @@
       "topology": "tezro-rack-ip59"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -22379,6 +22476,7 @@
       "topology": "tezro-rack-ip59"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -22567,6 +22665,7 @@
       "topology": "tezro-rack"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -22755,6 +22854,7 @@
       "topology": "tezro-rack"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -22943,6 +23043,7 @@
       "topology": "tezro-rack"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -23131,6 +23232,7 @@
       "topology": "tezro-tower-multi-ip59"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -23319,6 +23421,7 @@
       "topology": "tezro-tower-multi-ip59"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -23507,6 +23610,7 @@
       "topology": "tezro-tower-one-ip59"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -23695,6 +23799,7 @@
       "topology": "tezro"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -23883,6 +23988,7 @@
       "topology": "tezro"
     },
     {
+      "board": "ip53",
       "console": "l1-uart",
       "consoles": [
         {
@@ -24118,6 +24224,7 @@
   "schema": "sgi-machines",
   "topologies": [
     {
+      "board": "ip34",
       "cables": [],
       "console": 0,
       "controllers": [
@@ -24135,6 +24242,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip34",
       "description": "SGI Fuel (IP34)",
       "generation": "sn1",
       "graphics": {
@@ -25810,6 +25918,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip27",
       "cables": [
         {
           "ends": [
@@ -25844,6 +25953,7 @@
           "widget-revision": 2
         }
       ],
+      "default-board": "ip27",
       "description": "SGI Onyx2 deskside, one InfiniteReality pipe on XIO4",
       "generation": "sn0",
       "graphics": {
@@ -26521,6 +26631,7 @@
       ]
     },
     {
+      "board": "ip27",
       "cables": [
         {
           "ends": [
@@ -26625,6 +26736,7 @@
           "widget-revision": 2
         }
       ],
+      "default-board": "ip27",
       "description": "SGI Onyx2 rack, one InfiniteReality pipe cabled from IO3",
       "generation": "sn0",
       "graphics": {
@@ -28059,6 +28171,7 @@
       ]
     },
     {
+      "board": "ip35",
       "cables": [
         {
           "ends": [
@@ -28146,6 +28259,7 @@
           "widget-revision": 2
         }
       ],
+      "default-board": "ip35",
       "description": "SGI Onyx 3000 (IP35), two C-bricks, an I-brick and a V-brick",
       "generation": "sn1",
       "graphics": {
@@ -28565,6 +28679,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip35",
       "cables": [
         {
           "ends": [
@@ -28743,6 +28858,7 @@
           "widget-revision": 2
         }
       ],
+      "default-board": "ip35",
       "description": "SGI Onyx 3400 (IP35) with InfiniteReality3, four C-bricks, an R-brick, an I-brick, an N-brick and two G-bricks",
       "generation": "sn1",
       "graphics": {
@@ -30051,6 +30167,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip53",
       "cables": [],
       "console": 0,
       "controllers": [
@@ -30074,6 +30191,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip53",
       "description": "SGI Onyx 350 (IP53), approximate software profile",
       "generation": "sn1",
       "graphics": {
@@ -30312,6 +30430,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip53",
       "cables": [],
       "console": 0,
       "controllers": [
@@ -30335,6 +30454,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip53",
       "description": "SGI Onyx 350 (IP59), approximate software profile",
       "generation": "sn1",
       "graphics": {
@@ -30572,6 +30692,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip53",
       "cables": [],
       "console": 0,
       "controllers": [
@@ -30595,6 +30716,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip53",
       "description": "Onyx 4 host, IP59 node board",
       "generation": "sn1",
       "io-boards": [
@@ -30798,6 +30920,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip53",
       "cables": [],
       "console": 0,
       "controllers": [
@@ -30821,6 +30944,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip53",
       "description": "Onyx 4 host, IP53-backed serial compatibility experiment",
       "generation": "sn1",
       "io-boards": [
@@ -31015,6 +31139,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip29",
       "cables": [
         {
           "ends": [
@@ -31036,6 +31161,7 @@
       "console": 0,
       "controllers": [],
       "crossbars": [],
+      "default-board": "ip29",
       "description": "SGI Origin 200 (IP29)",
       "generation": "sn0",
       "graphics": {
@@ -31598,10 +31724,12 @@
       "xio-slots": []
     },
     {
+      "board": "ip29",
       "cables": [],
       "console": 0,
       "controllers": [],
       "crossbars": [],
+      "default-board": "ip29",
       "description": "SGI Origin 200 (IP29)",
       "generation": "sn0",
       "graphics": {
@@ -32055,6 +32183,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip29",
       "cables": [],
       "console": 0,
       "controllers": [],
@@ -32066,6 +32195,7 @@
           "widget-revision": 2
         }
       ],
+      "default-board": "ip29",
       "description": "SGI Origin 200 (IP29)",
       "generation": "sn0",
       "graphics": {
@@ -32715,10 +32845,12 @@
       ]
     },
     {
+      "board": "ip29",
       "cables": [],
       "console": 0,
       "controllers": [],
       "crossbars": [],
+      "default-board": "ip29",
       "description": "SGI Origin 200 (IP29)",
       "generation": "sn0",
       "graphics": {
@@ -33173,6 +33305,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip27",
       "cables": [
         {
           "ends": [
@@ -33293,6 +33426,7 @@
           "widget-revision": 2
         }
       ],
+      "default-board": "ip27",
       "description": "SGI Origin 2000 deskside",
       "generation": "sn0",
       "graphics": {
@@ -35496,6 +35630,7 @@
       ]
     },
     {
+      "board": "ip27",
       "cables": [
         {
           "ends": [
@@ -35600,6 +35735,7 @@
           "widget-revision": 2
         }
       ],
+      "default-board": "ip27",
       "description": "SGI Origin 2000 rack module",
       "generation": "sn0",
       "graphics": {
@@ -37809,6 +37945,7 @@
       ]
     },
     {
+      "board": "ip45",
       "cables": [
         {
           "ends": [
@@ -37899,6 +38036,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip45",
       "description": "SGI Origin 300 (IP45), routed NUMAlink and PCI expansion",
       "generation": "sn1",
       "io-assemblies": [
@@ -38467,6 +38605,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip45",
       "cables": [
         {
           "ends": [
@@ -38507,6 +38646,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip45",
       "description": "SGI Origin 300 (IP45) with PCI expansion module",
       "generation": "sn1",
       "io-assemblies": [
@@ -38850,6 +38990,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip45",
       "cables": [
         {
           "ends": [
@@ -38898,6 +39039,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip45",
       "description": "SGI Origin 300 (IP45), two chassis",
       "generation": "sn1",
       "io-boards": [
@@ -39289,6 +39431,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip45",
       "cables": [],
       "console": 0,
       "controllers": [
@@ -39307,6 +39450,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip45",
       "description": "SGI Origin 300 (IP45)",
       "generation": "sn1",
       "io-boards": [
@@ -39512,6 +39656,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip35",
       "cables": [
         {
           "ends": [
@@ -39580,6 +39725,7 @@
           "widget-revision": 2
         }
       ],
+      "default-board": "ip35",
       "description": "SGI Origin 3200 (IP35), two C-bricks and an I-brick",
       "generation": "sn1",
       "io-boards": [
@@ -39897,6 +40043,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip35",
       "cables": [
         {
           "ends": [
@@ -40044,6 +40191,7 @@
           "widget-revision": 2
         }
       ],
+      "default-board": "ip35",
       "description": "SGI Origin 3400 (IP35), four C-bricks on an R-brick and an I-brick",
       "generation": "sn1",
       "io-boards": [
@@ -40595,6 +40743,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip53",
       "cables": [],
       "console": 0,
       "controllers": [
@@ -40618,6 +40767,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip53",
       "description": "SGI Origin 350 (IP59), approximate software profile",
       "generation": "sn1",
       "io-boards": [
@@ -40820,6 +40970,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip53",
       "cables": [],
       "console": 0,
       "controllers": [
@@ -40843,6 +40994,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip53",
       "description": "SGI Origin 350 (IP53), approximate software profile",
       "generation": "sn1",
       "io-boards": [
@@ -41046,6 +41198,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip53",
       "cables": [
         {
           "ends": [
@@ -41162,6 +41315,7 @@
           "widget-revision": 2
         }
       ],
+      "default-board": "ip53",
       "description": "SGI Origin 3900 (IP59), one Cx-brick and an I-brick",
       "generation": "sn1",
       "io-boards": [
@@ -41634,6 +41788,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip53",
       "cables": [
         {
           "ends": [
@@ -41744,6 +41899,7 @@
           "widget-revision": 2
         }
       ],
+      "default-board": "ip53",
       "description": "SGI Origin 3900 (IP53), one Cx-brick and an I-brick",
       "generation": "sn1",
       "io-boards": [
@@ -42216,6 +42372,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip53",
       "cables": [],
       "console": 0,
       "controllers": [
@@ -42239,6 +42396,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip53",
       "description": "SGI Tezro rack first enclosure IP59 profile",
       "generation": "sn1",
       "io-boards": [
@@ -42457,6 +42615,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip53",
       "cables": [],
       "console": 0,
       "controllers": [
@@ -42480,6 +42639,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip53",
       "description": "SGI Tezro rack first enclosure serial compatibility profile",
       "generation": "sn1",
       "io-boards": [
@@ -42684,6 +42844,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip53",
       "cables": [],
       "console": 0,
       "controllers": [
@@ -42707,6 +42868,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip53",
       "description": "SGI Tezro tower, two/four-processor IP59 profile",
       "generation": "sn1",
       "graphics": {
@@ -42966,6 +43128,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip53",
       "cables": [],
       "console": 0,
       "controllers": [
@@ -42989,6 +43152,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip53",
       "description": "SGI Tezro tower, one-processor IP59 profile",
       "generation": "sn1",
       "io-boards": [
@@ -43176,6 +43340,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip53",
       "cables": [],
       "console": 0,
       "controllers": [
@@ -43199,6 +43364,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip53",
       "description": "SGI Tezro, one-processor board serial compatibility profile",
       "generation": "sn1",
       "graphics": {
@@ -43409,6 +43575,7 @@
       "xio-slots": []
     },
     {
+      "board": "ip53",
       "cables": [],
       "console": 0,
       "controllers": [
@@ -43432,6 +43599,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip53",
       "description": "SGI Tezro, two/four-processor board serial compatibility profile",
       "generation": "sn1",
       "graphics": {

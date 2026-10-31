@@ -1,6 +1,7 @@
 {
   "offerings": [
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -250,6 +251,7 @@
       "topology": "origin300-two-chassis"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -499,6 +501,7 @@
       "topology": "origin300-two-chassis"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -748,6 +751,7 @@
       "topology": "origin300-two-chassis"
     },
     {
+      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -1001,6 +1005,7 @@
   "schema": "sgi-machines",
   "topologies": [
     {
+      "board": "ip45",
       "cables": [
         {
           "ends": [
@@ -1049,6 +1054,7 @@
         }
       ],
       "crossbars": [],
+      "default-board": "ip45",
       "description": "SGI Origin 300 (IP45), two chassis",
       "generation": "sn1",
       "io-boards": [

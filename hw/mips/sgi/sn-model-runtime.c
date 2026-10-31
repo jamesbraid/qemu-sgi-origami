@@ -762,6 +762,8 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     view->ip53_runtime = t->ip53_runtime;
     view->has_machine_default = t->has_machine_default;
     view->machine_default = t->machine_default;
+    view->board = t->board;
+    view->default_board = t->default_board;
     view->console = node_map[t->console];
     view->junk_uart = sgi_model_kept(node_map, node_total, t->junk_uart) ?
                       node_map[t->junk_uart] : -1;
@@ -1117,9 +1119,19 @@ static bool sgi_model_topology_accepts_cpus(const SGIModelTopology *t,
     return false;
 }
 
+/* A record names its board; one that names none builds no other. */
+bool sgi_model_topology_builds_board(const SGIModelTopology *t,
+                                     const char *board)
+{
+    if (!t->board) {
+        return !board;
+    }
+    return g_str_equal(t->board, board ? board : t->default_board);
+}
+
 const SGIModelTopology *sgi_model_product_variant(
     const SGIMachines *machines, const char *product, const char *name,
-    unsigned int cpus)
+    const char *board, unsigned int cpus)
 {
     const SGIModelTopologyList *entry;
     const SGIModelTopology *first = NULL, *machine_default = NULL;
@@ -1128,7 +1140,8 @@ const SGIModelTopology *sgi_model_product_variant(
         const SGIModelTopology *t = entry->value;
 
         if (strcmp(t->name, name) ||
-            !sgi_model_topology_matches_product(t, product)) {
+            !sgi_model_topology_matches_product(t, product) ||
+            !sgi_model_topology_builds_board(t, board)) {
             continue;
         }
         if (sgi_model_topology_accepts_cpus(t, cpus)) {
@@ -1262,6 +1275,7 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
     const SGIModelTopology *chassis, *view;
     const QDictEntry *option;
     const char *product, *name, *nodes_text, *processor, *variant;
+    const char *board;
     uint64_t nodes = 0;
 
     if (!args) {
@@ -1273,11 +1287,12 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
 
         if (!g_str_equal(key, "type") && !g_str_equal(key, "topology") &&
             !g_str_equal(key, "nodes") && !g_str_equal(key, "processor") &&
-            !g_str_equal(key, "variant")) {
+            !g_str_equal(key, "variant") &&
+            !g_str_equal(key, "board")) {
             error_setg(errp, "machine option '%s' is not part of a "
                        "catalogue selection; give only the machine, "
-                       "topology=, nodes=, processor= or an offered variant=",
-                       key);
+                       "topology=, nodes=, processor=, board= or "
+                       "an offered variant=", key);
             return NULL;
         }
     }
@@ -1335,6 +1350,16 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
         error_setg(errp, "%s has no topology '%s'", product, name);
         return NULL;
     }
+    board = qdict_get_try_str(args, "board");
+    if (!board && qdict_haskey(args, "board")) {
+        error_setg(errp, "board must be a string");
+        return NULL;
+    }
+    chassis = sgi_model_product_variant(machines, product, name, board, 0);
+    if (!chassis) {
+        error_setg(errp, "topology '%s' has no board '%s'", name, board);
+        return NULL;
+    }
     view = sgi_model_resolve_population(chassis, nodes, errp);
     if (!view) {
         return NULL;
@@ -1352,6 +1377,7 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
 
         if (g_str_equal(offering->product, product) &&
             g_str_equal(offering->topology, chassis->name) &&
+            !g_strcmp0(offering->board, chassis->board) &&
             offering->nodes == QAPI_LIST_LENGTH(view->nodes) &&
             g_str_equal(offering->processor->id, processor)) {
             return offering;

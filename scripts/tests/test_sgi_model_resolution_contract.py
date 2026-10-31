@@ -4043,6 +4043,73 @@ class CompositionVariantTests(unittest.TestCase):
                     _resolver.ResolutionError, message):
                 _resolver.load_system_models(self.write(document))
 
+    def test_a_variant_names_its_board(self):
+        document = copy.deepcopy(self.VARIANTS)
+        document["variants"][0]["board"] = "ip59"
+        document["variants"][1]["board"] = "ip53"
+        models = _resolver.load_system_models(self.write(document))
+        self.assertEqual(
+            [(model["composition"]["board"],
+              model["composition"]["default_board"],
+              model["composition"]["boards"],
+              _resolver.declared_board(model)) for model in models],
+            [("ip59", "ip53", ["ip53", "ip59"], "ip59"),
+             ("ip53", "ip53", ["ip53", "ip59"], "ip53")])
+
+    def test_a_composition_names_one_board_for_all(self):
+        document = copy.deepcopy(self.VARIANTS)
+        document["board"] = "ip59"
+        models = _resolver.load_system_models(self.write(document))
+        self.assertEqual(
+            [(model["composition"]["board"],
+              model["composition"]["default_board"],
+              model["composition"]["boards"]) for model in models],
+            [("ip59", "ip59", ["ip59"])] * 2)
+        self.assertIsNone(_resolver.declared_board(
+            _resolver.load_system_model(INPUTS / "origin350.yaml")))
+
+    def test_a_board_must_be_named_by_all_or_none(self):
+        changes = (
+            (lambda d: d["variants"][0].update(board="ip59"),
+             "names a board for some variants but not all"),
+            (lambda d: d.update(board="IP59"), "names invalid board 'IP59'"),
+        )
+        for change, message in changes:
+            document = copy.deepcopy(self.VARIANTS)
+            change(document)
+            with self.subTest(message=message), self.assertRaisesRegex(
+                    _resolver.ResolutionError, message):
+                _resolver.load_system_models(self.write(document))
+
+    def test_a_topology_with_several_boards_spells_the_board(self):
+        from sgi_model.model_emit import _machine_options
+
+        record = {"name": "tezro", "generation": "SN1"}
+        self.assertEqual(_machine_options("tezro", record, 1),
+                         "tezro,topology=tezro,nodes=1")
+        record.update(board="ip53", default_board="ip53", boards=["ip53"])
+        self.assertEqual(_machine_options("tezro", record, 1),
+                         "tezro,topology=tezro,nodes=1")
+        record.update(boards=["ip53", "ip59"])
+        self.assertEqual(_machine_options("tezro", record, 1),
+                         "tezro,topology=tezro,nodes=1,board=ip53")
+        record.update(board="ip59")
+        self.assertEqual(_machine_options("tezro", record, 1),
+                         "tezro,topology=tezro,nodes=1,board=ip59")
+
+    def test_cpu_totals_are_disjoint_within_one_board(self):
+        from sgi_model.model_qemu import _check_variant_totals
+
+        def record(board, *totals):
+            return {"name": "tezro", "board": board,
+                    "supported_cpu_populations": [[n] for n in totals]}
+
+        _check_variant_totals([record("ip53", 1), record("ip53", 2, 4),
+                               record("ip59", 1), record("ip59", 2, 4)])
+        with self.assertRaisesRegex(ValueError, "both accept 1 CPUs as ip59"):
+            _check_variant_totals([record("ip53", 1), record("ip59", 1),
+                                   record("ip59", 1, 2)])
+
     def test_catalogue_refuses_variants_sharing_a_cpu_total(self):
         from sgi_model.model_qemu import _check_variant_totals
 

@@ -1,6 +1,7 @@
 {
   "offerings": [
     {
+      "board": "ip35",
       "console": "l1-uart",
       "consoles": [
         {
@@ -276,6 +277,7 @@
   "schema": "sgi-machines",
   "topologies": [
     {
+      "board": "ip35",
       "cables": [
         {
           "ends": [
@@ -344,6 +346,7 @@
           "widget-revision": 2
         }
       ],
+      "default-board": "ip35",
       "description": "SGI Origin 3200 (IP35), two C-bricks and an I-brick",
       "generation": "sn1",
       "io-boards": [

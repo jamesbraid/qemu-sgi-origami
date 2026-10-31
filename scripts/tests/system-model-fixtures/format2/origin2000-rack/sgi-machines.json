@@ -1,6 +1,7 @@
 {
   "offerings": [
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -244,6 +245,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -487,6 +489,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -730,6 +733,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -973,6 +977,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1216,6 +1221,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1451,6 +1457,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1686,6 +1693,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1921,6 +1929,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2156,6 +2165,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2383,6 +2393,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2610,6 +2621,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2837,6 +2849,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -3056,6 +3069,7 @@
       "topology": "origin2000-rack"
     },
     {
+      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -3279,6 +3293,7 @@
   "schema": "sgi-machines",
   "topologies": [
     {
+      "board": "ip27",
       "cables": [
         {
           "ends": [
@@ -3383,6 +3398,7 @@
           "widget-revision": 2
         }
       ],
+      "default-board": "ip27",
       "description": "SGI Origin 2000 rack module",
       "generation": "sn0",
       "graphics": {

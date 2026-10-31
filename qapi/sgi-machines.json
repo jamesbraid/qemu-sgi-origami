@@ -2076,6 +2076,16 @@
 #     One topology of each product sets it, including a product that
 #     requires ``topology=``; absent means false
 #
+# @board: the board this record builds on every node, named by its
+#     IP number in lower case (``ip53``, ``ip59``); ``board=`` selects
+#     it.  Every SN0 and SN1 record names one.  Not the platform
+#     @generation, and not the per-processor-count identity in
+#     @SGIModelIp53NodeBoard.  Within one topology name, records of
+#     one board accept disjoint CPU totals
+#
+# @default-board: the board the topology builds with no ``board=``;
+#     present wherever @board is
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelTopology',
@@ -2106,7 +2116,9 @@
             '*processor-options': ['SGIModelProcessorOption'],
             '*graphics': 'SGIModelGraphics',
             '*ip53-runtime': 'SGIModelIp53Runtime',
-            '*machine-default': 'bool' } }
+            '*machine-default': 'bool',
+            '*board': 'str',
+            '*default-board': 'str' } }
 
 ##
 # @SGIModelConsole:
@@ -2554,6 +2566,10 @@
 #     ``topology=``, when one exists; absence means the launcher must
 #     require an explicit topology selection.
 #
+# @board: the board this offering builds, where its topology names
+#     one; @machine-options names it wherever the topology takes more
+#     than one board
+#
 # @display-name: human-readable name of this configuration
 #
 # @nodes: node count of this configuration
@@ -2628,6 +2644,7 @@
   'data': { 'product': 'str',
             'topology': 'str',
             '*default-topology': 'str',
+            '*board': 'str',
             'display-name': 'str',
             'nodes': 'uint32',
             'machine-options': 'str',

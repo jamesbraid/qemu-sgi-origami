@@ -1161,6 +1161,7 @@ def resolve_system_model(
     unknown = sorted(set(composition) - {
         "configuration_version", "layers", "module_instances",
         "connector_population", "links", "xio_cables", "model_role",
+        "board",
     })
     if unknown:
         raise ResolutionError(f"composition '{path}' has unsupported field '{unknown[0]}'")
@@ -1285,6 +1286,14 @@ def resolve_system_model(
         )
     if module_instances:
         resolved["composition"]["module_instances"] = module_instances
+    if "board" in composition:
+        board = composition["board"]
+        if not isinstance(board, str) or not _BOARD.match(board):
+            raise ResolutionError(
+                f"composition '{path}' names invalid board '{board}'")
+        resolved["composition"]["board"] = board
+        resolved["composition"]["default_board"] = board
+        resolved["composition"]["boards"] = [board]
     return resolved
 
 
@@ -1294,6 +1303,8 @@ def _validate_resolved_system_model(model: dict[str, Any]) -> dict[str, Any]:
 
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]*$")
+# A board= value: the board's IP number, lower-cased.
+_BOARD = re.compile(r"^ip[0-9]+$")
 
 
 def _resolve_variants(
@@ -1310,6 +1321,15 @@ def _resolve_variants(
     CPU totals each accepts. Exactly one variant is the default: the one a
     caller that names no variant gets, and the one the machine describes
     itself from.
+
+    A composition whose topology takes more than one node board (the
+    IP53 and its 1 GHz successor, the IP59) names the board each variant
+    builds in `board`, or one board for the whole composition. The machine
+    picks the board by its board property, the default variant's when that
+    is not given, and then the variant by -smp, so the CPU totals need be
+    disjoint only within one board. Either every model of a composition
+    names a board or none does; one that names none builds the board its
+    board layer describes.
     """
     variants = document.get("variants")
     if variants is None:
@@ -1330,7 +1350,7 @@ def _resolve_variants(
         if not isinstance(variant, dict):
             raise ResolutionError(
                 f"{label} has a variant that is not a mapping")
-        unknown = sorted(set(variant) - {"id", "default", "layers"})
+        unknown = sorted(set(variant) - {"id", "default", "layers", "board"})
         if unknown:
             raise ResolutionError(
                 f"{label} variant has unsupported field '{unknown[0]}'")
@@ -1350,12 +1370,26 @@ def _resolve_variants(
         composition = {key: copy.deepcopy(value)
                        for key, value in document.items() if key != "variants"}
         composition["layers"] = list(shared) + list(layers)
+        if "board" in variant:
+            composition["board"] = variant["board"]
         model = resolve_system_model(path, composition)
         model["composition"]["product"] = path.stem
         model["composition"]["variant"] = {"id": ident, "default": default}
         models.append(model)
     if sum(model["composition"]["variant"]["default"] for model in models) != 1:
         raise ResolutionError(f"{label} must mark exactly one variant default")
+    declared = {"board" in model["composition"] for model in models}
+    if declared == {True, False}:
+        raise ResolutionError(
+            f"{label} names a board for some variants but not all")
+    if declared == {True}:
+        default_board = next(
+            model["composition"]["board"] for model in models
+            if model["composition"]["variant"]["default"])
+        boards = sorted({model["composition"]["board"] for model in models})
+        for model in models:
+            model["composition"]["default_board"] = default_board
+            model["composition"]["boards"] = boards
     return models
 
 
@@ -1378,6 +1412,12 @@ def model_variant(model: dict[str, Any]) -> str | None:
     that declares no variants."""
     variant = model.get("composition", {}).get("variant")
     return None if variant is None else variant["id"]
+
+
+def declared_board(model: dict[str, Any]) -> str | None:
+    """The board a resolved model's composition names, or None for one that
+    leaves it to the board layer."""
+    return model.get("composition", {}).get("board")
 
 
 def is_default_variant(model: dict[str, Any]) -> bool:
