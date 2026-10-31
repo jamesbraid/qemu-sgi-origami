@@ -67,9 +67,7 @@ layer:
         400 MHz R12000s with 8 MB secondary caches and 4096 MB in eight
         512 MB banks; the bundles ship C-bricks without memory, so the
         memory is a model choice. The router answers the model's synthetic
-        diagnostics, which no hardware record settles. The stock PROM's
-        discovery prints one failed vector read and a bad link on each node
-        before it finds the router; the cause is not diagnosed.
+        diagnostics, which no hardware record settles.
       emulation:
         bedrock_nodes:
           c0-bedrock: &cbrick-bedrock
