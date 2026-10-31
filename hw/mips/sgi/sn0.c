@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI SN0 (IP27) family mechanics and node device. Origin 200 supplies a
  * compiled topology to the generic model consumer. -bios and pflash fill a

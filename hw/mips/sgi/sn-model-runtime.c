@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Validate machine endpoints, resolve a machine selection to the catalogue
  * topology it builds, and project structural population views.

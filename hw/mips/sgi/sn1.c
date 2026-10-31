@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Bedrock machine classes: CPU part, population, and description.
  * sn1-node.c owns Bedrock CPUs, L1, XBridge, PROM policy, and PCI population.
