@@ -13647,6 +13647,11 @@ static void odyssey_work_drain(SGIOdysseyState *s, hwaddr addr)
  * - Offsets the model does not implement, which it logs and answers with
  *   zero: the kernel's scheduler writes one beside the software token, and
  *   the OpenGL client polls one at 0x120004 while it draws.
+ * - Stores to the flow-control target, +0x1074, only. The kernel stores it
+ *   and clears +0x107c with no poll of the FIFO between, so the store is a
+ *   direct register write; what a board does with one behind queued work
+ *   is unknown. No reader exists, so a read still waits (datasheet,
+ *   "Flags, status and flow control").
  * - The interrupt flags. The one flag the queued work raises is low
  *   water, and only once no store waits, so a clear written behind the
  *   stores still comes before that edge, as on a board whose FIFO is above
@@ -13699,6 +13704,8 @@ static bool odyssey_access_waits(hwaddr addr, unsigned size, bool write)
     case ODSY_SWAP_CONTROL_COMPANION:
     case ODSY_DISPLAYED_BUFFER:
         return false;
+    case ODSY_FLCTL_TARGET:
+        return !write;
     default:
         return true;
     }
