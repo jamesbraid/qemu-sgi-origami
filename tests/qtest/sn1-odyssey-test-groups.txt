@@ -68,6 +68,7 @@ board /mips64/sn1/odyssey/unimplemented-reports-independent-budgets
 board /mips64/sn1/odyssey/dma-texture-object
 board /mips64/sn1/odyssey/dma-texture-luminance-alpha
 board /mips64/sn1/odyssey/dma-texture-12bit-sources
+board /mips64/sn1/odyssey/dma-texture-gl-types
 board /mips64/sn1/odyssey/burst-texture-12bit-sources
 board /mips64/sn1/odyssey/object-store-reclaims
 board /mips64/sn1/odyssey/object-store-grows-without-forgetting
