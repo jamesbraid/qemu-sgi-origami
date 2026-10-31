@@ -1,3 +1,5 @@
+.. SPDX-License-Identifier: BSD-3-Clause
+
 ============================
 SGI IOC3 base I/O controller
 ============================

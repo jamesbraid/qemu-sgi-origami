@@ -1,3 +1,5 @@
+.. SPDX-License-Identifier: BSD-3-Clause
+
 ===============================
 SGI Bridge XIO-to-PCI bridge
 ===============================
