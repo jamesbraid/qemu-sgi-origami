@@ -261,7 +261,14 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
                 notify = false;
                 break;
             }
-            if (s->synthetic_diagnostics && address == bank[p] + 0x18) {
+            if (address == bank[p] + 0x18) {
+                /*
+                 * Per-link partition reset fence mask, present on every
+                 * router. Bits 7:0 are the per-link permits and must read
+                 * back what was written. The reset value and bits 63:8 are
+                 * unknown; zero reset and an 0xff storage mask are model
+                 * choices.
+                 */
                 storage = &s->remote_reset_mask[p];
                 mask = REMOTE_RESET_MASK;
                 notify = false;
@@ -393,7 +400,11 @@ static void router_reset_enter(Object *obj, ResetType type)
 {
     SGISN1RouterState *s = SGI_SN1_ROUTER(obj);
 
-    /* Cold-zero state is a reviewed functional approximation. */
+    /*
+     * Cold-zero is a model choice. The reset value of the protection
+     * configuration and the per-link reset masks, and bits 63:8 of the
+     * masks, are unknown.
+     */
     router_reset_local(s);
     memset(s->parameter, 0, sizeof(s->parameter));
     memset(s->channel_test, 0, sizeof(s->channel_test));
