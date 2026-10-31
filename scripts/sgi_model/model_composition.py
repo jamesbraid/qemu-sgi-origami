@@ -1399,7 +1399,7 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
             and emulation.get("profile") == expected[1]
         )
         if profile != "pic-rev3-bedrock" and not (
-                profile == "pic-rev3-bedrock-experimental" and experiment):
+                profile == "pic-rev3-bedrock-compat" and experiment):
             if not (profile == "pic-rev3-bedrock-tezro-compat"
                     and tezro_profile):
                 raise ResolutionError(

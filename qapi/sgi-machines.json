@@ -1157,12 +1157,13 @@
 # @pic-rev3-bedrock: tested PIC revision 3 profile for a Bedrock
 #     host fixture
 #
-# @pic-rev3-bedrock-experimental:
-#     Experimental IP53 software policy; hardware remains unknown.
+# @pic-rev3-bedrock-compat:
+#     IP53-family compatibility policy for the Origin 350, Onyx 350
+#     and Onyx 4 host; hardware remains unknown.
 #
 # @pic-rev3-bedrock-tezro-compat:
 #     Tezro serial compatibility policy; PIC behavior uses the IP53
-#     experimental policy and is not a measured Tezro chip revision.
+#     compatibility policy and is not a measured Tezro chip revision.
 #
 # @pic-rev3-enclosure-experimental:
 #     IX-brick and PX-brick software policy: the PIC register layout
@@ -1173,7 +1174,7 @@
 # Since: 11.2
 ##
 { 'enum': 'SGIModelPicCompatibilityProfile',
-  'data': ['pic-rev3-bedrock', 'pic-rev3-bedrock-experimental',
+  'data': ['pic-rev3-bedrock', 'pic-rev3-bedrock-compat',
            'pic-rev3-bedrock-tezro-compat',
            'pic-rev3-enclosure-experimental'] }
 

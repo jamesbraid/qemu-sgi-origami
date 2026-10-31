@@ -29723,7 +29723,7 @@
             "revision": "-D"
           }
         ],
-        "pic-profile": "pic-rev3-bedrock-experimental"
+        "pic-profile": "pic-rev3-bedrock-compat"
       },
       "junk-uart": -1,
       "machine-default": true,
@@ -29846,7 +29846,7 @@
       ],
       "pci-host-bridges": [
         {
-          "compatibility-profile": "pic-rev3-bedrock-experimental",
+          "compatibility-profile": "pic-rev3-bedrock-compat",
           "id": "pic",
           "kind": "pic",
           "xio-attachment-index": 0
@@ -29986,7 +29986,7 @@
             "revision": "-C"
           }
         ],
-        "pic-profile": "pic-rev3-bedrock-experimental"
+        "pic-profile": "pic-rev3-bedrock-compat"
       },
       "junk-uart": -1,
       "modules": [
@@ -30108,7 +30108,7 @@
       ],
       "pci-host-bridges": [
         {
-          "compatibility-profile": "pic-rev3-bedrock-experimental",
+          "compatibility-profile": "pic-rev3-bedrock-compat",
           "id": "pic",
           "kind": "pic",
           "xio-attachment-index": 0
@@ -30213,7 +30213,7 @@
             "revision": "-C"
           }
         ],
-        "pic-profile": "pic-rev3-bedrock-experimental"
+        "pic-profile": "pic-rev3-bedrock-compat"
       },
       "junk-uart": -1,
       "machine-default": true,
@@ -30336,7 +30336,7 @@
       ],
       "pci-host-bridges": [
         {
-          "compatibility-profile": "pic-rev3-bedrock-experimental",
+          "compatibility-profile": "pic-rev3-bedrock-compat",
           "id": "pic",
           "kind": "pic",
           "xio-attachment-index": 0
@@ -40045,7 +40045,7 @@
             "revision": "-C"
           }
         ],
-        "pic-profile": "pic-rev3-bedrock-experimental"
+        "pic-profile": "pic-rev3-bedrock-compat"
       },
       "junk-uart": -1,
       "machine-default": true,
@@ -40168,7 +40168,7 @@
       ],
       "pci-host-bridges": [
         {
-          "compatibility-profile": "pic-rev3-bedrock-experimental",
+          "compatibility-profile": "pic-rev3-bedrock-compat",
           "id": "pic",
           "kind": "pic",
           "xio-attachment-index": 0
@@ -40273,7 +40273,7 @@
             "revision": "-C"
           }
         ],
-        "pic-profile": "pic-rev3-bedrock-experimental"
+        "pic-profile": "pic-rev3-bedrock-compat"
       },
       "junk-uart": -1,
       "modules": [
@@ -40395,7 +40395,7 @@
       ],
       "pci-host-bridges": [
         {
-          "compatibility-profile": "pic-rev3-bedrock-experimental",
+          "compatibility-profile": "pic-rev3-bedrock-compat",
           "id": "pic",
           "kind": "pic",
           "xio-attachment-index": 0
