@@ -305,8 +305,10 @@ enum {
  * isp(7D), not from a vendor document; the chip's own power-on default is
  * unknown, so 250 is an approximation that only affects a guest that never
  * programs a value; whether a non-zero retry count lengthens the wait is
- * unknown, and the wait is modelled as one attempt. This constant is the
- * one place the unit changes if the datasheet settles on another.
+ * unknown, and the wait is modelled as one attempt. The model also
+ * completes exactly at the programmed value, whereas the chip is only
+ * known to wait at least that long. This constant is the one place the
+ * unit changes if the datasheet settles on another.
  */
 #define ISP_SELECTION_TIMEOUT_UNIT_NS   (1000 * 1000)
 #define ISP_SELECTION_TIMEOUT_DEFAULT   250
@@ -497,7 +499,8 @@ struct QLogicISPRequest {
     /*
      * A command to an absent target has no SCSIRequest: sreq is NULL and
      * this timer posts its completion once the selection timeout has run
-     * out. The deadline is on the virtual clock, in nanoseconds.
+     * out (see qlogic_isp_waiting_for_selection). The deadline is on the
+     * virtual clock, in nanoseconds.
      */
     QEMUTimer *timer;
     int64_t deadline;
@@ -530,6 +533,17 @@ static void qlogic_isp_drop_pending_status(QLogicISPState *s)
     }
 }
 
+/*
+ * A request with no SCSIRequest is a command to an absent target still
+ * waiting for its selection to time out; it gets its sreq before anything
+ * else can look at it, and the request list is only touched under the
+ * main-loop lock.
+ */
+static bool qlogic_isp_waiting_for_selection(const QLogicISPRequest *req)
+{
+    return req->sreq == NULL;
+}
+
 /* Frees a request that never became a SCSIRequest, timer included. */
 static void qlogic_isp_free_selection(QLogicISPRequest *req)
 {
@@ -544,7 +558,7 @@ static void qlogic_isp_drop_selections(QLogicISPState *s)
     QLogicISPRequest *req, *next;
 
     QTAILQ_FOREACH_SAFE(req, &s->requests, next, next) {
-        if (req->sreq == NULL) {
+        if (qlogic_isp_waiting_for_selection(req)) {
             qlogic_isp_free_selection(req);
         }
     }
@@ -795,10 +809,14 @@ static unsigned qlogic_isp_retire(QLogicISPState *s, int channel, int target,
 
             /*
              * Nothing to cancel behind a command still waiting out its
-             * selection timeout: the host is owed the entry now, in place
-             * of the timeout's own.
+             * selection timeout. Inferred, not established: the drivers
+             * handle a reset completion for a command a bus reset destroyed
+             * (docs/datasheets/isp1040.md, "Set-selection-timeout"), but no
+             * source says the firmware sends one for a command still in
+             * selection. The model posts it now, in place of the timeout's
+             * own.
              */
-            if (req->sreq == NULL) {
+            if (qlogic_isp_waiting_for_selection(req)) {
                 qlogic_isp_post_status(s, req->handle, 0, completion,
                                        0, 0, 0, NULL, 0);
                 qlogic_isp_free_selection(req);
@@ -1966,7 +1984,10 @@ static void qlogic_isp_missing_target(QLogicISPState *s, uint32_t handle,
     uint16_t timeout = s->chan[channel].select_timeout;
     QLogicISPRequest *req;
 
-    /* A guest that programmed no wait gets the answer at once. */
+    /*
+     * Model choice: the datasheet is silent on a zero timeout, so a guest
+     * that programmed no wait gets the answer at once.
+     */
     if (timeout == 0) {
         qlogic_isp_post_missing_target(s, handle);
         return;
@@ -2703,7 +2724,7 @@ static bool qlogic_isp_selection_state_needed(void *opaque)
         }
     }
     QTAILQ_FOREACH(req, &s->requests, next) {
-        if (req->sreq == NULL) {
+        if (qlogic_isp_waiting_for_selection(req)) {
             return true;
         }
     }
@@ -2720,7 +2741,7 @@ static bool qlogic_isp_selection_pre_save(void *opaque, Error **errp)
     QTAILQ_FOREACH(req, &s->requests, next) {
         QLogicISPSelectionWire *wire;
 
-        if (req->sreq != NULL) {
+        if (!qlogic_isp_waiting_for_selection(req)) {
             continue;
         }
         /* Outstanding commands are capped by the announced budget. */

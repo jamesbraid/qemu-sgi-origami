@@ -1879,9 +1879,11 @@ static void test_soft_reset_cancels_selection_wait(void *obj, void *data,
 
 /*
  * A bus reset destroys the commands outstanding on the bus, and the drivers
- * (qla1280 CS_RESET, isp RQCS_RESET_OCCURRED, qlw STATUS_RESET) all read a
- * reset completion for them. A selection still waiting for an absent target
- * is one of them: it ends with the reset completion at once, not with the
+ * (qla1280 CS_RESET, isp RQCS_RESET_OCCURRED, qlw STATUS_RESET) all handle a
+ * reset completion for them; that much is established. That the firmware
+ * sends one for a selection still waiting for an absent target is inferred
+ * (docs/datasheets/isp1040.md, "Set-selection-timeout"), and the model
+ * does so: it ends with the reset completion at once, not with the
  * selection timeout later, and the command completes only once.
  */
 static void test_bus_reset_retires_selection_wait(void *obj, void *data,
@@ -1921,9 +1923,10 @@ static void test_bus_reset_retires_selection_wait(void *obj, void *data,
 }
 
 /*
- * The driver builds the request ring again while a selection waits. The
- * wait is not tied to a ring entry, so it still posts its completion, once,
- * when the timeout runs out.
+ * The driver builds the request ring again while a selection waits. Model
+ * choice; the datasheet is silent on what the chip does to a selection in
+ * progress. Here the wait is not tied to a ring entry, so it still posts its
+ * completion, once, when the timeout runs out.
  */
 static void test_request_queue_init_keeps_selection_wait(void *obj, void *data,
                                                          QGuestAllocator *alloc)
