@@ -4704,12 +4704,15 @@ static void test_retry_count(void *obj, void *data, QGuestAllocator *alloc)
  * 256 and throttle 255 for a loop ID that has a port, retry count
  * accepted and not stored, link counters all zero. A loop ID with no port
  * is refused with 0x4005, never 0x4001, which IRIX prints as an invalid
- * command.
+ * command. The adapter's own loop ID is answered by get link status, which
+ * the driver polls for it, with the same zero counters, and refused by get
+ * port queue parameters, which it asks of discovered ports only. While the
+ * loop is down all of these are refused.
  */
 static void test_irix_loop_commands(void *obj, void *data,
                                     QGuestAllocator *alloc)
 {
-    static const uint8_t absent[] = { 0, 2, 6, 0x7d, 0x7e, 0xff };
+    static const uint8_t absent[] = { 2, 6, 0x7d, 0x7e, 0xff };
     static const uint8_t present[] = { 1, 5 };
     uint8_t seen[64], fill[64], zeroes[32] = { 0 };
     uint64_t buf;
@@ -4722,14 +4725,31 @@ static void test_irix_loop_commands(void *obj, void *data,
 
     /* The loop is not up yet: a port-addressed command has no port. */
     isp_start(&t);
+    buf = guest_alloc(alloc, sizeof(seen));
+    memset(fill, 0xa5, sizeof(fill));
     g_assert_cmphex(isp_call_ack(&t, CMD_GET_PORT_QUEUE, 1 << 8, 0, 0), ==,
                     MBOX_COMMAND_ERROR);
+    qtest_memwrite(t.qts, buf, fill, sizeof(fill));
+    g_assert_cmphex(isp_call_dma(&t, CMD_GET_LINK_STATUS, 1 << 8, buf), ==,
+                    MBOX_COMMAND_ERROR);
+    isp_ack(&t);
+    qtest_memread(t.qts, buf, seen, sizeof(seen));
+    g_assert_cmpmem(seen, sizeof(seen), fill, sizeof(fill));
     g_assert_cmphex(isp_call_ack(&t, CMD_RESET_LINK_STAT, 0, 0, 0), ==,
                     MBOX_COMPLETE);
 
     isp_loop_up(&t, 0);
-    buf = guest_alloc(alloc, sizeof(seen));
-    memset(fill, 0xa5, sizeof(fill));
+
+    /* Loop ID 0 is the adapter's own: link status only. */
+    g_assert_cmphex(isp_call_ack(&t, CMD_GET_PORT_QUEUE, 0, 0, 0), ==,
+                    MBOX_COMMAND_ERROR);
+    qtest_memwrite(t.qts, buf, fill, sizeof(fill));
+    g_assert_cmphex(isp_call_dma(&t, CMD_GET_LINK_STATUS, 0, buf), ==,
+                    MBOX_COMPLETE);
+    isp_ack(&t);
+    qtest_memread(t.qts, buf, seen, sizeof(seen));
+    g_assert_cmpmem(seen, 32, zeroes, 32);
+    g_assert_cmpmem(seen + 32, 32, fill + 32, 32);
 
     for (i = 0; i < ARRAY_SIZE(present); i++) {
         g_assert_cmphex(isp_call(&t, CMD_GET_PORT_QUEUE, present[i] << 8, 0,

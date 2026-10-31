@@ -2015,6 +2015,12 @@ static uint16_t isp2200_fc_mailbox(QLogicISP2200State *s, uint16_t cmd,
      * and invents no state.
      */
     case ISP2200_MBOX_GET_PORT_QUEUE:
+        /*
+         * Not answered for the adapter's own loop ID: the datasheet has
+         * the driver ask once per discovered port, which the adapter is
+         * not. A guest that asks anyway gets the refusal the port
+         * database gives.
+         */
         if (!isp2200_loop_ready(s) || !isp2200_target(s, in[1] >> 8)) {
             return ISP2200_MBOX_COMMAND_ERROR;
         }
@@ -2033,7 +2039,14 @@ static uint16_t isp2200_fc_mailbox(QLogicISP2200State *s, uint16_t cmd,
     case ISP2200_MBOX_GET_LINK_STATUS: {
         uint8_t counters[ISP2200_LINK_STATUS_SIZE] = { 0 };
 
-        if (!isp2200_loop_ready(s) || !isp2200_target(s, in[1] >> 8)) {
+        /*
+         * The driver's link-statistics thread asks for the adapter's own
+         * loop ID as well as the ports', so the adapter answers for
+         * itself, with the same zero counters.
+         */
+        if (!isp2200_loop_ready(s) ||
+            !(isp2200_target(s, in[1] >> 8) ||
+              (s->has_loop_id && (in[1] >> 8) == s->loop_id))) {
             return ISP2200_MBOX_COMMAND_ERROR;
         }
         if (isp2200_dma_write(s, isp2200_mbox_addr(in), counters,
