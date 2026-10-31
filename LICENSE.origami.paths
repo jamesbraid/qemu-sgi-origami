@@ -8,10 +8,13 @@ docs/devel/sgi-mesa-renderer.rst
 docs/devel/testing/sgi.rst
 docs/sphinx/sgiref.py
 docs/system/mips/sgi/index.rst
+docs/system/devices/sgi-mace-i2c.rst
+docs/system/mips/sgi/glossary.rst
 docs/system/mips/sgi/hardware/baseio.rst
 docs/system/mips/sgi/hardware/bedrock.rst
 docs/system/mips/sgi/hardware/bridge.rst
 docs/system/mips/sgi/hardware/elsc.rst
+docs/system/mips/sgi/hardware/dbrick.rst
 docs/system/mips/sgi/hardware/gigachannel.rst
 docs/system/mips/sgi/hardware/graphics.rst
 docs/system/mips/sgi/hardware/ds1685.rst
@@ -39,6 +42,7 @@ docs/system/mips/sgi/hardware/crime.rst
 docs/system/mips/sgi/hardware/mace.rst
 docs/system/mips/sgi/hardware/mace-ethernet.rst
 docs/system/mips/sgi/hardware/gbe.rst
+docs/system/mips/sgi/hardware/vice.rst
 docs/system/mips/sgi/hardware/ad1843.rst
 docs/system/mips/sgi/hardware/aic7880.rst
 docs/system/mips/sgi/hardware/at29c040a.rst
@@ -1006,7 +1010,6 @@ tests/qtest/sgi-mace-ps2-test.c
 hw/mips/sgi/mace.c
 hw/mips/sgi/mace-timer.h
 include/hw/mips/sgi/mace.h
-docs/system/mips/sgi/ip32.rst
 hw/mips/sgi/models/o2.yaml
 hw/mips/sgi/models/layers/architectures/ip32.yaml
 hw/mips/sgi/models/layers/assemblies/ip32.yaml
