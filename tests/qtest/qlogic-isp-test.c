@@ -1695,17 +1695,20 @@ static void test_state_flags_track_sense_phase(void *obj, void *data,
  * of a retry count on the wait unknown.
  */
 #define ISP_ABSENT_HANDLE   0x9
+#define ISP_NO_RESET        0xffff
 #define ISP_MS_NS           (1000 * 1000)
 
 /*
  * Queues up, an optional selection timeout programmed (0xffff leaves the
- * adapter's default), and one command sent to a target nothing is attached
- * at. Returns the response ring's address, which reads as zero until the
- * completion is written.
+ * adapter's default), an optional bus reset carrying a delay of hold_s
+ * seconds (ISP_NO_RESET for none), and one command sent to a target nothing
+ * is attached at. Returns the response ring's address, which reads as zero
+ * until the completion is written.
  */
 static uint64_t isp_send_to_absent_target(QPCIDevice *dev, QPCIBar io,
                                           QGuestAllocator *alloc,
-                                          uint16_t timeout_ms)
+                                          uint16_t timeout_ms,
+                                          uint16_t hold_s)
 {
     QTestState *qts = dev->bus->qts;
     uint64_t rqst_addr, resp_addr;
@@ -1730,6 +1733,13 @@ static uint64_t isp_send_to_absent_target(QPCIDevice *dev, QPCIBar io,
     if (timeout_ms != 0xffff) {
         qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_SET_SELECTION_TIMEOUT,
                               timeout_ms, 0, 0);
+        g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                        ISP_MBOX_COMPLETE);
+        qlogic_isp_ack(dev, io);
+    }
+
+    if (hold_s != ISP_NO_RESET) {
+        qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_BUS_RESET, hold_s, 0, 0);
         g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
                         ISP_MBOX_COMPLETE);
         qlogic_isp_ack(dev, io);
@@ -1778,7 +1788,8 @@ static void test_no_device_incomplete_state_flags(void *obj, void *data,
     io = qpci_iomap(dev, 0, NULL);
     qts = dev->bus->qts;
 
-    resp_addr = isp_send_to_absent_target(dev, io, alloc, 0xffff);
+    resp_addr = isp_send_to_absent_target(dev, io, alloc, 0xffff,
+                                          ISP_NO_RESET);
 
     qtest_clock_step(qts, 250 * ISP_MS_NS - 1);
     g_assert_false(isp_completion_posted(qts, resp_addr));
@@ -1810,7 +1821,8 @@ static void test_selection_timeout_sets_the_delay(void *obj, void *data,
     qts = dev->bus->qts;
 
     /* Shorter than the default: done long before 250 ms. */
-    resp_addr = isp_send_to_absent_target(dev, io, alloc, 40);
+    resp_addr = isp_send_to_absent_target(dev, io, alloc, 40,
+                                          ISP_NO_RESET);
     qtest_clock_step(qts, 40 * ISP_MS_NS - 1);
     g_assert_false(isp_completion_posted(qts, resp_addr));
     qtest_clock_step(qts, 1);
@@ -1834,7 +1846,8 @@ static void test_selection_timeout_longer_than_default(void *obj, void *data,
     qts = dev->bus->qts;
 
     /* Past the default, so a fixed 250 ms would already have answered. */
-    resp_addr = isp_send_to_absent_target(dev, io, alloc, 600);
+    resp_addr = isp_send_to_absent_target(dev, io, alloc, 600,
+                                          ISP_NO_RESET);
     qtest_clock_step(qts, 250 * ISP_MS_NS);
     g_assert_false(isp_completion_posted(qts, resp_addr));
     qtest_clock_step(qts, 350 * ISP_MS_NS - 1);
@@ -1860,7 +1873,8 @@ static void test_soft_reset_cancels_selection_wait(void *obj, void *data,
     io = qpci_iomap(dev, 0, NULL);
     qts = dev->bus->qts;
 
-    resp_addr = isp_send_to_absent_target(dev, io, alloc, 40);
+    resp_addr = isp_send_to_absent_target(dev, io, alloc, 40,
+                                          ISP_NO_RESET);
     qpci_io_writew(dev, io, ISP_REG_BUS_CTRL, ISP_BUS_CTRL_SOFT_RESET);
 
     /*
@@ -1900,7 +1914,8 @@ static void test_bus_reset_retires_selection_wait(void *obj, void *data,
     io = qpci_iomap(dev, 0, NULL);
     qts = dev->bus->qts;
 
-    resp_addr = isp_send_to_absent_target(dev, io, alloc, 600);
+    resp_addr = isp_send_to_absent_target(dev, io, alloc, 600,
+                                          ISP_NO_RESET);
     qtest_clock_step(qts, 100 * ISP_MS_NS);
     g_assert_false(isp_completion_posted(qts, resp_addr));
 
@@ -1942,7 +1957,8 @@ static void test_request_queue_init_keeps_selection_wait(void *obj, void *data,
     io = qpci_iomap(dev, 0, NULL);
     qts = dev->bus->qts;
 
-    resp_addr = isp_send_to_absent_target(dev, io, alloc, 40);
+    resp_addr = isp_send_to_absent_target(dev, io, alloc, 40,
+                                          ISP_NO_RESET);
     qtest_clock_step(qts, 10 * ISP_MS_NS);
 
     new_rqst = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
@@ -1958,6 +1974,60 @@ static void test_request_queue_init_keeps_selection_wait(void *obj, void *data,
                     ISP_IOCB_INCOMPLETE);
     qtest_clock_step(qts, 1000 * ISP_MS_NS);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * The ISP1040's one bus holds off after a bus reset the same way: an absent
+ * target's command waits out the hold and then its selection timeout
+ * (docs/datasheets/isp1040.md, "Bus-reset hold-off (0x0018)": both are model
+ * choices on inferred ground). The ring-slot withholding is the 12160 test's
+ * to pin; here the single-channel part must hold, release, and take a delay
+ * of zero as no hold.
+ */
+static void test_bus_reset_hold_then_selection_timeout(void *obj, void *data,
+                                                       QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t resp_addr;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    resp_addr = isp_send_to_absent_target(dev, io, alloc, 40, 1);
+    qtest_clock_step(qts, 40 * ISP_MS_NS);
+    g_assert_false(isp_completion_posted(qts, resp_addr));
+    qtest_clock_step(qts, 1000 * ISP_MS_NS - 1);
+    g_assert_false(isp_completion_posted(qts, resp_addr));
+    qtest_clock_step(qts, 1);
+    g_assert_true(isp_completion_posted(qts, resp_addr));
+    qlogic_isp_ack(dev, io);
+
+    qpci_iounmap(dev, io);
+}
+
+static void test_bus_reset_delay_zero_holds_nothing(void *obj, void *data,
+                                                    QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t resp_addr;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    resp_addr = isp_send_to_absent_target(dev, io, alloc, 40, 0);
+    qtest_clock_step(qts, 40 * ISP_MS_NS);
+    g_assert_true(isp_completion_posted(qts, resp_addr));
+    qlogic_isp_ack(dev, io);
 
     qpci_iounmap(dev, io);
 }
@@ -2302,6 +2372,12 @@ static void test_bus_reset_mailbox_resets_scsi_bus(void *obj, void *data,
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
                     ISP_MBOX_COMPLETE);
     qlogic_isp_ack(dev, io);
+
+    /*
+     * The bus starts no SCSI activity for the delay the reset carried
+     * (docs/datasheets/isp1040.md, "Bus-reset hold-off (0x0018)").
+     */
+    qtest_clock_step(qts, 1000 * ISP_MS_NS);
 
     /* The rings survived, and the disk saw the reset. */
     g_assert_cmphex(isp_test_unit_ready(dev, io, qts, rqst_addr, resp_addr,
@@ -3286,6 +3362,10 @@ static void qlogic_isp_register_nodes(void)
                  test_bus_reset_retires_selection_wait, NULL);
     qos_add_test("request-queue-init-keeps-selection-wait", "qlogic-isp1040",
                  test_request_queue_init_keeps_selection_wait, NULL);
+    qos_add_test("bus-reset-hold-then-selection-timeout", "qlogic-isp1040",
+                 test_bus_reset_hold_then_selection_timeout, NULL);
+    qos_add_test("bus-reset-delay-zero-holds-nothing", "qlogic-isp1040",
+                 test_bus_reset_delay_zero_holds_nothing, NULL);
     qos_add_test("bus-cfg1", "qlogic-isp1040", test_bus_cfg1, NULL);
     qos_add_test("dma-block-cfg", "qlogic-isp1040", test_dma_block_cfg, NULL);
     qos_add_test("dma-block-ctrl-is-inert", "qlogic-isp1040",
