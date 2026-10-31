@@ -34,6 +34,15 @@ struct SGIBedrockNIState {
 
 /* Port status bit 1: the link is up. */
 #define SGI_BEDROCK_NI_LINK_UP (1ULL << 1)
+/*
+ * Port status bit 0, set while no cable is wired to the port. Inferred from a
+ * real one-node IP35 console, not established: docs/datasheets/
+ * bedrock-network-interface.md, "port status". The guest's bus-error
+ * handler reads port status before any processor-interface record and
+ * reports a link reset when bits 1:0 read 0, so a node with no cable must
+ * not read 0 there.
+ */
+#define SGI_BEDROCK_NI_UNCABLED (1ULL << 0)
 
 void sgi_bedrock_ni_add_change_notifier(SGIBedrockNIState *s,
                                         Notifier *notifier);

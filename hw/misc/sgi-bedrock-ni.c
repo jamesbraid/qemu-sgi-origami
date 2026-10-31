@@ -30,11 +30,17 @@ static uint64_t ni_read(void *opaque, hwaddr offset, unsigned size)
     }
     /*
      * Link-up needs no software step: the stock PROM programs the port once
-     * and then only polls this bit, so it follows
-     * the cable from reset.
+     * and then only polls this bit, so it follows the cable from reset. A
+     * port with no cable at all, a standalone unit or a one-node machine,
+     * reads the uncabled value. A cable marked down reads no link and the
+     * contract states nothing else for it, so bit 0 stays clear there.
     */
-    if (offset == 0 && s->bedrock && sgi_bedrock_link_up(s->bedrock)) {
-        value |= SGI_BEDROCK_NI_LINK_UP;
+    if (offset == 0) {
+        if (!s->bedrock || !sgi_bedrock_cabled(s->bedrock)) {
+            value |= SGI_BEDROCK_NI_UNCABLED;
+        } else if (sgi_bedrock_link_up(s->bedrock)) {
+            value |= SGI_BEDROCK_NI_LINK_UP;
+        }
     }
     ni_update_irq(s);
     return value;

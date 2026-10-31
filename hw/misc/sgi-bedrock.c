@@ -1918,6 +1918,11 @@ bool sgi_bedrock_link_up(SGIBedrockState *s)
     return bedrock_neighbor(s, &peer, &peer_index);
 }
 
+bool sgi_bedrock_cabled(SGIBedrockState *s)
+{
+    return s->net_cable != NULL;
+}
+
 void sgi_bedrock_port_reset_send(SGIBedrockState *s)
 {
     SGIBedrockState *peer;

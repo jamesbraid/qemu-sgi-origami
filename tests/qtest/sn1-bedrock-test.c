@@ -816,7 +816,8 @@ static void test_disconnected(void)
     qtest_irq_intercept_out_named(s, NI_PATH, "error");
     qtest_writeq(s, NI_BASE, UINT64_MAX);
     qtest_writeq(s, NI_BASE + 0x18, 7);
-    g_assert_cmphex(qtest_readq(s, NI_BASE), ==, 0);
+    /* No cable: no link, bit 0 set, and a write does not move it. */
+    g_assert_cmphex(qtest_readq(s, NI_BASE), ==, 1);
     g_assert_cmphex(qtest_readq(s, NI_BASE + 0x100), ==, 0);
     g_assert_cmphex(qtest_readq(s, NI_BASE + 0x100), ==, 0);
     g_assert_cmphex(qtest_readq(s, NI_BASE + 0x120), ==, 0);
@@ -850,7 +851,9 @@ static void test_read_only_writes(void)
     s = ni_start(extra);
     for (size_t i = 0; i < ARRAY_SIZE(offsets); i++) {
         qtest_writeq(s, NI_BASE + offsets[i], UINT64_MAX);
-        g_assert_cmphex(qtest_readq(s, NI_BASE + offsets[i]), ==, 0);
+        /* Port status reads the uncabled value, bit 0 alone. */
+        g_assert_cmphex(qtest_readq(s, NI_BASE + offsets[i]), ==,
+                        offsets[i] ? 0 : 1);
     }
     qtest_quit(s);
 
