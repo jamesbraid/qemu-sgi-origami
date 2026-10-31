@@ -2,11 +2,14 @@
 /*
  * The L1 console's "env" report for the Chimera node boards.
  *
- * The table layout, names, states and limits follow the reviewed IP59
- * datasheet and the console captures it cites. Every reading is model
- * state: a fixed, in-limits snapshot taken from one captured session, not
- * a measurement, so a guest or a test sees the same value each time. The
- * node's own voltages, fans and temperatures are not simulated.
+ * The table layout, names, states and limits follow the reviewed L1 and
+ * IP59 datasheets and the console captures they cite. The firmware has one
+ * copy of each row format, shared by every brick personality, so each row
+ * kind below has one printer and the tables only supply data. Every
+ * reading is model state: a fixed, in-limits snapshot taken from one
+ * captured session, not a measurement, so a guest or a test sees the same
+ * value each time. The node's own voltages, fans and temperatures are not
+ * simulated.
  */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-l1-env.h"
@@ -20,12 +23,8 @@ typedef enum {
 #define ENV_WARN_PERCENT 10
 #define ENV_FAULT_PERCENT 20
 
-/*
- * The captures right-align the supply names one column apart: the
- * workstation board in 13 columns, the 2U board in 14.
- */
-#define ENV_WS_NAME_WIDTH 13
-#define ENV_2U_NAME_WIDTH 14
+/* Supply names are right-aligned in this many columns on every board. */
+#define ENV_NAME_WIDTH 14
 
 /* The state column of a row on a node that has no power. */
 #define ENV_WAIT_POWER "Wait Pwr"
@@ -47,6 +46,17 @@ typedef struct EnvTemp {
     bool present;
     unsigned reading_c;
 } EnvTemp;
+
+typedef struct EnvZone {
+    const char *name;
+    const char *sensors;
+    /* A zero target prints N/A for both temperatures. */
+    unsigned target_c;
+    unsigned current_c;
+    const char *fans;
+    unsigned fan_percent;
+    unsigned fan_min_percent;
+} EnvZone;
 
 /*
  * The VCPU nominal comes from the node's PSC code, not from the sensor
@@ -76,7 +86,7 @@ static unsigned env_vcpu_nominal_mv(unsigned psc)
     }
 }
 
-/* A limit in tenths of a hundredth of a volt, rounded half up. */
+/* A limit in hundredths of a volt, rounded half up. */
 static unsigned env_limit_centivolts(unsigned nominal_mv, int percent)
 {
     return (nominal_mv * (100 + percent) / 100 + 5) / 10;
@@ -196,27 +206,19 @@ static const EnvTemp u2_temps[] = {
 };
 
 /* The cooling zones follow each workstation board's captured firmware. */
-static const char *const ws_zones[2] = {
-    [ENV_IP53] =
-    "Node        Enabled"
-    "           5,6  62C/143F  50C/122F          0   46%/ 46%\r\n"
-    "PCI         Enabled"
-    "       0,1,2,3  45C/113F  34C/ 93F        3,4   57%/ 57%\r\n"
-    "ODY         Enabled"
-    "             4  50C/122F  42C/107F          6   64%/ 64%\r\n"
-    "HD          Enabled"
-    "             5  40C/104F  50C/122F          5   66%/ 38%\r\n",
-    [ENV_IP59] =
-    "NODE        Enabled"
-    "           5,6  53C/127F  48C/118F          0   62%/ 46%\r\n"
-    "BOOST       Enabled"
-    "           N/A       N/A       N/A     8,9,10   64%/ 50%\r\n"
-    "HD          Enabled"
-    "           N/A       N/A       N/A          5   56%/ 38%\r\n"
-    "PCI         Enabled"
-    "       0,1,2,3  45C/113F  37C/ 98F        3,4   57%/ 57%\r\n"
-    "ODY         Enabled"
-    "             4  50C/122F  45C/113F          6   82%/ 64%\r\n",
+static const EnvZone ws_zones_ip53[] = {
+    { "Node", "5,6", 62, 50, "0", 46, 46 },
+    { "PCI", "0,1,2,3", 45, 34, "3,4", 57, 57 },
+    { "ODY", "4", 50, 42, "6", 64, 64 },
+    { "HD", "5", 40, 50, "5", 66, 38 },
+};
+
+static const EnvZone ws_zones_ip59[] = {
+    { "NODE", "5,6", 53, 48, "0", 62, 46 },
+    { "BOOST", "N/A", 0, 0, "8,9,10", 64, 50 },
+    { "HD", "N/A", 0, 0, "5", 56, 38 },
+    { "PCI", "0,1,2,3", 45, 37, "3,4", 57, 57 },
+    { "ODY", "4", 50, 45, "6", 82, 64 },
 };
 
 static unsigned env_fahrenheit(unsigned celsius)
@@ -224,36 +226,92 @@ static unsigned env_fahrenheit(unsigned celsius)
     return celsius * 9 / 5 + 32;
 }
 
-static void env_rail(GString *out, unsigned width, const char *prefix,
-                     const EnvRail *rail, bool powered)
+/*
+ * "%14s %10s  " opens a supply row, then "%2d%% %6.2f/%6.2f" for each limit
+ * pair and "%7.3f" for the reading. The limits are integer arithmetic so
+ * that they round half up, as the captures do.
+ */
+static void env_supply_row(GString *out, const char *name, const char *state,
+                           unsigned nominal_mv, unsigned reading_mv)
 {
-    g_autofree char *name = g_strdup_printf("%s%s", prefix, rail->name);
-    unsigned nominal = rail->nominal_mv;
-
-    if (!nominal) {
-        g_string_append_printf(out, "%*s <not present>\r\n", width, name);
+    if (!nominal_mv) {
+        g_string_append_printf(out, "%*s <not present>\r\n",
+                               ENV_NAME_WIDTH, name);
         return;
     }
     g_string_append_printf(out,
-        "%*s %10s  %d%% %3u.%02u/%3u.%02u  %d%% %3u.%02u/%3u.%02u  %7.3f\r\n",
-        width, name, powered ? "Enabled" : ENV_WAIT_POWER,
+        "%*s %10s  %2d%% %3u.%02u/%3u.%02u  %2d%% %3u.%02u/%3u.%02u  %7.3f\r\n",
+        ENV_NAME_WIDTH, name, state,
         ENV_WARN_PERCENT,
-        env_limit_centivolts(nominal, -ENV_WARN_PERCENT) / 100,
-        env_limit_centivolts(nominal, -ENV_WARN_PERCENT) % 100,
-        env_limit_centivolts(nominal, ENV_WARN_PERCENT) / 100,
-        env_limit_centivolts(nominal, ENV_WARN_PERCENT) % 100,
+        env_limit_centivolts(nominal_mv, -ENV_WARN_PERCENT) / 100,
+        env_limit_centivolts(nominal_mv, -ENV_WARN_PERCENT) % 100,
+        env_limit_centivolts(nominal_mv, ENV_WARN_PERCENT) / 100,
+        env_limit_centivolts(nominal_mv, ENV_WARN_PERCENT) % 100,
         ENV_FAULT_PERCENT,
-        env_limit_centivolts(nominal, -ENV_FAULT_PERCENT) / 100,
-        env_limit_centivolts(nominal, -ENV_FAULT_PERCENT) % 100,
-        env_limit_centivolts(nominal, ENV_FAULT_PERCENT) / 100,
-        env_limit_centivolts(nominal, ENV_FAULT_PERCENT) % 100,
-        powered ? rail->reading_mv / 1000.0 : 0.0);
+        env_limit_centivolts(nominal_mv, -ENV_FAULT_PERCENT) / 100,
+        env_limit_centivolts(nominal_mv, -ENV_FAULT_PERCENT) % 100,
+        env_limit_centivolts(nominal_mv, ENV_FAULT_PERCENT) / 100,
+        env_limit_centivolts(nominal_mv, ENV_FAULT_PERCENT) % 100,
+        reading_mv / 1000.0);
 }
 
-static void env_rails(GString *out, unsigned width, const EnvRail *rails,
-                      unsigned count, EnvBoard board, bool powered)
+static void env_fan_row(GString *out, unsigned index, const EnvFan *fan,
+                        const char *state, unsigned reading_rpm)
+{
+    g_string_append_printf(out, "FAN %2u %8s %10s  %11u  %11u\r\n", index,
+                           fan->name, state, fan->warning_rpm, reading_rpm);
+}
+
+/*
+ * "%2d %-14s %10s  " opens a temperature row. A sensor under automatic fan
+ * control shows only its fault limit.
+ */
+static void env_temp_row(GString *out, unsigned index, const EnvTemp *temp,
+                         const char *state, bool autofan, unsigned fault_c,
+                         unsigned reading_c)
+{
+    if (!temp->present) {
+        g_string_append_printf(out, "%2u %-14s <not present>\r\n", index,
+                               temp->name);
+        return;
+    }
+    g_string_append_printf(out, "%2u %-14s %10s  ", index, temp->name, state);
+    if (autofan) {
+        g_string_append_printf(out, "  [Autofan Control]   %3uC/%3uF  ",
+                               fault_c, env_fahrenheit(fault_c));
+    } else {
+        g_string_append_printf(out, "%3uC/%3uF  %3uC/%3uF  %3uC/%3uF  ",
+                               31, env_fahrenheit(31),
+                               48, env_fahrenheit(48),
+                               fault_c, env_fahrenheit(fault_c));
+    }
+    g_string_append_printf(out, "%3uC/%3uF\r\n", reading_c,
+                           env_fahrenheit(reading_c));
+}
+
+/* The row layout reproduces the captured zone rows. */
+static void env_zone_row(GString *out, const EnvZone *zone, const char *state)
+{
+    g_autofree char *target = zone->target_c ?
+        g_strdup_printf("%2uC/%3uF", zone->target_c,
+                        env_fahrenheit(zone->target_c)) :
+        g_strdup("N/A");
+    g_autofree char *current = zone->target_c ?
+        g_strdup_printf("%2uC/%3uF", zone->current_c,
+                        env_fahrenheit(zone->current_c)) :
+        g_strdup("N/A");
+
+    g_string_append_printf(out,
+        "%-10s  %-8s%13s  %8s  %8s  %9s  %3u%%/%3u%%\r\n",
+        zone->name, state, zone->sensors, target, current, zone->fans,
+        zone->fan_percent, zone->fan_min_percent);
+}
+
+static void env_rails(GString *out, const EnvRail *rails, unsigned count,
+                      EnvBoard board, bool powered)
 {
     const char *generation = board == ENV_IP59 ? "IP59 " : "IP53 ";
+    const char *state = powered ? "Enabled" : ENV_WAIT_POWER;
 
     g_string_append(out,
         "Description    State       Warning Limits     "
@@ -261,15 +319,19 @@ static void env_rails(GString *out, unsigned width, const EnvRail *rails,
         "-------------- ----------  -----------------  "
         "-----------------  -------\r\n");
     for (unsigned i = 0; i < count; i++) {
-        env_rail(out, width, "", &rails[i], powered);
+        env_supply_row(out, rails[i].name, state, rails[i].nominal_mv,
+                       powered ? rails[i].reading_mv : 0);
     }
     for (unsigned i = 0; i < ARRAY_SIZE(node_rails[board]); i++) {
         EnvRail rail = node_rails[board][i];
+        g_autofree char *name = NULL;
 
         if (!strcmp(rail.name, "VCPU")) {
             rail.nominal_mv = env_vcpu_nominal_mv(env_psc_code(board));
         }
-        env_rail(out, width, generation, &rail, powered);
+        name = g_strdup_printf("%s%s", generation, rail.name);
+        env_supply_row(out, name, state, rail.nominal_mv,
+                       powered ? rail.reading_mv : 0);
     }
 }
 
@@ -281,61 +343,13 @@ static void env_fans(GString *out, const EnvFan *fans, unsigned count,
         "Description     State       Warning RPM  Current RPM\r\n"
         "--------------- ----------  -----------  -----------\r\n");
     for (unsigned i = 0; i < count; i++) {
-        g_string_append_printf(out, "FAN %2u %8s %10s %12u %12u\r\n", i,
-                               fans[i].name,
-                               powered ? "Enabled" : ENV_WAIT_POWER,
-                               fans[i].warning_rpm,
-                               powered ? fans[i].reading_rpm[board] : 0);
+        env_fan_row(out, i, &fans[i], powered ? "Enabled" : ENV_WAIT_POWER,
+                    powered ? fans[i].reading_rpm[board] : 0);
     }
 }
 
-static void env_temp_current(GString *out, bool powered, unsigned celsius)
-{
-    unsigned c = powered ? celsius : 0;
-
-    g_string_append_printf(out, "%2uC/%3uF\r\n", c, env_fahrenheit(c));
-}
-
-static void env_ws_temps(GString *out, EnvBoard board, bool powered)
-{
-    g_string_append(out,
-        "\r\n"
-        "                             Advisory   Critical   Fault      "
-        "Current\r\n"
-        "Description       State       Temp       Temp       Temp       "
-        "Temp\r\n"
-        "----------------- ----------  ---------  ---------  ---------  "
-        "---------\r\n");
-    for (unsigned i = 0; i < ARRAY_SIZE(ws_temps[board]); i++) {
-        const EnvTemp *t = &ws_temps[board][i];
-        bool bedrock = i == ARRAY_SIZE(ws_temps[board]) - 1;
-
-        g_string_append_printf(out, "%u %-14s %10s    [Autofan Control]    "
-                               "%uC/%uF   ", i, t->name,
-                               powered ? "Enabled" : ENV_WAIT_POWER,
-                               bedrock ? 85 : 76,
-                               env_fahrenheit(bedrock ? 85 : 76));
-        env_temp_current(out, powered, t->reading_c);
-    }
-    g_string_append(out,
-        "\r\n"
-        "                    Zone Temp     Target    Current   Zone Fan   "
-        "Curr/Min\r\n"
-        "Zone Name  State     Sensors       Average   Average   Index      "
-        "Fan %\r\n"
-        "---------  --------  ------------  --------  --------  ---------  "
-        "---------\r\n");
-    if (powered) {
-        g_string_append(out, ws_zones[board]);
-    } else {
-        g_auto(GStrv) rows = g_strsplit(ws_zones[board], "Enabled ", -1);
-        g_autofree char *waiting = g_strjoinv(ENV_WAIT_POWER, rows);
-
-        g_string_append(out, waiting);
-    }
-}
-
-static void env_u2_temps(GString *out, bool powered)
+static void env_temps(GString *out, const EnvTemp *temps, unsigned count,
+                      bool autofan, bool powered)
 {
     g_string_append(out,
         "\r\n"
@@ -345,20 +359,29 @@ static void env_u2_temps(GString *out, bool powered)
         "Temp\r\n"
         "----------------- ----------  ---------  ---------  ---------  "
         "---------\r\n");
-    for (unsigned i = 0; i < ARRAY_SIZE(u2_temps); i++) {
-        const EnvTemp *t = &u2_temps[i];
+    for (unsigned i = 0; i < count; i++) {
+        bool bedrock = !strcmp(temps[i].name, "BEDROCK");
+        /* The captured autofan faults are 76 C, and 85 C on the BEDROCK. */
+        unsigned fault_c = autofan ? (bedrock ? 85 : 76) : 55;
 
-        if (!t->present) {
-            g_string_append_printf(out, "%2u %-14s <not present>\r\n", i,
-                                   t->name);
-            continue;
-        }
-        g_string_append_printf(out, "%2u %-14s %10s   31C/%3uF   "
-                               "48C/%3uF   55C/%3uF   ", i, t->name,
-                               powered ? "Enabled" : ENV_WAIT_POWER,
-                               env_fahrenheit(31), env_fahrenheit(48),
-                               env_fahrenheit(55));
-        env_temp_current(out, powered, t->reading_c);
+        env_temp_row(out, i, &temps[i], powered ? "Enabled" : ENV_WAIT_POWER,
+                     autofan, fault_c, powered ? temps[i].reading_c : 0);
+    }
+}
+
+static void env_zones(GString *out, const EnvZone *zones, unsigned count,
+                      bool powered)
+{
+    g_string_append(out,
+        "\r\n"
+        "                    Zone Temp     Target    Current   Zone Fan   "
+        "Curr/Min\r\n"
+        "Zone Name  State     Sensors       Average   Average   Index      "
+        "Fan %\r\n"
+        "---------  --------  ------------  --------  --------  ---------  "
+        "---------\r\n");
+    for (unsigned i = 0; i < count; i++) {
+        env_zone_row(out, &zones[i], powered ? "Enabled" : ENV_WAIT_POWER);
     }
 }
 
@@ -394,19 +417,23 @@ char *sgi_l1_chimera_env(char type, const char *node_board, bool powered)
     out = g_string_new("Environmental monitoring is enabled and running.\r\n"
                        "\r\n");
     if (type == '9') {
-        env_rails(out, ENV_WS_NAME_WIDTH, ws_rails, ARRAY_SIZE(ws_rails), board,
-                  powered);
+        env_rails(out, ws_rails, ARRAY_SIZE(ws_rails), board, powered);
         env_fans(out, ws_fans,
                  board == ENV_IP59 ? ARRAY_SIZE(ws_fans) : WS_FANS_IP53,
                  board, powered);
-        env_ws_temps(out, board, powered);
-    } else {
-        env_rails(out, ENV_2U_NAME_WIDTH, u2_rails, ARRAY_SIZE(u2_rails), board,
+        env_temps(out, ws_temps[board], ARRAY_SIZE(ws_temps[board]), true,
                   powered);
+        if (board == ENV_IP59) {
+            env_zones(out, ws_zones_ip59, ARRAY_SIZE(ws_zones_ip59), powered);
+        } else {
+            env_zones(out, ws_zones_ip53, ARRAY_SIZE(ws_zones_ip53), powered);
+        }
+    } else {
+        env_rails(out, u2_rails, ARRAY_SIZE(u2_rails), board, powered);
         env_fans(out, u2_fans,
                  board == ENV_IP59 ? ARRAY_SIZE(u2_fans) : U2_FANS_IP53,
                  board, powered);
-        env_u2_temps(out, powered);
+        env_temps(out, u2_temps, ARRAY_SIZE(u2_temps), false, powered);
     }
     return g_string_free(out, FALSE);
 }

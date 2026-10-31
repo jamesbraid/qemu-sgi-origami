@@ -7,6 +7,11 @@
  * IP53 workstation captures, and the 2U IP59 table is the Onyx 350 module
  * capture. The IP53 2U table has no capture: it is the IP59 2U table with
  * the board's name, VCPU limits and fan list, which is inferred.
+ *
+ * The firmware has one copy of each row format, so the workstation rows
+ * use the same 14-wide supply names and two-wide temperature indexes as
+ * the 2U rows. The workstation captures show them one column narrower
+ * because the forum pages dropped a leading space.
  */
 #ifndef SGI_L1_CHIMERA_ENV_VECTORS_H
 #define SGI_L1_CHIMERA_ENV_VECTORS_H
@@ -18,43 +23,43 @@
     "   Current\r\n" \
     "-------------- ----------  -----------------  ----------------" \
     "-  -------\r\n" \
-    "         1.8V    Enabled  10%   1.62/  1.98  20%   1.44/  2.16" \
+    "          1.8V    Enabled  10%   1.62/  1.98  20%   1.44/  2.16" \
     "  #\r\n" \
-    "          12V    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
+    "           12V    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
     "  #\r\n" \
-    "       12V #2    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
+    "        12V #2    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
     "  #\r\n" \
-    "         3.3V    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
+    "          3.3V    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
     "  #\r\n" \
-    "         2.5V    Enabled  10%   2.25/  2.75  20%   2.00/  3.00" \
+    "          2.5V    Enabled  10%   2.25/  2.75  20%   2.00/  3.00" \
     "  #\r\n" \
-    "       12V IO    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
+    "        12V IO    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
     "  #\r\n" \
-    "       5V AUX    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
+    "        5V AUX    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
     "  #\r\n" \
-    "     3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
+    "      3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
     "  #\r\n" \
-    "           5V    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
+    "            5V    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
     "  #\r\n" \
-    " XIO 12V BIAS    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
+    "  XIO 12V BIAS    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
     "  #\r\n" \
-    "       XIO 5V    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
+    "        XIO 5V    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
     "  #\r\n" \
-    "     XIO 2.5V    Enabled  10%   2.25/  2.75  20%   2.00/  3.00" \
+    "      XIO 2.5V    Enabled  10%   2.25/  2.75  20%   2.00/  3.00" \
     "  #\r\n" \
-    " XIO 3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
+    "  XIO 3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
     "  #\r\n" \
-    "IP59 3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
+    " IP59 3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
     "  #\r\n" \
-    "  IP59 5V AUX    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
+    "   IP59 5V AUX    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
     "  #\r\n" \
-    "     IP59 12V    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
+    "      IP59 12V    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
     "  #\r\n" \
-    "    IP59 VCPU    Enabled  10%   1.14/  1.40  20%   1.02/  1.52" \
+    "     IP59 VCPU    Enabled  10%   1.14/  1.40  20%   1.02/  1.52" \
     "  #\r\n" \
-    "    IP59 SRAM    Enabled  10%   2.25/  2.75  20%   2.00/  3.00" \
+    "     IP59 SRAM    Enabled  10%   2.25/  2.75  20%   2.00/  3.00" \
     "  #\r\n" \
-    "    IP59 1.5V    Enabled  10%   1.35/  1.65  20%   1.20/  1.80" \
+    "     IP59 1.5V    Enabled  10%   1.35/  1.65  20%   1.20/  1.80" \
     "  #\r\n" \
     "\r\n" \
     "Description     State       Warning RPM  Current RPM\r\n" \
@@ -71,25 +76,25 @@
     "FAN  9  N0 CNTR    Enabled         1800 #\r\n" \
     "FAN 10 N0 RIGHT    Enabled         1800 #\r\n" \
     "\r\n" \
-    "                             Advisory   Critical   Fault      " \
+    "                              Advisory   Critical   Fault      " \
     "Current\r\n" \
     "Description       State       Temp       Temp       Temp      " \
     " Temp\r\n" \
     "----------------- ----------  ---------  ---------  --------- " \
     " ---------\r\n" \
-    "0 INTERFACE 0       Enabled    [Autofan Control]    76C/168F  " \
+    " 0 INTERFACE 0       Enabled    [Autofan Control]    76C/168F  " \
     " #\r\n" \
-    "1 INTERFACE 1       Enabled    [Autofan Control]    76C/168F  " \
+    " 1 INTERFACE 1       Enabled    [Autofan Control]    76C/168F  " \
     " #\r\n" \
-    "2 INTERFACE 2       Enabled    [Autofan Control]    76C/168F  " \
+    " 2 INTERFACE 2       Enabled    [Autofan Control]    76C/168F  " \
     " #\r\n" \
-    "3 INTERFACE 3       Enabled    [Autofan Control]    76C/168F  " \
+    " 3 INTERFACE 3       Enabled    [Autofan Control]    76C/168F  " \
     " #\r\n" \
-    "4 ODYSSEY           Enabled    [Autofan Control]    76C/168F  " \
+    " 4 ODYSSEY           Enabled    [Autofan Control]    76C/168F  " \
     " #\r\n" \
-    "5 NODE              Enabled    [Autofan Control]    76C/168F  " \
+    " 5 NODE              Enabled    [Autofan Control]    76C/168F  " \
     " #\r\n" \
-    "6 BEDROCK           Enabled    [Autofan Control]    85C/185F  " \
+    " 6 BEDROCK           Enabled    [Autofan Control]    85C/185F  " \
     " #\r\n" \
     "\r\n" \
     "                    Zone Temp     Target    Current   Zone Fan" \
@@ -116,43 +121,43 @@
     "   Current\r\n" \
     "-------------- ----------  -----------------  ----------------" \
     "-  -------\r\n" \
-    "         1.8V    Enabled  10%   1.62/  1.98  20%   1.44/  2.16" \
+    "          1.8V    Enabled  10%   1.62/  1.98  20%   1.44/  2.16" \
     "  #\r\n" \
-    "          12V    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
+    "           12V    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
     "  #\r\n" \
-    "       12V #2    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
+    "        12V #2    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
     "  #\r\n" \
-    "         3.3V    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
+    "          3.3V    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
     "  #\r\n" \
-    "         2.5V    Enabled  10%   2.25/  2.75  20%   2.00/  3.00" \
+    "          2.5V    Enabled  10%   2.25/  2.75  20%   2.00/  3.00" \
     "  #\r\n" \
-    "       12V IO    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
+    "        12V IO    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
     "  #\r\n" \
-    "       5V AUX    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
+    "        5V AUX    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
     "  #\r\n" \
-    "     3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
+    "      3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
     "  #\r\n" \
-    "           5V    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
+    "            5V    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
     "  #\r\n" \
-    " XIO 12V BIAS    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
+    "  XIO 12V BIAS    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
     "  #\r\n" \
-    "       XIO 5V    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
+    "        XIO 5V    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
     "  #\r\n" \
-    "     XIO 2.5V    Enabled  10%   2.25/  2.75  20%   2.00/  3.00" \
+    "      XIO 2.5V    Enabled  10%   2.25/  2.75  20%   2.00/  3.00" \
     "  #\r\n" \
-    " XIO 3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
+    "  XIO 3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
     "  #\r\n" \
-    "IP53 3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
+    " IP53 3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  3.96" \
     "  #\r\n" \
-    "  IP53 5V AUX    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
+    "   IP53 5V AUX    Enabled  10%   4.50/  5.50  20%   4.00/  6.00" \
     "  #\r\n" \
-    "     IP53 12V    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
+    "      IP53 12V    Enabled  10%  10.80/ 13.20  20%   9.60/ 14.40" \
     "  #\r\n" \
-    "    IP53 VCPU    Enabled  10%   1.13/  1.38  20%   1.00/  1.50" \
+    "     IP53 VCPU    Enabled  10%   1.13/  1.38  20%   1.00/  1.50" \
     "  #\r\n" \
-    "    IP53 SRAM    Enabled  10%   2.25/  2.75  20%   2.00/  3.00" \
+    "     IP53 SRAM    Enabled  10%   2.25/  2.75  20%   2.00/  3.00" \
     "  #\r\n" \
-    "    IP53 1.5V    Enabled  10%   1.35/  1.65  20%   1.20/  1.80" \
+    "     IP53 1.5V    Enabled  10%   1.35/  1.65  20%   1.20/  1.80" \
     "  #\r\n" \
     "\r\n" \
     "Description     State       Warning RPM  Current RPM\r\n" \
@@ -166,25 +171,25 @@
     "FAN  6    ODY 1    Enabled         1300 #\r\n" \
     "FAN  7    ODY 2    Enabled         1300 #\r\n" \
     "\r\n" \
-    "                             Advisory   Critical   Fault      " \
+    "                              Advisory   Critical   Fault      " \
     "Current\r\n" \
     "Description       State       Temp       Temp       Temp      " \
     " Temp\r\n" \
     "----------------- ----------  ---------  ---------  --------- " \
     " ---------\r\n" \
-    "0 INTERFACE 0       Enabled    [Autofan Control]    76C/168F  " \
+    " 0 INTERFACE 0       Enabled    [Autofan Control]    76C/168F  " \
     " #\r\n" \
-    "1 INTERFACE 1       Enabled    [Autofan Control]    76C/168F  " \
+    " 1 INTERFACE 1       Enabled    [Autofan Control]    76C/168F  " \
     " #\r\n" \
-    "2 INTERFACE 2       Enabled    [Autofan Control]    76C/168F  " \
+    " 2 INTERFACE 2       Enabled    [Autofan Control]    76C/168F  " \
     " #\r\n" \
-    "3 INTERFACE 3       Enabled    [Autofan Control]    76C/168F  " \
+    " 3 INTERFACE 3       Enabled    [Autofan Control]    76C/168F  " \
     " #\r\n" \
-    "4 ODYSSEY           Enabled    [Autofan Control]    76C/168F  " \
+    " 4 ODYSSEY           Enabled    [Autofan Control]    76C/168F  " \
     " #\r\n" \
-    "5 NODE              Enabled    [Autofan Control]    76C/168F  " \
+    " 5 NODE              Enabled    [Autofan Control]    76C/168F  " \
     " #\r\n" \
-    "6 BEDROCK           Enabled    [Autofan Control]    85C/185F  " \
+    " 6 BEDROCK           Enabled    [Autofan Control]    85C/185F  " \
     " #\r\n" \
     "\r\n" \
     "                    Zone Temp     Target    Current   Zone Fan" \
