@@ -2,9 +2,9 @@
 
 .. _sgi-pci-expansion:
 
-========================================================
-PCI expansion boards and the Origin 300 expansion module
-========================================================
+===============================================
+PCI expansion: boards and the Origin 300 module
+===============================================
 
 Used in :ref:`sgi-ip27` (the XIO PCI expansion board, the PCI Carrier
 Assembly and the shoehorn) and :ref:`sgi-ip35` (the Origin 300 PCI

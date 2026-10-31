@@ -83,6 +83,7 @@ SCRIPT_SUITES = MODEL_SUITES + [
     'scripts/tests/test_archive_source.py',
     'scripts/ci/test_sgi_check.py',
     'scripts/tests/test_sgi_license_check.py',
+    'scripts/tests/test_sgi_docs_lint.py',
     'scripts/test_sanitizer_workflow.py',
 ]
 
@@ -310,7 +311,10 @@ def model(args):
 def docs(args):
     # The manual's own build runs Sphinx only with --enable-docs, which the
     # CI configure turns off. Build it directly so a broken page, label or
-    # table fails the pull request instead of going unnoticed.
+    # table fails the pull request instead of going unnoticed. The lint
+    # comes first: it is quick and names the page and line.
+    run([args.python or sys.executable, '-B',
+         SOURCE / 'scripts/ci/sgi-docs-lint.py'])
     with tempfile.TemporaryDirectory() as out:
         run([args.python or sys.executable, '-m', 'sphinx', '-W', '--keep-going',
              '-q', '-b', 'html', '-d', os.path.join(out, 'doctrees'),
