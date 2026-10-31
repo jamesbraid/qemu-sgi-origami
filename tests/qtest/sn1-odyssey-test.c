@@ -9300,7 +9300,7 @@ static void test_command_fifo_gl_polygon_offset(void)
 }
 
 /*
- * The board's depth word (docs/datasheets/odyssey.md, "Depth word"): a
+ * The board's depth word: a
  * 6-bit exponent and an 18-bit mantissa, the value (1 + m / 2^18)
  * 2^(e - 31), here for 2S times the eye-linear fraction, truncated.
  */
@@ -12428,7 +12428,7 @@ static void object_store_select(QTestState *qts, uint32_t base,
 /*
  * The table holds 4096 objects and the first is still found: selecting it
  * again returns the same object and its texel, so the object count does not
- * move. Model policy (odyssey.md, "Board-memory object store"); the 1024
+ * move. Model policy; the 1024
  * table forgot the first object after the 1025th select.
  */
 static void test_object_store_keeps_4096_objects(void)
@@ -12654,8 +12654,8 @@ static const uint32_t object_store_pixels[4] = {
  * Sampling is not use. A 2x2 texture is uploaded first, then the table is
  * filled, and the texture is drawn many times with no further upload. One
  * more object then forgets the texture, the least recently selected, and
- * not the next-oldest. Model policy (odyssey.md, "Board-memory object
- * store"); it fails on a model where a draw refreshes the object it samples.
+ * not the next-oldest. Model policy; it fails on a model where a draw
+ * refreshes the object it samples.
  */
 static void test_object_store_sampling_is_not_use(void)
 {
@@ -12776,8 +12776,8 @@ static uint32_t partial_level_row(QTestState *qts, int x, uint32_t width,
 /*
  * A partly written ordinary 2D level is present. The 512x256 level's object
  * holds 200 rows: the object grows to the level's height, row 199 reads its
- * texel, and rows nobody wrote read 0. Model policy (odyssey.md,
- * "Board-memory object store"). It fails on a model that takes the 200-row
+ * texel, and rows nobody wrote read 0. Model policy. It fails on a model
+ * that takes the 200-row
  * object as a missing level, which draws untextured.
  */
 static void test_texture_partial_level_is_present(void)
@@ -12803,7 +12803,7 @@ static void test_texture_partial_level_is_present(void)
 /*
  * A level whose object holds no rows stays missing and draws untextured; one
  * written row makes it present, grown to the level's height. Model policy
- * (odyssey.md, "Board-memory object store"): the hardware is unknown.
+ * (model policy): the hardware is unknown.
  */
 static void test_texture_level_without_rows_is_missing(void)
 {
@@ -16458,8 +16458,7 @@ static void test_texture_lod_bias(void)
  * A square whose S runs 0, 1, 2, 1 round its corners, so S grows by one
  * base texel per pixel along x and along y of a 4-pixel side. One pixel's
  * derivatives give a footprint of one texel (level 0), but the 2x2 quad's
- * diagonals differ by two texels, and the quad takes level 1
- * (docs/datasheets/odyssey.md, "Mipmap level of detail").
+ * diagonals differ by two texels, and the quad takes level 1.
  */
 static void texture_skewed_quad(QTestState *qts, uint32_t x0, uint32_t y0,
                                 uint32_t side)
@@ -17942,7 +17941,7 @@ static void test_texture_public_border_3d_linear(void)
  * the partly written 2D level rule: the object is not grown to fill it, the
  * volume stays incomplete and the draw takes the incomplete-image fallback,
  * which leaves the pixel as it was. The rule is model policy for ordinary
- * 2D levels only (odyssey.md, "Board-memory object store").
+ * 2D levels only.
  */
 static void test_stored_volume_partial_slice_keeps_fallback(void)
 {
@@ -21365,8 +21364,8 @@ static void test_texture_adapter_storage_dimensions(void)
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0xffffffff);
     /*
      * An eight-wide object has only one row, and two rows are asked for: the
-     * level is partly written, so it is present (odyssey.md, "Board-memory
-     * object store", model policy). Its written row reads its texel and the
+     * level is partly written, so it is present (model policy). Its written
+     * row reads its texel and the
      * row nobody wrote reads 0.
      */
     sampler[0] = 0x08000c20;
@@ -24260,7 +24259,7 @@ static void test_readback_gl_layouts(void)
 }
 
 /*
- * The GL read table (docs/datasheets/odyssey.md, "Read table"): word 4's
+ * The GL read table: word 4's
  * class (bits 2:0) and code (bits 7:3) name the host bytes. Each row below
  * reads one pixel, red 0x9a, green 0x5e, blue 0xc3, alpha 0xd1, and checks
  * the bytes against the GL packing of the row's format and type (written
