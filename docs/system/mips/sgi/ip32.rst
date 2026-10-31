@@ -89,10 +89,11 @@ This changes the CPU module selection, not the board connections. It does
 not admit the published 512 MB starting population or the RM7000A product.
 The existing catalogue configuration name ``o2plus`` selects this offering.
 
-Supply ``-cpu R12000`` with all five inputs before realization:
-``r12000-prid=0x00000e35``, ``r12000-fpu-id=0x00000900``,
-``r12000-reset-mode=0x011a8603``, ``r12000-scache-bytes=2097152`` and
-``r12000-scache-block-words=16``. The resulting Config0 is ``0x6d1a8603``.
+``-cpu R12000`` alone is enough: the board fits the module's part,
+PRId ``0x00000e35``, FPU identification ``0x00000900`` and reset mode
+word ``0x011a8603``, which selects a 2 MiB secondary cache with 16-word
+blocks. It refuses a ``-cpu`` value that differs. The resulting Config0 is
+``0x6d1a8603``.
 PRId revision and FPU identity are compatibility selections, not measured
 O2+ values. The reset word chooses legal mode fields and 64-byte secondary
 blocks. It is not a module reset-ROM capture. The published R12000A name

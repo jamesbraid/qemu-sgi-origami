@@ -605,8 +605,7 @@ static GPtrArray *catalogue_cases(void)
             "%s%s -cpu %s -smp %" PRId64 " -m %" PRId64 "M",
             qdict_get_str(offering, "machine-options"),
             extra ? extra->machine_options : "",
-            c->ip32 && g_str_equal(c->name, "o2plus") ? O2PLUS_CPU :
-                qdict_get_str(offering, "default-cpu-model"),
+            qdict_get_str(offering, "default-cpu-model"),
             qdict_get_int(offering, "smp"),
             qdict_get_int(memory, "default") *
             qdict_get_int(offering, "nodes"));

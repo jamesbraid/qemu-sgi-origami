@@ -30,6 +30,7 @@
 #include "hw/mips/sgi/crime.h"
 #include "hw/mips/sgi/mace.h"
 #include "hw/mips/sgi/o2-rom.h"
+#include "hw/mips/sgi/sgi-cpu.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
 #include "hw/pci/pci_host.h"
@@ -1878,6 +1879,20 @@ static void o2_init(MachineState *machine)
                                 &s->cpu_uncached_physical);
     cpu_dev = qdev_new(machine->cpu_type);
     if (s->o2plus) {
+        /*
+         * The selected O2+ module's part (docs/system/mips/sgi/ip32.rst),
+         * applied as every board applies its catalogue processor; the
+         * catalogue compiler refuses an o2plus assembly that differs.
+         * A -cpu value that differs is refused: the module admits only
+         * this one.
+         */
+        static const SGIModelProcessor o2plus_cpu = {
+            .id = (char *)"cpu0", .kind = (char *)"R12000",
+            .has_prid = true, .prid = 0xe35,
+            .has_fpu_prid = true, .fpu_prid = 0x900,
+            .has_mode_bits = true, .mode_bits = 0x011a8603,
+            .clock_hz = 400000000, .cache_mib = 2,
+        };
         static const struct {
             const char *property;
             uint32_t value;
@@ -1894,6 +1909,7 @@ static void o2_init(MachineState *machine)
             error_report("o2plus requires r12000-variant=r12000");
             exit(1);
         }
+        sgi_cpu_apply_processor(cpu_dev, &o2plus_cpu, &error_fatal);
         for (unsigned i = 0; i < ARRAY_SIZE(inputs); i++) {
             if (object_property_get_uint(OBJECT(cpu_dev), inputs[i].property,
                                          &error_fatal) != inputs[i].value) {
