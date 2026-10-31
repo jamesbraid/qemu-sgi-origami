@@ -432,6 +432,9 @@ qlogic_isp_bank_read(const char *bank, uint64_t addr, uint16_t val) "%s 0x%02" P
 qlogic_isp_bank_write(const char *bank, uint64_t addr, uint16_t val) "%s 0x%02" PRIx64 " <- 0x%04x"
 qlogic_isp_reset_delay(unsigned int channel, uint16_t value) "channel %u delay %u"
 qlogic_isp_selection_timeout(unsigned int channel, uint16_t value) "channel %u selection timeout %u"
+qlogic_isp_bus_hold(uint8_t channel, uint16_t seconds) "channel %u quiet for %u s"
+qlogic_isp_hold_park(uint32_t handle, uint8_t channel, uint8_t target, uint8_t lun) "handle 0x%08x %u:%u:%u parked behind the bus-reset hold"
+qlogic_isp_hold_release(uint32_t handle, uint8_t channel) "handle 0x%08x channel %u hold over"
 qlogic_isp_selection_wait(uint32_t handle, uint8_t channel, uint8_t target, uint8_t lun, uint16_t timeout) "handle 0x%08x %u:%u:%u absent, selection timeout %u"
 qlogic_isp_mbox_busy(uint16_t cmd) "cmd 0x%04x refused, result still held"
 

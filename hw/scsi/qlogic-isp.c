@@ -314,6 +314,19 @@ enum {
 #define ISP_SELECTION_TIMEOUT_DEFAULT   250
 
 /*
+ * The hold-off after a bus reset: docs/datasheets/isp1040.md, "Bus-reset
+ * hold-off (0x0018)". QLogic's installation guides define a setting, "SCSI
+ * bus reset delay", 0 to 15 seconds, after which "the firmware does not
+ * initiate any SCSI activity for the number of seconds specified"
+ * (established, for that NVRAM setting). That mailbox 1 of the bus-reset
+ * command starts the same hold-off is inferred, from the shared name and
+ * the value the drivers pass. What a command does that arrives during the
+ * hold, and whether anything is posted when it ends, are not documented;
+ * the model's choices are noted where they are made. The unit is seconds.
+ */
+#define ISP_BUS_RESET_DELAY_UNIT_NS     (1000LL * 1000 * 1000)
+
+/*
  * A completion held for response-ring room, a case only a model with no
  * bus latency reaches; the SCSIRequest is already finished.
  */
@@ -342,6 +355,21 @@ typedef struct QLogicISPSelectionWire {
     uint8_t lun;
     int64_t remaining;
 } QLogicISPSelectionWire;
+
+/*
+ * A command parked behind a bus's hold-off, as it travels in a migration
+ * stream. Only where its entry sits in the request ring travels: the slot
+ * is not given back to the guest while the command is parked, so the
+ * destination re-reads the entry from guest memory when the hold ends.
+ */
+typedef struct QLogicISPHoldWire {
+    uint32_t handle;
+    uint16_t ring_index;
+    uint8_t channel;
+    uint8_t target;
+    uint8_t lun;
+    uint8_t entry_count;
+} QLogicISPHoldWire;
 
 /*
  * The most completions the model can hold: one per command of the budget
@@ -396,6 +424,14 @@ typedef struct QLogicISPChannel {
     uint8_t index;
     uint16_t reset_delay;   /* What this bus waits after a reset. */
     uint16_t select_timeout;    /* Selection timeout, in the unit above. */
+    /*
+     * The bus is quiet until this time on the virtual clock, in
+     * nanoseconds, after a bus reset carrying a delay (see the hold-off
+     * note at ISP_BUS_RESET_DELAY_UNIT_NS). Zero when no hold is set. The
+     * timer starts the commands that arrived meanwhile.
+     */
+    int64_t hold_until;
+    QEMUTimer *hold_timer;
 } QLogicISPChannel;
 
 struct QLogicISPState {
@@ -451,6 +487,14 @@ struct QLogicISPState {
     QLogicISPSelectionWire selection_wire[QLOGIC_ISP_HELD_MAX];
 
     /*
+     * The hold-off in the same migration form: what is left of each bus's
+     * hold, and the commands parked behind it, oldest first.
+     */
+    int64_t hold_remaining[QLOGIC_ISP_MAX_CHANNELS];
+    uint32_t parked_count;
+    QLogicISPHoldWire parked_wire[QLOGIC_ISP_HELD_MAX];
+
+    /*
      * A command finishing on its own frees one of the announced budget's
      * slots, and the ring may be stalled on it. Resuming here rather than
      * from the completion callback keeps the consume loop out of the SCSI
@@ -504,6 +548,15 @@ struct QLogicISPRequest {
      */
     QEMUTimer *timer;
     int64_t deadline;
+    /*
+     * A command that arrived while its bus was in a hold-off has no
+     * SCSIRequest either. It is the request entry at ring_index, entry_count
+     * slots long, which the guest is not told is free until the command
+     * has started, so the entry is read again when the hold ends.
+     */
+    bool parked;
+    uint16_t ring_index;
+    uint8_t entry_count;
     QTAILQ_ENTRY(QLogicISPRequest) next;
 };
 
@@ -534,14 +587,19 @@ static void qlogic_isp_drop_pending_status(QLogicISPState *s)
 }
 
 /*
- * A request with no SCSIRequest is a command to an absent target still
- * waiting for its selection to time out; it gets its sreq before anything
- * else can look at it, and the request list is only touched under the
- * main-loop lock.
+ * A request with no SCSIRequest has not started: it is a command to an
+ * absent target still waiting for its selection to time out, or one parked
+ * behind its bus's hold-off. It gets its sreq before anything else can look
+ * at it, and the request list is only touched under the main-loop lock.
  */
-static bool qlogic_isp_waiting_for_selection(const QLogicISPRequest *req)
+static bool qlogic_isp_not_started(const QLogicISPRequest *req)
 {
     return req->sreq == NULL;
+}
+
+static bool qlogic_isp_waiting_for_selection(const QLogicISPRequest *req)
+{
+    return qlogic_isp_not_started(req) && !req->parked;
 }
 
 /* Frees a request that never became a SCSIRequest, timer included. */
@@ -558,8 +616,33 @@ static void qlogic_isp_drop_selections(QLogicISPState *s)
     QLogicISPRequest *req, *next;
 
     QTAILQ_FOREACH_SAFE(req, &s->requests, next, next) {
-        if (qlogic_isp_waiting_for_selection(req)) {
+        if (qlogic_isp_not_started(req)) {
             qlogic_isp_free_selection(req);
+        }
+    }
+}
+
+/* Forgets every command parked behind a hold-off, posting nothing. */
+static void qlogic_isp_drop_parked(QLogicISPState *s)
+{
+    QLogicISPRequest *req, *next;
+
+    QTAILQ_FOREACH_SAFE(req, &s->requests, next, next) {
+        if (req->parked) {
+            qlogic_isp_free_selection(req);
+        }
+    }
+}
+
+/* Ends the hold-off on every bus. Parked commands are the caller's. */
+static void qlogic_isp_clear_holds(QLogicISPState *s)
+{
+    unsigned int i;
+
+    for (i = 0; i < QLOGIC_ISP_MAX_CHANNELS; i++) {
+        s->chan[i].hold_until = 0;
+        if (s->chan[i].hold_timer) {
+            timer_del(s->chan[i].hold_timer);
         }
     }
 }
@@ -602,8 +685,12 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
         s->chan[i].select_timeout = ISP_SELECTION_TIMEOUT_DEFAULT;
     }
 
-    /* The reset takes the adapter's pending selections with it. */
+    /*
+     * The reset takes the adapter's pending selections with it, and any
+     * hold-off and the commands parked behind it.
+     */
     qlogic_isp_drop_selections(s);
+    qlogic_isp_clear_holds(s);
 
     /* Zeroed so a stale ring cannot be acted on. */
     s->rqst_base = 0;
@@ -814,9 +901,10 @@ static unsigned qlogic_isp_retire(QLogicISPState *s, int channel, int target,
              * (docs/datasheets/isp1040.md, "Set-selection-timeout"), but no
              * source says the firmware sends one for a command still in
              * selection. The model posts it now, in place of the timeout's
-             * own.
+             * own. A command parked behind a hold-off gets the same, which is
+             * a model choice on top of that inference.
              */
-            if (qlogic_isp_waiting_for_selection(req)) {
+            if (qlogic_isp_not_started(req)) {
                 qlogic_isp_post_status(s, req->handle, 0, completion,
                                        0, 0, 0, NULL, 0);
                 qlogic_isp_free_selection(req);
@@ -835,6 +923,20 @@ static unsigned qlogic_isp_retire(QLogicISPState *s, int channel, int target,
     }
 
     return retired;
+}
+
+/* Quiets a bus for the given seconds from now; none ends any hold. */
+static void qlogic_isp_start_hold(QLogicISPChannel *chan, uint16_t seconds)
+{
+    trace_qlogic_isp_bus_hold(chan->index, seconds);
+    if (seconds == 0) {
+        chan->hold_until = 0;
+        timer_del(chan->hold_timer);
+        return;
+    }
+    chan->hold_until = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                       (int64_t)seconds * ISP_BUS_RESET_DELAY_UNIT_NS;
+    timer_mod(chan->hold_timer, chan->hold_until);
 }
 
 /*
@@ -1098,6 +1200,12 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
             break;
         }
 
+        /*
+         * Model choice: building the ring again abandons the commands parked
+         * behind a hold-off, whose entries lived in the old one. A waiting
+         * selection has no entry to lose and is kept.
+         */
+        qlogic_isp_drop_parked(s);
         s->rqst_base = addr;
         s->rqst_len = s->mailbox[1];
         s->rqst_cons = 0;
@@ -1226,6 +1334,16 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         retired = qlogic_isp_retire(s, channel, -1, -1, -1, ISP_IOCB_RESET);
         trace_qlogic_isp_recovery(cmd, channel, -1, -1, 0, retired);
         bus_cold_reset(BUS(&s->chan[channel].bus));
+
+        /*
+         * The command itself completes at once (inferred: the drivers give
+         * it 100 to 400 ms and pass delays of seconds). The bus then starts
+         * no SCSI activity for mailbox 1 seconds, and a delay of zero holds
+         * nothing. A later reset replaces an earlier hold, including with
+         * none. The mailbox stays live and nothing is posted when the hold
+         * ends.
+         */
+        qlogic_isp_start_hold(&s->chan[channel], s->mailbox[1]);
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
     }
@@ -1905,12 +2023,13 @@ static void qlogic_isp_add_segment(QEMUSGList *qsg, uint64_t *described,
 
 static uint64_t qlogic_isp_read_segments(QLogicISPState *s, QEMUSGList *qsg,
                                          hwaddr rqst_addr,
+                                         uint16_t ring_index,
                                          uint8_t entry_count,
                                          uint16_t seg_count, uint64_t max)
 {
     PCIDevice *pci = PCI_DEVICE(s);
     uint16_t collected = 0;
-    uint16_t cont_index = s->rqst_cons;
+    uint16_t cont_index = ring_index;
     int conts_left = entry_count - 1;
     uint64_t described = 0;
     int i;
@@ -2008,12 +2127,61 @@ static void qlogic_isp_missing_target(QLogicISPState *s, uint32_t handle,
     trace_qlogic_isp_selection_wait(handle, channel, target, lun, timeout);
 }
 
+static bool qlogic_isp_bus_quiet(const QLogicISPChannel *chan)
+{
+    return chan->hold_until > qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+}
+
+/*
+ * A command for a bus in its hold-off does not start. Model choice: it
+ * waits, and starts when the hold ends, so the guest sees a slow bus. The
+ * sources say only that the firmware "does not initiate any SCSI
+ * activity" (docs/datasheets/isp1040.md, "Bus-reset hold-off (0x0018)");
+ * refusing or failing the command is as well supported, and which the
+ * firmware does is unknown. Only the bus in its hold waits: the request
+ * ring is walked on, so a command for the other bus behind it is not
+ * delayed.
+ *
+ * The entry stays where it is. Its slot is withheld from the guest (see
+ * qlogic_isp_request_out) until the command starts, and is read again
+ * then, so nothing has to be copied or migrated but its position. The
+ * command counts as outstanding meanwhile, as a waiting selection does.
+ * Every check that can answer the entry without a bus (the channel number,
+ * an absent target) comes after the hold, so an absent target first waits
+ * out the hold and then its selection timeout: also a model choice.
+ */
+static bool qlogic_isp_park_if_quiet(QLogicISPState *s, uint32_t handle,
+                                     uint8_t channel, uint8_t target,
+                                     uint8_t lun, uint16_t ring_index,
+                                     uint8_t entry_count)
+{
+    QLogicISPRequest *req;
+
+    if (!qlogic_isp_bus_quiet(&s->chan[channel])) {
+        return false;
+    }
+
+    req = g_new0(QLogicISPRequest, 1);
+    req->dev = s;
+    req->handle = handle;
+    req->channel = channel;
+    req->target = target;
+    req->lun = lun;
+    req->parked = true;
+    req->ring_index = ring_index;
+    req->entry_count = entry_count;
+    QTAILQ_INSERT_TAIL(&s->requests, req, next);
+    trace_qlogic_isp_hold_park(handle, channel, target, lun);
+    return true;
+}
+
 /*
  * Returns false when the fabric refused the CDB read: the walk stops on
  * the entry and nothing is posted -- the part documents no status for a
  * refused transfer, and the Bridge reports it on its own error path.
  */
 static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
+                                      uint16_t ring_index,
                                       uint8_t entry_count)
 {
     const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
@@ -2053,6 +2221,11 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
         return true;
     }
 
+    if (qlogic_isp_park_if_quiet(s, handle, channel, target, lun, ring_index,
+                                 entry_count)) {
+        return true;
+    }
+
     sdev = scsi_device_find(&s->chan[channel].bus, channel, target, lun);
     if (!sdev) {
         /*
@@ -2080,8 +2253,8 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     /* The command comes first: its length is what caps the descriptors. */
     req->sreq = scsi_req_new(sdev, handle, lun, cdb,
                              MIN(cdb_len, sizeof(cdb)), req);
-    req->described = qlogic_isp_read_segments(s, &req->qsg, addr, entry_count,
-                                              seg_count,
+    req->described = qlogic_isp_read_segments(s, &req->qsg, addr, ring_index,
+                                              entry_count, seg_count,
                                               req->sreq->cmd.xfer);
     if (scsi_req_enqueue(req->sreq)) {
         scsi_req_continue(req->sreq);
@@ -2092,12 +2265,13 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
 static uint64_t qlogic_isp_read_segments_a64(QLogicISPState *s,
                                              QEMUSGList *qsg,
                                              hwaddr rqst_addr,
+                                             uint16_t ring_index,
                                              uint8_t entry_count,
                                              uint16_t seg_count, uint64_t max)
 {
     PCIDevice *pci = PCI_DEVICE(s);
     uint16_t collected = 0;
-    uint16_t cont_index = s->rqst_cons;
+    uint16_t cont_index = ring_index;
     int conts_left = entry_count - 1;
     uint64_t described = 0;
     int i;
@@ -2140,6 +2314,7 @@ static uint64_t qlogic_isp_read_segments_a64(QLogicISPState *s,
 }
 
 static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
+                                          uint16_t ring_index,
                                           uint8_t entry_count)
 {
     const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
@@ -2180,6 +2355,12 @@ static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
         return true;
     }
 
+    /* Held off by a bus-reset delay, as the 32-bit path is. */
+    if (qlogic_isp_park_if_quiet(s, handle, channel, target, lun, ring_index,
+                                 entry_count)) {
+        return true;
+    }
+
     sdev = scsi_device_find(&s->chan[channel].bus, channel, target, lun);
     if (!sdev) {
         /* The same missing-target answer as the 32-bit path. */
@@ -2201,12 +2382,96 @@ static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     req->sreq = scsi_req_new(sdev, handle, lun, cdb,
                              MIN(cdb_len, sizeof(cdb)), req);
     req->described = qlogic_isp_read_segments_a64(s, &req->qsg, addr,
-                                                  entry_count, seg_count,
+                                                  ring_index, entry_count,
+                                                  seg_count,
                                                   req->sreq->cmd.xfer);
     if (scsi_req_enqueue(req->sreq)) {
         scsi_req_continue(req->sreq);
     }
     return true;
+}
+
+/* Starts a command that was parked, reading its entry from the ring. */
+static void qlogic_isp_start_parked(QLogicISPState *s, uint16_t ring_index,
+                                    uint8_t entry_count)
+{
+    PCIDevice *pci = PCI_DEVICE(s);
+    hwaddr addr = qlogic_isp_rqst_entry_addr(s, ring_index);
+
+    switch (qlogic_isp_desc_ld8(pci, addr + ISP_ENTRY_OFF_TYPE)) {
+    case ISP_ENTRY_TYPE_REQUEST:
+        qlogic_isp_handle_request(s, addr, ring_index, entry_count);
+        break;
+    case ISP_A64_ENTRY_TYPE_COMMAND:
+        qlogic_isp_handle_request_a64(s, addr, ring_index, entry_count);
+        break;
+    default:
+        /* Not reachable: the guest has not been given the slot back. */
+        break;
+    }
+}
+
+/*
+ * The hold-off is over: the bus's parked commands start, oldest first.
+ * Nothing is posted for the end of the hold itself. Inferred: no driver
+ * handles an asynchronous event for it, and none is documented
+ * (docs/datasheets/isp1040.md, "Bus-reset hold-off (0x0018)").
+ */
+static void qlogic_isp_hold_expired(void *opaque)
+{
+    QLogicISPChannel *chan = opaque;
+    QLogicISPState *s = chan->dev;
+
+    chan->hold_until = 0;
+    for (;;) {
+        QLogicISPRequest *req;
+        uint32_t handle;
+        uint16_t ring_index;
+        uint8_t entry_count;
+
+        QTAILQ_FOREACH(req, &s->requests, next) {
+            if (req->parked && req->channel == chan->index) {
+                break;
+            }
+        }
+        if (!req) {
+            break;
+        }
+        handle = req->handle;
+        ring_index = req->ring_index;
+        entry_count = req->entry_count;
+        qlogic_isp_free_selection(req);
+        trace_qlogic_isp_hold_release(handle, chan->index);
+        qlogic_isp_start_parked(s, ring_index, entry_count);
+    }
+}
+
+/*
+ * The request-out position the guest reads. A parked command's slot is not
+ * free until the command has started, so the position the guest sees stops
+ * at the oldest parked entry while the model walks on. Linux works out its
+ * free ring space from this value; withholding the slots is also what
+ * keeps the entry intact for the second read.
+ */
+static uint16_t qlogic_isp_request_out(QLogicISPState *s)
+{
+    QLogicISPRequest *req;
+    uint16_t out = s->rqst_cons;
+    unsigned int back = 0;
+
+    QTAILQ_FOREACH(req, &s->requests, next) {
+        unsigned int dist;
+
+        if (!req->parked) {
+            continue;
+        }
+        dist = (s->rqst_cons + s->rqst_len - req->ring_index) % s->rqst_len;
+        if (dist > back) {
+            back = dist;
+            out = req->ring_index;
+        }
+    }
+    return out;
 }
 
 static unsigned qlogic_isp_outstanding(QLogicISPState *s)
@@ -2287,14 +2552,16 @@ static void qlogic_isp_consume_requests(QLogicISPState *s)
 
         switch (entry_type) {
         case ISP_ENTRY_TYPE_REQUEST:
-            if (!qlogic_isp_handle_request(s, addr, entry_count)) {
+            if (!qlogic_isp_handle_request(s, addr, s->rqst_cons,
+                                          entry_count)) {
                 return;
             }
             break;
 
         /* Continuations are stepped past here; reading segments visits them. */
         case ISP_A64_ENTRY_TYPE_COMMAND:
-            if (!qlogic_isp_handle_request_a64(s, addr, entry_count)) {
+            if (!qlogic_isp_handle_request_a64(s, addr, s->rqst_cons,
+                                              entry_count)) {
                 return;
             }
             break;
@@ -2392,7 +2659,7 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
         if (s->rqst_len == 0) {
             return s->mailbox[ISP_MAILBOX_REQUEST_QUEUE];
         }
-        return s->rqst_cons;
+        return qlogic_isp_request_out(s);
     }
 
     if (addr >= ISP_REG_MAILBOX_BASE && addr < ISP_REG_MAILBOX_END) {
@@ -2651,6 +2918,9 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
     for (i = 0; i < info->nchannels; i++) {
         s->chan[i].dev = s;
         s->chan[i].index = i;
+        s->chan[i].hold_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                             qlogic_isp_hold_expired,
+                                             &s->chan[i]);
         /*
          * The ceiling scsi_bus_check_address() tests before the stamp
          * below runs. Channel 0's bus keeps it at zero, so the ISP1040
@@ -2680,10 +2950,15 @@ void qlogic_isp_handle_legacy_cmdline(DeviceState *dev)
 static void qlogic_isp_exit(PCIDevice *dev)
 {
     QLogicISPState *s = QLOGIC_ISP(dev);
+    unsigned int i;
 
     qemu_bh_delete(s->resume_bh);
     qlogic_isp_drop_pending_status(s);
     qlogic_isp_drop_selections(s);
+    for (i = 0; i < QLOGIC_ISP_MAX_CHANNELS; i++) {
+        timer_free(s->chan[i].hold_timer);
+        s->chan[i].hold_timer = NULL;
+    }
 }
 
 /*
@@ -2841,6 +3116,143 @@ static const VMStateDescription vmstate_qlogic_isp_selection = {
     }
 };
 
+static bool qlogic_isp_hold_state_needed(void *opaque)
+{
+    QLogicISPState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    unsigned int i;
+
+    for (i = 0; i < QLOGIC_ISP_MAX_CHANNELS; i++) {
+        if (s->chan[i].hold_until > now) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Flatten the hold-off and the commands parked behind it. */
+static bool qlogic_isp_hold_pre_save(void *opaque, Error **errp)
+{
+    QLogicISPState *s = opaque;
+    QLogicISPRequest *req;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    unsigned int i;
+
+    for (i = 0; i < QLOGIC_ISP_MAX_CHANNELS; i++) {
+        s->hold_remaining[i] = MAX(s->chan[i].hold_until - now, 0);
+    }
+    s->parked_count = 0;
+    QTAILQ_FOREACH(req, &s->requests, next) {
+        QLogicISPHoldWire *wire;
+
+        if (!req->parked) {
+            continue;
+        }
+        /* Outstanding commands are capped by the announced budget. */
+        assert(s->parked_count < QLOGIC_ISP_HELD_MAX);
+        wire = &s->parked_wire[s->parked_count++];
+        wire->handle = req->handle;
+        wire->ring_index = req->ring_index;
+        wire->channel = req->channel;
+        wire->target = req->target;
+        wire->lun = req->lun;
+        wire->entry_count = req->entry_count;
+    }
+    return true;
+}
+
+static bool qlogic_isp_parked_count_valid(void *opaque, int version_id)
+{
+    QLogicISPState *s = opaque;
+
+    return s->parked_count < QLOGIC_ISP_HELD_MAX;
+}
+
+/* Rearm the hold-off for what was left of it, and park the commands. */
+static bool qlogic_isp_hold_post_load(void *opaque, int version_id,
+                                      Error **errp)
+{
+    QLogicISPState *s = opaque;
+    const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint32_t i;
+
+    for (i = 0; i < s->parked_count; i++) {
+        const QLogicISPHoldWire *wire = &s->parked_wire[i];
+        QLogicISPRequest *req;
+
+        if (wire->channel >= info->nchannels || s->rqst_len == 0 ||
+            wire->ring_index >= s->rqst_len || wire->entry_count == 0) {
+            error_setg(errp, "qlogic-isp: parked command on channel %u at "
+                       "ring index %u", wire->channel, wire->ring_index);
+            return false;
+        }
+        req = g_new0(QLogicISPRequest, 1);
+        req->dev = s;
+        req->handle = wire->handle;
+        req->channel = wire->channel;
+        req->target = wire->target;
+        req->lun = wire->lun;
+        req->parked = true;
+        req->ring_index = wire->ring_index;
+        req->entry_count = wire->entry_count;
+        QTAILQ_INSERT_TAIL(&s->requests, req, next);
+    }
+
+    for (i = 0; i < info->nchannels; i++) {
+        if (s->hold_remaining[i] > 0) {
+            s->chan[i].hold_until = now + s->hold_remaining[i];
+            timer_mod(s->chan[i].hold_timer, s->chan[i].hold_until);
+        }
+    }
+
+    memset(s->parked_wire, 0, s->parked_count * sizeof(s->parked_wire[0]));
+    s->parked_count = 0;
+    return true;
+}
+
+static const VMStateDescription vmstate_qlogic_isp_hold_wire = {
+    .name = "qlogic-isp/hold-wire",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(handle, QLogicISPHoldWire),
+        VMSTATE_UINT16(ring_index, QLogicISPHoldWire),
+        VMSTATE_UINT8(channel, QLogicISPHoldWire),
+        VMSTATE_UINT8(target, QLogicISPHoldWire),
+        VMSTATE_UINT8(lun, QLogicISPHoldWire),
+        VMSTATE_UINT8(entry_count, QLogicISPHoldWire),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * What is left of a bus-reset hold-off and the commands parked behind it,
+ * as a time remaining rather than a deadline, as the selection wait does.
+ * Carried only while a hold is running, so a stream from a guest that
+ * never held a bus stays what it was.
+ */
+static const VMStateDescription vmstate_qlogic_isp_hold = {
+    .name = "qlogic-isp/hold",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = qlogic_isp_hold_state_needed,
+    .pre_save_errp = qlogic_isp_hold_pre_save,
+    .post_load_errp = qlogic_isp_hold_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT64_ARRAY(hold_remaining, QLogicISPState,
+                            QLOGIC_ISP_MAX_CHANNELS),
+        VMSTATE_UINT32(parked_count, QLogicISPState),
+        VMSTATE_VALIDATE("parked command count within the ring rule",
+                         qlogic_isp_parked_count_valid),
+        VMSTATE_STRUCT_VARRAY_UINT32(parked_wire, QLogicISPState,
+                                     parked_count, 0,
+                                     vmstate_qlogic_isp_hold_wire,
+                                     QLogicISPHoldWire),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /* One completion the guest has not been given room for. */
 static const VMStateDescription vmstate_qlogic_isp_pending_status = {
     .name = "qlogic-isp/pending-status",
@@ -2885,7 +3297,9 @@ static bool qlogic_isp_pre_load(void *opaque, Error **errp)
     qlogic_isp_drop_pending_status(s);
     s->held_count = 0;
     qlogic_isp_drop_selections(s);
+    qlogic_isp_clear_holds(s);
     s->selection_count = 0;
+    s->parked_count = 0;
     /* A stream that omits the subsection means the reset value. */
     for (i = 0; i < QLOGIC_ISP_MAX_CHANNELS; i++) {
         s->chan[i].select_timeout = ISP_SELECTION_TIMEOUT_DEFAULT;
@@ -2972,6 +3386,7 @@ static const VMStateDescription vmstate_qlogic_isp = {
     .subsections = (const VMStateDescription * const []) {
         &vmstate_qlogic_isp_isp12160,
         &vmstate_qlogic_isp_selection,
+        &vmstate_qlogic_isp_hold,
         NULL
     }
 };

@@ -3282,6 +3282,246 @@ static void test_migration_carries_a_waiting_selection(const void *data)
 
 /* Channel 0's delay and channel 1's, which no register hands back. */
 /*
+ * The bus-reset hold-off. docs/datasheets/isp1040.md, "Bus-reset hold-off
+ * (0x0018)", marks the vendor's setting established and everything the model
+ * does with it inferred or unknown: that the mailbox delay starts the same
+ * hold, that a command arriving meanwhile waits rather than being refused,
+ * and that nothing is posted when the hold ends. These cases pin the model's
+ * choices, not a measured contract.
+ */
+#define HOLD_S_NS           (1000LL * 1000 * 1000)
+
+static QTestState *hold_start_with_disks(DiskPair *disks)
+{
+    QTestState *qts = isp12160_start_with_disks(disks);
+
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+    return qts;
+}
+
+/* The bus-reset command: mailbox 1 the delay in seconds, mailbox 2 the bus. */
+static void hold_bus_reset(QTestState *qts, uint16_t seconds, unsigned channel)
+{
+    const uint16_t in[] = { seconds, channel };
+
+    g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_BUS_RESET, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(qts);
+}
+
+static void send_tur(QTestState *qts, uint32_t handle, unsigned channel,
+                     unsigned target)
+{
+    uint8_t cdb[6] = { SCSI_TEST_UNIT_READY };
+
+    submit_a64(qts, ring.rqst_next, handle, channel, target, 0, cdb,
+               sizeof(cdb), 0, NULL, 0);
+}
+
+static uint16_t responses(QTestState *qts)
+{
+    return isp_readw(qts, ISP_REG_RESPONSE_QUEUE);
+}
+
+/*
+ * A command for a present target does not start during the hold and does
+ * after it, to the nanosecond. The request-out position the guest reads
+ * stays at the command's slot meanwhile: the slot is not free until the
+ * command has started.
+ */
+static void test_bus_reset_hold_delays_a_present_target(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = hold_start_with_disks(&disks);
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    hold_bus_reset(qts, 1, 0);
+    send_tur(qts, 0x71, 0, DISK_TARGET);
+
+    g_assert_cmphex(responses(qts), ==, 0);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 0);
+    qtest_clock_step(qts, HOLD_S_NS - 1);
+    g_assert_cmphex(responses(qts), ==, 0);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 0);
+
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(responses(qts), ==, 1);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 1);
+    wait_status(qts, 0x71, status);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+
+    /* Nothing else is posted for the end of the hold. */
+    qtest_clock_step(qts, 10 * HOLD_S_NS);
+    g_assert_cmphex(responses(qts), ==, ring.resp_next);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/* A delay of zero holds nothing: the command completes without time passing. */
+static void test_bus_reset_delay_zero_holds_nothing(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = hold_start_with_disks(&disks);
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    hold_bus_reset(qts, 0, 0);
+    send_tur(qts, 0x72, 0, DISK_TARGET);
+    g_assert_cmphex(responses(qts), ==, 1);
+    wait_status(qts, 0x72, status);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * One bus is quiet and the other is not, with the quiet bus's command ahead
+ * of the other's in the one request ring: the other bus's command is not
+ * delayed, and the position the guest reads stays at the held slot while the
+ * model has walked past it.
+ */
+static void test_bus_reset_hold_leaves_the_other_bus(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = hold_start_with_disks(&disks);
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    hold_bus_reset(qts, 1, 0);
+    send_tur(qts, 0x73, 0, DISK_TARGET);
+    send_tur(qts, 0x74, 1, DISK_TARGET);
+
+    g_assert_cmphex(responses(qts), ==, 1);
+    wait_status(qts, 0x74, status);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 0);
+
+    qtest_clock_step(qts, HOLD_S_NS - 1);
+    g_assert_cmphex(responses(qts), ==, ring.resp_next);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(responses(qts), ==, ring.resp_next + 1);
+    wait_status(qts, 0x73, status);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 2);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * An absent target first waits out the hold, then its selection timeout:
+ * a model choice, the selection timeout counting from when selection would
+ * start.
+ */
+static void test_bus_reset_hold_then_selection_timeout(const void *data)
+{
+    waiting_start();
+    hold_bus_reset(qts, 1, 0);
+    send_to_absent(qts, 0x75, 0);
+
+    qtest_clock_step(qts, WAIT_DEFAULT_NS);
+    g_assert_cmphex(responses(qts), ==, 0);
+    qtest_clock_step(qts, HOLD_S_NS - 1);
+    g_assert_cmphex(responses(qts), ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(responses(qts), ==, 1);
+    expect_selection_timed_out(qts, 0, 0x75);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 1);
+}
+
+/*
+ * A second bus reset replaces the hold, and retires what is parked behind
+ * the first as any bus reset retires the commands outstanding on its bus.
+ */
+static void test_bus_reset_replaces_the_hold(const void *data)
+{
+    waiting_start();
+    hold_bus_reset(qts, 5, 0);
+    send_to_absent(qts, 0x76, 0);
+    g_assert_cmphex(responses(qts), ==, 0);
+
+    hold_bus_reset(qts, 0, 0);
+    g_assert_cmphex(responses(qts), ==, 1);
+    expect_retired_handle(qts, 0, 0x76, ISP_IOCB_RESET);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 1);
+
+    /* The cleared hold lets a new command through to its selection wait. */
+    send_to_absent(qts, 0x77, 0);
+    qtest_clock_step(qts, WAIT_DEFAULT_NS);
+    g_assert_cmphex(responses(qts), ==, 2);
+    expect_selection_timed_out(qts, 1, 0x77);
+}
+
+/* A reset of the adapter ends the hold and forgets the parked command. */
+static void test_reset_clears_the_bus_reset_hold(const void *data)
+{
+    waiting_start();
+    hold_bus_reset(qts, 5, 0);
+    send_to_absent(qts, 0x78, 0);
+
+    waiting_start();
+    send_to_absent(qts, 0x79, 0);
+    qtest_clock_step(qts, WAIT_DEFAULT_NS - 1);
+    g_assert_cmphex(responses(qts), ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(responses(qts), ==, 1);
+    expect_selection_timed_out(qts, 0, 0x79);
+
+    /* The first command never comes back. */
+    qtest_clock_step(qts, 10 * HOLD_S_NS);
+    g_assert_cmphex(responses(qts), ==, 1);
+}
+
+/*
+ * A hold crosses a migration as the time left and the command parked behind
+ * it as its place in the ring. 0.5 s of a 2 s hold pass before the
+ * migration; the destination starts the command after the other 1.5 s and
+ * answers it after its selection timeout.
+ */
+static void test_migration_carries_a_bus_reset_hold(const void *data)
+{
+    g_autofree char *dir = g_dir_make_tmp("isp12160-hold-XXXXXX", NULL);
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_nonnull(dir);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+
+    from = qtest_init(MACHINE);
+    aim_window_at_memory_bar(from);
+    qtest_memset(from, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(from, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(from, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+    hold_bus_reset(from, 2, 0);
+    send_to_absent(from, 0xe1, 0);
+    qtest_clock_step(from, HOLD_S_NS / 2);
+    g_assert_cmphex(responses(from), ==, 0);
+
+    to = qtest_initf("%s -incoming %s", MACHINE, uri);
+    qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    sgi_migrate_resume(to);
+
+    g_assert_cmphex(responses(to), ==, 0);
+    g_assert_cmphex(isp_readw(to, ISP_REG_REQUEST_QUEUE), ==, 0);
+
+    /* A command sent now joins the hold, and starts after the first. */
+    send_to_absent(to, 0xe2, 0);
+    qtest_clock_step(to, 3 * HOLD_S_NS / 2 + WAIT_DEFAULT_NS - 1);
+    g_assert_cmphex(responses(to), ==, 0);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(responses(to), ==, 2);
+    expect_selection_timed_out(to, 0, 0xe1);
+    expect_selection_timed_out(to, 1, 0xe2);
+
+    qtest_quit(to);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+/*
  * A programmed wait with no command waiting still crosses a migration: the
  * destination answers an absent target after the value the guest set for
  * that bus, not after the default. Each bus has its own value.
@@ -3964,6 +4204,20 @@ int main(int argc, char **argv)
                         NULL, test_migration_carries_a_waiting_selection);
     qtest_add_data_func("sn0/isp12160/migration-carries-a-programmed-wait",
                         NULL, test_migration_carries_a_programmed_wait);
+    qtest_add_data_func("sn0/isp12160/bus-reset-hold-delays-a-present-target",
+                        NULL, test_bus_reset_hold_delays_a_present_target);
+    qtest_add_data_func("sn0/isp12160/bus-reset-delay-zero-holds-nothing",
+                        NULL, test_bus_reset_delay_zero_holds_nothing);
+    qtest_add_data_func("sn0/isp12160/bus-reset-hold-leaves-the-other-bus",
+                        NULL, test_bus_reset_hold_leaves_the_other_bus);
+    qtest_add_data_func("sn0/isp12160/bus-reset-hold-then-selection-timeout",
+                        NULL, test_bus_reset_hold_then_selection_timeout);
+    qtest_add_data_func("sn0/isp12160/bus-reset-replaces-the-hold", NULL,
+                        test_bus_reset_replaces_the_hold);
+    qtest_add_data_func("sn0/isp12160/reset-clears-the-bus-reset-hold", NULL,
+                        test_reset_clears_the_bus_reset_hold);
+    qtest_add_data_func("sn0/isp12160/migration-carries-a-bus-reset-hold",
+                        NULL, test_migration_carries_a_bus_reset_hold);
     qtest_add_data_func("sn0/isp12160/migration-preserves-distinct-state",
                         NULL, test_migration_preserves_distinct_state);
     qtest_add_data_func(
