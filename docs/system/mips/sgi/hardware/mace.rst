@@ -972,7 +972,11 @@ I2C bus interface
 =================
 
 MACE has a two-wire I2C master at peripheral offset ``0x330000``
-(:src:`sgi-mace-2.0-spec p. 149-150`), *established*. No machine maps
+(the peripheral address map; the register offsets ``0x00`` to ``0x18``
+inside the block are in :src:`sgi-mace-2.0-spec p. 149-150`),
+*established*. The specification's text says the ASIC contains two I2C
+interfaces (p. 149), but its register chapter describes one block of
+four registers, which is what the model implements. No machine maps
 it: the ``o2`` machine leaves the block absent, and which I2C devices an
 O2 board carries is *unknown*. ``sgi-mace`` has a register model of the
 master, ``hw/mips/sgi/mace-i2c.c``, which only the qtests can turn on,
@@ -982,8 +986,36 @@ the property outside QTest.
 The model has four 64-bit registers: configuration at offsets 0 and 8,
 CONTROL at ``0x10`` and DATA at ``0x18``. Only aligned 8-byte accesses
 are accepted. Any other width or offset is a bus error with no side
-effect. Reading the configuration while a transfer owns the bus logs
-``LOG_UNIMP`` and fails, because the model has no sampled line state.
+effect. Reading the configuration fails and logs ``LOG_UNIMP`` while a
+transfer owns the bus, while the model is busy, while the bus is busy or
+when an endpoint cannot do byte-at-once transfers, because the model has
+no sampled line state. Otherwise it returns the written bits with both
+sampled line inputs (``0x30``) reading released.
+
+CONTROL follows the specification's Table 77 (:src:`sgi-mace-2.0-spec p. 150`),
+*established*:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Bit
+     - Meaning
+   * - 0
+     - Force idle: a write of 0 forces idle; a read of 1 means not idle.
+   * - 1
+     - Direction: 1 receive, 0 send.
+   * - 2
+     - Last byte control (hold): 1 keeps the bus after the byte, 0
+       releases it.
+   * - 4
+     - Transfer busy (read only).
+   * - 5
+     - Acknowledge not received (read only), the model's NACK status.
+   * - 7
+     - Bus error (read only), the model's sticky error status.
+
+Bits 3 and 6 are reserved. A configuration write that sets a line
+override bit (2 or 3) logs ``LOG_UNIMP``, sets the error status and fails.
 
 The model transfers whole bytes with no wire timing, an
 *approximation*:

@@ -6,8 +6,10 @@
 VICE: video and image compression engine
 ========================================
 
-Used in :ref:`sgi-ip32` (O2). VICE is a media processor on the O2's
-CRIME bus. It holds a scalar and vector signal processor (the MSP), a
+Used in :ref:`sgi-ip32` (O2). VICE is a media processor on the
+processor's system bus (SysAD), which it shares with the CPU
+(:src:`099-0123-003 p. 20, 97`), *established*. It talks to CRIME over
+handshake pins. It holds a scalar and vector signal processor (the MSP), a
 bitstream processor (the BSP) and two DMA channels that move image data
 between its own memories and main memory
 (:src:`099-0123-003 p. 15-21`), *established*. QEMU models it as the
@@ -125,8 +127,9 @@ The specification says reads beyond the implemented part of an address
 range return zeros so memory can grow later
 (:src:`099-0123-003 p. 22`), *established*. The model does this for the
 gaps in the memory map (`Local memories`_) and for the offsets from
-``0x200`` to ``0xfff``. Writes to the gaps are discarded and log
-``LOG_GUEST_ERROR``.
+``0x200`` to ``0xfff``. Writes to the memory-map gaps are discarded and log
+``LOG_GUEST_ERROR``. Writes to ``0x200`` to ``0xfff`` are refused
+(`Model limits`_).
 
 .. _sgi-vice-registers:
 
@@ -222,14 +225,16 @@ column gives the page of the field table.
      - 32
      - 0
      - read/write
-     - Bits 2:0 grant the MSP data banks A to C. All 32 bits are kept.
+     - Bits 2:0 grant the MSP data banks A to C. The specification
+       defines only bits 2:0 (p. 48); the model keeps all 32 bits.
      - 48
    * - ``0x108``
      - VICEMSP_COUNT
      - 32
      - 0
      - read
-     - Counts ``msp-clock-hz`` ticks. Write refused.
+     - Counts ``msp-clock-hz`` ticks. Write refused. The specification
+       makes it read/write (p. 53); this is a model difference.
      - 53
    * - ``0x160``
      - VICE_INT
@@ -330,8 +335,11 @@ column gives the page of the field table.
      - 64 entries, one per slot. See `Address translation`_.
      - 38
 
-The register offsets, widths, names and access types are *established*
-(:src:`099-0123-003 p. 39-43`). The specification gives some reset
+The register offsets, widths and names are *established*
+(:src:`099-0123-003 p. 39-43`), and so are the access types except in two
+rows where the model differs from the specification: ``MSP_D_RAM`` keeps
+bits the specification does not define, and ``VICEMSP_COUNT`` refuses
+writes the specification allows. Both are *approximation*. The specification gives some reset
 values as "unknown" or leaves them undefined: the PC, bad address and
 EPC (:src:`099-0123-003 p. 50-51`), the descriptor words and the
 translation entries (:src:`099-0123-003 p. 38, 42`). The model resets
@@ -456,10 +464,13 @@ interrupts latch whatever the enable bit says, *established*.
      - As bit 1, for channel 2.
 
 The bit assignments are from :src:`099-0123-003 p. 45-46`, *established*.
-The output line is high while ``VICE_INT & VICE_INT_EN`` is not zero and
-is updated on every change to either register, to a status bit and
-on a restore from a migration stream. The specification does not give the
-pin polarity as seen by CRIME, which sees a registered signal.
+The specification names the pin ``Vice_Int_n`` (p. 18) and requires it
+to be 1 in reset (p. 26), so the pin is active low, *established*. The
+model's output line is high while ``VICE_INT & VICE_INT_EN`` is not zero
+and is updated on every change to either register, to a status bit and
+on a restore from a migration stream. That polarity is a model choice,
+*approximation*, and differs from the pin. CRIME sees a registered
+signal.
 
 .. _sgi-vice-reset:
 

@@ -186,7 +186,8 @@ the rest read as zero. Resets come from the specification pages given,
      - CMFIFO
      - 0 at revision 1, 63 at revision 2
      - read
-     - Spec p. 45. Free entries; the model's FIFO is always empty.
+     - Spec p. 45. Free entries; the model's FIFO is always empty. The
+       revision 2 value has no public source (`Model limits`_).
    * - ``0x060000``-``0x0603fc``
      - GMAP[0..255]
      - not specified; model 0
@@ -857,8 +858,11 @@ Model limits
   entries of a 64-deep FIFO (:src:`sgi-gbe-1.1-spec p. 45`),
   *established*, and the model reads them that way. It has no FIFO and
   writes drain before the access completes, so the FIFO is always empty.
-  At revision 1 the six-bit field wraps 64 free entries to 0, and at
-  revision 2 it saturates at 63. Both empty readings are *inferred*.
+  At revision 1 the six-bit field wraps 64 free entries to 0, an
+  *inferred* reading: 64 does not fit six bits, and the specification
+  gives a reset value of 000000. At revision 2 the model reads 63. No
+  public source gives a revision 2 reading, so that value is an
+  *approximation* and what hardware returns is *unknown*.
   Linux's ``gbefb.c`` waits while ``cm_fifo >= 63``, treating the value
   as occupancy, a *software expectation* that disagrees with the
   specification.
