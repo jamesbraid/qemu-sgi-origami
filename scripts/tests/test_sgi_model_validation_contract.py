@@ -2028,11 +2028,12 @@ class Origin3000BrickValidationTests(unittest.TestCase):
             "profile"] = "rbrick"
         self.assertFails(model, "names unsupported L1 profile 'rbrick'")
 
-    def test_io7_ieee1394_absent_is_only_true(self):
+    def test_io7_has_no_ieee1394_absent_flag(self):
         model = self.model()
         model["machine"]["emulation"]["io_boards"][
-            "ibrick-xbridge-bridge-f"]["ieee1394_absent"] = False
-        self.assertFails(model, "ieee1394_absent, when given, must be true")
+            "ibrick-xbridge-bridge-f"]["ieee1394_absent"] = True
+        self.assertFails(
+            model, "invalid io_boards policy for 'ibrick-xbridge-bridge-f'")
 
 
 if __name__ == "__main__":

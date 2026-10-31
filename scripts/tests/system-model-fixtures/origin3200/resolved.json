@@ -1429,10 +1429,9 @@
       ],
       "io_boards": {
         "ibrick-xbridge-bridge-f": {
-          "ieee1394_absent": true,
           "ioc3_subsystem_id": 65535,
           "mac_source": "none",
-          "notes": "The IOC3 subsystem field is the unobserved placeholder, and no source gives where the IO7's Ethernet address comes from. The IEEE 1394 link controller is left out, a stated limitation: its PHY and bus are not modelled.",
+          "notes": "The IOC3 subsystem field is the unobserved placeholder, and no source gives where the IO7's Ethernet address comes from. The IEEE 1394 link controller's PHY is the model's lone unconnected PHY, an approximation: the fitted PHY part is unidentified, and no 1394 bus or CD-ROM is modelled.",
           "provenance": "derived",
           "sources": [
             "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick",

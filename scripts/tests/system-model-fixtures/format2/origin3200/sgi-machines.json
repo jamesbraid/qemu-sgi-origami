@@ -355,7 +355,6 @@
           "carrier": "machine-placed",
           "fibre-channel": true,
           "id": "ibrick-xbridge-bridge-f",
-          "ieee1394-absent": true,
           "ioc3-subsystem-id": 65535,
           "mac-source": "none",
           "module-index": 2,

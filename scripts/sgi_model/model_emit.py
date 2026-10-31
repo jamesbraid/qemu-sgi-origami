@@ -326,8 +326,6 @@ def _io_board(raw: dict) -> dict:
         board["system-timekeeper"] = _kebab_keys(raw["system_timekeeper"])
     if raw.get("ds1742") is True:
         board["ds1742"] = True
-    if raw.get("ieee1394_absent") is True:
-        board["ieee1394-absent"] = True
     if raw.get("fibre_channel") is True:
         board["fibre-channel"] = True
     if "ds1742_fresh_year_base" in raw:

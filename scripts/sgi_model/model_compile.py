@@ -2409,11 +2409,6 @@ def _compile_brick_xbridge_heads(model: dict, components: dict[str, dict],
                 "decoded_widget_mask": 0, "discovery_widget": 0,
             })
             functions = _brick_head_functions(model, components, head["id"])
-            configured = model["machine"]["emulation"].get(
-                "io_boards", {}).get(head["id"], {})
-            absent = set()
-            if configured.get("ieee1394_absent"):
-                absent.add("TI_TSB12LV22")
             fibre_channel = [device for device, kind, _cid in functions
                              if kind == "QLOGIC_ISP2200"]
             if fibre_channel not in ([], [_IBRICK_FC_DEVICE]):
@@ -2422,15 +2417,13 @@ def _compile_brick_xbridge_heads(model: dict, components: dict[str, dict],
                     f"card at device {fibre_channel}; the I-brick's is at "
                     f"device {_IBRICK_FC_DEVICE}")
             fitted = [(device, kind) for device, kind, _cid in functions
-                      if kind not in absent and kind != "QLOGIC_ISP2200"]
+                      if kind != "QLOGIC_ISP2200"]
             if not fitted:
                 if fibre_channel:
                     raise CompileError(
                         f"I/O brick head '{head['id']}' carries a Fibre "
                         "Channel card without the IO7 it shares a head with")
                 continue
-            if configured.get("ieee1394_absent"):
-                fitted = sorted([*fitted, (6, "TI_TSB12LV22")])
             if fitted != _IO7_FUNCTIONS or widget != 15:
                 raise CompileError(
                     f"I/O brick head '{head['id']}' carries "
@@ -2453,8 +2446,7 @@ def _compile_brick_xbridge_heads(model: dict, components: dict[str, dict],
                 "other_identities": [],
                 "pci": [{"kind": kind, **({"ethernet": _ioc3_has_ethernet(
                             components, cid)} if kind == "IOC3" else {})}
-                        for _device, kind, cid in functions
-                        if kind not in absent],
+                        for _device, kind, cid in functions],
                 # Whether the IO7's IOC3 has a one-wire part of its own is
                 # unknown, so the record names none.
                 "ioc3_serial": None,
@@ -2462,8 +2454,6 @@ def _compile_brick_xbridge_heads(model: dict, components: dict[str, dict],
                     configured, "ioc3_subsystem_id", head["id"], 16),
                 "mac_source": "none",
             }
-            if configured.get("ieee1394_absent"):
-                board["ieee1394_absent"] = True
             if fibre_channel:
                 board["fibre_channel"] = True
             selected = model["machine"]["emulation"].get(

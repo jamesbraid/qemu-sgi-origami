@@ -4498,33 +4498,32 @@ class XioCableCompileTests(unittest.TestCase):
         self.assertEqual(
             (board["id"], board["board_kind"], board["module_index"],
              board["slot_index"], board["mac_source"],
-             board["ioc3_subsystem_id"], board["ieee1394_absent"],
-             board["fibre_channel"]),
-            ("ibrick-xbridge-bridge-f", "IO7", 2, 1, "none", 0xffff, True,
-             True))
+             board["ioc3_subsystem_id"], board["fibre_channel"]),
+            ("ibrick-xbridge-bridge-f", "IO7", 2, 1, "none", 0xffff, True))
+        self.assertNotIn("ieee1394_absent", board)
         self.assertEqual(board["pci"], [{"kind": "QLOGIC_ISP2200"},
                                         {"kind": "IOC3", "ethernet": True},
-                                        {"kind": "LUCENT_OHCI"}])
+                                        {"kind": "LUCENT_OHCI"},
+                                        {"kind": "TI_TSB12LV22"}])
         self.assertIsNone(board["ioc3_serial"])
         emitted, = _render_topology(entry, "origin3200")["io-boards"]
         self.assertEqual(emitted["preset"], "io7")
         self.assertEqual(emitted["carrier"], "machine-placed")
         self.assertEqual(emitted["attachment"], 1)
-        self.assertTrue(emitted["ieee1394-absent"])
+        self.assertNotIn("ieee1394-absent", emitted)
         self.assertTrue(emitted["fibre-channel"])
         for field in ("pci-functions", "ioc3-serial", "part", "revision",
                       "serial"):
             self.assertNotIn(field, emitted)
 
-    def test_fitted_ieee1394_stays_on_the_io7(self):
+    def test_io7_rejects_an_ieee1394_absent_flag(self):
         model = _origin3200_fixture(ibrick_io=True)
         model["machine"]["emulation"]["io_boards"][
-            "ibrick-xbridge-bridge-f"].pop("ieee1394_absent")
-        board, = compile_model(model)["io_boards"]
-        self.assertNotIn("ieee1394_absent", board)
-        self.assertEqual([item["kind"] for item in board["pci"]],
-                         ["QLOGIC_ISP2200", "IOC3", "LUCENT_OHCI",
-                          "TI_TSB12LV22"])
+            "ibrick-xbridge-bridge-f"]["ieee1394_absent"] = True
+        with self.assertRaisesRegex(
+                CompileError,
+                "invalid io_boards policy for 'ibrick-xbridge-bridge-f'"):
+            compile_model(model)
 
     def test_ibrick_fibre_channel_loop_is_an_fc_loop_adapter(self):
         from sgi_model.model_emit import _scsi_adapters_for

@@ -1282,10 +1282,6 @@
 # @ioc3-serial: the IOC3 function's own one-wire serial, a distinct
 #     fitted-part identity from the board's own @serial, if known
 #
-# @ieee1394-absent: the io7 board's IEEE 1394 link controller is left
-#     out, a stated limitation of a topology whose guest would wait on
-#     the controller's unmodelled PHY and bus; absent means fitted
-#
 # @fibre-channel: the I-brick's QLogic ISP2200 Fibre Channel card is
 #     fitted at device 1 of the io7 board's head; absent means not
 #     fitted
@@ -1313,7 +1309,6 @@
             '*pci-functions': ['SGIModelPciFunction'],
             '*ioc3-subsystem-id': 'uint16',
             '*mac-source': 'SGIModelMacSource',
-            '*ieee1394-absent': 'bool',
             '*fibre-channel': 'bool' } }
 
 ##
