@@ -286,6 +286,88 @@ static void test_ps2_ports_present(void)
     g_free(ioc4_log_file_take(log));
 }
 
+static void ioc4_send_ps2_key_state(QTestState *qts, const char *qcode,
+                                    bool down)
+{
+    QDict *response = qtest_qmp(qts,
+        "{'execute':'input-send-event','arguments':{'events':["
+        "{'type':'key','data':{'down':%i,'key':"
+        "{'type':'qcode','data':%s}}}]}}", down, qcode);
+
+    g_assert_true(qdict_haskey(response, "return"));
+    qobject_unref(response);
+}
+
+/*
+ * The attach and interrupt sequence of OpenBSD's public IOC4 keyboard
+ * driver: read-modify-write the control register to clamp after one
+ * character, transmit with the write-pending poll, then on each interrupt
+ * mask the source, read each receive register until no valid flag is left,
+ * acknowledge and unmask.
+ */
+static void test_ps2_driver_sequence(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts = ioc4_start_ps2(false, log);
+    uint32_t csr, val;
+
+    qtest_irq_intercept_out_named(qts, CHIP, "head-e-pci-intx");
+    csr = reg_read(qts, KBC_CONTROL);
+    csr &= ~0x00c00ccc;
+    csr |= 0x00300000;
+    reg_write(qts, KBC_CONTROL, csr);
+    g_assert_cmphex(reg_read(qts, KBC_CONTROL), ==, 0x00300000);
+    reg_write(qts, 0x14, KBC_OTHER_IRQ);
+
+    /* A reset reply is two characters, so the clamp holds the second back. */
+    g_assert_cmphex(reg_read(qts, KBC_CONTROL) & KBC_WRITE_PENDING, ==, 0);
+    reg_write(qts, KBC_KBD_TRANSMIT, 0xff);
+    g_assert_true(qtest_get_irq(qts, 0));
+    g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, KBC_OTHER_IRQ);
+    reg_write(qts, 0x1c, KBC_OTHER_IRQ);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x80fa0000);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x80aa0000);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
+    g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0);
+    reg_write(qts, 0x0c, KBC_OTHER_IRQ);
+    reg_write(qts, 0x14, KBC_OTHER_IRQ);
+    g_assert_false(qtest_get_irq(qts, 0));
+
+    /* Press and release: three characters, one per read under the clamp. */
+    ioc4_send_ps2_key_state(qts, "a", true);
+    ioc4_send_ps2_key_state(qts, "a", false);
+    g_assert_true(qtest_get_irq(qts, 0));
+    reg_write(qts, 0x1c, KBC_OTHER_IRQ);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x801c0000);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x80f00000);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x801c0000);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
+    reg_write(qts, 0x0c, KBC_OTHER_IRQ);
+    reg_write(qts, 0x14, KBC_OTHER_IRQ);
+    g_assert_false(qtest_get_irq(qts, 0));
+
+    /* Clamp after three: the same press and release arrive in one read. */
+    reg_write(qts, KBC_CONTROL, 0x00400000);
+    ioc4_send_ps2_key_state(qts, "a", true);
+    ioc4_send_ps2_key_state(qts, "a", false);
+    val = reg_read(qts, KBC_KBD_RECEIVE);
+    g_assert_cmphex(val, ==, 0xe01cf01c);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
+
+    /* No clamp: a fourth character is lost and the flag is not reported. */
+    reg_write(qts, KBC_CONTROL, 0);
+    ioc4_send_ps2_key_state(qts, "a", true);
+    ioc4_send_ps2_key_state(qts, "b", true);
+    ioc4_send_ps2_key_state(qts, "c", true);
+    ioc4_send_ps2_key_state(qts, "d", true);
+    val = reg_read(qts, KBC_KBD_RECEIVE);
+    g_assert_cmphex(val, ==, 0xe01c3221);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
+
+    qtest_quit(qts);
+    g_free(ioc4_log_file_take(log));
+}
+
 static QTestState *ioc4_start_readback(bool incoming, bool enabled)
 {
     QTestState *qts = qtest_initf(
@@ -3571,6 +3653,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/uart-clock", test_uart_and_clock);
     qtest_add_func("/sgi-ioc4/ps2-adapter", test_ps2_adapter);
     qtest_add_func("/sgi-ioc4/ps2-ports-present", test_ps2_ports_present);
+    qtest_add_func("/sgi-ioc4/ps2-driver-sequence", test_ps2_driver_sequence);
     qtest_add_func("/sgi-ioc4/ps2-migration", test_ps2_migration);
     qtest_add_func("/sgi-ioc4/interrupts", test_interrupts);
     qtest_add_func("/sgi-ioc4/pio-fifo", test_pio_fifo);
