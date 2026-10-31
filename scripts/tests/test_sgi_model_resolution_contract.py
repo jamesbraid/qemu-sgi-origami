@@ -3995,6 +3995,21 @@ class CompositionVariantTests(unittest.TestCase):
                                     "has no variant 'four-processor'"):
             _resolver.load_system_model(path, "four-processor")
 
+    def test_only_the_default_variant_carries_product_harness_facts(self):
+        from sgi_model.model_validation import check_schema
+
+        checked = schema(INPUTS)
+        one = _resolver.load_system_model(INPUTS / "tezro.yaml",
+                                          "one-processor")
+        self.assertEqual(check_schema(one, checked), [])
+        self.assertNotIn("netboot_adapter", one["machine"]["harness"])
+        one["machine"]["harness"]["netboot_adapter"] = "bcm5701-ethernet"
+        self.assertNotEqual(check_schema(one, checked), [])
+        default = _resolver.load_system_model(INPUTS / "tezro.yaml")
+        self.assertEqual(check_schema(default, checked), [])
+        del default["machine"]["harness"]["netboot_adapter"]
+        self.assertNotEqual(check_schema(default, checked), [])
+
     def test_a_composition_without_variants_is_its_own_default(self):
         model = _resolver.load_system_model(INPUTS / "origin350.yaml")
         self.assertNotIn("variant", model["composition"])

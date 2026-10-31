@@ -132,6 +132,9 @@ layer:
           notes: The launch recipe applies the Tezro row-17 seed to this selected base payload. The payload and
             seed are software inputs; their hashes do not establish installed Tezro firmware or flash
             wiring.
+      # The product's own harness facts (PROM dialogue, disk bus, netboot
+      # adapter, guests and install media) come from the default variant;
+      # this board brings only what its own launch differs in.
       harness:
         console: l1-uart
         console_records:
@@ -156,10 +159,7 @@ layer:
           argument: -serial chardev:ioc4_serial_3
           launcher_name: ioc4-serial-3
         launch_recipe: ip53-discovery
-        prom_dialogue: none
         default_cpu_model: R16000
-        disk_bus: scsi.0
-        netboot_adapter: unsupported
         smdk:
           package_path: assets/boot/smdk
           tftp_mode: fixed
@@ -167,14 +167,11 @@ layer:
           requires_boot_flash: false
           requires_network_identity: false
           discovery_prerequisites: []
-        default_topology: tezro
         requires_per_node_flash: false
         has_managed_boot_flash: true
         operator_firmware: true
         firmware_bytes: 1476264
         identity_inputs: []
-        supported_guests: []
-        install_media: []
         provenance: derived
         sources:
         - tezro-deskside-trial
