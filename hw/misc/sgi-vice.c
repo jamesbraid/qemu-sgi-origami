@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * VICE host/local-memory and common descriptor DMA transport.
- * Contract: Origami docs/datasheets/o2-vice-host-dma.md, SHA-256
- * 2f7d2767e0e8bf53e96ee1b60224e3f6dd6569e5e28136af09c9469e4b615615.
+ * Source: VICE Design Specification, document 099-0123-003.
  * Scalar execution is in sgi-vice-msp.c; FIFO/image operations remain held.
  */
 #include "qemu/osdep.h"
