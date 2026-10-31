@@ -866,9 +866,11 @@ static int sgi_rad1_octane_startup_index(hwaddr addr);
 
 /*
  * Whether the Octane's analog output is muted: 0x88 = 2 is the relay mute and
- * 0x8c = 3 the DAC mute. That either silences the output while the transfer
- * carries on is inferred from the names and values the drivers write; no
- * permitted source ties them to the channel. The registers are storage only,
+ * 0x8c = 3 the DAC mute. The permitted sources show only the values the
+ * drivers write and when; that these values mute, and that the transfer
+ * carries on while the host output is silent, are inferred (the datasheet's
+ * mute and transfer rows). No permitted source ties either register to the
+ * channel. The registers are storage only,
  * so the answer follows from them and needs no state of its own.
  */
 static bool sgi_rad1_octane_out_muted(SGIRad1AudioChannel *c)
@@ -1609,13 +1611,23 @@ static SGIRad1OctaneOutForm sgi_rad1_octane_out_form(SGIRad1AudioState *s)
     if (ctrl == 0xfffff008 &&
         !sgi_rad1_octane_ring_valid(s, SGI_RAD1_OCTANE_RING_OUTPUT,
                                     0xfffff008)) {
-        /* IRIX's word, but its second descriptor does not match. */
+        /*
+         * IRIX's word, but entry 1 does not match the working descriptor.
+         * Kept as an unsupported start (an earlier policy); other links are
+         * judged only when followed.
+         */
         return SGI_RAD1_OCTANE_OUT_BAD;
     }
     return SGI_RAD1_OCTANE_OUT_LINK;
 }
 
-/* Descriptor RAM: sixteen entries of address low, high and control. */
+/*
+ * Descriptor RAM: sixteen entries of address low, high and control, twelve
+ * bytes apart from 0x400. Entries 1 and 7 are seen in the drivers; the count
+ * comes from the four-bit link field and the rest of the layout is inferred
+ * from those two. Entry 15 shares its words with the status-DMA second set,
+ * which the status path reads from the same bank.
+ */
 #define SGI_RAD1_OCTANE_DESC_FIRST      0x400
 #define SGI_RAD1_OCTANE_DESC_STRIDE     12
 #define SGI_RAD1_OCTANE_DESC_ENTRIES    16
@@ -1629,7 +1641,8 @@ static bool sgi_rad1_octane_desc_word(hwaddr addr)
 
 /*
  * Follow the working output descriptor's link: load the entry it names into
- * the working registers and carry on from its start. Returns true when the
+ * the working registers (a model choice; both drivers link to a copy of the
+ * working descriptor) and carry on from its start. Returns true when the
  * channel stopped instead. An entry reading all zero was never programmed
  * (the model cannot tell it from one written with zeros); hardware does
  * nothing documented for that, so it is reported, the channel stops and its
