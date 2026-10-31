@@ -661,12 +661,17 @@ each 1280 by 1024, none reachable through the aperture:
 - an 8-bit stencil plane;
 - an object store for off-screen buffers and texture levels.
 
-The object store holds at most 1024 objects in 128 MiB of 32-bit
-texels, whatever the product. When an object needs more room than is
-free, the model forgets the least recently used other objects until it
-fits, then packs the store. A new object beyond the 1024 slots also
-forgets the least recently used one. The first object forgotten each
-way is logged under ``LOG_UNIMP``. A board keeps a level until something overwrites
+The object store holds at most 16384 objects in 128 MiB of 32-bit
+texels, whatever the product. An object counts as used when an upload or
+a grow selects it, not when a draw samples it. When an object needs more
+room than is free, the model forgets the least recently selected other
+objects until it fits, then packs the store in offset order. A new
+object beyond the 16384 slots also forgets the least recently selected
+one. The first object forgotten each way is logged under ``LOG_UNIMP``.
+An ordinary 2D texture level whose object holds some but not all of its
+rows counts as present: the object grows to the level's height and the
+unwritten rows read zero, which GL leaves undefined (*approximation*). A
+level with no object, or whose object has no rows, stays missing. A board keeps a level until something overwrites
 it, so a forgotten texture that a client still samples draws
 untextured here (*approximation*). A destination base beyond the
 product's memory size logs ``LOG_GUEST_ERROR`` once per reset.
