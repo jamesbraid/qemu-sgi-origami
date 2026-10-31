@@ -7,7 +7,7 @@ sources:
   tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro and Tezro rack software limits"
 layer:
   kind: module
-  id: tezro-serial-compat-module
+  id: ip53-tezro-module
   requires:
     architecture: sn1
     assembly: ip53-tezro

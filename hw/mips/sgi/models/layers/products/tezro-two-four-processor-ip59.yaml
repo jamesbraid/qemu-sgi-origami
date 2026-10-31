@@ -11,7 +11,7 @@ sources:
   tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro tower and rack software limits"
 layer:
   kind: product
-  id: tezro-tower-multi-ip59
+  id: tezro-two-four-processor-ip59
   requires:
     assembly: ip53-tezro
   topology:

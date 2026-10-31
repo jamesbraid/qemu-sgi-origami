@@ -3955,12 +3955,12 @@ class CompositionVariantTests(unittest.TestCase):
                    "layers/assemblies/ip53-tezro.yaml"],
         "variants": [
             {"id": "one-processor", "board": "ip53",
-             "layers": ["layers/modules/tezro-serial-compat-module.yaml",
+             "layers": ["layers/modules/ip53-tezro-module.yaml",
                         "layers/products/tezro-one-processor.yaml"]},
             {"id": "two-four-processor", "board": "ip53", "default": True,
              "layers": ["layers/products/tezro-two-four-processor.yaml"]},
             {"id": "two-four-processor-ip59", "board": "ip59",
-             "layers": ["layers/products/tezro-tower-multi-ip59.yaml"]},
+             "layers": ["layers/products/tezro-two-four-processor-ip59.yaml"]},
         ],
     }
     # The IP53 interface boards alone, naming no node board.
@@ -3996,9 +3996,9 @@ class CompositionVariantTests(unittest.TestCase):
         self.assertEqual(
             [[layer["id"] for layer in model["composition"]["layers"]
               if layer["kind"] in ("module", "product")] for model in models],
-            [["tezro-serial-compat-module", "tezro-one-processor"],
+            [["ip53-tezro-module", "tezro-one-processor"],
              ["tezro-two-four-processor"],
-             ["tezro-tower-multi-ip59"]])
+             ["tezro-two-four-processor-ip59"]])
         checked = schema(path.parent)
         for variant in ("one-processor", "two-four-processor",
                         "two-four-processor-ip59"):

@@ -10,7 +10,7 @@ variants:
     board: ip53
     default: true
     layers:
-      - layers/modules/tezro-serial-compat-module.yaml
+      - layers/modules/ip53-tezro-module.yaml
       - layers/products/tezro-rack.yaml
   - id: ip59
     board: ip59

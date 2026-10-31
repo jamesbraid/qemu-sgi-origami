@@ -60,7 +60,7 @@ IP53_RUNTIME_PROFILES = {
     ("origin350", "ip53"): ("origin350", "ip53-origin350"),
     ("origin350", "ip59"): ("origin350", "ip59-origin350"),
     ("onyx4-host", "ip59"): ("onyx4-host", "ip59-onyx4-host"),
-    ("onyx350", "ip53"): ("onyx350", "ip53-onyx350-compat"),
+    ("onyx350", "ip53"): ("onyx350", "ip53-onyx350"),
     ("onyx350", "ip59"): ("onyx350", "ip59-onyx350"),
     ("tezro", "ip53"): ("tezro", "tezro-serial-compat"),
     ("tezro", "ip59"): ("tezro", "ip59-tezro"),
