@@ -78,10 +78,12 @@ is ``o2`` (the default) or ``o2plus``.
      - one R10000, 195 MHz, 1 MiB secondary cache
      - exactly 1 GiB
      - the product guide and a published 195 MHz capture
-   * - ``-M o2,variant=o2plus``
+   * - ``-M o2,variant=o2plus -cpu R12000,...``
      - one R12000, 400 MHz, 2 MiB secondary cache
      - exactly 1 GiB
-     - a model selection (:ref:`sgi-ip32-o2plus`)
+     - a model selection (:ref:`sgi-ip32-o2plus`); the machine's default
+       R10000 is refused for this variant, so ``-cpu R12000`` with the
+       listed properties is required
 
 Every other part is the same in both. The catalogue's configurations
 ``o2`` and ``o2plus`` (``hw/mips/sgi/models/o2.yaml`` and
@@ -122,9 +124,12 @@ O2+ processor
 
 ``variant=o2plus`` fits one R12000 at 400 MHz with 2 MiB secondary cache.
 The NetBSD report shows a real O2 with an R12000
-(:src:`dmesgd-5290 cpu0`), *observed*. The clock, the cache size and the
-identity values below are model selections, not readings of an O2+
-module, *approximation*. The variant requires ``-cpu R12000`` with
+(:src:`dmesgd-5290 cpu0`), *observed*, and a published module list gives
+an R12000 at 400 MHz with 2048 KB secondary cache
+(:src:`bukosek-sgi-o2 Processor options`), *observed*. The identity
+values below are model selections, not readings of an O2+ module,
+*approximation*; the capture's PRId and cache differ from them
+(`Published machines`_). The variant requires ``-cpu R12000`` with
 exactly these properties: ``r12000-prid=0xe35``, ``r12000-fpu-id=0x900``,
 ``r12000-reset-mode=0x11a8603``, ``r12000-scache-bytes=2097152`` and
 ``r12000-scache-block-words=16``.
@@ -265,47 +270,64 @@ Processor address map
 =====================
 
 CRIME decodes the processor's physical addresses
-(:src:`sgi-crime-1.5-spec PDF p. 47-48`), *established*. The model maps:
+(:src:`sgi-crime-1.5-spec PDF p. 47-48`, Table 3-1), *established*. The
+table gives each window's size in the specification next to the size the
+model maps. Where the two differ, the modelled size is an
+*approximation*: the model maps less than the hardware decodes.
 
 .. list-table::
    :header-rows: 1
 
    * - Physical address
-     - Size
+     - Specification size
+     - Modelled size
      - Contents
    * - ``0x00000000``
+     - 256 MiB
      - 256 MiB
      - low memory view
    * - ``0x14000000``
      - 32 MiB
+     - 32 MiB
      - CRIME registers, rendering engine at ``0x15000000``
    * - ``0x16000000``
      - 16 MiB
+     - 16 MiB
      - GBE registers
    * - ``0x17000000``
-     - 1 MiB
-     - VICE; unmapped
-   * - ``0x1a000000``
      - 16 MiB
-     - MACE window onto PCI
+     - none, unmapped
+     - VICE registers and RAM; :doc:`hardware/vice` models 1 MiB windows
+       but the machine does not fit it
+   * - ``0x1a000000``
+     - 32 MiB
+     - 16 MiB
+     - MACE window onto PCI memory
    * - ``0x1f000000``
+     - 4 MiB
      - 4 MiB
      - MACE registers
    * - ``0x1fc00000``
      - 4 MiB
+     - 4 MiB
      - boot flash, repeated through the window
    * - ``0x20000000``
+     - 512 MiB
      - 512 MiB
      - high memory alias
    * - ``0x40000000``
      - 1 GiB
+     - 1 GiB
      - full memory
    * - ``0x80000000``
      - 1 GiB
+     - 1 GiB
      - memory without ECC checking
    * - ``0x280000000``
+     - 4 GiB from ``0x200000000``
      - 2 GiB
-     - MACE high PCI window
+     - MACE high PCI memory window; the model starts at ``0x280000000``
+       (see :doc:`hardware/mace`)
 
 The linear frame and depth buffer windows at ``0x10000000`` and
 ``0x12000000`` are not modelled. :doc:`hardware/crime` and
@@ -317,7 +339,9 @@ Firmware and boot
 =================
 
 The board boots from a 512 KiB Atmel flash that MACE decodes in a 4 MiB
-window (:src:`sgi-mace-2.0-spec p. 8`), *established*. The machine
+window (:src:`sgi-crime-1.5-spec PDF p. 48`, Table 3-1, which sizes the
+System ROM window at 4 MB; :src:`sgi-mace-2.0-spec p. 8` names the Atmel
+512Kx8 flash), *established*. The machine
 requires all of these:
 
 - ``rom-image=FILE``: a complete 512 KiB PROM image, with
@@ -379,7 +403,10 @@ identity file the user prepared::
 ``STATUS`` is 14 hexadecimal digits, the forms the qtests use. The
 machine names any input that is missing or malformed.
 
-Migration is refused: the eight-bank memory model has no saved state.
+Migration is refused for the product: the eight-bank memory model has no
+saved state, so the machine registers a migration blocker and an
+unmigratable state description. The register test profile, with 64 or
+128 MiB of RAM, has no blocker.
 
 .. _sgi-ip32-graphics:
 
@@ -407,7 +434,9 @@ Three published sources show real O2s. Each is rated *observed*.
   (NetBSD prints it in decimal, 17592186044577, converted here),
   a MACE PCI bridge revision 1 and a DP83840 PHY at MII address 8.
 - A published hardware inventory of an O2 with a 300 MHz R5000-family
-  processor (:src:`bukosek-sgi-o2 My O2`).
+  processor (:src:`bukosek-sgi-o2 My O2`). The same page lists the
+  processor modules, among them an R12000 at 400 MHz with 2048 KB
+  secondary cache (:src:`bukosek-sgi-o2 Processor options`).
 
 The machine differs from these. These are model limits:
 
@@ -426,6 +455,17 @@ The machine differs from these. These are model limits:
    * - R10000 revision
      - 2.7
      - 2.6
+   * - R12000 identity (PRId)
+     - ``0xe23``, revision 2.3, FPU ``0x900``
+       (:src:`dmesgd-5290 cpu0`), *observed*
+     - ``0xe35`` and FPU ``0x900``, set by ``r12000-prid`` and
+       ``r12000-fpu-id``, *approximation*
+   * - R12000 secondary cache
+     - 1024 KB, 64-byte blocks (:src:`dmesgd-5290 cpu0`), *observed*;
+       1 MB in the product guide (:src:`sgi-o2-product-guide-1065 p. 4`);
+       2048 KB for the 400 MHz module
+       (:src:`bukosek-sgi-o2 Processor options`, part 030-1529)
+     - 2 MiB, 64-byte blocks, *approximation*
    * - Processors
      - R5000, RM5271, RM7000, R10000 and R12000 modules
      - R10000 at 195 MHz, or R12000 at 400 MHz
@@ -448,7 +488,7 @@ Model limits
   and the board's DIMM wiring are not modelled.
 - The processor reset words, the O2+ identity values and the pixel clock
   are model choices.
-- Migration is refused.
+- The product refuses migration; the register test profile does not.
 - Each chip page lists its own limits and how an unexpected access shows
   up.
 
@@ -467,9 +507,10 @@ Tests
   and the DS1685 backends.
 - ``tests/qtest/sgi-o2-rom-test.c``: the flash window and synthetic
   images.
-- ``tests/qtest/o2-r10k-cache-test.c`` and
-  ``tests/qtest/o2-r10k-scache-reset-test.c``: R10000 cache visibility,
-  and the secondary cache selection after a CPU reset.
+- ``tests/qtest/o2-r10k-scache-reset-test.c``: the secondary cache
+  selection after a CPU reset.
+- ``tests/qtest/sgi-catalogue-launch-test.c``: launches every catalogue
+  offering, including ``o2`` and ``o2plus``, with synthetic inputs.
 - ``scripts/tests/test_sgi_model_ip32.py``: the catalogue's two
   configurations.
 
