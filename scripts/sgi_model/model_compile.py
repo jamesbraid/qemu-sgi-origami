@@ -21,6 +21,7 @@ same way, naming the missing fact, rather than inventing a value.
 from __future__ import annotations
 
 import copy
+import json
 from collections.abc import Callable
 
 from .model_composition import (
@@ -1096,77 +1097,39 @@ def _processor(model: dict, cpu: dict) -> dict:
     part = _required(cpu, "hardware_kind", cpu["id"])
     identity = cpu.get("identity") or {}
     if part == "r16000":
-        product = model.get("composition", {}).get("product")
-        profile = {
-            "origin350": ("origin350", 700, 0x009cad85,
-                          "ip53-origin350"),
-            "origin350-ip59": ("origin350", 1000, 0x00edb385,
-                               "ip59-origin350"),
-            "onyx350-ip59": ("onyx350", 1000, 0x00edb385, "ip59-onyx350"),
-            "onyx4-host-ip59": ("onyx4-host", 1000, 0x00edb385,
-                                "ip59-onyx4-host"),
-            "tezro-tower-one-ip59": (
-                "tezro", 1000, 0x00edb385, "ip59-tezro-tower-one"),
-            "tezro-tower-multi-ip59": (
-                "tezro", 1000, 0x00edb385, "ip59-tezro-tower-multi"),
-            "tezro-rack-ip59": (
-                "tezro", 1000, 0x00edb385, "ip59-tezro-rack"),
-            "onyx4-host-serial-compat": (
-                "onyx4-host", 1000, 0x00edb385,
-                "ip53-onyx4-host-serial-compat"),
-            "onyx350-compat": ("onyx350", 800, 0x009caf85,
-                        "ip53-onyx350-compat"),
-            "tezro": (
-                "tezro", 700, 0x009bad85, "tezro-serial-compat"),
-            "tezro-rack": (
-                "tezro", 700, 0x009bad85,
-                "tezro-rack-serial-compat"),
-            # A Cx-brick node board takes the Origin 350's fit, an
-            # approximation its datasheet states; it has no PIC and no
-            # discovery launch recipe.
-            "origin3900": ("origin3000", 700, 0x009cad85, "origin3900"),
-            "origin3900-ip59": ("origin3000", 1000, 0x00edb385,
-                                "origin3900-ip59"),
-        }.get(product)
-        cx_brick = product in ("origin3900", "origin3900-ip59")
-        origin350_projection = (
-            product in ("origin350", "origin350-ip59")
-            and model.get("machine", {}).get("emulation", {}).get(
-                "machine_name") == "origin350")
-        if (profile is None or
-                (not origin350_projection and
-                 model.get("machine", {}).get("emulation", {}).get(
-                     "machine_name") != profile[0])
-                or (not origin350_projection and
-                    model.get("machine", {}).get("emulation", {}).get(
-                        "profile") != profile[3])
-                or (not origin350_projection and not cx_brick and
-                    model.get("machine", {}).get("harness", {}).get(
-                        "launch_recipe") != "ip53-discovery")):
+        # The R16000 fits only an IP53-family node board (the IP53 and the
+        # IP59 share its board layer), which supplies the processor's
+        # reset-mode word; nothing here is keyed by topology name.
+        if model.get("machine", {}).get("board_ip") != "IP53":
             raise CompileError(
-                "R16000 is supported for only the Origin 350 IP53 experiment, "
-                "a Cx-brick node board or an explicitly selected "
-                "compatibility profile"
-            )
+                f"CPU '{cpu['id']}' is an R16000, which only an IP53-family "
+                "node board takes")
         clock_mhz = _integer(identity, "clock_mhz", f"CPU '{cpu['id']}'", 32)
         cache_mib = _integer(identity, "cache_mib", f"CPU '{cpu['id']}'", 16)
         reset_mode = _integer(
             identity, "r16000_reset_mode", f"CPU '{cpu['id']}'", 32)
         scache_bytes = _integer(
             identity, "r16000_scache_bytes", f"CPU '{cpu['id']}'", 64)
-        expected_cache_mib = (16 if clock_mhz == 1000 else
-                              4 if product in {
-            "tezro", "tezro-rack",
-        } else 8)
-        expected_scache_bytes = expected_cache_mib * 1024 * 1024
-        if (clock_mhz != profile[1] or cache_mib != expected_cache_mib or
-                reset_mode != profile[2] or
-                scache_bytes != expected_scache_bytes):
+        # The board's firmware block, where the product authors one, and
+        # the processor's own SKU are the sources; the copies on the CPU
+        # must agree with them.
+        board_word = model.get("machine", {}).get(
+            "firmware_config", {}).get("processor_reset_mode")
+        # The word's SS field (bits 18:16) selects the secondary cache the
+        # part sizes itself from: 512 KiB shifted left by SS.
+        if (512 << ((reset_mode >> 16) & 7)) * 1024 != cache_mib * 1024 * 1024:
             raise CompileError(
-                f"CPU '{cpu['id']}' does not match the selected "
-                f"{profile[1]} MHz/{expected_cache_mib} MiB {product} IP53 "
-                "profile inputs"
-            )
+                f"CPU '{cpu['id']}' reset mode {reset_mode:#010x} selects a "
+                f"{(512 << ((reset_mode >> 16) & 7)) // 1024} MiB secondary "
+                f"cache, not its {cache_mib} MiB")
+        if (scache_bytes != cache_mib * 1024 * 1024 or
+                (board_word is not None and reset_mode != board_word)):
+            raise CompileError(
+                f"CPU '{cpu['id']}' does not match its board's "
+                f"{clock_mhz} MHz, {cache_mib} MiB R16000: secondary cache "
+                f"{scache_bytes:#x} bytes, reset mode {reset_mode:#010x}"
+                + ("" if board_word is None else
+                   f" against the firmware block's {board_word:#010x}"))
         return {
             "id": f"r16000-{clock_mhz}mhz",
             "kind": "R16000",
@@ -3704,6 +3667,16 @@ def compile_model(model: dict) -> dict:
     if ip53_runtime is not None:
         topology["ip53_runtime"] = _compile_ip53_runtime(
             ip53_runtime, ip53_graph_nodes, pci_host_bridges)
+    # One board per record: every R16000 of an IP53-family record is the
+    # one processor its board fits, so a composition cannot mix an IP53
+    # node with an IP59 one, nor a Cx-brick's four nodes across boards.
+    fitted = {json.dumps(slot["assembly"], sort_keys=True)
+              for node in topology["nodes"] for slot in node["cpu_slots"]
+              if (slot["assembly"] or {}).get("kind") == "R16000"}
+    if len(fitted) > 1:
+        raise CompileError(
+            f"topology '{topology['name']}' fits R16000s of more than one "
+            "board; a record builds one board on every node")
     # Every SN record names its board, which board= selects: the one its
     # composition names, or else the one its board layer describes.
     if machine.get("generation") in ("SN0", "SN1"):
