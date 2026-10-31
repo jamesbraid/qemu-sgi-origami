@@ -199,14 +199,6 @@ documents:
     rights: published
     obtain:
       url: https://techpubs.jurassic.nl/library/manuals/4000/007-4566-001/pdf/007-4566-001.pdf
-  007-4572-001:
-    title: "Cx-brick Addendum"
-    publisher: Silicon Graphics
-    kind: manual
-    locator: page
-    rights: published
-    obtain:
-      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4572-001/pdf/007-4572-001.pdf
   007-4632-001:
     title: "SGI Onyx 350 Visualization System User's Guide"
     publisher: Silicon Graphics
