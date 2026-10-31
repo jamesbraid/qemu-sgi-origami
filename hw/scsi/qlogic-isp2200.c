@@ -2024,16 +2024,19 @@ static uint16_t isp2200_fc_mailbox(QLogicISP2200State *s, uint16_t cmd,
         if (!isp2200_loop_ready(s) || !isp2200_target(s, in[1] >> 8)) {
             return ISP2200_MBOX_COMMAND_ERROR;
         }
+        trace_qlogic_isp2200_approximate_reply(cmd, in[1] >> 8);
         out[2] = ISP2200_PORT_QUEUE_DEPTH;
         out[3] = ISP2200_PORT_QUEUE_THROTTLE;
         return ISP2200_MBOX_COMPLETE;
 
     /* Accepted and forgotten: the retry pair stays the control block's. */
     case ISP2200_MBOX_SET_RETRY_COUNT:
+        trace_qlogic_isp2200_approximate_reply(cmd, 0);
         return ISP2200_MBOX_COMPLETE;
 
     /* Every link counter reads zero, so there is nothing to clear. */
     case ISP2200_MBOX_RESET_LINK_STATUS:
+        trace_qlogic_isp2200_approximate_reply(cmd, 0);
         return ISP2200_MBOX_COMPLETE;
 
     case ISP2200_MBOX_GET_LINK_STATUS: {
@@ -2049,6 +2052,7 @@ static uint16_t isp2200_fc_mailbox(QLogicISP2200State *s, uint16_t cmd,
               (s->has_loop_id && (in[1] >> 8) == s->loop_id))) {
             return ISP2200_MBOX_COMMAND_ERROR;
         }
+        trace_qlogic_isp2200_approximate_reply(cmd, in[1] >> 8);
         if (isp2200_dma_write(s, isp2200_mbox_addr(in), counters,
                               sizeof(counters)) != MEMTX_OK) {
             return ISP2200_MBOX_HOST_INTERFACE_ERROR;
