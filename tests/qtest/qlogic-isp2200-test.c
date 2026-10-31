@@ -4698,27 +4698,20 @@ static void test_retry_count(void *obj, void *data, QGuestAllocator *alloc)
 }
 
 /*
- * Get port queue parameters, set retry count, reset link status and get
- * link status, which IRIX 6.5.30 sends on the model and no public source
- * settles the replies of. At ready each is refused with 0x4001, writes
- * nothing to the buffer its mailboxes could name and changes neither the
- * loop nor the retry pair: set retry count is not stored.
+ * Approximation: get port queue parameters, set retry count, reset link
+ * status and get link status are sent by IRIX 6.5.30 and no public source
+ * settles the firmware's replies. The model completes each: queue depth
+ * 256 and throttle 255 for a loop ID that has a port, retry count
+ * accepted and not stored, link counters all zero. A loop ID with no port
+ * is refused with 0x4005, never 0x4001, which IRIX prints as an invalid
+ * command.
  */
-static void test_refused_loop_commands(void *obj, void *data,
-                                       QGuestAllocator *alloc)
+static void test_irix_loop_commands(void *obj, void *data,
+                                    QGuestAllocator *alloc)
 {
-    static const struct {
-        uint16_t cmd;
-        uint16_t m1;
-    } cases[] = {
-        { CMD_GET_PORT_QUEUE, 1 << 8 },
-        { CMD_SET_RETRY_COUNT, 7 },
-        { CMD_RESET_LINK_STAT, 0 },
-        { CMD_GET_LINK_STATUS, 0 },
-        { CMD_GET_LINK_STATUS, 1 << 8 },
-        { CMD_GET_LINK_STATUS, 5 << 8 },
-    };
-    uint8_t seen[256], fill[256];
+    static const uint8_t absent[] = { 0, 2, 6, 0x7d, 0x7e, 0xff };
+    static const uint8_t present[] = { 1, 5 };
+    uint8_t seen[64], fill[64], zeroes[32] = { 0 };
     uint64_t buf;
     unsigned i;
     Isp t;
@@ -4726,26 +4719,76 @@ static void test_refused_loop_commands(void *obj, void *data,
     isp_open(&t, obj, alloc);
     t.retry_count = 4;
     t.retry_delay = 15;
+
+    /* The loop is not up yet: a port-addressed command has no port. */
+    isp_start(&t);
+    g_assert_cmphex(isp_call_ack(&t, CMD_GET_PORT_QUEUE, 1 << 8, 0, 0), ==,
+                    MBOX_COMMAND_ERROR);
+    g_assert_cmphex(isp_call_ack(&t, CMD_RESET_LINK_STAT, 0, 0, 0), ==,
+                    MBOX_COMPLETE);
+
     isp_loop_up(&t, 0);
     buf = guest_alloc(alloc, sizeof(seen));
     memset(fill, 0xa5, sizeof(fill));
 
-    for (i = 0; i < ARRAY_SIZE(cases); i++) {
+    for (i = 0; i < ARRAY_SIZE(present); i++) {
+        g_assert_cmphex(isp_call(&t, CMD_GET_PORT_QUEUE, present[i] << 8, 0,
+                                 0), ==, MBOX_COMPLETE);
+        g_assert_cmphex(rd(&t, MBOX(2)), ==, 256);
+        g_assert_cmphex(rd(&t, MBOX(3)), ==, 255);
+        isp_ack(&t);
+
+        /* Exactly 32 bytes, the length IRIX copies, and all zero. */
         qtest_memwrite(t.qts, buf, fill, sizeof(fill));
-        g_assert_cmphex(isp_call_dma(&t, cases[i].cmd, cases[i].m1, buf), ==,
-                        MBOX_INVALID);
+        g_assert_cmphex(isp_call_dma(&t, CMD_GET_LINK_STATUS, present[i] << 8,
+                                     buf), ==, MBOX_COMPLETE);
+        isp_ack(&t);
+        qtest_memread(t.qts, buf, seen, sizeof(seen));
+        g_assert_cmpmem(seen, 32, zeroes, 32);
+        g_assert_cmpmem(seen + 32, 32, fill + 32, 32);
+    }
+
+    for (i = 0; i < ARRAY_SIZE(absent); i++) {
+        g_assert_cmphex(isp_call_ack(&t, CMD_GET_PORT_QUEUE, absent[i] << 8,
+                                     0, 0), ==, MBOX_COMMAND_ERROR);
+        qtest_memwrite(t.qts, buf, fill, sizeof(fill));
+        g_assert_cmphex(isp_call_dma(&t, CMD_GET_LINK_STATUS, absent[i] << 8,
+                                     buf), ==, MBOX_COMMAND_ERROR);
         isp_ack(&t);
         qtest_memread(t.qts, buf, seen, sizeof(seen));
         g_assert_cmpmem(seen, sizeof(seen), fill, sizeof(fill));
-        isp_expect_no_event(&t);
-        g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_READY);
-        assert_retry_count(&t, 4, 15);
     }
 
-    /* Set retry count with a new pair in m1 and m2 keeps the old one. */
-    g_assert_cmphex(isp_call_ack(&t, CMD_SET_RETRY_COUNT, 7, 8, 0), ==,
-                    MBOX_INVALID);
+    /* Neither disturbs the loop, the events, or the retry pair. */
+    g_assert_cmphex(isp_call_ack(&t, CMD_RESET_LINK_STAT, 0, 0, 0), ==,
+                    MBOX_COMPLETE);
+    g_assert_cmphex(isp_call(&t, CMD_SET_RETRY_COUNT, 7, 8, 0), ==,
+                    MBOX_COMPLETE);
+    for (i = 1; i < 8; i++) {
+        g_assert_cmphex(rd(&t, MBOX(i)), ==, 0);
+    }
+    isp_ack(&t);
+    isp_expect_no_event(&t);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_READY);
     assert_retry_count(&t, 4, 15);
+    isp_close(&t);
+}
+
+/* A refused DMA is 0x4002, as for the model's other DMA commands. */
+static void test_link_status_dma_refused(void *obj, void *data,
+                                         QGuestAllocator *alloc)
+{
+    uint16_t cmd;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, 0);
+    cmd = qpci_config_readw(t.dev, PCI_COMMAND);
+    qpci_config_writew(t.dev, PCI_COMMAND, cmd & ~PCI_COMMAND_MASTER);
+    g_assert_cmphex(isp_call_dma(&t, CMD_GET_LINK_STATUS, 1 << 8,
+                                 guest_alloc(alloc, 64)), ==,
+                    MBOX_HOST_IF_ERROR);
+    isp_ack(&t);
     isp_close(&t);
 }
 
@@ -4929,8 +4972,10 @@ static void isp2200_register_nodes(void)
                  &dbrick_opts);
     qos_add_test("dbrick-full-loop", "qlogic-isp2200", test_dbrick_full_loop,
                  &dbrick_full_opts);
-    qos_add_test("refused-loop-commands", "qlogic-isp2200",
-                 test_refused_loop_commands, &loop_opts);
+    qos_add_test("irix-loop-commands", "qlogic-isp2200",
+                 test_irix_loop_commands, &loop_opts);
+    qos_add_test("link-status-dma-refused", "qlogic-isp2200",
+                 test_link_status_dma_refused, &loop_opts);
 }
 
 libqos_init(isp2200_register_nodes);

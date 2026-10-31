@@ -121,6 +121,13 @@ when it is zero from a hash of the device's QOM path, so each adapter has its
 own name and keeps it from run to run. The other fields are the values the
 public OpenBSD driver uses when it has no image.
 
+Four mailbox commands come from IRIX and have no public definition. The
+model's replies are approximations: Get Port Queue Parameters (``0x29``)
+returns queue depth 256 and throttle 255 for a loop ID with a port;
+Set Retry Count (``0x32``) and Reset Link Status (``0x52``) complete and
+change nothing; Get Link Status (``0x6b``) writes 32 zero bytes. A loop ID
+with no port gets ``0x4005`` from ``0x29`` and ``0x6b``.
+
 Reset and RISC control
 ======================
 
