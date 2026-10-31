@@ -13,10 +13,11 @@ CRIME, turns them into a 24-bit pixel stream with a colour map, a gamma
 map and a 32 by 32 hardware cursor, and clocks that stream out to a DAC
 and a flat panel. It also holds the video timing generator and the video
 capture engine (:src:`sgi-gbe-1.1-spec p. 1`). QEMU models revision 1.1
-as ``sgi-o2-gbe`` in ``hw/display/sgi/gbe.c``. The O2 test profile
-(:doc:`../ip32`) fits it only with ``gbe11-registers=on``. That profile is
-a synthetic register test profile, not an O2 that boots an operating
-system.
+as ``sgi-o2-gbe`` in ``hw/display/sgi/gbe.c``. The ``o2`` machine
+(:doc:`../ip32`) always fits it, with a display, the ``legacy-software``
+memory view and a 20 MHz TTL pixel clock. Its register test profile fits
+it only with ``gbe11-registers=on``. VICE, the O2's other media engine,
+is on :doc:`vice`.
 
 Facts are rated as described in :ref:`sgi-ratings`.
 
@@ -183,9 +184,9 @@ the rest read as zero. Resets come from the specification pages given,
      - Colour map, spec p. 45.
    * - ``0x058000``
      - CMFIFO
-     - 0
-     - none
-     - Spec p. 45. Model reads the pending-write count.
+     - 0 at revision 1, 63 at revision 2
+     - read
+     - Spec p. 45. Free entries; the model's FIFO is always empty.
    * - ``0x060000``-``0x0603fc``
      - GMAP[0..255]
      - not specified; model 0
@@ -757,8 +758,8 @@ addresses in that space. The device has a ``dma-view`` property:
   the same offsets, a window for software written against an earlier CRIME,
   an *approximation* with no source for its bounds.
 
-The O2 test profile selects the view from its ``crime-profile`` option
-and links the CRIME model's decoded memory region. A read outside the
+The ``o2`` machine selects ``legacy-software``. The register test
+profile selects the view from its ``crime-profile`` option. Both link the CRIME model's decoded memory region. A read outside the
 window or the memory logs ``LOG_GUEST_ERROR``, and the plane or table
 involved stays blank until the next fetch. The memory must not exceed
 3 GiB. The model has no DMA write path, no 16-deep request queue and no
@@ -776,6 +777,12 @@ there (``crmfb.c``). Linux programs it the same way, *software expectation*.
 The model resolves each dirty line on demand and redraws everything after
 any register write and at each vertical blank.
 
+While the selected pixel clock is absent, for example after software
+selects the external TTL clock on a board without one, the console shows
+black, and the picture returns from the unchanged timing registers when
+the clock does. What a monitor shows with no pixel clock is *unknown*, so
+this is an *approximation*.
+
 The scanout has no retrace timer of its own. The GBE counters own vertical
 blank, shadow copies and list fetches. The model has no monitor, no EDID, no
 DAC sense wiring, no retrace-driven monitor power state and no flat-panel
@@ -783,9 +790,12 @@ output. These are *approximation*. A device made without
 ``functional-display`` is a register file: it has no counters, memory
 access or console, and rejects the FIFO-reset bits.
 
-Without ``gbe11-registers`` the O2 test profile has no GBE. A load or
-store at ``0x16000000`` fails with a bus error, and the default profile has
-no display. With ``gbe11-registers=on`` the profile (machine type ``o2-test``) adds the device as
+The ``o2`` machine always adds the device as ``/machine/gbe`` at
+``0x16000000`` with ``functional-display`` and ``external-ttl-hz`` of
+20 MHz. Its register test profile (``-M o2,register-test-profile=on``)
+has no GBE without ``gbe11-registers``: a load or store at
+``0x16000000`` fails with a bus error, and there is no display. With
+``gbe11-registers=on`` that profile adds the device as
 ``/machine/gbe`` at ``0x16000000``. It then requires the eight-bank 1 GiB
 memory profile (``bank-profile=8x128m-synthetic`` with ``-m 1G``),
 ``reset-low-ram-approx=on``, ``prom-private-window=on``,
@@ -844,13 +854,14 @@ Model limits
 ============
 
 - **CMFIFO.** The specification says bits 5:0 are the number of free
-  entries (:src:`sgi-gbe-1.1-spec p. 45`). The model has no FIFO, writes
-  apply at once, and the register reads the count of pending writes, which
-  is always 0. Linux's ``gbefb.c`` waits while ``cm_fifo >= 63``, which
-  treats the value as occupancy and not free space, so the drivers do not
-  settle which reading is right. The model's 0 means "empty" under the
-  occupancy reading and "full" under the specification's wording.
-  *unknown*.
+  entries of a 64-deep FIFO (:src:`sgi-gbe-1.1-spec p. 45`),
+  *established*, and the model reads them that way. It has no FIFO and
+  writes drain before the access completes, so the FIFO is always empty.
+  At revision 1 the six-bit field wraps 64 free entries to 0, and at
+  revision 2 it saturates at 63. Both empty readings are *inferred*.
+  Linux's ``gbefb.c`` waits while ``cm_fifo >= 63``, treating the value
+  as occupancy, a *software expectation* that disagrees with the
+  specification.
 - **Counter period.** VT_1 is the period, not ``period - 1``.
 - **Pixel order.** Leftmost pixel at the lowest address. *unknown*.
 - **DOTCLK status.** Resets with out-of-range and out-of-lock set, which
@@ -915,7 +926,7 @@ is set. It uses synthetic fixtures, not captured data. The cases cover:
   interaction with the CRIME memory-transfer banks.
 - ``/sgi-gbe/access-unsupported``: refusal of other widths.
 - ``/sgi-gbe/board-interrupts``, ``board-mte-scanout`` and
-  ``dma-reset/board``: the device in the O2 test profile, the CRIME
+  ``dma-reset/board``: the device in the O2 register test profile, the CRIME
   interrupt bits and the memory-transfer path to the display.
 
 ``tests/qtest/sgi-o2-test.c`` covers the machine side.

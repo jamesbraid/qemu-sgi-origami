@@ -11,7 +11,7 @@ The AIC-7880 is Adaptec's single-chip PCI SCSI host adapter with Ultra
 (20 MHz) SCSI. The O2 has two on the MACE PCI bridge, at PCI devices 1 and
 2, each with its own SCSI bus. They carry the internal disk and CD-ROM
 (:doc:`mace`). QEMU models the part as ``aic7880`` in
-``hw/scsi/aic7880.c``, and the O2 test profile (:doc:`../ip32`) fits two.
+``hw/scsi/aic7880.c``, and the ``o2`` machine (:doc:`../ip32`) fits two.
 
 Facts are rated as described in :ref:`sgi-ratings`.
 
@@ -158,7 +158,7 @@ sequencer clock of 8 or 10 MHz, selected by FASTMODE, from a nominal 40 MHz
 input clock (:src:`adaptec-aic-7870-data-book p. 4, 48, 53, 98`),
 *established* for the
 AIC-7870. The AIC-7880's clock and timing are *unknown*, so both modes are
-an *approximation*. The O2 test profile does not set ``x-sequencer-clocked``.
+an *approximation*. The ``o2`` machine does not set ``x-sequencer-clocked``.
 
 SCSI behaviour
 ==============
@@ -198,11 +198,11 @@ Model limits
   synchronous or wide negotiation.
 - The ``external-scb-ram``, ``external-scb-size`` and
   ``external-scb-width`` properties model external SCB memory of 1, 2, 4
-  or 8 KiB with 8 or 9 data bits. The O2 test profile does not set them.
+  or 8 KiB with 8 or 9 data bits. The ``o2`` machine does not set them.
 - Configuration register ``0x40`` reads zero. The model has no counterpart
   of the Ultra bit Linux ORs in on the O2.
-- The O2 test profile accepts at most one SCSI disk or CD-ROM, at logical
-  unit 0 and target 0 to 6, across both controllers.
+- The ``o2`` machine accepts at most one SCSI disk or CD-ROM, at logical
+  unit 0 and target 0 to 6, across both controllers, and refuses hotplug.
 - ``o2-pci-diagnostic`` (QTest only) and ``o2-storage-diagnostic`` (reports
   every DMA to the machine) are test hooks, not hardware features.
 - Revision and subsystem IDs are a model choice. An unsupported register

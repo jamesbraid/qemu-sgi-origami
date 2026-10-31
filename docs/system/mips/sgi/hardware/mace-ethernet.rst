@@ -13,8 +13,8 @@ management bus (:src:`sgi-mace-2.0-spec p. 76`) and moves frames by DMA
 from a transmit ring and into receive buffers
 (:src:`sgi-mace-2.0-spec p. 70`), *established*. QEMU
 models it as ``sgi-mace-eth`` in ``hw/net/sgi-mace-eth.c``, a child of
-``sgi-mace`` mapped at MACE offset ``0x280000``. The O2 test profile
-(:ref:`sgi-ip32`) fits it. Facts are rated as
+``sgi-mace`` mapped at MACE offset ``0x280000``. The ``o2`` machine
+(:ref:`sgi-ip32`) fits it, with an ICS1890 PHY at MII address 8. Facts are rated as
 described in :ref:`sgi-ratings`.
 
 .. _sgi-mace-ethernet-sources:
