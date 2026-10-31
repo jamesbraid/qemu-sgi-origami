@@ -10761,13 +10761,13 @@ static void test_origin3900_ip59_cx_brick(void)
 }
 
 /*
- * The IO7 answers at head F devices 4 and 5 and, with its IEEE 1394
- * controller left out, not at device 6. Only c0 reaches it.
+ * The IO7 answers at head F devices 4, 5 and 6, its IEEE 1394 controller
+ * fitted as on a real I-brick. Only c0 reaches it.
  */
-static void test_origin3200_io7_without_ieee1394(void)
+static void test_origin3200_io7_ieee1394(void)
 {
     static const uint32_t identity[] = {
-        [4] = 0x000310a9, [5] = 0x580211c1,
+        [4] = 0x000310a9, [5] = 0x580211c1, [6] = 0x8009104c,
     };
     g_autofree char *prom = NULL;
     QTestState *qts = origin3200_start(&prom);
@@ -10777,10 +10777,10 @@ static void test_origin3200_io7_without_ieee1394(void)
     uint32_t value = 0;
 
     g_assert_cmpstr(io7, ==, "sgi-baseio");
-    g_assert_null(link);
-    for (unsigned int device = 4; device <= 6; device++) {
+    g_assert_cmpstr(link, ==, "tsb12lv22");
+    for (unsigned int device = 4; device <= 7; device++) {
         g_assert_cmphex(qtest_readl(qts, CBRICK_CONFIG(15, device)), ==,
-                        device < 6 ? identity[device] : UINT32_MAX);
+                        device < 7 ? identity[device] : UINT32_MAX);
     }
     g_assert_true(nasid_test_cpu_readl(qts, 0, CBRICK_CONFIG(15, 4),
                                        &value));
@@ -10788,6 +10788,88 @@ static void test_origin3200_io7_without_ieee1394(void)
     g_assert_false(nasid_test_cpu_readl(qts, 4, CBRICK_CONFIG(15, 4),
                                         &value));
     qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * Every product built on the I-brick fits its IEEE 1394 controller and
+ * its Timekeeper under the IO7. A record that kept the controller out
+ * would pass the Origin 3200 check above and still build an IO7 without
+ * it here; one without the clock would leave the stock PROM's
+ * time-of-day bounded 1394 probe waiting forever.
+ */
+static void test_ibrick_products_fit_ieee1394(void)
+{
+    static const struct {
+        const char *topology;
+        const char *cpu;
+        unsigned int smp;
+        unsigned int mib;
+    } products[] = {
+        { "origin3200", "R12000", 8, 8192 },
+        { "origin3400", "R12000", 16, 16384 },
+        { "onyx3000", "R12000", 8, 8192 },
+        { "onyx3400-ir", "R12000", 16, 16384 },
+        { "origin3900", "R16000", 16, 8192 },
+        { "origin3900,board=ip59", "R16000", 16, 8192 },
+    };
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn-builder-ibrick-1394-prom-XXXXXX", &prom,
+                             &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    for (size_t i = 0; i < G_N_ELEMENTS(products); i++) {
+        QTestState *qts = qtest_initf(
+            "-M origin3000,topology=%s -cpu %s -smp %u -m %u -bios %s "
+            "-nodefaults -display none", products[i].topology,
+            products[i].cpu, products[i].smp, products[i].mib, prom);
+        QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-list',"
+                                         " 'arguments': { 'path': "
+                                         "'/machine' } }");
+        const QListEntry *entry;
+        unsigned int io7s = 0;
+
+        g_test_message("topology %s", products[i].topology);
+        for (entry = qlist_first(qdict_get_qlist(response, "return"));
+             entry; entry = qlist_next(entry)) {
+            QDict *item = qobject_to(QDict, qlist_entry_obj(entry));
+            const char *name = qdict_get_str(item, "name");
+            const char *type = qdict_get_str(item, "type");
+            g_autofree char *module = NULL;
+            g_autofree char *io7 = NULL;
+            g_autofree char *link = NULL;
+
+            if (!g_str_has_prefix(name, "module") ||
+                !g_str_has_prefix(type, "child<")) {
+                continue;
+            }
+            module = g_strdup_printf("/machine/%s", name);
+            io7 = qom_child_type(qts, module, "io7");
+            if (!io7) {
+                continue;
+            }
+            g_free(module);
+            module = g_strdup_printf("/machine/%s/io7", name);
+            link = qom_child_type(qts, module, "ieee1394");
+            g_assert_cmpstr(link, ==, "tsb12lv22");
+            g_free(module);
+            module = g_strdup_printf("/machine/%s/io7/ioc3", name);
+            g_assert_cmpuint(qom_get_uint(qts, module, "timekeeper-kind"), ==,
+                             1);
+            g_free(link);
+            link = qom_child_type(qts, module, "rtc");
+            g_assert_cmpstr(link, ==, "m48t35");
+            io7s++;
+        }
+        g_assert_cmpuint(io7s, ==, 1);
+        qobject_unref(response);
+        qtest_quit(qts);
+    }
     g_unlink(prom);
 }
 
@@ -13371,8 +13453,10 @@ int main(int argc, char **argv)
                    test_origin3900_ip59_cx_brick);
     qtest_add_func("sn/builder/router-l1-board-records",
                    test_router_l1_board_records);
-    qtest_add_func("sn/builder/origin3200/io7-without-ieee1394",
-                   test_origin3200_io7_without_ieee1394);
+    qtest_add_func("sn/builder/origin3200/io7-ieee1394",
+                   test_origin3200_io7_ieee1394);
+    qtest_add_func("sn/builder/ibrick/products-fit-ieee1394",
+                   test_ibrick_products_fit_ieee1394);
     qtest_add_func("sn/builder/origin3200/io7-timekeeper",
                    test_origin3200_io7_timekeeper);
     qtest_add_func("sn/builder/origin3200/fibre-channel-doubleword-dma",

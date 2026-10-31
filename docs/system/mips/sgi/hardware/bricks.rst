@@ -282,8 +282,12 @@ Model limits:
 * No internal FC disk is built with the machine. Disks join the loop
   only as the launcher attaches them, and which of the brick's two drive
   bays a disk stands for is *unknown*.
-* The IO7's IEEE 1394 link controller is left out, because its model has
-  no PHY or bus and the stock PROM's probe waits on them.
+* The IO7's IEEE 1394 link controller carries the model's lone PHY with no
+  connected port, because the fitted PHY part is unidentified
+  (*approximation*); no 1394 bus, CD-ROM or packet DMA is modelled. The
+  stock PROM writes one base into both of that controller's BARs; the
+  model answers OHCI registers at that shared base (*approximation*),
+  since TI does not say which decoder answers.
 * The IO7's time-of-day part is unidentified, so its IOC3 carries the
   Origin 300's M48T35-compatible Timekeeper as a compatibility choice
   (*approximation*), with blank storage on every start.

@@ -107,17 +107,14 @@ layer:
           ibrick-xbridge-bridge-f:
             ioc3_subsystem_id: 65535
             mac_source: none
-            # The TSB12LV22 model has no PHY or bus, and its reviewed
-            # register contract keeps it out of product profiles until
-            # those exist; the stock PROM's 1394 probe waits on them.
-            ieee1394_absent: true
             provenance: derived
             sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick, hw/misc/tsb12lv22.c]
             notes: >-
               The IOC3 subsystem field is the unobserved placeholder, and no
               source gives where the IO7's Ethernet address comes from. The
-              IEEE 1394 link controller is left out, a stated limitation:
-              its PHY and bus are not modelled.
+              IEEE 1394 link controller's PHY is the model's lone
+              unconnected PHY, an approximation: the fitted PHY part is
+              unidentified, and no 1394 bus or CD-ROM is modelled.
         system_timekeepers:
           ibrick-xbridge-bridge-f:
             kind: m48t35-compatible

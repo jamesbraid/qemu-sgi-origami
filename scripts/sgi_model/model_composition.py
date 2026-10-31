@@ -1411,7 +1411,7 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                           "initiator_region", "installed_bank_mask"},
         "l1_controllers": {"reported_type", "revision", "mac_eeprom_input",
                            "profile", "node_board"},
-        "io_boards": {"ioc3_subsystem_id", "mac_source", "ieee1394_absent"},
+        "io_boards": {"ioc3_subsystem_id", "mac_source"},
         "pci_function_revisions": {"revision"},
     }
     bindings = {
@@ -1558,9 +1558,6 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                 if entry.get("mac_source") not in {"none", "module-l1"}:
                     raise ResolutionError(
                         f"'{cid}' has no supported MAC source")
-                if entry.get("ieee1394_absent", True) is not True:
-                    raise ResolutionError(
-                        f"'{cid}' ieee1394_absent, when given, must be true")
             else:
                 integer(entry.get("revision"), 255, f"'{cid}' PCI revision")
 
