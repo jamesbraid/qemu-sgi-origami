@@ -5433,6 +5433,190 @@ static bool odyssey_code_is_index(uint32_t code)
     return code == ODSY_IMAGE_CODE_CI || code == ODSY_IMAGE_CODE_CI16;
 }
 
+/*
+ * A GL image write's source pixels, from word 7 of its DMA header: the
+ * format code in bits 4:0 names the components in source order and the
+ * type code in bits 8:5 their width (datasheet, "Image-write table").
+ * Signed types arrive under the unsigned codes. A packed type lists its
+ * components from the most significant bits down, so a reversed packed
+ * type comes under the format whose order it has in memory; reading the
+ * format code that way for packed types is INFERRED from the table's
+ * wording and agrees with the byte-sized forms, where it is the memory
+ * order. The 4:2:2 mode (format 0xa) and byte swapping (bit 10) have no
+ * modeled meaning.
+ */
+#define ODSY_GL_FORMAT_MASK 0x1f
+#define ODSY_GL_TYPE_SHIFT 5
+#define ODSY_GL_TYPE_MASK 0xf
+#define ODSY_GL_SWAP_BYTES (1u << 10)
+
+enum {
+    ODSY_GL_R, ODSY_GL_G, ODSY_GL_B, ODSY_GL_A,
+    ODSY_GL_LUM, ODSY_GL_INTENSITY, ODSY_GL_INDEX,
+};
+
+typedef struct OdysseyGLLayout {
+    uint8_t ncomp;
+    uint8_t chan[4];    /* ODSY_GL_* in source order */
+    uint8_t bits[4];    /* a packed component's width, else 0 */
+    uint8_t cbytes;     /* bytes a component takes, a packed word's size */
+    uint8_t bytes;      /* bytes a pixel takes */
+    bool packed;
+} OdysseyGLLayout;
+
+static const struct {
+    uint8_t ncomp;
+    uint8_t chan[4];
+} odyssey_gl_formats[0x12] = {
+    [1] = { 1, { ODSY_GL_INDEX } },
+    [2] = { 1, { ODSY_GL_LUM } },
+    [3] = { 1, { ODSY_GL_INTENSITY } },
+    [4] = { 1, { ODSY_GL_R } },
+    [5] = { 1, { ODSY_GL_G } },
+    [6] = { 1, { ODSY_GL_B } },
+    [7] = { 1, { ODSY_GL_A } },
+    [8] = { 2, { ODSY_GL_LUM, ODSY_GL_A } },
+    [9] = { 3, { ODSY_GL_R, ODSY_GL_G, ODSY_GL_B } },
+    [0xb] = { 4, { ODSY_GL_R, ODSY_GL_G, ODSY_GL_B, ODSY_GL_A } },
+    [0xc] = { 4, { ODSY_GL_A, ODSY_GL_B, ODSY_GL_G, ODSY_GL_R } },
+    [0xd] = { 3, { ODSY_GL_B, ODSY_GL_G, ODSY_GL_R } },
+    /* BGRA's reversed packed types: A, R, G, B from the top. */
+    [0x10] = { 4, { ODSY_GL_A, ODSY_GL_R, ODSY_GL_G, ODSY_GL_B } },
+    [0x11] = { 4, { ODSY_GL_B, ODSY_GL_G, ODSY_GL_R, ODSY_GL_A } },
+};
+
+/* Each packed type's width per R, G, B, A, and its word size in bytes. */
+static const struct {
+    uint8_t bits[4];
+    uint8_t bytes;
+    uint8_t ncomp;
+} odyssey_gl_packed[0xd] = {
+    [5] = { { 3, 3, 2, 0 }, 1, 3 },
+    [6] = { { 4, 4, 4, 4 }, 2, 4 },
+    [7] = { { 5, 5, 5, 1 }, 2, 4 },
+    [8] = { { 10, 10, 10, 2 }, 4, 4 },
+    [0xa] = { { 5, 6, 5, 0 }, 2, 3 },
+    [0xc] = { { 5, 6, 5, 0 }, 2, 3 },
+};
+
+/* Fill *l from word 7's format and type codes; false when not modeled. */
+static bool odyssey_gl_layout(uint32_t control, OdysseyGLLayout *l)
+{
+    unsigned format = control & ODSY_GL_FORMAT_MASK;
+    unsigned type = (control >> ODSY_GL_TYPE_SHIFT) & ODSY_GL_TYPE_MASK;
+
+    if ((control & ODSY_GL_SWAP_BYTES) ||
+        format >= ARRAY_SIZE(odyssey_gl_formats) ||
+        !odyssey_gl_formats[format].ncomp) {
+        return false;
+    }
+    memset(l, 0, sizeof(*l));
+    l->ncomp = odyssey_gl_formats[format].ncomp;
+    memcpy(l->chan, odyssey_gl_formats[format].chan, sizeof(l->chan));
+    if (type < ARRAY_SIZE(odyssey_gl_packed) && odyssey_gl_packed[type].bytes) {
+        if (l->ncomp != odyssey_gl_packed[type].ncomp) {
+            return false;
+        }
+        l->packed = true;
+        l->cbytes = odyssey_gl_packed[type].bytes;
+        l->bytes = l->cbytes;
+        for (unsigned i = 0; i < l->ncomp; i++) {
+            if (l->chan[i] > ODSY_GL_A) {
+                return false;
+            }
+            l->bits[i] = odyssey_gl_packed[type].bits[l->chan[i]];
+            if (!l->bits[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (format == 0x10) {
+        return false;
+    }
+    /*
+     * Signed types arrive under the unsigned codes. They are read as
+     * unsigned, which is right when the library converts them first and
+     * INFERRED when a context capability bit makes it send them directly
+     * (datasheet: which boards set the bit is unread).
+     */
+    switch (type) {
+    case 2:
+    case 0xb:
+        l->cbytes = 1;
+        break;
+    case 3:
+        l->cbytes = 2;
+        break;
+    case 4:
+        l->cbytes = 4;
+        break;
+    default:
+        return false;
+    }
+    l->bytes = l->cbytes * l->ncomp;
+    return true;
+}
+
+static uint32_t odyssey_gl_scale(uint64_t v, unsigned bits)
+{
+    uint64_t max = (1ull << bits) - 1;
+
+    return (v * 255 + max / 2) / max;
+}
+
+/*
+ * One source pixel as 0xRRGGBBAA, or for colour index the raw index. A
+ * channel the source lacks is zero and alpha is opaque; LUMINANCE fills
+ * red, green and blue, INTENSITY all four. INFERRED, all of it: the
+ * datasheet gives the expand flag for red, green and blue only, and
+ * leaves what the board stores for a source without alpha unknown. The
+ * values are GL's own pixel-transfer defaults.
+ */
+static uint32_t odyssey_gl_decode(const OdysseyGLLayout *l, const uint8_t *b)
+{
+    uint32_t c[4] = { 0, 0, 0, 0xff };
+    uint64_t word = 0;
+    unsigned shift = 8 * l->bytes;
+
+    if (l->packed) {
+        for (unsigned i = 0; i < l->bytes; i++) {
+            word = word << 8 | b[i];
+        }
+    }
+    for (unsigned i = 0; i < l->ncomp; i++) {
+        uint64_t raw;
+        unsigned bits;
+
+        if (l->packed) {
+            bits = l->bits[i];
+            shift -= bits;
+            raw = (word >> shift) & ((1ull << bits) - 1);
+        } else {
+            const uint8_t *p = b + i * l->cbytes;
+
+            bits = 8 * l->cbytes;
+            raw = l->cbytes == 4 ? (uint32_t)ldl_be_p(p) :
+                  l->cbytes == 2 ? lduw_be_p(p) : *p;
+        }
+        if (l->chan[i] == ODSY_GL_INDEX) {
+            return raw & ODSY_INDEX_MASK;
+        }
+        raw = odyssey_gl_scale(raw, bits);
+        switch (l->chan[i]) {
+        case ODSY_GL_LUM:
+            c[0] = c[1] = c[2] = raw;
+            break;
+        case ODSY_GL_INTENSITY:
+            c[0] = c[1] = c[2] = c[3] = raw;
+            break;
+        default:
+            c[l->chan[i]] = raw;
+        }
+    }
+    return (odyssey_pack_pixel(c[0], c[1], c[2]) & ~0xffu) | c[3];
+}
+
 /* Bytes a pixel of a source format takes, 0 for an unknown code. */
 static unsigned odyssey_pixel_bytes(uint32_t code)
 {
@@ -9592,17 +9776,25 @@ static int odyssey_dma_entries(const SGIDMABus *bus, uint64_t table,
  * One pixel of a transfer at (x, y) of object obj, or of the colour buffers
  * the drawing mask selects when obj is -1, decoded by the
  * header's source format exactly as an image transfer's pixel is
- * (odyssey_decode_pixel()). Clipped to the
+ * (odyssey_decode_pixel()), or by gl when the header is a GL write whose
+ * format and type codes odyssey_gl_layout() reads. Clipped to the
  * plane only: the placement note names no other test for this path, and the
  * X server's 0x204b clip in force at each greeter transfer covers the
  * rectangle anyway, so no capture tells the two apart.
  */
 static void odyssey_dma_put(SGIOdysseyState *s, int obj, int64_t x,
-                            int64_t y, const uint8_t *src, uint32_t code)
+                            int64_t y, const uint8_t *src, uint32_t code,
+                            const OdysseyGLLayout *gl)
 {
     uint32_t pixel;
 
-    odyssey_decode_pixel(s, code, src, &pixel);
+    if (gl) {
+        pixel = odyssey_gl_decode(gl, src);
+        code = gl->chan[0] == ODSY_GL_INDEX ? ODSY_IMAGE_CODE_CI :
+               ODSY_IMAGE_CODE_RGBA;
+    } else {
+        odyssey_decode_pixel(s, code, src, &pixel);
+    }
     if (obj >= 0) {
         if (x >= 0 && y >= 0) {
             odyssey_object_store(s, obj, x, y, pixel);
@@ -9741,6 +9933,16 @@ static void odyssey_dma_to_buffer(SGIOdysseyState *s, const SGIDMABus *bus,
                      (hdr[ODSY_DMA_HDR_CONTROL] & ODSY_IMAGE_CODE_MASK) ==
                      ODSY_IMAGE_CODE_LUM_ALPHA;
     bool raw = obj >= 0 && odyssey_dma_raw(hdr, bpp);
+    uint32_t control = hdr[ODSY_DMA_HDR_CONTROL];
+    OdysseyGLLayout gl_layout;
+    /*
+     * A GL write whose format and type the codes above do not cover:
+     * decoded from the two codes, when its pixel size is the header's.
+     */
+    bool gl = !raw && !texel12 && !lum_alpha &&
+              odyssey_pixel_bytes(control & ODSY_IMAGE_CODE_MASK) != bpp &&
+              odyssey_gl_layout(control, &gl_layout) &&
+              gl_layout.bytes == bpp;
     g_autofree uint8_t *row = NULL;
     uint64_t payload = 0, pos = 0;
     uint32_t left, r, c;
@@ -9749,7 +9951,8 @@ static void odyssey_dma_to_buffer(SGIOdysseyState *s, const SGIDMABus *bus,
     if (obj >= 0 && odyssey_dma_raw64(s, hdr, bpp)) {
         return;
     }
-    if (bpp != 4 && bpp != 3 && bpp != 1 && !texel12 && !lum_alpha && !raw) {
+    if (bpp != 4 && bpp != 3 && bpp != 1 && !texel12 && !lum_alpha && !raw &&
+        !gl) {
         if (!s->dma_bpp_reported) {
             s->dma_bpp_reported = true;
             qemu_log_mask(LOG_UNIMP, "sgi-odyssey: DMA to buffer 0x%x at %u "
@@ -9759,7 +9962,7 @@ static void odyssey_dma_to_buffer(SGIOdysseyState *s, const SGIDMABus *bus,
         return;
     }
     code = texel12 || raw ? hdr[ODSY_DMA_HDR_CONTROL] & ODSY_IMAGE_CODE_MASK :
-                            odyssey_dma_code(s, hdr, bpp);
+           gl ? 0 : odyssey_dma_code(s, hdr, bpp);
     n = odyssey_dma_entries(bus, table, seq, e);
     if (n < 0) {
         return;
@@ -9814,7 +10017,7 @@ static void odyssey_dma_to_buffer(SGIOdysseyState *s, const SGIDMABus *bus,
                 continue;
             }
             odyssey_dma_put(s, obj, (int64_t)x + c, (int64_t)y + r,
-                            row + c * bpp, code);
+                            row + c * bpp, code, gl ? &gl_layout : NULL);
         }
     }
 done:
@@ -9904,85 +10107,61 @@ static void odyssey_dma_zs_write_pixel(SGIOdysseyState *s, int64_t x,
 }
 
 /*
- * Source format code 0x6c: a GL DMA image write of A, B, G, R bytes, one
- * pixel a 4-byte word (word 7's low byte, bytes-per-pixel code 1). IRIS GL's
- * lrectwrite and GL_ABGR_EXT draws (ipaste, bgpaste) send it. ESTABLISHED
- * for what the software sends, from a model run: ipaste's payload for
- * brick.rgb carries bytes ff 7f 80 97 for the image's bottom-left pixel,
- * whose file channels are R 0x97, G 0x80, B 0x7f, and the next pixels match
- * the same way. INFERRED: that the board decodes the word in that order,
- * from the image coming out right. 0x4c carries the same bytes; this form
- * differs in word 4 and the code.
+ * A GL image write to the draw sentinel: word 7 gives the source format
+ * and type codes (odyssey_gl_layout()), word 4 has bits 7:0 clear, bit 12
+ * set and a size field in bits 15:13 that the datasheet gives as 0 to 2
+ * (ESTABLISHED, "Image-write table"). The size field follows the board-side
+ * destination class, not the source, so no decode reads it. The other bits
+ * of word 4 and word 7 (draw buffer, field codes, expand, the transfer path
+ * and descriptions-differ flags, the interrupt request) are not decode
+ * inputs.
  *
- * Word 7 of the two observed writes is 0x7201016c (ipaste) and 0x7a01016c
- * (bgpaste). Bits 29:25 differ between them or are set with no known
- * effect and are ignored; every other bit must match, bit 8 (set in both)
- * included, so an unseen form stays reported.
- */
-#define ODSY_DMA_ABGR_CONTROL 0x4001016cu
-#define ODSY_DMA_ABGR_CONTROL_IGNORED 0x3e000000u
-
-/*
- * dmplay's movie frames: the same A, B, G, R bytes under source format code
- * 0x4c, with word 4 0x82233000 and word 7 0x7a01004c. OBSERVED on the
- * model with Announcer.mov: each 320x240 frame arrives as nine tiles whose
- * widths (96, 128, 96) and heights (10, 115, 115) cover it exactly, rows
- * of 4 * width bytes with the rest of each 1280-byte source row skipped.
- * The first tile sent holds the first source rows and names y 125, the
- * last names y 0. INFERRED from the picture: the A, B, G, R order (a red
- * tie and skin tones; a 0x00RRGGBB reading turns the face blue), that the
- * source's first row is the top of the picture (it
- * comes out upside down otherwise), and that the header's y counts up from
- * the bottom of the window, as GL window coordinates do, with rows sent
- * top to bottom as under a pixel zoom of -1. Only this exact word 4 is
- * taken.
- *
- * ESTABLISHED from disassembly of the IRIX 6.5.30 GL client library,
- * whose image DMA to the drawable builds this header: word 4 bit 31 comes
- * from the draw buffer, bits 27:24 and 23:20 from a mode table indexed by
- * two words of the destination's description, bits 19:16 from a third,
- * bits 15:13 from the format and type table and bit 12 is always set.
- * None of them reads the pixel zoom, so the bits this word has and the
- * ABGR write's 0x80035000 lacks (0x02206000) follow the destination,
- * format and type, not the row order. Word 1's y is the smaller y of the
- * destination box the library computes; no drawable height is sent. Word
- * 7 bit 30 is set when the source's and destination's descriptions
- * differ in their second word, and bit 27 by another flag; neither reads
- * the zoom either. What tells the board this form's rows run top down,
- * and the window height its bottom-up y needs, remain unknown.
+ * Two forms observed on the model fix the bottom-up row order every GL
+ * write has. dmplay's movie frames are the ABGR bytes under word 4
+ * 0x82233000, each 320x240 frame nine tiles whose widths (96, 128, 96) and
+ * heights (10, 115, 115) cover it, 4 * width bytes a row with the rest of
+ * each 1280-byte source row skipped. INFERRED from the picture: the first
+ * source row is the top, and word 1's y counts up from the window's bottom
+ * with rows sent top to bottom, as under a pixel zoom of -1. Nothing in the
+ * header says so: the library builds word 4 from the destination, format
+ * and type, and word 7's bits 30 and 27 do not read the zoom. Only that
+ * exact word 4 with format 0xc and type 2 is taken top-down.
  */
 #define ODSY_DMA_MOVIE_FORMAT 0x82233000u
-#define ODSY_DMA_MOVIE_CONTROL 0x4001004cu
+#define ODSY_DMA_GL_WORD4_FIXED 0x1000u
+#define ODSY_DMA_GL_SIZE_SHIFT 13
+#define ODSY_DMA_GL_SIZE_FIELD 0x7
+#define ODSY_DMA_GL_SIZE_MAX 2
 
 /*
- * The draw-sentinel uploads this model takes: the captured RGBA16 write,
- * whose words 4 and 7 must match exactly, eight bytes a pixel, and the ABGR
- * write above, four bytes a pixel, whose word 7 must match apart from the
- * ignored bits (ODSY_DMA_ABGR_CONTROL) and whose word 4 must be the observed
- * 0x80035000. The movie write is taken under the same rule with its own
- * words and sets *top_down. 0 for any other upload, which the caller
- * reports.
+ * Fill *gl for a write the model decodes and set *top_down; false, with
+ * the datasheet's unknowns and malformed headers left for the caller to
+ * report, for anything else.
  */
-static unsigned odyssey_dma_draw_sentinel_bytes(const uint32_t *hdr,
-                                                bool *top_down)
+static bool odyssey_dma_gl_write(const uint32_t *hdr, OdysseyGLLayout *gl,
+                                 bool *top_down)
 {
+    uint32_t fmt = hdr[ODSY_DMA_HDR_FORMAT];
     uint32_t control = hdr[ODSY_DMA_HDR_CONTROL];
 
     *top_down = false;
-    if (hdr[ODSY_DMA_HDR_FORMAT] == 0x02635000 && control == 0x7a02006b) {
-        return 8;
+    if ((fmt & 0xff) || !(fmt & ODSY_DMA_GL_WORD4_FIXED) ||
+        ((fmt >> ODSY_DMA_GL_SIZE_SHIFT) & ODSY_DMA_GL_SIZE_FIELD) >
+        ODSY_DMA_GL_SIZE_MAX || !odyssey_gl_layout(control, gl)) {
+        return false;
     }
-    if (hdr[ODSY_DMA_HDR_FORMAT] == 0x80035000 &&
-        (control & ~ODSY_DMA_ABGR_CONTROL_IGNORED) == ODSY_DMA_ABGR_CONTROL) {
-        return 4;
+    if (gl->bytes != odyssey_dma_bpp[(control >> ODSY_DMA_BPP_SHIFT) &
+                                     ODSY_DMA_BPP_MASK]) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: GL image write with "
+                      "word 7 0x%x takes %u bytes a pixel, not the %u its "
+                      "size code gives\n", control, gl->bytes,
+                      odyssey_dma_bpp[(control >> ODSY_DMA_BPP_SHIFT) &
+                                      ODSY_DMA_BPP_MASK]);
+        return false;
     }
-    if (hdr[ODSY_DMA_HDR_FORMAT] == ODSY_DMA_MOVIE_FORMAT &&
-        (control & ~ODSY_DMA_ABGR_CONTROL_IGNORED) ==
-        ODSY_DMA_MOVIE_CONTROL) {
-        *top_down = true;
-        return 4;
-    }
-    return 0;
+    *top_down = fmt == ODSY_DMA_MOVIE_FORMAT &&
+                (control & 0x1ff) == (2 << ODSY_GL_TYPE_SHIFT | 0xc);
+    return true;
 }
 
 /*
@@ -10007,7 +10186,9 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
     uint32_t left, r;
     bool top_down = false;
     bool zs = odyssey_dma_zs_write(hdr);
-    unsigned psize = zs ? 4 : odyssey_dma_draw_sentinel_bytes(hdr, &top_down);
+    OdysseyGLLayout gl = {};
+    unsigned psize = zs ? 4 : odyssey_dma_gl_write(hdr, &gl, &top_down) ?
+                     gl.bytes : 0;
     /*
      * APPROXIMATION: the window's height, for a top-down write's
      * bottom-up y, taken from the 0x81d clip box's last row. The library
@@ -10084,27 +10265,12 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
             int64_t px = (int64_t)x + c + s->win_origin[0];
             int64_t py = (top_down ? rows - y - h + r :
                           (int64_t)y + h - 1 - r) + s->win_origin[1];
-            uint32_t rgba;
 
             if (zs) {
                 odyssey_dma_zs_write_pixel(s, px, py, ldl_be_p(src));
                 continue;
             }
-            if (psize == 4) {
-                rgba = (odyssey_pack_pixel(src[3], src[2], src[1]) & ~0xffu) |
-                       src[0];
-            } else {
-                uint32_t red = lduw_be_p(src), green = lduw_be_p(src + 2);
-                uint32_t blue = lduw_be_p(src + 4), alpha = lduw_be_p(src + 6);
-
-                rgba = odyssey_pack_pixel(
-                    (red * 255 + UINT16_MAX / 2) / UINT16_MAX,
-                    (green * 255 + UINT16_MAX / 2) / UINT16_MAX,
-                    (blue * 255 + UINT16_MAX / 2) / UINT16_MAX);
-                rgba = (rgba & ~0xffu) |
-                       ((alpha * 255 + UINT16_MAX / 2) / UINT16_MAX);
-            }
-            odyssey_paint_pixel(s, px, py, rgba);
+            odyssey_paint_pixel(s, px, py, odyssey_gl_decode(&gl, src));
         }
     }
     if (!zs) {
@@ -10828,10 +10994,10 @@ static void odyssey_dma_from_board(SGIOdysseyState *s, const SGIDMABus *bus,
  * the FIFO -- whose row length is word 2's (16-pixel units), created when no
  * 0x1017 named it first. A zero word 0 names no buffer and is refused. An
  * upload to a sentinel (GL's DMA image write) is accepted only by the
- * draw-sentinel adapter, for the colour layouts it knows
- * (odyssey_dma_draw_sentinel_bytes()) and the depth and stencil writes
- * (odyssey_dma_zs_write()). The 0xe03 opcode, which only the
- * diagnostic region path emits, is reported and not performed.
+ * draw-sentinel adapter, for the format and type pairs odyssey_gl_layout()
+ * decodes and the depth and stencil writes (odyssey_dma_zs_write()).
+ * The 0xe03 opcode, which only the diagnostic region path emits, is
+ * reported and not performed.
  */
 static void odyssey_dma_descriptor(SGIOdysseyState *s, bool readback)
 {

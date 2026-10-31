@@ -11943,6 +11943,53 @@ static void dma_texel12_row(QTestState *qts, uint32_t base, uint32_t code,
 }
 
 /*
+ * The same format and type decode serves a texture object's DMA upload
+ * (word 0 names the object). Pairs the 12-bit probe codes do not cover,
+ * four-byte components, packed types, single channels and BGRA, store the
+ * decoded texel with its alpha, as the sentinel write does.
+ */
+static void test_dma_texture_gl_types(void)
+{
+    static const struct {
+        uint32_t format, type, bytes, size_index;
+        uint8_t src[16];
+        uint32_t texel;
+    } cases[] = {
+        { 0xb, 4, 16, 3,
+          { 0x11, 0x11, 0x11, 0x11, 0x22, 0x22, 0x22, 0x22,
+            0x33, 0x33, 0x33, 0x33, 0x44, 0x44, 0x44, 0x44 }, 0x11223344 },
+        { 4, 2, 1, 5, { 0x80 }, 0x800000ff },
+        { 9, 0xa, 2, 0, { 0xf8, 0x10 }, 0xff0084ff },
+        { 0xb, 8, 4, 1, { 0xff, 0xc0, 0x08, 0x02 }, 0xff0080aa },
+        { 0x11, 2, 4, 1, { 0x33, 0x22, 0x11, 0x44 }, 0x11223344 },
+    };
+    QTestState *qts = board_start("");
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_BANKS);
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        const uint32_t base = 0x190000 + i * 0x1000;
+        const uint64_t table = 0xb80000;
+        const uint64_t page = 0xb84000;
+        const uint32_t hdr[8] = {
+            base, 0, 2, (1 << 16) | 1, 0x80015000, 0, cases[i].bytes,
+            0x3a000000 | cases[i].size_index << 16 | cases[i].type << 5 |
+            cases[i].format,
+        };
+        const uint64_t pte[] = { ODSY_DMA_PTE(page, cases[i].bytes) };
+
+        qtest_memwrite(qts, page, cases[i].src, cases[i].bytes);
+        dma_image_table(qts, table, hdr, pte, 1);
+        dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table);
+        g_test_message("format 0x%x type 0x%x", cases[i].format,
+                       cases[i].type);
+        g_assert_cmphex(odsy_test_object_texel(qts, base, 0, 0), ==,
+                        cases[i].texel);
+    }
+    board_quit(qts);
+}
+
+/*
  * The GL library's uploads into a 12-bit texture, from a guest probe that
  * sent distinct component values under each internal format, source format
  * and type. The code names the components in the source's order (0x62 L,
@@ -21798,8 +21845,9 @@ static void test_draw_sentinel_short_upload(void)
 /*
  * The GL library's ABGR image write (ipaste, bgpaste): code 0x6c, four
  * bytes a pixel in A, B, G, R order, bottom row first, word 1 relative to
- * the window. Callers differ in word 7 bit 27; both land. Any other bit of
- * words 4 and 7, bit 30 or bit 31 included, leaves the write unpainted.
+ * the window. Callers differ in word 7 bit 27; both land, and so does a
+ * write without bit 30 or with bit 31, which the decode does not read.
+ * A word 4 with its low byte set is not a write header and is refused.
  */
 static void test_draw_sentinel_abgr_upload(void)
 {
@@ -21835,20 +21883,21 @@ static void test_draw_sentinel_abgr_upload(void)
     readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
     g_assert_cmphex(odsy_buffer_pixel(qts, 1, 303, 403), ==, 0x97807fff);
 
-    /* Without bit 30, or with an unknown bit such as 31, nothing lands. */
+    /* Bits 30 and 31 are not decode inputs. */
     window_origin(qts, 500, 600);
     hdr[7] = 0x3201016c;
     readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
-    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 503, 603), ==, 0);
-    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 503, 602), ==, 0);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 503, 603), ==, 0x97807fff);
+    window_origin(qts, 700, 800);
     hdr[7] = 0xc201016c;
     readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
-    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 503, 603), ==, 0);
-    /* Another word 4 is refused too. */
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 703, 803), ==, 0x97807fff);
+    /* A word 4 with its low byte set is refused. */
+    window_origin(qts, 900, 400);
     hdr[7] = 0x7201016c;
     hdr[4] = 0x80035001;
     readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
-    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 503, 603), ==, 0);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 903, 403), ==, 0);
 
     board_quit(qts);
 }
@@ -22095,6 +22144,273 @@ static void test_draw_sentinel_short_rejections(void)
     g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 0);
 
     board_quit(qts);
+}
+
+/*
+ * GL image writes to the draw sentinel decode word 7's format code (bits
+ * 4:0) and type code (bits 8:5), whatever the pair is, not three captured
+ * words (datasheet, "Image-write table"). Each row writes one pixel at the
+ * window's own row i and reads the stored word back. The size field in
+ * word 4 (bits 15:13) rides along with the destination class and must not
+ * change the pixel, so the rows vary it over 0 to 2. A row that only
+ * passes because the decode ignores a channel or its width would need the
+ * channel values here to differ, which they do.
+ */
+typedef struct GLWriteCase {
+    uint32_t format, type, size_field;
+    unsigned bytes;
+    uint8_t src[16];
+    uint32_t want;
+} GLWriteCase;
+
+static void gl_write_cases(const GLWriteCase *cases, unsigned n)
+{
+    static const uint8_t bpp_code[17] = {
+        [2] = 0, [4] = 1, [8] = 2, [16] = 3, [12] = 4, [1] = 5, [6] = 6,
+        [3] = 7,
+    };
+    QTestState *qts = readback_start("");
+
+    window_origin(qts, 100, 200);
+    window_clip(qts, (const uint32_t[][4]) { { 0, 0, 1279, 1023 } }, 1);
+    draw_mask(qts, ODSY_DRAW_BUFFER1);
+    for (unsigned i = 0; i < n; i++) {
+        const GLWriteCase *c = &cases[i];
+        const uint32_t hdr[8] = {
+            RB_DRAW_SENTINEL, (i << 16) | 3, 0x50, (1 << 16) | 1,
+            0x80001000u | c->size_field << 13, 0, c->bytes,
+            0x32000000u | bpp_code[c->bytes] << 16 | c->type << 5 | c->format,
+        };
+        const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A, c->bytes) };
+
+        qtest_memwrite(qts, RB_PAGE_A, c->src, c->bytes);
+        readback_run(qts, hdr, pte, 1);
+        g_test_message("format 0x%x type 0x%x", c->format, c->type);
+        g_assert_cmphex(odsy_buffer_pixel(qts, 1, 103, 200 + i), ==, c->want);
+    }
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 0);
+    board_quit(qts);
+}
+
+/* Every colour format with one-byte components. */
+static void test_draw_sentinel_gl_byte_types(void)
+{
+    static const GLWriteCase cases[] = {
+        { 9, 2, 1, 3, { 0x11, 0x22, 0x33 }, 0x112233ff },
+        { 0xb, 2, 2, 4, { 0x11, 0x22, 0x33, 0x44 }, 0x11223344 },
+        { 0xc, 2, 2, 4, { 0x44, 0x33, 0x22, 0x11 }, 0x11223344 },
+        { 0xd, 2, 0, 3, { 0x33, 0x22, 0x11 }, 0x112233ff },
+        { 0x11, 2, 1, 4, { 0x33, 0x22, 0x11, 0x44 }, 0x11223344 },
+        /* The 12-bit drawable's type code, 0xb, has the same bytes. */
+        { 0xc, 0xb, 2, 4, { 0x44, 0x33, 0x22, 0x11 }, 0x11223344 },
+    };
+
+    gl_write_cases(cases, ARRAY_SIZE(cases));
+}
+
+/* Two-byte components: each is a 16-bit big-endian value scaled to 8 bits. */
+static void test_draw_sentinel_gl_short_types(void)
+{
+    static const GLWriteCase cases[] = {
+        { 9, 3, 1, 6, { 0x11, 0x11, 0x22, 0x22, 0x33, 0x33 }, 0x112233ff },
+        { 0xb, 3, 2, 8, { 0x11, 0x11, 0x22, 0x22, 0x33, 0x33, 0x44, 0x44 },
+          0x11223344 },
+        { 0xc, 3, 2, 8, { 0x44, 0x44, 0x33, 0x33, 0x22, 0x22, 0x11, 0x11 },
+          0x11223344 },
+        { 0xd, 3, 0, 6, { 0x33, 0x33, 0x22, 0x22, 0x11, 0x11 }, 0x112233ff },
+        { 0x11, 3, 1, 8, { 0x33, 0x33, 0x22, 0x22, 0x11, 0x11, 0x44, 0x44 },
+          0x11223344 },
+    };
+
+    gl_write_cases(cases, ARRAY_SIZE(cases));
+}
+
+/* Four-byte components, which drew nothing at all before. */
+static void test_draw_sentinel_gl_int_types(void)
+{
+    static const GLWriteCase cases[] = {
+        { 9, 4, 1, 12, { 0x11, 0x11, 0x11, 0x11, 0x22, 0x22, 0x22, 0x22,
+                         0x33, 0x33, 0x33, 0x33 }, 0x112233ff },
+        { 0xb, 4, 2, 16, { 0x11, 0x11, 0x11, 0x11, 0x22, 0x22, 0x22, 0x22,
+                           0x33, 0x33, 0x33, 0x33, 0x44, 0x44, 0x44, 0x44 },
+          0x11223344 },
+        { 0xc, 4, 2, 16, { 0x44, 0x44, 0x44, 0x44, 0x33, 0x33, 0x33, 0x33,
+                           0x22, 0x22, 0x22, 0x22, 0x11, 0x11, 0x11, 0x11 },
+          0x11223344 },
+        { 0xd, 4, 0, 12, { 0x33, 0x33, 0x33, 0x33, 0x22, 0x22, 0x22, 0x22,
+                           0x11, 0x11, 0x11, 0x11 }, 0x112233ff },
+        { 0x11, 4, 1, 16, { 0x33, 0x33, 0x33, 0x33, 0x22, 0x22, 0x22, 0x22,
+                            0x11, 0x11, 0x11, 0x11, 0x44, 0x44, 0x44, 0x44 },
+          0x11223344 },
+    };
+
+    gl_write_cases(cases, ARRAY_SIZE(cases));
+}
+
+/*
+ * RED, GREEN, BLUE and ALPHA sources set their own channel only. The others
+ * are zero, and alpha is opaque unless the source is ALPHA.
+ */
+static void test_draw_sentinel_gl_single_channel(void)
+{
+    static const GLWriteCase cases[] = {
+        { 4, 2, 1, 1, { 0x80 }, 0x800000ff },
+        { 5, 2, 1, 1, { 0x80 }, 0x008000ff },
+        { 6, 2, 1, 1, { 0x80 }, 0x000080ff },
+        { 7, 2, 1, 1, { 0x80 }, 0x00000080 },
+        { 4, 3, 1, 2, { 0x80, 0x80 }, 0x800000ff },
+        { 5, 3, 1, 2, { 0x80, 0x80 }, 0x008000ff },
+        { 6, 3, 1, 2, { 0x80, 0x80 }, 0x000080ff },
+        { 7, 3, 1, 2, { 0x80, 0x80 }, 0x00000080 },
+        { 4, 4, 1, 4, { 0x80, 0x80, 0x80, 0x80 }, 0x800000ff },
+        { 5, 4, 1, 4, { 0x80, 0x80, 0x80, 0x80 }, 0x008000ff },
+        { 6, 4, 1, 4, { 0x80, 0x80, 0x80, 0x80 }, 0x000080ff },
+        { 7, 4, 1, 4, { 0x80, 0x80, 0x80, 0x80 }, 0x00000080 },
+    };
+
+    gl_write_cases(cases, ARRAY_SIZE(cases));
+}
+
+/*
+ * LUMINANCE spreads over red, green and blue with alpha opaque, INTENSITY
+ * over all four, LUMINANCE_ALPHA keeps its alpha.
+ */
+static void test_draw_sentinel_gl_luminance(void)
+{
+    static const GLWriteCase cases[] = {
+        { 2, 2, 1, 1, { 0x80 }, 0x808080ff },
+        { 2, 3, 1, 2, { 0x80, 0x80 }, 0x808080ff },
+        { 2, 4, 1, 4, { 0x80, 0x80, 0x80, 0x80 }, 0x808080ff },
+        { 3, 2, 1, 1, { 0x80 }, 0x80808080 },
+        { 3, 3, 1, 2, { 0x80, 0x80 }, 0x80808080 },
+        { 3, 4, 1, 4, { 0x80, 0x80, 0x80, 0x80 }, 0x80808080 },
+        { 8, 2, 1, 2, { 0x80, 0x40 }, 0x80808040 },
+        { 8, 3, 1, 4, { 0x80, 0x80, 0x40, 0x40 }, 0x80808040 },
+        { 8, 4, 1, 8, { 0x80, 0x80, 0x80, 0x80, 0x40, 0x40, 0x40, 0x40 },
+          0x80808040 },
+    };
+
+    gl_write_cases(cases, ARRAY_SIZE(cases));
+}
+
+/*
+ * Packed types: the format names the components from the most significant
+ * bits down, so a reversed packed type arrives under the format whose
+ * order it has in memory (INFERRED from the datasheet's wording). Each
+ * channel is scaled from its own width.
+ */
+static void test_draw_sentinel_gl_packed_types(void)
+{
+    static const GLWriteCase cases[] = {
+        /* 3_3_2: R 5, G 2, B 3. And _REV under BGR: B 2, G 5, R 3. */
+        { 9, 5, 0, 1, { 0xab }, 0xb649ffff },
+        { 0xd, 5, 0, 1, { 0xab }, 0x6db6aaff },
+        /* 5_6_5: R 31, G 0, B 16, and its _REV under BGR. */
+        { 9, 0xa, 0, 2, { 0xf8, 0x10 }, 0xff0084ff },
+        { 9, 0xc, 0, 2, { 0xf8, 0x10 }, 0xff0084ff },
+        { 0xd, 0xa, 0, 2, { 0xf8, 0x10 }, 0x8400ffff },
+        /* 4_4_4_4: R 15, G 8, B 0, A 10 under each order. */
+        { 0xb, 6, 0, 2, { 0xf8, 0x0a }, 0xff8800aa },
+        { 0xc, 6, 0, 2, { 0xf8, 0x0a }, 0xaa0088ff },
+        { 0x10, 6, 0, 2, { 0xf8, 0x0a }, 0x8800aaff },
+        { 0x11, 6, 0, 2, { 0xf8, 0x0a }, 0x0088ffaa },
+        /* 5_5_5_1: R 31, G 0, B 16, A 1; and 1_5_5_5_REV as A B G R. */
+        { 0xb, 7, 0, 2, { 0xf8, 0x21 }, 0xff0084ff },
+        { 0xc, 7, 0, 2, { 0xfc, 0x10 }, 0x8400ffff },
+        /* 10_10_10_2: R 1023, G 0, B 512, A 2; _REV as A B G R. */
+        { 0xb, 8, 0, 4, { 0xff, 0xc0, 0x08, 0x02 }, 0xff0080aa },
+        { 0xc, 8, 0, 4, { 0xff, 0xf0, 0x02, 0x00 }, 0x8000ffff },
+    };
+
+    gl_write_cases(cases, ARRAY_SIZE(cases));
+}
+
+/* Colour index in each integer width: the raw index, 12 bits kept. */
+static void test_draw_sentinel_gl_index_types(void)
+{
+    static const GLWriteCase cases[] = {
+        { 1, 2, 0, 1, { 0x2a }, 0x2a },
+        { 1, 3, 0, 2, { 0x01, 0x23 }, 0x123 },
+        { 1, 4, 0, 4, { 0x00, 0x00, 0x01, 0x45 }, 0x145 },
+    };
+
+    gl_write_cases(cases, ARRAY_SIZE(cases));
+}
+
+/*
+ * A pair the datasheet does not define leaves the window alone and says so
+ * once; so does a size field above 2, byte swapping (bit 10), whose board
+ * effect is unknown, and a bytes-per-pixel code that disagrees with the
+ * pair. A bit the decode does not read (bit 30, bit 31) changes nothing.
+ */
+static void test_draw_sentinel_gl_unmodeled(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    uint32_t hdr[8] = {
+        RB_DRAW_SENTINEL, 3, 0x50, (1 << 16) | 1, 0x80001000u, 0, 4,
+        0x3201000b | 2 << 5,
+    };
+    const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A, 4) };
+    const uint8_t px[4] = { 0x11, 0x22, 0x33, 0x44 };
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-gl-write-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = readback_start(extra);
+
+    window_origin(qts, 100, 200);
+    window_clip(qts, (const uint32_t[][4]) { { 0, 0, 1279, 1023 } }, 1);
+    draw_mask(qts, ODSY_DRAW_BUFFER1);
+    qtest_memwrite(qts, RB_PAGE_A, px, sizeof(px));
+
+    /* RGBA 4:2:2, an unknown format, an unknown type. */
+    hdr[7] = 0x3201000a | 2 << 5;
+    readback_run(qts, hdr, pte, 1);
+    hdr[7] = 0x32010012 | 2 << 5;
+    readback_run(qts, hdr, pte, 1);
+    hdr[7] = 0x3201000b | 1 << 5;
+    readback_run(qts, hdr, pte, 1);
+    /*
+     * A packed type on a format with the wrong component count: RED with
+     * 4_4_4_4, two bytes, so the size code agrees and only the component
+     * count refuses it.
+     */
+    hdr[3] = (1 << 16) | 1;
+    hdr[6] = 2;
+    hdr[7] = 0x32000004 | 6 << 5;
+    readback_run(qts, hdr, (const uint64_t[]) { ODSY_DMA_PTE(RB_PAGE_A, 2) },
+                 1);
+    hdr[6] = 4;
+    /* Byte swap, a size field of 3, a size code of 8 bytes for 4. */
+    hdr[7] = 0x3201000b | 2 << 5 | 1 << 10;
+    readback_run(qts, hdr, pte, 1);
+    hdr[7] = 0x3201000b | 2 << 5;
+    hdr[4] = 0x80001000u | 3 << 13;
+    readback_run(qts, hdr, pte, 1);
+    hdr[4] = 0x80001000u;
+    hdr[7] = 0x3202000b | 2 << 5;
+    readback_run(qts, hdr, pte, 1);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 103, 200), ==, 0);
+
+    /* Bits 30 and 31 are not part of the decode. */
+    hdr[7] = 0xc201000b | 2 << 5;
+    readback_run(qts, hdr, pte, 1);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 103, 200), ==, 0x11223344);
+
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(readback_count(log, "DMA upload to sentinel"), ==, 1);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
 /*
@@ -24319,6 +24635,22 @@ int main(int argc, char **argv)
                    test_draw_sentinel_short_zero_origin_clip);
     add_fresh_case("sn1/odyssey/dma/draw-sentinel-short-rejections",
                    test_draw_sentinel_short_rejections);
+    add_fresh_case("sn1/odyssey/dma/draw-sentinel-gl-byte-types",
+                   test_draw_sentinel_gl_byte_types);
+    add_fresh_case("sn1/odyssey/dma/draw-sentinel-gl-short-types",
+                   test_draw_sentinel_gl_short_types);
+    add_fresh_case("sn1/odyssey/dma/draw-sentinel-gl-int-types",
+                   test_draw_sentinel_gl_int_types);
+    add_fresh_case("sn1/odyssey/dma/draw-sentinel-gl-single-channel",
+                   test_draw_sentinel_gl_single_channel);
+    add_fresh_case("sn1/odyssey/dma/draw-sentinel-gl-luminance",
+                   test_draw_sentinel_gl_luminance);
+    add_fresh_case("sn1/odyssey/dma/draw-sentinel-gl-packed-types",
+                   test_draw_sentinel_gl_packed_types);
+    add_fresh_case("sn1/odyssey/dma/draw-sentinel-gl-index-types",
+                   test_draw_sentinel_gl_index_types);
+    add_fresh_case("sn1/odyssey/dma/draw-sentinel-gl-unmodeled",
+                   test_draw_sentinel_gl_unmodeled);
     add_fresh_case("sn1/odyssey/readback/sentinel-drawable-relative",
                    test_readback_sentinel_drawable_relative);
     add_fresh_case("sn1/odyssey/readback/intermediate-block",
@@ -24734,6 +25066,8 @@ int main(int argc, char **argv)
                    test_dma_texture_luminance_alpha);
     add_fresh_case("sn1/odyssey/dma-texture-12bit-sources",
                    test_dma_texture_12bit_sources);
+    add_fresh_case("sn1/odyssey/dma-texture-gl-types",
+                   test_dma_texture_gl_types);
     add_case("sn1/odyssey/burst-texture-12bit-sources",
              test_burst_texture_12bit_sources);
     add_fresh_case("sn1/odyssey/object-store-reclaims",
