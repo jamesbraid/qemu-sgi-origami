@@ -168,6 +168,7 @@
 
 #define ISP_IOCB_COMPLETE    0x0000
 #define ISP_IOCB_INCOMPLETE  0x0001
+#define ISP_IOCB_RESET       0x0004
 
 #define ISP_STATE_FLAG_GOT_BUS            0x0100
 #define ISP_STATE_FLAG_GOT_SENSE          0x2000
@@ -1877,6 +1878,88 @@ static void test_soft_reset_cancels_selection_wait(void *obj, void *data,
 }
 
 /*
+ * A bus reset destroys the commands outstanding on the bus, and the drivers
+ * (qla1280 CS_RESET, isp RQCS_RESET_OCCURRED, qlw STATUS_RESET) all read a
+ * reset completion for them. A selection still waiting for an absent target
+ * is one of them: it ends with the reset completion at once, not with the
+ * selection timeout later, and the command completes only once.
+ */
+static void test_bus_reset_retires_selection_wait(void *obj, void *data,
+                                                  QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t resp_addr;
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    resp_addr = isp_send_to_absent_target(dev, io, alloc, 600);
+    qtest_clock_step(qts, 100 * ISP_MS_NS);
+    g_assert_false(isp_completion_posted(qts, resp_addr));
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_BUS_RESET, 1, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    g_assert_true(isp_completion_posted(qts, resp_addr));
+    qtest_memread(qts, resp_addr, status, sizeof(status));
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_RESET);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+
+    /* The selection timeout runs out later and posts nothing more. */
+    qtest_clock_step(qts, 1000 * ISP_MS_NS);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
+ * The driver builds the request ring again while a selection waits. The
+ * wait is not tied to a ring entry, so it still posts its completion, once,
+ * when the timeout runs out.
+ */
+static void test_request_queue_init_keeps_selection_wait(void *obj, void *data,
+                                                         QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t resp_addr, new_rqst;
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    resp_addr = isp_send_to_absent_target(dev, io, alloc, 40);
+    qtest_clock_step(qts, 10 * ISP_MS_NS);
+
+    new_rqst = guest_alloc(alloc, 2 * ISP_QUEUE_ENTRY_SIZE);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   2, new_rqst), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_false(isp_completion_posted(qts, resp_addr));
+
+    qtest_clock_step(qts, 30 * ISP_MS_NS);
+    g_assert_true(isp_completion_posted(qts, resp_addr));
+    qtest_memread(qts, resp_addr, status, sizeof(status));
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_INCOMPLETE);
+    qtest_clock_step(qts, 1000 * ISP_MS_NS);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
  * An unrecognized entry type answers INCOMPLETE for the handle the guest
  * is waiting on, at the offset every handle-carrying type shares, rather
  * than being consumed silently -- the failure that hung a real boot.
@@ -3196,6 +3279,10 @@ static void qlogic_isp_register_nodes(void)
                  test_selection_timeout_longer_than_default, NULL);
     qos_add_test("soft-reset-cancels-selection-wait", "qlogic-isp1040",
                  test_soft_reset_cancels_selection_wait, NULL);
+    qos_add_test("bus-reset-retires-selection-wait", "qlogic-isp1040",
+                 test_bus_reset_retires_selection_wait, NULL);
+    qos_add_test("request-queue-init-keeps-selection-wait", "qlogic-isp1040",
+                 test_request_queue_init_keeps_selection_wait, NULL);
     qos_add_test("bus-cfg1", "qlogic-isp1040", test_bus_cfg1, NULL);
     qos_add_test("dma-block-cfg", "qlogic-isp1040", test_dma_block_cfg, NULL);
     qos_add_test("dma-block-ctrl-is-inert", "qlogic-isp1040",
