@@ -42307,7 +42307,7 @@
             "revision": "A"
           }
         ],
-        "pic-profile": "pic-rev3-bedrock-tezro-experimental"
+        "pic-profile": "pic-rev3-bedrock-tezro-compat"
       },
       "junk-uart": -1,
       "modules": [
@@ -42439,7 +42439,7 @@
       ],
       "pci-host-bridges": [
         {
-          "compatibility-profile": "pic-rev3-bedrock-tezro-experimental",
+          "compatibility-profile": "pic-rev3-bedrock-tezro-compat",
           "id": "pic-xio-f",
           "kind": "pic",
           "xio-attachment-index": 0
@@ -42534,7 +42534,7 @@
       },
       "ip53-runtime": {
         "l1-irouter-compat": true,
-        "pic-profile": "pic-rev3-bedrock-tezro-experimental"
+        "pic-profile": "pic-rev3-bedrock-tezro-compat"
       },
       "junk-uart": -1,
       "modules": [
@@ -42666,7 +42666,7 @@
       ],
       "pci-host-bridges": [
         {
-          "compatibility-profile": "pic-rev3-bedrock-tezro-experimental",
+          "compatibility-profile": "pic-rev3-bedrock-tezro-compat",
           "id": "pic-xio-f",
           "kind": "pic",
           "xio-attachment-index": 0
@@ -42810,7 +42810,7 @@
             "revision": "A"
           }
         ],
-        "pic-profile": "pic-rev3-bedrock-tezro-experimental"
+        "pic-profile": "pic-rev3-bedrock-tezro-compat"
       },
       "junk-uart": -1,
       "modules": [
@@ -42937,13 +42937,13 @@
       ],
       "pci-host-bridges": [
         {
-          "compatibility-profile": "pic-rev3-bedrock-tezro-experimental",
+          "compatibility-profile": "pic-rev3-bedrock-tezro-compat",
           "id": "pic-xio-b",
           "kind": "pic",
           "xio-attachment-index": 0
         },
         {
-          "compatibility-profile": "pic-rev3-bedrock-tezro-experimental",
+          "compatibility-profile": "pic-rev3-bedrock-tezro-compat",
           "id": "pic-xio-f",
           "kind": "pic",
           "xio-attachment-index": 1
@@ -43057,7 +43057,7 @@
             "revision": "A"
           }
         ],
-        "pic-profile": "pic-rev3-bedrock-tezro-experimental"
+        "pic-profile": "pic-rev3-bedrock-tezro-compat"
       },
       "junk-uart": -1,
       "modules": [
@@ -43158,7 +43158,7 @@
       ],
       "pci-host-bridges": [
         {
-          "compatibility-profile": "pic-rev3-bedrock-tezro-experimental",
+          "compatibility-profile": "pic-rev3-bedrock-tezro-compat",
           "id": "pic-xio-f",
           "kind": "pic",
           "xio-attachment-index": 0
@@ -43290,7 +43290,7 @@
       },
       "ip53-runtime": {
         "l1-irouter-compat": true,
-        "pic-profile": "pic-rev3-bedrock-tezro-experimental"
+        "pic-profile": "pic-rev3-bedrock-tezro-compat"
       },
       "junk-uart": -1,
       "modules": [
@@ -43391,7 +43391,7 @@
       ],
       "pci-host-bridges": [
         {
-          "compatibility-profile": "pic-rev3-bedrock-tezro-experimental",
+          "compatibility-profile": "pic-rev3-bedrock-tezro-compat",
           "id": "pic-xio-f",
           "kind": "pic",
           "xio-attachment-index": 0
@@ -43521,7 +43521,7 @@
       },
       "ip53-runtime": {
         "l1-irouter-compat": true,
-        "pic-profile": "pic-rev3-bedrock-tezro-experimental"
+        "pic-profile": "pic-rev3-bedrock-tezro-compat"
       },
       "junk-uart": -1,
       "machine-default": true,
@@ -43649,13 +43649,13 @@
       ],
       "pci-host-bridges": [
         {
-          "compatibility-profile": "pic-rev3-bedrock-tezro-experimental",
+          "compatibility-profile": "pic-rev3-bedrock-tezro-compat",
           "id": "pic-xio-b",
           "kind": "pic",
           "xio-attachment-index": 0
         },
         {
-          "compatibility-profile": "pic-rev3-bedrock-tezro-experimental",
+          "compatibility-profile": "pic-rev3-bedrock-tezro-compat",
           "id": "pic-xio-f",
           "kind": "pic",
           "xio-attachment-index": 1

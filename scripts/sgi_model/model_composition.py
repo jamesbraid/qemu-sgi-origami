@@ -1393,15 +1393,15 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
             and model.get("machine", {}).get("harness", {}).get(
                 "launch_recipe") == "ip53-discovery"
         )
-        tezro_experiment = (
+        tezro_profile = (
             product in TEZRO_RUNTIME_PRODUCTS
             and emulation.get("machine_name") == "tezro"
             and emulation.get("profile") == expected[1]
         )
         if profile != "pic-rev3-bedrock" and not (
                 profile == "pic-rev3-bedrock-experimental" and experiment):
-            if not (profile == "pic-rev3-bedrock-tezro-experimental"
-                    and tezro_experiment):
+            if not (profile == "pic-rev3-bedrock-tezro-compat"
+                    and tezro_profile):
                 raise ResolutionError(
                     "pic_profiles has unsupported profile "
                     f"'{profile}' for '{cid}'")
