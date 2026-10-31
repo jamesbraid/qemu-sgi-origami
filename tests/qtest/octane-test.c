@@ -4140,6 +4140,79 @@ static void test_rad_transfer_failures(void)
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
+#define RAD_CG_ALT_SELECT   0x40000000u
+#define RAD_CG_ALT_MUX      0xac
+
+/* Bits 30:29 of 0x58 name the generator that paces the analog output. */
+static void test_rad_clock_select(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    uint32_t out = 0;
+    int lfd = g_file_open_tmp("octane-rad-select-XXXXXX", &log_path, NULL);
+
+    g_assert_cmpint(lfd, >=, 0);
+    close(lfd);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d unimp -D %s", quoted);
+    qts = octane_start_args(extra);
+    octane_rad_clock_map(qts);
+    /* Generator 1 at 48 kHz, generator 2 at 32 kHz. */
+    octane_rad_cg_load(qts, RAD_CG_OUT_MUX, 0x603, 0x0000ffff,
+                       RAD_CG_OUT_SELECT);
+    octane_rad_cg_load(qts, RAD_CG_ALT_MUX, 0x605, 0x0000ffff,
+                       RAD_CG_ALT_SELECT);
+    octane_rad_output_program(qts, 0xa000a000);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000001);
+    qtest_clock_step(qts, 50000000);
+    out += 2400;
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, out);
+
+    /* Switching while the ring runs keeps the frames and changes the rate. */
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x40000001);
+    qtest_clock_step(qts, 50000000);
+    out += 1600;
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, out);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000001);
+    qtest_clock_step(qts, 50000000);
+    out += 2400;
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, out);
+
+    /* Anything else in the select field is not a known clock source. */
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x00000001);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x60000001);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x80000001);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x60000000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0x20000001);
+    qtest_clock_step(qts, 50000000);
+    out += 2400;
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, out);
+
+    /* Reset returns the output to generator 1. */
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x40000001);
+    qtest_system_reset(qts);
+    octane_rad_clock_map(qts);
+    octane_rad_cg_load(qts, RAD_CG_OUT_MUX, 0x605, 0x0000ffff,
+                       RAD_CG_OUT_SELECT);
+    octane_rad_cg_load(qts, RAD_CG_ALT_MUX, 0x603, 0x0000ffff,
+                       RAD_CG_ALT_SELECT);
+    octane_rad_output_program(qts, 0xa000a000);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000001);
+    qtest_clock_step(qts, 50000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 1600);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "unsupported 4-byte BAR0 write at 0x58 "
+                                 "value 0x1"));
+    g_assert_nonnull(strstr(log, "value 0x60000001"));
+    g_assert_nonnull(strstr(log, "value 0x80000001"));
+    g_assert_nonnull(strstr(log, "value 0x60000000"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 static void test_rad_ust_clock(void)
 {
     QTestState *qts = octane_start();
@@ -5847,6 +5920,7 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rad-transfer-failures", test_rad_transfer_failures);
     qtest_add_func("/octane/rad-transfer-unsupported",
                    test_rad_transfer_unsupported);
+    qtest_add_func("/octane/rad-clock-select", test_rad_clock_select);
     qtest_add_func("/octane/rad-ust-clock", test_rad_ust_clock);
     qtest_add_func("/octane/rad-ust-word-and-wrap",
                    test_rad_ust_word_and_wrap);

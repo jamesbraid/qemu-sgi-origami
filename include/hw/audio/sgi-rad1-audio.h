@@ -172,7 +172,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  * denominator in bits 15:0. Generator n's master select is bit 0 of the word
  * at 0xb4 - 4 * n: set is a 192 kHz master, clear a 176.4 kHz one. The rate
  * is master / (divisor + remainder / denominator). Generator 0 clocks the
- * analog input and generator 1 the analog output.
+ * analog input. The analog output follows the generator its control word
+ * 0x58 names (see OUT_SEL_GEN1): generator 1 unless bit 30 selects 2.
  *
  * The width of the divisor field, 9 bits, is inferred: Linux ORs its flag
  * bits 10:9 above a divisor that never needs more. The flag bits themselves
@@ -194,6 +195,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_OCTANE_CG_MASTER_B         192000
 #define SGI_RAD1_OCTANE_CG_IN               0
 #define SGI_RAD1_OCTANE_CG_OUT              1
+#define SGI_RAD1_OCTANE_CG_OUT_ALT          2
+
+/*
+ * Analog output control, 0x58: bit 0 starts the channel; bit 28 + n names the
+ * clock generator that paces it. IRIX uses bit 29 (generator 1) and the stock
+ * PROM bit 30 (generator 2). The general rule is inferred from those two
+ * words; bit 31, combinations and none set are unknown and not accepted.
+ */
+#define SGI_RAD1_OCTANE_OUT_SEL_GEN1        0x20000000u
+#define SGI_RAD1_OCTANE_OUT_SEL_GEN2        0x40000000u
 
 /*
  * The DMA register bank, BAR0 0x400..0x528: the status-DMA descriptor-ring
