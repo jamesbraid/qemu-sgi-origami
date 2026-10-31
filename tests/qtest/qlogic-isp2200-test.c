@@ -2232,6 +2232,108 @@ static void test_nvram_serial(void *obj, void *data, QGuestAllocator *alloc)
     isp_close(&t);
 }
 
+/* The clocked pieces of an NVRAM read, for cases that stop part way. */
+static void nvram_bit(Isp *t, unsigned bit)
+{
+    uint16_t out = bit ? 0x0004 : 0;
+
+    wr(t, REG_NVRAM, 0x0002 | out);
+    wr(t, REG_NVRAM, 0x0003 | out);
+    wr(t, REG_NVRAM, 0x0002 | out);
+}
+
+static void nvram_command(Isp *t, uint16_t cmd)
+{
+    unsigned bit;
+
+    wr(t, REG_NVRAM, 0x0002);
+    for (bit = 0; bit < 11; bit++) {
+        nvram_bit(t, !!(cmd & (1 << (10 - bit))));
+    }
+}
+
+static unsigned nvram_data_bit(Isp *t)
+{
+    unsigned bit;
+
+    wr(t, REG_NVRAM, 0x0003);
+    bit = !!(rd(t, REG_NVRAM) & 0x0008);
+    wr(t, REG_NVRAM, 0x0002);
+    return bit;
+}
+
+/*
+ * Approximation: the part is modelled for reads only, and a word address
+ * of 128 or more, past the 256-byte image, reads 0xffff. A command whose
+ * opcode is not read is ignored, drives nothing and leaves the image
+ * as it was. Clocking past the word's sixteenth bit reads zero, not the
+ * next word. A zero before the start bit is skipped. Deselecting part
+ * way through a word forgets it, so the next read starts clean.
+ */
+static void test_nvram_edges(void *obj, void *data, QGuestAllocator *alloc)
+{
+    unsigned i;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+
+    for (i = 128; i < 256; i += 127) {
+        g_assert_cmphex(nvram_read_word(&t, i), ==, 0xffff);
+    }
+
+    /* Write opcode, then more clocks than a word has: nothing comes out. */
+    nvram_command(&t, 0x500 | 1);
+    for (i = 0; i < 20; i++) {
+        g_assert_cmpuint(nvram_data_bit(&t), ==, 0);
+    }
+    wr(&t, REG_NVRAM, 0);
+    g_assert_cmphex(nvram_read_word(&t, 1), ==, 0x2050);
+
+    /* Past the sixteenth bit of a read. */
+    nvram_command(&t, 0x600);
+    for (i = 0; i < 16; i++) {
+        nvram_data_bit(&t);
+    }
+    for (i = 0; i < 20; i++) {
+        g_assert_cmpuint(nvram_data_bit(&t), ==, 0);
+    }
+    wr(&t, REG_NVRAM, 0);
+
+    /* Deselected after the command and five data bits. */
+    nvram_command(&t, 0x600 | 1);
+    for (i = 0; i < 5; i++) {
+        nvram_data_bit(&t);
+    }
+    wr(&t, REG_NVRAM, 0);
+    g_assert_cmphex(nvram_read_word(&t, 1), ==, 0x2050);
+
+    /* Deselected after seven command bits. */
+    wr(&t, REG_NVRAM, 0x0002);
+    for (i = 0; i < 7; i++) {
+        nvram_bit(&t, 1);
+    }
+    wr(&t, REG_NVRAM, 0);
+    g_assert_cmphex(nvram_read_word(&t, 0), ==, 0x5349);
+
+    /* Two zero bits before the start bit change nothing. */
+    wr(&t, REG_NVRAM, 0x0002);
+    nvram_bit(&t, 0);
+    nvram_bit(&t, 0);
+    for (i = 0; i < 11; i++) {
+        nvram_bit(&t, !!((0x600 | 1) & (1 << (10 - i))));
+    }
+    {
+        uint16_t v = 0;
+
+        for (i = 0; i < 16; i++) {
+            v = (v << 1) | nvram_data_bit(&t);
+        }
+        g_assert_cmphex(v, ==, 0x2050);
+    }
+    wr(&t, REG_NVRAM, 0);
+    isp_close(&t);
+}
+
 static void *nvram_serial_setup(GString *cmd_line, void *arg)
 {
     g_string_append(cmd_line, " -global qlogic-isp2200.nvram-serial=0x123456");
@@ -4924,6 +5026,7 @@ static void isp2200_register_nodes(void)
                  test_nvram_default_image, NULL);
     qos_add_test("nvram-serial", "qlogic-isp2200", test_nvram_serial,
                  &serial_opts);
+    qos_add_test("nvram-edges", "qlogic-isp2200", test_nvram_edges, NULL);
     qos_add_test("window-linux-order", "qlogic-isp2200",
                  test_window_linux_order, NULL);
     qos_add_test("window-openbsd-init", "qlogic-isp2200",
