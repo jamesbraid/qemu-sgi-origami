@@ -84,6 +84,8 @@ struct SGIBedrockLBState {
     uint64_t vector_status;
     uint64_t vector_return;
     uint64_t vector_read;
+    /* A launch is on the stack; transient, never migrated. */
+    bool vector_in_flight;
 };
 
 /* The node number the revision word currently carries. */

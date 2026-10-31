@@ -260,6 +260,8 @@ static void lb_microlan_write(SGIBedrockLBState *s, uint64_t value)
 static void lb_vector_launch(SGIBedrockLBState *s)
 {
     uint64_t reply = s->vector_params & LB_VECTOR_ECHO;
+    /* A looped request can rewrite the registers before the reply lands. */
+    uint64_t type = s->vector_params & LB_VECTOR_TYPE_WRITE;
     SGINetPacket packet = {
         .op = (s->vector_params & LB_VECTOR_TYPE_WRITE) ?
               SGI_NET_PACKET_WRITE : SGI_NET_PACKET_READ,
@@ -275,6 +277,16 @@ static void lb_vector_launch(SGIBedrockLBState *s)
         s->vector_status |= LB_VECTOR_OVERRUN;
         return;
     }
+    if (s->vector_in_flight) {
+        /*
+         * A request that loops back through a router reached this block's
+         * own vector registers while their launch is still running.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-lb: vector launch from inside a vector "
+                      "launch refused\n");
+        return;
+    }
     if (s->vector_params & LB_VECTOR_TYPE_MASK & ~LB_VECTOR_TYPE_WRITE) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bedrock-lb: vector request type %" PRIu64
@@ -284,7 +296,9 @@ static void lb_vector_launch(SGIBedrockLBState *s)
         return;
     }
     if (s->bedrock) {
+        s->vector_in_flight = true;
         result = sgi_bedrock_vector_send(s->bedrock, &packet);
+        s->vector_in_flight = false;
     }
     trace_sgi_bedrock_lb_vector_launch(s->vector_route, s->vector_params,
                                        result, packet.value);
@@ -322,8 +336,7 @@ static void lb_vector_launch(SGIBedrockLBState *s)
          * primitive accepts only 1 there, its read
          * primitive only 0.
         */
-        s->vector_status = reply | LB_VECTOR_VALID |
-                           (s->vector_params & LB_VECTOR_TYPE_WRITE);
+        s->vector_status = reply | LB_VECTOR_VALID | type;
         return;
     }
 }
@@ -745,6 +758,14 @@ static void lb_init(Object *obj)
     notifier_list_init(&s->node_notifiers);
     memory_region_init_io(&s->mmio, obj, &lb_ops, s, TYPE_SGI_BEDROCK_LB,
                           SGI_BEDROCK_LB_SIZE);
+    /*
+     * A vector launch sent through a router can come back to this node, and
+     * the request then performs on these registers while the launch is
+     * still on the stack. The per-device guard would refuse that access;
+     * vector_in_flight stops the one recursion that matters, a looped
+     * request that launches again.
+     */
+    s->mmio.disable_reentrancy_guard = true;
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     qdev_init_gpio_out_named(DEVICE(obj), &s->soft_reset, "soft-reset", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->error, "error", 1);
