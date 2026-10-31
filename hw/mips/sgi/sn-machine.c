@@ -6616,6 +6616,24 @@ static unsigned int sgi_machine_pipe_brick_number(
 }
 
 /*
+ * The router board record a catalogue router carries. The R-brick of the
+ * Origin 3400 and Onyx 3400 and the NUMAlink module of the Origin 300 and
+ * 350 each have a part their inventories report. The Cx-brick router has
+ * none: no inventory of its router board has been read, so its L1 keeps no
+ * record rather than borrow another product's part.
+ */
+static const char *sgi_machine_router_board(const char *id)
+{
+    if (!strcmp(id, "rbrick-router")) {
+        return "rbrick";
+    }
+    if (!strcmp(id, "router-router")) {
+        return "numalink-module";
+    }
+    return NULL;
+}
+
+/*
  * Each I/O brick's L1, an I-brick's, an N-brick's or a V-brick's: a controller
  * of the brick's own module, reached from the L1 of every C-brick whose XIO
  * cable ends on that module's crossbars. An I-brick or V-brick has one such
@@ -7384,6 +7402,7 @@ static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
         Object *module = object_resolve_path_component(OBJECT(s), name);
         unsigned owner = model_module->controller_index;
         DeviceState *l1, *uart, *router;
+        const char *board;
         size_t record_count;
         g_autofree const SGIModelController **controller_records =
             sgi_model_controller_array(t->controllers, &record_count);
@@ -7428,6 +7447,10 @@ static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
             qdev_prop_set_uint32(l1, "brick-type-code", 0x52);
             qdev_prop_set_uint32(l1, "bay",
                                  model_module->initial_module_number);
+            board = sgi_machine_router_board(record->id);
+            if (board) {
+                qdev_prop_set_string(l1, "router-board", board);
+            }
             if (!qdev_realize(l1, NULL, errp)) {
                 return false;
             }

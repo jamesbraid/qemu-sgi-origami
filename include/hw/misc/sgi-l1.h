@@ -216,6 +216,8 @@ struct SGIL1State {
     char *node_board_name;
     char *node_board_part;
     char *node_board_revision;
+    /* The router profile's board record: rbrick or numalink-module. */
+    char *router_board;
     bool cpu_context_present;
     uint32_t cpu_mode_word;
     uint64_t cpu_clock_hz;
