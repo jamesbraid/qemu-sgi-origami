@@ -29,6 +29,7 @@
 #define REG_REQUEST         MBOX(4)
 #define REG_RESPONSE        MBOX(5)
 #define REG_ISR             0x0a
+#define REG_NVRAM           0x0e
 #define REG_SEMAPHORE       0x0c
 #define REG_HCCR            0xc0
 
@@ -506,6 +507,92 @@ static void test_command_in_flight(void)
     g_rmdir(dir);
 }
 
+/*
+ * The serial EEPROM port holds a transfer between register writes: the
+ * command bits shifted so far, or the data bits already given out. Migrate
+ * with the transfer part way, finish on the destination, and the word is
+ * the one an uninterrupted read gives. Once in the command phase and once
+ * in the data phase, where the shift register and the data-out line are
+ * both live.
+ */
+static void nvram_clock_bit(Isp *t, unsigned bit)
+{
+    uint16_t out = bit ? 0x0004 : 0;
+
+    wr(t, REG_NVRAM, 0x0002 | out);
+    wr(t, REG_NVRAM, 0x0003 | out);
+    wr(t, REG_NVRAM, 0x0002 | out);
+}
+
+static uint16_t nvram_clock_in(Isp *t, unsigned n)
+{
+    uint16_t v = 0;
+    unsigned i;
+
+    for (i = 0; i < n; i++) {
+        wr(t, REG_NVRAM, 0x0003);
+        v = (v << 1) | !!(rd(t, REG_NVRAM) & 0x0008);
+        wr(t, REG_NVRAM, 0x0002);
+    }
+    return v;
+}
+
+static void nvram_migrate_at(unsigned cmd_bits, unsigned data_bits)
+{
+    g_autofree char *dir = g_dir_make_tmp("isp2200-migrate-XXXXXX", NULL);
+    Isp from = isp_source(), to;
+    /* Word 0x7f: address bits the first six command bits already hold. */
+    const uint16_t cmd = 0x600 | 0x7f;
+    uint16_t want = 0;
+    uint16_t head = 0, tail;
+    unsigned i;
+
+    wr(&from, REG_NVRAM, 0x0002);
+    for (i = 0; i < cmd_bits; i++) {
+        nvram_clock_bit(&from, !!(cmd & (1 << (10 - i))));
+    }
+    if (data_bits) {
+        head = nvram_clock_in(&from, data_bits - 1);
+        /* Clock high with the bit on the line, not yet read. */
+        wr(&from, REG_NVRAM, 0x0003);
+    }
+    isp_migrate(&from, &to, dir);
+
+    if (data_bits) {
+        head = (head << 1) | !!(rd(&to, REG_NVRAM) & 0x0008);
+        wr(&to, REG_NVRAM, 0x0002);
+    }
+    for (i = cmd_bits; i < 11; i++) {
+        nvram_clock_bit(&to, !!(cmd & (1 << (10 - i))));
+    }
+    tail = nvram_clock_in(&to, 16 - data_bits);
+    tail = data_bits ? (head << (16 - data_bits)) | tail : tail;
+    wr(&to, REG_NVRAM, 0);
+
+    /* The same word read start to finish on the destination. */
+    wr(&to, REG_NVRAM, 0x0002);
+    for (i = 0; i < 11; i++) {
+        nvram_clock_bit(&to, !!(cmd & (1 << (10 - i))));
+    }
+    want = nvram_clock_in(&to, 16);
+    wr(&to, REG_NVRAM, 0);
+    g_assert_cmphex(want, !=, 0xffff);
+    g_assert_cmphex(want, !=, 0);
+    g_assert_cmphex(tail, ==, want);
+    isp_finish(&to);
+    g_rmdir(dir);
+}
+
+static void test_nvram_command_in_flight(void)
+{
+    nvram_migrate_at(6, 0);
+}
+
+static void test_nvram_data_in_flight(void)
+{
+    nvram_migrate_at(11, 5);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -515,5 +602,9 @@ int main(int argc, char **argv)
                    test_posted_and_waiting);
     qtest_add_func("qlogic-isp2200/migration/command-in-flight",
                    test_command_in_flight);
+    qtest_add_func("qlogic-isp2200/migration/nvram-command-in-flight",
+                   test_nvram_command_in_flight);
+    qtest_add_func("qlogic-isp2200/migration/nvram-data-in-flight",
+                   test_nvram_data_in_flight);
     return g_test_run();
 }
