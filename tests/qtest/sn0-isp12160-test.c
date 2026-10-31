@@ -3280,7 +3280,6 @@ static void test_migration_carries_a_waiting_selection(const void *data)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
-/* Channel 0's delay and channel 1's, which no register hands back. */
 /*
  * The bus-reset hold-off. docs/datasheets/isp1040.md, "Bus-reset hold-off
  * (0x0018)", marks the vendor's setting established and everything the model
@@ -3569,6 +3568,240 @@ static void test_migration_carries_a_programmed_wait(const void *data)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+/* Stops the source and brings its state up on a fresh destination. */
+static QTestState *hold_migrate(QTestState *from)
+{
+    g_autofree char *dir = g_dir_make_tmp("isp12160-hold-XXXXXX", NULL);
+    g_autofree char *uri = NULL;
+    QTestState *to;
+
+    g_assert_nonnull(dir);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    to = qtest_initf("%s -incoming %s", MACHINE, uri);
+    qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    sgi_migrate_resume(to);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+    return to;
+}
+
+static QTestState *hold_start_bare(void)
+{
+    QTestState *qts = qtest_init(MACHINE);
+
+    aim_window_at_memory_bar(qts);
+    qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+    return qts;
+}
+
+/*
+ * Request-out stops at the oldest parked command, not the newest, with the
+ * other bus's command between the two held ones: that command completes
+ * and the position still reads the first held slot.
+ */
+static void test_bus_reset_hold_reports_the_oldest_slot(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = hold_start_with_disks(&disks);
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    hold_bus_reset(qts, 1, 0);
+    send_tur(qts, 0x81, 0, DISK_TARGET);
+    send_tur(qts, 0x82, 1, DISK_TARGET);
+    send_tur(qts, 0x83, 0, DISK_TARGET);
+
+    g_assert_cmphex(responses(qts), ==, 1);
+    wait_status(qts, 0x82, status);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 0);
+
+    qtest_clock_step(qts, HOLD_S_NS);
+    g_assert_cmphex(responses(qts), ==, ring.resp_next + 2);
+    wait_status(qts, 0x81, status);
+    wait_status(qts, 0x83, status);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 3);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * A held command with data segments in continuation entries reads them from
+ * its own slots when it starts, by which time the ring walk is two entries
+ * past it. Four segments: two inline, two in the continuation.
+ */
+static void test_bus_reset_hold_reads_held_segments(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = hold_start_with_disks(&disks);
+    uint8_t cdb[10] = { SCSI_READ_10 };
+    RingSeg segs[4];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE], got[SECTOR_BYTES];
+    unsigned i;
+
+    for (i = 0; i < ARRAY_SIZE(segs); i++) {
+        segs[i].iova = DIRECT64(BUF_PHYS + i * SECTOR_BYTES / 4);
+        segs[i].len = SECTOR_BYTES / 4;
+    }
+    put_lba10(cdb, 0, 1);
+    qtest_memset(qts, BUF_PHYS, 0xcc, SECTOR_BYTES);
+
+    hold_bus_reset(qts, 1, 0);
+    send_tur(qts, 0x84, 0, DISK_TARGET);
+    submit_a64(qts, ring.rqst_next, 0x85, 0, DISK_TARGET, 0, cdb,
+               sizeof(cdb), ISP_REQ_CONTROL_DATA_IN, segs, ARRAY_SIZE(segs));
+    g_assert_cmphex(responses(qts), ==, 0);
+
+    qtest_clock_step(qts, HOLD_S_NS);
+    wait_status(qts, 0x84, status);
+    wait_status(qts, 0x85, status);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    qtest_memread(qts, BUF_PHYS, got, SECTOR_BYTES);
+    expect_sector(got, DISK0_SECTOR0_FILL);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/* The hold is per bus in the other direction too: bus 1 held, bus 0 not. */
+static void test_bus_reset_hold_on_bus_one(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = hold_start_with_disks(&disks);
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    hold_bus_reset(qts, 1, 1);
+    send_tur(qts, 0x86, 1, DISK_TARGET);
+    send_tur(qts, 0x87, 0, DISK_TARGET);
+
+    g_assert_cmphex(responses(qts), ==, 1);
+    wait_status(qts, 0x87, status);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 0);
+    qtest_clock_step(qts, HOLD_S_NS - 1);
+    g_assert_cmphex(responses(qts), ==, ring.resp_next);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(responses(qts), ==, ring.resp_next + 1);
+    wait_status(qts, 0x86, status);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 2);
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
+ * A hold on bus 1 crosses a migration: its parked command starts on the
+ * destination, and a command for bus 0 sent there is not held.
+ */
+static void test_migration_carries_a_bus_one_hold(const void *data)
+{
+    QTestState *from = hold_start_bare();
+    QTestState *to;
+
+    hold_bus_reset(from, 2, 1);
+    send_to_absent(from, 0xe4, 1);
+    qtest_clock_step(from, HOLD_S_NS / 2);
+    g_assert_cmphex(responses(from), ==, 0);
+
+    to = hold_migrate(from);
+    g_assert_cmphex(isp_readw(to, ISP_REG_REQUEST_QUEUE), ==, 0);
+    send_to_absent(to, 0xe5, 0);
+    qtest_clock_step(to, WAIT_DEFAULT_NS - 1);
+    g_assert_cmphex(responses(to), ==, 0);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(responses(to), ==, 1);
+    expect_selection_timed_out(to, 0, 0xe5);
+
+    qtest_clock_step(to, 3 * HOLD_S_NS / 2 - 1);
+    g_assert_cmphex(responses(to), ==, 1);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(responses(to), ==, 2);
+    expect_selection_timed_out(to, 1, 0xe4);
+
+    qtest_quit(to);
+}
+
+/*
+ * The VM stops after a hold's deadline has passed but before its timer has
+ * run: the clock is stepped while stopped. The hold and the parked command
+ * still cross, and the destination starts the command at once.
+ */
+static void test_migration_carries_an_expired_hold(const void *data)
+{
+    QTestState *from = hold_start_bare();
+    QTestState *to;
+
+    hold_bus_reset(from, 1, 0);
+    send_to_absent(from, 0xe6, 0);
+    qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
+    qtest_clock_step(from, 2 * HOLD_S_NS);
+    /* The precondition: the deadline is past and nothing has started. */
+    g_assert_cmphex(responses(from), ==, 0);
+
+    to = hold_migrate(from);
+    g_assert_cmphex(responses(to), ==, 0);
+    qtest_clock_step(to, WAIT_DEFAULT_NS - 1);
+    g_assert_cmphex(responses(to), ==, 0);
+    /*
+     * The restored timer is already due and runs when the destination's
+     * clock next moves, so the selection timeout counts from there and the
+     * answer is not at an exact instant. It must come, and once.
+     */
+    qtest_clock_step(to, WAIT_DEFAULT_NS);
+    g_assert_cmphex(responses(to), ==, 1);
+    expect_selection_timed_out(to, 0, 0xe6);
+    g_assert_cmphex(isp_readw(to, ISP_REG_REQUEST_QUEUE), ==, 1);
+
+    qtest_quit(to);
+}
+
+/*
+ * Building the request ring again abandons the commands parked behind a
+ * hold (a model choice): the entry is still in memory, and is not run.
+ */
+static void test_rebuild_drops_parked_commands(const void *data)
+{
+    waiting_start();
+    hold_bus_reset(qts, 5, 0);
+    send_to_absent(qts, 0x88, 0);
+    g_assert_cmphex(responses(qts), ==, 0);
+
+    init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 0);
+    qtest_clock_step(qts, 6 * HOLD_S_NS);
+    g_assert_cmphex(responses(qts), ==, 0);
+}
+
+/*
+ * The guest overwrote a held command's entry, which it was not given back:
+ * the command is answered incomplete for its handle (a model choice), not
+ * lost.
+ */
+static void test_rewritten_held_entry_answers_incomplete(const void *data)
+{
+    const uint8_t bogus = 0x7f;
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    waiting_start();
+    hold_bus_reset(qts, 1, 0);
+    send_to_absent(qts, 0x8a, 0);
+    /* Bytes are reversed within each 32-bit word in the ring's memory. */
+    qtest_memwrite(qts, RQST_PHYS + (ISP_ENTRY_OFF_TYPE ^ 3), &bogus, 1);
+
+    qtest_clock_step(qts, HOLD_S_NS);
+    g_assert_cmphex(responses(qts), ==, 1);
+    response_slot(qts, 0, status);
+    g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, 0x8a);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_INCOMPLETE);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATUS_FLAGS), ==, 0);
+}
+
+/* Channel 0's delay and channel 1's, which no register hands back. */
 static const uint16_t migrate_reset_delay[] = { 7, 9 };
 
 static void test_migration_preserves_distinct_state(const void *data)
@@ -4218,6 +4451,20 @@ int main(int argc, char **argv)
                         test_reset_clears_the_bus_reset_hold);
     qtest_add_data_func("sn0/isp12160/migration-carries-a-bus-reset-hold",
                         NULL, test_migration_carries_a_bus_reset_hold);
+    qtest_add_data_func("sn0/isp12160/bus-reset-hold-reports-the-oldest-slot",
+                        NULL, test_bus_reset_hold_reports_the_oldest_slot);
+    qtest_add_data_func("sn0/isp12160/bus-reset-hold-reads-held-segments",
+                        NULL, test_bus_reset_hold_reads_held_segments);
+    qtest_add_data_func("sn0/isp12160/bus-reset-hold-on-bus-one",
+                        NULL, test_bus_reset_hold_on_bus_one);
+    qtest_add_data_func("sn0/isp12160/migration-carries-a-bus-one-hold",
+                        NULL, test_migration_carries_a_bus_one_hold);
+    qtest_add_data_func("sn0/isp12160/migration-carries-an-expired-hold",
+                        NULL, test_migration_carries_an_expired_hold);
+    qtest_add_data_func("sn0/isp12160/rebuild-drops-parked-commands",
+                        NULL, test_rebuild_drops_parked_commands);
+    qtest_add_data_func("sn0/isp12160/rewritten-held-entry-answers-incomplete",
+                        NULL, test_rewritten_held_entry_answers_incomplete);
     qtest_add_data_func("sn0/isp12160/migration-preserves-distinct-state",
                         NULL, test_migration_preserves_distinct_state);
     qtest_add_data_func(

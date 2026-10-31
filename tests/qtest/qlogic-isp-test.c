@@ -2390,6 +2390,106 @@ static void test_bus_reset_mailbox_resets_scsi_bus(void *obj, void *data,
 }
 
 /*
+ * A held command with a continuation entry reads its five segments from its
+ * own slots when it starts, after the ring walk has gone two entries past
+ * it. The INQUIRY is the data-transfer test's, held behind a one-second
+ * reset delay.
+ */
+static void test_bus_reset_hold_reads_held_segments(void *obj, void *data,
+                                                    QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr, piece[5];
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE], cont[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t inquiry[36];
+    const uint8_t piece_len[5] = { 8, 8, 8, 8, 4 };
+    size_t i;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    for (i = 0; i < 5; i++) {
+        piece[i] = guest_alloc(alloc, 64);
+        qtest_memset(qts, piece[i], 0xff, 64);
+    }
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   4, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* Slot 0 answers the power-on unit attention, as the tests above do. */
+    g_assert_cmphex(isp_test_unit_ready(dev, io, qts, rqst_addr, resp_addr,
+                                        0, 0, 1, 0x1, status), ==,
+                    CHECK_CONDITION | ISP_SCSI_STATUS_SENSE_VALID);
+
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_BUS_RESET, 1, 0, 0);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
+                    ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 2;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x2);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 5);
+    entry[ISP_REQ_OFF_CDB + 0] = INQUIRY;
+    entry[ISP_REQ_OFF_CDB + 4] = sizeof(inquiry);
+    for (i = 0; i < 4; i++) {
+        isp_put32(entry, ISP_REQ_OFF_SEGS + i * ISP_SEG_SIZE,
+                  (uint32_t)piece[i]);
+        isp_put32(entry, ISP_REQ_OFF_SEGS + i * ISP_SEG_SIZE + 4,
+                  piece_len[i]);
+    }
+    qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+    memset(cont, 0, sizeof(cont));
+    cont[0] = ISP_ENTRY_TYPE_CONTINUATION;
+    cont[1] = 1;
+    isp_put32(cont, ISP_CONT_OFF_SEGS, (uint32_t)piece[4]);
+    isp_put32(cont, ISP_CONT_OFF_SEGS + 4, piece_len[4]);
+    qtest_memwrite(qts, rqst_addr + 2 * ISP_QUEUE_ENTRY_SIZE, cont,
+                   sizeof(cont));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 3);
+
+    /* Held: nothing answered, nothing written, request-out at its slot. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    qtest_memread(qts, piece[0], inquiry, 1);
+    g_assert_cmphex(inquiry[0], ==, 0xff);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==, 1);
+
+    qtest_clock_step(qts, 1000 * ISP_MS_NS);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 2);
+    qtest_memread(qts, resp_addr + ISP_QUEUE_ENTRY_SIZE, status,
+                  sizeof(status));
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x2);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    for (i = 0; i < 5; i++) {
+        qtest_memread(qts, piece[i], inquiry + (i < 4 ? i * 8 : 32),
+                      piece_len[i]);
+    }
+    g_assert_cmpint(memcmp(&inquiry[8], "QEMU    ", 8), ==, 0);
+    g_assert_cmpint(memcmp(&inquiry[16], "QEMU HARDDISK   ", 16), ==, 0);
+    /* The fifth piece is the one in the continuation entry. */
+    g_assert_cmphex(inquiry[32], !=, 0xff);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_REQUEST_QUEUE), ==, 3);
+    qlogic_isp_ack(dev, io);
+
+    qpci_iounmap(dev, io);
+}
+
+/*
  * The device word carries a bus bit and this part drives one bus: a
  * bus-1 request must answer incomplete with no phase reached, not
  * execute on bus 0 against a device the guest never named.
@@ -3366,6 +3466,8 @@ static void qlogic_isp_register_nodes(void)
                  test_bus_reset_hold_then_selection_timeout, NULL);
     qos_add_test("bus-reset-delay-zero-holds-nothing", "qlogic-isp1040",
                  test_bus_reset_delay_zero_holds_nothing, NULL);
+    qos_add_test("bus-reset-hold-reads-held-segments", "qlogic-isp1040",
+                 test_bus_reset_hold_reads_held_segments, NULL);
     qos_add_test("bus-cfg1", "qlogic-isp1040", test_bus_cfg1, NULL);
     qos_add_test("dma-block-cfg", "qlogic-isp1040", test_dma_block_cfg, NULL);
     qos_add_test("dma-block-ctrl-is-inert", "qlogic-isp1040",

@@ -325,6 +325,8 @@ enum {
  * the model's choices are noted where they are made. The unit is seconds.
  */
 #define ISP_BUS_RESET_DELAY_UNIT_NS     (1000LL * 1000 * 1000)
+/* The longest hold a mailbox word can ask for, which a stream is held to. */
+#define QLOGIC_ISP_HOLD_MAX_NS          (65535 * ISP_BUS_RESET_DELAY_UNIT_NS)
 
 /*
  * A completion held for response-ring room, a case only a model with no
@@ -610,8 +612,11 @@ static void qlogic_isp_free_selection(QLogicISPRequest *req)
     g_free(req);
 }
 
-/* Discards every command still waiting out a selection timeout. */
-static void qlogic_isp_drop_selections(QLogicISPState *s)
+/*
+ * Discards every command that has not started: those still waiting out a
+ * selection timeout and those parked behind a hold-off. Nothing is posted.
+ */
+static void qlogic_isp_drop_unstarted(QLogicISPState *s)
 {
     QLogicISPRequest *req, *next;
 
@@ -689,7 +694,7 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
      * The reset takes the adapter's pending selections with it, and any
      * hold-off and the commands parked behind it.
      */
-    qlogic_isp_drop_selections(s);
+    qlogic_isp_drop_unstarted(s);
     qlogic_isp_clear_holds(s);
 
     /* Zeroed so a stale ring cannot be acted on. */
@@ -925,7 +930,13 @@ static unsigned qlogic_isp_retire(QLogicISPState *s, int channel, int target,
     return retired;
 }
 
-/* Quiets a bus for the given seconds from now; none ends any hold. */
+/*
+ * Quiets a bus for the given seconds from now; none ends any hold. Model
+ * choice: the delay is not clamped. The vendor's 0 to 15 seconds is the
+ * range of the NVRAM setting, and what the firmware does with a larger
+ * mailbox value is unknown, so the bus is quiet for exactly the seconds
+ * asked, up to the 65535 a mailbox word holds.
+ */
 static void qlogic_isp_start_hold(QLogicISPChannel *chan, uint16_t seconds)
 {
     trace_qlogic_isp_bus_hold(chan->index, seconds);
@@ -2127,9 +2138,15 @@ static void qlogic_isp_missing_target(QLogicISPState *s, uint32_t handle,
     trace_qlogic_isp_selection_wait(handle, channel, target, lun, timeout);
 }
 
+/*
+ * Quiet from the reset until the hold timer has run and started what was
+ * parked, not merely until the deadline passes: a hold restored by a
+ * migration at its deadline still has its timer to run, and a command
+ * arriving before it must not overtake the ones already parked.
+ */
 static bool qlogic_isp_bus_quiet(const QLogicISPChannel *chan)
 {
-    return chan->hold_until > qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    return chan->hold_until != 0;
 }
 
 /*
@@ -2391,9 +2408,19 @@ static bool qlogic_isp_handle_request_a64(QLogicISPState *s, hwaddr addr,
     return true;
 }
 
-/* Starts a command that was parked, reading its entry from the ring. */
-static void qlogic_isp_start_parked(QLogicISPState *s, uint16_t ring_index,
-                                    uint8_t entry_count)
+/*
+ * Starts a command that was parked, reading its entry from the ring.
+ *
+ * The slot was never handed back, so the entry should be as it was; if the
+ * guest rewrote it anyway that is a guest error, and the command is not
+ * lost silently. Model choices: an entry that no longer names a command is
+ * answered incomplete for the handle that was parked, as an unknown entry
+ * type is in the ring walk. A command whose CDB read is refused the second
+ * time is dropped, as the walk drops it (the handler logs it and the part
+ * documents no status for a refused transfer).
+ */
+static void qlogic_isp_start_parked(QLogicISPState *s, uint32_t handle,
+                                    uint16_t ring_index, uint8_t entry_count)
 {
     PCIDevice *pci = PCI_DEVICE(s);
     hwaddr addr = qlogic_isp_rqst_entry_addr(s, ring_index);
@@ -2406,7 +2433,12 @@ static void qlogic_isp_start_parked(QLogicISPState *s, uint16_t ring_index,
         qlogic_isp_handle_request_a64(s, addr, ring_index, entry_count);
         break;
     default:
-        /* Not reachable: the guest has not been given the slot back. */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "qlogic-isp: request entry %u was rewritten while its "
+                      "command was held off; answering handle 0x%08x "
+                      "incomplete\n", ring_index, handle);
+        qlogic_isp_post_status(s, handle, 0, ISP_IOCB_INCOMPLETE,
+                               0, 0, 0, NULL, 0);
         break;
     }
 }
@@ -2442,7 +2474,7 @@ static void qlogic_isp_hold_expired(void *opaque)
         entry_count = req->entry_count;
         qlogic_isp_free_selection(req);
         trace_qlogic_isp_hold_release(handle, chan->index);
-        qlogic_isp_start_parked(s, ring_index, entry_count);
+        qlogic_isp_start_parked(s, handle, ring_index, entry_count);
     }
 }
 
@@ -2450,8 +2482,15 @@ static void qlogic_isp_hold_expired(void *opaque)
  * The request-out position the guest reads. A parked command's slot is not
  * free until the command has started, so the position the guest sees stops
  * at the oldest parked entry while the model walks on. Linux works out its
- * free ring space from this value; withholding the slots is also what
- * keeps the entry intact for the second read.
+ * free ring space from this value.
+ *
+ * Approximation (docs/datasheets/isp1040.md, "Bus-reset hold-off (0x0018)",
+ * model choices): this exists because the model reads the entry a second
+ * time when the hold ends, and withholding the slot keeps it intact. A real
+ * chip that has fetched an entry would plausibly advance request-out at
+ * once, so a guest watching the position during a hold sees less ring
+ * space than hardware would show, and a ring filled during a hold stalls
+ * the guest sooner. No source says when the chip advances it.
  */
 static uint16_t qlogic_isp_request_out(QLogicISPState *s)
 {
@@ -2954,7 +2993,7 @@ static void qlogic_isp_exit(PCIDevice *dev)
 
     qemu_bh_delete(s->resume_bh);
     qlogic_isp_drop_pending_status(s);
-    qlogic_isp_drop_selections(s);
+    qlogic_isp_drop_unstarted(s);
     for (i = 0; i < QLOGIC_ISP_MAX_CHANNELS; i++) {
         timer_free(s->chan[i].hold_timer);
         s->chan[i].hold_timer = NULL;
@@ -3119,11 +3158,20 @@ static const VMStateDescription vmstate_qlogic_isp_selection = {
 static bool qlogic_isp_hold_state_needed(void *opaque)
 {
     QLogicISPState *s = opaque;
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    QLogicISPRequest *req;
     unsigned int i;
 
+    /*
+     * A hold counts until its timer has run, even past its deadline: the
+     * VM can stop in between, and the parked commands start from the timer.
+     */
     for (i = 0; i < QLOGIC_ISP_MAX_CHANNELS; i++) {
-        if (s->chan[i].hold_until > now) {
+        if (s->chan[i].hold_until != 0) {
+            return true;
+        }
+    }
+    QTAILQ_FOREACH(req, &s->requests, next) {
+        if (req->parked) {
             return true;
         }
     }
@@ -3139,7 +3187,9 @@ static bool qlogic_isp_hold_pre_save(void *opaque, Error **errp)
     unsigned int i;
 
     for (i = 0; i < QLOGIC_ISP_MAX_CHANNELS; i++) {
-        s->hold_remaining[i] = MAX(s->chan[i].hold_until - now, 0);
+        /* Minus one is no hold; zero is a hold whose timer is yet to run. */
+        s->hold_remaining[i] = s->chan[i].hold_until ?
+                               MAX(s->chan[i].hold_until - now, 0) : -1;
     }
     s->parked_count = 0;
     QTAILQ_FOREACH(req, &s->requests, next) {
@@ -3177,6 +3227,13 @@ static bool qlogic_isp_hold_post_load(void *opaque, int version_id,
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     uint32_t i;
 
+    for (i = 0; i < info->nchannels; i++) {
+        if (s->hold_remaining[i] > QLOGIC_ISP_HOLD_MAX_NS) {
+            error_setg(errp, "qlogic-isp: hold of %" PRId64 " ns on channel "
+                       "%u", s->hold_remaining[i], i);
+            return false;
+        }
+    }
     for (i = 0; i < s->parked_count; i++) {
         const QLogicISPHoldWire *wire = &s->parked_wire[i];
         QLogicISPRequest *req;
@@ -3200,10 +3257,22 @@ static bool qlogic_isp_hold_post_load(void *opaque, int version_id,
     }
 
     for (i = 0; i < info->nchannels; i++) {
-        if (s->hold_remaining[i] > 0) {
-            s->chan[i].hold_until = now + s->hold_remaining[i];
-            timer_mod(s->chan[i].hold_timer, s->chan[i].hold_until);
+        QLogicISPRequest *req;
+        bool parked = false;
+        int64_t left = s->hold_remaining[i];
+
+        QTAILQ_FOREACH(req, &s->requests, next) {
+            parked |= req->parked && req->channel == i;
         }
+        if (left < 0 && !parked) {
+            continue;
+        }
+        /*
+         * A hold at its deadline, or a parked command with no hold to
+         * start it, runs its timer at once, as a waiting selection does.
+         */
+        s->chan[i].hold_until = MAX(now + MAX(left, 0), 1);
+        timer_mod(s->chan[i].hold_timer, s->chan[i].hold_until);
     }
 
     memset(s->parked_wire, 0, s->parked_count * sizeof(s->parked_wire[0]));
@@ -3296,7 +3365,7 @@ static bool qlogic_isp_pre_load(void *opaque, Error **errp)
 
     qlogic_isp_drop_pending_status(s);
     s->held_count = 0;
-    qlogic_isp_drop_selections(s);
+    qlogic_isp_drop_unstarted(s);
     qlogic_isp_clear_holds(s);
     s->selection_count = 0;
     s->parked_count = 0;
