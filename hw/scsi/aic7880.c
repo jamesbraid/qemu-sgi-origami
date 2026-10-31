@@ -953,15 +953,29 @@ static void aic7880_process_scsi_data(AIC7880State *s)
         }
         if (from_target) {
             len = MIN(len, sizeof(s->host_fifo) - s->host_fifo_len);
-            for (unsigned i = 0; i < len; i++) {
-                s->host_fifo[s->host_fifo_write++] = data[i];
+            if (len) {
+                unsigned first = MIN(len,
+                                     sizeof(s->host_fifo) - s->host_fifo_write);
+
+                memcpy(s->host_fifo + s->host_fifo_write, data, first);
+                if (len > first) {
+                    memcpy(s->host_fifo, data + first, len - first);
+                }
             }
+            s->host_fifo_write += len;
             s->host_fifo_len += len;
         } else {
             len = MIN(len, s->host_fifo_len);
-            for (unsigned i = 0; i < len; i++) {
-                data[i] = s->host_fifo[s->host_fifo_read++];
+            if (len) {
+                unsigned first = MIN(len,
+                                     sizeof(s->host_fifo) - s->host_fifo_read);
+
+                memcpy(data, s->host_fifo + s->host_fifo_read, first);
+                if (len > first) {
+                    memcpy(data + first, s->host_fifo, len - first);
+                }
             }
+            s->host_fifo_read += len;
             s->host_fifo_len -= len;
         }
         s->scsi_data_pos += len;
