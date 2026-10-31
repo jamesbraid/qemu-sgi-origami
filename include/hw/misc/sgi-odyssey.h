@@ -55,8 +55,13 @@ typedef struct SGIRenderer SGIRenderer;
  * falls silent.
  */
 #define SGI_ODYSSEY_GL_CONSTANTS 2048
-/* Off-screen board-memory objects the model keeps (texture levels). */
-#define SGI_ODYSSEY_OBJECTS 1024
+/*
+ * Off-screen board-memory objects the model keeps (texture levels). Model
+ * policy (odyssey.md, "Board-memory object store"): large enough for the
+ * guests reported so far, not a board limit. The per-object state is 32
+ * bytes, so the table is held statically: about 512 KiB.
+ */
+#define SGI_ODYSSEY_OBJECTS 16384
 #define SGI_ODYSSEY_OBJ_POOL_BYTES (128 * 1024 * 1024)
 #define SGI_ODYSSEY_OBJ_POOL_WORDS (SGI_ODYSSEY_OBJ_POOL_BYTES / 4)
 #define SGI_ODYSSEY_OBJ_VALID_BYTES (SGI_ODYSSEY_OBJ_POOL_WORDS / 8)
@@ -326,7 +331,10 @@ struct SGIOdysseyState {
     uint32_t obj_width[SGI_ODYSSEY_OBJECTS];
     uint32_t obj_offset[SGI_ODYSSEY_OBJECTS];
     uint32_t obj_rows[SGI_ODYSSEY_OBJECTS];
-    /* When each object was last selected or grown (obj_clock's count). */
+    /*
+     * When each object was last selected or grown (obj_clock's count), the
+     * eviction rank. A draw's sampling does not set it.
+     */
     uint64_t obj_stamp[SGI_ODYSSEY_OBJECTS];
     uint64_t obj_clock;
     /* The store bytes a save carries, obj_used words (migration only). */
