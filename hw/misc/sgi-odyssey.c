@@ -5078,7 +5078,12 @@ static bool odyssey_object_region_written(const SGIOdysseyState *s,
     return true;
 }
 
-/* Mark object i as the most recently used. */
+/*
+ * Mark object i as the most recently selected. Model policy (odyssey.md,
+ * "Board-memory object store"): an upload or a grow selects an object. A
+ * draw that samples it does not, so a texture drawn every frame but never
+ * uploaded again is still the first forgotten.
+ */
 static void odyssey_object_touch(SGIOdysseyState *s, int i)
 {
     s->obj_stamp[i] = ++s->obj_clock;
@@ -5094,7 +5099,7 @@ static void odyssey_object_forget(SGIOdysseyState *s, int i)
     s->obj_stamp[i] = 0;
 }
 
-/* The least recently used live object other than keep, or -1. */
+/* The least recently selected live object other than keep, or -1. */
 static int odyssey_object_oldest(SGIOdysseyState *s, int keep)
 {
     int oldest = -1;
@@ -5188,8 +5193,8 @@ static int odyssey_object_select(SGIOdysseyState *s, uint32_t base,
         if (!s->obj_full_reported) {
             s->obj_full_reported = true;
             qemu_log_mask(LOG_UNIMP, "sgi-odyssey: more than %u board-memory "
-                          "objects; the least recently used, 0x%x, is "
-                          "forgotten\n", SGI_ODYSSEY_OBJECTS,
+                          "objects; the least recently selected, 0x%x, "
+                          "is forgotten\n", SGI_ODYSSEY_OBJECTS,
                           s->obj_base[i]);
         }
         odyssey_object_forget(s, i);
@@ -5213,7 +5218,7 @@ static int odyssey_object_select(SGIOdysseyState *s, uint32_t base,
 /*
  * Make room for rows rows in object i: grow it in place when it is the last
  * in the store, else move it to the end. When there is no room, forget the
- * least recently used other objects until the live objects and i's new
+ * least recently selected other objects until the live objects and i's new
  * size fit, reporting the first object forgotten, then pack the store once
  * with i last. False, reported once, when i alone does not fit.
  */
@@ -5222,10 +5227,11 @@ static bool odyssey_object_rows(SGIOdysseyState *s, int i, uint32_t rows)
     uint64_t need = (uint64_t)s->obj_width[i] * rows;
     uint64_t have = (uint64_t)s->obj_width[i] * s->obj_rows[i];
 
+    /* Writing rows the object already has selects it as a grow does. */
+    odyssey_object_touch(s, i);
     if (rows <= s->obj_rows[i]) {
         return true;
     }
-    odyssey_object_touch(s, i);
     if (need <= ODSY_OBJ_POOL_WORDS &&
         !(have && s->obj_offset[i] + have == s->obj_used &&
           s->obj_offset[i] + need <= ODSY_OBJ_POOL_WORDS) &&
@@ -5248,7 +5254,8 @@ static bool odyssey_object_rows(SGIOdysseyState *s, int i, uint32_t rows)
                 s->obj_forget_reported = true;
                 qemu_log_mask(LOG_UNIMP, "sgi-odyssey: the model's %u MiB "
                               "board-memory store is full; the least "
-                              "recently used object, 0x%x, is forgotten\n",
+                              "recently selected object, 0x%x, is "
+                              "forgotten\n",
                               (unsigned)(ODSY_OBJ_POOL_BYTES / MiB),
                               s->obj_base[victim]);
             }

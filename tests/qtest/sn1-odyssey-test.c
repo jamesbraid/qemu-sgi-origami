@@ -12485,7 +12485,7 @@ static void test_object_store_capacity_is_16384(void)
  * The object store recycles. Two 4096-texel-wide objects of 3000 rows
  * take most of the 128 MiB store; reshaping the first leaves its rows
  * behind as a hole that a third such object reclaims without losing the
- * second. A fourth, larger object then forgets the least recently used
+ * second. A fourth, larger object then forgets the least recently selected
  * object (the second) and keeps the rest. Then more objects than the table
  * holds: the oldest is forgotten and the newest still lands. Both kinds of
  * forgetting are reported once, naming the object. Before, the
@@ -12544,7 +12544,7 @@ static void test_object_store_reclaims(void)
     g_assert_cmphex(odsy_test_object_texel(qts, 0x600000 +
                                            (ODSY_TEST_OBJECTS - 1) * 0x20,
                                            2, 2), ==, 0x66666666);
-    /* The large objects were the least recently used, so they went first. */
+    /* The large objects were the least recently selected: they went first. */
     g_assert_cmphex(odsy_test_object_texel(qts, 0x500000, 8, 3999), ==, 0);
     board_quit(qts);
 
@@ -12552,9 +12552,10 @@ static void test_object_store_reclaims(void)
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
     g_assert_nonnull(strstr(log, "board-memory store is full; the least "
-                            "recently used object, 0x300000, is forgotten"));
+                            "recently selected object, 0x300000, is "
+                            "forgotten"));
     g_assert_nonnull(strstr(log, "more than 16384 board-memory objects; the "
-                            "least recently used, 0x200000, is forgotten"));
+                            "least recently selected, 0x200000, is forgotten"));
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
@@ -12581,6 +12582,119 @@ static void test_object_store_grows_without_forgetting(void)
     g_assert_cmphex(odsy_test_object_texel(qts, 0x300000, 6, 2999), ==,
                     0x22222222);
     board_quit(qts);
+}
+
+/*
+ * The first object the table forgets is named in the log (-d unimp). Start a
+ * board that writes it to a fresh file, and return the path in *log_path.
+ */
+static QTestState *object_store_log_board(char **log_path)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-store-XXXXXX.log", log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(*log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_BANKS);
+    return qts;
+}
+
+/* Fill the table past the textured object: ODSY_TEST_OBJECTS - 1 more. */
+static void object_store_fill(QTestState *qts)
+{
+    for (uint32_t i = 0; i < ODSY_TEST_OBJECTS - 1; i++) {
+        object_store_select(qts, 0x300000 + i * 0x20, 1);
+    }
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==,
+                     ODSY_TEST_OBJECTS);
+}
+
+/*
+ * Assert that the board's log, once it has quit, names base as the object
+ * the full table forgot, and not other.
+ */
+static void object_store_log_forgot(char *log_path, uint32_t base,
+                                    uint32_t other)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *want = g_strdup_printf("selected, 0x%x, is forgotten",
+                                            base);
+    g_autofree char *not_want = g_strdup_printf("selected, 0x%x, is "
+                                                "forgotten", other);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log, want));
+    g_assert_null(strstr(log, not_want));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+static void texture_adapter_upload(QTestState *qts, uint32_t base,
+                                    const uint32_t pixels[4]);
+static void texture_adapter_window(QTestState *qts);
+static void texture_adapter_bind(QTestState *qts, uint32_t base,
+                                  uint32_t sampler, uint32_t env);
+static void texture_adapter_point(QTestState *qts, int x, int y,
+                                   float s, float t);
+
+static const uint32_t object_store_pixels[4] = {
+    0xff000040, 0x00ff0080, 0x0000ffc0, 0xffffffff,
+};
+
+/*
+ * Sampling is not use. A 2x2 texture is uploaded first, then the table is
+ * filled, and the texture is drawn many times with no further upload. One
+ * more object then forgets the texture, the least recently selected, and
+ * not the next-oldest. Model policy (odyssey.md, "Board-memory object
+ * store"); it fails on a model where a draw refreshes the object it samples.
+ */
+static void test_object_store_sampling_is_not_use(void)
+{
+    g_autofree char *log_path = NULL;
+    QTestState *qts = object_store_log_board(&log_path);
+
+    texture_adapter_upload(qts, 0x180000, object_store_pixels);
+    object_store_fill(qts);
+    texture_adapter_window(qts);
+    texture_adapter_bind(qts, 0x180000, 0x13001400, 1);
+    for (int x = 10; x < 26; x++) {
+        texture_adapter_point(qts, x, 10, 0.25f, 0.25f);
+        g_assert_cmphex(odsy_test_pixel(qts, x, 10), ==, 0xff000040);
+    }
+    object_store_select(qts, 0x300000 + (ODSY_TEST_OBJECTS - 1) * 0x20, 1);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 0, 0), ==, 0);
+    board_quit(qts);
+    object_store_log_forgot(log_path, 0x180000, 0x300000);
+}
+
+/*
+ * An upload refreshes recency. With the table full, the oldest object is
+ * uploaded to again, so one more object forgets the second-oldest and the
+ * uploaded one keeps its texels. It fails on a model that ranks by creation
+ * order.
+ */
+static void test_object_store_upload_refreshes_recency(void)
+{
+    g_autofree char *log_path = NULL;
+    QTestState *qts = object_store_log_board(&log_path);
+
+    texture_adapter_upload(qts, 0x180000, object_store_pixels);
+    object_store_fill(qts);
+    texture_adapter_upload(qts, 0x180000, object_store_pixels);
+    object_store_select(qts, 0x300000 + (ODSY_TEST_OBJECTS - 1) * 0x20, 1);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 0, 0), ==,
+                    0xff000040);
+    board_quit(qts);
+    object_store_log_forgot(log_path, 0x300000, 0x180000);
 }
 
 /* Save a board to a file and return the stream's size in bytes. */
@@ -15748,8 +15862,6 @@ static void texture_adapter_upload_rgba8_colour_table(QTestState *qts,
         }
     }
 }
-
-static void texture_adapter_window(QTestState *qts);
 
 /*
  * pfCity's volume form: RGBA, linear and not mipmapped (word 4 0x13000022),
@@ -25809,6 +25921,10 @@ int main(int argc, char **argv)
                    test_object_store_keeps_4096_objects);
     add_fresh_case("sn1/odyssey/object-store-capacity-is-16384",
                    test_object_store_capacity_is_16384);
+    add_fresh_case("sn1/odyssey/object-store-sampling-is-not-use",
+                   test_object_store_sampling_is_not_use);
+    add_fresh_case("sn1/odyssey/object-store-upload-refreshes-recency",
+                   test_object_store_upload_refreshes_recency);
     add_case("sn1/odyssey/texture-adapter/rgba12-byte-upload",
              test_texture_adapter_rgba12_byte_upload);
     add_case("sn1/odyssey/texture-adapter/nearest",
