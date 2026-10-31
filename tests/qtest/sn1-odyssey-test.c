@@ -23348,8 +23348,8 @@ static void test_readback_gl_depth_round_trip(void)
 
 /*
  * A stencil rectangle written and read back over an RGB window, read as
- * class 0 code 0 with field codes (4, 0). A written word keeps its low
- * byte. MODEL CHOICE: where the board keeps the stencil byte in a stored
+ * class 0 code 0 with field codes (4, 0). A written word keeps bits 23:16
+ * (the index). MODEL CHOICE: where the board keeps the stencil byte in a stored
  * pixel is unknown, so the model keeps it in a plane of its own. The test
  * pins that choice: a stencil write leaves the colour and the depth word alone
  * (including the byte above a depth's 24 bits), and a depth write leaves
@@ -23359,7 +23359,7 @@ static void test_readback_gl_depth_round_trip(void)
 static void test_readback_gl_stencil_round_trip(void)
 {
     static const uint32_t stencil[4] = {
-        0x00000007, 0x000000ff, 0x00000100, 0x12345678,
+        0x00070000, 0x00ff0000, 0x01000000, 0x12785678,
     };
     static const uint32_t depth[4] = {
         0xff000001, 0xff000002, 0xff000003, 0xff000004,
@@ -23407,7 +23407,7 @@ static void test_readback_gl_stencil_round_trip(void)
  */
 static void test_readback_gl_zs_write_rules(void)
 {
-    static const uint32_t one[1] = { 0x00000055 };
+    static const uint32_t one[1] = { 0x00550000 };
     static const uint32_t narrow[1] = { 0x0000fbfe };
     QTestState *qts = readback_start("");
     uint8_t got[4];
@@ -23450,7 +23450,8 @@ static void test_readback_gl_zs_write_rules(void)
  * A format-0 type-4 write takes its plane from register 0x0452 when the
  * pixels arrive, and word 4's size field has no say (the datasheet's "Depth
  * and stencil by pixel burst"). Bit 24 enables depth; the stencil byte is
- * (word & mask) | (old & ~mask) under bits 19:12. Depth with mask 0 leaves
+ * (index & mask) | (old & ~mask) under bits 19:12, the index being word
+ * bits 23:16. Depth with mask 0 leaves
  * stencil alone; a partial mask keeps the old bits the mask clears; with
  * bit 24 clear a stencil write leaves depth alone, whichever size field the
  * header carries; with both clear nothing is stored; with both set one
@@ -23459,7 +23460,7 @@ static void test_readback_gl_zs_write_rules(void)
  */
 static void test_readback_gl_zs_write_enables(void)
 {
-    static const uint32_t seed[1] = { 0x000000aa };
+    static const uint32_t seed[1] = { 0x00aa0000 };
     static const uint32_t word[1] = { 0x00123455 };
     static const uint32_t both[1] = { 0x00654321 };
     QTestState *qts = readback_start("");
@@ -23477,11 +23478,11 @@ static void test_readback_gl_zs_write_enables(void)
     readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 1, 1, got);
     g_assert_cmphex(got[0], ==, 0xaa);
 
-    /* A partial mask: low nibble from the word, high nibble kept. */
+    /* A partial mask: low nibble from the index, high nibble kept. */
     set_reg(qts, ODSY_REG_WRITE_MASK, 0x0fu << 12);
     readback_zs_write(qts, RB_ZS_STENCIL_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, word);
     readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 1, 1, got);
-    g_assert_cmphex(got[0], ==, 0xa5);
+    g_assert_cmphex(got[0], ==, 0xa2);
 
     /* Bit 24 clear: a stencil write leaves depth alone, size field or not. */
     readback_zs_write(qts, RB_ZS_DEPTH_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, seed);
@@ -23499,13 +23500,23 @@ static void test_readback_gl_zs_write_enables(void)
     readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 1, 1, got);
     g_assert_cmphex(got[0], ==, 0xaa);
 
-    /* Both enabled: one word takes both planes, stencil from its low byte. */
+    /* Both enabled: one word takes both planes, stencil from bits 23:16. */
     set_reg(qts, ODSY_REG_WRITE_MASK, RB_ZS_DEPTH_ONLY | RB_ZS_STENCIL_ONLY);
     readback_zs_write(qts, RB_ZS_DEPTH_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, both);
     readback_zs_read(qts, 2, 2, 4, RB_ZS_X, RB_ZS_Y, 1, 1, got);
     g_assert_cmphex(ldl_be_p(got), ==, 0x654321);
     readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 1, 1, got);
-    g_assert_cmphex(got[0], ==, 0x21);
+    g_assert_cmphex(got[0], ==, 0x65);
+
+    /*
+     * Index 0x11 is word 0x00110000. The model once took the stencil from
+     * the word's low byte and stored 0 here.
+     */
+    set_reg(qts, ODSY_REG_WRITE_MASK, RB_ZS_STENCIL_ONLY);
+    readback_zs_write(qts, RB_ZS_STENCIL_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1,
+                      (const uint32_t[1]) { 0x00110000 });
+    readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(got[0], ==, 0x11);
     board_quit(qts);
 }
 
