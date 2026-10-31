@@ -2415,6 +2415,13 @@ static const EnvCase env_2u_ip53 = {
     "55", "IP53_4CPU", "030-2013-001", "-D", ENV_2U_IP53
 };
 
+static const EnvCase env_q_ip59 = {
+    "81", "IP59_4CPU", "030-1989-003", "-C", ENV_Q_IP59
+};
+static const EnvCase env_q_ip53 = {
+    "81", "IP53_4CPU", "030-2013-001", "-D", ENV_Q_IP53
+};
+
 static void env_start(int *fd, QTestState **s, const EnvCase *c,
                       const char *extra)
 {
@@ -2499,8 +2506,8 @@ static void test_env_unmodelled(void)
     static const EnvCase unnamed_board = {
         "57", "IP45_4CPU", "030-1707-003", "-G", NULL
     };
-    static const EnvCase rackmount = {
-        "81", "IP59_4CPU", "030-1989-003", "-C", NULL
+    static const EnvCase blade = {
+        "56", "IP59_4CPU", "030-1989-003", "-C", NULL
     };
     static const EnvCase short_name = {
         "57", "IP5", "030-1989-003", "-C", NULL
@@ -2508,7 +2515,7 @@ static void test_env_unmodelled(void)
     static const EnvCase modelled = {
         "57", "IP59_4CPU", "030-1989-003", "-C", NULL
     };
-    const EnvCase *cases[] = { &unnamed_board, &rackmount, &short_name };
+    const EnvCase *cases[] = { &unnamed_board, &blade, &short_name };
     int fd;
     QTestState *s;
 
@@ -7400,10 +7407,16 @@ int main(int argc, char **argv)
                         test_env);
     qtest_add_data_func("sn1/l1/env/2u-ip59", &env_2u_ip59, test_env);
     qtest_add_data_func("sn1/l1/env/2u-ip53", &env_2u_ip53, test_env);
+    qtest_add_data_func("sn1/l1/env/rack-workstation-ip59", &env_q_ip59,
+                        test_env);
+    qtest_add_data_func("sn1/l1/env/rack-workstation-ip53", &env_q_ip53,
+                        test_env);
     qtest_add_data_func("sn1/l1/env/unpowered/workstation-ip59",
                         &env_ws_ip59, test_env_unpowered);
     qtest_add_data_func("sn1/l1/env/unpowered/2u-ip59", &env_2u_ip59,
                         test_env_unpowered);
+    qtest_add_data_func("sn1/l1/env/unpowered/rack-workstation-ip59",
+                        &env_q_ip59, test_env_unpowered);
     qtest_add_func("sn1/l1/env/unmodelled", test_env_unmodelled);
     qtest_add_func("sn1/l1/power", test_power);
     qtest_add_func("sn1/l1/node-reset", test_node_reset);

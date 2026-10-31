@@ -29,6 +29,8 @@ typedef enum {
 /* The state column of a row on a node that has no power. */
 #define ENV_WAIT_POWER "Wait Pwr"
 
+#define ENV_ZONE_MEAN UINT_MAX
+
 typedef struct EnvRail {
     const char *name;
     unsigned nominal_mv;
@@ -47,6 +49,7 @@ typedef struct EnvTemp {
     unsigned reading_c;
     /* A sensor on the node cannot be read while the node has no power. */
     bool on_node;
+    unsigned fault_c;
 } EnvTemp;
 
 typedef struct EnvZone {
@@ -54,7 +57,7 @@ typedef struct EnvZone {
     const char *sensors;
     /* A zero target prints N/A for both temperatures. */
     unsigned target_c;
-    unsigned current_c;
+    unsigned current_c;     /* ENV_ZONE_MEAN: the mean of the sensors */
     const char *fans;
     unsigned fan_percent;
     unsigned fan_min_percent;
@@ -130,6 +133,25 @@ static const EnvRail u2_rails[] = {
     { "XIO 3.3V AUX", 0, 0 },
 };
 
+/* The rack-mounted workstation has the 2U rails with its XIO rails fitted. */
+static const EnvRail q_rails[] = {
+    { "1.8V", 1800, 1777 },
+    { "12V", 12000, 12063 },
+    { "12V #2", 12000, 12063 },
+    { "3.3V", 3300, 3337 },
+    { "12V IO", 12000, 12063 },
+    { "5V AUX", 5000, 5044 },
+    { "3.3V AUX", 3300, 3285 },
+    { "PCI 5V AUX", 5000, 5044 },
+    { "PCI 3.3V", 3300, 3320 },
+    { "PCI 2.5V", 2500, 2496 },
+    { "PCI 5V", 5000, 4966 },
+    { "XIO 12V BIAS", 12000, 11750 },
+    { "XIO 5V", 5000, 4992 },
+    { "XIO 2.5V", 2500, 2457 },
+    { "XIO 3.3V AUX", 3300, 3285 },
+};
+
 /*
  * The node board's rails, shown with the board's name in front. Readings
  * are per generation. The VCPU nominal is filled in from the PSC code.
@@ -185,26 +207,75 @@ static const EnvFan u2_fans[] = {
 };
 #define U2_FANS_IP53 5
 
+/* The captured autofan faults are 76 C, and 85 C on the BEDROCK sensor. */
+/*
+ * The rack-mounted workstation replaces the second exhaust fan with an
+ * Odyssey fan, which warns at 1679 RPM in the captured module. The IP53 list
+ * is the first five; the three N0 fans are IP59's.
+ */
+static const EnvFan q_fans[] = {
+    { "EXHST 1", 1980, { 2636, 2636 } },
+    { "PS", 3200, { 4066, 4066 } },
+    { "PCI 1", 1980, { 2556, 2556 } },
+    { "PCI 2", 1980, { 2812, 2812 } },
+    { "ODY", 1679, { 1850, 1850 } },
+    { "N0 LEFT", 1980, { 0, 4054 } },
+    { "N0 CNTR", 1980, { 0, 3797 } },
+    { "N0 RIGHT", 1980, { 0, 4109 } },
+};
+#define Q_FANS_IP53 5
+
 static const EnvTemp ws_temps[2][7] = {
     [ENV_IP53] = {
-        { "INTERFACE 0", true, 36 }, { "INTERFACE 1", true, 31 },
-        { "INTERFACE 2", true, 31 }, { "INTERFACE 3", true, 38 },
-        { "ODYSSEY", true, 42 }, { "NODE", true, 50 },
-        { "BEDROCK", true, 50, true },
+        { "INTERFACE 0", true, 36, false, 76 },
+        { "INTERFACE 1", true, 31, false, 76 },
+        { "INTERFACE 2", true, 31, false, 76 },
+        { "INTERFACE 3", true, 38, false, 76 },
+        { "ODYSSEY", true, 42, false, 76 },
+        { "NODE", true, 50, false, 76 },
+        { "BEDROCK", true, 50, true, 85 },
     },
     [ENV_IP59] = {
-        { "INTERFACE 0", true, 40 }, { "INTERFACE 1", true, 34 },
-        { "INTERFACE 2", true, 34 }, { "INTERFACE 3", true, 41 },
-        { "ODYSSEY", true, 45 }, { "NODE", true, 50 },
-        { "BEDROCK", true, 47, true },
+        { "INTERFACE 0", true, 40, false, 76 },
+        { "INTERFACE 1", true, 34, false, 76 },
+        { "INTERFACE 2", true, 34, false, 76 },
+        { "INTERFACE 3", true, 41, false, 76 },
+        { "ODYSSEY", true, 45, false, 76 },
+        { "NODE", true, 50, false, 76 },
+        { "BEDROCK", true, 47, true, 85 },
     },
 };
 
 static const EnvTemp u2_temps[] = {
-    { "INTERFACE 0", true, 11 }, { "INTERFACE 1", true, 11 },
-    { "INTERFACE 2", true, 12 }, { "PCI RISER", true, 16 },
-    { "ODYSSEY", false, 0 }, { "NODE", true, 14 },
-    { "BEDROCK", true, 13, true },
+    { "INTERFACE 0", true, 11, false, 55 },
+    { "INTERFACE 1", true, 11, false, 55 },
+    { "INTERFACE 2", true, 12, false, 55 },
+    { "PCI RISER", true, 16, false, 55 },
+    { "ODYSSEY", false, 0, false, 55 },
+    { "NODE", true, 14, false, 55 },
+    { "BEDROCK", true, 13, true, 55 },
+};
+
+/* The rack-mounted workstation's captured faults are 75 C on every sensor. */
+static const EnvTemp q_temps[2][7] = {
+    [ENV_IP53] = {
+        { "INTERFACE 0", true, 36, false, 75 },
+        { "INTERFACE 1", true, 31, false, 75 },
+        { "INTERFACE 2", true, 31, false, 75 },
+        { "PCI RISER", true, 38, false, 75 },
+        { "ODYSSEY", true, 42, false, 75 },
+        { "NODE", true, 50, false, 75 },
+        { "BEDROCK", true, 50, true, 75 },
+    },
+    [ENV_IP59] = {
+        { "INTERFACE 0", true, 40, false, 75 },
+        { "INTERFACE 1", true, 34, false, 75 },
+        { "INTERFACE 2", true, 34, false, 75 },
+        { "PCI RISER", true, 41, false, 75 },
+        { "ODYSSEY", true, 45, false, 75 },
+        { "NODE", true, 50, false, 75 },
+        { "BEDROCK", true, 47, true, 75 },
+    },
 };
 
 /* The cooling zones follow each workstation board's captured firmware. */
@@ -221,6 +292,18 @@ static const EnvZone ws_zones_ip59[] = {
     { "HD", "N/A", 0, 0, "5", 56, 38 },
     { "PCI", "0,1,2,3", 45, 37, "3,4", 57, 57 },
     { "ODY", "4", 50, 45, "6", 82, 64 },
+};
+
+/*
+ * The rack-mounted workstation's zones, with the sensors and fans the
+ * captured IP53 module lists. The captures give no targets or fan
+ * percentages, so those are model values.
+ */
+static const EnvZone q_zones[] = {
+    { "NODE", "0,1,2,5,6", 62, ENV_ZONE_MEAN, "0", 46, 46 },
+    { "PS", "0,1,2,5,6", 62, ENV_ZONE_MEAN, "1", 46, 46 },
+    { "PCI", "3", 45, ENV_ZONE_MEAN, "2,3", 57, 57 },
+    { "ODY", "4", 50, ENV_ZONE_MEAN, "4", 64, 64 },
 };
 
 static unsigned env_fahrenheit(unsigned celsius)
@@ -297,15 +380,16 @@ static void env_temp_row(GString *out, unsigned index, const EnvTemp *temp,
 }
 
 /* The row layout reproduces the captured zone rows. */
-static void env_zone_row(GString *out, const EnvZone *zone, const char *state)
+static void env_zone_row(GString *out, const EnvZone *zone, const char *state,
+                         unsigned current_c)
 {
     g_autofree char *target = zone->target_c ?
         g_strdup_printf("%2uC/%3uF", zone->target_c,
                         env_fahrenheit(zone->target_c)) :
         g_strdup("N/A");
     g_autofree char *current = zone->target_c ?
-        g_strdup_printf("%2uC/%3uF", zone->current_c,
-                        env_fahrenheit(zone->current_c)) :
+        g_strdup_printf("%2uC/%3uF", current_c,
+                        env_fahrenheit(current_c)) :
         g_strdup("N/A");
 
     g_string_append_printf(out,
@@ -367,18 +451,28 @@ static void env_temps(GString *out, const EnvTemp *temps, unsigned count,
         "----------------- ----------  ---------  ---------  ---------  "
         "---------\r\n");
     for (unsigned i = 0; i < count; i++) {
-        bool bedrock = !strcmp(temps[i].name, "BEDROCK");
-        /* The captured autofan faults are 76 C, and 85 C on the BEDROCK. */
-        unsigned fault_c = autofan ? (bedrock ? 85 : 76) : 55;
-
         env_temp_row(out, i, &temps[i], powered ? "Enabled" : ENV_WAIT_POWER,
-                     autofan, powered || !temps[i].on_node, fault_c,
+                     autofan, powered || !temps[i].on_node, temps[i].fault_c,
                      powered ? temps[i].reading_c : 0);
     }
 }
 
+/* The mean of a zone's sensor readings, rounded half up. */
+static unsigned env_zone_mean(const EnvZone *zone, const EnvTemp *temps)
+{
+    unsigned sum = 0, count = 0;
+
+    for (const char *p = zone->sensors; *p; p++) {
+        if (g_ascii_isdigit(*p)) {
+            sum += temps[*p - '0'].reading_c;
+            count++;
+        }
+    }
+    return count ? (sum + count / 2) / count : 0;
+}
+
 static void env_zones(GString *out, const EnvZone *zones, unsigned count,
-                      bool powered)
+                      const EnvTemp *temps, bool powered)
 {
     g_string_append(out,
         "\r\n"
@@ -389,7 +483,9 @@ static void env_zones(GString *out, const EnvZone *zones, unsigned count,
         "---------  --------  ------------  --------  --------  ---------  "
         "---------\r\n");
     for (unsigned i = 0; i < count; i++) {
-        env_zone_row(out, &zones[i], powered ? "Enabled" : ENV_WAIT_POWER);
+        env_zone_row(out, &zones[i], powered ? "Enabled" : ENV_WAIT_POWER,
+                     zones[i].current_c == ENV_ZONE_MEAN ?
+                     env_zone_mean(&zones[i], temps) : zones[i].current_c);
     }
 }
 
@@ -418,7 +514,7 @@ char *sgi_l1_chimera_env(char type, const char *node_board, bool powered)
     EnvBoard board;
     GString *out;
 
-    if ((type != '7' && type != '9') ||
+    if ((type != '7' && type != '9' && type != 'Q') ||
         !env_board_from_name(node_board, &board)) {
         return NULL;
     }
@@ -432,10 +528,20 @@ char *sgi_l1_chimera_env(char type, const char *node_board, bool powered)
         env_temps(out, ws_temps[board], ARRAY_SIZE(ws_temps[board]), true,
                   powered);
         if (board == ENV_IP59) {
-            env_zones(out, ws_zones_ip59, ARRAY_SIZE(ws_zones_ip59), powered);
+            env_zones(out, ws_zones_ip59, ARRAY_SIZE(ws_zones_ip59),
+                      ws_temps[board], powered);
         } else {
-            env_zones(out, ws_zones_ip53, ARRAY_SIZE(ws_zones_ip53), powered);
+            env_zones(out, ws_zones_ip53, ARRAY_SIZE(ws_zones_ip53),
+                      ws_temps[board], powered);
         }
+    } else if (type == 'Q') {
+        env_rails(out, q_rails, ARRAY_SIZE(q_rails), board, powered);
+        env_fans(out, q_fans,
+                 board == ENV_IP59 ? ARRAY_SIZE(q_fans) : Q_FANS_IP53,
+                 board, powered);
+        env_temps(out, q_temps[board], ARRAY_SIZE(q_temps[board]), true,
+                  powered);
+        env_zones(out, q_zones, ARRAY_SIZE(q_zones), q_temps[board], powered);
     } else {
         env_rails(out, u2_rails, ARRAY_SIZE(u2_rails), board, powered);
         env_fans(out, u2_fans,

@@ -1701,9 +1701,10 @@ static void l1_o3k_brick_print(SGIL1State *s)
 }
 
 /*
- * The "env" report of a Chimera interface board: type 7 is the 2U board and
- * type 9 the workstation board, and the node board's name picks IP53 or
- * IP59. Returns false for every other brick, which keeps "env" unmodelled.
+ * The "env" report of a Chimera interface board: type 7 is the 2U board,
+ * type 9 the workstation board and type Q the rack-mounted workstation, and
+ * the node board's name picks IP53 or IP59. Returns false for every other
+ * brick, which keeps "env" unmodelled.
  */
 static bool l1_chimera_env(SGIL1State *s)
 {

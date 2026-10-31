@@ -10,7 +10,8 @@
 /**
  * sgi_l1_chimera_env: the text the "env" command prints
  * @type: the brick type character: '7' for the 2U interface board, '9' for
- *        the workstation interface board
+ *        the workstation interface board, 'Q' for the rack-mounted
+ *        workstation
  * @node_board: the node board's product name, such as "IP59_4CPU"
  * @powered: whether the node has power; an unpowered node reports every
  *           row as waiting for power
