@@ -149,10 +149,7 @@ class IP53RuntimeExportTests(unittest.TestCase):
         base = {"id": "cpu", "name": "CPU", "kind": "cpu",
                 "provenance": "derived", "hardware_kind": "r16000",
                 "identity": {"r16000_reset_mode": 0x009cad85,
-                             "r16000_scache_bytes": 0x800000,
-                             "required_properties": [
-                                 "r16000-experimental", "r16000-reset-mode",
-                                 "r16000-scache-bytes"]}}
+                             "r16000_scache_bytes": 0x800000}}
         self.assertTrue(validator.is_valid(base))
         for changed in (
                 dict(base, hardware_kind="r10000"),

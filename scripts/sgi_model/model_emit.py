@@ -1078,11 +1078,10 @@ def _hardware_inputs(topology: dict) -> list[dict]:
 # catalogue's values through them unless -cpu names one.
 _CPU_OVERRIDES = {
     "R10000": ("r10000-prid",),
-    "R12000": ("r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
-               "r12000-scache-bytes", "r12000-scache-block-words"),
+    "R12000": ("r12000-prid", "r12000-fpu-id"),
     "R14000": ("r14000-prid",),
-    "R16000": ("r16000-experimental", "r16000-reset-mode",
-               "r16000-scache-bytes"),
+    # Fixed by its model; its board's reset-mode word is not overridable.
+    "R16000": (),
 }
 
 
@@ -1302,13 +1301,6 @@ def _offerings_for(model: dict, topology: dict,
                 if choice["cpus_per_node"] is None or
                 set(cpu_population) <= set(choice["cpus_per_node"])):
             assembly = choice["assembly"]
-            # A topology's IP53 runtime profile, and a Cx-brick node board,
-            # fit their R16000s themselves, so none of their launches needs
-            # caller CPU properties.
-            machine_fits_cpus = (
-                topology.get("ip53_runtime") is not None
-                or all(node.get("board_kind") == "ip53-cx"
-                       for node in topology["nodes"]))
             offerings.append({
                 "product": machine_name,
                 "topology": configuration_name,
@@ -1331,9 +1323,6 @@ def _offerings_for(model: dict, topology: dict,
                     "id": assembly["id"],
                     "part": assembly["kind"], "clock-hz": assembly["clock_hz"],
                     "cache-mib": assembly["cache_mib"],
-                    **({"required-properties": list(assembly["required_properties"])}
-                       if ("required_properties" in assembly and
-                           not machine_fits_cpus) else {}),
                 },
                 **({"firmware": firmware}
                    if launch_recipe in ("ip53-discovery", "ip32") else {}),

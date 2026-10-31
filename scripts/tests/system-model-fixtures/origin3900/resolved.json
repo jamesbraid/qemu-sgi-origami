@@ -470,11 +470,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -512,11 +507,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -554,11 +544,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -596,11 +581,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -713,11 +693,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -755,11 +730,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -797,11 +767,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -839,11 +804,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -956,11 +916,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -998,11 +953,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -1040,11 +990,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -1082,11 +1027,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -1199,11 +1139,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -1241,11 +1176,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -1283,11 +1213,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,
@@ -1325,11 +1250,6 @@
         "clock_mhz": 700,
         "r16000_reset_mode": 10268037,
         "r16000_scache_bytes": 8388608,
-        "required_properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ],
         "variants": [
           {
             "cache_mib": 8,

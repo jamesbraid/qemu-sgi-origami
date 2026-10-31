@@ -49,7 +49,7 @@ layer:
         kind: cpu
         hardware_kind: r16000
         parent: bedrock
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Origin 350 runtime inputs"]
         notes: >-
@@ -61,7 +61,7 @@ layer:
         kind: cpu
         hardware_kind: r16000
         parent: bedrock
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Origin 350 runtime inputs"]
       - id: cpu2
@@ -69,7 +69,7 @@ layer:
         kind: cpu
         hardware_kind: r16000
         parent: bedrock
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Origin 350 runtime inputs"]
       - id: cpu3
@@ -77,7 +77,7 @@ layer:
         kind: cpu
         hardware_kind: r16000
         parent: bedrock
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Origin 350 runtime inputs"]
       - id: node-memory

@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "eb34e4d6e4866ac2574b4d2434be3813ac8ba58d43339bd0d5ee84d720180d6a"
+    "b140e00f0b845d68cceba6ad2aa4f7e3fb650e422eebfbd0cc8e4ec1e6301c60"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -906,6 +906,19 @@ class FuelTests(unittest.TestCase):
                             for c in row["consoles"]
                             if c["argument"].endswith("l1_node1")))
 
+    def test_no_offering_or_assembly_lists_cpu_properties(self):
+        """Every board fits its processor's values itself, so the
+        catalogue names no CPU property a launcher must set, and offers
+        no override of a reset-mode word the board drives."""
+        text = render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"]
+        self.assertNotIn("required-properties", text)
+        catalogue = json.loads(text)
+        for offering in catalogue["offerings"]:
+            cpu = [item["property"] for item in offering["overrides"]
+                   if item["target"] == "cpu"]
+            with self.subTest(topology=offering["topology"]):
+                self.assertNotIn("reset-mode", " ".join(cpu))
+
     def test_ip35_firmware_names_each_product_machine_type(self):
         """Origin 300, Fuel and the Tezro trial keep reset-mode words; the
         six selected IP53 profiles use type zero and full firmware words."""
@@ -980,8 +993,9 @@ class FuelTests(unittest.TestCase):
             "octane": (["flash-select", "flash-strap", "mac"],
                        ["r10000-prid"]),
         }
-        r12000 = ["r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
-                  "r12000-scache-bytes", "r12000-scache-block-words"]
+        # The board drives the reset-mode word; only the identity is
+        # the launch's to override.
+        r12000 = ["r12000-prid", "r12000-fpu-id"]
         for row in catalogue["offerings"]:
             if row["product"] not in expected:
                 continue

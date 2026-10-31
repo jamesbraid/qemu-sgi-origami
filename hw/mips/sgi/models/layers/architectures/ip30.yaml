@@ -38,8 +38,8 @@ layer:
         reset_mode_bits: '0x001aa683'
         notes: >-
           Emulator compatibility value, not a measured Octane2 reset word.
-          The machine's r12000-reset-mode, r12000-scache-bytes and
-          r12000-scache-block-words properties override it.
+          The machine applies it to the CPU, and its SS and SB fields
+          select the secondary cache.
       provenance: derived
       sources:
       - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-processors

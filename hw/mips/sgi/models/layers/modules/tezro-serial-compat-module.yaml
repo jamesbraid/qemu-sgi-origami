@@ -59,10 +59,6 @@ layer:
         cache_clock_mhz: 350
         r16000_reset_mode: 0x009bad85
         r16000_scache_bytes: 4194304
-        required_properties:
-        - r16000-experimental
-        - r16000-reset-mode
-        - r16000-scache-bytes
       provenance: derived
       sources:
       - tezro-deskside-trial

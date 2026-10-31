@@ -70,10 +70,7 @@ class IP30CatalogueTests(unittest.TestCase):
             {"property": "flash-strap", "target": "machine"},
             {"property": "mac", "target": "machine"},
             {"property": "r12000-prid", "target": "cpu"},
-            {"property": "r12000-fpu-id", "target": "cpu"},
-            {"property": "r12000-reset-mode", "target": "cpu"},
-            {"property": "r12000-scache-bytes", "target": "cpu"},
-            {"property": "r12000-scache-block-words", "target": "cpu"}])
+            {"property": "r12000-fpu-id", "target": "cpu"}])
         self.assertEqual(len(offering["scsi-adapters"]), 2)
         self.assertEqual(len(offering["consoles"]), 2)
         self.assertEqual(len(offering["networks"]), 1)
