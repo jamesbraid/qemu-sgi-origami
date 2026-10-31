@@ -1,3 +1,5 @@
+.. SPDX-License-Identifier: BSD-3-Clause
+
 =========================================
 QLogic ISP1040 and ISP12160 SCSI adapters
 =========================================
