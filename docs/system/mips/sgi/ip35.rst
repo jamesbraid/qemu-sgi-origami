@@ -607,7 +607,8 @@ widget 15. The Tezro's two interface boards are two variants of the one
 one-processor board, two or four the two/four-processor board. The
 two/four-processor board selects two PIC widgets, 11 and 15, and places the
 modeled IO9 behind widget 15. The one-processor board selects only the PIC
-at widget 15. Otherwise the
+at widget 15; one PIC is inferred from that board's two PCI-X buses
+(007-4564-001 printed pages 26-31), not shown by an inventory. Otherwise the
 two boards share the same selected memory and I/O construction. The rack
 profile models only the first enclosure. The Tezro two/four-processor board
 and the Onyx 350 profile take an optional V12 in graphics slot ``widget-12``

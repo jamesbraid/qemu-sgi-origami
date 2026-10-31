@@ -476,6 +476,12 @@ class LaunchPolicyFieldTests(unittest.TestCase):
             "l1-irouter-compat": True,
         })
 
+    def test_topology_grade_is_only_for_the_unauthored_row(self):
+        model = _resolved("origin2000-rack")
+        model["composition"]["topology"]["grade"] = "inferred"
+        with self.assertRaisesRegex(CompileError, "carry their own grades"):
+            compile_model(model)
+
     def test_ip53_runtime_pic_profile_must_match_its_hosts(self):
         model = _resolved("origin350")
         model["machine"]["emulation"]["ip53_runtime"]["pic_profile"] = (
