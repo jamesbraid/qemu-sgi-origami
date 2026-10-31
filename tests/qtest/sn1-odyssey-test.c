@@ -23263,14 +23263,18 @@ static void test_readback_gl_depth_shared_rows(void)
 /*
  * Depth and stencil DMA (the datasheet's "Depth and stencil headers"). The
  * write is the draw sentinel with word 7's format code 0 and type code 4,
- * four bytes a pixel, and word 4's size field 1 for depth and 0 for stencil;
- * the read is class 1 code 0 (16-bit depth), class 2 code 2 (32-bit depth)
+ * four bytes a pixel. Register 0x0452 chooses the plane, not word 4's size
+ * field (which these headers still set, as a header always has one); the
+ * read is class 1 code 0 (16-bit depth), class 2 code 2 (32-bit depth)
  * or class 0 code 0 (stencil byte).
  */
 #define RB_ZS_DEPTH_WRITE 0x80033000u
 #define RB_ZS_STENCIL_WRITE 0x80031000u
 #define RB_ZS_X 0x40
 #define RB_ZS_Y 0x3f
+/* Register 0x0452: the depth write enable alone, the stencil mask alone. */
+#define RB_ZS_DEPTH_ONLY (1u << 24)
+#define RB_ZS_STENCIL_ONLY (0xffu << 12)
 
 static void readback_zs_write(QTestState *qts, uint32_t word4, uint32_t x,
                               uint32_t y, uint32_t w, uint32_t h,
@@ -23366,6 +23370,7 @@ static void test_readback_gl_stencil_round_trip(void)
     odsy_buffer_pixel_write(qts, 0, RB_ORIGIN_X + RB_ZS_X,
                             RB_ORIGIN_Y + RB_ZS_Y, 0x9a5ec3d1);
     dispmode_write(qts, 0, ODSY_DISPMODE_RGB);
+    set_reg(qts, ODSY_REG_WRITE_MASK, RB_ZS_STENCIL_ONLY);
     readback_zs_write(qts, RB_ZS_STENCIL_WRITE, RB_ZS_X, RB_ZS_Y, 2, 2,
                       stencil);
     readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 3, 2, got);
@@ -23380,6 +23385,7 @@ static void test_readback_gl_stencil_round_trip(void)
     readback_zs_read(qts, 1, 0, 2, RB_ZS_X, RB_ZS_Y, 2, 1, got);
     g_assert_cmphex(lduw_be_p(got), ==, 0xffff);
 
+    set_reg(qts, ODSY_REG_WRITE_MASK, RB_ZS_DEPTH_ONLY);
     readback_zs_write(qts, RB_ZS_DEPTH_WRITE, RB_ZS_X, RB_ZS_Y, 2, 2, depth);
     readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 2, 2, got);
     g_assert_cmphex(got[0], ==, 0x07);
@@ -23393,12 +23399,11 @@ static void test_readback_gl_stencil_round_trip(void)
  * Three DMA write behaviours that are model choices, pinned as they stand.
  * The writes go through the same pixel test as a GL fragment, so a clip
  * rectangle that leaves the pixel out, or a window-ID compare it fails,
- * stores nothing. They do not apply the stencil write mask (0x0452 bits
- * 19:12): a mask of 0 still stores the byte. And a depth write is always
- * the 24-bit form, so a 16-bit-form word, as an RGBA 12/12/12/12 window's
- * library would send, is stored as a 24-bit word and the 16-bit read
- * (word >> 8) returns near zero: the round trip is broken for that visual.
- * What the board does is unknown, so each is a MODEL CHOICE.
+ * stores nothing. And a depth write is always the 24-bit form, so a
+ * 16-bit-form word, as an RGBA 12/12/12/12 window's library would send, is
+ * stored as a 24-bit word and the 16-bit read (word >> 8) returns near
+ * zero: the round trip is broken for that visual. What the board does is
+ * unknown, so each is a MODEL CHOICE.
  */
 static void test_readback_gl_zs_write_rules(void)
 {
@@ -23408,6 +23413,7 @@ static void test_readback_gl_zs_write_rules(void)
     uint8_t got[4];
 
     dispmode_write(qts, 0, ODSY_DISPMODE_RGB);
+    set_reg(qts, ODSY_REG_WRITE_MASK, RB_ZS_DEPTH_ONLY | RB_ZS_STENCIL_ONLY);
 
     /* A clip rectangle that excludes the pixel: nothing is stored. */
     window_clip(qts, (const uint32_t[][4]) { { 0, 0, 10, 10 } }, 1);
@@ -23430,12 +23436,6 @@ static void test_readback_gl_zs_write_rules(void)
     cmd_push(qts, ODSY_ID_PLANE_BASE);
     cmd_push(qts, 0);
 
-    /* The stencil write mask is ignored. */
-    set_reg(qts, ODSY_REG_WRITE_MASK, 0);
-    readback_zs_write(qts, RB_ZS_STENCIL_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, one);
-    readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 1, 1, got);
-    g_assert_cmphex(got[0], ==, 0x55);
-
     /* A 16-bit-form depth word is stored as a 24-bit one. */
     readback_zs_write(qts, RB_ZS_DEPTH_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, narrow);
     readback_zs_read(qts, 1, 0, 2, RB_ZS_X, RB_ZS_Y, 1, 1, got);
@@ -23443,6 +23443,69 @@ static void test_readback_gl_zs_write_rules(void)
     dispmode_write(qts, 0, ODSY_DISPMODE_GROUP17);
     readback_zs_read(qts, 2, 2, 4, RB_ZS_X, RB_ZS_Y, 1, 1, got);
     g_assert_cmphex(ldl_be_p(got), ==, 0xfbfe);
+    board_quit(qts);
+}
+
+/*
+ * A format-0 type-4 write takes its plane from register 0x0452 when the
+ * pixels arrive, and word 4's size field has no say (the datasheet's "Depth
+ * and stencil by pixel burst"). Bit 24 enables depth; the stencil byte is
+ * (word & mask) | (old & ~mask) under bits 19:12. Depth with mask 0 leaves
+ * stencil alone; a partial mask keeps the old bits the mask clears; with
+ * bit 24 clear a stencil write leaves depth alone, whichever size field the
+ * header carries; with both clear nothing is stored; with both set one
+ * word takes both planes. Whether the depth and
+ * stencil test bits gate such a write is unknown and not modelled.
+ */
+static void test_readback_gl_zs_write_enables(void)
+{
+    static const uint32_t seed[1] = { 0x000000aa };
+    static const uint32_t word[1] = { 0x00123455 };
+    static const uint32_t both[1] = { 0x00654321 };
+    QTestState *qts = readback_start("");
+    uint8_t got[4];
+
+    dispmode_write(qts, 0, ODSY_DISPMODE_GROUP17);
+    set_reg(qts, ODSY_REG_WRITE_MASK, RB_ZS_STENCIL_ONLY);
+    readback_zs_write(qts, RB_ZS_STENCIL_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, seed);
+
+    /* Depth, stencil mask 0: depth is stored, stencil stays 0xaa. */
+    set_reg(qts, ODSY_REG_WRITE_MASK, RB_ZS_DEPTH_ONLY);
+    readback_zs_write(qts, RB_ZS_DEPTH_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, word);
+    readback_zs_read(qts, 2, 2, 4, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(ldl_be_p(got), ==, 0x123455);
+    readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(got[0], ==, 0xaa);
+
+    /* A partial mask: low nibble from the word, high nibble kept. */
+    set_reg(qts, ODSY_REG_WRITE_MASK, 0x0fu << 12);
+    readback_zs_write(qts, RB_ZS_STENCIL_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, word);
+    readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(got[0], ==, 0xa5);
+
+    /* Bit 24 clear: a stencil write leaves depth alone, size field or not. */
+    readback_zs_write(qts, RB_ZS_DEPTH_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, seed);
+    readback_zs_read(qts, 2, 2, 4, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(ldl_be_p(got), ==, 0x123455);
+    readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(got[0], ==, 0xaa);
+
+    /* Neither enabled: nothing is stored. */
+    set_reg(qts, ODSY_REG_WRITE_MASK, 0);
+    readback_zs_write(qts, RB_ZS_STENCIL_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, word);
+    readback_zs_write(qts, RB_ZS_DEPTH_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, seed);
+    readback_zs_read(qts, 2, 2, 4, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(ldl_be_p(got), ==, 0x123455);
+    readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(got[0], ==, 0xaa);
+
+    /* Both enabled: one word takes both planes, stencil from its low byte. */
+    set_reg(qts, ODSY_REG_WRITE_MASK, RB_ZS_DEPTH_ONLY | RB_ZS_STENCIL_ONLY);
+    readback_zs_write(qts, RB_ZS_DEPTH_WRITE, RB_ZS_X, RB_ZS_Y, 1, 1, both);
+    readback_zs_read(qts, 2, 2, 4, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(ldl_be_p(got), ==, 0x654321);
+    readback_zs_read(qts, 0, 0, 1, RB_ZS_X, RB_ZS_Y, 1, 1, got);
+    g_assert_cmphex(got[0], ==, 0x21);
     board_quit(qts);
 }
 
@@ -24289,6 +24352,8 @@ int main(int argc, char **argv)
                    test_readback_gl_stencil_round_trip);
     add_fresh_case("sn1/odyssey/readback/gl-zs-write-rules",
                    test_readback_gl_zs_write_rules);
+    add_fresh_case("sn1/odyssey/readback/gl-zs-write-enables",
+                   test_readback_gl_zs_write_enables);
     add_fresh_case("sn1/odyssey/readback/gl-depth-word-encoding",
                    test_readback_gl_depth_word_encoding);
     add_fresh_case("sn1/odyssey/readback/gl-unlisted-rows",
