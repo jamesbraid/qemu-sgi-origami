@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI GBE 1.1 architectural display model. The functional-display option
- * selects the reviewed functional policy in Origami's o2-gbe-platform.md.
+ * selects the model's functional policy.
  * Pipeline phase, byte placement, FIFO reset and PLL validity are model
- * approximations. FIFO reset policy is in o2-gbe-dma-reset.md.
+ * approximations.
  * The revision property selects only the CTRLSTAT revision field and the
  * color-map FIFO count encoding; revision 2's added registers and its
  * clock reference remain unsupported.
@@ -823,8 +823,11 @@ static uint64_t read_reg(void *opaque, hwaddr addr, unsigned size)
          * Both revisions count free entries of the 64-entry FIFO, as the
          * GBE specification describes. They differ only when it is empty:
          * the six-bit field wraps 64 to 0 at revision 1 and saturates at
-         * 63 from revision 2. Both empty readings are inferred from the
-         * IRIX 6.5.30 X server, which accepts zero only below revision 2.
+         * 63 from revision 2. The GBE 1.1 specification (p. 45) gives a
+         * free-entry count, a 64-deep FIFO and a reset value of 000000,
+         * which is consistent with revision 1 wrapping 64 to 0. The
+         * revision 2 value of 63 has no public source and is a model
+         * choice.
          *
          * Approximation: writes drain synchronously, so the queue is empty
          * at every MMIO completion and the count only ever reads its empty
