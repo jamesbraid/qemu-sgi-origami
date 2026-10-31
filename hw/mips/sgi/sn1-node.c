@@ -2010,7 +2010,7 @@ static bool sn1_node_validate_processors(SN1NodeState *node,
         }
 
         if (strcmp(machine->cpu_type, MIPS_CPU_TYPE_NAME("R16000"))) {
-            error_setg(errp, TYPE_SGI_SN1_NODE " IP53 experiment requires "
+            error_setg(errp, TYPE_SGI_SN1_NODE " IP53 board requires "
                        "R16000, requested %s", machine->cpu_type);
             return false;
         }
@@ -2032,7 +2032,7 @@ static bool sn1_node_validate_processors(SN1NodeState *node,
                 (processor->has_fpu_prid &&
                  processor->fpu_prid != 0x00000900)) {
                 error_setg(errp, TYPE_SGI_SN1_NODE " IP53 processor %u "
-                           "does not match the authorized %u MHz, %u MiB, "
+                           "does not match the board's %u MHz, %u MiB, "
                            "reset-mode 0x%08x R16000 profile", i,
                            (unsigned int)(expected_clock / 1000000),
                            expected_cache_mib, expected_mode);
@@ -2134,30 +2134,20 @@ static bool sn1_node_create_cpus(SN1NodeState *node, MachineState *machine,
              * The reset-latched processor mode field is Config0 bits 24:0.
              * An R12000 takes it with the rest of its profile above.
              */
-            if (!object_property_find(OBJECT(cpu_dev), "r12000-prid")) {
-                object_property_set_uint(OBJECT(cpu_dev), "reset-mode",
+            if (!object_property_find(OBJECT(cpu_dev), "r12000-prid") &&
+                !sgi_cpu_set_reset_mode(cpu_dev,
                     node->model_node->cpu_slots->value->assembly->mode_bits &
-                    0x01ffffff, &error_abort);
+                    0x01ffffff, errp)) {
+                return false;
             }
-        } else {
+        } else if (!sgi_cpu_set_reset_mode(cpu_dev, processor->mode_bits,
+                                           errp)) {
             /*
              * The R16000's identity is fixed by its model; the board
              * supplies only the mode word, whose SS field selects the
-             * cache, and refuses a -cpu reset-mode that disagrees.
+             * cache.
              */
-            const GlobalProperty *prop =
-                qdev_find_global_prop(OBJECT(cpu_dev), "reset-mode");
-
-            if (prop &&
-                object_property_get_uint(OBJECT(cpu_dev), "reset-mode",
-                                         &error_abort) !=
-                processor->mode_bits) {
-                error_setg(errp, "IP53 CPU property reset-mode "
-                           "conflicts with the authorized descriptor");
-                return false;
-            }
-            object_property_set_uint(OBJECT(cpu_dev), "reset-mode",
-                                     processor->mode_bits, &error_abort);
+            return false;
         }
         /* Release both vCPUs from the machine reset handler, not realize. */
         object_property_set_bool(OBJECT(cpu_dev), "start-powered-off", true,

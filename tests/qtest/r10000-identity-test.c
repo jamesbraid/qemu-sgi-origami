@@ -216,6 +216,45 @@ static void test_sn1_prid(gconstpointer data)
     g_assert_cmpint(unlink(prom), ==, 0);
 }
 
+/*
+ * Every board drives its processor's mode word at reset, so a -cpu
+ * reset-mode that disagrees with it is refused rather than run with a
+ * cache the board never selected.
+ */
+static void test_board_reset_mode_conflict(void)
+{
+    const struct {
+        const char *machine;
+        const char *cpu;
+        const char *smp;
+        const char *memory;
+        bool bios;
+    } boards[] = {
+        { "origin200", "R10000,reset-mode=0x11a784", "1", "128M" },
+        { "origin200,processor=r12000-270mhz-4mb",
+          "R12000,reset-mode=0x13ab84", "2", "128M" },
+        { "octane2", "R12000,reset-mode=0x1aa682", "1", "128M", true },
+        { "fuel", "R14000,reset-mode=0x9aa984", "1", "512M" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(boards); i++) {
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", boards[i].machine,
+            "-cpu", boards[i].cpu, "-smp", boards[i].smp,
+            "-m", boards[i].memory, "-display", "none", "-S",
+            "-accel", "qtest", "-qtest", "null",
+            boards[i].bios ? "-bios" : NULL, image_path, NULL,
+        };
+        g_autofree char *error_output = NULL;
+        int status;
+
+        g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                                   NULL, &error_output, &status, NULL));
+        g_assert_false(g_spawn_check_exit_status(status, NULL));
+        g_assert_nonnull(strstr(error_output, "conflicts with the board's"));
+    }
+}
+
 static void test_invalid_identity(void)
 {
     const char *profiles[] = {
@@ -459,6 +498,8 @@ int main(int argc, char **argv)
         qtest_add_data_func(name, &origin200_processors[i],
                             test_origin200_processor);
     }
+    qtest_add_func("/r10000/identity/board-reset-mode-conflict",
+                   test_board_reset_mode_conflict);
     qtest_add_data_func("/r10000/identity/octane2", GINT_TO_POINTER(0),
                         test_octane2_identity);
     qtest_add_data_func("/r10000/identity/octane2-override",

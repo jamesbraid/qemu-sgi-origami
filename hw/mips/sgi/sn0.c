@@ -859,16 +859,13 @@ static void sn0_node_create_cpus(SN0NodeState *node)
         object_property_set_bool(OBJECT(node->cpu[slice]), "big-endian", true,
                                  &error_abort);
         /*
-         * The catalogue's part, unless -cpu named one of its properties.
-         * An R12000 takes its mode bits with the rest of its profile.
+         * The catalogue's part: its mode word, which -cpu may not
+         * contradict, and its identity, which -cpu may override.
          */
-        if (sn0_node_processor(node) &&
-            object_property_find(OBJECT(node->cpu[slice]), "reset-mode")) {
-            object_property_set_uint(OBJECT(node->cpu[slice]), "reset-mode",
-                sn0_node_processor(node)->mode_bits &
-                SN0_PROCESSOR_MODE_MASK, &error_abort);
-        }
         if (sn0_node_processor(node)) {
+            sgi_cpu_set_reset_mode(DEVICE(node->cpu[slice]),
+                                   sn0_node_processor(node)->mode_bits &
+                                   SN0_PROCESSOR_MODE_MASK, &error_fatal);
             sgi_cpu_apply_processor(DEVICE(node->cpu[slice]),
                                     sn0_node_processor(node), &error_fatal);
         }
