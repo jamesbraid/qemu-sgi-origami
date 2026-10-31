@@ -22,6 +22,22 @@ static bool sgi_cpu_default(DeviceState *dev, const char *name,
     return object_property_set_uint(OBJECT(dev), name, value, errp);
 }
 
+bool sgi_cpu_set_reset_mode(DeviceState *dev, uint32_t mode, Error **errp)
+{
+    uint64_t requested;
+
+    if (qdev_find_global_prop(OBJECT(dev), "reset-mode")) {
+        requested = object_property_get_uint(OBJECT(dev), "reset-mode",
+                                             &error_abort);
+        if (requested != mode) {
+            error_setg(errp, "CPU reset-mode 0x%" PRIx64 " conflicts with "
+                       "the board's 0x%x", requested, mode);
+            return false;
+        }
+    }
+    return object_property_set_uint(OBJECT(dev), "reset-mode", mode, errp);
+}
+
 bool sgi_cpu_set_prid(DeviceState *dev, uint32_t prid, Error **errp)
 {
     static const char *const names[] = { "r10000-prid", "r14000-prid" };
@@ -51,7 +67,6 @@ static bool sgi_cpu_apply_r12000(DeviceState *dev,
     } fields[] = {
         { "r12000-prid", processor->prid },
         { "r12000-fpu-id", processor->fpu_prid },
-        { "reset-mode", mode },
     };
 
     if (!processor->has_prid || !processor->has_fpu_prid ||
@@ -65,7 +80,7 @@ static bool sgi_cpu_apply_r12000(DeviceState *dev,
             return false;
         }
     }
-    return true;
+    return sgi_cpu_set_reset_mode(dev, mode, errp);
 }
 
 bool sgi_cpu_apply_processor(DeviceState *dev,

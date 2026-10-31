@@ -5795,8 +5795,8 @@ static void test_ip53_runtime_cpu_property_refusals(void)
         const char *message;
     } cases[] = {
         { "R16000,reset-mode=0x009cad84",
-          "IP53 CPU property reset-mode conflicts with the "
-          "authorized descriptor" },
+          "CPU reset-mode 0x9cad84 conflicts with the "
+          "board's 0x9cad85" },
         /* The opt-in and cache size are gone: the board sets the part. */
         { "R16000,r16000-experimental=on", "r16000-experimental" },
         { "R16000,r16000-scache-bytes=0x800000", "r16000-scache-bytes" },
@@ -5849,8 +5849,8 @@ static void test_ip53_runtime_cpu_property_refusals(void)
             "R16000-mips64-cpu.reset-mode=0x009cad84",
         };
         static const char *const messages[] = {
-            "IP53 CPU property reset-mode conflicts with the "
-            "authorized descriptor",
+            "CPU reset-mode 0x9cad84 conflicts with the "
+            "board's 0x9cad85",
         };
 
         for (unsigned int i = 0; i < G_N_ELEMENTS(globals); i++) {

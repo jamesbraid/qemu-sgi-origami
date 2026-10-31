@@ -8629,7 +8629,7 @@ static void test_o2plus_configuration(void)
           "o2plus requires r12000-variant=r12000" },
         { "r12000-prid=0xe24", "requires r12000-prid" },
         { "r12000-fpu-id=0x901", "requires r12000-fpu-id" },
-        { "reset-mode=0x11aa603", "requires reset-mode" },
+        { "reset-mode=0x11aa603", "conflicts with the board's" },
         { "big-endian=off", "requires a big-endian CPU" },
         { "cache-data-visibility=on", "requires cache-data-visibility=off" },
     };

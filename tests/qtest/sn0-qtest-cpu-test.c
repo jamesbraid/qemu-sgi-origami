@@ -1294,6 +1294,9 @@ static void test_r12000_rejects_inconsistent_profile(void)
           "reset-mode=0x1ea683", "secondary cache size is reserved" },
         { "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567",
           "R12000 requires reset-mode" },
+        /* BE, bit 15, clear on this big-endian CPU. */
+        { "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
+          "reset-mode=0x190683", "reset-mode endianness differs from CPU" },
         { "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
           "reset-mode=0x1b8683", "at most 2 MiB" },
     };
