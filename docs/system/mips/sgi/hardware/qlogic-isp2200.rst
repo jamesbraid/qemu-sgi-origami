@@ -125,8 +125,10 @@ Four mailbox commands come from IRIX and have no public definition. The
 model's replies are approximations: Get Port Queue Parameters (``0x29``)
 returns queue depth 256 and throttle 255 for a loop ID with a port;
 Set Retry Count (``0x32``) and Reset Link Status (``0x52``) complete and
-change nothing; Get Link Status (``0x6b``) writes 32 zero bytes. A loop ID
-with no port gets ``0x4005`` from ``0x29`` and ``0x6b``.
+change nothing; Get Link Status (``0x6b``) writes 32 zero bytes, for the
+adapter's own loop ID as well as a port's. A loop ID with no port, and
+``0x29`` for the adapter's own loop ID (the driver asks it of discovered
+ports only), get ``0x4005``, as does either while the loop is down.
 
 Reset and RISC control
 ======================
@@ -507,14 +509,12 @@ minimum it sets anyway. A later initialise-firmware replaces the pair;
 a reset drops it. IRIX 6.5.30 scans its loop at attach only when this
 command completes.
 
-The enhanced port database (``0x47``), the login, logout, name-server,
-link-status and loop-port commands (``0x40``, ``0x41``, ``0x6b``,
-``0x6e``, ``0x6f``, ``0x71``, ``0x74``), get port queue parameters
-(``0x29``), set retry count (``0x32``) and reset link status
-(``0x52``) answer ``0x4001`` and are logged as unimplemented. Set
-retry count stores nothing. No public source settles what any of
-these returns on this part. Linux's request-ring mailbox entry
-(``0x39``) is an unknown type and returns with entry status bit 2.
+The enhanced port database (``0x47``), the login, logout, name-server
+and loop-port commands (``0x40``, ``0x41``, ``0x6e``, ``0x6f``, ``0x71``,
+``0x74``) answer ``0x4001`` and are logged as unimplemented. No public
+source settles what any of these returns on this part. Linux's
+request-ring mailbox entry (``0x39``) is an unknown type and returns with
+entry status bit 2.
 
 Commands on the loop
 --------------------
