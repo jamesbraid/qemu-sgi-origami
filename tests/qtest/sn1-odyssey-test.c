@@ -12697,6 +12697,55 @@ static void test_object_store_upload_refreshes_recency(void)
     object_store_log_forgot(log_path, 0x300000, 0x180000);
 }
 
+/*
+ * Packing a store of many objects keeps every one of them intact. 16382
+ * one-row objects sit low in the store, a large object (4096 wide, 8000
+ * rows) follows, then one more small object, so the large one is not last
+ * and its growth to 8100 rows does not fit at the end. Every third of the
+ * first 1500 small objects was reshaped first, so the store has holes and
+ * its objects are out of index order. The store is packed with the large
+ * one last, forgetting nothing: each object still reads its texel and the
+ * large object keeps its rows and gains the new ones.
+ */
+static void test_object_store_packs_many_objects(void)
+{
+    const uint32_t small = 0x300000;
+    const uint32_t last = small + 16382 * 0x20;
+    QTestState *qts = board_start("");
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_BANKS);
+    for (uint32_t i = 0; i < 16382; i++) {
+        dma_object_texel(qts, small + i * 0x20, 1, 0, 0, (i + 1) << 8 | 0xff);
+    }
+    /*
+     * A new row length moves an object's rows to the end of the store: do
+     * it to every third of the first 1500, so holes open and store order
+     * is not index order.
+     */
+    for (uint32_t i = 0; i < 1500; i += 3) {
+        dma_object_texel(qts, small + i * 0x20, 2, 0, 0, (i + 1) << 8 | 0xee);
+    }
+    dma_object_texel(qts, 0x200000, 256, 5, 7999, 0x11111111);
+    dma_object_texel(qts, last, 1, 0, 0, 0x22222222);
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==,
+                     16384);
+    dma_object_texel(qts, 0x200000, 256, 6, 8099, 0x33333333);
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==,
+                     16384);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x200000, 5, 7999), ==,
+                    0x11111111);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x200000, 6, 8099), ==,
+                    0x33333333);
+    g_assert_cmphex(odsy_test_object_texel(qts, last, 0, 0), ==, 0x22222222);
+    for (uint32_t i = 0; i < 16382; i += i < 1500 ? 1 : 37) {
+        g_assert_cmphex(odsy_test_object_texel(qts, small + i * 0x20, 0, 0),
+                        ==, (i + 1) << 8 |
+                        (i < 1500 && i % 3 == 0 ? 0xee : 0xff));
+    }
+    board_quit(qts);
+}
+
 /* Save a board to a file and return the stream's size in bytes. */
 static gint64 object_store_save(QTestState *from, const char *path)
 {
@@ -25921,6 +25970,8 @@ int main(int argc, char **argv)
                    test_object_store_keeps_4096_objects);
     add_fresh_case("sn1/odyssey/object-store-capacity-is-16384",
                    test_object_store_capacity_is_16384);
+    add_fresh_case("sn1/odyssey/object-store-packs-many-objects",
+                   test_object_store_packs_many_objects);
     add_fresh_case("sn1/odyssey/object-store-sampling-is-not-use",
                    test_object_store_sampling_is_not_use);
     add_fresh_case("sn1/odyssey/object-store-upload-refreshes-recency",

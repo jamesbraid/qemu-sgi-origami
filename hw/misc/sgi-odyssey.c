@@ -5113,6 +5113,20 @@ static int odyssey_object_oldest(SGIOdysseyState *s, int keep)
     return oldest;
 }
 
+/* Order object indices by store offset, then by index. */
+static gint odyssey_object_by_offset(gconstpointer a, gconstpointer b,
+                                     gpointer opaque)
+{
+    const SGIOdysseyState *s = opaque;
+    uint32_t i = *(const uint32_t *)a;
+    uint32_t j = *(const uint32_t *)b;
+
+    if (s->obj_offset[i] != s->obj_offset[j]) {
+        return s->obj_offset[i] < s->obj_offset[j] ? -1 : 1;
+    }
+    return i < j ? -1 : i > j;
+}
+
 /*
  * Pack the objects that hold rows to the front of the store, in store order,
  * so the space between them is reclaimed, then object last (when not -1)
@@ -5125,6 +5139,8 @@ static void odyssey_object_compact(SGIOdysseyState *s, int last)
                          (uint64_t)s->obj_width[last] * s->obj_rows[last] : 0;
     g_autofree uint8_t *held = NULL;
     g_autofree bool *held_valid = NULL;
+    g_autofree uint32_t *order = NULL;
+    unsigned int packable = 0;
     uint64_t next = 0;
 
     /* Packing the others may overwrite last's words: keep them aside. */
@@ -5137,20 +5153,25 @@ static void odyssey_object_compact(SGIOdysseyState *s, int last)
                                                       s->obj_offset[last] + k);
         }
     }
-    for (;;) {
-        uint64_t size;
-        int pick = -1;
-
-        /* The lowest-placed object not yet packed: at or past next. */
-        for (unsigned int i = 0; i < s->obj_count; i++) {
-            if ((int)i != last && s->obj_base[i] && s->obj_rows[i] &&
-                s->obj_offset[i] >= next &&
-                (pick < 0 || s->obj_offset[i] < s->obj_offset[pick])) {
-                pick = i;
-            }
+    /*
+     * Each object moves down to the end of the one before it, in store
+     * order. An object that overlaps an earlier one's old place is left
+     * where it is, as a search for the lowest unpacked offset would skip it.
+     */
+    order = g_new(uint32_t, s->obj_count);
+    for (unsigned int i = 0; i < s->obj_count; i++) {
+        if ((int)i != last && s->obj_base[i] && s->obj_rows[i]) {
+            order[packable++] = i;
         }
-        if (pick < 0) {
-            break;
+    }
+    g_qsort_with_data(order, packable, sizeof(*order), odyssey_object_by_offset,
+                      s);
+    for (unsigned int k = 0; k < packable; k++) {
+        int pick = order[k];
+        uint64_t size;
+
+        if (s->obj_offset[pick] < next) {
+            continue;
         }
         size = (uint64_t)s->obj_width[pick] * s->obj_rows[pick];
         if (s->obj_offset[pick] != next) {
