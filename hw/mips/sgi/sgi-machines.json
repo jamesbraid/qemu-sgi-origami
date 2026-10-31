@@ -44028,6 +44028,43 @@
       "crossbars": [],
       "description": "SGI Tezro, one-processor board serial compatibility profile",
       "generation": "sn1",
+      "graphics": {
+        "headless": true,
+        "max-pipes": 1,
+        "slots": [
+          {
+            "changeable": false,
+            "description": "VPro at PIC widget 12, a placement inferred from the two/four-processor board's captured configuration",
+            "families": [
+              {
+                "device": "sgi-odyssey",
+                "family": "odyssey",
+                "name": "VPro",
+                "products": [
+                  {
+                    "description": "second generation, 128 MB board memory",
+                    "fidelity": "implemented",
+                    "limitations": [
+                      "widget 12 behind the widget-0 PIC's crossbow is inferred from the two/four-processor board's captured placement, since the guide gives this board a VPro XIO connector but no widget or route"
+                    ],
+                    "name": "VPro V12",
+                    "pairing": "inferred",
+                    "product": "v12",
+                    "settings": []
+                  }
+                ]
+              }
+            ],
+            "name": "widget-12",
+            "placement": [
+              {
+                "name": "slot",
+                "value": "widget-12"
+              }
+            ]
+          }
+        ]
+      },
       "io-boards": [
         {
           "carrier": "machine-placed",

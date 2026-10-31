@@ -3807,6 +3807,28 @@ static void test_tezro_board_follows_smp(void)
     }
 }
 
+/*
+ * Both Tezro interface boards take the optional V12 by -device: the guide
+ * gives each a VPro XIO connector, and the slot is widget 12 on both.
+ */
+static void test_tezro_v12_on_both_boards(void)
+{
+    static const char *const cpus[] = { "1", "4" };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(cpus); i++) {
+        IP53RuntimeTestFixture *fixture =
+            ip53_runtime_test_start_with_binary_profile(
+                NULL, "tezro,topology=tezro",
+                "-device sgi-odyssey,slot=widget-12,product=v12",
+                cpus[i], "4G", "0x009bad85");
+        g_autofree char *product = qom_get_str(
+            fixture->qts, "/machine/module0/widget-12", "product");
+
+        g_assert_cmpstr(product, ==, "v12");
+        ip53_runtime_test_stop(fixture);
+    }
+}
+
 static void test_tezro_named_serial_profiles_build(void)
 {
     static const struct {
@@ -13103,6 +13125,8 @@ int main(int argc, char **argv)
                    test_tezro_two_four_processor_board_builds_two_pic_hosts);
     qtest_add_func("sn/builder/tezro-board-follows-smp",
                    test_tezro_board_follows_smp);
+    qtest_add_func("sn/builder/tezro-v12-on-both-boards",
+                   test_tezro_v12_on_both_boards);
     qtest_add_func("sn/builder/tezro-named-serial-profiles-build",
                    test_tezro_named_serial_profiles_build);
     qtest_add_func("sn/builder/tezro-second-pic-link-is-live-from-reset",
