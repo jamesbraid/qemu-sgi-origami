@@ -551,6 +551,39 @@ static void expect_area_checksum(const GByteArray *bytes)
 }
 
 /*
+ * The board area's fields in the order the stock PROM reads them: six header
+ * bytes, then manufacturer, product name, serial and part number, one FRU
+ * file byte and the revision. Each must be typed 8-bit ASCII (type/length
+ * bits 7:6 = 11), the type the PROM requires of name, serial, part and
+ * revision, and carry exactly the expected text.
+ */
+static const uint8_t *expect_typed_field(const uint8_t *p, const uint8_t *end,
+                                         const char *text)
+{
+    size_t n = strlen(text);
+
+    g_assert_true(p < end);
+    g_assert_cmphex(*p & 0xc0, ==, 0xc0);
+    g_assert_cmpuint(*p & 0x3f, ==, n);
+    g_assert_true(p + 1 + n <= end);
+    g_assert_cmpmem(p + 1, n, text, n);
+    return p + 1 + n;
+}
+
+static void expect_board_fields(const GByteArray *area, const char *part,
+                                const char *revision)
+{
+    const uint8_t *p = area->data + 6, *end = area->data + area->len;
+
+    p = expect_typed_field(p, end, "SYNTHETIC");
+    p = expect_typed_field(p, end, "ROUTER");
+    p = expect_typed_field(p, end, "EMUR00");
+    p = expect_typed_field(p, end, part);
+    p++;
+    p = expect_typed_field(p, end, revision);
+}
+
+/*
  * A router L1 holds its board record at component 1, where the stock PROM
  * reads the chassis and board areas at router initialisation. The record is
  * named ROUTER and carries the part and revision the product's owner
@@ -575,10 +608,7 @@ static void expect_router_board(const char *board, const char *part,
         expect_area_checksum(bytes);
         if (area == 2) {
             board_length = bytes->len;
-            g_assert_true(contains_text(bytes->data, bytes->len, "ROUTER"));
-            g_assert_true(contains_text(bytes->data, bytes->len, part));
-            g_assert_true(contains_text(bytes->data, bytes->len, revision));
-            g_assert_true(contains_text(bytes->data, bytes->len, "EMUR00"));
+            expect_board_fields(bytes, part, revision);
         }
     }
     g_assert_false(board_has_address(s, 0, LOCAL_GENERAL, 1));

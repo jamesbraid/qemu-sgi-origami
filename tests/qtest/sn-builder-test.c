@@ -10626,6 +10626,73 @@ static void test_origin3900_cx_brick(void)
 }
 
 /*
+ * Each router L1 is given its product's board record, which the stock PROM
+ * reads at router initialisation and prints an EEPROM vector read error
+ * without. The Origin 3400 R-brick takes the R-brick row, the Origin 300
+ * NUMAlink module its row, and the router-profile L1 the Origin 3900 builder
+ * puts behind a Cx-brick's router window, for either node board generation,
+ * the Cx-brick row. A builder that stops naming the board brings the error
+ * back with every register-level L1 test still passing.
+ */
+static void test_router_l1_board_records(void)
+{
+    static const struct {
+        const char *machine;
+        const char *router_l1;
+        const char *board;
+    } cases[] = {
+        { "origin3000,topology=origin3400 -cpu R12000 -smp 16 -m 16384",
+          "/machine/module4/l1", "rbrick" },
+        { "origin3000,topology=origin3900 -cpu R16000 -smp 16 -m 8192",
+          "/machine/module0/router-l1", "cxbrick" },
+        { "origin3000,topology=origin3900,board=ip59 -cpu R16000 -smp 16 -m 8192",
+          "/machine/module0/router-l1", "cxbrick" },
+    };
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn-builder-router-board-prom-XXXXXX", &prom,
+                             &error);
+    g_autofree char *expansion_prom_path = expansion_prom();
+    g_autofree char *storage = expansion_storage_image(16 * 1024 * 1024);
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *profile = NULL, *board = NULL;
+
+        qts = qtest_initf("-M %s -bios %s -nodefaults -display none -S",
+                          cases[i].machine, prom);
+        profile = qom_get_str(qts, cases[i].router_l1, "brick-type");
+        board = qom_get_str(qts, cases[i].router_l1, "router-board");
+        g_assert_cmpstr(profile, ==, "router");
+        g_assert_cmpstr(board, ==, cases[i].board);
+        qtest_quit(qts);
+    }
+    qts = qtest_initf(
+        "-M " ROUTED_TOPOLOGY "," STORAGE_BINDING " "
+        "-cpu R14000 -smp 4 -m 1G -S -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-nodefaults -display none", expansion_prom_path, storage);
+    {
+        g_autofree char *profile = qom_get_str(qts, "/machine/module3/l1",
+                                               "brick-type");
+        g_autofree char *board = qom_get_str(qts, "/machine/module3/l1",
+                                             "router-board");
+
+        g_assert_cmpstr(profile, ==, "router");
+        g_assert_cmpstr(board, ==, "numalink-module");
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+    g_unlink(expansion_prom_path);
+    g_unlink(storage);
+}
+
+/*
  * A Cx-brick carries either IP53 or IP59 node boards, never both, and the
  * IP53 brick stays the default. The IP59 brick's L1 reports the captured
  * IP59_4CPU record for its boards and every processor is the 1 GHz,
@@ -13302,6 +13369,8 @@ int main(int argc, char **argv)
                    test_origin3900_cx_brick);
     qtest_add_func("sn/builder/origin3900/ip59-cx-brick",
                    test_origin3900_ip59_cx_brick);
+    qtest_add_func("sn/builder/router-l1-board-records",
+                   test_router_l1_board_records);
     qtest_add_func("sn/builder/origin3200/io7-without-ieee1394",
                    test_origin3200_io7_without_ieee1394);
     qtest_add_func("sn/builder/origin3200/io7-timekeeper",
