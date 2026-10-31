@@ -5980,6 +5980,10 @@ static void test_ip53_runtime_cpu_property_refusals(void)
               "'origin350' is 4" },
             { "tezro,topology=tezro-rack", "4G", "1,maxcpus=4",
               "does not match an approved normal IP53 serial profile tuple" },
+            /* Each topology is listed once, whatever its board variants. */
+            { "tezro,topology=tezro-none", "4G", "1",
+              "known topologies: tezro-rack-ip59, tezro-rack, "
+              "tezro-tower-multi-ip59, tezro-tower-one-ip59, tezro\n" },
         };
 
         for (unsigned int i = 0; i < G_N_ELEMENTS(fitted_cases); i++) {

@@ -8952,10 +8952,14 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
         error_free(local_err);
 
+        /* A topology with board variants is listed once, not per board. */
         for (entry = sgi_machines()->topologies; entry;
              entry = entry->next) {
             if (sgi_model_topology_matches_product(entry->value,
-                                                   smc->product)) {
+                                                   smc->product) &&
+                sgi_model_product_variant(sgi_machines(), smc->product,
+                                          entry->value->name, 0) ==
+                entry->value) {
                 if (names->len) {
                     g_string_append(names, ", ");
                 }
