@@ -75,6 +75,10 @@ board /mips64/sn1/odyssey/object-store-grows-without-forgetting
 board /mips64/sn1/odyssey/object-store-migrates-used-part
 board /mips64/sn1/odyssey/object-store-keeps-4096-objects
 board /mips64/sn1/odyssey/object-store-capacity-is-16384
+board /mips64/sn1/odyssey/object-store-draw-grow-is-not-use
+board /mips64/sn1/odyssey/texture-partial-level-is-present
+board /mips64/sn1/odyssey/texture-level-without-rows-is-missing
+board /mips64/sn1/odyssey/stored-volume-partial-slice-keeps-fallback
 board /mips64/sn1/odyssey/object-store-packs-many-objects
 board /mips64/sn1/odyssey/object-store-sampling-is-not-use
 board /mips64/sn1/odyssey/object-store-upload-refreshes-recency
