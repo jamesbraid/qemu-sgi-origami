@@ -5890,6 +5890,11 @@ static void test_ip53_runtime_cpu_property_refusals(void)
             /* A count neither Tezro board accepts lists both boards'. */
             { "tezro,topology=tezro", "4G", "3",
               "topology 'tezro' accepts 1, 2 or 4 CPUs, not 3" },
+            /* board= takes only a board the topology names. */
+            { "tezro,topology=tezro,board=ip35", "4G", "4",
+              "topology 'tezro' has no board 'ip35'; it takes 'ip53'" },
+            { "origin350,board=ip59", "2G", "4",
+              "topology 'origin350' has no board 'ip59'; it takes 'ip53'" },
             /* Each topology is listed once, whatever its board variants. */
             { "tezro,topology=tezro-none", "4G", "1",
               "known topologies: tezro-rack-ip59, tezro-rack, "

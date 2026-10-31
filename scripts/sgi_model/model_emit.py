@@ -439,6 +439,9 @@ def _render_topology(topology: dict, machine_name: str,
         result["ip53-runtime"] = _kebab_keys(topology["ip53_runtime"])
     if machine_default:
         result["machine-default"] = True
+    if "board" in topology:
+        result["board"] = topology["board"]
+        result["default-board"] = topology["default_board"]
     return result
 
 def _node_population(raw: dict) -> dict:
@@ -1117,12 +1120,15 @@ def _overrides(topology: dict, part: str) -> list[dict]:
 def _machine_options(machine_name: str, topology: dict, nodes: int,
                      processor: str | None = None) -> str:
     """The `-M` value selecting one offering: product, topology and node
-    count, the same three for every machine, and the processor module
-    where it is not the topology's default."""
+    count, the same three for every machine, the board wherever the
+    topology takes more than one, and the processor module where it is not
+    the topology's default."""
     if topology["generation"] == "IP32":
         return (machine_name if topology["name"] == "o2"
                 else f"{machine_name},variant={topology['name']}")
     options = f"{machine_name},topology={topology['name']},nodes={nodes}"
+    if len(topology.get("boards", ())) > 1:
+        options += f",board={topology['board']}"
     return options if processor is None else f"{options},processor={processor}"
 
 
@@ -1307,6 +1313,8 @@ def _offerings_for(model: dict, topology: dict,
                 **({"default-topology": selected_default}
                    if (selected_default := default_topology(
                        machine_name, product_models)) is not None else {}),
+                **({"board": topology["board"]}
+                   if "board" in topology else {}),
                 "display-name": model["machine"]["name"],
                 "nodes": nodes,
                 "machine-options": _machine_options(

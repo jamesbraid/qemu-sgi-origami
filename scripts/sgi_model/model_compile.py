@@ -3704,6 +3704,14 @@ def compile_model(model: dict) -> dict:
     if ip53_runtime is not None:
         topology["ip53_runtime"] = _compile_ip53_runtime(
             ip53_runtime, ip53_graph_nodes, pci_host_bridges)
+    # Every SN record names its board, which board= selects: the one its
+    # composition names, or else the one its board layer describes.
+    if machine.get("generation") in ("SN0", "SN1"):
+        composition = model["composition"]
+        board = composition.get("board", machine["board_ip"].lower())
+        topology["board"] = board
+        topology["default_board"] = composition.get("default_board", board)
+        topology["boards"] = composition.get("boards", [board])
     return topology
 
 

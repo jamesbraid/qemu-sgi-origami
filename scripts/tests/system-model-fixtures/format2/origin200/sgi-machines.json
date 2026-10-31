@@ -1,6 +1,7 @@
 {
   "offerings": [
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -181,6 +182,7 @@
       "topology": "origin200"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -361,6 +363,7 @@
       "topology": "origin200"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -541,6 +544,7 @@
       "topology": "origin200"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -721,6 +725,7 @@
       "topology": "origin200"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -905,6 +910,7 @@
       "topology": "origin200"
     },
     {
+      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1097,10 +1103,12 @@
   "schema": "sgi-machines",
   "topologies": [
     {
+      "board": "ip29",
       "cables": [],
       "console": 0,
       "controllers": [],
       "crossbars": [],
+      "default-board": "ip29",
       "description": "SGI Origin 200 (IP29)",
       "generation": "sn0",
       "graphics": {

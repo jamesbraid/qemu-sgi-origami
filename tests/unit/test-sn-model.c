@@ -1602,9 +1602,10 @@ static void test_tezro_requires_explicit_topology(void)
     }
     /* One record for each interface board, chosen by the CPU count. */
     g_assert_cmpuint(boards, ==, 2);
-    one = sgi_model_product_variant(catalogue, "tezro", "tezro", 1);
-    many = sgi_model_product_variant(catalogue, "tezro", "tezro", 2);
-    g_assert(sgi_model_product_variant(catalogue, "tezro", "tezro", 4) ==
+    one = sgi_model_product_variant(catalogue, "tezro", "tezro", NULL, 1);
+    many = sgi_model_product_variant(catalogue, "tezro", "tezro", NULL, 2);
+    g_assert(sgi_model_product_variant(catalogue, "tezro", "tezro", NULL,
+                                       4) ==
              many);
     g_assert(one != many);
     g_assert_cmpuint(QAPI_LIST_LENGTH(one->pci_host_bridges), ==, 1);
@@ -1859,7 +1860,8 @@ static void test_resolve_refusals(void)
     assert_refused("origin2000,baseio-preset=io6g",
                    "machine option 'baseio-preset' is not part of a "
                    "catalogue selection; give only the machine, "
-                   "topology=, nodes=, processor= or an offered variant=");
+                   "topology=, nodes=, processor=, board= or an "
+                   "offered variant=");
     assert_refused("topology=origin200",
                    "no machine named in 'topology=origin200'");
 }
@@ -1887,9 +1889,13 @@ static void test_resolve_product_scope(void)
         /* Of a topology's board variants, the name finds the first. */
         g_assert_true(sgi_model_product_topology(catalogue, t->product,
                                                  t->name) == first->value);
-        /* A board variant shares its name; -smp tells it apart. */
+        /*
+         * A board variant shares its name; board= and -smp tell it
+         * apart.
+         */
         g_assert_true(sgi_model_product_variant(catalogue, t->product,
-                                                t->name, cpus) == t);
+                                                t->name, t->board,
+                                                cpus) == t);
     }
     g_assert_null(sgi_model_product_topology(catalogue, "origin200",
                                              "origin2000-rack"));
@@ -2028,20 +2034,69 @@ static void test_product_variant_by_cpus(void)
     QAPI_LIST_PREPEND(machines->topologies, large);
     QAPI_LIST_PREPEND(machines->topologies, small);
 
-    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", 1) ==
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", NULL,
+                                       1) ==
              small);
-    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", 2) ==
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", NULL,
+                                       2) ==
              large);
-    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", 4) ==
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", NULL,
+                                       4) ==
              large);
     /* A total no variant accepts finds the machine-default record. */
-    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", 3) ==
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", NULL,
+                                       3) ==
              large);
-    g_assert(sgi_model_product_variant(machines, "tezro", "tezro-rack", 4) ==
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro-rack", NULL,
+                                       4) ==
              other);
-    g_assert_null(sgi_model_product_variant(machines, "onyx350", "tezro", 1));
+    g_assert_null(sgi_model_product_variant(machines, "onyx350", "tezro",
+                                            NULL, 1));
     g_assert_null(sgi_model_product_variant(machines, "tezro", "tezro-none",
-                                            1));
+                                            NULL, 1));
+}
+
+/*
+ * board= picks the node board before -smp picks the variant: the same
+ * total selects a different record on each board, NULL selects the
+ * default board, and a record naming no board takes none.
+ */
+static void test_product_variant_by_board(void)
+{
+    static const uint32_t one[] = { 1 }, many[] = { 4, 2 };
+    g_autoptr(SGIMachines) machines = g_new0(SGIMachines, 1);
+    SGIModelTopology *old_one = variant_record("tezro", false, one, 1);
+    SGIModelTopology *old_many = variant_record("tezro", true, many, 2);
+    SGIModelTopology *new_one = variant_record("tezro", false, one, 1);
+    SGIModelTopology *new_many = variant_record("tezro", false, many, 2);
+    SGIModelTopology *plain = variant_record("tezro-rack", false, one, 1);
+    SGIModelTopology *records[] = { old_one, old_many, new_one, new_many };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(records); i++) {
+        records[i]->board = g_strdup(i < 2 ? "ip53" : "ip59");
+        records[i]->default_board = g_strdup("ip53");
+    }
+    QAPI_LIST_PREPEND(machines->topologies, plain);
+    for (size_t i = G_N_ELEMENTS(records); i-- > 0;) {
+        QAPI_LIST_PREPEND(machines->topologies, records[i]);
+    }
+
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", NULL,
+                                       1) ==
+             old_one);
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", "ip53",
+                                       2) == old_many);
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", "ip59",
+                                       1) == new_one);
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", "ip59",
+                                       4) == new_many);
+    /* No IP59 record is the machine default, so a refusal gets the first. */
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", "ip59",
+                                       3) == new_one);
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro-rack", NULL,
+                                       1) == plain);
+    g_assert_null(sgi_model_product_variant(machines, "tezro", "tezro-rack",
+                                            "ip59", 1));
 }
 
 int main(int argc, char **argv)
@@ -2072,6 +2127,8 @@ int main(int argc, char **argv)
                          test_modular_node_requires_owner);
     g_test_add_func("/sn-model/product-variant-by-cpus",
                     test_product_variant_by_cpus);
+    g_test_add_func("/sn-model/product-variant-by-board",
+                    test_product_variant_by_board);
     g_test_add_func("/sn-model/tezro-requires-explicit-topology",
                     test_tezro_requires_explicit_topology);
     g_test_add_func("/sn-model/existing-population-views",

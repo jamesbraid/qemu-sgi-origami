@@ -64,22 +64,27 @@ def _check_default_topology(topologies: list[dict], machine_names: dict[str, str
 
 
 def _check_variant_totals(topologies: list[dict]) -> None:
-    """Require records sharing a name to accept disjoint CPU totals.
+    """Require records sharing a name and board to accept disjoint CPU
+    totals.
 
     A composition's board variants all compile under its one name; QEMU
-    picks the record whose supported CPU totals contain -smp, so no total
-    may select two of them.
+    picks the board by board= and then the record whose supported CPU
+    totals contain -smp, so within one board no total may select two of
+    them.
     """
-    owners: dict[tuple[str, int], int] = {}
+    owners: dict[tuple[str, str | None, int], int] = {}
     for index, topology in enumerate(topologies):
+        board = topology.get("board")
         for total in {sum(population)
                       for population in topology["supported_cpu_populations"]}:
-            other = owners.setdefault((topology["name"], total), index)
+            other = owners.setdefault(
+                (topology["name"], board, total), index)
             if other != index:
                 raise ValueError(
                     f"topology '{topology['name']}' has two variants that "
-                    f"both accept {total} CPUs; QEMU selects a variant by "
-                    "its CPU total")
+                    f"both accept {total} CPUs"
+                    + (f" as {board}" if board else "")
+                    + "; QEMU selects a variant by its CPU total")
 
 
 def _model_key(path: pathlib.Path, model: dict) -> str:

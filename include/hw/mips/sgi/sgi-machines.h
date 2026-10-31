@@ -60,15 +60,25 @@ const SGIModelTopology *sgi_model_product_topology(
 
 /*
  * A composition with board variants compiles one record for each under
- * one name, and no two of them accept the same CPU total. Return @product's
- * record named @name whose node-population rows accept @cpus CPUs in all;
- * when none does, the machine-default record of that name, or else the
- * first, so a refusal can still name the topology. NULL when @product has
- * no topology @name.
+ * one name, and within one board no two of them accept the same CPU
+ * total. Return @product's record named @name that builds @board (the
+ * topology's default board when NULL) and whose node-population rows
+ * accept @cpus CPUs in all; when none does, the machine-default record of
+ * that name and board, or else the first, so a refusal can still name
+ * the topology. NULL when @product has no topology @name building that
+ * board.
  */
 const SGIModelTopology *sgi_model_product_variant(
     const SGIMachines *machines, const char *product, const char *name,
-    unsigned int cpus);
+    const char *board, unsigned int cpus);
+
+/*
+ * Whether @t builds @board, or its topology's default board when @board
+ * is NULL. A record that names no board builds only when none is asked
+ * for.
+ */
+bool sgi_model_topology_builds_board(const SGIModelTopology *t,
+                                     const char *board);
 
 /*
  * The topology a machine builds from chassis @chassis with @nodes node
