@@ -4098,9 +4098,14 @@ static bool l1_io8_board_mac(const SGIL1EEPROM *record, uint8_t mac[6])
 /*
  * The router board each product fits, as owner inventories print it. An
  * R-brick of an Origin 3400 reports 030-1634-002 revision B, and the
- * Origin 300 and 350 NUMAlink module 030-1634-003 revision A. A product
- * whose router board no inventory has been read for names none and gets no
- * record.
+ * Origin 300 and 350 NUMAlink module 030-1634-003 revision A.
+ *
+ * The Origin 3900 Cx-brick's router board is an approximation: no
+ * inventory of it has been read, so its part and revision are unknown. The
+ * row carries the model's not-observed placeholders, which no hardware
+ * reports, instead of borrowing either product's part. Its name ROUTER is
+ * inferred. A real inventory or L1 listing of a Cx-brick replaces the row.
+ * A product with no row gets no record.
  */
 typedef struct SGIL1RouterBoard {
     const char *name;
@@ -4111,6 +4116,7 @@ typedef struct SGIL1RouterBoard {
 static const SGIL1RouterBoard l1_router_boards[] = {
     { "rbrick", "030-1634-002", "B" },
     { "numalink-module", "030-1634-003", "A" },
+    { "cxbrick", "NOTOBSERVED0", "00" },
 };
 
 static const SGIL1RouterBoard *l1_router_board(const char *name)
@@ -4460,8 +4466,8 @@ static bool l1_o3k_check(SGIL1State *s, Error **errp)
     if (s->router_board &&
         (strcmp(s->profile->name, "router") ||
          !l1_router_board(s->router_board))) {
-        error_setg(errp, "L1 router-board must be rbrick or numalink-module "
-                   "and needs the router profile");
+        error_setg(errp, "L1 router-board must be rbrick, numalink-module or "
+                   "cxbrick and needs the router profile");
         return false;
     }
     if (!s->profile->o3k) {
