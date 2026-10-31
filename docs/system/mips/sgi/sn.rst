@@ -764,6 +764,11 @@ Onyx2 deskside. ``-M <product>,topology=help`` lists the rest:
      - 1
      - as the IP53 topology
      - as the IP53 topology
+   * - ``origin3900-ip59``
+     - ``origin3000``
+     - 4 node boards in one Cx-brick
+     - 4 per board
+     - 2048 MiB per board
 
 The ``-ip59`` topologies carry the 1 GHz IP59 node board; see
 :ref:`sgi-ip59-profiles`.

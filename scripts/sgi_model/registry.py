@@ -27,6 +27,7 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin3200",
     "origin3400",
     "origin3900",
+    "origin3900-ip59",
     "onyx3000",
     "onyx3400-ir",
     "onyx2-deskside",
