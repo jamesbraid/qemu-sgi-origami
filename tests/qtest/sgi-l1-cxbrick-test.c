@@ -497,43 +497,299 @@ static void test_port_speed(void)
     rig_stop(&rig);
 }
 
+/* One 0x0006 read on @board's window, the model's table numbering. */
+static size_t cx_eeprom(CxRig *rig, unsigned board, unsigned component,
+                        unsigned area, unsigned offset, unsigned requested,
+                        uint8_t *reply)
+{
+    uint8_t args[20];
+
+    integer(args, component);
+    integer(args + 5, area);
+    integer(args + 10, offset);
+    integer(args + 15, requested);
+    return rpc(rig, board, LOCAL_GENERAL, 6, args, sizeof(args), 4, reply);
+}
+
 /*
- * Board n's window reads board n's node board record at component 0. Other
- * component numbers, including the ones the model keeps other boards'
- * records at, answer minus 104.
+ * A whole area read in the PROM's 64-byte chunks until the remaining count
+ * is 0, or NULL when the component has no such area (minus 104).
+ */
+static GByteArray *cx_area(CxRig *rig, unsigned board, unsigned component,
+                           unsigned area)
+{
+    GByteArray *bytes = g_byte_array_new();
+    uint8_t reply[131];
+    uint32_t remaining;
+
+    do {
+        size_t length = cx_eeprom(rig, board, component, area, bytes->len,
+                                  64, reply);
+        size_t data_length;
+
+        g_assert_cmpuint(length, >=, 6);
+        g_assert_cmphex(reply[0], ==, 0x30);
+        if ((int32_t)ldl_be_p(reply + 1) == -104) {
+            g_assert_cmpuint(bytes->len, ==, 0);
+            g_byte_array_free(bytes, TRUE);
+            return NULL;
+        }
+        expect_code(reply, length, 0);
+        g_assert_cmpuint(reply[5], ==, 2);
+        g_assert_cmphex(reply[11] & 0x80, ==, 0x80);
+        data_length = reply[11] & 0x7f;
+        g_assert_cmpuint(data_length, >, 0);
+        g_assert_cmpuint(data_length, <=, 64);
+        g_assert_cmpuint(length, ==, 12 + data_length);
+        g_byte_array_append(bytes, reply + 12, data_length);
+        remaining = ldl_be_p(reply + 7);
+        g_assert_cmpuint(bytes->len, <=, 512);
+    } while (remaining);
+    return bytes;
+}
+
+static bool has_text(const GByteArray *bytes, const char *text)
+{
+    for (size_t i = 0; i + strlen(text) <= bytes->len; i++) {
+        if (!memcmp(bytes->data + i, text, strlen(text))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* A board record area's length byte covers it and its bytes sum to zero. */
+static void expect_board_area(const GByteArray *bytes)
+{
+    uint8_t sum = 0;
+
+    g_assert_cmpuint(bytes->len, >, 8);
+    g_assert_cmpuint(bytes->len, ==, 8u * bytes->data[1]);
+    for (guint i = 0; i < bytes->len; i++) {
+        sum += bytes->data[i];
+    }
+    g_assert_cmphex(sum, ==, 0);
+}
+
+/*
+ * Board n's window reads board n's node board record at component 0, the
+ * number every guest the model has run asks for its own node board; the
+ * model maps it to that board's place in the table (approximation, see
+ * test_component_table).
  */
 static void test_board_records(void)
 {
     CxRig rig;
-    uint8_t args[20], reply[131];
-    size_t length;
 
     rig_start(&rig, NAMED ",identity-index=2", 0xf, false, "");
     for (unsigned board = 0; board < 4; board++) {
         g_autofree char *serial = g_strdup_printf("EMUN%02u", 8 + board);
-        bool found = false;
+        g_autoptr(GByteArray) own = cx_area(&rig, board, 0, 2);
 
-        integer(args, 0);
-        integer(args + 5, 2);
-        integer(args + 10, 0);
-        integer(args + 15, 116);
-        length = rpc(&rig, board, LOCAL_GENERAL, 6, args, sizeof(args), 4,
-                     reply);
-        expect_code(reply, length, 0);
-        g_assert_cmpuint(reply[5], ==, 2);
-        for (size_t i = 12; i + strlen(serial) <= length; i++) {
-            found |= !memcmp(reply + i, serial, strlen(serial));
-        }
-        g_assert_true(found);
-        for (unsigned component = 1; component < 8; component++) {
-            integer(args, component);
-            length = rpc(&rig, board, LOCAL_GENERAL, 6, args, sizeof(args),
-                         4, reply);
-            g_assert_cmpuint(length, ==, 6);
-            expect_code(reply, length, -104);
-        }
+        g_assert_nonnull(own);
+        expect_board_area(own);
+        g_assert_true(has_text(own, serial));
     }
     rig_stop(&rig);
+}
+
+/* An SPD record the PROM accepts, and the pair-consistent bytes it reads. */
+static void expect_spd(const GByteArray *spd, unsigned board, unsigned dimm)
+{
+    uint8_t sum = 0;
+
+    g_assert_cmpuint(spd->len, >=, 99);
+    for (unsigned i = 0; i < 63; i++) {
+        sum += spd->data[i];
+    }
+    g_assert_cmpuint(spd->data[63], ==, sum);
+    g_assert_cmpuint(spd->data[64], !=, 0xff);
+    /* Width left to the memory self-test; 1 GiB density, as the memory is. */
+    g_assert_cmpuint(spd->data[13], ==, 0);
+    g_assert_cmpuint(spd->data[31], ==, 0x01);
+    g_assert_cmpmem(spd->data + 95, 3, "EMU", 3);
+    g_assert_cmpuint(spd->data[98], ==, dimm);
+    g_assert_cmpuint(spd->data[99], ==, board);
+}
+
+/*
+ * The Cx-brick L1's numbering by requesting port, router board records
+ * datasheet "Component numbers by requesting port" (personality 6; the port
+ * to board mapping is inferred). A node link n asking component c reaches
+ * table entry 0 -> 2 + 9n (NODE n), 1 -> 3 + 9n (its DIMM 0, not the
+ * router), c >= 2 -> c + 9n, and 38 or more is minus 104. The table: 2, 11,
+ * 20 and 29 the node boards, each followed by eight SPDs in the order 0, 2,
+ * 4, 6, 1, 3, 5, 7. The router and power inlet belong to the router's own
+ * port, which is the router window (below), so this L1 serves neither.
+ *
+ * Contents are the model's. SPDs exist for the two 1 GiB DIMMs the
+ * catalogue's 2048 MiB per node needs, DIMM 0 and DIMM 1 (components 3 and 7
+ * of the node's own); the other DIMMs answer minus 104 (datasheet "DIMM SPD
+ * records": serve fitted DIMMs only). The inferred port mapping, the absent
+ * inlet and the fit are approximations.
+ */
+static void test_component_table(void)
+{
+    static const unsigned dimm_order[8] = { 0, 2, 4, 6, 1, 3, 5, 7 };
+    CxRig rig;
+    uint8_t reply[131];
+    size_t length;
+
+    rig_start(&rig, NAMED ",identity-index=2", 0xf, false, "");
+    for (unsigned n = 0; n < 4; n++) {
+        g_autoptr(GByteArray) own0 = cx_area(&rig, n, 0, 2);
+        g_autoptr(GByteArray) own2 = cx_area(&rig, n, 2, 2);
+        g_autoptr(GByteArray) spd0 = cx_area(&rig, n, 1, 4);
+        g_autofree char *serial = g_strdup_printf("EMUN%02u", 8 + n);
+
+        /* c = 0 and c = 2 are the node's own record, checksummed. */
+        g_assert_nonnull(own0);
+        g_assert_nonnull(own2);
+        expect_board_area(own0);
+        g_assert_true(has_text(own0, serial));
+        g_assert_cmpuint(own0->len, ==, own2->len);
+        g_assert_cmpmem(own0->data, own0->len, own2->data, own2->len);
+        g_assert_nonnull(cx_area(&rig, n, 0, 1));
+        g_assert_null(cx_area(&rig, n, 0, 4));
+
+        /* c = 1 is its own DIMM 0 SPD, never the router. */
+        g_assert_null(cx_area(&rig, n, 1, 1));
+        g_assert_null(cx_area(&rig, n, 1, 2));
+        g_assert_nonnull(spd0);
+        expect_spd(spd0, n, 0);
+
+        /* c = 3 to 10: its own eight DIMMs; only DIMMs 0 and 1 are fitted. */
+        for (unsigned i = 0; i < 8; i++) {
+            g_autoptr(GByteArray) spd = cx_area(&rig, n, 3 + i, 4);
+
+            if (dimm_order[i] > 1) {
+                g_assert_null(spd);
+                continue;
+            }
+            g_assert_nonnull(spd);
+            expect_spd(spd, n, dimm_order[i]);
+            /* An SPD is not a board record. */
+            g_assert_null(cx_area(&rig, n, 3 + i, 1));
+            g_assert_null(cx_area(&rig, n, 3 + i, 2));
+        }
+
+        /* c >= 11 is c + 9n: another board's entry, or past 37. */
+        for (unsigned c = 11; c < 40; c++) {
+            unsigned target = c + 9 * n;
+            unsigned slot = (target - 2) % 9;
+            g_autoptr(GByteArray) area = cx_area(&rig, n, c, slot ? 4 : 2);
+
+            if (target >= 38 || (slot && dimm_order[slot - 1] > 1)) {
+                g_assert_null(area);
+            } else {
+                g_assert_nonnull(area);
+            }
+        }
+    }
+    /* Literal triples: link 0 component 11 is NODE 1; link 3's is past 37. */
+    {
+        g_autoptr(GByteArray) node1 = cx_area(&rig, 0, 11, 2);
+
+        g_assert_nonnull(node1);
+        g_assert_true(has_text(node1, "EMUN09"));
+        g_assert_null(cx_area(&rig, 3, 11, 2));
+        g_assert_null(cx_area(&rig, 3, 11, 1));
+    }
+    /* An offset at an area's end, and an area past 4, as ever. */
+    length = cx_eeprom(&rig, 0, 3, 4, 128, 16, reply);
+    expect_code(reply, length, -105);
+    length = cx_eeprom(&rig, 0, 3, 5, 0, 16, reply);
+    expect_code(reply, length, -105);
+    /* A number near 2^32 must not wrap into the table on any link. */
+    for (unsigned n = 0; n < 4; n++) {
+        length = cx_eeprom(&rig, n, UINT32_MAX - 3, 2, 0, 16, reply);
+        expect_code(reply, length, -104);
+        length = cx_eeprom(&rig, n, 0xfffffff7, 2, 0, 16, reply);
+        expect_code(reply, length, -104);
+    }
+    /*
+     * Numbers that wrap to a real entry once the link's 9n is added: 3 - 9n
+     * would be DIMM 0 of board 0 and 2 - 9n board 0's node record.
+     */
+    for (unsigned n = 1; n < 4; n++) {
+        length = cx_eeprom(&rig, n, (uint32_t)(3 - 9 * n), 4, 0, 16, reply);
+        expect_code(reply, length, -104);
+        length = cx_eeprom(&rig, n, (uint32_t)(2 - 9 * n), 2, 0, 16, reply);
+        expect_code(reply, length, -104);
+    }
+    rig_stop(&rig);
+
+    /* Boards 0 and 2 only: board 1's and board 3's entries are absent. */
+    rig_start(&rig, NAMED, 0x5, false, "");
+    {
+        g_autoptr(GByteArray) node2 = cx_area(&rig, 0, 20, 2);
+
+        g_assert_nonnull(node2);
+        g_assert_null(cx_area(&rig, 0, 11, 2));
+        g_assert_null(cx_area(&rig, 0, 29, 2));
+        g_assert_nonnull(cx_area(&rig, 2, 0, 2));
+    }
+    rig_stop(&rig);
+}
+
+/*
+ * The router's own port, router board records datasheet "Component numbers
+ * by requesting port": component 1 is the ROUTER record, component 0 the
+ * power inlet (absent here, contents unknown) and components 2 and above
+ * minus 104. The router-window L1 stands in for that port (an
+ * approximation: the real port belongs to the brick's one L1). The record's
+ * part and revision are the model's not-observed placeholders.
+ */
+static void window_read(QTestState *window, unsigned component, unsigned area,
+                        unsigned offset, uint8_t *reply, size_t *length)
+{
+    uint8_t request[28] = { 0x10, 0x0f, 0xff, 0xf0, 0x06, 0, 6, 4 };
+
+    integer(request + 8, component);
+    integer(request + 13, area);
+    integer(request + 18, offset);
+    integer(request + 23, 64);
+    sgi_l1_test_send(window, BASE, request, sizeof(request), false);
+    *length = sgi_l1_test_receive(window, BASE, reply, 131);
+}
+
+static void test_router_window_record(void)
+{
+    static const struct { unsigned component, area; } absent[] = {
+        { 0, 2 }, { 2, 2 }, { 3, 4 }, { 11, 2 },
+    };
+    QTestState *window;
+    uint8_t reply[131];
+    size_t length;
+
+    window = qtest_init("-M none -cpu R10000 -S "
+                        "-device sgi-l1,id=l1c,brick-type=router,"
+                        "router-board=cxbrick "
+                        "-device sgi-l1-uart,id=l1u0,controller=l1c");
+    qtest_sysbus_mmio_map(window, "/machine/peripheral/l1u0", 0, BASE);
+    for (unsigned area = 1; area <= 2; area++) {
+        g_autoptr(GByteArray) bytes = g_byte_array_new();
+        uint32_t remaining;
+
+        do {
+            window_read(window, 1, area, bytes->len, reply, &length);
+            expect_code(reply, length, 0);
+            g_byte_array_append(bytes, reply + 12, reply[11] & 0x7f);
+            remaining = ldl_be_p(reply + 7);
+        } while (remaining);
+        expect_board_area(bytes);
+        if (area == 2) {
+            g_assert_true(has_text(bytes, "ROUTER"));
+            g_assert_true(has_text(bytes, "NOTOBSERVED0"));
+            g_assert_true(has_text(bytes, "\xc2" "00"));
+        }
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(absent); i++) {
+        window_read(window, absent[i].component, absent[i].area, 0, reply,
+                    &length);
+        expect_code(reply, length, -104);
+    }
+    qtest_quit(window);
 }
 
 /*
@@ -879,6 +1135,9 @@ int main(int argc, char **argv)
                    test_firmware_revision);
     qtest_add_func("sgi-l1-cxbrick/port-speed", test_port_speed);
     qtest_add_func("sgi-l1-cxbrick/board-records", test_board_records);
+    qtest_add_func("sgi-l1-cxbrick/component-table", test_component_table);
+    qtest_add_func("sgi-l1-cxbrick/router-window-record",
+                   test_router_window_record);
     qtest_add_func("sgi-l1-cxbrick/console-filter", test_console_filter);
     qtest_add_func("sgi-l1-cxbrick/console-default", test_console_default);
     qtest_add_func("sgi-l1-cxbrick/console-selection",

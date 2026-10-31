@@ -1520,19 +1520,45 @@ What the model chooses, and the limit of each choice:
   contract keeps the router's state; per-board power and reset are not
   offered. ``nmi`` pulses one ``nmi`` line per board, and only boards with
   processors are wired to them.
-- Board ``n``'s window reads board ``n``'s synthetic node board record at
-  component 0; every other component answers minus 104. The DIMM, router
-  board and power entry module records are not modelled. With
-  ``cpu-context-present`` each board's record carries the CPU context the
-  Origin 350's carries, which the stock PROM compares with its flash.
+- Request ``0x0006`` follows the 38-entry component table of the L1
+  firmware's Cx-brick personality: component 0 the power entry module's
+  inlet board, 1 the router board, then a node board at 2, 11, 20 and 29,
+  each followed by its eight DIMM SPDs in the order 0, 2, 4, 6, 1, 3, 5, 7.
+  The firmware numbers a request by the port it arrived on. On board ``n``'s
+  window component 0 is table entry 2 + 9n (its node board), 1 is 3 + 9n (its
+  DIMM 0 SPD, not the router), and ``c`` of 2 or more is ``c`` + 9n, so 3 to
+  10 are its own DIMMs and larger numbers reach other boards; 38 and up
+  answer minus 104, as do the entries of an unfitted board. With
+  ``cpu-context-present`` each node board's record carries the CPU context
+  the Origin 350's carries, which the stock PROM compares with its flash.
+  Approximations:
+
+  - Link ``n`` is node board ``n``'s port. The numbering is established for
+    the firmware; the port to board mapping is inferred.
+  - The router's own port is the router window: a router-profile L1 behind
+    the window answers component 1 with the ``ROUTER`` record (name
+    inferred, part ``NOTOBSERVED0`` and revision ``00`` not observed,
+    synthetic serial) and components 0 and 2 up with minus 104. The brick's
+    own L1 has no router port, so it serves neither the router record nor
+    the power inlet.
+  - The power inlet is absent: its record's contents are unknown and the
+    stock PROM never asks for it.
+  - SPDs exist only for the DIMMs the catalogue's 2048 MiB per node needs,
+    the two 1 GiB DIMMs in slots 0 and 1. Each has a valid checksum, byte 13
+    zero (the PROM's memory self-test decides the width) and byte 31 the
+    1 GiB rank density, which the PROM uses only when its memory probe finds
+    nothing. Type and timing bytes stay zero and are not interpreted. The
+    population of a real Cx-brick is unknown. Byte 99 marks the board.
 - Board ``n``'s window answers the identity requests with the brick's slot
   plus ``n``, and the serial request with the brick's serial and ``.n``,
   because the stock PROM refuses two modules at one slot and tells hubs
-  apart by the serial. No source says how a Cx-brick numbers its boards or
-  what it returns, so this is an approximation.
-- The brick has no default type character: ``0x0003`` answers minus 104
-  until ``brick-type-code`` supplies one, and ``brick`` prints the type as
-  ``?``.
+  apart by the serial. The router board records datasheet specifies the
+  real answer, which is the serial of the board record the port names; the
+  model does not implement it yet and logs the gap as unimplemented. This
+  is an approximation.
+- The datasheet gives a Cx-brick the type letter ``6``, but the model does
+  not implement it yet: ``0x0003`` answers minus 104 until
+  ``brick-type-code`` supplies one, and ``brick`` prints the type as ``?``.
 - Request ``0x0005`` answers the firmware revision ``revision-*``
   configures, 1.44.0 in the Origin 3900 catalogue entries as on the other
   brick profiles, and minus 104 without one. ``version`` prints it as
