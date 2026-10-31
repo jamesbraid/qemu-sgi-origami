@@ -1141,37 +1141,6 @@ def _processor_choices(topology: dict) -> list[dict]:
              "cpus_per_node": None, "default": True}]
 
 
-_IP53_REQUIRED_CPU_PROPERTIES = [
-    "r16000-experimental", "r16000-reset-mode", "r16000-scache-bytes",
-]
-
-
-def _is_ip53_normal_offering(
-    topology: dict, cpu_population: tuple[int, ...],
-    default_memory: tuple[int, ...], accepted_memory: list[int],
-    assembly: dict,
-) -> bool:
-    """Whether this offering is its topology's approved normal IP53 launch,
-    which needs no caller CPU flags. The topology's own ip53-runtime
-    normal selection names it, the same record QEMU admits it from."""
-    selection = (topology.get("ip53_runtime") or {}).get("normal_selection")
-    if selection is None or tuple(cpu_population) != (selection["cpus"],):
-        return False
-    expected = (selection["memory_mib"], selection["clock_hz"],
-                selection["cache_mib"], selection["mode_word"])
-    memory_mib, clock_hz, cache_mib, mode_bits = expected
-    return (
-        default_memory == (memory_mib,)
-        and accepted_memory == [memory_mib]
-        and assembly.get("kind") == "R16000"
-        and assembly.get("clock_hz") == clock_hz
-        and assembly.get("cache_mib") == cache_mib
-        and assembly.get("mode_bits") == mode_bits
-        and assembly.get("required_properties") ==
-            _IP53_REQUIRED_CPU_PROPERTIES
-    )
-
-
 def _is_ip53_runtime_profile(model: dict) -> bool:
     product = model.get("composition", {}).get("product")
     emulation = model.get("machine", {}).get("emulation", {})
@@ -1333,10 +1302,9 @@ def _offerings_for(model: dict, topology: dict,
                 if choice["cpus_per_node"] is None or
                 set(cpu_population) <= set(choice["cpus_per_node"])):
             assembly = choice["assembly"]
-            normal_ip53 = _is_ip53_normal_offering(
-                topology, tuple(cpu_population),
-                default_memory, choice["accepted_memory_mib"], assembly,
-            )
+            # A topology's IP53 runtime profile fits its R16000s itself,
+            # so none of its launches needs caller CPU properties.
+            machine_fits_cpus = topology.get("ip53_runtime") is not None
             offerings.append({
                 "product": machine_name,
                 "topology": configuration_name,
@@ -1361,7 +1329,7 @@ def _offerings_for(model: dict, topology: dict,
                     "cache-mib": assembly["cache_mib"],
                     **({"required-properties": list(assembly["required_properties"])}
                        if ("required_properties" in assembly and
-                           not normal_ip53) else {}),
+                           not machine_fits_cpus) else {}),
                 },
                 **({"firmware": firmware}
                    if launch_recipe in ("ip53-discovery", "ip32") else {}),

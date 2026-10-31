@@ -61,30 +61,28 @@ typedef struct TopologyExtra {
 
 static const TopologyExtra topology_extras[] = {
     { "fuel", FUEL_IDENTITY },
-    { "origin350", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+    { "origin350", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "onyx350-compat", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+    { "onyx350-compat", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "onyx4-host-serial-compat", ",ip53-experimental=on,"
+    { "onyx4-host-serial-compat", ","
       "nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "tezro-rack", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+    { "tezro-rack", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "tezro", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+    { "tezro", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "origin350-ip59", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+    { "origin350-ip59", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "onyx350-ip59", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+    { "onyx350-ip59", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "onyx4-host-ip59", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+    { "onyx4-host-ip59", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "tezro-rack-ip59", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+    { "tezro-rack-ip59", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "tezro-tower-multi-ip59",
-      ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+    { "tezro-tower-multi-ip59", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "tezro-tower-one-ip59",
-      ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+    { "tezro-tower-one-ip59", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "origin300-numalink-pci-expansion",
       STORAGE_BINDING, true },

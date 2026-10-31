@@ -1938,7 +1938,7 @@ static bool sn1_node_is_cx(const SN1NodeState *node);
 
 /*
  * Whether this node's processors are the experimental R16000 model: an
- * Origin 350-style IP53 board under an authorized runtime profile, or a
+ * Origin 350-style IP53 board under its topology's runtime profile, or a
  * Cx-brick node board, which has no such profile.
  */
 static bool sn1_node_uses_r16000(const SN1NodeState *node,
@@ -1946,7 +1946,7 @@ static bool sn1_node_uses_r16000(const SN1NodeState *node,
 {
     return sn1_node_is_cx(node) ||
         (node->ip53_assembly_validated &&
-         sgi_machine_ip53_experiment_authorized(machine));
+         sgi_machine_ip53_runtime_enabled(machine));
 }
 
 /*

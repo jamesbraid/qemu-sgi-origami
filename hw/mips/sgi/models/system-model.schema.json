@@ -350,7 +350,7 @@
                   "type": "object",
                   "additionalProperties": false,
                   "required": ["cpus", "fitted_cpus", "memory_mib", "clock_hz", "cache_mib", "mode_word"],
-                  "description": "The one launch admitted without ip53-experimental=on.",
+                  "description": "The launch this profile once singled out as normal. QEMU no longer reads it.",
                   "properties": {
                     "cpus": { "type": "integer", "minimum": 1 },
                     "fitted_cpus": { "type": "integer", "minimum": 1 },

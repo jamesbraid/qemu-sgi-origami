@@ -66,8 +66,8 @@ struct SGIMachineClass {
  */
 void sgi_machine_init(MachineState *machine);
 
-/* True after the selected Origin 350 experiment passes machine preflight. */
-bool sgi_machine_ip53_experiment_authorized(MachineState *machine);
+/* True once preflight has applied the topology's IP53 runtime profile. */
+bool sgi_machine_ip53_runtime_enabled(MachineState *machine);
 
 /*
  * Register the storage properties (node<N>-flash, io<N>-flash, nvram<N>,
