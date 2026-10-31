@@ -14,8 +14,10 @@ contains the rendering engine that draws into main memory
 (:src:`sgi-crime-1.5-spec PDF p. 13`; interrupts on PDF p. 106, timers
 on PDF p. 112-119, address map on PDF p. 47-52). QEMU models it as
 ``sgi-crime`` in ``hw/mips/sgi/crime.c``, with state in
-``include/hw/mips/sgi/crime.h``. The O2 test profile (:doc:`../ip32`),
-a synthetic register test profile, fits it.
+``include/hw/mips/sgi/crime.h``. The ``o2`` machine (:doc:`../ip32`)
+fits it with the ``legacy-software`` profile, the eight-bank memory and
+the functional memory transfer engine. VICE, whose interrupt CRIME
+collects, has its own page (:doc:`vice`).
 
 The model follows the CRIME 1.5 specification. A second profile,
 ``legacy-software``, presents the identity published O2 captures show
@@ -244,7 +246,9 @@ Profiles and options
 ====================
 
 Two properties and several options change what the device does. The
-O2 test profile (:doc:`../ip32`) exposes ``crime-profile``,
+``o2`` machine (:doc:`../ip32`) fixes ``crime-profile=legacy-software``,
+the eight banks, ``reset-low-ram-approx``, ``functional-memory-transfer``
+and ``prom-id-word``. Its register test profile exposes ``crime-profile``,
 ``reset-low-ram-approx``, ``functional-memory-transfer``,
 ``empty-renderer-status`` and ``prom-id-word`` as machine options of the
 same names, sets ``eight-128m-banks`` from its

@@ -14,10 +14,10 @@ the board's flash :src:`sgi-mace-2.0-spec p. 8`, *established*. The
 AT29C040A is the Atmel part of that size.
 
 QEMU models the ROM window and the AT29C040A programming interface as
-``sgi-o2-rom`` in ``hw/mips/sgi/o2-rom.c``. The device exists only on the
-O2 test profile (:doc:`../ip32`) and only when the profile is given a ROM
-image. The window is a plain read-only image by default. The AT29C040A
-programming model is an option.
+``sgi-o2-rom`` in ``hw/mips/sgi/o2-rom.c``. The ``o2`` machine
+(:doc:`../ip32`) always fits it with the AT29C040A programming model and
+a required 512 KiB image. The device's own default, which the register
+test profile can select, is a plain read-only image window.
 
 Facts are rated as described in :ref:`sgi-ratings`.
 

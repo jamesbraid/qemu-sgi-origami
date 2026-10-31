@@ -6,17 +6,17 @@
 ICS1890: Ethernet transceiver
 =============================
 
-Used in :ref:`sgi-ip30`, on the Octane and Octane2 system boards, and as
-an option of the :ref:`sgi-ip32` test profile. Published O2s report a
-DP83840 instead (:ref:`sgi-ip32-published`).
+Used in :ref:`sgi-ip30`, on the Octane and Octane2 system boards, and
+:ref:`sgi-ip32`, where the ``o2`` machine fits it although published O2s
+report a DP83840 (:ref:`sgi-ip32-published`).
 
 The ICS1890 is a 10/100 Mb/s Ethernet transceiver. On the Octane it sits
 behind the IOC3's MII management interface. QEMU models revision 3 as
 ``hw/net/ics1890.c``. The ``octane`` and ``octane2`` machines select it
 on the onboard IOC3 with ``phy-ics1890=on`` at MII address 1; other IOC3
-boards keep their own PHY (:doc:`ioc3`). The ``o2-test`` machine attaches
-one to the MACE Ethernet MAC only with its own ``phy-ics1890=on``
-(:doc:`mace-ethernet`).
+boards keep their own PHY (:doc:`ioc3`). The ``o2`` machine attaches one
+to the MACE Ethernet MAC at MII address 8 (:doc:`mace-ethernet`). Its
+register test profile attaches one only with ``phy-ics1890=on``.
 
 Facts are rated as described in :ref:`sgi-ratings`.
 

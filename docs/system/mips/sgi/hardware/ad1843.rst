@@ -11,7 +11,7 @@ The AD1843 is a 16-bit stereo SoundComm codec from Analog Devices. The
 O2 uses one, wired to the audio interface of the MACE I/O ASIC over a
 serial TDM link. QEMU has no separate codec device. The codec is part of
 ``sgi-mace`` and lives in ``hw/mips/sgi/mace-audio.c``, beside the MACE
-side of the interface (:doc:`mace`). The O2 test profile
+side of the interface (:doc:`mace`). The ``o2`` machine
 (:doc:`../ip32`) carries it. The model follows the first silicon, revision
 ID 1.
 

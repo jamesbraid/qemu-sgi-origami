@@ -2,87 +2,393 @@
 
 .. _sgi-ip32:
 
-========
-IP32: O2
-========
+================
+IP32: O2 and O2+
+================
+
+The ``o2`` machine (``hw/mips/sgi/o2.c``) builds one :term:`IP32 <IP
+number>` board with one processor, two serial ports, the MACE I/O, the
+GBE display and the two onboard SCSI controllers, and starts the boot
+:term:`PROM` image the user supplies. ``variant=o2plus`` selects the O2+
+processor on the same board. No test in this tree runs a stock IP32 PROM
+or boots an operating system on the machine, so whether IRIX or another
+system boots on it is not established here. This page is the hardware
+contract the machine models in ``hw/mips/sgi/models/`` cite for the O2:
+what is fitted, how it is wired, what the emulator chose where the
+hardware is not known, and which sources back each statement.
+
+Facts are rated as described in :ref:`sgi-ratings`.
 
 The O2 is a Silicon Graphics entry workstation. A published hardware
 page dates it to 1996 as the successor of the Indy and names its chips
 as CRIME, MACE and GBE (:src:`bukosek-sgi-o2 Architecture`), *observed*.
 It keeps memory, graphics and I/O data in one pool of main memory
-(:src:`o2-technical-report p. 4`), *established*. The CRIME 1.5 specification
-gives CRIME's roles (:src:`sgi-crime-1.5-spec Table 3-1, PDF p. 48`),
-*established*.
+(:src:`o2-technical-report p. 4`), *established*. The CRIME 1.5
+specification gives CRIME's roles (:src:`sgi-crime-1.5-spec Table 3-1,
+PDF p. 48`), *established*.
 
-The technical report lists the R5000 and R10000
-(:src:`o2-technical-report Table 2-1`), *established*. The same
-hardware page lists five processor families, RM5271 (RM5200 family),
-R5000, RM7000, R10000 and R12000 (:src:`bukosek-sgi-o2 Processor
-options`), *observed*. No bootable O2 machine exists. Facts are rated as
-described in :ref:`sgi-ratings`.
+.. _sgi-ip32-sources:
+
+Sources
+=======
+
+SGI documents:
+
+- *O2 Technical Report*, :src:`o2-technical-report`: the shared memory
+  design and the processor families (Table 2-1).
+- *O2 Workstation Hardware Reference Guide*,
+  :src:`007-3275-003 p. 28-31`: DIMM pairs and memory population.
+- *Remanufactured O2 Visual Workstation Product Guide*,
+  :src:`sgi-o2-product-guide-1065 p. 4, 12`: one R10000 with 1 MiB
+  secondary cache and 64 MB to 1 GB of memory.
+- *CRIME 1.5 Specification*, :src:`sgi-crime-1.5-spec`, for the address
+  map (PDF p. 47-52) and the interrupt inputs.
+- *MACE I/O ASIC Specification*, chip revision 2.0,
+  :src:`sgi-mace-2.0-spec`, for the I/O apertures and the boot flash.
+- NEC *VR10000 Series User's Manual*, fourth edition,
+  :src:`nec-vr10000-series-um-4`, for the reset mode word fields.
+
+Public captures:
+
+- An OpenBSD 5.2 boot report of an O2, :src:`dmesgd-2432`.
+- A NetBSD 9.99.31 boot report of an O2 with an R12000,
+  :src:`dmesgd-5290`.
+- A published hardware inventory, :src:`bukosek-sgi-o2`.
+
+Each chip's own page lists the sources for its registers.
+
+.. _sgi-ip32-machines:
 
 .. _sgi-ip32-current:
 
-Current model
-=============
+Machines
+========
 
-QEMU provides one O2 machine, ``o2-test`` (``hw/mips/sgi/o2.c``). It is a
-synthetic register test profile that gives the qtests of the O2 chips a
-board to run on. It is not a machine that boots an operating system, and
-no functional test boots one on it. By default it fits:
+One machine type, ``o2``, builds both products. Its ``variant`` property
+is ``o2`` (the default) or ``o2plus``.
 
-- one R10000 at a fixed 195 MHz, the only processor it accepts;
-- 64 MiB of RAM, with 128 MiB or, in the eight-bank profile, 1 GiB as
-  options;
-- CRIME, the MACE host bridge with its two serial ports and real-time
-  clock, and the MACE Ethernet MAC with no PHY;
-- two AIC-7880 SCSI controllers at PCI device 1 and 2.
+.. list-table::
+   :header-rows: 1
 
-GBE, the boot flash and the PHY are options. Each chip's page describes
-the device, what the profile does with it and how it is tested.
+   * - Selection
+     - Processor
+     - Memory
+     - Basis
+   * - ``-M o2``
+     - one R10000, 195 MHz, 1 MiB secondary cache
+     - exactly 1 GiB
+     - the product guide and a published 195 MHz capture
+   * - ``-M o2,variant=o2plus``
+     - one R12000, 400 MHz, 2 MiB secondary cache
+     - exactly 1 GiB
+     - a model selection (:ref:`sgi-ip32-o2plus`)
+
+Every other part is the same in both. The catalogue's configurations
+``o2`` and ``o2plus`` (``hw/mips/sgi/models/o2.yaml`` and
+``o2plus.yaml``) describe these two selections.
+
+.. _sgi-ip32-processor:
+
+Processor
+---------
+
+The product guide lists one R10000 with 1 MiB secondary cache
+(:src:`sgi-o2-product-guide-1065 p. 4`), *established*. The OpenBSD
+report shows a 195 MHz R10000 revision 2.7 with a 1024 KB secondary cache
+(:src:`dmesgd-2432 cpu0`), *observed*. The machine fits that processor,
+big-endian, at a fixed 195 MHz, with QEMU's default R10000 identity,
+revision 2.6.
+
+The machine sets the R10000 reset mode word to ``0x00198603``, which
+reads back as Config0 ``0x6c198603`` and selects 64-byte secondary cache
+blocks. The fields are legal values from the processor manual
+(:src:`nec-vr10000-series-um-4`), but the board's real reset word is
+*unknown*; this one is an *approximation*. A CPU ``reset-mode`` option
+is refused. The CPU's cache-data visibility must stay off, so processor
+and DMA accesses share QEMU's coherent RAM, an *approximation*: the
+model has no cache incoherence for software to manage.
+
+The O2 sold with other processors. The technical report lists the R5000
+and R10000 (:src:`o2-technical-report Table 2-1`), *established*, and the
+published hardware page lists RM5271, R5000, RM7000, R10000 and R12000
+modules (:src:`bukosek-sgi-o2 Processor options`), *observed*. The
+machine accepts only the R10000, and the R12000 with ``variant=o2plus``.
+QEMU's ``R5000`` CPU type is refused.
+
+.. _sgi-ip32-o2plus:
+
+O2+ processor
+-------------
+
+``variant=o2plus`` fits one R12000 at 400 MHz with 2 MiB secondary cache.
+The NetBSD report shows a real O2 with an R12000
+(:src:`dmesgd-5290 cpu0`), *observed*. The clock, the cache size and the
+identity values below are model selections, not readings of an O2+
+module, *approximation*. The variant requires ``-cpu R12000`` with
+exactly these properties: ``r12000-prid=0xe35``, ``r12000-fpu-id=0x900``,
+``r12000-reset-mode=0x11a8603``, ``r12000-scache-bytes=2097152`` and
+``r12000-scache-block-words=16``.
+
+Config0 then reads ``0x6d1a8603``. The CPU's R12000A mode is refused, so
+the variant has a plain R12000 identity although the catalogue names the
+configuration "O2+ R12000A". The reset word's fields are legal values
+from the processor manual (:src:`nec-vr10000-series-um-4`); the module's
+real word is *unknown*. The register test profile cannot select this
+variant.
+
+.. _sgi-ip32-memory:
+
+Memory
+------
+
+The guide describes four pairs of DIMMs of equal capacity and requires
+the first pair to be fitted (:src:`007-3275-003 p. 28-31`), and the
+product guide gives 64 MB to 1 GB (:src:`sgi-o2-product-guide-1065 p. 12`),
+*established*. The machine accepts exactly 1 GiB and nothing else, held
+as eight 128 MiB CRIME banks; ``-m 1G`` is the default. The eight banks
+are a model selection that gives the full capacity, not the board's
+socket-to-bank wiring, *approximation*: DIMM pairs and CRIME's logical
+banks are different things, and how a fitted board maps one to the other
+is *unknown*. Memory slots and extra RAM are refused.
+
+Two reset-time choices stand in for behaviour the model does not
+otherwise have, the PROM using memory and the processor cache before it
+has programmed the memory controller. Both are *approximation*:
+
+- Until the first bank-control write, the first 32 MiB of RAM answer at
+  address 0, as if bank 0 were already set up (:doc:`hardware/crime`).
+- While the processor runs from the boot flash, its cached accesses to
+  the first ``0x1008`` bytes of memory go to a private store. The store
+  is released once the PROM has moved its stack to uncached memory and
+  the same bytes have reached RAM. Running code from that range, or
+  switching stacks before the bytes match, logs ``LOG_UNIMP``.
+
+.. _sgi-ip32-test-profile:
+
+Register test profile
+---------------------
+
+``-M o2,register-test-profile=on`` drops the product's fixed population
+and admits the diagnostic options the chip qtests use: 64 or 128 MiB of
+RAM, the eight-bank profile, the CRIME, GBE, flash and PHY options and
+several test fixtures. It works only under QTest. It is a fixture for
+register tests, not a model of any O2. The chip pages describe the
+options. The product refuses all of them.
 
 .. _sgi-ip32-components:
 
-Components
-==========
+Components and connections
+==========================
 
 .. list-table::
    :header-rows: 1
 
    * - Part
      - Role
+     - Where
      - Page
+   * - R10000 or R12000
+     - Processor
+     - CRIME's processor interface
+     - :doc:`hardware/r10000`
    * - CRIME
-     - Memory controller, processor interface, interrupt controller and
-       rendering engine
+     - Memory controller, interrupt controller, timer, rendering engine
+     - physical ``0x14000000``
      - :doc:`hardware/crime`
+   * - GBE
+     - Display back end, revision 1.1
+     - physical ``0x16000000``
+     - :doc:`hardware/gbe`
    * - MACE
-     - I/O bridge: PCI host, serial, keyboard, timers, audio interface
+     - PCI host, peripheral controller, serial, PS/2, audio interface,
+       timers
+     - physical ``0x1f000000``
      - :doc:`hardware/mace`
    * - MACE Ethernet (MAC-110)
      - 10/100 Mb/s MAC inside MACE
+     - MACE offset ``0x280000``
      - :doc:`hardware/mace-ethernet`
    * - ICS1890
-     - Ethernet PHY the profile can attach
+     - Ethernet PHY
+     - MII address 8
      - :doc:`hardware/ics1890`
-   * - GBE
-     - Display back end
-     - :doc:`hardware/gbe`
    * - AD1843
      - Audio codec behind MACE
+     - MACE codec link
      - :doc:`hardware/ad1843`
-   * - AIC-7880
-     - SCSI controller
-     - :doc:`hardware/aic7880`
-   * - AT29C040A
-     - Boot flash
-     - :doc:`hardware/at29c040a`
    * - DS1685
-     - Real-time clock (DS1687 on the board)
+     - Real-time clock and NVRAM (DS1687 on the board)
+     - MACE peripheral bus
      - :doc:`hardware/ds1685`
-   * - R10000
-     - Processor
-     - :doc:`hardware/r10000`
+   * - AT29C040A
+     - 512 KiB boot flash
+     - physical ``0x1fc00000``
+     - :doc:`hardware/at29c040a`
+   * - AIC-7880 (two)
+     - SCSI controllers
+     - MACE PCI devices 1 and 2
+     - :doc:`hardware/aic7880`
+   * - VICE
+     - Video and image compression engine
+     - not fitted
+     - :doc:`hardware/vice`
+
+The processor reaches CRIME over its system interface, and CRIME owns
+memory (:src:`sgi-crime-1.5-spec PDF p. 47-48`), *established*. In the
+model, CRIME's five processor interrupt outputs drive CPU interrupt lines
+2 to 6, GBE's four interrupt outputs drive CRIME's external inputs 0 to 3,
+and MACE drives sixteen CRIME inputs. The CRIME page gives the bit
+assignment (:src:`sgi-crime-1.5-spec PDF p. 106-108`). MACE's Ethernet,
+peripheral and PCI DMA reach memory through CRIME's decoded banks.
+
+The machine always builds every part in the table except VICE. QEMU has
+a VICE model, but the machine does not fit it, so the VICE aperture is
+unmapped. The machine fixes these settings, each described on its chip's
+page:
+
+- CRIME interface revision 1 with the ``legacy-software`` profile, whose
+  ID matches the published O2 captures (:ref:`sgi-ip32-published`), and
+  its functional memory transfer engine.
+- MACE's 32-bit identity word access, its native PCI byte swap and an
+  Ethernet DMA view of low memory.
+- GBE revision 1.1 with a display, its ``legacy-software`` memory view
+  and a 20 MHz TTL pixel clock input.
+- An ICS1890 PHY at MII address 8, where the published O2s report a
+  DP83840 (:ref:`sgi-ip32-published`).
+
+Each is an *approximation* where its chip page says so. None identifies a
+fitted ASIC revision.
+
+.. _sgi-ip32-address-map:
+
+Processor address map
+=====================
+
+CRIME decodes the processor's physical addresses
+(:src:`sgi-crime-1.5-spec PDF p. 47-48`), *established*. The model maps:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Physical address
+     - Size
+     - Contents
+   * - ``0x00000000``
+     - 256 MiB
+     - low memory view
+   * - ``0x14000000``
+     - 32 MiB
+     - CRIME registers, rendering engine at ``0x15000000``
+   * - ``0x16000000``
+     - 16 MiB
+     - GBE registers
+   * - ``0x17000000``
+     - 1 MiB
+     - VICE; unmapped
+   * - ``0x1a000000``
+     - 16 MiB
+     - MACE window onto PCI
+   * - ``0x1f000000``
+     - 4 MiB
+     - MACE registers
+   * - ``0x1fc00000``
+     - 4 MiB
+     - boot flash, repeated through the window
+   * - ``0x20000000``
+     - 512 MiB
+     - high memory alias
+   * - ``0x40000000``
+     - 1 GiB
+     - full memory
+   * - ``0x80000000``
+     - 1 GiB
+     - memory without ECC checking
+   * - ``0x280000000``
+     - 2 GiB
+     - MACE high PCI window
+
+The linear frame and depth buffer windows at ``0x10000000`` and
+``0x12000000`` are not modelled. :doc:`hardware/crime` and
+:doc:`hardware/mace` give the rules for each window.
+
+.. _sgi-ip32-firmware:
+
+Firmware and boot
+=================
+
+The board boots from a 512 KiB Atmel flash that MACE decodes in a 4 MiB
+window (:src:`sgi-mace-2.0-spec p. 8`), *established*. The machine
+requires all of these:
+
+- ``rom-image=FILE``: a complete 512 KiB PROM image, with
+  ``rom-size=524288``, ``rom-offset=0`` and ``rom-pad-byte``.
+- ``rom-at29c040a-protection``, ``rom-at29c040a-lower-lock`` and
+  ``rom-at29c040a-upper-lock``: the flash's software data protection and
+  boot block lock states at power-on (:doc:`hardware/at29c040a`). A real
+  part's states depend on its history, so the user states them.
+- ``identity-test-serial``, ``identity-eprom-file`` and
+  ``identity-status``: the board identity MACE reads back
+  (:doc:`hardware/mace`). These are the user's values, not a factory
+  record. The Ethernet station address is separate.
+- ``password-clear-input=0`` or ``1``: the board's password-clear input,
+  whose fitted level is *unknown*.
+
+The machine refuses ``-bios``, ``-kernel``, ``-initrd`` and ``-append``.
+Block backends named ``o2flash`` and ``o2flash-state`` keep the flash and
+its protection state across runs. ``nvram0`` and ``nvram0-clock`` keep
+the DS1685's RAM and clock.
+
+At reset the processor fetches from ``0xbfc00000``, the uncached view of
+the flash. What happens next depends on the image. The qtests run
+synthetic images only.
+
+.. _sgi-ip32-storage:
+
+Storage, network and serial
+===========================
+
+The two AIC-7880 buses are ``aic0.0`` and ``aic1.0``. The machine accepts
+one SCSI disk or CD-ROM in total, at LUN 0 and target 0 to 6, on either
+bus. It refuses a second, other device kinds and unplugging. It refuses
+any other PCI device, and PCI and SCSI hotplug.
+
+The default network card is ``sgi-mace-eth``. ``-nic`` or ``-netdev``
+with ``macaddr`` sets its station address.
+
+MACE's two serial ports take the first two ``-serial`` backends. The
+first is the console port. A third is refused.
+
+.. _sgi-ip32-running:
+
+Running
+=======
+
+A minimal command line, with a PROM image ``ip32prom.bin`` and an
+identity file the user prepared::
+
+    qemu-system-mips64 -nographic -m 1G \
+      -M o2,rom-image=ip32prom.bin,rom-size=524288,rom-offset=0,\
+    rom-pad-byte=255,rom-at29c040a-protection=disabled,\
+    rom-at29c040a-lower-lock=unlocked,rom-at29c040a-upper-lock=unlocked,\
+    identity-test-serial=SERIAL,identity-eprom-file=identity.bin,\
+    identity-status=STATUS,password-clear-input=0 \
+      -drive if=none,id=d0,file=disk.img,format=raw \
+      -device scsi-hd,bus=aic0.0,scsi-id=1,drive=d0
+
+``SERIAL`` is 12 hexadecimal digits, ``identity.bin`` holds 128 bytes and
+``STATUS`` is 14 hexadecimal digits, the forms the qtests use. The
+machine names any input that is missing or malformed.
+
+Migration is refused: the eight-bank memory model has no saved state.
+
+.. _sgi-ip32-graphics:
+
+Graphics
+========
+
+GBE scans the frame buffer out of main memory, and its display binds to
+a QEMU console (:doc:`hardware/gbe`). CRIME's rendering engine draws a
+functional subset of its operations into memory (:doc:`hardware/crime`).
 
 .. _sgi-ip32-published:
 
@@ -103,27 +409,82 @@ Three published sources show real O2s. Each is rated *observed*.
 - A published hardware inventory of an O2 with a 300 MHz R5000-family
   processor (:src:`bukosek-sgi-o2 My O2`).
 
-The profile's defaults differ from these. These are model limits:
+The machine differs from these. These are model limits:
 
 .. list-table::
    :header-rows: 1
 
    * - Item
      - Published machines
-     - ``o2-test`` default
+     - ``o2``
    * - CRIME ID low byte
      - ``0xa1``
-     - ``0xb1``, the value in the CRIME 1.5 specification
-       (``crime-profile=legacy-software`` returns ``0xa1``)
+     - ``0xa1``, the same
    * - Ethernet PHY
      - DP83840 at MII address 8
-     - none; an ICS1890 is an option
+     - ICS1890 at MII address 8
    * - R10000 revision
      - 2.7
      - 2.6
    * - Processors
      - R5000, RM5271, RM7000, R10000 and R12000 modules
-     - R10000 at 195 MHz only
+     - R10000 at 195 MHz, or R12000 at 400 MHz
+   * - Memory
+     - 64 MB to 1 GB
+     - 1 GiB only
    * - Parallel port
      - fitted
      - absent
+
+.. _sgi-ip32-limits:
+
+Model limits
+============
+
+- No stock PROM run or operating system boot is tested in this tree.
+- VICE, the parallel port, USB, the camera and video inputs, and PCI
+  expansion cards are not fitted.
+- Memory is 1 GiB only, as eight logical banks. ECC, cache incoherence
+  and the board's DIMM wiring are not modelled.
+- The processor reset words, the O2+ identity values and the pixel clock
+  are model choices.
+- Migration is refused.
+- Each chip page lists its own limits and how an unexpected access shows
+  up.
+
+.. _sgi-ip32-tests:
+
+Tests
+=====
+
+- ``tests/qtest/sgi-o2-test.c``: the product's composition, required
+  inputs and refusals, both variants' processor and Config0, serial
+  backends, native PCI, the eight-bank memory and its aliases, the
+  private boot store, the interrupt chain, the flash aliases, and the SCSI
+  paths; with ``register-test-profile=on``, the diagnostic options.
+- ``tests/qtest/sgi-o2-id-test.c``: the MACE identity line.
+- ``tests/qtest/sgi-o2-platform-inputs-test.c``: the password-clear input
+  and the DS1685 backends.
+- ``tests/qtest/sgi-o2-rom-test.c``: the flash window and synthetic
+  images.
+- ``tests/qtest/o2-r10k-cache-test.c`` and
+  ``tests/qtest/o2-r10k-scache-reset-test.c``: R10000 cache visibility,
+  and the secondary cache selection after a CPU reset.
+- ``scripts/tests/test_sgi_model_ip32.py``: the catalogue's two
+  configurations.
+
+The chip pages list the CRIME, MACE, GBE and Ethernet tests.
+
+.. _sgi-ip32-unknowns:
+
+Open questions
+==============
+
+- The board's reset mode word, and the O2+ module's identity and reset
+  word. A reset-time read of Config0 and PRId on a real O2 and O2+ would
+  settle them.
+- How DIMM sockets map to CRIME banks. A real board's bank control
+  registers after the PROM sizes memory would settle it.
+- The fitted CRIME and MACE revisions beyond the published IDs.
+- The password-clear input's fitted level and the flash's shipped
+  protection state.
