@@ -168,6 +168,8 @@ struct SGIPICState {
     uint8_t pxbow_host_widget;
     uint8_t pxbow_pic_widget;
     uint8_t pxbow_revision;
+    /* A PIC on another PIC's crossbar (sgi_pic_join_pxbow()). */
+    SGIPICState *crossbar_owner;
     uint8_t req64_slots[2];
     SGIBedrockPIState *bedrock_pi[2];
     unsigned bedrock_source_base;
@@ -2199,6 +2201,59 @@ bool sgi_pic_enable_pxbow_experiment(SGIPICState *s, uint64_t span,
 }
 
 /*
+ * Put @s on @owner's crossbar at link @widget, live from reset. The
+ * crossbar at widget 0 is one per node, so a second PIC is one more of
+ * its links and its windows are reached through it (pic.md, "How does the
+ * second PIC reach the node?"). That is inferred from what the PROM and
+ * the kernel read, and the sheet calls it a modelling consequence, not a
+ * claim about silicon. @s keeps no crossbar of its own: whether the second
+ * PIC has one is unknown.
+ *
+ * Approximation: only the processor's accesses go through the crossbar.
+ * This PIC's interrupt and DMA packets still take the typed link to the
+ * host, as the first PIC's do, where pic.md describes them returning
+ * through the crossbar (the "Routing" row). Limitation, recorded under
+ * "Approximation: direct return of the second PIC's packets": link 11 and
+ * widget 0 never see that traffic, so link state, fence and credit effects
+ * on it are not modelled.
+ */
+bool sgi_pic_join_pxbow(SGIPICState *s, SGIPICState *owner,
+                        unsigned int widget, Error **errp)
+{
+    DeviceState *xbow;
+    uint16_t links;
+
+    if (DEVICE(s)->realized || DEVICE(owner)->realized || s == owner ||
+        s->pxbow_enabled || s->crossbar_owner || !owner->pxbow_enabled ||
+        owner->enclosure_crossbar || !pic_uses_runtime_profile(s) ||
+        !pic_uses_runtime_profile(owner)) {
+        error_setg(errp, "a PIC joins one runtime PIC's crossbar before "
+                   "either realizes");
+        return false;
+    }
+    if (widget < SGI_XBOW_FIRST_WIDGET || widget >= SGI_XBOW_WIDGETS ||
+        widget == owner->pxbow_host_widget ||
+        widget == owner->pxbow_pic_widget) {
+        error_setg(errp, "crossbar link %u is not free for a second PIC",
+                   widget);
+        return false;
+    }
+    xbow = DEVICE(&owner->pxbow);
+    if (!sgi_xbow_attach_endpoint(&owner->pxbow, widget, &s->cpu_widget,
+                                  &s->widget, errp)) {
+        return false;
+    }
+    links = object_property_get_uint(OBJECT(xbow), "links-present",
+                                     &error_abort) | BIT(widget);
+    qdev_prop_set_uint16(xbow, "links-present", links);
+    qdev_prop_set_uint16(xbow, "startup-links-alive", links);
+    qdev_prop_set_uint16(xbow, "link-reset-restore-alive", links);
+    s->crossbar_owner = owner;
+    s->pxbow_pic_widget = widget;
+    return true;
+}
+
+/*
  * What the host port's link delivers: each packet goes to the cabled
  * Bedrock as a typed packet from the crossbar port it entered by. A
  * packet with no source attached comes from the crossbar's own widget 0,
@@ -2352,7 +2407,8 @@ SGIXbowState *sgi_pic_pxbow(SGIPICState *s)
 MemoryRegion *sgi_pic_routed_widget(SGIPICState *s, unsigned int widget,
                                     Error **errp)
 {
-    return pic_pxbow_routed_widget(s, widget, errp);
+    return pic_pxbow_routed_widget(s->crossbar_owner ? s->crossbar_owner : s,
+                                   widget, errp);
 }
 
 uint8_t sgi_pic_pxbow_revision(SGIPICState *s)

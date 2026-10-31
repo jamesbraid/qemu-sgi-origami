@@ -3444,11 +3444,11 @@ static void test_tezro_tower_multi_builds_two_pic_hosts(void)
                                   "qtest-clock-period"), ==,
                      CLOCK_PERIOD_FROM_HZ(700000000));
 
-    /* Widget zero marks only widget 15 as the IO9-owning PIC. */
+    /* Widget zero shows both PICs present: the second PIC is link 11. */
     g_assert_true(nasid_test_cpu_readl(qts, 0, IP53_IO_SPACE + 0x2fc, &aux));
     g_assert_cmphex(aux & (1U << 5), ==, 1U << 5);
     g_assert_true(nasid_test_cpu_readl(qts, 0, IP53_IO_SPACE + 0x1fc, &aux));
-    g_assert_cmphex(aux & (1U << 5), ==, 0);
+    g_assert_cmphex(aux & (1U << 5), ==, 1U << 5);
     g_assert_cmphex(qtest_readl(qts, widget_f + 0x21000), ==,
                     UINT32_C(0x100a10a9));
     g_assert_cmphex(qtest_readl(qts, widget_f + 0x21008) & 0xff, ==, 0x53);
@@ -3471,6 +3471,307 @@ static void test_tezro_tower_multi_builds_two_pic_hosts(void)
     qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
     g_assert_cmphex(qtest_readq(qts, pic_b_route), ==, 0);
     g_assert_cmphex(qtest_readq(qts, pic_f_route), ==, 0);
+    ip53_runtime_test_stop(fixture);
+}
+
+/*
+ * The second PIC of a two- or four-processor Tezro board on widget 0's
+ * crossbar (docs/datasheets/pic.md, "Tezro crossbar discovery"). Link n's
+ * registers start at 0x100 + (n - 8) * 0x40 in widget 0, and the PROM
+ * reads the low word of each doubleword, so a register's address here is
+ * its word address.
+ */
+#define TEZRO_WIDGET(n) (IP53_IO_SPACE + (uint64_t)(n) * UINT64_C(0x1000000))
+#define TEZRO_LINK(n, offset) (0x100 + ((n) - 8) * 0x40 + (offset))
+#define TEZRO_LINK_CONTROL 0x0c
+#define TEZRO_LINK_STATUS 0x14
+#define TEZRO_LINK_ARB_UPPER 0x1c
+#define TEZRO_LINK_ARB_LOWER 0x24
+#define TEZRO_LINK_STATUS_CLEAR 0x2c
+#define TEZRO_LINK_RESET 0x34
+#define TEZRO_LINK_AUX 0x3c
+#define TEZRO_MULTI_MACHINE "tezro,topology=tezro-tower-multi," \
+                            "ip53-experimental=on"
+
+static IP53RuntimeTestFixture *tezro_multi_start(void)
+{
+    return ip53_runtime_test_start_with_binary_profile(
+        NULL, TEZRO_MULTI_MACHINE, NULL, "4", "4G", "0x009bad85");
+}
+
+static uint32_t tezro_widget_zero(QTestState *qts, uint64_t offset)
+{
+    uint32_t value = 0;
+
+    g_assert_true(nasid_test_cpu_readl(qts, 0, IP53_IO_SPACE + offset,
+                                       &value));
+    return value;
+}
+
+static bool tezro_link_alive(QTestState *qts, unsigned int link)
+{
+    return tezro_widget_zero(qts, TEZRO_LINK(link, TEZRO_LINK_STATUS)) &
+           (1U << 31);
+}
+
+static bool tezro_link_present(QTestState *qts, unsigned int link)
+{
+    return tezro_widget_zero(qts, TEZRO_LINK(link, TEZRO_LINK_AUX)) &
+           (1U << 5);
+}
+
+/* Links 8 to 15 that read both alive and present. */
+static unsigned int tezro_live_links(QTestState *qts)
+{
+    unsigned int live = 0;
+
+    for (unsigned int link = 8; link < 16; link++) {
+        if (tezro_link_alive(qts, link) && tezro_link_present(qts, link)) {
+            live |= 1U << link;
+        }
+    }
+    return live;
+}
+
+static void tezro_assert_two_pic_links(QTestState *qts)
+{
+    uint32_t identity = tezro_widget_zero(qts, 4);
+
+    /* Widget 0: bit 0, manufacturer 0, part 0xd100 (inferred for Tezro). */
+    g_assert_cmphex(identity & 1, ==, 1);
+    g_assert_cmphex((identity >> 1) & 0x7ff, ==, 0);
+    g_assert_cmphex((identity >> 12) & 0xffff, ==, 0xd100);
+    /* The hub, the second PIC and the IO9 PIC; nothing else is fitted. */
+    g_assert_cmphex(tezro_live_links(qts), ==,
+                    (1U << 10) | (1U << 11) | (1U << 15));
+    for (unsigned int link = 10; link < 16; link++) {
+        uint32_t aux = tezro_widget_zero(qts, TEZRO_LINK(link, TEZRO_LINK_AUX));
+
+        if (link != 10 && link != 11 && link != 15) {
+            continue;
+        }
+        g_assert_cmphex(aux & (1U << 5), ==, 1U << 5);
+        g_assert_cmphex(aux & (1U << 6), ==, 0);
+    }
+    /* Bit 0 set would make the PROM skip the link; bit 2 is unknown. */
+    g_assert_cmphex(tezro_widget_zero(qts,
+        TEZRO_LINK(11, TEZRO_LINK_ARB_UPPER)) & 5, ==, 0);
+    g_assert_cmphex(tezro_widget_zero(qts,
+        TEZRO_LINK(15, TEZRO_LINK_ARB_UPPER)) & 5, ==, 0);
+}
+
+/* Links 10, 11 and 15 are live from reset and the others are empty. */
+static void test_tezro_second_pic_link_is_live_from_reset(void)
+{
+    IP53RuntimeTestFixture *fixture = tezro_multi_start();
+    QTestState *qts = fixture->qts;
+    g_autoptr(QDict) failure = NULL;
+
+    tezro_assert_two_pic_links(qts);
+    g_assert_cmphex(qom_get_uint(qts, "/machine/pic-pic-xio-f/pxbow",
+                                 "links-alive"), ==, 0x8c00);
+
+    /* The second PIC is a link of the IO9 PIC's crossbar, not a crossbar. */
+    failure = qtest_qmp_assert_failure_ref(qts,
+        "{'execute':'qom-get','arguments':{'path':"
+        "'/machine/pic-pic-xio-b/pxbow','property':'links-present'}}");
+    g_assert_nonnull(failure);
+
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    tezro_assert_two_pic_links(qts);
+    ip53_runtime_test_stop(fixture);
+}
+
+/* The PROM's bring-up of a link: clear word, control, then arbitration. */
+static void test_tezro_second_pic_link_bringup(void)
+{
+    IP53RuntimeTestFixture *fixture = tezro_multi_start();
+    QTestState *qts = fixture->qts;
+
+    (void)tezro_widget_zero(qts, TEZRO_LINK(11, TEZRO_LINK_STATUS_CLEAR));
+    qtest_writel(qts, IP53_IO_SPACE + TEZRO_LINK(11, TEZRO_LINK_CONTROL),
+                 0x00080000);
+    qtest_writel(qts, IP53_IO_SPACE + TEZRO_LINK(11, TEZRO_LINK_ARB_UPPER), 0);
+    qtest_writel(qts, IP53_IO_SPACE + TEZRO_LINK(11, TEZRO_LINK_ARB_LOWER), 0);
+    g_assert_true(tezro_link_alive(qts, 11));
+    g_assert_true(tezro_link_present(qts, 11));
+    g_assert_cmphex((tezro_widget_zero(qts,
+        TEZRO_LINK(11, TEZRO_LINK_CONTROL)) >> 18) & 0x1f, ==, 2);
+
+    qtest_writel(qts, IP53_IO_SPACE + TEZRO_LINK(11, TEZRO_LINK_CONTROL),
+                 3U << 18);
+    g_assert_cmphex((tezro_widget_zero(qts,
+        TEZRO_LINK(11, TEZRO_LINK_CONTROL)) >> 18) & 0x1f, ==, 3);
+    g_assert_true(tezro_link_alive(qts, 11));
+    g_assert_true(tezro_link_present(qts, 11));
+    ip53_runtime_test_stop(fixture);
+}
+
+static void tezro_assert_pic_identity(QTestState *qts, uint64_t widget,
+                                      uint32_t head0_part)
+{
+    for (unsigned int head = 0; head < 2; head++) {
+        uint32_t identity = 0;
+
+        g_assert_true(nasid_test_cpu_readl(qts, 0,
+            widget + head * UINT64_C(0x800000) + 4, &identity));
+        g_assert_cmphex(identity & 1, ==, 1);
+        g_assert_cmphex((identity >> 1) & 0x7ff, ==, 0x24);
+        g_assert_cmphex((identity >> 12) & 0xffff, ==,
+                        head0_part + head * 0x10);
+        /* ASIC BRIDGE revision 3, as the PROM inventory prints it. */
+        g_assert_cmphex(identity >> 28, ==, 3);
+    }
+}
+
+/* Widget 11 answers as a PIC of its own; widget 15 keeps its identity. */
+static void test_tezro_second_pic_identity_and_control(void)
+{
+    IP53RuntimeTestFixture *fixture = tezro_multi_start();
+    QTestState *qts = fixture->qts;
+    static const uint64_t widgets[] = { 11, 15 };
+
+    /* Which of the two parts widget 11 is stays unknown; 0xd102 is chosen. */
+    tezro_assert_pic_identity(qts, TEZRO_WIDGET(11), 0xd102);
+    tezro_assert_pic_identity(qts, TEZRO_WIDGET(15), 0xd102);
+
+    /* Both heads of both PICs take the PROM's 32-bit control-word write. */
+    for (unsigned int w = 0; w < G_N_ELEMENTS(widgets); w++) {
+        for (unsigned int head = 0; head < 2; head++) {
+            uint64_t control = TEZRO_WIDGET(widgets[w]) +
+                               head * UINT64_C(0x800000) + 0x24;
+            uint32_t value = 0;
+
+            g_assert_true(nasid_test_cpu_readl(qts, 0, control, &value));
+            value = (value & ~0xf000U) | 0x4000;
+            qtest_writel(qts, control, value);
+            g_assert_true(nasid_test_cpu_readl(qts, 0, control, &value));
+            g_assert_cmphex(value & 0xf000, ==, 0x4000);
+        }
+    }
+    ip53_runtime_test_stop(fixture);
+}
+
+/* The second PIC has no devices, and the IO9 PIC has an empty window 2. */
+static void test_tezro_empty_windows_fail(void)
+{
+    IP53RuntimeTestFixture *fixture = tezro_multi_start();
+    QTestState *qts = fixture->qts;
+    uint64_t widget_b = TEZRO_WIDGET(11);
+    uint64_t widget_f = TEZRO_WIDGET(15);
+    uint32_t word = 0;
+    uint64_t view = 0;
+
+    /* Four-processor Tezro: widget 11 head 0, windows 1 to 4 are empty. */
+    for (unsigned int window = 1; window <= 4; window++) {
+        qtest_writel(qts, widget_b + 0x114, 0x41);
+        g_assert_false(nasid_test_cpu_readl(qts, 0,
+            widget_b + 0x20000 + window * 0x1000, &word));
+        g_assert_true(nasid_test_cpu_readq(qts, 0, widget_b + 0x170, &view));
+        g_assert_cmphex(view & (1U << 11), ==, 1U << 11);
+        g_assert_true(nasid_test_cpu_readl(qts, 0, widget_b + 0x174, &word));
+        g_assert_cmphex(word & (1U << 11), ==, 1U << 11);
+        /* The PROM probes with every enable clear: status stays clear. */
+        g_assert_true(nasid_test_cpu_readl(qts, 0, widget_b + 0x104, &word));
+        g_assert_cmphex(word & (1U << 11), ==, 0);
+    }
+
+    /* A write to an empty window goes nowhere and records nothing. */
+    qtest_writel(qts, widget_b + 0x114, 0x41);
+    qtest_writel(qts, widget_b + 0x22004, 0x6);
+    g_assert_true(nasid_test_cpu_readq(qts, 0, widget_b + 0x170, &view));
+    g_assert_cmphex(view, ==, 0);
+
+    /* The IO9 PIC: its populated windows answer, window 2 does not. */
+    g_assert_true(nasid_test_cpu_readl(qts, 0, widget_f + 0x21000, &word));
+    g_assert_cmphex(word, ==, UINT32_C(0x100a10a9));
+    g_assert_true(nasid_test_cpu_readl(qts, 0, widget_f + 0x23000, &word));
+    g_assert_cmphex(word, ==, UINT32_C(0x12161077));
+    g_assert_true(nasid_test_cpu_readl(qts, 0, widget_f + 0x24000, &word));
+    g_assert_cmphex(word, ==, UINT32_C(0x164514e4));
+    g_assert_false(nasid_test_cpu_readl(qts, 0, widget_f + 0x22000, &word));
+    g_assert_true(nasid_test_cpu_readq(qts, 0, widget_f + 0x170, &view));
+    g_assert_cmphex(view & (1U << 11), ==, 1U << 11);
+    ip53_runtime_test_stop(fixture);
+}
+
+static void tezro_pulse(QTestState *qts, unsigned int link)
+{
+    qtest_writel(qts, IP53_IO_SPACE + TEZRO_LINK(link, TEZRO_LINK_RESET), 0);
+}
+
+static void tezro_finish_pulse(QTestState *qts)
+{
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    qtest_clock_step(qts, 20);
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+}
+
+/*
+ * A link reset shows that link not alive for the pulse and leaves every
+ * other link alive; the widget's registers survive it. The crossbar model
+ * keeps a link that restores alive carrying traffic through the pulse
+ * (see sgi_xbow_carries()), so only the status shows it and a read of the
+ * widget still completes. That completed read goes beyond the datasheet,
+ * which states no rule for a read during the pulse: it is the crossbar
+ * model's behaviour, pinned here, not a hardware fact. A model that failed
+ * the read would need a crossbar change this suite does not make. The 20 ns
+ * pulse is the crossbar model's too, not a Tezro measurement.
+ */
+static void test_tezro_link_reset_isolates_widgets(void)
+{
+    /* The second PIC, the IO9 PIC and the hub, in turn. */
+    static const unsigned int links[] = { 11, 15, 10 };
+    IP53RuntimeTestFixture *fixture = tezro_multi_start();
+    QTestState *qts = fixture->qts;
+    uint64_t pattern = UINT64_C(0x1122334455667788);
+    uint64_t value = 0;
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(links); i++) {
+        unsigned int link = links[i];
+        uint64_t widget_b_register = TEZRO_WIDGET(11) + 0x130;
+
+        qtest_writeq(qts, widget_b_register, pattern + i);
+        tezro_pulse(qts, link);
+        g_assert_false(tezro_link_alive(qts, link));
+        for (unsigned int other = 10; other < 16; other++) {
+            if (other != link && (other == 10 || other == 11 || other == 15)) {
+                g_assert_true(tezro_link_alive(qts, other));
+                g_assert_true(tezro_link_present(qts, other));
+            }
+        }
+        g_assert_true(nasid_test_cpu_readq(qts, 0, widget_b_register, &value));
+        g_assert_cmphex(value, ==, pattern + i);
+        if (link == 11) {
+            /* The IO9 PIC on link 15 stays up while link 11 resets. */
+            g_assert_true(nasid_test_cpu_readq(qts, 0,
+                                               TEZRO_WIDGET(15) + 0x20,
+                                               &value));
+        }
+        tezro_finish_pulse(qts);
+        g_assert_true(nasid_test_cpu_readq(qts, 0, widget_b_register, &value));
+        g_assert_cmphex(value, ==, pattern + i);
+        g_assert_cmphex(tezro_live_links(qts), ==,
+                        (1U << 10) | (1U << 11) | (1U << 15));
+    }
+    ip53_runtime_test_stop(fixture);
+}
+
+/* One PIC on a one-processor board: no link 11, and widget 11 faults. */
+static void test_tezro_one_processor_board_has_one_pic(void)
+{
+    IP53RuntimeTestFixture *fixture =
+        ip53_runtime_test_start_with_binary_profile(
+        NULL, "tezro,topology=tezro-tower-one,ip53-experimental=on", NULL,
+        "1", "4G", "0x009bad85");
+    QTestState *qts = fixture->qts;
+    uint32_t word = 0;
+
+    g_assert_cmphex(tezro_live_links(qts), ==, (1U << 10) | (1U << 15));
+    g_assert_false(tezro_link_alive(qts, 11));
+    g_assert_false(tezro_link_present(qts, 11));
+    g_assert_false(nasid_test_cpu_readl(qts, 0, TEZRO_WIDGET(11) + 4, &word));
+    g_assert_true(nasid_test_cpu_readl(qts, 0, TEZRO_WIDGET(15) + 4, &word));
     ip53_runtime_test_stop(fixture);
 }
 
@@ -12596,6 +12897,18 @@ int main(int argc, char **argv)
                    test_tezro_tower_multi_builds_two_pic_hosts);
     qtest_add_func("sn/builder/tezro-named-serial-profiles-build",
                    test_tezro_named_serial_profiles_build);
+    qtest_add_func("sn/builder/tezro-second-pic-link-is-live-from-reset",
+                   test_tezro_second_pic_link_is_live_from_reset);
+    qtest_add_func("sn/builder/tezro-second-pic-link-bringup",
+                   test_tezro_second_pic_link_bringup);
+    qtest_add_func("sn/builder/tezro-second-pic-identity-and-control",
+                   test_tezro_second_pic_identity_and_control);
+    qtest_add_func("sn/builder/tezro-empty-windows-fail",
+                   test_tezro_empty_windows_fail);
+    qtest_add_func("sn/builder/tezro-link-reset-isolates-widgets",
+                   test_tezro_link_reset_isolates_widgets);
+    qtest_add_func("sn/builder/tezro-one-processor-board-has-one-pic",
+                   test_tezro_one_processor_board_has_one_pic);
     qtest_add_func("sn/builder/ip53-bcm5701-takes-machine-mac",
                    test_ip53_bcm5701_takes_machine_mac);
     qtest_add_func("sn/builder/tezro-legacy-experimental-populations",
