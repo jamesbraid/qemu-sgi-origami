@@ -169,6 +169,10 @@ enum {
 #define ISP2200_MBOX_LOAD_RAM           0x0009
 #define ISP2200_MBOX_LOAD_RAM_EXTENDED  0x000b
 #define ISP2200_MBOX_ABORT_COMMAND      0x0015
+#define ISP2200_MBOX_GET_PORT_QUEUE     0x0029
+#define ISP2200_MBOX_SET_RETRY_COUNT    0x0032
+#define ISP2200_MBOX_RESET_LINK_STATUS  0x0052
+#define ISP2200_MBOX_GET_LINK_STATUS    0x006b
 #define ISP2200_MBOX_ABORT_TARGET       0x0017
 #define ISP2200_MBOX_FIRMWARE_STATUS    0x001f
 #define ISP2200_MBOX_GET_ADAPTER_ID     0x0020
@@ -240,6 +244,18 @@ enum {
  * minimum Linux already sets, leaving its state as it was.
  */
 #define ISP2200_RETRY_TIMEOUT       200
+
+/*
+ * Get Port Queue Parameters m2 and m3. Approximation: the firmware's
+ * values are unknown; these are the ones IRIX substitutes itself when the
+ * command fails, so the guest ends up with the parameters it already
+ * assumes.
+ */
+#define ISP2200_PORT_QUEUE_DEPTH    256
+#define ISP2200_PORT_QUEUE_THROTTLE 255
+
+/* Get Link Status writes eight 32-bit counters, the length IRIX copies. */
+#define ISP2200_LINK_STATUS_SIZE    32
 
 /* Get Adapter ID m1 while the loop is down: Linux's "loop in transition". */
 #define ISP2200_ADAPTER_ID_NOT_READY 7
@@ -1991,6 +2007,41 @@ static uint16_t isp2200_fc_mailbox(QLogicISP2200State *s, uint16_t cmd,
         out[2] = s->icb[ISP2200_ICB_OFF_RETRY_DELAY];
         out[3] = ISP2200_RETRY_TIMEOUT;
         return ISP2200_MBOX_COMPLETE;
+
+    /*
+     * The four commands below come from IRIX alone and no public source
+     * gives the firmware's replies. Each answer is an approximation: it
+     * keeps the guest on the path it takes when the command succeeds
+     * and invents no state.
+     */
+    case ISP2200_MBOX_GET_PORT_QUEUE:
+        if (!isp2200_loop_ready(s) || !isp2200_target(s, in[1] >> 8)) {
+            return ISP2200_MBOX_COMMAND_ERROR;
+        }
+        out[2] = ISP2200_PORT_QUEUE_DEPTH;
+        out[3] = ISP2200_PORT_QUEUE_THROTTLE;
+        return ISP2200_MBOX_COMPLETE;
+
+    /* Accepted and forgotten: the retry pair stays the control block's. */
+    case ISP2200_MBOX_SET_RETRY_COUNT:
+        return ISP2200_MBOX_COMPLETE;
+
+    /* Every link counter reads zero, so there is nothing to clear. */
+    case ISP2200_MBOX_RESET_LINK_STATUS:
+        return ISP2200_MBOX_COMPLETE;
+
+    case ISP2200_MBOX_GET_LINK_STATUS: {
+        uint8_t counters[ISP2200_LINK_STATUS_SIZE] = { 0 };
+
+        if (!isp2200_loop_ready(s) || !isp2200_target(s, in[1] >> 8)) {
+            return ISP2200_MBOX_COMMAND_ERROR;
+        }
+        if (isp2200_dma_write(s, isp2200_mbox_addr(in), counters,
+                              sizeof(counters)) != MEMTX_OK) {
+            return ISP2200_MBOX_HOST_INTERFACE_ERROR;
+        }
+        return ISP2200_MBOX_COMPLETE;
+    }
 
     default:
         qemu_log_mask(LOG_UNIMP,
