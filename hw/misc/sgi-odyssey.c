@@ -4718,6 +4718,7 @@ static void odyssey_copy_rect_aux(SGIOdysseyState *s)
     if (!w_clip || !h_clip) {
         return;
     }
+    QEMU_BUILD_BUG_ON(ODSY_AUX_ID_BUFFER != 0 || ODSY_AUX_OVERLAY_BUFFER != 1);
     stage = g_malloc((size_t)w_clip * h_clip);
     for (unsigned b = 0; b < 2; b++) {
         uint8_t *plane = b == ODSY_AUX_ID_BUFFER ? s->did : s->overlay;
