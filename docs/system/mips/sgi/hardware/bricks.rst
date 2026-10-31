@@ -304,8 +304,14 @@ N-brick whose first three chips carry c1 to c3, and two G-bricks. It has
 16 R12000s, four per C-brick, and 16384 MB. The stock PROM 6.210 finds 4
 nodes, 16 CPUs and one router, and its diagnostics summary reads ``ALL
 DIAGS PASSED``. Its ``hinv -v`` lists the four node boards, the
-I-brick's two heads and the router, and an XBow for the I-brick and for
-the N-brick chips of c10 and c13, but none for c07's.
+I-brick's two heads, the router, an XBow for each C-brick and, for the
+pipe that is fitted, a ``KONA Graphics Board`` under the module of the
+C-brick that reaches it.
+
+All four pipes are cabled: the I-brick's second port (port B) carries
+pipe 0 of G-brick 0, and the N-brick's first three chips carry pipe 1 of
+G-brick 0 and both pipes of G-brick 1. The N-brick's fourth connector
+pair is empty.
 
 Choices the sources do not settle, each an *approximation*:
 
@@ -321,27 +327,29 @@ Choices the sources do not settle, each an *approximation*:
 * The N-brick's XBridge presents the revision the model's XBridge
   presents, as the I-brick's does.
 * Module numbers of the bricks.
+* The I-brick and N-brick controllers' attached-brick replies, and the
+  N-brick's type letter (:ref:`sgi-l1-origin3000`).
+* Each N-brick chip presents its two PCI heads, widgets 14 and 15, with
+  nothing behind either, to the C-brick cabled to it. The N-brick
+  Overview (revision 10/24/01, printed page 3) calls the chip's ports E
+  and F logically disconnected. The heads are there because the stock
+  PROM 6.210 records an N-brick board (type ``0x74``, Linux
+  ``KLTYPE_NBRICK``) for a C-brick's crossbar only from heads that
+  decode, and IRIX 6.5.30, like Linux's ``io_xswitch_widget_init``,
+  looks for an I/O brick board on the node or its crossbar peer when it
+  brings up a crossbar widget, so a pipe behind the N-brick needs one,
+  *software expectation*. A widget scan of a real N-brick would settle
+  which heads answer.
 
 Model limits:
 
-* Three pipes, not four. A pipe cabled to a free port of the I-brick's
-  XBridge makes the PROM of the C-brick that hosts that chip print
-  ``iobrick_attached_modids failed``; on the I-brick that C-brick is the
-  global master, which then finds no base I/O. What an I/O brick's port
-  B presents to that query when a graphics pipe is cabled to it is not
-  established, so I-brick port B is left uncabled. G-brick 0 holds two
-  pipes and G-brick 1 one, on the N-brick's three pipe ports.
-* The graphics contract builds one pipe at once, so the machine offers
-  the four pipe slots and fits at most one ``sgi-kona``. The stock PROM
-  inventory lists no pipe with one fitted.
-* The C-bricks cabled to the N-brick print ``Unexpected I/O brick type``
-  at start: the N-brick has no L1 model, and what an N-brick answers to
-  the attached-brick request is *unknown*. They still join the PROM's
-  node count.
+* The machine fits up to four ``sgi-kona`` pipes, one per pipe slot.
+  The first, on I-brick port B, is the default. Each G-brick's pipe 1
+  takes one or two raster managers and its pipe 0 one, two or four. Each
+  C-brick's L1 knows its chip's G-brick whether or not a pipe is fitted.
 * The router's ports 1, 6, 7 and 8 are uncabled, and the PROM prints
   ``discover_object: vector read 0x2 LRI failed`` and ``erect_fences``
   messages and an EEPROM vector read error against the router.
-* IRIX has not been booted on this topology.
 
 .. _sgi-bricks-cxbrick:
 
@@ -383,19 +391,31 @@ The *Partitioning Guide for Systems That Contain Cx-bricks* covers the
 Origin 3900 and gives a partition of one CX-brick with an I- or IX-brick
 (*established*, :src:`007-4426-001 pp. xi, 3, 6, 18`).
 
-Catalogue: the ``cx-brick`` layer and the ``origin3900`` reference
-composition. They record one module with four Bedrock nodes, an
-eight-port router linked to each node over a midplane link, and each
-node's XIO connector on its own Bedrock's ``xio-ii`` bus. The product
-accepts zero or four processors per node and at least one node with
-processors. The composition cables an I-brick to node board 0's XIO
-connector at its port A, a choice of the composition (*approximation*).
-It is a reference only and never compiles, because which router port each
-node board and each connector uses, the brick's NASIDs and widget
-numbers, the L1's type character and the processors' clock and part are
-*unknown*. The builder can build the brick's one L1 for hand-built
-topologies through the controller's ``profile: cx-brick``
-(:ref:`sgi-l1-cxbrick`); the composition does not yet carry that record.
+Catalogue: the ``cx-brick`` layer and the ``origin3900`` composition.
+They record one module with four Bedrock nodes, an eight-port router
+linked to each node over a midplane link, and each node's XIO connector
+on its own Bedrock's ``xio-ii`` bus. The composition cables an I-brick to
+node board 0's XIO connector at its port A, a choice of the composition
+(*approximation*).
+
+``-M origin3000,topology=origin3900,nodes=4 -cpu R16000`` builds it. No
+source read fixes the CX-brick's processors, node board part, router
+ports, NASIDs, widget numbers or L1 type character, so the model chooses
+each, an *approximation*:
+
+* Each node board is fitted as the Origin 350's IP53 is: four 700 MHz
+  R16000s with 8 MB caches and 2048 MB.
+* Node board *n* takes router port *n* + 2.
+* The L1 reports the C-brick's type character (:ref:`sgi-l1-cxbrick`).
+* Board *n*'s link reports the brick's slot plus *n* and a serial of its
+  own, because the stock IP35 PROM tells nodes apart by those, *software
+  expectation*.
+
+The node board has its own board kind, ``ip53-cx``. Like the C-brick's
+IP35 board it has no XBridge and takes an XIO cable. Like the Origin
+350's IP53 it carries R16000s, but it has none of the Origin 350's PIC,
+IO9 or runtime profile. On the model the stock IP35 PROM 6.210 reports
+4 nodes, 16 CPUs, 8192 MB and 1 router and passes its diagnostics.
 The Origin 350 layers in
 ``assemblies/ip53.yaml`` and ``modules/ip53-origin350-module.yaml`` do not
 transfer: that module has two or four processors, a PIC at widget 15 and
@@ -692,6 +712,11 @@ each slot and the slots' interrupt wiring. The widget numbering above
 stays *inferred* for that reason. A document that names the downstream
 chips' mode straps, or a P-brick widget inventory, would settle these.
 
+The layer records the brick's L1 type letter as ``P`` (``0x50``, Linux
+``ksys/l1.h``), which IRIX 6.5.30 and the stock IP35 PROM 6.210 name a
+P-brick with module class ``p``, expecting a 600 MHz link, *software
+expectation*. Nothing is built from it yet.
+
 .. _sgi-bricks-pxbrick:
 
 PX-brick
@@ -800,8 +825,10 @@ Resolution refuses a node cabled to any other port, and the builder
 refuses such a cable in a topology it is handed, with the message "node
 '<id>' is cabled to router '<id>' port <n>; it takes a node only on
 ports 2, 3, 4, 5". A cable to another router may use any port. The layer
-sets no L1 brick-type character, since no reviewed L1 contract gives the
-R-brick's. It does not model the disabled-port variant. The SN1 router
+sets no L1 brick-type character: the router L1 profile answers ``R``
+(``0x52``) for every router's controller, which is what the stock IP35
+PROM 6.210 and IRIX 6.5.30 expect, *software expectation*, not a capture
+of a fitted R-brick. It does not model the disabled-port variant. The SN1 router
 device that the Origin 300 routed topology builds is described in
 :doc:`sn1-router`.
 
@@ -881,16 +908,31 @@ the cable on the midplane XBridge's port A and the V12 on its Crosstalk
 port 8. Both ports are the composition's choices (*approximation*).
 Which connector is port A, which Crosstalk port serves a slot, and so
 the V12's widget number, are *unknown*, and a PROM inventory or hardware
-graph of an Onyx 3000 with a V-brick would settle them. The V-brick's L1
-is not modelled, since its address and identity are unknown. No source
-fixes an Onyx 3000 C-brick's processors, caches or memory, so each
-C-brick takes the Origin 3200 C-brick's fit (four 400 MHz R12000s with 8
-MB caches and 4096 MB), a model choice. The V12 is fitted by default and
-``-vga none`` leaves its port empty. The stock PROM lists the V12 as a
-graphics board in the second C-brick's module and diagnoses all four
-processors on each node. IRIX 6.5.30 boots to a login without the V12
-and stops in an early kernel assertion with it; the cause is not
-established. A two-pipe V-brick, whose second pipe needs a second
+graph of an Onyx 3000 with a V-brick would settle them. The V-brick
+shares the X-brick's chassis, whose slot map puts slots 1 and 2 at
+Crosstalk ports 8 and 12, so one V12 is *inferred* to sit at 8 or 12.
+
+The V-brick has an L1 (``brick-type=vbrick``, :ref:`sgi-l1-origin3000`),
+reached from the C-brick its cable joins. It answers ``X`` with the
+X-brick's power and logic board records, *inferred*: the V-brick is an
+X-brick chassis and the L1 firmware takes the letter from the logic
+board's name, and no V-brick L1 reply has been captured. Its XBridge
+answers at both PCI heads, widgets 14 and 15, with nothing on them, as
+every XBridge does (:src:`108-0240-002 p. 2-26`), *established*. IRIX
+6.5.30 needs an I/O brick record for each crossbar widget it sets up, the
+V12 included, and the stock PROM builds those records only from live
+heads, *software expectation*.
+
+No source fixes an Onyx 3000 C-brick's processors, caches or memory, so
+each C-brick takes the Origin 3200 C-brick's fit (four 400 MHz R12000s
+with 8 MB caches and 4096 MB), a model choice. The V12 is fitted by
+default and ``-vga none`` leaves its port empty. On the model the stock
+PROM lists the V12 as a graphics board in the second C-brick's module,
+builds the V-brick's I/O records from its heads and diagnoses all four
+processors on each node. For a brick that answers ``X`` it expects the
+400 MHz link the C-brick's L1 reports, which agrees with the guide's
+800 MB/s port rate (:src:`007-4264-002 p. 54`). No IRIX boot with the
+V12 fitted is recorded for this V-brick identity. A two-pipe V-brick, whose second pipe needs a second
 C-brick on the other Crosstown2 port, is refused: the midplane XBridge
 takes one host (:ref:`sgi-ip35-brick-composition`).
 
@@ -942,10 +984,13 @@ X-brick hangs off the second, and ``origin3200-xbrick`` is that
 composition. It cables the X-brick at port A as a choice
 (*approximation*). Whether rear connector ``XIO 10`` or ``XIO 11`` is
 port A is *unknown*, because the two guides disagree. A source that ties a
-connector label to a port would settle it. Also *unknown* are the brick's
-L1 type character, the XBridge revision and the widget numbers a C-brick
-sees for the slots. Only an X-brick widget inventory would settle the
-last.
+connector label to a port would settle it. The layer records the brick's
+L1 type letter as ``X`` (``0x58``, Linux ``ksys/l1.h``), which IRIX 6.5.30
+and the stock IP35 PROM 6.210 name an X-brick with module class ``x``,
+expecting a 400 MHz link, *software expectation*. Nothing is built from
+the letter yet. *Unknown* are the XBridge revision and the widget numbers
+a C-brick sees for the slots, which only an X-brick widget inventory
+would settle.
 
 The builder qtest does build this layout. It places Origin 2000 PCI
 carrier cards in slots 1, 2 and 4 as stand-ins (*approximation*), leaves

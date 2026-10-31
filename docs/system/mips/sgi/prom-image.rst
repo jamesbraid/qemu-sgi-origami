@@ -342,6 +342,28 @@ at the same offset. The stock PROM still executes noncoherently and
 through the uncached segment after it enables RAM, and this choice serves
 that while keeping RAM visible to everything else, an *approximation*.
 
+On a machine of more than one node the two halves of that split behave
+differently once nodes are numbered:
+
+- PROM-bound accesses (uncached compatibility segment or CCA 3) reach the
+  reading processor's own node's payload, because every node's
+  processors fetch their own reset vector before any node carries a
+  number other than 0. This is part of the carrier, an *approximation*.
+- Memory-bound accesses name memory by node number, as any other access
+  with node field zero does. While the reader's node is still number 0
+  they reach that node's own banks, or its payload where none is
+  enabled. On any other node they take the node's claim path to node
+  number 0, through the cable, the NI route table and the routers, and
+  are a decode error where node 0 is out of reach (:doc:`hardware/bedrock`),
+  *inferred* from the memory claims.
+
+IRIX 6.5.30 on the model uses pages in that range on nodes of 2 GiB, so
+other nodes must see node 0's memory there and not their own, a
+*software expectation*. The qtests in ``tests/qtest/sn1-cross-node-test.c``
+check the memory half: ``reset-page-is-node-zeros`` on an Origin 3200 from
+every processor, and ``routed-reset-page-follows-the-route`` on an
+Origin 3400 whose route to node 0 is written after numbering.
+
 *Unknown*: how an IP45 board's reset request selects flash rather than
 memory, the fitted flash part, the full chip-select range and what answers
 outside the payload. A public IP45 decoder description or a measurement

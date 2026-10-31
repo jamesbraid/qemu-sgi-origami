@@ -1717,7 +1717,9 @@ the topology's catalogue record before it realizes
 (:ref:`sgi-sn-graphics-pipes`): ``sgi-mgras`` for IMPACT
 (:doc:`hardware/mgras`), ``sgi-kona`` for InfiniteReality
 (:doc:`hardware/kona`) and ``psitech-rad4`` for the PsiTech RAD4
-(:doc:`hardware/psitech-rad4`). At most one pipe is built.
+(:doc:`hardware/psitech-rad4`). ``onyx2-rack`` builds up to two pipes,
+``io3`` and ``io7``. Every other IP27 topology builds one
+(:ref:`sgi-sn-graphics-pipes`).
 
 .. list-table::
    :header-rows: 1

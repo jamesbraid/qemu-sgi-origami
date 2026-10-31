@@ -10,8 +10,9 @@ Used in :ref:`sgi-ip35` (the Origin 300 NUMAlink module, in the
 ``origin300-numalink-pci-expansion`` topology). The Origin 3000 R-brick
 and CX-brick router board (:ref:`sgi-bricks`) are eight-port NUMAlink
 routers too. No cited source names their router ASIC, so that they
-carry this part is *unknown*, and QEMU describes those bricks for
-reference only.
+carry this part is *unknown*. The ``origin3000`` machine's
+``origin3400``, ``onyx3400-ir`` and ``origin3900`` topologies build this
+model for them, an *approximation*.
 
 .. seealso::
 

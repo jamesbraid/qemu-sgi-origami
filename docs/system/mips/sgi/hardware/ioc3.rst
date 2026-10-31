@@ -555,14 +555,23 @@ PHY's reset input.
 The ``gpio-input-mask`` and ``gpio-input-values`` properties make chosen
 pins read-only board inputs: a read of pin data or of a pin register
 returns the property's value for those bits, whatever software wrote. The
-Octane machines use this for the product inputs. OpenBSD ``ip30.h``
+Octane machines use this for the board inputs. OpenBSD ``ip30.h``
 comments pin 2 as 1 on Octane and 0 on Octane2, a *software
-expectation*. The ``octane`` machine drives pin 2 high. The reference
-Octane2 reads pins 2 and 3 high (:ref:`sgi-ioc3-octane2-pins`), and the
-measurement of the modelled product outweighs the driver comment, so
-``octane2`` drives pins 2 and 3 high. Pin 3 on the Octane is unmeasured
-and has no wiring in the model. Whether the inputs are board straps or
-floating pull-ups is *unknown*. Writes
+expectation*. The reference Octane2 reads pins 2 and 3 high
+(:ref:`sgi-ioc3-octane2-pins`), and the measurement outweighs the driver
+comment, so both ``octane`` and ``octane2`` drive pins 2 and 3 high. The
+classic Octane's pins are unmeasured, so matching the Octane2 there is an
+*approximation*. Whether the inputs are board straps or floating
+pull-ups is *unknown*.
+
+On the Octane system board, the board row for subsystem ``0xc304``,
+pins 0 and 1 drive the front lightbar's white and red lamps, high meaning
+lit (:ref:`sgi-ip30-components`). The device then has read-only
+``lightbar-white`` and ``lightbar-red`` properties that follow the output
+latch of those pins, and a trace event fires when either changes. The
+pin direction bits are not consulted, because their effect on the lamps
+is unmeasured. Reset clears the latch, so both lamps go off. Other
+boards have neither property. Writes
 to pin data store all 32 bits, and the stored word is what reads back
 outside the input mask. Pins 0-1, 4 and 8, and pin 3 on the Octane, have no wiring in the model,
 and the edge and level selections in pin control bits 16-19 are stored
@@ -1559,7 +1568,8 @@ Model limits
   word at ``0x1c`` reads zero, where that chip reads its BAR 0 value
   (:ref:`sgi-ioc3-measurements`).
 - Pin data and the pin registers view one stored word behind the board's
-  input mask. Pin 3 on the Octane is unmeasured and unwired.
+  input mask. The Octane's pins 2 and 3 are unmeasured and copy the
+  Octane2's.
 - Chip control bits 21:19 read zero; the reference Octane2 reads 4 there
   at its PROM menu. SuperIO status bits 29 and 30, set on that board, are
   never raised.
@@ -1570,8 +1580,8 @@ Model limits
   bytes and the SuperIO clock register file are not modelled. The main
   block logs ``LOG_UNIMP``; the others are holes.
 - Carrier-detect and clear-to-send change sources, the interrupt input
-  pulse, the external interrupt output pin and the Octane front-panel
-  LEDs are not modelled.
+  pulse and the external interrupt output pin are not modelled. The
+  Octane lightbar is only the two properties above.
 - The 16550 auto flow control, RS-232 and RS-422 mode selection and the
   SuperIO reset bit have no effect.
 - The Ethernet engine raises only the receive timer, receive threshold,

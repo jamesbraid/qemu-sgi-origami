@@ -8,8 +8,9 @@ XBridge: XIO-to-PCI bridge
 
 Used in :ref:`sgi-ip35` (the Origin 300 IO-8 assembly, the Fuel system
 board and the Origin 300 PCI expansion module) and in the Origin 3000
-I-, P- and X-bricks (:ref:`sgi-bricks`), which the catalogue describes
-as reference compositions that no QEMU machine builds.
+I-, N-, P-, V- and X-bricks (:ref:`sgi-bricks`). The ``origin3000``
+machine builds the I-brick's, the N-brick's and the V-brick's. The P-
+and X-bricks are reference compositions no machine builds.
 
 .. seealso::
 

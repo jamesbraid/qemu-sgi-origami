@@ -399,8 +399,36 @@ The machine property ``x-uncatalogued-graphics=on`` skips all of this:
 the machine fits no default pipe, accepts any ``-vga`` and checks no
 graphics ``-device``. It is for register-contract qtests that use a
 machine to carry a board in a slot or combination no SGI system had, such
-as the InfiniteReality pipe the KONA qtests fit to an Origin 2000. At
-most one pipe is built at once on every topology.
+as the InfiniteReality pipe the KONA qtests fit to an Origin 2000.
+
+Each topology's ``max-pipes`` says how many pipes it builds at once: four
+on ``onyx3400-ir``, two on ``onyx2-rack`` (``io3`` and, from two node
+boards, ``io7``, the graphics module's second pipe), one everywhere else.
+A second pipe takes another slot with a second ``-device``. A node board
+controls at most one pipe
+(:src:`origin-onyx2-quick-reference-booklet p. 131`), *established*. ``io7``
+takes one or two raster managers because the model places it on the
+module's left-hand Ktown connector, an *approximation*.
+
+Each pipe presents serials of its own. A pipe slot's records take
+graphics serial instances sixteen per slot, numbered by the slot's place
+in the catalogue's slot list, not by the order the pipes are given in:
+the geometry board takes the pipe record's own serial (G0, G16, G32 and
+G48 on ``onyx3400-ir``), and the raster, texture and display boards the
+slot's later instances. A board two pipes share keeps one serial: the
+Onyx2 rack's ``io7`` lists the graphics module's Ktown with ``io3``'s
+serial. Whether a real second pipe's chain lists the Ktown at all is
+*unknown*, so listing it is an *approximation*. A topology with several
+pipes lists at most four slots, so pipe serials stay below instance 64,
+where boards fitted by slot name start theirs.
+
+A pipe fitted by slot name takes the slot's name as its device id, and
+each of its display channels is a console with the channel as its head.
+``screendump device=gbrick1-pipe0-pipe head=1`` captures the third
+pipe's second channel, and ``-vnc :1,display=io7,head=0`` shows the
+Onyx2 rack's second pipe. Without a device, ``screendump`` takes console
+0, the pipe that realized first, which is the first pipe given on the
+command line.
 ``tests/qtest/sgi-graphics-pipes-test.c`` checks the catalogue
 refusals.
 
@@ -480,6 +508,18 @@ and a backing whose size is not the item's size.
      - The 16 MiB configuration storage of expansion module
        ``<module>`` (:ref:`sgi-pci-expansion-storage`). A new machine's
        starts blank.
+   * - ``<slot>-kona-flash``
+     - ``onyx2`` slots ``io3``, ``io4`` and ``io7``;
+       ``onyx3400-ir`` slots ``gbrick<G>-pipe<P>-pipe``
+     - The 512 KiB flash EEPROM of the InfiniteReality pipe in that slot,
+       flash offset n at file offset n (:doc:`hardware/kona`). The
+       machine gives it to whichever ``sgi-kona`` sits in the slot, the
+       default pipe or a ``-device``, unless that device names its own
+       ``drive``. Every byte the pipe programs is written through, so a
+       video combination stored there is kept for a later run. A new
+       machine's is zero apart from the big-endian header state word 2 at
+       ``0x7ff1c``, which the stock PROM requires before it accepts the
+       pipe.
 
 The older forms still work but are deprecated, and giving both forms for
 one store is refused. They are ``-drive if=pflash,unit=N`` for node N's

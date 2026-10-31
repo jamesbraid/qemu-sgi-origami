@@ -720,7 +720,12 @@ capture; the other two bytes are *unknown* and answer zero. The check
 always passes and every reply is posted at once, *approximations*. No
 factory image has been captured, so the flash starts zero with header
 word 7 set to 2, an *approximation*. The flash keeps its contents across
-reset and migration.
+reset and migration. With a ``drive`` property, or the machine's
+``<slot>-kona-flash`` store (:ref:`sgi-sn-firmware-supply`), the flash
+loads from a 512 KiB image and writes every programmed byte through to
+it, so a stored video combination is kept for a later run; at the next
+graphics initialization the pipe runs the combination stored at
+``0x20000``.
 
 .. _sgi-kona-credits:
 
