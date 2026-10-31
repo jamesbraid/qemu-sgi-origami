@@ -20,8 +20,8 @@
 #define STATE_PHYS          0x00100000
 #define STATE_KSEG1_HI      0xa010
 #define POLL_INTERVAL_US    1000
-#define R16000_CPU "R16000,big-endian=on,r16000-experimental=on," \
-    "r16000-reset-mode=0x3a005,r16000-scache-bytes=4194304"
+#define R16000_CPU "R16000,big-endian=on," \
+    "reset-mode=0x3a005"
 
 /*
  * Boot-exception vectors, shared by the status-re and llsc fragments: both
@@ -594,8 +594,7 @@ static const CPUCase cpu_cases[] = {
     {
         "/r10k-llsc/r12000", "malta",
         "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
-        "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576,"
-        "r12000-scache-block-words=16",
+        "reset-mode=0x198683",
         true, LLSC_COMMON_SUCCESS_MASK,
     },
 };
@@ -2705,8 +2704,7 @@ static const ScacheLineCase scache_line_cases[] = {
     {
         "/r10k/scache/line-size/64",
         "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
-        "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576,"
-        "r12000-scache-block-words=16",
+        "reset-mode=0x198683",
         SCACHE_LINE_TAG_A,
     },
     /*
@@ -3454,8 +3452,7 @@ static char *a_cpu_options(const char *variant, unsigned int ec,
                     (ec << 9) | (sc << 19);
 
     return g_strdup_printf("R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
-        "r12000-reset-mode=0x%x,r12000-scache-bytes=2097152,"
-        "r12000-scache-block-words=16%s%s", mode,
+        "reset-mode=0x%x%s%s", mode,
         variant ? ",r12000-variant=" : "", variant ? variant : "");
 }
 
@@ -3622,8 +3619,7 @@ static void test_r12000a_variant(void)
     static const char *variants[] = { NULL, "r12000", "vr12000a" };
     static const char *fields[] = {
         "r12000-prid=0xe12", "r12000-fpu-id=0x4567",
-        "r12000-reset-mode=0x11a8603", "r12000-scache-bytes=2097152",
-        "r12000-scache-block-words=16",
+        "reset-mode=0x11a8603",
     };
 
     for (unsigned int i = 0; i < ARRAY_SIZE(variants); i++) {
@@ -4064,7 +4060,7 @@ static size_t a_profile_offset(const uint8_t *data, size_t len, size_t *header)
     size_t found = 0;
     unsigned int hits = 0;
 
-    for (size_t i = 2; i + sizeof(name) - 1 + 4 + 24 <= len; i++) {
+    for (size_t i = 2; i + sizeof(name) - 1 + 4 + 16 <= len; i++) {
         if (data[i - 2] == 5 && data[i - 1] == sizeof(name) - 1 &&
             !memcmp(data + i, name, sizeof(name) - 1) &&
             ldl_be_p(data + i + sizeof(name) - 1) == 1) {
@@ -4095,9 +4091,9 @@ static void test_r12000a_migration_malformed(void)
     g_assert_true(g_file_get_contents(stream, &contents, &length, NULL));
     body = a_profile_offset((uint8_t *)contents, length, &header);
     g_assert_cmphex(ldl_be_p(contents + body + 8), ==, 0x011a8603);
-    g_assert_cmpuint((uint8_t)contents[body + 20], ==, 1);
-    g_assert_cmphex(lduw_be_p(contents + body + 21), ==, 0x155);
-    g_assert_cmpuint((uint8_t)contents[body + 23], ==, 1);
+    g_assert_cmpuint((uint8_t)contents[body + 12], ==, 1);
+    g_assert_cmphex(lduw_be_p(contents + body + 13), ==, 0x155);
+    g_assert_cmpuint((uint8_t)contents[body + 15], ==, 1);
     for (unsigned int kind = 0; kind < 6; kind++) {
         g_autofree char *file = g_strdup_printf("%s/input-%u", dir, kind);
         g_autofree char *copy = g_memdup2(contents, length);
@@ -4108,20 +4104,20 @@ static void test_r12000a_migration_malformed(void)
 
         switch (kind) {
         case 1:
-            copy[body + 20] = 2; /* Unknown variant. */
+            copy[body + 12] = 2; /* Unknown variant. */
             break;
         case 2:
-            stw_be_p(copy + body + 21, 0x200);
+            stw_be_p(copy + body + 13, 0x200);
             break;
         case 3:
-            copy[body + 23] = 2; /* Not a boolean byte. */
+            copy[body + 15] = 2; /* Not a boolean byte. */
             break;
         case 4:
-            copy[body + 23] = 0; /* Initial state cannot be nonzero. */
+            copy[body + 15] = 0; /* Initial state cannot be nonzero. */
             break;
         case 5:
-            memmove(copy + header, copy + body + 24, length - body - 24);
-            size -= body + 24 - header;
+            memmove(copy + header, copy + body + 16, length - body - 16);
+            size -= body + 16 - header;
             break;
         default:
             break;

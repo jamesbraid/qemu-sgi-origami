@@ -26,10 +26,8 @@ DONE_EXCEPTION = 1
 DONE_NO_EXCEPTION = 2
 
 R12000 = ('R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,'
-          'r12000-reset-mode=0x198683,r12000-scache-bytes=1048576,'
-          'r12000-scache-block-words=16')
-R16000 = ('R16000,big-endian=on,r16000-experimental=on,'
-          'r16000-reset-mode=0x3a005,r16000-scache-bytes=4194304')
+          'reset-mode=0x198683')
+R16000 = 'R16000,big-endian=on,reset-mode=0x3a005'
 
 
 def instruction(op, rs, rt, immediate):

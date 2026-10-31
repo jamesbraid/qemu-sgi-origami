@@ -119,7 +119,9 @@ static void mips_r10k_reset_mode_set(Object *obj, Visitor *v,
         error_setg(errp, "%s unavailable on this CPU model", name);
         return;
     }
-    if (!mips_r10k_reset_mode_geometry(value, &capacity, &line_size, errp)) {
+    /* The R12000 and R16000 check their own geometry at realize. */
+    if (opaque &&
+        !mips_r10k_reset_mode_geometry(value, &capacity, &line_size, errp)) {
         return;
     }
     cpu->r10k_profile->reset_mode = value;
@@ -156,8 +158,7 @@ static bool mips_r10k_reset_mode_validate(MIPSCPU *cpu, Error **errp)
 }
 
 static const char *const r12000_property_names[R12000_PROFILE_FIELDS] = {
-    "r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
-    "r12000-scache-bytes", "r12000-scache-block-words",
+    "r12000-prid", "r12000-fpu-id",
 };
 
 static void mips_r12000_property_get(Object *obj, Visitor *v,
@@ -250,10 +251,15 @@ bool mips_r12000a_report_secondary_error(MIPSCPU *cpu,
 }
 #endif
 
+/*
+ * The R12000 reports the PRId and FPU identification its board supplies,
+ * and its reset-mode word selects the secondary cache: SS its capacity,
+ * 512 KiB to 16 MiB, and SB 16- or 32-word blocks.
+ */
 static bool mips_r12000_validate(MIPSCPU *cpu, Error **errp)
 {
     R10KCPUProfile *profile = cpu->r10k_profile;
-    uint32_t mode, bytes, words, ec, sc, k0, dsd;
+    uint32_t mode, ss, bytes, words, ec, sc, k0, dsd;
     /* Explicit A adds EC=12 (PClk/SysClk=7), not a secondary divisor. */
     uint32_t max_ec = profile->r12000a ? 12 : 11;
 
@@ -263,33 +269,32 @@ static bool mips_r12000_validate(MIPSCPU *cpu, Error **errp)
             return false;
         }
     }
-    mode = profile->values[R12000_RESET_MODE];
-    bytes = profile->values[R12000_SCACHE_BYTES];
-    words = profile->values[R12000_SCACHE_BLOCK_WORDS];
+    if (!profile->reset_mode_set) {
+        error_setg(errp, "R12000 requires reset-mode");
+        return false;
+    }
+    mode = profile->reset_mode;
+    ss = (mode >> CP0C0_R10K_SS) & 7;
+    words = (mode >> CP0C0_R10K_SB) & 1 ? 32 : 16;
+    bytes = ss <= 5 ? 512 * KiB << ss : 0;
     ec = (mode >> CP0C0_R10K_EC) & 15;
     sc = (mode >> CP0C0_R10K_SC) & 7;
     k0 = mode & 7;
     dsd = (mode >> 22) & 7;
     if ((profile->values[R12000_PRID] & 0xff00) != 0x0e00) {
         error_setg(errp, "r12000-prid requires implementation 0x0e");
-    } else if (mode & ~0x01ffffffu) {
-        error_setg(errp, "r12000-reset-mode exceeds 25 bits");
     } else if (k0 < 2 || k0 == 6 || ec < 3 || ec > max_ec ||
                sc < 2 || sc == 6 || (dsd != 0 && dsd != 4)) {
-        error_setg(errp, "r12000-reset-mode has a reserved encoding");
+        error_setg(errp, "reset-mode has a reserved encoding");
     } else if (((mode >> CP0C0_BE) & 1) != cpu->is_big_endian) {
-        error_setg(errp, "r12000-reset-mode endianness differs from CPU");
-    } else if (((mode >> CP0C0_R10K_SS) & 7) > 5 ||
-               bytes != 512 * KiB << ((mode >> CP0C0_R10K_SS) & 7)) {
+        error_setg(errp, "reset-mode endianness differs from CPU");
+    } else if (ss > 5) {
         /* SS codes 0 to 5 select 512 KiB to 16 MiB; 6 and 7 are reserved. */
-        error_setg(errp, "r12000-scache-bytes disagrees with Config SS");
-    } else if ((words != 16 && words != 32) ||
-               ((mode >> CP0C0_R10K_SB) & 1) != (words == 32)) {
-        error_setg(errp, "r12000-scache-block-words disagrees with Config SB");
+        error_setg(errp, "reset-mode secondary cache size is reserved");
     } else if (words == 16 && bytes > 2 * MiB) {
         /* Tag and MRU state for 64-byte blocks migrates only to 2 MiB. */
-        error_setg(errp, "r12000-scache-block-words=16 supports at most "
-                   "2 MiB of secondary cache");
+        error_setg(errp, "reset-mode 16-word secondary-cache blocks support "
+                   "at most 2 MiB of secondary cache");
     } else {
         profile->cpu_model = g_new(mips_def_t, 1);
         *profile->cpu_model = *cpu->env.cpu_model;
@@ -307,133 +312,39 @@ static bool mips_r12000_validate(MIPSCPU *cpu, Error **errp)
     return false;
 }
 
-static void mips_r16000_experimental_get(Object *obj, Visitor *v,
-                                         const char *name, void *opaque,
-                                         Error **errp)
-{
-    R10KCPUProfile *profile = MIPS_CPU(obj)->r10k_profile;
-    bool value = profile ? profile->r16000_experimental : false;
-
-    visit_type_bool(v, name, &value, errp);
-}
-
-static void mips_r16000_experimental_set(Object *obj, Visitor *v,
-                                         const char *name, void *opaque,
-                                         Error **errp)
-{
-    MIPSCPU *cpu = MIPS_CPU(obj);
-    bool value;
-
-    if (DEVICE(obj)->realized) {
-        error_setg(errp, "%s cannot change after CPU realization", name);
-        return;
-    }
-    if (!visit_type_bool(v, name, &value, errp)) {
-        return;
-    }
-    if (!cpu->r10k_profile) {
-        error_setg(errp, "%s unavailable on this CPU model", name);
-        return;
-    }
-    cpu->r10k_profile->r16000_experimental = value;
-}
-
-static const char *const r16000_property_names[] = {
-    "r16000-reset-mode", "r16000-scache-bytes",
-};
-
-static void mips_r16000_property_get(Object *obj, Visitor *v,
-                                     const char *name, void *opaque,
-                                     Error **errp)
-{
-    R10KCPUProfile *profile = MIPS_CPU(obj)->r10k_profile;
-    unsigned int field = (uintptr_t)opaque;
-    uint32_t value = 0;
-
-    if (profile) {
-        value = field == 0 ? profile->r16000_reset_mode :
-                             profile->r16000_scache_bytes;
-    }
-    visit_type_uint32(v, name, &value, errp);
-}
-
-static void mips_r16000_property_set(Object *obj, Visitor *v,
-                                     const char *name, void *opaque,
-                                     Error **errp)
-{
-    MIPSCPU *cpu = MIPS_CPU(obj);
-    R10KCPUProfile *profile = cpu->r10k_profile;
-    unsigned int field = (uintptr_t)opaque;
-    uint32_t value;
-
-    if (DEVICE(obj)->realized) {
-        error_setg(errp, "%s cannot change after CPU realization", name);
-        return;
-    }
-    if (!visit_type_uint32(v, name, &value, errp)) {
-        return;
-    }
-    if (!profile) {
-        error_setg(errp, "%s unavailable on this CPU model", name);
-        return;
-    }
-    if (field == 0) {
-        profile->r16000_reset_mode = value;
-        profile->r16000_reset_mode_set = true;
-    } else {
-        profile->r16000_scache_bytes = value;
-        profile->r16000_scache_bytes_set = true;
-    }
-}
-
+/*
+ * The R16000's PRId and FPU identification are fixed by its model, and its
+ * reset-mode word selects 128-byte lines and a 4, 8 or 16 MiB secondary
+ * cache.
+ */
 static bool mips_r16000_validate(MIPSCPU *cpu, Error **errp)
 {
     R10KCPUProfile *profile = cpu->r10k_profile;
-    uint32_t mode, bytes, ss;
+    uint32_t mode, ss;
 
-    if (!profile->r16000_experimental) {
-        error_setg(errp, "R16000 requires r16000-experimental=on");
-    } else if (!profile->r16000_reset_mode_set) {
-        error_setg(errp, "R16000 requires r16000-reset-mode");
-    } else if (!profile->r16000_scache_bytes_set) {
-        error_setg(errp, "R16000 requires r16000-scache-bytes");
-    } else if (profile->r16000_reset_mode & ~0x01ffffffu) {
+    if (!profile->reset_mode_set) {
+        error_setg(errp, "R16000 requires reset-mode");
+        return false;
+    }
+    mode = profile->reset_mode;
+    ss = (mode >> CP0C0_R10K_SS) & 7;
+    if (ss < 3 || ss > 5) {
+        error_setg(errp, "reset-mode must select a 4, 8 or 16 MiB "
+                   "secondary cache");
+    } else if (!((mode >> CP0C0_R10K_SB) & 1)) {
         error_setg(errp,
-                   "r16000-reset-mode uses only Config0 bits 24:0; "
-                   "primary cache sizes are fixed at 32 KiB");
+                   "reset-mode requires Config0 SB=1 for 128-byte lines");
+    } else if (((mode >> CP0C0_BE) & 1) != cpu->is_big_endian) {
+        error_setg(errp, "reset-mode endianness differs from CPU");
     } else {
-        mode = profile->r16000_reset_mode;
-        bytes = profile->r16000_scache_bytes;
-        if (bytes == 4 * 1024 * 1024) {
-            ss = 3;
-        } else if (bytes == 8 * 1024 * 1024) {
-            ss = 4;
-        } else if (bytes == 16 * 1024 * 1024) {
-            ss = 5;
-        } else {
-            error_setg(errp,
-                       "r16000-scache-bytes must be 4194304, 8388608, or 16777216");
-            return false;
-        }
-        if (((mode >> CP0C0_R10K_SS) & 7) != ss) {
-            error_setg(errp,
-                       "r16000-scache-bytes disagrees with Config0 SS");
-        } else if (!((mode >> CP0C0_R10K_SB) & 1)) {
-            error_setg(errp,
-                       "r16000-reset-mode requires Config0 SB=1 for 128-byte lines");
-        } else if (((mode >> CP0C0_BE) & 1) != cpu->is_big_endian) {
-            error_setg(errp,
-                       "r16000-reset-mode endianness differs from CPU");
-        } else {
-            profile->cpu_model = g_new(mips_def_t, 1);
-            *profile->cpu_model = *cpu->env.cpu_model;
-            profile->cpu_model->CP0_Config0 |= mode;
-            profile->cpu_model->cfg.scache_size = bytes;
-            profile->cpu_model->cfg.scache_line_size = 128;
-            cpu->env.cpu_model = profile->cpu_model;
-            profile->valid = true;
-            return true;
-        }
+        profile->cpu_model = g_new(mips_def_t, 1);
+        *profile->cpu_model = *cpu->env.cpu_model;
+        profile->cpu_model->CP0_Config0 |= mode;
+        profile->cpu_model->cfg.scache_size = 512 * KiB << ss;
+        profile->cpu_model->cfg.scache_line_size = 128;
+        cpu->env.cpu_model = profile->cpu_model;
+        profile->valid = true;
+        return true;
     }
     return false;
 }
@@ -452,13 +363,18 @@ void mips_r10k_cpu_class_init(ObjectClass *oc, const void *data)
                                   (void *)(uintptr_t)
                                   ((def->CP0_PRid >> 8) & 0xff));
     }
-    if (!strcmp(def->name, "R10000") || !strcmp(def->name, "R14000")) {
-        object_class_property_add(oc, "reset-mode", "uint32",
-                                  mips_r10k_reset_mode_get,
-                                  mips_r10k_reset_mode_set, NULL, NULL);
-        object_class_property_set_description(oc, "reset-mode",
-            "Board processor mode bits, Config0 bits 24:0 from reset");
-    }
+    /*
+     * Every part takes its board's mode bits; the R10000 and R14000 check
+     * the cache geometry they select when set, the others at realize.
+     */
+    object_class_property_add(oc, "reset-mode", "uint32",
+                              mips_r10k_reset_mode_get,
+                              mips_r10k_reset_mode_set, NULL,
+                              (!strcmp(def->name, "R10000") ||
+                               !strcmp(def->name, "R14000")) ?
+                              (void *)1 : NULL);
+    object_class_property_set_description(oc, "reset-mode",
+        "Board processor mode bits, Config0 bits 24:0 from reset");
     if (!strcmp(def->name, "R12000")) {
         object_class_property_add_str(oc, "r12000-variant",
                                        mips_r12000_variant_get,
@@ -471,23 +387,6 @@ void mips_r10k_cpu_class_init(ObjectClass *oc, const void *data)
                                       mips_r12000_property_set,
                                       NULL, (void *)i);
         }
-    }
-    if (!strcmp(def->name, "R16000")) {
-        object_class_property_add(oc, "r16000-experimental", "bool",
-                                  mips_r16000_experimental_get,
-                                  mips_r16000_experimental_set, NULL, NULL);
-        object_class_property_set_description(oc, "r16000-experimental",
-            "Opt in to the CPU-only R16000 compatibility experiment");
-        for (uintptr_t i = 0; i < ARRAY_SIZE(r16000_property_names); i++) {
-            object_class_property_add(oc, r16000_property_names[i], "uint32",
-                                      mips_r16000_property_get,
-                                      mips_r16000_property_set,
-                                      NULL, (void *)i);
-        }
-        object_class_property_set_description(oc, "r16000-reset-mode",
-            "Explicit board Config0 bits 24:0; primary cache sizes are fixed");
-        object_class_property_set_description(oc, "r16000-scache-bytes",
-            "Explicit secondary-cache capacity in bytes for the experiment");
     }
 }
 

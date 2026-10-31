@@ -19,8 +19,7 @@
 #define VPRO_WIDGET 11
 #define VPRO_PATH "/machine/module0/widget-11"
 #define OCTANE2_CPU "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
-    "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152," \
-    "r12000-scache-block-words=32"
+    "reset-mode=0x1aa683"
 
 /* The widget identification register, in its slot's data half. */
 #define ODSY_IDENTITY 0x0004

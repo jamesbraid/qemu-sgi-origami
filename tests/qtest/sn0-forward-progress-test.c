@@ -167,8 +167,7 @@ static void prepare_ip53(QTestState *qts)
 
 /* Test-owned R12000 configuration, as in octane-test.c. */
 #define OCTANE2_CPU "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
-    "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152," \
-    "r12000-scache-block-words=32"
+    "reset-mode=0x1aa683"
 
 static void prepare_fuel(QTestState *qts)
 {

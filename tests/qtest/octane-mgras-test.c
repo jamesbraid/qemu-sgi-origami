@@ -23,8 +23,7 @@
 #define CORE_LINKS 0x8100
 #define SI_LINKS 0x8900
 #define OCTANE2_CPU "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
-    "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152," \
-    "r12000-scache-block-words=32"
+    "reset-mode=0x1aa683"
 
 static char *flash_path;
 

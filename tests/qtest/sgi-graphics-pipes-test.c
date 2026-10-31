@@ -23,8 +23,7 @@
 #include "sgi-test.h"
 
 #define OCTANE2_CPU "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
-    "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152," \
-    "r12000-scache-block-words=32"
+    "reset-mode=0x1aa683"
 
 /* The IP53 PIC fabric's Crossbow link registers for widget w. */
 #define IP53_XBOW_LINK_STATUS(w) (0x100 + ((w) - 8) * 0x40 + 0x10 + 4)
@@ -74,13 +73,13 @@ static const Launch launches[] = {
     { "onyx350-compat", "onyx350,topology=onyx350-compat,"
       "nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9",
-      "-cpu R16000,r16000-experimental=on,r16000-reset-mode=0x009caf85,"
-      "r16000-scache-bytes=0x800000 -smp 4 -m 8G", SN1_PROM, NULL, true },
+      "-cpu R16000,reset-mode=0x009caf85"
+      " -smp 4 -m 8G", SN1_PROM, NULL, true },
     { "tezro", "tezro,topology=tezro,"
       "nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9",
-      "-cpu R16000,r16000-experimental=on,r16000-reset-mode=0x009bad85,"
-      "r16000-scache-bytes=0x400000 -smp 4 -m 4G", SN1_PROM, NULL, true },
+      "-cpu R16000,reset-mode=0x009bad85"
+      " -smp 4 -m 4G", SN1_PROM, NULL, true },
     { "onyx3400-ir", "origin3000,topology=onyx3400-ir",
       "-cpu R12000 -smp 16 -m 16384", SN1_PROM,
       "/machine/module5/gbrick0-pipe0-pipe" },

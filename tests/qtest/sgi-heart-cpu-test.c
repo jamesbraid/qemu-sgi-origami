@@ -145,8 +145,7 @@ static void test_double_bit_cpu(gconstpointer data)
     s = qtest_initf("-M %s -cpu %s -accel tcg -S -bios %s",
         c->r12000 ? "octane2" : "octane",
         c->r12000 ? "R12000,r12000-prid=0xe35,r12000-fpu-id=0x900,"
-        "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152,"
-        "r12000-scache-block-words=32" : "R10000", path);
+        "reset-mode=0x1aa683" : "R10000", path);
     unlink(path);
     qtest_writel(s, HEART_REGS + 0x20, c->r12000 ? 0x80070000 : 0x80030000);
     /* Vary the HEART mask independently of mode bit 13 and CPU masks. */

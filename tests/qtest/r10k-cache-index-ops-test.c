@@ -53,13 +53,11 @@ typedef struct Geo {
     uint32_t line;
 } Geo;
 
+/* reset-mode carries each secondary cache's size and line length. */
 #define R12000_1M_64B \
-    "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567," \
-    "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576," \
-    "r12000-scache-block-words=16"
+    "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,reset-mode=0x198683"
 #define R16000_4M_128B \
-    "R16000,big-endian=on,r16000-experimental=on," \
-    "r16000-reset-mode=0x3a005,r16000-scache-bytes=4194304"
+    "R16000,big-endian=on,reset-mode=0x3a005"
 
 static const Geo geos[] = {
     { "1m-128", "R10000", 1 << 20, 128 },

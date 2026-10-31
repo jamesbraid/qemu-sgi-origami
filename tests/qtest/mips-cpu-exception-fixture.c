@@ -188,8 +188,7 @@ static bool fixture_create_variant(MipsCpuExceptionFixtureState *s,
                                     Error **errp)
 {
     static const char *const inputs[] = {
-        "r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
-        "r12000-scache-bytes", "r12000-scache-block-words",
+        "r12000-prid", "r12000-fpu-id", "reset-mode",
     };
     MIPSCPU *reference = MIPS_CPU(s->cpu);
     DeviceState *device;

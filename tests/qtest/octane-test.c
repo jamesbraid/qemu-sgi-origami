@@ -131,8 +131,7 @@ static QTestState *octane_start_serial(int *sock)
 
 /* Test-owned R12000 configuration, not measured Octane2 reset values. */
 #define OCTANE2_CPU "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
-    "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152," \
-    "r12000-scache-block-words=32"
+    "reset-mode=0x1aa683"
 
 static QTestState *octane2_start_args(const char *extra)
 {

@@ -3144,8 +3144,8 @@ static void test_ip53_runtime_construction(void)
         "-M origin350,topology=origin350,"
         "nvram0=sgi-ds1742-data-io9,"
         "nvram0-clock=sgi-ds1742-clock-io9 -m 2G -smp 4 "
-        "-cpu R16000,r16000-experimental=on,"
-        "r16000-reset-mode=0x009cad85,r16000-scache-bytes=0x800000 "
+        "-cpu R16000,"
+        "reset-mode=0x009cad85 "
         "-drive if=pflash,index=0,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw "
@@ -3184,11 +3184,8 @@ static void test_ip53_runtime_construction(void)
         QDict *cpu = qobject_to(QDict, qlist_entry_obj(entry));
         const char *path = qdict_get_str(cpu, "qom-path");
 
-        g_assert_true(qom_get_bool(qts, path, "r16000-experimental"));
-        g_assert_cmphex(qom_get_uint(qts, path, "r16000-reset-mode"), ==,
+        g_assert_cmphex(qom_get_uint(qts, path, "reset-mode"), ==,
                         0x009cad85);
-        g_assert_cmphex(qom_get_uint(qts, path, "r16000-scache-bytes"), ==,
-                        0x800000);
         cpu_count++;
     }
     qobject_unref(response);
@@ -3248,9 +3245,6 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_options(
     g_autoptr(GError) err = NULL;
     g_autofree char *arguments = NULL;
     g_autofree char *cpu = NULL;
-    const char *scache_bytes = g_str_has_prefix(
-        machine, "onyx4-host") ? "0x1000000" :
-        g_str_has_prefix(machine, "tezro") ? "0x400000" : "0x800000";
     IP53RuntimeTestFixture *fixture = g_new0(IP53RuntimeTestFixture, 1);
     int flash_fd, data_fd, clock_fd;
 
@@ -3270,9 +3264,8 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_options(
     g_assert_cmpint(ftruncate(clock_fd, 16), ==, 0);
     g_assert_cmpint(close(clock_fd), ==, 0);
     cpu = explicit_cpu_properties ?
-        g_strdup_printf("R16000,r16000-experimental=on,"
-                        "r16000-reset-mode=%s,r16000-scache-bytes=%s",
-                        reset_mode, scache_bytes) : g_strdup("R16000");
+        g_strdup_printf("R16000,reset-mode=%s", reset_mode) :
+        g_strdup("R16000");
     arguments = g_strdup_printf(
         "-M %s%s -m %s -smp %s -cpu %s "
         "-drive if=pflash,index=0,file=%s,format=raw "
@@ -3363,11 +3356,8 @@ static void test_onyx4_host_ip53_compatibility_construction(void)
         QDict *cpu = qobject_to(QDict, qlist_entry_obj(entry));
         const char *path = qdict_get_str(cpu, "qom-path");
 
-        g_assert_true(qom_get_bool(qts, path, "r16000-experimental"));
-        g_assert_cmphex(qom_get_uint(qts, path, "r16000-reset-mode"), ==,
+        g_assert_cmphex(qom_get_uint(qts, path, "reset-mode"), ==,
                         0x00edb385);
-        g_assert_cmphex(qom_get_uint(qts, path, "r16000-scache-bytes"), ==,
-                        0x1000000);
         cpu_count++;
     }
     g_assert_cmpuint(cpu_count, ==, 4);
@@ -3415,11 +3405,8 @@ static void test_tezro_two_four_processor_board_builds_two_pic_hosts(void)
         QDict *cpu = qobject_to(QDict, qlist_entry_obj(entry));
         const char *path = qdict_get_str(cpu, "qom-path");
 
-        g_assert_true(qom_get_bool(qts, path, "r16000-experimental"));
-        g_assert_cmphex(qom_get_uint(qts, path, "r16000-reset-mode"), ==,
+        g_assert_cmphex(qom_get_uint(qts, path, "reset-mode"), ==,
                         0x009bad85);
-        g_assert_cmphex(qom_get_uint(qts, path, "r16000-scache-bytes"), ==,
-                        0x400000);
         cpu_count++;
     }
     g_assert_cmpuint(cpu_count, ==, 4);
@@ -3962,11 +3949,8 @@ static void test_ip53_populations_fit_their_r16000s(void)
             QDict *cpu = qobject_to(QDict, qlist_entry_obj(entry));
             const char *path = qdict_get_str(cpu, "qom-path");
 
-            g_assert_true(qom_get_bool(qts, path, "r16000-experimental"));
-            g_assert_cmphex(qom_get_uint(qts, path, "r16000-reset-mode"), ==,
+            g_assert_cmphex(qom_get_uint(qts, path, "reset-mode"), ==,
                             profiles[i].mode);
-            g_assert_cmpuint(qom_get_uint(qts, path, "r16000-scache-bytes"),
-                             ==, profiles[i].cache_bytes);
             cpu_count++;
         }
         g_assert_cmpuint(cpu_count, ==, profiles[i].cpu_count);
@@ -5810,18 +5794,12 @@ static void test_ip53_runtime_cpu_property_refusals(void)
         const char *cpu;
         const char *message;
     } cases[] = {
-        { "R16000,r16000-experimental=off,"
-          "r16000-reset-mode=0x009cad85,r16000-scache-bytes=0x800000",
-          "IP53 CPU property r16000-experimental conflicts with the "
+        { "R16000,reset-mode=0x009cad84",
+          "IP53 CPU property reset-mode conflicts with the "
           "authorized descriptor" },
-        { "R16000,r16000-experimental=on,"
-          "r16000-reset-mode=0x009cad84,r16000-scache-bytes=0x800000",
-          "IP53 CPU property r16000-reset-mode conflicts with the "
-          "authorized descriptor" },
-        { "R16000,r16000-experimental=on,"
-          "r16000-reset-mode=0x009cad85,r16000-scache-bytes=0x400000",
-          "IP53 CPU property r16000-scache-bytes conflicts with the "
-          "authorized descriptor" },
+        /* The opt-in and cache size are gone: the board sets the part. */
+        { "R16000,r16000-experimental=on", "r16000-experimental" },
+        { "R16000,r16000-scache-bytes=0x800000", "r16000-scache-bytes" },
     };
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *blank = g_malloc0(IP53_TEST_PROM_SIZE);
@@ -5868,16 +5846,10 @@ static void test_ip53_runtime_cpu_property_refusals(void)
 
     {
         static const char *const globals[] = {
-            "R16000-mips64-cpu.r16000-experimental=off",
-            "R16000-mips64-cpu.r16000-reset-mode=0x009cad84",
-            "R16000-mips64-cpu.r16000-scache-bytes=0x400000",
+            "R16000-mips64-cpu.reset-mode=0x009cad84",
         };
         static const char *const messages[] = {
-            "IP53 CPU property r16000-experimental conflicts with the "
-            "authorized descriptor",
-            "IP53 CPU property r16000-reset-mode conflicts with the "
-            "authorized descriptor",
-            "IP53 CPU property r16000-scache-bytes conflicts with the "
+            "IP53 CPU property reset-mode conflicts with the "
             "authorized descriptor",
         };
 
@@ -10625,11 +10597,8 @@ static void test_origin3900_cx_brick(void)
             const char *path = qdict_get_str(
                 qobject_to(QDict, qlist_entry_obj(entry)), "qom-path");
 
-            g_assert_true(qom_get_bool(qts, path, "r16000-experimental"));
-            g_assert_cmphex(qom_get_uint(qts, path, "r16000-reset-mode"), ==,
+            g_assert_cmphex(qom_get_uint(qts, path, "reset-mode"), ==,
                             0x009cad85);
-            g_assert_cmphex(qom_get_uint(qts, path, "r16000-scache-bytes"),
-                            ==, 0x800000);
             cpu_count++;
         }
         g_assert_cmpuint(cpu_count, ==, 16);
@@ -10657,11 +10626,10 @@ static void test_origin3900_ip59_cx_brick(void)
         const char *topology;
         const char *board_name;
         uint32_t reset_mode;
-        uint64_t scache_bytes;
         uint64_t clock_hz;
     } bricks[] = {
-        { "origin3900", "", 0x009cad85, 8 * MiB, 700000000 },
-        { "origin3900-ip59", "IP59_4CPU", 0x00edb385, 16 * MiB, 1000000000 },
+        { "origin3900", "", 0x009cad85, 700000000 },
+        { "origin3900-ip59", "IP59_4CPU", 0x00edb385, 1000000000 },
     };
     g_autofree char *prom = NULL;
     g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
@@ -10700,10 +10668,8 @@ static void test_origin3900_ip59_cx_brick(void)
             QDict *cpu = qobject_to(QDict, qlist_entry_obj(entry));
             const char *path = qdict_get_str(cpu, "qom-path");
 
-            g_assert_cmphex(qom_get_uint(qts, path, "r16000-reset-mode"), ==,
+            g_assert_cmphex(qom_get_uint(qts, path, "reset-mode"), ==,
                             bricks[i].reset_mode);
-            g_assert_cmpuint(qom_get_uint(qts, path, "r16000-scache-bytes"),
-                             ==, bricks[i].scache_bytes);
             count++;
         }
         g_assert_cmpuint(count, ==, 16);

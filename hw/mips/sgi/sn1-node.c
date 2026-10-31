@@ -2134,50 +2134,30 @@ static bool sn1_node_create_cpus(SN1NodeState *node, MachineState *machine,
              * The reset-latched processor mode field is Config0 bits 24:0.
              * An R12000 takes it with the rest of its profile above.
              */
-            if (!object_property_find(OBJECT(cpu_dev), "r12000-reset-mode")) {
+            if (!object_property_find(OBJECT(cpu_dev), "r12000-prid")) {
                 object_property_set_uint(OBJECT(cpu_dev), "reset-mode",
                     node->model_node->cpu_slots->value->assembly->mode_bits &
                     0x01ffffff, &error_abort);
             }
         } else {
-            const GlobalProperty *prop;
-            bool experimental;
-            uint64_t reset_mode, scache_bytes;
+            /*
+             * The R16000's identity is fixed by its model; the board
+             * supplies only the mode word, whose SS field selects the
+             * cache, and refuses a -cpu reset-mode that disagrees.
+             */
+            const GlobalProperty *prop =
+                qdev_find_global_prop(OBJECT(cpu_dev), "reset-mode");
 
-            prop = qdev_find_global_prop(OBJECT(cpu_dev),
-                                         "r16000-experimental");
-            experimental = object_property_get_bool(
-                OBJECT(cpu_dev), "r16000-experimental", &error_abort);
-            if (prop && !experimental) {
-                error_setg(errp, "IP53 CPU property r16000-experimental "
+            if (prop &&
+                object_property_get_uint(OBJECT(cpu_dev), "reset-mode",
+                                         &error_abort) !=
+                processor->mode_bits) {
+                error_setg(errp, "IP53 CPU property reset-mode "
                            "conflicts with the authorized descriptor");
                 return false;
             }
-            prop = qdev_find_global_prop(OBJECT(cpu_dev),
-                                         "r16000-reset-mode");
-            reset_mode = object_property_get_uint(
-                OBJECT(cpu_dev), "r16000-reset-mode", &error_abort);
-            if (prop && reset_mode != processor->mode_bits) {
-                error_setg(errp, "IP53 CPU property r16000-reset-mode "
-                           "conflicts with the authorized descriptor");
-                return false;
-            }
-            prop = qdev_find_global_prop(OBJECT(cpu_dev),
-                                         "r16000-scache-bytes");
-            scache_bytes = object_property_get_uint(
-                OBJECT(cpu_dev), "r16000-scache-bytes", &error_abort);
-            if (prop && scache_bytes != (uint64_t)processor->cache_mib * MiB) {
-                error_setg(errp, "IP53 CPU property r16000-scache-bytes "
-                           "conflicts with the authorized descriptor");
-                return false;
-            }
-            object_property_set_bool(OBJECT(cpu_dev), "r16000-experimental",
-                                     true, &error_abort);
-            object_property_set_uint(OBJECT(cpu_dev), "r16000-reset-mode",
+            object_property_set_uint(OBJECT(cpu_dev), "reset-mode",
                                      processor->mode_bits, &error_abort);
-            object_property_set_uint(OBJECT(cpu_dev), "r16000-scache-bytes",
-                                     (uint64_t)processor->cache_mib * MiB,
-                                     &error_abort);
         }
         /* Release both vCPUs from the machine reset handler, not realize. */
         object_property_set_bool(OBJECT(cpu_dev), "start-powered-off", true,

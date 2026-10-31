@@ -555,7 +555,7 @@ property named:
      - approximation: no recorded measurement gives this word; the
        inventory prints no FPU revision for the Octane2
    * - Reset mode word ``0x001aa683``
-     - ``r12000-reset-mode``
+     - ``reset-mode``
      - approximation: big-endian, secondary-cache size code ``010``
        (2 MiB), 32-word secondary-cache blocks, Kseg0 algorithm 3, and
        other divisor and mode fields chosen only to be valid encodings.
@@ -563,11 +563,11 @@ property named:
        from SysAD, and page 366 gives the R12000 divider encodings, but
        no source gives the word this board drives.
    * - Secondary cache 2 MiB
-     - ``r12000-scache-bytes``
+     - the reset word's SS field
      - established by the inventory (:ref:`sgi-ip30-octane2-hinv`); the
        model derives it from the reset word
    * - Secondary-cache block 32 words
-     - ``r12000-scache-block-words``
+     - the reset word's SB field
      - approximation: derived from the chosen reset word; the fitted
        block size is unknown
 

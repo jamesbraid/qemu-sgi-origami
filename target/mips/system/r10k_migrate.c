@@ -489,15 +489,19 @@ const VMStateDescription mips_vmstate_r10k_scache_16m = {
     }
 };
 
+/* A realized R16000: its model fixed, its reset-mode validated. */
+static bool mips_r16000_profile_active(const MIPSCPU *cpu)
+{
+    return cpu->r10k_profile && cpu->r10k_profile->valid &&
+           !strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R16000");
+}
+
 static int mips_r16000_profile_post_load(void *opaque, int version_id)
 {
     R10KCPUProfile *profile = opaque;
 
-    if (!profile->r16000_experimental || !profile->r16000_reset_mode_set ||
-        !profile->r16000_scache_bytes_set ||
-        profile->migration_r16000_reset_mode != profile->r16000_reset_mode ||
-        profile->migration_r16000_scache_bytes !=
-        profile->r16000_scache_bytes) {
+    if (!profile->reset_mode_set ||
+        profile->migration_reset_mode != profile->reset_mode) {
         return -EINVAL;
     }
     profile->migration_r16000_profile_seen = true;
@@ -506,32 +510,27 @@ static int mips_r16000_profile_post_load(void *opaque, int version_id)
 
 static int mips_r16000_profile_pre_load(void *opaque)
 {
-    MIPSCPU *cpu = opaque;
-
-    if (strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R16000") ||
-        !cpu->r10k_profile || !cpu->r10k_profile->r16000_experimental) {
-        return -EINVAL;
-    }
-    return 0;
+    return mips_r16000_profile_active(opaque) ? 0 : -EINVAL;
 }
 
+/*
+ * The source's reset-mode, which the destination's must equal: the cache
+ * it selects was sized at realize.
+ */
 static const VMStateDescription vmstate_r16000_profile = {
     .name = "mips/r16000-profile",
     .version_id = 1,
     .minimum_version_id = 1,
     .post_load = mips_r16000_profile_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32(migration_r16000_reset_mode, R10KCPUProfile),
-        VMSTATE_UINT32(migration_r16000_scache_bytes, R10KCPUProfile),
+        VMSTATE_UINT32(migration_reset_mode, R10KCPUProfile),
         VMSTATE_END_OF_LIST()
     }
 };
 
 static bool mips_r16000_profile_needed(void *opaque)
 {
-    MIPSCPU *cpu = opaque;
-
-    return cpu->r10k_profile && cpu->r10k_profile->r16000_experimental;
+    return mips_r16000_profile_active(opaque);
 }
 
 const VMStateDescription mips_vmstate_r16000_profile = {
@@ -567,6 +566,7 @@ static const VMStateDescription vmstate_r12000_profile = {
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(migration_profile, R10KCPUProfile,
                              R12000_PROFILE_FIELDS),
+        VMSTATE_UINT32(migration_reset_mode, R10KCPUProfile),
         VMSTATE_UINT8(migration_r12000_variant, R10KCPUProfile),
         VMSTATE_UINT16(migration_r12000_syndrome, R10KCPUProfile),
         VMSTATE_UINT8(migration_r12000_captured, R10KCPUProfile),
@@ -600,13 +600,13 @@ void mips_r10k_profile_pre_save(MIPSCPU *cpu)
     if (mips_r12000_profile_active(cpu)) {
         memcpy(profile->migration_profile, profile->values,
                sizeof(profile->values));
+        profile->migration_reset_mode = profile->reset_mode;
         profile->migration_r12000_variant = profile->r12000a;
         profile->migration_r12000_syndrome = profile->r12000a_syndrome;
         profile->migration_r12000_captured = profile->r12000a_captured;
     }
-    if (profile && profile->r16000_experimental) {
-        profile->migration_r16000_reset_mode = profile->r16000_reset_mode;
-        profile->migration_r16000_scache_bytes = profile->r16000_scache_bytes;
+    if (mips_r16000_profile_active(cpu)) {
+        profile->migration_reset_mode = profile->reset_mode;
     }
 }
 
@@ -630,7 +630,7 @@ int mips_r10k_profile_post_load(MIPSCPU *cpu)
         return -EINVAL;
     }
     if (!strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R16000") &&
-        (!profile || !profile->r16000_experimental ||
+        (!mips_r16000_profile_active(cpu) ||
          !profile->migration_r16000_profile_seen ||
          env->CP0_PRid != 0x00000F50 || env->active_fpu.fcr0 != 0x00000900 ||
          (env->CP0_Config0 & env->cpu_model->CP0_Config0_preserve_bitmask) !=
@@ -652,7 +652,8 @@ int mips_r10k_profile_post_load(MIPSCPU *cpu)
             (!profile->r12000a && (profile->migration_r12000_syndrome ||
                                    profile->migration_r12000_captured)) ||
             memcmp(profile->migration_profile, profile->values,
-                   sizeof(profile->values))) {
+                   sizeof(profile->values)) ||
+            profile->migration_reset_mode != profile->reset_mode) {
             return -EINVAL;
         }
     }

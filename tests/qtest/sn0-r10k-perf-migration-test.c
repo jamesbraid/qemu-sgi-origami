@@ -200,8 +200,8 @@ typedef struct {
 
 static const TestConfig configurations[] = {
     { "origin200", "R10000", 0, 1 },
-    { "malta", "R16000,big-endian=on,r16000-experimental=on,"
-      "r16000-reset-mode=0x3a005,r16000-scache-bytes=4194304", 0, 1 },
+    { "malta", "R16000,big-endian=on,"
+      "reset-mode=0x3a005", 0, 1 },
 };
 
 static const CacheTagProbe r10000_cache_probe = {
@@ -616,11 +616,10 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
     g_assert_cmpint(written, ==, sizeof(image));
 }
 
+/* The mode word's SS field selects @capacity's secondary cache. */
 static char *r16000_cpu_args(const CacheCapacity *capacity, uint32_t mode)
 {
-    return g_strdup_printf("R16000,big-endian=on,r16000-experimental=on,"
-                           "r16000-reset-mode=0x%x,r16000-scache-bytes=%u",
-                           mode, capacity->bytes);
+    return g_strdup_printf("R16000,big-endian=on,reset-mode=0x%x", mode);
 }
 
 static char *cpu_qom_path(QTestState *qts)
@@ -657,30 +656,11 @@ static uint64_t cpu_uint_property(QTestState *qts, const char *property)
     return result;
 }
 
-static bool cpu_bool_property(QTestState *qts, const char *property)
-{
-    g_autofree char *path = cpu_qom_path(qts);
-    QDict *value = qtest_qmp(qts,
-        "{'execute':'qom-get','arguments':{'path':%s,'property':%s}}",
-        path, property);
-    QObject *result_obj = qdict_get(value, "return");
-    bool result;
-
-    g_assert_null(qdict_get(value, "error"));
-    g_assert_nonnull(result_obj);
-    result = qdict_get_bool(value, "return");
-    qobject_unref(value);
-    return result;
-}
-
 static void assert_r16000_properties(QTestState *qts,
                                      const CacheCapacity *capacity,
                                      uint32_t mode)
 {
-    g_assert_true(cpu_bool_property(qts, "r16000-experimental"));
-    g_assert_cmpuint(cpu_uint_property(qts, "r16000-reset-mode"), ==, mode);
-    g_assert_cmpuint(cpu_uint_property(qts, "r16000-scache-bytes"), ==,
-                     capacity->bytes);
+    g_assert_cmpuint(cpu_uint_property(qts, "reset-mode"), ==, mode);
 }
 
 static void write_guest_image(int fd, const TestConfig *config)
