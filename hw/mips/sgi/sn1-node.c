@@ -1949,26 +1949,64 @@ static bool sn1_node_uses_r16000(const SN1NodeState *node,
          sgi_machine_ip53_experiment_authorized(machine));
 }
 
+/*
+ * The R16000 tuples each IP53-family product accepts: the clock, secondary
+ * cache and reset-mode word its catalogue profiles select. The IP59 rows are
+ * the 1 GHz generation of the same boards; the reset word is a synthetic
+ * input, as the catalogue states.
+ */
+static const struct {
+    const char *product;
+    uint64_t clock_hz;
+    unsigned int cache_mib;
+    uint32_t reset_mode;
+} sn1_r16000_profiles[] = {
+    { "origin350", 700000000, 8, 0x009cad85 },
+    { "origin350", 1000000000, 16, 0x009dad85 },
+    { "onyx350", 800000000, 8, 0x009caf85 },
+    { "onyx350", 1000000000, 16, 0x009dad85 },
+    { "tezro", 700000000, 4, 0x009bad85 },
+    { "tezro", 1000000000, 16, 0x009dad85 },
+    { "onyx4-host", 1000000000, 16, 0x009dad85 },
+    /* A Cx-brick node board takes the Origin 350's fit, or the IP59's. */
+    { "origin3000", 700000000, 8, 0x009cad85 },
+    { "origin3000", 1000000000, 16, 0x009dad85 },
+};
+
 static bool sn1_node_validate_processors(SN1NodeState *node,
                                         MachineState *machine, Error **errp)
 {
     bool r16000 = sn1_node_uses_r16000(node, machine);
 
     if (r16000) {
-        bool onyx350 = g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product,
-                                 "onyx350") == 0;
-        bool onyx4_host = g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product,
-                                    "onyx4-host") == 0;
-        bool tezro = g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product,
-                               "tezro") == 0;
-        uint32_t expected_mode = onyx4_host ? 0x009dad85 :
-                                 onyx350 ? 0x009caf85 : 0x009cad85;
-        uint64_t expected_clock = onyx4_host ? 1000000000 :
-                                  onyx350 ? 800000000 : 700000000;
-        unsigned int expected_cache_mib = onyx4_host ? 16 : tezro ? 4 : 8;
+        const char *product = SGI_MACHINE_GET_CLASS(machine)->product;
+        const SGIModelProcessor *first = node->nr_cpus ?
+            sn1_cpu_processor(node->model_node, 0) : NULL;
+        uint64_t expected_clock = 0;
+        unsigned int expected_cache_mib = 0;
+        uint32_t expected_mode = 0;
 
-        if (tezro) {
-            expected_mode = 0x009bad85;
+        /*
+         * A node's processors all take the one tuple its first names, and
+         * it must be one the product offers.
+         */
+        for (size_t i = 0; first && i < ARRAY_SIZE(sn1_r16000_profiles);
+             i++) {
+            if (!g_strcmp0(sn1_r16000_profiles[i].product, product) &&
+                first->clock_hz == sn1_r16000_profiles[i].clock_hz &&
+                first->cache_mib == sn1_r16000_profiles[i].cache_mib &&
+                first->has_mode_bits &&
+                first->mode_bits == sn1_r16000_profiles[i].reset_mode) {
+                expected_clock = sn1_r16000_profiles[i].clock_hz;
+                expected_cache_mib = sn1_r16000_profiles[i].cache_mib;
+                expected_mode = sn1_r16000_profiles[i].reset_mode;
+                break;
+            }
+        }
+        if (first && !expected_clock) {
+            error_setg(errp, TYPE_SGI_SN1_NODE " IP53 processor 0 does not "
+                       "match an authorized R16000 profile of %s", product);
+            return false;
         }
 
         if (strcmp(machine->cpu_type, MIPS_CPU_TYPE_NAME("R16000"))) {
