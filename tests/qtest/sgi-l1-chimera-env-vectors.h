@@ -12,6 +12,11 @@
  * use the same 14-wide supply names and two-wide temperature indexes as
  * the 2U rows. The workstation captures show them one column narrower
  * because the forum pages dropped a leading space.
+ *
+ * The rack-mounted workstation (type Q) uses the 2U supply and
+ * temperature tables with its XIO rails fitted, the Odyssey fan list and
+ * automatic fan control. Its zone rows give the sensors and fans the
+ * captured module lists; the target and fan percentages are model values.
  */
 #ifndef SGI_L1_CHIMERA_ENV_VECTORS_H
 #define SGI_L1_CHIMERA_ENV_VECTORS_H
@@ -357,5 +362,196 @@
     "  #\r\n" \
     " 6 BEDROCK           Enabled   31C/ 87F   48C/118F   55C/131F " \
     "  #\r\n"
+
+#define ENV_Q_IP59 \
+    "Environmental monitoring is enabled and running.\r\n" \
+    "\r\n" \
+    "Description    State       Warning Limits     Fault Limits  " \
+    "     Current\r\n" \
+    "-------------- ----------  -----------------  " \
+    "-----------------  -------\r\n" \
+    "          1.8V    Enabled  10%   1.62/  1.98  20%   1.44/  " \
+    "2.16  #\r\n" \
+    "           12V    Enabled  10%  10.80/ 13.20  20%   9.60/ " \
+    "14.40  #\r\n" \
+    "        12V #2    Enabled  10%  10.80/ 13.20  20%   9.60/ " \
+    "14.40  #\r\n" \
+    "          3.3V    Enabled  10%   2.97/  3.63  20%   2.64/  " \
+    "3.96  #\r\n" \
+    "        12V IO    Enabled  10%  10.80/ 13.20  20%   9.60/ " \
+    "14.40  #\r\n" \
+    "        5V AUX    Enabled  10%   4.50/  5.50  20%   4.00/  " \
+    "6.00  #\r\n" \
+    "      3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  " \
+    "3.96  #\r\n" \
+    "    PCI 5V AUX    Enabled  10%   4.50/  5.50  20%   4.00/  " \
+    "6.00  #\r\n" \
+    "      PCI 3.3V    Enabled  10%   2.97/  3.63  20%   2.64/  " \
+    "3.96  #\r\n" \
+    "      PCI 2.5V    Enabled  10%   2.25/  2.75  20%   2.00/  " \
+    "3.00  #\r\n" \
+    "        PCI 5V    Enabled  10%   4.50/  5.50  20%   4.00/  " \
+    "6.00  #\r\n" \
+    "  XIO 12V BIAS    Enabled  10%  10.80/ 13.20  20%   9.60/ " \
+    "14.40  #\r\n" \
+    "        XIO 5V    Enabled  10%   4.50/  5.50  20%   4.00/  " \
+    "6.00  #\r\n" \
+    "      XIO 2.5V    Enabled  10%   2.25/  2.75  20%   2.00/  " \
+    "3.00  #\r\n" \
+    "  XIO 3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  " \
+    "3.96  #\r\n" \
+    " IP59 3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  " \
+    "3.96  #\r\n" \
+    "   IP59 5V AUX    Enabled  10%   4.50/  5.50  20%   4.00/  " \
+    "6.00  #\r\n" \
+    "      IP59 12V    Enabled  10%  10.80/ 13.20  20%   9.60/ " \
+    "14.40  #\r\n" \
+    "     IP59 VCPU    Enabled  10%   1.14/  1.40  20%   1.02/  " \
+    "1.52  #\r\n" \
+    "     IP59 SRAM    Enabled  10%   2.25/  2.75  20%   2.00/  " \
+    "3.00  #\r\n" \
+    "     IP59 1.5V    Enabled  10%   1.35/  1.65  20%   1.20/  " \
+    "1.80  #\r\n" \
+    "\r\n" \
+    "Description     State       Warning RPM  Current RPM\r\n" \
+    "--------------- ----------  -----------  -----------\r\n" \
+    "FAN  0  EXHST 1    Enabled         1980 #\r\n" \
+    "FAN  1       PS    Enabled         3200 #\r\n" \
+    "FAN  2    PCI 1    Enabled         1980 #\r\n" \
+    "FAN  3    PCI 2    Enabled         1980 #\r\n" \
+    "FAN  4      ODY    Enabled         1679 #\r\n" \
+    "FAN  5  N0 LEFT    Enabled         1980 #\r\n" \
+    "FAN  6  N0 CNTR    Enabled         1980 #\r\n" \
+    "FAN  7 N0 RIGHT    Enabled         1980 #\r\n" \
+    "\r\n" \
+    "                              Advisory   Critical   Fault   " \
+    "   Current\r\n" \
+    "Description       State       Temp       Temp       Temp    " \
+    "   Temp\r\n" \
+    "----------------- ----------  ---------  ---------  " \
+    "---------  ---------\r\n" \
+    " 0 INTERFACE 0       Enabled    [Autofan Control]    " \
+    "75C/167F   #\r\n" \
+    " 1 INTERFACE 1       Enabled    [Autofan Control]    " \
+    "75C/167F   #\r\n" \
+    " 2 INTERFACE 2       Enabled    [Autofan Control]    " \
+    "75C/167F   #\r\n" \
+    " 3 PCI RISER         Enabled    [Autofan Control]    " \
+    "75C/167F   #\r\n" \
+    " 4 ODYSSEY           Enabled    [Autofan Control]    " \
+    "75C/167F   #\r\n" \
+    " 5 NODE              Enabled    [Autofan Control]    " \
+    "75C/167F   #\r\n" \
+    " 6 BEDROCK           Enabled    [Autofan Control]    " \
+    "75C/167F   #\r\n" \
+    "\r\n" \
+    "                    Zone Temp     Target    Current   Zone " \
+    "Fan   Curr/Min\r\n" \
+    "Zone Name  State     Sensors       Average   Average   " \
+    "Index      Fan %\r\n" \
+    "---------  --------  ------------  --------  --------  " \
+    "---------  ---------\r\n" \
+    "NODE        Enabled     0,1,2,5,6  62C/143F  41C/105F       " \
+    "   0   46%/ 46%\r\n" \
+    "PS          Enabled     0,1,2,5,6  62C/143F  41C/105F       " \
+    "   1   46%/ 46%\r\n" \
+    "PCI         Enabled             3  45C/113F  41C/105F       " \
+    " 2,3   57%/ 57%\r\n" \
+    "ODY         Enabled             4  50C/122F  45C/113F       " \
+    "   4   64%/ 64%\r\n"
+
+#define ENV_Q_IP53 \
+    "Environmental monitoring is enabled and running.\r\n" \
+    "\r\n" \
+    "Description    State       Warning Limits     Fault Limits  " \
+    "     Current\r\n" \
+    "-------------- ----------  -----------------  " \
+    "-----------------  -------\r\n" \
+    "          1.8V    Enabled  10%   1.62/  1.98  20%   1.44/  " \
+    "2.16  #\r\n" \
+    "           12V    Enabled  10%  10.80/ 13.20  20%   9.60/ " \
+    "14.40  #\r\n" \
+    "        12V #2    Enabled  10%  10.80/ 13.20  20%   9.60/ " \
+    "14.40  #\r\n" \
+    "          3.3V    Enabled  10%   2.97/  3.63  20%   2.64/  " \
+    "3.96  #\r\n" \
+    "        12V IO    Enabled  10%  10.80/ 13.20  20%   9.60/ " \
+    "14.40  #\r\n" \
+    "        5V AUX    Enabled  10%   4.50/  5.50  20%   4.00/  " \
+    "6.00  #\r\n" \
+    "      3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  " \
+    "3.96  #\r\n" \
+    "    PCI 5V AUX    Enabled  10%   4.50/  5.50  20%   4.00/  " \
+    "6.00  #\r\n" \
+    "      PCI 3.3V    Enabled  10%   2.97/  3.63  20%   2.64/  " \
+    "3.96  #\r\n" \
+    "      PCI 2.5V    Enabled  10%   2.25/  2.75  20%   2.00/  " \
+    "3.00  #\r\n" \
+    "        PCI 5V    Enabled  10%   4.50/  5.50  20%   4.00/  " \
+    "6.00  #\r\n" \
+    "  XIO 12V BIAS    Enabled  10%  10.80/ 13.20  20%   9.60/ " \
+    "14.40  #\r\n" \
+    "        XIO 5V    Enabled  10%   4.50/  5.50  20%   4.00/  " \
+    "6.00  #\r\n" \
+    "      XIO 2.5V    Enabled  10%   2.25/  2.75  20%   2.00/  " \
+    "3.00  #\r\n" \
+    "  XIO 3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  " \
+    "3.96  #\r\n" \
+    " IP53 3.3V AUX    Enabled  10%   2.97/  3.63  20%   2.64/  " \
+    "3.96  #\r\n" \
+    "   IP53 5V AUX    Enabled  10%   4.50/  5.50  20%   4.00/  " \
+    "6.00  #\r\n" \
+    "      IP53 12V    Enabled  10%  10.80/ 13.20  20%   9.60/ " \
+    "14.40  #\r\n" \
+    "     IP53 VCPU    Enabled  10%   1.13/  1.38  20%   1.00/  " \
+    "1.50  #\r\n" \
+    "     IP53 SRAM    Enabled  10%   2.25/  2.75  20%   2.00/  " \
+    "3.00  #\r\n" \
+    "     IP53 1.5V    Enabled  10%   1.35/  1.65  20%   1.20/  " \
+    "1.80  #\r\n" \
+    "\r\n" \
+    "Description     State       Warning RPM  Current RPM\r\n" \
+    "--------------- ----------  -----------  -----------\r\n" \
+    "FAN  0  EXHST 1    Enabled         1980 #\r\n" \
+    "FAN  1       PS    Enabled         3200 #\r\n" \
+    "FAN  2    PCI 1    Enabled         1980 #\r\n" \
+    "FAN  3    PCI 2    Enabled         1980 #\r\n" \
+    "FAN  4      ODY    Enabled         1679 #\r\n" \
+    "\r\n" \
+    "                              Advisory   Critical   Fault   " \
+    "   Current\r\n" \
+    "Description       State       Temp       Temp       Temp    " \
+    "   Temp\r\n" \
+    "----------------- ----------  ---------  ---------  " \
+    "---------  ---------\r\n" \
+    " 0 INTERFACE 0       Enabled    [Autofan Control]    " \
+    "75C/167F   #\r\n" \
+    " 1 INTERFACE 1       Enabled    [Autofan Control]    " \
+    "75C/167F   #\r\n" \
+    " 2 INTERFACE 2       Enabled    [Autofan Control]    " \
+    "75C/167F   #\r\n" \
+    " 3 PCI RISER         Enabled    [Autofan Control]    " \
+    "75C/167F   #\r\n" \
+    " 4 ODYSSEY           Enabled    [Autofan Control]    " \
+    "75C/167F   #\r\n" \
+    " 5 NODE              Enabled    [Autofan Control]    " \
+    "75C/167F   #\r\n" \
+    " 6 BEDROCK           Enabled    [Autofan Control]    " \
+    "75C/167F   #\r\n" \
+    "\r\n" \
+    "                    Zone Temp     Target    Current   Zone " \
+    "Fan   Curr/Min\r\n" \
+    "Zone Name  State     Sensors       Average   Average   " \
+    "Index      Fan %\r\n" \
+    "---------  --------  ------------  --------  --------  " \
+    "---------  ---------\r\n" \
+    "NODE        Enabled     0,1,2,5,6  62C/143F  40C/104F       " \
+    "   0   46%/ 46%\r\n" \
+    "PS          Enabled     0,1,2,5,6  62C/143F  40C/104F       " \
+    "   1   46%/ 46%\r\n" \
+    "PCI         Enabled             3  45C/113F  38C/100F       " \
+    " 2,3   57%/ 57%\r\n" \
+    "ODY         Enabled             4  50C/122F  42C/107F       " \
+    "   4   64%/ 64%\r\n"
 
 #endif
