@@ -208,10 +208,14 @@ static const MemoryRegionOps sgi_ioc3_pci_bar_ops = {
 };
 
 /*
- * The chip decodes five configuration address bits: dwords 0x20-0x3f repeat
- * 0x00-0x1f. The repeat hides the subsystem dword at 0x2c and the interrupt
- * pin byte at 0x3d from a guest, while the PCI core keeps routing the
- * chip's INTA from the stored pin.
+ * The reference Octane2's chip reads configuration dwords 0x20-0x3f as a
+ * repeat of 0x00-0x1f. What it does at 0x40 and above is unknown, so only
+ * that range repeats here. The repeat hides the stored subsystem dword at
+ * 0x2c and the interrupt pin byte at 0x3d from a guest, while the PCI core
+ * keeps routing the chip's INTA from the stored pin. Writes are not
+ * aliased: a write in 0x20-0x3f, such as the interrupt line, lands in the
+ * hidden store and does not read back. What the chip does with such a write
+ * is unknown; both public drivers avoid it.
  */
 static uint32_t sgi_ioc3_config_read(PCIDevice *dev, uint32_t addr, int len)
 {
@@ -1127,8 +1131,10 @@ static const MemoryRegionOps sgi_ioc3_ssram_ops = {
 };
 
 /*
- * The sub-devices each board fits, keyed by the subsystem identity a guest
- * reads out of configuration space. Mainline Linux's per-board setup
+ * The sub-devices each board fits, keyed by the board's subsystem-id
+ * property. The chip does not show that identity in configuration space;
+ * Linux finds the board from the Bridge's board part and OpenBSD from the
+ * one-wire records. Mainline Linux's per-board setup
  * routines (drivers/mfd/ioc3.c, v7.2-rc7, commit db2ddb8) provide the
  * starting population. Its driver has no parallel child, so physical
  * parallel ports also follow the board manuals and OpenBSD attachment.
@@ -1727,8 +1733,8 @@ static void sgi_ioc3_init(Object *obj)
 
     /*
      * Both clocks are initialized; realize keeps whichever this board fits
-     * and unparents the other. A subsystem identity is a property, so which
-     * one is wanted is not known until then.
+     * and unparents the other. The board key is a property, so which one
+     * is wanted is not known until then.
      */
     object_initialize_child(obj, "rtc", &s->rtc, TYPE_M48T35);
     object_initialize_child(obj, "ds1685", &s->ds1685, TYPE_DS1685);

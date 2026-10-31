@@ -11394,8 +11394,8 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
                               sgi_machine_get_ioc3_subsystem_id,
                               sgi_machine_set_ioc3_subsystem_id, NULL, NULL);
     object_class_property_set_description(oc, "ioc3-subsystem-id",
-        "Override the catalogue's IOC3 PCI subsystem ID for every Bedrock "
-        "I/O board.");
+        "Override the catalogue's IOC3 board key, which selects the "
+        "IOC3's sub-device population, for every Bedrock I/O board.");
 
     object_class_property_add(oc, "l1-type-code", "uint8",
                               sgi_machine_get_l1_type_code,
