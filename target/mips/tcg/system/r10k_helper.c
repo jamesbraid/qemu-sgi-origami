@@ -125,6 +125,43 @@ static unsigned int r10k_dcache_word_index(hwaddr pa, unsigned int way)
     return ((pa >> 2) & 0xfff) * R10K_PCACHE_WAYS + way;
 }
 
+/*
+ * The slot a secondary index operation names. The secondary cache is
+ * indexed by the physical address the operand translated to, and address
+ * bit 0 picks the way, mapped operand or not (datasheet, "Geometry and
+ * address bits"). Every secondary index operation takes its location from
+ * here, so a rule for operands that needed translation changes this one
+ * function. Returns false for a location the arrays do not hold.
+ */
+typedef struct R10KScacheOperand {
+    unsigned int set;
+    unsigned int way;
+    unsigned int tag;
+    unsigned int quad;
+    unsigned int dword;
+} R10KScacheOperand;
+
+static bool r10k_scache_operand(CPUMIPSState *env, hwaddr paddr,
+                                R10KScacheOperand *op)
+{
+    unsigned int quad_set = (paddr / 16) & (r10k_scache_quad_sets(env) - 1);
+
+    op->way = paddr & 1;
+    op->set = (paddr / r10k_scache_line_size(env)) &
+              (r10k_scache_sets(env) - 1);
+    op->tag = op->set * R10K_SCACHE_WAYS + op->way;
+    op->quad = quad_set * R10K_SCACHE_WAYS + op->way;
+    op->dword = op->quad * 2 + extract64(paddr, 3, 1);
+    return op->set < r10k_scache_sets(env) &&
+           op->tag < r10k_scache_size(env) / r10k_scache_line_size(env) &&
+           op->tag < R10K_SCACHE_MAX_TAGS &&
+           op->set < R10K_SCACHE_MAX_SETS &&
+           op->quad < r10k_scache_size(env) / 16 &&
+           op->quad < R10K_SCACHE_MAX_QUADWORDS &&
+           op->dword < r10k_scache_size(env) / 8 &&
+           op->dword < R10K_SCACHE_MAX_DWORDS;
+}
+
 static int r10k_scache_find(CPUMIPSState *env, hwaddr pa)
 {
     unsigned int set = (pa / r10k_scache_line_size(env)) &
@@ -776,37 +813,31 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
          * A block already invalid is left entirely alone — no tag
          * rewrite, and the MRU bit stays where it was.
          */
-        unsigned int way = paddr & 1;
-        unsigned int set = (paddr / r10k_scache_line_size(env)) &
-                           (r10k_scache_sets(env) - 1);
+        R10KScacheOperand slot;
 
         /*
          * A block the board follows is written back if dirty, and a
          * block write or nothing goes out on the interface either way
          * (the processor block write and eliminate protocols).
          */
-        unsigned int tag = set * R10K_SCACHE_WAYS + way;
-
-        if (set >= r10k_scache_sets(env) || way >= R10K_SCACHE_WAYS ||
-            tag >= r10k_scache_size(env) / r10k_scache_line_size(env) ||
-            tag >= R10K_SCACHE_MAX_TAGS) {
+        if (!r10k_scache_operand(env, paddr, &slot)) {
             return;
         }
         r10k_system_request(env, R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE,
                             paddr, ctz32(r10k_scache_sets(env)));
-        if (env->r10k->scache_taglo[tag] & (3 << 10)) {
+        if (env->r10k->scache_taglo[slot.tag] & (3 << 10)) {
             if (MIPS_CPU(env_cpu(env))->cache_data_visibility) {
-                hwaddr line = (r10k_scache_tag_pa(env, tag) << 18) |
+                hwaddr line = (r10k_scache_tag_pa(env, slot.tag) << 18) |
                               (paddr & 0x3ffff);
 
                 line &= ~(hwaddr)(r10k_scache_line_size(env) - 1);
 
                 if (!r10k_scache_flush_primaries(env, line) ||
-                    !r10k_scache_writeback(env, line, way)) {
+                    !r10k_scache_writeback(env, line, slot.way)) {
                     return;
                 }
             }
-            r10k_scache_invalidate(env, set, way, paddr, addr);
+            r10k_scache_invalidate(env, slot.set, slot.way, paddr, addr);
         }
         return;
     }
@@ -868,64 +899,45 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                            cache_operation == 0b010 ||
                            cache_operation == 0b110 ||
                            cache_operation == 0b111)) {
-        unsigned int way = paddr & 1;
+        R10KScacheOperand slot;
 
+        if (!r10k_scache_operand(env, paddr, &slot)) {
+            return;
+        }
         if (cache_operation == 0b001 || cache_operation == 0b010) {
-            unsigned int set = (paddr / r10k_scache_line_size(env)) &
-                               (r10k_scache_sets(env) - 1);
-            unsigned int tag = set * R10K_SCACHE_WAYS + way;
-
-            if (set >= r10k_scache_sets(env) || way >= R10K_SCACHE_WAYS ||
-                tag >= r10k_scache_size(env) / r10k_scache_line_size(env) ||
-                tag >= R10K_SCACHE_MAX_TAGS ||
-                set >= R10K_SCACHE_MAX_SETS) {
-                return;
-            }
             /* TagHi's MRU bit is set-wide; its tag nibble is per-way. */
             if (cache_operation == 0b010) { /* Index Store Tag */
-                env->r10k->scache_taglo[tag] =
+                env->r10k->scache_taglo[slot.tag] =
                     env->CP0_TagLo & R10K_SCACHE_TAGLO_MASK;
-                env->r10k->scache_taghi[tag] =
+                env->r10k->scache_taghi[slot.tag] =
                     env->CP0_TagHi & R10K_SCACHE_TAGHI_MASK;
-                env->r10k->scache_mru[set] =
+                env->r10k->scache_mru[slot.set] =
                     extract32(env->CP0_TagHi, 31, 1);
             } else { /* Index Load Tag */
-                env->CP0_TagLo = env->r10k->scache_taglo[tag];
-                env->CP0_TagHi = env->r10k->scache_taghi[tag] |
-                    ((uint32_t)env->r10k->scache_mru[set] << 31);
+                env->CP0_TagLo = env->r10k->scache_taglo[slot.tag];
+                env->CP0_TagHi = env->r10k->scache_taghi[slot.tag] |
+                    ((uint32_t)env->r10k->scache_mru[slot.set] << 31);
             }
-        } else {
-            unsigned int quad_set = (paddr / 16) &
-                (r10k_scache_quad_sets(env) - 1);
-            unsigned int quad = quad_set * R10K_SCACHE_WAYS + way;
-            unsigned int dword = quad * 2 + extract64(paddr, 3, 1);
+        } else if (cache_operation == 0b111) { /* Index Store Data */
+            /*
+             * The data array is one quadword wide and is written
+             * whole: the doubleword not named by the address is
+             * padded with zeroes so the stored check bits cover a
+             * known quadword. Other quadwords of the block are not
+             * touched.
+             */
+            env->r10k->scache_data[slot.quad * 2] = 0;
+            env->r10k->scache_data[slot.quad * 2 + 1] = 0;
+            env->r10k->scache_data[slot.dword] =
+                (uint64_t)(uint32_t)env->CP0_TagHi << 32 |
+                (uint32_t)env->CP0_TagLo;
+            env->r10k->scache_ecc[slot.quad] = env->CP0_ErrCtl & 0x3ff;
+        } else { /* Index Load Data */
+            uint64_t data = env->r10k->scache_data[slot.dword];
 
-            if (quad >= r10k_scache_size(env) / 16 ||
-                quad >= R10K_SCACHE_MAX_QUADWORDS ||
-                dword >= r10k_scache_size(env) / 8 ||
-                dword >= R10K_SCACHE_MAX_DWORDS) {
-                return;
-            }
-            if (cache_operation == 0b111) { /* Index Store Data */
-                /*
-                 * The data array is one quadword wide and is written
-                 * whole: the doubleword not named by the address is
-                 * padded with zeroes so the stored check bits cover a
-                 * known quadword.
-                 */
-                env->r10k->scache_data[quad * 2] = 0;
-                env->r10k->scache_data[quad * 2 + 1] = 0;
-                env->r10k->scache_data[dword] =
-                    (uint64_t)(uint32_t)env->CP0_TagHi << 32 |
-                    (uint32_t)env->CP0_TagLo;
-                env->r10k->scache_ecc[quad] = env->CP0_ErrCtl & 0x3ff;
-            } else { /* Index Load Data */
-                uint64_t data = env->r10k->scache_data[dword];
-
-                env->CP0_TagLo = (uint32_t)data;
-                env->CP0_TagHi = data >> 32;
-                env->CP0_ErrCtl = env->r10k->scache_ecc[quad];
-            }
+            env->CP0_TagLo = (uint32_t)data;
+            env->CP0_TagHi = data >> 32;
+            env->CP0_ErrCtl = env->r10k->scache_ecc[slot.quad];
         }
     }
 }
