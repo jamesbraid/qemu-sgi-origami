@@ -18,6 +18,7 @@ import re
 from typing import Any
 
 from .exceptions import ResolutionError
+from .registry import IP53_RUNTIME_PROFILES, TEZRO_RUNTIME_PRODUCTS
 
 
 EXCLUSION_FIELDS = {"match", "reason", "provenance", "sources", "evidence_gap"}
@@ -1384,18 +1385,7 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
         if (component.get("kind") != "pci-host-bridge"
                 or component.get("hardware_kind") != "pic"):
             raise ResolutionError(f"component '{cid}' is not a PIC host")
-        expected = {
-            "origin350": ("origin350", "ip53-origin350"),
-            "onyx4-host-serial-compat": (
-                "onyx4-host", "ip53-onyx4-host-serial-compat"),
-            "onyx350-compat": ("onyx350", "ip53-onyx350-compat"),
-            "tezro-tower-one": (
-                "tezro", "tezro-tower-one-serial-compat"),
-            "tezro-tower-multi": (
-                "tezro", "tezro-tower-multi-serial-compat"),
-            "tezro-rack": (
-                "tezro", "tezro-rack-serial-compat"),
-        }.get(product)
+        expected = IP53_RUNTIME_PROFILES.get(product)
         experiment = (
             expected is not None
             and emulation.get("machine_name") == expected[0]
@@ -1404,13 +1394,9 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                 "launch_recipe") == "ip53-discovery"
         )
         tezro_experiment = (
-            product in {"tezro-tower-one", "tezro-tower-multi", "tezro-rack"}
+            product in TEZRO_RUNTIME_PRODUCTS
             and emulation.get("machine_name") == "tezro"
-            and emulation.get("profile") in {
-                "tezro-tower-one-serial-compat",
-                "tezro-tower-multi-serial-compat",
-                "tezro-rack-serial-compat",
-            }
+            and emulation.get("profile") == expected[1]
         )
         if profile != "pic-rev3-bedrock" and not (
                 profile == "pic-rev3-bedrock-experimental" and experiment):
@@ -1511,9 +1497,7 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                         raise ResolutionError(
                             f"'{cid}' board identity violates configured mask")
                 identity = component.get("identity", {})
-                if product in {
-                    "tezro-tower-one", "tezro-tower-multi", "tezro-rack",
-                }:
+                if product in TEZRO_RUNTIME_PRODUCTS:
                     if "hardware_revision" in identity:
                         integer(identity["hardware_revision"], 15,
                                 f"'{cid}' hardware_revision")

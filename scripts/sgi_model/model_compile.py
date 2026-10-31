@@ -1100,6 +1100,17 @@ def _processor(model: dict, cpu: dict) -> dict:
         profile = {
             "origin350": ("origin350", 700, 0x009cad85,
                           "ip53-origin350"),
+            "origin350-ip59": ("origin350", 1000, 0x009dad85,
+                               "ip59-origin350"),
+            "onyx350-ip59": ("onyx350", 1000, 0x009dad85, "ip59-onyx350"),
+            "onyx4-host-ip59": ("onyx4-host", 1000, 0x009dad85,
+                                "ip59-onyx4-host"),
+            "tezro-tower-one-ip59": (
+                "tezro", 1000, 0x009dad85, "ip59-tezro-tower-one"),
+            "tezro-tower-multi-ip59": (
+                "tezro", 1000, 0x009dad85, "ip59-tezro-tower-multi"),
+            "tezro-rack-ip59": (
+                "tezro", 1000, 0x009dad85, "ip59-tezro-rack"),
             "onyx4-host-serial-compat": (
                 "onyx4-host", 1000, 0x009dad85,
                 "ip53-onyx4-host-serial-compat"),
@@ -1121,7 +1132,7 @@ def _processor(model: dict, cpu: dict) -> dict:
         }.get(product)
         cx_brick = product == "origin3900"
         origin350_projection = (
-            product == "origin350"
+            product in ("origin350", "origin350-ip59")
             and model.get("machine", {}).get("emulation", {}).get(
                 "machine_name") == "origin350")
         if (profile is None or
@@ -1150,7 +1161,7 @@ def _processor(model: dict, cpu: dict) -> dict:
             "r16000-experimental", "r16000-reset-mode",
             "r16000-scache-bytes",
         ]
-        expected_cache_mib = (16 if product == "onyx4-host-serial-compat" else
+        expected_cache_mib = (16 if clock_mhz == 1000 else
                               4 if product in {
             "tezro-tower-one", "tezro-tower-multi", "tezro-rack",
         } else 8)
@@ -3733,6 +3744,8 @@ def _compile_ip35_firmware(model: dict) -> dict:
     ip53_products = {
         "origin350", "onyx4-host-serial-compat", "onyx350-compat",
         "tezro-tower-one", "tezro-tower-multi", "tezro-rack",
+        "origin350-ip59", "onyx4-host-ip59", "onyx350-ip59",
+        "tezro-tower-one-ip59", "tezro-tower-multi-ip59", "tezro-rack-ip59",
     }
     if (firmware is None and
             model.get("composition", {}).get("product") in ip53_products):

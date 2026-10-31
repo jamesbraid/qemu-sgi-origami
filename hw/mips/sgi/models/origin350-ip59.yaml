@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Origin 350 with an IP59 node board.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip53.yaml
+  - layers/modules/ip59-origin350-module.yaml
+  - layers/products/origin350-ip59.yaml

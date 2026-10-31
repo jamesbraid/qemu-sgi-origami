@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Onyx 4 host with an IP59 node board.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip53.yaml
+  - layers/modules/ip59-onyx4-host-module.yaml
+  - layers/products/onyx4-host-ip59.yaml

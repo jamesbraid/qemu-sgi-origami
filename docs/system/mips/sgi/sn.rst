@@ -748,11 +748,25 @@ Onyx2 deskside. ``-M <product>,topology=help`` lists the rest:
      - 1
      - 2 or 4
      - 4096 MiB (fixed)
-   * - ``onyx4-host-serial-compat`` (default)
+   * - ``onyx4-host-ip59`` (default)
      - ``onyx4-host``
      - 1
      - 4 (fixed)
      - 8192 MiB (fixed)
+   * - ``onyx4-host-serial-compat``
+     - ``onyx4-host``
+     - 1
+     - 4 (fixed)
+     - 8192 MiB (fixed)
+   * - ``origin350-ip59``, ``onyx350-ip59``, ``tezro-tower-one-ip59``,
+       ``tezro-tower-multi-ip59``, ``tezro-rack-ip59``
+     - as the IP53 topology of the same name
+     - 1
+     - as the IP53 topology
+     - as the IP53 topology
+
+The ``-ip59`` topologies carry the 1 GHz IP59 node board; see
+:ref:`sgi-ip59-profiles`.
 
 ``-M origin200,topology=origin200-dual`` selects the second row. Each
 topology describes one chassis, and its catalogue record carries a
@@ -1181,7 +1195,8 @@ What each topology offers today:
      - ``widget-13``
      - ``v12``
      - ``v12``
-   * - ``tezro-tower-multi``, ``onyx350-compat``
+   * - ``tezro-tower-multi``, ``onyx350-compat``, and their ``-ip59``
+       topologies
      - ``widget-12`` on the PIC fabric
      - none
      - ``v12``

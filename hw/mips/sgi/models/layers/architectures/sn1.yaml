@@ -71,9 +71,8 @@ layer:
             cache_mib: 16
             notes: >-
               Public HINV reports this tuple for module 001c01, an IP59_4CPU
-              board. Selecting that module as an Onyx 4 host is an inference;
-              this tuple is used only by the explicitly IP53-backed serial
-              compatibility experiment. It does not establish reset behavior.
+              board; the IP59 products and the Onyx 4 host experiment use it.
+              It does not establish reset behavior.
           - clock_mhz: 700
             cache_mib: 4
             notes: >-

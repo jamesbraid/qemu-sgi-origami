@@ -1,0 +1,188 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Proposed one-node Onyx 350 compatibility profile; choices await independent review.
+layer_version: 1
+sources:
+  ip59-node-board: "web:irixnet-thread-2263  module 001c01 of the captured system: Part:030-1989-003;Name:IP59_4CPU;Revision:-C, four 1.0 GHz R16000 revision 3.0 with 16 MB secondary cache"
+  ip59-two-cpu-board: "web:nekonomicon-16719032  Tezro rack: IP59_2CPU 030-2059-002 revision A, two 1.0 GHz R16000 on slices A and C"
+  ip59-identity: "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf share/man/man4/man4.sgi/intro.4 lines 113-114: IP59 is the 1GHz IP53 design, listed for the Origin 350, Onyx 350 and Tezro"
+  ip53-product-capacity: "007-4566-001 printed pages 68-75 and 114-120: IP53 two/four R16000 configurations, 2 or 4 processors, 8 DIMM slots and 512 MiB or 1 GiB DIMMs"
+  onyx350-compatibility-proposal: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 350 software profile and unresolved physical behavior"
+  onyx350-hinv: "web:graphica-onyx350-hinv  module 001c01 CPU, memory and PROM 6.211 inventory"
+  onyx350-flash-candidate: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected 800 MHz flash seed from IP35 PROM 6.210"
+  ip53-platform-driver: "openbsd-sgi revision 2df91d80c104636deeef8124252ddd5951b55fbf: sys/arch/sgi/sgi/ip27_machdep.c:166-185 and sys/arch/sgi/sgi/ip27.h:43-46"
+  ip53-clock-year-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected fresh-clock seed and limits"
+layer:
+  kind: product
+  id: onyx350-ip59
+  requires: {assembly: ip53}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[4]]
+    provenance: derived
+    sources: [ip53-product-capacity, onyx350-compatibility-proposal, onyx350-hinv]
+  population:
+    nodes: 1
+    cpus_per_node: [4]
+    provenance: derived
+    sources: [ip53-product-capacity, onyx350-compatibility-proposal, onyx350-hinv]
+  cpu_selection:
+    default: {clock_mhz: 1000, cache_mib: 16}
+    slots: [cpu0, cpu1, cpu2, cpu3]
+  memory_kits_per_node: [kit-8192-at-banks-0-7-onyx350-observed]
+  # The slots a graphics pipe can take, what each offers and the pipe
+  # the machine fits by default; products and values are
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/system/mips/sgi/sn.rst,
+  # Graphics pipes). The V12 is optional and fitted by -device only.
+  graphics:
+    max_pipes: 1
+    headless: true
+    slots:
+      - name: widget-12
+        description: "VPro at PIC widget 12 in the captured graphics configuration"
+        placement: {slot: widget-12}
+        families:
+          - family: odyssey
+            products:
+              - {product: v12, fidelity: implemented, pairing: established, assembly: "030-1909-008"}
+  data:
+    machine:
+      name: Onyx 350 IP59 profile
+      model_role: emulation-target
+      notes: >-
+        One-node Onyx 350 module with an IP59 node board and 8 GiB of memory
+        in logical banks 0 through 7. The node board is the captured
+        IP59_4CPU, part 030-1989-003, revision C, with four 1.0 GHz R16000
+        processors and 16 MB secondary caches; the L1 reports it from its
+        node-board record. The IP59 is the 1 GHz generation of the IP53
+        compute board and shares its Bedrock, PIC and IO9 hardware, so the
+        model builds it with the IP53 family's guest-board path. The reset
+        word 0x009dad85 and the PROM seed are synthetic inputs, not measured
+        values. The captured system, an Onyx 350 of six modules, reports PROM
+        6.211; the selected held payload is 6.210, which real IP59 boards also
+        run. The optional V12 at widget 12 follows a separate published Onyx
+        350 inventory.
+      firmware_config:
+        processor_reset_mode: 0x009dad85
+        processor_firmware_word: 0x569dad85
+        machine_type: 0x00000000
+        flash_read_cycles: 16
+        flash_write_cycles: 16
+        provenance: derived
+        sources: [onyx350-compatibility-proposal, onyx350-flash-candidate, onyx350-hinv]
+      emulation:
+        machine_name: onyx350
+        display_description: SGI Onyx 350 (IP59), approximate software profile
+        profile: ip59-onyx350
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib: [8192]
+        # How the emulator and launchers run this IP53 profile, read in
+        # place of comparing topology names.
+        ip53_runtime:
+          pic_profile: pic-rev3-bedrock-experimental
+          normal_selection:
+            cpus: 4
+            fitted_cpus: 4
+            memory_mib: 8192
+            clock_hz: 1000000000
+            cache_mib: 16
+            mode_word: 0x009dad85
+          l1_irouter_compat: true
+          node_boards:
+            - processors: 4
+              name: IP59_4CPU
+              part: "030-1989-003"
+              revision: "-C"
+        pic_profiles:
+          pic: pic-rev3-bedrock-experimental
+        synthetic_identities:
+          - component: bedrock
+            serial: "0x51454d554e00"
+            reason: >-
+              Stable synthetic Bedrock identity for this proposed emulation
+              experiment; no physical board serial is supplied.
+        bedrock_nodes:
+          bedrock:
+            board_id_word: 8193
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask: {mode: fitted-banks}
+            provenance: derived
+            sources: [ip53-platform-driver, onyx350-compatibility-proposal, "hw/mips/sgi/sn1-node.c",
+                     "hw/mips/sgi/sn-machine.c"]
+            notes: >-
+              Selects subtype 2 under the public OpenBSD product mapping. The
+              retained low twelve bits, 0x001, are an unmeasured software
+              choice. This does not identify an observed IP53 reset state.
+              The installed bank mask follows the synthetic bank placement
+              above.
+        l1_controllers:
+          l1:
+            reported_type: 56
+            revision: {major: 1, minor: 18, patch: 5}
+            provenance: derived
+            sources: ["web:graphica-o350-chimera-notes the IP35 PROM 6.210 POD session on an Onyx 350 graphics module with an Odyssey board prints 'SN12 Graphics Blade.', and after 'NVRAM checksum is incorrect: reinitializing.' prints 'Installing Graphics Console...'", "firmware:ip35-prom-6.210 product classification: L1 type '7' prints 'SN12 2U Server.', '8' 'SN12 Graphics Blade.', '9' 'SN12 Workstation.' and 'Q' 'SN12 Rackmounted Workstation.'; the BaseIO environment reset sets console to g for '8', '9' and 'Q' and for a Fuel board word, and to d otherwise", onyx350-compatibility-proposal]
+            notes: >-
+              Type '8', inferred from a real Onyx 350 graphics module whose
+              PROM reported the graphics-module class and then chose the
+              graphics console for a fresh NVRAM.
+              The IP35 PROM's own mapping ties that class to type '8'; the
+              L1 reply byte itself was not captured. Type '7', used before,
+              makes the PROM call the machine a 2U server and default to the
+              serial console. This does not establish a reset value or the
+              identity of a separately queried I/O controller.
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - name: processor reset execution view
+              address: "0x1fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: bounded high LBOOT execution alias
+              address: "0x100_1fc0_0000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+          second_selection:
+            address: "0x100_1a000000"
+            size: "0x0080_0000"
+          provenance: derived
+          sources: [onyx350-flash-candidate, onyx350-hinv]
+          notes: >-
+            This path and digest identify the raw original base payload accepted
+            by the existing launcher. The launcher constructs the selected 800 MHz seed from this 6.210 payload and records its distinct hash. The captured module reports PROM 6.211; the trial does not establish physical decode or fitted flash.
+      harness:
+        console: l1-uart
+        console_records:
+          - {kind: console, node_id: bedrock, argument: "-serial chardev:l1", launcher_name: l1}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_0", launcher_name: ioc4-serial-0}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_1", launcher_name: ioc4-serial-1}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_2", launcher_name: ioc4-serial-2}
+          - {kind: second-port, node_id: bedrock, argument: "-serial chardev:ioc4_serial_3", launcher_name: ioc4-serial-3}
+        launch_recipe: ip53-discovery
+        prom_dialogue: none
+        default_cpu_model: R16000
+        disk_bus: scsi.0
+        netboot_adapter: bcm5701-ethernet
+        smdk:
+          package_path: assets/boot/smdk
+          tftp_mode: fixed
+          diagnostic_mac_bootarg: false
+          requires_boot_flash: false
+          requires_network_identity: false
+          discovery_prerequisites: []
+        default_topology: onyx350-ip59
+        requires_per_node_flash: false
+        has_managed_boot_flash: true
+        operator_firmware: true
+        firmware_bytes: 1476264
+        identity_inputs: []
+        supported_guests: []
+        install_media: [netboot]
+        provenance: derived
+        sources: [onyx350-compatibility-proposal, onyx350-flash-candidate, onyx350-hinv]
+  evidence_policy: strict

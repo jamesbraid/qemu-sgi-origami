@@ -87,7 +87,7 @@
         "required": ["composition", "machine"],
         "properties": {
           "composition": { "required": ["product"], "properties": {
-            "product": { "enum": ["origin350", "onyx4-host-serial-compat", "onyx350-compat", "tezro-tower-one", "tezro-tower-multi", "tezro-rack"] }
+            "product": { "enum": ["origin350", "onyx4-host-serial-compat", "onyx350-compat", "tezro-tower-one", "tezro-tower-multi", "tezro-rack", "origin350-ip59", "onyx4-host-ip59", "onyx350-ip59", "tezro-tower-one-ip59", "tezro-tower-multi-ip59", "tezro-rack-ip59"] }
           } },
           "machine": {
             "required": ["generation", "harness", "emulation"],

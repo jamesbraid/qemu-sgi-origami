@@ -1,0 +1,201 @@
+# SPDX-License-Identifier: BSD-3-Clause
+layer_version: 1
+sources:
+  ip59-node-board: "web:irixnet-thread-2263  module 001c01 of the captured system: Part:030-1989-003;Name:IP59_4CPU;Revision:-C, four 1.0 GHz R16000 revision 3.0 with 16 MB secondary cache"
+  ip59-two-cpu-board: "web:nekonomicon-16719032  Tezro rack: IP59_2CPU 030-2059-002 revision A, two 1.0 GHz R16000 on slices A and C"
+  ip59-identity: "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf share/man/man4/man4.sgi/intro.4 lines 113-114: IP59 is the 1GHz IP53 design, listed for the Origin 350, Onyx 350 and Tezro"
+  tezro-deskside-trial: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
+  tezro-deskside-trial-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
+  tezro-l1-version-compatibility: "web:ip35-patch-sg0007149 SG0007149 README identifies IP35 support; decoded L1 member has image identifier 1.48.1"
+  tezro-board-guide: '007-4564-001 printed pages 26-29 and 38; 007-4643-003 printed pages 21-29: supported
+    processor populations and PCI/IO9 location'
+  tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro tower and rack software limits"
+layer:
+  kind: product
+  id: tezro-rack-ip59
+  requires:
+    assembly: ip53-tezro
+    module: ip59-tezro-module
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations:
+    - - 1
+    - - 2
+    - - 4
+    provenance: derived
+    sources:
+    - tezro-board-guide
+    - tezro-software-choice-limit
+  population:
+    nodes: 1
+    cpus_per_node:
+    - 1
+    provenance: derived
+    sources:
+    - tezro-board-guide
+    - tezro-software-choice-limit
+  memory_kits_per_node:
+  - kit-4096-at-banks-0-5-tezro-deskside
+  cpu_selection:
+    default:
+      clock_mhz: 1000
+      cache_mib: 16
+    slots:
+    - cpu0
+  data:
+    machine:
+      name: Tezro rack first enclosure IP59 profile
+      model_role: emulation-target
+      notes: >-
+        Tezro rack first enclosure with an IP59 node board. The four-processor
+        board is the captured IP59_4CPU, part 030-1989-003, revision C; the
+        two-processor board is the IP59_2CPU, part 030-2059-002, revision A,
+        captured in a rack Tezro. A one-processor node keeps the L1's generic
+        board record: no capture shows a one-processor IP59 board, so its
+        part and revision are unknown. The reset word 0x009dad85 and the PROM seed are
+        synthetic inputs. The 4 GiB logical memory map, Bedrock and L1
+        identities, PIC placement and interrupt routes are emulator choices
+        adapted from the IP53 Tezro profile. Graphics and the rack second
+        enclosure are omitted.
+      firmware_config:
+        processor_reset_mode: 0x009dad85
+        processor_firmware_word: 0x569dad85
+        machine_type: 0x00000000
+        flash_read_cycles: 16
+        flash_write_cycles: 16
+        provenance: derived
+        sources:
+        - tezro-deskside-trial
+        - tezro-deskside-trial-review
+      emulation:
+        machine_name: tezro
+        display_description: SGI Tezro rack first enclosure IP59 profile
+        profile: ip59-tezro-rack
+        synthetic_identities:
+        - component: bedrock
+          serial: '0x51454d554e00'
+          reason: Emulator-assigned identity for the software-only trial.
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib:
+          - 4096
+        # How the emulator and launchers run this IP53 profile, read in
+        # place of comparing topology names.
+        ip53_runtime:
+          pic_profile: pic-rev3-bedrock-tezro-experimental
+          normal_selection:
+            cpus: 1
+            fitted_cpus: 4
+            memory_mib: 4096
+            clock_hz: 1000000000
+            cache_mib: 16
+            mode_word: 0x009dad85
+          l1_irouter_compat: true
+          node_boards:
+            - processors: 4
+              name: IP59_4CPU
+              part: "030-1989-003"
+              revision: "-C"
+            - processors: 2
+              name: IP59_2CPU
+              part: "030-2059-002"
+              revision: "A"
+        pic_profiles:
+          pic-xio-f: pic-rev3-bedrock-tezro-experimental
+        bedrock_nodes:
+          bedrock:
+            board_id_word: 8193
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask:
+              mode: fitted-banks
+            provenance: derived
+            sources:
+            - tezro-deskside-trial
+            - tezro-deskside-trial-review
+            notes: Board word 0x2001 is a trial software input selected for this trial. It is not established
+              as the physical Tezro board value.
+        l1_controllers:
+          l1:
+            reported_type: 81
+            revision: {major: 1, minor: 48, patch: 1}
+            provenance: derived
+            sources: ["web:lore-kaloz-ip35-35 brick type 'Q' is Tezro rackmount", tezro-l1-version-compatibility]
+            notes: >-
+              The Linux mapping supports the reported brick type. The public
+              SG0007149 IP35 update contains an L1 image identified as 1.48.1;
+              selecting it supports software compatibility and does not
+              establish Tezro fitment or a factory revision.
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: '0x1686a8'
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+          - name: processor reset execution view
+            address: '0x1fc00000'
+            payload_offset: '0x0'
+            size: '0x1686a8'
+          - name: bounded high LBOOT execution alias
+            address: '0x100_1fc0_0000'
+            payload_offset: '0x0'
+            size: '0x1686a8'
+          second_selection:
+            address: '0x100_1a000000'
+            size: '0x0080_0000'
+          provenance: derived
+          sources:
+          - tezro-deskside-trial
+          notes: The launch recipe applies the Tezro row-17 seed to this selected base payload. The payload and
+            seed are software inputs; their hashes do not establish installed Tezro firmware or flash
+            wiring.
+      harness:
+        console: l1-uart
+        console_records:
+        - kind: console
+          node_id: bedrock
+          argument: -serial chardev:l1
+          launcher_name: l1
+        - kind: second-port
+          node_id: bedrock
+          argument: -serial chardev:ioc4_serial_0
+          launcher_name: ioc4-serial-0
+        - kind: second-port
+          node_id: bedrock
+          argument: -serial chardev:ioc4_serial_1
+          launcher_name: ioc4-serial-1
+        - kind: second-port
+          node_id: bedrock
+          argument: -serial chardev:ioc4_serial_2
+          launcher_name: ioc4-serial-2
+        - kind: second-port
+          node_id: bedrock
+          argument: -serial chardev:ioc4_serial_3
+          launcher_name: ioc4-serial-3
+        launch_recipe: ip53-discovery
+        prom_dialogue: none
+        default_cpu_model: R16000
+        disk_bus: scsi.0
+        netboot_adapter: unsupported
+        smdk:
+          package_path: assets/boot/smdk
+          tftp_mode: fixed
+          diagnostic_mac_bootarg: false
+          requires_boot_flash: false
+          requires_network_identity: false
+          discovery_prerequisites: []
+        default_topology: tezro-rack-ip59
+        requires_per_node_flash: false
+        has_managed_boot_flash: true
+        operator_firmware: true
+        firmware_bytes: 1476264
+        identity_inputs: []
+        supported_guests: []
+        install_media: []
+        provenance: derived
+        sources:
+        - tezro-deskside-trial
+        - tezro-deskside-trial-review
+    evidence_policy: strict

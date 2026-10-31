@@ -74,6 +74,20 @@ static const TopologyExtra topology_extras[] = {
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "tezro-tower-one", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "origin350-ip59", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "onyx350-ip59", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "onyx4-host-ip59", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "tezro-rack-ip59", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "tezro-tower-multi-ip59",
+      ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "tezro-tower-one-ip59",
+      ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "origin300-numalink-pci-expansion",
       STORAGE_BINDING, true },
     { "origin300-pci-expansion", STORAGE_BINDING, true },

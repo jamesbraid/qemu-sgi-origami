@@ -18,6 +18,7 @@ import json
 import re
 
 from .model_compile import CompileError, compile_model
+from .registry import IP53_RUNTIME_PROFILES
 
 
 def render_manifest(source_models: dict[str, dict], outputs: dict[str, str]) -> str:
@@ -1173,18 +1174,7 @@ def _is_ip53_normal_offering(
 def _is_ip53_runtime_profile(model: dict) -> bool:
     product = model.get("composition", {}).get("product")
     emulation = model.get("machine", {}).get("emulation", {})
-    expected = {
-        "origin350": ("origin350", "ip53-origin350"),
-        "onyx4-host-serial-compat": (
-            "onyx4-host", "ip53-onyx4-host-serial-compat"),
-        "onyx350-compat": ("onyx350", "ip53-onyx350-compat"),
-        "tezro-tower-one": (
-            "tezro", "tezro-tower-one-serial-compat"),
-        "tezro-tower-multi": (
-            "tezro", "tezro-tower-multi-serial-compat"),
-        "tezro-rack": (
-            "tezro", "tezro-rack-serial-compat"),
-    }.get(product)
+    expected = IP53_RUNTIME_PROFILES.get(product)
     return (expected is not None
             and emulation.get("machine_name") == expected[0]
             and emulation.get("profile") == expected[1]
