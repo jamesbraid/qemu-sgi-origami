@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * Original MSP scalar executor. Contract: o2-vice-msp-scalar.md, SHA-256
- * 3be44dcc92d7a12c9d3116f4837ac406b3c434a32cf0b94abd10ebcc1a37a814.
+ * Original MSP scalar executor. Source: VICE Design Specification,
+ * document 099-0123-003.
  * Vector computation and BSP execution have no implementation here.
  */
 #include "qemu/osdep.h"
