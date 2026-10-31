@@ -169,29 +169,52 @@ static void endpoint_profile_set(Object *obj, bool value, Error **errp)
     MACE_I2C_TEST(obj)->profile_available = value;
 }
 
+static I2CBus *endpoint_bus(Object *obj, Error **errp)
+{
+    BusState *bus = DEVICE(obj)->parent_bus;
+
+    if (!bus || !object_dynamic_cast(OBJECT(bus), TYPE_I2C_WIRE)) {
+        error_setg(errp, "test endpoint is not attached to an I2C wire bus");
+        return NULL;
+    }
+    return I2C_BUS(bus);
+}
+
 static void endpoint_bus_owner(Object *obj, Visitor *v, const char *name,
                                 void *opaque, Error **errp)
 {
-    MACEI2CTest *s = MACE_I2C_TEST(obj);
-    I2CBus *bus = I2C_BUS(s->parent_obj.qdev.parent_bus);
-    uint32_t owner = i2c_bus_resolved_owner(bus);
+    I2CBus *bus = endpoint_bus(obj, errp);
+    uint32_t owner;
 
+    if (!bus) {
+        return;
+    }
+    owner = i2c_bus_resolved_owner(bus);
     visit_type_uint32(v, name, &owner, errp);
 }
 
 static bool endpoint_bus_address(Object *obj, Error **errp)
 {
-    MACEI2CTest *s = MACE_I2C_TEST(obj);
+    I2CBus *bus = endpoint_bus(obj, errp);
 
-    return I2C_WIRE(s->parent_obj.qdev.parent_bus)->address_valid;
+    return bus && I2C_WIRE(bus)->address_valid;
 }
 
 static bool endpoint_controller_mapped(Object *obj, Error **errp)
 {
-    MACEI2CTest *s = MACE_I2C_TEST(obj);
-    MACEI2C *controller = SGI_MACE_I2C(s->parent_obj.qdev.parent_bus->parent);
+    I2CBus *bus = endpoint_bus(obj, errp);
+    DeviceState *controller;
 
-    return controller->regs.container != NULL;
+    if (!bus) {
+        return false;
+    }
+    controller = BUS(bus)->parent;
+    if (!controller ||
+        !object_dynamic_cast(OBJECT(controller), TYPE_SGI_MACE_I2C)) {
+        error_setg(errp, "test endpoint bus has no MACE I2C controller");
+        return false;
+    }
+    return SGI_MACE_I2C(controller)->regs.container != NULL;
 }
 
 static void endpoint_init(Object *obj)
