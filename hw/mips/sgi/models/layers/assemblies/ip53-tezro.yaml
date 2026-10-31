@@ -32,5 +32,7 @@ layer:
       provenance: derived
       sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected logical bank placement for Tezro"]
       notes: >-
-        Logical bank placement selected for the compatibility composition.
-        It does not identify physical DIMM slots.
+        The bank sizes match one observed Tezro population, from a
+        four-processor 700 MHz machine; other observed populations differ.
+        Where the banks sit in the node address map is inferred, and the
+        kit does not identify physical DIMM slots.
