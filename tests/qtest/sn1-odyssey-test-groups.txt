@@ -75,6 +75,8 @@ board /mips64/sn1/odyssey/object-store-grows-without-forgetting
 board /mips64/sn1/odyssey/object-store-migrates-used-part
 board /mips64/sn1/odyssey/object-store-keeps-4096-objects
 board /mips64/sn1/odyssey/object-store-capacity-is-16384
+board /mips64/sn1/odyssey/object-store-sampling-is-not-use
+board /mips64/sn1/odyssey/object-store-upload-refreshes-recency
 board /mips64/sn1/odyssey/processor-credit-return
 board /mips64/sn1/odyssey/readback
 board /mips64/sn1/odyssey/dma
