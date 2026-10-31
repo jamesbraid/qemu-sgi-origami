@@ -58,7 +58,7 @@ layer:
       parent: bedrock
       identity:
         cache_clock_mhz: 333
-        r16000_reset_mode: 0x009dad85
+        r16000_reset_mode: 0x00edb385
         r16000_scache_bytes: 16777216
         required_properties:
         - r16000-experimental
@@ -67,6 +67,7 @@ layer:
       provenance: derived
       sources:
       - tezro-deskside-trial
+      notes: The reset word 0x00edb385 is an inferred input, derived to reproduce the captured 333 MHz cache clock and tap; it is not a measured value.
     - id: memory
       name: node memory
       kind: memory

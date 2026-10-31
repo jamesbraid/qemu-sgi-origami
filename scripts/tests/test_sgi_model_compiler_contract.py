@@ -780,8 +780,8 @@ class Ip53CpuContextTests(unittest.TestCase):
                 ("tezro-tower-one", 0x549bad85, 700_000_000, 0x009bad85),
                 ("tezro-tower-multi", 0x549bad85, 700_000_000, 0x009bad85),
                 ("tezro-rack", 0x549bad85, 700_000_000, 0x009bad85),
-                ("onyx4-host-serial-compat", 0x569dad85, 1_000_000_000,
-                 0x009dad85)):
+                ("onyx4-host-serial-compat", 0x4aedb385, 1_000_000_000,
+                 0x00edb385)):
             with self.subTest(profile=name):
                 model = _resolved(name)
                 firmware = model["machine"]["firmware_config"]

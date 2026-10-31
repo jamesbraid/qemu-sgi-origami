@@ -50,7 +50,7 @@ layer:
         kind: cpu
         hardware_kind: r16000
         parent: bedrock
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Onyx 4 host software inputs"]
         notes: >-
@@ -62,7 +62,7 @@ layer:
         kind: cpu
         hardware_kind: r16000
         parent: bedrock
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Onyx 4 host software inputs"]
       - id: cpu2
@@ -70,7 +70,7 @@ layer:
         kind: cpu
         hardware_kind: r16000
         parent: bedrock
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Onyx 4 host software inputs"]
       - id: cpu3
@@ -78,7 +78,7 @@ layer:
         kind: cpu
         hardware_kind: r16000
         parent: bedrock
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Onyx 4 host software inputs"]
       - id: node-memory

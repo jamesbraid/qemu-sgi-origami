@@ -1100,19 +1100,19 @@ def _processor(model: dict, cpu: dict) -> dict:
         profile = {
             "origin350": ("origin350", 700, 0x009cad85,
                           "ip53-origin350"),
-            "origin350-ip59": ("origin350", 1000, 0x009dad85,
+            "origin350-ip59": ("origin350", 1000, 0x00edb385,
                                "ip59-origin350"),
-            "onyx350-ip59": ("onyx350", 1000, 0x009dad85, "ip59-onyx350"),
-            "onyx4-host-ip59": ("onyx4-host", 1000, 0x009dad85,
+            "onyx350-ip59": ("onyx350", 1000, 0x00edb385, "ip59-onyx350"),
+            "onyx4-host-ip59": ("onyx4-host", 1000, 0x00edb385,
                                 "ip59-onyx4-host"),
             "tezro-tower-one-ip59": (
-                "tezro", 1000, 0x009dad85, "ip59-tezro-tower-one"),
+                "tezro", 1000, 0x00edb385, "ip59-tezro-tower-one"),
             "tezro-tower-multi-ip59": (
-                "tezro", 1000, 0x009dad85, "ip59-tezro-tower-multi"),
+                "tezro", 1000, 0x00edb385, "ip59-tezro-tower-multi"),
             "tezro-rack-ip59": (
-                "tezro", 1000, 0x009dad85, "ip59-tezro-rack"),
+                "tezro", 1000, 0x00edb385, "ip59-tezro-rack"),
             "onyx4-host-serial-compat": (
-                "onyx4-host", 1000, 0x009dad85,
+                "onyx4-host", 1000, 0x00edb385,
                 "ip53-onyx4-host-serial-compat"),
             "onyx350-compat": ("onyx350", 800, 0x009caf85,
                         "ip53-onyx350-compat"),
@@ -1129,7 +1129,7 @@ def _processor(model: dict, cpu: dict) -> dict:
             # approximation its datasheet states; it has no PIC and no
             # discovery launch recipe.
             "origin3900": ("origin3000", 700, 0x009cad85, "origin3900"),
-            "origin3900-ip59": ("origin3000", 1000, 0x009dad85,
+            "origin3900-ip59": ("origin3000", 1000, 0x00edb385,
                                 "origin3900-ip59"),
         }.get(product)
         cx_brick = product in ("origin3900", "origin3900-ip59")

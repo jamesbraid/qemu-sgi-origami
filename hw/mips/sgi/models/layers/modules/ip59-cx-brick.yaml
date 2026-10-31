@@ -127,46 +127,54 @@ layer:
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node0-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor A. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node0-cpu1
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node0-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor B. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node0-cpu2
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node0-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor C. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node0-cpu3
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node0-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor D. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node0-memory
         name: node memory
         kind: memory
@@ -222,46 +230,54 @@ layer:
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node1-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor A. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node1-cpu1
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node1-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor B. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node1-cpu2
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node1-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor C. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node1-cpu3
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node1-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor D. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node1-memory
         name: node memory
         kind: memory
@@ -317,46 +333,54 @@ layer:
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node2-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor A. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node2-cpu1
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node2-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor B. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node2-cpu2
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node2-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor C. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node2-cpu3
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node2-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor D. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node2-memory
         name: node memory
         kind: memory
@@ -412,46 +436,54 @@ layer:
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node3-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor A. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node3-cpu1
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node3-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor B. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node3-cpu2
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node3-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor C. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node3-cpu3
         name: R16000
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
         parent: node3-bedrock
         sources: [ip59-processors]
         notes: >-
           Processor D. The reset mode and cache are the 1 GHz, 16 MB tuple;
-          the product layer's cpu selection supplies the clock.
+          the product layer's cpu selection supplies the clock. The reset word
+          0x00edb385 is an inferred input, derived to reproduce the captured
+          333 MHz cache clock and tap; it is not a measured value.
       - id: node3-memory
         name: node memory
         kind: memory
