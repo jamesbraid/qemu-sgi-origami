@@ -4643,16 +4643,18 @@ static void octane_rad_ramp_check(const char *wav, unsigned i, bool silent)
 
 /*
  * Run the analog output on a 4 KiB ring whose control word links to
- * descriptor RAM entry `entry`, for 100 ms at 44.1 kHz. With `program` the
+ * descriptor RAM entry `entry`, for 100 ms at 44.1 kHz. With `program` 1 the
  * entry holds the same descriptor, the way IRIX (entry 1) and Linux (entry 7)
- * program the entry they link to.
+ * program the entry they link to; with 2 it holds an address and a zero
+ * control word, which cannot be played; with 0 it is left alone.
  */
-static void octane_rad_link_run(unsigned entry, bool program,
+static void octane_rad_link_run(unsigned entry, int program,
                                 const char *path, const char *log_path,
                                 unsigned *frames, uint32_t *control)
 {
     g_autofree char *quoted = g_shell_quote(log_path);
-    g_autofree char *extra = g_strdup_printf("-d unimp -D %s", quoted);
+    g_autofree char *extra = g_strdup_printf(
+        "-d unimp,guest_errors -D %s", quoted);
     QTestState *qts = octane_rad_wav_start(path, 44100, extra);
     uint32_t ctrl = 0xfffff000 | (entry << 3);
     uint32_t slot = 0x400 + entry * 12;
@@ -4665,8 +4667,9 @@ static void octane_rad_link_run(unsigned entry, bool program,
     if (program) {
         qtest_writel(qts, RAD_BAR0 + slot, 0xa000a000);
         qtest_writel(qts, RAD_BAR0 + slot + 4, 0);
-        qtest_writel(qts, RAD_BAR0 + slot + 8, ctrl);
-        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + slot + 8), ==, ctrl);
+        qtest_writel(qts, RAD_BAR0 + slot + 8, program == 1 ? ctrl : 0);
+        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + slot + 8), ==,
+                        program == 1 ? ctrl : 0);
     }
     qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000001);
     qtest_clock_step(qts, 100000000);
@@ -4678,7 +4681,11 @@ static void octane_rad_link_run(unsigned entry, bool program,
     qtest_quit(qts);
 }
 
-/* IRIX links entry 1 to itself and Linux entry 7: both keep playing. */
+/*
+ * IRIX links entry 1 to itself and Linux entry 7: both keep playing. Entry 15
+ * shares its words with the second status-DMA set; that a link to it is
+ * followed like any other entry is inferred, the layout being extrapolated.
+ */
 static void test_rad_link_programmed(gconstpointer data)
 {
     const unsigned entry = GPOINTER_TO_UINT(data);
@@ -4696,7 +4703,7 @@ static void test_rad_link_programmed(gconstpointer data)
     g_assert_cmpint(lfd, >=, 0);
     close(fd);
     close(lfd);
-    octane_rad_link_run(entry, true, path, log_path, &frames, &control);
+    octane_rad_link_run(entry, 1, path, log_path, &frames, &control);
 
     /* 4410 frames are 8.6 laps of the 512-frame ring. */
     g_assert_cmpuint(frames, ==, 4410);
@@ -4732,7 +4739,7 @@ static void test_rad_link_unprogrammed(void)
     g_assert_cmpint(lfd, >=, 0);
     close(fd);
     close(lfd);
-    octane_rad_link_run(7, false, path, log_path, &frames, &control);
+    octane_rad_link_run(7, 0, path, log_path, &frames, &control);
 
     g_assert_cmpuint(frames, ==, 512);
     g_assert_cmphex(control, ==, 0x20000001);
@@ -4743,6 +4750,77 @@ static void test_rad_link_unprogrammed(void)
                                  "programmed"));
     g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/* A programmed entry that cannot be played is a guest error and stops. */
+static void test_rad_link_bad(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *wav = NULL;
+    g_autofree char *log = NULL;
+    unsigned frames;
+    uint32_t control;
+    gsize length;
+    int fd = g_file_open_tmp("octane-rad-link-XXXXXX.wav", &path, NULL);
+    int lfd = g_file_open_tmp("octane-rad-link-XXXXXX", &log_path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(lfd, >=, 0);
+    close(fd);
+    close(lfd);
+    octane_rad_link_run(3, 2, path, log_path, &frames, &control);
+
+    g_assert_cmpuint(frames, ==, 512);
+    g_assert_cmphex(control, ==, 0x20000001);
+    g_assert_true(g_file_get_contents(path, &wav, &length, NULL));
+    g_assert_cmpuint(octane_rad_wav_frames(wav, length), ==, 512);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "links to descriptor 3, which cannot be "
+                                 "played"));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
+ * The release values IRIX and Linux write (0x88 = 3, 0x8c = 2) leave the
+ * output audible, and a mute set between sample-clock timer callbacks still
+ * lets the frames due before the write play: 1 ms is 44 frames, not a
+ * multiple of the eight-frame step. Spans: 44 audible, 44 relay muted, 44
+ * audible (0x88 back to 3).
+ */
+static void test_rad_output_mute_release(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *wav = NULL;
+    QTestState *qts;
+    gsize length;
+    int fd = g_file_open_tmp("octane-rad-mute-XXXXXX.wav", &path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    qts = octane_rad_wav_start(path, 44100, "");
+    octane_rad_clock_map(qts);
+    octane_rad_ramp_fill(qts, RAM + 0xa000);
+    octane_rad_output_program(qts, 0xa000a000);
+    qtest_writel(qts, RAD_BAR0 + 0x88, 3);
+    qtest_writel(qts, RAD_BAR0 + 0x8c, 2);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000001);
+    qtest_clock_step(qts, 1000000);
+    qtest_writel(qts, RAD_BAR0 + 0x88, 2);
+    qtest_clock_step(qts, 1000000);
+    qtest_writel(qts, RAD_BAR0 + 0x88, 3);
+    qtest_clock_step(qts, 1000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 132);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000000);
+    qtest_clock_step(qts, 20000000);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(path, &wav, &length, NULL));
+    g_assert_cmpuint(octane_rad_wav_frames(wav, length), ==, 132);
+    for (unsigned i = 0; i < 132; i++) {
+        octane_rad_ramp_check(wav, i, i >= 44 && i < 88);
+    }
+    g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
 /*
@@ -6524,7 +6602,12 @@ int main(int argc, char **argv)
     qtest_add_data_func("/octane/rad-link-programmed-linux",
                         GUINT_TO_POINTER(7), test_rad_link_programmed);
     qtest_add_func("/octane/rad-link-unprogrammed", test_rad_link_unprogrammed);
+    qtest_add_data_func("/octane/rad-link-programmed-entry15",
+                        GUINT_TO_POINTER(15), test_rad_link_programmed);
+    qtest_add_func("/octane/rad-link-bad", test_rad_link_bad);
     qtest_add_func("/octane/rad-output-mute", test_rad_output_mute);
+    qtest_add_func("/octane/rad-output-mute-release",
+                   test_rad_output_mute_release);
     qtest_add_func("/octane/rad-clock-select", test_rad_clock_select);
     qtest_add_func("/octane/rad-ust-clock", test_rad_ust_clock);
     qtest_add_func("/octane/rad-ust-word-and-wrap",
