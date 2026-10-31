@@ -586,6 +586,12 @@ Tezro rack, first enclosure        one 700 MHz R16000   4 GiB   4 MiB       0x00
 Onyx 4 host candidate              four 1 GHz R16000    8 GiB   16 MiB      0x00edb385
 =================================  ===================  ======  ==========  ==========
 
+The Tezro 4 GiB is a selected memory kit, not a measured population. Every
+observed Tezro population comes from a two- or four-processor board, and the
+kit matches one of them, a four-processor 700 MHz machine, with the bank
+placement inferred. The one-processor board's installed DIMMs are unknown, so
+its 4 GiB, and the rack's, only reuse that kit.
+
 The machine fits these R16000 properties itself for every processor
 population a listed composition's topology accepts, with no machine option
 or explicit CPU property: the table gives each default, and the Tezro
@@ -611,12 +617,15 @@ modeled IO9 behind widget 15. The one-processor board selects only the PIC
 at widget 15; one PIC is inferred from that board's two PCI-X buses
 (007-4564-001 printed pages 26-31), not shown by an inventory. Otherwise the
 two boards share the same selected memory and I/O construction. The rack
-profile models only the first enclosure. The Tezro two/four-processor board
-and the Onyx 350 profile take an optional V12 in graphics slot ``widget-12``
-(``-device sgi-odyssey,slot=widget-12,product=v12``). Both default to no
-graphics. The widget position follows published Tezro and Onyx 350 inventories
-respectively; on the Onyx 350 it is an alternative to an InfiniteReality
-configuration. The pipe links to that port
+profile models only the first enclosure. Both Tezro boards and the Onyx 350
+profile take an optional V12 in graphics slot ``widget-12``
+(``-device sgi-odyssey,slot=widget-12,product=v12``), and all default to no
+graphics. On the two/four-processor board and the Onyx 350 the widget
+position follows published inventories; on the Onyx 350 it is an alternative
+to an InfiniteReality configuration. The one-processor board's placement is
+inferred: the Tezro guide gives that board one XIO connector for a VPro board
+(007-4564-001 printed pages 29-30) but names no widget, so the slot reuses the
+two/four-processor board's widget 12 and route. The pipe links to that port
 of the PXBOW of the PIC that owns widget 0, reuses Odyssey and Bedrock PI
 credit handling, and is marked alive and routed once it has realized. No profile attaches a G2/G2N brick or a NUMAlink peer.
 Direct-link XIO and the PIC interrupt and DMA settings are emulator choices
