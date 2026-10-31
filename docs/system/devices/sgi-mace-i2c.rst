@@ -1,7 +1,7 @@
 .. SPDX-License-Identifier: BSD-3-Clause
 
 MACE revision-2 untimed I2C test profile
-======================================
+========================================
 
 ``sgi-mace,i2c-untimed-test-profile=on`` enables the bounded I2C register
 profile only under qtest. The default remains disabled. No O2 endpoint,
