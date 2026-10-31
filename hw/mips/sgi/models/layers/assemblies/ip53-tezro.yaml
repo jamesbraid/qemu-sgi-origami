@@ -15,10 +15,10 @@ layer:
     supported_bank_sizes_mib: [512, 1024]
     provenance: vendor-document
     sources:
-      - "007-4564-001 printed pages 26-28: Tezro tower IP53 board, one/two/four R16000 and eight DIMM slots"
+      - "007-4564-001 printed pages 26-28 (Tower Configuration guide): Tezro IP53 board, one/two/four R16000 and eight DIMM slots"
       - "007-4643-003 printed pages 28-29: rack first enclosure one/two/four R16000 and eight DIMM slots"
     notes: >-
-      The tower and rack first enclosure accept one, two or four processors.
+      The Tezro and the Tezro rack first enclosure accept one, two or four processors.
       One processor requires at least 512 MB; two or four require at least
       1 GB. The optional rack second enclosure adds memory without processors.
       The slot limits describe the processor-bearing board, not all memory
@@ -34,5 +34,8 @@ layer:
       notes: >-
         The bank sizes match one observed Tezro population, from a
         four-processor 700 MHz machine; other observed populations differ.
+        Every observed population is from a two- or four-processor board;
+        the one-processor board's installed DIMMs are unknown, so its use
+        of this kit is a selection, not an observation.
         Where the banks sit in the node address map is inferred, and the
         kit does not identify physical DIMM slots.

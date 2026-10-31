@@ -6,7 +6,7 @@ sources:
   tezro-l1-version-compatibility: "web:ip35-patch-sg0007149 SG0007149 README identifies IP35 support; decoded L1 member has image identifier 1.48.1"
   tezro-board-guide: '007-4564-001 printed pages 26-29 and 38; 007-4643-003 printed pages 21-29: supported
     processor populations and PCI/IO9 location'
-  tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro tower and rack software limits"
+  tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro and Tezro rack software limits"
 layer:
   kind: product
   id: tezro-one-processor
@@ -42,7 +42,7 @@ layer:
       cache_mib: 4
     slots:
     - cpu0
-  # The tower guide (007-4564-001 printed pages 29-30) gives this board one
+  # The Tezro guide (007-4564-001 printed pages 29-30) gives this board one
   # XIO connector for a VPro board, so it takes the same optional V12 as
   # the two/four-processor board, fitted by -device only. The pairing is
   # graded inferred: the guide supports a VPro fit here but names no widget
@@ -71,8 +71,8 @@ layer:
       notes: Software-only Tezro compatibility profile. The manual supports the selected processor population
         and locates IO9 at bus 1, slot 1. The 700 MHz/4 MiB CPU tuple, reset candidate, 4 GiB logical
         memory map, Bedrock and L1 identities, PIC revision and placement, PCI function identities, and
-        interrupt routes are emulator choices adapted from the deskside software inputs.
-        They do not describe a measured tower or rack configuration. The optional V12 at widget 12 is
+        interrupt routes are emulator choices adapted from the software inputs first selected for the two/four-processor board.
+        They do not describe a measured Tezro or Tezro rack configuration. The optional V12 at widget 12 is
         an inferred placement. The rack second enclosure is omitted.
       firmware_config:
         processor_reset_mode: 0x009bad85
@@ -91,7 +91,7 @@ layer:
         synthetic_identities:
         - component: bedrock
           serial: '0x51454d554e00'
-          reason: Emulator-assigned identity for the software-only trial.
+          reason: Emulator-assigned identity for the software-only profile.
         lifecycle: implemented
         emulator_constraints:
           accepted_bank_sizes_mib:
@@ -114,7 +114,7 @@ layer:
             sources:
             - tezro-deskside-trial
             - tezro-deskside-trial-review
-            notes: Board word 0x2001 is a trial software input selected for this trial. It is not established
+            notes: Board word 0x2001 is a software input selected for this profile. It is not established
               as the physical Tezro board value.
         l1_controllers:
           l1:

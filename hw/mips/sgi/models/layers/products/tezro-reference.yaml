@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Four-processor selection of the two/four-processor tower interface board.
+# Four-processor selection of the two/four-processor interface board.
 layer_version: 1
 layer:
   kind: product
@@ -40,7 +40,7 @@ layer:
         is outside this reference.
     evidence_policy: strict
     components:
-      - {id: chassis, name: Tezro tower, kind: chassis, provenance: vendor-document, sources: ["007-4564-001 printed pages 23-26: tower enclosure and IP53 board"]}
+      - {id: chassis, name: Tezro, kind: chassis, provenance: vendor-document, sources: ["007-4564-001 printed pages 23-26: tower enclosure and IP53 board"]}
       - {id: cpu0, name: R16000, kind: cpu, hardware_kind: r16000, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed page 27: four-processor option"]}
       - {id: cpu1, name: R16000, kind: cpu, hardware_kind: r16000, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed page 27: four-processor option"]}
       - {id: cpu2, name: R16000, kind: cpu, hardware_kind: r16000, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed page 27: four-processor option"]}

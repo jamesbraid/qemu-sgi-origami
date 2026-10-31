@@ -4,7 +4,7 @@ sources:
   tezro-deskside-trial: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
   tezro-deskside-trial-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
   tezro-board-guide: '007-4564-001 printed pages 26-29 and 38; 007-4643-003 printed pages 21-29: supported processor populations and PCI/IO9 location'
-  tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro tower and rack software limits"
+  tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro and Tezro rack software limits"
 layer:
   kind: module
   id: tezro-serial-compat-module
@@ -109,7 +109,7 @@ layer:
       provenance: derived
       sources:
       - tezro-software-choice-limit
-      notes: The part identifies the selected deskside-compatible IO9 software input; tower and rack fitment is unknown.
+      notes: The part identifies the selected IO9 software input; fitment on either Tezro board and in the rack is unknown.
     - id: ioc4
       name: IOC4
       kind: io-controller
