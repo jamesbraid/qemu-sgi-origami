@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 
 # Builds a new SGI machine's storage from the compiled catalogue with the
 # machine's own resolver and initial-flash code, without building a

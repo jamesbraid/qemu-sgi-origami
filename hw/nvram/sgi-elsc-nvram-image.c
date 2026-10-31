@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The image a new SGI module system controller configuration NVRAM starts
  * with. The layout is the Origami project's PCF8584 and ELSC datasheet's, in

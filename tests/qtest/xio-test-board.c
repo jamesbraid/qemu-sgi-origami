@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * An XIO board that exercises sgi-xio-board without any real board: its
  * widget is the existing sgi-xio-test-target, so property validation and

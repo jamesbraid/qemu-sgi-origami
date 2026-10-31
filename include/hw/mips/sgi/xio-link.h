@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The XIO link: one point-to-point connection between two XIO ports.
  * Hardware has one kind of XIO link, whatever sits at either end

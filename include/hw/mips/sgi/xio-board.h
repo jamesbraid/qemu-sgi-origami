@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI XIO board base class: the removable unit that plugs into one of a
  * module's XIO slots (the BaseIO card, the PCI expansion card, a graphics

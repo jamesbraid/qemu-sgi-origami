@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 
 """Turn a JSON file into a C string constant, one C string literal per
 source line so the generated file stays diffable against the JSON it

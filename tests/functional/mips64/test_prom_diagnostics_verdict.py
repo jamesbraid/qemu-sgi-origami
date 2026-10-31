@@ -4,7 +4,7 @@
 # diag-gate's own two-pass factory-sequence and expected-failure contract,
 # without booting anything
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 A plain unittest -- no QEMU, no qemu_test import, runnable with just
 `uv run --with pytest pytest

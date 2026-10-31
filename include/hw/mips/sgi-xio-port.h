@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The XIO port: a QOM interface for every chip one end of an XIO link
  * attaches to -- the Hub's and Bedrock's I/O interface (II), each

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI module system controller configuration NVRAM: one 2048-byte store
  * answering eight consecutive I2C addresses, each a 256-byte block reached

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Origin 2000 module management: PCF8584 arbitration, one-wire identity and
  * shared NVRAM behind one module's node boards.
