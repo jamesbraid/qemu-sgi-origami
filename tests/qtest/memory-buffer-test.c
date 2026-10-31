@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Contract of the optional MemoryRegionOps buffer callbacks, driven
  * through memory-buffer-testdev: qtest memread/memwrite reach the device

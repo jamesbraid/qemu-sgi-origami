@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI I2C wire bus: a TYPE_I2C_BUS subclass that owns the resolved-master
  * byte API and the timed open-drain SDA/SCL transport used by the SGI Origin

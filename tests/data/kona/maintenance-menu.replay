@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 #
 # The IO6 PROM drawing its graphical System Maintenance Menu on an
 # InfiniteReality pipe: every register access of one emulated PROM boot

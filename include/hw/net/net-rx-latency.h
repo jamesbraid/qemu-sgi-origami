@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * A minimum arrival latency for received frames, shared by the SGI machines'
  * ethernet adapters.

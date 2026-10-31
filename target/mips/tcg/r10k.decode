@@ -1,6 +1,6 @@
 # MIPS R10000 instruction set extensions
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 #
 # Reference: MIPS IV Instruction Set / R10000 User's Manual
 
