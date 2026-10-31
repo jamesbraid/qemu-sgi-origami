@@ -766,14 +766,14 @@ static uint32_t sgi_machine_l1_node_processors(SGIMachineState *s,
  * the system board's component 1 area and the MAC text record. Each further
  * node takes the next address, so two chassis' IOC3s differ. An Origin 300
  * node also gets its node board's identity for its processor count, and a
- * Fuel its one system board's. An IP53 runtime profile that names a node
- * board gives that board's identity to a node with its processor count. A
- * raw record supplied for an area still wins inside the L1.
+ * Fuel its one system board's. An IP53 runtime profile that names node
+ * boards gives the one for a node's processor count to that node. A raw
+ * record supplied for an area still wins inside the L1.
  */
 static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
                                         unsigned int node_index, Error **errp)
 {
-    const SGIModelIp53NodeBoard *ip53_board;
+    const SGIModelIp53NodeBoardList *boards;
     SGIModelIoBoardPreset preset;
     uint32_t processors;
     g_autofree char *address = NULL;
@@ -781,13 +781,18 @@ static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
     if (!s->view) {
         return true;
     }
-    ip53_board = s->view->ip53_runtime ? s->view->ip53_runtime->node_board :
-                 NULL;
     processors = sgi_machine_l1_node_processors(s, l1);
-    if (ip53_board && processors == ip53_board->processors) {
-        qdev_prop_set_string(l1, "node-board-name", ip53_board->name);
-        qdev_prop_set_string(l1, "node-board-part", ip53_board->part);
-        qdev_prop_set_string(l1, "node-board-revision", ip53_board->revision);
+    boards = s->view->ip53_runtime ? s->view->ip53_runtime->node_boards :
+             NULL;
+    for (; boards; boards = boards->next) {
+        const SGIModelIp53NodeBoard *board = boards->value;
+
+        if (processors != board->processors) {
+            continue;
+        }
+        qdev_prop_set_string(l1, "node-board-name", board->name);
+        qdev_prop_set_string(l1, "node-board-part", board->part);
+        qdev_prop_set_string(l1, "node-board-revision", board->revision);
         return true;
     }
     if (!sgi_machine_node_io_preset(s->view, node_index, &preset)) {

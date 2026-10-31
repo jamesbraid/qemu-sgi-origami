@@ -1976,7 +1976,7 @@
 ##
 # @SGIModelIp53NodeBoard:
 #
-# The node-board identity an IP53 profile's L1 reports for a node.
+# One node-board identity an IP53 profile's L1 reports for a node.
 #
 # @processors: the processor count of a node that reports this board
 #
@@ -2009,8 +2009,9 @@
 # @l1-irouter-compat: whether the node's L1 answers the
 #     router-compatible command set and reports a first port speed
 #
-# @node-board: the node-board identity the L1 reports, absent where
-#     the node keeps the L1's generic record
+# @node-boards: the node-board identities the L1 reports, one per
+#     processor count a node may fit; absent where the node keeps the
+#     L1's generic record
 #
 # Since: 11.2
 ##
@@ -2018,7 +2019,7 @@
   'data': { 'pic-profile': 'SGIModelPicCompatibilityProfile',
             '*normal-selection': 'SGIModelIp53NormalSelection',
             'l1-irouter-compat': 'bool',
-            '*node-board': 'SGIModelIp53NodeBoard' } }
+            '*node-boards': ['SGIModelIp53NodeBoard'] } }
 
 ##
 # @SGIModelTopology:

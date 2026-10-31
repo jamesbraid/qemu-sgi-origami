@@ -478,6 +478,21 @@ class LaunchPolicyFieldTests(unittest.TestCase):
         with self.assertRaisesRegex(CompileError, "does not select"):
             compile_model(model)
 
+    def test_ip53_runtime_node_boards_are_emitted_as_authored(self):
+        model = _resolved("origin350")
+        topology = json.loads(render_catalogue_json([model]))["topologies"][0]
+        self.assertEqual(topology["ip53-runtime"]["node-boards"], [{
+            "processors": 4, "name": "IP53_4CPU",
+            "part": "030-1868-001", "revision": "-C",
+        }])
+
+    def test_ip53_runtime_refuses_two_boards_for_one_processor_count(self):
+        model = _resolved("origin350")
+        boards = model["machine"]["emulation"]["ip53_runtime"]["node_boards"]
+        boards.append(dict(boards[0], name="IP59_4CPU"))
+        with self.assertRaisesRegex(CompileError, "two node boards"):
+            compile_model(model)
+
     def test_ip53_runtime_needs_ip53_nodes(self):
         model = _resolved("origin300")
         model["machine"]["emulation"]["ip53_runtime"] = copy.deepcopy(

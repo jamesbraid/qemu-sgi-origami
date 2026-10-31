@@ -3713,6 +3713,11 @@ def _compile_ip53_runtime(raw: dict, ip53_nodes: list,
             raise CompileError(
                 f"PIC host '{host['id']}' does not select the IP53 runtime "
                 f"profile's {raw['pic_profile']}")
+    counts = [board["processors"] for board in raw.get("node_boards", [])]
+    if len(set(counts)) != len(counts):
+        raise CompileError(
+            "an IP53 runtime profile names two node boards for one "
+            "processor count")
     return copy.deepcopy(raw)
 
 
