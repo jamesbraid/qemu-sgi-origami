@@ -53,8 +53,13 @@ _RESOLVED_CACHE: dict[str, dict] = {}
 
 
 def _resolved(name: str) -> dict:
+    """The composition @name's default model, or with "name/variant" that
+    board variant's, as the catalogue manifest names it."""
     if name not in _RESOLVED_CACHE:
-        _RESOLVED_CACHE[name] = load_checked_system_model(MACHINES / f"{name}.yaml", model_schema=schema(MACHINES))
+        stem, _, variant = name.partition("/")
+        _RESOLVED_CACHE[name] = load_checked_system_model(
+            MACHINES / f"{stem}.yaml", model_schema=schema(MACHINES),
+            variant=variant or None)
     return copy.deepcopy(_RESOLVED_CACHE[name])
 
 def render_catalogue_json(models: list[dict]) -> str:
@@ -459,7 +464,7 @@ class LaunchPolicyFieldTests(unittest.TestCase):
             compile_model(model)
 
     def test_ip53_runtime_is_emitted_as_authored(self):
-        model = _resolved("tezro-tower-one")
+        model = _resolved("tezro/one-processor")
         topology = json.loads(render_catalogue_json([model]))["topologies"][0]
         self.assertEqual(topology["ip53-runtime"], {
             "pic-profile": "pic-rev3-bedrock-tezro-experimental",
@@ -526,7 +531,7 @@ class LaunchPolicyFieldTests(unittest.TestCase):
     def test_each_product_has_one_machine_default(self):
         models = [_resolved(name) for name in sorted({
             *PRODUCT_MODELS.values(), "origin200-dual",
-            "tezro-tower-one", "onyx2-deskside"})]
+            "tezro/one-processor", "onyx2-deskside"})]
         topologies = json.loads(render_catalogue_json(models))["topologies"]
         defaults = {}
         for topology in topologies:
@@ -777,8 +782,9 @@ class Ip53CpuContextTests(unittest.TestCase):
         for name, word, cpu_hz, reset in (
                 ("origin350", 0x569cad85, 700_000_000, 0x009cad85),
                 ("onyx350-compat", 0x569caf85, 800_000_000, 0x009caf85),
-                ("tezro-tower-one", 0x549bad85, 700_000_000, 0x009bad85),
-                ("tezro-tower-multi", 0x549bad85, 700_000_000, 0x009bad85),
+                ("tezro/one-processor", 0x549bad85, 700_000_000, 0x009bad85),
+                ("tezro/two-four-processor", 0x549bad85, 700_000_000,
+                 0x009bad85),
                 ("tezro-rack", 0x549bad85, 700_000_000, 0x009bad85),
                 ("onyx4-host-serial-compat", 0x4aedb385, 1_000_000_000,
                  0x00edb385)):
@@ -1338,8 +1344,8 @@ class PicIo9DescriptorTests(unittest.TestCase):
 
         self.assertNotIn("ds1742", board)
 
-    def test_tezro_tower_emits_its_io9_timekeeper(self):
-        topology = compile_model(_resolved("tezro-tower-multi"))
+    def test_tezro_emits_its_io9_timekeeper(self):
+        topology = compile_model(_resolved("tezro/two-four-processor"))
         board = next(item for item in topology["io_boards"]
                      if item["id"] == "io9")
 
@@ -3593,7 +3599,7 @@ class CatalogueJsonTests(unittest.TestCase):
 
     def test_ip53_v12_slot_is_optional_with_no_default(self):
         assemblies = {"onyx350-compat": "030-1909-008",
-                      "tezro-tower-multi": "030-1884-002"}
+                      "tezro": "030-1884-002"}
         catalogue = json.loads(render_catalogue_json(
             [_resolved(name) for name in assemblies]))
         topologies = {item["name"]: item for item in catalogue["topologies"]}
@@ -3616,7 +3622,7 @@ class CatalogueJsonTests(unittest.TestCase):
     def test_only_six_cleared_ip53_offerings_drop_cpu_requirements(self):
         profile_names = (
             "origin350", "onyx350-compat", "onyx4-host-serial-compat",
-            "tezro-tower-one", "tezro-tower-multi", "tezro-rack",
+            "tezro/one-processor", "tezro/two-four-processor", "tezro-rack",
         )
         catalogue = json.loads(render_catalogue_json(
             [_resolved(name) for name in profile_names]))
@@ -3630,8 +3636,8 @@ class CatalogueJsonTests(unittest.TestCase):
             ("origin350", "origin350", (4,)),
             ("onyx350", "onyx350-compat", (4,)),
             ("onyx4-host", "onyx4-host-serial-compat", (4,)),
-            ("tezro", "tezro-tower-one", (1,)),
-            ("tezro", "tezro-tower-multi", (4,)),
+            ("tezro", "tezro", (1,)),
+            ("tezro", "tezro", (4,)),
             ("tezro", "tezro-rack", (1,)),
         }
         topologies = {item["name"]: item for item in catalogue["topologies"]}
@@ -3654,14 +3660,18 @@ class CatalogueJsonTests(unittest.TestCase):
         self.assertEqual(actual_normal, normal)
         self.assertEqual(len(offerings), 9)
 
-        tower = topologies["tezro-tower-multi"]
+        # The two Tezro boards are two records under one name; the
+        # two/four-processor one is the machine default.
+        boards = [item for item in catalogue["topologies"]
+                  if item["name"] == "tezro"]
         self.assertEqual(
-            [item["cpus-per-node"] for item in
-             tower["node-populations"][0]["supported-cpu-populations"]],
-            [[4], [2]],
+            [[population["cpus-per-node"] for population in
+              board["node-populations"][0]["supported-cpu-populations"]]
+             for board in boards],
+            [[[1]], [[4], [2]]],
         )
         self.assertEqual(
-            _resolved("tezro-tower-multi")["composition"]["population"][
+            _resolved("tezro")["composition"]["population"][
                 "cpus_per_node"], [4],
         )
 

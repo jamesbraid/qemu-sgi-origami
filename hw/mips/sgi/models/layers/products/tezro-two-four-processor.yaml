@@ -8,7 +8,7 @@ sources:
   tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro tower and rack software limits"
 layer:
   kind: product
-  id: tezro-tower-multi
+  id: tezro-two-four-processor
   requires:
     assembly: ip53-tezro
   topology:
@@ -57,7 +57,7 @@ layer:
               - {product: v12, fidelity: implemented, pairing: established, assembly: "030-1884-002"}
   data:
     machine:
-      name: Tezro tower, two/four-processor serial compatibility profile
+      name: Tezro, two/four-processor board serial compatibility profile
       model_role: emulation-target
       notes: Software-only Tezro compatibility profile. The manual supports the selected processor population and locates IO9 at bus 1, slot 1. The 700 MHz/4 MiB CPU tuple, reset candidate, 4 GiB logical memory map, Bedrock and L1 identities, PIC revision and placement, PCI function identities, and interrupt
         routes are emulator choices adapted from the deskside software inputs. They do not describe a measured tower or rack configuration. The optional V12 at widget 12 follows a published quad Tezro inventory (030-1884-002 rev D); it does not establish the other selected board inputs. The rack second enclosure is omitted. The guide overview says three PCI buses for the two/four-processor board while its detailed
@@ -74,8 +74,8 @@ layer:
         - tezro-deskside-trial-review
       emulation:
         machine_name: tezro
-        display_description: SGI Tezro tower, two/four-processor serial compatibility profile
-        profile: tezro-tower-multi-serial-compat
+        display_description: SGI Tezro, two/four-processor board serial compatibility profile
+        profile: tezro-serial-compat
         synthetic_identities:
         - component: bedrock
           serial: '0x51454d554e00'
@@ -179,7 +179,7 @@ layer:
           requires_boot_flash: false
           requires_network_identity: false
           discovery_prerequisites: []
-        default_topology: tezro-tower-multi
+        default_topology: tezro
         requires_per_node_flash: false
         has_managed_boot_flash: true
         operator_firmware: true

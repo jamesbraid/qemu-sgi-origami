@@ -575,16 +575,16 @@ measure a processor reset pin, PROM image fitted to a board, or PCI wiring on
 the named product. The physical inventory facts cited by the catalogue have
 separate public capture or manual references.
 
-===========================  ===================  ======  ==========  ==========
-Profile                      Processors           Memory  Cache each  Reset mode
-===========================  ===================  ======  ==========  ==========
-Origin 350                   four 700 MHz R16000  2 GiB   8 MiB       0x009cad85
-Onyx 350 captured module     four 800 MHz R16000  8 GiB   8 MiB       0x009caf85
-Tezro tower, one CPU         one 700 MHz R16000   4 GiB   4 MiB       0x009bad85
-Tezro tower, four CPUs       four 700 MHz R16000  4 GiB   4 MiB       0x009bad85
-Tezro rack, first enclosure  one 700 MHz R16000   4 GiB   4 MiB       0x009bad85
-Onyx 4 host candidate        four 1 GHz R16000    8 GiB   16 MiB      0x00edb385
-===========================  ===================  ======  ==========  ==========
+=================================  ===================  ======  ==========  ==========
+Profile                            Processors           Memory  Cache each  Reset mode
+=================================  ===================  ======  ==========  ==========
+Origin 350                         four 700 MHz R16000  2 GiB   8 MiB       0x009cad85
+Onyx 350 captured module           four 800 MHz R16000  8 GiB   8 MiB       0x009caf85
+Tezro, one-processor board         one 700 MHz R16000   4 GiB   4 MiB       0x009bad85
+Tezro, two/four-processor board    four 700 MHz R16000  4 GiB   4 MiB       0x009bad85
+Tezro rack, first enclosure        one 700 MHz R16000   4 GiB   4 MiB       0x009bad85
+Onyx 4 host candidate              four 1 GHz R16000    8 GiB   16 MiB      0x00edb385
+=================================  ===================  ======  ==========  ==========
 
 The six listed compositions select the same internal R16000 experiment
 properties with or without the ``ip53-experimental`` machine option.
@@ -602,11 +602,15 @@ Mapping that report to Bedrock revision 2 is a profile choice; raw NI and
 widget register identities remain unmeasured.
 
 The Origin 350, Onyx 350 and Onyx 4 host profiles each select one PIC at XIO
-widget 15. Tezro selects two PIC widgets, 11 and 15, and places the modeled
-IO9 behind widget 15. The one-CPU and four-CPU Tezro tower profiles share
-the same selected board, memory and I/O construction. The rack profile models
-only the first enclosure. The four-CPU Tezro tower and Onyx 350 profiles
-take an optional V12 in graphics slot ``widget-12``
+widget 15. The Tezro's two interface boards are two variants of the one
+``tezro`` topology, and ``-smp`` picks the board: one processor builds the
+one-processor board, two or four the two/four-processor board. The
+two/four-processor board selects two PIC widgets, 11 and 15, and places the
+modeled IO9 behind widget 15. The one-processor board selects only the PIC
+at widget 15. Otherwise the
+two boards share the same selected memory and I/O construction. The rack
+profile models only the first enclosure. The Tezro two/four-processor board
+and the Onyx 350 profile take an optional V12 in graphics slot ``widget-12``
 (``-device sgi-odyssey,slot=widget-12,product=v12``). Both default to no
 graphics. The widget position follows published Tezro and Onyx 350 inventories
 respectively; on the Onyx 350 it is an alternative to an InfiniteReality
@@ -626,7 +630,7 @@ Origin 350 and the Onyx 4 host select L1 type ``0x37``. Onyx 350 selects
 ``0x38``: a published PROM session on a real Onyx 350 graphics module with a
 VPro board reports the class the IP35 PROM ties to that type, and the PROM's
 environment reset then chooses the graphics console, as it does for the Tezro
-types. The Tezro tower and rack profiles select ``0x39`` and ``0x51``
+types. The ``tezro`` and ``tezro-rack`` profiles select ``0x39`` and ``0x51``
 respectively, following the published Linux IP35 machine-name mapping.
 Physical L1 type replies remain unmeasured. The public captures do not establish the selected clocks,
 an installed flash image, or the complete PIC and IO9 interrupt wiring.

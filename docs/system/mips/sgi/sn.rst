@@ -743,10 +743,10 @@ Onyx2 deskside. ``-M <product>,topology=help`` lists the rest:
      - 1
      - 4 (fixed)
      - 8192 MiB (fixed)
-   * - ``tezro-tower-multi`` (default)
+   * - ``tezro`` (default)
      - ``tezro``
      - 1
-     - 2 or 4
+     - 1, 2 or 4
      - 4096 MiB (fixed)
    * - ``onyx4-host-ip59`` (default)
      - ``onyx4-host``
@@ -773,8 +773,14 @@ Onyx2 deskside. ``-M <product>,topology=help`` lists the rest:
 The ``-ip59`` topologies carry the 1 GHz IP59 node board; see
 :ref:`sgi-ip59-profiles`.
 
-``-M origin200,topology=origin200-dual`` selects the second row. Each
-topology describes one chassis, and its catalogue record carries a
+``-M origin200,topology=origin200-dual`` selects the second row.
+
+``tezro`` is one topology with a catalogue record for each Tezro
+interface board, told apart by the processor counts each accepts:
+``-smp 1`` builds the one-processor board and ``-smp 2`` or ``-smp 4``
+the two/four-processor board.
+
+Each topology describes one chassis, and its catalogue record carries a
 node-population row for each count of node boards it accepts; the
 ``nodes`` machine property picks the row, and defaults to the largest,
 so ``-M origin2000`` still fits four. ``-M origin2000,nodes=2`` fits node
@@ -1200,8 +1206,8 @@ What each topology offers today:
      - ``widget-13``
      - ``v12``
      - ``v12``
-   * - ``tezro-tower-multi``, ``onyx350-compat``, and their ``-ip59``
-       topologies
+   * - ``tezro`` with two or four processors, ``onyx350-compat``, and their
+       ``-ip59`` topologies
      - ``widget-12`` on the PIC fabric
      - none
      - ``v12``

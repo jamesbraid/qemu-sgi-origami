@@ -170,27 +170,31 @@ class IP53RuntimeExportTests(unittest.TestCase):
 
     def test_origin350_and_tezro_reference_graphs_still_resolve(self):
         model_schema = schema(ROOT / "hw/mips/sgi/models")
-        for filename, product in (("origin350.yaml", "origin350"),
-                                  ("tezro-tower-one.yaml", "tezro-tower-one")):
+        for filename, variant, product in (
+                ("origin350.yaml", None, "origin350"),
+                ("tezro.yaml", "one-processor", "tezro")):
             with self.subTest(filename=filename):
                 model = load_checked_system_model(
                     ROOT / "hw/mips/sgi/models" / filename,
-                    model_schema=model_schema)
+                    model_schema=model_schema, variant=variant)
                 self.assertEqual(model["composition"]["product"], product)
 
-    def test_tezro_tower_and_rack_compile_as_explicit_ip53_profiles(self):
+    def test_tezro_and_rack_compile_as_explicit_ip53_profiles(self):
         model_schema = schema(ROOT / "hw/mips/sgi/models")
+        # Each Tezro interface board is a variant of one tezro topology.
         expected = {
-            "tezro-tower-one": {"populations": [[1]], "pics": 1},
-            "tezro-tower-multi": {"populations": [[4], [2]], "pics": 2},
-            "tezro-rack": {"populations": [[1], [2], [4]], "pics": 1},
+            "one-processor": ("tezro", {"populations": [[1]], "pics": 1}),
+            "two-four-processor": (
+                "tezro", {"populations": [[4], [2]], "pics": 2}),
+            None: ("tezro-rack",
+                   {"populations": [[1], [2], [4]], "pics": 1}),
         }
         models = []
-        for name, facts in expected.items():
-            with self.subTest(name=name):
+        for variant, (name, facts) in expected.items():
+            with self.subTest(name=name, variant=variant):
                 model = load_checked_system_model(
                     ROOT / "hw/mips/sgi/models" / f"{name}.yaml",
-                    model_schema=model_schema)
+                    model_schema=model_schema, variant=variant)
                 self.assertEqual(model["machine"]["model_role"],
                                  "emulation-target")
                 topology = compile_model(model)
@@ -204,7 +208,7 @@ class IP53RuntimeExportTests(unittest.TestCase):
                 ))
                 self.assertEqual(len(topology["pci_host_bridges"]), facts["pics"])
                 self.assertEqual(len(topology["io_boards"]), 1)
-                if name in {"tezro-tower-one", "tezro-rack"}:
+                if variant in {"one-processor", None}:
                     self.assertEqual(model["composition"]["population"]["cpus_per_node"], [1])
                     # These profiles author cpu0 as fitted. The rack also
                     # advertises two/four-CPU populations; its remaining
@@ -212,12 +216,12 @@ class IP53RuntimeExportTests(unittest.TestCase):
                     self.assertEqual(
                         [component["id"] for component in model["components"]
                          if component["kind"] == "cpu"], ["cpu0"])
-                if name == "tezro-tower-multi":
+                if variant == "two-four-processor":
                     self.assertEqual(
                         model["composition"]["population"]["cpus_per_node"],
                         [4],
                     )
-                if name == "tezro-tower-one":
+                if variant == "one-processor":
                     self.assertEqual(sum(
                         slot["assembly"] is not None
                         for slot in topology["nodes"][0]["cpu_slots"]), 1)
@@ -232,14 +236,18 @@ class IP53RuntimeExportTests(unittest.TestCase):
         catalogue = json.loads(render_catalogue_json(
             models, product_models=product_models))
         offerings = [item for item in catalogue["offerings"]
-                     if item["topology"] in expected]
+                     if item["product"] == "tezro"]
         self.assertEqual(
-            {(item["topology"], tuple(item["cpus-per-node"]))
-             for item in offerings},
-            {(name, tuple(population))
-             for name, facts in expected.items()
-             for population in facts["populations"]},
+            sorted((item["topology"], tuple(item["cpus-per-node"]))
+                   for item in offerings),
+            sorted((name, tuple(population))
+                   for name, facts in expected.values()
+                   for population in facts["populations"]),
         )
+        tezro = [item for item in catalogue["topologies"]
+                 if item["name"] == "tezro"]
+        self.assertEqual([item.get("machine-default", False) for item in tezro],
+                         [False, True])
 
     def test_ip53_board_identity_projects_without_changing_origin300(self):
         model_schema = schema(ROOT / "hw/mips/sgi/models")

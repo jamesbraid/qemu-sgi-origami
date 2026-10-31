@@ -4425,13 +4425,13 @@ static void test_machine_node_board_profiles(void)
         { "onyx350,topology=onyx350-compat", "8G", 4,
           "0x009caf85", "0x800000", "IP53_4CPU", "030-2013-001", "-D",
           0x38, { 1, 18, 5 }, 0x569caf85, 800, 200 },
-        { "tezro,topology=tezro-tower-one", "4G", 1,
+        { "tezro,topology=tezro", "4G", 1,
           "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39,
           { 1, 48, 1 }, 0x549bad85, 700, 200 },
-        { "tezro,topology=tezro-tower-one,l1-type-code=55", "4G", 1,
+        { "tezro,topology=tezro,l1-type-code=55", "4G", 1,
           "0x009bad85", "0x400000", NULL, NULL, NULL, 0x37,
           { 1, 48, 1 }, 0x549bad85, 700, 200 },
-        { "tezro,topology=tezro-tower-multi", "4G", 4,
+        { "tezro,topology=tezro", "4G", 4,
           "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39,
           { 1, 48, 1 }, 0x549bad85, 700, 200 },
         { "tezro,topology=tezro-rack", "4G", 1,
@@ -4557,7 +4557,7 @@ static void test_machine_node_board_profiles(void)
 
     {
         const char *machine =
-            "tezro,topology=tezro-tower-one,l1-revision=2.3.4";
+            "tezro,topology=tezro,l1-revision=2.3.4";
         uint8_t reply[160];
 
         s = qtest_initf("-M %s,ip53-experimental=on,"
@@ -4704,7 +4704,7 @@ static void test_machine_cpu_context_global_overrides(void)
           "nvram0-clock=sgi-ds1742-clock-io9", "8G",
           "4", "R16000,r16000-experimental=on,r16000-reset-mode=0x009caf85,"
           "r16000-scache-bytes=0x800000" },
-        { "tezro,topology=tezro-tower-one,ip53-experimental=on,"
+        { "tezro,topology=tezro,ip53-experimental=on,"
           "nvram0=sgi-ds1742-data-io9,"
           "nvram0-clock=sgi-ds1742-clock-io9", "4G", "1",
           "R16000,r16000-experimental=on,r16000-reset-mode=0x009bad85,"
@@ -4819,9 +4819,9 @@ static void test_ip53_cpu_context_migration(void)
         { "onyx350,topology=onyx350-compat", "8G", 4, "0x009caf85",
           "0x800000", 800, 0x569caf85, "IP53_4CPU", "030-2013-001",
           "-D" },
-        { "tezro,topology=tezro-tower-one", "4G", 1, "0x009bad85",
+        { "tezro,topology=tezro", "4G", 1, "0x009bad85",
           "0x400000", 700, 0x549bad85, NULL, NULL, NULL },
-        { "tezro,topology=tezro-tower-multi", "4G", 4, "0x009bad85",
+        { "tezro,topology=tezro", "4G", 4, "0x009bad85",
           "0x400000", 700, 0x549bad85, NULL, NULL, NULL },
         { "tezro,topology=tezro-rack", "4G", 1, "0x009bad85",
           "0x400000", 700, 0x549bad85, NULL, NULL, NULL },
@@ -4973,7 +4973,7 @@ static QTestState *start_tezro_revision_profile(const char *incoming,
                                                 const char *data,
                                                 const char *clock)
 {
-    return qtest_initf("-M tezro,topology=tezro-tower-one,ip53-experimental=on,"
+    return qtest_initf("-M tezro,topology=tezro,ip53-experimental=on,"
                        "nvram0=sgi-ds1742-data-io9,"
                        "nvram0-clock=sgi-ds1742-clock-io9 "
                        "-m 4G -smp 1 -cpu R16000,r16000-experimental=on,"
@@ -5058,9 +5058,9 @@ static void test_machine_port_speed_profiles(void)
           0x37, true },
         { "onyx350,topology=onyx350-compat", "8G", 4,
           "0x009caf85", "0x800000", 1, 0x38, true },
-        { "tezro,topology=tezro-tower-one", "4G", 1,
+        { "tezro,topology=tezro", "4G", 1,
           "0x009bad85", "0x400000", 1, 0x39, true },
-        { "tezro,topology=tezro-tower-multi", "4G", 4,
+        { "tezro,topology=tezro", "4G", 4,
           "0x009bad85", "0x400000", 1, 0x39, true },
         { "tezro,topology=tezro-rack", "4G", 1,
           "0x009bad85", "0x400000", 1, 0x51, true },

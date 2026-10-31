@@ -1116,12 +1116,8 @@ def _processor(model: dict, cpu: dict) -> dict:
                 "ip53-onyx4-host-serial-compat"),
             "onyx350-compat": ("onyx350", 800, 0x009caf85,
                         "ip53-onyx350-compat"),
-            "tezro-tower-one": (
-                "tezro", 700, 0x009bad85,
-                "tezro-tower-one-serial-compat"),
-            "tezro-tower-multi": (
-                "tezro", 700, 0x009bad85,
-                "tezro-tower-multi-serial-compat"),
+            "tezro": (
+                "tezro", 700, 0x009bad85, "tezro-serial-compat"),
             "tezro-rack": (
                 "tezro", 700, 0x009bad85,
                 "tezro-rack-serial-compat"),
@@ -1165,7 +1161,7 @@ def _processor(model: dict, cpu: dict) -> dict:
         ]
         expected_cache_mib = (16 if clock_mhz == 1000 else
                               4 if product in {
-            "tezro-tower-one", "tezro-tower-multi", "tezro-rack",
+            "tezro", "tezro-rack",
         } else 8)
         expected_scache_bytes = expected_cache_mib * 1024 * 1024
         if (clock_mhz != profile[1] or cache_mib != expected_cache_mib or
@@ -3745,7 +3741,7 @@ def _compile_ip35_firmware(model: dict) -> dict:
     firmware = machine.get("emulation", {}).get("ip35_firmware")
     ip53_products = {
         "origin350", "onyx4-host-serial-compat", "onyx350-compat",
-        "tezro-tower-one", "tezro-tower-multi", "tezro-rack",
+        "tezro", "tezro-rack",
         "origin350-ip59", "onyx4-host-ip59", "onyx350-ip59",
         "tezro-tower-one-ip59", "tezro-tower-multi-ip59", "tezro-rack-ip59",
     }

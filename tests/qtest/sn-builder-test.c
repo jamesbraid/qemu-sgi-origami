@@ -3027,7 +3027,7 @@ static void test_sgi_catalogue_references(void)
     static const char *const names[] = {
         "onyx350-base", "onyx350-observed-module", "onyx4-host-g2",
         "onyx4-host-g2n", "origin350-reference",
-        "tezro-rack-two-enclosure", "tezro-tower-four",
+        "tezro-rack-two-enclosure", "tezro-reference",
     };
     QTestState *qts = qtest_init("-M none");
     QDict *resp = qtest_qmp(qts,
@@ -3392,11 +3392,11 @@ static void test_onyx4_host_ip53_compatibility_construction(void)
     ip53_runtime_test_stop(fixture);
 }
 
-static void test_tezro_tower_multi_builds_two_pic_hosts(void)
+static void test_tezro_two_four_processor_board_builds_two_pic_hosts(void)
 {
     IP53RuntimeTestFixture *fixture =
         ip53_runtime_test_start_with_binary_profile(
-        NULL, "tezro,topology=tezro-tower-multi,ip53-experimental=on", NULL,
+        NULL, "tezro,topology=tezro,ip53-experimental=on", NULL,
         "4", "4G", "0x009bad85");
     g_autofree char *pic_b = qom_child_type(fixture->qts, "/machine",
                                            "pic-pic-xio-b");
@@ -3491,8 +3491,7 @@ static void test_tezro_tower_multi_builds_two_pic_hosts(void)
 #define TEZRO_LINK_STATUS_CLEAR 0x2c
 #define TEZRO_LINK_RESET 0x34
 #define TEZRO_LINK_AUX 0x3c
-#define TEZRO_MULTI_MACHINE "tezro,topology=tezro-tower-multi," \
-                            "ip53-experimental=on"
+#define TEZRO_MULTI_MACHINE "tezro,topology=tezro,ip53-experimental=on"
 
 static IP53RuntimeTestFixture *tezro_multi_start(void)
 {
@@ -3763,7 +3762,7 @@ static void test_tezro_one_processor_board_has_one_pic(void)
 {
     IP53RuntimeTestFixture *fixture =
         ip53_runtime_test_start_with_binary_profile(
-        NULL, "tezro,topology=tezro-tower-one,ip53-experimental=on", NULL,
+        NULL, "tezro,topology=tezro,ip53-experimental=on", NULL,
         "1", "4G", "0x009bad85");
     QTestState *qts = fixture->qts;
     uint32_t word = 0;
@@ -3776,14 +3775,46 @@ static void test_tezro_one_processor_board_has_one_pic(void)
     ip53_runtime_test_stop(fixture);
 }
 
+/*
+ * One tezro topology covers both interface boards: -smp 1 builds the
+ * one-processor board's one PIC, two or four processors the other
+ * board's two.
+ */
+static void test_tezro_board_follows_smp(void)
+{
+    static const struct {
+        const char *cpus;
+        bool second_pic;
+    } boards[] = {
+        { "1", false },
+        { "2", true },
+        { "4", true },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(boards); i++) {
+        IP53RuntimeTestFixture *fixture =
+            ip53_runtime_test_start_with_binary_profile(
+                NULL, "tezro,topology=tezro,ip53-experimental=on", NULL,
+                boards[i].cpus, "4G", "0x009bad85");
+        g_autofree char *pic_b = qom_child_type(fixture->qts, "/machine",
+                                               "pic-pic-xio-b");
+        g_autofree char *pic_f = qom_child_type(fixture->qts, "/machine",
+                                               "pic-pic-xio-f");
+
+        g_assert_cmpstr(pic_f, ==, "sgi-pic");
+        g_assert_cmpstr(pic_b, ==, boards[i].second_pic ? "sgi-pic" : NULL);
+        ip53_runtime_test_stop(fixture);
+    }
+}
+
 static void test_tezro_named_serial_profiles_build(void)
 {
     static const struct {
         const char *topology;
         const char *cpus;
     } profiles[] = {
-        { "tezro-tower-one", "1" },
-        { "tezro-tower-multi", "4" },
+        { "tezro", "1" },
+        { "tezro", "4" },
         { "tezro-rack", "1" },
     };
 
@@ -3830,7 +3861,7 @@ static void test_ip53_bcm5701_takes_machine_mac(void)
         { "origin350,ip53-experimental=on", "2G", "0x009cad85" },
         { "onyx350,topology=onyx350-compat,ip53-experimental=on", "8G",
           "0x009caf85" },
-        { "tezro,topology=tezro-tower-multi,ip53-experimental=on", "4G",
+        { "tezro,topology=tezro,ip53-experimental=on", "4G",
           "0x009bad85" },
     };
 
@@ -3867,7 +3898,7 @@ static void test_tezro_legacy_experimental_populations(void)
         const char *topology;
         const char *cpus;
     } profiles[] = {
-        { "tezro-tower-multi", "2" },
+        { "tezro", "2" },
         { "tezro-rack", "2" },
         { "tezro-rack", "4" },
     };
@@ -3902,9 +3933,9 @@ static void test_ip53_normal_selection_profiles(void)
           8 * MiB, 700000000, 4 },
         { "onyx350,topology=onyx350-compat", "4", "8G", 0x009caf85,
           8 * MiB, 800000000, 4 },
-        { "tezro,topology=tezro-tower-one", "1", "4G", 0x009bad85,
+        { "tezro,topology=tezro", "1", "4G", 0x009bad85,
           4 * MiB, 700000000, 1 },
-        { "tezro,topology=tezro-tower-multi", "4", "4G", 0x009bad85,
+        { "tezro,topology=tezro", "4", "4G", 0x009bad85,
           4 * MiB, 700000000, 4 },
         { "tezro,topology=tezro-rack", "1", "4G", 0x009bad85,
           4 * MiB, 700000000, 1 },
@@ -5326,7 +5357,7 @@ static void test_ip53_other_products_host_widget(void)
     ip53_check_host_widget(ip53_runtime_test_start(
         "origin350,ip53-experimental=on", NULL), 0xa);
     ip53_check_host_widget(ip53_runtime_test_start_with_binary_profile(
-        NULL, "tezro,topology=tezro-tower-multi,ip53-experimental=on", NULL,
+        NULL, "tezro,topology=tezro,ip53-experimental=on", NULL,
         "4", "4G", "0x009bad85"), 0xa);
 }
 
@@ -5447,8 +5478,8 @@ static void test_ip53_widget_zero_reports_revision_three(void)
     } compositions[] = {
         { "origin350,topology=origin350", "4", "2G", "0x009cad85" },
         { "onyx350,topology=onyx350-compat", "4", "8G", "0x009caf85" },
-        { "tezro,topology=tezro-tower-one", "1", "4G", "0x009bad85" },
-        { "tezro,topology=tezro-tower-multi", "4", "4G", "0x009bad85" },
+        { "tezro,topology=tezro", "1", "4G", "0x009bad85" },
+        { "tezro,topology=tezro", "4", "4G", "0x009bad85" },
         { "tezro,topology=tezro-rack", "1", "4G", "0x009bad85" },
         { "onyx4-host,topology=onyx4-host-serial-compat", "4", "8G",
           "0x00edb385" },
@@ -13061,8 +13092,10 @@ int main(int argc, char **argv)
                    test_ip53_runtime_construction);
     qtest_add_func("sn/builder/onyx4-host-ip53-compatibility-construction",
                    test_onyx4_host_ip53_compatibility_construction);
-    qtest_add_func("sn/builder/tezro-tower-multi-builds-two-pic-hosts",
-                   test_tezro_tower_multi_builds_two_pic_hosts);
+    qtest_add_func("sn/builder/tezro-two-four-processor-board",
+                   test_tezro_two_four_processor_board_builds_two_pic_hosts);
+    qtest_add_func("sn/builder/tezro-board-follows-smp",
+                   test_tezro_board_follows_smp);
     qtest_add_func("sn/builder/tezro-named-serial-profiles-build",
                    test_tezro_named_serial_profiles_build);
     qtest_add_func("sn/builder/tezro-second-pic-link-is-live-from-reset",

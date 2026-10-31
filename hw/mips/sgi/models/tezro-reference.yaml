@@ -3,4 +3,4 @@ configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip53-tezro.yaml
-  - layers/products/tezro-tower-multi.yaml
+  - layers/products/tezro-reference.yaml
