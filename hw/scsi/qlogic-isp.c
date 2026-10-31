@@ -1024,19 +1024,17 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     /*
-     * One value, in mailbox 1. Which bus it is for is not carried anywhere
-     * the datasheet records, so it is taken for every bus of the adapter;
-     * a guest that programs each bus in turn still ends up with its last
-     * value, which is the same on both buses in every driver read.
+     * Mailbox 1 is bus 0's value and mailbox 2 bus 1's, as the public
+     * drivers load them; a one-bus part has meaning only in mailbox 1.
      */
     case ISP_MBOX_CMD_SET_SELECTION_TIMEOUT: {
         const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
         unsigned int i;
 
         for (i = 0; i < info->nchannels; i++) {
-            s->chan[i].select_timeout = s->mailbox[1];
+            s->chan[i].select_timeout = s->mailbox[1 + i];
+            trace_qlogic_isp_selection_timeout(i, s->mailbox[1 + i]);
         }
-        trace_qlogic_isp_selection_timeout(s->mailbox[1]);
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
     }
