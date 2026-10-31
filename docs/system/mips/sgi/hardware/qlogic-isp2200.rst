@@ -128,7 +128,9 @@ Set Retry Count (``0x32``) and Reset Link Status (``0x52``) complete and
 change nothing; Get Link Status (``0x6b``) writes 32 zero bytes, for the
 adapter's own loop ID as well as a port's. A loop ID with no port, and
 ``0x29`` for the adapter's own loop ID (the driver asks it of discovered
-ports only), get ``0x4005``, as does either while the loop is down.
+ports only), get ``0x4005``, as does either while the loop is down. The
+``qlogic_isp2200_approximate_reply`` trace event marks each of these
+replies.
 
 Reset and RISC control
 ======================
