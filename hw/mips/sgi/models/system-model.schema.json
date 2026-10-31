@@ -10,6 +10,31 @@
   "allOf": [
     {
       "if": {
+        "required": ["composition"],
+        "properties": { "composition": {
+          "required": ["variant"],
+          "properties": { "variant": { "properties": { "default": { "const": false } } } }
+        } }
+      },
+      "then": {
+        "properties": { "machine": { "properties": { "harness": {
+          "not": { "anyOf": [
+            { "required": ["prom_dialogue"] }, { "required": ["disk_bus"] },
+            { "required": ["netboot_adapter"] }, { "required": ["default_topology"] },
+            { "required": ["supported_guests"] }, { "required": ["install_media"] }
+          ] },
+          "description": "A board variant other than the default takes the product's harness facts from the default variant and repeats none of them."
+        } } } }
+      },
+      "else": {
+        "properties": { "machine": { "properties": { "harness": { "required": [
+          "prom_dialogue", "disk_bus", "netboot_adapter", "default_topology",
+          "supported_guests", "install_media"
+        ] } } } }
+      }
+    },
+    {
+      "if": {
         "required": ["machine"],
         "properties": {
           "machine": {
@@ -838,11 +863,7 @@
         },
         "harness": {
           "type": "object",
-          "required": [
-            "console", "prom_dialogue", "disk_bus", "netboot_adapter",
-            "default_cpu_model", "default_topology", "supported_guests",
-            "install_media"
-          ],
+          "required": ["console", "default_cpu_model"],
           "additionalProperties": false,
           "description": "Launch metadata emitted into the compiled catalogue: console dialogue, supported guests and accepted launch options. These are harness choices, not hardware claims, so provenance and sources are optional here; a value that states a hardware fact may cite one.",
           "properties": {
