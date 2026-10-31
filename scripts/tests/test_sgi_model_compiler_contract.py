@@ -443,7 +443,7 @@ class LaunchPolicyFieldTests(unittest.TestCase):
         model = _resolved("tezro/one-processor")
         topology = json.loads(render_catalogue_json([model]))["topologies"][0]
         self.assertEqual(topology["ip53-runtime"], {
-            "pic-profile": "pic-rev3-bedrock-tezro-experimental",
+            "pic-profile": "pic-rev3-bedrock-tezro-compat",
             "l1-irouter-compat": True,
         })
 
@@ -456,7 +456,7 @@ class LaunchPolicyFieldTests(unittest.TestCase):
     def test_ip53_runtime_pic_profile_must_match_its_hosts(self):
         model = _resolved("origin350")
         model["machine"]["emulation"]["ip53_runtime"]["pic_profile"] = (
-            "pic-rev3-bedrock-tezro-experimental")
+            "pic-rev3-bedrock-tezro-compat")
         with self.assertRaisesRegex(CompileError, "does not select"):
             compile_model(model)
 

@@ -624,7 +624,7 @@ static void assert_tezro_pic_profiles(QTestState *qts)
             "'property':'compatibility-profile'}}", pic_path[host]);
 
         g_assert_cmpstr(qdict_get_str(profile, "return"), ==,
-                        "pic-rev3-bedrock-tezro-experimental");
+                        "pic-rev3-bedrock-tezro-compat");
     }
 }
 

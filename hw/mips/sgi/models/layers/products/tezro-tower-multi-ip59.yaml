@@ -98,7 +98,7 @@ layer:
         # How the emulator and launchers run this IP53 profile, read in
         # place of comparing topology names.
         ip53_runtime:
-          pic_profile: pic-rev3-bedrock-tezro-experimental
+          pic_profile: pic-rev3-bedrock-tezro-compat
           l1_irouter_compat: true
           node_boards:
             - processors: 4
@@ -110,8 +110,8 @@ layer:
               part: "030-2059-002"
               revision: "A"
         pic_profiles:
-          pic-xio-b: pic-rev3-bedrock-tezro-experimental
-          pic-xio-f: pic-rev3-bedrock-tezro-experimental
+          pic-xio-b: pic-rev3-bedrock-tezro-compat
+          pic-xio-f: pic-rev3-bedrock-tezro-compat
         bedrock_nodes:
           bedrock:
             board_id_word: 8193
