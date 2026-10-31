@@ -73,7 +73,9 @@ layer:
         memory map, Bedrock and L1 identities, PIC revision and placement, PCI function identities, and
         interrupt routes are emulator choices adapted from the software inputs first selected for the two/four-processor board.
         They do not describe a measured Tezro or Tezro rack configuration. The optional V12 at widget 12 is
-        an inferred placement. The rack second enclosure is omitted.
+        an inferred placement. The L1 keeps its generic node-board record, as no capture shows a
+        one-processor IP53 board, so its name, part and revision are unknown. The rack second enclosure
+        is omitted.
       firmware_config:
         processor_reset_mode: 0x009bad85
         processor_firmware_word: 0x549bad85
