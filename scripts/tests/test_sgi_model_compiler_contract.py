@@ -235,10 +235,12 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
                 topology, {**self.harness([record]), "console": "l1-uart"},
                 (0,))
 
-    def test_origin350_experiment_r16000_projects_explicit_reset_and_cache(self):
+    def test_r16000_projects_its_boards_reset_and_cache(self):
         model = {
             "composition": {"product": "origin350"},
-            "machine": {"emulation": {"machine_name": "origin350"}},
+            "machine": {"board_ip": "IP53",
+                        "firmware_config": {
+                            "processor_reset_mode": 0x009cad85}},
         }
         cpu = {
             "id": "cpu0", "hardware_kind": "r16000",
@@ -258,10 +260,10 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
             "mode_bits": 0x009cad85,
         })
 
-    def test_r16000_projection_is_limited_to_origin350_experiment(self):
+    def test_r16000_projection_is_limited_to_ip53_family_boards(self):
         model = {
             "composition": {"product": "origin300"},
-            "machine": {"emulation": {"machine_name": "origin300"}},
+            "machine": {"board_ip": "IP45"},
         }
         cpu = {
             "id": "cpu0", "hardware_kind": "r16000",
@@ -272,13 +274,40 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
             },
         }
 
-        with self.assertRaisesRegex(CompileError, "only the Origin 350 IP53 experiment"):
+        with self.assertRaisesRegex(CompileError, "only an IP53-family"):
             _processor(model, cpu)
+
+    def test_r16000_reset_word_selects_its_cache(self):
+        model = {"composition": {"product": "onyx4-host"},
+                 "machine": {"board_ip": "IP53"}}
+        cpu = {"id": "cpu0", "hardware_kind": "r16000", "identity": {
+            "clock_mhz": 1000, "cache_mib": 8,
+            "r16000_reset_mode": 0x00edb385,
+            "r16000_scache_bytes": 0x800000}}
+        # The IP59's word selects 16 MiB, so it cannot fit an 8 MiB part.
+        with self.assertRaisesRegex(CompileError, "selects a 16 MiB"):
+            _processor(model, cpu)
+        cpu["identity"].update(cache_mib=16, r16000_scache_bytes=0x1000000)
+        self.assertEqual(_processor(model, cpu)["mode_bits"], 0x00edb385)
+
+    def test_a_record_fits_one_boards_r16000_on_every_node(self):
+        model = copy.deepcopy(_resolved("origin3900"))
+        compile_model(model)
+        cpus = [item for item in model["components"]
+                if item.get("hardware_kind") == "r16000"]
+        self.assertEqual(len(cpus), 16)
+        # One Cx-brick node board's processors run at the IP59's clock.
+        for cpu in cpus[:4]:
+            cpu["identity"]["clock_mhz"] = 1000
+        with self.assertRaisesRegex(CompileError, "more than one board"):
+            compile_model(model)
 
     def test_r16000_projection_rejects_mismatched_and_missing_inputs(self):
         model = {
             "composition": {"product": "origin350"},
-            "machine": {"emulation": {"machine_name": "origin350"}},
+            "machine": {"board_ip": "IP53",
+                        "firmware_config": {
+                            "processor_reset_mode": 0x009cad85}},
         }
         cpu = {
             "id": "cpu0", "hardware_kind": "r16000",
@@ -290,9 +319,9 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
         }
         missing = object()
         cases = (
-            ("machine class", ("machine", "emulation", "machine_name"), "origin300"),
-            ("product class", ("composition", "product"), "onyx350-base"),
-            ("clock", ("identity", "clock_mhz"), 701),
+            ("board", ("machine", "board_ip"), "IP45"),
+            ("firmware block word", ("machine", "firmware_config",
+                                     "processor_reset_mode"), 0x009aa985),
             ("cache", ("identity", "cache_mib"), 4),
             ("reset mode", ("identity", "r16000_reset_mode"), 0x009aa985),
             ("secondary cache bytes", ("identity", "r16000_scache_bytes"), 0x400000),
