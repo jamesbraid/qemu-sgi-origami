@@ -60,10 +60,6 @@ layer:
         cache_clock_mhz: 333
         r16000_reset_mode: 0x00edb385
         r16000_scache_bytes: 16777216
-        required_properties:
-        - r16000-experimental
-        - r16000-reset-mode
-        - r16000-scache-bytes
       provenance: derived
       sources:
       - tezro-deskside-trial

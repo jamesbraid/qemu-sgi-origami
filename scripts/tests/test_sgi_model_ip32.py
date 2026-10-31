@@ -60,9 +60,8 @@ class IP32CatalogueTests(unittest.TestCase):
         self.assertEqual(cpu["prid"], 0x0e35)
         self.assertEqual(cpu["fpu_prid"], 0x0900)
         self.assertEqual(cpu["mode_bits"], 0x011a8603)
-        self.assertEqual(cpu["required_properties"], [
-            "r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
-            "r12000-scache-bytes", "r12000-scache-block-words"])
+        # The board fits the module's part; the launcher passes nothing.
+        self.assertNotIn("required_properties", cpu)
         catalogue = json.loads(render_qemu_inputs(MODELS)[
             "hw/mips/sgi/sgi-machines.json"])
         offering = next(o for o in catalogue["offerings"]

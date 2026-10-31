@@ -93,18 +93,6 @@
         {
           "property": "r12000-fpu-id",
           "target": "cpu"
-        },
-        {
-          "property": "r12000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-bytes",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-block-words",
-          "target": "cpu"
         }
       ],
       "processor": {

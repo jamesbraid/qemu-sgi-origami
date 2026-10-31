@@ -2071,28 +2071,13 @@
             "properties": { "kind": { "const": "cpu" }, "hardware_kind": { "const": "r16000" } },
             "required": ["kind", "hardware_kind"]
           },
-          "then": {
-            "properties": { "identity": { "properties": {
-              "required_properties": {
-                "const": ["r16000-experimental", "r16000-reset-mode", "r16000-scache-bytes"]
-              }
-            } } }
-          },
           "else": {
             "properties": {
               "identity": {
                 "not": { "anyOf": [
                   { "required": ["r16000_reset_mode"] },
                   { "required": ["r16000_scache_bytes"] }
-                ] },
-                "properties": {
-                  "required_properties": {
-                    "not": { "contains": { "enum": [
-                      "r16000-experimental", "r16000-reset-mode",
-                      "r16000-scache-bytes"
-                    ] } }
-                  }
-                }
+                ] }
               }
             }
           }
@@ -2247,14 +2232,6 @@
             "processor_identification": { "$ref": "#/$defs/address" },
             "r16000_reset_mode": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
             "r16000_scache_bytes": { "type": "integer", "minimum": 1 },
-            "required_properties": {
-              "type": "array",
-              "uniqueItems": true,
-              "items": { "enum": [
-                "r16000-experimental", "r16000-reset-mode",
-                "r16000-scache-bytes"
-              ] }
-            },
             "fpu_identification": { "$ref": "#/$defs/address" },
             "ni_revision": { "type": "integer", "minimum": 0, "maximum": 15 },
             "widget_revision": { "type": "integer", "minimum": 0, "maximum": 15 },

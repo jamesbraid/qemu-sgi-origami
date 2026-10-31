@@ -126,7 +126,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node0-bedrock
         sources: [cx-r16000-fit]
@@ -138,7 +138,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node0-bedrock
         sources: [cx-r16000-fit]
@@ -150,7 +150,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node0-bedrock
         sources: [cx-r16000-fit]
@@ -162,7 +162,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node0-bedrock
         sources: [cx-r16000-fit]
@@ -225,7 +225,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node1-bedrock
         sources: [cx-r16000-fit]
@@ -237,7 +237,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node1-bedrock
         sources: [cx-r16000-fit]
@@ -249,7 +249,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node1-bedrock
         sources: [cx-r16000-fit]
@@ -261,7 +261,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node1-bedrock
         sources: [cx-r16000-fit]
@@ -324,7 +324,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node2-bedrock
         sources: [cx-r16000-fit]
@@ -336,7 +336,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node2-bedrock
         sources: [cx-r16000-fit]
@@ -348,7 +348,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node2-bedrock
         sources: [cx-r16000-fit]
@@ -360,7 +360,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node2-bedrock
         sources: [cx-r16000-fit]
@@ -423,7 +423,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node3-bedrock
         sources: [cx-r16000-fit]
@@ -435,7 +435,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node3-bedrock
         sources: [cx-r16000-fit]
@@ -447,7 +447,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node3-bedrock
         sources: [cx-r16000-fit]
@@ -459,7 +459,7 @@ layer:
         name: R16000-family CPU
         kind: cpu
         hardware_kind: r16000
-        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        identity: {r16000_reset_mode: 0x009cad85, r16000_scache_bytes: 0x800000}
         provenance: derived
         parent: node3-bedrock
         sources: [cx-r16000-fit]

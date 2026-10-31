@@ -246,10 +246,6 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
                 "clock_mhz": 700, "cache_mib": 8,
                 "r16000_reset_mode": 0x009cad85,
                 "r16000_scache_bytes": 0x800000,
-                "required_properties": [
-                    "r16000-experimental", "r16000-reset-mode",
-                    "r16000-scache-bytes",
-                ],
             },
         }
 
@@ -260,10 +256,6 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
             "id": "r16000-700mhz", "kind": "R16000",
             "clock_hz": 700_000_000, "cache_mib": 8,
             "mode_bits": 0x009cad85,
-            "required_properties": [
-                "r16000-experimental", "r16000-reset-mode",
-                "r16000-scache-bytes",
-            ],
         })
 
     def test_r16000_projection_is_limited_to_origin350_experiment(self):
@@ -277,10 +269,6 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
                 "clock_mhz": 700, "cache_mib": 8,
                 "r16000_reset_mode": 0x009cad85,
                 "r16000_scache_bytes": 0x800000,
-                "required_properties": [
-                    "r16000-experimental", "r16000-reset-mode",
-                    "r16000-scache-bytes",
-                ],
             },
         }
 
@@ -298,10 +286,6 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
                 "clock_mhz": 700, "cache_mib": 8,
                 "r16000_reset_mode": 0x009cad85,
                 "r16000_scache_bytes": 0x800000,
-                "required_properties": [
-                    "r16000-experimental", "r16000-reset-mode",
-                    "r16000-scache-bytes",
-                ],
             },
         }
         missing = object()
@@ -324,14 +308,6 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
             ("missing cache", ("identity", "cache_mib"), missing),
             ("missing reset mode", ("identity", "r16000_reset_mode"), missing),
             ("missing secondary cache bytes", ("identity", "r16000_scache_bytes"), missing),
-            ("missing QOM requirements", ("identity", "required_properties"), missing),
-            ("reordered QOM requirements", ("identity", "required_properties"), [
-                "r16000-reset-mode", "r16000-experimental",
-                "r16000-scache-bytes",
-            ]),
-            ("missing experimental QOM requirement", ("identity", "required_properties"), [
-                "r16000-reset-mode", "r16000-scache-bytes",
-            ]),
         )
         for field, path, value in cases:
             with self.subTest(field=field):
@@ -524,12 +500,6 @@ class LaunchPolicyFieldTests(unittest.TestCase):
 
         model = _resolved("origin350")
         self.assertTrue(all("required-properties" not in item["processor"]
-                            for item in offerings(model)))
-        # Without its runtime profile the topology's R16000s are the
-        # caller's to configure.
-        del model["machine"]["emulation"]["ip53_runtime"]
-        del model["machine"]["emulation"]["pic_profiles"]
-        self.assertTrue(all("required-properties" in item["processor"]
                             for item in offerings(model)))
 
     def test_each_product_has_one_machine_default(self):
@@ -3658,9 +3628,7 @@ class CatalogueJsonTests(unittest.TestCase):
                              key)
             assembly = topologies[key[0]]["nodes"][0]["cpu-slots"][0][
                 "assembly"]
-            self.assertEqual(assembly["required-properties"], [
-                "r16000-experimental", "r16000-reset-mode",
-                "r16000-scache-bytes"], key)
+            self.assertNotIn("required-properties", assembly, key)
 
         # The two Tezro boards are two records under one name; the
         # two/four-processor one is the machine default.

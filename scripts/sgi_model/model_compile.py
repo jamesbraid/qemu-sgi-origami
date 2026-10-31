@@ -1154,11 +1154,6 @@ def _processor(model: dict, cpu: dict) -> dict:
             identity, "r16000_reset_mode", f"CPU '{cpu['id']}'", 32)
         scache_bytes = _integer(
             identity, "r16000_scache_bytes", f"CPU '{cpu['id']}'", 64)
-        required_properties = identity.get("required_properties")
-        expected_properties = [
-            "r16000-experimental", "r16000-reset-mode",
-            "r16000-scache-bytes",
-        ]
         expected_cache_mib = (16 if clock_mhz == 1000 else
                               4 if product in {
             "tezro", "tezro-rack",
@@ -1166,8 +1161,7 @@ def _processor(model: dict, cpu: dict) -> dict:
         expected_scache_bytes = expected_cache_mib * 1024 * 1024
         if (clock_mhz != profile[1] or cache_mib != expected_cache_mib or
                 reset_mode != profile[2] or
-                scache_bytes != expected_scache_bytes or
-                required_properties != expected_properties):
+                scache_bytes != expected_scache_bytes):
             raise CompileError(
                 f"CPU '{cpu['id']}' does not match the selected "
                 f"{profile[1]} MHz/{expected_cache_mib} MiB {product} IP53 "
@@ -1179,7 +1173,6 @@ def _processor(model: dict, cpu: dict) -> dict:
             "clock_hz": clock_mhz * 1_000_000,
             "cache_mib": cache_mib,
             "mode_bits": reset_mode,
-            "required_properties": expected_properties,
         }
     return _processor_record(part, identity, f"CPU '{cpu['id']}'")
 

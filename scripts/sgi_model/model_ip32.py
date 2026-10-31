@@ -48,10 +48,7 @@ def compile_ip32(model: dict) -> dict:
         mode = num(entry.get("reset_mode_bits", 0))
         if (prid, fpu, mode) != (0x0e35, 0x0900, 0x011a8603):
             raise CompileError("O2+ requires the selected R12000 identity and reset tuple")
-        processor.update({"prid": prid, "fpu_prid": fpu, "mode_bits": mode,
-                          "required_properties": [
-                              "r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
-                              "r12000-scache-bytes", "r12000-scache-block-words"]})
+        processor.update({"prid": prid, "fpu_prid": fpu, "mode_bits": mode})
     node = {
         "id": crimes[0]["id"],
         "asic_kind": "CRIME", "cpu_slots": [{"interface": 0, "slot": 0,

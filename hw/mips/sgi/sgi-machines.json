@@ -388,14 +388,7 @@
         "cache-mib": 2,
         "clock-hz": 400000000,
         "id": "cpu0",
-        "part": "R12000",
-        "required-properties": [
-          "r12000-prid",
-          "r12000-fpu-id",
-          "r12000-reset-mode",
-          "r12000-scache-bytes",
-          "r12000-scache-block-words"
-        ]
+        "part": "R12000"
       },
       "product": "o2",
       "prom-dialogue": "none",
@@ -763,18 +756,6 @@
         },
         {
           "property": "r12000-fpu-id",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-bytes",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-block-words",
           "target": "cpu"
         }
       ],
@@ -5450,18 +5431,6 @@
         {
           "property": "r12000-fpu-id",
           "target": "cpu"
-        },
-        {
-          "property": "r12000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-bytes",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-block-words",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -5748,18 +5717,6 @@
         },
         {
           "property": "r12000-fpu-id",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-bytes",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-block-words",
           "target": "cpu"
         }
       ],
@@ -6088,18 +6045,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -6288,18 +6233,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -6487,18 +6420,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -6686,18 +6607,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -7651,18 +7560,6 @@
         },
         {
           "property": "r12000-fpu-id",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-bytes",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-block-words",
           "target": "cpu"
         }
       ],
@@ -8805,18 +8702,6 @@
         },
         {
           "property": "r12000-fpu-id",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-bytes",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-block-words",
           "target": "cpu"
         }
       ],
@@ -9970,18 +9855,6 @@
         {
           "property": "r12000-fpu-id",
           "target": "cpu"
-        },
-        {
-          "property": "r12000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-bytes",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-block-words",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -11079,18 +10952,6 @@
         },
         {
           "property": "r12000-fpu-id",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-bytes",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-block-words",
           "target": "cpu"
         }
       ],
@@ -20556,18 +20417,6 @@
         {
           "property": "r12000-fpu-id",
           "target": "cpu"
-        },
-        {
-          "property": "r12000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-bytes",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-block-words",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -20854,18 +20703,6 @@
         },
         {
           "property": "r12000-fpu-id",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-bytes",
-          "target": "cpu"
-        },
-        {
-          "property": "r12000-scache-block-words",
           "target": "cpu"
         }
       ],
@@ -21169,18 +21006,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -21368,18 +21193,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -21538,18 +21351,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -21823,18 +21624,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -22138,18 +21927,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -22338,18 +22115,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -22538,18 +22303,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -22738,18 +22491,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -22938,18 +22679,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -23138,18 +22867,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -23338,18 +23055,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -23538,18 +23243,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -23738,18 +23431,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -23938,18 +23619,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -24138,18 +23807,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -24338,18 +23995,6 @@
         {
           "property": "mac",
           "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
         }
       ],
       "processor": {
@@ -24831,14 +24476,7 @@
                 "id": "cpu0",
                 "kind": "R12000",
                 "mode-bits": 18515459,
-                "prid": 3637,
-                "required-properties": [
-                  "r12000-prid",
-                  "r12000-fpu-id",
-                  "r12000-reset-mode",
-                  "r12000-scache-bytes",
-                  "r12000-scache-block-words"
-                ]
+                "prid": 3637
               },
               "interface": 0,
               "slot": 0
@@ -30597,12 +30235,7 @@
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz",
                 "kind": "R16000",
-                "mode-bits": 10268549,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268549
               },
               "interface": 0,
               "slot": 0
@@ -30613,12 +30246,7 @@
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz",
                 "kind": "R16000",
-                "mode-bits": 10268549,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268549
               },
               "interface": 0,
               "slot": 1
@@ -30629,12 +30257,7 @@
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz",
                 "kind": "R16000",
-                "mode-bits": 10268549,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268549
               },
               "interface": 1,
               "slot": 0
@@ -30645,12 +30268,7 @@
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz",
                 "kind": "R16000",
-                "mode-bits": 10268549,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268549
               },
               "interface": 1,
               "slot": 1
@@ -30877,12 +30495,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 0
@@ -30893,12 +30506,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 1
@@ -30909,12 +30517,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 0
@@ -30925,12 +30528,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 1
@@ -31123,12 +30721,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 0
@@ -31139,12 +30732,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 1
@@ -31155,12 +30743,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 0
@@ -31171,12 +30754,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 1
@@ -31360,12 +30938,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 0
@@ -31376,12 +30949,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 1
@@ -31392,12 +30960,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 0
@@ -31408,12 +30971,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 1
@@ -41185,12 +40743,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 0
@@ -41201,12 +40754,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 1
@@ -41217,12 +40765,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 0
@@ -41233,12 +40776,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 1
@@ -41431,12 +40969,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 0,
               "slot": 0
@@ -41447,12 +40980,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 0,
               "slot": 1
@@ -41463,12 +40991,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 1,
               "slot": 0
@@ -41479,12 +41002,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 1,
               "slot": 1
@@ -41754,12 +41272,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 0
@@ -41770,12 +41283,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 1
@@ -41786,12 +41294,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 0
@@ -41802,12 +41305,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 1
@@ -41859,12 +41357,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 0
@@ -41875,12 +41368,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 1
@@ -41891,12 +41379,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 0
@@ -41907,12 +41390,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 1
@@ -41964,12 +41442,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 0
@@ -41980,12 +41453,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 1
@@ -41996,12 +41464,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 0
@@ -42012,12 +41475,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 1
@@ -42069,12 +41527,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 0
@@ -42085,12 +41538,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 1
@@ -42101,12 +41549,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 0
@@ -42117,12 +41560,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 1
@@ -42416,12 +41854,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 0,
               "slot": 0
@@ -42432,12 +41865,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 0,
               "slot": 1
@@ -42448,12 +41876,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 1,
               "slot": 0
@@ -42464,12 +41887,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 1,
               "slot": 1
@@ -42521,12 +41939,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 0,
               "slot": 0
@@ -42537,12 +41950,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 0,
               "slot": 1
@@ -42553,12 +41961,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 1,
               "slot": 0
@@ -42569,12 +41972,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 1,
               "slot": 1
@@ -42626,12 +42024,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 0,
               "slot": 0
@@ -42642,12 +42035,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 0,
               "slot": 1
@@ -42658,12 +42046,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 1,
               "slot": 0
@@ -42674,12 +42057,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 1,
               "slot": 1
@@ -42731,12 +42109,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 0,
               "slot": 0
@@ -42747,12 +42120,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 0,
               "slot": 1
@@ -42763,12 +42131,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 1,
               "slot": 0
@@ -42779,12 +42142,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10268037,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10268037
               },
               "interface": 1,
               "slot": 1
@@ -43022,12 +42380,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 0
@@ -43038,12 +42391,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 1
@@ -43054,12 +42402,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 0
@@ -43070,12 +42413,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 1
@@ -43269,12 +42607,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10202501,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10202501
               },
               "interface": 0,
               "slot": 0
@@ -43285,12 +42618,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10202501,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10202501
               },
               "interface": 0,
               "slot": 1
@@ -43301,12 +42629,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10202501,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10202501
               },
               "interface": 1,
               "slot": 0
@@ -43317,12 +42640,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10202501,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10202501
               },
               "interface": 1,
               "slot": 1
@@ -43560,12 +42878,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 0
@@ -43576,12 +42889,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 1
@@ -43592,12 +42900,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 0
@@ -43608,12 +42911,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 1,
               "slot": 1
@@ -43822,12 +43120,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 15577989,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 15577989
               },
               "interface": 0,
               "slot": 0
@@ -44060,12 +43353,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10202501,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10202501
               },
               "interface": 0,
               "slot": 0
@@ -44302,12 +43590,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10202501,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10202501
               },
               "interface": 0,
               "slot": 0
@@ -44318,12 +43601,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10202501,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10202501
               },
               "interface": 0,
               "slot": 1
@@ -44334,12 +43612,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10202501,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10202501
               },
               "interface": 1,
               "slot": 0
@@ -44350,12 +43623,7 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz",
                 "kind": "R16000",
-                "mode-bits": 10202501,
-                "required-properties": [
-                  "r16000-experimental",
-                  "r16000-reset-mode",
-                  "r16000-scache-bytes"
-                ]
+                "mode-bits": 10202501
               },
               "interface": 1,
               "slot": 1
