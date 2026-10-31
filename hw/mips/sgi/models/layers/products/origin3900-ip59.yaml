@@ -135,7 +135,7 @@ layer:
             # those exist; the stock PROM's 1394 probe waits on them.
             ieee1394_absent: true
             provenance: derived
-            sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick, hw/misc/tsb12lv22.c]
+            sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick, hw/misc/tsb12lv22.c]
             notes: >-
               The IOC3 subsystem field is the unobserved placeholder, and no
               source gives where the IO7's Ethernet address comes from. The
@@ -158,7 +158,7 @@ layer:
           machine_type: 0
           cpu_mode_word: 0x4aedb385
           provenance: derived
-          sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected 6.210 flash payload and seed policy"]
+          sources: ["qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  selected 6.210 flash payload and seed policy"]
           notes: >-
             The 1 GHz, 16 MB R16000 firmware word the IP59 products use; the
             word is an inferred input, derived to reproduce the captured cache clock and tap, and no Cx-brick flash block has been

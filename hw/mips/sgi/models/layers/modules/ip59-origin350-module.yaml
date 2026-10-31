@@ -4,7 +4,7 @@ layer_version: 1
 sources:
   ip59-node-board: "web:irixnet-thread-2263  module 001c01 of the captured system: Part:030-1989-003;Name:IP59_4CPU;Revision:-C, four 1.0 GHz R16000 revision 3.0 with 16 MB secondary cache"
   ip53-origin350-profile-closure: "web:nekonomicon-16724207  captured Origin 350 IP53, IO9, and 2U_INT_53 board parts in module 001c01"
-  sn-family-closure-origin350: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Origin 350 module topology and explicit physical limits"
+  sn-family-closure-origin350: "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  selected Origin 350 module topology and explicit physical limits"
 layer:
   kind: module
   id: ip59-origin350-module
@@ -54,7 +54,7 @@ layer:
         parent: bedrock
         identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000}
         provenance: derived
-        sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]
+        sources: ["qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]
         notes: >-
           The clock, secondary-cache capacity, reset mode and required QOM
           properties are software experiment inputs from the selected runtime
@@ -66,7 +66,7 @@ layer:
         parent: bedrock
         identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000}
         provenance: derived
-        sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]
+        sources: ["qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]
       - id: cpu2
         name: R16000
         kind: cpu
@@ -74,7 +74,7 @@ layer:
         parent: bedrock
         identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000}
         provenance: derived
-        sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]
+        sources: ["qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]
       - id: cpu3
         name: R16000
         kind: cpu
@@ -82,7 +82,7 @@ layer:
         parent: bedrock
         identity: {r16000_reset_mode: 0x00edb385, r16000_scache_bytes: 0x1000000}
         provenance: derived
-        sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]
+        sources: ["qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]
       - id: node-memory
         name: node memory
         kind: memory
@@ -119,7 +119,7 @@ layer:
         kind: pci-host-bridge
         hardware_kind: pic
         datasheet_contracts:
-          - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-pic
+          - qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-pic
         pci_host_bridge: {heads: 2}
         parent: pic-board
         identity: {widget_part: "0xd102", widget_mfg: "0x024"}
@@ -131,7 +131,7 @@ layer:
         kind: io-controller
         hardware_kind: ioc4
         datasheet_contracts:
-          - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-ioc4
+          - qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-ioc4
         parent: io9
         identity: {pci_vendor: "0x10a9", pci_device: "0x100a", pci_revision: 0x53}
         ioc4: {clock_hz: 33333333, serial_dma_experimental: true}
@@ -158,7 +158,7 @@ layer:
         name: BCM5701
         kind: io-controller
         hardware_kind: bcm5701
-        datasheet_contracts: [qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-bcm570x]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-bcm570x]
         parent: io9
         identity: {pci_vendor: "0x14e4", pci_device: "0x1645", pci_revision: 0}
         provenance: derived
@@ -172,11 +172,11 @@ layer:
         kind: rtc
         hardware_kind: ds1744
         datasheet_contracts:
-          - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-ds1744
+          - qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-ds1744
         parent: io9
         provenance: derived
         fresh_year_base: 1968
-        sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]
+        sources: ["qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]
         notes: >-
           Synthetic 32 KiB timekeeper geometry selected for this software
           profile. The fitted IO9 part and physical address wiring remain
@@ -205,10 +205,10 @@ layer:
       - {id: numalink, name: NUMAlink 3, kind: fabric, master: bedrock, provenance: vendor-document, sources: [sn-family-closure-origin350], notes: Cabled to nothing on a single compute module.}
       - {id: io9-bus, name: "IO9, bus 1 (PIC head 0)", kind: pci, master: pic, provenance: vendor-document, sources: [sn-family-closure-origin350]}
     connections:
-      - {component: cpu0, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]}
-      - {component: cpu1, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]}
-      - {component: cpu2, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]}
-      - {component: cpu3, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]}
+      - {component: cpu0, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]}
+      - {component: cpu1, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]}
+      - {component: cpu2, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]}
+      - {component: cpu3, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  selected Origin 350 runtime inputs"]}
       - {component: bedrock, bus: sysad0, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-origin350]}
       - {component: bedrock, bus: xio, role: master, widget: 10, provenance: derived, sources: [ip53-origin350-profile-closure], notes: "Widget 10 is an explicit Bedrock XIO master choice; the physical Bedrock-to-PIC route remains unknown."}
       - component: pic

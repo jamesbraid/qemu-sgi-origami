@@ -118,14 +118,15 @@ Products
      - 4 GiB
      - IP53
    * - ``onyx4-host``
-     - ``onyx4-host-serial-compat``
+     - ``onyx4-host-ip59`` (default), ``onyx4-host-serial-compat``
      - four R16000, 1 GHz, 16 MiB
      - 8 GiB
      - IP53 path standing in for an IP59 board
 
 The IP53 machines accept only ``-cpu R16000``. ``-kernel`` is refused.
 ``onyx350`` and ``tezro`` have no default topology and refuse a launch
-that does not name one. The products are described in
+that does not name one. Each product also has an IP59 topology,
+described in :ref:`sgi-ip59-profiles`. The products are described in
 :ref:`sgi-ip35-ip53`.
 
 .. _sgi-ip53-processors:
@@ -391,7 +392,7 @@ Selected inputs
      - four 1 GHz R16000
      - 8 GiB
      - 16 MiB
-     - ``0x009dad85``
+     - ``0x00edb385``
      - widget 15
      - 33,333,333 Hz
 
@@ -651,6 +652,92 @@ Origin 350. A guest reaching the PROM menu or an IRIX login on one of
 these profiles shows that the model runs that software, not that the
 named product is wired that way.
 
+.. _sgi-ip59-profiles:
+
+IP59 node board profiles
+------------------------
+
+IP59 is the 1 GHz generation of the IP53 board (OpenBSD
+``share/man/man4/man4.sgi/intro.4`` at ``2df91d80c104``, lines 113-114).
+The published IP59 inventories show the same Bedrock, revision 2 at
+200 MHz, and the same IO9 as the IP53 ones (:src:`irixnet-thread-2263`;
+:src:`nekonomicon-16719032`), *observed*. That it was sold as an upgrade
+for the Origin 350, Onyx 350 and Tezro is *inferred*; the poster of
+:src:`irixnet-thread-2263` reports fitting a quad 1 GHz board into an
+Onyx 4 G2N brick.
+
+The model builds each IP59 product from the IP53 assembly, PIC and IO9
+and changes only the node-board record and the processors: 1.0 GHz
+R16000 revision 3.0 with a 16 MiB secondary cache at one third of the
+processor clock, which the captured IP59 inventories print as ``Speed
+333 Mhz Tap 0x15`` (:src:`irixnet-thread-2263`;
+:src:`nekonomicon-16719032`), *observed*. Reusing the IP53
+PIC and IO9 wiring is an *approximation*: no source describes them on
+IP59.
+
+Every IP53 product has an IP59 topology, named with ``topology=``. The
+IP53 topologies stay the defaults, except on ``onyx4-host``, whose
+default is ``onyx4-host-ip59``.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Topology
+     - Machine
+     - Memory
+   * - ``origin350-ip59``
+     - ``origin350``
+     - 2 GiB
+   * - ``onyx350-ip59``
+     - ``onyx350``
+     - 8 GiB
+   * - ``tezro-tower-one-ip59``
+     - ``tezro``, one processor
+     - 4 GiB
+   * - ``tezro-tower-multi-ip59``
+     - ``tezro``, two or four processors
+     - 4 GiB
+   * - ``tezro-rack-ip59``
+     - ``tezro``, first enclosure of a rack
+     - 4 GiB
+   * - ``onyx4-host-ip59``
+     - ``onyx4-host``
+     - 8 GiB
+   * - ``origin3900-ip59``
+     - ``origin3000``, one Cx-brick
+     - 2 GiB per node board
+
+The L1 serves the node board from its record, as on IP53. A
+four-processor node reports ``IP59_4CPU``, part ``030-1989-003``,
+revision ``-C`` (:src:`irixnet-thread-2263`), and a two-processor node
+``IP59_2CPU``, part ``030-2059-002``, revision ``A``
+(:src:`nekonomicon-16719032`), both *observed*. A one-processor Tezro
+keeps the L1's generic record: no published inventory shows a
+one-processor IP59 board, so its part and revision are *unknown*. Serial
+numbers and barcodes are synthetic.
+
+The reset mode word ``0x00edb385`` and the flash configuration word
+``0x4aedb385`` are *inferred* inputs, not measured values. No published
+updater row covers a 1 GHz, 16 MiB part, and no Config register or
+processor revision register has been read from a 1 GHz module. The pair
+is derived so that the stock PROM and IRIX print the captured 333 MHz
+cache clock, tap ``0x15`` and a 200 MHz hub: the cache clock divisor
+selects one third of the processor clock, the system clock divisor one
+fifth, and the tap uses bit 22, the fifth tap bit the R16000 adds to the
+R10000 layout. A boot that printed the PROM's invalid-tap message would
+refute that reading. Whether the part is an R16000A is *unknown*. The
+PROM payload is the 6.210 image the IP53 profiles use.
+
+The model builds an Origin 3900 Cx-brick with IP53 or IP59 node boards,
+not a mix: ``origin3900-ip59`` fits four IP59 boards, and the Cx-brick's L1 reports
+the ``IP59_4CPU`` record for each. No Cx-brick inventory is published,
+so the composition is an *approximation*, and whether a Cx-brick's IP59
+is the same board as the 2U one is *unknown*. The 16 MiB cache follows
+the captured 2U boards.
+
+The L1 model carries no IP59 fan, sensor or expander tables and produces
+no environment readings for either board.
+
 .. _sgi-ip53-firmware:
 
 Firmware and boot
@@ -709,7 +796,7 @@ the start of ``-M`` change:
      - four processors, 4096 MB
    * - Onyx 4 host
      - ``onyx4-host,topology=onyx4-host-serial-compat,nodes=1``
-     - ``onyx4-host``
+     - ``onyx4-host,topology=onyx4-host-serial-compat``
      - four processors, 8192 MB
 
 Booting IRIX from here needs a disk on ``scsi.0``, the first onboard SCSI
@@ -722,7 +809,8 @@ Graphics
 ========
 
 None of the IP53 machines fits a graphics pipe by default.
-``tezro-tower-multi`` and ``onyx350-compat`` take an optional V12 at
+``tezro-tower-multi``, ``onyx350-compat`` and their ``-ip59``
+topologies take an optional V12 at
 ``widget-12``, ``-device sgi-odyssey,slot=widget-12,product=v12``.
 The published 700 MHz Tezro inventory reports its V12, part ``030-1884-002`` revision D, at widget 12
 (:src:`graphica-tezro-hinv`), *observed*. The same Onyx 350 module, 001c01, was also published with a V12, part
