@@ -2393,7 +2393,8 @@ static bool l1_task_command(uint16_t command)
  * The Cx-brick profile's codes: those its request-code table grades, and
  * those the public SN1 header names with the meaning the Origin 300 image
  * serves (debug switches, firmware revision, the display lines, partition
- * set and event subchannel). Anything else has no reviewed meaning on a
+ * set and event subchannel), and the I/O link speed the stock PROM reads
+ * from its node's own L1. Anything else has no reviewed meaning on a
  * Cx-brick and is refused.
  */
 static bool l1_cx_graded(uint16_t command)
@@ -2408,6 +2409,7 @@ static bool l1_cx_graded(uint16_t command)
     case 7:
     case 8:
     case 9:
+    case 0xa:
     case 0xe:
     case 0x1002:
     case 0x1003:
