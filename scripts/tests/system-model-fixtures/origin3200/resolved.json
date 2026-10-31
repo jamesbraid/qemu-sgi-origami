@@ -1612,7 +1612,7 @@
         {
           "cache_mib": 4,
           "clock_mhz": 700,
-          "notes": "Tezro deskside compatibility tuple. Cache clock is supplied by the product component; processor identification and reset Config0 remain unknown."
+          "notes": "Tezro compatibility tuple. Cache clock is supplied by the product component; processor identification and reset Config0 remain unknown."
         }
       ]
     }
