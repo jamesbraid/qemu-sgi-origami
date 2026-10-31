@@ -1,43 +1,50 @@
 #!/usr/bin/env python3
-#
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
+"""Emit hw/mips/sgi/sgi-machines.json as the C array sgi_machines_json.
 
-"""Turn a JSON file into a C string constant, one C string literal per
-source line so the generated file stays diffable against the JSON it
-embeds. Modelled on scripts/shaderinclude.py, which can emit a source
-line's bytes verbatim only because GLSL shader source never contains a
-double quote or a backslash; JSON is built from string literals that
-usually contain both, so this escapes each line's bytes instead.
+The JSON becomes one string literal per source line, each carrying its
+line's newline, so a change to the catalogue shows up as the same lines
+changing in the generated file. The input is treated as bytes: quotes and
+backslashes are backslash-escaped, and any other byte outside printable
+ASCII is written as a three-digit octal escape, which cannot run into the
+character after it. The result goes to standard output.
 """
 
+import argparse
 import sys
 
+ARRAY_NAME = "sgi_machines_json"
 
-_ESCAPES = {
-    ord('"'): '\\"',
-    ord('\\'): '\\\\',
-    ord('\t'): '\\t',
-}
-
-
-def _escape(line: str) -> str:
-    return "".join(_ESCAPES.get(ord(ch), ch) for ch in line)
+# Printable ASCII passes through, apart from the two characters a C string
+# literal gives meaning to.
+_LITERAL = {b: chr(b) for b in range(0x20, 0x7f)}
+_LITERAL[ord('"')] = '\\"'
+_LITERAL[ord("\\")] = "\\\\"
 
 
-def main(args: list[str]) -> int:
-    file_path = args[1]
-    varname = "sgi_machines_json"
+def c_literal(line: bytes) -> str:
+    """Spell one line's bytes as the body of a C string literal."""
+    return "".join(_LITERAL.get(b) or f"\\{b:03o}" for b in line)
 
-    with open(file_path, "r", encoding="utf-8") as source:
-        lines = source.read().splitlines()
 
-    with open(sys.stdout.fileno(), "wt", closefd=False, newline="\n") as out:
-        print(f"static const char {varname}[] =", file=out)
-        for line in lines:
-            print(f'    "{_escape(line)}\\n"', file=out)
-        print("    ;", file=out)
-    return 0
+def render(data: bytes) -> str:
+    lines = data.split(b"\n")
+    if lines[-1] == b"":
+        # The file's final newline ends the last line; it starts no new one.
+        lines.pop()
+    body = "".join(f'    "{c_literal(line)}\\n"\n' for line in lines)
+    return f"static const char {ARRAY_NAME}[] =\n{body}    ;\n"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("json", help="the catalogue file to embed")
+    opts = parser.parse_args()
+
+    with open(opts.json, "rb") as src:
+        text = render(src.read())
+    sys.stdout.buffer.write(text.encode("ascii"))
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    main()
