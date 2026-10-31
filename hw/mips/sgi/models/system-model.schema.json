@@ -1812,6 +1812,18 @@
         "notes"
       ],
       "properties": {
+        "node_board": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["processors", "name", "part", "revision"],
+          "description": "The node-board identity a Cx-brick's L1 reports for every board it serves.",
+          "properties": {
+            "processors": { "type": "integer", "minimum": 1 },
+            "name": { "type": "string", "minLength": 1 },
+            "part": { "type": "string", "minLength": 1 },
+            "revision": { "type": "string", "minLength": 1 }
+          }
+        },
         "reported_type": {
           "type": "integer",
           "minimum": 1,

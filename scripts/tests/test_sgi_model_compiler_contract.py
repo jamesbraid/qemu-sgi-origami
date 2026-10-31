@@ -493,6 +493,17 @@ class LaunchPolicyFieldTests(unittest.TestCase):
         with self.assertRaisesRegex(CompileError, "two node boards"):
             compile_model(model)
 
+    def test_cx_brick_l1_node_board_is_emitted_as_authored(self):
+        model = _resolved("origin3900")
+        board = {"processors": 4, "name": "IP59_4CPU",
+                 "part": "030-1989-003", "revision": "-C"}
+        model["machine"]["emulation"]["l1_controllers"]["cx0-l1"][
+            "node_board"] = board
+        catalogue = json.loads(render_catalogue_json([model]))
+        l1 = next(c["l1"] for c in catalogue["topologies"][0]["controllers"]
+                  if c["id"] == "cx0-l1")
+        self.assertEqual(l1["node-board"], board)
+
     def test_ip53_runtime_needs_ip53_nodes(self):
         model = _resolved("origin300")
         model["machine"]["emulation"]["ip53_runtime"] = copy.deepcopy(

@@ -328,6 +328,8 @@
 #
 # @cpu-context: selected firmware inputs for the node board's CPU
 #     context record
+# @node-board: the identity the Cx-brick's L1 reports for each node
+#     board it serves, when the product names one
 # @reported-type: raw type response, when known
 # @revision: reported version, when available
 # @mac-eeprom-input: input supplying this controller's MAC EEPROM
@@ -339,6 +341,7 @@
 ##
 { 'struct': 'SGIModelL1Config',
   'data': { '*cpu-context': 'SGIModelL1CPUContext',
+            '*node-board': 'SGIModelIp53NodeBoard',
             '*reported-type': 'uint8',
             '*revision': 'SGIModelL1Revision',
             '*mac-eeprom-input': 'SGIModelInputBinding',
