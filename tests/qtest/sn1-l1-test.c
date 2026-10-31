@@ -12,6 +12,7 @@
 #include "sgi-wait.h"
 #include "sgi-l1-test.h"
 #include "sgi-l1-identity-vectors.h"
+#include "sgi-l1-chimera-env-vectors.h"
 #include "sgi-test.h"
 #include <poll.h>
 #include <sys/socket.h>
@@ -2317,6 +2318,213 @@ static void test_fresh_off(void)
     console_send(fd, "\024log\r");
     console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
                        STAMP "power up (COMMAND)\r\n" RETURN_CPU0);
+    qtest_quit(s);
+    close(fd);
+}
+
+static char *console_read_until(int fd, const char *end)
+{
+    GString *text = g_string_new(NULL);
+    size_t end_length = strlen(end);
+
+    while (text->len < end_length ||
+           strcmp(text->str + text->len - end_length, end)) {
+        struct pollfd pfd = { .fd = fd, .events = POLLIN };
+        char c;
+
+        g_assert_cmpint(poll(&pfd, 1, SGI_WAIT_S * 1000), ==, 1);
+        g_assert_cmpint(read(fd, &c, 1), ==, 1);
+        g_string_append_c(text, c);
+    }
+    g_string_truncate(text, text->len - end_length);
+    return g_string_free(text, FALSE);
+}
+
+/*
+ * Replaces the Current column of a supply, fan or temperature row with "#".
+ * A reading is a measurement, so the vectors do not carry one; the rest of
+ * the line, and every other line, stays exact.
+ */
+static char *env_mask_readings(const char *text)
+{
+    g_auto(GStrv) lines = g_strsplit(text, "\r\n", -1);
+    GString *out = g_string_new(NULL);
+
+    for (char **line = lines; *line; line++) {
+        size_t n = strlen(*line);
+        size_t cut = 0;
+
+        if ((strstr(*line, "Enabled") || strstr(*line, "Wait Pwr")) &&
+            !strstr(*line, "%/")) {
+            cut = !strncmp(*line, "FAN", 3) ? 12 :
+                  (*line)[n - 1] == 'F' ? 8 : 7;
+        }
+        if (cut) {
+            g_string_append_len(out, *line, n - cut);
+            g_string_append_c(out, '#');
+        } else {
+            g_string_append(out, *line);
+        }
+        if (line[1]) {
+            g_string_append(out, "\r\n");
+        }
+    }
+    return g_string_free(out, FALSE);
+}
+
+/* A supply's reading lies inside its warning limits. */
+static void env_check_supply_readings(const char *text)
+{
+    g_auto(GStrv) lines = g_strsplit(text, "\r\n", -1);
+    unsigned supplies = 0;
+
+    for (char **line = lines; *line; line++) {
+        const char *warning = strstr(*line, "10% ");
+        double low, high, reading;
+
+        if (!warning || !strstr(*line, "Enabled")) {
+            continue;
+        }
+        g_assert_cmpint(sscanf(warning + 3, "%lf/%lf 20%% %*f/%*f %lf",
+                               &low, &high, &reading), ==, 3);
+        g_assert_cmpfloat(reading, >=, low);
+        g_assert_cmpfloat(reading, <=, high);
+        supplies++;
+    }
+    g_assert_cmpuint(supplies, >, 6);
+}
+
+typedef struct EnvCase {
+    const char *code;
+    const char *board;
+    const char *part;
+    const char *revision;
+    const char *expected;
+} EnvCase;
+
+static const EnvCase env_ws_ip59 = {
+    "57", "IP59_4CPU", "030-1989-003", "-C", ENV_WS_IP59
+};
+static const EnvCase env_ws_ip53 = {
+    "57", "IP53_4CPU", "030-2013-001", "-D", ENV_WS_IP53
+};
+static const EnvCase env_2u_ip59 = {
+    "55", "IP59_4CPU", "030-1989-003", "-C", ENV_2U_IP59
+};
+static const EnvCase env_2u_ip53 = {
+    "55", "IP53_4CPU", "030-2013-001", "-D", ENV_2U_IP53
+};
+
+static void env_start(int *fd, QTestState **s, const EnvCase *c,
+                      const char *extra)
+{
+    g_autofree char *props = g_strdup_printf(
+        ",brick-type-code=%s,irouter-compat=on,node-board-name=%s,"
+        "node-board-part=%s,node-board-revision=%s%s",
+        c->code, c->board, c->part, c->revision, extra);
+
+    *s = console_start(fd, props, "");
+}
+
+static void test_env(gconstpointer opaque)
+{
+    const EnvCase *c = opaque;
+    g_autofree char *text = NULL;
+    g_autofree char *masked = NULL;
+    int fd;
+    QTestState *s;
+
+    env_start(&fd, &s, c, "");
+    console_expect(fd, POWERING ENTER_CPU0);
+    console_send(fd, "\024env\r");
+    console_expect(fd, ESCAPE);
+    text = console_read_until(fd, RETURN_CPU0);
+    masked = env_mask_readings(text);
+    g_assert_cmpstr(masked, ==, c->expected);
+    env_check_supply_readings(text);
+    qtest_quit(s);
+    close(fd);
+}
+
+static void test_env_unpowered(void)
+{
+    static const EnvCase c = {
+        "57", "IP59_4CPU", "030-1989-003", "-C", ENV_WS_IP59
+    };
+    g_autofree char *text = NULL;
+    g_autofree char *masked = NULL;
+    g_auto(GStrv) rows = g_strsplit(c.expected, "\r\n", -1);
+    GString *expected = g_string_new(NULL);
+    g_autofree char *waiting = NULL;
+    int fd;
+    QTestState *s;
+
+    /* The state column is left-aligned in the zone rows, right in the rest. */
+    for (char **row = rows; *row; row++) {
+        g_auto(GStrv) pieces = g_strsplit(*row,
+                                          strstr(*row, "%/") ? "Enabled " :
+                                                               "   Enabled",
+                                          -1);
+        g_autofree char *line = g_strjoinv(strstr(*row, "%/") ? "Wait Pwr" :
+                                                               "  Wait Pwr",
+                                           pieces);
+
+        g_string_append(expected, line);
+        if (row[1]) {
+            g_string_append(expected, "\r\n");
+        }
+    }
+    waiting = g_string_free(expected, FALSE);
+    env_start(&fd, &s, &c, ",auto-power=off");
+    console_send(fd, "env\r");
+    text = console_read_until(fd, PROMPT);
+    masked = env_mask_readings(text);
+    g_assert_cmpstr(masked, ==, waiting);
+    qtest_quit(s);
+    close(fd);
+}
+
+/* Everything the "env" report does not model stays an unknown command. */
+static void test_env_unmodelled(void)
+{
+    static const EnvCase unnamed_board = {
+        "57", "IP45_4CPU", "030-1707-003", "-G", NULL
+    };
+    static const EnvCase rackmount = {
+        "81", "IP59_4CPU", "030-1989-003", "-C", NULL
+    };
+    static const EnvCase short_name = {
+        "57", "IP5", "030-1989-003", "-C", NULL
+    };
+    static const EnvCase modelled = {
+        "57", "IP59_4CPU", "030-1989-003", "-C", NULL
+    };
+    const EnvCase *cases[] = { &unnamed_board, &rackmount, &short_name };
+    int fd;
+    QTestState *s;
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        env_start(&fd, &s, cases[i], ",auto-power=off");
+        console_send(fd, "env\r");
+        console_expect(fd, "ERROR: command not found.\r\n" PROMPT);
+        qtest_quit(s);
+        close(fd);
+    }
+    /* A brick with no node board name, and a brick that is not Chimera. */
+    s = console_start(&fd, ",brick-type-code=57,auto-power=off", "");
+    console_send(fd, "env\r");
+    console_expect(fd, "ERROR: command not found.\r\n" PROMPT);
+    qtest_quit(s);
+    close(fd);
+    s = console_start(&fd, ",auto-power=off", "");
+    console_send(fd, "env\r");
+    console_expect(fd, "ERROR: command not found.\r\n" PROMPT);
+    qtest_quit(s);
+    close(fd);
+    /* The arguments of "env" are not modelled. */
+    env_start(&fd, &s, &modelled, ",auto-power=off");
+    console_send(fd, "env check\r");
+    console_expect(fd, "ERROR: command not found.\r\n" PROMPT);
     qtest_quit(s);
     close(fd);
 }
@@ -7170,6 +7378,14 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/console", test_console);
     qtest_add_func("sn1/l1/poweroff", test_poweroff);
     qtest_add_func("sn1/l1/fresh-off", test_fresh_off);
+    qtest_add_data_func("sn1/l1/env/workstation-ip59", &env_ws_ip59,
+                        test_env);
+    qtest_add_data_func("sn1/l1/env/workstation-ip53", &env_ws_ip53,
+                        test_env);
+    qtest_add_data_func("sn1/l1/env/2u-ip59", &env_2u_ip59, test_env);
+    qtest_add_data_func("sn1/l1/env/2u-ip53", &env_2u_ip53, test_env);
+    qtest_add_func("sn1/l1/env/unpowered", test_env_unpowered);
+    qtest_add_func("sn1/l1/env/unmodelled", test_env_unmodelled);
     qtest_add_func("sn1/l1/power", test_power);
     qtest_add_func("sn1/l1/node-reset", test_node_reset);
     qtest_add_func("sn1/l1/signals", test_signals);

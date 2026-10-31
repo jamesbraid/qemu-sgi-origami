@@ -213,7 +213,7 @@ system_ss.add(when: 'CONFIG_AXIADO_CLK', if_true: files('axiado_clk.c'))
 # Qualcomm Hexagon DSP subsystems
 system_ss.add(when: 'CONFIG_QCOM_QDSP6SS_CLK', if_true: files('qcom-qdsp6ss-clk.c'))
 
-system_ss.add(when: 'CONFIG_SGI_L1', if_true: files('sgi-l1.c'))
+system_ss.add(when: 'CONFIG_SGI_L1', if_true: files('sgi-l1.c', 'sgi-l1-env.c'))
 system_ss.add(when: 'CONFIG_SGI_BEDROCK_NI',
               if_true: files('sgi-bedrock-ni.c', 'sgi-bedrock-ni-regs.c'))
 system_ss.add(when: 'CONFIG_SGI_BEDROCK_MD', if_true: files('sgi-bedrock-md.c'))
