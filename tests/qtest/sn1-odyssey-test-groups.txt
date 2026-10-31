@@ -110,6 +110,7 @@ fifo /mips64/sn1/odyssey/command-fifo-copy-id-plane-overlap
 fifo /mips64/sn1/odyssey/command-fifo-copy-id-plane-plane-mask
 fifo /mips64/sn1/odyssey/command-fifo-copy-id-plane-mask-selection
 fifo /mips64/sn1/odyssey/command-fifo-copy-id-plane-dispatch
+fifo /mips64/sn1/odyssey/command-fifo-copy-id-plane-select-base
 fifo /mips64/sn1/odyssey/command-fifo-copy-id-plane-clipping
 fifo /mips64/sn1/odyssey/command-fifo-host-write-sync
 fifo /mips64/sn1/odyssey/command-fifo-dma-trace

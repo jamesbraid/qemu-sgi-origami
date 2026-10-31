@@ -13456,6 +13456,9 @@ static void test_command_fifo_dest_select_flags(void)
     board_quit(qts);
 }
 
+static void odsy_buffer_pixel_write(QTestState *qts, uint32_t buffer,
+                                    uint32_t x, uint32_t y, uint32_t value);
+
 #define ODSY_ID_PLANE_BASE 0x142000
 #define ODSY_TEST_WIDTH 1280
 #define ODSY_TEST_HEIGHT 1024
@@ -13468,9 +13471,6 @@ static void test_command_fifo_dest_select_flags(void)
  * mask 0xc) or the id byte (0x3) under the plane mask, leaving colour alone.
  * That routing is INFERRED, and the overlap staging is model policy.
  */
-static void odsy_buffer_pixel_write(QTestState *qts, uint32_t buffer,
-                                    uint32_t x, uint32_t y, uint32_t value);
-
 static void odsy_did_write(QTestState *qts, uint32_t x, uint32_t y,
                            uint32_t value)
 {
@@ -13607,6 +13607,8 @@ static void test_command_fifo_copy_id_plane_overlap(void)
         { false, 2, 0, { 0, 0, 1, 2, 3, 4 }, { 1, 2, 3, 4, 3, 4 } },
         { true, 0, 2, { 1, 2, 3, 4, 0, 0 }, { 1, 2, 1, 2, 3, 4 } },
         { true, 2, 0, { 0, 0, 1, 2, 3, 4 }, { 1, 2, 3, 4, 3, 4 } },
+        /* The source holds zeros: only the staged read gives this. */
+        { true, 2, 0, { 1, 2, 3, 4, 0, 0 }, { 3, 4, 0, 0, 0, 0 } },
     };
     QTestState *qts = board_start("");
 
@@ -13773,6 +13775,26 @@ static void test_command_fifo_copy_id_plane_dispatch(void)
     g_assert_no_error(error);
     g_assert_cmpuint(count_substr(log, "one at the id-plane base"), ==, 1);
     g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
+ * The base compared is the one the last id-plane select named, not a fixed
+ * value, and a mask naming both buffers copies both bytes (UNKNOWN in the
+ * datasheet; model policy).
+ */
+static void test_command_fifo_copy_id_plane_select_base(void)
+{
+    QTestState *qts = board_start("");
+
+    odsy_overlay_write(qts, 10, 10, 0x66);
+    odsy_did_write(qts, 10, 10, 0x44);
+    odsy_buffer_pixel_write(qts, 0, 10, 10, 0x12121212);
+    idcopy_setup(qts, 0xf, 0xff, 0x150000, ODSY_DEST_ID_PLANES);
+    idcopy_send(qts, 0x150000, 0x150000, 10, 10, 1, 1, 30, 10);
+    g_assert_cmphex(odsy_overlay(qts, 30, 10), ==, 0x66);
+    g_assert_cmphex(odsy_did(qts, 30, 10), ==, 0x44);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 30, 10), ==, 0);
+    board_quit(qts);
 }
 
 /* Case 6: the plane bounds clip both the read and the write. */
@@ -25532,6 +25554,8 @@ int main(int argc, char **argv)
              test_command_fifo_copy_id_plane_mask_selection);
     add_case("sn1/odyssey/command-fifo-copy-id-plane-dispatch",
              test_command_fifo_copy_id_plane_dispatch);
+    add_case("sn1/odyssey/command-fifo-copy-id-plane-select-base",
+             test_command_fifo_copy_id_plane_select_base);
     add_case("sn1/odyssey/command-fifo-copy-id-plane-clipping",
              test_command_fifo_copy_id_plane_clipping);
     add_case("sn1/odyssey/scanout-overlay-unselected-mask",
