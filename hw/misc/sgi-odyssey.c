@@ -2171,10 +2171,11 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * the arity in bits 13:10, and the format in the low bits, with bits 9:5
  * clear. Format 0x11 carries one four-byte pixel per word, laid out by the
  * source code: A, B, G, R for the X server's icons (0x4c), R, G, B, A for
- * source code 0x6b. Format 0x10 packs four colour
- * indices per word; format 0x12 carries 16-bit components for sources 0x69,
- * 0x6b and 0x6c (see the source codes below). Other formats remain
- * unsupported.
+ * source code 0x4b. Format 0x10 packs four colour
+ * indices per word; format 0x12 carries 16-bit components for sources 0x62,
+ * 0x68, 0x69, 0x6b and 0x6c (see the source codes below). The tag a source
+ * may arrive under is fixed by odyssey_image_pairing_supported(). Other
+ * formats remain unsupported.
  */
 #define ODSY_IMAGE_BURST_BASE 0x4000
 #define ODSY_IMAGE_BURST_FMT_MASK 0x1f
@@ -2214,9 +2215,11 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * GL_ABGR_EXT for 0x6c): the components arrive in the source's own order,
  * and only the code changes with it. In a pixel burst the same probe's
  * 16-bit sources arrive as 16-bit components: 0x62 two luminances a word
- * and 0x68 one luminance-alpha pair a word under tag format 0x10, 0x69,
- * 0x6b and 0x6c as a stream of halves under format 0x12; 8-bit luminance
- * sources use 0x42 and 0x48 instead. distort's photograph agrees: its 0x6c
+ * and 0x68 one luminance-alpha pair a word, under tag 0x12 into an RGBA
+ * window and 0x10 into a luminance object; 0x69, 0x6b and 0x6c as a stream
+ * of halves under 0x12; 8-bit luminance sources use 0x42 and 0x48 instead,
+ * under 0x11 into an RGBA window and 0x10 into a luminance object (datasheet,
+ * "Pixel burst tags"). distort's photograph agrees: its 0x6c
  * texels carry the file's blue, green and red bytes repeated into both
  * halves of each 16-bit component.
  *
@@ -5618,22 +5621,31 @@ static uint32_t odyssey_gl_decode(const OdysseyGLLayout *l, const uint8_t *b)
 }
 
 /*
- * The source code of a transfer header's word. Its low byte is the code
- * the burst path knows; the type code's top bit (bit 8) belongs to the
- * packed and 12-bit types, which would alias onto a lower code and paint
- * the wrong layout. Type 0xb is the 12-bit drawable's byte form of the
- * codes the burst path already takes, so it keeps the low byte. Any other
- * type with bit 8 set keeps the full nine bits, which no case matches, so
- * the burst is refused.
+ * The source code of a transfer header's word: its low nine bits, the
+ * format in bits 4:0 and the type in bits 8:5. The pairing table keys on all
+ * nine bits (odyssey_image_pairing_supported()).
  */
 static uint32_t odyssey_image_header_code(uint32_t word)
 {
-    uint32_t type = (word >> ODSY_GL_TYPE_SHIFT) & ODSY_GL_TYPE_MASK;
+    return word & 0x1ff;
+}
 
-    if ((word & 0x100) && type != 0xb) {
-        return word & 0x1ff;
+/*
+ * The code that lays out a burst's bytes. The type code's top bit (bit 8)
+ * belongs to the packed and 12-bit types, which would alias onto a lower
+ * code and paint the wrong layout. Type 0xb is the 12-bit drawable's byte
+ * form of the codes the burst path already takes, so it keeps the low byte.
+ * Any other type with bit 8 set keeps the full nine bits, which no case
+ * matches, so the burst paints nothing.
+ */
+static uint32_t odyssey_image_layout_code(uint32_t code)
+{
+    uint32_t type = (code >> ODSY_GL_TYPE_SHIFT) & ODSY_GL_TYPE_MASK;
+
+    if ((code & 0x100) && type != 0xb) {
+        return code;
     }
-    return word & ODSY_IMAGE_CODE_MASK;
+    return code & ODSY_IMAGE_CODE_MASK;
 }
 
 /* Bytes a pixel of a source format takes, 0 for an unknown code. */
@@ -5662,6 +5674,73 @@ static unsigned odyssey_pixel_bytes(uint32_t code)
 }
 
 /*
+ * Whether a source code may arrive under a burst tag. These are the pairings
+ * the library sends (datasheet, "Pixel burst tags"). The tag follows the
+ * destination's expand flag: a luminance or intensity source takes 0x10 into
+ * a luminance or index object, and 0x11 (byte sources) or 0x12 (wider ones)
+ * into an RGBA window. A code the table lacks was never accepted, and a
+ * listed code under another tag is not a pairing the library produces.
+ * The model checks the code and the tag; it does not check the table's
+ * destination-class column, which it has no way to tell apart.
+ */
+static bool odyssey_image_pairing_supported(uint32_t code, uint32_t fmt)
+{
+    switch (code) {
+    case 0x41:
+    case 0x61:
+    case 0x80:
+    case 0x81:
+        return fmt == ODSY_IMAGE_FMT_CI;
+    case 0x42:
+    case 0x43:
+    case 0x48:
+        return fmt == ODSY_IMAGE_FMT_CI || fmt == ODSY_IMAGE_FMT_RGB;
+    case 0x62:
+    case 0x63:
+    case 0x68:
+    case 0x82:
+    case 0x83:
+    case 0x88:
+        return fmt == ODSY_IMAGE_FMT_CI || fmt == ODSY_IMAGE_FMT_RGBA16;
+    case 0x44 ... 0x47:
+    case 0x49:
+    case 0x4b ... 0x4d:
+    case 0x50:
+    case 0x51:
+    case 0xa9:
+    case 0xad:
+    case 0xcb:
+    case 0xcc:
+    case 0xd0:
+    case 0xd1:
+    case 0xeb:
+    case 0xec:
+    case 0xf0:
+    case 0xf1:
+    case 0x149:
+    case 0x14d:
+    case 0x169:
+    case 0x16b ... 0x16d:
+    case 0x189:
+    case 0x18d:
+        return fmt == ODSY_IMAGE_FMT_RGB;
+    case 0x64 ... 0x67:
+    case 0x69:
+    case 0x6b ... 0x6d:
+    case 0x84 ... 0x87:
+    case 0x89:
+    case 0x8b ... 0x8d:
+    case 0x10b:
+    case 0x10c:
+    case 0x110:
+    case 0x111:
+        return fmt == ODSY_IMAGE_FMT_RGBA16;
+    default:
+        return false;
+    }
+}
+
+/*
  * One data word of a pixel burst, laid out by the transfer header's format
  * code (ODSY_IMAGE_CODE_*): its bytes join a stream that yields a pixel
  * every odyssey_pixel_bytes() bytes, so a three-byte pixel may span two
@@ -5670,35 +5749,23 @@ static unsigned odyssey_pixel_bytes(uint32_t code)
  * header with a code this model does not know paints nothing and is
  * reported once: the burst tag does not say how a pixel is laid out.
  */
-static bool odyssey_image_pairing_supported(uint32_t code, uint32_t fmt)
-{
-    if (code == ODSY_IMAGE_CODE_RGBA12) {
-        return fmt == ODSY_IMAGE_FMT_RGB || fmt == ODSY_IMAGE_FMT_RGBA16;
-    }
-    if (code == ODSY_IMAGE_CODE_RGB12 || code == ODSY_IMAGE_CODE_ABGR12) {
-        return fmt == ODSY_IMAGE_FMT_RGBA16;
-    }
-    if (code == ODSY_IMAGE_CODE_LUM_ALPHA) {
-        return fmt == ODSY_IMAGE_FMT_CI;
-    }
-    return fmt != ODSY_IMAGE_FMT_RGBA16;
-}
-
 static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
 {
-    uint32_t code = s->image_code;
+    uint32_t code = odyssey_image_layout_code(s->image_code);
     unsigned int n = odyssey_pixel_bytes(code), i;
     uint8_t b[4];
 
-    if (!odyssey_image_pairing_supported(code, s->image_fmt)) {
+    if (!odyssey_image_pairing_supported(s->image_code, s->image_fmt)) {
         return;
     }
-    if (s->image_fmt == ODSY_IMAGE_FMT_RGBA16) {
+    if (s->image_fmt == ODSY_IMAGE_FMT_RGBA16 &&
+        odyssey_texel12_components(code)) {
         /*
          * A stream of 16-bit components, high half first, a pixel every
-         * odyssey_texel12_components() halves: two words for 0x6b and 0x6c,
-         * a word and a half for 0x69. At most two halves wait between
-         * words; image_nbytes counts them, image_bytes holds them.
+         * odyssey_texel12_components() halves: one word for 0x68, two for
+         * 0x6b and 0x6c, a word and a half for 0x69, half a word for 0x62.
+         * At most two halves wait between words; image_nbytes counts them,
+         * image_bytes holds them.
          */
         unsigned comps = odyssey_texel12_components(code);
         uint16_t halves[4];

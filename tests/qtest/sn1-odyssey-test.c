@@ -5670,6 +5670,144 @@ static void test_command_fifo_image_raster_formats(void)
 }
 
 /*
+ * Luminance sources into an RGBA window take their burst tag from the expand
+ * flag (datasheet, "Pixel burst tags"): 0x62 and 0x68 under 0x12 (16-bit
+ * components, the earlier one in the high half), 0x48 under 0x11 (packed
+ * bytes, luminance then alpha). The same codes under 0x10 are the
+ * luminance-object control. Pairings the table does not list are refused,
+ * logged, and paint nothing.
+ */
+static void test_command_fifo_image_luminance_tags(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-luminance-tags-XXXXXX.log", &log_path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    /* 0x62: two 16-bit luminances a word; 0x2020 and 0xc0c0 are 0x20, 0xc0. */
+    image_begin(qts, 100, 100, 102, 101);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(0, 0x62));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_SHORT));
+    cmd_push(qts, 0x2020c0c0);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 100, 100), ==, 0x202020ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 101, 100), ==, 0xc0c0c0ff);
+
+    /* 0x68: one pair a word, luminance in the high half. */
+    image_begin(qts, 200, 200, 202, 201);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(0, 0x68));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_SHORT));
+    cmd_push(qts, 0x30307070);
+    cmd_push(qts, 0xa0a01010);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 200, 200), ==, 0x30303070);
+    g_assert_cmphex(odsy_test_pixel(qts, 201, 200), ==, 0xa0a0a010);
+
+    /* 0x48: bytes L0 A0 L1 A1 packed four to a word, no gaps. */
+    image_begin(qts, 300, 300, 304, 301);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(4, 0x48));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x1020a0b0);
+    cmd_push(qts, 0x40506070);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 300, 300), ==, 0x10101020);
+    g_assert_cmphex(odsy_test_pixel(qts, 301, 300), ==, 0xa0a0a0b0);
+    g_assert_cmphex(odsy_test_pixel(qts, 302, 300), ==, 0x40404050);
+    g_assert_cmphex(odsy_test_pixel(qts, 303, 300), ==, 0x60606070);
+
+    /* Pairings outside the table paint nothing: 0x62 under 0x11 ... */
+    image_begin(qts, 400, 400, 402, 401);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x62));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x2020c0c0);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 400, 400), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 401, 400), ==, 0);
+
+    /* ... 0x48 under 0x12, and 0x42 (a byte source) under 0x12. */
+    for (unsigned i = 0; i < 2; i++) {
+        image_begin(qts, 410, 410, 412, 411);
+        cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+        cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, i ? 0x42 : 0x48));
+        cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+        cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_SHORT));
+        cmd_push(qts, 0x20c02060);
+        cmd_push(qts, ODSY_CMD_GL_END);
+        g_assert_cmphex(odsy_test_pixel(qts, 410, 410), ==, 0);
+        g_assert_cmphex(odsy_test_pixel(qts, 411, 410), ==, 0);
+    }
+
+    /* Control: the codes under tag 0x10 into an off-screen object. */
+    cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    cmd_push(qts, 0x16c000);
+    cmd_push(qts, 2);
+    cmd_push(qts, 0x080024d0);
+    cmd_push(qts, 0);
+    image_begin(qts, 0, 0, 2, 1);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x62));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_CI));
+    cmd_push(qts, 0x2020c0c0);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16c000, 0, 0), ==,
+                    0x202020ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16c000, 1, 0), ==,
+                    0xc0c0c0ff);
+    image_begin(qts, 0, 2, 2, 3);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x68));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_CI));
+    cmd_push(qts, 0x30307070);
+    cmd_push(qts, 0xa0a01010);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16c000, 0, 2), ==,
+                    0x30303070);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16c000, 1, 2), ==,
+                    0xa0a0a010);
+    image_begin(qts, 0, 4, 2, 5);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x48));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_CI));
+    cmd_push(qts, 0x1020a0b0);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16c000, 0, 4), ==,
+                    0x10101020);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16c000, 1, 4), ==,
+                    0xa0a0a0b0);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(count_occurrences(log, "command FIFO word 0x00014411 is "
+                                       "not modeled"), ==, 1);
+    g_assert_cmpuint(count_occurrences(log, "command FIFO word 0x00014412 is "
+                                       "not modeled"), ==, 1);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
  * Source codes that carry an alpha component keep it. A GL image into the
  * colour buffer lands with the alpha the source gave: 0x4b one 0xRRGGBBAA
  * word a pixel, 0x48 luminance then alpha, both on the 0x11 tag.
@@ -5699,13 +5837,14 @@ static void test_command_fifo_image_alpha_screen(void)
     g_assert_cmphex(odsy_test_pixel(qts, 200, 200), ==, 0x808080ee);
     g_assert_cmphex(odsy_test_pixel(qts, 201, 200), ==, 0x404040cc);
 
-    /* 0x6b read as bytes: the same 0xRRGGBBAA word as 0x4b. */
+    /* 0x6b: four 16-bit components, each repeating its byte. */
     image_begin(qts, 300, 300, 301, 301);
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
-    cmd_push(qts, ODSY_IMAGE_HEADER_OP(1, 0x6b));
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x6b));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
-    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x1a2b3c4d);
+    cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_SHORT));
+    cmd_push(qts, 0x1a1a2b2b);
+    cmd_push(qts, 0x3c3c4d4d);
     cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_pixel(qts, 300, 300), ==, 0x1a2b3c4d);
 
@@ -5714,7 +5853,7 @@ static void test_command_fifo_image_alpha_screen(void)
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(1, 0x68));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
-    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_SHORT));
     cmd_push(qts, 0x8080eeee);
     cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_pixel(qts, 400, 400), ==, 0x808080ee);
@@ -19348,10 +19487,10 @@ static void test_texture_adapter_luminance_alpha(void)
                     0x12121234);
     g_assert_cmphex(odsy_test_object_texel(qts, 0x182000, 1, 0), ==, 0);
 
-    /* LA8 data paired with the RGB word format is unsupported. */
+    /* LA8 data paired with the 16-bit component tag is not a listed pairing. */
     upload_begin(qts, 0x183000, 2, 0x080024d0, 2, 2);
     upload_first_header(qts, 0x48);
-    user_cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
+    user_cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_SHORT));
     user_cmd_push(qts, 0x12345678);
     upload_end(qts);
     g_assert_cmphex(odsy_test_object_texel(qts, 0x183000, 0, 0), ==, 0);
@@ -24851,6 +24990,8 @@ int main(int argc, char **argv)
              test_command_fifo_image_raster_window_origin);
     add_case("sn1/odyssey/command-fifo-image-raster-formats",
              test_command_fifo_image_raster_formats);
+    add_fresh_case("sn1/odyssey/command-fifo-image-luminance-tags",
+                   test_command_fifo_image_luminance_tags);
     add_case("sn1/odyssey/command-fifo-image-alpha-screen",
              test_command_fifo_image_alpha_screen);
     add_case("sn1/odyssey/command-fifo-image-alpha-dma",
