@@ -84,6 +84,13 @@ the class and revision word ``0x000000c0`` (:ref:`sgi-rad1-octane2-config`),
 machines. That every Octane board carries this revision is *inferred*
 from three machines.
 
+PCI Status on ``sgi-rad1-octane`` reads ``0x0480``: slow DEVSEL timing
+and fast back-to-back capable (bits 10:9 and 7, :src:`pci-local-bus-2.2`).
+That matches the reference Octane2's chip
+(:ref:`sgi-rad1-octane2-config`), *established* for that chip. The bits
+are read-only and survive a write and a machine reset. That every Octane
+board reads the same is *inferred*.
+
 The BaseIO-G ``hinv -v`` lists ``0x10a9:0x0005`` at PCI slot 7
 :src:`nekonomicon-17194 owner's hinv -v post`, *observed*, and the
 ``io6g`` preset of :doc:`baseio` places ``sgi-rad1-audio`` there. Both
@@ -726,10 +733,7 @@ Model limits
 - Every stored register's readback, every reset value, the BAR size, the
   MediaIO class code and the MediaIO PCI status bits are model choices.
   The MediaIO type reports medium DEVSEL timing and fast back-to-back
-  capability; no source gives either. The Octane type reports neither,
-  where the reference Octane2's chip reads Status ``0x0480``, slow DEVSEL
-  timing and fast back-to-back capable
-  (:ref:`sgi-rad1-octane2-config`).
+  capability; no source gives either.
 - Mute, gain, clock-generator rates, PLL lock, external clocks, analog
   input selection and the serial word have no effect.
 - The Octane runs no AES3 or ADAT audio channel, no ADAT-input subcode
@@ -756,7 +760,8 @@ Tests
 
 ``tests/qtest/octane-test.c``, the ``/octane/rad-*`` and
 ``/octane2/rad-pci-identity`` cases, covers the identity word through the
-Bridge configuration window on both machines, BAR sizing, start-up
+Bridge configuration window on both machines, the read-only PCI Status
+``0x0480`` across a write and a reset, BAR sizing, start-up
 storage and refused enables, the subcode windows under all four Bridge
 width and swap settings, one-shot and continuous status DMA through
 direct, translated and 64-bit Bridge addresses, the analog output and

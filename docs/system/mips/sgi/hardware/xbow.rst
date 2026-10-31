@@ -117,9 +117,11 @@ slot on a big-endian host; this page uses the aligned offset.
      - Error summary; all bits default to zero. Reading the clearing
        alias at 0x0050 returns the value and negates the register
        access, crosstalk and connection time-out bits. On revision 5,
-       bits 9:6 report the port the read arrived on; the model fills
-       them only for the PIC's internal Crossbow, so on the Octanes they
-       read zero.
+       bits 9:6 report the port the read arrived on. The model fills
+       them for the PIC's internal Crossbow and for the Octane's
+       Crossbow at revision 5 and later, so ``octane2`` reads ``0x200``
+       from HEART, as the measured Octane2 does. On revision 4 they read
+       zero.
      - established, spec PDF pages 73 and 88; bits 9:6 *inferred* for
        revision 5 from :src:`xbridge-asic-spec-0.5 p. 75`, a different
        chip's specification, and one read of ``0x200`` from widget 8 on
@@ -256,7 +258,8 @@ The set for widget *w* begins at ``0x0100 + (w - 8) * 0x40``
        use ordinary writes.
    * - +0x38
      - Auxiliary status: retry counters, the timed-out-source map, a
-       widget-present bit and the link width.
+       widget-present bit and the link width. A link comes up in the
+       narrower of its two ends' widths (PDF page 23).
 
 The port state model is: coming out of reset (alive, max-retry and
 failure-mode clear); failed to come out of reset (max-retry and
@@ -266,9 +269,20 @@ established by the specification's link error description (PDF
 pages 65-69). It is what a guest reads to decide whether anything is
 plugged in. The measured Octane2's five empty ports sit in the second
 state and its three fitted ports in the third
-(:ref:`sgi-xbow-octane2-links`). The empty ports also read the 8-bit
-mode bit set, and four of them show receive errors and retry counts,
-which the model does not reproduce.
+(:ref:`sgi-xbow-octane2-links`).
+
+The model negotiates link width as the link comes up: 8-bit when link
+control sets the force-8-bit bit or when the board names the widget in
+the ``eight-bit-links`` property, 16-bit otherwise. The Octane machines
+name the Bridge, which has only an 8-bit link
+(:src:`bridge-asic-spec-4.0 p. 4`), so its auxiliary status reads
+``0x30`` as on the measured Octane2. On the Octane at revision 5 and
+later, an empty port reports the 8-bit width bit beside failure mode and
+reads ``0x50``, as the measured Octane2's empty ports do. This is a
+per-instance opt-in because only that standalone Crossbow was measured.
+Other crossbars, the PIC's internal revision 5 crossbar among them, read
+``0x40`` at an empty port. Four of the measured empty ports also show
+receive errors and retry counts, which the model does not reproduce.
 
 .. _sgi-xbow-measurements:
 
@@ -483,6 +497,12 @@ Decoded against the specification's link tables (PDF pages 77-81):
   the fitted links' values is *inferred* from the reads being taken after
   initialisation.
 
+The ``octane2`` model, which fits no V12 by default, reads widget 0
+status ``0x200``, auxiliary status ``0x20`` at link 8, ``0x30`` at
+link 15 and ``0x50`` at each empty port, matching these reads across a
+machine reset. It reads zero receive retry counts and no receiver error
+at the empty ports.
+
 These establish, for this board at PROM time, that one revision 5
 Crossbow uses widgets 8, 11 and 15 and no other port, and that no
 expansion Bridge is fitted. They do not identify which port an expansion
@@ -520,6 +540,21 @@ Emulator choices and unknowns
      - unknown
      - The specification gives flags but no timing; a capture of a
        real chip's link bring-up would settle them.
+   * - A link comes up 8-bit when its widget has only an 8-bit link
+       (``eight-bit-links``) or link control forces it.
+     - established
+     - Spec PDF page 23; the Bridge's 8-bit link,
+       :src:`bridge-asic-spec-4.0 p. 4`; the measured Octane2's link 15.
+   * - An empty port on the Octane's revision 5 Crossbow reads the 8-bit
+       width bit beside failure mode; other crossbars do not.
+     - approximation
+     - Measured on the Octane2's standalone Crossbow only
+       (:ref:`sgi-xbow-octane2-links`). Whether other revision 5
+       crossbars report it is *unknown*.
+   * - Empty ports record no receive errors or retry counts.
+     - approximation
+     - Four of the measured Octane2's empty ports show both; what drives
+       them is *unknown*.
    * - The 48-bit error address splits between 0x0010 (bits 47:32) and
        0x0018 (bits 31:0).
      - established

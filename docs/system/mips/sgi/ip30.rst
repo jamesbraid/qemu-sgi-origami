@@ -540,13 +540,17 @@ would settle the part.
 
 The model's choices:
 
-- ``flash-select`` false and ``flash-strap`` false in both product
-  layers (``boot_flash_wiring``): the boot flash on select 0, strapped
-  to boot from it. Address for address this places the part where the
-  reference Octane2 has it, but the model's Bridge status reads bit 6
-  clear (``0x20``) where that board reads it set. On the ``octane``
-  layer it is an *approximation*. The machine properties of the same
-  names override it.
+- ``flash-select`` and ``flash-strap`` true in the ``octane2`` layer
+  (``boot_flash_wiring``): the boot flash on select 1, with the strap
+  set. This matches the reference Octane2: the part answers at
+  ``0xc00000`` and the Bridge status reads ``0x60``, the strap and PCI
+  mode that board reads. The outstanding-read count of 2 in that board's
+  ``0x62`` reads zero on the model (:ref:`sgi-bridge-limits`).
+- ``flash-select`` and ``flash-strap`` false in the ``octane`` layer:
+  the boot flash on select 0, strapped to boot from it, status ``0x20``.
+  The part answers at the same address. No Octane board has been read,
+  so this is an *approximation*.
+- The machine properties of the same names override either layer.
 - A 1 MiB array (``firmware_bytes``), implemented with QEMU's
   Intel-command-set ``pflash_cfi01`` and compatibility identifiers,
   repeating across the 2 MiB select. The size and the repeat match the
