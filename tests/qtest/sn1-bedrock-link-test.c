@@ -179,13 +179,20 @@ static void test_link_follows_the_cable(void)
     qtest_quit(s);
 }
 
-/* A Bedrock whose cable reference is never wired has no link. */
+/*
+ * A Bedrock whose cable reference is never wired has no link and reads the
+ * uncabled value, bit 0 alone: the guest's bus-error handler reads port
+ * status first and treats bits 1:0 = 0 as a link reset. A write leaves it
+ * alone, and the cabled pair above keeps bit 0 clear.
+ */
 static void test_unwired_port_has_no_link(void)
 {
     QTestState *s = qtest_initf(MACHINE, "");
 
     qtest_sysbus_mmio_map(s, A_PATH, 0, A_BASE);
-    g_assert_cmphex(qtest_readq(s, NI(A_BASE, PORT_STATUS)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, NI(A_BASE, PORT_STATUS)), ==, 1);
+    qtest_writeq(s, NI(A_BASE, PORT_STATUS), 0xffffffffffffffffULL);
+    g_assert_cmphex(qtest_readq(s, NI(A_BASE, PORT_STATUS)), ==, 1);
     qtest_quit(s);
 }
 

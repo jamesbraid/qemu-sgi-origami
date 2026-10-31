@@ -245,6 +245,9 @@ MemoryRegion *sgi_bedrock_processor_io(SGIBedrockState *s, unsigned int slot);
 /* Whether this node's port has a peer at the other end of an up cable. */
 bool sgi_bedrock_link_up(SGIBedrockState *s);
 
+/* Whether a cable is wired to this node's port, up or down. */
+bool sgi_bedrock_cabled(SGIBedrockState *s);
+
 /*
  * A warm reset sent over this node's link (network-interface port reset):
  * the Bedrock at the other end of an up cable resets if its reset enable

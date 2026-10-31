@@ -52,6 +52,8 @@
 #define IO_ITTE0 UINT64_C(0x160)
 #define LB_SCRATCH2 UINT64_C(0x8010)
 #define NI_PORT_STATUS UINT64_C(0x0)
+#define NI_PORT_ERRORS UINT64_C(0x100)
+#define NI_PORT_ERRORS_CLEAR UINT64_C(0x120)
 
 #define ITTE_WIDGET(w) ((uint64_t)(w) << 8)
 #define IO_WIDGET(w) (SPACE_IO + (uint64_t)(w) * UINT64_C(0x1000000))
@@ -810,6 +812,18 @@ static void test_bedrock_register_aliases(const void *data)
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + BEDROCK_NI +
                                 NI_PORT_STATUS) & (UINT64_C(1) << 18),
                     ==, 0);
+    /*
+     * A one-node machine has no cable: port status reads 1 (no link, the
+     * uncabled bit set), and the port errors and the read-and-clear alias
+     * read 0, through the local window and the node-addressed one.
+     */
+    for (unsigned int window = 0; window < 2; window++) {
+        uint64_t ni = (window ? BEDROCK_NODE0 : BEDROCK_LOCAL) + BEDROCK_NI;
+
+        g_assert_cmphex(qtest_readq(qts, ni + NI_PORT_STATUS), ==, 1);
+        g_assert_cmphex(qtest_readq(qts, ni + NI_PORT_ERRORS), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, ni + NI_PORT_ERRORS_CLEAR), ==, 0);
+    }
 
     /* The 8 MiB architectural window does not turn its tail into storage. */
     check_access_has_no_storage(qts,
