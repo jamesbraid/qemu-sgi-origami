@@ -40,6 +40,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIPICHead, SGI_PIC_HEAD)
 #define PIC_INTERNAL_SLOTS 4
 #define PIC_ACCESS_LOG_LIMIT 32
 #define PIC_SHORT_DEVICE_BASE 0x200
+#define PIC_INT_PCI_MASTER_TIMEOUT BIT_ULL(11)
 #define TYPE_SGI_PIC_IOMMU "sgi-pic-iommu"
 #define TYPE_SGI_PIC_FIXTURE "sgi-pic-fixture"
 #define TYPE_SGI_PIC_V1_TEST "sgi-pic-v1-test"
@@ -735,6 +736,7 @@ static bool pic_defined(hwaddr addr)
     case 0x120:
     case 0x128:
     case 0x130 ... 0x168:
+    case 0x170:
     case 0x200 ... 0x218:
         return true;
     default:
@@ -1108,27 +1110,54 @@ static uint32_t pic_config_address(SGIPICHead *s, hwaddr addr, unsigned size)
            ((addr & 0xff) ^ (4 - size));
 }
 
-static uint64_t pic_read(void *opaque, hwaddr addr, unsigned size)
+/*
+ * An unclaimed configuration read: no device answers the cycle, so the
+ * requester sees the failure of a PCI master timeout. Error view bit 11
+ * records it whatever the enable, and status bit 11 only while enable bit
+ * 11 is set. The empty-slot rule and what it leaves unknown are in
+ * docs/datasheets/pic.md, "Empty-slot configuration reads". The rule is
+ * inferred there, not established.
+ *
+ * Unknown and not modelled: the PCI-X master-timeout bit (34), whether a
+ * write of bit 0 to the reset register is a PCI-group clear, and the
+ * error interrupt the enabled bit reports to the host.
+ *
+ * Left to the Bedrock contract: what the failed load records in the
+ * processor interface. The access fails here, and this device records
+ * nothing on Bedrock's behalf.
+ */
+static void pic_config_master_timeout(SGIPICHead *s)
 {
-    SGIPICHead *s = opaque;
+    REG(s, 0x170) |= PIC_INT_PCI_MASTER_TIMEOUT;
+    if (REG(s, 0x108) & PIC_INT_PCI_MASTER_TIMEOUT) {
+        REG(s, 0x100) |= PIC_INT_PCI_MASTER_TIMEOUT;
+    }
+}
+
+static MemTxResult pic_read_result(SGIPICHead *s, hwaddr addr, unsigned size,
+                                   uint64_t *out)
+{
     uint32_t cfg;
 
     if (pic_short_window(addr, &(unsigned){ 0 }, &(hwaddr){ 0 },
                          &(hwaddr){ 0 })) {
-        return pic_short_read(s, addr, size, false);
+        *out = pic_short_read(s, addr, size, false);
+        return MEMTX_OK;
     }
 
     if (addr == 0 && size == 8) {
         uint64_t value = pic_widget_identity(s);
 
         trace_sgi_pic_head_reg_read(s->head, addr, size, value);
-        return value;
+        *out = value;
+        return MEMTX_OK;
     }
     if (addr == 4 && size == 4) {
         uint64_t value = pic_widget_identity(s);
 
         trace_sgi_pic_head_reg_read(s->head, addr, size, (uint32_t)value);
-        return value;
+        *out = value;
+        return MEMTX_OK;
     }
     if (addr >= 0x20000 && addr < 0x29000 && size <= 4) {
         uint64_t value;
@@ -1136,25 +1165,38 @@ static uint64_t pic_read(void *opaque, hwaddr addr, unsigned size)
         cfg = pic_config_address(s, addr, size);
         if (!pci_find_device(PCI_HOST_BRIDGE(s)->bus, cfg >> 16,
                              (cfg >> 8) & 0xff)) {
+            /*
+             * Device 0 is unclaimed too: what PIC returns there is
+             * unknown (pic.md, "Empty-slot configuration reads"), so the
+             * reserved window is an approximation that answers like an
+             * empty slot. A value seen without the failure is all ones.
+             */
             qemu_log_mask(LOG_GUEST_ERROR,
                           "sgi-pic: head %u configuration miss at 0x%"
                           HWADDR_PRIx "\n", s->head, addr);
+            pic_config_master_timeout(s);
+            *out = MAKE_64BIT_MASK(0, size * 8);
+            trace_sgi_pic_head_reg_read(s->head, addr, size, *out);
+            return MEMTX_ERROR;
         }
         value = pci_data_read(PCI_HOST_BRIDGE(s)->bus, cfg, size);
         trace_sgi_pic_head_reg_read(s->head, addr, size, value);
-        return value;
+        *out = value;
+        return MEMTX_OK;
     }
     if (size == 8 && !(addr & 7) && pic_defined(addr) &&
         addr < sizeof(s->reg)) {
         if ((addr == 0x28 || addr == 0x30 || addr == 0x38) &&
             !pic_uses_runtime_profile(s->pic)) {
             pic_unsupported(s, addr, size, 0, false);
-            return 0;
+            *out = 0;
+            return MEMTX_OK;
         }
         uint64_t value = REG(s, addr);
 
         trace_sgi_pic_head_reg_read(s->head, addr, size, value);
-        return value;
+        *out = value;
+        return MEMTX_OK;
     }
     if (size == 8 && !(addr & 7) && addr >= 0x18000 && addr < 0x19800) {
         unsigned bank = (addr - 0x18000) / 0x800;
@@ -1163,10 +1205,12 @@ static uint64_t pic_read(void *opaque, hwaddr addr, unsigned size)
         uint64_t value = s->req[bank][index];
 
         trace_sgi_pic_head_reg_read(s->head, addr, size, value);
-        return value;
+        *out = value;
+        return MEMTX_OK;
     }
     pic_unsupported(s, addr, size, 0, false);
-    return 0;
+    *out = 0;
+    return MEMTX_OK;
 }
 
 static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
@@ -1220,6 +1264,7 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
     case 0x00:
     case 0x50:
     case 0x100:
+    case 0x170:
         pic_unsupported(s, addr, size, value, true);
         return;
     case 0x20:
@@ -1270,6 +1315,13 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
         return;
     }
     case 0x110:
+        /*
+         * One bit at a time, not Bridge's group strobes. Any write also
+         * clears the error view (pic.md, "PIC register bits"). Bit 0 and
+         * bit 6 have no field here: whether bit 0 is a PCI-group clear is
+         * unknown, so a 0x41 write clears the view and leaves the rest.
+         */
+        REG(s, 0x170) = 0;
         REG(s, 0x100) &= ~value;
         REG(s, 0x100) |= s->pins;
         for (unsigned pin = 0; pin < PIC_PIN_COUNT; pin++) {
@@ -1372,7 +1424,7 @@ static void pic_cpu_word_write(SGIPICHead *s, hwaddr addr, uint32_t value)
     uint64_t merged;
 
     if (!pic_cpu_word_slot(s, addr, &slot) || slot == 0 ||
-        slot == 0x50 || slot == 0x100 || slot == 0x120) {
+        slot == 0x50 || slot == 0x100 || slot == 0x120 || slot == 0x170) {
         pic_unsupported(s, addr, 4, value, true);
         return;
     }
@@ -1395,8 +1447,14 @@ static void pic_cpu_word_write(SGIPICHead *s, hwaddr addr, uint32_t value)
     trace_sgi_pic_head_reg_write(s->head, addr, 4, value);
 }
 
+static MemTxResult pic_read_attrs(void *opaque, hwaddr addr, uint64_t *value,
+                                  unsigned size, MemTxAttrs attrs)
+{
+    return pic_read_result(opaque, addr, size, value);
+}
+
 static const MemoryRegionOps pic_ops = {
-    .read = pic_read,
+    .read_with_attrs = pic_read_attrs,
     .write = pic_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid.min_access_size = 1,
@@ -1425,7 +1483,8 @@ static bool pic_cpu_access_valid(void *opaque, hwaddr addr, unsigned size,
     return !(addr & (size - 1));
 }
 
-static uint64_t pic_cpu_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult pic_cpu_read(void *opaque, hwaddr addr, uint64_t *value,
+                                unsigned size, MemTxAttrs attrs)
 {
     SGIPICState *s = opaque;
     SGIPICHead *head;
@@ -1434,25 +1493,28 @@ static uint64_t pic_cpu_read(void *opaque, hwaddr addr, unsigned size)
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-pic: short-window guard read at 0x%" HWADDR_PRIx
                       " refused for %u bytes\n", addr, size);
-        return 0;
+        *value = 0;
+        return MEMTX_OK;
     }
     head = &s->head[addr / PIC_HEAD_OFFSET];
     addr %= PIC_HEAD_OFFSET;
     if (pic_uses_runtime_profile(s) &&
         pic_short_window(addr, &(unsigned){ 0 }, &(hwaddr){ 0 },
                          &(hwaddr){ 0 })) {
-        return pic_short_read(head, addr, size, true);
+        *value = pic_short_read(head, addr, size, true);
+        return MEMTX_OK;
     }
     if (pic_uses_runtime_profile(s) && addr >= 0x20000 && addr < 0x29000 &&
         size <= 4) {
-        return pic_read(head, addr, size);
+        return pic_read_result(head, addr, size, value);
     }
     if (pic_uses_runtime_profile(s) && size == 4 && (addr & 7) == 4 &&
         !pic_short_window(addr, &(unsigned){ 0 }, &(hwaddr){ 0 },
                           &(hwaddr){ 0 })) {
-        return pic_cpu_word_read(head, addr);
+        *value = pic_cpu_word_read(head, addr);
+        return MEMTX_OK;
     }
-    return pic_read(head, addr, size);
+    return pic_read_result(head, addr, size, value);
 }
 
 static bool pic_error_destination(SGIPICHead *head, hwaddr *address);
@@ -1574,7 +1636,7 @@ static bool pic_error_destination(SGIPICHead *head, hwaddr *address)
 }
 
 static const MemoryRegionOps pic_cpu_ops = {
-    .read = pic_cpu_read,
+    .read_with_attrs = pic_cpu_read,
     .write = pic_cpu_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid.min_access_size = 1,

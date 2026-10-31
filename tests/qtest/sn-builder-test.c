@@ -2106,7 +2106,10 @@ static void ip53_bcm_assert_static_device(QTestState *qts)
         uint64_t config = IP53_BCM_RUNTIME_PIC_HEAD0 + 0x20000 +
                           device * 0x1000;
 
-        g_assert_true(nasid_test_cpu_readl(qts, 0, config, &identity));
+        /* An empty window fails the read; only the card answers. */
+        if (!nasid_test_cpu_readl(qts, 0, config, &identity)) {
+            continue;
+        }
         if ((identity & 0xffff) == 0x14e4 &&
             (identity >> 16) == 0x1645) {
             bcm5701_count++;
@@ -2159,6 +2162,7 @@ static void test_ip53_two_pic_hosts_keep_widget_state_and_reset(void)
     g_autofree char *pic_b = NULL;
     g_autofree char *pic_f = NULL;
     g_autofree char *io9_ioc4 = NULL;
+    uint32_t config;
     uint64_t value;
     int fd;
 
@@ -2179,8 +2183,9 @@ static void test_ip53_two_pic_hosts_keep_widget_state_and_reset(void)
     g_assert_cmpstr(io9_ioc4, ==, "sgi-ioc4");
     g_assert_cmphex(qtest_readl(qts, widget_f + 0x21000), ==,
                     UINT32_C(0x100a10a9));
-    g_assert_cmphex(qtest_readl(qts, widget_b + 0x21000), ==,
-                    UINT32_MAX);
+    /* The second PIC has no device in window 1: the read fails. */
+    g_assert_false(nasid_test_cpu_readl(qts, 0, widget_b + 0x21000,
+                                        &config));
     g_assert_true(nasid_test_cpu_readq(qts, 0, widget_b, &value));
     g_assert_cmphex((value >> 12) & 0xffff, ==, 0xd102);
     g_assert_true(nasid_test_cpu_readq(qts, 0, head_f1, &value));
@@ -3453,8 +3458,8 @@ static void test_tezro_tower_multi_builds_two_pic_hosts(void)
     g_assert_cmphex(qtest_readl(qts, widget_f + 0x24000), ==,
                     UINT32_C(0x164514e4));
     g_assert_cmphex(qtest_readl(qts, widget_f + 0x24008) & 0xff, ==, 0x00);
-    g_assert_cmphex(qtest_readl(qts, widget_b + 0x21000), ==,
-                    UINT32_C(0xffffffff));
+    /* The second PIC has no device in window 1: the read fails. */
+    g_assert_false(nasid_test_cpu_readl(qts, 0, widget_b + 0x21000, &aux));
 
     /* Separate PICs retain and reset their own interrupt-route registers. */
     qtest_writeq(qts, pic_b_route, UINT64_C(0x1122334455667788));
@@ -10888,7 +10893,8 @@ static void test_enclosure_widget_scan(const void *data)
 
 /*
  * Test 2: through each of the six heads, device 0 is reserved, devices
- * 1 and 2 are the slot's own cards and device 3 reads all ones.
+ * 1 and 2 are the slot's own cards and device 3 is empty. Device 0 and an
+ * empty device are unclaimed configuration cycles, which fail.
  */
 static void test_enclosure_configuration(const void *data)
 {
@@ -10901,18 +10907,16 @@ static void test_enclosure_configuration(const void *data)
         for (unsigned int head = 0; head < 2; head++) {
             unsigned int w = enc_widgets[pic];
 
-            g_assert_true(nasid_test_cpu_readl(qts, ENC_CPU,
-                                               ENC_CFG(w, head, 0), &id));
-            g_assert_cmphex(id, ==, UINT32_MAX);
+            g_assert_false(nasid_test_cpu_readl(qts, ENC_CPU,
+                                                ENC_CFG(w, head, 0), &id));
             for (unsigned int dev = 1; dev <= 2; dev++) {
                 g_assert_true(nasid_test_cpu_readl(
                     qts, ENC_CPU, ENC_CFG(w, head, dev), &id));
                 g_assert_cmphex(id, ==, ((0x7000u | (pic << 8) |
                                           (head << 4) | dev) << 16) | 0x1b36);
             }
-            g_assert_true(nasid_test_cpu_readl(qts, ENC_CPU,
-                                               ENC_CFG(w, head, 3), &id));
-            g_assert_cmphex(id, ==, UINT32_MAX);
+            g_assert_false(nasid_test_cpu_readl(qts, ENC_CPU,
+                                                ENC_CFG(w, head, 3), &id));
         }
     }
     qtest_quit(qts);

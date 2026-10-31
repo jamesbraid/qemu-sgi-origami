@@ -634,6 +634,11 @@ sgi_qtests = \
    config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') and
    config_all_devices.has_key('CONFIG_PCI_BRIDGE') ?
     ['sgi-pic-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_PIC') and
+   config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') and
+   config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') and
+   config_all_devices.has_key('CONFIG_PCI_BRIDGE') ?
+    ['sgi-pic-empty-slot-test'] : []) + \
   sn0_mgras_qtests + \
   sgi_board_qtests + \
   (config_all_devices.has_key('CONFIG_SGI_O2_GBE') ?
