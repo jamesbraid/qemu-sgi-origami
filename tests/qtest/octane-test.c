@@ -4428,7 +4428,9 @@ static void test_rad_tune_plays_once(void)
     g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0x40000001);
 
     /*
-     * The relay and DAC mute are stored; they leave the transfer alone.
+     * The relay and DAC mute are stored; they silence the host output but
+     * leave the transfer alone. No time passes here, so every frame still
+     * plays and the sample check below holds.
      */
     qtest_writel(qts, RAD_BAR0 + 0x88, 2);
     qtest_writel(qts, RAD_BAR0 + 0x8c, 3);
@@ -4741,6 +4743,48 @@ static void test_rad_link_unprogrammed(void)
                                  "programmed"));
     g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
+ * The relay mute (0x88 = 2) and the DAC mute (0x8c = 3) send silence to the
+ * host while the transfer runs on (inferred). Four 10 ms spans at 44.1 kHz,
+ * 441 frames each: audio, relay muted, DAC muted, audio.
+ */
+static void test_rad_output_mute(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *wav = NULL;
+    QTestState *qts;
+    gsize length;
+    int fd = g_file_open_tmp("octane-rad-mute-XXXXXX.wav", &path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    qts = octane_rad_wav_start(path, 44100, "");
+    octane_rad_clock_map(qts);
+    octane_rad_ramp_fill(qts, RAM + 0xa000);
+    octane_rad_output_program(qts, 0xa000a000);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000001);
+    qtest_clock_step(qts, 10000000);
+    qtest_writel(qts, RAD_BAR0 + 0x88, 2);
+    qtest_clock_step(qts, 10000000);
+    qtest_writel(qts, RAD_BAR0 + 0x88, 0);
+    qtest_writel(qts, RAD_BAR0 + 0x8c, 3);
+    qtest_clock_step(qts, 10000000);
+    qtest_writel(qts, RAD_BAR0 + 0x8c, 0);
+    qtest_clock_step(qts, 10000000);
+    /* The transfer never paused: 1764 frames, start bit still set. */
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 1764);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0x20000001);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000000);
+    qtest_clock_step(qts, 20000000);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(path, &wav, &length, NULL));
+    g_assert_cmpuint(octane_rad_wav_frames(wav, length), ==, 1764);
+    for (unsigned i = 0; i < 1764; i++) {
+        octane_rad_ramp_check(wav, i, i >= 441 && i < 1323);
+    }
+    g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
 static void test_rad_ust_clock(void)
@@ -6480,6 +6524,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("/octane/rad-link-programmed-linux",
                         GUINT_TO_POINTER(7), test_rad_link_programmed);
     qtest_add_func("/octane/rad-link-unprogrammed", test_rad_link_unprogrammed);
+    qtest_add_func("/octane/rad-output-mute", test_rad_output_mute);
     qtest_add_func("/octane/rad-clock-select", test_rad_clock_select);
     qtest_add_func("/octane/rad-ust-clock", test_rad_ust_clock);
     qtest_add_func("/octane/rad-ust-word-and-wrap",

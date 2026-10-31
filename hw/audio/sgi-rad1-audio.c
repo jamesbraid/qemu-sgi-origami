@@ -862,6 +862,26 @@ static void sgi_rad1_audio_chan_stop(SGIRad1AudioChannel *c,
                                      sgi_rad1_audio_chan_pointer(c));
 }
 
+static int sgi_rad1_octane_startup_index(hwaddr addr);
+
+/*
+ * Whether the Octane's analog output is muted: 0x88 = 2 is the relay mute and
+ * 0x8c = 3 the DAC mute. That either silences the output while the transfer
+ * carries on is inferred from the names and values the drivers write; no
+ * permitted source ties them to the channel. The registers are storage only,
+ * so the answer follows from them and needs no state of its own.
+ */
+static bool sgi_rad1_octane_out_muted(SGIRad1AudioChannel *c)
+{
+    SGIRad1AudioState *s = c->dev;
+
+    return s->octane && c == &s->chan[SGI_RAD1_AUDIO_CH_OUT] &&
+           (s->octane_startup[sgi_rad1_octane_startup_index(
+                SGI_RAD1_AUDIO_REG_LATCH_PULSE)] == 2 ||
+            s->octane_startup[sgi_rad1_octane_startup_index(
+                SGI_RAD1_AUDIO_REG_SHIFT_LOAD_DATA)] == 3);
+}
+
 /*
  * One step of an output: read the ring frames at the pointer and push them to
  * the voice as stereo 16-bit frames
@@ -884,6 +904,9 @@ static bool sgi_rad1_audio_out_chunk(SGIRad1AudioChannel *c, uint8_t *ring,
         sgi_rad1_audio_frames_to_pcm(ring, pcm, frames,
                                      sgi_rad1_audio_chan_info(c)->
                                      words_per_frame);
+        if (sgi_rad1_octane_out_muted(c)) {
+            memset(pcm, 0, frames * SGI_RAD1_AUDIO_HOST_CHANNELS * 2);
+        }
         audio_be_write(be, c->out_voice, pcm,
                        frames * SGI_RAD1_AUDIO_HOST_CHANNELS * 2);
     }
@@ -1897,6 +1920,11 @@ static MemTxResult sgi_rad1_octane_write(void *opaque, hwaddr addr,
                 goto unsupported;
             }
             sgi_rad1_audio_enable_write(c, value);
+        }
+        if (addr == SGI_RAD1_AUDIO_REG_LATCH_PULSE ||
+            addr == SGI_RAD1_AUDIO_REG_SHIFT_LOAD_DATA) {
+            /* Frames due so far play under the old mute state. */
+            sgi_rad1_audio_chan_sync(&s->chan[SGI_RAD1_AUDIO_CH_OUT]);
         }
         s->octane_startup[index] = value;
         sgi_rad1_octane_cg_write(s, addr, value);
