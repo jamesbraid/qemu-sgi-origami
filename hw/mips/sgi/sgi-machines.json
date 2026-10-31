@@ -21556,12 +21556,7 @@
         "cache-mib": 16,
         "clock-hz": 1000000000,
         "id": "r16000-1000mhz",
-        "part": "R16000",
-        "required-properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ]
+        "part": "R16000"
       },
       "product": "origin3000",
       "prom-dialogue": "ip35-l1-prompt",
@@ -21846,12 +21841,7 @@
         "cache-mib": 8,
         "clock-hz": 700000000,
         "id": "r16000-700mhz",
-        "part": "R16000",
-        "required-properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ]
+        "part": "R16000"
       },
       "product": "origin3000",
       "prom-dialogue": "ip35-l1-prompt",

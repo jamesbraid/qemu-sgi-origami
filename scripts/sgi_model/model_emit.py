@@ -1302,9 +1302,13 @@ def _offerings_for(model: dict, topology: dict,
                 if choice["cpus_per_node"] is None or
                 set(cpu_population) <= set(choice["cpus_per_node"])):
             assembly = choice["assembly"]
-            # A topology's IP53 runtime profile fits its R16000s itself,
-            # so none of its launches needs caller CPU properties.
-            machine_fits_cpus = topology.get("ip53_runtime") is not None
+            # A topology's IP53 runtime profile, and a Cx-brick node board,
+            # fit their R16000s themselves, so none of their launches needs
+            # caller CPU properties.
+            machine_fits_cpus = (
+                topology.get("ip53_runtime") is not None
+                or all(node.get("board_kind") == "ip53-cx"
+                       for node in topology["nodes"]))
             offerings.append({
                 "product": machine_name,
                 "topology": configuration_name,
