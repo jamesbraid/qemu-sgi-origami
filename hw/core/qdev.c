@@ -506,6 +506,11 @@ static void device_set_realized(Object *obj, bool value, Error **errp)
     NamedClockList *ncl;
     Error *local_err = NULL;
 
+    if (dev->unrealize_in_progress) {
+        error_setg(errp, "Device '%s' is being unrealized",
+                   object_get_typename(obj));
+        return;
+    }
     if (dev->hotplugged && !dc->hotpluggable) {
         error_setg(errp, "Device '%s' does not support hotplugging",
                    object_get_typename(obj));
@@ -592,6 +597,15 @@ static void device_set_realized(Object *obj, bool value, Error **errp)
        qatomic_store_release(&dev->realized, value);
 
     } else if (!value && dev->realized) {
+        if (dc->pre_unrealize) {
+            dev->unrealize_in_progress = true;
+            dc->pre_unrealize(dev, &local_err);
+            if (local_err) {
+                dev->unrealize_in_progress = false;
+                error_propagate(errp, local_err);
+                return;
+            }
+        }
 
         /*
          * Change the value so that any concurrent users are aware
@@ -619,6 +633,7 @@ static void device_set_realized(Object *obj, bool value, Error **errp)
         }
         dev->pending_deleted_event = true;
         DEVICE_LISTENER_CALL(unrealize, Reverse, dev);
+        dev->unrealize_in_progress = false;
     }
 
     assert(local_err == NULL);

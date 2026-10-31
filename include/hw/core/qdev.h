@@ -93,6 +93,7 @@ typedef enum DeviceCategory {
 } DeviceCategory;
 
 typedef void (*DeviceRealize)(DeviceState *dev, Error **errp);
+typedef void (*DevicePreUnrealize)(DeviceState *dev, Error **errp);
 typedef void (*DeviceUnrealize)(DeviceState *dev);
 typedef void (*DeviceReset)(DeviceState *dev);
 typedef void (*BusRealize)(BusState *bus, Error **errp);
@@ -104,6 +105,12 @@ typedef int (*DeviceSyncConfig)(DeviceState *dev, Error **errp);
  * @props: Properties accessing state fields.
  * @realize: Callback function invoked when the #DeviceState:realized
  * property is changed to %true.
+ * @pre_unrealize: Optional preparation for a realized-to-unrealized transition,
+ * before changing realization state or unrealizing child buses. On error, it
+ * must leave device and child state unchanged. Recursive changes to this
+ * device's realized property are rejected throughout teardown. This is not
+ * called during realization failure cleanup. A NULL callback preserves the
+ * existing lifecycle.
  * @unrealize: Callback function invoked when the #DeviceState:realized
  * property is changed to %false.
  * @sync_config: Callback function invoked when QMP command device-sync-config
@@ -173,6 +180,7 @@ struct DeviceClass {
      */
     DeviceReset legacy_reset;
     DeviceRealize realize;
+    DevicePreUnrealize pre_unrealize;
     DeviceUnrealize unrealize;
     DeviceSyncConfig sync_config;
 
@@ -237,6 +245,11 @@ struct DeviceState {
      * @realized: has device been realized?
      */
     bool realized;
+    /**
+     * @unrealize_in_progress: guards transitions for devices using
+     * pre_unrealize
+     */
+    bool unrealize_in_progress;
     /**
      * @pending_deleted_event: track pending deletion events during unplug
      */
