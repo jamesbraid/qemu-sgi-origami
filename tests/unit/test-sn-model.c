@@ -1968,6 +1968,57 @@ static void test_storage_board_rules(void)
     }
 }
 
+/* One single-node topology record accepting each total in @totals. */
+static SGIModelTopology *variant_record(const char *name, bool machine_default,
+                                        const uint32_t *totals, size_t n)
+{
+    SGIModelTopology *t = g_new0(SGIModelTopology, 1);
+    SGIModelNodePopulation *row = g_new0(SGIModelNodePopulation, 1);
+
+    t->name = g_strdup(name);
+    t->product = g_strdup("tezro");
+    t->has_machine_default = machine_default;
+    t->machine_default = machine_default;
+    QAPI_LIST_PREPEND(row->nodes, 0);
+    for (size_t i = n; i-- > 0;) {
+        SGIModelCpuPopulation *population = g_new0(SGIModelCpuPopulation, 1);
+
+        QAPI_LIST_PREPEND(population->cpus_per_node, totals[i]);
+        QAPI_LIST_PREPEND(row->supported_cpu_populations, population);
+    }
+    QAPI_LIST_PREPEND(t->node_populations, row);
+    return t;
+}
+
+/* -smp picks among a topology's board variants by the totals each accepts. */
+static void test_product_variant_by_cpus(void)
+{
+    static const uint32_t one[] = { 1 }, many[] = { 4, 2 }, rack[] = { 1 };
+    g_autoptr(SGIMachines) machines = g_new0(SGIMachines, 1);
+    SGIModelTopology *small = variant_record("tezro", false, one, 1);
+    SGIModelTopology *large = variant_record("tezro", true, many, 2);
+    SGIModelTopology *other = variant_record("tezro-rack", false, rack, 1);
+
+    QAPI_LIST_PREPEND(machines->topologies, other);
+    QAPI_LIST_PREPEND(machines->topologies, large);
+    QAPI_LIST_PREPEND(machines->topologies, small);
+
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", 1) ==
+             small);
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", 2) ==
+             large);
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", 4) ==
+             large);
+    /* A total no variant accepts finds the machine-default record. */
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro", 3) ==
+             large);
+    g_assert(sgi_model_product_variant(machines, "tezro", "tezro-rack", 4) ==
+             other);
+    g_assert_null(sgi_model_product_variant(machines, "onyx350", "tezro", 1));
+    g_assert_null(sgi_model_product_variant(machines, "tezro", "tezro-none",
+                                            1));
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1994,6 +2045,8 @@ int main(int argc, char **argv)
     g_test_add_data_func("/sn-model/ownership/ip30-requires-module",
                          GUINT_TO_POINTER(SGI_MODEL_GENERATION_IP30),
                          test_modular_node_requires_owner);
+    g_test_add_func("/sn-model/product-variant-by-cpus",
+                    test_product_variant_by_cpus);
     g_test_add_func("/sn-model/tezro-requires-explicit-topology",
                     test_tezro_requires_explicit_topology);
     g_test_add_func("/sn-model/existing-population-views",
