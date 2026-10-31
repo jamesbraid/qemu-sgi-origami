@@ -41699,7 +41699,12 @@
               "processors": 4,
               "revision": "-C"
             },
-            "reported-type": 67
+            "reported-type": 67,
+            "revision": {
+              "major": 1,
+              "minor": 44,
+              "patch": 0
+            }
           },
           "module-index": 0,
           "owner": "module",
@@ -42356,7 +42361,12 @@
               "cpu-mode-word": 1453108613,
               "hub-clock-hz": 200000000
             },
-            "reported-type": 67
+            "reported-type": 67,
+            "revision": {
+              "major": 1,
+              "minor": 44,
+              "patch": 0
+            }
           },
           "module-index": 0,
           "owner": "module",

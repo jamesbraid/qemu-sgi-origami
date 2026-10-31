@@ -437,9 +437,34 @@ static void test_request_grades(void)
     g_assert_cmpuint(length, ==, 9);
     g_assert_cmphex((uint32_t)ldl_be_p(reply + 1), ==, 0xffffffff);
     g_assert_cmphex(ldl_be_p(reply + 5), ==, 8);
-    /* The firmware revision is unknown for the Cx-brick. */
+    /* Without a configured revision the request is an error. */
     length = rpc(&rig, 0, LOCAL_GENERAL, 5, NULL, 0, 0, reply);
     expect_code(reply, length, -104);
+    rig_stop(&rig);
+}
+
+/*
+ * Request 0x0005 answers the configured firmware revision on every board's
+ * window, and the console's version line prints it without an image.
+ */
+static void test_firmware_revision(void)
+{
+    CxRig rig;
+    uint8_t reply[131];
+    size_t length;
+
+    rig_start(&rig, NAMED ",revision-major=1,revision-minor=44,"
+              "revision-patch=0", 0xf, false, "");
+    for (unsigned board = 0; board < 4; board++) {
+        length = rpc(&rig, board, LOCAL_GENERAL, 5, NULL, 0, 0, reply);
+        g_assert_cmpuint(length, ==, 21);
+        expect_code(reply, length, 0);
+        g_assert_cmpuint(reply[5], ==, 3);
+        g_assert_cmpuint(ldl_be_p(reply + 7), ==, 1);
+        g_assert_cmpuint(ldl_be_p(reply + 12), ==, 44);
+        g_assert_cmpuint(ldl_be_p(reply + 17), ==, 0);
+    }
+    expect_command(&rig, 0, "version", "L1 1.44.0 (Image EMU-UNKNOWN)\n");
     rig_stop(&rig);
 }
 
@@ -746,9 +771,6 @@ static const struct {
       "*compute-boards must be fitted*" },
     { "-device sgi-l1,brick-type=cxbrick,node-position=1",
       "*node-position does not apply*" },
-    { "-device sgi-l1,brick-type=cxbrick,revision-major=1,"
-      "revision-minor=0,revision-patch=0",
-      "*firmware revision is unknown*" },
     { "-device sgi-l1,brick-type=cxbrick,irouter-compat=on",
       "*compatibility is not accepted*" },
     { "-device sgi-l1,brick-type=cxbrick,identity-index=25",
@@ -853,6 +875,8 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-cxbrick/reply-routing", test_reply_routing);
     qtest_add_func("sgi-l1-cxbrick/positions", test_positions);
     qtest_add_func("sgi-l1-cxbrick/request-grades", test_request_grades);
+    qtest_add_func("sgi-l1-cxbrick/firmware-revision",
+                   test_firmware_revision);
     qtest_add_func("sgi-l1-cxbrick/port-speed", test_port_speed);
     qtest_add_func("sgi-l1-cxbrick/board-records", test_board_records);
     qtest_add_func("sgi-l1-cxbrick/console-filter", test_console_filter);

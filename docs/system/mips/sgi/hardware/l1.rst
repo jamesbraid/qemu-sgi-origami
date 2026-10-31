@@ -310,8 +310,8 @@ captured controller output.
        identity request on a C-brick is unknown. The case of the I-brick
        letter is the model's choice.
    * - The machine configures firmware revision 1.44.0 on every C-brick,
-       I-brick, N-brick and V-brick L1 for request ``0x0005``, and the
-       machine's ``l1-revision`` replaces it. ``version`` prints the
+       Cx-brick, I-brick, N-brick and V-brick L1 for request ``0x0005``,
+       and the machine's ``l1-revision`` replaces it. ``version`` prints the
        number as ``L1 1.44.0 (Image EMU-UNKNOWN)``, naming no image bank
        or product image.
      - established for the firmware; inferred for a fitted brick
@@ -634,10 +634,12 @@ What the model chooses, and the limit of each choice:
   returns; this is an approximation.
 - The brick has no default type character: ``0x0003`` answers minus 104
   until ``brick-type-code`` supplies one, and ``brick`` prints the type as
-  ``?``. The firmware revision is unknown, so ``revision-*`` is refused.
-  Request ``0x000a`` answers as the C-brick profile does, 400 MHz unless
-  ``port-speed-first`` says otherwise, which matches the I-brick the
-  Cx-brick's L1 reaches.
+  ``?``. Request ``0x0005`` answers the firmware revision ``revision-*``
+  configures, 1.44.0 in the Origin 3900 catalogue as on the other brick
+  profiles, and minus 104 without one; ``version`` prints it as ``L1
+  1.44.0 (Image EMU-UNKNOWN)``. Request ``0x000a`` answers as the C-brick
+  profile does, 400 MHz unless ``port-speed-first`` says otherwise, which
+  matches the I-brick the Cx-brick's L1 reaches.
 - A neighbouring Cx-brick link is refused. The L2, the neighbouring Cx-brick
   and the ``iia`` to ``iid``, ``nia`` and ``nib`` commands are not modelled.
   One I-brick may be named as ``io-peer``: the attached I/O brick request
