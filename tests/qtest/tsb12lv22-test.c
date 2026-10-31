@@ -1,6 +1,6 @@
 /*
- * Standalone TI TSB12LV22 revision-01 register contract, TI SLLS290.
- * No PHY, bus, ROM, DMA engine or product profile is present.
+ * Standalone TI TSB12LV22 revision-01 register contract, TI SLLS290, with
+ * the model's lone PHY. No ROM, packet DMA or product profile is present.
  * SPDX-License-Identifier: BSD-3-Clause
  */
 #include "qemu/osdep.h"
@@ -12,6 +12,10 @@
 
 #define MACHINE "-nodefaults -M none " QPCI_SGI_BRIDGE_HEAD
 #define CARD " -device tsb12lv22,id=ohci,addr=4.0"
+#define RAM 0x02000000
+#define SELF_IDS (RAM + 0x4000)
+/* Self-ID 0: PHY 0, link active, gap 63, S400, port 0 unconnected, i. */
+#define SELF_ID 0x807f8042u
 
 typedef struct TestOHCI {
     QTestState *qts;
@@ -66,12 +70,48 @@ static bool irq(TestOHCI *t)
     return qtest_readl(t->qts, 0x40000104) & (1 << 4);
 }
 
+static uint32_t load_le(TestOHCI *t, uint64_t addr)
+{
+    uint8_t b[4];
+
+    qtest_memread(t->qts, addr, b, sizeof(b));
+    return ldl_le_p(b);
+}
+
+/*
+ * Link powered, enabled and receiving self-IDs into a buffer pre-filled
+ * with the pattern boot software uses to tell a written buffer from a
+ * stale one. The Bridge's direct window maps PCI 0x80000000 onwards. The
+ * slot's direct swap is set so memory holds the card's PCI bytes as they
+ * were issued and the checks read the little-endian quadlets directly.
+ */
+static void link_up(TestOHCI *t, bool enable)
+{
+    uint8_t fill[16];
+    unsigned i;
+
+    for (i = 0; i < sizeof(fill); i += 4) {
+        stl_le_p(fill + i, 0xdeadbeef);
+    }
+    qtest_memwrite(t->qts, SELF_IDS, fill, sizeof(fill));
+    qtest_writel(t->qts, 0x40000000 + 0x84, 0);
+    qtest_writel(t->qts, 0x40000000 + 0x224,
+                 qtest_readl(t->qts, 0x40000000 + 0x224) | (1 << 19));
+    write_reg(t, 0x50, 0x00080000);
+    write_reg(t, 0x64, 0x80000000u | SELF_IDS);
+    write_reg(t, 0xe0, 0x00000200);
+    if (enable) {
+        write_reg(t, 0x50, 0x00020000);
+    }
+}
+
 static void test_pci(void)
 {
     TestOHCI t = open_card("");
     unsigned i;
 
     g_assert_cmphex(qpci_config_readl(t.dev, 0), ==, 0x8009104c);
+    /* Revision 01: IRIX's hinv prints "Version 0 0" for a nonzero one. */
     g_assert_cmphex(qpci_config_readl(t.dev, 8), ==, 0x0c001001);
     g_assert_cmphex(qpci_config_readw(t.dev, 6), ==, 0x0210);
     g_assert_cmphex(qpci_config_readb(t.dev, 0x3d), ==, 1);
@@ -372,6 +412,159 @@ static void test_unsupported(void)
     close_card(&t);
 }
 
+/*
+ * The stock IP35 PROM's probe: one PHY register 1 write with IBR, then
+ * busReset and selfIDComplete in the raw events, a self-ID buffer whose
+ * generation matches SelfIDCount and whose last quadlet is no longer the
+ * fill, and both events clearing at once when written. Any of those left
+ * undone spins the PROM.
+ */
+static void test_bus_reset(void)
+{
+    TestOHCI t = open_card("");
+
+    link_up(&t, true);
+    write_reg(&t, 0x88, 0x80020000);
+    g_assert_false(irq(&t));
+    write_reg(&t, 0xec, 0x417f);
+    g_assert_cmphex(read_reg(&t, 0xec) & 0xc000, ==, 0);
+    g_assert_cmphex(read_reg(&t, 0x80), ==, 0x00030000);
+    g_assert_true(irq(&t));
+    g_assert_cmphex(read_reg(&t, 0x68), ==, 0x0001000c);
+    g_assert_cmphex(load_le(&t, SELF_IDS), ==, 0x00010000);
+    g_assert_cmphex(load_le(&t, SELF_IDS + 4), ==, SELF_ID);
+    g_assert_cmphex(load_le(&t, SELF_IDS + 8), ==, ~SELF_ID);
+    g_assert_cmphex(load_le(&t, SELF_IDS + 12), ==, 0xdeadbeef);
+    g_assert_cmphex(read_reg(&t, 0xe8), ==, 0xc000ffc0);
+    write_reg(&t, 0x84, 0x00020000);
+    g_assert_cmphex(read_reg(&t, 0x80), ==, 0x00010000);
+    g_assert_false(irq(&t));
+    write_reg(&t, 0x84, 0x00010000);
+    g_assert_cmphex(read_reg(&t, 0x80), ==, 0);
+
+    /* A second reset advances the generation in both places. */
+    write_reg(&t, 0xec, 0x417f);
+    g_assert_cmphex(read_reg(&t, 0x68), ==, 0x0002000c);
+    g_assert_cmphex(load_le(&t, SELF_IDS), ==, 0x00020000);
+    close_card(&t);
+}
+
+/*
+ * IRIX's attach reads PHY register 1 back after forcing a reset with root
+ * holdoff: rdDone, the address and the stored value, IBR clear, and the
+ * register-access-fail position (bit 18) never set.
+ */
+static void test_phy_read(void)
+{
+    TestOHCI t = open_card("");
+
+    link_up(&t, true);
+    write_reg(&t, 0xec, 0x8100);
+    g_assert_cmphex(read_reg(&t, 0xec), ==, 0x813f0100);
+    g_assert_cmphex(read_reg(&t, 0x80), ==, 0x04000000);
+    write_reg(&t, 0x84, 0x04000000);
+    write_reg(&t, 0xec, 0x41ff);
+    g_assert_cmphex(read_reg(&t, 0x80), ==, 0x00030000);
+    write_reg(&t, 0xec, 0x8100);
+    g_assert_cmphex(read_reg(&t, 0xec), ==, 0x81bf0100);
+    g_assert_cmphex(read_reg(&t, 0x80) & (1 << 18), ==, 0);
+    write_reg(&t, 0xec, 0x4105);
+    g_assert_cmphex(read_reg(&t, 0x80), ==, 0x04030000);
+    write_reg(&t, 0xec, 0x8100);
+    g_assert_cmphex(read_reg(&t, 0xec), ==, 0x81050100);
+
+    /*
+     * Unmodelled PHY registers have no value to return: a read leaves
+     * rdDone clear, so the earlier register 1 result is not mistaken for
+     * it, and raises no phyRegRcvd. A write changes nothing.
+     */
+    write_reg(&t, 0x84, 0xffffffff);
+    write_reg(&t, 0xec, 0x8200);
+    g_assert_cmphex(read_reg(&t, 0xec) & 0x80008000, ==, 0);
+    g_assert_cmphex(read_reg(&t, 0x80), ==, 0);
+    write_reg(&t, 0xec, 0x42ff);
+    write_reg(&t, 0xec, 0x8100);
+    g_assert_cmphex(read_reg(&t, 0xec), ==, 0x81050100);
+
+    /* A hard reset restores the PHY's power-on gap count. */
+    qtest_system_reset(t.qts);
+    t.bar[0] = qpci_iomap(t.dev, 0, NULL);
+    qpci_config_writew(t.dev, PCI_COMMAND,
+                       PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    link_up(&t, true);
+    write_reg(&t, 0xec, 0x8100);
+    g_assert_cmphex(read_reg(&t, 0xec), ==, 0x813f0100);
+    close_card(&t);
+}
+
+/*
+ * Without LPS the PHY is not reached at all. With the link disabled a
+ * reset raises busReset but stores no self-ID, so no completion either.
+ */
+static void test_link_off(void)
+{
+    TestOHCI t = open_card("");
+
+    write_reg(&t, 0xec, 0x417f);
+    write_reg(&t, 0xec, 0x8100);
+    g_assert_cmphex(read_reg(&t, 0xec), ==, 0);
+    g_assert_cmphex(read_reg(&t, 0x80), ==, 0);
+    link_up(&t, false);
+    write_reg(&t, 0xec, 0x417f);
+    g_assert_cmphex(read_reg(&t, 0x80), ==, 0x00020000);
+    g_assert_cmphex(read_reg(&t, 0x68), ==, 0);
+    g_assert_cmphex(read_reg(&t, 0xe8), ==, 0xffc0);
+    g_assert_cmphex(load_le(&t, SELF_IDS), ==, 0xdeadbeef);
+    close_card(&t);
+}
+
+/*
+ * With the slot's direct swap clear, its reset state and the setting the
+ * stock IP35 PROM leaves, the Bridge reverses each quadlet, so the same
+ * self-ID reads as its numeric value with a big-endian load, which is how
+ * the PROM checks it. A model that wrote host-order quadlets would match
+ * only one of the two settings. noByteSwapData is set here, as the PROM
+ * sets it, and clear in bus-reset: self-ID quadlets ignore it.
+ */
+static void test_self_id_swap_clear(void)
+{
+    TestOHCI t = open_card("");
+    uint8_t b[4];
+
+    link_up(&t, true);
+    qtest_writel(t.qts, 0x40000000 + 0x224,
+                 qtest_readl(t.qts, 0x40000000 + 0x224) & ~(1 << 19));
+    write_reg(&t, 0x50, 0x40000000);
+    write_reg(&t, 0xec, 0x417f);
+    qtest_memread(t.qts, SELF_IDS, b, sizeof(b));
+    g_assert_cmphex((uint32_t)ldl_be_p(b), ==, 0x00010000);
+    qtest_memread(t.qts, SELF_IDS + 4, b, sizeof(b));
+    g_assert_cmphex((uint32_t)ldl_be_p(b), ==, SELF_ID);
+    qtest_memread(t.qts, SELF_IDS + 8, b, sizeof(b));
+    g_assert_cmphex((uint32_t)ldl_be_p(b), ==, ~SELF_ID);
+    close_card(&t);
+}
+
+/*
+ * A self-ID buffer the Bridge refuses (an invalid translation entry) must
+ * not read as a stored buffer: selfIDError set, no count, the node still
+ * invalid. Reporting the usual size and idValid would send software to
+ * parse memory that was never written.
+ */
+static void test_self_id_refused(void)
+{
+    TestOHCI t = open_card("");
+
+    link_up(&t, true);
+    write_reg(&t, 0x64, 0x40000000);
+    write_reg(&t, 0xec, 0x417f);
+    g_assert_cmphex(read_reg(&t, 0x80), ==, 0x00030000);
+    g_assert_cmphex(read_reg(&t, 0x68), ==, 0x80010000);
+    g_assert_cmphex(read_reg(&t, 0xe8), ==, 0xffc0);
+    g_assert_cmphex(load_le(&t, SELF_IDS), ==, 0xdeadbeef);
+    close_card(&t);
+}
+
 static void test_migration(void)
 {
     g_autofree char *dir = g_dir_make_tmp("tsb12lv22-XXXXXX", NULL);
@@ -386,6 +579,8 @@ static void test_migration(void)
     write_reg(&from, 0x108, 0x11223344);
     write_reg(&from, 0x80, 1);
     write_reg(&from, 0x88, 0x80000001);
+    write_reg(&from, 0x50, 0x00080000);
+    write_reg(&from, 0xec, 0x4105);
     sgi_migrate_stopped(from.qts, uri);
     sgi_wait_migration(to.qts, "completed");
     g_assert_cmphex(read_reg(&to, 0x28), ==, 0x12345678);
@@ -395,6 +590,8 @@ static void test_migration(void)
     g_assert_cmphex(read_reg(&to, 0x24), ==, 0);
     write_reg(&to, 0x84, 1);
     g_assert_false(irq(&to));
+    write_reg(&to, 0xec, 0x8100);
+    g_assert_cmphex(read_reg(&to, 0xec), ==, 0x81050100);
     close_card(&to);
     close_card(&from);
     unlink(socket);
@@ -413,6 +610,11 @@ int main(int argc, char **argv)
     qtest_add_func("tsb12lv22/interrupts", test_interrupts);
     qtest_add_func("tsb12lv22/resets", test_resets);
     qtest_add_func("tsb12lv22/unsupported", test_unsupported);
+    qtest_add_func("tsb12lv22/bus-reset", test_bus_reset);
+    qtest_add_func("tsb12lv22/phy-read", test_phy_read);
+    qtest_add_func("tsb12lv22/link-off", test_link_off);
+    qtest_add_func("tsb12lv22/self-id-swap-clear", test_self_id_swap_clear);
+    qtest_add_func("tsb12lv22/self-id-refused", test_self_id_refused);
     qtest_add_func("tsb12lv22/migration", test_migration);
     return g_test_run();
 }

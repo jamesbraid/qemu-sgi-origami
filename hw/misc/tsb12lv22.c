@@ -1,10 +1,15 @@
 /*
  * TI TSB12LV22 revision-01 standalone register model (SLLS290, July 1998).
- * PHY, ROM, bus, cycle scheduling, power transitions and DMA are unsupported.
+ * ROM, packet traffic, cycle scheduling, power transitions and context DMA
+ * are unsupported. The attached PHY is an approximation: no PHY part is
+ * identified for any board, so this is a lone cable PHY, node 0, with one
+ * unconnected port. It answers PHY register 1, takes a bus reset and
+ * returns its own self-ID packet, which is what boot software checks.
  * SPDX-License-Identifier: BSD-3-Clause
  */
 #include "qemu/osdep.h"
 #include "hw/pci/pci_device.h"
+#include "qemu/bswap.h"
 #include "hw/core/resettable.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
@@ -23,7 +28,26 @@ OBJECT_DECLARE_SIMPLE_TYPE(TSB12LV22State, TSB12LV22)
 #define IT_MASK 0x98
 #define IR_EVENT 0xa0
 #define IR_MASK 0xa8
+#define SELF_ID_BUFFER 0x64
+#define SELF_ID_COUNT 0x68
 #define LINK_CONTROL 0xe0
+#define NODE_ID 0xe8
+#define PHY_CONTROL 0xec
+#define LPS (1u << 19)
+#define LINK_ENABLE (1u << 17)
+#define RCV_SELF_ID (1u << 9)
+#define SELF_ID_COMPLETE (1u << 16)
+#define BUS_RESET (1u << 17)
+#define PHY_REG_RCVD (1u << 26)
+#define SELF_ID_ERROR (1u << 31)
+#define ID_VALID (1u << 31)
+#define NODE_ROOT (1u << 30)
+#define RD_DONE (1u << 31)
+#define RD_REG (1u << 15)
+#define WR_REG (1u << 14)
+/* PHY register 1: root holdoff 7, initiate bus reset 6, gap count 5:0. */
+#define PHY_IBR 0x40
+#define PHY_GAP_COUNT_RESET 0x3f
 #define SOFT_RESET (1u << 16)
 #define MASTER_ENABLE (1u << 31)
 #define EVENT_WRITABLE 0x07fb033fu
@@ -35,6 +59,8 @@ struct TSB12LV22State {
     MemoryRegion extension;
     uint32_t reg[APERTURE / 4];
     bool guid_locked[2];
+    /* PHY register 1 without IBR, which completes as it is written. */
+    uint8_t phy_reg1;
 };
 
 typedef struct Register {
@@ -151,6 +177,7 @@ static void reset_registers(TSB12LV22State *s, bool soft)
         REG(s, 0x28) = lo;
     } else {
         memset(s->guid_locked, 0, sizeof(s->guid_locked));
+        s->phy_reg1 = PHY_GAP_COUNT_RESET;
     }
     update_irq(s);
 }
@@ -159,6 +186,98 @@ static void unsupported(unsigned offset, uint64_t value)
 {
     qemu_log_mask(LOG_UNIMP, "tsb12lv22: unsupported operation at 0x%x"
                   " value 0x%" PRIx64 "\n", offset, value);
+}
+
+/*
+ * A bus reset on a bus of one: busReset sets and selfIDComplete clears, the
+ * PHY sends one self-ID packet, and the link stores it with its inverse
+ * after a generation header (IEEE 1394 self-ID 0 layout, as Linux's
+ * firewire core decodes it). Each quadlet goes out as one 32-bit
+ * little-endian PCI value whatever noByteSwapData holds: OHCI 1.1 exempts
+ * PHY packets from that swap, and this OHCI 1.00 part is assumed to match.
+ * Completion is synchronous. The link stores self-IDs only while enabled
+ * with rcvSelfID set; without them the reset is logged and goes no
+ * further. A buffer write the PCI side refuses is a model choice: the
+ * self-ID phase still ends, but with SelfIDCount's selfIDError set,
+ * nothing counted and the node left invalid, so software never reads a
+ * buffer that was not stored.
+ */
+static void bus_reset(TSB12LV22State *s)
+{
+    uint32_t generation = ((REG(s, SELF_ID_COUNT) >> 16) + 1) & 0xff;
+    uint32_t packet = 0x80000000 |             /* self-ID, PHY ID 0 */
+                      1u << 22 |               /* link active */
+                      (s->phy_reg1 & 0x3f) << 16 |
+                      2u << 14 |               /* S400 */
+                      1u << 6 |                /* port 0 not connected */
+                      1u << 1;                 /* initiated the reset */
+    uint32_t data[3];
+    MemTxResult result;
+    int i;
+
+    REG(s, INT_EVENT) = (REG(s, INT_EVENT) | BUS_RESET) & ~SELF_ID_COMPLETE;
+    REG(s, NODE_ID) &= ~(ID_VALID | NODE_ROOT);
+    if (!(REG(s, HC_CONTROL) & LINK_ENABLE) ||
+        !(REG(s, LINK_CONTROL) & RCV_SELF_ID)) {
+        qemu_log_mask(LOG_UNIMP, "tsb12lv22: bus reset with self-ID "
+                      "receive disabled\n");
+        update_irq(s);
+        return;
+    }
+    data[0] = generation << 16;
+    data[1] = packet;
+    data[2] = ~packet;
+    for (i = 0; i < ARRAY_SIZE(data); i++) {
+        data[i] = cpu_to_le32(data[i]);
+    }
+    result = pci_dma_write(PCI_DEVICE(s), REG(s, SELF_ID_BUFFER) & ~0x7ffu,
+                           data, sizeof(data));
+    if (result != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR, "tsb12lv22: self-ID buffer write "
+                      "to 0x%x failed\n", REG(s, SELF_ID_BUFFER));
+        REG(s, SELF_ID_COUNT) = SELF_ID_ERROR | generation << 16;
+    } else {
+        REG(s, SELF_ID_COUNT) = generation << 16 | ARRAY_SIZE(data) << 2;
+        REG(s, NODE_ID) = (REG(s, NODE_ID) & 0xffc0) | ID_VALID | NODE_ROOT;
+    }
+    REG(s, INT_EVENT) |= SELF_ID_COMPLETE;
+    update_irq(s);
+}
+
+/*
+ * Only PHY register 1 is modelled. The PHY part is unidentified, so other
+ * registers have no value to return: a read of one clears rdDone and is
+ * left incomplete, and a write of one is dropped, both logged.
+ */
+static void phy_control(TSB12LV22State *s, uint32_t value)
+{
+    unsigned address = (value >> 8) & 0xf;
+
+    if ((value & (RD_REG | WR_REG)) == (RD_REG | WR_REG) ||
+        !(REG(s, HC_CONTROL) & LPS)) {
+        unsupported(PHY_CONTROL, value);
+        return;
+    }
+    REG(s, PHY_CONTROL) = (REG(s, PHY_CONTROL) & ~0xfffu) | (value & 0xfff);
+    if (value & RD_REG) {
+        /* A stale rdDone must not be taken for this read's result. */
+        REG(s, PHY_CONTROL) &= ~RD_DONE;
+    }
+    if (address != 1) {
+        unsupported(PHY_CONTROL, value);
+        return;
+    }
+    if (value & WR_REG) {
+        s->phy_reg1 = value & ~PHY_IBR & 0xff;
+        if (value & PHY_IBR) {
+            bus_reset(s);
+        }
+        return;
+    }
+    REG(s, PHY_CONTROL) = (REG(s, PHY_CONTROL) & 0xfff) | RD_DONE |
+                          address << 24 | s->phy_reg1 << 16;
+    REG(s, INT_EVENT) |= PHY_REG_RCVD;
+    update_irq(s);
 }
 
 static bool access_valid(void *opaque, hwaddr addr, unsigned size,
@@ -216,8 +335,8 @@ static void write_register(void *opaque, hwaddr addr, uint64_t value,
         }
         return;
     }
-    if (r.offset == 0xec && (value & 0xc000)) {
-        unsupported(addr, value);
+    if (r.offset == PHY_CONTROL && (value & (RD_REG | WR_REG))) {
+        phy_control(s, value);
         return;
     }
     if (r.offset == 0x04 || r.offset == 0x14 ||
@@ -349,6 +468,7 @@ static const VMStateDescription vmstate_tsb12lv22 = {
         VMSTATE_PCI_DEVICE(parent_obj, TSB12LV22State),
         VMSTATE_UINT32_ARRAY(reg, TSB12LV22State, APERTURE / 4),
         VMSTATE_BOOL_ARRAY(guid_locked, TSB12LV22State, 2),
+        VMSTATE_UINT8(phy_reg1, TSB12LV22State),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -398,7 +518,7 @@ static void class_init(ObjectClass *klass, const void *data)
     pc->device_id = 0x8009;
     pc->revision = 1;
     pc->class_id = PCI_CLASS_SERIAL_FIREWIRE;
-    dc->desc = "TI TSB12LV22 standalone registers (no PHY or DMA)";
+    dc->desc = "TI TSB12LV22 registers with a lone PHY (no packet DMA)";
     dc->vmsd = &vmstate_tsb12lv22;
     rc->phases.hold = reset_hold;
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
