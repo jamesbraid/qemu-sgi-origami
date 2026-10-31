@@ -3195,7 +3195,10 @@ static void test_bus_reset_retires_a_waiting_selection(const void *data)
     expect_selection_timed_out(qts, 1, 0x92);
 }
 
-/* A programmed wait of zero is no wait. */
+/*
+ * Model choice, the datasheet being silent about zero: a programmed wait
+ * of zero is no wait.
+ */
 static void test_zero_selection_timeout_answers_at_once(const void *data)
 {
     const uint16_t in[] = { 0, 0 };
@@ -3278,6 +3281,54 @@ static void test_migration_carries_a_waiting_selection(const void *data)
 }
 
 /* Channel 0's delay and channel 1's, which no register hands back. */
+/*
+ * A programmed wait with no command waiting still crosses a migration: the
+ * destination answers an absent target after the value the guest set for
+ * that bus, not after the default. Each bus has its own value.
+ */
+static void test_migration_carries_a_programmed_wait(const void *data)
+{
+    const uint16_t wait_ms[] = { 100, 60 };
+    g_autofree char *dir = g_dir_make_tmp("isp12160-select-XXXXXX", NULL);
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_nonnull(dir);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+
+    from = qtest_init(MACHINE);
+    aim_window_at_memory_bar(from);
+    qtest_memset(from, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(from, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(from, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
+                RESP_SLOTS, true);
+    g_assert_cmphex(isp_mbox(from, ISP_MBOX_CMD_SET_SELECTION_TIMEOUT,
+                             wait_ms, ARRAY_SIZE(wait_ms)), ==,
+                    ISP_MBOX_COMPLETE);
+    isp_mbox_ack(from);
+
+    to = qtest_initf("%s -incoming %s", MACHINE, uri);
+    qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    sgi_migrate_resume(to);
+
+    /* Nothing waited at the migration; the commands start on the new side. */
+    send_to_absent(to, 0xd1, 0);
+    send_to_absent(to, 0xd2, 1);
+    qtest_clock_step(to, 60 * 1000 * 1000 - 1);
+    g_assert_cmphex(isp_readw(to, ISP_REG_RESPONSE_QUEUE), ==, 0);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(isp_readw(to, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    expect_selection_timed_out(to, 0, 0xd2);
+    qtest_clock_step(to, 40 * 1000 * 1000);
+    g_assert_cmphex(isp_readw(to, ISP_REG_RESPONSE_QUEUE), ==, 2);
+    expect_selection_timed_out(to, 1, 0xd1);
+
+    qtest_quit(to);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 static const uint16_t migrate_reset_delay[] = { 7, 9 };
 
 static void test_migration_preserves_distinct_state(const void *data)
@@ -3911,6 +3962,8 @@ int main(int argc, char **argv)
                         NULL, test_reset_cancels_a_waiting_selection);
     qtest_add_data_func("sn0/isp12160/migration-carries-a-waiting-selection",
                         NULL, test_migration_carries_a_waiting_selection);
+    qtest_add_data_func("sn0/isp12160/migration-carries-a-programmed-wait",
+                        NULL, test_migration_carries_a_programmed_wait);
     qtest_add_data_func("sn0/isp12160/migration-preserves-distinct-state",
                         NULL, test_migration_preserves_distinct_state);
     qtest_add_data_func(
