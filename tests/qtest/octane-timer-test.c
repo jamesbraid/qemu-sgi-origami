@@ -47,8 +47,7 @@
 #define MB_COMPARE 12
 
 #define OCTANE2_CPU "R12000,r12000-prid=0xe35,r12000-fpu-id=0x900," \
-    "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152," \
-    "r12000-scache-block-words=32"
+    "reset-mode=0x1aa683"
 
 typedef enum TimerSequence {
     SEQ_CROSSED,

@@ -20,12 +20,9 @@ CPU_ARGS = {
     'R4000': 'R4000',
     'R10000': 'R10000',
     'R14000': 'R14000',
-    'R16000-4m': 'R16000,big-endian=on,r16000-experimental=on,'
-                 'r16000-reset-mode=0x3a005,r16000-scache-bytes=4194304',
-    'R16000-8m': 'R16000,big-endian=on,r16000-experimental=on,'
-                 'r16000-reset-mode=0x4a005,r16000-scache-bytes=8388608',
-    'R16000-16m': 'R16000,big-endian=on,r16000-experimental=on,'
-                  'r16000-reset-mode=0x5a005,r16000-scache-bytes=16777216',
+    'R16000-4m': 'R16000,big-endian=on,reset-mode=0x3a005',
+    'R16000-8m': 'R16000,big-endian=on,reset-mode=0x4a005',
+    'R16000-16m': 'R16000,big-endian=on,reset-mode=0x5a005',
 }
 
 

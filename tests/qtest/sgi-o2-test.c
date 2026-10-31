@@ -8629,10 +8629,7 @@ static void test_o2plus_configuration(void)
           "o2plus requires r12000-variant=r12000" },
         { "r12000-prid=0xe24", "requires r12000-prid" },
         { "r12000-fpu-id=0x901", "requires r12000-fpu-id" },
-        { "r12000-reset-mode=0x11aa603", "requires r12000-reset-mode" },
-        { "r12000-scache-bytes=1048576", "requires r12000-scache-bytes" },
-        { "r12000-scache-block-words=32",
-          "requires r12000-scache-block-words" },
+        { "reset-mode=0x11aa603", "requires reset-mode" },
         { "big-endian=off", "requires a big-endian CPU" },
         { "cache-data-visibility=on", "requires cache-data-visibility=off" },
     };
@@ -8668,7 +8665,7 @@ static void test_o2plus_configuration(void)
         } fitted[] = {
             { "r12000-prid", "prid", 0xe35 },
             { "r12000-fpu-id", "fpu-prid", 0x900 },
-            { "r12000-reset-mode", "mode-bits", 0x011a8603 },
+            { "reset-mode", "mode-bits", 0x011a8603 },
         };
         /* The board's copy of the module's part must stay the catalogue's. */
         g_autoptr(QDict) machines = qtest_qmp(qts,

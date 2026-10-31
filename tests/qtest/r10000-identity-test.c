@@ -95,10 +95,7 @@ static void test_octane2_identity(gconstpointer data)
     read_identity(qts, expected);
     g_assert_cmphex(cpu_property(qts, "r12000-prid"), ==, expected);
     g_assert_cmphex(cpu_property(qts, "r12000-fpu-id"), ==, 0x900);
-    g_assert_cmphex(cpu_property(qts, "r12000-reset-mode"), ==, 0x1aa683);
-    g_assert_cmpuint(cpu_property(qts, "r12000-scache-bytes"), ==,
-                     2 * 1024 * 1024);
-    g_assert_cmpuint(cpu_property(qts, "r12000-scache-block-words"), ==, 32);
+    g_assert_cmphex(cpu_property(qts, "reset-mode"), ==, 0x1aa683);
     qtest_system_reset(qts);
     read_identity(qts, expected);
     qtest_quit(qts);
@@ -168,7 +165,7 @@ static const Origin200Processor origin200_processors[] = {
       "r10000-prid", 0x934, "reset-mode", 0x0aa985 },
     /* SS=3 (4 MiB), cache clock divided by 1.5, system clock by 3. */
     { "origin200,processor=r12000-270mhz-4mb -cpu R12000 -smp 2",
-      "r12000-prid", 0xe23, "r12000-reset-mode", 0x13ab85 },
+      "r12000-prid", 0xe23, "reset-mode", 0x13ab85 },
 };
 
 static void test_origin200_processor(gconstpointer data)
@@ -180,10 +177,6 @@ static void test_origin200_processor(gconstpointer data)
     g_assert_cmphex(cpu_property(qts, p->mode_property), ==, p->mode);
     if (g_str_equal(p->prid_property, "r12000-prid")) {
         g_assert_cmphex(cpu_property(qts, "r12000-fpu-id"), ==, 0x900);
-        g_assert_cmpuint(cpu_property(qts, "r12000-scache-bytes"), ==,
-                         4 * 1024 * 1024);
-        g_assert_cmpuint(cpu_property(qts, "r12000-scache-block-words"), ==,
-                         32);
     }
     qtest_quit(qts);
 }

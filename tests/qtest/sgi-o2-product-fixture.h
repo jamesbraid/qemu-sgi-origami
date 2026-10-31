@@ -8,8 +8,7 @@
 #include "qemu/units.h"
 
 #define O2PLUS_CPU "R12000,r12000-prid=0xe35,r12000-fpu-id=0x900," \
-    "r12000-reset-mode=0x11a8603,r12000-scache-bytes=2097152," \
-    "r12000-scache-block-words=16"
+    "reset-mode=0x11a8603"
 
 typedef struct O2ProductTest {
     char *dir;

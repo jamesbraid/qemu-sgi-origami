@@ -117,12 +117,10 @@ static inline uint32_t r10k_scache_capacity(uint32_t configured_size,
  */
 #define R10K_ASID_PAGES   256
 
+/* The R12000 identity a board supplies; its mode word is reset_mode. */
 enum {
     R12000_PRID,
     R12000_FPU_ID,
-    R12000_RESET_MODE,
-    R12000_SCACHE_BYTES,
-    R12000_SCACHE_BLOCK_WORDS,
     R12000_PROFILE_FIELDS,
 };
 
@@ -161,17 +159,16 @@ typedef struct R10KCPUProfile {
     uint16_t migration_r12000_syndrome;
     uint8_t migration_r12000_captured;
     bool migration_r12000_profile_seen;
-    bool r16000_experimental;
-    uint32_t r16000_reset_mode;
-    uint32_t r16000_scache_bytes;
-    bool r16000_reset_mode_set;
-    bool r16000_scache_bytes_set;
-    uint32_t migration_r16000_reset_mode;
-    uint32_t migration_r16000_scache_bytes;
     /* Transient: cleared before load, set by the R16000 subsection. */
     bool migration_r16000_profile_seen;
+    /*
+     * reset-mode: the board's Config0 bits 24:0, whose SS and SB fields
+     * also select the secondary cache. The R12000 and R16000 profile
+     * subsections carry it to check the destination's agrees.
+     */
     uint32_t reset_mode;
     bool reset_mode_set;
+    uint32_t migration_reset_mode;
     struct mips_def_t *cpu_model;
     bool valid;
 } R10KCPUProfile;

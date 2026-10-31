@@ -64,9 +64,9 @@
 #define IP53_NODE "-M origin350," \
                   "nvram0=sgi-ds1742-data-io9," \
                   "nvram0-clock=sgi-ds1742-clock-io9 " \
-                  "-cpu R16000,r16000-experimental=on," \
-                  "r16000-reset-mode=0x009cad85," \
-                  "r16000-scache-bytes=0x800000 -smp 4 -m 2G "
+                  "-cpu R16000," \
+                  "reset-mode=0x009cad85" \
+                  " -smp 4 -m 2G "
 #define RUN "-accel tcg,thread=multi -no-shutdown -S "
 /*
  * The head's own port, over the global map in node 0's I/O space: a store
@@ -228,8 +228,8 @@ static QTestState *start_ip53_vpro(void)
     qts = qtest_initf(
         "-M tezro,topology=tezro,nvram0=sgi-ds1742-data-io9,"
         "nvram0-clock=sgi-ds1742-clock-io9 "
-        "-cpu R16000,r16000-experimental=on,"
-        "r16000-reset-mode=0x009bad85,r16000-scache-bytes=0x400000 "
+        "-cpu R16000,"
+        "reset-mode=0x009bad85 "
         "-smp 4 -m 4G " RUN "-bios %s "
         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw "

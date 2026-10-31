@@ -1003,8 +1003,7 @@ static QTestState *ip30_ioc3_start(bool octane2, const char *extra)
                     octane2 ? "octane2" : "octane",
                     octane2 ? "256M" : "128M",
                     octane2 ? "R12000,r12000-prid=0xe24,"
-                    "r12000-fpu-id=0x7654,r12000-reset-mode=0x1aa683,"
-                    "r12000-scache-bytes=2097152,r12000-scache-block-words=32"
+                    "r12000-fpu-id=0x7654,reset-mode=0x1aa683"
                     : "R10000", quoted, extra);
     g_unlink(path);
     return s;

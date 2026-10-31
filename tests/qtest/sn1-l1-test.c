@@ -4501,8 +4501,8 @@ static void test_machine_node_board_profiles(void)
         g_assert_cmpint(close(fd), ==, 0);
 
         s = qtest_initf("-M %s%s -m %s -smp %u "
-                        "-cpu R16000,r16000-experimental=on,"
-                        "r16000-reset-mode=%s,r16000-scache-bytes=%s "
+                        "-cpu R16000,"
+                        "reset-mode=%s "
                         "-drive if=pflash,index=0,file=%s,format=raw "
                         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
                         "format=raw "
@@ -4510,8 +4510,8 @@ static void test_machine_node_board_profiles(void)
                         "format=raw -display none -S",
                         profiles[i].machine, storage_options,
                         profiles[i].memory,
-                        profiles[i].cpus, profiles[i].reset_mode,
-                        profiles[i].scache_bytes, flash, data, clock);
+                        profiles[i].cpus, profiles[i].reset_mode, flash, data,
+                        clock);
         qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
         {
             assert_l1_revision(s, profiles[i].l1_revision[0],
@@ -4563,9 +4563,9 @@ static void test_machine_node_board_profiles(void)
         s = qtest_initf("-M %s,"
                             "nvram0=sgi-ds1742-data-io9,"
                             "nvram0-clock=sgi-ds1742-clock-io9 -m 4G -smp 1 "
-                        "-cpu R16000,r16000-experimental=on,"
-                        "r16000-reset-mode=0x009bad85,"
-                        "r16000-scache-bytes=0x400000 "
+                        "-cpu R16000,"
+                        "reset-mode=0x009bad85"
+                        " "
                         "-drive if=pflash,index=0,file=%s,format=raw "
                         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
                         "format=raw "
@@ -4602,15 +4602,15 @@ static void test_machine_node_board_profiles(void)
             s = qtest_initf("-M %s,"
                             "nvram0=sgi-ds1742-data-io9,"
                             "nvram0-clock=sgi-ds1742-clock-io9 -m %s -smp %u "
-                            "-cpu R16000,r16000-experimental=on,"
-                            "r16000-reset-mode=%s,r16000-scache-bytes=%s "
+                            "-cpu R16000,"
+                            "reset-mode=%s "
                             "-drive if=pflash,index=0,file=%s,format=raw "
                             "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
                             "format=raw "
                             "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
                             "format=raw -display none -S",
                             machine, profiles[i].memory, profiles[i].cpus,
-                            profiles[i].reset_mode, profiles[i].scache_bytes,
+                            profiles[i].reset_mode,
                             flash, data, clock);
             qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
             if (override == 0) {
@@ -4651,15 +4651,15 @@ static void test_machine_node_board_profiles(void)
         s = qtest_initf("-M %s,"
                             "nvram0=sgi-ds1742-data-io9,"
                             "nvram0-clock=sgi-ds1742-clock-io9 -m %s -smp %u "
-                        "-cpu R16000,r16000-experimental=on,"
-                        "r16000-reset-mode=%s,r16000-scache-bytes=%s "
+                        "-cpu R16000,"
+                        "reset-mode=%s "
                         "-drive if=pflash,index=0,file=%s,format=raw "
                         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
                         "format=raw "
                         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
                         "format=raw -display none -S",
                         machine, profiles[0].memory, profiles[0].cpus,
-                        profiles[0].reset_mode, profiles[0].scache_bytes,
+                        profiles[0].reset_mode,
                         flash, data, clock);
         qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
         g_assert_cmpuint(eeprom_read(s, 0, 1, 0, sizeof(raw), reply), ==,
@@ -4697,23 +4697,20 @@ static void test_machine_cpu_context_global_overrides(void)
     } profiles[] = {
         { "origin350,nvram0=sgi-ds1742-data-io9,"
           "nvram0-clock=sgi-ds1742-clock-io9", "2G", "4",
-          "R16000,r16000-experimental=on,r16000-reset-mode=0x009cad85,"
-          "r16000-scache-bytes=0x800000" },
+          "R16000,reset-mode=0x009cad85" },
         { "onyx350,topology=onyx350-compat,"
           "nvram0=sgi-ds1742-data-io9,"
           "nvram0-clock=sgi-ds1742-clock-io9", "8G",
-          "4", "R16000,r16000-experimental=on,r16000-reset-mode=0x009caf85,"
-          "r16000-scache-bytes=0x800000" },
+          "4", "R16000,reset-mode=0x009caf85" },
         { "tezro,topology=tezro,"
           "nvram0=sgi-ds1742-data-io9,"
           "nvram0-clock=sgi-ds1742-clock-io9", "4G", "1",
-          "R16000,r16000-experimental=on,r16000-reset-mode=0x009bad85,"
-          "r16000-scache-bytes=0x400000" },
+          "R16000,reset-mode=0x009bad85" },
         { "onyx4-host,topology=onyx4-host-serial-compat,"
           "nvram0=sgi-ds1742-data-io9,"
           "nvram0-clock=sgi-ds1742-clock-io9",
-          "8G", "4", "R16000,r16000-experimental=on,"
-          "r16000-reset-mode=0x00edb385,r16000-scache-bytes=0x1000000" },
+          "8G", "4", "R16000,"
+          "reset-mode=0x00edb385" },
         { "origin300", "512M", "2", "R14000" },
     };
     static const struct {
@@ -4772,8 +4769,7 @@ static void test_machine_cpu_context_global_overrides(void)
 
 static QTestState *start_ip53_context_migration_profile(
     const char *machine, const char *memory, unsigned int cpus,
-    const char *reset_mode,
-    const char *scache_bytes, const char *flash, const char *data,
+    const char *reset_mode, const char *flash, const char *data,
     const char *clock, const char *board_file, const char *incoming)
 {
     g_autofree char *board_option = board_file ?
@@ -4781,15 +4777,15 @@ static QTestState *start_ip53_context_migration_profile(
 
     return qtest_initf("-M %s,nvram0=sgi-ds1742-data-io9,"
                        "nvram0-clock=sgi-ds1742-clock-io9%s -m %s -smp %u "
-                       "-cpu R16000,r16000-experimental=on,"
-                       "r16000-reset-mode=%s,r16000-scache-bytes=%s "
+                       "-cpu R16000,"
+                       "reset-mode=%s "
                        "-drive if=pflash,index=0,file=%s,format=raw "
                        "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
                        "format=raw "
                        "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
                        "format=raw -display none -S %s",
                        machine, board_option, memory, cpus, reset_mode,
-                       scache_bytes, flash, data, clock,
+                       flash, data, clock,
                        incoming ? incoming : "");
 }
 
@@ -4852,11 +4848,11 @@ static void test_ip53_cpu_context_migration(void)
 
         from = start_ip53_context_migration_profile(
             profiles[i].machine, profiles[i].memory, profiles[i].cpus,
-            profiles[i].reset_mode, profiles[i].scache_bytes, flash, data,
+            profiles[i].reset_mode, flash, data,
             clock, NULL, "");
         to = start_ip53_context_migration_profile(
             profiles[i].machine, profiles[i].memory, profiles[i].cpus,
-            profiles[i].reset_mode, profiles[i].scache_bytes, flash, data,
+            profiles[i].reset_mode, flash, data,
             clock, NULL,
             "-incoming defer");
         qtest_sysbus_mmio_map(from, "/machine/node0/l1-uart", 0, BASE);
@@ -4918,11 +4914,11 @@ static void test_ip53_cpu_context_migration(void)
 
         from = start_ip53_context_migration_profile(
             profiles[i].machine, profiles[i].memory, profiles[i].cpus,
-            profiles[i].reset_mode, profiles[i].scache_bytes, flash, data,
+            profiles[i].reset_mode, flash, data,
             clock, first_path, "");
         to = start_ip53_context_migration_profile(
             profiles[i].machine, profiles[i].memory, profiles[i].cpus,
-            profiles[i].reset_mode, profiles[i].scache_bytes, flash, data,
+            profiles[i].reset_mode, flash, data,
             clock, same_path, "-incoming defer");
         qtest_qmp_assert_success(to,
             "{'execute':'migrate-incoming','arguments':{'uri':%s}}", same_uri);
@@ -4936,11 +4932,11 @@ static void test_ip53_cpu_context_migration(void)
 
         from = start_ip53_context_migration_profile(
             profiles[i].machine, profiles[i].memory, profiles[i].cpus,
-            profiles[i].reset_mode, profiles[i].scache_bytes, flash, data,
+            profiles[i].reset_mode, flash, data,
             clock, first_path, "");
         to = start_ip53_context_migration_profile(
             profiles[i].machine, profiles[i].memory, profiles[i].cpus,
-            profiles[i].reset_mode, profiles[i].scache_bytes, flash, data,
+            profiles[i].reset_mode, flash, data,
             clock, different_path, "-incoming defer");
         qtest_set_expected_status(to, EXIT_FAILURE);
         qtest_qmp_assert_success(to,
@@ -4976,9 +4972,9 @@ static QTestState *start_tezro_revision_profile(const char *incoming,
     return qtest_initf("-M tezro,topology=tezro,"
                        "nvram0=sgi-ds1742-data-io9,"
                        "nvram0-clock=sgi-ds1742-clock-io9 "
-                       "-m 4G -smp 1 -cpu R16000,r16000-experimental=on,"
-                       "r16000-reset-mode=0x009bad85,"
-                       "r16000-scache-bytes=0x400000 "
+                       "-m 4G -smp 1 -cpu R16000,"
+                       "reset-mode=0x009bad85"
+                       " "
                        "-drive if=pflash,index=0,file=%s,format=raw "
                        "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
                        "format=raw "
@@ -5096,8 +5092,8 @@ static void test_machine_port_speed_profiles(void)
                                   0x8000), ==, 0);
         g_assert_cmpint(close(fd), ==, 0);
         s = qtest_initf("-M %s%s -m %s -smp %u "
-                        "-cpu R16000,r16000-experimental=on,"
-                        "r16000-reset-mode=%s,r16000-scache-bytes=%s "
+                        "-cpu R16000,"
+                        "reset-mode=%s "
                         "-drive if=pflash,index=0,file=%s,format=raw "
                         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
                         "format=raw "
@@ -5106,7 +5102,7 @@ static void test_machine_port_speed_profiles(void)
                         profiles[i].machine, storage_options,
                         profiles[i].memory,
                         profiles[i].cpus,
-                        profiles[i].reset_mode, profiles[i].scache_bytes,
+                        profiles[i].reset_mode,
                         flash, data, clock);
         assert_machine_irouter_brick(s, profiles[i].irouter_compat,
                                      profiles[i].brick_type);

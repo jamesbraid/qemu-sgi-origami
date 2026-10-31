@@ -1899,9 +1899,7 @@ static void o2_init(MachineState *machine)
         } inputs[] = {
             { "r12000-prid", 0xe35 },
             { "r12000-fpu-id", 0x900 },
-            { "r12000-reset-mode", 0x011a8603 },
-            { "r12000-scache-bytes", 2 * MiB },
-            { "r12000-scache-block-words", 16 },
+            { "reset-mode", 0x011a8603 },
         };
 
         /* The A-only CPU interface has no qualified O2+ module admission. */

@@ -12,23 +12,18 @@
 #include "sgi-wait.h"
 
 #define R12000_CPU_1 "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567," \
-    "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576," \
-    "r12000-scache-block-words=16"
+    "reset-mode=0x198683"
 #define R12000_CPU_2 "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
-    "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152," \
-    "r12000-scache-block-words=32"
+    "reset-mode=0x1aa683"
 /* As R12000_CPU_2 but with SS=3: the 4 MiB cache of an Origin 200 PIMM. */
 #define R12000_CPU_4M "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
-    "r12000-reset-mode=0x1ba683,r12000-scache-bytes=4194304," \
-    "r12000-scache-block-words=32"
+    "reset-mode=0x1ba683"
 #define R12000_CPU_1_32 "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567," \
-    "r12000-reset-mode=0x19a683,r12000-scache-bytes=1048576," \
-    "r12000-scache-block-words=32"
+    "reset-mode=0x19a683"
 #define R12000_CPU_1_FPU "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4568," \
-    "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576," \
-    "r12000-scache-block-words=16"
-#define R16000_CPU_4M "R16000,big-endian=on,r16000-experimental=on," \
-    "r16000-reset-mode=0x3a005,r16000-scache-bytes=4194304"
+    "reset-mode=0x198683"
+#define R16000_CPU_4M "R16000,big-endian=on," \
+    "reset-mode=0x3a005"
 #define R12000_MAILBOX 0x00200000
 #define R16000_MAILBOX (USER_PHYS + 0x1100)
 
@@ -1292,22 +1287,15 @@ static void test_r12000_rejects_inconsistent_profile(void)
         const char *profile;
         const char *error;
     } cases[] = {
-        { "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
-          "r12000-reset-mode=0x198683,r12000-scache-bytes=2097152,"
-          "r12000-scache-block-words=16", "Config SS" },
-        { "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
-          "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576,"
-          "r12000-scache-block-words=32", "Config SB" },
         { "R12000,r12000-prid=0xd12,r12000-fpu-id=0x4567,"
-          "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576,"
-          "r12000-scache-block-words=16", "implementation 0x0e" },
-        /* SS=6 is reserved, so no capacity agrees with it. */
+          "reset-mode=0x198683", "implementation 0x0e" },
+        /* SS=6 is reserved, so the word selects no capacity. */
         { "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
-          "r12000-reset-mode=0x1ea683,r12000-scache-bytes=33554432,"
-          "r12000-scache-block-words=32", "Config SS" },
+          "reset-mode=0x1ea683", "secondary cache size is reserved" },
+        { "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567",
+          "R12000 requires reset-mode" },
         { "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
-          "r12000-reset-mode=0x1b8683,r12000-scache-bytes=4194304,"
-          "r12000-scache-block-words=16", "at most 2 MiB" },
+          "reset-mode=0x1b8683", "at most 2 MiB" },
     };
 
     for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
@@ -1338,17 +1326,10 @@ static void assert_cpu_profile_rejected(const char *machine,
     g_assert_nonnull(strstr(stderr_text, reason));
 }
 
-static void test_r16000_requires_experiment_profile(void)
+static void test_r16000_requires_reset_mode(void)
 {
     assert_cpu_profile_rejected("malta", "R16000,big-endian=on",
-                                 "R16000 requires r16000-experimental=on");
-    assert_cpu_profile_rejected("malta",
-        "R16000,big-endian=on,r16000-experimental=on",
-        "R16000 requires r16000-reset-mode");
-    assert_cpu_profile_rejected("malta",
-        "R16000,big-endian=on,r16000-experimental=on,"
-        "r16000-reset-mode=0x3a005",
-        "R16000 requires r16000-scache-bytes");
+                                "R16000 requires reset-mode");
 }
 
 static void test_r16000_rejects_inconsistent_profile(void)
@@ -1357,21 +1338,15 @@ static void test_r16000_rejects_inconsistent_profile(void)
         const char *profile;
         const char *error;
     } cases[] = {
-        { "R16000,big-endian=on,r16000-experimental=on,"
-          "r16000-reset-mode=0x3a005,r16000-scache-bytes=4194305",
-          "r16000-scache-bytes must be 4194304, 8388608, or 16777216" },
-        { "R16000,big-endian=on,r16000-experimental=on,"
-          "r16000-reset-mode=0x4a005,r16000-scache-bytes=4194304",
-          "r16000-scache-bytes disagrees with Config0 SS" },
-        { "R16000,big-endian=on,r16000-experimental=on,"
-          "r16000-reset-mode=0x38005,r16000-scache-bytes=4194304",
-          "r16000-reset-mode requires Config0 SB=1" },
-        { "R16000,big-endian=on,r16000-experimental=on,"
-          "r16000-reset-mode=0x32005,r16000-scache-bytes=4194304",
-          "r16000-reset-mode endianness differs from CPU" },
-        { "R16000,big-endian=on,r16000-experimental=on,"
-          "r16000-reset-mode=0x6c03a005,r16000-scache-bytes=4194304",
-          "r16000-reset-mode uses only Config0 bits 24:0" },
+        /* SS=2 selects 2 MiB, which no R16000 fits. */
+        { "R16000,big-endian=on,reset-mode=0x2a005",
+          "reset-mode must select a 4, 8 or 16 MiB secondary cache" },
+        { "R16000,big-endian=on,reset-mode=0x38005",
+          "reset-mode requires Config0 SB=1" },
+        { "R16000,big-endian=on,reset-mode=0x32005",
+          "reset-mode endianness differs from CPU" },
+        { "R16000,big-endian=on,reset-mode=0x6c03a005",
+          "reset-mode uses only Config0 bits 24:0" },
     };
 
     for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
@@ -1383,8 +1358,8 @@ static void test_r16000_rejects_inconsistent_profile(void)
 static void test_r16000_rejected_by_production_profile(void)
 {
     assert_cpu_profile_rejected("origin300",
-        "R16000,big-endian=on,r16000-experimental=on,"
-        "r16000-reset-mode=0x3a005,r16000-scache-bytes=4194304",
+        "R16000,big-endian=on,"
+        "reset-mode=0x3a005",
         "Invalid CPU model: R16000");
 }
 
@@ -1446,11 +1421,11 @@ static void test_r16000_identity_and_immutable_inputs(void)
         uint32_t expected_config0;
     } cases[] = {
         { R16000_CPU_4M, 0x6c03a005 },
-        { "R16000,big-endian=on,r16000-experimental=on,"
-          "r16000-reset-mode=0x4a005,r16000-scache-bytes=8388608",
+        { "R16000,big-endian=on,"
+          "reset-mode=0x4a005",
           0x6c04a005 },
-        { "R16000,big-endian=on,r16000-experimental=on,"
-          "r16000-reset-mode=0x5a005,r16000-scache-bytes=16777216",
+        { "R16000,big-endian=on,"
+          "reset-mode=0x5a005",
           0x6c05a005 },
     };
     g_autofree char *image = r16000_identity_image();
@@ -1483,24 +1458,12 @@ static void test_r16000_identity_and_immutable_inputs(void)
         g_assert_cmphex(ldl_be_p(mailbox + 16), ==, 0x00000900);
 
         cpu_path = r16000_qom_path(qts);
-        for (unsigned int property = 0; property < 3; property++) {
-            QDict *response;
-            if (property == 0) {
-                response = qtest_qmp_assert_failure_ref(qts,
-                    "{'execute':'qom-set','arguments':{'path':%s,"
-                    "'property':'r16000-experimental','value':false}}",
-                    cpu_path);
-            } else if (property == 1) {
-                response = qtest_qmp_assert_failure_ref(qts,
-                    "{'execute':'qom-set','arguments':{'path':%s,"
-                    "'property':'r16000-reset-mode','value':237581}}",
-                    cpu_path);
-            } else {
-                response = qtest_qmp_assert_failure_ref(qts,
-                    "{'execute':'qom-set','arguments':{'path':%s,"
-                    "'property':'r16000-scache-bytes','value':8388608}}",
-                    cpu_path);
-            }
+        {
+            QDict *response = qtest_qmp_assert_failure_ref(qts,
+                "{'execute':'qom-set','arguments':{'path':%s,"
+                "'property':'reset-mode','value':237581}}",
+                cpu_path);
+
             g_assert_nonnull(strstr(qdict_get_str(response, "desc"),
                                     "cannot change after CPU realization"));
             qobject_unref(response);
@@ -1792,7 +1755,7 @@ int main(int argc, char **argv)
         qtest_add_func("/r12000/profile-inconsistent",
                        test_r12000_rejects_inconsistent_profile);
         qtest_add_func("/r16000/profile-required",
-                       test_r16000_requires_experiment_profile);
+                       test_r16000_requires_reset_mode);
         qtest_add_func("/r16000/profile-inconsistent",
                        test_r16000_rejects_inconsistent_profile);
         qtest_add_func("/r16000/identity-immutable",

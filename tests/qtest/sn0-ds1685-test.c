@@ -1282,8 +1282,7 @@ static void test_storage_octane_named_drive(const void *data)
     const char prom[4] = { 0 };
     const char *cpu = !strcmp(machine, "octane") ? "R10000" :
         "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654,"
-        "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152,"
-        "r12000-scache-block-words=32";
+        "reset-mode=0x1aa683";
     const uint64_t bridge = 0x1f000000;
     const uint64_t index = bridge + 0x600000 + 0xa0000;
     const uint64_t data_port = bridge + 0x600000 + 0xc0000;
