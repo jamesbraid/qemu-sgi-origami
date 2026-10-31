@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * R10000-family translation routines: the translation-time checks and
  * TCG generation where the R10000 family differs from the shared MIPS
@@ -170,22 +170,13 @@ void gen_movzn_s_r10k(DisasContext *ctx, int fs, int fd, int ft,
  * arms lived in the shared decoder.
  */
 
-static inline void gen_r10k_mfc0_load32(TCGv arg, target_ulong off)
-{
-    TCGv_i32 t0 = tcg_temp_new_i32();
-
-    tcg_gen_ld_i32(t0, tcg_env, off);
-    tcg_gen_ext_i32_tl(arg, t0);
-}
-
+/* A 32-bit register reads back sign-extended into the destination. */
 static inline void gen_r10k_mfc0_load32_r10k(TCGv arg, target_ulong off)
 {
     TCGv_ptr r10k = tcg_temp_new_ptr();
-    TCGv_i32 t0 = tcg_temp_new_i32();
 
     tcg_gen_ld_ptr(r10k, tcg_env, offsetof(CPUMIPSState, r10k));
-    tcg_gen_ld_i32(t0, r10k, off);
-    tcg_gen_ext_i32_tl(arg, t0);
+    tcg_gen_ld32s_tl(arg, r10k, off);
 }
 
 static inline void gen_r10k_mfc0_load64_r10k(TCGv arg, target_ulong off,
@@ -264,7 +255,8 @@ static R10KCp0Result gen_perf_mfc0(DisasContext *ctx, TCGv arg, int sel,
     }
 
     if (sel != 0 && (sel & 1) == 0) {
-        gen_r10k_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[sel]));
+        tcg_gen_ld32s_tl(arg, tcg_env,
+                         offsetof(CPUMIPSState, CP0_Performance[sel]));
     } else {
         /* Shared TBs resolve control 0's capture on the executing CPU. */
         translator_io_start(&ctx->base);
@@ -412,25 +404,28 @@ R10KCp0Result gen_dmtc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
  */
 void gen_mtc0_count_r10k(DisasContext *ctx)
 {
+    uint32_t branch;
+    target_ulong fall_through;
+
     if (!ctx->count_compare_adjacent_recovery) {
         return;
     }
-    switch (ctx->hflags & MIPS_HFLAG_BMASK_BASE) {
-    case MIPS_HFLAG_BR:
+    branch = ctx->hflags & MIPS_HFLAG_BMASK_BASE;
+    fall_through = ctx->base.pc_next + 4;
+
+    if (branch == MIPS_HFLAG_BR) {
+        /* Jump register: the destination is known only at run time. */
         tcg_gen_mov_tl(cpu_PC, btarget);
-        break;
-    case MIPS_HFLAG_BC:
+    } else if (branch == MIPS_HFLAG_BC) {
+        /* Taken goes to the target, untaken past the delay slot. */
         tcg_gen_movcond_tl(TCG_COND_NE, cpu_PC, bcond, tcg_constant_tl(0),
                            tcg_constant_tl(ctx->btarget),
-                           tcg_constant_tl(ctx->base.pc_next + 4));
-        break;
-    case MIPS_HFLAG_B:
-    case MIPS_HFLAG_BL:
+                           tcg_constant_tl(fall_through));
+    } else if (branch == MIPS_HFLAG_B || branch == MIPS_HFLAG_BL) {
+        /* A likely branch's slot only executes when it is taken. */
         tcg_gen_movi_tl(cpu_PC, ctx->btarget);
-        break;
-    default:
-        tcg_gen_movi_tl(cpu_PC, ctx->base.pc_next + 4);
-        break;
+    } else {
+        tcg_gen_movi_tl(cpu_PC, fall_through);
     }
 }
 
