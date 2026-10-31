@@ -76,7 +76,7 @@ layer:
           - clock_mhz: 700
             cache_mib: 4
             notes: >-
-              Tezro deskside compatibility tuple. Cache clock is supplied by
+              Tezro compatibility tuple. Cache clock is supplied by
               the product component; processor identification and reset Config0
               remain unknown.
         provenance: derived
