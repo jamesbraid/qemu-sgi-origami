@@ -551,6 +551,197 @@ static void test_read_only_transmit(void)
     qtest_quit(s);
 }
 
+static bool observe_bool(QTestState *s, const char *name)
+{
+    g_autoptr(QDict) reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':%s,'property':%s}}",
+        EP, name);
+
+    return qdict_get_bool(reply, "return");
+}
+
+static void termination_reset(unsigned mode)
+{
+    QTestState *s = start("", mode);
+
+    qtest_writeq(s, CONFIG, 2);
+    address(s, true);
+    qtest_writeq(s, CONTROL, 7);
+    g_assert_cmphex(qtest_readq(s, DATA), ==, 0x96);
+    qtest_writeq(s, CONFIG, 3);
+    g_assert_cmphex(qtest_readq(s, CONFIG), ==, 0x30);
+    g_assert_cmphex(qtest_readq(s, CONTROL), ==, 0);
+    g_assert_cmphex(observe(s, "events"), ==, 0x2345);
+    g_assert_cmpuint(observe(s, "nacks"), ==, 1);
+    g_assert_cmpuint(observe(s, "stops"), ==, 1);
+    g_assert_cmpuint(observe(s, "recursive-events"), ==, 0);
+    g_assert_cmpuint(observe(s, "cursor"), ==, 1);
+    qtest_quit(s);
+}
+
+static void test_reset_during_nack(void)
+{
+    termination_reset(9);
+}
+
+static void test_reset_during_stop(void)
+{
+    termination_reset(10);
+}
+
+static void test_child_unrealize(void)
+{
+    QTestState *s = start("", 0);
+    uint64_t value;
+
+    address(s, true);
+    qtest_writeq(s, CONTROL, 7);
+    g_assert_cmphex(qtest_readq(s, DATA), ==, 0x96);
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':"
+        "'/machine/peripheral/mace/i2c-controller',"
+        "'property':'realized','value':false}}");
+    g_assert_cmphex(observe(s, "events"), ==, 0x2345);
+    g_assert_cmpuint(observe(s, "bus-owner"), ==, UINT32_MAX);
+    g_assert_false(observe_bool(s, "bus-address-valid"));
+    g_assert_cmpint(memtx_load(s, CONTROL, &value, 8), !=, MEMTX_OK);
+    g_assert_cmpint(memtx_store(s, DATA, 0x88, 8), !=, MEMTX_OK);
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/mace',"
+        "'property':'realized','value':false}}");
+    g_assert_false(observe_bool(s, "controller-mapped"));
+    g_assert_cmpuint(observe(s, "callbacks-after-unrealize"), ==, 0);
+    g_assert_cmphex(observe(s, "events"), ==, 0x2345);
+    g_assert_cmpuint(observe(s, "cursor"), ==, 1);
+    qtest_quit(s);
+}
+
+static void assert_bus_state(QTestState *s, bool owned)
+{
+    g_assert_cmpuint(observe(s, "bus-owner"), ==, owned ? 0 : UINT32_MAX);
+    g_assert_cmpint(observe_bool(s, "bus-address-valid"), ==, owned);
+}
+
+static void test_address_nack_release(void)
+{
+    QTestState *s = start("", 0);
+
+    qtest_writeq(s, CONTROL, 1);
+    qtest_writeq(s, DATA, 0xa0);
+    g_assert_cmphex(qtest_readq(s, CONTROL), ==, 0x20);
+    assert_bus_state(s, false);
+    g_assert_cmpuint(observe(s, "address-attempts"), ==, 1);
+    g_assert_cmpuint(observe(s, "starts"), ==, 0);
+    qtest_writeq(s, DATA, 0x88);
+    g_assert_cmphex(qtest_readq(s, CONTROL), ==, 0);
+    assert_bus_state(s, false);
+    g_assert_cmpuint(observe(s, "address-attempts"), ==, 2);
+    g_assert_cmphex(observe(s, "events"), ==, 0x15);
+    qtest_quit(s);
+}
+
+static void test_address_nack_release_force_idle(void)
+{
+    QTestState *s = start("", 0);
+
+    qtest_writeq(s, CONTROL, 1);
+    qtest_writeq(s, DATA, 0xa0);
+    assert_bus_state(s, false);
+    for (unsigned i = 0; i < 17; i++) {
+        g_assert_cmphex(qtest_readq(s, CONTROL), ==, 0x20);
+        qtest_writeq(s, CONTROL, 0);
+    }
+    g_assert_cmphex(qtest_readq(s, CONTROL), ==, 0x20);
+    assert_bus_state(s, false);
+    g_assert_cmpuint(observe(s, "address-attempts"), ==, 1);
+    g_assert_cmpuint(observe(s, "starts"), ==, 0);
+    g_assert_cmpuint(observe(s, "stops"), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_address_nack_hold(void)
+{
+    static const unsigned polls[] = { 0, 1, 17 };
+
+    for (unsigned p = 0; p < ARRAY_SIZE(polls); p++) {
+        QTestState *s = start("", 0);
+
+        qtest_writeq(s, CONTROL, 5);
+        qtest_writeq(s, DATA, 0xa0);
+        for (unsigned i = 0; i < polls[p]; i++) {
+            g_assert_cmphex(qtest_readq(s, CONTROL), ==, 0x25);
+        }
+        qtest_writeq(s, CONTROL, 7);
+        qtest_writeq(s, CONTROL, 1);
+        g_assert_cmphex(qtest_readq(s, CONTROL), ==, 0x21);
+        assert_bus_state(s, true);
+        g_assert_cmpuint(observe(s, "address-attempts"), ==, 1);
+        g_assert_cmpuint(observe(s, "starts"), ==, 0);
+        qtest_writeq(s, CONTROL, 4);
+        qtest_writeq(s, CONTROL, 4);
+        g_assert_cmphex(qtest_readq(s, CONTROL), ==, 0x24);
+        assert_bus_state(s, false);
+        g_assert_cmpuint(observe(s, "address-attempts"), ==, 1);
+        qtest_writeq(s, CONTROL, 5);
+        qtest_writeq(s, DATA, 0x88);
+        g_assert_cmphex(qtest_readq(s, CONTROL), ==, 5);
+        assert_bus_state(s, true);
+        g_assert_cmpuint(observe(s, "address-attempts"), ==, 2);
+        g_assert_cmpuint(observe(s, "starts"), ==, 1);
+        g_assert_cmpuint(observe(s, "stops"), ==, 0);
+        qtest_writeq(s, CONTROL, 0);
+        g_assert_cmphex(observe(s, "events"), ==, 0x15);
+        qtest_quit(s);
+    }
+}
+
+static void test_address_nack_hold_payload(void)
+{
+    for (unsigned read = 0; read < 2; read++) {
+        QTestState *s = start("", 0);
+        uint64_t value;
+
+        qtest_writeq(s, CONTROL, 5);
+        qtest_writeq(s, DATA, 0xa0);
+        assert_bus_state(s, true);
+        if (read) {
+            qtest_writeq(s, CONTROL, 7);
+            g_assert_cmpint(memtx_load(s, DATA, &value, 8), !=, MEMTX_OK);
+        } else {
+            g_assert_cmpint(memtx_store(s, DATA, 0x88, 8), !=, MEMTX_OK);
+        }
+        g_assert_cmphex(qtest_readq(s, CONTROL), ==, read ? 0xa6 : 0xa4);
+        assert_bus_state(s, false);
+        g_assert_cmpuint(observe(s, "address-attempts"), ==, 1);
+        g_assert_cmpuint(observe(s, "starts"), ==, 0);
+        g_assert_cmpuint(observe(s, "writes"), ==, 0);
+        g_assert_cmpuint(observe(s, "cursor"), ==, 0);
+        g_assert_cmpuint(observe(s, "events"), ==, 0);
+        qtest_quit(s);
+    }
+}
+
+static void test_callback_unrealize(void)
+{
+    for (unsigned mode = 11; mode <= 12; mode++) {
+        QTestState *s = start("", mode);
+
+        address(s, true);
+        qtest_writeq(s, CONTROL, 7);
+        g_assert_cmphex(qtest_readq(s, DATA), ==, 0x96);
+        assert_bus_state(s, true);
+        g_assert_cmphex(qtest_readq(s, CONTROL), ==, 7);
+        g_assert_cmpuint(observe(s, "refused-teardowns"), ==, 1);
+        g_assert_cmpuint(observe(s, "nacks"), ==, 0);
+        g_assert_cmpuint(observe(s, "stops"), ==, 0);
+        g_assert_cmpuint(observe(s, "recursive-events"), ==, 0);
+        qtest_writeq(s, CONTROL, 0);
+        g_assert_cmphex(observe(s, "events"), ==, 0x2345);
+        g_assert_cmpuint(observe(s, "callbacks-after-unrealize"), ==, 0);
+        qtest_quit(s);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -579,5 +770,15 @@ int main(int argc, char **argv)
     qtest_add_func("mace/i2c/address-nack", test_address_nack);
     qtest_add_func("mace/i2c/write-only-receive", test_write_only_receive);
     qtest_add_func("mace/i2c/read-only-transmit", test_read_only_transmit);
+    qtest_add_func("mace/i2c/reset-during-nack", test_reset_during_nack);
+    qtest_add_func("mace/i2c/reset-during-stop", test_reset_during_stop);
+    qtest_add_func("mace/i2c/child-unrealize", test_child_unrealize);
+    qtest_add_func("mace/i2c/address-nack-release", test_address_nack_release);
+    qtest_add_func("mace/i2c/address-nack-release-force-idle",
+                    test_address_nack_release_force_idle);
+    qtest_add_func("mace/i2c/address-nack-hold", test_address_nack_hold);
+    qtest_add_func("mace/i2c/address-nack-hold-payload",
+                    test_address_nack_hold_payload);
+    qtest_add_func("mace/i2c/callback-unrealize", test_callback_unrealize);
     return g_test_run();
 }

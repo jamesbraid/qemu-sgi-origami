@@ -7,6 +7,7 @@
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "qemu/module.h"
 #include "system/qtest.h"
 
@@ -16,6 +17,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(MACEI2CTest, MACE_I2C_TEST)
 struct MACEI2CTest {
     I2CSlave parent_obj;
     uint32_t mode;
+    uint32_t address_attempts;
+    uint32_t callbacks_after_unrealize;
+    uint32_t refused_teardowns;
     uint32_t cursor;
     uint32_t starts;
     uint32_t stops;
@@ -36,6 +40,9 @@ static int endpoint_event(I2CSlave *dev, enum i2c_event event)
 
     if (s->callback_active) {
         s->recursive_events++;
+    }
+    if (!qdev_is_realized(DEVICE(dev))) {
+        s->callbacks_after_unrealize++;
     }
 
     switch (event) {
@@ -59,6 +66,14 @@ static int endpoint_event(I2CSlave *dev, enum i2c_event event)
         g_assert_not_reached();
     }
     s->events = (s->events << 4) | code;
+    if ((s->mode == 9 && event == I2C_NACK) ||
+        (s->mode == 10 && event == I2C_FINISH)) {
+        MACEI2C *controller = SGI_MACE_I2C(dev->qdev.parent_bus->parent);
+
+        s->callback_active = true;
+        mace_i2c_reset(controller, true);
+        s->callback_active = false;
+    }
     return s->mode == 5 ? 1 : 0;
 }
 
@@ -78,6 +93,19 @@ static uint8_t endpoint_recv(I2CSlave *dev)
     if (s->mode == 7) {
         s->callback_active = true;
         mace_i2c_reset(controller, true);
+        s->callback_active = false;
+    }
+    if (s->mode == 11 || s->mode == 12) {
+        Object *owner = s->mode == 11 ? OBJECT(controller) :
+                                       OBJECT(controller)->parent;
+        Error *err = NULL;
+
+        s->callback_active = true;
+        g_assert_false(object_property_set_bool(owner, "realized", false,
+                                                &err));
+        g_assert_nonnull(err);
+        error_free(err);
+        s->refused_teardowns++;
         s->callback_active = false;
     }
     return byte;
@@ -108,6 +136,9 @@ static const VMStateDescription vmstate_endpoint = {
         VMSTATE_I2C_SLAVE(parent_obj, MACEI2CTest),
         VMSTATE_UINT32_EQUAL(mode, MACEI2CTest),
         VMSTATE_UINT32(cursor, MACEI2CTest),
+        VMSTATE_UINT32(address_attempts, MACEI2CTest),
+        VMSTATE_UINT32(callbacks_after_unrealize, MACEI2CTest),
+        VMSTATE_UINT32(refused_teardowns, MACEI2CTest),
         VMSTATE_UINT32(starts, MACEI2CTest),
         VMSTATE_UINT32(stops, MACEI2CTest),
         VMSTATE_UINT32(nacks, MACEI2CTest),
@@ -138,11 +169,49 @@ static void endpoint_profile_set(Object *obj, bool value, Error **errp)
     MACE_I2C_TEST(obj)->profile_available = value;
 }
 
+static void endpoint_bus_owner(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    MACEI2CTest *s = MACE_I2C_TEST(obj);
+    I2CBus *bus = I2C_BUS(s->parent_obj.qdev.parent_bus);
+    uint32_t owner = i2c_bus_resolved_owner(bus);
+
+    visit_type_uint32(v, name, &owner, errp);
+}
+
+static bool endpoint_bus_address(Object *obj, Error **errp)
+{
+    MACEI2CTest *s = MACE_I2C_TEST(obj);
+
+    return I2C_WIRE(s->parent_obj.qdev.parent_bus)->address_valid;
+}
+
+static bool endpoint_controller_mapped(Object *obj, Error **errp)
+{
+    MACEI2CTest *s = MACE_I2C_TEST(obj);
+    MACEI2C *controller = SGI_MACE_I2C(s->parent_obj.qdev.parent_bus->parent);
+
+    return controller->regs.container != NULL;
+}
+
 static void endpoint_init(Object *obj)
 {
     MACEI2CTest *s = MACE_I2C_TEST(obj);
 
     s->profile_available = true;
+    object_property_add(obj, "bus-owner", "uint32", endpoint_bus_owner,
+                         NULL, NULL, NULL);
+    object_property_add_bool(obj, "bus-address-valid", endpoint_bus_address,
+                              NULL);
+    object_property_add_bool(obj, "controller-mapped",
+                              endpoint_controller_mapped, NULL);
+    object_property_add_uint32_ptr(obj, "address-attempts",
+                                   &s->address_attempts, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "refused-teardowns",
+                                   &s->refused_teardowns, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "callbacks-after-unrealize",
+                                   &s->callbacks_after_unrealize,
+                                   OBJ_PROP_FLAG_READ);
     object_property_add_bool(obj, "profile-available", endpoint_profile_get,
                               endpoint_profile_set);
     object_property_add_uint32_ptr(obj, "busy-seen", &s->busy_seen,
@@ -176,12 +245,24 @@ static uint64_t endpoint_profile(I2CSlave *dev)
            mode == 1 || mode == 2 || mode == 3 ? 0 : mode + 1;
 }
 
+static I2CSlaveClass *endpoint_parent_class;
+
+static bool endpoint_match(I2CSlave *dev, uint8_t address, bool broadcast,
+                           I2CNodeList *matches)
+{
+    MACE_I2C_TEST(dev)->address_attempts++;
+    return endpoint_parent_class->match_and_add(dev, address, broadcast,
+                                                matches);
+}
+
 static void endpoint_class_init(ObjectClass *oc, const void *data)
 {
     I2CSlaveClass *sc = I2C_SLAVE_CLASS(oc);
     I2CWireEndpointClass *ec = I2C_WIRE_ENDPOINT_CLASS(oc);
     DeviceClass *dc = DEVICE_CLASS(oc);
 
+    endpoint_parent_class = I2C_SLAVE_CLASS(object_class_get_parent(oc));
+    sc->match_and_add = endpoint_match;
     ec->untimed_profile = endpoint_profile;
     sc->event = endpoint_event;
     sc->send = endpoint_send;
