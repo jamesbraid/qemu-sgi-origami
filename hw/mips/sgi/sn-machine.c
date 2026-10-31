@@ -4572,6 +4572,12 @@ static bool sgi_machine_supply_cx_l1(SGIMachineState *s,
         }
     }
     qdev_prop_set_string(l1, "brick-type", "cxbrick");
+    if (c->l1 && c->l1->node_board) {
+        qdev_prop_set_string(l1, "node-board-name", c->l1->node_board->name);
+        qdev_prop_set_string(l1, "node-board-part", c->l1->node_board->part);
+        qdev_prop_set_string(l1, "node-board-revision",
+                             c->l1->node_board->revision);
+    }
     if (c->l1 && c->l1->has_reported_type) {
         qdev_prop_set_uint32(l1, "brick-type-code", c->l1->reported_type);
     }

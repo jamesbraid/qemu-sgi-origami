@@ -1424,7 +1424,7 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                           "board_id_required_bits", "local_region",
                           "initiator_region", "installed_bank_mask"},
         "l1_controllers": {"reported_type", "revision", "mac_eeprom_input",
-                           "profile"},
+                           "profile", "node_board"},
         "io_boards": {"ioc3_subsystem_id", "mac_source", "ieee1394_absent"},
         "pci_function_revisions": {"revision"},
     }
@@ -1550,6 +1550,14 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                     required(entry, "reported_type", f"'{cid}'")
                     integer(entry["reported_type"], 255,
                             f"'{cid}' reported_type", 1)
+                if "node_board" in entry:
+                    board = entry["node_board"]
+                    if (not isinstance(board, dict)
+                            or set(board) != {"processors", "name", "part",
+                                              "revision"}):
+                        raise ResolutionError(
+                            f"'{cid}' node_board needs processors, name, "
+                            "part and revision")
                 if "revision" in entry:
                     revision = entry["revision"]
                     if (not isinstance(revision, dict)
