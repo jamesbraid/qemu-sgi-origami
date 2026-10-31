@@ -70,14 +70,12 @@ layer:
         processors and 16 MB secondary caches; the L1 reports it from its
         node-board record. The IP59 is the 1 GHz generation of the IP53
         compute board and shares its Bedrock, PIC and IO9 hardware, so the
-        model builds it with the IP53 family's guest-board path. The reset
-        word 0x009dad85 and the PROM seed are synthetic inputs, not measured
-        values. The 4 GiB logical memory map, Bedrock and L1 identities, PIC
+        model builds it with the IP53 family's guest-board path. The reset word 0x00edb385 and the flash word 0x4aedb385 are inferred inputs derived to reproduce the captured 333 MHz cache clock and tap 0x15 (SCClkDiv 5, SysClkDiv 9, tap bit 22 set), not measured values. The 4 GiB logical memory map, Bedrock and L1 identities, PIC
         placement and interrupt routes are emulator choices adapted from the
         IP53 Tezro profile.
       firmware_config:
-        processor_reset_mode: 0x009dad85
-        processor_firmware_word: 0x569dad85
+        processor_reset_mode: 0x00edb385
+        processor_firmware_word: 0x4aedb385
         machine_type: 0x00000000
         flash_read_cycles: 16
         flash_write_cycles: 16
@@ -107,7 +105,7 @@ layer:
             memory_mib: 4096
             clock_hz: 1000000000
             cache_mib: 16
-            mode_word: 0x009dad85
+            mode_word: 0x00edb385
           l1_irouter_compat: true
           node_boards:
             - processors: 4
@@ -259,7 +257,7 @@ layer:
       parent: bedrock
       identity:
         cache_clock_mhz: 333
-        r16000_reset_mode: 0x009dad85
+        r16000_reset_mode: 0x00edb385
         r16000_scache_bytes: 16777216
         required_properties:
         - r16000-experimental
@@ -275,7 +273,7 @@ layer:
       parent: bedrock
       identity:
         cache_clock_mhz: 333
-        r16000_reset_mode: 0x009dad85
+        r16000_reset_mode: 0x00edb385
         r16000_scache_bytes: 16777216
         required_properties:
         - r16000-experimental
@@ -291,7 +289,7 @@ layer:
       parent: bedrock
       identity:
         cache_clock_mhz: 333
-        r16000_reset_mode: 0x009dad85
+        r16000_reset_mode: 0x00edb385
         r16000_scache_bytes: 16777216
         required_properties:
         - r16000-experimental
@@ -307,7 +305,7 @@ layer:
       parent: bedrock
       identity:
         cache_clock_mhz: 333
-        r16000_reset_mode: 0x009dad85
+        r16000_reset_mode: 0x00edb385
         r16000_scache_bytes: 16777216
         required_properties:
         - r16000-experimental

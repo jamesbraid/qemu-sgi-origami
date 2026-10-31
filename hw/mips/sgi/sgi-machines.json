@@ -30751,7 +30751,7 @@
           "l1": {
             "cpu-context": {
               "cpu-clock-hz": 1000000000,
-              "cpu-mode-word": 1453174149,
+              "cpu-mode-word": 1257091973,
               "hub-clock-hz": 200000000
             },
             "reported-type": 56,
@@ -30849,7 +30849,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 1453174149,
+        "cpu-mode-word": 1257091973,
         "machine-type": 0
       },
       "ip53-runtime": {
@@ -30868,7 +30868,7 @@
           "cpus": 4,
           "fitted-cpus": 4,
           "memory-mib": 8192,
-          "mode-word": 10333573
+          "mode-word": 15577989
         },
         "pic-profile": "pic-rev3-bedrock-experimental"
       },
@@ -30933,7 +30933,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -30949,7 +30949,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -30965,7 +30965,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -30981,7 +30981,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -31039,7 +31039,7 @@
           "l1": {
             "cpu-context": {
               "cpu-clock-hz": 1000000000,
-              "cpu-mode-word": 1453174149,
+              "cpu-mode-word": 1257091973,
               "hub-clock-hz": 200000000
             },
             "reported-type": 55,
@@ -31102,7 +31102,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 1453174149,
+        "cpu-mode-word": 1257091973,
         "machine-type": 0
       },
       "ip53-runtime": {
@@ -31121,7 +31121,7 @@
           "cpus": 4,
           "fitted-cpus": 4,
           "memory-mib": 8192,
-          "mode-word": 10333573
+          "mode-word": 15577989
         },
         "pic-profile": "pic-rev3-bedrock-experimental"
       },
@@ -31187,7 +31187,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -31203,7 +31203,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -31219,7 +31219,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -31235,7 +31235,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -31293,7 +31293,7 @@
           "l1": {
             "cpu-context": {
               "cpu-clock-hz": 1000000000,
-              "cpu-mode-word": 1453174149,
+              "cpu-mode-word": 1257091973,
               "hub-clock-hz": 200000000
             },
             "reported-type": 55,
@@ -31356,7 +31356,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 1453174149,
+        "cpu-mode-word": 1257091973,
         "machine-type": 0
       },
       "ip53-runtime": {
@@ -31367,7 +31367,7 @@
           "cpus": 4,
           "fitted-cpus": 4,
           "memory-mib": 8192,
-          "mode-word": 10333573
+          "mode-word": 15577989
         },
         "pic-profile": "pic-rev3-bedrock-experimental"
       },
@@ -31432,7 +31432,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -31448,7 +31448,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -31464,7 +31464,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -31480,7 +31480,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -41118,7 +41118,7 @@
           "l1": {
             "cpu-context": {
               "cpu-clock-hz": 1000000000,
-              "cpu-mode-word": 1453174149,
+              "cpu-mode-word": 1257091973,
               "hub-clock-hz": 200000000
             },
             "reported-type": 55,
@@ -41181,7 +41181,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 1453174149,
+        "cpu-mode-word": 1257091973,
         "machine-type": 0
       },
       "ip53-runtime": {
@@ -41200,7 +41200,7 @@
           "cpus": 4,
           "fitted-cpus": 4,
           "memory-mib": 2048,
-          "mode-word": 10333573
+          "mode-word": 15577989
         },
         "pic-profile": "pic-rev3-bedrock-experimental"
       },
@@ -41265,7 +41265,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -41281,7 +41281,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -41297,7 +41297,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -41313,7 +41313,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -41690,7 +41690,7 @@
           "l1": {
             "cpu-context": {
               "cpu-clock-hz": 1000000000,
-              "cpu-mode-word": 1453174149,
+              "cpu-mode-word": 1257091973,
               "hub-clock-hz": 200000000
             },
             "node-board": {
@@ -41750,7 +41750,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 1453174149,
+        "cpu-mode-word": 1257091973,
         "machine-type": 0
       },
       "junk-uart": -1,
@@ -41837,7 +41837,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -41853,7 +41853,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -41869,7 +41869,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -41885,7 +41885,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -41942,7 +41942,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -41958,7 +41958,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -41974,7 +41974,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -41990,7 +41990,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -42047,7 +42047,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -42063,7 +42063,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -42079,7 +42079,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -42095,7 +42095,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -42152,7 +42152,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -42168,7 +42168,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -42184,7 +42184,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -42200,7 +42200,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -42945,7 +42945,7 @@
           "l1": {
             "cpu-context": {
               "cpu-clock-hz": 1000000000,
-              "cpu-mode-word": 1453174149,
+              "cpu-mode-word": 1257091973,
               "hub-clock-hz": 200000000
             },
             "reported-type": 81,
@@ -43008,7 +43008,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 1453174149,
+        "cpu-mode-word": 1257091973,
         "machine-type": 0
       },
       "ip53-runtime": {
@@ -43033,7 +43033,7 @@
           "cpus": 1,
           "fitted-cpus": 4,
           "memory-mib": 4096,
-          "mode-word": 10333573
+          "mode-word": 15577989
         },
         "pic-profile": "pic-rev3-bedrock-tezro-experimental"
       },
@@ -43108,7 +43108,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -43124,7 +43124,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -43140,7 +43140,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -43156,7 +43156,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -43469,7 +43469,7 @@
           "l1": {
             "cpu-context": {
               "cpu-clock-hz": 1000000000,
-              "cpu-mode-word": 1453174149,
+              "cpu-mode-word": 1257091973,
               "hub-clock-hz": 200000000
             },
             "reported-type": 57,
@@ -43567,7 +43567,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 1453174149,
+        "cpu-mode-word": 1257091973,
         "machine-type": 0
       },
       "ip53-runtime": {
@@ -43592,7 +43592,7 @@
           "cpus": 4,
           "fitted-cpus": 4,
           "memory-mib": 4096,
-          "mode-word": 10333573
+          "mode-word": 15577989
         },
         "pic-profile": "pic-rev3-bedrock-tezro-experimental"
       },
@@ -43662,7 +43662,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -43678,7 +43678,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -43694,7 +43694,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -43710,7 +43710,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",
@@ -44076,7 +44076,7 @@
           "l1": {
             "cpu-context": {
               "cpu-clock-hz": 1000000000,
-              "cpu-mode-word": 1453174149,
+              "cpu-mode-word": 1257091973,
               "hub-clock-hz": 200000000
             },
             "reported-type": 57,
@@ -44139,7 +44139,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 1453174149,
+        "cpu-mode-word": 1257091973,
         "machine-type": 0
       },
       "ip53-runtime": {
@@ -44164,7 +44164,7 @@
           "cpus": 1,
           "fitted-cpus": 1,
           "memory-mib": 4096,
-          "mode-word": 10333573
+          "mode-word": 15577989
         },
         "pic-profile": "pic-rev3-bedrock-tezro-experimental"
       },
@@ -44229,7 +44229,7 @@
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz",
                 "kind": "R16000",
-                "mode-bits": 10333573,
+                "mode-bits": 15577989,
                 "required-properties": [
                   "r16000-experimental",
                   "r16000-reset-mode",

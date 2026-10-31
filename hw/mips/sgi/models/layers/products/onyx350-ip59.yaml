@@ -56,15 +56,13 @@ layer:
         processors and 16 MB secondary caches; the L1 reports it from its
         node-board record. The IP59 is the 1 GHz generation of the IP53
         compute board and shares its Bedrock, PIC and IO9 hardware, so the
-        model builds it with the IP53 family's guest-board path. The reset
-        word 0x009dad85 and the PROM seed are synthetic inputs, not measured
-        values. The captured system, an Onyx 350 of six modules, reports PROM
+        model builds it with the IP53 family's guest-board path. The reset word 0x00edb385 and the flash word 0x4aedb385 are inferred inputs derived to reproduce the captured 333 MHz cache clock and tap 0x15 (SCClkDiv 5, SysClkDiv 9, tap bit 22 set), not measured values. The captured system, an Onyx 350 of six modules, reports PROM
         6.211; the selected held payload is 6.210, which real IP59 boards also
         run. The optional V12 at widget 12 follows a separate published Onyx
         350 inventory.
       firmware_config:
-        processor_reset_mode: 0x009dad85
-        processor_firmware_word: 0x569dad85
+        processor_reset_mode: 0x00edb385
+        processor_firmware_word: 0x4aedb385
         machine_type: 0x00000000
         flash_read_cycles: 16
         flash_write_cycles: 16
@@ -87,7 +85,7 @@ layer:
             memory_mib: 8192
             clock_hz: 1000000000
             cache_mib: 16
-            mode_word: 0x009dad85
+            mode_word: 0x00edb385
           l1_irouter_compat: true
           node_boards:
             - processors: 4

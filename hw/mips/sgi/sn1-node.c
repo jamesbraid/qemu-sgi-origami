@@ -1952,7 +1952,7 @@ static bool sn1_node_uses_r16000(const SN1NodeState *node,
 /*
  * The R16000 tuples each IP53-family product accepts: the clock, secondary
  * cache and reset-mode word its catalogue profiles select. The IP59 rows are
- * the 1 GHz generation of the same boards; the reset word is a synthetic
+ * the 1 GHz generation of the same boards; the reset word is an inferred
  * input, as the catalogue states.
  */
 static const struct {
@@ -1962,15 +1962,15 @@ static const struct {
     uint32_t reset_mode;
 } sn1_r16000_profiles[] = {
     { "origin350", 700000000, 8, 0x009cad85 },
-    { "origin350", 1000000000, 16, 0x009dad85 },
+    { "origin350", 1000000000, 16, 0x00edb385 },
     { "onyx350", 800000000, 8, 0x009caf85 },
-    { "onyx350", 1000000000, 16, 0x009dad85 },
+    { "onyx350", 1000000000, 16, 0x00edb385 },
     { "tezro", 700000000, 4, 0x009bad85 },
-    { "tezro", 1000000000, 16, 0x009dad85 },
-    { "onyx4-host", 1000000000, 16, 0x009dad85 },
+    { "tezro", 1000000000, 16, 0x00edb385 },
+    { "onyx4-host", 1000000000, 16, 0x00edb385 },
     /* A Cx-brick node board takes the Origin 350's fit, or the IP59's. */
     { "origin3000", 700000000, 8, 0x009cad85 },
-    { "origin3000", 1000000000, 16, 0x009dad85 },
+    { "origin3000", 1000000000, 16, 0x00edb385 },
 };
 
 static bool sn1_node_validate_processors(SN1NodeState *node,

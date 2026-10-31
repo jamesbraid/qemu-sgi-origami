@@ -64,8 +64,7 @@ layer:
         and IP59 nodes alike; no Cx-brick
         capture is held. Whether the Cx-brick's IP59 board is the same board
         as the 2U one is not established; the 16 MB cache follows the captured
-        IP59 boards. The reset word 0x009dad85 and the PROM seed are synthetic
-        inputs. Node board 0 and port A are this composition's choices; which
+        IP59 boards. The reset word 0x00edb385 and the flash word 0x4aedb385 are inferred inputs derived to reproduce the captured 333 MHz cache clock and tap 0x15 (SCClkDiv 5, SysClkDiv 9, tap bit 22 set), not measured values. Node board 0 and port A are this composition's choices; which
         XIO connector a boot I-brick uses is unknown. An IX-brick may take the
         I-brick's place on a real partition; no IX-brick layer exists yet. The
         Bedrock is the 200 MHz revision 2 every published inventory reports,
@@ -154,12 +153,12 @@ layer:
         # 0 and the 1 GHz IP59 R16000 firmware word.
         ip35_firmware:
           machine_type: 0
-          cpu_mode_word: 0x569dad85
+          cpu_mode_word: 0x4aedb385
           provenance: derived
           sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected 6.210 flash payload and seed policy"]
           notes: >-
             The 1 GHz, 16 MB R16000 firmware word the IP59 products use; the
-            word is a synthetic input and no Cx-brick flash block has been
+            word is an inferred input, derived to reproduce the captured cache clock and tap, and no Cx-brick flash block has been
             captured.
         # The router answers the model's synthetic diagnostics, which no
         # hardware record settles.

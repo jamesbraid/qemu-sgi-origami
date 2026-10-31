@@ -45,15 +45,15 @@ layer:
         reported secondary cache, 8 GiB, and one IO9. The capture labels its
         system Onyx 350; selecting this module as an Onyx 4 host is an inference.
         QEMU uses the IP53 Bedrock, PIC, IO9 and guest board identity as an
-        explicit software compatibility mapping. Reset mode 0x009dad85 is a
+        explicit software compatibility mapping. Reset mode 0x00edb385 is a
         selected synthetic input with the 16 MiB cache encoding; it is not a
         measured electrical reset value. The eight-bank memory placement and
         other IP53 device inputs are software choices. The launcher applies a
         configured PROM seed; this profile does not establish physical fitment
         or stock PROM boot.
       firmware_config:
-        processor_reset_mode: 0x009dad85
-        processor_firmware_word: 0x569dad85
+        processor_reset_mode: 0x00edb385
+        processor_firmware_word: 0x4aedb385
         machine_type: 0x00000000
         flash_read_cycles: 16
         flash_write_cycles: 16
@@ -76,7 +76,7 @@ layer:
             memory_mib: 8192
             clock_hz: 1000000000
             cache_mib: 16
-            mode_word: 0x009dad85
+            mode_word: 0x00edb385
           l1_irouter_compat: true
         pic_profiles:
           pic: pic-rev3-bedrock-experimental

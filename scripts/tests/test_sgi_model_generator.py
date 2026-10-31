@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "c9971017669044236e8675487a33ef64fda05f58be56933beca732d56bb28a21"
+    "bfd20f816dd483a65ecf2d47f7548fcc81dc16e39fe11251ebdaa950c5ce1134"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -914,14 +914,14 @@ class FuelTests(unittest.TestCase):
             "tezro-tower-one": 0x549bad85,
             "tezro-tower-multi": 0x549bad85,
             "tezro-rack": 0x549bad85,
-            "onyx4-host-serial-compat": 0x569dad85,
+            "onyx4-host-serial-compat": 0x4aedb385,
             # The IP59 profiles all share the 1 GHz, 16 MB word.
-            "origin350-ip59": 0x569dad85,
-            "onyx350-ip59": 0x569dad85,
-            "onyx4-host-ip59": 0x569dad85,
-            "tezro-tower-one-ip59": 0x569dad85,
-            "tezro-tower-multi-ip59": 0x569dad85,
-            "tezro-rack-ip59": 0x569dad85,
+            "origin350-ip59": 0x4aedb385,
+            "onyx350-ip59": 0x4aedb385,
+            "onyx4-host-ip59": 0x4aedb385,
+            "tezro-tower-one-ip59": 0x4aedb385,
+            "tezro-tower-multi-ip59": 0x4aedb385,
+            "tezro-rack-ip59": 0x4aedb385,
         }
         for topology in catalogue["topologies"]:
             product = topology["product"]

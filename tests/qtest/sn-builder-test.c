@@ -3312,7 +3312,7 @@ static void test_onyx4_host_ip53_compatibility_construction(void)
 {
     IP53RuntimeTestFixture *fixture = ip53_runtime_test_start_with_binary_profile(
         NULL, "onyx4-host,ip53-experimental=on", NULL, "4", "8G",
-        "0x009dad85");
+        "0x00edb385");
     QTestState *qts = fixture->qts;
     g_autofree char *pic = qom_child_type(qts, "/machine", "pic-pic");
     g_autofree char *ioc4 = qom_child_type(
@@ -3377,7 +3377,7 @@ static void test_onyx4_host_ip53_compatibility_construction(void)
 
         g_assert_true(qom_get_bool(qts, path, "r16000-experimental"));
         g_assert_cmphex(qom_get_uint(qts, path, "r16000-reset-mode"), ==,
-                        0x009dad85);
+                        0x00edb385);
         g_assert_cmphex(qom_get_uint(qts, path, "r16000-scache-bytes"), ==,
                         0x1000000);
         cpu_count++;
@@ -3602,19 +3602,19 @@ static void test_ip53_normal_selection_profiles(void)
         { "tezro,topology=tezro-rack", "1", "4G", 0x009bad85,
           4 * MiB, 700000000, 1 },
         { "onyx4-host,topology=onyx4-host-serial-compat", "4", "8G",
-          0x009dad85, 16 * MiB, 1000000000, 4 },
+          0x00edb385, 16 * MiB, 1000000000, 4 },
         /* The IP59 node boards: 1 GHz R16000 with a 16 MiB cache. */
-        { "origin350,topology=origin350-ip59", "4", "2G", 0x009dad85,
+        { "origin350,topology=origin350-ip59", "4", "2G", 0x00edb385,
           16 * MiB, 1000000000, 4 },
-        { "onyx350,topology=onyx350-ip59", "4", "8G", 0x009dad85,
+        { "onyx350,topology=onyx350-ip59", "4", "8G", 0x00edb385,
           16 * MiB, 1000000000, 4 },
-        { "tezro,topology=tezro-tower-one-ip59", "1", "4G", 0x009dad85,
+        { "tezro,topology=tezro-tower-one-ip59", "1", "4G", 0x00edb385,
           16 * MiB, 1000000000, 1 },
-        { "tezro,topology=tezro-tower-multi-ip59", "4", "4G", 0x009dad85,
+        { "tezro,topology=tezro-tower-multi-ip59", "4", "4G", 0x00edb385,
           16 * MiB, 1000000000, 4 },
-        { "tezro,topology=tezro-rack-ip59", "1", "4G", 0x009dad85,
+        { "tezro,topology=tezro-rack-ip59", "1", "4G", 0x00edb385,
           16 * MiB, 1000000000, 1 },
-        { "onyx4-host,topology=onyx4-host-ip59", "4", "8G", 0x009dad85,
+        { "onyx4-host,topology=onyx4-host-ip59", "4", "8G", 0x00edb385,
           16 * MiB, 1000000000, 4 },
     };
     static const char *const selectors[] = { NULL, "off", "on" };
@@ -10183,7 +10183,7 @@ static void test_origin3900_ip59_cx_brick(void)
         uint64_t clock_hz;
     } bricks[] = {
         { "origin3900", "", 0x009cad85, 8 * MiB, 700000000 },
-        { "origin3900-ip59", "IP59_4CPU", 0x009dad85, 16 * MiB, 1000000000 },
+        { "origin3900-ip59", "IP59_4CPU", 0x00edb385, 16 * MiB, 1000000000 },
     };
     g_autofree char *prom = NULL;
     g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);

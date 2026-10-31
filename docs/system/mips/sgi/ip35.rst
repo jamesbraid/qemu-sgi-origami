@@ -583,7 +583,7 @@ Onyx 350 captured module     four 800 MHz R16000  8 GiB   8 MiB       0x009caf85
 Tezro tower, one CPU         one 700 MHz R16000   4 GiB   4 MiB       0x009bad85
 Tezro tower, four CPUs       four 700 MHz R16000  4 GiB   4 MiB       0x009bad85
 Tezro rack, first enclosure  one 700 MHz R16000   4 GiB   4 MiB       0x009bad85
-Onyx 4 host candidate        four 1 GHz R16000    8 GiB   16 MiB      0x009dad85
+Onyx 4 host candidate        four 1 GHz R16000    8 GiB   16 MiB      0x00edb385
 ===========================  ===================  ======  ==========  ==========
 
 The six listed compositions select the same internal R16000 experiment
@@ -671,11 +671,17 @@ keeps the L1's generic record: no capture shows a one-processor IP59 board, so
 its part and revision are unknown. Serials and barcodes use the
 synthetic scheme; part names and revisions are the captured values.
 
-The reset-mode word ``0x009dad85`` and the flash configuration word
-``0x569dad85`` are synthetic inputs, as for the Onyx 4 host before them: no
-published updater row covers a 1 GHz, 16 MB part, the held PROM has no such
-row, and no raw Config0 or processor revision register has been read from a
-1 GHz module. The model does not claim to know whether the part is an R16000A.
+The reset-mode word ``0x00edb385`` and the flash configuration word
+``0x4aedb385`` are inferred inputs, not measured values. No published updater
+row covers a 1 GHz, 16 MB part, and no raw
+Config0 or processor revision register has been read from a 1 GHz module.
+The pair is derived so that the stock PROM and IRIX print the captured
+``Speed 333 Mhz  Tap 0x15`` and a 200 MHz hub: the secondary-cache clock
+divisor selects one third of the CPU clock, the system-clock divisor selects
+a fifth of it, and the cache tap uses the fifth tap bit (bit 22) that the
+R16000 adds to the R10000 layout. A boot that printed the PROM's "invalid tap
+setting" text would refute that reading. The model does not claim to know
+whether the part is an R16000A.
 The PROM payload is the same 6.210 image the IP53 profiles use; real IP59
 boards ran 6.210 and 6.211.
 

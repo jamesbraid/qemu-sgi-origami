@@ -53,14 +53,13 @@ layer:
         two-processor board is the IP59_2CPU, part 030-2059-002, revision A,
         captured in a rack Tezro. A one-processor node keeps the L1's generic
         board record: no capture shows a one-processor IP59 board, so its
-        part and revision are unknown. The reset word 0x009dad85 and the PROM seed are
-        synthetic inputs. The 4 GiB logical memory map, Bedrock and L1
+        part and revision are unknown. The reset word 0x00edb385 and the flash word 0x4aedb385 are inferred inputs derived to reproduce the captured 333 MHz cache clock and tap 0x15 (SCClkDiv 5, SysClkDiv 9, tap bit 22 set), not measured values. The 4 GiB logical memory map, Bedrock and L1
         identities, PIC placement and interrupt routes are emulator choices
         adapted from the IP53 Tezro profile. Graphics and the rack second
         enclosure are omitted.
       firmware_config:
-        processor_reset_mode: 0x009dad85
-        processor_firmware_word: 0x569dad85
+        processor_reset_mode: 0x00edb385
+        processor_firmware_word: 0x4aedb385
         machine_type: 0x00000000
         flash_read_cycles: 16
         flash_write_cycles: 16
@@ -90,7 +89,7 @@ layer:
             memory_mib: 4096
             clock_hz: 1000000000
             cache_mib: 16
-            mode_word: 0x009dad85
+            mode_word: 0x00edb385
           l1_irouter_compat: true
           node_boards:
             - processors: 4
