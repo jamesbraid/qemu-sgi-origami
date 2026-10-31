@@ -5,6 +5,7 @@
 #include "qemu/bswap.h"
 #include "hw/misc/sgi-dma-word-test.h"
 #include "hw/display/sgi/head-ops.h"
+#include "sgi-migrate.h"
 
 static void test_word_mapping(const void *opaque)
 {
@@ -255,10 +256,32 @@ static void test_query_defaults(void)
 }
 
 /*
+ * The raster-position stream ends with four class-0 blocks, 0x3cf8 to 0x3cfb,
+ * of sixteen zero operands each. The board is taken to latch the current
+ * index, colour and texture coordinate when the last block is consumed
+ * (INFERRED), and 0x4c3 answers from that latch while 0x4c0 stays live.
+ */
+static void raster_blocks(QTestState *qts, unsigned first, unsigned last)
+{
+    uint32_t words[17] = { 0 };
+    unsigned i;
+
+    for (i = first; i <= last; i++) {
+        words[0] = 0x3cf8 + i;
+        query_words(qts, words, ARRAY_SIZE(words));
+    }
+}
+
+static void raster_stream(QTestState *qts)
+{
+    raster_blocks(qts, 0, 3);
+}
+
+/*
  * The raster-position query, 0x4c3: besides the current-value records, the
  * library reads the raster index at +0x928 and the raster colour at +0x93c,
- * which the model answers with the current index and colour records. Here a
- * glColor4f of (1, 0.5, 0.25, 1) and glIndexi(9) before it.
+ * which the model answers from the raster latch. Here a glColor4f of
+ * (1, 0.5, 0.25, 1) and glIndexi(9) precede the position stream.
  */
 static void test_query_raster_position(void)
 {
@@ -272,6 +295,7 @@ static void test_query_raster_position(void)
 
     query_seed(qts, expected);
     query_words(qts, setters, ARRAY_SIZE(setters));
+    raster_stream(qts);
     query_words(qts, words, ARRAY_SIZE(words));
     query_expect_defaults(expected, 0x55, 2, 0x1234);
     stl_be_p(expected + 0x904, 9);
@@ -290,6 +314,252 @@ static void test_query_raster_position(void)
     stl_be_p(expected + 0x94c, 0x3f800000);
     query_assert_memory(qts, expected);
     qtest_quit(qts);
+}
+
+static void raster_set(QTestState *qts, uint32_t index, uint32_t r,
+                       uint32_t s)
+{
+    const uint32_t words[] = {
+        0xc580c406, index,
+        0xc580d015, r, 0x3f000000, 0x3e800000, 0x3f800000,
+        0xc380c821, s, 0x40000000,
+    };
+
+    query_words(qts, words, ARRAY_SIZE(words));
+}
+
+static void raster_expect(QTestState *qts, unsigned offset,
+                          const uint32_t *want, unsigned count)
+{
+    uint8_t page[0x2000];
+    unsigned i;
+
+    qtest_memread(qts, SGI_DMA_WORD_TEST_BACKING, page, sizeof(page));
+    for (i = 0; i < count; i++) {
+        g_assert_cmphex((uint32_t)ldl_be_p(page + offset + 4 * i), ==,
+                        want[i]);
+    }
+}
+
+static void raster_query(QTestState *qts, uint32_t word)
+{
+    const uint32_t words[] = { word, 0x55, 0x10a5a, 2, 0x1234 };
+    uint8_t seed[0x2000];
+
+    query_seed(qts, seed);
+    query_words(qts, words, ARRAY_SIZE(words));
+}
+
+static const uint32_t raster_colour_a[] = {
+    0xc580d015, 0x3f800000, 0x3f000000, 0x3e800000, 0x3f800000,
+};
+static const uint32_t raster_colour_b[] = {
+    0xc580d015, 0x3e800000, 0x3f000000, 0x3e800000, 0x3f800000,
+};
+
+/* Colour A, glRasterPos, colour B, deferred query: the reply carries A. */
+static void test_query_raster_latch_colour(void)
+{
+    QTestState *qts = query_test_init();
+
+    raster_set(qts, 9, 0x3f800000, 0x3f000000);
+    raster_stream(qts);
+    raster_set(qts, 5, 0x3e800000, 0x3e000000);
+    raster_query(qts, 0x4c3);
+    raster_expect(qts, 0x93c, raster_colour_a, ARRAY_SIZE(raster_colour_a));
+    qtest_quit(qts);
+}
+
+static void test_query_raster_latch_index(void)
+{
+    const uint32_t want[] = { 0xc580c406, 9 };
+    QTestState *qts = query_test_init();
+
+    raster_set(qts, 9, 0x3f800000, 0x3f000000);
+    raster_stream(qts);
+    raster_set(qts, 5, 0x3e800000, 0x3e000000);
+    raster_query(qts, 0x4c3);
+    raster_expect(qts, 0x928, want, ARRAY_SIZE(want));
+    qtest_quit(qts);
+}
+
+static void test_query_raster_latch_texcoord(void)
+{
+    const uint32_t want[] = { 0xc380c821, 0x3f000000, 0x40000000 };
+    QTestState *qts = query_test_init();
+
+    raster_set(qts, 9, 0x3f800000, 0x3f000000);
+    raster_stream(qts);
+    raster_set(qts, 5, 0x3e800000, 0x3e000000);
+    raster_query(qts, 0x4c3);
+    raster_expect(qts, 0x950, want, ARRAY_SIZE(want));
+    qtest_quit(qts);
+}
+
+/* A query straight after the stream sees the same values as the latch. */
+static void test_query_raster_latch_immediate(void)
+{
+    const uint32_t index[] = { 0xc580c406, 9 };
+    const uint32_t texcoord[] = { 0xc380c821, 0x3f000000, 0x40000000 };
+    QTestState *qts = query_test_init();
+
+    raster_set(qts, 9, 0x3f800000, 0x3f000000);
+    raster_stream(qts);
+    raster_query(qts, 0x4c3);
+    raster_expect(qts, 0x93c, raster_colour_a, ARRAY_SIZE(raster_colour_a));
+    raster_expect(qts, 0x928, index, ARRAY_SIZE(index));
+    raster_expect(qts, 0x950, texcoord, ARRAY_SIZE(texcoord));
+    qtest_quit(qts);
+}
+
+/* The current-value query 0x4c0 keeps answering live values. */
+static void test_query_raster_latch_live_control(void)
+{
+    const uint32_t index[] = { 0xc580c406, 5 };
+    const uint32_t texcoord[] = { 0xc380c821, 0x3e000000, 0x40000000 };
+    QTestState *qts = query_test_init();
+
+    raster_set(qts, 9, 0x3f800000, 0x3f000000);
+    raster_stream(qts);
+    raster_set(qts, 5, 0x3e800000, 0x3e000000);
+    raster_query(qts, 0x4c0);
+    raster_expect(qts, 0x914, raster_colour_b, ARRAY_SIZE(raster_colour_b));
+    raster_expect(qts, 0x900, index, ARRAY_SIZE(index));
+    raster_expect(qts, 0x950, texcoord, ARRAY_SIZE(texcoord));
+    qtest_quit(qts);
+}
+
+static void raster_expect_initial(QTestState *qts)
+{
+    const uint32_t colour[] = {
+        0xc580cc0e, 0x3f800000, 0x3f800000, 0x3f800000,
+    };
+    const uint32_t index[] = { 0xc580c406, 1 };
+    const uint32_t texcoord[] = { 0xc380c821, 0, 0 };
+
+    raster_expect(qts, 0x93c, colour, ARRAY_SIZE(colour));
+    raster_expect(qts, 0x928, index, ARRAY_SIZE(index));
+    raster_expect(qts, 0x950, texcoord, ARRAY_SIZE(texcoord));
+}
+
+/* No glRasterPos yet: 0x4c3 answers the GL initial values, not live ones. */
+static void test_query_raster_latch_initial(void)
+{
+    QTestState *qts = query_test_init();
+
+    raster_set(qts, 5, 0x3e800000, 0x3e000000);
+    raster_query(qts, 0x4c3);
+    raster_expect_initial(qts);
+    qtest_quit(qts);
+}
+
+/*
+ * The trigger is the last block, 0x3cfb: a colour change between the first
+ * and last block is the one the latch takes, and a stream cut short before
+ * the last block leaves the earlier latch.
+ */
+static void test_query_raster_latch_trigger(void)
+{
+    QTestState *qts = query_test_init();
+
+    raster_set(qts, 9, 0x3f800000, 0x3f000000);
+    raster_blocks(qts, 0, 2);
+    raster_set(qts, 5, 0x3e800000, 0x3e000000);
+    raster_blocks(qts, 3, 3);
+    raster_set(qts, 7, 0x3e000000, 0x3e000000);
+    raster_query(qts, 0x4c3);
+    raster_expect(qts, 0x93c, raster_colour_b, ARRAY_SIZE(raster_colour_b));
+    qtest_quit(qts);
+}
+
+static void test_query_raster_latch_cut_short(void)
+{
+    QTestState *qts = query_test_init();
+
+    raster_set(qts, 9, 0x3f800000, 0x3f000000);
+    raster_stream(qts);
+    raster_set(qts, 5, 0x3e800000, 0x3e000000);
+    raster_blocks(qts, 0, 2);
+    raster_query(qts, 0x4c3);
+    raster_expect(qts, 0x93c, raster_colour_a, ARRAY_SIZE(raster_colour_a));
+    qtest_quit(qts);
+}
+
+/* Reset clears a latch that has been taken. */
+static void test_query_raster_latch_reset(void)
+{
+    QTestState *qts = query_test_init();
+
+    raster_set(qts, 9, 0x3f800000, 0x3f000000);
+    raster_stream(qts);
+    qtest_system_reset(qts);
+    qtest_writel(qts, SGI_DMA_WORD_TEST_NATIVE + 0x400c,
+                 SGI_DMA_WORD_TEST_MEMORY);
+    qtest_writel(qts, SGI_DMA_WORD_TEST_NATIVE + 0x403c,
+                 SGI_DMA_WORD_TEST_MEMORY + 0x800);
+    raster_set(qts, 5, 0x3e800000, 0x3e000000);
+    raster_query(qts, 0x4c3);
+    raster_expect_initial(qts);
+    qtest_quit(qts);
+}
+
+/*
+ * The latch migrates: take it, change the live values, migrate, and the
+ * destination answers the latched values. A destination with no latch
+ * subsection in the stream (the defaults case) answers the initial values.
+ */
+static void raster_latch_migration(bool taken)
+{
+    const uint32_t index[] = { 0xc580c406, 9 };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = query_test_init();
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-raster-latch-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    if (taken) {
+        raster_set(from, 9, 0x3f800000, 0x3f000000);
+        raster_stream(from);
+    }
+    raster_set(from, 5, 0x3e800000, 0x3e000000);
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = qtest_init("-M none -cpu R14000 "
+                    "-device sgi-dma-word-test,native=on -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(to, "completed");
+    qtest_writel(to, SGI_DMA_WORD_TEST_NATIVE + 0x4004, 0);
+    qtest_writel(to, SGI_DMA_WORD_TEST_NATIVE + 0x400c,
+                 SGI_DMA_WORD_TEST_MEMORY);
+    qtest_writel(to, SGI_DMA_WORD_TEST_NATIVE + 0x4034, 0);
+    qtest_writel(to, SGI_DMA_WORD_TEST_NATIVE + 0x403c,
+                 SGI_DMA_WORD_TEST_MEMORY + 0x800);
+    raster_query(to, 0x4c3);
+    if (taken) {
+        raster_expect(to, 0x93c, raster_colour_a,
+                      ARRAY_SIZE(raster_colour_a));
+        raster_expect(to, 0x928, index, ARRAY_SIZE(index));
+    } else {
+        raster_expect_initial(to);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+static void test_query_raster_latch_migration(void)
+{
+    raster_latch_migration(true);
+}
+
+static void test_query_raster_latch_migration_defaults(void)
+{
+    raster_latch_migration(false);
 }
 
 static void query_fragment(QTestState *qts, const uint32_t *words,
@@ -1325,6 +1595,28 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-query/irq-ordering", test_query_irq_ordering);
     qtest_add_func("/sgi-query/defaults", test_query_defaults);
     qtest_add_func("/sgi-query/raster-position", test_query_raster_position);
+    qtest_add_func("/sgi-query/raster-latch-colour",
+                   test_query_raster_latch_colour);
+    qtest_add_func("/sgi-query/raster-latch-index",
+                   test_query_raster_latch_index);
+    qtest_add_func("/sgi-query/raster-latch-texcoord",
+                   test_query_raster_latch_texcoord);
+    qtest_add_func("/sgi-query/raster-latch-immediate",
+                   test_query_raster_latch_immediate);
+    qtest_add_func("/sgi-query/raster-latch-live-control",
+                   test_query_raster_latch_live_control);
+    qtest_add_func("/sgi-query/raster-latch-initial",
+                   test_query_raster_latch_initial);
+    qtest_add_func("/sgi-query/raster-latch-trigger",
+                   test_query_raster_latch_trigger);
+    qtest_add_func("/sgi-query/raster-latch-cut-short",
+                   test_query_raster_latch_cut_short);
+    qtest_add_func("/sgi-query/raster-latch-reset",
+                   test_query_raster_latch_reset);
+    qtest_add_func("/sgi-query/raster-latch-migration",
+                   test_query_raster_latch_migration);
+    qtest_add_func("/sgi-query/raster-latch-migration-defaults",
+                   test_query_raster_latch_migration_defaults);
     qtest_add_func("/sgi-query/setters", test_query_setters);
     qtest_add_func("/sgi-query/partial-setter", test_query_partial_setter);
     qtest_add_func("/sgi-query/completed-event", test_query_completed_event);
