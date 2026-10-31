@@ -31,6 +31,7 @@
 #include "hw/core/clock.h"
 #include "hw/pci/pci_regs.h"
 #include "libqtest.h"
+#include "memtx.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "qobject/qnum.h"
@@ -5485,6 +5486,79 @@ static void test_ip53_widget_zero_revision_survives_migration(void)
     ip53_runtime_test_stop(from);
     g_unlink(socket);
     g_rmdir(dir);
+}
+
+/* A 32-bit store from the first processor; the result is the bus status. */
+static MemTxResult ip53_write32(QTestState *qts, uint64_t address,
+                                uint32_t value)
+{
+    return memtx_store(qts, address, value, 4);
+}
+
+static void ip53_store_ok(QTestState *qts, uint64_t address, uint32_t value)
+{
+    g_assert_cmpint(ip53_write32(qts, address, value), ==, MEMTX_OK);
+}
+
+/*
+ * The stock PROM's crossbar check stores to the two read-only error
+ * address registers on purpose and expects the stores to complete, status
+ * bit 5 to set, status bits 9:6 to hold the requester's widget, and with
+ * the access-error interrupt enabled a vector 0x10 write to the processor
+ * interface's interrupt-modify register. It also locks the crossbar with
+ * bit 1 of link 0xf's arbitration-upper register. A real deskside Tezro
+ * passes it. It holds with either value of the revision input (docs/
+ * datasheets/xbow.md, "IP53 integrated crossbar").
+ */
+static void ip53_assert_crossbar_register_check(const char *extra)
+{
+    IP53RuntimeTestFixture *fixture = ip53_runtime_test_start(
+        "origin350,ip53-experimental=on", extra);
+    QTestState *qts = fixture->qts;
+    uint64_t destination = IP53_PI_INTERRUPT_ADDRESS;
+    uint32_t value = 0;
+    uint64_t pending = 0;
+
+    /* Control 0: a store to either register completes and sets bit 5. */
+    ip53_store_ok(qts, IP53_IO_SPACE + 0x1c, 0xdeadbeef);
+    g_assert_true(nasid_test_cpu_readl(qts, 0, IP53_IO_SPACE + 0x54, &value));
+    g_assert_cmphex(value & (1U << 5), ==, 1U << 5);
+    /* The clearing read acknowledged it; the requester's widget stays. */
+    g_assert_true(nasid_test_cpu_readl(qts, 0, IP53_IO_SPACE + 0x0c, &value));
+    g_assert_cmphex(value, ==, 0xa << 6);
+    ip53_store_ok(qts, IP53_IO_SPACE + 0x14, 0);
+    g_assert_true(nasid_test_cpu_readl(qts, 0, IP53_IO_SPACE + 0x54, &value));
+    g_assert_cmphex(value & (1U << 5), ==, 1U << 5);
+
+    /* Enabled and routed to the processor interface as vector 0x10. */
+    ip53_store_ok(qts, IP53_IO_SPACE + 0x34,
+                  (UINT32_C(0x10) << 24) | (10 << 16) |
+                  (uint32_t)((destination >> 32) & 0xffff));
+    ip53_store_ok(qts, IP53_IO_SPACE + 0x3c, (uint32_t)destination);
+    ip53_store_ok(qts, IP53_IO_SPACE + 0x24, 1U << 5);
+    g_assert_true(nasid_test_cpu_readq(qts, 0, IP53_PI_PENDING, &pending));
+    g_assert_cmphex(pending & (UINT64_C(1) << 16), ==, 0);
+    ip53_store_ok(qts, IP53_IO_SPACE + 0x14, 0);
+    g_assert_true(nasid_test_cpu_readl(qts, 0, IP53_IO_SPACE + 0x0c, &value));
+    g_assert_cmphex(value & (1U << 5), ==, 1U << 5);
+    g_assert_true(nasid_test_cpu_readq(qts, 0, IP53_PI_PENDING, &pending));
+    g_assert_cmphex(pending & (UINT64_C(1) << 16), ==, UINT64_C(1) << 16);
+
+    /* Link 0xf's arbitration-upper bit 1 is the PROM's crossbar lock. */
+    ip53_store_ok(qts, IP53_IO_SPACE + 0x2dc, 2);
+    g_assert_true(nasid_test_cpu_readl(qts, 0, IP53_IO_SPACE + 0x2dc, &value));
+    g_assert_cmphex(value & 2, ==, 2);
+    ip53_store_ok(qts, IP53_IO_SPACE + 0x2dc, 0);
+    g_assert_true(nasid_test_cpu_readl(qts, 0, IP53_IO_SPACE + 0x2dc, &value));
+    g_assert_cmphex(value & 2, ==, 0);
+    ip53_runtime_test_stop(fixture);
+}
+
+static void test_ip53_crossbar_accepts_error_address_writes(void)
+{
+    ip53_assert_crossbar_register_check(MEMTX_TEST_DEVICE);
+    ip53_assert_crossbar_register_check(
+        MEMTX_TEST_DEVICE "-global sgi-pic.pxbow-revision=3");
 }
 
 static void test_ip53_widget_zero_status_source(void)
@@ -13029,6 +13103,8 @@ int main(int argc, char **argv)
                    test_ip53_widget_zero_reports_revision_three);
     qtest_add_func("sn/builder/ip53-widget-zero-revision-survives-migration",
                    test_ip53_widget_zero_revision_survives_migration);
+    qtest_add_func("sn/builder/ip53-crossbar-accepts-error-address-writes",
+                   test_ip53_crossbar_accepts_error_address_writes);
     qtest_add_func("sn/builder/ip53-widget-zero-status-source",
                    test_ip53_widget_zero_status_source);
     qtest_add_func("sn/builder/ip53-pxbow-route-fences-and-interrupt",
