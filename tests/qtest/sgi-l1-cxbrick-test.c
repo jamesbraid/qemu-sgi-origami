@@ -418,7 +418,7 @@ static void test_positions(void)
 static void test_request_grades(void)
 {
     static const uint16_t refused[] = {
-        0xa, 0xb, 0xc, 0xd, 0xf, 0x10, 0x11, 0x1001, 0x1008, 0x1009,
+        0xb, 0xc, 0xd, 0xf, 0x10, 0x11, 0x1001, 0x1008, 0x1009,
         0x100a, 0x100b, 0x100c, 0x2000, 0x2002, 0x2003, 0x2004, 0x2007,
         0x2008, 0x4000, 0x4002,
     };
@@ -440,6 +440,35 @@ static void test_request_grades(void)
     /* The firmware revision is unknown for the Cx-brick. */
     length = rpc(&rig, 0, LOCAL_GENERAL, 5, NULL, 0, 0, reply);
     expect_code(reply, length, -104);
+    rig_stop(&rig);
+}
+
+/*
+ * Request 0x000a answers the I/O link speed as the C-brick profile does:
+ * a first integer of 0, 400 MHz, which is what the stock PROM expects
+ * from the attached I-brick, unless port-speed-first says 600 MHz.
+ */
+static void test_port_speed(void)
+{
+    CxRig rig;
+    uint8_t reply[131];
+    size_t length;
+
+    rig_start(&rig, NAMED, 0xf, false, "");
+    for (unsigned board = 0; board < 4; board++) {
+        length = rpc(&rig, board, LOCAL_GENERAL, 0xa, NULL, 0, 0, reply);
+        g_assert_cmpuint(length, ==, 16);
+        expect_code(reply, length, 0);
+        g_assert_cmpuint(reply[5], ==, 2);
+        g_assert_cmpuint(ldl_be_p(reply + 7), ==, 0);
+        g_assert_cmpuint(ldl_be_p(reply + 12), ==, 0);
+    }
+    rig_stop(&rig);
+
+    rig_start(&rig, NAMED ",port-speed-first=1", 0x1, false, "");
+    length = rpc(&rig, 0, LOCAL_GENERAL, 0xa, NULL, 0, 0, reply);
+    expect_code(reply, length, 0);
+    g_assert_cmpuint(ldl_be_p(reply + 7), ==, 1);
     rig_stop(&rig);
 }
 
@@ -824,6 +853,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-cxbrick/reply-routing", test_reply_routing);
     qtest_add_func("sgi-l1-cxbrick/positions", test_positions);
     qtest_add_func("sgi-l1-cxbrick/request-grades", test_request_grades);
+    qtest_add_func("sgi-l1-cxbrick/port-speed", test_port_speed);
     qtest_add_func("sgi-l1-cxbrick/board-records", test_board_records);
     qtest_add_func("sgi-l1-cxbrick/console-filter", test_console_filter);
     qtest_add_func("sgi-l1-cxbrick/console-default", test_console_default);

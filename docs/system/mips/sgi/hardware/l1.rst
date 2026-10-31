@@ -552,9 +552,10 @@ the C-brick profile above: a brick starts unnamed and prints ``---c--``
 Request codes, the request layout and the framing follow the C-brick rule.
 The profile serves the codes the Linux v2.6.0 ``ksys/l1.h`` header names
 with the Origin 300 meaning (``0x0001`` to ``0x0009``, ``0x1002`` to
-``0x1007``) and the Origin 300 codes ``0x000e``, ``0x2001``, ``0x2005`` and
-``0x2006``. Every other code answers the unknown-request code and is logged
-as unimplemented, the attached-brick requests ``0x000c`` and ``0x000d``
+``0x1007``), the I/O link speed ``0x000a`` that the stock PROM reads from
+its node's own L1, and the Origin 300 codes ``0x000e``, ``0x2001``,
+``0x2005`` and ``0x2006``. Every other code answers the unknown-request
+code and is logged as unimplemented, the attached-brick requests ``0x000c`` and ``0x000d``
 among them. ``0x2001`` resets, as on the Origin 300; the public header gives
 ``0x2001`` to PCI power-up and ``0x2000`` to the full reset, so which a
 fitted Cx-brick uses is *unknown*, and each ``0x2001`` is logged as such.
@@ -634,6 +635,9 @@ What the model chooses, and the limit of each choice:
 - The brick has no default type character: ``0x0003`` answers minus 104
   until ``brick-type-code`` supplies one, and ``brick`` prints the type as
   ``?``. The firmware revision is unknown, so ``revision-*`` is refused.
+  Request ``0x000a`` answers as the C-brick profile does, 400 MHz unless
+  ``port-speed-first`` says otherwise, which matches the I-brick the
+  Cx-brick's L1 reaches.
 - A neighbouring Cx-brick link is refused. The L2, the neighbouring Cx-brick
   and the ``iia`` to ``iid``, ``nia`` and ``nib`` commands are not modelled.
   One I-brick may be named as ``io-peer``: the attached I/O brick request
