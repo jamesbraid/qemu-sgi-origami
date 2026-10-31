@@ -1193,7 +1193,7 @@ def _validate_ip53_runtime_consoles(model: dict, topology: dict) -> None:
 def _validate_export_profiles(model: dict, topology: dict) -> None:
     hosts = topology.get("pci_host_bridges", [])
     experimental = any(
-        host.get("compatibility_profile") == "pic-rev3-bedrock-experimental"
+        host.get("compatibility_profile") == "pic-rev3-bedrock-compat"
         for host in hosts)
     tezro_compat = any(
         host.get("compatibility_profile") ==
@@ -1206,7 +1206,7 @@ def _validate_export_profiles(model: dict, topology: dict) -> None:
             "Tezro PIC profile requires a registered IP53 profile")
     if any("compatibility_profile" in host
            and host.get("compatibility_profile") not in {
-               "pic-rev3-bedrock-experimental",
+               "pic-rev3-bedrock-compat",
                "pic-rev3-bedrock-tezro-compat",
            } for host in hosts):
         raise CompileError("qtest-only PIC profile cannot be exported as a product")

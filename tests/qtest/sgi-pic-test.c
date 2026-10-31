@@ -3375,7 +3375,7 @@ static void test_bedrock_profile_is_fixture_only(void)
 static void test_runtime_profile_rejects_fixture_mode(void)
 {
     assert_pic_profile_realize_error(
-        "compatibility-profile=pic-rev3-bedrock-experimental,"
+        "compatibility-profile=pic-rev3-bedrock-compat,"
         "test-fixture=on",
         "*PIC runtime profile cannot enable test-fixture*");
 }
@@ -3414,7 +3414,7 @@ static void test_runtime_profile_non_qtest_cli_refuses_static_sysbus(void)
 static void test_runtime_profile_derives_linked_transport(void)
 {
     assert_pic_profile_realize_error(
-        "compatibility-profile=pic-rev3-bedrock-experimental",
+        "compatibility-profile=pic-rev3-bedrock-compat",
         "*PIC linked transport requires a typed peer before realization*");
 }
 

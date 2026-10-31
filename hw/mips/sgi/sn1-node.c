@@ -1937,9 +1937,9 @@ static bool sn1_node_is_ip35(const SN1NodeState *node);
 static bool sn1_node_is_cx(const SN1NodeState *node);
 
 /*
- * Whether this node's processors are the experimental R16000 model: an
- * Origin 350-style IP53 board under its topology's runtime profile, or a
- * Cx-brick node board, which has no such profile.
+ * Whether this node's processors are R16000s: an IP53-family node board
+ * (IP53 or IP59) under its topology's runtime profile, or a Cx-brick node
+ * board, which has no such profile.
  */
 static bool sn1_node_uses_r16000(const SN1NodeState *node,
                                  MachineState *machine)

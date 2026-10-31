@@ -131,7 +131,7 @@
                   "pic_profiles": {
                     "type": "object", "minProperties": 1,
                     "additionalProperties": {
-                      "enum": ["pic-rev3-bedrock-experimental", "pic-rev3-bedrock-tezro-compat"]
+                      "enum": ["pic-rev3-bedrock-compat", "pic-rev3-bedrock-tezro-compat"]
                     }
                   }
                 }
@@ -343,7 +343,7 @@
               "description": "How this IP53 topology runs as a registered runtime profile. The emulator and launchers read these fields instead of comparing topology names.",
               "properties": {
                 "pic_profile": {
-                  "enum": ["pic-rev3-bedrock-experimental", "pic-rev3-bedrock-tezro-compat"],
+                  "enum": ["pic-rev3-bedrock-compat", "pic-rev3-bedrock-tezro-compat"],
                   "description": "The compatibility profile every PIC host selects once the IP53 runtime is authorized."
                 },
                 "l1_irouter_compat": { "type": "boolean" },
@@ -409,7 +409,7 @@
               "minProperties": 1,
               "propertyNames": { "$ref": "#/$defs/identifier" },
               "additionalProperties": {
-                "enum": ["pic-rev3-bedrock", "pic-rev3-bedrock-experimental", "pic-rev3-bedrock-tezro-compat"]
+                "enum": ["pic-rev3-bedrock", "pic-rev3-bedrock-compat", "pic-rev3-bedrock-tezro-compat"]
               }
             },
             "system_timekeepers": {

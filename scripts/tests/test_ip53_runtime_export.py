@@ -45,7 +45,7 @@ class IP53RuntimeExportTests(unittest.TestCase):
         model["components"] = [{"id": "pic", "kind": "pci-host-bridge",
                                 "hardware_kind": "pic"}]
         model["machine"]["emulation"]["pic_profiles"] = {
-            "pic": "pic-rev3-bedrock-experimental"}
+            "pic": "pic-rev3-bedrock-compat"}
         validate_initialization_policy(model)
         for field, value in (("product", "onyx350-base"),
                              ("machine_name", "origin300"),
@@ -71,7 +71,7 @@ class IP53RuntimeExportTests(unittest.TestCase):
             "pic": "pic-rev3-bedrock"}
         validate_initialization_policy(model)
         model["machine"]["emulation"]["pic_profiles"] = {
-            "missing": "pic-rev3-bedrock-experimental"}
+            "missing": "pic-rev3-bedrock-compat"}
         with self.assertRaisesRegex(ResolutionError, "unknown component"):
             validate_initialization_policy(model)
 
@@ -79,12 +79,12 @@ class IP53RuntimeExportTests(unittest.TestCase):
         model = self.experiment_model()
         self.assertTrue(_is_ip53_runtime_profile(model))
         _validate_export_profiles(model, {"pci_host_bridges": [{
-            "compatibility_profile": "pic-rev3-bedrock-experimental"}]})
+            "compatibility_profile": "pic-rev3-bedrock-compat"}]})
         model["composition"]["product"] = "onyx350-base"
         self.assertFalse(_is_ip53_runtime_profile(model))
         with self.assertRaisesRegex(CompileError, "registered IP53 profile"):
             _validate_export_profiles(model, {"pci_host_bridges": [{
-                "compatibility_profile": "pic-rev3-bedrock-experimental"}]})
+                "compatibility_profile": "pic-rev3-bedrock-compat"}]})
         with self.assertRaisesRegex(CompileError, "qtest-only"):
             _validate_export_profiles(self.experiment_model(), {
                 "pci_host_bridges": [{

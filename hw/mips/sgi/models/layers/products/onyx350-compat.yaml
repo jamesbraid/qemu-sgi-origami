@@ -78,7 +78,7 @@ layer:
         # How the emulator and launchers run this IP53 profile, read in
         # place of comparing topology names.
         ip53_runtime:
-          pic_profile: pic-rev3-bedrock-experimental
+          pic_profile: pic-rev3-bedrock-compat
           l1_irouter_compat: true
           node_boards:
             - processors: 4
@@ -86,7 +86,7 @@ layer:
               part: "030-2013-001"
               revision: "-D"
         pic_profiles:
-          pic: pic-rev3-bedrock-experimental
+          pic: pic-rev3-bedrock-compat
         synthetic_identities:
           - component: bedrock
             serial: "0x51454d554e00"
