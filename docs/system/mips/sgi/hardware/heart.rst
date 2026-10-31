@@ -133,15 +133,17 @@ widget 8's small window, directly from the processor rather than
 through a Crossbow loopback.
 
 The model fits one processor. Processor-interface status at ``0x80``
-reads ``0x18``: bit 4 marks processor 0 active and bits 3:0 give widget
-8 (Linux names the low nibble the widget ID). The processor ID register
-at ``0x50000`` reads zero. The reference Octane2, revision F with one
-processor, reads status ``0x8118`` and processor ID zero at PROM time
-(:ref:`sgi-heart-octane2-piu`), *established* for that revision. Its
-status also sets bit 8, which Linux names big-endian, and bit 15, which
-no public source names; the model's ``0x18`` lacks both. The revision 4
-status word is *unknown*, and the model's word is an *approximation* on
-both machines. The IRIX 6.5.30 kernel takes the low nibble of status as the
+reads ``0x118`` on revision 4 and ``0x8118`` on revision F: bit 4 marks
+processor 0 active, bits 3:0 give widget 8 (Linux names the low nibble
+the widget ID) and bit 8 is the bit Linux names big-endian. Revision F
+also sets bit 15, which no public source names. The processor ID
+register at ``0x50000`` reads zero. The reference Octane2, revision F
+with one processor, reads status ``0x8118`` and processor ID zero at
+PROM time (:ref:`sgi-heart-octane2-piu`), *established* for that
+revision, and the ``octane2`` model matches it. Every IP30 runs
+big-endian, so that revision 4 sets bit 8 is *inferred*; the rest of the
+revision 4 word is *unknown*, and the ``octane`` word is an
+*approximation*. The IRIX 6.5.30 kernel takes the low nibble of status as the
 destination widget for PCI DMA, a *software expectation*; with a zero
 nibble it would send SCSI DMA to widget 0. On the model the PROM reads
 status and the processor ID register repeatedly during startup
@@ -182,12 +184,12 @@ follow Linux ``heart.h``. Every reset value is the model's choice
    * - ``0x00``
      - Mode
      - 64
-     - ``0``
+     - ``0``; ``0x0920000000000000`` on revision F
      - read/write
      - Stored whole. Only bits 0, 1, 13, 15, 19, 20, 21 and 25 change
        behaviour (:ref:`sgi-heart-interrupts`, :ref:`sgi-heart-ecc`).
-       Revision F holds 4 in bits 59:57, 56:54 and 53:51 after PROM
-       start-up (:ref:`sgi-heart-octane2-piu`).
+       Revision F resets the request-limit fields 59:57, 56:54 and
+       53:51 to 4, *inferred* (:ref:`sgi-heart-octane2-piu`).
    * - ``0x08``, ``0x10``, ``0x18``
      - SDRAM mode, memory refresh, request arbitration
      - 64
@@ -210,10 +212,9 @@ follow Linux ``heart.h``. Every reset value is the model's choice
    * - ``0x80``
      - Status
      - 64
-     - ``0x18``
+     - ``0x118``; ``0x8118`` on revision F
      - read-only
-     - Constant. Revision F reads ``0x8118``
-       (:ref:`sgi-heart-octane2-piu`).
+     - Constant (:ref:`sgi-heart-identity`).
    * - ``0x98``, ``0xa0``
      - Memory error address and data
      - 64
@@ -277,10 +278,10 @@ follow Linux ``heart.h``. Every reset value is the model's choice
    * - ``0x30000``
      - Compare
      - 64
-     - ``0``
+     - ``0``; ``0xffffff`` on revision F
      - read/write
-     - Low 24 bits stored with no effect. Revision F reads ``0xffffff``
-       at PROM time (:ref:`sgi-heart-octane2-counter`).
+     - Low 24 bits stored with no effect. The revision F reset value is
+       *inferred* (:ref:`sgi-heart-octane2-counter`).
    * - ``0x50000``
      - Processor ID
      - 64
@@ -316,6 +317,12 @@ fails the transaction and logs ``LOG_UNIMP``.
      - ``0x60`` on ``octane2``
      - read-only
      - Absent on ``octane``.
+   * - ``0x10``
+     - Error address upper, 64-bit view
+     - 64
+     - ``0``
+     - read-only
+     - Constant zero.
    * - ``0x14``, ``0x1c``
      - Error address upper and lower
      - 32
@@ -327,7 +334,7 @@ fails the transaction and logs ``LOG_UNIMP``.
      - 32
      - ``0``
      - read/write
-     - Stored whole with no effect.
+     - Stored with no effect. Bits 11:10 are strobes and read zero.
    * - ``0x28`` / ``0x2c``
      - Request timeout
      - 64 / 32
@@ -386,12 +393,16 @@ write fail on both machines.
 The IP30 PROM reads, modifies and writes the 32-bit control word at
 ``0x24``, a *software expectation*. On the model it reads zero and
 writes ``0x4008``, and later reads that back and writes ``0x4c08``
-(:src:`ip30-prom-4.17 widget registers`). The model stores all 32 bits and
-returns them; zero reset and full writability are *approximations*. The
-reference Octane2 reads ``0x4218`` at PROM time, not ``0x4c08``
-(:ref:`sgi-heart-octane2-widget-more`), so the real register's reset
-value, writable bits or the PROM's path differ from the model in a way
-these reads do not resolve.
+(:src:`ip30-prom-4.17 widget registers`). Linux ``xwidget.h`` names bits
+11 and 10 the receive and transmit retry-counter clears, and the same
+bits of the Bridge's control register read back zero, so the model
+treats them as strobes: a write stores the other 30 bits and those two
+read zero, *inferred*. The PROM's ``0x4c08`` then reads back as
+``0x4008``. Zero reset and the writability of the other bits are
+*approximations*. The reference Octane2 reads ``0x4218`` at PROM time
+(:ref:`sgi-heart-octane2-widget-more`). Bits 11:10 match. Bits 9 and 4
+are set there and clear on the model; whether the chip resets them set
+or the PROM writes them on hardware is *unknown*.
 
 The request-timeout word is one stored 32-bit value. A 32-bit access at
 ``0x2c`` and a 64-bit access at ``0x28`` reach it; a 64-bit write keeps its
@@ -593,8 +604,9 @@ processors 1-3, then bit 17 (Linux ``HM_CACHED_PROM_EN``), bit 13
 (``HM_INT_EN``), and finally bits 0-3, 5-8, 10, 12, 14-16 and 25,
 leaving ``0xe00000000203fdff``. The reference Octane2's PROM leaves
 ``0xe92000000203fdff``: the same bits plus 4 in each of the three
-request-limit fields at bits 59:51, which the model resets to zero
-(:ref:`sgi-heart-octane2-piu`). Linux ``heart.h`` names bits 0-10 and 16
+request-limit fields at bits 59:51. The model resets those fields to 4
+on revision F, so its run leaves the same word, and to zero on revision
+4 (:ref:`sgi-heart-octane2-piu`). Linux ``heart.h`` names bits 0-10 and 16
 error enables, of which the PROM leaves 4 and 9 clear, bit 12
 ``HM_DATA_CHK_EN``, 14 ``HM_IO_COH_EN``, 15 ``HM_GLOBAL_ECC_EN`` and 25
 ``HM_COR_ECC_LCK`` (``arch/mips/include/asm/sgi/heart.h`` at
@@ -695,7 +707,8 @@ public source gives one. The reference Octane2 reads compare as
 ``0xffffff`` with pending bit 50 set at its PROM menu, which the PROM does
 not write on the model, so that ``0xffffff`` is the reset value and that a
 match sets bit 50 are both *inferred* (:ref:`sgi-heart-octane2-counter`).
-The model resets compare to zero and never sets bit 50. The stock diagnostic's register test writes
+The model resets compare to ``0xffffff`` on revision F and to zero on
+revision 4, and never sets bit 50. The stock diagnostic's register test writes
 and reads compare, which is why it is stored.
 
 .. _sgi-heart-onewire:
@@ -1119,13 +1132,14 @@ Other widget registers
    0x9000000018000090:                  0
 
 A 64-bit read of widget ``0x10`` completes and returns zero on revision
-F. The error address, error command and HEART-specific error words read
-zero with no error recorded. The control word reads ``0x4218``: bits 14,
-9, 4 and 3. Its low nibble is 8, HEART's widget number. The model's run
-of the same PROM leaves ``0x4c08`` (:ref:`sgi-heart-widget-registers`),
-so bits 4 and 9 set and bits 10 and 11 clear on hardware differ from the
-model. Which bits the chip resets set, and which the PROM writes, is
-*unknown*.
+F. The model returns zero there on every revision; that revision 4 does
+so is *inferred*. The error address, error command and HEART-specific
+error words read zero with no error recorded, as on the model. The
+control word reads ``0x4218``: bits 14, 9, 4 and 3. Its low nibble is 8,
+HEART's widget number. The model's run of the same PROM leaves
+``0x4008`` (:ref:`sgi-heart-widget-registers`): bits 11 and 10 are clear
+on both, and bits 9 and 4 are set on hardware only. Whether the chip
+resets those two set, or the PROM writes them, is *unknown*.
 
 .. _sgi-heart-octane2-piu:
 
@@ -1155,13 +1169,17 @@ maximum processor requests (59:57), maximum I/O requests (56:54) and
 maximum pending I/O requests (53:51), each reading 4. Every mode write
 the model saw the PROM make is a read-modify-write that leaves these
 fields alone (:ref:`sgi-heart-memory`), so that HEART resets each field
-to 4 is *inferred*.
+to 4 is *inferred*. The reads were taken after firmware initialisation in
+a session in which IRIX had also run, so a kernel write is not ruled
+out. The model resets the fields to 4 on revision F and reads the
+measured word after its PROM run.
 
 Status ``0x8118`` decodes under Linux ``heart.h`` as widget number 8 in
 bits 3:0, processor 0 active in bit 4 and big-endian in bit 8, with the
 direct-connect (11), Triton (10) and R4000 (9) bits clear. Bit 15 is
 set and no public source names it. The word is *established* for
-revision F with one processor at PROM time.
+revision F with one processor at PROM time, and the ``octane2`` model
+returns it.
 
 The bus-error address word reads ``0x000000ffffffffff`` and the
 bus-error miscellaneous word ``0x00000000007fffff``. The memory-error
@@ -1226,7 +1244,7 @@ values say nothing about the counter's starting point.
 
 Compare reads ``0xffffff``. The model saw the PROM never touch compare
 (:ref:`sgi-heart-timer`), so that ``0xffffff`` is the chip's reset value
-is *inferred*. Pending bit 50 was set while the counter's low 24 bits
+is *inferred*, and the model's revision F resets to it. Pending bit 50 was set while the counter's low 24 bits
 had passed that value many times. That a compare match sets bit 50 is
 *inferred* from this and the bit's public name, not shown by these
 reads.
@@ -1261,15 +1279,16 @@ Model limits
 - Processor-interface accesses to an unmodelled offset log
   ``LOG_UNIMP``; reads return zero and writes are dropped, without a bus
   error. Widget-window accesses to an unmodelled offset or width log
-  ``LOG_UNIMP`` and fail, so the processor takes a bus error. The stock
-  6.5.30 graphics diagnostic reads widget ``0x10`` as 64 bits and
-  branches on zero, a *software expectation*; on the model that read
-  fails this way. Revision F answers that read with zero
+  ``LOG_UNIMP`` and fail, so the processor takes a bus error.
+- The bus-error address, bus-error miscellaneous and memory-error address
+  words at ``0x88``, ``0x90`` and ``0x98`` read zero, where revision F
+  reads nonzero values at PROM time with no error pending
+  (:ref:`sgi-heart-octane2-piu`).
+- A compare match never sets pending bit 50, which revision F's reads
+  suggest it does (:ref:`sgi-heart-octane2-counter`).
+- Widget control bits 9 and 4 reset to zero and the PROM leaves them
+  clear, where revision F reads them set
   (:ref:`sgi-heart-octane2-widget-more`).
-- Status lacks bits 8 and 15, mode resets the three request-limit fields
-  to zero, compare resets to zero, and the bus-error and memory-error
-  words read zero, each unlike revision F at PROM time
-  (:ref:`sgi-heart-measurements`).
 - Busy one-wire replacement logs ``LOG_GUEST_ERROR``.
 - The Octane's HEART revision 4 has no measured status word, so the
   ``octane`` refuses that read.
@@ -1288,7 +1307,9 @@ from 64 MiB to 2 GiB (``/heart/prom-probe/*``). These check the descriptor
 the probe leaves at base ``0x40``; the revision-4 cases for 64 to 512 MiB
 fail under plain modulo mapping. It also covers widget identity, control,
 request timeout, error and diagnostic registers, interrupt packets, pending
-and mask behaviour on all five levels, processor status, the one-wire master
+and mask behaviour on all five levels, processor status on both revisions,
+the revision F mode and compare reset values
+(``/heart/revision-f-reset-words``), the one-wire master
 with and without a part, slot replacement, Crosstalk routing and DMA through
 a Bridge, the ECC subsets, reset and migration.
 
@@ -1301,7 +1322,9 @@ and succeed after repair.
 ``tests/qtest/octane-test.c`` checks HEART inside the ``octane`` and
 ``octane2`` machines: identity at both widths and the refused widths
 (``/octane/heart-identity``, ``/octane2/heart-identity``), the Octane2
-status word, widget control and error registers, the stored diagnostic
+status word, the measured status, mode, compare and widget ``0x10`` words
+across a reset (``/octane2/heart-measured-words``), widget control and
+error registers, the stored diagnostic
 registers on both machines, one-wire timing with the divider written,
 HEART's level 0-2 outputs, and SCSI DMA from a QLogic
 controller into HEART RAM.

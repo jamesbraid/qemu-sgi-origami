@@ -151,7 +151,7 @@ Identity and placement
      - none
      - parity error response, memory write and invalidate
    * - Latency Timer bits writable
-     - none
+     - all eight
      - all eight
 
 The ``octane`` and ``octane2`` machines build two ISP1040 functions at
@@ -245,8 +245,11 @@ also resets to ``0x0200`` is *inferred*; a read taken before any firmware
 runs would settle it. Both headers also read ``0x40`` in the cache line
 size and the Latency Timer after firmware initialisation. That the real
 part's Latency Timer is writable is *inferred*, and so is that the firmware
-wrote the value: a hardwired or reset value would read the same. The model keeps
-the Latency Timer read-only on the ISP1040. The error latches in Status are the PCI core's
+wrote the value: a hardwired or reset value would read the same. The model
+resets the ISP1040's Latency Timer to zero and takes a write, so the same
+firmware write of ``0x40`` reads back ``0x40``, as on the reference
+Octane2. Only that value is measured. Making all eight bits writable, as
+on the ISP12160, is an *approximation*. The error latches in Status are the PCI core's
 write-one-to-clear bits, and nothing in the model sets them.
 
 The ISP12160 differs in these ways.
@@ -1480,10 +1483,10 @@ Model limits
   weaker than that of a part with a vendor register table. Its PCI
   revision of 5 is *observed* on Origin 200 captures and *established* on
   the reference Octane2.
-- The ISP1040's Latency Timer is read-only and it has no expansion ROM
-  base register, where the reference Octane2's parts read a nonzero Latency
-  Timer and a ROM base with decode disabled. That the real parts take a
-  Latency Timer write and implement the ROM base register is *inferred*. The value 6 in bus
+- The ISP1040 has no expansion ROM base register, where the reference
+  Octane2's parts read a ROM base with decode disabled. That the real
+  parts implement it is *inferred*. Which Latency Timer bits other than
+  those of ``0x40`` the real part implements is *unknown*. The value 6 in bus
   configuration 0 is *inferred* from the family numbering and has not been
   read from hardware.
 - The tape models no real DDS mechanics (helical scan, compression
@@ -1498,7 +1501,9 @@ Tests
 =====
 
 - ``tests/qtest/qlogic-isp-test.c`` is the ISP1040 register contract on a
-  stand-alone PCI bus. It covers identity and the PCI revision, both BARs,
+  stand-alone PCI bus. It covers identity and the PCI revision, the
+  Latency Timer write the reference Octane2's value needs
+  (``latency-timer``), both BARs,
   bus configuration 0 and 1, soft reset and the signature (including the
   exact Linux product-ID comparison), the DMA block configuration and
   control registers, bus control and status, the semaphore, the mailbox

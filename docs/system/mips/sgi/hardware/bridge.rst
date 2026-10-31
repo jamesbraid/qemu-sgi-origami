@@ -260,8 +260,9 @@ model's choice where the specification gives none, an *approximation*.
      - read-only
      - Bit 5 reads one for PCI mode. Bit 6 is the flash-select strap, the
        ``flash-select`` property. Retry counters and the
-       outstanding-request count read zero. The reference Octane2 reads
-       ``0x62`` (:ref:`sgi-bridge-octane2-status`).
+       outstanding-request count read zero. ``octane2`` reads ``0x60``
+       and ``octane`` ``0x20``. The reference Octane2 reads ``0x62``
+       (:ref:`sgi-bridge-octane2-status`).
    * - ``0x010``, ``0x018``
      - Error address upper, lower
      - 32
@@ -1077,6 +1078,12 @@ What the model fits:
   IP29 board fits nothing.
 - The ``flash-select`` property is the strap. Clear puts select 0 at
   ``0xc00000`` and select 1 at ``0xe00000``; set swaps them.
+- ``octane2`` fits its boot part on select 1 with the strap set, as the
+  reference Octane2's status reads, so its Bridge status reads ``0x60``
+  and the part still answers at ``0xc00000``
+  (:ref:`sgi-bridge-octane2-status`). ``octane`` keeps the part on
+  select 0 with the strap clear, status ``0x20``, an *approximation*:
+  no Octane board has been read.
 - A read of 1 to 8 bytes returns the part's bytes in address order, each
   16-bit word read as one chip cycle. A part smaller than 2 MB repeats
   across its select. The reference Octane2's 1 MiB boot select repeats
@@ -1413,6 +1420,11 @@ monitor's read. That it is a live count, not a fixed value, is *inferred*
 from the monitor's read being itself an outstanding request; one sample
 cannot separate the two.
 
+The ``octane2`` model matches the strap and PCI mode: its status reads
+``0x60`` before and after a machine reset, with chip select 1 at
+``0xc00000``. The outstanding-read count reads zero there
+(:ref:`sgi-bridge-limits`).
+
 Control ``0x7f2043ff`` decodes against Linux ``bridge.h`` and the
 specification's control table (:src:`bridge-asic-spec-4.0 p. 21-23`,
 Table 11):
@@ -1696,8 +1708,8 @@ Model limits
   only difference.
 - Status reports the strap and PCI mode only. Its outstanding-request
   count and link retry counters always read zero, where the reference
-  Octane2 read a count of 2 while serving the read. The ``octane2``
-  machine leaves the strap clear, where that board reads it set
+  Octane2 read a count of 2 while serving the read. The model completes
+  each read before the next access, so the count has nothing to report
   (:ref:`sgi-bridge-octane2-status`).
 - The error address registers never record anything, where hardware
   keeps the last logged address.
@@ -1777,5 +1789,7 @@ accesses split into two word cycles, and widget 1 staying the Hub.
 ``tests/qtest/sgi-bridge-bus-test.c`` drives a standalone Bridge with test
 parts. ``tests/qtest/sn0-pio-forward-test.c`` checks that window accesses
 follow a moved BAR. ``tests/qtest/octane-test.c`` covers the Octane flash
-wiring and strap combinations, and ``tests/qtest/sgi-ioc3-eth-test.c``
+wiring and strap combinations and the status word each machine reads
+across a reset (``/octane2/bridge-status-strap``).
+``tests/qtest/sgi-ioc3-eth-test.c``
 covers IOC3 DMA through both windows with both swap settings.

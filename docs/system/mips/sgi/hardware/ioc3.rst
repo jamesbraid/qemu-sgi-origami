@@ -123,7 +123,7 @@ Configuration space
    * - ``0x20-0x3f``
      - Repeat of ``0x00-0x1f``
      - the same words
-     - The chip decodes five address bits. A read of ``0x2c`` returns the
+     - Reads only; writes are not aliased. A read of ``0x2c`` returns the
        latency word, so the chip presents no subsystem registers. A read
        of ``0x3d`` returns the repeated byte of ``0x1d``, zero, so it
        presents no interrupt pin.
@@ -131,7 +131,11 @@ Configuration space
 The model repeats the first 32 bytes of configuration space in the next
 32 for every read that lies inside the 64-byte header, *established* for
 the reference Octane2's chip (:ref:`sgi-ioc3-measurements`) and applied to
-every board as chip behaviour. The PCI core still holds an interrupt pin
+every board as chip behaviour. What the chip does at ``0x40`` and above
+is *unknown*, so only that range repeats. Writes are not aliased: a
+write in ``0x20``-``0x3f``, such as the interrupt line, lands in the
+hidden store and does not read back. What the chip does with such a
+write is *unknown*; Linux and OpenBSD both avoid it. The PCI core still holds an interrupt pin
 of 1 (INTA, the Ethernet line; the SuperIO line is separate board wiring)
 and routes the interrupt from it, so the repeat changes only what a guest
 reads. The dword at ``0x1c`` reads the model's zero, where the reference
@@ -1382,8 +1386,8 @@ The identity, class, revision and Status values are *established* for
 this chip revision. The command, latency and BAR values are what this
 machine read after firmware initialisation, not reset values.
 
-The chip decodes 32 bytes of configuration space and repeats them in the
-next 32, *established* by the 64 bytes read. That it therefore has no
+The chip reads configuration bytes ``0x20``-``0x3f`` as a repeat of
+``0x00``-``0x1f``, *established* by the 64 bytes read. That it therefore has no
 subsystem vendor and subsystem ID registers of its own is *inferred* from
 this repeat on this chip; the read at ``0x2c`` returns the ``0x0c`` word.
 The word at ``0x1c`` reads the BAR 0 value on this unit, *established*,
@@ -1563,10 +1567,11 @@ establish a reset state or the parallel controller part.
 Model limits
 ============
 
-- Configuration space repeats 32 bytes and presents no subsystem
-  registers or interrupt pin, as the reference Octane2's chip does. The
-  word at ``0x1c`` reads zero, where that chip reads its BAR 0 value
-  (:ref:`sgi-ioc3-measurements`).
+- Configuration reads at ``0x20``-``0x3f`` repeat ``0x00``-``0x1f`` and
+  present no subsystem registers or interrupt pin, as the reference
+  Octane2's chip does. Writes there are not aliased and do not read
+  back. The word at ``0x1c`` reads zero, where that chip reads its BAR 0
+  value (:ref:`sgi-ioc3-measurements`).
 - Pin data and the pin registers view one stored word behind the board's
   input mask. The Octane's pins 2 and 3 are unmeasured and copy the
   Octane2's.
