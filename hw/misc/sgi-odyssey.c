@@ -9834,11 +9834,11 @@ done:
  *
  * MODEL CHOICE, DMA writes (the gl-zs-write-rules qtest pins each): they
  * pass odyssey_pixel_allowed(), so clip rectangles and the window-ID
- * compare apply; they ignore the stencil write mask (0x0452 bits 19:12);
- * and a depth write is always the 24-bit form. LIMIT: an RGBA 12/12/12/12
- * window's library sends 16-bit-form words, which are stored as 24-bit
- * words, so the 16-bit read returns near zero and that visual's depth does
- * not round-trip. The board's behaviour for all three is UNKNOWN.
+ * compare apply; and a depth write is always the 24-bit form. LIMIT: an
+ * RGBA 12/12/12/12 window's library sends 16-bit-form words, which are
+ * stored as 24-bit words, so the 16-bit read returns near zero and that
+ * visual's depth does not round-trip. The board's behaviour for both is
+ * UNKNOWN.
  */
 enum {
     ODSY_DMA_PLANE_COLOUR,
@@ -9850,33 +9850,51 @@ enum {
  * A depth or stencil write to the draw sentinel (the datasheet's "Depth and
  * stencil headers", ESTABLISHED as the library's request): word 7 carries
  * format code 0 and type code 4 (0x080) and the four-byte pixel code
- * (bits 18:16 = 1); word 4 has bits 7:0 clear, bit 12 set, and a size
- * field in bits 15:13 of 1 for depth and 0 for stencil. The other bits of
- * word 7 (the transfer path, the descriptions-differ bit, the interrupt
- * request) and of word 4 (the framebuffer depth code, the field codes and
- * the draw buffer) are not read: the datasheet leaves the field codes'
- * meaning unknown, and the planes have no use for them.
+ * (bits 18:16 = 1); word 4 has bits 7:0 clear and bit 12 set. The other bits
+ * of word 7 (the transfer path, the descriptions-differ bit, the interrupt
+ * request) and of word 4 (the size field, the framebuffer depth code, the
+ * field codes and the draw buffer) are not read. The size field does not
+ * choose depth or stencil: the library's burst never carries it, and the
+ * write enables of block 0x052 (register 0x0452) choose at write time
+ * (odyssey_dma_zs_write_pixel()).
  */
 #define ODSY_DMA_ZS_CONTROL 0x00010080u
 #define ODSY_DMA_ZS_CONTROL_MASK 0x000701ffu
-#define ODSY_DMA_ZS_SIZE_SHIFT 13
-#define ODSY_DMA_ZS_SIZE_MASK 0x7
 
-static unsigned odyssey_dma_zs_write_plane(const uint32_t *hdr)
+static bool odyssey_dma_zs_write(const uint32_t *hdr)
 {
     uint32_t fmt = hdr[ODSY_DMA_HDR_FORMAT];
 
-    if ((hdr[ODSY_DMA_HDR_CONTROL] & ODSY_DMA_ZS_CONTROL_MASK) !=
-        ODSY_DMA_ZS_CONTROL || (fmt & 0xff) || !(fmt & (1u << 12))) {
-        return ODSY_DMA_PLANE_COLOUR;
+    return (hdr[ODSY_DMA_HDR_CONTROL] & ODSY_DMA_ZS_CONTROL_MASK) ==
+           ODSY_DMA_ZS_CONTROL && !(fmt & 0xff) && (fmt & (1u << 12));
+}
+
+/*
+ * One pixel of a depth or stencil write, chosen by register 0x0452. The
+ * meaning of the bits is ESTABLISHED (the datasheet's "Depth and stencil by
+ * pixel burst"): bit 24 enables depth, bits 19:12 are the stencil write
+ * mask. INFERRED, not stated by the datasheet: the word is depth (its low
+ * 24 bits) when bit 24 is set, and merges into the stencil byte as
+ * (word & mask) | (old & ~mask), ordinary write-mask semantics. A word may
+ * take both planes when both are enabled; that is a MODEL CHOICE, with the
+ * stencil byte taken from the word's low byte to fit the model's plane
+ * split (the gl-zs-write-enables qtest pins it). LIMIT: whether the
+ * depth-test and stencil-test bits of 0x0404 gate the write is UNKNOWN; the
+ * model applies neither.
+ */
+static void odyssey_dma_zs_write_pixel(SGIOdysseyState *s, int64_t x,
+                                       int64_t y, uint32_t word)
+{
+    uint32_t mask = (s->gl_write_mask >> ODSY_WRITE_STENCIL_SHIFT) &
+                    ODSY_WRITE_STENCIL_MASK;
+
+    if (s->gl_write_mask & ODSY_WRITE_DEPTH) {
+        odyssey_gl_store_depth(s, x, y, word);
     }
-    switch ((fmt >> ODSY_DMA_ZS_SIZE_SHIFT) & ODSY_DMA_ZS_SIZE_MASK) {
-    case 1:
-        return ODSY_DMA_PLANE_DEPTH;
-    case 0:
-        return ODSY_DMA_PLANE_STENCIL;
-    default:
-        return ODSY_DMA_PLANE_COLOUR;
+    if (mask) {
+        uint32_t old = odyssey_gl_load_stencil(s, x, y);
+
+        odyssey_gl_store_stencil(s, x, y, (word & mask) | (old & ~mask));
     }
 }
 
@@ -9983,7 +10001,7 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
     g_autofree uint8_t *payload = NULL;
     uint32_t left, r;
     bool top_down = false;
-    unsigned zs = odyssey_dma_zs_write_plane(hdr);
+    bool zs = odyssey_dma_zs_write(hdr);
     unsigned psize = zs ? 4 : odyssey_dma_draw_sentinel_bytes(hdr, &top_down);
     /*
      * APPROXIMATION: the window's height, for a top-down write's
@@ -10063,12 +10081,8 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
                           (int64_t)y + h - 1 - r) + s->win_origin[1];
             uint32_t rgba;
 
-            if (zs == ODSY_DMA_PLANE_DEPTH) {
-                odyssey_gl_store_depth(s, px, py, ldl_be_p(src));
-                continue;
-            }
-            if (zs == ODSY_DMA_PLANE_STENCIL) {
-                odyssey_gl_store_stencil(s, px, py, ldl_be_p(src));
+            if (zs) {
+                odyssey_dma_zs_write_pixel(s, px, py, ldl_be_p(src));
                 continue;
             }
             if (psize == 4) {
@@ -10811,7 +10825,7 @@ static void odyssey_dma_from_board(SGIOdysseyState *s, const SGIDMABus *bus,
  * upload to a sentinel (GL's DMA image write) is accepted only by the
  * draw-sentinel adapter, for the colour layouts it knows
  * (odyssey_dma_draw_sentinel_bytes()) and the depth and stencil writes
- * (odyssey_dma_zs_write_plane()). The 0xe03 opcode, which only the
+ * (odyssey_dma_zs_write()). The 0xe03 opcode, which only the
  * diagnostic region path emits, is reported and not performed.
  */
 static void odyssey_dma_descriptor(SGIOdysseyState *s, bool readback)
