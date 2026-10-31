@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * A machine started on state qemu-sgi-machine-init created must read the
  * same boot flash as one started with no files on the same PROM image.

@@ -3,7 +3,7 @@
  * Hub's own bus, as the configuration NVRAM section of the project's PCF8584
  * and ELSC datasheet specifies it.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

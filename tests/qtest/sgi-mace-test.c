@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Register tests for the standalone MACE 2.0 peripheral block. */
 
 #include "qemu/osdep.h"

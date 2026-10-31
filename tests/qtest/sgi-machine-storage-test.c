@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Attach each SGI machine's writable stores as block nodes through the
  * machine property named for the catalogue's storage item, and check that a

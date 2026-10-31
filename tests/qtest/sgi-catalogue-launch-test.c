@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Launch every offering query-sgi-machines lists from its catalogue data:
  * machine-options, storage bindings, processor, CPU count and memory.
