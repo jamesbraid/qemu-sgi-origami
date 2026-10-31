@@ -10167,6 +10167,76 @@ static void test_origin3900_cx_brick(void)
 }
 
 /*
+ * A Cx-brick carries either IP53 or IP59 node boards, never both, and the
+ * IP53 brick stays the default. The IP59 brick's L1 reports the captured
+ * IP59_4CPU record for its boards and every processor is the 1 GHz,
+ * 16 MiB R16000; the IP53 brick's L1 keeps the generic record and its
+ * processors the 700 MHz, 8 MiB fit.
+ */
+static void test_origin3900_ip59_cx_brick(void)
+{
+    static const struct {
+        const char *topology;
+        const char *board_name;
+        uint32_t reset_mode;
+        uint64_t scache_bytes;
+        uint64_t clock_hz;
+    } bricks[] = {
+        { "origin3900", "", 0x009cad85, 8 * MiB, 700000000 },
+        { "origin3900-ip59", "IP59_4CPU", 0x009dad85, 16 * MiB, 1000000000 },
+    };
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn-builder-origin3900-ip59-prom-XXXXXX", &prom,
+                             &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    for (size_t i = 0; i < G_N_ELEMENTS(bricks); i++) {
+        QTestState *qts = qtest_initf(
+            "-M origin3000,topology=%s -cpu R16000 -smp 16 -m 8192 "
+            "-bios %s -nodefaults -display none", bricks[i].topology, prom);
+        g_autoptr(QDict) response = qtest_qmp(
+            qts, "{'execute':'query-cpus-fast'}");
+        QList *cpus = qdict_get_qlist(response, "return");
+        const QListEntry *entry;
+        g_autofree char *name = qom_get_str(qts, "/machine/module0/l1",
+                                            "node-board-name");
+        unsigned int count = 0;
+
+        g_assert_cmpstr(name, ==, bricks[i].board_name);
+        if (bricks[i].board_name[0]) {
+            g_autofree char *part = qom_get_str(qts, "/machine/module0/l1",
+                                                "node-board-part");
+            g_autofree char *revision = qom_get_str(
+                qts, "/machine/module0/l1", "node-board-revision");
+
+            g_assert_cmpstr(part, ==, "030-1989-003");
+            g_assert_cmpstr(revision, ==, "-C");
+        }
+        for (entry = qlist_first(cpus); entry; entry = qlist_next(entry)) {
+            QDict *cpu = qobject_to(QDict, qlist_entry_obj(entry));
+            const char *path = qdict_get_str(cpu, "qom-path");
+
+            g_assert_cmphex(qom_get_uint(qts, path, "r16000-reset-mode"), ==,
+                            bricks[i].reset_mode);
+            g_assert_cmpuint(qom_get_uint(qts, path, "r16000-scache-bytes"),
+                             ==, bricks[i].scache_bytes);
+            count++;
+        }
+        g_assert_cmpuint(count, ==, 16);
+        g_assert_cmpuint(qom_get_uint(qts, "/machine/cpu-refclk",
+                                      "qtest-clock-period"), ==,
+                         CLOCK_PERIOD_FROM_HZ(bricks[i].clock_hz));
+        qtest_quit(qts);
+    }
+    g_unlink(prom);
+}
+
+/*
  * The IO7 answers at head F devices 4 and 5 and, with its IEEE 1394
  * controller left out, not at device 6. Only c0 reaches it.
  */
@@ -12757,6 +12827,8 @@ int main(int argc, char **argv)
                    test_onyx3000_vbrick_l1_and_heads);
     qtest_add_func("sn/builder/origin3900/cx-brick",
                    test_origin3900_cx_brick);
+    qtest_add_func("sn/builder/origin3900/ip59-cx-brick",
+                   test_origin3900_ip59_cx_brick);
     qtest_add_func("sn/builder/origin3200/io7-without-ieee1394",
                    test_origin3200_io7_without_ieee1394);
     qtest_add_func("sn/builder/origin3200/io7-timekeeper",

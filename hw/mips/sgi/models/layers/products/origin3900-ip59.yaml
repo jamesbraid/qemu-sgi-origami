@@ -1,0 +1,265 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Origin 3900 with IP59 node boards: one Cx-brick with four of them, and an
+# I-brick on node board 0's XIO connector. A Cx-brick is all IP53 or all IP59.
+layer_version: 1
+sources:
+  ip59-node-board: "web:irixnet-thread-2263  module 001c01 of the captured system: Part:030-1989-003;Name:IP59_4CPU;Revision:-C, four 1.0 GHz R16000 revision 3.0 with 16 MB secondary cache"
+  ip59-identity: "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf share/man/man4/man4.sgi/intro.4 lines 113-114: IP59 is the 1GHz IP53 design"
+  007-4426-001-scope: "007-4426-001 printed page xi: the guide covers Origin 3900 and Onyx 3900 systems, the systems that contain Cx-bricks"
+  007-4426-001-partition: "007-4426-001 printed page 3: a standalone partition includes at least one Cx-brick, one I- or IX-brick, a root disk and one console connection"
+  007-4426-001-one-brick: "007-4426-001 printed pages 6 and 18, Table 1-1 and Figure 2-1: a partition of one Cx-brick, with all four IP53 node boards on its own router"
+  007-4572-001-population: "007-4572-001 printed pages 3, 4 and 13: one to four IP53 node boards, each with zero or four processors, processors added in increments of four"
+  007-4572-001-io: "007-4572-001 printed pages 2 and 14: a Cx-brick attaches up to four I/O bricks; the I-, P-, X-, N-, IX- and PX-bricks are compatible"
+  007-4572-001-xio: "007-4572-001 printed page 10: XIO 0 to node 0"
+  007-4240-002-cbrick-ports: "007-4240-002 printed page 196 and 007-4311-002 printed page 36: C-bricks are cabled only to router ports 2, 3, 4 and 5"
+  108-0240-002-ports: "108-0240-002 printed pages 2-28 and 2-29: I-brick ports A and B go to compute nodes"
+  007-4653-001-nasid: "007-4653-001 printed page 62, Figure 3-5: the four boards take consecutive NASIDs in the order board 1, board 2, board 0, board 3"
+layer:
+  kind: product
+  id: origin3900-ip59
+  requires: {assembly: ip53}
+  topology:
+    min_nodes: 1
+    max_nodes: 4
+    node_cpu_counts: [0, 4]
+    # This composition fixes the selected fit, four R16000 processors on
+    # each of four node boards, so it is the only population an emulator
+    # built from it would accept.
+    supported_cpu_populations: [[4, 4, 4, 4]]
+    supported_processors:
+      - {part: r16000, clock_mhz: 1000, cache_mib: 16}
+    supported_bank_mib_per_node:
+      - [1024, 1024, 0, 0, 0, 0, 0, 0]
+    provenance: vendor-document
+    sources: [007-4426-001-one-brick, 007-4572-001-population]
+  population:
+    nodes: 4
+    cpus_per_node: [4, 4, 4, 4]
+    provenance: vendor-document
+    sources: [007-4426-001-one-brick, 007-4572-001-population]
+  cpu_selection:
+    default: {clock_mhz: 1000, cache_mib: 16}
+    slots: [node0-cpu0, node0-cpu1, node0-cpu2, node0-cpu3, node1-cpu0, node1-cpu1, node1-cpu2, node1-cpu3, node2-cpu0, node2-cpu1, node2-cpu2, node2-cpu3, node3-cpu0, node3-cpu1, node3-cpu2, node3-cpu3]
+  memory_kits_per_node: [kit-2048-at-banks-0-1-origin350-profile, kit-2048-at-banks-0-1-origin350-profile, kit-2048-at-banks-0-1-origin350-profile, kit-2048-at-banks-0-1-origin350-profile]
+  composition_rules:
+    counts:
+      - {bricks: [cx-brick], min: 1, max: 1}
+      - {bricks: [r-brick], max: 0}
+      - {bricks: [i-brick, p-brick, x-brick], max: 4, require: i-brick}
+    provenance: vendor-document
+    sources: [007-4426-001-partition, 007-4426-001-one-brick, 007-4572-001-io]
+  data:
+    machine:
+      name: Origin 3900
+      model_role: emulation-target
+      notes: >-
+        The Origin 3900 with IP59 node boards: one Cx-brick with all four node
+        boards fitted, sixteen 1 GHz R16000 processors with 16 MB secondary
+        caches, and an I-brick on node board 0's XIO connector at its XBridge
+        port A. IP59 is inferred to have been an upgrade for the IP53 systems; the board is
+        the captured IP59_4CPU, part 030-1989-003, revision C, which the Cx-
+        brick's L1 reports for every board. A Cx-brick is all IP53 or all
+        IP59, so a different clock or board is another topology. The IP
+        Numbers table lists the Origin 3900 against IP59 and IRIX treats IP53
+        and IP59 nodes alike; no Cx-brick
+        capture is held. Whether the Cx-brick's IP59 board is the same board
+        as the 2U one is not established; the 16 MB cache follows the captured
+        IP59 boards. The reset word 0x009dad85 and the PROM seed are synthetic
+        inputs. Node board 0 and port A are this composition's choices; which
+        XIO connector a boot I-brick uses is unknown. An IX-brick may take the
+        I-brick's place on a real partition; no IX-brick layer exists yet. The
+        Bedrock is the 200 MHz revision 2 every published inventory reports,
+        memory is 2048 MB in banks 0 and 1, and node board n takes router port
+        n+2, as for the IP53 Origin 3900. The boards are numbered NASID 0 to 3
+        by board number, where the Origin 3900 guide orders them board 1, 2,
+        0, 3 from an unknown base. The Cx-brick's L1 reports the C-brick's
+        type character, which the stock PROM needs to name the module. The
+        router answers the model's synthetic diagnostics, which no hardware
+        record settles. The rack's L2 controller is not modelled.
+      emulation:
+        bedrock_nodes:
+          cx0-node0-bedrock: &cx-bedrock
+            # Product code 0 in bits 15:12 is a C-brick to OpenBSD and the
+            # stock PROM; a Cx-brick node board is the C-brick's equivalent
+            # ("one IP53 node board is equal to one C-brick", 007-4653-001
+            # printed page 52). The low nibble selects the PROM's
+            # configuration row; the Origin 350 fit needs the row its own
+            # board word selects.
+            board_id_word: 1
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask: {mode: fitted-banks}
+            provenance: derived
+            sources: ["openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick", "007-4653-001 printed page 52: one IP53 node board is equal to one C-brick", "firmware:ip35-prom-6.210 CPU-configuration table"]
+            notes: >-
+              Approximation. No source gives a Cx-brick node board's board
+              word. The Origin 350 IP53's word is reused so that the PROM
+              selects the R16000 row; a register read on a real node board
+              would settle it.
+          cx0-node1-bedrock: *cx-bedrock
+          cx0-node2-bedrock: *cx-bedrock
+          cx0-node3-bedrock: *cx-bedrock
+        l1_controllers:
+          cx0-l1:
+            node_board: {processors: 4, name: IP59_4CPU, part: "030-1989-003", revision: "-C"}
+            # The printed module letter is c, as a C-brick's; the stock PROM
+            # maps the C-brick's type byte, 0x43, to the C-brick module
+            # class. The Cx-brick's real type byte is unknown.
+            reported_type: 67
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst, ip59-node-board, "007-4653-001 printed pages 21 and 134: 001c07 is a Cx-brick in rack 001, slot 07"]
+            notes: >-
+              Approximation. The type byte is the C-brick's, because the
+              printed letter is the same and the PROM needs a module class;
+              the Cx-brick's real value (the profile's unknown Cx-5) would
+              settle it. The firmware revision is unknown and not carried.
+          ibrick-l1:
+            profile: ibrick
+            revision: {major: 1, minor: 44, patch: 0}
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            notes: >-
+              The I-brick profile of the L1 model, reached from the Cx-brick's
+              L1 over the XIO cable. Its firmware revision is an
+              approximation: no capture gives a fitted I-brick's, so it is the
+              1.44.0 of every brick image in the IRIX 6.5.30 L1 firmware, as
+              the C-brick profiles use.
+        io_boards:
+          ibrick-xbridge-bridge-f:
+            ioc3_subsystem_id: 65535
+            mac_source: none
+            # The TSB12LV22 model has no PHY or bus, and its reviewed
+            # register contract keeps it out of product profiles until
+            # those exist; the stock PROM's 1394 probe waits on them.
+            ieee1394_absent: true
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick, hw/misc/tsb12lv22.c]
+            notes: >-
+              The IOC3 subsystem field is the unobserved placeholder, and no
+              source gives where the IO7's Ethernet address comes from. The
+              IEEE 1394 link controller is left out, a stated limitation:
+              its PHY and bus are not modelled.
+        system_timekeepers:
+          ibrick-xbridge-bridge-f:
+            kind: m48t35-compatible
+            year_base: 1968
+            initial_ip27_fixture: false
+            provenance: derived
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"]
+            notes: >-
+              The IO7's time-of-day part is not identified; this is the
+              Origin 300's M48T35-compatible choice, an approximation. IP35
+              software uses the 1968 year convention.
+        # The IP35 flash configuration block's product values: machine type
+        # 0 and the 1 GHz IP59 R16000 firmware word.
+        ip35_firmware:
+          machine_type: 0
+          cpu_mode_word: 0x569dad85
+          provenance: derived
+          sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  selected 6.210 flash payload and seed policy"]
+          notes: >-
+            The 1 GHz, 16 MB R16000 firmware word the IP59 products use; the
+            word is a synthetic input and no Cx-brick flash block has been
+            captured.
+        # The router answers the model's synthetic diagnostics, which no
+        # hardware record settles.
+        synthetic_router_diagnostics: true
+        machine_name: origin3000
+        display_description: SGI Origin 3900 (IP59), one Cx-brick and an I-brick
+        profile: origin3900-ip59
+        lifecycle: implemented
+        # Each node board runs the selected fit's 2048 MiB only.
+        emulator_constraints:
+          accepted_bank_sizes_mib: [2048]
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - name: CPU reset view
+              address: "0x000_001fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: local Hub-special boot view
+              address: "0x100_18000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: bounded high local Hub-special boot view
+              address: "0x100_1fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: node-zero remote Hub-special boot view
+              address: "0x100_38000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+          second_selection:
+            address: "0x100_1a000000"
+            size: "0x0080_0000"
+          provenance: derived
+          sources: [qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-carrier, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-trampolines, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip35-views]
+          notes: >-
+            The Origin 300's stock IP35 PROM 6.210 payload and views, carried
+            by each Cx-brick node board; the Origin 350 inventory reports the
+            same PROM revision. Emulator compatibility policy; no fitted flash part
+            or physical reset decoder is claimed.
+        initial_module_numbers:
+          # The guide's example names a Cx-brick 001c07; no reviewed source
+          # places this system's bricks, so these numbers are model choices
+          # that only need to be distinct.
+          - {component: cx0-chassis, number: 7, reason: "Model choice: the slot the Origin 3900 guide's example names, 001c07."}
+          - {component: ibrick-brick, number: 16, reason: "Model choice: a distinct slot for the I-brick."}
+        synthetic_identities:
+          - component: cx0-node0-bedrock
+            serial: "0x51454d554e00"
+            reason: Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.
+          - component: cx0-node1-bedrock
+            serial: "0x51454d554e01"
+            reason: Synthetic node identity N1, carrying the "QEMU" marker; not hardware evidence.
+          - component: cx0-node2-bedrock
+            serial: "0x51454d554e02"
+            reason: Synthetic node identity N2, carrying the "QEMU" marker; not hardware evidence.
+          - component: cx0-node3-bedrock
+            serial: "0x51454d554e03"
+            reason: Synthetic node identity N3, carrying the "QEMU" marker; not hardware evidence.
+          - component: ibrick-xbridge
+            serial: "0x51454d555800"
+            reason: Synthetic I-brick XBridge identity; no physical barcode is claimed.
+          - component: ibrick-ioc3
+            serial: "0x5e7454d55000"
+            reason: Synthetic I-brick IOC3 identity; no physical barcode is claimed.
+          - component: cx0-router
+            serial: "0x51454d555200"
+            reason: Synthetic router descriptor identity; no physical barcode is claimed.
+      harness:
+        console: l1-uart
+        prom_dialogue: ip35-l1-prompt
+        default_cpu_model: R16000
+        # The I-brick's Fibre Channel card's private loop: a boot disk
+        # there is a loop port, named by the launcher's port_wwn and wwn.
+        disk_bus: scsi.0
+        netboot_adapter: ioc3-ethernet
+        default_topology: origin3200
+        supported_guests: [irix]
+        install_media: [netboot]
+        provenance: derived
+        sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-metadata]
+    evidence_policy: strict
+    components:
+      - id: rack
+        name: Origin 3900 rack
+        kind: chassis
+        provenance: vendor-document
+        description: The rack that holds the Cx-brick and its I/O brick.
+        sources: [007-4426-001-scope, 007-4426-001-one-brick]
+    buses: []
+    connections: []
+    xio_cables:
+      - id: cx0-to-ibrick
+        ends: [cx0-xio-0-connector, ibrick-port-a]
+        provenance: vendor-document
+        sources: [007-4572-001-xio, 007-4572-001-io]
+        notes: >-
+          Node board 0 and port A are this composition's choices; which XIO
+          connector and port a boot I-brick uses is unknown.

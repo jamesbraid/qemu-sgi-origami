@@ -93,6 +93,7 @@ hw/mips/sgi/models/layers/modules/ip27-node-board.yaml
 hw/mips/sgi/models/layers/modules/ip53-onyx350-compat-module.yaml
 hw/mips/sgi/models/layers/modules/ip53-onyx4-host-compat-module.yaml
 hw/mips/sgi/models/layers/modules/ip53-origin350-module.yaml
+hw/mips/sgi/models/layers/modules/ip59-cx-brick.yaml
 hw/mips/sgi/models/layers/modules/ip59-onyx350-module.yaml
 hw/mips/sgi/models/layers/modules/ip59-onyx4-host-module.yaml
 hw/mips/sgi/models/layers/modules/ip59-origin350-module.yaml
@@ -152,6 +153,7 @@ hw/mips/sgi/models/layers/products/origin3400.yaml
 hw/mips/sgi/models/layers/products/origin350-ip59.yaml
 hw/mips/sgi/models/layers/products/origin350-reference.yaml
 hw/mips/sgi/models/layers/products/origin350.yaml
+hw/mips/sgi/models/layers/products/origin3900-ip59.yaml
 hw/mips/sgi/models/layers/products/origin3900.yaml
 hw/mips/sgi/models/layers/products/tezro-rack-ip59.yaml
 hw/mips/sgi/models/layers/products/tezro-rack.yaml
@@ -194,6 +196,7 @@ hw/mips/sgi/models/origin3400.yaml
 hw/mips/sgi/models/origin350-ip59.yaml
 hw/mips/sgi/models/origin350-reference.yaml
 hw/mips/sgi/models/origin350.yaml
+hw/mips/sgi/models/origin3900-ip59.yaml
 hw/mips/sgi/models/origin3900.yaml
 hw/mips/sgi/models/references.schema.json
 hw/mips/sgi/models/references.yaml

@@ -1129,8 +1129,10 @@ def _processor(model: dict, cpu: dict) -> dict:
             # approximation its datasheet states; it has no PIC and no
             # discovery launch recipe.
             "origin3900": ("origin3000", 700, 0x009cad85, "origin3900"),
+            "origin3900-ip59": ("origin3000", 1000, 0x009dad85,
+                                "origin3900-ip59"),
         }.get(product)
-        cx_brick = product == "origin3900"
+        cx_brick = product in ("origin3900", "origin3900-ip59")
         origin350_projection = (
             product in ("origin350", "origin350-ip59")
             and model.get("machine", {}).get("emulation", {}).get(

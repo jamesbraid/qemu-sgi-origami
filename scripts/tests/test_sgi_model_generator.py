@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "d112fb3fb28707d54477fce8b0819be7bb4ac883bb696b2a66b3ea56515b89c3"
+    "c9971017669044236e8675487a33ef64fda05f58be56933beca732d56bb28a21"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -209,9 +209,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 155)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 49)
-        self.assertEqual(len(layers), 104)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 158)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 50)
+        self.assertEqual(len(layers), 106)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -933,11 +933,14 @@ class FuelTests(unittest.TestCase):
                     "machine-type": 0,
                     "cpu-mode-word": 0x5414a785})
                 continue
-            if topology["name"] == "origin3900":
-                # The Cx-brick reuses the Origin 350's IP53 firmware word.
+            if topology["name"] in ("origin3900", "origin3900-ip59"):
+                # The Cx-brick reuses the Origin 350's IP53 firmware word,
+                # or the IP59 products' when it carries IP59 boards.
                 self.assertEqual(topology["ip35-firmware"], {
                     "machine-type": 0,
-                    "cpu-mode-word": ip53_words["origin350"]})
+                    "cpu-mode-word": ip53_words[
+                        "origin350-ip59" if topology["name"].endswith("ip59")
+                        else "origin350"]})
                 continue
             if product not in ("origin300", "fuel", "origin350",
                                "onyx350", "tezro", "onyx4-host"):

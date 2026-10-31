@@ -1,0 +1,532 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Origin 3000 Cx-brick with IP59 node boards: four node boards and one router board in one
+# brick, with four external NUMAlink 3 ports and one XIO port per node board.
+layer_version: 1
+sources:
+  cx-composition: "007-4572-001 printed pages 1 and 3, Table 1: the Cx-brick holds one to four IP53 node boards, one router board and a power entry module, with 4 internal and 4 external NUMAlink 3 ports and 4 internal and 4 external XIO ports"
+  cx-node-board: "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+  cx-memory: "007-4572-001 printed pages 4 and 13: 512 MB or 1 GB DDR DIMMs added in matched pairs, the first pair in slots 0 and 1, 1 to 8 GB per node board"
+  cx-router: "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors"
+  cx-numalink-labels: "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+  cx-xio: "007-4572-001 printed page 10: XIO 2 to node 2, XIO 1 to node 1, XIO 3 to node 3 and XIO 0 to node 0"
+  cx-bedrock-identity: "web:nekonomicon-16729141  an Origin 350 hinv -v reports ASIC BEDROCK Rev 2 at 200 MHz; every published Origin 3000 inventory reports the same for a C-brick"
+  ip59-processors: "web:irixnet-thread-2263  module 001c01 of the captured system: four 1.0 GHz R16000 revision 3.0 with 16 MB secondary cache; qemu:docs/system/mips/sgi/ip35.rst#sgi-ip59-profiles  the reset word is a synthetic input"
+  ip59-field-upgrade: "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf share/man/man4/man4.sgi/intro.4 lines 113-114: IP59 is the 1GHz IP53 design"
+  cx-l1: "007-4572-001 printed pages 5 and 10: the Cx-brick has one L1 controller, on the router board, with a front display, a console connector and a USB L1 port"
+  cx-router-ports: "007-4572-001 printed pages 4 and 11: the external connectors are NUMAlink 1 Port A, 8 Port H, 7 Port G and 6 Port F, so ports 1, 8, 7 and 6 are external; 007-4311-002 printed pages 36 and 37: a C-brick takes router port 2, 3, 4 or 5"
+layer:
+  kind: module
+  id: cx-brick
+  requires: {architecture: sn1, assembly: ip53}
+  data:
+    components:
+      - id: chassis
+        name: Cx-brick
+        kind: module
+        provenance: vendor-document
+        sources: [cx-composition]
+        notes: >-
+          The brick's L1 type character is unknown, so the chassis carries
+          no brick_type.
+      - id: router-board
+        name: Cx-brick router board
+        kind: board
+        provenance: vendor-document
+        parent: chassis
+        sources: [cx-router]
+      - id: router
+        name: SN1 Router
+        kind: router-asic
+        hardware_kind: router
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/router.rst]
+        router_asic: {port_count: 8, role: router, node_ports: [2, 3, 4, 5]}
+        identity: {part: "0x3017", hardware_revision: 1, chip_inputs: 0}
+        provenance: vendor-document
+        parent: router-board
+        sources: [cx-composition, cx-router]
+        notes: >-
+          Eight ports: four internal links to the node boards and four
+          external connectors. The connector labels number the external
+          ports 1, 8, 7 and 6, which leaves 2 to 5, the ports a C-brick
+          takes on an R-brick, for the node links. That node board n takes
+          port n+2 is a model choice; no source orders them. The part and
+          revision are the R-brick's (the addendum says the same ASIC),
+          reused; the zero chip inputs are an emulator policy.
+      - id: l1
+        name: L1 system controller
+        kind: system-controller
+        hardware_kind: l1
+        system_controller: {kind: l1, owner: module, profile: cx-brick}
+        provenance: vendor-document
+        parent: router-board
+        description: >-
+          The brick's one L1, on the router board. It serves the four node
+          boards over one link each and holds the brick's identity.
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+        sources: [cx-l1]
+      - id: numalink-a
+        name: NUMAlink 1 Port A
+        kind: connector
+        provenance: vendor-document
+        parent: router
+        connector: {interface: NUMAlink 3, location: rear panel, occupancy: opaque, notes: "Joins the neighbouring Cx-brick, with port F."}
+        sources: [cx-numalink-labels]
+      - id: numalink-h
+        name: NUMAlink 8 Port H
+        kind: connector
+        provenance: vendor-document
+        parent: router
+        connector: {interface: NUMAlink 3, location: rear panel, occupancy: opaque, notes: "Goes to an R-brick in router-based systems, or to another Cx-brick."}
+        sources: [cx-numalink-labels]
+      - id: numalink-g
+        name: NUMAlink 7 Port G
+        kind: connector
+        provenance: vendor-document
+        parent: router
+        connector: {interface: NUMAlink 3, location: rear panel, occupancy: opaque, notes: "Goes to an R-brick in router-based systems, or to another Cx-brick."}
+        sources: [cx-numalink-labels]
+      - id: numalink-f
+        name: NUMAlink 6 Port F
+        kind: connector
+        provenance: vendor-document
+        parent: router
+        connector: {interface: NUMAlink 3, location: rear panel, occupancy: opaque, notes: "Joins the neighbouring Cx-brick, with port A."}
+        sources: [cx-numalink-labels]
+      - id: node0-board
+        name: IP53 node board
+        kind: board
+        hardware_kind: ip53-cx
+        provenance: vendor-document
+        parent: chassis
+        sources: [cx-node-board]
+        notes: >-
+          Node board 0, labelled N0. The L1 reports it as the captured
+          IP59_4CPU, part 030-1989-003, revision C.
+      - id: node0-bedrock
+        name: Bedrock
+        kind: node-asic
+        hardware_kind: bedrock
+        datasheet_contracts:
+          - qemu:docs/system/mips/sgi/ip35.rst
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb
+        node_asic: {processor_interfaces: 2, cpus_per_interface: 2}
+        identity: {widget_part: "0xc110", widget_mfg: "0x036", hardware_revision: 2, clock_mhz: 200}
+        provenance: derived
+        parent: node0-board
+        sources: [cx-node-board, cx-bedrock-identity]
+        notes: >-
+          Approximation. The identity is the Bedrock every published Origin
+          3000 and Origin 350 inventory reports (revision 2, 200 MHz); no
+          inventory names a Cx-brick node board's Bedrock revision or clock.
+      - id: node0-cpu0
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node0-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor A. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node0-cpu1
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node0-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor B. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node0-cpu2
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node0-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor C. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node0-cpu3
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node0-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor D. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node0-memory
+        name: node memory
+        kind: memory
+        provenance: vendor-document
+        parent: node0-bedrock
+        description: Eight DIMM slots, 512 MB or 1 GB DIMMs in matched pairs, the first pair in slots 0 and 1, 1 to 8 GB.
+        sources: [cx-memory]
+      - id: xio-0-connector
+        name: XIO 0 connector
+        kind: connector
+        provenance: vendor-document
+        parent: chassis
+        connector:
+          interface: Crosstown2
+          location: rear panel
+          occupancy: opaque
+          notes: >-
+            Node board 0's XIO port. The brick at the far end owns the
+            crossbar and its ports; the composition says what is cabled here.
+        sources: [cx-xio]
+      - id: node1-board
+        name: IP53 node board
+        kind: board
+        hardware_kind: ip53-cx
+        provenance: vendor-document
+        parent: chassis
+        sources: [cx-node-board]
+        notes: >-
+          Node board 1, labelled N1. The L1 reports it as the captured
+          IP59_4CPU, part 030-1989-003, revision C.
+      - id: node1-bedrock
+        name: Bedrock
+        kind: node-asic
+        hardware_kind: bedrock
+        datasheet_contracts:
+          - qemu:docs/system/mips/sgi/ip35.rst
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb
+        node_asic: {processor_interfaces: 2, cpus_per_interface: 2}
+        identity: {widget_part: "0xc110", widget_mfg: "0x036", hardware_revision: 2, clock_mhz: 200}
+        provenance: derived
+        parent: node1-board
+        sources: [cx-node-board, cx-bedrock-identity]
+        notes: >-
+          Approximation. The identity is the Bedrock every published Origin
+          3000 and Origin 350 inventory reports (revision 2, 200 MHz); no
+          inventory names a Cx-brick node board's Bedrock revision or clock.
+      - id: node1-cpu0
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node1-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor A. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node1-cpu1
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node1-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor B. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node1-cpu2
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node1-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor C. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node1-cpu3
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node1-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor D. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node1-memory
+        name: node memory
+        kind: memory
+        provenance: vendor-document
+        parent: node1-bedrock
+        description: Eight DIMM slots, 512 MB or 1 GB DIMMs in matched pairs, the first pair in slots 0 and 1, 1 to 8 GB.
+        sources: [cx-memory]
+      - id: xio-1-connector
+        name: XIO 1 connector
+        kind: connector
+        provenance: vendor-document
+        parent: chassis
+        connector:
+          interface: Crosstown2
+          location: rear panel
+          occupancy: opaque
+          notes: >-
+            Node board 1's XIO port. The brick at the far end owns the
+            crossbar and its ports; the composition says what is cabled here.
+        sources: [cx-xio]
+      - id: node2-board
+        name: IP53 node board
+        kind: board
+        hardware_kind: ip53-cx
+        provenance: vendor-document
+        parent: chassis
+        sources: [cx-node-board]
+        notes: >-
+          Node board 2, labelled N2. The L1 reports it as the captured
+          IP59_4CPU, part 030-1989-003, revision C.
+      - id: node2-bedrock
+        name: Bedrock
+        kind: node-asic
+        hardware_kind: bedrock
+        datasheet_contracts:
+          - qemu:docs/system/mips/sgi/ip35.rst
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb
+        node_asic: {processor_interfaces: 2, cpus_per_interface: 2}
+        identity: {widget_part: "0xc110", widget_mfg: "0x036", hardware_revision: 2, clock_mhz: 200}
+        provenance: derived
+        parent: node2-board
+        sources: [cx-node-board, cx-bedrock-identity]
+        notes: >-
+          Approximation. The identity is the Bedrock every published Origin
+          3000 and Origin 350 inventory reports (revision 2, 200 MHz); no
+          inventory names a Cx-brick node board's Bedrock revision or clock.
+      - id: node2-cpu0
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node2-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor A. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node2-cpu1
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node2-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor B. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node2-cpu2
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node2-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor C. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node2-cpu3
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node2-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor D. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node2-memory
+        name: node memory
+        kind: memory
+        provenance: vendor-document
+        parent: node2-bedrock
+        description: Eight DIMM slots, 512 MB or 1 GB DIMMs in matched pairs, the first pair in slots 0 and 1, 1 to 8 GB.
+        sources: [cx-memory]
+      - id: xio-2-connector
+        name: XIO 2 connector
+        kind: connector
+        provenance: vendor-document
+        parent: chassis
+        connector:
+          interface: Crosstown2
+          location: rear panel
+          occupancy: opaque
+          notes: >-
+            Node board 2's XIO port. The brick at the far end owns the
+            crossbar and its ports; the composition says what is cabled here.
+        sources: [cx-xio]
+      - id: node3-board
+        name: IP53 node board
+        kind: board
+        hardware_kind: ip53-cx
+        provenance: vendor-document
+        parent: chassis
+        sources: [cx-node-board]
+        notes: >-
+          Node board 3, labelled N3. The L1 reports it as the captured
+          IP59_4CPU, part 030-1989-003, revision C.
+      - id: node3-bedrock
+        name: Bedrock
+        kind: node-asic
+        hardware_kind: bedrock
+        datasheet_contracts:
+          - qemu:docs/system/mips/sgi/ip35.rst
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb
+        node_asic: {processor_interfaces: 2, cpus_per_interface: 2}
+        identity: {widget_part: "0xc110", widget_mfg: "0x036", hardware_revision: 2, clock_mhz: 200}
+        provenance: derived
+        parent: node3-board
+        sources: [cx-node-board, cx-bedrock-identity]
+        notes: >-
+          Approximation. The identity is the Bedrock every published Origin
+          3000 and Origin 350 inventory reports (revision 2, 200 MHz); no
+          inventory names a Cx-brick node board's Bedrock revision or clock.
+      - id: node3-cpu0
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node3-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor A. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node3-cpu1
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node3-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor B. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node3-cpu2
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node3-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor C. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node3-cpu3
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
+        provenance: derived
+        parent: node3-bedrock
+        sources: [ip59-processors]
+        notes: >-
+          Processor D. The reset mode and cache are the 1 GHz, 16 MB tuple;
+          the product layer's cpu selection supplies the clock.
+      - id: node3-memory
+        name: node memory
+        kind: memory
+        provenance: vendor-document
+        parent: node3-bedrock
+        description: Eight DIMM slots, 512 MB or 1 GB DIMMs in matched pairs, the first pair in slots 0 and 1, 1 to 8 GB.
+        sources: [cx-memory]
+      - id: xio-3-connector
+        name: XIO 3 connector
+        kind: connector
+        provenance: vendor-document
+        parent: chassis
+        connector:
+          interface: Crosstown2
+          location: rear panel
+          occupancy: opaque
+          notes: >-
+            Node board 3's XIO port. The brick at the far end owns the
+            crossbar and its ports; the composition says what is cabled here.
+        sources: [cx-xio]
+    buses:
+      - {id: numalink-a-link, name: Router to NUMAlink 1 Port A, kind: fabric, master: router, provenance: vendor-document, sources: [cx-router, cx-numalink-labels]}
+      - {id: numalink-h-link, name: Router to NUMAlink 8 Port H, kind: fabric, master: router, provenance: vendor-document, sources: [cx-router, cx-numalink-labels]}
+      - {id: numalink-g-link, name: Router to NUMAlink 7 Port G, kind: fabric, master: router, provenance: vendor-document, sources: [cx-router, cx-numalink-labels]}
+      - {id: numalink-f-link, name: Router to NUMAlink 6 Port F, kind: fabric, master: router, provenance: vendor-document, sources: [cx-router, cx-numalink-labels]}
+      - {id: node0-sysad0, name: "Node 0 SysAD, processor interface 0", kind: sysad, master: node0-cpu0, provenance: derived, sources: [cx-node-board]}
+      - {id: node0-xio-ii, name: "Node 0 XIO, the Bedrock's I/O interface", kind: xio, master: node0-bedrock, provenance: vendor-document, sources: [cx-node-board, cx-xio]}
+      - {id: node0-router-link, name: Node 0 to the router, kind: fabric, link: {kind: midplane}, master: router, provenance: vendor-document, sources: [cx-router]}
+      - {id: node1-sysad0, name: "Node 1 SysAD, processor interface 0", kind: sysad, master: node1-cpu0, provenance: derived, sources: [cx-node-board]}
+      - {id: node1-xio-ii, name: "Node 1 XIO, the Bedrock's I/O interface", kind: xio, master: node1-bedrock, provenance: vendor-document, sources: [cx-node-board, cx-xio]}
+      - {id: node1-router-link, name: Node 1 to the router, kind: fabric, link: {kind: midplane}, master: router, provenance: vendor-document, sources: [cx-router]}
+      - {id: node2-sysad0, name: "Node 2 SysAD, processor interface 0", kind: sysad, master: node2-cpu0, provenance: derived, sources: [cx-node-board]}
+      - {id: node2-xio-ii, name: "Node 2 XIO, the Bedrock's I/O interface", kind: xio, master: node2-bedrock, provenance: vendor-document, sources: [cx-node-board, cx-xio]}
+      - {id: node2-router-link, name: Node 2 to the router, kind: fabric, link: {kind: midplane}, master: router, provenance: vendor-document, sources: [cx-router]}
+      - {id: node3-sysad0, name: "Node 3 SysAD, processor interface 0", kind: sysad, master: node3-cpu0, provenance: derived, sources: [cx-node-board]}
+      - {id: node3-xio-ii, name: "Node 3 XIO, the Bedrock's I/O interface", kind: xio, master: node3-bedrock, provenance: vendor-document, sources: [cx-node-board, cx-xio]}
+      - {id: node3-router-link, name: Node 3 to the router, kind: fabric, link: {kind: midplane}, master: router, provenance: vendor-document, sources: [cx-router]}
+    connections:
+      - {component: router, bus: numalink-a-link, role: master, fabric_port: 1, provenance: vendor-document, sources: [cx-numalink-labels]}
+      - {component: numalink-a, bus: numalink-a-link, role: endpoint, fabric_port: 1, provenance: vendor-document, sources: [cx-numalink-labels]}
+      - {component: router, bus: numalink-h-link, role: master, fabric_port: 8, provenance: vendor-document, sources: [cx-numalink-labels]}
+      - {component: numalink-h, bus: numalink-h-link, role: endpoint, fabric_port: 8, provenance: vendor-document, sources: [cx-numalink-labels]}
+      - {component: router, bus: numalink-g-link, role: master, fabric_port: 7, provenance: vendor-document, sources: [cx-numalink-labels]}
+      - {component: numalink-g, bus: numalink-g-link, role: endpoint, fabric_port: 7, provenance: vendor-document, sources: [cx-numalink-labels]}
+      - {component: router, bus: numalink-f-link, role: master, fabric_port: 6, provenance: vendor-document, sources: [cx-numalink-labels]}
+      - {component: numalink-f, bus: numalink-f-link, role: endpoint, fabric_port: 6, provenance: vendor-document, sources: [cx-numalink-labels]}
+      - {component: node0-cpu0, bus: node0-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node0-cpu1, bus: node0-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node0-cpu2, bus: node0-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node0-cpu3, bus: node0-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node0-bedrock, bus: node0-sysad0, role: endpoint, provenance: derived, sources: [cx-node-board]}
+      - {component: xio-0-connector, bus: node0-xio-ii, role: endpoint, provenance: vendor-document, sources: [cx-xio]}
+      - {component: router, bus: node0-router-link, role: master, fabric_port: 2, provenance: derived, sources: [cx-router-ports], notes: "Approximation: node board 0 takes router port 2; no source orders the ports."}
+      - {component: node0-bedrock, bus: node0-router-link, role: endpoint, provenance: vendor-document, sources: [cx-router]}
+      - {component: node1-cpu0, bus: node1-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node1-cpu1, bus: node1-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node1-cpu2, bus: node1-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node1-cpu3, bus: node1-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node1-bedrock, bus: node1-sysad0, role: endpoint, provenance: derived, sources: [cx-node-board]}
+      - {component: xio-1-connector, bus: node1-xio-ii, role: endpoint, provenance: vendor-document, sources: [cx-xio]}
+      - {component: router, bus: node1-router-link, role: master, fabric_port: 3, provenance: derived, sources: [cx-router-ports], notes: "Approximation: node board 1 takes router port 3; no source orders the ports."}
+      - {component: node1-bedrock, bus: node1-router-link, role: endpoint, provenance: vendor-document, sources: [cx-router]}
+      - {component: node2-cpu0, bus: node2-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node2-cpu1, bus: node2-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node2-cpu2, bus: node2-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node2-cpu3, bus: node2-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node2-bedrock, bus: node2-sysad0, role: endpoint, provenance: derived, sources: [cx-node-board]}
+      - {component: xio-2-connector, bus: node2-xio-ii, role: endpoint, provenance: vendor-document, sources: [cx-xio]}
+      - {component: router, bus: node2-router-link, role: master, fabric_port: 4, provenance: derived, sources: [cx-router-ports], notes: "Approximation: node board 2 takes router port 4; no source orders the ports."}
+      - {component: node2-bedrock, bus: node2-router-link, role: endpoint, provenance: vendor-document, sources: [cx-router]}
+      - {component: node3-cpu0, bus: node3-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node3-cpu1, bus: node3-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node3-cpu2, bus: node3-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node3-cpu3, bus: node3-sysad0, role: master, provenance: derived, sources: [cx-node-board]}
+      - {component: node3-bedrock, bus: node3-sysad0, role: endpoint, provenance: derived, sources: [cx-node-board]}
+      - {component: xio-3-connector, bus: node3-xio-ii, role: endpoint, provenance: vendor-document, sources: [cx-xio]}
+      - {component: router, bus: node3-router-link, role: master, fabric_port: 5, provenance: derived, sources: [cx-router-ports], notes: "Approximation: node board 3 takes router port 5; no source orders the ports."}
+      - {component: node3-bedrock, bus: node3-router-link, role: endpoint, provenance: vendor-document, sources: [cx-router]}
