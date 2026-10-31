@@ -4537,8 +4537,8 @@ static void test_rad_tune_unmapped(void)
 }
 
 /*
- * Without end of descriptor the control word links to a descriptor the model
- * does not hold. The first lap plays; the link is reported as unsupported,
+ * Without end of descriptor the control word links to a descriptor nobody
+ * programmed. The first lap plays; the link is reported as unsupported,
  * the channel stops and its start bit is left alone.
  */
 static void test_rad_tune_unlinked(void)
@@ -4573,8 +4573,8 @@ static void test_rad_tune_unlinked(void)
     g_assert_true(g_file_get_contents(path, &wav, &length, NULL));
     g_assert_cmpuint(octane_rad_wav_frames(wav, length), ==, RAD_TUNE_FRAMES);
     g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
-    g_assert_nonnull(strstr(log, "links to descriptor 0, which is not "
-                                 "modelled"));
+    g_assert_nonnull(strstr(log, "links to descriptor 0, which was never "
+                                 "programmed"));
     g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
@@ -4614,6 +4614,132 @@ static void test_rad_tune_index_ignored(void)
     g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
     g_assert_nonnull(strstr(log, "control 0xfffff03c has end of descriptor"));
     g_assert_null(strstr(log, "control 0xfffff004"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/* Fill a 4 KiB output ring, 512 frames, with a ramp to check the wav by. */
+static void octane_rad_ramp_fill(QTestState *qts, uint64_t ram)
+{
+    for (unsigned i = 0; i < 512; i++) {
+        uint32_t left = 0x1000 + i;
+        uint32_t right = -(0x2000 + i);
+
+        qtest_writel(qts, ram + i * 8, (left << 8) | 0x5a);
+        qtest_writel(qts, ram + i * 8 + 4, (right << 8) | 0xa5);
+    }
+}
+
+/* Whether wav frame i holds ring frame i % 512, or silence. */
+static void octane_rad_ramp_check(const char *wav, unsigned i, bool silent)
+{
+    int16_t left = lduw_le_p(wav + 44 + i * 4);
+    int16_t right = lduw_le_p(wav + 46 + i * 4);
+
+    g_assert_cmpint(left, ==, silent ? 0 : 0x1000 + i % 512);
+    g_assert_cmpint(right, ==, silent ? 0 : -(int)(0x2000 + i % 512));
+}
+
+/*
+ * Run the analog output on a 4 KiB ring whose control word links to
+ * descriptor RAM entry `entry`, for 100 ms at 44.1 kHz. With `program` the
+ * entry holds the same descriptor, the way IRIX (entry 1) and Linux (entry 7)
+ * program the entry they link to.
+ */
+static void octane_rad_link_run(unsigned entry, bool program,
+                                const char *path, const char *log_path,
+                                unsigned *frames, uint32_t *control)
+{
+    g_autofree char *quoted = g_shell_quote(log_path);
+    g_autofree char *extra = g_strdup_printf("-d unimp -D %s", quoted);
+    QTestState *qts = octane_rad_wav_start(path, 44100, extra);
+    uint32_t ctrl = 0xfffff000 | (entry << 3);
+    uint32_t slot = 0x400 + entry * 12;
+
+    octane_rad_clock_map(qts);
+    octane_rad_ramp_fill(qts, RAM + 0xa000);
+    qtest_writel(qts, RAD_BAR0 + 0x4f8, 0xa000a000);
+    qtest_writel(qts, RAD_BAR0 + 0x524, 0);
+    qtest_writel(qts, RAD_BAR0 + 0x4fc, ctrl);
+    if (program) {
+        qtest_writel(qts, RAD_BAR0 + slot, 0xa000a000);
+        qtest_writel(qts, RAD_BAR0 + slot + 4, 0);
+        qtest_writel(qts, RAD_BAR0 + slot + 8, ctrl);
+        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + slot + 8), ==, ctrl);
+    }
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000001);
+    qtest_clock_step(qts, 100000000);
+    *frames = octane_rad_out_frames(qts);
+    *control = qtest_readl(qts, RAD_BAR0 + 0x58);
+    /* Let the host backend take what it was given before the file closes. */
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000000);
+    qtest_clock_step(qts, 20000000);
+    qtest_quit(qts);
+}
+
+/* IRIX links entry 1 to itself and Linux entry 7: both keep playing. */
+static void test_rad_link_programmed(gconstpointer data)
+{
+    const unsigned entry = GPOINTER_TO_UINT(data);
+    g_autofree char *path = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *wav = NULL;
+    g_autofree char *log = NULL;
+    unsigned frames;
+    uint32_t control;
+    gsize length;
+    int fd = g_file_open_tmp("octane-rad-link-XXXXXX.wav", &path, NULL);
+    int lfd = g_file_open_tmp("octane-rad-link-XXXXXX", &log_path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(lfd, >=, 0);
+    close(fd);
+    close(lfd);
+    octane_rad_link_run(entry, true, path, log_path, &frames, &control);
+
+    /* 4410 frames are 8.6 laps of the 512-frame ring. */
+    g_assert_cmpuint(frames, ==, 4410);
+    g_assert_cmphex(control, ==, 0x20000001);
+    g_assert_true(g_file_get_contents(path, &wav, &length, NULL));
+    g_assert_cmpuint(octane_rad_wav_frames(wav, length), ==, 4410);
+    for (unsigned i = 0; i < 4410; i++) {
+        octane_rad_ramp_check(wav, i, false);
+    }
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_null(strstr(log, "links to descriptor"));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
+ * A link to an entry nobody programmed is reported and the channel stops after
+ * the lap, its start bit left set (model policy; hardware unknown).
+ */
+static void test_rad_link_unprogrammed(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *wav = NULL;
+    g_autofree char *log = NULL;
+    unsigned frames;
+    uint32_t control;
+    gsize length;
+    int fd = g_file_open_tmp("octane-rad-link-XXXXXX.wav", &path, NULL);
+    int lfd = g_file_open_tmp("octane-rad-link-XXXXXX", &log_path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(lfd, >=, 0);
+    close(fd);
+    close(lfd);
+    octane_rad_link_run(7, false, path, log_path, &frames, &control);
+
+    g_assert_cmpuint(frames, ==, 512);
+    g_assert_cmphex(control, ==, 0x20000001);
+    g_assert_true(g_file_get_contents(path, &wav, &length, NULL));
+    g_assert_cmpuint(octane_rad_wav_frames(wav, length), ==, 512);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "links to descriptor 7, which was never "
+                                 "programmed"));
+    g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
@@ -6349,6 +6475,11 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rad-tune-unlinked", test_rad_tune_unlinked);
     qtest_add_func("/octane/rad-tune-index-ignored",
                    test_rad_tune_index_ignored);
+    qtest_add_data_func("/octane/rad-link-programmed-irix",
+                        GUINT_TO_POINTER(1), test_rad_link_programmed);
+    qtest_add_data_func("/octane/rad-link-programmed-linux",
+                        GUINT_TO_POINTER(7), test_rad_link_programmed);
+    qtest_add_func("/octane/rad-link-unprogrammed", test_rad_link_unprogrammed);
     qtest_add_func("/octane/rad-clock-select", test_rad_clock_select);
     qtest_add_func("/octane/rad-ust-clock", test_rad_ust_clock);
     qtest_add_func("/octane/rad-ust-word-and-wrap",
