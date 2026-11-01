@@ -322,6 +322,35 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
         with self.assertRaisesRegex(CompileError, "flash word"):
             _processor(model, cpu)
 
+    def test_a_c_brick_r14000_agrees_with_its_board(self):
+        # The captured 030-1734-00x PIMM: 600 MHz R14000, 8 MB, Tap 0xa
+        # (cbrick.md, the PIMM captures); the stock PROM's class-0 row for
+        # board nibble 3 is 0x549cab85, whose low 25 bits are the reset word.
+        model = {"composition": {"product": "origin3200-r14000-600mhz"},
+                 "machine": {"board_ip": "IP35", "emulation": {
+                     "ip35_firmware": {"machine_type": 0,
+                                       "cpu_mode_word": 0x549cab85}}},
+                 "processors": [{"part": "r14000", "variants": [
+                     {"clock_mhz": 600, "cache_mib": 8,
+                      "reset_mode_bits": "0x009cab85"}]}]}
+        processor = {"kind": "R14000", "clock_hz": 600_000_000,
+                     "cache_mib": 8}
+        self.assertEqual(_mode_bits(model, {}, processor), 0x009cab85)
+        # The reset word's SS field selects the cache: a 4 MiB part cannot
+        # borrow the 8 MiB word.
+        small = dict(processor, cache_mib=4)
+        model["processors"][0]["variants"].append(
+            {"clock_mhz": 600, "cache_mib": 4,
+             "reset_mode_bits": "0x009cab85"})
+        with self.assertRaisesRegex(CompileError, "selects a 8 MiB"):
+            _mode_bits(model, {}, small)
+        # A flash word for another clock leaves the PROM and the processor
+        # disagreeing about the clock.
+        model["machine"]["emulation"]["ip35_firmware"]["cpu_mode_word"] = (
+            0x5414a785)
+        with self.assertRaisesRegex(CompileError, "flash word"):
+            _mode_bits(model, {}, processor)
+
     def test_a_record_fits_one_boards_r16000_on_every_node(self):
         model = copy.deepcopy(_resolved("origin3900"))
         compile_model(model)
