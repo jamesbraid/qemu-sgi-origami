@@ -1362,6 +1362,407 @@ static void test_migration(gconstpointer opaque)
     qtest_quit(to);
 }
 
+/* ---- code run from staged lines, and what changes it ---- */
+
+/* A branch at @from to @to: the offset counts words from the delay slot. */
+static uint16_t branch_offset(uint64_t from, uint64_t to)
+{
+    return (uint16_t)(((int64_t)to - (int64_t)(from + 4)) / 4);
+}
+
+#define INSN_BEQ_TO(from, to) \
+    mips_itype(SN0_OPC_BEQ, 0, 0, branch_offset(from, to))
+#define INSN_BNEZ_T1(from, to) \
+    mips_itype(SN0_OPC_BNE, R_T1, 0, branch_offset(from, to))
+#define INSN_ADDIU(rt, imm)  mips_addiu(rt, rt, imm)
+
+/*
+ * The staged loop runs 6 instructions an iteration, twice: 120 million
+ * instructions, which take well under a second translated as blocks and
+ * about nine minutes fetched an instruction at a time through an I/O
+ * region. The bound sits far from both.
+ */
+#define STAGED_LOOPS     10000000
+#define STAGED_LOOPS_MAX 60.0
+#define ALTERNATE_LOOPS  2000
+
+/*
+ * A counting loop that runs from a staged line, and one that alternates
+ * between a staged line and the memory line after it, give what they give
+ * from memory, and the first runs as translated blocks. Index Store Data
+ * pads each quadword with a zero doubleword, so the staged code is two
+ * instructions and two no-ops per quadword.
+ */
+static void seed_loop(QTestState *qts, const Geo *g)
+{
+    uint64_t a = page_pa(2);
+    uint64_t m = a + g->line;
+
+    /* The memory half of the alternating loop, in the line after a. */
+    put_mem32(qts, m, INSN_ADDIU(R_T1, -1));
+    put_mem32(qts, m + 4, INSN_BNEZ_T1(m + 4, a));
+    put_mem32(qts, m + 8, 0);
+    put_mem32(qts, m + 12, INSN_JR_RA);
+    put_mem32(qts, m + 16, 0);
+}
+
+static void test_staged_loop(gconstpointer opaque)
+{
+    const Geo *g = opaque;
+    g_autofree SN0Image *p = g_new0(SN0Image, 1);
+    uint64_t a = page_pa(0);
+    uint64_t b = page_pa(2);
+    g_autoptr(GTimer) timer = g_timer_new();
+    QTestState *qts;
+
+    begin(p);
+    /* a: v0 += 1, t1 -= 1, two no-ops, loop while t1, jr ra. */
+    stage_tag(p, a, 0, 2);
+    stage_data(p, a, 0, INSN_ADDIU(R_V0, 1), INSN_ADDIU(R_T1, -1));
+    stage_data(p, a + 16, 0, INSN_BNEZ_T1(a + 16, a), 0);
+    stage_data(p, a + 32, 0, INSN_JR_RA, 0);
+    for (unsigned int run = 0; run < 2; run++) {
+        sn0_emit_li(p, R_V0, 0);
+        sn0_emit_li(p, R_T1, STAGED_LOOPS);
+        call_to(p, a, run);
+    }
+    /* b: v0 += 3, then on to the memory line after it and back. */
+    stage_tag(p, b, 0, 2);
+    stage_data(p, b, 0, INSN_ADDIU(R_V0, 3),
+               INSN_BEQ_TO(b + 4, b + g->line));
+    sn0_emit_li(p, R_V0, 0);
+    sn0_emit_li(p, R_T1, ALTERNATE_LOOPS);
+    call_to(p, b, 2);
+    /* A load from the memory line still reads memory. */
+    load_to(p, 4, b + g->line, 3);
+    finish(p);
+
+    g_timer_start(timer);
+    qts = run_image(g, p, seed_loop);
+    if (!qts) {
+        return;
+    }
+    g_assert_cmpfloat(g_timer_elapsed(timer, NULL), <, STAGED_LOOPS_MAX);
+    g_assert_cmpuint(slot32(qts, 0), ==, STAGED_LOOPS);
+    g_assert_cmpuint(slot32(qts, 1), ==, STAGED_LOOPS);
+    g_assert_cmpuint(slot32(qts, 2), ==, 3 * ALTERNATE_LOOPS);
+    g_assert_cmphex(slot32(qts, 3), ==, INSN_ADDIU(R_T1, -1));
+    qtest_quit(qts);
+}
+
+/*
+ * A store into a staged line, cached or by Index Store Data, takes effect
+ * on the next run of the code there. So does an uncached store into the
+ * memory line on the same page that a fetch reads from memory.
+ */
+static void test_staged_code_stores(gconstpointer opaque)
+{
+    const Geo *g = opaque;
+    g_autofree SN0Image *p = g_new0(SN0Image, 1);
+    uint64_t a = page_pa(0);
+    uint64_t m = a + g->line;
+    QTestState *qts;
+
+    begin(p);
+    stage_tag(p, a, 0, 2);
+    stage_data(p, a, 0, INSN_ORI_V0(0x1111), INSN_JR_RA);
+    call_to(p, a, 0);
+    store_from(p, 4, a, INSN_ORI_V0(0x2222));
+    call_to(p, a, 1);
+    stage_data(p, a, 0, INSN_ORI_V0(0x3333), INSN_JR_RA);
+    call_to(p, a, 2);
+    /* Memory code in the next line, rewritten through kseg1, uncached. */
+    sn0_emit_li(p, R_S0, SN0_KSEG1(m));
+    sn0_emit_li(p, R_T1, INSN_ORI_V0(0x4444));
+    sn0_emit(p, mips_itype(SN0_OPC_SW, R_S0, R_T1, 0));
+    sn0_emit_li(p, R_T1, INSN_JR_RA);
+    sn0_emit(p, mips_itype(SN0_OPC_SW, R_S0, R_T1, 4));
+    sn0_emit(p, mips_itype(SN0_OPC_SW, R_S0, 0, 8));
+    call_to(p, m, 3);
+    sn0_emit_li(p, R_T1, INSN_ORI_V0(0x5555));
+    sn0_emit(p, mips_itype(SN0_OPC_SW, R_S0, R_T1, 0));
+    call_to(p, m, 4);
+    finish(p);
+
+    qts = run_image(g, p, NULL);
+    if (!qts) {
+        return;
+    }
+    g_assert_cmphex(slot32(qts, 0), ==, 0x1111);
+    g_assert_cmphex(slot32(qts, 1), ==, 0x2222);
+    g_assert_cmphex(slot32(qts, 2), ==, 0x3333);
+    g_assert_cmphex(slot32(qts, 3), ==, 0x4444);
+    g_assert_cmphex(slot32(qts, 4), ==, 0x5555);
+    g_assert_cmphex(mem32(qts, a), ==, FILL_WORD);
+    qtest_quit(qts);
+}
+
+/*
+ * Ending a staged line sends the next fetch at its address to memory, and
+ * staging it again sends the fetch back to the line: Index Invalidate (I)
+ * then Index WriteBack Invalidate (S), Hit Invalidate (S), and a new tag
+ * and data. Index Load Tag reads the ended line back as invalid. Another
+ * line stays staged in the page throughout, so the page itself never
+ * stops holding a staged line.
+ */
+static void test_staged_code_ending(gconstpointer opaque)
+{
+    const Geo *g = opaque;
+    g_autofree SN0Image *p = g_new0(SN0Image, 1);
+    uint64_t a = page_pa(0);
+    QTestState *qts;
+
+    begin(p);
+    stage_tag(p, a + 2 * g->line, 0, 2);
+    stage_tag(p, a, 0, 2);
+    stage_data(p, a, 0, INSN_ORI_V0(0x1111), INSN_JR_RA);
+    call_to(p, a, 0);
+    cache_at(p, 0x00, xk(a));                   /* Index Invalidate (I) */
+    cache_at(p, 0x00, xk(a) | 1);
+    end_line(p, 0x03, xk(a));
+    call_to(p, a, 1);                           /* memory */
+    tag_to(p, xk(a), 8);
+    stage_tag(p, a, 0, 2);
+    stage_data(p, a, 0, INSN_ORI_V0(0x3333), INSN_JR_RA);
+    call_to(p, a, 2);
+    data_to(p, xk(a), 10);
+    end_line(p, 0x13, xk(a));                   /* Hit Invalidate (S) */
+    call_to(p, a, 3);
+    stage_tag(p, a, 1, 2);                      /* the other way */
+    stage_data(p, a, 1, INSN_ORI_V0(0x4444), INSN_JR_RA);
+    call_to(p, a, 4);
+    finish(p);
+
+    qts = run_image(g, p, seed_code);
+    if (!qts) {
+        return;
+    }
+    g_assert_cmphex(slot32(qts, 0), ==, 0x1111);
+    g_assert_cmphex(slot32(qts, 1), ==, 0x2222);
+    g_assert_cmpuint(extract32(slot32(qts, 8), 10, 2), ==, 0);
+    g_assert_cmphex(slot32(qts, 2), ==, 0x3333);
+    g_assert_cmphex(slot32(qts, 10), ==, INSN_ORI_V0(0x3333));
+    g_assert_cmphex(slot32(qts, 11), ==, INSN_JR_RA);
+    g_assert_cmphex(slot32(qts, 3), ==, 0x2222);
+    g_assert_cmphex(slot32(qts, 4), ==, 0x4444);
+    qtest_quit(qts);
+}
+
+/* Call @va, a 32-bit address sign-extended, and save $v0. */
+static void call_at32(SN0Image *p, uint32_t va, unsigned int slot)
+{
+    sn0_emit_li(p, R_S2, va);
+    sn0_emit(p, (R_S2 << 21) | (R_RA << 11) | 0x09); /* jalr $ra, $s2 */
+    sn0_emit_nop(p);
+    put_slot(p, R_V0, slot);
+}
+
+static void seed_splits(QTestState *qts, const Geo *g)
+{
+    uint64_t a = page_pa(0), b = page_pa(1) + g->line;
+    uint64_t c = page_pa(4), d = page_pa(6), k = page_pa(8);
+
+    put_mem32(qts, a + g->line, INSN_ADDIU(R_V0, 0x23));
+    put_mem32(qts, b - 8, INSN_ORI_V0(0x200));
+    put_mem32(qts, b - 4, INSN_JR_RA);
+    put_mem32(qts, c - 8, INSN_ORI_V0(0x300));
+    put_mem32(qts, c - 4, INSN_JR_RA);
+    put_mem32(qts, d, INSN_ADDIU(R_V0, 0x89));
+    put_mem32(qts, k, INSN_ORI_V0(0x2222));
+    put_mem32(qts, k + 4, INSN_JR_RA);
+    put_mem32(qts, k + 8, 0);
+}
+
+/*
+ * A branch and its delay slot on either side of a line or page boundary,
+ * one staged and one not, each run from its own source: the staged word
+ * from the line, the other from memory. And a staged line run through
+ * kseg1, uncached, returns memory's code while the cached view keeps
+ * returning the staged code.
+ */
+static void test_staged_code_splits(gconstpointer opaque)
+{
+    const Geo *g = opaque;
+    g_autofree SN0Image *p = g_new0(SN0Image, 1);
+    uint64_t a = page_pa(0), b = page_pa(1) + g->line;
+    uint64_t c = page_pa(4), d = page_pa(6), k = page_pa(8);
+    QTestState *qts;
+
+    begin(p);
+    /* Branch at a staged line's end, delay slot in memory. */
+    stage_tag(p, a, 0, 2);
+    stage_data(p, a + g->line - 8, 0, INSN_ORI_V0(0x100), INSN_JR_RA);
+    call_to(p, a + g->line - 8, 0);
+    /* Branch at a memory line's end, delay slot in a staged line. */
+    stage_tag(p, b, 0, 2);
+    stage_data(p, b, 0, INSN_ADDIU(R_V0, 0x45), 0);
+    call_to(p, b - 8, 1);
+    /* The same across a page boundary, both ways. */
+    stage_tag(p, c, 0, 2);
+    stage_data(p, c, 0, INSN_ADDIU(R_V0, 0x67), 0);
+    call_to(p, c - 8, 2);
+    stage_tag(p, d - g->line, 0, 2);
+    stage_data(p, d - 8, 0, INSN_ORI_V0(0x400), INSN_JR_RA);
+    call_to(p, d - 8, 3);
+    /* Cached and uncached views of one staged line, alternately. */
+    stage_tag(p, k, 0, 2);
+    stage_data(p, k, 0, INSN_ORI_V0(0x1111), INSN_JR_RA);
+    for (unsigned int i = 0; i < 2; i++) {
+        call_to(p, k, 4 + 2 * i);
+        call_at32(p, SN0_KSEG1(k), 5 + 2 * i);
+    }
+    finish(p);
+
+    qts = run_image(g, p, seed_splits);
+    if (!qts) {
+        return;
+    }
+    g_assert_cmphex(slot32(qts, 0), ==, 0x123);
+    g_assert_cmphex(slot32(qts, 1), ==, 0x245);
+    g_assert_cmphex(slot32(qts, 2), ==, 0x367);
+    g_assert_cmphex(slot32(qts, 3), ==, 0x489);
+    for (unsigned int i = 0; i < 2; i++) {
+        g_assert_cmphex(slot32(qts, 4 + 2 * i), ==, 0x1111);
+        g_assert_cmphex(slot32(qts, 5 + 2 * i), ==, 0x2222);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * One staged line in each of more pages than a 1 MiB cache has page
+ * slots for, each run in turn: the pages past the slots run through the
+ * window and give the same result. Page n's line sits at line n / 256 of
+ * the page, in way (n / 128) & 1, so no two share a secondary entry.
+ */
+#define SLOT_PAGES 300
+
+/* t2 = the PA of page a2's line: a0 + (a2 / 256) * 128. */
+static void emit_slot_line(SN0Image *p)
+{
+    sn0_emit_srl(p, SN0_R_T2, SN0_R_A2, 8);
+    sn0_emit_sll(p, SN0_R_T2, SN0_R_T2, 7);
+    sn0_emit_addu(p, SN0_R_T2, SN0_R_A0, SN0_R_T2);
+}
+
+static void test_staged_code_slots(gconstpointer opaque)
+{
+    const Geo *g = opaque;
+    g_autofree SN0Image *p = g_new0(SN0Image, 1);
+    unsigned int top, back;
+    QTestState *qts;
+
+    g_assert_cmpuint(SLOT_PAGES, >, g->size / PAGE);
+    begin(p);
+    sn0_emit_li64(p, SN0_R_A3, xk(0));
+    /* Stage: TagLo from the line's PA, state 2, VA[13:12]; then code. */
+    sn0_emit_li(p, SN0_R_A0, BASE);
+    sn0_emit_li(p, SN0_R_A2, 0);
+    top = p->pos;
+    emit_slot_line(p);
+    sn0_emit_srl(p, R_T0, SN0_R_T2, 18);
+    sn0_emit_sll(p, R_T0, R_T0, 14);
+    sn0_emit_srl(p, R_T1, SN0_R_T2, 12);
+    sn0_emit_i(p, SN0_OPC_ANDI, R_T1, R_T1, 3);
+    sn0_emit_sll(p, R_T1, R_T1, 7);
+    sn0_emit_or(p, R_T0, R_T0, R_T1);
+    sn0_emit_i(p, SN0_OPC_ORI, R_T0, R_T0, 2 << 10);
+    sn0_emit_mtc0(p, R_T0, 28);
+    sn0_emit_mtc0(p, SN0_R_ZERO, 29);
+    sn0_emit_or(p, R_S0, SN0_R_A3, SN0_R_T2);
+    sn0_emit_srl(p, R_T1, SN0_R_A2, 7);
+    sn0_emit_i(p, SN0_OPC_ANDI, R_T1, R_T1, 1);
+    sn0_emit_or(p, R_S0, R_S0, R_T1);
+    sn0_emit(p, mips_cache(0x0b, R_S0, 0));
+    sn0_emit_li(p, R_T0, INSN_ADDIU(R_V0, 1));
+    sn0_emit_mtc0(p, R_T0, 28);
+    sn0_emit_li(p, R_T0, INSN_JR_RA);
+    sn0_emit_mtc0(p, R_T0, 29);
+    sn0_emit(p, mips_cache(0x1f, R_S0, 0));
+    sn0_emit(p, mips_addiu(SN0_R_A0, SN0_R_A0, PAGE));
+    sn0_emit(p, mips_addiu(SN0_R_A2, SN0_R_A2, 1));
+    sn0_emit(p, mips_addiu(R_T0, SN0_R_A2, -SLOT_PAGES));
+    back = sn0_emit_branch(p, SN0_OPC_BNE, R_T0, 0);
+    sn0_patch_branch(p, back, top);
+    /* Run each page's line; every one adds one to v0. */
+    sn0_emit_li(p, R_V0, 0);
+    sn0_emit_li(p, SN0_R_A0, BASE);
+    sn0_emit_li(p, SN0_R_A2, 0);
+    top = p->pos;
+    emit_slot_line(p);
+    sn0_emit_or(p, R_S2, SN0_R_A3, SN0_R_T2);
+    sn0_emit(p, (R_S2 << 21) | (R_RA << 11) | 0x09);  /* jalr $ra, $s2 */
+    sn0_emit_nop(p);
+    sn0_emit(p, mips_addiu(SN0_R_A0, SN0_R_A0, PAGE));
+    sn0_emit(p, mips_addiu(SN0_R_A2, SN0_R_A2, 1));
+    sn0_emit(p, mips_addiu(R_T0, SN0_R_A2, -SLOT_PAGES));
+    back = sn0_emit_branch(p, SN0_OPC_BNE, R_T0, 0);
+    sn0_patch_branch(p, back, top);
+    put_slot(p, R_V0, 0);
+    finish(p);
+
+    qts = run_image(g, p, NULL);
+    if (!qts) {
+        return;
+    }
+    g_assert_cmpuint(slot32(qts, 0), ==, SLOT_PAGES);
+    qtest_quit(qts);
+}
+
+/*
+ * Code run from a staged line before a system reset runs from memory
+ * after it: the reset ends the line and nothing translated from its copy
+ * survives, even once another line of the same page is staged and run.
+ */
+static void seed_reset_code(QTestState *qts, const Geo *g)
+{
+    uint64_t a = page_pa(1);
+
+    put_mem32(qts, a, INSN_ORI_V0(0x2222));
+    put_mem32(qts, a + 4, INSN_JR_RA);
+    put_mem32(qts, a + 8, 0);
+}
+
+static void test_staged_code_reset(gconstpointer opaque)
+{
+    const Geo *g = opaque;
+    g_autofree SN0Image *p = g_new0(SN0Image, 1);
+    uint64_t a = page_pa(1);
+    unsigned int skip;
+    QTestState *qts;
+
+    begin(p);
+    /* The first pass stages a; the second, flagged by the host, a + line. */
+    sn0_emit_i(p, SN0_OPC_LW, R_S1, R_T0, RUNS);
+    skip = sn0_emit_branch(p, SN0_OPC_BNE, R_T0, 0);
+    stage_tag(p, a, 0, 2);
+    stage_data(p, a, 0, INSN_ORI_V0(0x1111), INSN_JR_RA);
+    call_to(p, a, 0);
+    finish(p);
+    sn0_patch_branch(p, skip, p->pos);
+    stage_tag(p, a + g->line, 0, 2);
+    stage_data(p, a + g->line, 0, INSN_ORI_V0(0x4444), INSN_JR_RA);
+    call_to(p, a + g->line, 1);
+    call_to(p, a, 0);
+    finish(p);
+
+    qts = run_image_with(g, p, seed_reset_code, "");
+    if (!qts) {
+        return;
+    }
+    g_assert_cmphex(slot32(qts, 0), ==, 0x1111);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'stop' }");
+    qtest_system_reset_nowait(qts);
+    qtest_qmp_eventwait(qts, "RESET");
+    qtest_writel(qts, RESULT + RUNS, 1);
+    qtest_writel(qts, RESULT + PHASE, 0);
+    qtest_writeq(qts, RESULT + SLOT(0), 0);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    wait_phase(qts, 1);
+    g_assert_cmphex(slot32(qts, 1), ==, 0x4444);
+    g_assert_cmphex(slot32(qts, 0), ==, 0x2222);
+    qtest_quit(qts);
+}
+
 /* ---- case 15 elsewhere, registration ---- */
 
 static void add_geo_case(const char *name, void (*fn)(gconstpointer),
@@ -1403,6 +1804,12 @@ int main(int argc, char **argv)
     add_geo_case("many-lines", test_many, true);
     add_geo_case("reset", test_reset, false);
     add_geo_case("migration", test_migration, true);
+    add_geo_case("staged-loop", test_staged_loop, true);
+    add_geo_case("staged-code-stores", test_staged_code_stores, false);
+    add_geo_case("staged-code-ending", test_staged_code_ending, false);
+    add_geo_case("staged-code-splits", test_staged_code_splits, true);
+    add_geo_case("staged-code-slots", test_staged_code_slots, false);
+    add_geo_case("staged-code-reset", test_staged_code_reset, false);
     qtest_add_func("r10k/cache-index/non-r10000", test_r4400);
     return g_test_run();
 }

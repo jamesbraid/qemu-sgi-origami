@@ -1614,6 +1614,8 @@ struct ArchCPU {
      * MIPSASIdx_STAGED, so it adds nothing to the other two.
      */
     MemoryRegion staged_window;
+    /* The copies instruction fetch runs staged lines from, MIPSASIdx_CODE. */
+    MemoryRegion staged_code;
     AddressSpace cache_backing_as;
     bool cache_memory_initialized;
 #endif
@@ -1621,14 +1623,16 @@ struct ArchCPU {
 
 /*
  * Address-space indices: cached references first, uncached ones second.
- * The third exists only on the R10000 family, for cached references to a
- * page that holds a staged secondary-cache line.
+ * The third and fourth exist only on the R10000 family, for cached
+ * references to a page that holds a staged secondary-cache line: loads and
+ * stores, and instruction fetches from a staged line.
  */
 enum {
     MIPSASIdx_CACHED = 0,
     MIPSASIdx_UNCACHED = 1,
     MIPSASIdx_STAGED = 2,
-    MIPSASIdx_MAX = MIPSASIdx_STAGED,
+    MIPSASIdx_CODE = 3,
+    MIPSASIdx_MAX = MIPSASIdx_CODE,
 };
 
 /*
@@ -1640,6 +1644,16 @@ enum {
 static inline bool mips_attrs_staged(MemTxAttrs attrs)
 {
     return attrs.mips_uncached && attrs.mips_cca >= 3 && attrs.mips_cca <= 5;
+}
+
+/*
+ * A staged reference that also carries the kseg1 attribute, which
+ * translation sets only for the uncached kseg1 segment, is an instruction
+ * fetch bound for MIPSASIdx_CODE.
+ */
+static inline bool mips_attrs_staged_code(MemTxAttrs attrs)
+{
+    return mips_attrs_staged(attrs) && attrs.mips_kseg1;
 }
 
 /**

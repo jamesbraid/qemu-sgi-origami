@@ -73,6 +73,16 @@ typedef struct DisasContext {
     bool has_r10k_prefetch;
     bool cop0_branches_reserved;
     uint64_t diagnostic_rw_bitmask;
+    /*
+     * Set when the block comes from a page holding a staged R10000 line,
+     * from its copy or from memory (staged_from_copy): staged_lines has a
+     * bit for each line of the page the block may hold, and
+     * staged_line_shift is log2 of the line size.
+     */
+    bool staged_code;
+    bool staged_from_copy;
+    unsigned int staged_line_shift;
+    uint64_t staged_lines;
 } DisasContext;
 
 #define DISAS_STOP       DISAS_TARGET_0
@@ -188,6 +198,9 @@ void gen_prefx_r10k(DisasContext *ctx, int hint, int base, int index);
 void gen_mtc0_count_r10k(DisasContext *ctx);
 void gen_mtc0_compare_r10k(DisasContext *ctx);
 void gen_count_compare_adjacency_r10k(DisasContext *ctx);
+void r10k_staged_code_init(DisasContext *ctx, CPUMIPSState *env);
+bool gen_staged_code_leave_r10k(DisasContext *ctx);
+void r10k_staged_code_next(DisasContext *ctx);
 
 /*
  * The R10000 family's implementation-dependent coprocessor 0 registers,

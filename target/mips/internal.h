@@ -206,6 +206,12 @@ void r10k_tlb_rebuild_active_mask(CPUMIPSState *env);
 /* r10k_helper.c: the pages that hold staged secondary-cache lines. */
 void r10k_staged_rebuild(CPUMIPSState *env);
 bool r10k_staged_page(CPUMIPSState *env, hwaddr paddr, MemTxAttrs attrs);
+hwaddr r10k_staged_fill(CPUMIPSState *env, hwaddr paddr,
+                        MMUAccessType access_type, int *prot,
+                        MemTxAttrs *attrs);
+bool r10k_staged_code_lines(CPUMIPSState *env, vaddr pc, int mmu_idx,
+                            const void *host, bool *from_copy,
+                            uint64_t *lines, unsigned int *line_shift);
 #endif
 
 /* r10k_migrate.c: the R10000-family state carried behind env->r10k. */

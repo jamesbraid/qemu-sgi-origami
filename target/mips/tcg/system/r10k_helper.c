@@ -17,6 +17,8 @@
  */
 
 #include "qemu/osdep.h"
+#include "qapi/error.h"
+#include "qemu/bitmap.h"
 #include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
@@ -24,6 +26,7 @@
 #include "internal.h"
 #include "exec/cputlb.h"
 #include "exec/helper-proto.h"
+#include "exec/page-protection.h"
 #include "exec/target_page.h"
 #include "exec/translation-block.h"
 #include "exec/watchpoint.h"
@@ -203,10 +206,9 @@ static bool r10k_scache_operand(CPUMIPSState *env, hwaddr paddr,
  * staged line is filled in the processor's staged address space
  * (MIPSASIdx_STAGED), where a region serves each byte from the staged
  * line if there is one and from system memory if not. Uncached accesses
- * never take that path. Code run from a staged page is fetched through
- * that region, so QEMU translates it one instruction at a time and never
- * caches the block: a measured tight loop ran at about 0.2 million
- * instructions a second, against hundreds of millions from RAM.
+ * never take that path. A load or store reaches the region on every
+ * access; instruction fetch does not ("Instruction fetch from a staged
+ * page" below).
  *
  * Pages are counted in staged_pages. The first line staged in a page, or
  * the last one cleared, flushes the TLB and the translation blocks made
@@ -243,15 +245,62 @@ static bool r10k_staged_line_addr(CPUMIPSState *env, unsigned int tag,
     return true;
 }
 
+static void r10k_staged_code_drop(CPUMIPSState *env, uint64_t page);
+static void r10k_staged_line_changed(CPUMIPSState *env, uint64_t addr);
+
+/*
+ * Discard what was translated from the memory behind [@pa, @pa + @len),
+ * wherever in RAM that memory lives.
+ */
+static void r10k_staged_backing_invalidate(CPUMIPSState *env, hwaddr pa,
+                                           hwaddr len)
+{
+    MIPSCPU *cpu = env_archcpu(env);
+
+    RCU_READ_LOCK_GUARD();
+    while (len) {
+        hwaddr xlat, l = len;
+        MemoryRegion *mr;
+        ram_addr_t ram;
+
+        mr = address_space_translate(&cpu->cache_backing_as, pa, &xlat, &l,
+                                     false, r10k_cache_backing_attrs(env));
+        ram = memory_region_get_ram_addr(mr);
+        if (ram != RAM_ADDR_INVALID) {
+            tb_invalidate_phys_range(env_cpu(env), ram + xlat,
+                                     ram + xlat + l - 1);
+        }
+        pa += l;
+        len -= l;
+    }
+}
+
+/*
+ * While any page holds a staged line, blocks are made for this processor
+ * alone: the TB key below is its own. A block made from the memory behind
+ * a staged page depends on which of the page's lines are staged, and
+ * another processor stages different lines or none.
+ */
+static void r10k_staged_set_tb_key(CPUMIPSState *env)
+{
+    R10KState *r10k = env->r10k;
+
+    r10k->tb_key = g_hash_table_size(r10k->staged_pages) ?
+                   env_cpu(env)->cpu_index + 1 : 0;
+}
+
 static void r10k_staged_toggled(CPUMIPSState *env, uint64_t page_addr,
                                 bool staged)
 {
     CPUState *cs = env_cpu(env);
 
     trace_r10k_staged_page(page_addr, staged);
+    r10k_staged_set_tb_key(env);
+    if (!staged) {
+        r10k_staged_code_drop(env, page_addr);
+    }
     tlb_flush(cs);
-    tb_invalidate_phys_range(cs, page_addr,
-                             page_addr + TARGET_PAGE_SIZE - 1);
+    r10k_staged_backing_invalidate(env, page_addr, TARGET_PAGE_SIZE);
 }
 
 static void r10k_staged_count(CPUMIPSState *env, uint64_t addr, bool add)
@@ -300,9 +349,11 @@ static void r10k_scache_write_tag(CPUMIPSState *env, unsigned int tag,
         }
         if (is) {
             r10k_staged_count(env, new_addr, true);
+            r10k_staged_line_changed(env, new_addr);
         }
         if (was) {
             r10k_staged_count(env, old_addr, false);
+            r10k_staged_line_changed(env, old_addr);
         }
     }
 }
@@ -322,11 +373,21 @@ void r10k_staged_rebuild(CPUMIPSState *env)
     if (!r10k || !r10k->staged_pages || !r10k->scache_geometry_valid) {
         return;
     }
+    /*
+     * Release every copy slot. Blocks made from them can no longer be
+     * reached, but slots left held would leak until every staged fetch
+     * fell back to the window.
+     */
+    for (unsigned int slot = 0; slot < r10k->code_nslots; slot++) {
+        if (test_bit(slot, r10k->code_slots_used)) {
+            r10k_staged_code_drop(env, r10k->code_slot_page[slot]);
+        }
+    }
     g_hash_table_iter_init(&iter, r10k->staged_pages);
     while (g_hash_table_iter_next(&iter, &key, NULL)) {
         uint64_t page = (uint64_t)GPOINTER_TO_UINT(key) << TARGET_PAGE_BITS;
 
-        tb_invalidate_phys_range(cs, page, page + TARGET_PAGE_SIZE - 1);
+        r10k_staged_backing_invalidate(env, page, TARGET_PAGE_SIZE);
     }
     g_hash_table_remove_all(r10k->staged_pages);
     for (unsigned int tag = 0;
@@ -345,8 +406,9 @@ void r10k_staged_rebuild(CPUMIPSState *env)
     while (g_hash_table_iter_next(&iter, &key, NULL)) {
         uint64_t page = (uint64_t)GPOINTER_TO_UINT(key) << TARGET_PAGE_BITS;
 
-        tb_invalidate_phys_range(cs, page, page + TARGET_PAGE_SIZE - 1);
+        r10k_staged_backing_invalidate(env, page, TARGET_PAGE_SIZE);
     }
+    r10k_staged_set_tb_key(env);
     tlb_flush(cs);
 }
 
@@ -384,6 +446,299 @@ static int r10k_staged_lookup(CPUMIPSState *env, hwaddr pa)
     return -1;
 }
 
+/* The byte at @pa of the staged line in @way. */
+static uint8_t r10k_staged_byte(CPUMIPSState *env, hwaddr pa, unsigned int way)
+{
+    return env->r10k->scache_data[r10k_scache_word_index(env, pa, way)] >>
+           r10k_scache_byte_shift(pa);
+}
+
+/*
+ * Instruction fetch from a staged page. QEMU translates code fetched from
+ * an I/O region one instruction at a time and caches nothing, so code run
+ * through the window ran thousands of times slower than code run from RAM.
+ * Instead an instruction-fetch fill maps the page with execute permission
+ * alone, to one of two places chosen by the line the fetch falls in:
+ *
+ * - a staged line: a copy of the page's staged lines, each byte as the
+ *   window would serve it, kept in a slot of staged_code, a RAM region
+ *   that is an address space of its own (MIPSASIdx_CODE);
+ * - an unstaged line: the memory behind the page, through the ordinary
+ *   cached address space, as a fetch from a page with no staged line
+ *   would. QEMU's own tracking of writes to that memory keeps code
+ *   translated from it current.
+ *
+ * Every other fill of a staged page maps the window with execute removed,
+ * so loads and stores always reach the window and no fill takes another
+ * kind's TLB entry.
+ *
+ * Translation keeps a block to the lines its mapping answers for
+ * (r10k_staged_code_lines()): a block from a copy holds only staged
+ * lines, one from memory only unstaged ones. A block ends before the
+ * first line it may not hold, and a block that would start in one leaves
+ * at once, discarding the page's TLB entry so the next fetch is filled
+ * again, to the other place.
+ *
+ * Both follow the arrays. A store or Index Store Data (S) into a staged
+ * line rewrites the copied bytes and discards what was translated from
+ * them through tb_invalidate_phys_range(), so the next execution runs the
+ * new code. A tag write that adds or removes a line copies the line again
+ * and discards what was translated from it, from the copy and from the
+ * memory behind it. That covers Index Store Tag (S), both invalidates,
+ * writebacks and the primary inclusion purge they carry, which all end a
+ * line through r10k_scache_write_tag(). A page that loses its last line
+ * gives up its slot.
+ *
+ * There is one slot for each page's worth of secondary capacity, enough
+ * for staged code laid out in whole pages. Code staged more sparsely can
+ * spread over more pages than that; a staged line on a page that finds
+ * every slot taken is fetched through the window, as before. A store
+ * into the line the running block came from takes effect from the next
+ * block, as a store into code in RAM does.
+ */
+
+/* The slot holding @page's copy, or -1. */
+static int r10k_staged_code_slot(CPUMIPSState *env, uint64_t page)
+{
+    R10KState *r10k = env->r10k;
+
+    if (!r10k->code_nslots) {
+        return -1;
+    }
+    return (int)GPOINTER_TO_UINT(g_hash_table_lookup(r10k->code_pages,
+               GUINT_TO_POINTER(page >> TARGET_PAGE_BITS))) - 1;
+}
+
+static ram_addr_t r10k_staged_code_ram(MIPSCPU *cpu, unsigned int slot)
+{
+    return memory_region_get_ram_addr(&cpu->staged_code) +
+           (ram_addr_t)slot * TARGET_PAGE_SIZE;
+}
+
+static uint8_t *r10k_staged_code_host(MIPSCPU *cpu, unsigned int slot)
+{
+    return (uint8_t *)memory_region_get_ram_ptr(&cpu->staged_code) +
+           (size_t)slot * TARGET_PAGE_SIZE;
+}
+
+/*
+ * Copy [@pa, @pa + @len), within one page, from the arrays into the
+ * page's copy: staged bytes as the window serves them, zero elsewhere,
+ * which no block reads. Then discard what was translated from it.
+ */
+static void r10k_staged_code_copy(CPUMIPSState *env, hwaddr pa,
+                                  unsigned int len)
+{
+    MIPSCPU *cpu = env_archcpu(env);
+    hwaddr page = pa & TARGET_PAGE_MASK;
+    int slot = r10k_staged_code_slot(env, page);
+    uint8_t *copy;
+    ram_addr_t ram;
+
+    if (slot < 0) {
+        return;
+    }
+    copy = r10k_staged_code_host(cpu, slot);
+    for (hwaddr b = pa; b < pa + len; b++) {
+        int way = r10k_staged_lookup(env, b);
+
+        copy[b - page] = way < 0 ? 0 : r10k_staged_byte(env, b, way);
+    }
+    ram = r10k_staged_code_ram(cpu, slot);
+    tb_invalidate_phys_range(env_cpu(env), ram + (pa - page),
+                             ram + (pa - page) + len - 1);
+}
+
+static void r10k_staged_code_drop(CPUMIPSState *env, uint64_t page)
+{
+    R10KState *r10k = env->r10k;
+    MIPSCPU *cpu = env_archcpu(env);
+    int slot = r10k_staged_code_slot(env, page);
+    ram_addr_t ram;
+
+    if (slot < 0) {
+        return;
+    }
+    trace_r10k_staged_code(page, slot, false);
+    g_hash_table_remove(r10k->code_pages,
+                        GUINT_TO_POINTER(page >> TARGET_PAGE_BITS));
+    clear_bit(slot, r10k->code_slots_used);
+    ram = r10k_staged_code_ram(cpu, slot);
+    tb_invalidate_phys_range(env_cpu(env), ram, ram + TARGET_PAGE_SIZE - 1);
+    tlb_flush(env_cpu(env));
+}
+
+/* A tag write added or removed the line at @addr. */
+static void r10k_staged_line_changed(CPUMIPSState *env, uint64_t addr)
+{
+    unsigned int line = r10k_scache_line_size(env);
+
+    if (!env->r10k->code_nslots) {
+        return;
+    }
+    addr &= ~(uint64_t)(line - 1);
+    r10k_staged_code_copy(env, addr, line);
+    r10k_staged_backing_invalidate(env, addr, line);
+}
+
+/* Bytes [@pa, @pa + @len) of staged lines changed in the arrays. */
+static void r10k_staged_code_update(CPUMIPSState *env, hwaddr pa,
+                                    unsigned int len)
+{
+    hwaddr end = pa + len;
+
+    if (!env->r10k->code_nslots) {
+        return;
+    }
+    while (pa < end) {
+        hwaddr stop = MIN(end, (pa & TARGET_PAGE_MASK) + TARGET_PAGE_SIZE);
+
+        r10k_staged_code_copy(env, pa, stop - pa);
+        pa = stop;
+    }
+}
+
+/*
+ * What a TLB fill of a staged page at @paddr maps, given the fill's access
+ * type, permissions and attributes. Returns the address in the address
+ * space the attributes it leaves select.
+ */
+hwaddr r10k_staged_fill(CPUMIPSState *env, hwaddr paddr,
+                        MMUAccessType access_type, int *prot,
+                        MemTxAttrs *attrs)
+{
+    R10KState *r10k = env->r10k;
+    uint64_t page = paddr & TARGET_PAGE_MASK;
+    int slot;
+
+    if (access_type != MMU_INST_FETCH) {
+        /* A fetch takes its own fill, unless there is no copy to take. */
+        attrs->mips_uncached = 1;
+        if (r10k->code_nslots) {
+            *prot &= ~PAGE_EXEC;
+        }
+        return paddr;
+    }
+    if (!r10k->code_nslots) {
+        attrs->mips_uncached = 1;
+        return paddr;
+    }
+    if (r10k_staged_lookup(env, paddr) < 0) {
+        *prot &= PAGE_EXEC;
+        return paddr;
+    }
+    slot = r10k_staged_code_slot(env, page);
+    if (slot < 0) {
+        slot = find_first_zero_bit(r10k->code_slots_used, r10k->code_nslots);
+        if (slot >= r10k->code_nslots) {
+            attrs->mips_uncached = 1;
+            return paddr;
+        }
+        set_bit(slot, r10k->code_slots_used);
+        r10k->code_slot_page[slot] = page;
+        g_hash_table_insert(r10k->code_pages,
+                            GUINT_TO_POINTER(page >> TARGET_PAGE_BITS),
+                            GUINT_TO_POINTER(slot + 1));
+        r10k_staged_code_copy(env, page, TARGET_PAGE_SIZE);
+        trace_r10k_staged_code(page, slot, true);
+    }
+    attrs->mips_uncached = 1;
+    attrs->mips_kseg1 = 1;
+    *prot &= PAGE_EXEC;
+    return (hwaddr)slot * TARGET_PAGE_SIZE + (paddr & ~TARGET_PAGE_MASK);
+}
+
+/*
+ * For translation of a block at @pc whose code is at @host: whether the
+ * block comes from a page that holds a staged line, and if so whether from
+ * its copy (*from_copy) and which lines it may hold, one bit for each line
+ * from the page's start, and log2 of the line size. A copy answers for the
+ * staged lines, the memory behind the page for the rest. Any change to
+ * that set discards every block made under it, so the answer holds for as
+ * long as such a block can run.
+ *
+ * The memory behind a page is reached by uncached fetches too, and a block
+ * made from it is found by any fetch at the same address and memory. So
+ * the lines are those the page holds now, whatever the mapping that asked,
+ * and a block that starts in a staged line only checks, when it runs,
+ * whether its fetch should have come from the copy
+ * (helper_r10k_staged_code_check()).
+ */
+bool r10k_staged_code_lines(CPUMIPSState *env, vaddr pc, int mmu_idx,
+                            const void *host, bool *from_copy,
+                            uint64_t *lines, unsigned int *line_shift)
+{
+    R10KState *r10k = env->r10k;
+    MIPSCPU *cpu = env_archcpu(env);
+    const uint8_t *base;
+    MemTxAttrs attrs = {};
+    unsigned int line;
+    uint64_t page, staged = 0;
+    hwaddr paddr;
+    int prot;
+
+    if (!r10k || !r10k->code_nslots || !host ||
+        !g_hash_table_size(r10k->staged_pages)) {
+        return false;
+    }
+    base = memory_region_get_ram_ptr(&cpu->staged_code);
+    *from_copy = (const uint8_t *)host >= base &&
+                 (const uint8_t *)host < base +
+                     (size_t)r10k->code_nslots * TARGET_PAGE_SIZE;
+    if (*from_copy) {
+        page = r10k->code_slot_page[((const uint8_t *)host - base) /
+                                    TARGET_PAGE_SIZE];
+    } else if (get_physical_address(env, &paddr, &prot, pc, MMU_INST_FETCH,
+                                    mmu_idx, &attrs) == TLBRET_MATCH &&
+               g_hash_table_contains(r10k->staged_pages,
+                   GUINT_TO_POINTER(paddr >> TARGET_PAGE_BITS))) {
+        page = paddr & TARGET_PAGE_MASK;
+    } else {
+        return false;
+    }
+    line = r10k_scache_line_size(env);
+    for (unsigned int i = 0; i < TARGET_PAGE_SIZE / line; i++) {
+        if (r10k_staged_lookup(env, page + i * line) >= 0) {
+            staged |= UINT64_C(1) << i;
+        }
+    }
+    *lines = *from_copy ? staged : ~staged;
+    *line_shift = ctz32(line);
+    return true;
+}
+
+/*
+ * A block from a copy that would start in an unstaged line: discard the
+ * TLB entry for @pc's page, so the fetch is filled again, and return to
+ * the main loop to fetch the instruction afresh.
+ */
+void helper_r10k_staged_code_leave(CPUMIPSState *env, target_ulong pc)
+{
+    CPUState *cs = env_cpu(env);
+
+    tlb_flush_page(cs, pc);
+    cpu_loop_exit_restore(cs, GETPC());
+}
+
+/*
+ * A block from memory that starts in a staged line: leave as above if
+ * this fetch is a cached one that the line answers for, otherwise run on.
+ */
+void helper_r10k_staged_code_check(CPUMIPSState *env, target_ulong pc)
+{
+    MemTxAttrs attrs = {};
+    hwaddr paddr;
+    int prot;
+
+    if (get_physical_address(env, &paddr, &prot, pc, MMU_INST_FETCH,
+                             mips_env_mmu_index(env), &attrs) ==
+        TLBRET_MATCH && r10k_staged_page(env, paddr, attrs) &&
+        r10k_staged_lookup(env, paddr) >= 0) {
+        tlb_flush_page(env_cpu(env), pc);
+        cpu_loop_exit_restore(env_cpu(env), GETPC());
+    }
+}
+
 static MemTxResult r10k_staged_read(void *opaque, hwaddr pa, uint64_t *data,
                                     unsigned size, MemTxAttrs attrs)
 {
@@ -410,9 +765,7 @@ static MemTxResult r10k_staged_read(void *opaque, hwaddr pa, uint64_t *data,
     }
     for (unsigned int i = 0; i < size; i++) {
         if (ways[i] >= 0) {
-            bytes[i] = env->r10k->scache_data[
-                r10k_scache_word_index(env, pa + i, ways[i])] >>
-                r10k_scache_byte_shift(pa + i);
+            bytes[i] = r10k_staged_byte(env, pa + i, ways[i]);
         }
     }
     *data = 0;
@@ -464,6 +817,7 @@ static MemTxResult r10k_staged_write(void *opaque, hwaddr pa, uint64_t data,
                               r10k->scache_taglo[op.tag] | (3 << 10),
                               r10k->scache_taghi[op.tag]);
     }
+    r10k_staged_code_update(env, pa, size);
     return result;
 }
 
@@ -804,6 +1158,20 @@ void r10k_cache_memory_init(MIPSCPU *cpu)
         r10k->staged_pages = g_hash_table_new(g_direct_hash,
                                               g_direct_equal);
         r10k->staging = true;
+        if (r10k->scache_geometry_valid) {
+            /* A page's lines fit the 64-bit masks translation keeps. */
+            g_assert(r10k->scache_line_size >= TARGET_PAGE_SIZE / 64);
+            /* Derived from the arrays, so never migrated. */
+            r10k->code_nslots = r10k->scache_size / TARGET_PAGE_SIZE;
+            memory_region_init_ram_flags_nomigrate(&cpu->staged_code,
+                OBJECT(cpu), "r10k-staged-code",
+                (uint64_t)r10k->code_nslots * TARGET_PAGE_SIZE, 0,
+                &error_fatal);
+            r10k->code_pages = g_hash_table_new(g_direct_hash,
+                                                g_direct_equal);
+            r10k->code_slot_page = g_new0(uint64_t, r10k->code_nslots);
+            r10k->code_slots_used = bitmap_new(r10k->code_nslots);
+        }
     }
     cpu->cache_memory_initialized = true;
 }
@@ -817,6 +1185,13 @@ void r10k_cache_memory_destroy(MIPSCPU *cpu)
             g_hash_table_destroy(r10k->staged_pages);
             r10k->staged_pages = NULL;
             r10k->staging = false;
+        }
+        if (r10k->code_nslots) {
+            g_hash_table_destroy(r10k->code_pages);
+            r10k->code_pages = NULL;
+            g_clear_pointer(&r10k->code_slot_page, g_free);
+            g_clear_pointer(&r10k->code_slots_used, g_free);
+            r10k->code_nslots = 0;
         }
         address_space_destroy(&cpu->cache_backing_as);
         cpu->cache_memory_initialized = false;
@@ -1247,6 +1622,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                            cache_operation == 0b110 ||
                            cache_operation == 0b111)) {
         R10KScacheOperand slot;
+        uint64_t line;
 
         if (!r10k_scache_operand(env, paddr, &slot)) {
             return;
@@ -1279,6 +1655,11 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                 (uint64_t)(uint32_t)env->CP0_TagHi << 32 |
                 (uint32_t)env->CP0_TagLo;
             env->r10k->scache_ecc[slot.quad] = env->CP0_ErrCtl & 0x3ff;
+            if (env->r10k->staging &&
+                r10k_staged_line_addr(env, slot.tag, &line)) {
+                r10k_staged_code_update(env, line + (paddr &
+                    (r10k_scache_line_size(env) - 1) & ~(hwaddr)15), 16);
+            }
         } else { /* Index Load Data */
             uint64_t data = env->r10k->scache_data[slot.dword];
 
