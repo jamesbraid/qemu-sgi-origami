@@ -1046,9 +1046,6 @@ tests/unit/crime-rational-82-reference.h
 tests/unit/crime-texture-82-reference.c
 tests/unit/crime-texture-82-reference.h
 tests/unit/crime-texture-82-body.h
-docs/system/devices/sgi-mace-i2c.rst
-docs/system/mips/sgi/hardware/dbrick.rst
-docs/system/mips/sgi/hardware/qlogic-isp2200.rst
 hw/display/sgi/gl-select.c
 hw/display/sgi/head-guard.c
 hw/display/sgi/head-work.c
