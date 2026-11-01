@@ -92,6 +92,11 @@ jobs:
           python3 scripts/check-qtest-registered.py
           python3 scripts/test_check_qtest_registered.py
 
+      - name: the SGI files are listed and licensed
+        run: |
+          echo "the SGI files are listed and licensed" > "$CI_STEP"
+          python3 scripts/ci/sgi-license-check.py
+
       - name: build the QEMU test image
         run: |
           echo "build the QEMU test image" > "$CI_STEP"
@@ -215,6 +220,12 @@ jobs:
           echo "$PART: every qtest source is one the suite runs" > "$CI_STEP"
           python3 scripts/check-qtest-registered.py
           python3 scripts/test_check_qtest_registered.py
+
+      - name: the SGI files are listed and licensed
+        if: ${{ startsWith(matrix.part, 'functional') }}
+        run: |
+          echo "$PART: the SGI files are listed and licensed" > "$CI_STEP"
+          python3 scripts/ci/sgi-license-check.py
 
       - name: build the QEMU test image
         run: |
