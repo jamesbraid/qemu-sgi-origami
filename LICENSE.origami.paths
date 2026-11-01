@@ -1155,3 +1155,5 @@ tests/unit/test-sgi-renderer-gl.c
 tests/unit/test-sgi-renderer.c
 scripts/ci/sgi-license-check.py
 scripts/tests/test_sgi_license_check.py
+scripts/ci/sgi-leak-check.py
+scripts/tests/test_sgi_leak_check.py
