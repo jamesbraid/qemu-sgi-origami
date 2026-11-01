@@ -129,10 +129,10 @@ an R12000 at 400 MHz with 2048 KB secondary cache
 (:src:`bukosek-sgi-o2 Processor options`), *observed*. The identity
 values below are model selections, not readings of an O2+ module,
 *approximation*; the capture's PRId and cache differ from them
-(`Published machines`_). The variant requires ``-cpu R12000`` with
-exactly these properties: ``r12000-prid=0xe35``, ``r12000-fpu-id=0x900``,
-``r12000-reset-mode=0x11a8603``, ``r12000-scache-bytes=2097152`` and
-``r12000-scache-block-words=16``.
+(`Published machines`_). ``-cpu R12000`` alone is enough: the board
+fits the module's part, PRId ``0xe35``, FPU identification ``0x900`` and
+reset mode word ``0x11a8603``, which selects a 2 MiB secondary cache with
+16-word blocks. It refuses a ``-cpu`` value that differs.
 
 Config0 then reads ``0x6d1a8603``. The CPU's R12000A mode is refused, so
 the variant has a plain R12000 identity although the catalogue names the
@@ -458,8 +458,8 @@ The machine differs from these. These are model limits:
    * - R12000 identity (PRId)
      - ``0xe23``, revision 2.3, FPU ``0x900``
        (:src:`dmesgd-5290 cpu0`), *observed*
-     - ``0xe35`` and FPU ``0x900``, set by ``r12000-prid`` and
-       ``r12000-fpu-id``, *approximation*
+     - ``0xe35`` and FPU ``0x900``, fitted by the board,
+       *approximation*
    * - R12000 secondary cache
      - 1024 KB, 64-byte blocks (:src:`dmesgd-5290 cpu0`), *observed*;
        1 MB in the product guide (:src:`sgi-o2-product-guide-1065 p. 4`);

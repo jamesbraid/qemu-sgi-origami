@@ -79,9 +79,8 @@ Family members and selection
      - ``octane2``; ``origin200`` with its 270 MHz processor;
        ``origin3000`` C-bricks; ``o2`` with ``variant=o2plus``
      - ``r12000-prid`` and ``r12000-fpu-id``, required
-     - ``r12000-reset-mode``, required
-     - none: ``r12000-scache-bytes`` and ``r12000-scache-block-words``
-       are required
+     - ``reset-mode``, required
+     - none: the reset mode word's SS and SB fields set it
    * - ``R14000``
      - ``origin300``, ``fuel``
      - ``r14000-prid``, default ``0x00000f24``
@@ -90,14 +89,18 @@ Family members and selection
    * - ``R16000``
      - the IP53 machines; ``origin3000`` with ``topology=origin3900``
      - fixed ``0x00000f50``
-     - ``r16000-reset-mode``, required
-     - set by ``r16000-scache-bytes``, required
+     - ``reset-mode``, required
+     - none: the reset mode word's SS field sets it
 
 A machine creates its CPU from the catalogue's processor part. The SGI
 machine code (``hw/mips/sgi/sgi-cpu.c``) applies that part's values
 through the CPU's own properties, each only where ``-cpu`` or
 ``-global`` did not already name it, so ``-cpu R12000,r12000-prid=0xe24``
-overrides one field and keeps the rest. Every one of these properties is
+overrides one field and keeps the rest. The reset mode word is the
+exception: a board that drives one refuses a ``-cpu`` or ``-global``
+``reset-mode`` that differs from it ("CPU reset-mode ... conflicts with
+the board's ..."), because the word selects the secondary cache and so
+names another processor. The ``octane`` and plain ``o2`` drive no word. Every one of these properties is
 fixed at realize: a later ``qom-set`` fails with "cannot change after CPU
 realization". The platform pages say which part each machine fits and at
 what clock (:ref:`sgi-ip30-processors`,
@@ -192,20 +195,27 @@ changes only the Kseg0 field; the model preserves bits 31:3.
 The board, not the processor, chooses the word. The model reproduces that
 with a per-CPU input:
 
-- R10000 and R14000: ``reset-mode`` replaces bits 24:0 of the definition's
-  Config at every reset. Without it the definition's own bits stand. For
-  the R10000 those are SC=3, SS=1 (1 MiB), SB=1, EC=3 and Kseg0 algorithm
-  3, a fallback value and not any machine's measured word.
-- R12000: ``r12000-reset-mode`` is required. Realize rejects bits above
-  24, reserved Kseg0 codes (0, 1 and 6), a system clock divisor below 3
-  or above 11, a secondary clock divisor below 2 or equal to 6, bits
-  23:22 set, and a BE bit that disagrees with the
-  CPU's ``big-endian`` property. ``r12000-scache-bytes`` must equal the
-  size SS selects, ``r12000-scache-block-words`` must be 16 or 32 and
-  agree with SB, and 16-word blocks are accepted only up to 2 MiB. Which
-  divisor codes the R12000 actually reserves is set out in the NEC manual
+Every family member takes the word through one ``reset-mode`` property
+and sizes its secondary cache from it: capacity from SS and block size
+from SB. A word with bits above 24 set is refused.
+
+- R10000 and R14000: ``reset-mode`` is optional and replaces bits 24:0
+  of the definition's Config at every reset. SS 6 or 7, or a size and
+  block pair the arrays cannot hold, is refused. Without a word the
+  definition's own bits and cache stand. For the R10000 those are SC=3,
+  SS=1 (1 MiB), SB=1, EC=3 and Kseg0 algorithm 3, a fallback value and
+  not any machine's measured word; the R14000 keeps 2 MiB.
+- R12000: ``reset-mode`` is required. Realize rejects reserved Kseg0
+  codes (0, 1 and 6), a system clock divisor below 3 or above 11 (12 on
+  the ``vr12000a`` variant), a secondary clock divisor below 2 or equal
+  to 6, bits 24:22 other than zero or bit 24 alone, a reserved SS code, a
+  BE bit that disagrees with the CPU's ``big-endian`` property, and
+  16-word blocks above 2 MiB. Which divisor codes the R12000 actually
+  reserves is set out in the NEC manual
   :src:`nec-vr10000-vr12000-um-3 p. 366`; the model's accepted ranges
   are its own choice.
+- R16000: ``reset-mode`` is required and must select 4, 8 or 16 MiB with
+  SB=1, 128-byte lines, and a BE bit that matches ``big-endian``.
 - In every case BE follows ``big-endian`` at reset.
 
 The ``octane2`` catalogue supplies ``0x001aa683``, giving Config
@@ -524,10 +534,14 @@ behind the CPU in its own subsections:
   present only when the configured capacity needs them.
 - ``cpu/r12000-extra`` and ``cpu/r12000-profile`` on the R12000: the
   secondary arrays the profile's geometry adds, branch prediction entries
-  512 to 2,047, and the five profile values. Loading fails unless the
-  destination was configured with the same five values, so a destination
-  with the same capacity but another block size or FPU word refuses the
-  stream.
+  512 to 2,047, and the profile values, PRId, FPU word and reset mode
+  word. Loading fails unless the destination was configured with the same
+  values, so a destination with the same capacity but another block size
+  or FPU word refuses the stream. ``cpu/r16000-profile`` carries the
+  R16000's reset mode word the same way.
+- ``cpu/r10k-syndrome`` on the R14000 and R16000: the captured syndrome
+  and its flag. A stream without it, or with an out-of-range or
+  inconsistent value, is refused.
 - On the R10000 and R14000, loading fails if the incoming PRId differs
   from the destination's configured PRId, so its next reset cannot
   restore another identity.
@@ -611,7 +625,9 @@ operations, Count and Compare with the adjacent-write recovery, the
 partial ``LWR`` rule, the denormal-result and ``CVT.L`` traps,
 ``reset-mode`` and PRId through ``r14000-prid`` (implementation
 ``0x0f``). Unlike the R10000 and R12000 it has no input-denormal trap,
-and it has four counters without counter interrupts. Its
+and it has four counters without counter interrupts. Like the R16000 it
+carries the nine-bit secondary-cache syndrome field in bits 31:23 of
+performance control 0 (:ref:`sgi-r10000-limits`). Its
 machine-specific detail belongs with the SN1 machines.
 
 .. _sgi-r10000-r16000:
@@ -620,9 +636,11 @@ R16000
 ======
 
 The ``R16000`` type is the processor of the IP53 machines. It shares the
-same family code and requires ``r16000-experimental=on``,
-``r16000-reset-mode`` and ``r16000-scache-bytes`` (4, 8 or 16 MiB, with
-SB=1); its counters log ``LOG_UNIMP`` for any event but Cycles and for
+same family code and requires ``reset-mode`` (4, 8 or 16 MiB, with SB=1);
+its PRId and FPU identification are fixed. The machines fit it
+themselves, and each node checks that every processor is the one the
+catalogue compiled for its first slot: same clock, cache and word. Its
+counters log ``LOG_UNIMP`` for any event but Cycles and for
 an interrupt enable. Its machine-specific detail belongs with the IP53
 machines.
 
@@ -643,16 +661,21 @@ Model limits
 - Performance counters count only Cycles, with no update delay.
 - The Count-sample window and the adjacent-write recovery can raise IP7
   at a Compare write that silicon would have deferred a full wrap.
-- R12000 FS-set denormal and quiet-NaN handling and R12000A features,
-  such as the secondary ECC syndrome in performance control 0
-  :src:`nec-vr10000-series-um-4 PDF p. 247, 358`, are not modelled.
+- R12000 FS-set denormal and quiet-NaN handling are not modelled.
+- The secondary ECC syndrome in bits 31:23 of performance control 0
+  :src:`nec-vr10000-series-um-4 PDF p. 247, 358` is a read-only field on
+  the ``vr12000a`` variant, the R14000 and the R16000. Writes leave it
+  alone, and it keeps the last syndrome captured on a refill or
+  writeback that found an error. No machine's cache model reports such an
+  error, so outside the qtests it reads zero. Its presence on the R14000
+  and R16000 is *inferred* from the IRIX Origin 2000 and Origin 3000
+  kernels reading it on every implementation ``0x0f`` part, a *software
+  expectation*, and its bit positions are carried over from the
+  R12000A.
 - Cold and soft reset differ only in the generic MIPS way: a QEMU system
   reset is a cold reset. A Soft Reset exception keeps WatchLo on the
   R10000 and R16000 and clears it on the R12000 and R14000, a model
   choice; whether the R12000 and R14000 keep WatchLo is *unknown*.
-- On the R10000 the secondary arrays follow a reset-mode SS of 1 to 5
-  (1 to 16 MiB); SS 0, 6 and 7 leave 1 MiB. The R14000's arrays stay at
-  2 MiB whatever SS says. Config SS then disagrees with the arrays.
 - An unhandled CP0 register 25 selector logs ``LOG_UNIMP`` and reads
   zero. Setting Status RE logs ``LOG_UNIMP``.
 - Migration works only between identical builds.
@@ -667,7 +690,10 @@ Tests
   ``fuel`` and a bare R10000 and R14000; overrides; a rejected PRId
   write; repeated resets; immutable properties; rejected implementation
   numbers; and migration with matching and mismatched identities. It also
-  checks the ``octane2`` catalogue's five R12000 values.
+  checks the ``octane2`` catalogue's R12000 PRId, FPU word and reset
+  mode word, and that ``origin200`` (R10000 and R12000), ``octane2`` and
+  ``fuel`` refuse a ``-cpu`` ``reset-mode`` that differs from the
+  board's.
 - ``tests/qtest/sn0-qtest-cpu-test.c``: the ordinary timer rules
   (``/sn0/qtest/r10000-timer``, ``r14000-timer``); the adjacent-write
   recovery on all four types; partial ``LWR`` on the R10000, R14000 and
