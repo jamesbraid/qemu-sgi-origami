@@ -218,6 +218,7 @@ extern const VMStateDescription mips_vmstate_r14k_scache;
 extern const VMStateDescription mips_vmstate_r12000_extra;
 extern const VMStateDescription mips_vmstate_r10k_scache_4m;
 extern const VMStateDescription mips_vmstate_r16000_profile;
+extern const VMStateDescription mips_vmstate_r10k_syndrome;
 extern const VMStateDescription mips_vmstate_r10k_scache_8m;
 extern const VMStateDescription mips_vmstate_r10k_scache_16m;
 

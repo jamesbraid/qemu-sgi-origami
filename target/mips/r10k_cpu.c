@@ -222,6 +222,23 @@ static void mips_r12000_variant_set(Object *obj, const char *value,
     cpu->r10k_profile->r12000a = !strcmp(value, "vr12000a");
 }
 
+/*
+ * The last-secondary-error syndrome is a property of the R12000A variant,
+ * and of the R14000 and R16000 with no selector. Plain R12000 and R10000
+ * parts have no such field.
+ */
+bool mips_r10k_has_syndrome(const MIPSCPU *cpu)
+{
+    const char *name;
+
+    if (!cpu->r10k_profile) {
+        return false;
+    }
+    name = MIPS_CPU_GET_CLASS(cpu)->cpu_def->name;
+    return cpu->r10k_profile->r12000a || !strcmp(name, "R14000") ||
+           !strcmp(name, "R16000");
+}
+
 #ifndef CONFIG_USER_ONLY
 bool mips_r12000a_report_secondary_error(MIPSCPU *cpu,
                                         const R12000SecondaryReport *report,
@@ -229,15 +246,15 @@ bool mips_r12000a_report_secondary_error(MIPSCPU *cpu,
 {
     BQL_LOCK_GUARD();
 
-    if (!DEVICE(cpu)->realized || !mips_r12000a_enabled(cpu)) {
-        error_setg(errp, "secondary syndrome capture requires "
-                   "realized vr12000a");
+    if (!DEVICE(cpu)->realized || !mips_r10k_has_syndrome(cpu)) {
+        error_setg(errp, "secondary syndrome capture requires a realized "
+                   "vr12000a, R14000 or R16000");
         return false;
     }
     if (!report || report->syndrome > 0x1ff ||
         (unsigned)report->path > R12000_SECONDARY_OTHER ||
         (unsigned)report->error > R12000_SECONDARY_UNCORRECTABLE) {
-        error_setg(errp, "invalid R12000A secondary-data report");
+        error_setg(errp, "invalid secondary-data report");
         return false;
     }
     if (!report->cache_op && report->error != R12000_SECONDARY_GOOD &&

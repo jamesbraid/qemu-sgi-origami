@@ -325,6 +325,7 @@ void r10k_cpu_set_bus_handler(MIPSCPU *cpu,
                               void *opaque);
 void r10k_cpu_set_requester_id(MIPSCPU *cpu, uint16_t requester_id);
 bool mips_r12000a_enabled(const MIPSCPU *cpu);
+bool mips_r10k_has_syndrome(const MIPSCPU *cpu);
 #ifndef CONFIG_USER_ONLY
 /*
  * Consume a qualified detector report before its notification/completion.
