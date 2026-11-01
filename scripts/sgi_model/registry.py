@@ -27,6 +27,7 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin3200",
     "origin3200-r16000",
     "origin3200-r14000-600mhz",
+    "origin3200-two-ibricks",
     "origin3400",
     "origin3400-r16000",
     "origin3400-r14000-600mhz",

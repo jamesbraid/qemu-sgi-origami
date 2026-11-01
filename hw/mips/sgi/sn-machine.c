@@ -6693,11 +6693,20 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
     g_autofree const SGIModelCrossbar **crossbars = NULL;
     g_autofree const SGIModelIoBoard **boards = NULL;
     size_t module_count, crossbar_count, board_count;
-    unsigned int index = 0;
+    unsigned int index = 0, ibrick_count = 0;
 
     modules = sgi_model_module_array(t->modules, &module_count);
     crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
     boards = sgi_model_io_board_array(t->io_boards, &board_count);
+    /*
+     * Count from the catalogue: s->controller_count is only set for a
+     * topology with routers or L1 management.
+     */
+    for (unsigned int i = 0; s->l1_config &&
+         i < QAPI_LIST_LENGTH(t->controllers); i++) {
+        ibrick_count += s->l1_config[i].has_profile &&
+            s->l1_config[i].profile == SGI_MODEL_L1_PROFILE_IBRICK;
+    }
     for (const SGIModelControllerList *entry = t->controllers; entry;
          entry = entry->next, index++) {
         const SGIModelController *controller = entry->value;
@@ -6793,7 +6802,12 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
          * That holds only while the index is nonzero: the I-brick and
          * N-brick L1s keep index 0 with the same letters.
          */
-        if (vbrick) {
+        if (vbrick || (!nbrick && ibrick_count > 1)) {
+            /*
+             * With several I-bricks the stock PROM would name every node
+             * by one shared base I/O identity and merge their hubs, so
+             * each takes its module's index.
+             */
             qdev_prop_set_uint8(l1, "identity-index", controller->module_index);
         }
         qdev_prop_set_int32(l1, "revision-major",

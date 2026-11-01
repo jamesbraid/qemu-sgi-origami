@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "892a77256a57906022f66bb6d8d5bce4c39909719214d11ec13daacf291b9243"
+    "6fa6f0b7184814725d1dcb3b94a6a73e70a59bf09f94c6f1c6e4995b2d1b228c"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -212,9 +212,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 164)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 49)
-        self.assertEqual(len(layers), 113)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 166)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 50)
+        self.assertEqual(len(layers), 114)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -960,7 +960,7 @@ class FuelTests(unittest.TestCase):
                     "cpu-mode-word": 0x549cab85})
                 continue
             if topology["name"] in ("origin3200", "origin3400", "onyx3000",
-                                    "onyx3400-ir"):
+                                    "onyx3400-ir", "origin3200-two-ibricks"):
                 # The C-brick's machine-type byte and reset-mode word come
                 # from the PROM's CPU-configuration table row.
                 self.assertEqual(topology["ip35-firmware"], {
@@ -1020,6 +1020,30 @@ class FuelTests(unittest.TestCase):
             if item["name"] != "origin3900-memory-node":
                 self.assertTrue(all("role" not in node
                                     for node in item["nodes"]), item["name"])
+
+    def test_second_ibrick_is_a_labelled_model_only_offering(self):
+        """An I-brick on each C-brick is in no source, so the offering says
+        so, keeps widgets 14 and 15 on each I-brick, and names the I-bricks
+        by their host C-bricks (datasheet: a second I-brick)."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        [offering] = [item for item in catalogue["offerings"]
+                      if item["topology"] == "origin3200-two-ibricks"]
+        self.assertIn("not a documented configuration",
+                      offering["display-name"])
+        self.assertEqual(offering["cpus-per-node"], [4, 4])
+        [topology] = [item for item in catalogue["topologies"]
+                      if item["name"] == "origin3200-two-ibricks"]
+        self.assertIn("not a documented configuration",
+                      topology["description"])
+        self.assertEqual(
+            sorted((a["crossbar-index"], a["node-index"], a["widget"])
+                   for a in topology["xio-attachments"]),
+            [(0, 0, 14), (0, 0, 15), (1, 1, 14), (1, 1, 15)])
+        self.assertEqual(
+            [(c["name"], [e["index"] for e in c["ends"]])
+             for c in topology["xio-cables"]],
+            [("c0-to-ibrick", [0, 0]), ("c1-to-ibrick2", [1, 1])])
 
     def test_c_brick_800mhz_r16000_is_offered_where_the_sources_put_it(self):
         """The 800 MHz R16000 C-brick is reported by third parties and
