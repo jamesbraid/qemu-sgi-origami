@@ -21,7 +21,20 @@
 #include "hw/core/qdev.h"
 #include "hw/core/irq.h"
 #include "qapi/error.h"
-#include "qemu/cutils.h"
+
+typedef struct GPIOOutNotify {
+    void (*notify)(DeviceState *dev, const char *name, int n);
+    char *name;
+    int n;
+} GPIOOutNotify;
+
+static void qdev_gpio_out_notify_free(gpointer opaque)
+{
+    GPIOOutNotify *notify = opaque;
+
+    g_free(notify->name);
+    g_free(notify);
+}
 
 static NamedGPIOList *qdev_get_named_gpio_list(DeviceState *dev,
                                                const char *name)
@@ -75,26 +88,15 @@ void qdev_init_gpio_in(DeviceState *dev, qemu_irq_handler handler, int n)
 static void qdev_gpio_out_link_changed(Object *obj, const char *propname)
 {
     DeviceState *dev = DEVICE(obj);
-    NamedGPIOList *gpio_list;
+    GPIOOutNotify *notify = dev->gpio_out_notifiers ?
+        g_hash_table_lookup(dev->gpio_out_notifiers, propname) : NULL;
 
-    QLIST_FOREACH(gpio_list, &dev->gpios, node) {
-        const char *base = gpio_list->name ? gpio_list->name :
-                           "unnamed-gpio-out";
-        size_t len = strlen(base);
-        const char *end;
-        unsigned long n;
+    if (notify) {
+        void (*callback)(DeviceState *, const char *, int) = notify->notify;
+        g_autofree char *name = g_strdup(notify->name);
+        int n = notify->n;
 
-        if (!g_str_has_prefix(propname, base) || propname[len] != '[') {
-            continue;
-        }
-        if (qemu_strtoul(propname + len + 1, &end, 10, &n) ||
-            *end != ']' || end[1] || n >= gpio_list->num_out) {
-            return;
-        }
-        if (gpio_list->out_change) {
-            gpio_list->out_change(dev, gpio_list->name, n);
-        }
-        return;
+        callback(dev, name, n);
     }
 }
 
@@ -112,8 +114,6 @@ void qdev_init_gpio_out_named_with_notify(
     NamedGPIOList *gpio_list = qdev_get_named_gpio_list(dev, name);
 
     assert(gpio_list->num_in == 0 || !name);
-    assert(!gpio_list->num_out || gpio_list->out_change == notify);
-    gpio_list->out_change = notify;
 
     if (!name) {
         name = "unnamed-gpio-out";
@@ -124,6 +124,18 @@ void qdev_init_gpio_out_named_with_notify(
                                           gpio_list->num_out + i);
 
         if (notify) {
+            GPIOOutNotify *change = g_new0(GPIOOutNotify, 1);
+
+            if (!dev->gpio_out_notifiers) {
+                dev->gpio_out_notifiers = g_hash_table_new_full(
+                    g_str_hash, g_str_equal, g_free,
+                    qdev_gpio_out_notify_free);
+            }
+            change->notify = notify;
+            change->name = g_strdup(gpio_list->name);
+            change->n = gpio_list->num_out + i;
+            g_hash_table_insert(dev->gpio_out_notifiers,
+                                g_strdup(propname), change);
             object_property_add_link_with_notify(
                 OBJECT(dev), propname, TYPE_IRQ, (Object **)&pins[i],
                 object_property_allow_set_link, qdev_gpio_out_link_changed,

@@ -25,6 +25,16 @@ static uint32_t rd(QTestState *q, unsigned a)
     return qtest_readl(q, BASE + a);
 }
 
+static void set_timing_output_link(QTestState *q, unsigned n,
+                                   const char *link)
+{
+    g_autofree char *property = g_strdup_printf("timing[%u]", n);
+
+    qtest_qmp_assert_success(q,
+        "{'execute':'qom-set','arguments':{'path':%s,'property':%s,"
+        "'value':%s}}", PATH, property, link);
+}
+
 static void wr(QTestState *q, unsigned a, uint32_t v)
 {
     qtest_writel(q, BASE + a, v);
@@ -1562,6 +1572,43 @@ static void test_timing_output_connect_does_not_drive_level(void)
     qtest_quit(q);
 }
 
+static void test_timing_output_reconnect_unsynchronized(void)
+{
+    static const char *sink = "/machine/peripheral/sink";
+    static const char *sink_input =
+        "/machine/peripheral/sink/unnamed-gpio-in[10]";
+    static const uint32_t sink_base = 0x17000000;
+    QTestState *q = start("-device sgi-o2-gbe,id=sink");
+
+    mode(q);
+    wr(q, 4, 12 | 2 << 8 | 3u << 14 | 1u << 20);
+    wr(q, VT(3), 30 | 20 << 12);
+    wr(q, VT(8), 2 | 1 << 12);
+    wr(q, VT(9), 67 | 2 << 12);
+    wr(q, VT(0), 0);
+    qtest_sysbus_mmio_map(q, sink, 0, sink_base);
+    qtest_set_irq_in(q, sink, NULL, 10, 0);
+    qtest_irq_intercept_out_named(q, PATH, "sysbus-irq");
+    qtest_clock_step(q, 46);
+    set_timing_output_link(q, 1, sink_input);
+    g_assert_false(qtest_readl(q, sink_base) & (1u << 4));
+
+    set_timing_output_link(q, 1, "");
+    qtest_clock_step(q, 10293);
+    g_assert_cmpuint(qtest_get_irq_raise_count(q, 0), ==, 1);
+
+    qtest_clock_step(q, 277);
+    set_timing_output_link(q, 1, sink_input);
+    g_assert_false(qtest_readl(q, sink_base) & (1u << 4));
+    qtest_clock_step(q, 184);
+    g_assert_true(qtest_readl(q, sink_base) & (1u << 4));
+    qtest_clock_step(q, 923);
+    g_assert_true(qtest_readl(q, sink_base) & (1u << 4));
+    qtest_clock_step(q, 1);
+    g_assert_false(qtest_readl(q, sink_base) & (1u << 4));
+    qtest_quit(q);
+}
+
 
 static void test_did_overlapping_cache(void)
 {
@@ -3031,6 +3078,8 @@ int main(int argc, char **argv)
                    test_timing_output_connect_midline);
     qtest_add_func("/sgi-gbe/timing-output-connect-level",
                    test_timing_output_connect_does_not_drive_level);
+    qtest_add_func("/sgi-gbe/timing-output-reconnect-unsynchronized",
+                   test_timing_output_reconnect_unsynchronized);
     qtest_add_func("/sgi-gbe/did-overlapping-cache",
                    test_did_overlapping_cache);
     qtest_add_func("/sgi-gbe/clock-pin-phase", test_clock_pin_phase);

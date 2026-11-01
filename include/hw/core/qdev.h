@@ -201,7 +201,6 @@ struct NamedGPIOList {
     qemu_irq *in;
     int num_in;
     int num_out;
-    void (*out_change)(DeviceState *dev, const char *name, int n);
     QLIST_ENTRY(NamedGPIOList) node;
 };
 
@@ -272,6 +271,10 @@ struct DeviceState {
      * @gpios: QLIST of named GPIOs the device provides.
      */
     NamedGPIOListHead gpios;
+    /**
+     * @gpio_out_notifiers: optional callbacks for output GPIO link changes.
+     */
+    GHashTable *gpio_out_notifiers;
     /**
      * @clocks: QLIST of named clocks the device provides.
      */
