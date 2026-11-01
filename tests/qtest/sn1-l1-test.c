@@ -4419,18 +4419,18 @@ static void test_machine_node_board_profiles(void)
         uint32_t hub_mhz;
         bool ds1742;
     } profiles[] = {
-        { "origin350", "2G", 4, "0x009cad85", "0x800000",
+        { "origin350", "2G", 4, "0x009bad85", "0x400000",
           "IP53_4CPU", "030-1868-001", "-C", 0x37, { 1, 18, 5 },
-          0x569cad85, 700, 200 },
+          0x589bad85, 700, 200 },
         { "onyx350,topology=onyx350", "8G", 4,
           "0x009caf85", "0x800000", "IP53_4CPU", "030-2013-001", "-D",
-          0x38, { 1, 18, 5 }, 0x569caf85, 800, 200 },
+          0x38, { 1, 18, 5 }, 0x549caf85, 800, 200 },
         { "tezro,topology=tezro", "4G", 1,
           "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39,
-          { 1, 48, 1 }, 0x549bad85, 700, 200 },
+          { 1, 48, 1 }, 0x589bad85, 700, 200 },
         { "tezro,topology=tezro,l1-type-code=55", "4G", 1,
           "0x009bad85", "0x400000", NULL, NULL, NULL, 0x37,
-          { 1, 48, 1 }, 0x549bad85, 700, 200 },
+          { 1, 48, 1 }, 0x589bad85, 700, 200 },
         /*
          * The IP53 Tezro boards the published inventories show
          * (docs/datasheets/ip53-tezro-node-board-identity.md); no
@@ -4440,19 +4440,19 @@ static void test_machine_node_board_profiles(void)
          */
         { "tezro,topology=tezro", "4G", 4,
           "0x009bad85", "0x400000", "IP53_4CPU", "030-1868-001", "-C", 0x39,
-          { 1, 48, 1 }, 0x549bad85, 700, 200 },
+          { 1, 48, 1 }, 0x589bad85, 700, 200 },
         { "tezro,topology=tezro", "4G", 2,
           "0x009bad85", "0x400000", "IP53_2CPU", "030-1869-001", "-C", 0x39,
-          { 1, 48, 1 }, 0x549bad85, 700, 200 },
+          { 1, 48, 1 }, 0x589bad85, 700, 200 },
         { "tezro,topology=tezro-rack", "4G", 1,
           "0x009bad85", "0x400000", NULL, NULL, NULL, 0x51,
-          { 1, 48, 1 }, 0x549bad85, 700, 200 },
+          { 1, 48, 1 }, 0x589bad85, 700, 200 },
         { "tezro,topology=tezro-rack", "4G", 4,
           "0x009bad85", "0x400000", "IP53_4CPU", "030-1868-001", "-C", 0x51,
-          { 1, 48, 1 }, 0x549bad85, 700, 200 },
+          { 1, 48, 1 }, 0x589bad85, 700, 200 },
         { "tezro,topology=tezro-rack", "4G", 2,
           "0x009bad85", "0x400000", "IP53_2CPU", "030-1869-001", "-C", 0x51,
-          { 1, 48, 1 }, 0x549bad85, 700, 200 },
+          { 1, 48, 1 }, 0x589bad85, 700, 200 },
         /*
          * The IP59 node boards: the captured four-processor record, and
          * the two-processor one where the topology fits two.
@@ -4584,11 +4584,11 @@ static void test_machine_node_board_profiles(void)
                         clock);
         qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
         assert_l1_revision(s, 2, 3, 4);
-        assert_cpu_context_record(s, 0x549bad85, 700, 200, NULL, NULL, NULL,
+        assert_cpu_context_record(s, 0x589bad85, 700, 200, NULL, NULL, NULL,
                                   reply, sizeof(reply));
         qtest_system_reset(s);
         assert_l1_revision(s, 2, 3, 4);
-        assert_cpu_context_record(s, 0x549bad85, 700, 200, NULL, NULL, NULL,
+        assert_cpu_context_record(s, 0x589bad85, 700, 200, NULL, NULL, NULL,
                                   reply, sizeof(reply));
         qtest_quit(s);
     }
@@ -4707,7 +4707,7 @@ static void test_machine_cpu_context_global_overrides(void)
     } profiles[] = {
         { "origin350,nvram0=sgi-ds1742-data-io9,"
           "nvram0-clock=sgi-ds1742-clock-io9", "2G", "4",
-          "R16000,reset-mode=0x009cad85" },
+          "R16000,reset-mode=0x009bad85" },
         { "onyx350,topology=onyx350,"
           "nvram0=sgi-ds1742-data-io9,"
           "nvram0-clock=sgi-ds1742-clock-io9", "8G",
@@ -4820,17 +4820,17 @@ static void test_ip53_cpu_context_migration(void)
         const char *part;
         const char *revision;
     } profiles[] = {
-        { "origin350", "2G", 4, "0x009cad85", "0x800000", 700,
-          0x569cad85, "IP53_4CPU", "030-1868-001", "-C" },
+        { "origin350", "2G", 4, "0x009bad85", "0x400000", 700,
+          0x589bad85, "IP53_4CPU", "030-1868-001", "-C" },
         { "onyx350,topology=onyx350", "8G", 4, "0x009caf85",
-          "0x800000", 800, 0x569caf85, "IP53_4CPU", "030-2013-001",
+          "0x800000", 800, 0x549caf85, "IP53_4CPU", "030-2013-001",
           "-D" },
         { "tezro,topology=tezro", "4G", 1, "0x009bad85",
-          "0x400000", 700, 0x549bad85, NULL, NULL, NULL },
+          "0x400000", 700, 0x589bad85, NULL, NULL, NULL },
         { "tezro,topology=tezro", "4G", 4, "0x009bad85",
-          "0x400000", 700, 0x549bad85, "IP53_4CPU", "030-1868-001", "-C" },
+          "0x400000", 700, 0x589bad85, "IP53_4CPU", "030-1868-001", "-C" },
         { "tezro,topology=tezro-rack", "4G", 1, "0x009bad85",
-          "0x400000", 700, 0x549bad85, NULL, NULL, NULL },
+          "0x400000", 700, 0x589bad85, NULL, NULL, NULL },
         { "onyx4-host,topology=onyx4-host", "8G", 4,
           "0x00edb385", "0x1000000", 1000, 0x4aedb385, "IP59_4CPU",
           "030-1989-003", "-C" },
@@ -5061,7 +5061,7 @@ static void test_machine_port_speed_profiles(void)
         bool irouter_compat;
         bool ds1742;
     } profiles[] = {
-        { "origin350", "2G", 4, "0x009cad85", "0x800000", 1,
+        { "origin350", "2G", 4, "0x009bad85", "0x400000", 1,
           0x37, true },
         { "onyx350,topology=onyx350", "8G", 4,
           "0x009caf85", "0x800000", 1, 0x38, true },

@@ -305,7 +305,7 @@ class IP53RuntimeExportTests(unittest.TestCase):
             ROOT / "hw/mips/sgi/models/origin350.yaml",
             model_schema=model_schema)
         self.assertEqual(experiment["machine"]["firmware_config"][
-            "processor_reset_mode"], 0x009cad85)
+            "processor_reset_mode"], 0x009bad85)
         legacy = load_checked_system_model(
             ROOT / "hw/mips/sgi/models/origin200.yaml",
             model_schema=model_schema)

@@ -403,8 +403,8 @@ source read fixes the CX-brick's processors, node board part, router
 ports, NASIDs, widget numbers or L1 type character, so the model chooses
 each, an *approximation*:
 
-* Each node board is fitted as the Origin 350's IP53 is: four 700 MHz
-  R16000s with 8 MB caches and 2048 MB.
+* Each node board is fitted as an Origin 350 IP53 is: four 700 MHz
+  R16000s, here with 8 MB caches, and 2048 MB.
 * Node board *n* takes router port *n* + 2.
 * The L1 reports the C-brick's type character (:ref:`sgi-l1-cxbrick`).
 * Board *n*'s link reports the brick's slot plus *n* and a serial of its

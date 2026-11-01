@@ -3518,7 +3518,7 @@ class Origin3900Tests(unittest.TestCase):
             [("cx0-l1", "module", "cx-brick"), ("ibrick-l1", None, None)])
         self.assertEqual(
             topology["controllers"][0]["l1"]["cpu_context"],
-            {"cpu_mode_word": 0x569cad85, "cpu_clock_hz": 700000000,
+            {"cpu_mode_word": 0x549cad85, "cpu_clock_hz": 700000000,
              "hub_clock_hz": 200000000})
         for node in topology["nodes"]:
             for slot in node["cpu_slots"]:

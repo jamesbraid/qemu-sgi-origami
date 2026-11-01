@@ -64,13 +64,13 @@ layer:
       name: Tezro, two/four-processor board serial compatibility profile
       model_role: emulation-target
       notes: Software-only Tezro compatibility profile. The manual supports the selected processor population and locates IO9 at bus 1, slot 1. The 700 MHz/4 MiB CPU tuple, reset candidate, 4 GiB logical memory map, Bedrock and L1 identities, PIC revision and placement, PCI function identities, and interrupt
-        routes are emulator choices adapted from the software inputs first selected for the two/four-processor board. They do not describe a measured Tezro or Tezro rack configuration. The optional V12 at widget 12 follows a published quad Tezro inventory (030-1884-002 rev D); it does not establish the other selected board inputs. The rack second enclosure is omitted. The guide overview says three PCI buses for the two/four-processor board while its detailed
+        routes are emulator choices adapted from the software inputs first selected for the two/four-processor board. They do not describe a measured Tezro or Tezro rack configuration. The flash word 0x589bad85 is the stock IP35 PROM's configuration-table word for 700 MHz and 4 MiB with cache tap 0xc, the tap all but one of the 030-1868-001 and 030-1869-001 boards print (one prints 0x1c under an older PROM). The table row carries machine type 2 where this profile stores 0. The reset word is the low 25 bits of that flash word, a model derivation that is not itself a table row. The optional V12 at widget 12 follows a published quad Tezro inventory (030-1884-002 rev D); it does not establish the other selected board inputs. The rack second enclosure is omitted. The guide overview says three PCI buses for the two/four-processor board while its detailed
         slot layout shows four; this software profile selects two PICs and four buses. The L1 reports the
         node board the published Tezro inventories show, IP53_4CPU, part 030-1868-001, revision C, with
         four processors, and IP53_2CPU, part 030-1869-001, revision C, with two.
       firmware_config:
         processor_reset_mode: 0x009bad85
-        processor_firmware_word: 0x549bad85
+        processor_firmware_word: 0x589bad85
         machine_type: 0x00000000
         flash_read_cycles: 16
         flash_write_cycles: 16

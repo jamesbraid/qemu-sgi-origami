@@ -3145,7 +3145,7 @@ static void test_ip53_runtime_construction(void)
         "nvram0=sgi-ds1742-data-io9,"
         "nvram0-clock=sgi-ds1742-clock-io9 -m 2G -smp 4 "
         "-cpu R16000,"
-        "reset-mode=0x009cad85 "
+        "reset-mode=0x009bad85 "
         "-drive if=pflash,index=0,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw "
@@ -3188,7 +3188,7 @@ static void test_ip53_runtime_construction(void)
         const char *path = qdict_get_str(cpu, "qom-path");
 
         g_assert_cmphex(qom_get_uint(qts, path, "reset-mode"), ==,
-                        0x009cad85);
+                        0x009bad85);
         cpu_count++;
     }
     qobject_unref(response);
@@ -3221,7 +3221,7 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary(
     const char *binary_var, const char *machine, const char *extra)
 {
     return ip53_runtime_test_start_with_binary_profile(
-        binary_var, machine, extra, "4", "2G", "0x009cad85");
+        binary_var, machine, extra, "4", "2G", "0x009bad85");
 }
 
 static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary_profile(
@@ -3850,7 +3850,7 @@ static void test_ip53_bcm5701_takes_machine_mac(void)
         const char *memory;
         const char *reset_mode;
     } products[] = {
-        { "origin350", "2G", "0x009cad85" },
+        { "origin350", "2G", "0x009bad85" },
         { "onyx350,topology=onyx350", "8G",
           "0x009caf85" },
         { "tezro,topology=tezro", "4G",
@@ -3900,8 +3900,8 @@ static void test_ip53_populations_fit_their_r16000s(void)
         uint64_t clock_hz;
         unsigned int cpu_count;
     } profiles[] = {
-        { "origin350,topology=origin350", "4", "2G", 0x009cad85,
-          8 * MiB, 700000000, 4 },
+        { "origin350,topology=origin350", "4", "2G", 0x009bad85,
+          4 * MiB, 700000000, 4 },
         { "onyx350,topology=onyx350", "4", "8G", 0x009caf85,
           8 * MiB, 800000000, 4 },
         { "tezro,topology=tezro", "1", "4G", 0x009bad85,
@@ -5396,7 +5396,7 @@ static void test_ip53_widget_zero_reports_revision_three(void)
         const char *memory;
         const char *mode;
     } compositions[] = {
-        { "origin350,topology=origin350", "4", "2G", "0x009cad85" },
+        { "origin350,topology=origin350", "4", "2G", "0x009bad85" },
         { "onyx350,topology=onyx350", "4", "8G", "0x009caf85" },
         { "tezro,topology=tezro", "1", "4G", "0x009bad85" },
         { "tezro,topology=tezro", "4", "4G", "0x009bad85" },
@@ -5794,9 +5794,9 @@ static void test_ip53_runtime_cpu_property_refusals(void)
         const char *cpu;
         const char *message;
     } cases[] = {
-        { "R16000,reset-mode=0x009cad84",
-          "CPU reset-mode 0x9cad84 conflicts with the "
-          "board's 0x9cad85" },
+        { "R16000,reset-mode=0x009bad84",
+          "CPU reset-mode 0x9bad84 conflicts with the "
+          "board's 0x9bad85" },
         /* The opt-in and cache size are gone: the board sets the part. */
         { "R16000,r16000-experimental=on", "r16000-experimental" },
         { "R16000,r16000-scache-bytes=0x800000", "r16000-scache-bytes" },
@@ -5846,11 +5846,11 @@ static void test_ip53_runtime_cpu_property_refusals(void)
 
     {
         static const char *const globals[] = {
-            "R16000-mips64-cpu.reset-mode=0x009cad84",
+            "R16000-mips64-cpu.reset-mode=0x009bad84",
         };
         static const char *const messages[] = {
-            "CPU reset-mode 0x9cad84 conflicts with the "
-            "board's 0x9cad85",
+            "CPU reset-mode 0x9bad84 conflicts with the "
+            "board's 0x9bad85",
         };
 
         for (unsigned int i = 0; i < G_N_ELEMENTS(globals); i++) {

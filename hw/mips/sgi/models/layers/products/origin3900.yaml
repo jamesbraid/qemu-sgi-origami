@@ -148,16 +148,18 @@ layer:
               Origin 300's M48T35-compatible choice, an approximation. IP35
               software uses the 1968 year convention.
         # The IP35 flash configuration block's product values: machine type
-        # 0 and the Origin 350's 700 MHz R16000 firmware word.
+        # 0 and the 700 MHz, 8 MiB R16000 firmware word.
         ip35_firmware:
           machine_type: 0
-          cpu_mode_word: 0x569cad85
+          cpu_mode_word: 0x549cad85
           provenance: derived
           sources: ["qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected 6.210 flash payload and seed policy"]
           notes: >-
-            Approximation. The Origin 350's full firmware word for the
-            700 MHz, 8 MB R16000 fit; no Cx-brick flash block has been
-            captured.
+            Approximation. The stock IP35 PROM's configuration-table word for
+            700 MHz and 8 MB with cache tap 0xa, the tap the one Onyx 350
+            board (030-1812-002) with that tuple prints, so borrowed across
+            products; the table row carries machine type 2 where this block
+            stores 0. No Cx-brick flash block has been captured.
         # The router answers the model's synthetic diagnostics, which no
         # hardware record settles.
         synthetic_router_diagnostics: true

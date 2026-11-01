@@ -72,13 +72,13 @@ layer:
         and locates IO9 at bus 1, slot 1. The 700 MHz/4 MiB CPU tuple, reset candidate, 4 GiB logical
         memory map, Bedrock and L1 identities, PIC revision and placement, PCI function identities, and
         interrupt routes are emulator choices adapted from the software inputs first selected for the two/four-processor board.
-        They do not describe a measured Tezro or Tezro rack configuration. The optional V12 at widget 12 is
+        They do not describe a measured Tezro or Tezro rack configuration. The flash word 0x589bad85 is the stock IP35 PROM's configuration-table word for 700 MHz and 4 MiB with cache tap 0xc, the tap all but one of the 030-1868-001 and 030-1869-001 boards print (one prints 0x1c under an older PROM). The table row carries machine type 2 where this profile stores 0. The reset word is the low 25 bits of that flash word, a model derivation that is not itself a table row. The optional V12 at widget 12 is
         an inferred placement. The L1 keeps its generic node-board record, as no capture shows a
         one-processor IP53 board, so its name, part and revision are unknown. The rack second enclosure
         is omitted.
       firmware_config:
         processor_reset_mode: 0x009bad85
-        processor_firmware_word: 0x549bad85
+        processor_firmware_word: 0x589bad85
         machine_type: 0x00000000
         flash_read_cycles: 16
         flash_write_cycles: 16

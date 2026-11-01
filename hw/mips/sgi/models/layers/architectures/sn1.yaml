@@ -58,9 +58,9 @@ layer:
           - clock_mhz: 700
             cache_mib: 8
             notes: >-
-              Selected software profile for the Origin 350 IP53 runtime model.
+              Selected software profile for the Origin 3900 IP53 runtime model.
               This tuple does not identify a processor stepping or prove a
-              physical Origin 350 configuration.
+              physical Origin 3900 configuration.
           - clock_mhz: 800
             cache_mib: 8
             notes: >-
@@ -76,9 +76,10 @@ layer:
           - clock_mhz: 700
             cache_mib: 4
             notes: >-
-              Tezro compatibility tuple. Cache clock is supplied by
-              the product component; processor identification and reset Config0
-              remain unknown.
+              Origin 350 and Tezro tuple, printed by the 030-1868-001 and
+              030-1869-001 boards. Cache clock is supplied by the product
+              component; processor identification and reset Config0 remain
+              unknown.
         provenance: derived
         sources: ["qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected Origin 350 processor inputs", "web:graphica-onyx350-hinv  module 001c01 CPU inventory, four 800 MHz R16000 with 8 MiB cache; single-module operation remains unverified", "web:irixnet-thread-2263  module 001c01 reports 1 GHz/16 MiB; Onyx 4 host assignment remains inferred"]
 

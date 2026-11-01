@@ -65,7 +65,7 @@
                   "nvram0=sgi-ds1742-data-io9," \
                   "nvram0-clock=sgi-ds1742-clock-io9 " \
                   "-cpu R16000," \
-                  "reset-mode=0x009cad85" \
+                  "reset-mode=0x009bad85" \
                   " -smp 4 -m 2G "
 #define RUN "-accel tcg,thread=multi -no-shutdown -S "
 /*
