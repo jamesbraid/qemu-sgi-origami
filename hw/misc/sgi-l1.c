@@ -284,6 +284,34 @@ static SGIL1State *l1_host_of(const SGIL1State *ibrick,
     return NULL;
 }
 
+/*
+ * The partition ID this controller reports. PROVISIONAL: an I/O brick takes
+ * its C-brick's ID and refuses a set, which is one reading of the L1 sheet's
+ * brick command ("it is acquired from attached C-brick"). The partitioning
+ * datasheet and the L1 datasheet conflict on whether an I/O brick holds a
+ * partition of its own, and a separate research item will settle it. An
+ * N-brick serves several C-bricks, which can hold different IDs, so it keeps
+ * its own value (a model choice).
+ */
+static uint32_t l1_partition(const SGIL1State *s)
+{
+    if (l1_is_iobrick(s) && !l1_is_nbrick(s)) {
+        SGIL1State *host = s->reply_to ? s->reply_to : l1_host_of(s, NULL);
+
+        if (host) {
+            return host->partition;
+        }
+    }
+    return s->partition;
+}
+
+/* The Origin 3000 R-brick's L1: the router profile on the R-brick board. */
+static bool l1_is_rbrick(const SGIL1State *s)
+{
+    return s->profile && !strcmp(s->profile->name, "router") &&
+           s->router_board && !strcmp(s->router_board, "rbrick");
+}
+
 /* The controller side: operator console text, display and log. */
 
 static void G_GNUC_PRINTF(2, 3) l1_printf(SGIL1State *s, const char *fmt, ...)
@@ -1712,7 +1740,7 @@ static void l1_o3k_brick_print(SGIL1State *s)
         g_strlcpy(bay, "--", sizeof(bay));
     }
     l1_printf(s, "rack: %s, slot: %s, partition: %u, type: %c, "
-              "source: EEPROM\r\n", rack, bay, s->partition,
+              "source: EEPROM\r\n", rack, bay, l1_partition(s),
               l1_is_iobrick(s) ? (char)s->profile->identity :
               !l1_is_cxbrick(s) ? 'C' : (char)l1_brick_type_character(s));
 }
@@ -2448,6 +2476,23 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
 
         if (argc == 1 && s->profile->o3k) {
             l1_o3k_brick_print(s);
+        } else if (argc == 1 && l1_is_rbrick(s)) {
+            /*
+             * A router has no partition: the field prints N/A. The type
+             * letter has no name entry in the firmware's switch, so it
+             * prints as itself; the short tail is the C-brick and I-brick
+             * line's, an approximation.
+             */
+            l1_printf(s, "rack: %03u, slot: %02u, partition: N/A, type: R, "
+                      "source: EEPROM\r\n", s->rack, s->bay);
+        } else if (argc == 3 && !strcmp(argv[1], "partition") &&
+                   (l1_is_rbrick(s) || l1_is_iobrick(s))) {
+            /* The refusal strings are the L1 sheet's; the code is ours. */
+            l1_printf(s, "%s", l1_is_rbrick(s) ?
+                      "INFO: can't set partition on routers.\r\n" :
+                      "INFO: can't set partition on I/O brick (it is "
+                      "acquired from attached C-brick)\r\n");
+            result = -1;
         } else if (argc == 1 && l1_chimera_type_name(s)) {
             l1_chimera_brick(s, l1_chimera_type_name(s));
         } else if (argc == 1) {
@@ -3622,7 +3667,7 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
     case 0xb:
         fields[0] = 0;
         stl_be_p(fields + 1, command == 1 ? s->debug_switches :
-                 command == 9 ? s->partition : s->two_bit_setting);
+                 command == 9 ? l1_partition(s) : s->two_bit_setting);
         field_count = 1;
         field_length = 5;
         break;

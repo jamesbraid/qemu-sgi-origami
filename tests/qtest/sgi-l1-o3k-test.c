@@ -1671,6 +1671,83 @@ static void test_partition_limit(void)
 }
 
 /*
+ * Partition identity as the partitioning datasheet's L1 rows state it. A
+ * C-brick stores its own ID, which 0x0009 returns and the brick line
+ * prints. 0x000b answers 0 (an L2-less system:
+ * the PROM never fetches a partition record). A router prints N/A and
+ * refuses a set; an I/O brick has no ID of its own, reports its C-brick's
+ * and refuses a set. The refusal texts are the datasheet's; their exit
+ * code is the model's choice.
+ */
+static void expect_partition_request(QTestState *s, unsigned n,
+                                     uint16_t request, uint32_t want)
+{
+    uint8_t reply[131];
+    size_t length = rpc(s, n, LOCAL_GENERAL, request, NULL, 0, 0, reply);
+
+    g_assert_cmpuint(length, ==, 11);
+    expect_code(reply, length, 0);
+    g_assert_cmphex(ldl_be_p(reply + 7), ==, want);
+}
+
+static void expect_brick_partition(QTestState *s, unsigned n,
+                                   const char *want)
+{
+    g_autofree char *output = command(s, n, "brick", NULL);
+    g_autofree char *needle = g_strdup_printf("partition: %s,", want);
+
+    g_assert_nonnull(strstr(output, needle));
+}
+
+/*
+ * PROVISIONAL for the I-brick: it follows its C-brick's partition and refuses
+ * a set, one reading of two conflicting datasheets (the partitioning sheet
+ * and the L1 sheet). Revisit when the conflict is settled.
+ */
+static void test_partition_identity(void)
+{
+    const char *const props[] = {
+        "brick-type=cbrick,named=on,rack=1,bay=4,partition=1",
+        "brick-type=cbrick,named=on,rack=1,bay=7,partition=2",
+        "brick-type=ibrick,named=on,rack=1,bay=31,mac=" MAC_PROP,
+        "brick-type=router,router-board=rbrick",
+        "brick-type=cbrick,named=on,rack=1,bay=9",
+    };
+    QTestState *s = start_with(5, props, "");
+    int32_t code = 0;
+    g_autofree char *output = NULL;
+
+    expect_brick_partition(s, 0, "1");
+    expect_brick_partition(s, 1, "2");
+    expect_partition_request(s, 0, 9, 1);
+    expect_partition_request(s, 1, 9, 2);
+    expect_partition_request(s, 0, 0xb, 0);
+    expect_partition_request(s, 1, 0xb, 0);
+    /* An unpartitioned C-brick answers 0 (the model prints the number). */
+    expect_brick_partition(s, 4, "0");
+    expect_partition_request(s, 4, 9, 0);
+
+    /* The I-brick reports its C-brick's ID, and cannot be given its own. */
+    link_io(s, 1, 2);
+    expect_brick_partition(s, 2, "2");
+    expect_partition_request(s, 2, 9, 2);
+    output = command(s, 2, "brick partition 5", &code);
+    g_assert_cmpstr(output, ==, "INFO: can't set partition on I/O brick "
+                    "(it is acquired from attached C-brick)\n");
+    g_assert_cmpint(code, ==, -1);
+    expect_brick_partition(s, 2, "2");
+    g_free(output);
+
+    /* The R-brick has none and refuses one. */
+    expect_brick_partition(s, 3, "N/A");
+    output = command(s, 3, "brick partition 5", &code);
+    g_assert_cmpstr(output, ==, "INFO: can't set partition on routers.\n");
+    g_assert_cmpint(code, ==, -1);
+    expect_brick_partition(s, 3, "N/A");
+    qtest_quit(s);
+}
+
+/*
  * ctci is not modelled: it is reported as an unknown command, and nothing
  * runs on the other C-brick or its I-brick.
  */
@@ -1974,6 +2051,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/attached/unnamed-then-named",
                    test_unnamed_attachment_gets_named);
     qtest_add_func("sgi-l1-o3k/partition-limit", test_partition_limit);
+    qtest_add_func("sgi-l1-o3k/partition-identity", test_partition_identity);
     qtest_add_func("sgi-l1-o3k/ctci", test_ctci_unimplemented);
     for (unsigned i = 0; i < G_N_ELEMENTS(link_cases); i++) {
         name = g_strdup_printf("sgi-l1-o3k/link-before-realize/%u", i);
