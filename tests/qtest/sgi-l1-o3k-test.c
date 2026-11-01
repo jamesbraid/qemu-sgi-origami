@@ -1302,7 +1302,12 @@ static void expect_command_code(QTestState *s, unsigned n, const char *text,
 static void expect_partition(QTestState *s, unsigned n, unsigned want)
 {
     g_autofree char *output = command(s, n, "brick", NULL);
-    g_autofree char *needle = want ? g_strdup_printf("partition: %u,", want) :
+    /*
+     * Zero prints none and 255 or more prints ?, as the L1 datasheet's brick
+     * row has it (inferred for the Origin 3000 C-brick image).
+     */
+    g_autofree char *needle = want >= 255 ? g_strdup("partition: ?,") :
+        want ? g_strdup_printf("partition: %u,", want) :
         g_strdup("partition: none,");
 
     g_assert_nonnull(strstr(output, needle));
