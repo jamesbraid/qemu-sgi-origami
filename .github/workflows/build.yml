@@ -97,6 +97,22 @@ jobs:
           echo "the SGI files are listed and licensed" > "$CI_STEP"
           python3 scripts/ci/sgi-license-check.py
 
+      # The pattern list is private and arrives as an Actions secret; the
+      # check prints rule ids and file:line, never the patterns. Only the
+      # main repository requires it, so a fork without the secret skips with
+      # a notice.
+      - name: no private identifiers in the change
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          SGI_LEAK_DENYLIST: ${{ secrets.SGI_LEAK_DENYLIST }}
+          SGI_LEAK_REQUIRE: ${{ github.repository == 'jamesb/qemu' && '1' || '' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          echo "no private identifiers in the change" > "$CI_STEP"
+          set +x
+          python3 scripts/ci/sgi-leak-check.py --base "$PR_BASE_SHA" \
+              --event "$GITHUB_EVENT_PATH"
+
       - name: build the QEMU test image
         run: |
           echo "build the QEMU test image" > "$CI_STEP"
