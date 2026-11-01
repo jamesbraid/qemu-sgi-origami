@@ -1117,3 +1117,5 @@ tests/unit/test-sgi-head-guard.c
 tests/unit/test-sgi-machine-init.c
 tests/unit/test-sgi-renderer-gl.c
 tests/unit/test-sgi-renderer.c
+scripts/ci/sgi-license-check.py
+scripts/tests/test_sgi_license_check.py
