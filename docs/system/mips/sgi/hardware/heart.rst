@@ -10,8 +10,8 @@ Used in :ref:`sgi-ip30`, on the Octane and Octane2 system board.
 
 .. seealso::
 
-   - Hub (:doc:`hub`): the SN0 node controller, which joins a
-     node's processors and memory to XIO as HEART does for the Octane.
+   - Hub (:doc:`hub`): the SN0 node controller, the processor and memory
+     controller of an SN0 node, as HEART is for the Octane.
 
 HEART is the processor, memory and I/O controller of the IP30 board. It
 sits between the processor, the SDRAM

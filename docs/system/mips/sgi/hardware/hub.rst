@@ -13,8 +13,8 @@ Origin 2000 and Onyx2 (IP27 node board), one per node.
 
    - Bedrock (:doc:`bedrock`): the node controller of the SN1 machines, the
      successor to the Hub.
-   - HEART (:doc:`heart`): the Octane's processor and memory controller, the
-     IP30 counterpart of the Hub.
+   - HEART (:doc:`heart`): the Octane's processor and memory controller,
+     as the Hub is for an SN0 node.
 
 The Hub is the node controller of the SN0 machines.
 One Hub per node joins the node's two R10000-family processors, its
