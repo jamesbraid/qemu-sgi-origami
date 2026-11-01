@@ -104,6 +104,14 @@ page under ``docs/system/mips/sgi/``:
   family or is followed by "machine" or "topology", and a numbered product
   such as "Origin 3000", must be an offered machine, topology or product;
   a part no machine fits says "Used in no machine";
+- no pointer to material outside this repository, in the pages and in the
+  comments of ``hw/mips/sgi/`` and ``hw/*/sgi-*``: a path under ``refs/``,
+  ``assets/``, ``/storage`` or ``/scratch``, or ``/tmp`` outside a literal
+  block, a path under
+  ``docs/datasheets/``, a Markdown file name, a decision record code
+  such as ``D-0021``, "Library", "notebook" or "reviewed datasheet". The
+  check cannot recognise vendor kernel names and does not try, so keep
+  those out by review;
 - a listing of the page, and of this guide, in ``LICENSE.origami.paths``.
 
 ``scripts/ci/sgi-check model`` checks the citations and the generated files.

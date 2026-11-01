@@ -231,6 +231,81 @@ class DocsLintTests(unittest.TestCase):
         self.assertEqual(
             self.run_lint({'hardware/demo.rst': page}, catalogue=None), [])
 
+    def test_private_references_in_pages(self):
+        for bad in ('See refs/foo/bar.pdf for it.', 'Read /storage/x/y.',
+                    'Saved in /tmp/run.log.', 'Kept in /scratch/a.',
+                    'See docs/datasheets/hub.md.', 'The sheet pic.md says.',
+                    'Decision D-0021 allows it.', 'The Library holds it.',
+                    'The notebook records it.',
+                    'The reviewed datasheet says so.'):
+            out = self.messages({'hardware/demo.rst': GOOD_PART + f'\n{bad}\n'})
+            self.assertIn(' is ', out, bad)
+            self.assertIn('hardware/demo.rst:14:', out, bad)
+
+    def test_private_references_are_found_in_literal_blocks_too(self):
+        for path in ('/storage/x/log', '/scratch', 'refs/a/b'):
+            text = GOOD_PART + f'\nA dump::\n\n   {path}\n'
+            self.assertIn(' is ', self.messages({'hardware/demo.rst': text}), path)
+
+    def test_tmp_is_allowed_in_literal_blocks_only(self):
+        for block in ('A command::\n\n   -chardev socket,path=/tmp/s\n',
+                      '.. code-block:: shell\n\n   ls /tmp/sock\n'):
+            text = GOOD_PART + '\n' + block
+            self.assertEqual(self.run_lint({'hardware/demo.rst': text}), [])
+        text = GOOD_PART + '\nIt writes /tmp/log in prose.\n'
+        self.assertIn('/tmp', self.messages({'hardware/demo.rst': text}))
+        out = '\n'.join(self.run_sources('hw/mips/sgi/a.c', '/* /tmp/x */\n'))
+        self.assertIn('/tmp', out)
+
+    def test_path_segments_are_anchored(self):
+        for ok in ('Linux has drivers/scsi/storage/x.c.',
+                   'The a/tmp/b path and scsi/storage/x and scratch/ dirs.',
+                   'See https://example.org/tmp/x and /tmpfs.',
+                   'A /scratchpad register.'):
+            self.assertEqual(
+                self.run_lint({'hardware/demo.rst': GOOD_PART + f'\n{ok}\n'}),
+                [], ok)
+        for bad in ('Kept in /scratch.', 'Kept in /storage.', '(/tmp)'):
+            self.assertIn(' is ', self.messages(
+                {'hardware/demo.rst': GOOD_PART + f'\n{bad}\n'}), bad)
+
+    def test_public_references_pass(self):
+        for ok in ('The vendor datasheet gives it.', 'See README.rst.',
+                   'The library function is public.',
+                   'Linux path arch/mips/sgi-ip27/ip27-init.c is public.',
+                   'Use https://example.org/refs/x or a tmp file.',
+                   'The assets of the model are listed.'):
+            self.assertEqual(
+                self.run_lint({'hardware/demo.rst': GOOD_PART + f'\n{ok}\n'}),
+                [], ok)
+
+    def run_sources(self, name, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'LICENSE.origami.paths').write_text('')
+            src = root / name
+            src.parent.mkdir(parents=True)
+            src.write_text(text)
+            return lint.lint(root)
+
+    def test_private_references_in_c_comments(self):
+        for name, text in (
+                ('hw/mips/sgi/a.c', '/* see (docs/datasheets/x.md) */\n'),
+                ('hw/misc/sgi-a.c', 'int a;\n// from /storage/nvme/x\n'),
+                ('hw/pci-host/sgi-b.h',
+                 '/*\n * the dp83840.md sheet\n */\n')):
+            out = '\n'.join(self.run_sources(name, text))
+            self.assertIn(name, out)
+            self.assertIn(' is ', out)
+
+    def test_c_strings_and_other_files_are_not_scanned(self):
+        for name, text in (
+                ('hw/mips/sgi/a.c', 'const char *p = "/tmp/x";\n'),
+                ('hw/mips/sgi/a.c', 'const char *u = "http://e.org/a.md";\n'),
+                ('hw/mips/sgi/a.c', "char c = '/'; /* fine */\n"),
+                ('hw/misc/other.c', '/* /storage/x */\n')):
+            self.assertEqual(self.run_sources(name, text), [], text)
+
     def test_unlisted_page(self):
         out = self.messages({'hardware/demo.rst': GOOD_PART}, listed=False)
         self.assertIn('not listed in LICENSE.origami.paths', out)

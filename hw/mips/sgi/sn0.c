@@ -1460,9 +1460,9 @@ void sn0_node_set_power(SN0NodeState *node, bool on)
  * Unlike the Origin 2000 BaseIO card (sgi-xio-baseio), this Bridge is not
  * wrapped in any board class: it is a fitted part of the System Board
  * itself, not a removable card, so it answers the XIO port interface
- * directly (hw/pci-host/sgi-bridge.c) -- the physical difference
- * baseio.md draws between the two ("The Origin 200 has an integrated
- * IP29 System Board, not an Origin 2000 BaseIO card").
+ * directly (hw/pci-host/sgi-bridge.c). That is the physical difference
+ * between the two: the Origin 200 has an integrated IP29 System Board,
+ * not an Origin 2000 BaseIO card.
  *
  * The one XIO link joins the Bridge to upstream's port upstream_index:
  * the Bridge takes its fabric before it realizes, and upstream takes the

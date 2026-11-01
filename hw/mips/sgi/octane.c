@@ -723,8 +723,7 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
      * places at 0x20000000, and the processor reaches those bytes only
      * here: the guard above faults the high address. HEART builds the window
      * from the bank views, so it follows the bank descriptors and is RAM
-     * for TCG. Reset leaves it alone and it adds no migration state
-     * (docs/datasheets/ip30-machine.md).
+     * for TCG. Reset leaves it alone and it adds no migration state.
      */
     memory_region_add_subregion(
         physical, 0,
