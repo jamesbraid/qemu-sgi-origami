@@ -59,12 +59,32 @@ ROADMAP = re.compile(
 QUOTED = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d|``.*?``', re.S)
 
 # A sentence that states what a register holds or returns as a hex value.
-# The page must rate it or cite it in the same paragraph. Many such
-# sentences describe the model, so this only warns.
+# The page must rate it or cite it in the same paragraph.
+# The value follows the verb within a few words. A preposition between
+# them (a read "at" or "from" an address) means the hex number is where
+# the access goes, not what it returns.
 HEX_CLAIM = re.compile(
-    r'(?:reset value|resets? to|reads?(?: back| as)?|returns?|reports?|'
-    r'powers? up (?:as|at|to)|hardware value)\b[^.\n]*?\b0x[0-9a-fA-F]{2,}',
+    r'(?:reset value|resets? to|reads?(?: back| as)?|returns?(?! (?:route|ring|'
+    r'descriptor|path|queue)\b)|reports?|powers? up (?:as|at|to)|'
+    r'hardware value)'
+    r'(?:\s+(?!(?:at|from|in|on|of|to|through|by|with|for|into|over)\b)'
+    r'[\w`\'-]+){0,4}?\s+`{0,2}0x[0-9a-fA-F]{2,}'
+    # Or the other way round: "0x03ff1810 are the reset values".
+    r'|\b0x[0-9a-fA-F]{2,}`{0,2}[^.;:\n]{0,80}?\b(?:reset|power-up) values?\b',
     re.I)
+# A sentence about what the model or a test does is not a statement about
+# the hardware, so it needs no rating. The sentence must say so itself: a
+# neighbour that names the model does not cover it.
+MODEL_SENTENCE = re.compile(
+    r'\bmodel(?:led|s|\'s)?\b|\bLOG_[A-Z_]+|\bbus error\b|\bqtest\b'
+    r'|\btests?/|\btrace event\b', re.I)
+# A section whose paragraphs describe the tests, not the hardware.
+TEST_SECTIONS = ('Tests',)
+# The edge of a simple table: its columns carry the rating or describe
+# the model.
+SIMPLE_TABLE = re.compile(r'=+(?:\s+=+)+\s*$')
+LIST_ITEM = re.compile(r'\s*(?:[-*]|\d+\.)\s')
+SENTENCE_END = re.compile(r'(?<=[.;:])\s+(?=[A-Z`*(])|\s+(?=-\s)')
 
 CATALOGUE = 'hw/mips/sgi/sgi-machines.json'
 # A literal in a "Used in" paragraph is checked when it starts with the
@@ -176,24 +196,93 @@ def blank(m):
     return re.sub(r'[^\n]', ' ', m.group(0))
 
 
+def italics(para):
+    """Yield (offset, phrase) for each italic phrase outside literals.
+
+    A phrase may wrap across lines; its words are joined by single spaces.
+    """
+    for m in ITALIC.finditer(LITERAL.sub(blank, para)):
+        yield m.start(), ' '.join(m.group(1).split())
+
+
 def has_rating_or_citation(para):
     if ':src:' in para:
         return True
-    return any(m.group(1) in RATINGS
-               for m in ITALIC.finditer(LITERAL.sub('', para)))
+    return any(word in RATINGS for _, word in italics(para))
 
 
-def warn_page(rel, text):
-    """Return warnings: hex value statements with no rating or citation."""
+def section_of(lines):
+    """Return a function giving the section title that line n is in."""
+    heads = []
+    for i, line in enumerate(lines[:-1]):
+        if line.strip() and not ADORN.match(line) and ADORN.match(lines[i + 1]):
+            heads.append((i + 1, line.strip()))
+
+    def title(n):
+        found = ''
+        for first, name in heads:
+            if first > n:
+                break
+            found = name
+        return found
+    return title
+
+
+def lint_hex(rel, text):
+    """Return errors for a hex value stated about the hardware with no
+    rating word or :src: citation in the paragraph.
+
+    Skipped: table rows and simple tables, whose columns carry the rating
+    or describe the model; paragraphs in a Tests section; sentences that
+    name the model or a test (see MODEL_SENTENCE); and the items of a list whose
+    lead-in paragraph ends in a colon and carries the rating. Each other
+    list item is checked on its own.
+    """
     out = []
-    for first, para in paragraphs(text.split('\n')):
-        flat = ' '.join(para.split())
+    lines = text.split('\n')
+    section = section_of(lines)
+    lead = ''
+    for first, whole in paragraphs(lines):
+        before, lead = lead, whole
+        flat = ' '.join(whole.split())
         if flat.startswith(('* -', '- ')) and '* -' in flat:
-            continue  # a table row: its columns carry the rating
-        if HEX_CLAIM.search(flat) and not has_rating_or_citation(para):
-            out.append(f'{rel}:{first}: warning: a hex value is stated '
-                       'with no rating word or :src: in the paragraph')
+            continue
+        if SIMPLE_TABLE.match(whole.split('\n')[0].strip()):
+            continue
+        if section(first) in TEST_SECTIONS:
+            continue
+        items = list_items(whole)
+        if LIST_ITEM.match(items[0][1]):
+            intro = before
+        else:
+            intro = items[0][1]
+        if intro.rstrip().endswith(':') and has_rating_or_citation(intro):
+            continue  # "What the kernel does, a *software expectation*:"
+        for offset, para in items:
+            out += hex_item(rel, first + offset, para)
     return out
+
+
+def list_items(para):
+    """Split a paragraph at its bullet and numbered list items, giving
+    (line offset, text) for each, so that an item is checked by itself."""
+    items = []
+    for i, line in enumerate(para.split('\n')):
+        if LIST_ITEM.match(line) or not items:
+            items.append([i, []])
+        items[-1][1].append(line)
+    return [(i, '\n'.join(ls)) for i, ls in items]
+
+
+def hex_item(rel, first, para):
+    """Return the error for one paragraph or list item, as a list."""
+    if has_rating_or_citation(para):
+        return []
+    for sentence in SENTENCE_END.split(' '.join(para.split())):
+        if HEX_CLAIM.search(sentence) and not MODEL_SENTENCE.search(sentence):
+            return [f'{rel}:{first}: a hex value is stated with no rating '
+                    'word or :src: in the paragraph or list item']
+    return []
 
 
 def product_numbers(text):
@@ -323,14 +412,12 @@ def lint_page(rel, text):
                 'with "Used in"')
 
     for first, para in paragraphs(lines):
-        # A phrase may wrap onto the next line, so look at the paragraph.
-        for m in ITALIC.finditer(LITERAL.sub(blank, para)):
-            word = ' '.join(m.group(1).split())
+        for offset, word in italics(para):
             if word in RATINGS:
                 continue
             low = word.lower()
             if low.startswith(RATING_STEMS) or low in NEAR_MISSES:
-                add(first + para.count('\n', 0, m.start()),
+                add(first + para.count('\n', 0, offset),
                     f'italic "*{word}*" is not a rating; use one of the '
                     'six in sgi-ratings exactly')
 
@@ -343,13 +430,6 @@ def lint_page(rel, text):
     return out
 
 
-def warnings(root):
-    out = []
-    for page in sorted((root / PAGES).rglob('*.rst')):
-        out += warn_page(str(page.relative_to(root)), page.read_text())
-    return out
-
-
 def lint(root):
     listed = set((root / 'LICENSE.origami.paths').read_text().split())
     findings = []
@@ -358,6 +438,7 @@ def lint(root):
     for page in pages:
         rel = str(page.relative_to(root))
         findings += lint_page(rel, page.read_text())
+        findings += lint_hex(rel, page.read_text())
         if page.parent.name == 'hardware':
             findings += lint_used_in(rel, page.read_text(), cat)
     for page in pages:
@@ -381,8 +462,6 @@ def main(argv=None):
     findings = lint(args.root)
     for f in findings:
         print(f)
-    for w in warnings(args.root):
-        print(w, file=sys.stderr)
     return 1 if findings else 0
 
 

@@ -513,9 +513,9 @@ The model reproduces this with the device clock:
   engines stand still.
 - With ``stable-reference`` off the chip is always in external reset.
 - A DMA channel reset starts when control bit 3 is written as one. The
-  channel then reads control ``0x18`` and status ``0x10``. A later write
+  model's channel then reads control ``0x18`` and status ``0x10``. A later write
   with bit 3 clear ends the reset if at least 16 device clocks have
-  passed, and control reads ``0x10``. A write that does so too soon is a
+  passed, and the model's control then reads ``0x10``. A write that does so too soon is a
   refusal. A write of GO together with the release is also refused.
 - The MSP is held in reset at device reset. Writing ``MSP_CTL_STAT`` to
   release it before 16 device clocks have passed is a refusal. Writing it

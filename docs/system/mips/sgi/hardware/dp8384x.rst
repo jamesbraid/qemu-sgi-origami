@@ -102,7 +102,7 @@ transceiver was read, so its part and address are an *approximation*.
 
 Software finds the transceiver by scanning all 32 addresses and taking
 the first that answers, so exactly one address must answer. The model
-answers only at its own address. At any other address the IOC3 returns
+answers only at its own address. At any other address the IOC3 model returns
 ``0xffff`` and drops writes. The DP83840A address is fixed at the
 ``phy-addr`` value. The DP83843 address is the low five bits of
 register ``0x19`` (see below) and starts at the configured value.
@@ -485,7 +485,7 @@ autonegotiation is enabled, then reads ANER. If the partner can
 autonegotiate it intersects ANAR and ANLPAR to get 100BASE-TX full
 duplex. Only otherwise does it read register ``0x19`` to tell 10 from
 100 Mb/s, and its own comment says that register does not report
-duplex. The model reports a capable partner, so a guest takes the first
+duplex, a *software expectation*. The model reports a capable partner, so a guest takes the first
 route. A forced-speed write also reports completion in BMSR, which a
 real chip would not.
 
@@ -606,8 +606,8 @@ Errors and logging
 - Reads of unimplemented DP83840A registers return zero, not ``0xffff``.
 - A DP83843 with no common advertised mode, or with an unsupported media
   configuration, logs ``LOG_UNIMP`` and leaves the link down.
-- Management accesses at an unmatched address return ``0xffff`` or are
-  dropped without logging.
+- At an unmatched address the model returns ``0xffff`` for a management
+  read and drops a write, without logging.
 
 Migration
 =========

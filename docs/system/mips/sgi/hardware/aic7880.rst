@@ -134,7 +134,7 @@ selection set, an *approximation*: the board's strap is unknown. Linux
 calls the register at ``0x84`` DSCOMMAND0; the book calls it DSCOMMAND.
 
 An access to a register the model does not implement logs ``LOG_UNIMP``.
-A read returns ``0xff``. Either access pauses the sequencer, sets the error
+A read returns ``0xff`` on the model. Either access pauses the sequencer, sets the error
 state and raises the host interrupt, so a guest sees a stopped chip rather
 than a silent success.
 

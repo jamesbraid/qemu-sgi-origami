@@ -889,8 +889,8 @@ Model limits
 - **Capture.** Only the VC_0 and VC_1 rectangle is kept.
 - **Memory.** No DMA writes. The ``legacy-software`` window is an
   approximation. The memory size limit is 3 GiB.
-- **Access.** A wrong width or alignment is a bus error. An unmapped offset
-  inside the 16 MiB region reads ``0xffffffff``. Both log
+- **Access.** A wrong width or alignment is a bus error. The model reads an unmapped
+  offset inside the 16 MiB region as ``0xffffffff``. Both log
   ``LOG_GUEST_ERROR``. Unsupported fields and malformed tables log
   ``LOG_UNIMP``: PLL test bits, SYSCLK controls, clock source 2, invalid
   timing, plane geometry, uninitialised table entries and unsupported WID

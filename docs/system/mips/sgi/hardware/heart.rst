@@ -535,8 +535,8 @@ fails without it:
   visible by then, but nothing bounds it from below
   (``/heart/drop/no-delay``).
 - The first error of each kind is held: a second dropped store before
-  type bit 2 is cleared leaves ``0x70`` and ``0x78`` alone, and likewise
-  for reads and ``0x90``. Hardware may overwrite instead
+  type bit 2 is cleared leaves ``0x70`` and ``0x78`` alone, and the
+  same holds for a dropped load and ``0x90``. Hardware may overwrite instead
   (``/heart/drop/hold-and-clear``).
 - Mode bit 13 does not gate a widget error's bit 63, though it still
   gates bit 63 set by a memory error or by software. The PROM sets bit
@@ -1281,10 +1281,10 @@ Descriptor words 4-7 answer 32-bit reads with zero. That shows the
 offsets decode as storage or as zero, not whether HEART maps a bank
 through them. The flow-control addresses read ``0x000fff001b100000`` and
 zero; whether the PROM wrote the first is not shown. The processor ID
-register reads zero from processor 0.
+register reads zero from processor 0. All of these reads are *observed*.
 
 The MicroLAN divider reads ``0x3131`` and control ``0x3``: bit 1, slot
-done, and bit 0, the wire sampled high, after the PROM's last slot.
+done, and bit 0, the wire sampled high, after the PROM's last slot, *observed*.
 
 .. _sgi-heart-octane2-interrupts:
 

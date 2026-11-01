@@ -414,7 +414,7 @@ Model limits
   ``LOG_UNIMP`` and is dropped.
 - The HcFmNumber latch and the HcRhDescriptor writes act only on full
   four-byte writes. Other widths reach the core unchanged.
-- Unaligned reads return ``0xffffffff``, as the core does.
+- The model returns ``0xffffffff`` for unaligned reads, as the core does.
 
 Tests
 =====
