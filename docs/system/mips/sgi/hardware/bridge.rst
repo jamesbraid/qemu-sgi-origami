@@ -13,6 +13,10 @@ board).
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip30`.
+
+.. seealso::
+
    - XBridge (:doc:`xbridge`): the SN1 XIO-to-PCI chip.
    - PIC (:doc:`pic`): the XIO-to-PCI-X bridge of the IP53 boards.
    - Crossbow (:doc:`xbow`): the XIO crossbar that Bridge widgets sit behind

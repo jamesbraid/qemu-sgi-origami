@@ -16,6 +16,11 @@ register map, behaviour, model limits and tests. This page says which
 board goes in which machine and keeps the widget identity table the
 machine pages cite. Facts are rated as described in :ref:`sgi-ratings`.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip30`, :ref:`sgi-ip35`,
+   :ref:`sgi-ip53`.
+
 .. list-table::
    :header-rows: 1
 

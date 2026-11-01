@@ -13,6 +13,10 @@ and in the Origin 3000 C-brick and CX-brick node boards
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip35`, :ref:`sgi-ip53`.
+
+.. seealso::
+
    - Hub (:doc:`hub`): the node controller of the SN0 machines, which the
      Bedrock succeeds.
 

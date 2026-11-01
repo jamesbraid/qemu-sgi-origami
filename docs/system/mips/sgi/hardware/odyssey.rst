@@ -27,6 +27,10 @@ the behaviour of the shipped IRIX 6.5.30 kernel, X server and GL library.
 It describes no particular ASIC stepping. The graphics overview keeps a
 short summary (:ref:`sgi-graphics-odyssey`).
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip30`, :ref:`sgi-ip35`, :ref:`sgi-ip53`.
+
 Facts are rated as described in :ref:`sgi-ratings`. Most register
 behaviour here is *approximation* or *software expectation*: it shows
 what the stock software asks of the board and what the model answers,

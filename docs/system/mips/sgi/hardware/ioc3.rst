@@ -16,6 +16,10 @@ boards.
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip30`, :ref:`sgi-ip35`.
+
+.. seealso::
+
    - IOC4 (:doc:`ioc4`): the I/O controller of the IP53 boards' IO9.
 
 The IOC3 is SGI's PCI base I/O controller. One 32-bit PCI device with one

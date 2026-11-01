@@ -15,6 +15,10 @@ C-, I-, N-, V-, R- and CX-bricks (:ref:`sgi-bricks`), which the
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip35`, :ref:`sgi-ip53`.
+
+.. seealso::
+
    - ELSC (:doc:`elsc`): the module system controller of the SN0 machines.
 
 The L1 is the per-chassis system controller of SN1 systems. It runs

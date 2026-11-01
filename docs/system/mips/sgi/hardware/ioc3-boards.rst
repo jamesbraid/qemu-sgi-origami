@@ -13,6 +13,10 @@ system board),
 Origin 3000 I-brick's IO7, which the ``origin3000`` machine builds
 (:ref:`sgi-bricks-ibrick`).
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip30`, :ref:`sgi-ip35`.
+
 SGI fitted one IOC3 chip to many boards, and each board wires up a
 different subset of its functions (:doc:`ioc3`). This page lists the
 boards that carry an IOC3, says how a guest

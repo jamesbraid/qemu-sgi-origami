@@ -34,7 +34,9 @@ or no measurements leaves those sections out rather than keeping them
 empty. The family
 overview pages ``graphics.rst`` and ``bricks.rst`` open the same way.
 
-Link related parts with ``.. seealso::``. On the overview pages, mark an
+Follow the "Used in" paragraph with a ``.. seealso::`` that links the same
+platform pages (``ip<NN>.rst``, or ``sn.rst``) back. Link related parts
+with a ``.. seealso::`` too. On the overview pages, mark an
 SGI term with ``:term:`` to the glossary at its first use.
 
 Facts
@@ -105,6 +107,8 @@ page under ``docs/system/mips/sgi/``:
   Write a statement about the model as one about "the model"; a
   neighbouring sentence does not cover it;
 - a "Used in" first paragraph on every part page;
+- a ``.. seealso::`` block on a part page that links, with ``:ref:`` or
+  ``:doc:``, each platform page its "Used in" paragraph links;
 - machines in the "Used in" paragraph that exist in
   ``hw/mips/sgi/sgi-machines.json``: a literal that starts with a machine
   family or is followed by "machine" or "topology", and a numbered product

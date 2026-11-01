@@ -10,6 +10,7 @@ Prints file:line: message for each finding and exits 1 if there are any.
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -117,6 +118,14 @@ C_TOKEN = re.compile(
     re.S)
 
 LABEL = re.compile(r'\.\. _[^:]+:\s*$')
+LABEL_NAME = re.compile(r'\.\. _([^:]+):\s*$')
+# The pages a "Used in" paragraph can send a part page back to: the
+# platform pages of the machines (ip27.rst, ..., and the Scalable Node
+# overview sn.rst), which sit directly under PAGES.
+PLATFORM = re.compile(r'(?:ip\d+|sn)\.rst$')
+REF_ROLE = re.compile(r':ref:`(?:[^`<]*<)?([^`>]+?)>?`')
+DOC_ROLE = re.compile(r':doc:`(?:[^`<]*<)?([^`>]+?)>?`')
+SEEALSO = re.compile(r'\s*\.\. seealso::')
 ADORN = re.compile(r'([=\-~^"#*+])\1{2,}\s*$')
 LITERAL = re.compile(r'``.*?``|:\w+:`[^`]*`|`[^`]*`')
 ITALIC = re.compile(r'(?<![*\w])\*([^*\s](?:[^*]*[^*\s])?)\*(?![*\w])')
@@ -287,6 +296,68 @@ def product_numbers(text):
             for m in PRODUCT_NUMBER.finditer(text)}
 
 
+def page_labels(root):
+    """Return ({label: page path relative to root}, {page: its first
+    label}) for the SGI pages."""
+    where = {}
+    top = {}
+    for page in sorted((root / PAGES).rglob('*.rst')):
+        rel = str(page.relative_to(root))
+        for line in page.read_text().split('\n'):
+            m = LABEL_NAME.match(line)
+            if m:
+                where[m.group(1)] = rel
+                top.setdefault(rel, m.group(1))
+    return where, top
+
+
+def linked_pages(rel, text, where):
+    """The pages a run of text links with :ref: or :doc:."""
+    pages = set()
+    for m in REF_ROLE.finditer(text):
+        if ' '.join(m.group(1).split()) in where:
+            pages.add(where[' '.join(m.group(1).split())])
+    for m in DOC_ROLE.finditer(text):
+        target = m.group(1).strip()
+        base = Path(rel).parent if not target.startswith('/') else Path(PAGES)
+        pages.add(os.path.normpath(base / (target.lstrip('/') + '.rst')))
+    return pages
+
+
+def seealso_text(lines):
+    """The text of every seealso block on a page."""
+    out = []
+    block = None
+    for line in lines:
+        if SEEALSO.match(line):
+            block = len(line) - len(line.lstrip())
+            continue
+        if block is not None:
+            if line.strip() and len(line) - len(line.lstrip()) <= block:
+                block = None
+            else:
+                out.append(line)
+    return '\n'.join(out)
+
+
+def lint_seealso(rel, text, where):
+    """Check that a part page's seealso blocks link every platform page
+    its "Used in" paragraph links."""
+    lines = text.split('\n')
+    found = used_in_paragraph(lines)
+    if not found:
+        return []
+    first, para = found
+    used = {p for p in linked_pages(rel, para, where)
+            if Path(p).parent == Path(PAGES) and PLATFORM.match(Path(p).name)}
+    missing = used - linked_pages(rel, seealso_text(lines), where)
+    if not missing:
+        return []
+    names = ', '.join(sorted(Path(p).stem for p in missing))
+    return [f'{rel}:{first}: "Used in" links {names}, which no '
+            '".. seealso::" on the page links back']
+
+
 def catalogue(root):
     """Return (machine and topology names, product names with a number)
     that the model offers, or None if the catalogue is absent."""
@@ -431,12 +502,14 @@ def lint(root):
     findings = []
     pages = sorted((root / PAGES).rglob('*.rst'))
     cat = catalogue(root)
+    where, _ = page_labels(root)
     for page in pages:
         rel = str(page.relative_to(root))
         findings += lint_page(rel, page.read_text())
         findings += lint_hex(rel, page.read_text())
         if page.parent.name == 'hardware':
             findings += lint_used_in(rel, page.read_text(), cat)
+            findings += lint_seealso(rel, page.read_text(), where)
     for page in pages:
         findings += lint_private(str(page.relative_to(root)),
                                  page.read_text(), literal_tmp_ok=True)

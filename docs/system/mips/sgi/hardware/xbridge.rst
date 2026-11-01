@@ -14,6 +14,10 @@ and X-bricks are reference compositions no machine builds.
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip35`.
+
+.. seealso::
+
    - Bridge (:doc:`bridge`): the earlier XIO-to-PCI bridge, whose
      style the XBridge's PCI heads follow.
    - PIC (:doc:`pic`): the XIO-to-PCI-X bridge of the IP53 boards.

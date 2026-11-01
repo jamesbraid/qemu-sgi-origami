@@ -17,6 +17,10 @@ models it as ``sgi-mace-eth`` in ``hw/net/sgi-mace-eth.c``, a child of
 (:ref:`sgi-ip32`) fits it, with an ICS1890 PHY at MII address 8. Facts are rated as
 described in :ref:`sgi-ratings`.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip32`.
+
 .. _sgi-mace-ethernet-sources:
 
 Sources

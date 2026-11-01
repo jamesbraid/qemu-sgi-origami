@@ -12,6 +12,10 @@ which QEMU describes for reference only.
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip53`.
+
+.. seealso::
+
    - Bridge (:doc:`bridge`) and XBridge (:doc:`xbridge`): the earlier XIO-
      to-PCI bridges.
 

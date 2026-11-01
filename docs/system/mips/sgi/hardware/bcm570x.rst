@@ -10,6 +10,10 @@ Used in :ref:`sgi-ip53`: the IO9 board of the Origin 350, Onyx 350,
 Tezro and Onyx 4 host machines carries one at PCI device 4 behind the
 PIC.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip53`.
+
 The BCM5701 is a single-port, 10/100/1000 Mb/s PCI Ethernet MAC with an
 integrated copper PHY. QEMU models the MAC as ``hw/net/bcm570x.c`` (QOM type
 ``bcm570x``, selected by ``model=bcm5701``) and the PHY as

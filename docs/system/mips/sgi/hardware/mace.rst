@@ -22,6 +22,10 @@ own page (:doc:`mace-ethernet`), the clock is the DS1685 model
 (:doc:`ds1685`) and the codec is on :doc:`ad1843`. The ``o2`` machine
 (:ref:`sgi-ip32`) fits MACE.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip32`.
+
 Facts are rated as described in :ref:`sgi-ratings`.
 
 .. _sgi-mace-sources:

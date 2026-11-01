@@ -25,6 +25,10 @@ when ``CONFIG_SGI_VICE`` is set, which the
 qtest fixture configuration selects, and the qtests reach it with
 ``-M none -device sgi-vice,...`` (see `Tests`_).
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip32`.
+
 The model follows the *VICE Design Specification*. It covers the host
 register file, the six local memories, the address translation buffer,
 both DMA channels, the interrupt block and the MSP's scalar unit. The

@@ -137,6 +137,64 @@ class DocsLintTests(unittest.TestCase):
             self.assertIn('begin with "Used in"',
                           self.messages({f'hardware/{name}.rst': text}), name)
 
+    PLATFORM_PAGE = """\
+.. SPDX-License-Identifier: BSD-3-Clause
+
+.. _sgi-ip30:
+
+==============
+IP30: Octane
+==============
+
+The Octane.
+"""
+
+    def seealso_case(self, body, platform=PLATFORM_PAGE, extra=None):
+        pages = {'hardware/demo.rst': GOOD_PART + '\n' + body,
+                 'ip30.rst': platform}
+        pages.update(extra or {})
+        return self.messages(pages)
+
+    def test_seealso_must_link_the_platform_pages_of_used_in(self):
+        out = self.seealso_case('Text.\n')
+        self.assertIn('hardware/demo.rst:9: "Used in" links ip30', out)
+        self.assertIn('no ".. seealso::"', out)
+
+    def test_seealso_with_the_platform_page_passes(self):
+        for body in ('.. seealso::\n\n   Platform pages: :ref:`sgi-ip30`.\n',
+                     '.. seealso::\n\n   :doc:`../ip30`\n',
+                     '.. seealso::\n\n   :doc:`Octane <../ip30>` and\n'
+                     '   :doc:`other`.\n'):
+            self.assertEqual(self.seealso_case(body), '', body)
+
+    def test_seealso_must_hold_the_link_not_the_prose(self):
+        # A link outside a seealso block does not count.
+        out = self.seealso_case('See :ref:`sgi-ip30`.\n\n'
+                                '.. seealso::\n\n   :doc:`other`\n')
+        self.assertIn('"Used in" links ip30', out)
+        out = self.seealso_case('.. seealso::\n\n   :doc:`other`\n\n'
+                                'After it :ref:`sgi-ip30`.\n')
+        self.assertIn('"Used in" links ip30', out)
+
+    def test_seealso_covers_each_platform_page_named(self):
+        used = GOOD_PART.replace('Used in :ref:`sgi-ip30`.',
+                                 'Used in :ref:`sgi-ip30` and :ref:`sgi-ip35`.')
+        other = self.PLATFORM_PAGE.replace('ip30', 'ip35').replace(
+            'IP30: Octane', 'IP35: Fuel').replace('=' * 14, '=' * 12)
+        pages = {'hardware/demo.rst':
+                 used + '\n.. seealso::\n\n   :ref:`sgi-ip30`\n',
+                 'ip30.rst': self.PLATFORM_PAGE, 'ip35.rst': other}
+        out = self.messages(pages)
+        self.assertIn('links ip35', out)
+        self.assertNotIn('ip30,', out)
+        pages['hardware/demo.rst'] += '\n   :ref:`sgi-ip35`\n'
+        self.assertEqual(self.messages(pages), '')
+
+    def test_part_used_in_no_machine_needs_no_seealso(self):
+        text = GOOD_PART.replace('Used in :ref:`sgi-ip30`.',
+                                 'Used in no machine.')
+        self.assertEqual(self.run_lint({'hardware/demo.rst': text}), [])
+
     def test_roadmap_phrases(self):
         for bad in ('The decoder is not yet implemented.',
                     'The FIFO will be modelled later.',

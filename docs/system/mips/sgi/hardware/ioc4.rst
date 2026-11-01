@@ -11,6 +11,10 @@ Used in :ref:`sgi-ip53`: the IO9 base I/O board of the Origin 350, Onyx
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip53`.
+
+.. seealso::
+
    - IOC3 (:doc:`ioc3`): the base I/O controller of the earlier platforms.
 
 The IOC4 is SGI's PCI I/O controller. One PCI function holds four 16550-compatible

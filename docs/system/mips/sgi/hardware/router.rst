@@ -11,6 +11,10 @@ Used in :ref:`sgi-ip27` (the Origin 2000 and Onyx2 modules). The Origin
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip27`.
+
+.. seealso::
+
    - SN1 router (:doc:`sn1-router`): the NUMAlink counterpart for SN1.
 
 The Router is the six-port switch of the SN0 interconnect. It joins the

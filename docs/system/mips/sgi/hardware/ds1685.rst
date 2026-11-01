@@ -11,6 +11,10 @@ Used in :ref:`sgi-ip30`, on the Octane and Octane2 system boards, and
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip30`, :ref:`sgi-ip32`.
+
+.. seealso::
+
    - Timekeepers (:doc:`timekeepers`): the M48T35, DS1742 and DS1744 clocks of the Origin boards.
 
 The DS1685 is a real-time clock with 242 bytes of battery-backed RAM. On
