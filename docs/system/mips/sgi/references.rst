@@ -498,6 +498,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``irixnet-thread-2263``
    *IRIXnet thread 2263, owner Onyx 4 inventory*. IRIXnet forums. Capture, cited by post. `<https://forums.irixnet.org/thread-2263.html>`__ SHA-256 ``fe7d3d15560b2e4e431975e5f299c4f80e9d31db654cfe9f718b9399f3272df7``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-irixnet-thread-2263-page-2:
+
+``irixnet-thread-2263-page-2``
+   *IRIXnet thread 2263, page 2, Onyx 4 inventory with IP59\_4CPU node boards, hinv -vvvm*. IRIXnet forums. Capture, cited by post. `<https://forums.irixnet.org/thread-2263-page-2.html>`__ SHA-256 ``695a0de3d5037e10c38272632496162074491d8d53d0e3c36111d26e31c44382``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-irixnet-thread-2737:
 
 ``irixnet-thread-2737``

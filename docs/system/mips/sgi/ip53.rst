@@ -73,8 +73,12 @@ Published captures:
   :src:`graphica-tezro-hinv`; an 800 MHz four-processor inventory,
   :src:`irixnet-post-26015`; a 1 GHz PROM transcript,
   :src:`irixnet-thread-3613`.
-- Onyx 4: a published inventory of a system labelled Onyx 350 with an IP59
-  board, :src:`irixnet-thread-2263`.
+- Onyx 4: a hobbyist two-module system, built in an Onyx 350 prototype
+  chassis, with its first-page inventory (:src:`irixnet-thread-2263`) and
+  a later inventory that carries IP59 node-board records
+  (:src:`irixnet-thread-2263-page-2`).
+- Tezro rack: a 1 GHz four-processor inventory over two modules with IP59
+  board records, :src:`nekonomicon-16719032`.
 
 The stock firmware is :src:`ip35-prom-6.210`. What it does is a
 *software expectation*, never a hardware fact.
@@ -534,12 +538,19 @@ An Onyx 4 host carries the system's PCI cards, including the boot IO9 at
 bus 1, slot 1, and connects to G2N bricks over NUMAlink. A serial
 terminal attaches to the host's L1 (:src:`007-4634-002 p. 1-2, 15,
 20-23, 30-32`). All *established*. The profile takes module ``001c01`` of
-a published inventory of a system labelled Onyx 350: board ``IP59_4CPU``
-``030-1989-003`` revision C, four 1 GHz R16000 revision 3.0 with 16 MiB
-caches, 8 GiB, and IO9 ``030-1771-006`` revision A at widget 15
-(:src:`irixnet-thread-2263`), *observed*. The poster says a quad 1 GHz
-board was installed in a G2N, and the inventory places that board at
-``001c02``. Treating ``001c01`` as the Onyx 4 host is *inferred*.
+a published two-module inventory: board ``IP59_4CPU`` ``030-1989-003``
+revision ``-C``, four 1 GHz R16000 revision 3.0 with 16 MiB caches, 8 GiB,
+and IO9 ``030-1771-006`` revision ``-A`` below the ``2U_INT_53`` interface
+board at widget 15 (:src:`irixnet-thread-2263-page-2`), *observed*. The
+poster's first-page inventory shows the same processors and memory for
+this module but prints the board only as an ``IP35`` node board, with no
+part number (:src:`irixnet-thread-2263`). Module ``001c02``, the graphics
+brick, reports a second ``IP59_4CPU`` of the same part at revision ``-D``.
+The poster says a quad 1 GHz board was installed in the Onyx 4 G2N brick
+after a trade, and the first page shows ``001c02`` with 800 MHz
+processors, so ``001c02`` holds the fitted board, *inferred*. The poster
+built the system in an Onyx 350 prototype chassis, so treating ``001c01``
+as the Onyx 4 host is *inferred*.
 
 The model maps this IP59 board onto the IP53 board path, its PIC and its
 IO9 wiring, an *approximation*: no source describes the IP59 PIC, its
@@ -659,18 +670,20 @@ IP59 node board profiles
 
 IP59 is the 1 GHz generation of the IP53 board (OpenBSD
 ``share/man/man4/man4.sgi/intro.4`` at ``2df91d80c104``, lines 113-114).
-The published IP59 inventories show the same Bedrock, revision 2 at
-200 MHz, and the same IO9 as the IP53 ones (:src:`irixnet-thread-2263`;
-:src:`nekonomicon-16719032`), *observed*. That it was sold as an upgrade
-for the Origin 350, Onyx 350 and Tezro is *inferred*; the poster of
-:src:`irixnet-thread-2263` reports fitting a quad 1 GHz board into an
-Onyx 4 G2N brick.
+Two published inventories carry IP59 board records: the Onyx 4 above
+(:src:`irixnet-thread-2263-page-2`) and a Tezro rack
+(:src:`nekonomicon-16719032`). Both report a Bedrock, printed as ``HUB``
+in the Tezro, at revision 2 and 200 MHz, and an IO9 of part ``030-1771``,
+as the IP53 inventories do: ``-006`` revision ``-A`` in the Onyx 4 and
+``-005`` revision B in the Tezro, *observed*. That IP59 was sold as an
+upgrade for the Origin 350, Onyx 350 and Tezro is *inferred*; the Onyx 4
+poster reports fitting a quad 1 GHz board into an Onyx 4 G2N brick.
 
 The model builds each IP59 product from the IP53 assembly, PIC and IO9
 and changes only the node-board record and the processors: 1.0 GHz
 R16000 revision 3.0 with a 16 MiB secondary cache at one third of the
-processor clock, which the captured IP59 inventories print as ``Speed
-333 Mhz Tap 0x15`` (:src:`irixnet-thread-2263`;
+processor clock, which both captured IP59 inventories print as ``Speed
+333 Mhz  Tap 0x15`` (:src:`irixnet-thread-2263-page-2`;
 :src:`nekonomicon-16719032`), *observed*. Reusing the IP53
 PIC and IO9 wiring is an *approximation*: no source describes them on
 IP59.
@@ -709,24 +722,28 @@ default is ``onyx4-host-ip59``.
 
 The L1 serves the node board from its record, as on IP53. A
 four-processor node reports ``IP59_4CPU``, part ``030-1989-003``,
-revision ``-C`` (:src:`irixnet-thread-2263`), and a two-processor node
-``IP59_2CPU``, part ``030-2059-002``, revision ``A``
-(:src:`nekonomicon-16719032`), both *observed*. A one-processor Tezro
-keeps the L1's generic record: no published inventory shows a
-one-processor IP59 board, so its part and revision are *unknown*. Serial
+revision ``-C`` (:src:`irixnet-thread-2263-page-2`), and a two-processor
+node ``IP59_2CPU``, part ``030-2059-002``, revision ``A``
+(:src:`nekonomicon-16719032`), both *observed*. The Onyx 4's second board
+is revision ``-D``, which no profile serves. A one-processor Tezro keeps
+the L1's generic record: neither inventory shows a one-processor IP59
+board, so its part and revision are *unknown*. Serial
 numbers and barcodes are synthetic.
 
 The reset mode word ``0x00edb385`` and the flash configuration word
 ``0x4aedb385`` are *inferred* inputs, not measured values. No published
 updater row covers a 1 GHz, 16 MiB part, and no Config register or
-processor revision register has been read from a 1 GHz module. The pair
-is derived so that the stock PROM and IRIX print the captured 333 MHz
-cache clock, tap ``0x15`` and a 200 MHz hub: the cache clock divisor
-selects one third of the processor clock, the system clock divisor one
-fifth, and the tap uses bit 22, the fifth tap bit the R16000 adds to the
-R10000 layout. A boot that printed the PROM's invalid-tap message would
-refute that reading. Whether the part is an R16000A is *unknown*. The
-PROM payload is the 6.210 image the IP53 profiles use.
+processor revision register has been read from a 1 GHz module. The two
+words agree in their low 25 bits. Those bits hold secondary cache size
+code 5, which selects the 16 MiB the captures print (*observed*),
+secondary clock divisor code 5, system clock divisor code 9 and bit 22.
+That the divisor codes mean one third and one fifth of the processor
+clock, giving the printed 333 MHz cache clock and a 200 MHz hub, and
+that bit 22 yields tap ``0x15``, are *inferred*: the captures print only
+the results, and 800 MHz boards in the cited threads print tap
+``0xa``. A boot that printed the PROM's invalid-tap message would refute
+that reading. Whether the part is an R16000A is *unknown*. The PROM
+payload is the 6.210 image the IP53 profiles use.
 
 The model builds an Origin 3900 Cx-brick with IP53 or IP59 node boards,
 not a mix: ``origin3900-ip59`` fits four IP59 boards, and the Cx-brick's L1 reports
