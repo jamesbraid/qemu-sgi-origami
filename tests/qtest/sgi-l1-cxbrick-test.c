@@ -320,8 +320,8 @@ static void test_identity(void)
     rig_start(&rig, "brick-type=cxbrick", 0x3, false, "");
     expect_command(&rig, 1, "config", "0: ---c--\n");
     expect_command(&rig, 0, "brick",
-                   "rack: ---, slot: --, partition: 0, type: 6, "
-                   "source: EEPROM\n");
+                   "rack: ---, slot: --, partition: none, type: 6 [?MB flash], "
+                   "serial:(null), source: EEPROM\n");
     rig_stop(&rig);
 }
 

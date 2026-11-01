@@ -295,8 +295,8 @@ static void test_identity(void)
     s = start_one("brick-type=vbrick,named=on,rack=1,bay=10");
     expect_identity(s, 0, LOCAL_GENERAL, packed(1, 10), 'X');
     expect_command(s, 0, "brick",
-                   "rack: 001, slot: 10, partition: 0, type: X, "
-                   "source: EEPROM\n");
+                   "rack: 001, slot: 10, partition: none, type: X [?MB flash], "
+                   "serial:(null), source: EEPROM\n");
     expect_command(s, 0, "config", "0: 001x10\n");
     qtest_quit(s);
 }
@@ -334,8 +334,8 @@ static void test_naming_takes_effect_on_restart(void)
     g_autofree char *output = NULL;
 
     expect_command(s, 0, "brick",
-                   "rack: ---, slot: --, partition: 2, type: C, "
-                   "source: EEPROM\n");
+                   "rack: ---, slot: --, partition: 2, type: C [?MB flash], "
+                   "serial:(null), source: EEPROM\n");
     output = command(s, 0, "brick rack 3", &code);
     g_assert_cmpint(code, ==, 0);
     g_free(output);
@@ -348,16 +348,16 @@ static void test_naming_takes_effect_on_restart(void)
     expect_unnamed_identity(s, 0);
     expect_command(s, 0, "config", "0: ---c--\n");
     expect_command(s, 0, "brick",
-                   "rack: ---, slot: --, partition: 2, type: C, "
-                   "source: EEPROM\n");
+                   "rack: ---, slot: --, partition: 2, type: C [?MB flash], "
+                   "serial:(null), source: EEPROM\n");
     g_free(output);
     output = command(s, 0, "reboot_l1", &code);
     g_assert_cmpint(code, ==, 0);
     expect_identity(s, 0, LOCAL_GENERAL, packed(3, 1), 'C');
     expect_command(s, 0, "config", "0: 003c01\n");
     expect_command(s, 0, "brick",
-                   "rack: 003, slot: 01, partition: 9, type: C, "
-                   "source: EEPROM\n");
+                   "rack: 003, slot: 01, partition: 9, type: C [?MB flash], "
+                   "serial:(null), source: EEPROM\n");
     {
         /* The partition request returns the stored value. */
         uint8_t reply[131];
@@ -402,8 +402,8 @@ static void test_retention(void)
     /* Rack, partition, type and records survive; the slot took effect. */
     expect_identity(s, 0, LOCAL_GENERAL, packed(3, 7), 'C');
     expect_command(s, 0, "brick",
-                   "rack: 003, slot: 07, partition: 5, type: C, "
-                   "source: EEPROM\n");
+                   "rack: 003, slot: 07, partition: 5, type: C [?MB flash], "
+                   "serial:(null), source: EEPROM\n");
     after_length = eeprom(s, 0, LOCAL_GENERAL, 0, 2, 0, 64, after);
     g_assert_cmpuint(after_length, ==, before_length);
     g_assert_cmpmem(after, after_length, before, before_length);
@@ -411,8 +411,8 @@ static void test_retention(void)
     qtest_system_reset(s);
     expect_identity(s, 0, LOCAL_GENERAL, packed(3, 7), 'C');
     expect_command(s, 0, "brick",
-                   "rack: 003, slot: 07, partition: 5, type: C, "
-                   "source: EEPROM\n");
+                   "rack: 003, slot: 07, partition: 5, type: C [?MB flash], "
+                   "serial:(null), source: EEPROM\n");
     after_length = eeprom(s, 0, LOCAL_GENERAL, 0, 2, 0, 64, after);
     g_assert_cmpmem(after, after_length, before, before_length);
     /* So does a node power-off. */
@@ -421,8 +421,8 @@ static void test_retention(void)
     expect_command(s, 0, "power check", "power appears off\n");
     expect_identity(s, 0, LOCAL_GENERAL, packed(3, 7), 'C');
     expect_command(s, 0, "brick",
-                   "rack: 003, slot: 07, partition: 5, type: C, "
-                   "source: EEPROM\n");
+                   "rack: 003, slot: 07, partition: 5, type: C [?MB flash], "
+                   "serial:(null), source: EEPROM\n");
     after_length = eeprom(s, 0, LOCAL_GENERAL, 0, 2, 0, 64, after);
     g_assert_cmpmem(after, after_length, before, before_length);
     qtest_quit(s);
@@ -1177,11 +1177,11 @@ static void test_broadcast_and_relay(void)
         output = command(s, 0, "reboot_l1", NULL);
     }
     expect_command(s, 1, "brick",
-                   "rack: 001, slot: 31, partition: 4, type: I, "
-                   "source: EEPROM\n");
+                   "rack: 001, slot: 31, partition: 4, type: I [?MB flash], "
+                   "serial:(null), source: EEPROM\n");
     expect_command(s, 2, "brick",
-                   "rack: 001, slot: 07, partition: 4, type: C, "
-                   "source: EEPROM\n");
+                   "rack: 001, slot: 07, partition: 4, type: C [?MB flash], "
+                   "serial:(null), source: EEPROM\n");
     qtest_quit(s);
 }
 
@@ -1302,7 +1302,8 @@ static void expect_command_code(QTestState *s, unsigned n, const char *text,
 static void expect_partition(QTestState *s, unsigned n, unsigned want)
 {
     g_autofree char *output = command(s, n, "brick", NULL);
-    g_autofree char *needle = g_strdup_printf("partition: %u,", want);
+    g_autofree char *needle = want ? g_strdup_printf("partition: %u,", want) :
+        g_strdup("partition: none,");
 
     g_assert_nonnull(strstr(output, needle));
 }
@@ -1690,6 +1691,13 @@ static void expect_partition_request(QTestState *s, unsigned n,
     g_assert_cmphex(ldl_be_p(reply + 7), ==, want);
 }
 
+/*
+ * The brick line's partition field and tail follow the L1 datasheet's brick
+ * row: zero prints none, the type is followed by a flash-size text and the
+ * brick serial, with (null) for none. That the Origin 3000 C-brick image
+ * does the same as the Chimera and Origin 300 images is inferred, and the
+ * flash text is the unknown-size form.
+ */
 static void expect_brick_partition(QTestState *s, unsigned n,
                                    const char *want)
 {
@@ -1723,8 +1731,8 @@ static void test_partition_identity(void)
     expect_partition_request(s, 1, 9, 2);
     expect_partition_request(s, 0, 0xb, 0);
     expect_partition_request(s, 1, 0xb, 0);
-    /* An unpartitioned C-brick answers 0 (the model prints the number). */
-    expect_brick_partition(s, 4, "0");
+    /* An unpartitioned C-brick answers 0 and prints none. */
+    expect_brick_partition(s, 4, "none");
     expect_partition_request(s, 4, 9, 0);
 
     /* The I-brick reports its C-brick's ID, and cannot be given its own. */
@@ -1961,14 +1969,14 @@ static void test_migration(void)
     /* The pending name and partition crossed; neither has taken effect. */
     expect_unnamed_identity(to, 0);
     expect_command(to, 0, "brick",
-                   "rack: ---, slot: --, partition: 2, type: C, "
-                   "source: EEPROM\n");
+                   "rack: ---, slot: --, partition: 2, type: C [?MB flash], "
+                   "serial:(null), source: EEPROM\n");
     g_free(output);
     output = command(to, 0, "reboot_l1", &code);
     expect_identity(to, 0, LOCAL_GENERAL, packed(3, 1), 'C');
     expect_command(to, 0, "brick",
-                   "rack: 003, slot: 01, partition: 9, type: C, "
-                   "source: EEPROM\n");
+                   "rack: 003, slot: 01, partition: 9, type: C [?MB flash], "
+                   "serial:(null), source: EEPROM\n");
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);
