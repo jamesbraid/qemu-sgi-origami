@@ -214,8 +214,9 @@ values IRIX writes are *software expectations*.
      - Serial latch and data
      - R/W
      - Stored. On MediaIO they carry the serial word
-       (:ref:`sgi-rad1-mux`). The Octane driver writes ``0x8c`` = 2 and
-       ``0x88`` = 3, then 2 and 0 at halt.
+       (:ref:`sgi-rad1-mux`). On the Octane, ``0x88`` = 2 (relay mute)
+       or ``0x8c`` = 3 (DAC mute) silences the analog output
+       (:ref:`sgi-rad1-limits`).
    * - ``0x90``
      - Interface selection
      - R/W
@@ -388,11 +389,23 @@ them is *unknown*. The model latches set A at the enable edge and walks
 that ring alone.
 
 On MediaIO the whole span ``0x400``-``0x528`` is stored. On the Octane
-only the sets in the first, second, third and eighth rows above are
-accepted, plus the low-address words ``0x4c0``, ``0x4c8``, ``0x4d8``,
-``0x4e8`` and ``0x4f0``, which the Octane driver writes at start with
-the engines off; those five are stored with no effect. A descriptor write
-while its engine runs is refused on the Octane.
+the span from ``0x400`` is descriptor RAM: sixteen entries of address
+low, address high and control, twelve bytes apart. IRIX links to entry
+1 and Linux to entry 7, each programmed with a copy of the working
+descriptor, a *software expectation*. The sixteen-entry count follows
+from the four-bit link field, and the rest of the layout from those two
+entries, *inferred*. Entry 15 shares its words with the status ring's
+set B. Every entry word takes 32-bit reads and writes, except that a
+write to a channel's own set while that channel runs is refused.
+
+When an Octane output pass ends without end of descriptor, the model
+loads the entry that control bits 6:3 name into the working registers
+and plays on from its start, a model choice: both drivers link to a copy
+of the working descriptor. A link to an entry that reads all zero logs
+``LOG_UNIMP`` and stops the channel with its start bit still set, since
+what hardware does there is *unknown*. An entry with no address, no
+length, more than 1 MiB or a part frame logs ``LOG_GUEST_ERROR`` and
+stops the same way.
 
 .. _sgi-rad1-subcode-windows:
 
@@ -734,8 +747,16 @@ Model limits
   MediaIO class code and the MediaIO PCI status bits are model choices.
   The MediaIO type reports medium DEVSEL timing and fast back-to-back
   capability; no source gives either.
-- Mute, gain, clock-generator rates, PLL lock, external clocks, analog
-  input selection and the serial word have no effect.
+- On the Octane, while ``0x88`` holds 2 or ``0x8c`` holds 3, the analog
+  output sends silence to the host and the transfer carries on, so
+  positions and the start bit advance as before. A write to either
+  register first plays the frames already due under the old state. The
+  IRIX and PROM start sequences write these values around playback, a
+  *software expectation*. That they mute, and that the transfer runs on
+  while the output is silent, are *inferred* from the register names and
+  values; no public source ties either register to the channel.
+- Gain, clock-generator rates, PLL lock, external clocks, analog input
+  selection, the serial word and the MediaIO mute bits have no effect.
 - The Octane runs no AES3 or ADAT audio channel, no ADAT-input subcode
   channel and no video reference. Their enable bits are refused. The
   Octane driver also writes ``0x40000000`` and ``0x40000001`` to ``0x58``
@@ -766,7 +787,9 @@ storage and refused enables, the subcode windows under all four Bridge
 width and swap settings, one-shot and continuous status DMA through
 direct, translated and 64-bit Bridge addresses, the analog output and
 input clocks, the AES3-input subcode channel, ring overrun, sample
-conversion, DMA failures, refused accesses, the UST counter's enable
+conversion, the relay and DAC mutes over a played span, descriptor links
+to entries 1 and 7 past the first lap and to a never-programmed entry,
+DMA failures, refused accesses, the UST counter's enable
 sequence, word value and wrap, and migration.
 
 ``tests/qtest/sn0-baseio-test.c``, the ``sn0/baseio/io6g-rad1-*`` cases,
