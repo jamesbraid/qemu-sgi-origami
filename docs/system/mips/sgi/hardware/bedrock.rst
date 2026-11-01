@@ -214,7 +214,7 @@ capture. PI1's registers are PI0's at hub offset ``+0x200000``.
 
 The header states no reset value for this unit. It states only which
 registers survive a soft reset and which are not cleared at reset. The
-model's reset values below are *approximations* unless marked. Rows
+model's reset values below are each an *approximation* unless marked. Rows
 marked "kept" are never changed by any reset in the model, so they keep
 their value across a local reset and a machine reset alike.
 
@@ -643,7 +643,7 @@ modulo 4096 with ``LOG_GUEST_ERROR``; real wrap, saturation or sign is
 model sets the slot's graphics pending bit at once and logs
 ``LOG_UNIMP`` once per slot; the write stall is not modelled. The
 interrupt counter and compare are stored only. These are
-*approximations*.
+each an *approximation*.
 
 .. _sgi-bedrock-md:
 
@@ -794,7 +794,7 @@ what the stock PROM programs, a *software expectation*.
 Writes to the error registers log ``LOG_GUEST_ERROR`` and are ignored.
 Read-to-clear on the clear aliases is the model's choice; the header
 gives no mechanism. Reset values other than the two queue sizes and
-refresh enable are *approximations*. The unit's soft reset keeps memory
+refresh enable are each an *approximation*. The unit's soft reset keeps memory
 configuration, refresh threshold and enable, and directory
 configuration, as the header says (``hubmd.h`` lines 376, 1454-1455),
 *established*; it clears the rest. Other offsets read zero and drop
@@ -1370,7 +1370,7 @@ requests and port resets across it.
 Reads of port reset, and reads and writes of the channel test register
 at ``0x680028``, log ``LOG_UNIMP`` and return zero. Writes to read-only
 registers log ``LOG_GUEST_ERROR``. The header states no reset value for
-this unit except sideband's; the zeros are *approximations*. A companion
+this unit except sideband's; the zeros are each an *approximation*. A companion
 header gives a software constant it believes is the port-parameters
 default (``hubni_next.h`` lines 168-172); nothing uses it and the model
 does not.
@@ -1594,7 +1594,7 @@ at once:
 Routes through a router are on :doc:`sn1-router`. A direct reply leaves
 return route 0. A write to status or status-clear clears it when zero
 and logs ``LOG_UNIMP`` otherwise; return route and read data take any
-written value. These outcomes are *approximations*: what the chip
+written value. These outcomes are each an *approximation*: what the chip
 answers with no link or for a refused offset is *unknown*. A remote
 request applies no permission check.
 
@@ -1636,7 +1636,7 @@ The model starts one slot per write, clears completion and publishes
 completion and the sampled level 1 µs of virtual time later. Pulse
 classification reuses QEMU's SGI one-wire slot helper. A write while a
 slot is pending logs ``LOG_UNIMP`` and is discarded. These are
-*approximations*. No identity part is attached: which part IP45 fits,
+each an *approximation*. No identity part is attached: which part IP45 fits,
 its commands and its contents are *unknown*, so a slot sees the bare
 wire.
 
@@ -1709,7 +1709,7 @@ The Itanium port writes zero to all fifteen clear registers at probe
 (``huberror.c`` lines 95-100), a *software expectation*. Reads of clear
 registers and of holes return zero with ``LOG_UNIMP``. Writes to first
 error log ``LOG_GUEST_ERROR``. Reset values other than parameters are
-*approximations*.
+each an *approximation*.
 
 .. _sgi-bedrock-xb-errors:
 
@@ -1738,7 +1738,7 @@ the recorded queue has been serviced; a premature clear logs
 lowest-address queue still holding errors latches next. The seven
 queues the header lists without structure read zero and drop writes with
 ``LOG_UNIMP``. Treating any write to a clear register as a clear, and
-the relatch order, are *approximations*. Arbitration, timeouts and
+the relatch order, are each an *approximation*. Arbitration, timeouts and
 traffic errors are not modelled.
 
 .. _sgi-bedrock-flash:
@@ -1897,7 +1897,7 @@ can fall seconds behind its peers. At each of the four points the model
 halts the processor that arrived early until the ones it must follow
 catch up, or until 2 s of virtual time pass. A halt changes when a
 processor next runs, never a value it reads. These are
-*approximations* with no hardware counterpart; they apply under
+each an *approximation* with no hardware counterpart; they apply under
 multi-threaded TCG, round-robin TCG and ``-icount`` alike.
 
 - Reset barrier. Every processor clears local block scratch 1 after

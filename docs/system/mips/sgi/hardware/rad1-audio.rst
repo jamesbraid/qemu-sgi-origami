@@ -123,7 +123,7 @@ Offsets are from BAR0. Registers are 32 bits. "Stored" means the model
 keeps the last accepted write and returns it on read, with no other
 effect; no physical readback is known, so every stored register is an
 *approximation*. Reset is zero throughout, also an *approximation*. The
-values IRIX writes are *software expectations*.
+values IRIX writes are each a *software expectation*.
 
 .. list-table::
    :header-rows: 1
@@ -272,7 +272,7 @@ count and leaves it stopped. Any other value, a lone ``0x0a``, a read of
 tick per 960 ns of virtual time, keeping the fractional remainder and
 wrapping at 32 bits. The 960 ns period follows the fixed divisor the
 Octane driver uses to scale UST; the reset state and the effect of each
-value are *approximations*. The stopped zero count the model starts in
+value are each an *approximation*. The stopped zero count the model starts in
 matches what the reference Octane2 reads at its PROM menu. Reads never
 advance either counter.
 
@@ -480,7 +480,7 @@ Writes to ``0x5c``, *software expectation*:
 Continuous completions start at slot 1, the first the driver checks, and
 run on an absolute schedule: completion *k* is due *k* intervals after the
 start, so a late timer catches up back to back. A timer more than a ring
-behind restarts the schedule from the present. Both are *approximations*.
+behind restarts the schedule from the present. Each is an *approximation*.
 The driver needs completions about every 250 µs: its mixer refills the
 output only about ``0xcc`` words ahead of the last pointer it saw.
 
@@ -516,7 +516,7 @@ input fills bits 23:8 and leaves 7:0 zero. ADAT channels 3 to 8 are
 dropped on output and silent on input. The subcode channels write zero
 records, 256 bytes for type 6 and 128 bytes for type 7.
 
-Rates, all *approximations*:
+Rates, each an *approximation*:
 
 - Analog input and output, AES3 output and ADAT output: 44.1 kHz, the
   software rate the driver gives the analog output clock. Which bits of
@@ -609,7 +609,7 @@ stops its channel. On the Octane any failed status write stops the ring
 and publishes no done word, and a failed sample transfer stops the
 channel without advancing positions for the failed chunk; earlier chunks
 keep their progress. No error register or interrupt is synthesised.
-These are *approximations*.
+These are each an *approximation*.
 
 Reset and migration
 ===================

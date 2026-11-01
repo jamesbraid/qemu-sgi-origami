@@ -294,7 +294,7 @@ already past its target, and a strict comparator defers the tick for a
 whole wrap: 44.05 s at the ``octane``'s 97.5 MHz Count, 23.86 s at the
 ``octane2``'s 180 MHz. On the processor the instructions between the two
 take a few cycles, *inferred* from instruction timing. The model has two
-recoveries for this host artefact. Both are *approximations*: after a
+recoveries for this host artefact. Each is an *approximation*: after a
 delayed arm the model raises IP7 at the Compare write, where silicon would
 not have been late.
 

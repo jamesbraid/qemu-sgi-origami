@@ -303,7 +303,7 @@ before use, and no read of a real board is available, so a reset value is
 
 Mailbox registers other than MB_HOSTINTR are write-only. Reading one logs
 ``LOG_UNIMP`` and returns zero. Register names, offsets and bit meanings
-are *software expectations* from ``if_tireg.h``. Where the Alteon manual
+are each a *software expectation* from ``if_tireg.h``. Where the Alteon manual
 states them, the sections below cite it.
 
 GCR registers the model gives meaning to:
@@ -706,7 +706,7 @@ silicon is *unknown*.
 Other documented control bits are stored and ignored. The read-only error
 bits stay set across later state writes and clear on channel reset. The
 bit layout is from the manual's Tables 34 and 35 (pp. 82-84),
-*established*. The model's choices are *approximations*:
+*established*. The model's choices are each an *approximation*:
 
 - Each channel swaps data in four-byte groups unless No Swap is set, and
   exchanges the two words of each eight-byte unit unless PCI State bit 18
@@ -940,7 +940,7 @@ The event type and the up and down codes (``0x01`` gigabit up, ``0x02``
 down, ``0x03`` 10/100 up) are the same in all three public drivers. The
 drivers take the event as carrier authority and read the status registers
 only after an up event for speed and duplex (*software expectation*). The
-delay and status register values are *approximations*: no source gives
+delay and status register values are each an *approximation*: no source gives
 either. What real firmware does on a carrier change before firmware-up,
 during negotiation or across reset, and the exact status values for each
 transition, are *unknown*.

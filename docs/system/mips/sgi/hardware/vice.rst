@@ -863,7 +863,7 @@ Model limits
 - **System side**: no SysAD protocol, no CRIME transaction, no system-bus
   error interrupt (bit 6), no multi-chip ID decoding.
 - **Timing**: the rates in `Transfer steps`_ and the MSP's cycle counts
-  are *approximations*. The specification's pipeline description and the
+  are each an *approximation*. The specification's pipeline description and the
   qtests agree on what happens, not on how many nanoseconds it takes.
 - **No machine instantiates it.** The device is a part model and has no
   CRIME wiring, no firmware path and no guest driver.

@@ -266,7 +266,7 @@ where each board's values come from.
      - 2
      - 0
      - 3
-     - *Inferred* from the SI with texture captures with the TRAM taken
+     - *inferred* from the SI with texture captures with the TRAM taken
        away; no textureless SI has been captured.
    * - ``si-t``
      - ``0x45``
@@ -274,7 +274,7 @@ where each board's values come from.
      - 2
      - 0
      - 3
-     - *Observed* (:src:`mimgfx-origin2000-inventory`,
+     - *observed* (:src:`mimgfx-origin2000-inventory`,
        :src:`usenet-1123184831`): product 2, MGRAS revision 1, one GE,
        ``GE11 rev B``, four TRAMs.
    * - ``ssi``
@@ -283,7 +283,7 @@ where each board's values come from.
      - 2
      - 0
      - 3
-     - *Approximation*: no capture. Product 2 and SI's revisions, though
+     - *approximation*: no capture. Product 2 and SI's revisions, though
        every captured two-GE board prints product 3.
    * - ``mxi``
      - ``0x66``
@@ -291,7 +291,7 @@ where each board's values come from.
      - 2
      - 0
      - 3
-     - *Observed* (:src:`usenet-338549df`): product 3, MGRAS revision 1,
+     - *observed* (:src:`usenet-338549df`): product 3, MGRAS revision 1,
        the SI with texture's ASIC revisions.
    * - ``esi``
      - ``0x51``
@@ -299,14 +299,14 @@ where each board's values come from.
      - 3
      - 4
      - 3
-     - *Inferred* from the ESI with texture capture.
+     - *inferred* from the ESI with texture capture.
    * - ``esi-t``
      - ``0x51``
      - ``0x0c``
      - 3
      - 4
      - 3
-     - *Observed* (:src:`nekonomicon-17194`): MGRAS revision 4,
+     - *observed* (:src:`nekonomicon-17194`): MGRAS revision 4,
        ``GE12 rev A``, ``PP1 rev E``.
    * - ``essi``
      - ``0x72``
@@ -314,7 +314,7 @@ where each board's values come from.
      - 3
      - 7
      - 4
-     - *Observed* (:src:`usenet-bqfo2p`): product 3, MGRAS revision 4,
+     - *observed* (:src:`usenet-bqfo2p`): product 3, MGRAS revision 4,
        ``PP1 rev H``, ``CMAP rev F``.
    * - ``emxi``
      - ``0x72``
@@ -322,7 +322,7 @@ where each board's values come from.
      - 3
      - 7
      - 4
-     - *Observed* (:src:`usenet-8nbvii`). That this two-GE GE12 board
+     - *observed* (:src:`usenet-8nbvii`). That this two-GE GE12 board
        with texture is an EMXI is *inferred* from IRIX's naming rule.
 
 Every board answers HQ revision 2, RE4 revision 2, VC3 revision 0 and RA
@@ -920,7 +920,7 @@ writes ``0x00003700`` and sleeps until its handler sees source 10,
 *software expectation*. The model sets flag 17 as soon as a query's
 arguments arrive and answers from its own GL state or with zero, and it
 raises source 10 when it consumes the swap word, since its queue is
-always drained; both are *approximations*, and the board's true answers
+always drained; each is an *approximation*, and the board's true answers
 are *unknown*. A raster, descriptor or class-0 header with more than 8
 payload words, a header with a byte length that is not whole words where
 whole words are required, and any unknown class are logged
@@ -1153,7 +1153,7 @@ hardware. Any other execute is logged ``LOG_UNIMP`` and
 leaves the pixels alone. Block copy has no known payload grammar and is
 not implemented. Register ``0x161`` (``PP1FILLMODE``, which carries the
 logic operation) resets to ``0x0c000000`` and ``0x163`` to all ones,
-*approximations*.
+each an *approximation*.
 
 The X server reads small boxes through the data port: after an
 ``IR_ALIAS`` execute with ``0x102`` = ``0xa``, each 8-byte unit is read as
@@ -1239,7 +1239,7 @@ an address write restarts the load. Scanout ANDs each component with the
 pixel mask, register ``0x0400``, before the gamma table: the X server
 blanks the screen by writing 0 there and unblanks with ``0xff``, and the
 mask is *inferred* to work as a common RAMDAC's. Reset loads an identity
-gamma ramp and a mask of ``0xff``, *approximations*.
+gamma ramp and a mask of ``0xff``, each an *approximation*.
 
 VC3 registers 2 and 3 position the 32x32 cursor at its top-left pixel
 plus 31, *inferred* from the X server's writes; register ``0x1d`` bit 1
@@ -1265,7 +1265,7 @@ placeholder, *unknown*.
 Deriving the period only at the enable write, restarting the phase only
 when the period changes, and running the stock period before any table is
 loaded or for a table that gives no frame or one under 1 ms are
-*approximations*. The last logs ``LOG_GUEST_ERROR`` once per reset. A
+each an *approximation*. The last logs ``LOG_GUEST_ERROR`` once per reset. A
 real SI's retrace rate under the stock timing would settle the period.
 
 .. _sgi-mgras-dual-re:
@@ -1287,8 +1287,8 @@ and 1 before writes every PP1 must take, *software expectation*. The
 model keeps one XMAP register file per PP1. A read with every PP1
 selected answers from PP1 0, a named PP1 the board lacks drops writes
 with ``LOG_GUEST_ERROR`` and reads 0, bits 7:3 are ignored, and
-``0x071f00`` and ``0x071f80`` are shared fixed values: all
-*approximations*. Scanout reads PP1 0's tables, which software keeps
+``0x071f00`` and ``0x071f80`` are shared fixed values: each
+an *approximation*. Scanout reads PP1 0's tables, which software keeps
 alike on every PP1.
 
 The kernel selects one RE for direct reads through raster register
@@ -1315,7 +1315,7 @@ handshake and any display-list work. It then sets the XMAP main modes to
 ``0x028004`` to the board's GE revision and ``0x011098`` to done, and the
 first retrace falls one stock period later. What a real board keeps
 across its cold, warm, link and HQ resets is *unknown*; these values are
-*approximations*.
+each an *approximation*.
 
 .. _sgi-mgras-migration:
 

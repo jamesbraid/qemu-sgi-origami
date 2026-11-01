@@ -213,8 +213,8 @@ Hardware reset sets PIN and BB, so status reads ``0x81``
 sets it, and a match on the own address sets AAS
 :src:`philips-pcf8584-1997`, *established*. In the model a control write
 with PIN set sets PIN and clears BER, LAB and AAS without disturbing a
-transfer in progress, and the general call does not set AAS, both
-*approximations*.
+transfer in progress, and the general call does not set AAS, each
+an *approximation*.
 
 Transfers
 =========
@@ -437,7 +437,7 @@ sending ``pas``, a *software expectation*.
     through the first node it found in each, and on a two-module Origin
     200 only to the lowest-numbered module (`Master and slave`_). It
     repeats ``pwr d 8`` about once a second while it extends a
-    controller-started shutdown. Both are *software expectations*.
+    controller-started shutdown. Each is a *software expectation*.
 
 ``pwr c [<sec>]``
     Power cycle with an optional off interval, read the same way, from 5

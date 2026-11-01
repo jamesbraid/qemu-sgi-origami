@@ -45,7 +45,7 @@ Sources
   Neterion's programming manual is not a source for this page, so a
   register's reset value, a bit the drivers never use and the behaviour
   of an unprogrammed block are *unknown* unless a statement says
-  otherwise, and the values the model gives them are *approximations*.
+  otherwise, and the values the model gives them are each an *approximation*.
 
 Identity and placement
 ======================
@@ -86,10 +86,10 @@ systems`, *established*.
        subsystem vendor.
    * - Subsystem ID
      - ``0``. Property ``subsystem-id``.
-     - *Unknown*. No source states the SGI card's subsystem device ID.
+     - *unknown*. No source states the SGI card's subsystem device ID.
    * - Class, revision
      - Ethernet controller ``0x0200``, revision ``0``
-     - *Approximation*. The SGI card's revision is *unknown*.
+     - *approximation*. The SGI card's revision is *unknown*.
    * - BAR 0 (config ``0x10``)
      - 64-bit memory, 16 KiB, the PIF register window
      - Both drivers map it as memory. The size is an *approximation*:
@@ -138,7 +138,7 @@ address-table and traffic-memory command strobes, the scheduled
 interrupt and statistics enables, and the transmit doorbell.
 
 The reset column gives the model's value at cold reset and after the
-SW_RESET key. Reset values are *approximations*, except where noted.
+SW_RESET key. Reset values are each an *approximation*, except where noted.
 Bit positions count from the low end, so the public drivers' ``s2BIT(n)``
 is bit ``63 - n``.
 

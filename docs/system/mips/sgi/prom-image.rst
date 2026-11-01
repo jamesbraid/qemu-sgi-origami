@@ -694,7 +694,7 @@ PCI discovery
 Firmware and the operating system find PCI devices by reading Bridge
 configuration space. On the model, the IP27 PROM reads a vendor ID at
 every device number, and the IRIX 6.5.30 kernel probes again at its own
-Bridge attach inside a bus-error guard. Both are *software expectations*
+Bridge attach inside a bus-error guard. Each is a *software expectation*
 observed on the model. An empty device number fails the read back to the
 processor as a bus error and returns all ones to a caller that sees only
 the value (:ref:`sgi-bridge-config`).

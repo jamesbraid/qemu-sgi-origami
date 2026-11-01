@@ -24,11 +24,14 @@ machines only: the machines, their components, the address map, firmware
 and boot, running, graphics, published machines, model limits, tests and
 open questions.
 
-A part page, ``hardware/<part>.rst``, is titled "<Part>: <function>", never
-with a machine name in parentheses. One page covers one part. It opens
-with a "Used in" paragraph linking the platform pages whose machines fit
-the part, then has the sections Sources, Identity, Register map, the
-behaviour sections, Measurements, Model limits and Tests. Family overview
+A part page, ``hardware/<part>.rst``, is titled "<Part>: <function>", with
+nothing in parentheses. One page covers one part. It opens with a "Used
+in" paragraph linking the platform pages whose machines fit the part, or
+saying that no machine fits it. It then uses these sections, in this
+order, where they apply: Sources, Identity, Register map, the behaviour
+sections, Measurements, Model limits and Tests. A part with no registers
+or no measurements leaves those sections out rather than keeping them
+empty. Family overview
 pages such as ``graphics.rst`` and ``bricks.rst`` may open differently.
 
 Link related parts with ``.. seealso::``. On the overview pages, mark an
@@ -39,8 +42,9 @@ Facts
 
 Every statement about hardware carries one rating from ``sgi-ratings`` in
 the index, in italics: *established*, *observed*, *software expectation*,
-*inferred*, *approximation* or *unknown*. Use no other rating word in
-italics.
+*inferred*, *approximation* or *unknown*. Use these exact forms: no
+plurals, inflections, capitals or qualifiers inside the italics. Where a
+sentence needs a plural, write "each an *approximation*".
 
 - A model run shows only what the model does, never what the hardware does.
 - A read taken after firmware initialisation is not a reset value. A reset
@@ -82,10 +86,12 @@ page under ``docs/system/mips/sgi/``:
 
 - the BSD-3-Clause SPDX comment on the first line;
 - a top-level label before the title;
-- a part title of the form "<Part>: <function>" without a trailing
-  parenthesis, and a platform title of the form "IPnn: products";
-- only the six rating words in italics, spelled and cased as in
-  ``sgi-ratings``;
+- a part title of the form "<Part>: <function>" with no parentheses, and
+  a platform title of the form "IPnn: products";
+- that any italic phrase that begins like a rating word, in any case, is
+  exactly one of the six as ``sgi-ratings`` spells them, in prose and in
+  directive bodies such as tables and ``seealso`` blocks, though not in
+  literal or code blocks;
 - a "Used in" first paragraph on each part page, except the listed overviews;
 - a listing of the page, and of this guide, in ``LICENSE.origami.paths``.
 

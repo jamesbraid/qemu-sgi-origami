@@ -596,7 +596,7 @@ second pair of serial ports and, on the Onyx 3000, a four-port USB card in
 bus 6 slot 2 (*established*, :src:`007-4604-001 pp. 1-3, 10-12`). Three
 PIC ASICs provide two Crosstown2 ports and the six buses. As drawn, the
 middle PIC faces the host ports and has one link to each of the other two
-(*established as drawn*, :src:`007-4604-001 p. 4`). Each bus runs at its
+(*established*, as drawn, :src:`007-4604-001 p. 4`). Each bus runs at its
 own speed and a PCI card in a bus forces it to PCI mode.
 
 The IO9 carries an external SCSI connector, an internal SCSI port for the
@@ -727,7 +727,7 @@ twelve slots as six buses of two, each taking PCI or PCI-X cards at 33, 66,
 100 or 133 MHz (*established*, :src:`007-4605-001 pp. 1, 8-9`). Three PIC
 ASICs provide the buses and two Crosstown2 ports. As drawn, the two
 external ports attach to the middle PIC, which has one link to each of the
-others (*established as drawn*, :src:`007-4605-001 p. 3`). The addendum
+others (*established*, as drawn, :src:`007-4605-001 p. 3`). The addendum
 lists InfiniteReality pipe connectivity as an enhancement but describes no
 connector, card or cable for it (*established*, p. 1), so that attachment
 is *unknown*.
@@ -884,7 +884,7 @@ Connections:
 - The CX-brick's addendum names the V-brick as compatible with its four
   XIO connectors (*established*, :src:`007-4572-001 pp. 2, 5, 10`).
 - A host interface board sits between the connectors and the XBridge
-  (*established as drawn*). Its function is *unknown*.
+  (*established*, as drawn). Its function is *unknown*.
 - The four slot links are *inferred* to be the XBridge's Crosstalk ports
   8, 9, C and D, one per slot.
 
@@ -988,9 +988,9 @@ connector label to a port would settle it. The layer records the brick's
 L1 type letter as ``X`` (``0x58``, Linux ``ksys/l1.h``), which IRIX 6.5.30
 and the stock IP35 PROM 6.210 name an X-brick with module class ``x``,
 expecting a 400 MHz link, *software expectation*. Nothing is built from
-the letter yet. *unknown* are the XBridge revision and the widget numbers
-a C-brick sees for the slots, which only an X-brick widget inventory
-would settle.
+the letter yet. The XBridge revision and the widget numbers a C-brick sees
+for the slots are *unknown*; only an X-brick widget inventory would
+settle them.
 
 The builder qtest does build this layout. It places Origin 2000 PCI
 carrier cards in slots 1, 2 and 4 as stand-ins (*approximation*), leaves

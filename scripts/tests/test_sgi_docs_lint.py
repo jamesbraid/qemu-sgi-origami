@@ -65,7 +65,8 @@ class DocsLintTests(unittest.TestCase):
         self.assertEqual(self.run_lint({'hardware/demo.rst': text}), [])
 
     def test_part_titles(self):
-        for title in ('Demo test part', 'Demo: a test part (IP30)'):
+        for title in ('Demo test part', 'Demo: a test part (IP30)',
+                      'Demo (O2): a test part'):
             text = GOOD_PART.replace('Demo: a test part', title)
             out = self.messages({'hardware/demo.rst': text})
             self.assertIn('part title', out, title)
@@ -82,6 +83,31 @@ class DocsLintTests(unittest.TestCase):
                     'assumed', 'establish', 'Software expectation'):
             text = GOOD_PART + f'\nThe width is *{bad}* here.\n'
             self.assertIn(f'*{bad}*', self.messages({'hardware/demo.rst': text}))
+
+    def test_rating_variants(self):
+        for bad in ('approximations', 'software expectations', 'inference',
+                    'established as drawn', 'Unknown'):
+            text = GOOD_PART + f'\nThe width is *{bad}* here.\n'
+            self.assertIn(f'*{bad}*', self.messages({'hardware/demo.rst': text}))
+
+    def test_ratings_in_directive_bodies_are_checked(self):
+        table = GOOD_PART + (
+            '\n.. list-table::\n   :header-rows: 1\n\n'
+            '   * - Fact\n     - Rating\n'
+            '   * - Reset value\n     - *Inferred* from the manual\n')
+        out = self.messages({'hardware/demo.rst': table})
+        self.assertIn('hardware/demo.rst:20: italic "*Inferred*"', out)
+        seealso = GOOD_PART + (
+            '\n.. seealso::\n\n   :doc:`other`, whose width is *Inferred*.\n')
+        self.assertIn('italic "*Inferred*"',
+                      self.messages({'hardware/demo.rst': seealso}))
+
+    def test_literal_text_is_skipped(self):
+        for block in ('.. code-block:: text\n\n   *Inferred* output\n',
+                      'A dump::\n\n   *Inferred* output\n'):
+            text = GOOD_PART + '\n' + block + '\nAfter it, *unknown*.\n'
+            self.assertEqual(self.run_lint({'hardware/demo.rst': text}), [],
+                             block)
 
     def test_used_in_required_except_overviews(self):
         text = GOOD_PART.replace('Used in :ref:`sgi-ip30`.', 'The part.')

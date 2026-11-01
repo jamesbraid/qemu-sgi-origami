@@ -167,7 +167,7 @@ attach.
      - ``ge14-4`` 030-1129-002 rev F, four engines; ``ge14-2``
        030-1051-002 rev K, two engines; ``ge16-4`` 030-1398-001 rev E,
        four engines
-     - *Observed* parts. The GE14-2 presents the GE14-4's chip words, an
+     - *observed* parts. The GE14-2 presents the GE14-4's chip words, an
        *approximation*.
    * - ``rm-type``
      - ``rm7`` 030-1054-001 rev G; ``rm9`` 030-1402-001 rev E
@@ -415,7 +415,7 @@ selects the full 262,144. An entry the kernel's page mapper writes has
 bits 31:28 = 2 and a 4 KiB frame number in 27:0; the model translates
 device addresses only through entries of that form. Entry width and reset
 contents are *unknown*; storing 32 bits and clearing to zero are
-*approximations*. An access past the selected count is traced and logged
+each an *approximation*. An access past the selected count is traced and logged
 ``LOG_UNIMP``.
 
 .. _sgi-kona-commands:
@@ -424,8 +424,8 @@ Command page and grammars
 =========================
 
 Every command reaches the pipe as 32-bit words on the command page at
-``0xc10000``. Four senders share the page, each with its own grammar, all
-*software expectations* read from the senders:
+``0xc10000``. Four senders share the page, each with its own grammar, each
+a *software expectation* read from the senders:
 
 - The IO6 PROM's textport: a sync word 1, then a command and its
   arguments (:ref:`sgi-kona-textport`).
@@ -473,7 +473,7 @@ Textport commands
 -----------------
 
 Each command follows sync word 1. Counts and meanings are the IO6 PROM's
-(:src:`io6-prom-6.156 textport`), *software expectations*, except where
+(:src:`io6-prom-6.156 textport`), each a *software expectation*, except where
 noted.
 
 .. list-table::
@@ -543,7 +543,7 @@ Kernel commands
 ---------------
 
 The tokens the IRIX 6.5.30 kernel and its graphics initialiser send, with
-the words after the token, are *software expectations*. What the pipe does
+the words after the token, are each a *software expectation*. What the pipe does
 with each is *unknown*; the model's action is listed.
 
 .. list-table::
@@ -615,7 +615,7 @@ gamma and cursor loads, display-ID maps, pixel setup, write, read, copy
 and finish, stipples, points, lines, segments, spans, boxes and
 rectangles. Word counts come from the X server's send sites, *software
 expectations*. The model draws them into the colour planes with its own
-rules, *approximations*: boxes count y down from the top display line, a
+rules, each an *approximation*: boxes count y down from the top display line, a
 colour-index pixel resolves through X colour-map entry ``0x2d00`` plus the
 index read as 10:10:10, and clip lists hold up to 64 rectangles.
 
@@ -717,7 +717,7 @@ Bytes past 512 KiB are dropped on write and read as zero.
 The identification word's first two bytes are the manufacturer and device
 codes printed in :src:`108-0132-002 p. A-4`, an example rather than a
 capture; the other two bytes are *unknown* and answer zero. The check
-always passes and every reply is posted at once, *approximations*. No
+always passes and every reply is posted at once, each an *approximation*. No
 factory image has been captured, so the flash starts zero with header
 word 7 set to 2, an *approximation*. The flash keeps its contents across
 reset and migration. With a ``drive`` property, or the machine's

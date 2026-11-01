@@ -115,7 +115,7 @@ decodes consistently with that layout.
    * - ``octane2``
      - 6
      - ``0x6c00106d``
-     - *Established*: read on the reference Octane2
+     - *established*: read on the reference Octane2
        (:ref:`sgi-heart-octane2-id`).
 
 The stock IRIX 6.5.30 IP30 diagnostic reads the word as 64 bits and
@@ -159,7 +159,7 @@ bits 7:4 as the processor-active bits and mode bits 63:60 as
 processor disables (``arch/mips/include/asm/sgi/heart.h`` lines 158-160
 and 230-240 at ``db2ddb871435``) but uses neither. Neither driver reads
 processor presence from HEART: both scan the PROM's per-processor
-blocks in memory. These are *software expectations*.
+blocks in memory. These are each a *software expectation*.
 
 .. _sgi-heart-registers:
 
@@ -399,7 +399,7 @@ bits of the Bridge's control register read back zero, so the model
 treats them as strobes: a write stores the other 30 bits and those two
 read zero, *inferred*. The PROM's ``0x4c08`` then reads back as
 ``0x4008``. Zero reset and the writability of the other bits are
-*approximations*. The reference Octane2 reads ``0x4218`` at PROM time
+each an *approximation*. The reference Octane2 reads ``0x4218`` at PROM time
 (:ref:`sgi-heart-octane2-widget-more`). Bits 11:10 match. Bits 9 and 4
 are set there and clear on the model; whether the chip resets them set
 or the PROM writes them on hardware is *unknown*.
@@ -409,8 +409,8 @@ The request-timeout word is one stored 32-bit value. A 32-bit access at
 low 32 bits and a 64-bit read returns zero in the upper half. On the model
 the PROM writes ``0x28`` to the 32-bit word
 (:src:`ip30-prom-4.17 widget registers`), and the IRIX 6.5.30 IP30 kernel,
-observed on the model, later writes ``0x9c40`` and reads it back. Both are
-*software expectations*. Neither writes the 64-bit view. The reference
+observed on the model, later writes ``0x9c40`` and reads it back. Each is
+a *software expectation*. Neither writes the 64-bit view. The reference
 Octane2 read ``0x28`` after PROM startup (:ref:`sgi-heart-octane2-timeout`);
 that its PROM wrote that value is *inferred* from the same value on the
 model. The unit and the effect of the timeout are *unknown*; the model times
@@ -434,7 +434,7 @@ status at ``0x60`` and acknowledges pending bits 51-58
 observed on the model, writes zero to the mask, reads status (zero on
 the model) and writes zero to it, zeroes ``0x44``, reads cause and
 writes zero to it, then writes ``0x3ff62c07`` to the mask. These are
-*software expectations*; they suggest
+each a *software expectation*; they suggest
 write-one-to-clear status and a writable mask. The reference Octane2
 read zero at ``0x60`` and ``0x3ff7fc0f`` at ``0x68`` after PROM startup
 (:ref:`sgi-heart-octane2-widget`); that the PROM wrote that mask is
@@ -504,7 +504,7 @@ writes for the processor, and fails for DMA. Machine reset zeroes the
 descriptors in the device, then the ``octane`` and ``octane2`` machines
 write one valid descriptor per fitted bank, packed from base 0, so a
 guest started without the PROM finds its RAM mapped. These are
-*approximations*.
+each an *approximation*.
 
 The PROM sizes each bank itself, a *software expectation* from the
 shipped IP30 PROM, observed on the model
@@ -650,7 +650,7 @@ observed on the model, clears all four masks, writes ``0x8800440000000000``
 and the level-0 device bits 3-6 as it attaches, reads ``0x10038`` in its
 dispatcher and acknowledges a source by writing its bit to ``0x10028``. It
 writes ``0x10020`` only for device bits, reads cause and writes zero to it,
-and leaves masks 1-3 at zero. These are *software expectations*. At the
+and leaves masks 1-3 at zero. These are each a *software expectation*. At the
 reference Octane2's PROM menu mask 0 reads ``0x8c0002000000003d``, with
 device bit 2 set beside the model run's bits, masks 1-3 read zero and
 pending holds the timer bit 50 (:ref:`sgi-heart-octane2-interrupts`).
@@ -660,7 +660,7 @@ bit of its level is both pending and set in mask 0. Bit 63 also needs
 mode bit 13 (interrupt enable, Linux ``HM_INT_EN``) before it reaches
 IP6. A masked bit stays pending; unmasking it raises the line again
 without a new event. Masks 1-3 are stored and drive nothing. These
-output and retention rules are *approximations* compatible with the
+output and retention rules are each an *approximation* compatible with the
 drivers; HEART's assertion timing is *unknown*.
 
 Devices raise interrupts with a Crosstalk write to HEART's widget offset
@@ -698,7 +698,7 @@ lines 84-102 at ``db2ddb871435``); OpenBSD uses it as a timecounter
 Neither programs compare, trigger or the timer bit. On the model the
 PROM reads the counter in wait loops, the longest about 6,000,000 ticks,
 and never touches compare (:src:`ip30-prom-4.17 counter`). These are
-*software expectations*; all of them need the counter to advance.
+each a *software expectation*; all of them need the counter to advance.
 
 Compare stores the low 24 bits of a 64-bit write and reads them back.
 It raises no interrupt and does not touch the counter. The trigger
@@ -734,7 +734,7 @@ bus samples one; a present part pulls the reset sample low, as a DS2505
 presence pulse does after a reset low of at least 480 µs
 (:src:`ds2505-datasheet p. 15`), *established* for that part. The unit scale
 and the clock divider at ``0xb0``, which the model stores but ignores, are
-*approximations*; HEART's real slot timing is *unknown*. The reference
+each an *approximation*; HEART's real slot timing is *unknown*. The reference
 Octane2 reads the divider as ``0x3131`` and control as ``0x3`` at its PROM
 menu (:ref:`sgi-heart-octane2-piu`). A command written
 while a slot is busy replaces it and logs ``LOG_GUEST_ERROR``. Reset clears
@@ -750,7 +750,7 @@ memory error reports, 1 uncorrectable reports, 15 global ECC, 19
 single-bit error generation, 20 double-bit generation, 21 forced write
 and 25 correction lock. It places the memory error address and data at
 ``0x98`` and ``0xa0`` and cause at ``0x10040``. These names and
-placements are *software expectations*. None of these sources
+placements are each a *software expectation*. None of these sources
 gives HEART's encoder, correction or latch rules, so the ECC model is a
 functional subset, *approximation* throughout. It covers aligned
 eight-byte processor accesses to fitted RAM only.
@@ -824,7 +824,7 @@ physical address to make a PCI DMA address, so the Bridge passes the
 physical address to widget 8 unchanged (:doc:`bridge`). Linux instead
 issues 64-bit DMA addresses, ``0x8100000000000000`` plus the physical
 address, with widget 8 in bits 63:60 (``pci-xtalk-bridge.c`` lines 29-40
-and 663). These are *software expectations*.
+and 663). These are each a *software expectation*.
 
 On the model the PROM writes the same ``0x00800000`` and all of its DMA
 uses the 32-bit direct window (:src:`ip30-prom-4.17 Bridge direct map`).
@@ -834,7 +834,7 @@ setting.
 The IRIX 6.5.30 IP30 kernel, observed on the model, writes
 ``0x00820000``, which sets the bit Linux names ``BRIDGE_DIRMAP_ADD512``,
 but all of its DMA before the login prompt uses 64-bit addresses to
-widget 8. These are *software expectations*. On the model, either way
+widget 8. These are each a *software expectation*. On the model, either way
 the physical address arrives at HEART unchanged.
 
 The model accepts a Crosstalk read or write addressed to HEART when
@@ -860,7 +860,7 @@ cause, the saved ECC record and all faults, the widget control,
 request timeout and error mask, and the one-wire control word, and
 cancels a one-wire slot. The counter restarts from zero. RAM keeps its
 contents. The interrupt outputs are recomputed. These are
-*approximations*; the chip's power-on state is *unknown*.
+each an *approximation*; the chip's power-on state is *unknown*.
 
 Migration carries the same state, the counter value, faulty-word list
 and any unfinished one-wire slot's remaining time. The counter resumes

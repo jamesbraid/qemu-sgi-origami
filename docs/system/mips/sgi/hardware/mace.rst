@@ -359,7 +359,7 @@ The model maps two windows: a 16 MiB low window at ``0x1a000000`` and a
 with a byte-lane swap for 1-byte accesses, and fail other widths with a
 bus error. The specification draws the low window as 32 MiB. The PCI I/O
 windows at ``0x18000000`` and ``0x1_0000_0000`` are absent. Both limits
-are *approximations*.
+are each an *approximation*.
 
 Bus-master views
 ----------------

@@ -736,7 +736,7 @@ The RGB561 specification exempts its tables from reset and expects
 software to load them (:src:`ibm-rgb561-architecture-1.1 p. 1`). The model
 clears them for a fixed post-reset state, and resets the gamma tables to
 the linear ramp a bypassed pixel would show rather than zero, so a guest
-that never loads them keeps its colours. Both are *approximations*. Cold,
+that never loads them keeps its colours. Each is an *approximation*. Cold,
 warm and PCI reset of a real card are *unknown*.
 
 .. _sgi-psitech-rad4-migration:

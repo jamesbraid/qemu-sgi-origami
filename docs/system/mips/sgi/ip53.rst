@@ -523,7 +523,7 @@ four-processor Tezro captioned as a deskside (:src:`graphica-tezro-hinv`):
 2.1 with 4 MiB caches, Bedrock revision 2, 4 GiB in six banks,
 ``WS_INT_53`` boards at widgets ``0xb`` and ``0xf``, and IO9
 ``030-1771-005`` revision A at ``0xf``, *observed*. Applying it to a
-tower or a rack is an *inference* from the product family. An 800 MHz
+tower or a rack is *inferred* from the product family. An 800 MHz
 Tezro inventory reports the same two interface-board widgets
 (:src:`irixnet-post-26015`), *observed*.
 

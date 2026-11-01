@@ -114,7 +114,7 @@ separately.
        with is *unknown*.
    * - Widget identification bits 31:28
      - 1
-     - *Approximation*. No published capture of this field is known.
+     - *approximation*. No published capture of this field is known.
 
 The widget identification word at ``0x40_0000`` reads ``0x1c10106d``:
 revision 1, part ``0xc101``, manufacturer ``0x036`` and bit 0 set.
@@ -660,7 +660,7 @@ Real-time counter
 processors. The machine drives it at 1,250,000 Hz. OpenBSD registers its
 Hub time source at exactly that rate (``ip27_machdep.c``), and the
 stock PROM's configuration block states it
-(:src:`ip27-prom-6.156 configuration block`), *software expectations*.
+(:src:`ip27-prom-6.156 configuration block`), each a *software expectation*.
 Linux hard-codes an 800 ns tick in ``ip27-timer.c`` beside a comment
 saying the right value is not known, so it does not corroborate the
 rate. The counter wraps after about 114 years.
@@ -762,7 +762,7 @@ on hardware is *unknown*.
 The error stack address registers keep bits 31:3, start at zero and
 survive a reset. OpenBSD parks a PROM-operation word in processor A's
 before it reboots, and the stock PROM parks a marker in processor B's
-to tell a warm start from a cold one, both *software expectations*.
+to tell a warm start from a cold one, each a *software expectation*.
 
 ``NI_PORT_RESET`` carries three resets, each acting when written,
 nothing stored (Linux ``hubni.h``: bit 7 sends a warm reset, bit 1 a
@@ -774,8 +774,8 @@ link reset, bit 0 resets the whole Hub). In the model:
   and bit 7 carries a warm reset to the nodes the link reaches; the
   model does not separate them, an *approximation*. Linux writes bits 7
   and 0 together (``ip27-reset.c``); OpenBSD sets ``NI_PROTECTION`` and
-  writes bits 1 and 0 to each node in turn (``ip27_machdep.c``), both
-  *software expectations*. In the model either ends in a whole-machine
+  writes bits 1 and 0 to each node in turn (``ip27_machdep.c``), each
+  a *software expectation*. In the model either ends in a whole-machine
   restart. The
   standby system controllers keep their state, so the PROM sees a warm
   start (:ref:`sgi-ip27-power-implementation`).
@@ -821,7 +821,7 @@ fault guard, leaving a valid record naming that address. The IRIX
 with bits 61:25 equal to ``0x480041``, and selects a conservative mode
 and warns about old firmware if not. It later stores 64-bit zero to the
 status 1 ``_RCLR`` alias and walks the error stack until status 0 reads
-not valid. All three are *software expectations* read from the shipped
+not valid. Each of the three is a *software expectation* read from the shipped
 binaries. That a zero store to status 1's alias ends the status 0
 record is *inferred* from that loop; Linux says only that the alias
 clears on read. The model honours a 64-bit zero store at either alias
@@ -914,7 +914,7 @@ When a counted store leaves the counter below the bias, the model sets
 bank 0 bit 1 plus the slot once, and re-arms when the counter rises
 above the bias again. The processor stall that goes with it on the chip
 is zero length here and the interrupt counter and compare are stored
-only, both *approximations*, logged once per slot with ``LOG_UNIMP``.
+only, each an *approximation*, logged once per slot with ``LOG_UNIMP``.
 The IRIX 6.5.30 graphics objects attach a pipe by writing its page with
 bit 40 set, the saved count and then the map entry, and detach in the
 reverse order, a *software expectation*.
@@ -960,7 +960,7 @@ Origin 200 slot identity, a *software expectation*. The model reads:
   (:ref:`sgi-origin2000-module-identity`).
 
 Bits 0 and 2 on the Origin 200, bit 7 on the Origin 2000 and the bits
-the model leaves clear are *approximations*: no public source gives their
+the model leaves clear are each an *approximation*: no public source gives their
 values on these boards.
 
 ``MD_LED0`` and ``MD_LED1`` are write-only diagnostic indicators, one
@@ -1041,19 +1041,19 @@ the Bridge's board records (:doc:`bridge`):
      - ``PIMM_1XT5_1MB``
      - ``013-1895-001``
      - C
-     - *Observed*, a published 1998 sale listing of a dual-module
+     - *observed*, a published 1998 sale listing of a dual-module
        machine (:src:`usenet-6kd8bj`).
    * - Origin 200, two processors
      - ``PIMM_2XT5_1MB``
      - ``013-1896-001``
      - D
-     - *Observed*, a published inventory
+     - *observed*, a published inventory
        (:src:`ebbes-parallelrechner-dissertation p. 93`).
    * - Origin 2000 and Onyx2
      - ``IP27``
      - ``030-0733-003``
      - G
-     - *Observed* for a 195 MHz, 4 MB node
+     - *observed* for a 195 MHz, 4 MB node
        (:src:`irixnet-thread-4337 hinv -mvvv`); *inferred* for the
        model's 180 MHz, 1 MB node.
 
@@ -1105,7 +1105,7 @@ Access protection
 widget 0 and widgets 8 to 15. IRIX 6.5.30 saves, zeroes and restores the
 outbound register while it programs its request buffers, and clears and
 sets a device's ``IIO_IIDEM`` bit when it removes and re-enables the
-device. All are *software expectations*. The model stores the registers
+device. All are each a *software expectation*. The model stores the registers
 and enforces none, an *approximation*: enforcement and what a refused
 request does are *unknown*. ``IIO_IIDSR`` stores its 29 bits; the model
 raises none of the conditions that send the Hub's own error interrupt.
@@ -1293,7 +1293,7 @@ with a powered peer reads link up; a Hub with none, as on the Origin 200
 and the one-node Origin 2000, reads down with bit 28 set. The IRIX
 6.5.30 kernel treats down with bit 28 clear as a lost CrayLink on every
 bus error, a *software expectation*. The reset values are
-*approximations*. The model stays in M mode; node numbers 0 to 255 are
+each an *approximation*. The model stays in M mode; node numbers 0 to 255 are
 routed.
 
 Node numbering and the claim layer
@@ -1386,7 +1386,7 @@ stored and never consulted; enforcing protection a firmware forgot to
 open would leave a dead machine with no diagnostic. The stock PROM's
 link diagnostic vector-writes a peer's ``NI_IO_PROTECT`` and
 vector-reads its ``NI_PORT_ERROR``, and IRIX 6.5.30 vector-reads and
-writes ``NI_DIAG_PARMS`` at boot, *software expectations*; all three
+writes ``NI_DIAG_PARMS`` at boot, each a *software expectation*; all three
 answer the vector decode.
 
 .. _sgi-hub-power:

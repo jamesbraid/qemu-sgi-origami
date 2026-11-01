@@ -54,8 +54,8 @@ Composition
        (:src:`nekonomicon-16731033`). How the three parts differ is
        unknown.
      - *established* for the first two parts (:src:`hmm-408-b p. 33`)
-       and for the third (:src:`preterhuman-origin-200`). *Unknown*
-       for the difference; a catalogue entry for each would settle it.
+       and for the third (:src:`preterhuman-origin-200`). The
+       difference is *unknown*; a catalogue entry for each would settle it.
    * - Name in the hardware graph
      - ``mscsi``. IRIX prints ``Location: /hw/module/1/slot/io4/mscsi``
        and ``MSCSI Board: ... part 030-1243-001 rev F``.
@@ -94,8 +94,8 @@ Composition
      - *inferred* from the Origin 200 inventory, where IRIX prints
        nine of its fifteen QL1040B controllers as differential and at
        most seven of the fifteen are off the MSCSIs
-       (:src:`preterhuman-origin-200`). *Unknown* for which controller
-       is which and how IRIX learns it. A capture of one MSCSI alone
+       (:src:`preterhuman-origin-200`). Which controller is which, and
+       how IRIX learns it, is *unknown*. A capture of one MSCSI alone
        would settle it.
    * - Board type in the PROM
      - A record whose part starts ``030-0872-``, ``030-1243-`` or
