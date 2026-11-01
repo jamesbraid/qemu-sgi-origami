@@ -86,6 +86,7 @@ static const TopologyExtra topology_extras[] = {
     { "origin3400-r16000", "", .unmarked = true },
     { "origin3400-r14000-600mhz", "", .unmarked = true },
     { "origin3400-two-routers", "", .unmarked = true },
+    { "origin3400-two-partitions", "", .unmarked = true },
     { "origin3900", "", .unmarked = true },
     { "origin3900-memory-node", "", .unmarked = true },
     /* The Origin 3200's bricks again, with a V12 beside them. */

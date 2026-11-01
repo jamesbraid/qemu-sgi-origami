@@ -10562,6 +10562,44 @@ static void test_origin3400_two_routers_cables(void)
 }
 
 /*
+ * The two-partition Origin 3400 (the partitioning datasheet's minimum
+ * topology): two C-bricks on R-brick ports 2 and 3, each with its own
+ * I-brick. Each C-brick's controller holds its own partition ID, the
+ * I-bricks hold none of their own, and each C-brick reaches a different
+ * I-brick, so each partition has a disk and console path of its own.
+ */
+static void test_origin3400_two_partitions(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn-builder-two-partitions-prom-XXXXXX", &prom,
+                             &error);
+    QTestState *qts;
+    g_autofree char *io0 = NULL, *io1 = NULL;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M origin3000,topology=origin3400-two-partitions "
+                      "-cpu R12000 -smp 8 -m 8192 -bios %s -nodefaults "
+                      "-display none", prom);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node0/l1", "partition"), ==,
+                     1);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node1/l1", "partition"), ==,
+                     2);
+    io0 = qom_get_str(qts, "/machine/node0/l1", "io-peer");
+    io1 = qom_get_str(qts, "/machine/node1/l1", "io-peer");
+    g_assert_cmpstr(io0, !=, io1);
+    g_assert_cmpstr(qom_get_str(qts, io0, "brick-type"), ==, "ibrick");
+    g_assert_cmpstr(qom_get_str(qts, io1, "brick-type"), ==, "ibrick");
+    g_assert_cmpuint(qom_get_uint(qts, io0, "partition"), ==, 0);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
  * The catalogue's Onyx 3400 with InfiniteReality3: four C-bricks, an I-brick
  * on c0 and an N-brick on c1 to c3. Each I/O brick has a controller that
  * every C-brick cabled to it reaches, and each C-brick whose chip has a
@@ -13899,6 +13937,8 @@ int main(int argc, char **argv)
                    test_origin3400_routed_bricks);
     qtest_add_func("sn/builder/origin3400/two-routers-cables",
                    test_origin3400_two_routers_cables);
+    qtest_add_func("sn/builder/origin3400/two-partitions",
+                   test_origin3400_two_partitions);
     qtest_add_func("sn/builder/onyx3000/vbrick-l1-and-heads",
                    test_onyx3000_vbrick_l1_and_heads);
     qtest_add_func("sn/builder/origin3900/cx-brick",

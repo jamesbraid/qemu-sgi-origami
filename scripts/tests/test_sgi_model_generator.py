@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "5c083f7448d431e31a99be8a21522cef1368041c6f451b126bfc704293b5e746"
+    "5aa8d73f63cdbb3748ba57159fe161d51ce720c6c7fc810bac6adac474c18acb"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -212,9 +212,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 168)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 51)
-        self.assertEqual(len(layers), 115)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 170)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 52)
+        self.assertEqual(len(layers), 116)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -961,7 +961,8 @@ class FuelTests(unittest.TestCase):
                 continue
             if topology["name"] in ("origin3200", "origin3400", "onyx3000",
                                     "onyx3400-ir", "origin3200-two-ibricks",
-                                    "origin3400-two-routers"):
+                                    "origin3400-two-routers",
+                                    "origin3400-two-partitions"):
                 # The C-brick's machine-type byte and reset-mode word come
                 # from the PROM's CPU-configuration table row.
                 self.assertEqual(topology["ip35-firmware"], {
@@ -1049,6 +1050,37 @@ class FuelTests(unittest.TestCase):
         router_ports = [end for value in ends.values() for end in value
                         if end[0] == "router"]
         self.assertEqual(len(router_ports), len(set(router_ports)))
+
+    def test_two_partition_origin3400_holds_one_id_per_cbrick(self):
+        """The minimum partitioned system (the partitioning datasheet): two
+        C-bricks on R-brick ports 2 and 3, an I-brick on each, partition
+        IDs 1 and 2 held by the C-brick controllers and none by the I/O or
+        router controllers."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        topology = next(item for item in catalogue["topologies"]
+                        if item["name"] == "origin3400-two-partitions")
+        self.assertEqual(
+            {c["id"]: c["l1"].get("partition")
+             for c in topology["controllers"] if c.get("l1")},
+            {"c0-l1": 1, "c1-l1": 2, "ibrick0-l1": None, "ibrick1-l1": None})
+        self.assertEqual(
+            [(cable["ends"][0]["index"], cable["ends"][1]["port"])
+             for cable in topology["cables"]], [(0, 2), (1, 3)])
+        self.assertEqual(len(topology["nodes"]), 2)
+        io7 = [b for b in topology["io-boards"] if b["preset"] == "io7"]
+        self.assertEqual(len(io7), 2)
+        offering = next(item for item in catalogue["offerings"]
+                        if item["topology"] == "origin3400-two-partitions")
+        self.assertEqual(
+            offering["machine-options"],
+            "origin3000,topology=origin3400-two-partitions,nodes=2")
+        # Nothing else carries a partition: no other product is partitioned.
+        for other in catalogue["topologies"]:
+            if other["name"] == "origin3400-two-partitions":
+                continue
+            for controller in other["controllers"]:
+                self.assertNotIn("partition", controller.get("l1") or {})
 
     def test_second_ibrick_is_a_labelled_model_only_offering(self):
         """An I-brick on each C-brick is in no source, so the offering says

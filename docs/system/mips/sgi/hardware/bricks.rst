@@ -345,6 +345,39 @@ and no reset or flash word is captured for it; and the 600 MHz part
 ``030-1823-001`` that later L1 firmware recognizes, whose processor type
 (R16000 or R14000A), cache size, tap and C-brick status are all *unknown*.
 
+.. _sgi-sn-two-partitions:
+
+Two partitions of an Origin 3400
+--------------------------------
+
+``-M origin3000,topology=origin3400-two-partitions`` is the smallest
+partitioned system the configuration guide lists as valid: two C-bricks on
+router ports 2 and 3 of one R-brick, an I-brick on each C-brick, and the
+partition IDs 1 and 2 held by the two C-brick controllers. A C-brick's
+controller answers its ID to the stock PROM's partition request and prints
+it in the ``brick`` line; the R-brick prints ``N/A`` and refuses ``brick
+partition``.
+
+*Provisional:* an I-brick reports its C-brick's ID and refuses ``brick
+partition``. The partitioning datasheet and the L1 datasheet disagree on
+whether an I/O brick holds a partition of its own or acquires its C-brick's,
+and a separate research item will settle which. The model follows one reading
+(the I-brick follows its C-brick and refuses a set) until then.
+
+Both partitions boot in one QEMU process, so they share one machine clock,
+one disk-image namespace and one set of host backends, but each C-brick has
+its own console (the first is ``l1``, the second ``l1-node1``) and its own
+I-brick, so each partition has the system disk and console path the guide
+requires. Booting each partition's operating system from its own installed
+disk is not set up by the catalogue; a disk is bound per I-brick.
+
+The product combination, the IDs 1 and 2 and the absent L2 are
+approximations: the configuration guide says two one-C-brick partitions
+are a valid configuration, not that a two-C-brick system ships with an
+R-brick, and it names no ID for a particular brick. With no L2 the
+controller answers 0 to the partition-record request, so the PROM never
+fetches a record and takes the ID from the controller alone.
+
 .. _sgi-sn-cbrick-r16000:
 
 C-brick with 800 MHz R16000 processors
