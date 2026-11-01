@@ -947,19 +947,21 @@ static void bcm570x_global_reset(Bcm570xState *s)
 }
 
 /*
- * The driver word-swaps its register/SRAM host-address writes for the
- * big-endian host via ENDIAN_WORDSWAP; honour it at composition so the two
- * 32-bit halves form the intended 64-bit DMA address (datasheet "Byte
- * order").
+ * A host address held in a register or RCB pair is the high word at the lower
+ * offset and the low word at the next.  With ENDIAN_WORDSWAP set, a 32-bit
+ * target access at +0 of an on-chip eight-byte field reaches its more
+ * significant word (Figure 93 of the family programmer's guide; established
+ * for 32-bit phases), which is the setting the drivers use.  The model gives
+ * the pair no further exchange.
+ *
+ * A 64-bit target phase with the word swap set is unknown: the guide draws no
+ * figure for it.  The BAR accepts no 64-bit access, so such a phase is
+ * rejected and logged in bcm570x_bar0_accepts() rather than guessed at.  The
+ * swap-clear 32-bit case (the low word at +0) is not modelled; no driver
+ * leaves the swap clear.
  */
-static uint64_t bcm570x_compose_hostaddr(Bcm570xState *s, uint32_t hi,
-                                         uint32_t lo)
+static uint64_t bcm570x_compose_hostaddr(uint32_t hi, uint32_t lo)
 {
-    uint32_t misc = pci_get_long(PCI_DEVICE(s)->config + BCM570X_PCI_MISC_CTL);
-
-    if (misc & BCM570X_MISCCTL_ENDIAN_WORDSWAP) {
-        return ((uint64_t)lo << 32) | hi;
-    }
     return ((uint64_t)hi << 32) | lo;
 }
 
@@ -1138,7 +1140,7 @@ static bool bcm570x_post_status_block(Bcm570xState *s, bool raise)
         return false;
     }
 
-    base = bcm570x_compose_hostaddr(s,
+    base = bcm570x_compose_hostaddr(
                bcm570x_regfile_read(s, BCM570X_HCC_STATUSBLK_ADDR_HI),
                bcm570x_regfile_read(s, BCM570X_HCC_STATUSBLK_ADDR_LO));
 
@@ -1706,7 +1708,7 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
         return;
     }
 
-    ring_base = bcm570x_compose_hostaddr(s,
+    ring_base = bcm570x_compose_hostaddr(
                     bcm570x_sram_read(s, BCM570X_SRAM_SEND_RING_RCB +
                                       BCM570X_RCB_HOSTADDR_HI),
                     bcm570x_sram_read(s, BCM570X_SRAM_SEND_RING_RCB +
@@ -2165,8 +2167,19 @@ static void bcm570x_bar0_write(void *opaque, hwaddr addr, uint64_t val,
 static bool bcm570x_bar0_accepts(void *opaque, hwaddr addr, unsigned size,
                                  bool is_write, MemTxAttrs attrs)
 {
+    Bcm570xState *s = opaque;
+
     if (size == 4) {
         return !(addr & 3);
+    }
+
+    if (size == 8 &&
+        (pci_get_long(PCI_DEVICE(s)->config + BCM570X_PCI_MISC_CTL) &
+         BCM570X_MISCCTL_ENDIAN_WORDSWAP)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "bcm570x: 64-bit target %s at 0x%" HWADDR_PRIx
+                      " with ENDIAN_WORDSWAP set is unknown, rejected\n",
+                      is_write ? "write" : "read", addr);
     }
 
     return size == 1 && !is_write &&
@@ -2283,7 +2296,7 @@ static bool bcm570x_jumbo_ring_enabled(Bcm570xState *s)
 {
     uint32_t flags =
         bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_MAXLEN_FLAGS);
-    uint64_t jumbo_base = bcm570x_compose_hostaddr(s,
+    uint64_t jumbo_base = bcm570x_compose_hostaddr(
                      bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_HADDR_HI),
                      bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_HADDR_LO));
 
@@ -2607,7 +2620,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     jumbo_prod =
         bcm570x_regfile_read(s, BCM570X_MBX_RX_JUMBO_PROD_LO) & 0xffff;
     jumbo_enabled = bcm570x_jumbo_ring_enabled(s);
-    jumbo_base = bcm570x_compose_hostaddr(s,
+    jumbo_base = bcm570x_compose_hostaddr(
                      bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_HADDR_HI),
                      bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_HADDR_LO));
 
@@ -2648,7 +2661,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
             trace_bcm570x_rx_shortage_drop("standard", framelen);
             return orig_size;
         }
-        std_base = bcm570x_compose_hostaddr(s,
+        std_base = bcm570x_compose_hostaddr(
                        bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_HI),
                        bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_LO));
         idx = s->rx_std_cons;
@@ -2726,7 +2739,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         return orig_size;
     }
 
-    ret_base = bcm570x_compose_hostaddr(s,
+    ret_base = bcm570x_compose_hostaddr(
                    bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
                                      BCM570X_RCB_HOSTADDR_HI),
                    bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
