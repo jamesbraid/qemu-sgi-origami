@@ -1065,12 +1065,12 @@ static void test_registers(void)
         for (unsigned i = 0; i < 128; i++) {
             qtest_writeq(s, BASE + bank[p - 1] + 0x200 + 8 * i, i + p);
             g_assert_cmphex(qtest_readq(s, BASE + bank[p - 1] + 0x200 + 8 * i),
-                            ==, i + p);
+                            ==, (i + p) & 0xf);
         }
         for (unsigned i = 0; i < 16; i++) {
             qtest_writeq(s, BASE + bank[p - 1] + 0x100 + 8 * i, i + p);
             g_assert_cmphex(qtest_readq(s, BASE + bank[p - 1] + 0x100 + 8 * i),
-                            ==, i + p);
+                            ==, (i + p) & 0xf);
         }
         g_assert_cmphex(qtest_readq(s, BASE + bank[p - 1] + 8), ==, 0);
     }
@@ -1626,6 +1626,7 @@ static void test_routing(void)
 {
     QTestState *s = qtest_init(ARGS);
 
+    /* Each table entry is a 4-bit field; the turn is its low three bits. */
     qtest_writeq(s, BASE + bank[0] + 0x200 + 5 * 8,
                  UINT64_C(0xa5c3f00d17654327));
     qtest_writeq(s, BASE + bank[3] + 0x200 + 5 * 8,
@@ -1639,6 +1640,10 @@ static void test_routing(void)
     set(s, "turn", 8);
     g_assert_cmphex(get(s, "route"), ==, UINT64_MAX);
     set(s, "turn", 1);
+    /*
+     * A destination with a meta part (above 127) stays refused: how the
+     * router uses the global table is unknown, so it is not guessed.
+     */
     set(s, "destination", 128);
     g_assert_cmphex(get(s, "route"), ==, UINT64_MAX);
     set(s, "destination", 5);
@@ -1653,6 +1658,39 @@ static void test_routing(void)
     g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==,
                     UINT64_C(0xa5c3000000001100));
     g_assert_cmphex(get(s, "route"), ==, 1 | (7 << 8));
+    qtest_quit(s);
+}
+
+/*
+ * The programming order the datasheet records: scratch 0 keeps the booted
+ * bit and the 7-bit local ID in 63:56 beside the 48-bit serial, and the
+ * protection configuration keeps the meta ID in 11:8 and the force-local
+ * byte at 12 and up.
+ */
+static void test_programming_registers(void)
+{
+    QTestState *s = qtest_init(ARGS);
+    const uint64_t values[] = {
+        0x0, UINT64_C(0xf00), UINT64_C(0x1000), UINT64_C(0x1f00),
+        UINT64_C(0x1500), UINT64_C(0xa5c3000000001100), UINT64_MAX,
+    };
+
+    const uint64_t serial = UINT64_C(0x51454d554e01);
+    const uint64_t booted = (UINT64_C(1) << 63) | (UINT64_C(0x45) << 56);
+
+    qtest_writeq(s, BASE + 0x100, serial);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x518), ==, 0);
+    qtest_writeq(s, BASE + 0x100, qtest_readq(s, BASE + 0x100) | booted);
+    qtest_writeq(s, BASE + 0x118, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, booted | serial);
+    for (unsigned i = 0; i < G_N_ELEMENTS(values); i++) {
+        qtest_writeq(s, BASE + 0x10, values[i]);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, values[i]);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x10) & 0x1f00, ==,
+                        values[i] & 0x1f00);
+    }
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 0);
     qtest_quit(s);
 }
 
@@ -1778,29 +1816,80 @@ static void test_route_table_words(void)
     const uint64_t global8 = BASE + bank[7] + 0x100 + 15 * 8;
     const uint64_t local8 = BASE + bank[7] + 0x200 + 127 * 8;
 
+    /*
+     * Each entry holds one 4-bit field (the PROM writes only that);
+     * the bits above are not stored. Approximation: whether silicon
+     * keeps wider words is unknown.
+     */
     qtest_writeq(s, global1, first);
     qtest_writeq(s, local1, second);
     qtest_writeq(s, global8, second);
     qtest_writeq(s, local8, first);
-    g_assert_cmphex(qtest_readq(s, global1), ==, first);
-    g_assert_cmphex(qtest_readq(s, local1), ==, second);
-    g_assert_cmphex(qtest_readq(s, global8), ==, second);
-    g_assert_cmphex(qtest_readq(s, local8), ==, first);
+    g_assert_cmphex(qtest_readq(s, global1), ==, first & 0xf);
+    g_assert_cmphex(qtest_readq(s, local1), ==, second & 0xf);
+    g_assert_cmphex(qtest_readq(s, global8), ==, second & 0xf);
+    g_assert_cmphex(qtest_readq(s, local8), ==, first & 0xf);
     g_assert_cmphex(qtest_readq(s, global1 + 8), ==, 0);
     g_assert_cmphex(qtest_readq(s, local1 + 8), ==, 0);
     /* The test adapter's refusal says nothing about a vector error code. */
     qtest_writeq(s, BASE + bank[0] + 0x180, UINT64_MAX);
     g_assert_cmpuint(get(s, "result"), ==, 1);
-    g_assert_cmphex(qtest_readq(s, global1), ==, first);
+    g_assert_cmphex(qtest_readq(s, global1), ==, first & 0xf);
     qtest_writeq(s, BASE + bank[7] + 0x600, UINT64_MAX);
     g_assert_cmpuint(get(s, "result"), ==, 1);
-    g_assert_cmphex(qtest_readq(s, local8), ==, first);
+    g_assert_cmphex(qtest_readq(s, local8), ==, first & 0xf);
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
     g_assert_cmphex(qtest_readq(s, global1), ==, 0);
     g_assert_cmphex(qtest_readq(s, local1), ==, 0);
     g_assert_cmphex(qtest_readq(s, global8), ==, 0);
     g_assert_cmphex(qtest_readq(s, local8), ==, 0);
     qtest_quit(s);
+}
+
+/*
+ * The diagnostic profile, which the machine builder gives every Origin 300
+ * expansion, Origin 3400 and Origin 3900 router, keeps whole 64-bit table
+ * words; the ordinary profile (test_route_table_words) keeps 4 bits. The
+ * routing lookup takes the same low three bits from either.
+ */
+static void test_route_table_words_synthetic(void)
+{
+    g_autofree char *image = NULL;
+    g_autofree char *prom = NULL;
+    g_autoptr(GError) error = NULL;
+    const uint64_t wide = UINT64_C(0xa5c3f00d17654327);
+    const uint64_t global1 = BASE + bank[0] + 0x100 + 3 * 8;
+    const uint64_t local1 = BASE + bank[0] + 0x200 + 5 * 8;
+    QTestState *s;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-router-words-storage-XXXXXX", &image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-router-words-prom-XXXXXX", &prom, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 1476264), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    s = qtest_initf(
+        "-M origin300,topology=origin300-numalink-pci-expansion,"
+        "expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device sgi-sn1-router-test,id=test,"
+        "router=/machine/module3/router", prom, image);
+    qtest_writeq(s, global1, wide);
+    qtest_writeq(s, local1, wide);
+    g_assert_cmphex(qtest_readq(s, global1), ==, wide);
+    g_assert_cmphex(qtest_readq(s, local1), ==, wide);
+    set(s, "destination", 5);
+    set(s, "turn", 3);
+    g_assert_cmphex(get(s, "route"), ==, 4 | (7 << 8));
+    qtest_quit(s);
+    g_unlink(image);
+    g_unlink(prom);
 }
 
 static void test_migration(void)
@@ -1837,9 +1926,9 @@ static void test_migration(void)
     g_assert_cmphex(qtest_readq(to, BASE + 0x518), ==, 1);
     g_assert_cmphex(qtest_readq(to, BASE + 0x10), ==, 1 << 12);
     g_assert_cmphex(qtest_readq(to, BASE + bank[0] + 0x100 + 3 * 8), ==,
-                    UINT64_C(0xa5c3f00d17654321));
+                    UINT64_C(0xa5c3f00d17654321) & 0xf);
     g_assert_cmphex(qtest_readq(to, BASE + bank[7] + 0x200 + 127 * 8), ==,
-                    UINT64_C(0x5a3c0ff0fedcba98));
+                    UINT64_C(0x5a3c0ff0fedcba98) & 0xf);
     for (unsigned p = 0; p < 8; p++) {
         g_assert_cmphex(qtest_readq(to, BASE + bank[p] + 0x200), ==, p);
         g_assert_cmphex(qtest_readq(to, BASE + bank[p] + 0x100), ==, 7 - p);
@@ -2125,12 +2214,16 @@ int main(int argc, char **argv)
                    test_inactive_barrier_no_effects);
     qtest_add_func("/sgi/sn1-router/position", test_position);
     qtest_add_func("/sgi/sn1-router/routing", test_routing);
+    qtest_add_func("/sgi/sn1-router/programming-registers",
+                   test_programming_registers);
     qtest_add_func("/sgi/sn1-router/vector-links", test_vector_links);
     qtest_add_func("/sgi/sn1-router/silent-peer", test_silent_peer);
     qtest_add_func("/sgi/sn1-router/refusals", test_refusals);
     qtest_add_func("/sgi/sn1-router/reset", test_reset);
     qtest_add_func("/sgi/sn1-router/route-table-words",
                    test_route_table_words);
+    qtest_add_func("/sgi/sn1-router/route-table-words-synthetic",
+                   test_route_table_words_synthetic);
     qtest_add_func("/sgi/sn1-router/migration", test_migration);
     qtest_add_data_func(
         "/sgi/sn1-router/migration-profile/ordinary-destination",

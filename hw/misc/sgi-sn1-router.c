@@ -23,6 +23,19 @@
 #define INACTIVE_BARRIER_MASK ((UINT64_C(1) << 26) - 1)
 #define DEBUG_ADDRESS_MASK ((UINT64_C(1) << 10) - 1)
 #define DEBUG_ADDRESS_FIXED (UINT64_C(0xffff) << 10)
+/*
+ * A route table entry holds one 4-bit field per link, which is all the
+ * stock firmware writes. Approximation: that the entry stores nothing above
+ * bit 3 is inferred from that, and the silicon's width is unknown. The
+ * synthetic diagnostics keep whole words, as their experiments need. The
+ * machine builder gives every router of the Origin 300 expansion, Origin
+ * 3400 and Origin 3900 topologies that profile, so this mask applies to a
+ * router made with -device only.
+ */
+#define TABLE_FIELD_MASK UINT64_C(0xf)
+#define TABLE_TURN_MASK 7
+#define LOCAL_ENTRIES 128
+#define META_ENTRIES 16
 
 struct SGISN1RouterState {
     SysBusDevice parent_obj;
@@ -34,6 +47,8 @@ struct SGISN1RouterState {
     bool cables_locked;
     uint8_t revision;
     uint8_t synthetic_diagnostics;
+    /* Not migrated: only keeps the refused-destination log to one line. */
+    bool meta_destination_logged;
     uint64_t diagnostic[3];
     uint64_t protection;
     uint64_t global[2];
@@ -44,8 +59,8 @@ struct SGISN1RouterState {
     uint64_t channel_test[SGI_SN1_ROUTER_PORTS];
     uint64_t remote_reset_mask[SGI_SN1_ROUTER_PORTS];
     uint64_t inactive_barrier[INACTIVE_BARRIER_CONTEXTS];
-    uint64_t local[SGI_SN1_ROUTER_PORTS][128];
-    uint64_t meta[SGI_SN1_ROUTER_PORTS][16];
+    uint64_t local[SGI_SN1_ROUTER_PORTS][LOCAL_ENTRIES];
+    uint64_t meta[SGI_SN1_ROUTER_PORTS][META_ENTRIES];
     uint64_t generation;
     void (*changed)(void *);
     void *changed_opaque;
@@ -284,11 +299,11 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
             if (address >= bank[p] + 0x100 &&
                 address < bank[p] + 0x180) {
                 table = &s->meta[p][(address - bank[p] - 0x100) / 8];
-                mask = UINT64_MAX;
+                mask = s->synthetic_diagnostics ? UINT64_MAX : TABLE_FIELD_MASK;
             } else if (address >= bank[p] + 0x200 &&
                        address < bank[p] + 0x600) {
                 table = &s->local[p][(address - bank[p] - 0x200) / 8];
-                mask = UINT64_MAX;
+                mask = s->synthetic_diagnostics ? UINT64_MAX : TABLE_FIELD_MASK;
             }
         }
     }
@@ -314,12 +329,24 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
 bool sgi_sn1_router_route(SGISN1RouterState *s, unsigned ingress,
     uint8_t turn, uint8_t destination, unsigned *output, uint8_t *next_turn)
 {
-    if (ingress < 1 || ingress > SGI_SN1_ROUTER_PORTS || turn > 7 ||
-        destination > 127) {
+    if (ingress < 1 || ingress > SGI_SN1_ROUTER_PORTS || turn > 7) {
+        return false;
+    }
+    if (destination > 127) {
+        /*
+         * The meta part of a destination and the global table's use are
+         * unknown, so such a packet is refused, not guessed.
+         */
+        if (!s->meta_destination_logged) {
+            s->meta_destination_logged = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-sn1-router: not routing "
+                          "destination %u: meta routing is not modelled "
+                          "(logged once)\n", destination);
+        }
         return false;
     }
     *output = 1 + ((ingress - 1 + turn) % SGI_SN1_ROUTER_PORTS);
-    *next_turn = s->local[*output - 1][destination] & 7;
+    *next_turn = s->local[*output - 1][destination] & TABLE_TURN_MASK;
     return true;
 }
 
@@ -429,6 +456,18 @@ static int router_post_load(void *opaque, int version_id)
         return -EINVAL;
     }
     for (unsigned p = 0; p < SGI_SN1_ROUTER_PORTS; p++) {
+        for (unsigned i = 0; !s->synthetic_diagnostics && i < LOCAL_ENTRIES;
+             i++) {
+            if (s->local[p][i] & ~TABLE_FIELD_MASK) {
+                return -EINVAL;
+            }
+        }
+        for (unsigned i = 0; !s->synthetic_diagnostics && i < META_ENTRIES;
+             i++) {
+            if (s->meta[p][i] & ~TABLE_FIELD_MASK) {
+                return -EINVAL;
+            }
+        }
         if (s->parameter[p] & ~PARAMETER_MASK) {
             return -EINVAL;
         }
@@ -471,9 +510,9 @@ static const VMStateDescription vmstate_router = {
         VMSTATE_UINT64_ARRAY(inactive_barrier, SGISN1RouterState,
                              INACTIVE_BARRIER_CONTEXTS),
         VMSTATE_UINT64_2DARRAY(local, SGISN1RouterState,
-                             SGI_SN1_ROUTER_PORTS, 128),
+                             SGI_SN1_ROUTER_PORTS, LOCAL_ENTRIES),
         VMSTATE_UINT64_2DARRAY(meta, SGISN1RouterState,
-                             SGI_SN1_ROUTER_PORTS, 16),
+                             SGI_SN1_ROUTER_PORTS, META_ENTRIES),
         VMSTATE_END_OF_LIST()
     },
 };
