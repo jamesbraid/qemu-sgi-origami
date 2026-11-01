@@ -10,6 +10,10 @@ Used in :ref:`sgi-ip27`, :ref:`sgi-ip30`, :ref:`sgi-ip35` and the Origin
 3000 and Onyx 3000 bricks (:ref:`sgi-bricks`), as an add-in PCI card that
 no machine fits by default.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip30`, :ref:`sgi-ip35`.
+
 The Alteon Tigon is a gigabit Ethernet controller with an on-chip MAC and
 two embedded RISC processors. SGI sold it as the IRIS Gigabit Ethernet
 board, a single-port PCI card in a fibre and a copper variant, for the

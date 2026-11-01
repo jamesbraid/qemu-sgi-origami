@@ -10,6 +10,10 @@ Used in :ref:`sgi-ip35`, whose ``origin3000`` machine builds the Origin 3200,
 Origin 3400, Onyx 3000 and Onyx 3400 from these bricks, and :ref:`sgi-ip53`,
 which keeps them as reference compositions with the IP53 module layers.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip35`, :ref:`sgi-ip53`.
+
 The Origin 3000 and Onyx 3000 generation builds a system from separate
 rack-mounted enclosures called bricks, joined by NUMAlink 3 and Crosstown2
 cables. This page covers the C-, CX-, D-, G-, I-, IX-, N-, P-, PX-, R-,

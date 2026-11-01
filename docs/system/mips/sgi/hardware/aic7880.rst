@@ -13,6 +13,10 @@ The AIC-7880 is Adaptec's single-chip PCI SCSI host adapter with Ultra
 (:doc:`mace`). QEMU models the part as ``aic7880`` in
 ``hw/scsi/aic7880.c``, and the ``o2`` machine (:doc:`../ip32`) fits two.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip32`.
+
 Facts are rated as described in :ref:`sgi-ratings`.
 
 No document about the AIC-7880 itself is public in the sources used here.

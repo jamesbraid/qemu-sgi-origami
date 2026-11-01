@@ -9,6 +9,10 @@ D-brick: Fibre Channel disk enclosure
 Used in the Origin 3000 and Onyx 3000 systems described in
 :ref:`sgi-sn`.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-sn`.
+
 The D-brick is the Origin 3000 and Onyx 3000 JBOD enclosure: twelve bays
 of dual-ported Fibre Channel disks behind two loop resiliency circuit
 (LRC) modules, cabled to a Fibre Channel adapter in an I-brick or

@@ -13,6 +13,10 @@ built on the Origin 3000 machines that carry an I-brick, also takes the
 DP83843 (:ref:`sgi-bricks-ibrick`).
 :doc:`baseio` lists the boards.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip35`.
+
 The National Semiconductor DP83840A and the DP83843 PHYTER are 10/100 Mb/s
 Ethernet transceivers. Both sit behind the IOC3's MII management registers
 (:doc:`ioc3`) and are reached only through them. QEMU models both as one

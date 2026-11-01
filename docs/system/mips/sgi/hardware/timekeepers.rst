@@ -14,6 +14,10 @@ no machine profile.
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip35`, :ref:`sgi-ip53`.
+
+.. seealso::
+
    - DS1685 (:doc:`ds1685`): the clock of the Octane and Octane2.
 
 The SGI Origin-family boards keep their wall clock and a block of

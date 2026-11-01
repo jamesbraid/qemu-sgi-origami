@@ -12,6 +12,10 @@ Octane2 system boards).
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip30`.
+
+.. seealso::
+
    - Bridge (:doc:`bridge`), XBridge (:doc:`xbridge`) and PIC (:doc:`pic`):
      the XIO-to-PCI and PCI-X bridges that appear as widgets on XIO.
 

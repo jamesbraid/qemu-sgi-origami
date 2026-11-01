@@ -20,6 +20,10 @@ QEMU models both as one PCI type, ``psitech-rad4`` in
 device, ``psitech-rad4-km`` in ``hw/input/psitech-rad4-km.c``. QEMU offers
 the card on the Origin 200 topologies only (:ref:`sgi-sn-graphics-pipes`).
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-sn`.
+
 The model is a functional profile for one software stack: PsiTech's RAD4
 release 1.3k for IRIX 6.5, its kernel driver and its standalone X server,
 in any of the driver's 13 display modes. No board revision, part marking

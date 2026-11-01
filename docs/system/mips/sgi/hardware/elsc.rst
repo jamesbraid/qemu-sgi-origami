@@ -11,6 +11,10 @@ module.
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip27`.
+
+.. seealso::
+
    - L1 (:doc:`l1`): the system controller of the SN1 machines.
 
 The module system controller (MSC, also called the ELSC, the entry-level

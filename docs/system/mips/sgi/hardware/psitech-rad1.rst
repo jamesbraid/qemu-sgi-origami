@@ -15,6 +15,10 @@ chip's own integrated RAMDAC (:src:`ti-tvp4020-programmers-reference p.
 (:doc:`rad1-audio`). QEMU models it as ``psitech-rad1`` in
 ``hw/display/psitech-rad1.c``.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip27`.
+
 The model is a functional profile for the software that drives the card
 in IRIX 6.5.30: the PsiTech RAD1 kernel driver and the IO6 PROM's graphics
 textport. It implements the flat rectangle copy, point, rectangle and

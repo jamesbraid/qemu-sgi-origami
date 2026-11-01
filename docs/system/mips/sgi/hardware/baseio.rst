@@ -13,6 +13,10 @@ the ``origin3000`` machine builds as the ``io7`` preset
 (:ref:`sgi-bricks-ibrick`). The IP53 machines' IO9 is not one of
 these presets (:ref:`sgi-ip35-ip53-io9`).
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip35`, :ref:`sgi-ip53`.
+
 Every SGI Origin and Onyx2 family machine carries its console, boot
 disk and Ethernet on a small set of PCI devices behind an XIO-to-PCI
 bridge: an IOC3 and one or two SCSI controllers, and on the newer

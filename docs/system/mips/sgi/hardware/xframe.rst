@@ -12,6 +12,10 @@ manual lists (:src:`007-4669-003 Supported systems`, *established*). It
 is an add-in card that no machine fits by default. The tests run it on
 :ref:`sgi-ip27`'s ``origin200``, which the manual does not list.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip53`, :ref:`sgi-ip27`.
+
 The Xframe is Neterion's 10 Gb/s Ethernet controller, sold earlier under
 the S2io name, on PCI and PCI-X add-in cards. SGI sold one such card as
 its 10-Gigabit Ethernet Network Adapter. It is not SGI silicon, so QEMU

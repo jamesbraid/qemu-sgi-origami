@@ -15,6 +15,10 @@ side of the interface (:doc:`mace`). The ``o2`` machine
 (:doc:`../ip32`) carries it. The model follows the first silicon, revision
 ID 1.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip32`.
+
 The codec is reached only through the MACE codec command register.
 Software never addresses it directly.
 

@@ -16,6 +16,10 @@ model for them, an *approximation*.
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip35`.
+
+.. seealso::
+
    - Router (:doc:`router`): the SN0 interconnect router.
 
 The SN1 router is the eight-port NUMAlink switch of the SN1 interconnect.

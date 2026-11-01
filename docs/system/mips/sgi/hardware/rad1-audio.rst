@@ -20,6 +20,10 @@ PCI revision ``0xc0``. The two share the register layout and engines but
 accept different access sets. It is unrelated to the PsiTech RAD1 graphics
 card, which has its own model and page.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip30`, :ref:`sgi-ip27`.
+
 No published register specification for this chip has been found. Facts
 below are rated *established* (a cited manual or a measurement of an
 identified machine), *observed* (a published capture), *inferred*,

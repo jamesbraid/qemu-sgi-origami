@@ -10,6 +10,10 @@ Used in :ref:`sgi-ip30`, on the Octane and Octane2 system boards, and
 :ref:`sgi-ip32`, where the ``o2`` machine fits it although published O2s
 report a DP83840 (:ref:`sgi-ip32-published`).
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip30`, :ref:`sgi-ip32`.
+
 The ICS1890 is a 10/100 Mb/s Ethernet transceiver. On the Octane it sits
 behind the IOC3's MII management interface. QEMU models revision 3 as
 ``hw/net/ics1890.c``. The ``octane`` and ``octane2`` machines select it

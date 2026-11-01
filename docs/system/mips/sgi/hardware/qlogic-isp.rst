@@ -11,6 +11,11 @@ Used in :ref:`sgi-ip27`, :ref:`sgi-ip30`, :ref:`sgi-ip35` and
 board (:doc:`mscsi`), and in the Origin 3000 I-brick
 (:ref:`sgi-bricks-ibrick`), whose published inventories show an ISP2200.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip30`, :ref:`sgi-ip35`,
+   :ref:`sgi-ip53`.
+
 The QLogic ISP parts are intelligent host adapters. The host builds whole
 commands in memory rings, a mailbox interface carries everything else, and
 vendor microcode on an on-chip RISC processor does the bus work. This page

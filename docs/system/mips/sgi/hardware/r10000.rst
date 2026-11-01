@@ -12,6 +12,11 @@ and R12000), :ref:`sgi-ip32` (R10000, and R12000 on the O2+),
 C-brick (R12000) and CX-brick (R16000) the ``origin3000`` machine builds
 (:ref:`sgi-bricks`).
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip30`, :ref:`sgi-ip32`,
+   :ref:`sgi-ip35`, :ref:`sgi-ip53`.
+
 The R10000, R12000, R14000 and R16000 are the 64-bit MIPS IV processors
 of SGI's Octane, Origin and Onyx machines. QEMU models them as the
 ``R10000``, ``R12000``, ``R14000`` and ``R16000`` CPU types, defined in

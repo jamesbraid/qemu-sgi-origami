@@ -14,6 +14,10 @@ and the Onyx 3400 with InfiniteReality3 builds it
 (:ref:`sgi-sn-onyx3400-ir`). The model covers the InfiniteReality2,
 InfiniteReality2E and InfiniteReality3 products.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip35`.
+
 InfiniteReality is the graphics pipe of the Onyx2 deskside and rack. A pipe
 is a set of boards: a geometry board whose XIO-to-graphics ASIC (XG) ends
 the host path (:src:`007-3454-005 p. 28`, *established*), one, two or four

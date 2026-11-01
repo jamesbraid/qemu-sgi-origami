@@ -9,6 +9,10 @@ GIGAchannel: XIO expansion cabinet
 Used in :ref:`sgi-ip27` (the Origin 200, ``origin200-gigachannel`` and
 ``origin200-gigachannel-loopback`` topologies).
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip27`.
+
 The GIGAchannel is a separate I/O cabinet for the Origin 200. It holds one
 Crossbow, one Bridge with four PCI slots and five XIO slots. Two XIO cables
 join it to one Origin 200 CPU module. The upgrade removes the module's

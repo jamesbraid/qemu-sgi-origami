@@ -12,6 +12,10 @@ whose published inventories show the same identity, *observed*. QEMU
 builds the I-brick's with the ``io7`` base I/O preset on the Origin 3000
 machines whose catalogue entries carry an I-brick (:doc:`baseio`).
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip35`.
+
 The part is a two-port USB host controller that enumerates as PCI
 ``11c1:5802``, revision ``0x10``. QEMU models it as the ``lucent-ohci`` type
 (``hw/usb/lucent-ohci.c``), a subtype of the generic ``pci-ohci`` wrapper.

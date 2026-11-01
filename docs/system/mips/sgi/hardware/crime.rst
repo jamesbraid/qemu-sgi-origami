@@ -19,6 +19,10 @@ fits it with the ``legacy-software`` profile, the eight-bank memory and
 the functional memory transfer engine. VICE, whose interrupt CRIME
 collects, has its own page (:doc:`vice`).
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip32`.
+
 The model follows the CRIME 1.5 specification. A second profile,
 ``legacy-software``, presents the identity published O2 captures show
 and accepts a few more register writes. Neither is a revision-matched

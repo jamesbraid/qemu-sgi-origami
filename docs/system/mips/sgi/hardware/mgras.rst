@@ -26,6 +26,10 @@ work and DMA code it shares with the other SGI graphics heads. The
 (:ref:`sgi-ip30-graphics`, :ref:`sgi-sn-graphics-pipes`), and the overview
 of all three graphics families is :ref:`sgi-graphics`.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip30`, :ref:`sgi-ip27`, :ref:`sgi-sn`.
+
 Facts are rated as described in :ref:`sgi-ratings`. No IMPACT register
 specification is public. The model is a functional profile: it gives the
 stock IRIX 6.5.30 kernel, X server and OpenGL client and the stock IP30

@@ -19,6 +19,10 @@ memory view and a 20 MHz TTL pixel clock. Its register test profile fits
 it only with ``gbe11-registers=on``. VICE, the O2's other media engine,
 is on :doc:`vice`.
 
+.. seealso::
+
+   Platform pages: :ref:`sgi-ip32`.
+
 Facts are rated as described in :ref:`sgi-ratings`.
 
 .. _sgi-gbe-sources:

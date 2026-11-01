@@ -11,6 +11,10 @@ Origin 2000 and Onyx2 (IP27 node board), one per node.
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip27`.
+
+.. seealso::
+
    - Bedrock (:doc:`bedrock`): the node controller of the SN1 machines, the
      successor to the Hub.
    - HEART (:doc:`heart`): the Octane's processor and memory controller,
