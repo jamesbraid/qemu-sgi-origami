@@ -1954,8 +1954,8 @@ web:
     locator: page
     rights: obtain-only
     obtain:
-      # Library hash; bitsavers answered 403 to a plain fetch on
-      # 2026-10-27, so the url was not re-verified.
+      # The checksum is of a copy fetched earlier; bitsavers answered 403
+      # to a plain fetch on 2026-10-27, so the url was not re-verified.
       url: https://bitsavers.org/pdf/adaptec/asic/AIC-7870_Data_Book.pdf
       sha256: 7f7d155bd5f6290766a4c27bbb18082e879288a01005c349128ede091e1218a5
   atmel-at29c040a-0333i:
