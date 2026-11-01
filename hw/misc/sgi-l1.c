@@ -732,6 +732,23 @@ static void l1_boot_local(SGIL1State *s)
     }
     s->cx_console_subchannel = 4;
     s->cx_filter = false;
+    /*
+     * Monitoring, temperature checking, altitude and the power-monitoring
+     * mode are numbered settings and survive a controller start; the rest
+     * are held in RAM and are lost (inferred from the datasheet).
+     */
+    if (s->env.fan_auto_off || s->env.faults_only || s->env.fans_off ||
+        s->env.custom_limits || s->env.fan_override_mask) {
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: a controller start drops the "
+                      "RAM-only env settings; which settings persist is "
+                      "inferred\n");
+    }
+    s->env = (SGIL1EnvSettings) {
+        .disabled = s->env.disabled,
+        .temp_off = s->env.temp_off,
+        .power_mode = s->env.power_mode,
+        .altitude_high = s->env.altitude_high,
+    };
     s->promreq_debug = false;
     s->power_down_pending = false;
     /* A registered event subchannel of 4 or more is non-volatile. */
@@ -1714,7 +1731,232 @@ static bool l1_chimera_env(SGIL1State *s)
         return false;
     }
     text = sgi_l1_chimera_env(s->brick_type_code, s->node_board_name,
-                              s->node_power);
+                              s->node_power, &s->env, true);
+    if (!text) {
+        return false;
+    }
+    l1_printf(s, "%s", text);
+    return true;
+}
+
+/* "env off" with temperature checking off, or the reverse, warns once. */
+static void l1_env_overtemp_warning(SGIL1State *s)
+{
+    l1_printf(s, "WARNING: environmental monitoring is disabled "
+              "(with 'env off') and\r\n"
+              "temperature monitoring is explicitly disabled "
+              "(with 'env temp off');\r\n"
+              "**** OVERTEMP SHUTDOWN IS DISABLED!!! ****\r\n");
+}
+
+/* An environmental event reaches the console unless the filter drops it. */
+static void l1_chimera_env_event(SGIL1State *s, unsigned severity,
+                                 const char *text)
+{
+    g_autofree char *name = l1_module_name(s);
+
+    if (s->env.faults_only && severity < 2) {
+        return;
+    }
+    l1_printf(s, "\r\n%s ATTN: %s\r\n", name, text);
+}
+
+static bool l1_chimera_fan_command(SGIL1State *s, int argc, char **argv)
+{
+    g_autofree char *text = NULL;
+    unsigned long value;
+
+    if (argc == 1 || (argc == 2 && !strcmp(argv[1], "speed"))) {
+        text = sgi_l1_chimera_fan(s->brick_type_code, s->node_board_name,
+                                  s->node_power, &s->env, argc == 2);
+        if (!text) {
+            qemu_log_mask(LOG_UNIMP, "sgi-l1: fan speed on the workstation "
+                          "needs its fan-to-channel mapping, which is not "
+                          "recorded\n");
+            return false;
+        }
+        l1_printf(s, "%s", text);
+        return true;
+    }
+    if (argc == 2 && (!strcmp(argv[1], "on") || !strcmp(argv[1], "off"))) {
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: fan on and off do not change "
+                      "the modelled fans\n");
+        s->env.fans_off = !strcmp(argv[1], "off");
+        return true;
+    }
+    if (argc == 3 && !strcmp(argv[1], "speed")) {
+        int level = !strcmp(argv[2], "low") || !strcmp(argv[2], "l") ? 0 :
+                    !strcmp(argv[2], "med") || !strcmp(argv[2], "m") ? 1 :
+                    !strcmp(argv[2], "high") || !strcmp(argv[2], "h") ? 2 :
+                    -1;
+
+        return level >= 0 &&
+               sgi_l1_chimera_fan_set(s->brick_type_code, s->node_board_name,
+                                      &s->env, -1, level, 0);
+    }
+    if (argc == 4 && !strcmp(argv[1], "speed")) {
+        unsigned long fan;
+
+        if (qemu_strtoul(argv[2], NULL, 10, &fan) ||
+            qemu_strtoul(argv[3], NULL, 10, &value) || fan > 255) {
+            return false;
+        }
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: fans that share a control "
+                      "channel are written one at a time\n");
+        return sgi_l1_chimera_fan_set(s->brick_type_code, s->node_board_name,
+                                      &s->env, fan, -1, value);
+    }
+    if (argc == 3 && !strcmp(argv[1], "auto") &&
+        sgi_l1_chimera_has_autofan(s->brick_type_code) &&
+        (!strcmp(argv[2], "on") || !strcmp(argv[2], "off"))) {
+        s->env.fan_auto_off = !strcmp(argv[2], "off");
+        return true;
+    }
+    return false;
+}
+
+/*
+ * The env and fan commands of a Chimera interface board. The settings are
+ * the operator's; none of them drives a model of the node's sensors. Returns
+ * false for a form that is not modelled, so it stays an unknown command.
+ */
+static bool l1_chimera_env_command(SGIL1State *s, int argc, char **argv)
+{
+    g_autofree char *probe = NULL;
+    unsigned long limit[5];
+
+    probe = s->profile->o3k ? NULL :
+            sgi_l1_chimera_env(s->brick_type_code, s->node_board_name,
+                               false, &s->env, false);
+    if (!probe) {
+        return false;
+    }
+    if (!strcmp(argv[0], "fan")) {
+        return l1_chimera_fan_command(s, argc, argv);
+    }
+    if (argc == 2 && !strcmp(argv[1], "check")) {
+        l1_printf(s, "%s", probe);
+        return true;
+    }
+    if (argc == 2 && !strcmp(argv[1], "reset")) {
+        /* The restart sets every fan back to its low level (inferred). */
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: env reset restores the fan low "
+                      "levels by inference\n");
+        s->env.fan_override_mask = 0;
+        return true;
+    }
+    if (argc == 2 && !strcmp(argv[1], "on")) {
+        /* Clears temperature-off and monitor-only, not "env power off". */
+        s->env.disabled = false;
+        s->env.temp_off = false;
+        if (s->env.power_mode == 2) {
+            s->env.power_mode = 0;
+        }
+        return true;
+    }
+    if (argc == 2 && !strcmp(argv[1], "off")) {
+        s->env.disabled = true;
+        if (s->env.temp_off) {
+            l1_env_overtemp_warning(s);
+        }
+        return true;
+    }
+    if (argc == 3 && !strcmp(argv[1], "temp") &&
+        (!strcmp(argv[2], "on") || !strcmp(argv[2], "off"))) {
+        s->env.temp_off = !strcmp(argv[2], "off");
+        if (s->env.temp_off && s->env.disabled) {
+            l1_env_overtemp_warning(s);
+        }
+        return true;
+    }
+    if (argc == 3 && !strcmp(argv[1], "power")) {
+        if (!strcmp(argv[2], "on")) {
+            s->env.power_mode = 0;
+        } else if (!strcmp(argv[2], "off")) {
+            s->env.power_mode = 1;
+        } else if (!strcmp(argv[2], "monitor")) {
+            s->env.power_mode = 2;
+        } else {
+            return false;
+        }
+        return true;
+    }
+    if (argc == 3 && !strcmp(argv[1], "altitude") &&
+        (!strcmp(argv[2], "high") || !strcmp(argv[2], "low"))) {
+        s->env.altitude_high = !strcmp(argv[2], "high");
+        return true;
+    }
+    if (argc == 7 && !strcmp(argv[1], "test")) {
+        /* The five-value limit form: advisory, critical, fault, max, okay. */
+        for (unsigned i = 0; i < 5; i++) {
+            if (qemu_strtoul(argv[2 + i], NULL, 10, &limit[i]) ||
+                limit[i] > 255) {
+                return false;
+            }
+        }
+        for (unsigned i = 0; i < 4; i++) {
+            s->env.custom[i] = limit[i];
+        }
+        s->env.custom_limits = true;
+        l1_printf(s, "temperature limits set.\r\n");
+        return true;
+    }
+    if (argc == 3 && !strcmp(argv[1], "test")) {
+        static const struct {
+            const char *word;
+            const char *text;
+            unsigned severity;
+        } events[] = {
+            { "warning", "Environmental warning test", 1 },
+            { "fault", "Environmental fault test", 2 },
+            { "tmpadv", "Environmental advisory temp test", 1 },
+            { "tmpcrit", "Environmental critical temp test", 1 },
+            { "pwrdn", "Environmental fault/powerdown test", 2 },
+        };
+
+        for (unsigned i = 0; i < ARRAY_SIZE(events); i++) {
+            if (strcmp(argv[2], events[i].word)) {
+                continue;
+            }
+            if (i != 4) {
+                l1_printf(s, "test event generated.\r\n");
+            } else {
+                qemu_log_mask(LOG_UNIMP, "sgi-l1: env test pwrdn posts its "
+                              "event but does not run the power-down "
+                              "countdown or power the node off\n");
+            }
+            l1_chimera_env_event(s, events[i].severity, events[i].text);
+            return true;
+        }
+        return false;
+    }
+    if (argc == 2 && !strcmp(argv[1], "messages")) {
+        l1_printf(s, s->env.faults_only ?
+                  "only environmental faults visible.\r\n" :
+                  "all environmental events visible.\r\n");
+        return true;
+    }
+    if (argc == 3 && !strcmp(argv[1], "messages") &&
+        (!strcmp(argv[2], "faultsonly") || !strcmp(argv[2], "all"))) {
+        s->env.faults_only = !strcmp(argv[2], "faultsonly");
+        l1_printf(s, s->env.faults_only ?
+                  "only environmental faults will be visible.\r\n" :
+                  "all environmental events will be visible.\r\n");
+        return true;
+    }
+    return false;
+}
+
+/* The "power" table of a Chimera interface board; false if not modelled. */
+static bool l1_chimera_power(SGIL1State *s)
+{
+    g_autofree char *text = NULL;
+
+    if (s->profile->o3k) {
+        return false;
+    }
+    text = sgi_l1_chimera_power(s->brick_type_code, s->node_board_name,
+                                s->node_power);
     if (!text) {
         return false;
     }
@@ -1938,7 +2180,18 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
             }
         } else if (argc == 2 && !strcmp(argv[1], "check")) {
             l1_printf(s, "power appears %s\r\n", s->node_power ? "on" : "off");
+        } else if (argc == 1 && l1_chimera_power(s)) {
+            /* Printed by l1_chimera_power(). */
         } else {
+            if (argc == 2 && !strcmp(argv[1], "vrm")) {
+                qemu_log_mask(LOG_UNIMP, "sgi-l1: power vrm: the VRM list "
+                              "per board is not recorded\n");
+            }
+            if (argc == 3 && l1_word(argv[1], "up", "u") &&
+                !strcmp(argv[2], "hold")) {
+                qemu_log_mask(LOG_UNIMP, "sgi-l1: power up hold is not "
+                              "modelled\n");
+            }
             l1_invalid(s, "power");
         }
     } else if (l1_word(argv[0], "reset", "rst")) {
@@ -2081,6 +2334,9 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
         l1_o3k_config(s);
     } else if (argc == 1 && !strcmp(argv[0], "env") && l1_chimera_env(s)) {
         /* Printed by l1_chimera_env(). */
+    } else if ((!strcmp(argv[0], "env") || !strcmp(argv[0], "fan")) &&
+               l1_chimera_env_command(s, argc, argv)) {
+        /* The settings are applied by l1_chimera_env_command(). */
     } else if (l1_word(argv[0], "help", "hlp")) {
         l1_printf(s, "Commands are:\r\n"
                   "     brick        display      help|hlp     l1\r\n"
@@ -3954,6 +4210,39 @@ static int l1_pre_save(void *opaque)
            (s->query_router && s->query_router->active) ? -EBUSY : 0;
 }
 
+static bool l1_env_needed(void *opaque)
+{
+    SGIL1State *s = opaque;
+
+    const SGIL1EnvSettings *e = &s->env;
+
+    return e->disabled || e->temp_off || e->power_mode || e->altitude_high ||
+           e->fan_auto_off || e->faults_only || e->fans_off ||
+           e->custom_limits || e->fan_override_mask;
+}
+
+/* Sent only while an operator has changed an env or fan setting. */
+static const VMStateDescription vmstate_l1_env = {
+    .name = "sgi-l1/env",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = l1_env_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(env.disabled, SGIL1State),
+        VMSTATE_BOOL(env.temp_off, SGIL1State),
+        VMSTATE_UINT8(env.power_mode, SGIL1State),
+        VMSTATE_BOOL(env.fan_auto_off, SGIL1State),
+        VMSTATE_BOOL(env.altitude_high, SGIL1State),
+        VMSTATE_BOOL(env.faults_only, SGIL1State),
+        VMSTATE_BOOL(env.fans_off, SGIL1State),
+        VMSTATE_BOOL(env.custom_limits, SGIL1State),
+        VMSTATE_UINT8_ARRAY(env.custom, SGIL1State, 4),
+        VMSTATE_UINT8(env.fan_override_mask, SGIL1State),
+        VMSTATE_UINT8_ARRAY(env.fan_override, SGIL1State, 8),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 /* Product identity must match before loading the selected record cache. */
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
@@ -4031,6 +4320,10 @@ static const VMStateDescription vmstate_l1 = {
         VMSTATE_UINT8(cx_console_subchannel, SGIL1State),
         VMSTATE_BOOL(cx_filter, SGIL1State),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_l1_env,
+        NULL
     },
 };
 

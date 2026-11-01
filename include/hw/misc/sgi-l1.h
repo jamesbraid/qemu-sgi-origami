@@ -3,6 +3,7 @@
 #ifndef HW_MISC_SGI_L1_H
 #define HW_MISC_SGI_L1_H
 
+#include "hw/misc/sgi-l1-env.h"
 #include "hw/core/sysbus.h"
 #include "chardev/char-fe.h"
 
@@ -294,6 +295,7 @@ struct SGIL1State {
     uint8_t cx_console_board;
     uint8_t cx_console_subchannel;
     bool cx_filter;
+    SGIL1EnvSettings env;
     /* The board link whose request is being answered; not migrated. */
     bool cx_serving;
     uint8_t cx_link;
