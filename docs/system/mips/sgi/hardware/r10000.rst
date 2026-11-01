@@ -628,7 +628,7 @@ R14000
 ======
 
 The ``R14000`` type is the processor of the ``origin300`` and ``fuel``
-machines. It shares the family code above: the cache arrays and CACHE
+machines and of the 600 MHz C-brick entries (:ref:`sgi-sn-cbrick-r14000`). It shares the family code above: the cache arrays and CACHE
 operations, Count and Compare with the adjacent-write recovery, the
 partial ``LWR`` rule, the denormal-result and ``CVT.L`` traps,
 ``reset-mode`` and PRId through ``r14000-prid`` (implementation

@@ -1030,6 +1030,7 @@ hw/mips/sgi/crime-rational.h
 hw/mips/sgi/crime-texture.c
 hw/mips/sgi/crime-texture.h
 hw/mips/sgi/models/layers/modules/c-brick-r16000.yaml
+hw/mips/sgi/models/layers/modules/c-brick-r14000-600mhz.yaml
 tests/qtest/sgi-crime-line-vectors.h
 tests/qtest/sgi-crime-line-vectors.py
 tests/qtest/sgi-crime-texture-addresses.h
@@ -1049,6 +1050,14 @@ hw/mips/sgi/models/layers/products/origin3200-r16000.yaml
 hw/mips/sgi/models/layers/products/origin3400-r16000.yaml
 hw/mips/sgi/models/origin3200-r16000.yaml
 hw/mips/sgi/models/origin3400-r16000.yaml
+hw/mips/sgi/models/origin3400-r14000-600mhz.yaml
+hw/mips/sgi/models/origin3200-r14000-600mhz.yaml
+hw/mips/sgi/models/layers/products/origin3200-r14000-600mhz.yaml
+hw/mips/sgi/models/layers/products/origin3400-r14000-600mhz.yaml
+scripts/tests/system-model-fixtures/origin3200-r14000-600mhz/resolved.json
+scripts/tests/system-model-fixtures/origin3200-r14000-600mhz/resolved.sha256
+scripts/tests/system-model-fixtures/origin3400-r14000-600mhz/resolved.json
+scripts/tests/system-model-fixtures/origin3400-r14000-600mhz/resolved.sha256
 scripts/tests/system-model-fixtures/origin3200-r16000/resolved.json
 scripts/tests/system-model-fixtures/origin3200-r16000/resolved.sha256
 scripts/tests/system-model-fixtures/origin3400-r16000/resolved.json
@@ -1078,6 +1087,8 @@ hw/mips/sgi/models/layers/products/onyx3400-ir.yaml
 hw/mips/sgi/models/layers/products/onyx3400.yaml
 hw/mips/sgi/models/layers/products/origin300-numalink-pci-expansion.yaml
 hw/mips/sgi/models/onyx3000-r16000.yaml
+hw/mips/sgi/models/onyx3000-r14000-600mhz.yaml
+hw/mips/sgi/models/layers/products/onyx3000-r14000-600mhz.yaml
 hw/mips/sgi/models/onyx3000.yaml
 hw/mips/sgi/models/onyx3400-ir.yaml
 hw/mips/sgi/models/onyx3400.yaml
@@ -1169,6 +1180,8 @@ tests/unit/test-sgi-renderer.c
 scripts/ci/sgi-license-check.py
 scripts/tests/system-model-fixtures/onyx3000-r16000/resolved.json
 scripts/tests/system-model-fixtures/onyx3000-r16000/resolved.sha256
+scripts/tests/system-model-fixtures/onyx3000-r14000-600mhz/resolved.json
+scripts/tests/system-model-fixtures/onyx3000-r14000-600mhz/resolved.sha256
 scripts/tests/test_sgi_license_check.py
 scripts/ci/sgi-leak-check.py
 scripts/tests/test_sgi_leak_check.py

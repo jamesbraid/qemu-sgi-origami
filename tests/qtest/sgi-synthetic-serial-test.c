@@ -80,12 +80,15 @@ static const TopologyExtra topology_extras[] = {
      */
     { "origin3200", "", .unmarked = true },
     { "origin3200-r16000", "", .unmarked = true },
+    { "origin3200-r14000-600mhz", "", .unmarked = true },
     { "origin3400", "", .unmarked = true },
     { "origin3400-r16000", "", .unmarked = true },
+    { "origin3400-r14000-600mhz", "", .unmarked = true },
     { "origin3900", "", .unmarked = true },
     /* The Origin 3200's bricks again, with a V12 beside them. */
     { "onyx3000", "", .unmarked = true },
     { "onyx3000-r16000", "", .unmarked = true },
+    { "onyx3000-r14000-600mhz", "", .unmarked = true },
 };
 
 typedef struct MachineCase {

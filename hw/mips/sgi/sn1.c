@@ -15,11 +15,13 @@ static const char * const sgi_sn1_r14000_cpu_types[] = {
 };
 
 /*
- * The Origin 3000 takes the C-brick's R12000, and the Origin 3900's Cx-brick
- * node boards fit an R16000.
+ * The Origin 3000 takes the C-brick's R12000 or R14000, and the Origin
+ * 3900's Cx-brick node boards fit an R16000. Each topology's catalogue
+ * entry fixes which of them the node accepts.
  */
 static const char * const sgi_sn1_origin3000_cpu_types[] = {
     MIPS_CPU_TYPE_NAME("R12000"),
+    MIPS_CPU_TYPE_NAME("R14000"),
     MIPS_CPU_TYPE_NAME("R16000"),
     NULL,
 };

@@ -3242,7 +3242,9 @@
       "part": "r14000",
       "provenance": "observed-hardware",
       "sources": [
-        "108-0263-004 (Origin 300 scan tools guide), configuration names"
+        "108-0263-004 (Origin 300 scan tools guide), configuration names",
+        "firmware:ip35-prom-6.210 CPU-configuration table, the 600 MHz, 8 MiB C-brick row, word 0x549cab85",
+        "108-0266-001 printed page 28: a C-brick PIMM option of R14000 processors with 8 MB per processor"
       ],
       "variants": [
         {
@@ -3254,6 +3256,14 @@
         {
           "cache_mib": 2,
           "clock_mhz": 600
+        },
+        {
+          "cache_clock_mhz": 300,
+          "cache_mib": 8,
+          "clock_mhz": 600,
+          "notes": "The 600 MHz C-brick PIMM, part 030-1734-00x. Established: the retained inventories capture it with 8 MB per processor at 300 MHz and Tap 0xa, and print processor revisions 2.3 and 2.4; the PRId 0x0f24 is the revision 2.4 one (the model's R14000 type, implementation 0x0f). Approximated: the reset-mode word is the low 25 bits of the stock IP35 PROM's configuration-table word for a 600 MHz, 8 MB C-brick, 0x549cab85, whose SS field selects 8 MB; no capture of a C-brick's reset mode exists. Unknown: the FPU revision.",
+          "processor_identification": "0x0f24",
+          "reset_mode_bits": "0x009cab85"
         }
       ]
     },
