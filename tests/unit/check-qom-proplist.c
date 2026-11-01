@@ -214,6 +214,8 @@ struct DummyDev {
     DummyBackend *notified_backend;
     unsigned link_changes;
     bool reject_unlink;
+    bool reenter_link;
+    bool remove_link_on_notify;
 };
 
 struct DummyDevClass {
@@ -271,6 +273,16 @@ static void dummy_dev_notified_link_changed(Object *obj, const char *name)
     g_assert_true(object_property_get_link(obj, name, &error_abort) ==
                   (Object *)dev->notified_backend);
     dev->link_changes++;
+    if (dev->reenter_link) {
+        dev->reenter_link = false;
+        g_assert_true(object_property_set_link(obj, name,
+                                               OBJECT(dev->notified_backend),
+                                               &error_abort));
+    }
+    if (dev->remove_link_on_notify) {
+        dev->remove_link_on_notify = false;
+        object_property_del(obj, name);
+    }
 }
 
 static void dummy_dev_init(Object *obj)
@@ -710,6 +722,7 @@ static void test_link_notify(void)
     path = object_get_canonical_path(OBJECT(backend));
     object_unref(OBJECT(backend));
 
+    dev->reenter_link = true;
     g_assert_true(object_property_set_link(OBJECT(dev), "notified-backend",
                                            OBJECT(backend), &error_abort));
     g_assert_cmpuint(dev->link_changes, ==, 1);
@@ -735,6 +748,26 @@ static void test_link_notify(void)
     g_assert_cmpuint(dev->link_changes, ==, 2);
     g_assert_cmpuint(dummy_backend_finalized, ==, 1);
 
+    object_unref(OBJECT(dev));
+}
+
+static void test_link_notify_property_deletion(void)
+{
+    Object *root = object_get_objects_root();
+    DummyDev *dev = DUMMY_DEV(object_new(TYPE_DUMMY_DEV));
+    DummyBackend *backend = DUMMY_BACKEND(object_new(TYPE_DUMMY_BACKEND));
+
+    object_property_add_child(root, "notify-delete-backend",
+                              OBJECT(backend));
+    object_unref(OBJECT(backend));
+    dev->remove_link_on_notify = true;
+
+    g_assert_true(object_property_set_link(OBJECT(dev), "notified-backend",
+                                           OBJECT(backend), &error_abort));
+    g_assert_null(object_property_find(OBJECT(dev), "notified-backend"));
+    g_assert_cmpuint(dev->link_changes, ==, 1);
+
+    object_unparent(OBJECT(backend));
     object_unref(OBJECT(dev));
 }
 
@@ -804,6 +837,8 @@ int main(int argc, char **argv)
     g_test_add_func("/qom/proplist/class_iterator", test_dummy_class_iterator);
     g_test_add_func("/qom/proplist/delchild", test_dummy_delchild);
     g_test_add_func("/qom/proplist/link-notify", test_link_notify);
+    g_test_add_func("/qom/proplist/link-notify-property-deletion",
+                    test_link_notify_property_deletion);
     g_test_add_func("/qom/resolve/partial", test_qom_partial_path);
 
     return g_test_run();

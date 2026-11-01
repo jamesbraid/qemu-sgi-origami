@@ -1834,7 +1834,8 @@ ObjectProperty *object_property_add_link(Object *obj, const char *name,
  * Like object_property_add_link(), with a synchronous notification after the
  * target changes. No notification is made for a rejected set, an unchanged
  * target, or property deletion. The callback runs in the context of the
- * property setter, after link ownership has been updated.
+ * property setter, after link ownership has been updated. It may delete the
+ * link property; the setter does not access it after notification.
  */
 ObjectProperty *object_property_add_link_with_notify(
     Object *obj, const char *name, const char *type, Object **targetp,

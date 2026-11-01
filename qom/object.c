@@ -2055,6 +2055,7 @@ static void object_set_link_property(Object *obj, Visitor *v,
 {
     Error *local_err = NULL;
     LinkProperty *prop = opaque;
+    void (*notify)(Object *, const char *) = prop->notify;
     Object **targetp = object_link_get_targetp(obj, prop);
     Object *old_target = *targetp;
     Object *new_target;
@@ -2087,8 +2088,8 @@ static void object_set_link_property(Object *obj, Visitor *v,
         object_ref(new_target);
         object_unref(old_target);
     }
-    if (old_target != new_target && prop->notify) {
-        prop->notify(obj, name);
+    if (old_target != new_target && notify) {
+        notify(obj, name);
     }
 }
 

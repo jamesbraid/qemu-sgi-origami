@@ -720,6 +720,7 @@ static void device_finalize(Object *obj)
          * here
          */
     }
+    g_clear_pointer(&dev->gpio_out_notifiers, g_hash_table_unref);
 
     qdev_finalize_clocklist(dev);
 

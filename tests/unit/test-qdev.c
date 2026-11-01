@@ -43,6 +43,7 @@ static const TypeInfo my_dev_type_info = {
 };
 
 #define TYPE_GPIO_NOTIFY_DEV "gpio-notify-test-device"
+#define TYPE_GPIO_NOTIFY_CONTAINER "gpio-notify-test-container"
 typedef struct GPIONotifyDev {
     DeviceState parent_obj;
     qemu_irq out[2];
@@ -72,6 +73,11 @@ static const TypeInfo gpio_notify_dev_type_info = {
     .parent = TYPE_DEVICE,
     .instance_size = sizeof(GPIONotifyDev),
     .instance_init = gpio_notify_dev_init,
+};
+
+static const TypeInfo gpio_notify_container_type_info = {
+    .name = TYPE_GPIO_NOTIFY_CONTAINER,
+    .parent = TYPE_DEVICE,
 };
 
 static void test_qdev_gpio_link_notifications(void)
@@ -105,6 +111,25 @@ static void test_qdev_gpio_link_notifications(void)
     object_unparent(OBJECT(intercept));
     qemu_free_irq(intercept);
     object_unref(OBJECT(s));
+}
+
+static void test_qdev_gpio_link_notifications_through_container(void)
+{
+    GPIONotifyDev *source = (GPIONotifyDev *)qdev_new(TYPE_GPIO_NOTIFY_DEV);
+    DeviceState *container = qdev_new(TYPE_GPIO_NOTIFY_CONTAINER);
+    qemu_irq output = qemu_allocate_irq(NULL, NULL, 0);
+
+    qdev_pass_gpios(DEVICE(source), container, "notify");
+    qdev_connect_gpio_out_named(container, "notify", 1, output);
+    g_assert_cmpuint(source->changes, ==, 1);
+    g_assert_cmpuint(source->changed_lines, ==, 2);
+    qdev_connect_gpio_out_named(container, "notify", 1, NULL);
+    g_assert_cmpuint(source->changes, ==, 2);
+
+    object_unparent(OBJECT(output));
+    qemu_free_irq(output);
+    object_unref(OBJECT(container));
+    object_unref(OBJECT(source));
 }
 
 /*
@@ -289,6 +314,7 @@ int main(int argc, char **argv)
     module_call_init(MODULE_INIT_QOM);
     type_register_static(&my_dev_type_info);
     type_register_static(&gpio_notify_dev_type_info);
+    type_register_static(&gpio_notify_container_type_info);
     const TypeInfo pre_unrealize_types[] = {
         {
             .name = TYPE_PRE_UNREALIZE_BUS,
@@ -317,6 +343,8 @@ int main(int argc, char **argv)
     g_test_add_func("/qdev/pre-unrealize", test_qdev_pre_unrealize);
     g_test_add_func("/qdev/gpio-link-notifications",
                     test_qdev_gpio_link_notifications);
+    g_test_add_func("/qdev/gpio-link-notifications-through-container",
+                    test_qdev_gpio_link_notifications_through_container);
     g_test_run();
 
     return 0;
