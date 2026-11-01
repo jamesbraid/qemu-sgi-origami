@@ -15,9 +15,9 @@
 #endif
 
 /*
- * r10000-prid and r14000-prid: the whole PRId a part reports, whose
- * implementation number is fixed by the CPU model and whose revision
- * varies by part. @opaque is that implementation number.
+ * r10000-prid, r14000-prid and r16000-prid: the whole PRId a part
+ * reports, whose implementation number is fixed by the CPU model and
+ * whose revision varies by part. @opaque is that implementation number.
  */
 static void mips_r10k_prid_get(Object *obj, Visitor *v, const char *name,
                                void *opaque, Error **errp)
@@ -62,6 +62,9 @@ static const char *mips_r10k_prid_property(const char *model)
     }
     if (!strcmp(model, "R14000")) {
         return "r14000-prid";
+    }
+    if (!strcmp(model, "R16000")) {
+        return "r16000-prid";
     }
     return NULL;
 }
@@ -330,9 +333,9 @@ static bool mips_r12000_validate(MIPSCPU *cpu, Error **errp)
 }
 
 /*
- * The R16000's PRId and FPU identification are fixed by its model, and its
- * reset-mode word selects 128-byte lines and a 4, 8 or 16 MiB secondary
- * cache.
+ * The R16000's FPU identification is fixed by its model; its PRId
+ * revision is the part's (r16000-prid). Its reset-mode word selects
+ * 128-byte lines and a 4, 8 or 16 MiB secondary cache.
  */
 static bool mips_r16000_validate(MIPSCPU *cpu, Error **errp)
 {

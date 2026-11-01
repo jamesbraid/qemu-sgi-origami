@@ -956,6 +956,11 @@ const mips_def_t mips_defs[] =
          * does not identify a production board or a physical reset mode.
          * The caller must explicitly opt in and supply the board mode and
          * secondary-cache capacity before realization.
+         *
+         * PRId 0x0f50 is the 1.0 GHz part's; the 700 and 800 MHz parts
+         * (0x0f41 and 0x0f42) take r16000-prid. The FIR below is a model
+         * choice borrowed from the R12000 and R14000: no R16000 FIR has
+         * been read.
          */
         .name = "R16000",
         .CP0_PRid = 0x00000F50,

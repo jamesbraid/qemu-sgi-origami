@@ -316,6 +316,105 @@ static void test_r14000_invalid_identity(void)
                             "implementation 0x0f"));
 }
 
+/*
+ * Each R16000 part is the CPU model plus the PRId revision its assembly
+ * prints and the Config0 reset word of its clock and cache. Expected
+ * words are written from the printed revision (major nibble is the
+ * printed major plus 2) and the reset word's fields, not read back from
+ * the machine catalogue. Config0 reads the model's 32 KiB primary caches
+ * (IC and DC, 3 each) above the board's bits 24:0.
+ */
+typedef struct R16000Part {
+    const char *name;
+    uint32_t prid;
+    uint32_t reset_mode;
+} R16000Part;
+
+static const R16000Part r16000_parts[] = {
+    /* Revision 2.1, 700 MHz, 4 MiB: SS 3, EC 6, tap 0xc outside the word. */
+    { "R16000", 0x0f41, 0x009bad85 },
+    /* Revision 2.2, 800 MHz, 4 MiB: SS 3, EC 7. */
+    { "R16000", 0x0f42, 0x009baf85 },
+    /* Revision 2.2, 800 MHz, 8 MiB: SS 4, EC 7. */
+    { "R16000", 0x0f42, 0x009caf85 },
+    /* The 1.0 GHz part keeps the model's PRId: revision 3.0, 16 MiB. */
+    { "R16000", 0x0f50, 0x00edb385 },
+};
+
+/* Whether the CPU definition table offers @model, by query-cpu-definitions. */
+static bool cpu_model_offered(QTestState *qts, const char *model)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+                                       "{'execute':'query-cpu-definitions'}");
+    QList *list = qdict_get_qlist(reply, "return");
+
+    for (const QListEntry *e = qlist_first(list); e; e = qlist_next(e)) {
+        QDict *def = qobject_to(QDict, qlist_entry_obj(e));
+
+        if (g_str_equal(qdict_get_str(def, "name"), model)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void test_r16000_part(gconstpointer data)
+{
+    const R16000Part *part = data;
+    g_autofree char *cpu = g_strdup_printf(
+        "%s,big-endian=on,r16000-prid=0x%x,reset-mode=0x%x",
+        part->name, part->prid, part->reset_mode);
+    uint32_t config0 = (3u << 29) | (3u << 26) | part->reset_mode;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = start("malta", cpu, "");
+    g_assert_true(cpu_model_offered(qts, part->name));
+    read_identity(qts, part->prid);
+    g_assert_cmphex(qtest_readl(qts, MAILBOX + 16), ==, config0);
+    g_assert_cmphex(cpu_property(qts, "r16000-prid"), ==, part->prid);
+    g_assert_cmphex(cpu_property(qts, "reset-mode"), ==, part->reset_mode);
+    qtest_system_reset(qts);
+    read_identity(qts, part->prid);
+    g_assert_cmphex(qtest_readl(qts, MAILBOX + 16), ==, config0);
+    qtest_quit(qts);
+}
+
+/* Without r16000-prid the model keeps the 1.0 GHz part's PRId. */
+static void test_r16000_default_prid(void)
+{
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = start("malta", "R16000,big-endian=on,reset-mode=0x00edb385", "");
+    read_identity(qts, 0x0f50);
+    g_assert_cmphex(cpu_property(qts, "r16000-prid"), ==, 0x0f50);
+    qtest_quit(qts);
+}
+
+static void test_r16000_invalid_identity(void)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "malta", "-cpu",
+        "R16000,big-endian=on,reset-mode=0x009bad85,r16000-prid=0x926",
+        "-display", "none", "-S", NULL,
+    };
+    g_autofree char *error_output = NULL;
+    int status;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                               NULL, &error_output, &status, NULL));
+    g_assert_false(g_spawn_check_exit_status(status, NULL));
+    g_assert_nonnull(strstr(error_output, "r16000-prid requires "
+                            "implementation 0x0f"));
+}
+
 static void test_immutable_identity(void)
 {
     QTestState *qts;
@@ -450,7 +549,10 @@ static void test_migration(gconstpointer data)
 
 int main(int argc, char **argv)
 {
-    /* Each loop reads PRId, attempts a write, then publishes both results. */
+    /*
+     * Each loop reads PRId, attempts a write, rereads it, reads Config0,
+     * then publishes the results.
+     */
     static const uint32_t code[] = {
         0x3c1aa000,             /* lui k0, 0xa000 */
         0x375a1000,             /* ori k0, k0, 0x1000 */
@@ -465,9 +567,11 @@ int main(int argc, char **argv)
         0, 0, 0, 0,           /* CP0 write hazard spacing */
         0x40087800,             /* mfc0 t0, PRId */
         0xaf480004,             /* sw t0, 4(k0) */
+        0x40088000,             /* mfc0 t0, Config0 */
+        0xaf480010,             /* sw t0, 16(k0) */
         0x24080001,             /* addiu t0, zero, 1 */
         0xaf480008,             /* sw t0, 8(k0) */
-        0x1000ffef,             /* branch to request loop */
+        0x1000ffed,             /* branch to request loop */
         0,                     /* delay slot */
     };
     uint8_t image[0x2000] = { 0 };
@@ -514,6 +618,17 @@ int main(int argc, char **argv)
                             GINT_TO_POINTER(1), test_r14000_identity);
         qtest_add_func("/r10000/identity/r14000-invalid",
                        test_r14000_invalid_identity);
+        for (size_t i = 0; i < G_N_ELEMENTS(r16000_parts); i++) {
+            g_autofree char *name = g_strdup_printf(
+                "/r10000/identity/r16000-part/0x%x-0x%x", r16000_parts[i].prid,
+                r16000_parts[i].reset_mode);
+
+            qtest_add_data_func(name, &r16000_parts[i], test_r16000_part);
+        }
+        qtest_add_func("/r10000/identity/r16000-default",
+                       test_r16000_default_prid);
+        qtest_add_func("/r10000/identity/r16000-invalid",
+                       test_r16000_invalid_identity);
         qtest_add_data_func("/r10000/identity/migration-mismatch",
                             &r10000_mismatch, test_migration);
         qtest_add_data_func("/r10000/identity/r14000-migration-mismatch",

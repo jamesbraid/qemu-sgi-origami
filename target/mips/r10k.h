@@ -145,7 +145,7 @@ typedef struct R12000SecondaryReport {
 
 /* Immutable configuration and the definition copy owned by this CPU. */
 typedef struct R10KCPUProfile {
-    /* r10000-prid or r14000-prid: the PRId reset installs. */
+    /* r10000-prid, r14000-prid or r16000-prid: the PRId reset installs. */
     uint32_t prid;
     uint32_t values[R12000_PROFILE_FIELDS];
     bool set[R12000_PROFILE_FIELDS];
