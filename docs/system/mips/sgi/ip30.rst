@@ -627,6 +627,16 @@ These are emulator choices for launchers, not hardware facts.
   controller. The reference Octane2's hardware graph places its disk at PCI
   device 0, target 1 (:ref:`sgi-measured-octane2-graph`); the physical bay
   and channel wiring are *unknown*.
+- CD-ROM: ``-cdrom FILE`` puts a ``scsi-cd`` on the first onboard
+  controller's bus, ``scsi.0``, at target 2. The second controller's bus
+  is ``scsi.1``. On the model, the stock Octane2 PROM never selects a
+  target above 3 on ``scsi.0``, so a ``scsi-cd`` there at target 4 is not
+  found; at target 4 on ``scsi.1`` it is, as ``scsi(1)cdrom(4)``. The PROM's
+  code probes targets 0 to 3 on controller index 0 and 0 to 15 on the
+  others, skipping the adapter's own ID; which index is ``scsi.0`` comes
+  from model runs. The machine's ``scsi-cd`` reports a block descriptor and
+  takes a MODE SELECT block length, and the PROM sets the 512-byte blocks it
+  reads a CD in (``hw/mips/sgi/board-cdrom.c``).
 - Netboot adapter ``ioc3-ethernet``, the onboard IOC3's Ethernet; install
   media ``disk-image`` and ``netboot``. The stock PROM's "Install System
   Software" netbooted the IRIX 6.5.30 miniroot through it on the model,

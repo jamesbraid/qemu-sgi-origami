@@ -86,6 +86,7 @@
 #include "hw/mips/sgi/sgi-machines.h"
 #include "hw/mips/sgi/sgi-graphics.h"
 #include "hw/core/hotplug.h"
+#include "hw/mips/sgi/sgi-board-cdrom.h"
 #include "hw/mips/sgi/sgi-board-mac.h"
 #include "hw/mips/sgi/sgi-storage.h"
 #include "hw/mips/sgi/initial-flash.h"
@@ -11653,6 +11654,7 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     sgi_machine_class_set_default_ram(
         mc, sgi_machine_topology_default_ram(t));
     mc->default_ram_id = "sn0.node0.ram";
+    sgi_board_cdrom_class_init(mc);
     sgi_machine_class_add_storage(oc);
 }
 
@@ -11681,6 +11683,7 @@ static void origin2000_class_init(ObjectClass *oc, const void *data)
         "Select the BaseIO card variant this product's I/O board builds: "
         "'io6' (the plain card, the default) or 'io6g' (adds the MediaIO "
         "daughtercard's second IOC3 and both chips' keyboard/mouse pair).");
+    sgi_board_cdrom_class_init(mc);
     sgi_machine_class_add_storage(oc);
 }
 
@@ -11707,6 +11710,7 @@ static void onyx2_class_init(ObjectClass *oc, const void *data)
     sgi_machine_class_set_default_ram(
         mc, sgi_machine_topology_default_ram(t));
     mc->default_ram_id = "sn0.ram";
+    sgi_board_cdrom_class_init(mc);
     sgi_machine_class_add_storage(oc);
 }
 

@@ -11,6 +11,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "sgi-test.h"
 #include "sgi-wait.h"
@@ -1385,6 +1386,147 @@ static void test_two_luns_behind_one_target(const void *data)
 }
 
 /*
+ * A CD-ROM read the way the boot PROM reads one. The PROM takes the
+ * logical block length from the block descriptor MODE SENSE returns and,
+ * finding 2048, sends MODE SELECT for 512 before its first READ(10); the
+ * LBAs it then sends count 512-byte blocks. So the machine's scsi-cd must
+ * report a descriptor and take the new length. Each 512-byte block of the
+ * medium holds its own number, so a READ(10) counted in the wrong unit
+ * returns a different block's bytes.
+ */
+#define CD_BLOCKS_512               16
+#define CD_DATA_PHYS                0x00120000u
+#define CD_DATA_IOVA                (0xa500000000000000ULL | CD_DATA_PHYS)
+#define CD_MODE_HEADER_BYTES        4
+#define CD_BLOCK_DESCRIPTOR_BYTES   8
+#define CD_MODE_BYTES               (CD_MODE_HEADER_BYTES + \
+                                     CD_BLOCK_DESCRIPTOR_BYTES)
+#define CD_READ_LBA                 3
+#define CD_RING_ENTRIES             16
+
+static uint16_t cd_command(QTestState *qts, unsigned slot, uint32_t handle,
+                           const uint8_t *cdb, uint16_t cdb_len,
+                           uint32_t data_len)
+{
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    SgiWait w;
+
+    memset(entry, 0, sizeof(entry));
+    entry[ISP_ENTRY_OFF_TYPE] = ISP_A64_ENTRY_TYPE_COMMAND;
+    entry[ISP_ENTRY_OFF_COUNT] = 1;
+    put32le(entry + ISP_REQ_OFF_HANDLE, handle);
+    put16le(entry + ISP_REQ_OFF_DEVICE, 0x0100);    /* target 1, LUN 0 */
+    put16le(entry + ISP_REQ_OFF_CDBLEN, cdb_len);
+    put16le(entry + ISP_REQ_OFF_SEGCOUNT, data_len ? 1 : 0);
+    memcpy(entry + ISP_REQ_OFF_CDB, cdb, cdb_len);
+    put32le(entry + ISP_A64_REQ_OFF_SEGS + 0, (uint32_t)CD_DATA_IOVA);
+    put32le(entry + ISP_A64_REQ_OFF_SEGS + 4, (uint32_t)(CD_DATA_IOVA >> 32));
+    put32le(entry + ISP_A64_REQ_OFF_SEGS + 8, data_len);
+    normalise_words(entry, sizeof(entry));
+    qtest_memwrite(qts, RING_PHYS + slot * ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+    isp_writew(qts, ISP_REG_REQUEST_QUEUE, slot + 1);
+    /* A READ completes when the block layer's read does, not at once. */
+    sgi_wait_start(&w, "CD-ROM command 0x%02x response", cdb[0]);
+    while (isp_readw(qts, ISP_REG_RESPONSE_QUEUE) != slot + 1) {
+        sgi_wait_pause(&w, 1000);
+    }
+
+    qtest_memread(qts, RESP_PHYS + slot * ISP_QUEUE_ENTRY_SIZE, status,
+                  sizeof(status));
+    normalise_words(status, sizeof(status));
+    g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, handle);
+    return get16le(status + ISP_STATUS_OFF_SCSI_STATUS);
+}
+
+static void test_cdrom_takes_512_byte_blocks(const void *data)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *args = NULL;
+    uint8_t medium[CD_BLOCKS_512 * 512];
+    uint8_t mode[CD_MODE_BYTES];
+    uint8_t block[512];
+    uint8_t expected[512];
+    QTestState *qts;
+    int fd;
+    const uint8_t tur[6] = { 0x00 };
+    const uint8_t mode_sense[6] = { 0x1a, 0, 0x3f, 0, CD_MODE_BYTES, 0 };
+    const uint8_t mode_select[6] = { 0x15, 0x10, 0, 0, CD_MODE_BYTES, 0 };
+    const uint8_t read10[10] = { 0x28, 0, 0, 0, 0, CD_READ_LBA, 0, 0, 1, 0 };
+    const uint8_t mode_sense10[10] = { 0x5a, 0, 0x3f, 0, 0, 0, 0, 0, 16, 0 };
+    uint8_t mode10[16];
+
+    for (unsigned i = 0; i < CD_BLOCKS_512; i++) {
+        memset(medium + i * 512, 0x10 + i, 512);
+    }
+    fd = g_file_open_tmp("sn0-cdrom-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, medium, sizeof(medium)), ==, sizeof(medium));
+    close(fd);
+
+    args = g_strdup_printf(MACHINE_WITH_BRIDGE
+                           " -drive id=cd,if=none,file=%s,format=raw,"
+                           "readonly=on"
+                           " -device scsi-cd,bus=scsi.0,scsi-id=1,drive=cd",
+                           path);
+    qts = qtest_init(args);
+
+    aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+    qtest_memset(qts, RING_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * CD_RING_ENTRIES);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * CD_RING_ENTRIES);
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_RSP_QUEUE_A64, CD_RING_ENTRIES,
+                       RESP_IOVA);
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, CD_RING_ENTRIES,
+                       RING_IOVA);
+
+    /* Absorbs the power-on unit attention; its status does not matter. */
+    cd_command(qts, 0, 0xcd000000, tur, sizeof(tur), 0);
+
+    /* A header and one descriptor holding the current length, 2048. */
+    qtest_memset(qts, CD_DATA_PHYS, 0xcc, sizeof(mode));
+    g_assert_cmphex(cd_command(qts, 1, 0xcd000001, mode_sense,
+                               sizeof(mode_sense), sizeof(mode)), ==, 0);
+    qtest_memread(qts, CD_DATA_PHYS, mode, sizeof(mode));
+    normalise_words(mode, sizeof(mode));
+    g_assert_cmpuint(mode[3], ==, CD_BLOCK_DESCRIPTOR_BYTES);
+    g_assert_cmphex((mode[9] << 16) | (mode[10] << 8) | mode[11], ==, 2048);
+
+    /* MODE SENSE(10) carries the same descriptor after its longer header. */
+    qtest_memset(qts, CD_DATA_PHYS, 0xcc, sizeof(mode10));
+    g_assert_cmphex(cd_command(qts, 2, 0xcd000002, mode_sense10,
+                               sizeof(mode_sense10), sizeof(mode10)), ==, 0);
+    qtest_memread(qts, CD_DATA_PHYS, mode10, sizeof(mode10));
+    normalise_words(mode10, sizeof(mode10));
+    g_assert_cmphex(lduw_be_p(mode10 + 6), ==, CD_BLOCK_DESCRIPTOR_BYTES);
+    g_assert_cmphex((mode10[13] << 16) | (mode10[14] << 8) | mode10[15], ==,
+                    2048);
+
+    /* The PROM's MODE SELECT: the same descriptor asking for 512. */
+    memset(mode, 0, sizeof(mode));
+    mode[3] = CD_BLOCK_DESCRIPTOR_BYTES;
+    mode[CD_MODE_HEADER_BYTES + 6] = 512 >> 8;
+    normalise_words(mode, sizeof(mode));
+    qtest_memwrite(qts, CD_DATA_PHYS, mode, sizeof(mode));
+    g_assert_cmphex(cd_command(qts, 3, 0xcd000003, mode_select,
+                               sizeof(mode_select), sizeof(mode)), ==, 0);
+
+    qtest_memset(qts, CD_DATA_PHYS, 0xcc, sizeof(block));
+    g_assert_cmphex(cd_command(qts, 4, 0xcd000004, read10, sizeof(read10),
+                               sizeof(block)), ==, 0);
+    qtest_memread(qts, CD_DATA_PHYS, block, sizeof(block));
+    normalise_words(block, sizeof(block));
+    memset(expected, 0x10 + CD_READ_LBA, sizeof(expected));
+    g_assert_cmpmem(block, sizeof(block), expected, sizeof(expected));
+
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+/*
  * The fabric-refused-transfer pair: with 64 MB of memory the first unbacked
  * address is right after it, and a transfer there is refused the way one
  * through an invalid translation entry would be.
@@ -1610,6 +1752,8 @@ int main(int argc, char **argv)
                         NULL, test_mbox_a64_ram_load_is_not_this_part);
     qtest_add_data_func("sn0/qlogic-isp/two-luns-behind-one-target", NULL,
                         test_two_luns_behind_one_target);
+    qtest_add_data_func("sn0/qlogic-isp/cdrom-takes-512-byte-blocks", NULL,
+                        test_cdrom_takes_512_byte_blocks);
     qtest_add_data_func("sn0/qlogic-isp/refused-cdb-read-drops-the-request",
                         NULL, test_a_refused_cdb_read_drops_the_request);
     qtest_add_data_func("sn0/qlogic-isp/refused-status-write-no-interrupt",

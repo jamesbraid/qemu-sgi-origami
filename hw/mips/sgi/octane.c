@@ -42,6 +42,7 @@
 #include "hw/block/flash.h"
 #include "target/mips/cpu.h"
 #include "hw/mips/sgi/initial-flash.h"
+#include "hw/mips/sgi/sgi-board-cdrom.h"
 #include "hw/mips/sgi/sgi-board-mac.h"
 #include "hw/mips/sgi/sgi-cpu.h"
 #include "hw/mips/sgi/prom-image.h"
@@ -1261,6 +1262,7 @@ static void octane_class_init(ObjectClass *oc, const void *data)
     /* -nic and an unqualified -drive reach the onboard IOC3 and ISP. */
     mc->default_nic = "sgi-ioc3-eth";
     mc->block_default_type = IF_SCSI;
+    sgi_board_cdrom_class_init(mc);
     /*
      * QEMU's default parallel backend is a text console nothing reads; the
      * IOC3's port gets a null backend from sgi_ioc3_parallel_host_backend().
