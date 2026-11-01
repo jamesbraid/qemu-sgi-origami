@@ -1938,15 +1938,18 @@ static bool sn1_node_is_cx(const SN1NodeState *node);
 
 /*
  * Whether this node's processors are R16000s: an IP53-family node board
- * (IP53 or IP59) under its topology's runtime profile, or a Cx-brick node
- * board, which has no such profile.
+ * (IP53 or IP59) under its topology's runtime profile, a Cx-brick node
+ * board, which has no such profile, or a C-brick whose catalogue entry
+ * fits R16000s on its IP35 board.
  */
 static bool sn1_node_uses_r16000(const SN1NodeState *node,
                                  MachineState *machine)
 {
     return sn1_node_is_cx(node) ||
         (node->ip53_assembly_validated &&
-         sgi_machine_ip53_runtime_enabled(machine));
+         sgi_machine_ip53_runtime_enabled(machine)) ||
+        (sn1_node_is_ip35(node) && node->nr_cpus &&
+         !strcmp(sn1_cpu_processor(node->model_node, 0)->kind, "R16000"));
 }
 
 static bool sn1_node_validate_processors(SN1NodeState *node,
@@ -1967,13 +1970,13 @@ static bool sn1_node_validate_processors(SN1NodeState *node,
          * must be that one, as the first names it.
          */
         if (first && !first->has_mode_bits) {
-            error_setg(errp, TYPE_SGI_SN1_NODE " IP53 processor 0 has no "
+            error_setg(errp, TYPE_SGI_SN1_NODE " R16000 processor 0 has no "
                        "catalogued reset-mode word");
             return false;
         }
 
         if (strcmp(machine->cpu_type, MIPS_CPU_TYPE_NAME("R16000"))) {
-            error_setg(errp, TYPE_SGI_SN1_NODE " IP53 board requires "
+            error_setg(errp, TYPE_SGI_SN1_NODE " R16000 node board requires "
                        "R16000, requested %s", machine->cpu_type);
             return false;
         }
@@ -1994,7 +1997,7 @@ static bool sn1_node_validate_processors(SN1NodeState *node,
                 (processor->has_prid && processor->prid != 0x00000f50) ||
                 (processor->has_fpu_prid &&
                  processor->fpu_prid != 0x00000900)) {
-                error_setg(errp, TYPE_SGI_SN1_NODE " IP53 processor %u "
+                error_setg(errp, TYPE_SGI_SN1_NODE " R16000 processor %u "
                            "does not match the board's %u MHz, %u MiB, "
                            "reset-mode 0x%08x R16000 profile", i,
                            (unsigned int)(expected_clock / 1000000),
