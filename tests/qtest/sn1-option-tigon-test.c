@@ -2142,6 +2142,17 @@ static void test_traffic(const void *opaque)
     g_assert_cmphex(read_memory_word(&t, EVENT_PROD), ==, 1);
     g_assert_cmphex(read_memory_word(&t, EVENT_PROD - 4), ==, 0x4a392817);
     g_assert_cmphex(read_memory_word(&t, EVENT_PROD + 4), ==, 0x8d7c6b5a);
+    if (p->swap_clear) {
+        /*
+         * The statistics block at the head of the general information block
+         * takes the descriptors' placement. The station address, always
+         * published, reads as the guest does: two words, high byte first.
+         * Inferred, not a hardware fact; the placement is an approximation.
+         */
+        qtest_clock_step(t.qts, 200000000);
+        g_assert_cmphex(read_memory_word(&t, gib + 25 * 4), ==, 0x5254);
+        g_assert_cmphex(read_memory_word(&t, gib + 26 * 4), ==, 0x123456);
+    }
     expect_interrupt(&t, true);
     reg_write(&t, TI_GCR_EVENTCONS_IDX, 1);
     acknowledge(&t);

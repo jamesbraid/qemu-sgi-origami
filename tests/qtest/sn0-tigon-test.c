@@ -13,6 +13,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "hw/pci/pci_regs.h"
 
@@ -133,6 +134,9 @@ static unsigned int tigon_slot = TIGON_NARROW_SLOT;
 #define TI_GCR_RXRETURNCONS_IDX 0x680
 #define TI_MHC_BYTE_SWAP_ENB 0x00000010
 #define TI_MHC_WORD_SWAP_ENB 0x00000020
+#define TI_PCI_STATE            0x05c
+#define TI_PCISTATE_NO_WORD_SWAP (1u << 18)
+#define TI_PCISTATE_32BIT_BUS   0x00100000u
 #define TI_OPMODE_BYTESWAP_BD   0x00000002
 #define TI_OPMODE_WORDSWAP_BD   0x00000004
 #define TI_OPMODE_BYTESWAP_DATA 0x00000010
@@ -3471,6 +3475,147 @@ static void test_statistics_head_tracks_interface_state(const void *data)
     close(sv[0]);
 }
 
+/*
+ * A word the card wrote under the wide swap-clear controls. The model places
+ * such a word little-endian in the opposite half of its aligned eight-byte
+ * unit. That placement is an approximation. The accessor encodes the
+ * model's own descriptor rule, so a test built on it pins the model's
+ * placement as a regression guard; it is not evidence of what hardware does.
+ */
+static uint32_t read_wide_word(QTestState *qts, uint32_t addr)
+{
+    uint32_t v;
+
+    qtest_memread(qts, addr ^ 4, &v, sizeof(v));
+    return ldl_le_p(&v);
+}
+
+static uint64_t read_wide_stat64(QTestState *qts, uint32_t base,
+                                 uint32_t offset)
+{
+    return ((uint64_t)read_wide_word(qts, base + offset) << 32) |
+           read_wide_word(qts, base + offset + 4);
+}
+
+/* A word the card reads, in the placement it reads a wide descriptor in. */
+static void write_wide_word(QTestState *qts, uint32_t addr, uint32_t v)
+{
+    uint32_t le;
+
+    stl_le_p(&le, v);
+    qtest_memwrite(qts, addr ^ 4, &le, sizeof(le));
+}
+
+/*
+ * The statistics block lands with the placement the descriptors get. IRIX
+ * programs PCI State bit 18 with descriptor word swap set and byte swap
+ * clear; on option slot 5, which samples REQ64#, the model then exchanges the
+ * two words of every eight-byte unit it writes to host memory. The block took
+ * a plain write instead and reached the guest with every doubleword's halves
+ * exchanged: ifMtu and ifSpeed swapped, the station address split. That the
+ * block follows the descriptors is inferred (the same DMA engine under the
+ * same controls); the placement itself is approximated.
+ *
+ * The event producer index, a descriptor-class word, is the positive
+ * control: it must read back through the same accessor. The ifMtu and
+ * ifSpeed doubleword is also checked as literal raw bytes, and a refresh
+ * into a separate buffer must land in the same placement.
+ */
+static void test_statistics_wide_swap_clear_placement(const void *data)
+{
+    static const uint32_t host_mtu = 1518;
+    static const uint8_t want_address[8] = {
+        0x00, 0x00, 0x52, 0x54, 0x00, 0x12, 0x34, 0x56,
+    };
+    /* Words 15 then 14, each little-endian: speed 1e9, MTU 1518. */
+    static const uint8_t want_mtu_speed[8] = {
+        0x00, 0xca, 0x9a, 0x3b, 0xee, 0x05, 0x00, 0x00,
+    };
+    uint8_t phys_address[8], raw[8];
+    uint8_t got[2048];
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    tigon_slot = TIGON_WIRED_SLOT;
+    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
+                      "-device tigon,addr=%u,mac=" TIGON_MAC ",netdev=n0",
+                      sv[1], tigon_slot);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    /* The card reads its GIB in the plain placement, then IRIX's controls. */
+    go_operational(qts);
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    qtest_writel(qts, WINDOW_TIGON + TI_PCI_STATE, TI_PCISTATE_NO_WORD_SWAP);
+    g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + TI_PCI_STATE) &
+                    (TI_PCISTATE_NO_WORD_SWAP | TI_PCISTATE_32BIT_BUS), ==,
+                    TI_PCISTATE_NO_WORD_SWAP);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_OPMODE,
+                 TI_OPMODE_WORDSWAP_BD | TI_OPMODE_BYTESWAP_DATA);
+    qtest_memset(qts, EV_PROD_PHYS, 0, 8);
+    qtest_memset(qts, GIB_PHYS, 0, STATS_SIZE);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_IFINDEX, 1);
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_IFMTU, host_mtu);
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    post_command(qts, 0, ((uint32_t)TI_CMD_HOST_STATE << 24) |
+                 (TI_CMD_CODE_STACK_UP << 12));
+    post_command(qts, 1, (uint32_t)TI_CMD_LINK_NEGOTIATION << 24);
+    qtest_clock_step(qts, LINK_DELAY_NS);
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+
+    /* Positive control: the link event moved the producer from 1 to 2. */
+    g_assert_cmpuint(read_wide_word(qts, EV_PROD_PHYS), ==, 2);
+
+    g_assert_cmpuint(read_wide_word(qts, GIB_PHYS + STAT_IF_INDEX), ==, 1);
+    g_assert_cmpuint(read_wide_word(qts, GIB_PHYS + STAT_IF_MTU), ==,
+                     host_mtu);
+    g_assert_cmpuint(read_wide_word(qts, GIB_PHYS + STAT_IF_SPEED), ==,
+                     GIGABIT_BITS_PER_SECOND);
+    qtest_memread(qts, GIB_PHYS + STAT_IF_MTU, raw, sizeof(raw));
+    g_assert_cmpmem(raw, sizeof(raw), want_mtu_speed, sizeof(want_mtu_speed));
+    /* The guest reads these two words as numbers, high byte first. */
+    stl_be_p(phys_address,
+             read_wide_word(qts, GIB_PHYS + STAT_IF_PHYS_ADDRESS));
+    stl_be_p(phys_address + 4,
+             read_wide_word(qts, GIB_PHYS + STAT_IF_PHYS_ADDRESS + 4));
+    g_assert_cmpmem(phys_address, sizeof(phys_address),
+                    want_address, sizeof(want_address));
+    g_assert_cmpuint(read_wide_stat64(qts, GIB_PHYS, STAT_HC_OUT_UCAST), ==,
+                     0);
+
+    /* One unicast frame out, its descriptor in the same placement. */
+    qtest_memwrite(qts, TX_BUF_PHYS, test_frame_direct,
+                   sizeof(test_frame_direct));
+    write_wide_word(qts, TX_RING_PHYS + 0, 0);
+    write_wide_word(qts, TX_RING_PHYS + 4, TX_BUF_PHYS);
+    write_wide_word(qts, TX_RING_PHYS + 8,
+                    ((uint32_t)sizeof(test_frame_direct) << 16) |
+                    TI_BDFLAG_END);
+    write_wide_word(qts, TX_RING_PHYS + 12, 0);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+    net_recv_frame(sv[0], got, sizeof(got));
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(read_wide_stat64(qts, GIB_PHYS, STAT_HC_OUT_UCAST), ==,
+                     1);
+
+    /* The refreshed copy, in its own buffer, takes the same placement. */
+    qtest_memset(qts, STATS_PHYS, 0, STATS_SIZE);
+    post_command(qts, 2, (uint32_t)TI_CMD_RFRSH_STATS << 24);
+    g_assert_cmpuint(read_wide_word(qts, STATS_PHYS + STAT_IF_MTU), ==,
+                     host_mtu);
+    g_assert_cmpuint(read_wide_word(qts, STATS_PHYS + STAT_IF_SPEED), ==,
+                     GIGABIT_BITS_PER_SECOND);
+    g_assert_cmpuint(read_wide_stat64(qts, STATS_PHYS, STAT_HC_OUT_UCAST), ==,
+                     1);
+
+    qtest_quit(qts);
+    close(sv[0]);
+    tigon_slot = TIGON_NARROW_SLOT;
+}
+
 /* Step the live interval until the head's discard count reaches want. */
 static uint32_t wait_head_discards_reaches(QTestState *qts, uint32_t want)
 {
@@ -4434,6 +4579,8 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("/sn0/tigon/statistics-head-tracks-interface-state",
                         NULL, test_statistics_head_tracks_interface_state);
+    qtest_add_data_func("/sn0/tigon/statistics-wide-swap-clear-placement",
+                        NULL, test_statistics_wide_swap_clear_placement);
     qtest_add_data_func("/sn0/tigon/statistics-head-tracks-discards", NULL,
                         test_statistics_head_tracks_discards);
     qtest_add_data_func("/sn0/tigon/statistics-clear-reaches-head", NULL,

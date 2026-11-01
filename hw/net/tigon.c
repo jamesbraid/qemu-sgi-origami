@@ -570,25 +570,37 @@ failed:
     return result;
 }
 
-static MemTxResult tigon_dma_write_words(TigonState *s, uint64_t addr,
-                                         const uint32_t *words, size_t count)
+/*
+ * The wide swap-clear word placement for a host-memory write: the two words
+ * of each aligned eight-byte unit trade places before the bus write, and a
+ * trailing odd word keeps its slot here and is relocated by the writer. One
+ * rule for everything the card writes to the host, so no structure can drift
+ * from the others. Approximated, like the read side above.
+ */
+static void tigon_wide_exchange(void *raw, size_t count)
 {
-    bool bigendian = tigon_bd_bigendian(s);
-    bool wide = tigon_bd_wide_swap_clear(s) &&
-                (count == 1 || !(addr & 7));
-    uint32_t raw[TIGON_MAX_BD_WORDS];
-    MemTxResult result;
-    size_t bytes;
+    uint8_t *p = raw;
     size_t i;
 
-    assert(count > 0 && count <= ARRAY_SIZE(raw));
-    bytes = count * sizeof(*words);
-    for (i = 0; i < count; i++) {
-        size_t source = wide && (i ^ 1) < count ? i ^ 1 : i;
+    for (i = 0; i + 1 < count; i += 2) {
+        uint32_t first = ldl_he_p(p + i * 4);
 
-        raw[i] = bigendian ? cpu_to_be32(words[source])
-                           : cpu_to_le32(words[source]);
+        stl_he_p(p + i * 4, ldl_he_p(p + (i + 1) * 4));
+        stl_he_p(p + (i + 1) * 4, first);
     }
+}
+
+/*
+ * Write words already encoded for the bus. Wide ones go as eight-byte units,
+ * with an odd tail word in the opposite half of its eight-byte cell.
+ */
+static MemTxResult tigon_dma_write_raw(TigonState *s, uint64_t addr,
+                                       const uint32_t *raw, size_t count,
+                                       bool wide)
+{
+    MemTxResult result;
+    size_t i;
+
     if (wide) {
         for (i = 0; i + 1 < count; i += 2) {
             result = pci_dma_write(PCI_DEVICE(s), addr + i * 4, &raw[i], 8);
@@ -606,9 +618,28 @@ static MemTxResult tigon_dma_write_words(TigonState *s, uint64_t addr,
         }
         return MEMTX_OK;
     }
-    result = pci_dma_write(PCI_DEVICE(s), addr, raw, bytes);
-    trace_tigon_dma("write", addr, bytes, result);
+    result = pci_dma_write(PCI_DEVICE(s), addr, raw, count * sizeof(*raw));
+    trace_tigon_dma("write", addr, count * sizeof(*raw), result);
     return result;
+}
+
+static MemTxResult tigon_dma_write_words(TigonState *s, uint64_t addr,
+                                         const uint32_t *words, size_t count)
+{
+    bool bigendian = tigon_bd_bigendian(s);
+    bool wide = tigon_bd_wide_swap_clear(s) &&
+                (count == 1 || !(addr & 7));
+    uint32_t raw[TIGON_MAX_BD_WORDS];
+    size_t i;
+
+    assert(count > 0 && count <= ARRAY_SIZE(raw));
+    for (i = 0; i < count; i++) {
+        raw[i] = bigendian ? cpu_to_be32(words[i]) : cpu_to_le32(words[i]);
+    }
+    if (wide) {
+        tigon_wide_exchange(raw, count);
+    }
+    return tigon_dma_write_raw(s, addr, raw, count, wide);
 }
 
 static MemTxResult tigon_dma_read32(TigonState *s, uint64_t addr,
@@ -966,7 +997,8 @@ static void tigon_stats_put64(uint8_t *image, unsigned word, uint64_t v,
 /*
  * Assemble the statistics block and write it where the host asked for it. The
  * block is a struct in host DRAM, so it carries the byte order the host
- * selected for everything else the card writes there.
+ * selected for everything else the card writes there, and under the wide
+ * swap-clear controls the same word placement (inferred, approximated).
  *
  * Only the counters this model can observe are filled. The collision,
  * framing, carrier and internal-attention counters describe events the model
@@ -978,10 +1010,12 @@ static MemTxResult tigon_publish_stats(TigonState *s, uint64_t addr)
 {
     bool bigendian = tigon_bd_bigendian(s);
     bool link_up = s->gcr[TIGON_GCR_IDX(TI_GCR_GLINK_STAT)] != 0;
-    uint8_t image[TI_STATS_SIZE];
+    uint32_t image_words[TI_STATS_SIZE / 4];
+    uint8_t *image = (uint8_t *)image_words;
     MemTxResult result;
+    bool wide;
 
-    memset(image, 0, sizeof(image));
+    memset(image_words, 0, sizeof(image_words));
     /*
      * The interface's index and MTU are the host's own, handed to the card
      * through the register pair and reported straight back: the card has no
@@ -1036,8 +1070,21 @@ static MemTxResult tigon_publish_stats(TigonState *s, uint64_t addr)
                       ((uint32_t)s->station_addr.a[4] << 8) |
                       s->station_addr.a[5], bigendian);
 
-    result = pci_dma_write(PCI_DEVICE(s), addr, image, sizeof(image));
-    trace_tigon_dma("write", addr, sizeof(image), result);
+    /*
+     * The block is host memory written by the same DMA engine under the same
+     * controls as the descriptors, so it takes their wide swap-clear
+     * placement. That is INFERRED: no source describes a separate path for
+     * it. The placement it extends is APPROXIMATED, a synthetic composition
+     * of the current models; the physical Tigon word placement on a 64-bit
+     * data phase with word swap off is unknown, and this is not
+     * hardware-accurate. The block's layout is established.
+     */
+    wide = tigon_bd_wide_swap_clear(s) && !(addr & 7);
+    if (wide) {
+        tigon_wide_exchange(image_words, ARRAY_SIZE(image_words));
+    }
+    result = tigon_dma_write_raw(s, addr, image_words,
+                                 ARRAY_SIZE(image_words), wide);
     trace_tigon_stats(addr, s->stat_rx_ucast, s->stat_tx_ucast, result);
     return result;
 }
