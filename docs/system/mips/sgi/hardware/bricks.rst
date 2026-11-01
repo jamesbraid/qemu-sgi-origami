@@ -582,11 +582,38 @@ fails (the test property ``x-test-refuse-vector-read`` on the board's
 Bedrock) makes the PROM print ``Vector read error`` and ``*** Headless HUB
 inaccessible`` and carry on to the menu.
 
+The summary's ``DIAG RESULTS`` heading is followed by nothing, where the
+four-compute-board ``origin3900`` prints ``ALL DIAGS PASSED``. The PROM
+causes this from valid state, a *software expectation* drawn from analysis
+of the stock PROM 6.210 setup code. For a hub with no processors whose I/O probe finds nothing, the setup
+code reads the node's I/O link status register: with bits 13:12 at 0 or
+1 it records diagnostic value ``0x9b``, a link-down result, on the
+hub's KLCONFIG component, and with 2 or 3 it records zero. The summary
+prints ``ALL DIAGS PASSED`` only when no node has a problem flagged, and
+a nonzero hub result flags one without printing a line for it, so the
+section stays empty. Why nodes with processors never take that read is
+*unknown*.
+
+The model matches that account. Board 3 has no I/O brick, so its link
+status reads bit 13 clear (bits 13:12 read 0) and the master records
+``0x9b`` there; every node with processors records zero. Board 0, cabled
+to the I-brick, reads 2. Changing only the hub's diagnostic value,
+after the node is initialized and before the BASEIO PROM starts, moves
+the summary: zero on board 3 gives ``ALL DIAGS PASSED``, and ``0x9b`` on
+node 2 of a four-compute-board ``origin3900`` leaves it empty. The qtest
+``sn/builder/origin3900/memory-node-ii-link`` checks the two link
+values.
+
 Limits:
 
-* The summary's ``DIAG RESULTS`` is blank, where a four-compute-board
-  brick prints ``ALL DIAGS PASSED``. Whether a real memory-only board
-  leaves it blank too is *unknown*.
+* Whether a real memory-only board prints nothing under ``DIAG
+  RESULTS`` depends on what an uncabled I/O link reads on hardware. The
+  model reads bit 13 clear with no XIO cable, *inferred* and unmeasured;
+  if that holds, the empty section is what the real PROM prints too
+  (*inferred*). The model does not raise the link to get
+  ``ALL DIAGS PASSED``, since nothing shows a real uncabled link reads
+  up. Settled by the link status of a real node with no I/O brick, or a
+  console log from a real Origin 3900 with a memory-only board.
 * The board's NIC reads zero until the master initializes it; whether a
   real board reads one is *unknown*.
 * Every other fact about the board (its part number, Bedrock revision and

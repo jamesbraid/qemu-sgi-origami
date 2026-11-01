@@ -10747,23 +10747,28 @@ static void test_origin3900_cx_brick(void)
  * origin3000-topologies, "Node boards with no processors"; Cx-brick
  * datasheet, "Memory-only nodes".
  */
-static void test_origin3900_memory_node(void)
+static QTestState *origin3900_memory_node_start(char **prom)
 {
-    g_autofree char *prom = NULL;
     g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
     g_autoptr(GError) error = NULL;
-    int fd = g_file_open_tmp("sn-builder-memory-node-prom-XXXXXX", &prom,
+    int fd = g_file_open_tmp("sn-builder-memory-node-prom-XXXXXX", prom,
                              &error);
-    QTestState *qts;
-    g_autoptr(QDict) response = NULL;
 
     g_assert_no_error(error);
     g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
                     ORIGIN3200_PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
-    qts = qtest_initf(
+    return qtest_initf(
         "-M origin3000,topology=origin3900-memory-node -cpu R16000 "
-        "-smp 12 -m 8192 -bios %s -nodefaults -display none -S", prom);
+        "-smp 12 -m 8192 -bios %s -nodefaults -display none -S", *prom);
+}
+
+static void test_origin3900_memory_node(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts = origin3900_memory_node_start(&prom);
+    g_autoptr(QDict) response = NULL;
+
     response = qtest_qmp(qts, "{'execute':'query-cpus-fast'}");
 
     g_assert_cmpuint(qlist_size(qdict_get_qlist(response, "return")), ==, 12);
@@ -10777,6 +10782,51 @@ static void test_origin3900_memory_node(void)
                      0xf);
     g_assert_cmpuint(qom_get_uint(qts, "/machine/module0/l1",
                                   "compute-boards"), ==, 0x7);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * The firmware's setup code reads a memory-only node's I/O link status and
+ * records a hub diagnostic, which leaves the boot summary's diagnostic
+ * results empty, when bits 13:12 are 0 or 1. Board 3 has no I/O brick, so
+ * its link reads bit 13 clear (the uncabled value is inferred, not
+ * measured); board 0, cabled to the I-brick, reads it set. Board 0 reads
+ * its own register directly and board 3's with a vector read over the
+ * router (port 5), since nothing runs on board 3. Datasheet: the Cx-brick
+ * sheet.
+ */
+#define ORIGIN3900_MEMORY_NODE_ROUTE 0x5
+#define ORIGIN3900_II_LINK_STATUS_OFFSET UINT64_C(0x400128)
+
+static uint64_t origin3900_memory_node_vector_read(QTestState *qts,
+                                                   uint64_t offset)
+{
+    (void)qtest_readq(qts, MEMORY_NODE_LB_LOCAL + 0x60c038);
+    qtest_writeq(qts, MEMORY_NODE_LB_LOCAL + 0x60c008,
+                 ORIGIN3900_MEMORY_NODE_ROUTE);
+    qtest_writeq(qts, MEMORY_NODE_LB_LOCAL + 0x60c010, 0);
+    qtest_writeq(qts, MEMORY_NODE_LB_LOCAL + 0x60c000,
+                 (offset & UINT64_C(0xfffff8)) | (UINT64_C(0x1c8) << 40));
+    g_assert_cmphex(qtest_readq(qts, MEMORY_NODE_LB_LOCAL + 0x60c020) >> 63,
+                    ==, 1);
+    return qtest_readq(qts, MEMORY_NODE_LB_LOCAL + 0x60c030);
+}
+
+static void test_origin3900_memory_node_ii_link(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts = origin3900_memory_node_start(&prom);
+    uint64_t board0 = 0, board3;
+
+    g_assert_true(nasid_test_cpu_readq(qts, 0, ORIGIN3200_II_LINK_STATUS,
+                                       &board0));
+    board3 = origin3900_memory_node_vector_read(
+        qts, ORIGIN3900_II_LINK_STATUS_OFFSET);
+    g_assert_cmphex((board0 >> 12) & 3, >=, 2);
+    g_assert_cmphex((board3 >> 12) & 3, <, 2);
+    /* Board 3's word is a real II's: only the link bit differs. */
+    g_assert_cmphex(board3 | (UINT64_C(1) << 13), ==, board0);
     qtest_quit(qts);
     g_unlink(prom);
 }
@@ -13926,6 +13976,8 @@ int main(int argc, char **argv)
                    test_origin3200_two_ibricks);
     qtest_add_func("sn/builder/origin3900/memory-node",
                    test_origin3900_memory_node);
+    qtest_add_func("sn/builder/origin3900/memory-node-ii-link",
+                   test_origin3900_memory_node_ii_link);
     qtest_add_func("sn/builder/cbrick/memory-node-scratch1-marked",
                    test_memory_node_scratch1_marked);
     qtest_add_func("sn/builder/cbrick/memory-node-scratch1-read-fails",
