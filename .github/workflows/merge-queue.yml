@@ -47,6 +47,7 @@ jobs:
           TRUNK: sgi-origami
           CHECKS: build and register suite / build-and-qtest (pull_request)
           TOKEN: ${{ secrets.CI_BOT_TOKEN }}
+          COMMITTER_LOGIN: ${{ vars.CI_BOT_USER }}
           LAND_WORKFLOW: "build.yml"
           LAND_INPUTS: "suite=full"
           # One run waits through a normal full suite. The suite takes 15 to 16
@@ -80,16 +81,37 @@ jobs:
         # it is not written into the clone or quoted back in a git error the
         # driver prints, and its base64 form is masked in the log like the
         # secret itself. user.name and user.email are the committer of the
-        # replayed commits; authorship stays with each commit's author.
+        # replayed commits; authorship stays with each commit's author. The
+        # committer is the account the token belongs to: the CI_BOT_USER
+        # variable names it, or the forge reports it when the variable is
+        # unset, so no account or host name is written in this file. The
+        # address's domain is the forge's host name.
         run: |
-          auth=$(printf 'jamesb-ci-bot:%s' "$TOKEN" | base64 -w0)
+          bot=$(printf '%s' "$COMMITTER_LOGIN" | tr -d '[:space:]')
+          if [ -z "$bot" ]; then
+            bot=$(curl -sSf -H "Authorization: token $TOKEN" \
+                "$FORGE/api/v1/user" |
+              python3 -c 'import json, sys; print(json.load(sys.stdin)["login"])')
+            bot=$(printf '%s' "$bot" | tr -d '[:space:]')
+          fi
+          # The forge reports a missing login as null, which Python prints as
+          # None; neither is an account.
+          case "$bot" in
+            ''|None|null)
+              echo "the token owner is unknown; set the CI_BOT_USER variable"
+              exit 1 ;;
+          esac
+          host=${FORGE#*://}
+          host=${host%%/*}
+          host=${host%%:*}
+          auth=$(printf '%s:%s' "$bot" "$TOKEN" | base64 -w0)
           echo "::add-mask::$auth"
           export GIT_CONFIG_COUNT=3
           export GIT_CONFIG_KEY_0=http.extraHeader
           export GIT_CONFIG_VALUE_0="Authorization: Basic $auth"
-          export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=jamesb-ci-bot
+          export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=$bot
           export GIT_CONFIG_KEY_2=user.email
-          export GIT_CONFIG_VALUE_2=jamesb-ci-bot@noreply.git.octanix.dev
+          export GIT_CONFIG_VALUE_2=$bot@noreply.$host
           rm -rf "$WORKTREE"
           git clone -q --filter=blob:none --no-checkout \
             "$FORGE/$REPO.git" "$WORKTREE"

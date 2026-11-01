@@ -84,6 +84,7 @@ SCRIPT_SUITES = MODEL_SUITES + [
     'scripts/ci/test_sgi_check.py',
     'scripts/tests/test_sgi_license_check.py',
     'scripts/tests/test_sgi_leak_check.py',
+    'scripts/tests/test_sgi_leak_workflows.py',
     'scripts/tests/test_sgi_docs_lint.py',
     'scripts/tests/test_sgi_docs_model_check.py',
     'scripts/tests/test_sgi_docs_citations.py',
