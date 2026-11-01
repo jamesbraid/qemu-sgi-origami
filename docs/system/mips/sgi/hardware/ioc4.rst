@@ -52,7 +52,8 @@ Sources
 - Miod Vallat's October 2009 Origin 350 announcement and its OpenBSD
   dmesg, :src:`miod-openbsd-sgi-story Origin 350 support`: IOC4
   revision ``0x53``, four ``ns16550a`` ports with 16-byte FIFOs, a
-  DS1742-labelled clock on the byte bus, and no ATAPI support yet.
+  DS1742-labelled clock on the byte bus, and no ATAPI support in that
+  release.
 - The Origin 350 guide :src:`007-4566-001 p. 110-111, 120, 222`, the
   Onyx 350 guide :src:`007-4632-001 p. 29, 50, 58, 63`, the Tezro
   guides :src:`007-4564-001 p. 32` and :src:`007-4643-003 p. 24-25` and

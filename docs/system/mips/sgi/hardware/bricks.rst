@@ -715,7 +715,7 @@ chips' mode straps, or a P-brick widget inventory, would settle these.
 The layer records the brick's L1 type letter as ``P`` (``0x50``, Linux
 ``ksys/l1.h``), which IRIX 6.5.30 and the stock IP35 PROM 6.210 name a
 P-brick with module class ``p``, expecting a 600 MHz link, *software
-expectation*. Nothing is built from it yet.
+expectation*. Nothing is built from it.
 
 .. _sgi-bricks-pxbrick:
 
@@ -781,7 +781,7 @@ Model limits:
   IX-brick's IO9 waits on contracts for its IOC4 port presence, its
   QLogic part and its BCM5701 identity, so its bus 1 slot 1 is empty and
   logged as such.
-* No catalogued machine builds either brick yet, because no reviewed
+* No catalogued machine builds either brick, because no reviewed
   configuration attaches one to a C-brick. The builder test builds them.
 
 .. _sgi-bricks-rbrick:
@@ -988,7 +988,7 @@ connector label to a port would settle it. The layer records the brick's
 L1 type letter as ``X`` (``0x58``, Linux ``ksys/l1.h``), which IRIX 6.5.30
 and the stock IP35 PROM 6.210 name an X-brick with module class ``x``,
 expecting a 400 MHz link, *software expectation*. Nothing is built from
-the letter yet. The XBridge revision and the widget numbers a C-brick sees
+the letter. The XBridge revision and the widget numbers a C-brick sees
 for the slots are *unknown*; only an X-brick widget inventory would
 settle them.
 
@@ -1060,7 +1060,7 @@ Model limits
   requirement rule passes silently.
 - The model validator accepts an L1 brick-type character only for the two
   boards a source establishes, ``C`` (IP35) and ``4`` (IP45). An I-, P-,
-  R- or other brick cannot yet carry one.
+  R- or other brick cannot carry one.
 - The layers describe topology and identity, not behaviour. They carry no
   register map, reset value, link timing or interrupt route for any brick.
   Router tables, Crosstown2 speed selection and L1 requests for bricks
