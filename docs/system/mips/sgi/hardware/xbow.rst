@@ -167,11 +167,12 @@ slot on a big-endian host; this page uses the aligned offset.
      - Bits 22:20 select the link counted, with 000 meaning link 8 and
        a stated default of link 8; bits 19:0 count.
      - established, spec PDF pages 91-92. The model resets the
-       register to 0x00800000 (bit 23 set); the specification marks
-       bit 23 reserved and gives no such value. The measured Octane2
-       reads 0x00800000 in both counters after PROM start-up, so the
-       model's word matches revision 5 at that point; whether it is
-       the reset value is unknown. Counting itself is not modelled.
+       register to zero, the specification's value, keeps only bits
+       22:20 of the select and drops a write to reserved bit 23. The
+       measured Octane2 reads 0x00800000 in both counters after PROM
+       start-up, bit 23 set, which the model does not reproduce
+       (:ref:`sgi-xbow-model-choices`). Counting itself is not
+       modelled.
    * - 0x0070
      - NIC
      - Readable and writable; the MicroLAN controller behind it is
@@ -555,6 +556,21 @@ Emulator choices and unknowns
      - approximation
      - Four of the measured Octane2's empty ports show both; what drives
        them is *unknown*.
+   * - A store to the read-only error address registers fails and
+       records a register-access error, except on the PIC's
+       integrated crossbar, where it completes and still records the
+       error (``complete-posted-error-address-writes``).
+     - approximation
+     - The specification makes the store an error (PDF pages 70 and
+       73). The stock IP35 PROM expects it to complete on the IP53
+       crossbar, a *software expectation* (:ref:`sgi-pic-pxbow`).
+   * - Performance counters reset to zero, with bit 23 reserved and
+       dropped on a write.
+     - approximation
+     - The specification gives zero and marks bit 23 reserved (PDF
+       pages 91-92). The measured Octane2 reads bit 23 set after PROM
+       start-up (:ref:`sgi-xbow-measurements`); whether it is set at
+       reset or by firmware, and whether it reads back, is *unknown*.
    * - The 48-bit error address splits between 0x0010 (bits 47:32) and
        0x0018 (bits 31:0).
      - established

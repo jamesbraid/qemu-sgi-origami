@@ -92,10 +92,10 @@ carries two PICs is *inferred* from two buses per PIC.
 
 The model places the PIC wherever the machine profile says. The
 ``origin350``, ``onyx350`` and ``onyx4-host`` machines fit one PIC at
-widget 15. The ``tezro`` machine fits one PIC at widget 15 in its
-``tezro-rack`` and ``tezro-tower-one`` topologies, and PICs at widgets
-11 and 15 in ``tezro-tower-multi``. IO9 is behind head 0 of the
-widget-15 PIC in every Tezro topology
+widget 15. The ``tezro`` machine fits one PIC at widget 15 on its
+``tezro-rack`` topology and on the one-processor board of its ``tezro``
+topology, and PICs at widgets 11 and 15 on the two/four-processor board.
+IO9 is behind head 0 of the widget-15 PIC on every Tezro board
 (:ref:`sgi-ip53-serial-profiles`).
 
 No register of a physical PIC has been read for this model.
@@ -376,7 +376,8 @@ Widget control
 Bits 3:0 hold the head's widget number. The model uses them as the source
 widget on every DMA and interrupt packet the head sends. The runtime reset
 value ``0x0f00320f`` makes that widget 15 on every PIC, including the
-``tezro-tower-multi`` PIC attached at widget 11, until software rewrites
+Tezro two/four-processor board's PIC attached at widget 11, until
+software rewrites
 the field. Other stored bits, in the
 credit and endianness fields Linux ``xwidget.h`` names for the common
 widget, have no modelled effect. Bits outside the mask are logged
@@ -786,8 +787,17 @@ model is an *approximation*: PXBOW's register set, revision and routing
 are *unknown*. The ``pxbow-revision``, ``pxbow-host-widget`` and
 ``pxbow-pic-widget`` properties set it. Every runtime PIC builds this
 child, but a machine maps only one as widget 0: when a machine has two
-PICs, as ``tezro-tower-multi`` does, the PXBOW of the PIC that carries
-IO9 is widget 0.
+PICs, as the Tezro two/four-processor board does, the PXBOW of the PIC
+that carries IO9 is widget 0.
+
+The stock IP35 PROM's crossbar check stores to the two read-only error
+address registers and expects each store to complete with the
+register-access error set, a *software expectation*. The PXBOW child
+completes such a store and records the access error
+(``complete-posted-error-address-writes``). The Crossbow and XBridge
+crossbars of the other machines keep refusing it. Limiting this to the
+PXBOW is an *approximation*: no public source says which crossbars
+complete such a store, or whether those addresses are registers.
 
 .. _sgi-pic-reset:
 
