@@ -1728,6 +1728,9 @@ static void l1_o3k_config(SGIL1State *s)
 static void l1_o3k_brick_print(SGIL1State *s)
 {
     char rack[8], bay[8];
+    uint32_t partition = l1_partition(s);
+    g_autofree char *partition_text = partition ?
+        g_strdup_printf("%u", partition) : g_strdup("none");
 
     if (s->rack_valid) {
         snprintf(rack, sizeof(rack), "%03u", s->rack);
@@ -1739,10 +1742,21 @@ static void l1_o3k_brick_print(SGIL1State *s)
     } else {
         g_strlcpy(bay, "--", sizeof(bay));
     }
-    l1_printf(s, "rack: %s, slot: %s, partition: %u, type: %c, "
-              "source: EEPROM\r\n", rack, bay, l1_partition(s),
+    /*
+     * Zero prints none, and the type is followed by the flash text and the
+     * serial, as the L1 datasheet's brick row has them. That the Origin 3000
+     * images print the same is inferred, not captured. The flash size is
+     * unknown, so the unknown-size form is used, and a brick with no serial
+     * prints the C library's null text. A partition of 255 or more prints
+     * as a number here, as before; the datasheet says ?, which is left to a
+     * separate change.
+     */
+    l1_printf(s, "rack: %s, slot: %s, partition: %s, type: %c [?MB flash], "
+              "serial:%s, source: EEPROM\r\n", rack, bay, partition_text,
               l1_is_iobrick(s) ? (char)s->profile->identity :
-              !l1_is_cxbrick(s) ? 'C' : (char)l1_brick_type_character(s));
+              !l1_is_cxbrick(s) ? 'C' : (char)l1_brick_type_character(s),
+              s->brick_serial && s->brick_serial[0] ? s->brick_serial :
+                                                      "(null)");
 }
 
 /*
