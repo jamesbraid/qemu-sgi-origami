@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "f6bfffb43d61c2c26f3ce9f7356c0c7e7620983b3287b626f6c9f00e4bc31d1e"
+    "7d624476a53db7eab4ac3d0beceb420323ff4b3b46405fc658343ec86c4844b7"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -212,9 +212,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 147)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 42)
-        self.assertEqual(len(layers), 103)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 154)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 45)
+        self.assertEqual(len(layers), 107)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -945,6 +945,13 @@ class FuelTests(unittest.TestCase):
         }
         for topology in catalogue["topologies"]:
             product = topology["product"]
+            if topology["name"].endswith("-r16000"):
+                # The 800 MHz R16000 C-brick's word is the PROM table's
+                # class-0 row at that clock, an approximation.
+                self.assertEqual(topology["ip35-firmware"], {
+                    "machine-type": 0,
+                    "cpu-mode-word": 0x569caf85})
+                continue
             if topology["name"] in ("origin3200", "origin3400", "onyx3000",
                                     "onyx3400-ir"):
                 # The C-brick's machine-type byte and reset-mode word come
@@ -981,6 +988,87 @@ class FuelTests(unittest.TestCase):
                 self.assertEqual(topology["ip35-firmware"], {
                     "machine-type": machine_type,
                     "cpu-mode-word": expected_mode})
+
+    def test_c_brick_800mhz_r16000_is_offered_where_the_sources_put_it(self):
+        """The 800 MHz R16000 C-brick is reported by third parties and
+        backed by no SGI document, so it is an approximation offered only
+        on the products a C-brick sits in: the Origin 3200 and 3400 and the
+        Onyx 3000. Nothing else the sources do not support is offered."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        processor = {"id": "r16000-800mhz-8mb", "part": "R16000",
+                     "clock-hz": 800000000, "cache-mib": 8}
+        fitted = [item for item in catalogue["offerings"]
+                  if item.get("board") == "ip35"
+                  and item["processor"]["part"] == "R16000"]
+        self.assertEqual(
+            sorted((item["topology"], item["machine-options"])
+                   for item in fitted),
+            [("onyx3000-r16000",
+              "origin3000,topology=onyx3000-r16000,nodes=2"),
+             ("origin3200-r16000",
+              "origin3000,topology=origin3200-r16000,nodes=2"),
+             ("origin3400-r16000",
+              "origin3000,topology=origin3400-r16000,nodes=4")])
+        for item in fitted:
+            with self.subTest(topology=item["topology"]):
+                self.assertEqual(item["product"], "origin3000")
+                # What a launcher lists says it is an approximation.
+                self.assertTrue(item["display-name"].endswith(
+                    "(800 MHz R16000 C-brick, approximate)"))
+                self.assertEqual(item["processor"], processor)
+                self.assertEqual(item["default-cpu-model"], "R16000")
+        for item in catalogue["offerings"]:
+            if (item.get("board") == "ip35"
+                    and not item["topology"].endswith("-r16000")):
+                self.assertNotIn("approximate", item["display-name"])
+        # Not offered here: any other R16000 clock or cache on a C-brick,
+        # the Onyx 3400 with InfiniteReality (the sources name no graphics
+        # fit), and the 500 and 600 MHz R14000 PIMMs, which are real
+        # C-brick parts but not modelled by these entries.
+        ip35 = [item for item in catalogue["topologies"]
+                if item.get("board") == "ip35"]
+        self.assertEqual(
+            {slot["assembly"]["id"] for item in ip35
+             for node in item["nodes"] for slot in node["cpu-slots"]
+             if slot["assembly"]
+             and slot["assembly"]["kind"] == "R16000"},
+            {"r16000-800mhz-8mb"})
+        self.assertFalse([item for item in catalogue["offerings"]
+                          if item["topology"] == "onyx3400-ir-r16000"])
+        for item in ip35:
+            with self.subTest(topology=item["name"]):
+                kinds = {slot["assembly"]["kind"]
+                         for node in item["nodes"]
+                         for slot in node["cpu-slots"] if slot["assembly"]}
+                self.assertEqual(len(kinds), 1)
+                if item["name"].endswith("-r16000"):
+                    self.assertEqual(item["ip35-firmware"], {
+                        "machine-type": 0, "cpu-mode-word": 0x569caf85})
+                    self.assertEqual(
+                        {slot["assembly"]["mode-bits"] for node in
+                         item["nodes"] for slot in node["cpu-slots"]
+                         if slot["assembly"]}, {0x009caf85})
+                else:
+                    self.assertLessEqual(kinds, {"R12000", "R14000"})
+        # The 8 MiB 800 MHz IP53 boards print the same id: one processor.
+        shared = [item for item in catalogue["offerings"]
+                  if item["processor"]["id"] == "r16000-800mhz-8mb"
+                  and item.get("board") == "ip53"]
+        self.assertTrue(shared)
+        for item in shared:
+            self.assertEqual(item["processor"], processor)
+
+    def test_c_brick_r16000_models_say_they_are_approximations(self):
+        for name in ("origin3200-r16000", "origin3400-r16000",
+                     "onyx3000-r16000"):
+            with self.subTest(name=name):
+                model = load_checked_system_model(
+                    INPUTS / f"{name}.yaml", model_schema=schema(INPUTS))
+                notes = model["machine"]["notes"].lower()
+                self.assertIn("approximation", notes)
+                self.assertIn("no source", notes)
+                self.assertNotIn("hardware-accurate", notes)
 
     def test_overrides_follow_what_each_machine_binds(self):
         """The Bedrock board values are listed only where a Bedrock, an L1
