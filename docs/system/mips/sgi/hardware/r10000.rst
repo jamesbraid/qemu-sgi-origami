@@ -520,7 +520,9 @@ found narrows the choice.
 
 In big-endian 64-bit mode the model keeps the old upper half on a partial
 ``LWR``, for every family member; other MIPS CPUs keep QEMU's generic
-sign fill. This follows a software expectation: SGI's online processor
+sign fill. For the R12000, R12000A, R14000 and R16000 this is a model
+choice whose hardware result is unknown; only the R10000's is a cleared
+model choice. This follows a software expectation: SGI's online processor
 random-instruction diagnostic for IRIX 6.5.30m on IP27 expects the upper
 half kept, and Linux's pre-Release-6 instruction emulator keeps it too.
 Neither is a measurement of R10000 silicon.
@@ -703,10 +705,11 @@ Tests
   board's.
 - ``tests/qtest/sn0-qtest-cpu-test.c``: the ordinary timer rules
   (``/sn0/qtest/r10000-timer``, ``r14000-timer``); the adjacent-write
-  recovery on all four types; partial ``LWR`` on the R10000, R14000 and
-  R16000; R12000 profile validation, both block sizes and 4 MiB; R12000
-  migration, including refused block-size and FPU-word mismatches; and
-  R12000 counter selectors and counter IP7 apart from Count/Compare IP7.
+  recovery on all four types; partial ``LWR`` on the R10000, R12000,
+  R12000A, R14000 and R16000; R12000 profile validation, both block sizes
+  and 4 MiB; R12000 migration, including refused block-size and FPU-word
+  mismatches; and R12000 counter selectors and counter IP7 apart from
+  Count/Compare IP7.
 - ``tests/qtest/octane-timer-test.c``: the Count-sample window on
   ``octane`` and ``octane2`` under ``-icount shift=10``, with crossed
   targets after a Count read and a Count write and the six controls the
