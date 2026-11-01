@@ -780,6 +780,11 @@ const mips_def_t mips_defs[] =
             .compare_match_is_continuous = true,
             .count_compare_adjacent_recovery = true,
             .mtc0_entrylo_moves_64_bits = true,
+            /*
+             * Model choice: the architecture allows preserving or
+             * sign-extending the upper word. Origami's R10000-family
+             * identity datasheet, section "Partial LWR in 64-bit mode".
+             */
             .partial_lwr_preserves_upper = true,
             .pamask_full_at_reset = true,
             .ksu_3_is_user_mode = true,
@@ -847,6 +852,11 @@ const mips_def_t mips_defs[] =
             .compare_match_is_continuous = true,
             .count_compare_adjacent_recovery = true,
             .mtc0_entrylo_moves_64_bits = true,
+            /*
+             * Model choice; the hardware result for this part is unknown.
+             * Origami's R10000-family identity datasheet, section
+             * "Partial LWR in 64-bit mode".
+             */
             .partial_lwr_preserves_upper = true,
             .pamask_full_at_reset = true,
             .ksu_3_is_user_mode = true,
@@ -926,6 +936,11 @@ const mips_def_t mips_defs[] =
             .compare_match_is_continuous = true,
             .count_compare_adjacent_recovery = true,
             .mtc0_entrylo_moves_64_bits = true,
+            /*
+             * Model choice; the hardware result for this part is unknown.
+             * Origami's R10000-family identity datasheet, section
+             * "Partial LWR in 64-bit mode".
+             */
             .partial_lwr_preserves_upper = true,
             .pamask_full_at_reset = true,
             .ksu_3_is_user_mode = true,
@@ -1011,6 +1026,11 @@ const mips_def_t mips_defs[] =
             .compare_match_is_continuous = true,
             .count_compare_adjacent_recovery = true,
             .mtc0_entrylo_moves_64_bits = true,
+            /*
+             * Model choice; the hardware result for this part is unknown.
+             * Origami's R10000-family identity datasheet, section
+             * "Partial LWR in 64-bit mode".
+             */
             .partial_lwr_preserves_upper = true,
             .pamask_full_at_reset = true,
             .ksu_3_is_user_mode = true,

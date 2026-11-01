@@ -714,6 +714,24 @@ static void test_r14000_word_loads(void)
                        true);
 }
 
+/*
+ * Partial LWR keeps bits 63:32 on the R12000 and R12000A as on the other
+ * parts: a model choice the architecture permits, hardware result unknown.
+ * The expected words carry a nonzero upper half and old bit 31 both ways.
+ */
+static void test_r12000_word_loads(void)
+{
+    run_word_load_test("-M malta -m 64M -nic none -vga none",
+                       R12000_CPU_4M ",big-endian=on", true);
+}
+
+static void test_r12000a_word_loads(void)
+{
+    run_word_load_test("-M malta -m 64M -nic none -vga none",
+                       R12000_CPU_4M ",big-endian=on,r12000-variant=vr12000a",
+                       true);
+}
+
 static void test_r16000_word_loads(void)
 {
     run_word_load_test("-M malta -m 64M -nic none -vga none",
@@ -1740,6 +1758,9 @@ int main(int argc, char **argv)
         qtest_add_func("/sn0/qtest/r10000-tlb-conflict-after-reset",
                        test_r10000_tlb_conflict_after_reset);
         qtest_add_func("/sn0/qtest/r14000-word-loads", test_r14000_word_loads);
+        qtest_add_func("/sn0/qtest/r12000-word-loads", test_r12000_word_loads);
+        qtest_add_func("/sn0/qtest/r12000a-word-loads",
+                       test_r12000a_word_loads);
         qtest_add_func("/r16000/word-loads", test_r16000_word_loads);
     }
     qtest_add_func("/sn0/qtest/r10000-timer", test_r10000_timer);
