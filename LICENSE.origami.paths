@@ -1,4 +1,5 @@
 .github/workflows/build.yml
+.github/workflows/leak-scan.yml
 .github/workflows/merge-queue.yml
 .github/workflows/nightly.yml
 .github/workflows/sanitizer.yml

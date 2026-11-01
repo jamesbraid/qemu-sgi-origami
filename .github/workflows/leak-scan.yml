@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Scan every tracked file for the private identifiers the pull-request check
+# looks for in a change. That check reads only what a change adds, so it
+# cannot see text that was fine when it landed and that the private list has
+# since learned to match. The full run before each land scans the tree as
+# well; this workflow covers a push straight to the trunk and the nightly
+# drift. The list arrives as an Actions secret and the check prints rule ids
+# and file:line, never the patterns. Only the main repository requires it:
+# a fork without the secret skips with a notice.
+name: whole-tree private identifier scan
+
+on:
+  push:
+    branches: [sgi-origami]
+  schedule:
+    - cron: "47 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  # A newer push supersedes a scan that is still running.
+  group: leak-scan-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  scan-tree:
+    if: ${{ github.server_url != 'https://github.com' }}
+    runs-on: ${{ vars.CI_RUNNER }}
+    # The scan takes about two minutes; this is a hang guard.
+    timeout-minutes: 20
+    container:
+      image: ${{ vars.CI_JOB_IMAGE }}
+      credentials:
+        username: ${{ vars.CI_REGISTRY_USER }}
+        password: ${{ secrets.CI_BOT_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: no private identifiers in the tree
+        env:
+          SGI_LEAK_DENYLIST: ${{ secrets.SGI_LEAK_DENYLIST }}
+          SGI_LEAK_REQUIRE: ${{ github.repository == 'jamesb/qemu' && '1' || '' }}
+        run: |
+          set +x
+          python3 scripts/ci/sgi-leak-check.py --tree

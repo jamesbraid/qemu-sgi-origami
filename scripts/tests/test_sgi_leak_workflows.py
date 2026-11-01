@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-3-Clause
-"""Check that the merge queue names no account or host in its workflow.
+"""Check that the workflows run the private identifier scan where it must
+run, and that the merge queue names no account or host in its file.
 
-The tests read the workflow file, so a later edit cannot put a literal
-name back.
+The scan itself is tested in test_sgi_leak_check.py. These tests read the
+workflow files, so a later edit cannot quietly drop the whole-tree scan
+from the places the repository relies on it, or turn the pull-request
+check from a diff scan into a slow tree scan.
 """
 
 import pathlib
@@ -14,6 +17,7 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / '.github/workflows'
+SCAN = 'scripts/ci/sgi-leak-check.py'
 
 
 def load(name):
@@ -24,6 +28,59 @@ def load(name):
 def steps_running(job, needle):
     return [s for s in job.get('steps', [])
             if needle in (s.get('run') or '')]
+
+
+class TreeScanWorkflowTests(unittest.TestCase):
+    def test_scan_runs_on_trunk_pushes_and_nightly(self):
+        _text, wf = load('leak-scan.yml')
+        # PyYAML reads the bare key "on" as True.
+        triggers = wf.get('on', wf.get(True))
+        self.assertEqual(triggers['push']['branches'], ['sgi-origami'])
+        self.assertTrue(triggers['schedule'][0]['cron'])
+        self.assertIn('workflow_dispatch', triggers)
+
+    def test_scan_is_the_whole_tree_and_fails_closed_on_the_main_repo(self):
+        _text, wf = load('leak-scan.yml')
+        steps = steps_running(wf['jobs']['scan-tree'], f'{SCAN} --tree')
+        self.assertEqual(len(steps), 1)
+        env = steps[0]['env']
+        self.assertEqual(env['SGI_LEAK_DENYLIST'],
+                         '${{ secrets.SGI_LEAK_DENYLIST }}')
+        self.assertIn("github.repository == 'jamesb/qemu'",
+                      env['SGI_LEAK_REQUIRE'])
+        self.assertIn('set +x', steps[0]['run'])
+
+    def test_full_run_scans_the_tree_before_a_land(self):
+        _text, wf = load('build.yml')
+        job = wf['jobs']['full-part']
+        steps = steps_running(job, f'{SCAN} --tree')
+        self.assertEqual(len(steps), 1)
+        self.assertIn("startsWith(matrix.part, 'functional')", steps[0]['if'])
+        env = steps[0]['env']
+        self.assertEqual(env['SGI_LEAK_DENYLIST'],
+                         '${{ secrets.SGI_LEAK_DENYLIST }}')
+        self.assertIn("github.repository == 'jamesb/qemu'",
+                      env['SGI_LEAK_REQUIRE'])
+
+    def test_pull_request_check_stays_a_diff_scan(self):
+        text, wf = load('build.yml')
+        self.assertEqual(wf['name'], 'build and register suite')
+        job = wf['jobs']['build-and-qtest']
+        steps = steps_running(job, SCAN)
+        self.assertEqual(len(steps), 1)
+        self.assertIn('--base', steps[0]['run'])
+        self.assertNotIn('--tree', steps[0]['run'])
+        self.assertEqual(steps[0]['if'],
+                         "${{ github.event_name == 'pull_request' }}")
+
+    def test_no_workflow_prints_the_list(self):
+        for path in WORKFLOWS.glob('*.yml'):
+            text = path.read_text()
+            self.assertIsNone(
+                re.search(r'(echo|printf|cat)[^\n]*SGI_LEAK_DENYLIST', text),
+                path.name)
+            if '--tree' in text:
+                self.assertIn('set +x', text, path.name)
 
 
 class MergeQueueNamesTests(unittest.TestCase):
