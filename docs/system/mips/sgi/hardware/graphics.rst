@@ -94,8 +94,8 @@ expectation*:
 The table cites OpenBSD ``sys/arch/sgi/xbow/xbowdevs`` and
 ``sys/arch/sgi/xbow/impact_xbow.c`` at
 ``2df91d80c104636deeef8124252ddd5951b55fbf``, and Linux
-``arch/mips/include/asm/xtalk/xwidget.h`` at
-``2f9060b1db4aa2c21c248e34476d8936a2b69cf6``. OpenBSD matches an
+``arch/mips/include/asm/xtalk/xwidget.h`` at ``db2ddb871435``, lines
+90-108, which defines all six names. OpenBSD matches an
 ImpactSR board on exactly the pair ``0x2aa``/``0xc003``
 (``impact_xbow.c`` lines 61 and 62).
 
