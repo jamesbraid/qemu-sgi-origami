@@ -1717,6 +1717,97 @@ static void l1_o3k_brick_print(SGIL1State *s)
               !l1_is_cxbrick(s) ? 'C' : (char)l1_brick_type_character(s));
 }
 
+/*
+ * "serial" of a Chimera interface board: the serial numbers and the time in
+ * "%m/%d/%Y %X %Z" form. The brick serial comes from the same lookup as
+ * brick, so an unset serial prints the C library's null text, and with no
+ * time zone set the library's default name is GMT; both are inferred. The
+ * "Security: OFF" suffix follows only when a security setting is non-zero,
+ * and the model has none.
+ */
+static void l1_chimera_serial(SGIL1State *s)
+{
+    struct tm tm;
+    char when[40];
+
+    qemu_get_timedate(&tm, s->clock_offset);
+    strftime(when, sizeof(when), "%m/%d/%Y %H:%M:%S GMT", &tm);
+    if (!s->brick_serial || !s->brick_serial[0] ||
+        !s->system_serial || !s->system_serial[0]) {
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: serial: an unset serial prints "
+                      "(null), and the time zone name GMT, by inference\n");
+    }
+    l1_printf(s, "BSN: %s    SSN: %s    Time: %s\r\n",
+              s->brick_serial && s->brick_serial[0] ? s->brick_serial :
+                                                      "(null)",
+              s->system_serial && s->system_serial[0] ? s->system_serial :
+                                                        "(null)", when);
+}
+
+/*
+ * "serial all" of a Chimera interface board. The Data table and the EEPROM
+ * row formats are recorded, and so are the row lists of the 2U and
+ * workstation profiles (inferred to belong to these letters). Only the node
+ * board has a record in the model; the other positions print "no hardware
+ * detected". Where a standalone brick's reference serials come from is not
+ * recorded, so those rows read NVRAM and "not set". The brick-serial block
+ * ends with an empty line and the EEPROM header starts with a line end of
+ * its own, which leaves two empty lines (inferred); the header ends in four
+ * spaces and the rule in one. Q uses the 2U list. The template allows
+ * EEPROM or NVRAM for the local system serial: where it is held was not
+ * traced, and the Q capture shows NVRAM, so NVRAM is printed.
+ */
+static void l1_o300_board_fields(SGIL1State *s, unsigned component,
+                                 char fields[5][64]);
+
+static bool l1_chimera_serial_all(SGIL1State *s)
+{
+    static const char *const list_2u[] = {
+        "INTERFACE", "IO9", "ODYSSEY", "RISER", "NODE", "SNOWBALL",
+        "PS 1", "PS 2",
+    };
+    static const char *const list_ws[] = {
+        "INTERFACE", "IO9", "ODYSSEY", "SNOWBALL", "NODE", "IO DGHTR",
+    };
+    const char *const *list = s->brick_type_code == '9' ? list_ws : list_2u;
+    unsigned count = s->brick_type_code == '9' ? ARRAY_SIZE(list_ws) :
+                                                 ARRAY_SIZE(list_2u);
+    char node[5][64] = { "", "", "", "", "" };
+    const char *system_serial = s->system_serial && s->system_serial[0] ?
+                                s->system_serial : "not set";
+    const char *brick_serial = s->brick_serial && s->brick_serial[0] ?
+                               s->brick_serial : "not set";
+
+    l1_o300_board_fields(s, 0, node);
+    qemu_log_mask(LOG_UNIMP, "sgi-l1: serial all: reference serial "
+                  "locations and values and the local system serial's "
+                  "location (NVRAM chosen) are not recorded, and only the "
+                  "node board has a record\n");
+    l1_printf(s,
+              "Data                            Location      Value\r\n"
+              "------------------------------  ------------  --------\r\n"
+              "Local System Serial Number      %-12s  %s\r\n"
+              "Reference System Serial Number  %-12s  %s\r\n"
+              "Local Brick Serial Number       %-12s  %s\r\n"
+              "Reference Brick Serial Number   %-12s  %s\r\n"
+              "\r\n\r\n"
+              "EEPROM      Product Name    Serial         "
+              "Part Number           Rev  T/W    \r\n"
+              "----------  --------------  -------------  "
+              "--------------------  ---  ------ \r\n",
+              "NVRAM", system_serial, "NVRAM", "not set",
+              "EEPROM", brick_serial, "NVRAM", "not set");
+    for (unsigned i = 0; i < count; i++) {
+        if (!strcmp(list[i], "NODE")) {
+            l1_printf(s, "%-10s  %-14s  %-13s  %-20s  %-3s  %-6s\r\n",
+                      "NODE", node[0], node[1], node[2], node[3], node[4]);
+        } else {
+            l1_printf(s, "%-10s  no hardware detected\r\n", list[i]);
+        }
+    }
+    return true;
+}
+
 /* The type names of the Chimera interface boards, by brick type letter. */
 static const char *l1_chimera_type_name(const SGIL1State *s)
 {
@@ -2396,6 +2487,13 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
     } else if (argc == 1 && l1_chimera_type_name(s) &&
                l1_word(argv[0], "config", "cfg")) {
         l1_chimera_config(s);
+    } else if (argc == 1 && l1_chimera_type_name(s) &&
+               !strcmp(argv[0], "serial")) {
+        l1_chimera_serial(s);
+    } else if (argc == 2 && l1_chimera_type_name(s) &&
+               !strcmp(argv[0], "serial") && !strcmp(argv[1], "all") &&
+               l1_chimera_serial_all(s)) {
+        /* Printed by l1_chimera_serial_all(). */
     } else if (argc == 1 && !strcmp(argv[0], "env") && l1_chimera_env(s)) {
         /* Printed by l1_chimera_env(). */
     } else if ((!strcmp(argv[0], "env") || !strcmp(argv[0], "fan")) &&
