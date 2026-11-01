@@ -45,6 +45,11 @@ class RunningPageTests(unittest.TestCase):
         self.assertIn(":test:`", text)
         self.assertEqual(rd.test_references(text), [])
 
+    def test_manual_commands_test_is_registered(self):
+        meson = (ROOT / "tests/functional/mips64/meson.build").read_text()
+        self.assertTrue("'sgi_manual_commands'" in meson,
+                        "register sgi_manual_commands in meson.build")
+
     def test_every_generated_table_renders(self):
         for page, items in rd.FAMILIES.items():
             for product in items:

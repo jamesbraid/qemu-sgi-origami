@@ -9,6 +9,11 @@ test_mips64_timeouts = {
   # that for a heavily contended CI host; the previous unlisted default
   # of 90 left under half.
   'sn0_smp' : 240,
+  # Starts each command line the SGI manual's running pages show, and each
+  # one they generate, paused at reset with placeholder files: a few dozen
+  # launches that each end before the first instruction, 33s together on
+  # 2026-11-01. The budget bounds a hung launch.
+  'sgi_manual_commands' : 300,
   # Six Origin 200 reset checks, each completing twenty resets across
   # two reset mechanisms. The 900-second budget preserves the combined
   # budget for the three former scripts under a contended CI host.
@@ -405,6 +410,16 @@ if sgi_roms_available
   tests_mips64_system_thorough += ['mips_tlb_replacement']
   test_mips64_timeouts += {'mips_tlb_replacement': 300}
   test_mips64_system_extra_deps += {'timer_stall': sgi_timerstall_rom}
+endif
+
+# The manual-command test creates stores with qemu-sgi-machine-init, which
+# a system build makes only with the other tools. Without it the test is
+# not registered, and with it the test depends on the tool.
+if is_variable('qemu_sgi_machine_init')
+  tests_mips64_system_quick += ['sgi_manual_commands']
+  test_mips64_system_extra_deps += {
+    'sgi_manual_commands': qemu_sgi_machine_init,
+  }
 endif
 
 # Preserve the SGI suite membership before adding the general Malta test.
