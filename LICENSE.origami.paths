@@ -798,6 +798,7 @@ tests/functional/mips64/test_prom_smdk_origin300_4cpu.py
 tests/functional/mips64/test_prom_smdk_origin300_pair.py
 tests/functional/mips64/test_r10000_tlb_cache.py
 tests/functional/mips64/test_r10k_fpu.py
+tests/functional/mips64/test_sgi_manual_commands.py
 tests/functional/mips64/test_sgi_roms.py
 tests/functional/mips64/test_sn0_reset.py
 tests/functional/mips64/test_sn0_smp.py
