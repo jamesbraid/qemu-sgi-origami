@@ -736,6 +736,7 @@ const VMStateDescription vmstate_mips_cpu = {
     .subsections = (const VMStateDescription * const []) {
         &mips_vmstate_r16000_profile,
         &mips_vmstate_r12000_profile,
+        &mips_vmstate_r10k_syndrome,
         &mips_vmstate_nmi,
         &mips_vmstate_r5000_modes,
         &mips_vmstate_timer,

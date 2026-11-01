@@ -4054,23 +4054,32 @@ static void test_r12000a_migration_mismatch(void)
 }
 
 /* Locate the exact same-build subsection, avoiding its JSON description. */
-static size_t a_profile_offset(const uint8_t *data, size_t len, size_t *header)
+static size_t a_subsection_offset(const uint8_t *data, size_t len,
+                                  const char *name_str, size_t *header)
 {
-    static const char name[] = "cpu/r12000-profile";
+    char name[32];
     size_t found = 0;
     unsigned int hits = 0;
+    size_t n = strlen(name_str);
 
-    for (size_t i = 2; i + sizeof(name) - 1 + 4 + 16 <= len; i++) {
-        if (data[i - 2] == 5 && data[i - 1] == sizeof(name) - 1 &&
-            !memcmp(data + i, name, sizeof(name) - 1) &&
-            ldl_be_p(data + i + sizeof(name) - 1) == 1) {
+    g_assert_cmpuint(n, <, sizeof(name));
+    memcpy(name, name_str, n);
+    for (size_t i = 2; i + n + 4 + 16 <= len; i++) {
+        if (data[i - 2] == 5 && data[i - 1] == n &&
+            !memcmp(data + i, name, n) &&
+            ldl_be_p(data + i + n) == 1) {
             found = i;
             hits++;
         }
     }
     g_assert_cmpuint(hits, ==, 1);
     *header = found - 2;
-    return found + sizeof(name) - 1 + 4;
+    return found + n + 4;
+}
+
+static size_t a_profile_offset(const uint8_t *data, size_t len, size_t *header)
+{
+    return a_subsection_offset(data, len, "cpu/r12000-profile", header);
 }
 
 static void test_r12000a_migration_malformed(void)
@@ -4257,6 +4266,182 @@ static void test_r12000a_migration_register_image(void)
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
+/*
+ * The R14000 and R16000 carry the secondary-cache syndrome field with no
+ * variant selector. Plain R12000 is the control that fails if the field
+ * leaks onto every CPU.
+ */
+typedef struct SyndromeCpu {
+    const char *name;
+    const char *options;
+} SyndromeCpu;
+
+static const SyndromeCpu syndrome_cpus[] = {
+    { "r14000", "R14000" },
+    { "r16000", R16000_CPU },
+};
+
+static void test_syndrome_field(gconstpointer opaque)
+{
+    const SyndromeCpu *c = opaque;
+    static const uint32_t upper[] = { 0, 0xff800000, 0x55000000, 0x00800000 };
+    static const uint32_t lower[] = { 0, 0x10, 0x3e, 0x3ff };
+    ACPU a = a_start(c->options, "", true);
+    uint32_t out[7];
+
+    /* Before any error the field reads zero. */
+    g_assert_cmpuint(a_syndrome(&a), ==, 0);
+    g_assert_false(a_captured(a.qts, A_FIXTURE));
+    a_report(a.qts, A_FIXTURE, 0, 1, 0, 0x155, true);
+    g_assert_cmpuint(a_syndrome(&a), ==, 0x155);
+    /* Good traffic and a CacheOp read leave the last error in place. */
+    a_report(a.qts, A_FIXTURE, 0, 0, 0, 0, true);
+    a_report(a.qts, A_FIXTURE, 1, 1, 1, 0x42, true);
+    g_assert_cmpuint(a_syndrome(&a), ==, 0x155);
+    a_write(&a, 26, 0, 0xffffffff); /* CP0 ECC is not a syndrome input. */
+    g_assert_cmpuint(a_syndrome(&a), ==, 0x155);
+    a_write(&a, 25, 1, 0x12345678);
+    for (unsigned int i = 0; i < ARRAY_SIZE(upper); i++) {
+        a_write(&a, 25, 0, upper[i] | lower[i]);
+        a_snapshot(&a, out);
+        g_assert_cmphex(out[0] >> 23, ==, 0x155);
+        g_assert_cmphex(out[1], ==, 0x12345678);
+        /* Syndrome bit 31 does not raise the counter interrupt. */
+        g_assert_cmphex(out[4] & 0x8000, ==, 0);
+    }
+    a_quit(&a);
+}
+
+static void test_syndrome_isolation(gconstpointer opaque)
+{
+    const SyndromeCpu *c = opaque;
+    static const char second[] = "/machine/peripheral/a-second";
+    ACPU a = a_start(c->options, "-smp 2 -device mips-cpu-exception-fixture,"
+                                 "id=a-second,cpu-index=1", false);
+
+    a_report(a.qts, A_FIXTURE, 0, 1, 0, 0x155, true);
+    g_assert_cmpuint(a_private_syndrome(a.qts, second), ==, 0);
+    g_assert_false(a_captured(a.qts, second));
+    a_report(a.qts, second, 1, 2, 0, 0x0aa, true);
+    g_assert_cmpuint(a_private_syndrome(a.qts, A_FIXTURE), ==, 0x155);
+    g_assert_cmpuint(a_private_syndrome(a.qts, second), ==, 0x0aa);
+    a_quit(&a);
+}
+
+static void test_syndrome_absent_on_plain_r12000(void)
+{
+    g_autofree char *cpu = a_cpu_options(NULL, 3, 3);
+    ACPU a = a_start(cpu, "", true);
+    uint32_t out[7];
+
+    /* The same injection the R14000 and R16000 capture is refused. */
+    a_report(a.qts, A_FIXTURE, 0, 1, 0, 0x155, false);
+    a_write(&a, 25, 0, 0xff800010);
+    a_snapshot(&a, out);
+    g_assert_cmphex(out[0], ==, 0x10);
+    g_assert_cmpuint(a_private_syndrome(a.qts, A_FIXTURE), ==, 0);
+    g_assert_false(a_captured(a.qts, A_FIXTURE));
+    a_quit(&a);
+}
+
+static void test_syndrome_migration(gconstpointer opaque)
+{
+    const SyndromeCpu *c = opaque;
+
+    /* Not captured, captured zero and captured nonzero. */
+    for (unsigned int state = 0; state < 3; state++) {
+        g_autofree char *dir = g_dir_make_tmp("syndrome-migrate-XXXXXX", NULL);
+        g_autofree char *socket = g_build_filename(dir, "state.sock", NULL);
+        g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+        g_autofree char *incoming = g_strdup_printf("-incoming %s", uri);
+        ACPU from = a_start(c->options, "", true);
+        ACPU to = a_start(c->options, incoming, false);
+        uint32_t syndrome = state == 2 ? 0x1a5 : 0;
+
+        if (state >= 1) {
+            a_report(from.qts, A_FIXTURE, 1, 1, 0, syndrome, true);
+        }
+        sgi_migrate_stopped(from.qts, uri);
+        sgi_wait_migration(to.qts, "completed");
+        g_assert_cmpuint(a_syndrome(&to), ==, syndrome);
+        g_assert_cmpuint(a_private_syndrome(to.qts, A_FIXTURE), ==, syndrome);
+        g_assert_cmpint(a_captured(to.qts, A_FIXTURE), ==, state >= 1);
+        a_quit(&from);
+        a_quit(&to);
+        g_unlink(socket);
+        g_assert_cmpint(g_rmdir(dir), ==, 0);
+    }
+}
+
+static void test_syndrome_migration_malformed(gconstpointer opaque)
+{
+    const SyndromeCpu *c = opaque;
+    g_autofree char *dir = g_dir_make_tmp("syndrome-stream-XXXXXX", NULL);
+    g_autofree char *stream = g_build_filename(dir, "baseline", NULL);
+    g_autofree char *quoted = g_shell_quote(stream);
+    g_autofree char *uri = g_strdup_printf("exec:cat > %s", quoted);
+    g_autofree char *contents = NULL;
+    ACPU from = a_start(c->options, "", true);
+    gsize length;
+    size_t body, header;
+
+    a_report(from.qts, A_FIXTURE, 0, 2, 0, 0x155, true);
+    sgi_migrate_stopped(from.qts, uri);
+    a_quit(&from);
+    g_assert_true(g_file_get_contents(stream, &contents, &length, NULL));
+    body = a_subsection_offset((uint8_t *)contents, length,
+                               "cpu/r10k-syndrome", &header);
+    g_assert_cmphex(lduw_be_p(contents + body), ==, 0x155);
+    g_assert_cmpuint((uint8_t)contents[body + 2], ==, 1);
+    for (unsigned int kind = 0; kind < 5; kind++) {
+        g_autofree char *file = g_strdup_printf("%s/input-%u", dir, kind);
+        g_autofree char *copy = g_memdup2(contents, length);
+        g_autofree char *input = g_shell_quote(file);
+        g_autofree char *read_uri = g_strdup_printf("exec:cat %s", input);
+        ACPU to;
+        size_t size = length;
+
+        switch (kind) {
+        case 1:
+            stw_be_p(copy + body, 0x200);
+            break;
+        case 2:
+            copy[body + 2] = 2; /* Not a boolean byte. */
+            break;
+        case 3:
+            copy[body + 2] = 0; /* Not captured, yet nonzero. */
+            break;
+        case 4:
+            /* Without its subsection the stream is not a syndrome CPU's. */
+            memmove(copy + header, copy + body + 3, length - body - 3);
+            size -= body + 3 - header;
+            break;
+        default:
+            break;
+        }
+        g_assert_true(g_file_set_contents(file, copy, size, NULL));
+        to = a_start(c->options, "-incoming defer", false);
+        if (kind) {
+            qtest_set_expected_status(to.qts, 1);
+            qtest_qmp_send(to.qts,
+                "{'execute':'migrate-incoming',"
+                "'arguments':{'uri':%s}}", read_uri);
+            a_wait_rejected(&to);
+        } else {
+            qtest_qmp_assert_success(to.qts,
+                "{'execute':'migrate-incoming',"
+                "'arguments':{'uri':%s}}", read_uri);
+            sgi_wait_migration(to.qts, "completed");
+            g_assert_cmpuint(a_syndrome(&to), ==, 0x155);
+            g_assert_true(a_captured(to.qts, A_FIXTURE));
+        }
+        a_quit(&to);
+        g_unlink(file);
+    }
+    g_unlink(stream);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4280,6 +4465,25 @@ int main(int argc, char **argv)
                    test_r12000a_migration_mismatch);
     qtest_add_func("/r12000a/migration-malformed",
                    test_r12000a_migration_malformed);
+    qtest_add_func("/r12000/syndrome-absent",
+                   test_syndrome_absent_on_plain_r12000);
+    for (unsigned int i = 0; i < ARRAY_SIZE(syndrome_cpus); i++) {
+        g_autofree char *name = NULL;
+
+        name = g_strdup_printf("/%s/syndrome-field", syndrome_cpus[i].name);
+        qtest_add_data_func(name, &syndrome_cpus[i], test_syndrome_field);
+        g_free(name);
+        name = g_strdup_printf("/%s/syndrome-isolation", syndrome_cpus[i].name);
+        qtest_add_data_func(name, &syndrome_cpus[i], test_syndrome_isolation);
+        g_free(name);
+        name = g_strdup_printf("/%s/syndrome-migration", syndrome_cpus[i].name);
+        qtest_add_data_func(name, &syndrome_cpus[i], test_syndrome_migration);
+        g_free(name);
+        name = g_strdup_printf("/%s/syndrome-migration-malformed",
+                               syndrome_cpus[i].name);
+        qtest_add_data_func(name, &syndrome_cpus[i],
+                            test_syndrome_migration_malformed);
+    }
 
     qtest_add_func("/sn0/nmi/entry-and-retrigger",
                    test_nmi_entry_and_retrigger);

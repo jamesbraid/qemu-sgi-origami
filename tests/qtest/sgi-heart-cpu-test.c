@@ -34,6 +34,7 @@
 #define MB_REPAIRED 56
 #define MB_RETIRED 64
 #define MB_CACHEERR_BEFORE 72
+#define MB_PERF0 80
 #define ENTRY 0x800
 #define HANDLER 0x400
 
@@ -82,6 +83,9 @@ static unsigned build_image(SN0Image *p, const HeartCPUCase *c)
     sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_V0, MB_DESTINATION);
     save_cp0(p, SN0_CP0_ERROREPC, MB_ERROREPC);
     save_cp0(p, 27, MB_CACHEERR);
+    /* Performance control 0 holds the R12000A-only syndrome field. */
+    sn0_emit_mfc0(p, SN0_R_T0, 25);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_T0, MB_PERF0);
     /* Repair never acknowledges the separate HEART error latches. */
     sn0_emit_li64(p, SN0_R_T0, c->forced_repair ? ECC_FORCE : 0);
     sn0_emit_i(p, SN0_OPC_SD, SN0_R_S0, SN0_R_T0, 0);
@@ -172,6 +176,8 @@ static void test_double_bit_cpu(gconstpointer data)
     g_assert_cmphex(qtest_readq(s, MAILBOX + MB_ERROREPC), ==, SAVED_ERROREPC);
     g_assert_cmphex(qtest_readq(s, MAILBOX + MB_CACHEERR), ==,
                     qtest_readq(s, MAILBOX + MB_CACHEERR_BEFORE));
+    /* The memory-ECC path never writes the CPU's syndrome field. */
+    g_assert_cmphex(qtest_readl(s, MAILBOX + MB_PERF0) >> 23, ==, 0);
     g_assert_cmphex(qtest_readq(s, MAILBOX + MB_REPAIRED), ==, REPAIRED);
     g_assert_cmphex(qtest_readq(s, WORD), ==, REPAIRED);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==,

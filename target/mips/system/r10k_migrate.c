@@ -593,6 +593,59 @@ const VMStateDescription mips_vmstate_r12000_profile = {
     }
 };
 
+/*
+ * The R14000 and R16000 carry the syndrome field without the R12000
+ * profile, so it travels in a subsection of its own. The staging fields
+ * are the R12000 profile's: the two never apply to one CPU.
+ */
+static bool mips_r10k_syndrome_active(const MIPSCPU *cpu)
+{
+    return !mips_r12000_profile_active(cpu) && mips_r10k_has_syndrome(cpu);
+}
+
+static int mips_r10k_syndrome_pre_load(void *opaque)
+{
+    return mips_r10k_syndrome_active(opaque) ? 0 : -EINVAL;
+}
+
+static int mips_r10k_syndrome_loaded(void *opaque, int version_id)
+{
+    MIPSCPU *cpu = opaque;
+
+    cpu->r10k_profile->migration_r12000_profile_seen = true;
+    return 0;
+}
+
+static const VMStateDescription vmstate_r10k_syndrome = {
+    .name = "mips/r10k-syndrome",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT16(migration_r12000_syndrome, R10KCPUProfile),
+        VMSTATE_UINT8(migration_r12000_captured, R10KCPUProfile),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool mips_r10k_syndrome_needed(void *opaque)
+{
+    return mips_r10k_syndrome_active(opaque);
+}
+
+const VMStateDescription mips_vmstate_r10k_syndrome = {
+    .name = "cpu/r10k-syndrome",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r10k_syndrome_needed,
+    .pre_load = mips_r10k_syndrome_pre_load,
+    .post_load = mips_r10k_syndrome_loaded,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_POINTER(r10k_profile, MIPSCPU,
+                               vmstate_r10k_syndrome, R10KCPUProfile),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 void mips_r10k_profile_pre_save(MIPSCPU *cpu)
 {
     R10KCPUProfile *profile = cpu->r10k_profile;
@@ -607,6 +660,10 @@ void mips_r10k_profile_pre_save(MIPSCPU *cpu)
     }
     if (mips_r16000_profile_active(cpu)) {
         profile->migration_reset_mode = profile->reset_mode;
+    }
+    if (mips_r10k_syndrome_active(cpu)) {
+        profile->migration_r12000_syndrome = profile->r12000a_syndrome;
+        profile->migration_r12000_captured = profile->r12000a_captured;
     }
 }
 
@@ -657,6 +714,14 @@ int mips_r10k_profile_post_load(MIPSCPU *cpu)
             return -EINVAL;
         }
     }
+    if (mips_r10k_syndrome_active(cpu) &&
+        (!profile->migration_r12000_profile_seen ||
+         profile->migration_r12000_syndrome > 0x1ff ||
+         profile->migration_r12000_captured > 1 ||
+         (!profile->migration_r12000_captured &&
+          profile->migration_r12000_syndrome))) {
+        return -EINVAL;
+    }
     /* The cache arrays were sized at realize from the reset SS field. */
     if (env->r10k &&
         extract32(env->CP0_Config0, CP0C0_R10K_SS, 3) !=
@@ -664,7 +729,7 @@ int mips_r10k_profile_post_load(MIPSCPU *cpu)
         return -EINVAL;
     }
 
-    if (mips_r12000_profile_active(cpu)) {
+    if (mips_r12000_profile_active(cpu) || mips_r10k_syndrome_active(cpu)) {
         /* Publish only after all family and variant checks succeed. */
         profile->r12000a_syndrome = profile->migration_r12000_syndrome;
         profile->r12000a_captured = profile->migration_r12000_captured;
