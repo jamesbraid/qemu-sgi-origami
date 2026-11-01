@@ -1969,6 +1969,7 @@ typedef struct {
         ptrdiff_t offset; /* if OBJ_PROP_LINK_CLASS */
     };
     void (*check)(const Object *, const char *, Object *, Error **);
+    void (*notify)(Object *, const char *);
     ObjectPropertyLinkFlags flags;
 } LinkProperty;
 
@@ -2086,6 +2087,9 @@ static void object_set_link_property(Object *obj, Visitor *v,
         object_ref(new_target);
         object_unref(old_target);
     }
+    if (old_target != new_target && prop->notify) {
+        prop->notify(obj, name);
+    }
 }
 
 static Object *object_resolve_link_property(Object *parent, void *opaque,
@@ -2115,6 +2119,7 @@ object_add_link_prop(Object *obj, const char *name,
                      const char *type, void *ptr,
                      void (*check)(const Object *, const char *,
                                    Object *, Error **),
+                     void (*notify)(Object *, const char *),
                      ObjectPropertyLinkFlags flags)
 {
     LinkProperty *prop = g_malloc(sizeof(*prop));
@@ -2127,6 +2132,7 @@ object_add_link_prop(Object *obj, const char *name,
         prop->targetp = ptr;
     }
     prop->check = check;
+    prop->notify = notify;
     prop->flags = flags;
 
     full_type = g_strdup_printf("link<%s>", type);
@@ -2147,7 +2153,16 @@ object_property_add_link(Object *obj, const char *name,
                                        Object *, Error **),
                          ObjectPropertyLinkFlags flags)
 {
-    return object_add_link_prop(obj, name, type, targetp, check, flags);
+    return object_add_link_prop(obj, name, type, targetp, check, NULL, flags);
+}
+
+ObjectProperty *object_property_add_link_with_notify(
+    Object *obj, const char *name, const char *type, Object **targetp,
+    void (*check)(const Object *, const char *, Object *, Error **),
+    void (*notify)(Object *, const char *), ObjectPropertyLinkFlags flags)
+{
+    return object_add_link_prop(obj, name, type, targetp, check, notify,
+                                flags);
 }
 
 ObjectProperty *
@@ -2186,7 +2201,7 @@ object_property_add_const_link(Object *obj, const char *name,
 {
     return object_add_link_prop(obj, name,
                                 object_get_typename(target), target,
-                                NULL, OBJ_PROP_LINK_DIRECT);
+                                NULL, NULL, OBJ_PROP_LINK_DIRECT);
 }
 
 const char *object_get_canonical_path_component(const Object *obj)

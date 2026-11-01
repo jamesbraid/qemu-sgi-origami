@@ -296,7 +296,7 @@ static void line_start(SGIO2GBEState *s)
     }
 }
 
-static void sync_clock(SGIO2GBEState *s)
+static void sync_clock(SGIO2GBEState *s, bool publish_outputs)
 {
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     uint64_t den, num = clock_rate(s, &den);
@@ -331,7 +331,9 @@ static void sync_clock(SGIO2GBEState *s)
             s->vt[0] = y << 12 | x;
         }
     }
-    outputs(s);
+    if (publish_outputs) {
+        outputs(s);
+    }
 }
 
 static void arm(SGIO2GBEState *s)
@@ -341,20 +343,26 @@ static void arm(SGIO2GBEState *s)
     unsigned x = lo(s->vt[0]), next;
     static const unsigned horizontal[] = { 3, 5, 10, 12, 13, 15, 17, 18 };
     __uint128_t delta;
+    bool connected = false;
 
     timer_del(s->timer);
     if (!s->functional || !num || !xp || !yp || (s->vt[0] & FREEZE)) {
         return;
     }
     next = xp - x;
-    for (unsigned i = 0; i < ARRAY_SIZE(horizontal); i++) {
-        unsigned r = s->vt[horizontal[i]];
-        unsigned a = lo(r), b = hi(r);
-        if (a > x && a < xp) {
-            next = MIN(next, a - x);
-        }
-        if (b > x && b < xp) {
-            next = MIN(next, b - x);
+    for (unsigned i = 0; i < TIMING_COUNT; i++) {
+        connected |= s->timing[i] != NULL;
+    }
+    if (connected) {
+        for (unsigned i = 0; i < ARRAY_SIZE(horizontal); i++) {
+            unsigned r = s->vt[horizontal[i]];
+            unsigned a = lo(r), b = hi(r);
+            if (a > x && a < xp) {
+                next = MIN(next, a - x);
+            }
+            if (b > x && b < xp) {
+                next = MIN(next, b - x);
+            }
         }
     }
     delta = (__uint128_t)next * den * NANOSECONDS_PER_SECOND;
@@ -362,10 +370,20 @@ static void arm(SGIO2GBEState *s)
     timer_mod(s->timer, s->last_ns + MAX((delta + num - 1) / num, 1));
 }
 
+static void timing_output_changed(DeviceState *dev, const char *name, int n)
+{
+    SGIO2GBEState *s = SGI_O2_GBE(dev);
+
+    (void)name;
+    (void)n;
+    sync_clock(s, false);
+    arm(s);
+}
+
 static void timer_tick(void *opaque)
 {
     SGIO2GBEState *s = opaque;
-    sync_clock(s);
+    sync_clock(s, true);
     arm(s);
 }
 
@@ -763,7 +781,7 @@ static uint64_t read_reg(void *opaque, hwaddr addr, unsigned size)
     if (addr == 0x80000 || addr == 0x80004) {
         return s->vc[(addr - 0x80000) / 4];
     }
-    sync_clock(s);
+    sync_clock(s, true);
     arm(s);
     if (addr >= 0x10000 && addr < 0x10050) {
         return s->vt[(addr - 0x10000) / 4];
@@ -872,7 +890,7 @@ static void write_reg(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         s->vc[(addr - 0x80000) / 4] = v & FIELDS;
         return;
     }
-    sync_clock(s);
+    sync_clock(s, true);
     if (addr >= 0x10000 && addr < 0x10050) {
         index = (addr - 0x10000) / 4;
         v &= index == 0 ? FREEZE | FIELDS : index == 6 ? 127 : FIELDS;
@@ -1030,7 +1048,7 @@ static const MemoryRegionOps gbe_ops = {
 static void input(void *opaque, int n, int level)
 {
     SGIO2GBEState *s = opaque;
-    sync_clock(s);
+    sync_clock(s, true);
     if (n < 10) {
         s->aux_in = deposit32(s->aux_in, n, 1, !!level);
     } else if (n == 10) {
@@ -1104,7 +1122,7 @@ static void reset_enter(Object *obj, ResetType type)
 static int pre_save(void *opaque)
 {
     SGIO2GBEState *s = opaque;
-    sync_clock(s);
+    sync_clock(s, true);
     return (s->i2c[0].state != STOPPED || s->i2c[1].state != STOPPED ||
             s->i2c[0].current_addr >= 0 || s->i2c[1].current_addr >= 0) ?
             -EBUSY : 0;
@@ -1264,7 +1282,9 @@ static void init(Object *obj)
         sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->events[i]);
     }
     qdev_init_gpio_in(dev, input, 12);
-    qdev_init_gpio_out_named(dev, s->timing, "timing", TIMING_COUNT);
+    qdev_init_gpio_out_named_with_notify(dev, s->timing, "timing",
+                                         TIMING_COUNT,
+                                         timing_output_changed);
     qdev_init_gpio_out_named(dev, s->aux_out, "auxiliary", 20);
     s->aux_in = 1023;
     s->sense = true;

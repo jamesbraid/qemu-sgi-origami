@@ -21,6 +21,7 @@
 #include "hw/core/qdev.h"
 #include "hw/core/irq.h"
 #include "qapi/error.h"
+#include "qemu/cutils.h"
 
 static NamedGPIOList *qdev_get_named_gpio_list(DeviceState *dev,
                                                const char *name)
@@ -71,13 +72,48 @@ void qdev_init_gpio_in(DeviceState *dev, qemu_irq_handler handler, int n)
     qdev_init_gpio_in_named(dev, handler, NULL, n);
 }
 
+static void qdev_gpio_out_link_changed(Object *obj, const char *propname)
+{
+    DeviceState *dev = DEVICE(obj);
+    NamedGPIOList *gpio_list;
+
+    QLIST_FOREACH(gpio_list, &dev->gpios, node) {
+        const char *base = gpio_list->name ? gpio_list->name :
+                           "unnamed-gpio-out";
+        size_t len = strlen(base);
+        const char *end;
+        unsigned long n;
+
+        if (!g_str_has_prefix(propname, base) || propname[len] != '[') {
+            continue;
+        }
+        if (qemu_strtoul(propname + len + 1, &end, 10, &n) ||
+            *end != ']' || end[1] || n >= gpio_list->num_out) {
+            return;
+        }
+        if (gpio_list->out_change) {
+            gpio_list->out_change(dev, gpio_list->name, n);
+        }
+        return;
+    }
+}
+
 void qdev_init_gpio_out_named(DeviceState *dev, qemu_irq *pins,
                               const char *name, int n)
+{
+    qdev_init_gpio_out_named_with_notify(dev, pins, name, n, NULL);
+}
+
+void qdev_init_gpio_out_named_with_notify(
+    DeviceState *dev, qemu_irq *pins, const char *name, int n,
+    void (*notify)(DeviceState *dev, const char *name, int n))
 {
     int i;
     NamedGPIOList *gpio_list = qdev_get_named_gpio_list(dev, name);
 
     assert(gpio_list->num_in == 0 || !name);
+    assert(!gpio_list->num_out || gpio_list->out_change == notify);
+    gpio_list->out_change = notify;
 
     if (!name) {
         name = "unnamed-gpio-out";
@@ -87,10 +123,17 @@ void qdev_init_gpio_out_named(DeviceState *dev, qemu_irq *pins,
         gchar *propname = g_strdup_printf("%s[%u]", name,
                                           gpio_list->num_out + i);
 
-        object_property_add_link(OBJECT(dev), propname, TYPE_IRQ,
-                                 (Object **)&pins[i],
-                                 object_property_allow_set_link,
-                                 OBJ_PROP_LINK_STRONG);
+        if (notify) {
+            object_property_add_link_with_notify(
+                OBJECT(dev), propname, TYPE_IRQ, (Object **)&pins[i],
+                object_property_allow_set_link, qdev_gpio_out_link_changed,
+                OBJ_PROP_LINK_STRONG);
+        } else {
+            object_property_add_link(OBJECT(dev), propname, TYPE_IRQ,
+                                     (Object **)&pins[i],
+                                     object_property_allow_set_link,
+                                     OBJ_PROP_LINK_STRONG);
+        }
         g_free(propname);
     }
     gpio_list->num_out += n;

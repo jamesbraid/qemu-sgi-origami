@@ -204,6 +204,7 @@ struct NamedGPIOList {
     qemu_irq *in;
     int num_in;
     int num_out;
+    void (*out_change)(DeviceState *dev, const char *name, int n);
     QLIST_ENTRY(NamedGPIOList) node;
 };
 
@@ -804,6 +805,23 @@ void qdev_init_gpio_out(DeviceState *dev, qemu_irq *pins, int n);
  */
 void qdev_init_gpio_out_named(DeviceState *dev, qemu_irq *pins,
                               const char *name, int n);
+
+/**
+ * qdev_init_gpio_out_named_with_notify: create output GPIOs with link-change
+ *                                       notification
+ * @dev: Device to create output GPIOs for
+ * @pins: Pointer to qemu_irq or qemu_irq array for the GPIO lines
+ * @name: Name to give this array of GPIO lines
+ * @n: Number of GPIO lines to create in this array
+ * @notify: Called after an output connection changes
+ *
+ * Like qdev_init_gpio_out_named(), with a synchronous notification whenever
+ * an output link changes through its QOM property, including qdev connection
+ * helpers and qtest interception.
+ */
+void qdev_init_gpio_out_named_with_notify(
+    DeviceState *dev, qemu_irq *pins, const char *name, int n,
+    void (*notify)(DeviceState *dev, const char *name, int n));
 
 /**
  * qdev_init_gpio_in_named_with_opaque() - create an array of input GPIO lines

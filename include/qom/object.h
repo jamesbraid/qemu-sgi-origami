@@ -1822,6 +1822,28 @@ ObjectProperty *object_property_add_link(Object *obj, const char *name,
                               ObjectPropertyLinkFlags flags);
 
 /**
+ * object_property_add_link_with_notify:
+ * @obj: the object to add a property to
+ * @name: the name of the property
+ * @type: the qobj type of the link
+ * @targetp: a pointer to where the link object reference is stored
+ * @check: callback to veto setting or NULL if the property is read-only
+ * @notify: callback invoked after a successful change to the link target
+ * @flags: additional options for the link
+ *
+ * Like object_property_add_link(), with a synchronous notification after the
+ * target changes. No notification is made for a rejected set, an unchanged
+ * target, or property deletion. The callback runs in the context of the
+ * property setter, after link ownership has been updated.
+ */
+ObjectProperty *object_property_add_link_with_notify(
+    Object *obj, const char *name, const char *type, Object **targetp,
+    void (*check)(const Object *obj, const char *name, Object *val,
+                  Error **errp),
+    void (*notify)(Object *obj, const char *name),
+    ObjectPropertyLinkFlags flags);
+
+/**
  * object_class_property_add_link:
  * @oc: the object class to add a property to
  * @name: the name of the property
