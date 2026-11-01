@@ -53,7 +53,7 @@ Processor
   One fitted processor option: part, clock, secondary cache and the
   reset-mode word the board supplies. Its id names part, clock and cache
   (``r16000-1000mhz-16mb``). The generator holds every R16000 id to one
-  processor; the other parts are not yet held to it, and the Fuel's and
+  processor; the other parts' ids carry no such rule, and the Fuel's and
   the Origin 300's 500 MHz R14000 share ``r14000-500mhz-2mb`` with
   different PRId revisions. ``-cpu`` names only the part.
 

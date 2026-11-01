@@ -115,6 +115,39 @@ class DocsLintTests(unittest.TestCase):
                       self.messages({'hardware/demo.rst': text}))
         self.assertEqual(self.run_lint({'hardware/graphics.rst': text}), [])
 
+    def test_roadmap_phrases(self):
+        for bad in ('The decoder is not yet implemented.',
+                    'The FIFO will be modelled later.',
+                    'Wrapping will be supported.',
+                    'Wrapping is planned.', 'Use a stub for now.',
+                    'Covered in a later page.', 'Reads are yet to be wired.',
+                    'The model does not support it yet.', 'TODO: widths.'):
+            text = GOOD_PART + f'\n{bad}\n'
+            out = self.messages({'hardware/demo.rst': text})
+            self.assertIn('reads as a plan', out, bad)
+
+    def test_roadmap_phrase_reports_the_wrapped_line(self):
+        text = GOOD_PART + '\nThe first line\nwraps, and then the\nmodel will be\nmodelled.\n'
+        self.assertIn('hardware/demo.rst:16: "will be modelled"',
+                      self.messages({'hardware/demo.rst': text}))
+
+    def test_roadmap_phrases_allowed_where_not_a_plan(self):
+        for ok in ('An interrupt not yet delivered stays pending.',
+                   'The sheet says "will be erased\nto read FFH".',
+                   'The ``will be`` field is read back.',
+                   'A request not yet acknowledged is repeated.',
+                   'Writes to this bit will be ignored.',
+                   'Reset will be released by the host.',
+                   'The interrupt is not yet known to the CPU.',
+                   'The status is not yet available to software.',
+                   'The word is not yet decoded when the read starts.',
+                   'The transfer is not yet done.',
+                   'The word is not yet written by software.'):
+            text = GOOD_PART + f'\n{ok}\n'
+            self.assertEqual(self.run_lint({'hardware/demo.rst': text}), [], ok)
+        block = GOOD_PART + '\n.. code-block:: text\n\n   will be TODO\n'
+        self.assertEqual(self.run_lint({'hardware/demo.rst': block}), [])
+
     def test_unlisted_page(self):
         out = self.messages({'hardware/demo.rst': GOOD_PART}, listed=False)
         self.assertIn('not listed in LICENSE.origami.paths', out)

@@ -92,6 +92,9 @@ page under ``docs/system/mips/sgi/``:
   exactly one of the six as ``sgi-ratings`` spells them, in prose and in
   directive bodies such as tables and ``seealso`` blocks, though not in
   literal or code blocks;
+- no phrase that reads as a plan, such as "planned", "for now", "yet to", "will be modelled" or "not
+  yet implemented", outside literal blocks, literals and quoted text; "not yet delivered" and the like describe a hardware state
+  and pass;
 - a "Used in" first paragraph on each part page, except the listed overviews;
 - a listing of the page, and of this guide, in ``LICENSE.origami.paths``.
 
