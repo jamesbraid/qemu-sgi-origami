@@ -88,8 +88,9 @@ and 9 to 15 into a BUZZ B part, and rejects 0 and 4 to 8. gfxinfo prints
 the minor number as the revision's offset less one, so revision 2 is A.1
 and revision 10 is B.1. hinv names the board from the generation and the
 memory size: A with 32 MB is V6, A with 128 MB V8, B with 32 MB V10 and
-B with 128 MB V12. Each of the three is a *software expectation* read from the
-shipped binaries.
+B with 128 MB V12. Each of the three is a *software expectation* of
+the shipped IRIX 6.5.30 binaries; what gfxinfo and hinv print on a
+real machine is *observed* where the table below cites a capture.
 
 The ``product`` property selects one board. It sets the revision, memory
 size, bank count, back-end version and identity record together:
