@@ -21,7 +21,7 @@ SGI fitted one IOC3 chip to many boards, and each board wires up a
 different subset of its functions (:doc:`ioc3`). This page lists the
 boards that carry an IOC3, says how a guest
 decides what each chip fits, and specifies two boards that have no page of
-their own: the MENET XIO board, with a Bridge and four IOC3s that give a
+their own: the MENET :term:`XIO` board, with a :term:`Bridge` and four IOC3s that give a
 module four Fast Ethernet ports and six serial ports, and SGI's
 dual-serial PCI card. QEMU builds the MENET as the ``menet`` preset of
 ``sgi-xio-baseio`` (``hw/mips/sgi/xio-baseio.c`` and
@@ -48,7 +48,7 @@ Sources
 - An SGI engineer's statement that GIGAchannel XIO slots take MENET
   boards, :src:`usenet-9gjuq1`.
 - A stock list that names the dual-serial card, :src:`usenet-a47377f9`.
-- The stock IP27 PROM, :src:`ip27-prom-6.156`.
+- The stock IP27 :term:`PROM`, :src:`ip27-prom-6.156`.
 - Linux ``arch/mips/pci/pci-xtalk-bridge.c``, ``drivers/mfd/ioc3.c`` and
   ``arch/mips/include/asm/sn/klconfig.h`` at ``db2ddb871435``, and
   OpenBSD sgi ``sys/arch/sgi/pci/ioc.c`` at ``2df91d80c104``, as software
@@ -174,7 +174,7 @@ Board catalogue
      - The card's slot (:doc:`pci-expansion`).
    * - Origin 300 IO8 and Fuel
      - ``sgi-baseio`` presets ``io8`` and ``fuel``
-     - Device 4 on the XBridge (Linux ``bridge_setup_io8``,
+     - Device 4 on the :term:`XBridge` (Linux ``bridge_setup_io8``,
        ``bridge_setup_ip34_fuel_sysboard``). Both fit Ethernet, both
        serial ports, parallel and an M48T35 Timekeeper, with a DP83843
        transceiver. Fuel also fits keyboard and mouse (:doc:`xbridge`).
@@ -381,8 +381,8 @@ runs ``ioc3s-enumerate`` and ``populations``:
 - ``onewire-serials-distinct``: the four station-address parts carry
   four serials;
 - ``superio-reaches-hub``: a serial interrupt on each of devices 0 to 2
-  raises Bridge pin ``d + 4``, not ``d``, and reaches the node's Hub;
-- ``placed/widget-alive``: the placed board's widget is in the Crossbow's
+  raises Bridge pin ``d + 4``, not ``d``, and reaches the node's :term:`Hub`;
+- ``placed/widget-alive``: the placed board's widget is in the :term:`Crossbow`'s
   startup-alive population;
 - ``not-a-baseio-preset``, ``refuses-backends-it-cannot-take`` and
   ``io6-refuses-mediaio-ports``: the refusals described above.

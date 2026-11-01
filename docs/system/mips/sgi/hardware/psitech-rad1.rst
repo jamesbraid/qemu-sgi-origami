@@ -20,7 +20,7 @@ chip's own integrated RAMDAC (:src:`ti-tvp4020-programmers-reference p.
    Platform pages: :ref:`sgi-ip27`.
 
 The model is a functional profile for the software that drives the card
-in IRIX 6.5.30: the PsiTech RAD1 kernel driver and the IO6 PROM's graphics
+in IRIX 6.5.30: the PsiTech RAD1 kernel driver and the IO6 :term:`PROM`'s graphics
 textport. It implements the flat rectangle copy, point, rectangle and
 trapezoid fills, palette and bypass DMA paths that software uses, not the
 Permedia 2's 3D pipeline. No capture of a real card exists and the chip
@@ -109,7 +109,7 @@ matches the manual's Region Zero map, *software expectation*. Which PCI
 resources it uses for the framebuffer and the flash is *unknown*; BAR1 and
 BAR2 are the model's choice.
 
-The card is placed as an ordinary PCI device on an Origin 200 Bridge,
+The card is placed as an ordinary PCI device on an Origin 200 :term:`Bridge`,
 ``-device psitech-rad1,bus=pci,addr=N``. It is not part of the graphics
 catalogue that ``query-sgi-machines`` reports
 (:ref:`sgi-sn-graphics-pipes`).

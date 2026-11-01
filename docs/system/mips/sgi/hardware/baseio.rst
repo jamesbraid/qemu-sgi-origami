@@ -19,12 +19,12 @@ these presets (:ref:`sgi-ip35-ip53-io9`).
 
 Every SGI Origin and Onyx2 family machine carries its console, boot
 disk and Ethernet on a small set of PCI devices behind an XIO-to-PCI
-bridge: an IOC3 and one or two SCSI controllers, and on the newer
+bridge: an :term:`IOC3` and one or two SCSI controllers, and on the newer
 boards a USB controller. QEMU models all of these boards as one device,
 ``sgi-baseio`` (``hw/mips/sgi/baseio.c``), with a preset for each board
 design. The device owns the PCI population, the interrupt wiring and the
 board identity. It does not own the bridge. The carrier creates the
-Bridge (Origin 200, Origin 2000, Onyx2) or XBridge (Origin 300, Fuel),
+:term:`Bridge` (Origin 200, Origin 2000, Onyx2) or :term:`XBridge` (Origin 300, Fuel),
 sets its identity, realizes it and passes its PCI bus in the ``pci-bus``
 link property.
 
@@ -32,7 +32,7 @@ The presets are ``ip29`` (the Origin 200 system board's onboard I/O),
 ``io6`` (the Origin 2000 BaseIO), ``io6g`` (the Onyx2 BaseIO-G with its
 MediaIO daughtercard), ``io7`` (the Origin 3000 I-brick's onboard I/O),
 ``io8`` (the Origin 300 IO-8), ``fuel`` (the Fuel
-system board) and the two optional XIO boards ``menet`` and ``mscsi``,
+system board) and the two optional :term:`XIO` boards ``menet`` and ``mscsi``,
 which have their own pages (:doc:`ioc3-boards`, :doc:`mscsi`).
 ``preset`` has no default, and an unknown name is refused. The XIO cards
 (``io6``, ``io6g``, ``menet``, ``mscsi``) are built by the carrier
@@ -110,7 +110,7 @@ board, so an inventory from the model never reads as a real unit.
        port. IOC3 ``subsystem-id`` ``0xffff``, a model value with no hardware
        counterpart that no guest can read, because the chip has no
        subsystem register (*approximation*). BASEIO
-       PROM flash on the Bridge's flash port.
+       :term:`PROM` flash on the Bridge's flash port.
    * - ``io6g``
      - Onyx2 BaseIO-G with MediaIO, built by ``sgi-xio-baseio``. XIO
        widget 8 or 15, slot ``io1`` only.
@@ -179,7 +179,7 @@ the same board.
    * - Fact
      - Rating
      - Source
-   * - A Bridge connects the board to the Crossbow. The IOC3 and both
+   * - A Bridge connects the board to the :term:`Crossbow`. The IOC3 and both
        SCSI controllers are PCI children of the Bridge, not crosstalk
        widgets of their own. An MIO expansion connector sits on the same
        PCI bus.

@@ -18,16 +18,16 @@ and X-bricks are reference compositions no machine builds.
 
 .. seealso::
 
-   - Bridge (:doc:`bridge`): the earlier XIO-to-PCI bridge, whose
+   - :term:`Bridge` (:doc:`bridge`): the earlier XIO-to-PCI bridge, whose
      style the XBridge's PCI heads follow.
-   - PIC (:doc:`pic`): the XIO-to-PCI-X bridge of the IP53 boards.
-   - Crossbow (:doc:`xbow`): the XIO crossbar whose style the XBridge's
+   - :term:`PIC` (:doc:`pic`): the XIO-to-PCI-X bridge of the IP53 boards.
+   - :term:`Crossbow` (:doc:`xbow`): the :term:`XIO` crossbar whose style the XBridge's
      crossbar half follows.
 
 The XBridge is the SN1-generation XIO-to-PCI chip: a Crossbow-style
 crossbar fused with two Bridge-style PCI host bridges ("heads"), one PCI
 bus each :src:`xbridge-asic-spec-0.5 p. 17, 44`. An Origin 300 or Fuel
-node has one between the Bedrock and its PCI buses, and the Origin 300
+node has one between the :term:`Bedrock` and its PCI buses, and the Origin 300
 PCI expansion module has three. QEMU models it in three types:
 
 - ``sgi-xbridge-head`` in ``hw/pci-host/sgi-xbridge.c``: one PCI head,
@@ -65,7 +65,7 @@ Sources
   shipped binaries this page cites as software expectations.
 - Published captures: an Origin 300 OpenBSD boot,
   :src:`marc-openbsd-sgi-125897882029839 lines 55-91`; an Origin 300
-  PROM and IRIX inventory,
+  :term:`PROM` and IRIX inventory,
   :src:`marc-openbsd-sgi-139223952727384 lines 64-131`; a Fuel OpenBSD
   boot, :src:`miod-openbsd-sgi-story lines 5676-5695`.
 - OpenBSD ``sys/arch/sgi/xbow/xbridgereg.h``, ``xbridge.c``,
@@ -75,7 +75,7 @@ Sources
   out-of-tree IP35 port's ``arch/mips/pci/pci-sgipic.c`` and
   ``arch/mips/sgi-ip35/ip35-xtalk.c`` at ``linux-ip35:9f613a321ea0``,
   as software expectations.
-- SGI's Linux SN1 port at ``linux-history:7570df54ef8c`` (v2.5.40):
+- SGI's Linux :term:`SN1` port at ``linux-history:7570df54ef8c`` (v2.5.40):
   ``include/asm-ia64/sn/pci/bridge.h``, ``sn/xtalk/xbow.h`` and
   ``arch/ia64/sn/io/sn1/pcibr.c``, with the same header on the
   ``linux-mips`` tree's ``linux-2.4`` branch. SGI wrote these, so they
@@ -133,7 +133,7 @@ default 2.
 
 The model puts the Origin 300 riser's option slots at head E devices 1
 and 2 and the IO-8's own devices on head F, *observed*: OpenBSD attaches
-two BCM5701s at widget 14 devices 1 and 2 and the ISP12160, IOC3 and USB
+two BCM5701s at widget 14 devices 1 and 2 and the ISP12160, :term:`IOC3` and USB
 controller at widget 15 devices 1, 4 and 5
 (:src:`marc-openbsd-sgi-125897882029839 lines 57-91`).
 
@@ -990,7 +990,7 @@ head's control bits 3:0, and, for DMA, the requesting slot. Inbound
 packets to a head are delivered through the chip's XIO space. A packet
 that would re-enter a transfer already in progress from the same source
 is refused with ``LOG_GUEST_ERROR``. The Origin 300 topologies that route
-I/O through the modelled NUMAlink fabric use this mode.
+I/O through the modelled :term:`NUMAlink` fabric use this mode.
 
 Super Bridge mode
 -----------------

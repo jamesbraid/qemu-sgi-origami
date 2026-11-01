@@ -15,7 +15,7 @@ Used in :ref:`sgi-ip53`: the IO9 base I/O board of the Origin 350, Onyx
 
 .. seealso::
 
-   - IOC3 (:doc:`ioc3`): the base I/O controller of the earlier platforms.
+   - :term:`IOC3` (:doc:`ioc3`): the base I/O controller of the earlier platforms.
 
 The IOC4 is SGI's PCI I/O controller. One PCI function holds four 16550-compatible
 serial ports with ring DMA, a PS/2 keyboard and mouse controller, one
@@ -63,7 +63,7 @@ Sources
   guides :src:`007-4564-001 p. 32` and :src:`007-4643-003 p. 24-25` and
   the Onyx4 guide :src:`007-4634-002 p. 12, 23, 70`: the PS/2
   connectors on the base module.
-- The IP35 PROM, :src:`ip35-prom-6.210 IOC4 diagnostics`, run on this
+- The IP35 :term:`PROM`, :src:`ip35-prom-6.210 IOC4 diagnostics`, run on this
   model, as a software expectation: the PCI status value, the ATA
   register readback and the serial DMA loopback test it performs.
 
@@ -78,7 +78,7 @@ and Linux ``pci_ids.h``, a *software expectation*. A published Origin
 (:src:`miod-openbsd-sgi-story Origin 350 support`), *observed*. The
 model reports that revision for every IO9.
 
-OpenBSD numbers the IOC4 as PCI device 0 on the PIC bus because it adds
+OpenBSD numbers the IOC4 as PCI device 0 on the :term:`PIC` bus because it adds
 one to skip PIC's own configuration slot; Linux would number the same
 function device 1. The machine models place it at device 1. That this
 is the same slot is *inferred* from the two drivers' configuration
@@ -265,7 +265,7 @@ A UART window accepts only byte accesses. A wider access that reaches the
 IOC4 as one transaction fails with ``LOG_GUEST_ERROR`` and has no effect
 on the UART. An unaligned wider access that the host bridge splits into
 bytes reaches each register in turn; the qtest pins this through a
-standalone XBridge, not the PIC the IP53 machines use. The public drivers
+standalone :term:`XBridge`, not the PIC the IP53 machines use. The public drivers
 use bytes, *software expectation*. The chip's answer to a wider access is
 *unknown*.
 
@@ -311,7 +311,7 @@ The model's choices for these bits are each an *approximation*:
   and stays until acknowledged.
 - DCD and CTS change bits and both ATA bits are never set.
 
-How the IOC4 interrupt reaches the processor through PIC and Bedrock is
+How the IOC4 interrupt reaches the processor through PIC and :term:`Bedrock` is
 covered in :ref:`sgi-ip35-address-map-interrupt`.
 
 .. _sgi-ioc4-serial-dma:

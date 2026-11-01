@@ -15,21 +15,21 @@ Origin 2000 and Onyx2 (IP27 node board), one per node.
 
 .. seealso::
 
-   - Bedrock (:doc:`bedrock`): the node controller of the SN1 machines, the
+   - :term:`Bedrock` (:doc:`bedrock`): the node controller of the :term:`SN1` machines, the
      successor to the Hub.
    - HEART (:doc:`heart`): the Octane's processor and memory controller,
-     as the Hub is for an SN0 node.
+     as the Hub is for an :term:`SN0` node.
 
 The Hub is the node controller of the SN0 machines.
 One Hub per node joins the node's two R10000-family processors, its
-memory and directory, one XIO port and one CrayLink network port
+memory and directory, one :term:`XIO` port and one :term:`CrayLink` network port
 (:src:`007-3439-002 Figure 2-1`). QEMU models it as ``sgi-hub`` in
 ``hw/misc/sgi-hub.c``, with the graphics flow-control block in
 ``hw/mips/sgi/pi-gfx.c``. The ``origin200`` machines and the plain
 ``origin2000`` reference report Hub revision code 3 (Hub 2.1); the
 Origin 2000 rack and deskside and the Onyx2 models report code 5
 (Hub 2.3). The model is a functional profile: it gives the stock IP27
-PROM 6.156, IRIX 6.5.30, Linux and OpenBSD the registers they use, and
+:term:`PROM` 6.156, IRIX 6.5.30, Linux and OpenBSD the registers they use, and
 it is not a revision-matched description of the chip. Facts are rated
 as described in :ref:`sgi-ratings`. No Hub specification is public, so
 most register behaviour here is a *software expectation* or an
@@ -711,7 +711,7 @@ and 64 to 127 bank 1. The only way to change a pending bit is
 ``PI_INT_PEND_MOD``: bits 6:0 name the interrupt, and bit 8 set means set
 and clear means clear (Linux ``hubpi.h`` and ``intr.h``; OpenBSD
 ``hub.h``), a *software expectation*. A device interrupt arrives the
-same way, as an XIO write from a Bridge to the node's interrupt-modify
+same way, as an XIO write from a :term:`Bridge` to the node's interrupt-modify
 register (:ref:`sgi-hub-inbound`).
 
 Each processor has one mask per bank. A processor's line for a bank is
@@ -799,7 +799,7 @@ Processor errors and the bus-error probe
 Every uncached I/O-space request a processor makes passes through its
 Hub: the machine places a Hub region over each processor's view of the
 I/O space, which forwards the request on. When a processor read fails,
-at the Hub or downstream at a Crossbow or Bridge, the processor takes a
+at the Hub or downstream at a :term:`Crossbow` or Bridge, the processor takes a
 bus error and the Hub records it in that slice's status 0: bit 63
 (valid) and the processor physical address bits 39:3 in bits 61:25
 (Linux ``hubpi.h``). A failed read while the record is valid sets bit 62
@@ -994,7 +994,7 @@ operator booklet calls the junk bus UART
 as a first console. No shipped Origin 200 has the part, so it is off by
 default. Its clock is the model's choice.
 
-Serial lines are assigned per node in blocks of six: IOC3 ports A and
+Serial lines are assigned per node in blocks of six: :term:`IOC3` ports A and
 B, the system controller's AUX port, the bring-up UART, and the IOC3
 transmit records for ports A and B. Node *n*'s block starts at
 ``-serial`` index 6\ *n*. The IRIX console is IOC3 serial A, not the AUX

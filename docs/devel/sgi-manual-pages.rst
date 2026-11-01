@@ -36,8 +36,8 @@ overview pages ``graphics.rst`` and ``bricks.rst`` open the same way.
 
 Follow the "Used in" paragraph with a ``.. seealso::`` that links the same
 platform pages (``ip<NN>.rst``, or ``sn.rst``) back. Link related parts
-with a ``.. seealso::`` too. On the overview pages, mark an
-SGI term with ``:term:`` to the glossary at its first use.
+with a ``.. seealso::`` too. On every page, mark an SGI
+glossary term with ``:term:`` at its first use.
 
 Facts
 -----
@@ -106,6 +106,15 @@ page under ``docs/system/mips/sgi/``:
   list whose lead-in paragraph ends in a colon and carries the rating.
   Write a statement about the model as one about "the model"; a
   neighbouring sentence does not cover it;
+- the first use on a page of each glossary term that has a capital letter
+  (``XIO``, ``Bridge``, ``PROM``, ``Command Monitor``) as a ``:term:``
+  link. The check reads running prose only, so it skips literals, roles,
+  links, emphasis, titles and literal blocks, and the page whose own title
+  holds the term. It also skips the lowercase terms (``node``, ``module``,
+  ``widget``, ``brick``, ``node board``, ``hardware graph``), which are
+  ordinary words, and ``L1``, which also names a cache level. A form that
+  adds a suffix, such as ``XIOs`` or ``XIO-based``, is not the term. The
+  glossary and the generated References page are not read;
 - a "Used in" first paragraph on every part page;
 - a ``.. seealso::`` block on a part page that links, with ``:ref:`` or
   ``:doc:``, each platform page its "Used in" paragraph links;

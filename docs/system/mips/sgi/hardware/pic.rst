@@ -16,16 +16,16 @@ which QEMU describes for reference only.
 
 .. seealso::
 
-   - Bridge (:doc:`bridge`) and XBridge (:doc:`xbridge`): the earlier XIO-
+   - :term:`Bridge` (:doc:`bridge`) and :term:`XBridge` (:doc:`xbridge`): the earlier XIO-
      to-PCI bridges.
 
-PIC is SGI's XIO-to-PCI-X bridge. One PIC is one XIO widget
+PIC is SGI's XIO-to-PCI-X bridge. One PIC is one :term:`XIO` widget
 with two bridge heads, each with its own register block and its own PCI
 bus. QEMU models it as ``sgi-pic`` in ``hw/pci-host/sgi-pic.c``, with the
 two heads as internal ``sgi-pic-head`` children. The model reports PIC
 revision 3, the revision a published Origin 350 boot reports. No PIC
 specification is public, so the model is a compatibility profile: it
-gives public drivers, the stock IP35 PROM and IRIX 6.5.30 the registers
+gives public drivers, the stock IP35 :term:`PROM` and IRIX 6.5.30 the registers
 and transfers they use, and it is not a revision-matched description of
 the chip. Facts are rated as described in :ref:`sgi-ratings`.
 
@@ -113,7 +113,7 @@ The model presents each PIC through two address views of one 4 GiB
 widget window:
 
 - the *processor view*, which processor programmed I/O reaches through
-  the Bedrock and the crossbar. It is the device's system-bus region;
+  the :term:`Bedrock` and the crossbar. It is the device's system-bus region;
 - the *packet view*, which XIO packets from other widgets reach.
 
 Both views hold the same per-head state. In the two runtime profiles the
@@ -543,7 +543,7 @@ Processor byte lanes
 
 OpenBSD's PIC bus accessors place a byte at address XOR 3 and a halfword
 at address XOR 2 for ordinary PCI devices, without swapping the value,
-and use the address unchanged for IOC3, IOC4 and RAD1
+and use the address unchanged for :term:`IOC3`, :term:`IOC4` and RAD1
 (``xbridge.c``), a *software expectation*. The stock IP35 PROM's 16-bit
 writes to the IO9 SCSI controller arrive two bytes off their registers
 unless the same correction applies, a *software expectation* observed on
@@ -790,7 +790,7 @@ lower-word bits 63:48; the model refuses that form. Every other access at
 Widget 0
 ========
 
-The IP53 board has no Crossbow, but software expects one at widget 0.
+The IP53 board has no :term:`Crossbow`, but software expects one at widget 0.
 Public Linux headers name the IP53 crossbar PXBOW, with manufacturer 0
 and part ``0xd100``, a *software expectation*. In the runtime profiles
 the PIC owns an ``sgi-xbow`` child that answers as widget 0 with that

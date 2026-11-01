@@ -8,7 +8,7 @@ Broadcom BCM5701: Gigabit Ethernet controller
 
 Used in :ref:`sgi-ip53`: the IO9 board of the Origin 350, Onyx 350,
 Tezro and Onyx 4 host machines carries one at PCI device 4 behind the
-PIC.
+:term:`PIC`.
 
 .. seealso::
 
@@ -123,7 +123,7 @@ are writable storage, apart from the two interrupt bits described under
 Placement on the IO9
 --------------------
 
-The IO9 sits in the module's lowermost slot, and its IOC4, SCSI controller
+The IO9 sits in the module's lowermost slot, and its :term:`IOC4`, SCSI controller
 and Ethernet controller appear at PIC configuration devices 1, 3 and 4
 (:src:`007-4566-001 p. 69`, *established* for the board;
 :ref:`sgi-sn-family-origin350` for the device numbers, *observed*). The
@@ -916,7 +916,7 @@ and PCI identity at device 4 and the backend selection;
 the PIC's 64-bit direct window with the swap bits clear and set.
 
 ``tests/qtest/sn0-bcm570x-test.c`` covers DMA placement and swap
-behaviour behind the Origin 200 Bridge. It is the Bridge's placement
+behaviour behind the Origin 200 :term:`Bridge`. It is the Bridge's placement
 contract, not the PIC's.
 
 The functional tests ``tests/functional/mips64/test_irix_io9_tg_perf.py``,

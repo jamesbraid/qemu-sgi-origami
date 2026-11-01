@@ -7,7 +7,7 @@ Bridge: XIO-to-PCI bridge
 =========================
 
 Used in :ref:`sgi-ip27` (the Origin 200 IP29 system board, the Origin
-2000 and Onyx2 BaseIO card, the GIGAchannel cabinet and the XIO PCI
+2000 and Onyx2 BaseIO card, the GIGAchannel cabinet and the :term:`XIO` PCI
 option boards) and :ref:`sgi-ip30` (the Octane and Octane2 system
 board).
 
@@ -17,9 +17,9 @@ board).
 
 .. seealso::
 
-   - XBridge (:doc:`xbridge`): the SN1 XIO-to-PCI chip.
-   - PIC (:doc:`pic`): the XIO-to-PCI-X bridge of the IP53 boards.
-   - Crossbow (:doc:`xbow`): the XIO crossbar that Bridge widgets sit behind
+   - :term:`XBridge` (:doc:`xbridge`): the :term:`SN1` XIO-to-PCI chip.
+   - :term:`PIC` (:doc:`pic`): the XIO-to-PCI-X bridge of the IP53 boards.
+   - :term:`Crossbow` (:doc:`xbow`): the XIO crossbar that Bridge widgets sit behind
      where a module has one.
 
 Bridge is SGI's XIO-to-PCI bridge. One side is an XIO widget with the
@@ -58,7 +58,7 @@ Sources
   one-wire identity part.
 - The *Origin 200 and Origin 200 GIGAchannel Owner's Guide*,
   :src:`007-3708-002 p. 6`, Figure 1-4: the Origin 200's base Bridge, one
-  PCI bus and the two SCSI controllers and IOC3 behind it.
+  PCI bus and the two SCSI controllers and :term:`IOC3` behind it.
 - SGI's *IRIX Device Driver Programmer's Guide*,
   :src:`007-0911-090 p. 780`: the two DMA byte orders IRIX offers.
 - The DS2505 datasheet, :src:`ds2505-datasheet`, for the board identity
@@ -73,7 +73,7 @@ Sources
   ``widget.h`` and ``xbowdevs.h`` at ``2df91d80c104``, as software
   expectations: register layout, interrupt handling, byte-order
   programming and the identity.
-- The IP27 PROM, :src:`ip27-prom-6.156`, and the IRIX 6.5.30 kernel, read
+- The IP27 :term:`PROM`, :src:`ip27-prom-6.156`, and the IRIX 6.5.30 kernel, read
   as shipped binaries, as software expectations.
 - Published inventories: :src:`nekonomicon-16726704`,
   :src:`irixnet-post-32252`, :src:`usenet-95oo9r` and
@@ -101,7 +101,7 @@ The model composes the word from its ``revision``, ``part`` and
      - Revision field
      - Basis
    * - Origin 200 IP29 system board
-     - 8 on a direct Hub link
+     - 8 on a direct :term:`Hub` link
      - 4
      - *observed*: a published Origin 200 GIGAchannel inventory prints
        ``ASIC BRIDGE Rev 4`` for the base I/O Bridge
@@ -925,7 +925,7 @@ The model takes the specification's width-dependent rule, an
 
 Mainline Linux sets bit 19 on every slot at start of day and clears it for
 the IOC3. OpenBSD sets bits 19 and 20 on every device except the IOC3,
-IOC4 and RAD1 and confines DMA to the direct window. The IRIX 6.5.30
+:term:`IOC4` and RAD1 and confines DMA to the direct window. The IRIX 6.5.30
 kernel sets a window's swap bit for a byte-stream mapping and clears it
 for a word-values mapping. Each of the three is a *software expectation*.
 
@@ -1267,7 +1267,7 @@ These reads come from the :ref:`sgi-measured-octane2`, IP30 board
 revision B, whose Bridge at widget 15 reports revision 4. The
 specification letters revisions from 1 as A, so 4 is D, the silicon it
 describes (:src:`bridge-asic-spec-4.0 p. 19`, Table 7). Every read was
-taken in the PROM Command Monitor after the firmware had initialised the
+taken in the PROM :term:`Command Monitor` after the firmware had initialised the
 machine, so none is a reset value. Each register read is one 32-bit load
 at the slot offset plus four, physical ``0x1f000000`` plus the widget
 offset.

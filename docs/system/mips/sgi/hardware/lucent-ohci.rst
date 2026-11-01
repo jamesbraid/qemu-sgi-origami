@@ -134,9 +134,9 @@ Placement and interrupts
    * - Fact
      - Rating
      - Source
-   * - On the Origin 300 IO-8 the controller is ``00:05.0`` on XBridge
+   * - On the Origin 300 IO-8 the controller is ``00:05.0`` on :term:`XBridge`
        head F (widget ``0xf``), beside the ISP12160 at ``00:01.0`` and the
-       IOC3 at ``00:04.0``. The bus runs at 33 MHz.
+       :term:`IOC3` at ``00:04.0``. The bus runs at 33 MHz.
      - *observed*
      - :src:`marc-openbsd-sgi-139223952727384 lines 150-183`;
        :src:`007-4365-002 printed page 12`
@@ -151,7 +151,7 @@ Placement and interrupts
      - *observed* / *unknown*
      - :src:`marc-openbsd-sgi-125897882029839 lines 55-90` (neither card's
        interrupt-pin field is reported)
-   * - On the Fuel the controller is at PCI device 5 behind the Bedrock's
+   * - On the Fuel the controller is at PCI device 5 behind the :term:`Bedrock`'s
        XBridge, with two USB ports. The model wires its INTA to pin 5, the
        index OpenBSD registered its handler on.
      - *observed* (device, ports); *inferred* (pin)
@@ -283,7 +283,7 @@ reading it back would settle both.
 Real silicon advances HcFmNumber from its own clock. The core applies any
 overdue frame boundary synchronously at the start of every register read, so
 a read reflects elapsed virtual time instead of waiting for the timer. This
-is an emulator timing choice for all OHCI types. The Origin 300 PROM sets the
+is an emulator timing choice for all OHCI types. The Origin 300 :term:`PROM` sets the
 controller operational, waits about 1 ms and reads HcFmNumber, a *software
 expectation* that it has advanced. The catch-up runs only on register reads.
 A guest that polls the communication area by DMA without reading a register
@@ -430,7 +430,7 @@ root-hub descriptors and their survival across USBRESET, the power-on
 values, per-port and global power switching, power-off and reconnection of
 attached devices, HcFmNumber tracking the clock and the latch with its
 operational exception, and migration. It also drives a ``usb-wacom-tablet``
-through the controller. It runs against an Origin 200 Bridge host.
+through the controller. It runs against an Origin 200 :term:`Bridge` host.
 
 ``tests/qtest/sn1-fuel-usb-test.c`` runs USB transfers through the Fuel's
 controller and XBridge DMA. ``tests/qtest/sn1-fuel-test.c`` covers the Fuel

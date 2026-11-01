@@ -15,7 +15,7 @@ report a DP83840 (:ref:`sgi-ip32-published`).
    Platform pages: :ref:`sgi-ip30`, :ref:`sgi-ip32`.
 
 The ICS1890 is a 10/100 Mb/s Ethernet transceiver. On the Octane it sits
-behind the IOC3's MII management interface. QEMU models revision 3 as
+behind the :term:`IOC3`'s MII management interface. QEMU models revision 3 as
 ``hw/net/ics1890.c``. The ``octane`` and ``octane2`` machines select it
 on the onboard IOC3 with ``phy-ics1890=on`` at MII address 1; other IOC3
 boards keep their own PHY (:doc:`ioc3`). The ``o2`` machine attaches one
@@ -34,7 +34,7 @@ Sources
 - Three published Octane boot logs, :src:`lore-seufer-octane-2005`,
   :src:`lore-walker-octane-2005` and :src:`lore-kinard-octane-2019`. Each
   reports one PHY at address 1 with vendor ``0x15f42``, model 2,
-  revision 3. The 2019 log comes from a HEART F, Bridge D board.
+  revision 3. The 2019 log comes from a HEART F, :term:`Bridge` D board.
 - Linux ``drivers/net/ethernet/sgi/ioc3-eth.c`` and OpenBSD
   ``sys/dev/mii/icsphy.c`` and ``icsphyreg.h``, as software expectations.
 - The IOC3 MII registers read on the reference Octane2
@@ -49,7 +49,7 @@ The datasheet's identity tables give words ``0x0015`` and ``0xf423``; model
 the same words at address 1, *observed* on Octanes from 2005 and 2019
 (:src:`lore-seufer-octane-2005 PHY probe`,
 :src:`lore-kinard-octane-2019 attached dmesg`). On the reference Octane2,
-board ``030-1467-001`` revision B, the PROM's last MII transaction read
+board ``030-1467-001`` revision B, the :term:`PROM`'s last MII transaction read
 register 1 at address 1 and got ``0x7809``
 (:ref:`sgi-ics1890-measurements`), so a PHY answers at address 1 on that
 board, *established*. That word is the ICS1890's status reset value with
@@ -239,7 +239,7 @@ Measurements
 ============
 
 The reference Octane2 (:ref:`sgi-measured-octane2`) was read through the
-IOC3's MII registers in the PROM Command Monitor after the firmware had
+IOC3's MII registers in the PROM :term:`Command Monitor` after the firmware had
 initialised the machine. No PHY register was written or read directly.
 
 .. code-block:: text

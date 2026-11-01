@@ -86,7 +86,7 @@ Sources
   ``scsi_tape.h``, and NetBSD ``sys/dev/scsipi/st.c``, for the tape command
   set and mount sequence.
 - Captures of real machines: an OpenBSD boot of a real Origin 200,
-  :src:`dmesgd-8994`, and the PROM hardware inventories
+  :src:`dmesgd-8994`, and the :term:`PROM` hardware inventories
   :src:`nekonomicon-16727716` and :src:`nekonomicon-17194`. Two mailing
   list posts hold raw configuration-space bytes of ISP12160 functions on
   other systems, :src:`mail-isp12160-config-capture-2005` and
@@ -160,7 +160,7 @@ Identity and placement
      - all eight
 
 The ``octane`` and ``octane2`` machines build two ISP1040 functions at
-onboard PCI devices 0 and 1 of the Bridge. The Origin 200 and Origin 2000
+onboard PCI devices 0 and 1 of the :term:`Bridge`. The Origin 200 and Origin 2000
 BaseIO boards build two at devices 0 and 1, and the MSCSI board four at
 devices 0 to 3. The Origin 300 IO8 and Fuel boards each place one ISP12160
 at device 1, the Origin 350 IO9 board places one on its PCI head, and PCI
@@ -1376,7 +1376,7 @@ Measurements
 
 The reference Octane2 (:ref:`sgi-measured-octane2`) gave two software
 reports and two configuration headers. The headers were read in the PROM
-Command Monitor after the firmware had initialised the machine, through
+:term:`Command Monitor` after the firmware had initialised the machine, through
 the Bridge's type 0 configuration window, as sixteen 32-bit loads each:
 
 .. code-block:: text
@@ -1523,7 +1523,7 @@ Tests
   reads, a full response ring, a stale acknowledgement and a held
   completion.
 - ``tests/qtest/sn0-qlogic-isp-test.c`` repeats the access contract through
-  the XIO to PCI path on the Origin topology: the PCI Status reset value,
+  the :term:`XIO` to PCI path on the Origin topology: the PCI Status reset value,
   the swap bit, the signature through the fabric, RAM DMA through the
   Bridge, ring byte placement with the swap bit clear and set, missing
   targets, checksum mailboxes, target parameters, reset delay, refused CDB

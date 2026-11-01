@@ -424,7 +424,7 @@ It carries the algorithm, an uncached flag, the uncached attribute (as an
 address window above the physical address) and the CPU's requester
 identity with each reference, so a board can tell a coherent request
 from a noncoherent one and an uncached register access from memory. The
-SN1 Bedrock memory directory uses that. A ``PREF`` with a load or store
+:term:`SN1` :term:`Bedrock` memory directory uses that. A ``PREF`` with a load or store
 hint to an algorithm 4 (cacheable coherent exclusive) or 5 address is
 passed to the board as a coherent prefetch request; a prefetch with
 another hint or algorithm does nothing. The secondary Index Writeback
@@ -586,7 +586,7 @@ Measurements
      - R12000 3.5
      - running IRIX 6.5.30m
      - :ref:`sgi-measured-octane2` (:ref:`sgi-measured-octane2-hinv`)
-   * - PROM Command Monitor ``hinv -v``
+   * - :term:`PROM` :term:`Command Monitor` ``hinv -v``
      - ``360 Mhz R12000, with FPU``; 32 KiB primary instruction and data
        caches; 2 MiB secondary cache
      - R12000, revision not printed

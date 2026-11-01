@@ -20,7 +20,7 @@ boards.
 
 .. seealso::
 
-   - IOC4 (:doc:`ioc4`): the I/O controller of the IP53 boards' IO9.
+   - :term:`IOC4` (:doc:`ioc4`): the I/O controller of the IP53 boards' IO9.
 
 The IOC3 is SGI's PCI base I/O controller. One 32-bit PCI device with one
 1 MiB memory BAR holds two 16550 serial ports with ring DMA, a 10/100
@@ -161,7 +161,7 @@ Board population
 ----------------
 
 The ``subsystem-id`` property selects the functions the board wires up.
-It is the id Linux substitutes from the Bridge's board record, because
+It is the id Linux substitutes from the :term:`Bridge`'s board record, because
 the chip has no subsystem register (:ref:`sgi-ioc3-measurements`). No
 guest reads it from the chip. With ``population`` unset, the model picks
 the functions from the id by the table below. The table follows the per-board setup
@@ -1300,7 +1300,7 @@ DMA and byte order
 
 Every DMA master in the chip, the serial rings, the Ethernet engine and
 the parallel contexts, goes through one chip-owned view of the PCI
-bus-master address space, so the Bridge or XBridge applies its
+bus-master address space, so the Bridge or :term:`XBridge` applies its
 translation and swap controls to every access. The view reverses each
 aligned 32-bit word and places a narrower access at its address XOR the
 complement of its size. With the Bridge's DMA swap clear, as every
@@ -1343,8 +1343,7 @@ depth, refuses the stream.
 Measurements
 ============
 
-On the reference Octane2 (:ref:`sgi-measured-octane2`), the PROM Command
-Monitor read the onboard IOC3's PCI configuration header, Bridge device 2,
+On the reference Octane2 (:ref:`sgi-measured-octane2`), the :term:`PROM` :term:`Command Monitor` read the onboard IOC3's PCI configuration header, Bridge device 2,
 after the firmware had initialised the machine:
 
 .. code-block:: text

@@ -32,7 +32,7 @@ Sources
 SGI manuals, by document number and printed page:
 
 - *OCTANE Technical Report*, :src:`octane-technical-report`: printed
-  pages 2-3 (Crossbow ports), 2-15 (HEART, section 2.3.2), 2-19 (the two
+  pages 2-3 (:term:`Crossbow` ports), 2-15 (HEART, section 2.3.2), 2-19 (the two
   Bridges, section 2.3.3) and 7-1 (standard configurations).
 - *Octane Workstation Owner's Guide*, :src:`007-3435-004 p. 54` (memory
   fitting).
@@ -69,7 +69,7 @@ Public captures and accounts:
 
 The Octane2 population also rests on one physical Octane2, described in
 :ref:`sgi-measured-octane2`. The values each register read returned are
-on the page of the part it belongs to, except the Bridge's alternate
+on the page of the part it belongs to, except the :term:`Bridge`'s alternate
 flash aperture, which stays with the flash wiring below.
 
 .. _sgi-ip30-machines:
@@ -258,7 +258,7 @@ Components and connections
      - *established*: OpenBSD ``ip30.h`` (``IP30_BRIDGE_WIDGET``); the
        OpenBSD capture finds the Bridge at widget 15 and prints "Bridge
        revision 3". A Crossbow link reset of widget 15 resets the Bridge's
-       core, as on an XIO board. The Bridge specification describes that
+       core, as on an :term:`XIO` board. The Bridge specification describes that
        path for revision D, the Octane2's, *established*; for the Octane's
        revision C it is *inferred* (:ref:`sgi-bridge-reset`)
    * - Two QLogic SCSI controllers
@@ -390,7 +390,7 @@ Address-space selection
 The architecture layer records the selector as a two-bit processor
 attribute in virtual-address bits 58:57, giving four spaces. The
 R10000 family drives such an uncached attribute beside the address,
-and the public SN0 header (Linux ``arch/mips/include/asm/mach-ip27/spaces.h``)
+and the public :term:`SN0` header (Linux ``arch/mips/include/asm/mach-ip27/spaces.h``)
 documents its use on :term:`Hub` systems. That HEART decodes it the same way is
 *inferred* from the shared processor family, not *established*; no public
 HEART specification describes it.

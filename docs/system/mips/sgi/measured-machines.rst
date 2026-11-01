@@ -32,9 +32,9 @@ Wherever a page says "the reference Octane2", it means this machine:
      - IP30 ``030-1467-001``, revision B
    * - HEART
      - revision F (widget revision field 6)
-   * - Crossbow
+   * - :term:`Crossbow`
      - ASIC revision 1.4 (widget revision field 5)
-   * - Onboard Bridge
+   * - Onboard :term:`Bridge`
      - widget 15, revision field 4 (D)
    * - Processor
      - one 360 MHz R12000, chip revision 3.5, 2 MiB secondary cache
@@ -44,15 +44,15 @@ Wherever a page says "the reference Octane2", it means this machine:
      - V12 (VPro) at widget 11
    * - Operating system
      - IRIX 6.5.30m
-   * - Boot PROM
+   * - Boot :term:`PROM`
      - ``PROM Monitor SGI Version 6.5 Rev 4.17 IP30 Jan 20, 2004 - 64 Bit``
 
-No expansion Bridge, PCI card cage or second XIO board is fitted. The
+No expansion Bridge, PCI card cage or second :term:`XIO` board is fitted. The
 Crossbow reports links alive only at widgets 8, 11 and 15
 (:ref:`sgi-xbow-measurements`), and the running kernel's hardware graph
 lists widgets 0, 8, 11 and 15 (:ref:`sgi-measured-octane2-graph`).
 
-Register reads used the PROM Command Monitor's ``dump`` command after the
+Register reads used the PROM :term:`Command Monitor`'s ``dump`` command after the
 firmware had initialised the machine and stopped at its menu, so no value
 is a reset value. A ``dump -w`` read is one aligned 32-bit load and a
 ``dump -d`` read one aligned 64-bit load, through the uncached processor
@@ -75,7 +75,7 @@ The register reads are on these pages:
   interrupt, error and time-out registers and both flash selects:
   :ref:`sgi-bridge-measurements`
 - the QL1040B configuration headers: :ref:`sgi-qlogic-isp-measurements`
-- the onboard IOC3's PCI configuration header, interrupt, chip control,
+- the onboard :term:`IOC3`'s PCI configuration header, interrupt, chip control,
   pin, MII and Ethernet registers: :ref:`sgi-ioc3-measurements`
 - the PHY address and status word the PROM last read:
   :ref:`sgi-ics1890-measurements`
