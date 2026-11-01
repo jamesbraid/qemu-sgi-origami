@@ -40,6 +40,23 @@ DIRECTIVE = re.compile(r'\s*\.\. [\w:-]+::')
 # graphics and brick pages are overviews of a family of parts.
 USED_IN_EXEMPT = ('graphics.rst', 'bricks.rst')
 
+# Phrases that put a plan, not the current model, on a page. "not yet" is
+# a roadmap only before a verb that says what the model does or the page
+# records; "not yet delivered" or "not yet acknowledged" describes a
+# hardware state and is fine.
+ROADMAP = re.compile(
+    r'\b(?:yet to|planned|for now|in a later|in future)\b'
+    r'|\bwill be\s+(?:modell?ed|supported|implemented|added|emulated)\b'
+    r'|\bnot yet (?:implemented|modell?ed|supported|emulated|handled|'
+    r'covered|wired|described|documented|built|'
+    r'offered|exposed|understood|measured|captured|reviewed|'
+    r'verified|cleared|settled|public|held|tested|checked|decided)\b'
+    r'|\b(?:support|model|implement)\w*(?: \w+){0,2} yet\b'
+    r'|\bTODO\b', re.I)
+# Text that quotes a source or a guest message rather than the page's own
+# words: a double-quoted span, which may wrap across lines, and literals.
+QUOTED = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d|``.*?``', re.S)
+
 LABEL = re.compile(r'\.\. _[^:]+:\s*$')
 ADORN = re.compile(r'([=\-~^"#*+])\1{2,}\s*$')
 LITERAL = re.compile(r'``.*?``|:\w+:`[^`]*`|`[^`]*`')
@@ -95,6 +112,27 @@ def prose_lines(lines):
         yield n, line
 
 
+def paragraphs(lines):
+    """Yield (first line number, text) for each run of prose lines."""
+    run = []
+    last = 0
+    for n, line in prose_lines(lines):
+        if not line.strip() or (run and n != last + 1):
+            if run:
+                yield run[0][0], '\n'.join(t for _, t in run)
+            run = []
+        if line.strip():
+            run.append((n, line))
+        last = n
+    if run:
+        yield run[0][0], '\n'.join(t for _, t in run)
+
+
+def blank(m):
+    """Replace a match by spaces, keeping its newlines."""
+    return re.sub(r'[^\n]', ' ', m.group(0))
+
+
 def lint_page(rel, text):
     out = []
     lines = text.split('\n')
@@ -146,6 +184,13 @@ def lint_page(rel, text):
             if low.startswith(RATING_STEMS) or low in NEAR_MISSES:
                 add(n, f'italic "*{word}*" is not a rating; use one of the '
                     'six in sgi-ratings exactly')
+
+    for first, para in paragraphs(lines):
+        masked = QUOTED.sub(blank, para)
+        for m in ROADMAP.finditer(masked):
+            add(first + masked.count('\n', 0, m.start()),
+                f'"{" ".join(m.group(0).split())}" reads as a plan; state what the model '
+                'does now, or what the sources leave unknown')
     return out
 
 
