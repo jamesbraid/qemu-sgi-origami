@@ -82,9 +82,17 @@ Describe sources in sentences, without detail about any restricted source.
 Checks
 ------
 
-``scripts/ci/sgi-check docs`` builds the manual with warnings as errors and
-runs ``scripts/ci/sgi-docs-lint.py`` first. The lint requires, for every
-page under ``docs/system/mips/sgi/``:
+Every check below is an error. None is a warning, and the required
+pull-request check runs them on every pull request, whatever files it
+changes, so the pages stay buildable and correct at all times.
+
+``scripts/ci/sgi-check docs`` runs ``scripts/ci/sgi-docs-lint.py``, then
+builds the whole manual with Sphinx and warnings as errors. A broken
+table, label or cross-reference fails the build, and so does a ``:src:``
+citation of an id that ``references.yaml`` does not list: the role leaves
+it an undefined label (``scripts/tests/test_sgi_docs_citations.py`` builds
+such a page and expects the failure). The lint requires, for every page
+under ``docs/system/mips/sgi/``:
 
 - the BSD-3-Clause SPDX comment on the first line;
 - a top-level label before the title;
@@ -133,4 +141,18 @@ page under ``docs/system/mips/sgi/``:
   those out by review;
 - a listing of the page, and of this guide, in ``LICENSE.origami.paths``.
 
-``scripts/ci/sgi-check model`` checks the citations and the generated files.
+Three more checks run in the same required job, and each fails it:
+
+- ``scripts/ci/sgi-check model`` checks the model citations and the
+  generated files, including that ``references.rst`` matches
+  ``references.yaml``;
+- ``scripts/ci/sgi-license-check.py`` checks the licence listing and the
+  SPDX headers of the SGI files;
+- ``scripts/ci/sgi-leak-check.py`` rejects text in the change that matches
+  a private list of identifiers. It reads the added lines, the new file
+  names and the commit messages of a pull request. The full run before each
+  land, a push to the trunk and a nightly run scan every tracked file with
+  ``--tree``.
+
+``scripts/tests/test_sgi_docs_lint.py`` tests each rule of the lint with a
+page it must reject and a page it must pass.
