@@ -1081,8 +1081,8 @@ _CPU_OVERRIDES = {
     "R10000": ("r10000-prid",),
     "R12000": ("r12000-prid", "r12000-fpu-id"),
     "R14000": ("r14000-prid",),
-    # Fixed by its model; its board's reset-mode word is not overridable.
-    "R16000": (),
+    # Its board's reset-mode word is not overridable.
+    "R16000": ("r16000-prid",),
 }
 
 

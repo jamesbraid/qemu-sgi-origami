@@ -40,7 +40,9 @@ bool sgi_cpu_set_reset_mode(DeviceState *dev, uint32_t mode, Error **errp)
 
 bool sgi_cpu_set_prid(DeviceState *dev, uint32_t prid, Error **errp)
 {
-    static const char *const names[] = { "r10000-prid", "r14000-prid" };
+    static const char *const names[] = {
+        "r10000-prid", "r14000-prid", "r16000-prid",
+    };
 
     for (size_t i = 0; i < ARRAY_SIZE(names); i++) {
         if (object_property_find(OBJECT(dev), names[i])) {

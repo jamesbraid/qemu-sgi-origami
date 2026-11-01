@@ -415,6 +415,55 @@ static void test_r16000_invalid_identity(void)
                             "implementation 0x0f"));
 }
 
+/*
+ * The IP53 machines' 700 MHz profiles fit the revision 2.1 part their
+ * assemblies print, not the 1.0 GHz part's revision 3.0; -cpu
+ * r16000-prid= still names another. The reset word is the board's.
+ */
+typedef struct Ip53Machine {
+    const char *machine;
+    const char *memory;
+} Ip53Machine;
+
+static const Ip53Machine ip53_machines[] = {
+    { "origin350", "2G" },
+    { "tezro,topology=tezro", "4G" },
+};
+
+static void test_ip53_prid(gconstpointer data)
+{
+    const Ip53Machine *m = data;
+    /* Machine validation wants a full-size PROM, the IO9 its two stores. */
+    g_autofree char *dir = g_dir_make_tmp("r16000-identity-XXXXXX", NULL);
+    g_autofree char *prom = g_build_filename(dir, "prom.bin", NULL);
+    g_autofree char *data_store = g_build_filename(dir, "ds1744.bin", NULL);
+    g_autofree char *clock_store = g_build_filename(dir, "ds1742.bin", NULL);
+    g_autofree uint8_t *zero = g_malloc0(1476264);
+    const char *cpus[] = { "R16000", "R16000,r16000-prid=0x0f42" };
+    const uint32_t prids[] = { 0x0f41, 0x0f42 };
+
+    g_assert_true(g_file_set_contents(prom, (char *)zero, 1476264, NULL));
+    g_assert_true(g_file_set_contents(data_store, (char *)zero, 0x8000, NULL));
+    g_assert_true(g_file_set_contents(clock_store, (char *)zero, 16, NULL));
+    for (size_t i = 0; i < G_N_ELEMENTS(cpus); i++) {
+        QTestState *qts = qtest_initf(
+            "-M %s,nvram0=sgi-ds1742-data-io9,"
+            "nvram0-clock=sgi-ds1742-clock-io9 -cpu %s -smp 4 -m %s "
+            "-bios %s -drive if=none,id=sgi-ds1742-data-io9,file=%s,"
+            "format=raw -drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
+            "format=raw -S", m->machine, cpus[i], m->memory, prom,
+            data_store, clock_store);
+
+        g_assert_cmphex(cpu_property(qts, "r16000-prid"), ==, prids[i]);
+        g_assert_cmphex(cpu_property(qts, "reset-mode"), ==, 0x009bad85);
+        qtest_quit(qts);
+    }
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(data_store), ==, 0);
+    g_assert_cmpint(g_unlink(clock_store), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 static void test_immutable_identity(void)
 {
     QTestState *qts;
@@ -634,6 +683,10 @@ int main(int argc, char **argv)
         qtest_add_data_func("/r10000/identity/r14000-migration-mismatch",
                             &r14000_mismatch, test_migration);
     }
+    qtest_add_data_func("/r10000/identity/origin350-prid",
+                        &ip53_machines[0], test_ip53_prid);
+    qtest_add_data_func("/r10000/identity/tezro-prid",
+                        &ip53_machines[1], test_ip53_prid);
     qtest_add_data_func("/r10000/identity/migration",
                         &r10000_octane, test_migration);
     qtest_add_data_func("/r10000/identity/r14000-migration-fuel",

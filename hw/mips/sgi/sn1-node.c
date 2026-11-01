@@ -1963,6 +1963,8 @@ static bool sn1_node_validate_processors(SN1NodeState *node,
         uint64_t expected_clock = first ? first->clock_hz : 0;
         unsigned int expected_cache_mib = first ? first->cache_mib : 0;
         uint32_t expected_mode = first ? first->mode_bits : 0;
+        bool expected_has_prid = first && first->has_prid;
+        uint32_t expected_prid = expected_has_prid ? first->prid : 0;
 
         /*
          * The catalogue compiles the one R16000 the node's board fits onto
@@ -1994,7 +1996,8 @@ static bool sn1_node_validate_processors(SN1NodeState *node,
                 processor->cache_mib != expected_cache_mib ||
                 !processor->has_mode_bits ||
                 processor->mode_bits != expected_mode ||
-                (processor->has_prid && processor->prid != 0x00000f50) ||
+                processor->has_prid != expected_has_prid ||
+                (expected_has_prid && processor->prid != expected_prid) ||
                 (processor->has_fpu_prid &&
                  processor->fpu_prid != 0x00000900)) {
                 error_setg(errp, TYPE_SGI_SN1_NODE " R16000 processor %u "
@@ -2106,14 +2109,19 @@ static bool sn1_node_create_cpus(SN1NodeState *node, MachineState *machine,
                     0x01ffffff, errp)) {
                 return false;
             }
-        } else if (!sgi_cpu_set_reset_mode(cpu_dev, processor->mode_bits,
-                                           errp)) {
+        } else {
             /*
-             * The R16000's identity is fixed by its model; the board
-             * supplies only the mode word, whose SS field selects the
-             * cache.
+             * The R16000's FPU identification is fixed by its model. The
+             * board supplies the mode word, whose SS field selects the
+             * cache, and the PRId of the part it fits; a board that
+             * names none keeps the model's 1.0 GHz part.
              */
-            return false;
+            if (!sgi_cpu_set_reset_mode(cpu_dev, processor->mode_bits,
+                                        errp) ||
+                (processor->has_prid &&
+                 !sgi_cpu_set_prid(cpu_dev, processor->prid, errp))) {
+                return false;
+            }
         }
         /* Release both vCPUs from the machine reset handler, not realize. */
         object_property_set_bool(OBJECT(cpu_dev), "start-powered-off", true,

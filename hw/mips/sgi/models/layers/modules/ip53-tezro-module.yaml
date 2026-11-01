@@ -59,6 +59,7 @@ layer:
         cache_clock_mhz: 350
         r16000_reset_mode: 0x009bad85
         r16000_scache_bytes: 4194304
+        processor_identification: "0x0f41"
       provenance: derived
       sources:
       - tezro-runtime-inputs

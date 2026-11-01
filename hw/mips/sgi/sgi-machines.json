@@ -5444,6 +5444,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -6332,6 +6336,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -6521,6 +6529,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -6709,6 +6721,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -20574,6 +20590,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -21126,6 +21146,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -21729,6 +21753,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -21917,6 +21945,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -22076,6 +22108,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -22350,6 +22386,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -22654,6 +22694,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -22843,6 +22887,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -23032,6 +23080,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -23221,6 +23273,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -23410,6 +23466,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -23599,6 +23659,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -23788,6 +23852,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -23977,6 +24045,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -24166,6 +24238,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -24355,6 +24431,10 @@
         {
           "property": "mac",
           "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
         }
       ],
       "processor": {
@@ -42420,7 +42500,8 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10202501
+                "mode-bits": 10202501,
+                "prid": 3905
               },
               "interface": 0,
               "slot": 0
@@ -42431,7 +42512,8 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10202501
+                "mode-bits": 10202501,
+                "prid": 3905
               },
               "interface": 0,
               "slot": 1
@@ -42442,7 +42524,8 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10202501
+                "mode-bits": 10202501,
+                "prid": 3905
               },
               "interface": 1,
               "slot": 0
@@ -42453,7 +42536,8 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10202501
+                "mode-bits": 10202501,
+                "prid": 3905
               },
               "interface": 1,
               "slot": 1
@@ -44062,7 +44146,8 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10202501
+                "mode-bits": 10202501,
+                "prid": 3905
               },
               "interface": 0,
               "slot": 0
@@ -44073,7 +44158,8 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10202501
+                "mode-bits": 10202501,
+                "prid": 3905
               },
               "interface": 0,
               "slot": 1
@@ -44084,7 +44170,8 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10202501
+                "mode-bits": 10202501,
+                "prid": 3905
               },
               "interface": 1,
               "slot": 0
@@ -44095,7 +44182,8 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10202501
+                "mode-bits": 10202501,
+                "prid": 3905
               },
               "interface": 1,
               "slot": 1
@@ -44556,7 +44644,8 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10202501
+                "mode-bits": 10202501,
+                "prid": 3905
               },
               "interface": 0,
               "slot": 0
@@ -44809,7 +44898,8 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10202501
+                "mode-bits": 10202501,
+                "prid": 3905
               },
               "interface": 0,
               "slot": 0
@@ -44820,7 +44910,8 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10202501
+                "mode-bits": 10202501,
+                "prid": 3905
               },
               "interface": 0,
               "slot": 1
@@ -44831,7 +44922,8 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10202501
+                "mode-bits": 10202501,
+                "prid": 3905
               },
               "interface": 1,
               "slot": 0
@@ -44842,7 +44934,8 @@
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10202501
+                "mode-bits": 10202501,
+                "prid": 3905
               },
               "interface": 1,
               "slot": 1
