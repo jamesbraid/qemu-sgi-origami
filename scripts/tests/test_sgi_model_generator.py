@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "901c340dceef342bffeb5ec7efd40ecd15b8980048630851c2c9d12ae943c761"
+    "892a77256a57906022f66bb6d8d5bce4c39909719214d11ec13daacf291b9243"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -212,9 +212,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 161)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 48)
-        self.assertEqual(len(layers), 111)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 164)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 49)
+        self.assertEqual(len(layers), 113)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -967,6 +967,11 @@ class FuelTests(unittest.TestCase):
                     "machine-type": 0,
                     "cpu-mode-word": 0x5414a785})
                 continue
+            if topology["name"] == "origin3900-memory-node":
+                # The same Cx-brick word: the empty board adds none.
+                self.assertEqual(topology["ip35-firmware"], {
+                    "machine-type": 0, "cpu-mode-word": 0x549cad85})
+                continue
             if topology["name"] == "origin3900":
                 # The Cx-brick's IP53 word is the table row for its
                 # 700 MHz, 8 MiB fit; its IP59 word is the Origin 350's.
@@ -995,6 +1000,26 @@ class FuelTests(unittest.TestCase):
                 self.assertEqual(topology["ip35-firmware"], {
                     "machine-type": machine_type,
                     "cpu-mode-word": expected_mode})
+
+    def test_memory_only_board_is_an_extra_cx_brick_offering(self):
+        """The Cx-brick sells a zero-processor node board (007-4572-001
+        page 13), and the catalogue offers one brick that mixes three
+        compute boards with one such board, as its own topology."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        [offering] = [item for item in catalogue["offerings"]
+                      if item["topology"] == "origin3900-memory-node"]
+        self.assertEqual(offering["cpus-per-node"], [4, 4, 4, 0])
+        self.assertEqual(offering["smp"], 12)
+        [topology] = [item for item in catalogue["topologies"]
+                      if item["name"] == "origin3900-memory-node"]
+        roles = [node.get("role") for node in topology["nodes"]]
+        self.assertEqual(roles, [None, None, None, "memory"])
+        # No other topology carries a memory node.
+        for item in catalogue["topologies"]:
+            if item["name"] != "origin3900-memory-node":
+                self.assertTrue(all("role" not in node
+                                    for node in item["nodes"]), item["name"])
 
     def test_c_brick_800mhz_r16000_is_offered_where_the_sources_put_it(self):
         """The 800 MHz R16000 C-brick is reported by third parties and

@@ -524,6 +524,49 @@ The Origin 350 layers in
 transfer: that module has two or four processors, a PIC at widget 15 and
 an IO9, and the CX node board has none of these.
 
+.. _sgi-sn-cxbrick-memory-node:
+
+CX-brick with a memory-only node board
+--------------------------------------
+
+``-M origin3000,topology=origin3900-memory-node -cpu R16000`` is the
+``origin3900`` brick set with node board 3 fitted with no processors. The
+addendum allows a brick to mix four-processor and zero-processor boards
+(*established*, :src:`007-4572-001 p. 13`), and the zero-processor board
+keeps its Bedrock, eight DIMM slots, router link and XIO connection
+(*established*, :src:`007-4572-001 p. 4`). The brick has 12 processors
+(``-smp 12``) and boards 0 to 2 are as ``origin3900``'s. Board 3 has
+2048 MB and no processor, with its processor slots and SysAD bus left out
+of the ``cx-brick-memory-node`` layer, and the catalogue gives it
+``role: memory``. A brick of four such boards is not offered: it must be
+paired with another CX-brick (*established*, :src:`007-4653-001 pp. 47,
+64`).
+
+What the stock IP35 PROM 6.210 does with it is observed on the model, not
+established for a CX-brick (*inferred*). The PROM reports 12 CPUs on 4
+nodes, finds the board as a hub with no processor, and its KLCONFIG exists
+afterwards: ``hinv -v`` lists ``IP35 Node Board, Module 001c10`` with its
+Bedrock and 2048 MB and no processor. The board's local-block registers
+answer the master's vector requests with nothing executing on it. With the
+PROM's verbose switch (L1 debug switches ``0x104``) the console shows
+``> Headless Hub: index 4``, ``Initializing headless node at nasid 3`` and
+``Headless node at NASID 3 module 001c10``; without it only the
+``Intializing any CPUless nodes`` line prints. The master marks the board
+by setting bit 38 of its scratch 1. A vector read of that one register that
+fails (the test property ``x-test-refuse-vector-read`` on the board's
+Bedrock) makes the PROM print ``Vector read error`` and ``*** Headless HUB
+inaccessible`` and carry on to the menu.
+
+Limits:
+
+* The summary's ``DIAG RESULTS`` is blank, where a four-compute-board
+  brick prints ``ALL DIAGS PASSED``. Whether a real memory-only board
+  leaves it blank too is *unknown*.
+* The board's NIC reads zero until the master initializes it; whether a
+  real board reads one is *unknown*.
+* Every other fact about the board (its part number, Bedrock revision and
+  router port) is the ``origin3900`` choice, an *approximation*.
+
 .. _sgi-bricks-dbrick:
 
 D-brick

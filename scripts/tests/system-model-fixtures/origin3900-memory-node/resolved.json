@@ -1,0 +1,2507 @@
+{
+  "address_spaces": [
+    {
+      "id": "cached",
+      "name": "cached",
+      "node_stride": "0x2_0000_0000",
+      "notes": "The cached xkphys base, with no attribute; the same value as the Origin 200.",
+      "provenance": "datasheet",
+      "unmapped_base": "0xa800_0000_0000_0000"
+    },
+    {
+      "id": "hub-special",
+      "name": "Hub special",
+      "node_stride": "0x2_0000_0000",
+      "notes": "Attribute 0, as on the Origin 200. Split on IP35 into a 128 MB local register window at 0x1000_0000 and a 128 MB boot window at 0x1800_0000, with remote forms at 0x3000_0000 and 0x3800_0000. The L1 UART is inside the register window. The OpenBSD board-identification read remains an unresolved consumer requirement.",
+      "provenance": "datasheet",
+      "selector": 0,
+      "unmapped_base": "0x9000_0000_0000_0000"
+    },
+    {
+      "id": "io",
+      "name": "I/O",
+      "node_stride": "0x2_0000_0000",
+      "notes": "16 MB small windows at widget times 16 MB; 512 MB big windows in M mode at (entry plus one) times 512 MB, selected by seven translation entries; the Bedrock's own registers are widget 1 of the node.",
+      "provenance": "datasheet",
+      "selector": 1,
+      "unmapped_base": "0x9200_0000_0000_0000"
+    },
+    {
+      "id": "memory-special",
+      "name": "memory special",
+      "node_stride": "0x2_0000_0000",
+      "notes": "Attribute 2.",
+      "provenance": "datasheet",
+      "selector": 2,
+      "unmapped_base": "0x9400_0000_0000_0000"
+    },
+    {
+      "id": "memory",
+      "name": "uncached memory",
+      "node_stride": "0x2_0000_0000",
+      "notes": "Attribute 3. The node number sits at physical bits 39:33 in M mode, seven bits, an 8 GB node window and 128 nodes; N mode halves the window and is out of scope.",
+      "provenance": "datasheet",
+      "selector": 3,
+      "unmapped_base": "0x9600_0000_0000_0000"
+    }
+  ],
+  "buses": [
+    {
+      "id": "cx0-numalink-a-link",
+      "kind": "fabric",
+      "master": "cx0-router",
+      "name": "Router to NUMAlink 1 Port A",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors",
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "id": "cx0-numalink-h-link",
+      "kind": "fabric",
+      "master": "cx0-router",
+      "name": "Router to NUMAlink 8 Port H",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors",
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "id": "cx0-numalink-g-link",
+      "kind": "fabric",
+      "master": "cx0-router",
+      "name": "Router to NUMAlink 7 Port G",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors",
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "id": "cx0-numalink-f-link",
+      "kind": "fabric",
+      "master": "cx0-router",
+      "name": "Router to NUMAlink 6 Port F",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors",
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "id": "cx0-node0-sysad0",
+      "kind": "sysad",
+      "master": "cx0-node0-cpu0",
+      "name": "Node 0 SysAD, processor interface 0",
+      "provenance": "derived",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "id": "cx0-node0-xio-ii",
+      "kind": "xio",
+      "master": "cx0-node0-bedrock",
+      "name": "Node 0 XIO, the Bedrock's I/O interface",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board",
+        "007-4572-001 printed page 10: XIO 2 to node 2, XIO 1 to node 1, XIO 3 to node 3 and XIO 0 to node 0"
+      ]
+    },
+    {
+      "id": "cx0-node0-router-link",
+      "kind": "fabric",
+      "link": {
+        "kind": "midplane"
+      },
+      "master": "cx0-router",
+      "name": "Node 0 to the router",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors"
+      ]
+    },
+    {
+      "id": "cx0-node1-sysad0",
+      "kind": "sysad",
+      "master": "cx0-node1-cpu0",
+      "name": "Node 1 SysAD, processor interface 0",
+      "provenance": "derived",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "id": "cx0-node1-xio-ii",
+      "kind": "xio",
+      "master": "cx0-node1-bedrock",
+      "name": "Node 1 XIO, the Bedrock's I/O interface",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board",
+        "007-4572-001 printed page 10: XIO 2 to node 2, XIO 1 to node 1, XIO 3 to node 3 and XIO 0 to node 0"
+      ]
+    },
+    {
+      "id": "cx0-node1-router-link",
+      "kind": "fabric",
+      "link": {
+        "kind": "midplane"
+      },
+      "master": "cx0-router",
+      "name": "Node 1 to the router",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors"
+      ]
+    },
+    {
+      "id": "cx0-node2-sysad0",
+      "kind": "sysad",
+      "master": "cx0-node2-cpu0",
+      "name": "Node 2 SysAD, processor interface 0",
+      "provenance": "derived",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "id": "cx0-node2-xio-ii",
+      "kind": "xio",
+      "master": "cx0-node2-bedrock",
+      "name": "Node 2 XIO, the Bedrock's I/O interface",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board",
+        "007-4572-001 printed page 10: XIO 2 to node 2, XIO 1 to node 1, XIO 3 to node 3 and XIO 0 to node 0"
+      ]
+    },
+    {
+      "id": "cx0-node2-router-link",
+      "kind": "fabric",
+      "link": {
+        "kind": "midplane"
+      },
+      "master": "cx0-router",
+      "name": "Node 2 to the router",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors"
+      ]
+    },
+    {
+      "id": "cx0-node3-xio-ii",
+      "kind": "xio",
+      "master": "cx0-node3-bedrock",
+      "name": "Node 3 XIO, the Bedrock's I/O interface",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board",
+        "007-4572-001 printed page 10: XIO 2 to node 2, XIO 1 to node 1, XIO 3 to node 3 and XIO 0 to node 0"
+      ]
+    },
+    {
+      "id": "cx0-node3-router-link",
+      "kind": "fabric",
+      "link": {
+        "kind": "midplane"
+      },
+      "master": "cx0-router",
+      "name": "Node 3 to the router",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors"
+      ]
+    },
+    {
+      "id": "ibrick-io7-bus",
+      "kind": "pci",
+      "master": "ibrick-xbridge-bridge-f",
+      "name": "IO7, bus 1 (head F)",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"
+      ]
+    },
+    {
+      "id": "ibrick-heads-xio",
+      "kind": "xio",
+      "master": "ibrick-xbridge-crossbar",
+      "name": "XBridge crossbar to its PCI heads",
+      "notes": "The crossbar's internal ports E (14) and F (15), one PCI head each.",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ]
+    },
+    {
+      "id": "ibrick-port-b-xio",
+      "kind": "xio",
+      "master": "ibrick-xbridge-crossbar",
+      "name": "XBridge Crosstown2 port B",
+      "notes": "The crossbar's port B, out to its connector. A composition that cables a brick here attaches that brick's widget to this bus.",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes"
+      ]
+    }
+  ],
+  "components": [
+    {
+      "description": "The rack that holds the Cx-brick and its I/O brick.",
+      "id": "rack",
+      "kind": "chassis",
+      "name": "Origin 3900 rack",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4426-001 printed page xi: the guide covers Origin 3900 and Onyx 3900 systems, the systems that contain Cx-bricks",
+        "007-4426-001 printed pages 6 and 18, Table 1-1 and Figure 2-1: a partition of one Cx-brick, with all four IP53 node boards on its own router"
+      ]
+    },
+    {
+      "id": "cx0-chassis",
+      "kind": "module",
+      "name": "Cx-brick",
+      "notes": "The brick's L1 type character is unknown, so the chassis carries no brick_type.",
+      "parent": "rack",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 1 and 3, Table 1: the Cx-brick holds one to four IP53 node boards, one router board and a power entry module, with 4 internal and 4 external NUMAlink 3 ports and 4 internal and 4 external XIO ports"
+      ]
+    },
+    {
+      "id": "cx0-router-board",
+      "kind": "board",
+      "name": "Cx-brick router board",
+      "parent": "cx0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/router.rst"
+      ],
+      "hardware_kind": "router",
+      "id": "cx0-router",
+      "identity": {
+        "chip_inputs": 0,
+        "hardware_revision": 1,
+        "part": "0x3017"
+      },
+      "kind": "router-asic",
+      "name": "SN1 Router",
+      "notes": "Eight ports: four internal links to the node boards and four external connectors. The connector labels number the external ports 1, 8, 7 and 6, which leaves 2 to 5, the ports a C-brick takes on an R-brick, for the node links. That node board n takes port n+2 is a model choice; no source orders them. The part and revision are the R-brick's (the addendum says the same ASIC), reused; the zero chip inputs are an emulator policy.",
+      "parent": "cx0-router-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "router_asic": {
+        "node_ports": [
+          2,
+          3,
+          4,
+          5
+        ],
+        "port_count": 8,
+        "role": "router"
+      },
+      "sources": [
+        "007-4572-001 printed pages 1 and 3, Table 1: the Cx-brick holds one to four IP53 node boards, one router board and a power entry module, with 4 internal and 4 external NUMAlink 3 ports and 4 internal and 4 external XIO ports",
+        "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/l1.rst"
+      ],
+      "description": "The brick's one L1, on the router board. It serves the four node boards over one link each and holds the brick's identity.",
+      "hardware_kind": "l1",
+      "id": "cx0-l1",
+      "kind": "system-controller",
+      "name": "L1 system controller",
+      "parent": "cx0-router-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 5 and 10: the Cx-brick has one L1 controller, on the router board, with a front display, a console connector and a USB L1 port"
+      ],
+      "system_controller": {
+        "kind": "l1",
+        "owner": "module",
+        "profile": "cx-brick"
+      }
+    },
+    {
+      "connector": {
+        "interface": "NUMAlink 3",
+        "location": "rear panel",
+        "notes": "Joins the neighbouring Cx-brick, with port F.",
+        "occupancy": "opaque"
+      },
+      "id": "cx0-numalink-a",
+      "kind": "connector",
+      "name": "NUMAlink 1 Port A",
+      "parent": "cx0-router",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "NUMAlink 3",
+        "location": "rear panel",
+        "notes": "Goes to an R-brick in router-based systems, or to another Cx-brick.",
+        "occupancy": "opaque"
+      },
+      "id": "cx0-numalink-h",
+      "kind": "connector",
+      "name": "NUMAlink 8 Port H",
+      "parent": "cx0-router",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "NUMAlink 3",
+        "location": "rear panel",
+        "notes": "Goes to an R-brick in router-based systems, or to another Cx-brick.",
+        "occupancy": "opaque"
+      },
+      "id": "cx0-numalink-g",
+      "kind": "connector",
+      "name": "NUMAlink 7 Port G",
+      "parent": "cx0-router",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "NUMAlink 3",
+        "location": "rear panel",
+        "notes": "Joins the neighbouring Cx-brick, with port A.",
+        "occupancy": "opaque"
+      },
+      "id": "cx0-numalink-f",
+      "kind": "connector",
+      "name": "NUMAlink 6 Port F",
+      "parent": "cx0-router",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "hardware_kind": "ip53-cx",
+      "id": "cx0-node0-board",
+      "kind": "board",
+      "name": "IP53 node board",
+      "notes": "Node board 0, labelled N0. Its part number and revision are unknown; the Origin 350's IP53 board records do not transfer.",
+      "parent": "cx0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
+      "hardware_kind": "bedrock",
+      "id": "cx0-node0-bedrock",
+      "identity": {
+        "clock_mhz": 200,
+        "hardware_revision": 2,
+        "widget_mfg": "0x036",
+        "widget_part": "0xc110"
+      },
+      "kind": "node-asic",
+      "name": "Bedrock",
+      "node_asic": {
+        "cpus_per_interface": 2,
+        "processor_interfaces": 2
+      },
+      "notes": "Approximation. The identity is the Bedrock every published Origin 3000 and Origin 350 inventory reports (revision 2, 200 MHz); no inventory names a Cx-brick node board's Bedrock revision or clock.",
+      "parent": "cx0-node0-board",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board",
+        "web:nekonomicon-16729141  an Origin 350 hinv -v reports ASIC BEDROCK Rev 2 at 200 MHz; every published Origin 3000 inventory reports the same for a C-brick"
+      ]
+    },
+    {
+      "hardware_kind": "r16000",
+      "id": "cx0-node0-cpu0",
+      "identity": {
+        "cache_mib": 8,
+        "clock_mhz": 700,
+        "r16000_reset_mode": 10268037,
+        "r16000_scache_bytes": 8388608,
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 8,
+            "clock_mhz": 800
+          },
+          {
+            "cache_mib": 16,
+            "clock_mhz": 1000
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R16000-family CPU",
+      "notes": "Processor A. Approximation: the reset mode and cache are the Origin 350 fit; the product layer's cpu selection supplies the clock and cache size.",
+      "parent": "cx0-node0-bedrock",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+      ]
+    },
+    {
+      "hardware_kind": "r16000",
+      "id": "cx0-node0-cpu1",
+      "identity": {
+        "cache_mib": 8,
+        "clock_mhz": 700,
+        "r16000_reset_mode": 10268037,
+        "r16000_scache_bytes": 8388608,
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 8,
+            "clock_mhz": 800
+          },
+          {
+            "cache_mib": 16,
+            "clock_mhz": 1000
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R16000-family CPU",
+      "notes": "Processor B. Approximation: the reset mode and cache are the Origin 350 fit; the product layer's cpu selection supplies the clock and cache size.",
+      "parent": "cx0-node0-bedrock",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+      ]
+    },
+    {
+      "hardware_kind": "r16000",
+      "id": "cx0-node0-cpu2",
+      "identity": {
+        "cache_mib": 8,
+        "clock_mhz": 700,
+        "r16000_reset_mode": 10268037,
+        "r16000_scache_bytes": 8388608,
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 8,
+            "clock_mhz": 800
+          },
+          {
+            "cache_mib": 16,
+            "clock_mhz": 1000
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R16000-family CPU",
+      "notes": "Processor C. Approximation: the reset mode and cache are the Origin 350 fit; the product layer's cpu selection supplies the clock and cache size.",
+      "parent": "cx0-node0-bedrock",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+      ]
+    },
+    {
+      "hardware_kind": "r16000",
+      "id": "cx0-node0-cpu3",
+      "identity": {
+        "cache_mib": 8,
+        "clock_mhz": 700,
+        "r16000_reset_mode": 10268037,
+        "r16000_scache_bytes": 8388608,
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 8,
+            "clock_mhz": 800
+          },
+          {
+            "cache_mib": 16,
+            "clock_mhz": 1000
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R16000-family CPU",
+      "notes": "Processor D. Approximation: the reset mode and cache are the Origin 350 fit; the product layer's cpu selection supplies the clock and cache size.",
+      "parent": "cx0-node0-bedrock",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+      ]
+    },
+    {
+      "description": "Eight DIMM slots, 512 MB or 1 GB DIMMs in matched pairs, the first pair in slots 0 and 1, 1 to 8 GB.",
+      "id": "cx0-node0-memory",
+      "kind": "memory",
+      "name": "node memory",
+      "parent": "cx0-node0-bedrock",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 4 and 13: 512 MB or 1 GB DDR DIMMs added in matched pairs, the first pair in slots 0 and 1, 1 to 8 GB per node board"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "Crosstown2",
+        "location": "rear panel",
+        "notes": "Node board 0's XIO port. The brick at the far end owns the crossbar and its ports; the composition says what is cabled here.",
+        "occupancy": "opaque"
+      },
+      "id": "cx0-xio-0-connector",
+      "kind": "connector",
+      "name": "XIO 0 connector",
+      "parent": "cx0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed page 10: XIO 2 to node 2, XIO 1 to node 1, XIO 3 to node 3 and XIO 0 to node 0"
+      ]
+    },
+    {
+      "hardware_kind": "ip53-cx",
+      "id": "cx0-node1-board",
+      "kind": "board",
+      "name": "IP53 node board",
+      "notes": "Node board 1, labelled N1. Its part number and revision are unknown; the Origin 350's IP53 board records do not transfer.",
+      "parent": "cx0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
+      "hardware_kind": "bedrock",
+      "id": "cx0-node1-bedrock",
+      "identity": {
+        "clock_mhz": 200,
+        "hardware_revision": 2,
+        "widget_mfg": "0x036",
+        "widget_part": "0xc110"
+      },
+      "kind": "node-asic",
+      "name": "Bedrock",
+      "node_asic": {
+        "cpus_per_interface": 2,
+        "processor_interfaces": 2
+      },
+      "notes": "Approximation. The identity is the Bedrock every published Origin 3000 and Origin 350 inventory reports (revision 2, 200 MHz); no inventory names a Cx-brick node board's Bedrock revision or clock.",
+      "parent": "cx0-node1-board",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board",
+        "web:nekonomicon-16729141  an Origin 350 hinv -v reports ASIC BEDROCK Rev 2 at 200 MHz; every published Origin 3000 inventory reports the same for a C-brick"
+      ]
+    },
+    {
+      "hardware_kind": "r16000",
+      "id": "cx0-node1-cpu0",
+      "identity": {
+        "cache_mib": 8,
+        "clock_mhz": 700,
+        "r16000_reset_mode": 10268037,
+        "r16000_scache_bytes": 8388608,
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 8,
+            "clock_mhz": 800
+          },
+          {
+            "cache_mib": 16,
+            "clock_mhz": 1000
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R16000-family CPU",
+      "notes": "Processor A. Approximation: the reset mode and cache are the Origin 350 fit; the product layer's cpu selection supplies the clock and cache size.",
+      "parent": "cx0-node1-bedrock",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+      ]
+    },
+    {
+      "hardware_kind": "r16000",
+      "id": "cx0-node1-cpu1",
+      "identity": {
+        "cache_mib": 8,
+        "clock_mhz": 700,
+        "r16000_reset_mode": 10268037,
+        "r16000_scache_bytes": 8388608,
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 8,
+            "clock_mhz": 800
+          },
+          {
+            "cache_mib": 16,
+            "clock_mhz": 1000
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R16000-family CPU",
+      "notes": "Processor B. Approximation: the reset mode and cache are the Origin 350 fit; the product layer's cpu selection supplies the clock and cache size.",
+      "parent": "cx0-node1-bedrock",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+      ]
+    },
+    {
+      "hardware_kind": "r16000",
+      "id": "cx0-node1-cpu2",
+      "identity": {
+        "cache_mib": 8,
+        "clock_mhz": 700,
+        "r16000_reset_mode": 10268037,
+        "r16000_scache_bytes": 8388608,
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 8,
+            "clock_mhz": 800
+          },
+          {
+            "cache_mib": 16,
+            "clock_mhz": 1000
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R16000-family CPU",
+      "notes": "Processor C. Approximation: the reset mode and cache are the Origin 350 fit; the product layer's cpu selection supplies the clock and cache size.",
+      "parent": "cx0-node1-bedrock",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+      ]
+    },
+    {
+      "hardware_kind": "r16000",
+      "id": "cx0-node1-cpu3",
+      "identity": {
+        "cache_mib": 8,
+        "clock_mhz": 700,
+        "r16000_reset_mode": 10268037,
+        "r16000_scache_bytes": 8388608,
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 8,
+            "clock_mhz": 800
+          },
+          {
+            "cache_mib": 16,
+            "clock_mhz": 1000
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R16000-family CPU",
+      "notes": "Processor D. Approximation: the reset mode and cache are the Origin 350 fit; the product layer's cpu selection supplies the clock and cache size.",
+      "parent": "cx0-node1-bedrock",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+      ]
+    },
+    {
+      "description": "Eight DIMM slots, 512 MB or 1 GB DIMMs in matched pairs, the first pair in slots 0 and 1, 1 to 8 GB.",
+      "id": "cx0-node1-memory",
+      "kind": "memory",
+      "name": "node memory",
+      "parent": "cx0-node1-bedrock",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 4 and 13: 512 MB or 1 GB DDR DIMMs added in matched pairs, the first pair in slots 0 and 1, 1 to 8 GB per node board"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "Crosstown2",
+        "location": "rear panel",
+        "notes": "Node board 1's XIO port. The brick at the far end owns the crossbar and its ports; the composition says what is cabled here.",
+        "occupancy": "opaque"
+      },
+      "id": "cx0-xio-1-connector",
+      "kind": "connector",
+      "name": "XIO 1 connector",
+      "parent": "cx0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed page 10: XIO 2 to node 2, XIO 1 to node 1, XIO 3 to node 3 and XIO 0 to node 0"
+      ]
+    },
+    {
+      "hardware_kind": "ip53-cx",
+      "id": "cx0-node2-board",
+      "kind": "board",
+      "name": "IP53 node board",
+      "notes": "Node board 2, labelled N2. Its part number and revision are unknown; the Origin 350's IP53 board records do not transfer.",
+      "parent": "cx0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
+      "hardware_kind": "bedrock",
+      "id": "cx0-node2-bedrock",
+      "identity": {
+        "clock_mhz": 200,
+        "hardware_revision": 2,
+        "widget_mfg": "0x036",
+        "widget_part": "0xc110"
+      },
+      "kind": "node-asic",
+      "name": "Bedrock",
+      "node_asic": {
+        "cpus_per_interface": 2,
+        "processor_interfaces": 2
+      },
+      "notes": "Approximation. The identity is the Bedrock every published Origin 3000 and Origin 350 inventory reports (revision 2, 200 MHz); no inventory names a Cx-brick node board's Bedrock revision or clock.",
+      "parent": "cx0-node2-board",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board",
+        "web:nekonomicon-16729141  an Origin 350 hinv -v reports ASIC BEDROCK Rev 2 at 200 MHz; every published Origin 3000 inventory reports the same for a C-brick"
+      ]
+    },
+    {
+      "hardware_kind": "r16000",
+      "id": "cx0-node2-cpu0",
+      "identity": {
+        "cache_mib": 8,
+        "clock_mhz": 700,
+        "r16000_reset_mode": 10268037,
+        "r16000_scache_bytes": 8388608,
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 8,
+            "clock_mhz": 800
+          },
+          {
+            "cache_mib": 16,
+            "clock_mhz": 1000
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R16000-family CPU",
+      "notes": "Processor A. Approximation: the reset mode and cache are the Origin 350 fit; the product layer's cpu selection supplies the clock and cache size.",
+      "parent": "cx0-node2-bedrock",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+      ]
+    },
+    {
+      "hardware_kind": "r16000",
+      "id": "cx0-node2-cpu1",
+      "identity": {
+        "cache_mib": 8,
+        "clock_mhz": 700,
+        "r16000_reset_mode": 10268037,
+        "r16000_scache_bytes": 8388608,
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 8,
+            "clock_mhz": 800
+          },
+          {
+            "cache_mib": 16,
+            "clock_mhz": 1000
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R16000-family CPU",
+      "notes": "Processor B. Approximation: the reset mode and cache are the Origin 350 fit; the product layer's cpu selection supplies the clock and cache size.",
+      "parent": "cx0-node2-bedrock",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+      ]
+    },
+    {
+      "hardware_kind": "r16000",
+      "id": "cx0-node2-cpu2",
+      "identity": {
+        "cache_mib": 8,
+        "clock_mhz": 700,
+        "r16000_reset_mode": 10268037,
+        "r16000_scache_bytes": 8388608,
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 8,
+            "clock_mhz": 800
+          },
+          {
+            "cache_mib": 16,
+            "clock_mhz": 1000
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R16000-family CPU",
+      "notes": "Processor C. Approximation: the reset mode and cache are the Origin 350 fit; the product layer's cpu selection supplies the clock and cache size.",
+      "parent": "cx0-node2-bedrock",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+      ]
+    },
+    {
+      "hardware_kind": "r16000",
+      "id": "cx0-node2-cpu3",
+      "identity": {
+        "cache_mib": 8,
+        "clock_mhz": 700,
+        "r16000_reset_mode": 10268037,
+        "r16000_scache_bytes": 8388608,
+        "variants": [
+          {
+            "cache_mib": 8,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 8,
+            "clock_mhz": 800
+          },
+          {
+            "cache_mib": 16,
+            "clock_mhz": 1000
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R16000-family CPU",
+      "notes": "Processor D. Approximation: the reset mode and cache are the Origin 350 fit; the product layer's cpu selection supplies the clock and cache size.",
+      "parent": "cx0-node2-bedrock",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  the Origin 350's selected R16000 inputs, reused as an approximation; 007-4572-001 names no Cx-brick processor clock or reset mode"
+      ]
+    },
+    {
+      "description": "Eight DIMM slots, 512 MB or 1 GB DIMMs in matched pairs, the first pair in slots 0 and 1, 1 to 8 GB.",
+      "id": "cx0-node2-memory",
+      "kind": "memory",
+      "name": "node memory",
+      "parent": "cx0-node2-bedrock",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 4 and 13: 512 MB or 1 GB DDR DIMMs added in matched pairs, the first pair in slots 0 and 1, 1 to 8 GB per node board"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "Crosstown2",
+        "location": "rear panel",
+        "notes": "Node board 2's XIO port. The brick at the far end owns the crossbar and its ports; the composition says what is cabled here.",
+        "occupancy": "opaque"
+      },
+      "id": "cx0-xio-2-connector",
+      "kind": "connector",
+      "name": "XIO 2 connector",
+      "parent": "cx0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed page 10: XIO 2 to node 2, XIO 1 to node 1, XIO 3 to node 3 and XIO 0 to node 0"
+      ]
+    },
+    {
+      "hardware_kind": "ip53-cx",
+      "id": "cx0-node3-board",
+      "kind": "board",
+      "name": "IP53 node board",
+      "notes": "Node board 3, labelled N3. Its part number and revision are unknown; the Origin 350's IP53 board records do not transfer.",
+      "parent": "cx0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
+      ],
+      "hardware_kind": "bedrock",
+      "id": "cx0-node3-bedrock",
+      "identity": {
+        "clock_mhz": 200,
+        "hardware_revision": 2,
+        "widget_mfg": "0x036",
+        "widget_part": "0xc110"
+      },
+      "kind": "node-asic",
+      "name": "Bedrock",
+      "node_asic": {
+        "cpus_per_interface": 2,
+        "processor_interfaces": 2
+      },
+      "notes": "Approximation. The identity is the Bedrock every published Origin 3000 and Origin 350 inventory reports (revision 2, 200 MHz); no inventory names a Cx-brick node board's Bedrock revision or clock.",
+      "parent": "cx0-node3-board",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board",
+        "web:nekonomicon-16729141  an Origin 350 hinv -v reports ASIC BEDROCK Rev 2 at 200 MHz; every published Origin 3000 inventory reports the same for a C-brick"
+      ]
+    },
+    {
+      "description": "Eight DIMM slots, 512 MB or 1 GB DIMMs in matched pairs, the first pair in slots 0 and 1, 1 to 8 GB.",
+      "id": "cx0-node3-memory",
+      "kind": "memory",
+      "name": "node memory",
+      "parent": "cx0-node3-bedrock",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed pages 4 and 13: 512 MB or 1 GB DDR DIMMs added in matched pairs, the first pair in slots 0 and 1, 1 to 8 GB per node board"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "Crosstown2",
+        "location": "rear panel",
+        "notes": "Node board 3's XIO port. The brick at the far end owns the crossbar and its ports; the composition says what is cabled here.",
+        "occupancy": "opaque"
+      },
+      "id": "cx0-xio-3-connector",
+      "kind": "connector",
+      "name": "XIO 3 connector",
+      "parent": "cx0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4572-001 printed page 10: XIO 2 to node 2, XIO 1 to node 1, XIO 3 to node 3 and XIO 0 to node 0"
+      ]
+    },
+    {
+      "id": "ibrick-brick",
+      "kind": "module",
+      "name": "I-brick",
+      "parent": "rack",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/l1.rst"
+      ],
+      "description": "The I-brick's L1, on its power board. It knows only the C-brick its XIO cable joins, and that C-brick's L1 reaches it over the same cable.",
+      "hardware_kind": "l1",
+      "id": "ibrick-l1",
+      "kind": "system-controller",
+      "name": "L1 system controller",
+      "parent": "ibrick-brick",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4240-002 printed pages 105 to 106, 121 to 122 and 127 to 131: the I-brick L1, the C-brick L1 reaching it over the XIO connection, and an I-brick L1 knowing only its attached C-brick"
+      ],
+      "system_controller": {
+        "kind": "l1"
+      }
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/xbridge.rst",
+        "qemu:docs/system/mips/sgi/hardware/bridge.rst"
+      ],
+      "hardware_kind": "xbridge",
+      "id": "ibrick-xbridge",
+      "kind": "pci-host-bridge",
+      "name": "XBridge",
+      "notes": "The I-brick's own XBridge revision line is not established by any source read for this record.",
+      "parent": "ibrick-brick",
+      "pci_host_bridge": {
+        "heads": 2
+      },
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"
+      ]
+    },
+    {
+      "crossbar": {
+        "kind": "xbridge"
+      },
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/xbridge.rst"
+      ],
+      "hardware_kind": "xbridge",
+      "id": "ibrick-xbridge-crossbar",
+      "identity": {
+        "notes": "The revision the QEMU XBridge model presents. The I-brick's fitted XBridge revision is unknown; a widget scan or verbose PROM boot of a real I-brick would settle it.",
+        "widget_revision": 2
+      },
+      "kind": "crossbar",
+      "name": "XBridge crossbar section",
+      "parent": "ibrick-xbridge",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"
+      ]
+    },
+    {
+      "description": "The PCI head behind widget 14, bus 2, with the I-brick's PCI slots.",
+      "id": "ibrick-xbridge-bridge-e",
+      "kind": "subfunction",
+      "name": "XBridge bridge at port 0xe",
+      "parent": "ibrick-xbridge",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ]
+    },
+    {
+      "description": "The PCI head behind widget 15, bus 1, with the IO7 and the Fibre Channel card.",
+      "id": "ibrick-xbridge-bridge-f",
+      "kind": "subfunction",
+      "name": "XBridge bridge at port 0xf",
+      "parent": "ibrick-xbridge",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "Crosstown2",
+        "location": "rear panel",
+        "notes": "A compute-node port. The composition says which brick's cable ends here.",
+        "occupancy": "opaque",
+        "port": 10
+      },
+      "id": "ibrick-port-a",
+      "kind": "connector",
+      "name": "Crosstown2 port A connector",
+      "parent": "ibrick-xbridge-crossbar",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "Crosstown2",
+        "location": "rear panel",
+        "notes": "The second Crosstown2 port: a second compute node, or a G- or V-brick when port A carries the C-brick. Nothing is cabled here in this layer.",
+        "occupancy": "opaque",
+        "port": 11
+      },
+      "id": "ibrick-port-b",
+      "kind": "connector",
+      "name": "Crosstown2 port B connector",
+      "parent": "ibrick-xbridge-crossbar",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes",
+        "007-4264-002 printed page 8: an I-brick port connects to a C-brick, G-brick or V-brick"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/qlogic-isp2200.rst"
+      ],
+      "hardware_kind": "qlogic-isp2200",
+      "id": "ibrick-fibre-channel",
+      "identity": {
+        "pci_device": "0x2200",
+        "pci_vendor": "0x1077"
+      },
+      "kind": "storage-hba",
+      "name": "QLogic 2200 Fibre Channel",
+      "parent": "ibrick-brick",
+      "provenance": "observed-hardware",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
+      ],
+      "hardware_kind": "ioc3",
+      "id": "ibrick-ioc3",
+      "identity": {
+        "pci_device": "0x0003",
+        "pci_vendor": "0x10a9"
+      },
+      "kind": "io-controller",
+      "name": "IOC3",
+      "parent": "ibrick-brick",
+      "provenance": "observed-hardware",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "hardware_kind": "ioc3-ethernet",
+      "id": "ibrick-ioc3-ethernet",
+      "kind": "subfunction",
+      "name": "Ethernet MAC",
+      "parent": "ibrick-ioc3",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4311-002 printed page 29, Figure 3-12: the IO7's IOC3 block carries Ethernet, serial and TOD/NVRAM",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: Integral Fast Ethernet ef0 at module 001c04, pci 4"
+      ]
+    },
+    {
+      "hardware_kind": "ioc3-serial-a",
+      "id": "ibrick-ioc3-serial-a",
+      "kind": "subfunction",
+      "name": "serial port A",
+      "parent": "ibrick-ioc3",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4311-002 printed page 29, Figure 3-12: the IO7's IOC3 block carries Ethernet, serial and TOD/NVRAM",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: Integral Fast Ethernet ef0 at module 001c04, pci 4"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/lucent-ohci.rst"
+      ],
+      "hardware_kind": "lucent-ohci",
+      "id": "ibrick-usb",
+      "identity": {
+        "pci_device": "0x5802",
+        "pci_vendor": "0x11c1"
+      },
+      "kind": "io-controller",
+      "name": "USB controller (OHCI)",
+      "parent": "ibrick-brick",
+      "provenance": "observed-hardware",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/sn.rst"
+      ],
+      "hardware_kind": "ti-tsb12lv22",
+      "id": "ibrick-firewire",
+      "identity": {
+        "pci_device": "0x8009",
+        "pci_vendor": "0x104c"
+      },
+      "kind": "io-controller",
+      "name": "TI TSB12LV22 IEEE 1394 OHCI",
+      "notes": "A CD-ROM sits behind this controller's SBP-2 path on a real I-brick; not modeled as a separate component here.",
+      "parent": "ibrick-brick",
+      "provenance": "observed-hardware",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
+      ]
+    }
+  ],
+  "composition": {
+    "architecture": "sn1",
+    "assembly": "ip53",
+    "connector_population": [
+      {
+        "component": "cx0-numalink-a",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "A single Cx-brick system cables nothing to NUMAlink Port A; the ports join another Cx-brick or an R-brick.",
+        "sources": [
+          "007-4653-001 printed pages 46 and 47: the smallest Origin 3900 is one Cx-brick, with no R-brick"
+        ]
+      },
+      {
+        "component": "cx0-numalink-h",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "A single Cx-brick system cables nothing to NUMAlink Port H; the ports join another Cx-brick or an R-brick.",
+        "sources": [
+          "007-4653-001 printed pages 46 and 47: the smallest Origin 3900 is one Cx-brick, with no R-brick"
+        ]
+      },
+      {
+        "component": "cx0-numalink-g",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "A single Cx-brick system cables nothing to NUMAlink Port G; the ports join another Cx-brick or an R-brick.",
+        "sources": [
+          "007-4653-001 printed pages 46 and 47: the smallest Origin 3900 is one Cx-brick, with no R-brick"
+        ]
+      },
+      {
+        "component": "cx0-numalink-f",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "A single Cx-brick system cables nothing to NUMAlink Port F; the ports join another Cx-brick or an R-brick.",
+        "sources": [
+          "007-4653-001 printed pages 46 and 47: the smallest Origin 3900 is one Cx-brick, with no R-brick"
+        ]
+      },
+      {
+        "component": "cx0-xio-1-connector",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "This composition fits one I/O brick, on node board 0.",
+        "sources": [
+          "007-4572-001 printed pages 2 and 14: a Cx-brick attaches up to four I/O bricks"
+        ]
+      },
+      {
+        "component": "cx0-xio-2-connector",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "This composition fits one I/O brick, on node board 0.",
+        "sources": [
+          "007-4572-001 printed pages 2 and 14: a Cx-brick attaches up to four I/O bricks"
+        ]
+      },
+      {
+        "component": "cx0-xio-3-connector",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "This composition fits one I/O brick, on node board 0.",
+        "sources": [
+          "007-4572-001 printed pages 2 and 14: a Cx-brick attaches up to four I/O bricks"
+        ]
+      },
+      {
+        "component": "ibrick-port-b",
+        "occupancy": "empty",
+        "provenance": "vendor-document",
+        "reason": "The I-brick's port B is left uncabled; one cable to node board 0 is fitted.",
+        "sources": [
+          "108-0240-002 printed pages 2-28 and 2-29: I-brick ports A and B go to compute nodes"
+        ]
+      }
+    ],
+    "layers": [
+      {
+        "id": "sn1",
+        "kind": "architecture"
+      },
+      {
+        "id": "ip53",
+        "kind": "assembly"
+      },
+      {
+        "id": "origin3900-memory-node",
+        "kind": "product"
+      }
+    ],
+    "limits": {
+      "cpus_per_node": 4,
+      "dimms_per_node": 8,
+      "memory_banks_per_node": 8,
+      "nodes": 4,
+      "provenance": "derived",
+      "sources": [
+        "007-4566-001 p.68-75, 114-119: 2U compute module; 2 or 4 R16000 600/700 (E), 800 and 1000 (O); 8 DIMM slots as four pairs, 512 MB or 1 GB DIMMs, 1-8 GB"
+      ],
+      "supported_bank_sizes_mib": [
+        512,
+        1024
+      ]
+    },
+    "module_instances": [
+      {
+        "model": "layers/modules/cx-brick-memory-node.yaml",
+        "observed_hardware": {
+          "mode": "projected",
+          "note": "The Bedrock identity, revision 2 at 200 MHz, is what every published Origin 3000 and Origin 350 inventory reports; no inventory of a Cx-brick exists, so it is not a capture of this brick.",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-sn-family-bedrock"
+          ]
+        },
+        "parent": "rack",
+        "prefix": "cx0-"
+      },
+      {
+        "bus_bindings": {
+          "host-port-a-xio": "cx0-node0-xio-ii"
+        },
+        "model": "layers/modules/i-brick.yaml",
+        "observed_hardware": {
+          "mode": "direct",
+          "note": "The IO7 device identities are the closure record's own three independent owners' IRIX inventories, reused directly for this reference I-brick rather than a distinct capture of this exact set.",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
+          ]
+        },
+        "parent": "rack",
+        "prefix": "ibrick-"
+      }
+    ],
+    "platform": "ip35",
+    "population": {
+      "cpus_per_node": [
+        4,
+        4,
+        4,
+        0
+      ],
+      "dimms_per_node": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "memory_bank_mib_per_node": [
+        [
+          1024,
+          1024,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          1024,
+          1024,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          1024,
+          1024,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          1024,
+          1024,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      ],
+      "memory_mib_per_node": [
+        2048,
+        2048,
+        2048,
+        2048
+      ],
+      "nodes": 4,
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4426-001 printed pages 6 and 18, Table 1-1 and Figure 2-1: a partition of one Cx-brick, with all four IP53 node boards on its own router",
+        "007-4572-001 printed pages 3, 4 and 13: one to four IP53 node boards, each with zero or four processors, processors added in increments of four"
+      ]
+    },
+    "product": "origin3900-memory-node",
+    "topology": {
+      "max_nodes": 4,
+      "min_nodes": 1,
+      "node_cpu_counts": [
+        0,
+        4
+      ],
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4426-001 printed pages 6 and 18, Table 1-1 and Figure 2-1: a partition of one Cx-brick, with all four IP53 node boards on its own router",
+        "007-4572-001 printed pages 3, 4 and 13: one to four IP53 node boards, each with zero or four processors, processors added in increments of four"
+      ],
+      "supported_bank_mib_per_node": [
+        [
+          1024,
+          1024,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      ],
+      "supported_cpu_populations": [
+        [
+          4,
+          4,
+          4,
+          0
+        ]
+      ],
+      "supported_processors": [
+        {
+          "cache_mib": 8,
+          "clock_mhz": 700,
+          "part": "r16000"
+        }
+      ]
+    }
+  },
+  "connections": [
+    {
+      "bus": "cx0-numalink-a-link",
+      "component": "cx0-router",
+      "fabric_port": 1,
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "bus": "cx0-numalink-a-link",
+      "component": "cx0-numalink-a",
+      "fabric_port": 1,
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "bus": "cx0-numalink-h-link",
+      "component": "cx0-router",
+      "fabric_port": 8,
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "bus": "cx0-numalink-h-link",
+      "component": "cx0-numalink-h",
+      "fabric_port": 8,
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "bus": "cx0-numalink-g-link",
+      "component": "cx0-router",
+      "fabric_port": 7,
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "bus": "cx0-numalink-g-link",
+      "component": "cx0-numalink-g",
+      "fabric_port": 7,
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "bus": "cx0-numalink-f-link",
+      "component": "cx0-router",
+      "fabric_port": 6,
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "bus": "cx0-numalink-f-link",
+      "component": "cx0-numalink-f",
+      "fabric_port": 6,
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed pages 5 and 11: the rear NUMAlink connectors are labelled, left to right, NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7 Port G and NUMAlink 6 Port F; ports A and F both join one neighbouring Cx-brick"
+      ]
+    },
+    {
+      "bus": "cx0-node0-sysad0",
+      "component": "cx0-node0-cpu0",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node0-sysad0",
+      "component": "cx0-node0-cpu1",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node0-sysad0",
+      "component": "cx0-node0-cpu2",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node0-sysad0",
+      "component": "cx0-node0-cpu3",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node0-sysad0",
+      "component": "cx0-node0-bedrock",
+      "provenance": "derived",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node0-xio-ii",
+      "component": "cx0-xio-0-connector",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed page 10: XIO 2 to node 2, XIO 1 to node 1, XIO 3 to node 3 and XIO 0 to node 0"
+      ]
+    },
+    {
+      "bus": "cx0-node0-router-link",
+      "component": "cx0-router",
+      "fabric_port": 2,
+      "notes": "Approximation: node board 0 takes router port 2; no source orders the ports.",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 4 and 11: the external connectors are NUMAlink 1 Port A, 8 Port H, 7 Port G and 6 Port F, so ports 1, 8, 7 and 6 are external; 007-4311-002 printed pages 36 and 37: a C-brick takes router port 2, 3, 4 or 5"
+      ]
+    },
+    {
+      "bus": "cx0-node0-router-link",
+      "component": "cx0-node0-bedrock",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors"
+      ]
+    },
+    {
+      "bus": "cx0-node1-sysad0",
+      "component": "cx0-node1-cpu0",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node1-sysad0",
+      "component": "cx0-node1-cpu1",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node1-sysad0",
+      "component": "cx0-node1-cpu2",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node1-sysad0",
+      "component": "cx0-node1-cpu3",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node1-sysad0",
+      "component": "cx0-node1-bedrock",
+      "provenance": "derived",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node1-xio-ii",
+      "component": "cx0-xio-1-connector",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed page 10: XIO 2 to node 2, XIO 1 to node 1, XIO 3 to node 3 and XIO 0 to node 0"
+      ]
+    },
+    {
+      "bus": "cx0-node1-router-link",
+      "component": "cx0-router",
+      "fabric_port": 3,
+      "notes": "Approximation: node board 1 takes router port 3; no source orders the ports.",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 4 and 11: the external connectors are NUMAlink 1 Port A, 8 Port H, 7 Port G and 6 Port F, so ports 1, 8, 7 and 6 are external; 007-4311-002 printed pages 36 and 37: a C-brick takes router port 2, 3, 4 or 5"
+      ]
+    },
+    {
+      "bus": "cx0-node1-router-link",
+      "component": "cx0-node1-bedrock",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors"
+      ]
+    },
+    {
+      "bus": "cx0-node2-sysad0",
+      "component": "cx0-node2-cpu0",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node2-sysad0",
+      "component": "cx0-node2-cpu1",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node2-sysad0",
+      "component": "cx0-node2-cpu2",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node2-sysad0",
+      "component": "cx0-node2-cpu3",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node2-sysad0",
+      "component": "cx0-node2-bedrock",
+      "provenance": "derived",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed pages 3 and 4: each IP53 node board carries one Bedrock, zero or four processors A to D, and up to eight DIMMs, with one XIO and one NUMAlink 3 MegArray connector to the router board"
+      ]
+    },
+    {
+      "bus": "cx0-node2-xio-ii",
+      "component": "cx0-xio-2-connector",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed page 10: XIO 2 to node 2, XIO 1 to node 1, XIO 3 to node 3 and XIO 0 to node 0"
+      ]
+    },
+    {
+      "bus": "cx0-node2-router-link",
+      "component": "cx0-router",
+      "fabric_port": 4,
+      "notes": "Approximation: node board 2 takes router port 4; no source orders the ports.",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 4 and 11: the external connectors are NUMAlink 1 Port A, 8 Port H, 7 Port G and 6 Port F, so ports 1, 8, 7 and 6 are external; 007-4311-002 printed pages 36 and 37: a C-brick takes router port 2, 3, 4 or 5"
+      ]
+    },
+    {
+      "bus": "cx0-node2-router-link",
+      "component": "cx0-node2-bedrock",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors"
+      ]
+    },
+    {
+      "bus": "cx0-node3-xio-ii",
+      "component": "cx0-xio-3-connector",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed page 10: XIO 2 to node 2, XIO 1 to node 1, XIO 3 to node 3 and XIO 0 to node 0"
+      ]
+    },
+    {
+      "bus": "cx0-node3-router-link",
+      "component": "cx0-router",
+      "fabric_port": 5,
+      "notes": "Approximation: node board 3 takes router port 5; no source orders the ports.",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "007-4572-001 printed pages 4 and 11: the external connectors are NUMAlink 1 Port A, 8 Port H, 7 Port G and 6 Port F, so ports 1, 8, 7 and 6 are external; 007-4311-002 printed pages 36 and 37: a C-brick takes router port 2, 3, 4 or 5"
+      ]
+    },
+    {
+      "bus": "cx0-node3-router-link",
+      "component": "cx0-node3-bedrock",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4572-001 printed pages 4 and 5: the router board's router ASIC is the same ASIC as the R-brick's, with four internal NUMAlink 3 links, one per node board, and four external NUMAlink 3 connectors"
+      ]
+    },
+    {
+      "bus": "ibrick-heads-xio",
+      "component": "ibrick-xbridge-bridge-e",
+      "provenance": "vendor-document",
+      "role": "bridge-upstream",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ],
+      "widget": 14
+    },
+    {
+      "bus": "ibrick-heads-xio",
+      "component": "ibrick-xbridge-bridge-f",
+      "provenance": "vendor-document",
+      "role": "bridge-upstream",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ],
+      "widget": 15
+    },
+    {
+      "bus": "ibrick-io7-bus",
+      "component": "ibrick-xbridge-bridge-f",
+      "provenance": "vendor-document",
+      "role": "bridge-downstream",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ]
+    },
+    {
+      "bus": "ibrick-io7-bus",
+      "component": "ibrick-fibre-channel",
+      "pci_device": 1,
+      "provenance": "observed-hardware",
+      "role": "endpoint",
+      "sources": [
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "bus": "ibrick-io7-bus",
+      "component": "ibrick-ioc3",
+      "pci_device": 4,
+      "provenance": "observed-hardware",
+      "role": "endpoint",
+      "sources": [
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "bus": "ibrick-io7-bus",
+      "component": "ibrick-usb",
+      "pci_device": 5,
+      "provenance": "observed-hardware",
+      "role": "endpoint",
+      "sources": [
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "bus": "ibrick-io7-bus",
+      "component": "ibrick-firewire",
+      "pci_device": 6,
+      "provenance": "observed-hardware",
+      "role": "endpoint",
+      "sources": [
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "bus": "cx0-node0-xio-ii",
+      "component": "ibrick-xbridge-crossbar",
+      "notes": "Host port A, widget 0xA (10 decimal).",
+      "provenance": "vendor-document",
+      "role": "bridge-upstream",
+      "sources": [
+        "108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"
+      ],
+      "widget": 10
+    },
+    {
+      "bus": "cx0-node0-xio-ii",
+      "component": "ibrick-port-a",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes"
+      ]
+    },
+    {
+      "bus": "ibrick-port-b-xio",
+      "component": "ibrick-port-b",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes"
+      ]
+    }
+  ],
+  "evidence_policy": "strict",
+  "interrupts": [],
+  "machine": {
+    "architecture_ip": "IP35",
+    "board_ip": "IP53",
+    "emulation": {
+      "bedrock_nodes": {
+        "cx0-node0-bedrock": {
+          "board_id_word": 1,
+          "initiator_region": 0,
+          "installed_bank_mask": {
+            "mode": "fitted-banks"
+          },
+          "local_region": 0,
+          "notes": "Approximation. No source gives a Cx-brick node board's board word. The Origin 350 IP53's word is reused so that the PROM selects the R16000 row; a register read on a real node board would settle it.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick",
+            "007-4653-001 printed page 52: one IP53 node board is equal to one C-brick",
+            "firmware:ip35-prom-6.210 CPU-configuration table"
+          ]
+        },
+        "cx0-node1-bedrock": {
+          "board_id_word": 1,
+          "initiator_region": 0,
+          "installed_bank_mask": {
+            "mode": "fitted-banks"
+          },
+          "local_region": 0,
+          "notes": "Approximation. No source gives a Cx-brick node board's board word. The Origin 350 IP53's word is reused so that the PROM selects the R16000 row; a register read on a real node board would settle it.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick",
+            "007-4653-001 printed page 52: one IP53 node board is equal to one C-brick",
+            "firmware:ip35-prom-6.210 CPU-configuration table"
+          ]
+        },
+        "cx0-node2-bedrock": {
+          "board_id_word": 1,
+          "initiator_region": 0,
+          "installed_bank_mask": {
+            "mode": "fitted-banks"
+          },
+          "local_region": 0,
+          "notes": "Approximation. No source gives a Cx-brick node board's board word. The Origin 350 IP53's word is reused so that the PROM selects the R16000 row; a register read on a real node board would settle it.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick",
+            "007-4653-001 printed page 52: one IP53 node board is equal to one C-brick",
+            "firmware:ip35-prom-6.210 CPU-configuration table"
+          ]
+        },
+        "cx0-node3-bedrock": {
+          "board_id_word": 1,
+          "initiator_region": 0,
+          "installed_bank_mask": {
+            "mode": "fitted-banks"
+          },
+          "local_region": 0,
+          "notes": "Approximation. No source gives a Cx-brick node board's board word. The Origin 350 IP53's word is reused so that the PROM selects the R16000 row; a register read on a real node board would settle it.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick",
+            "007-4653-001 printed page 52: one IP53 node board is equal to one C-brick",
+            "firmware:ip35-prom-6.210 CPU-configuration table"
+          ]
+        }
+      },
+      "display_description": "SGI Origin 3900 (IP53), one Cx-brick with three compute boards and one memory-only board, and an I-brick",
+      "emulator_constraints": {
+        "accepted_bank_sizes_mib": [
+          2048
+        ]
+      },
+      "firmware_payload": {
+        "argument": "-bios",
+        "notes": "The Origin 300's stock IP35 PROM 6.210 payload and views, carried by each Cx-brick node board; the Origin 350 inventory reports the same PROM revision. Emulator compatibility policy; no fitted flash part or physical reset decoder is claimed.",
+        "path": "firmware/6.5.30/ip35prom.payload.bin",
+        "provenance": "derived",
+        "read_only": true,
+        "second_selection": {
+          "address": "0x100_1a000000",
+          "size": "0x0080_0000"
+        },
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": "0x1686a8",
+        "sources": [
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-carrier",
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-trampolines",
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip35-views"
+        ],
+        "views": [
+          {
+            "address": "0x000_001fc00000",
+            "name": "CPU reset view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          },
+          {
+            "address": "0x100_18000000",
+            "name": "local Hub-special boot view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          },
+          {
+            "address": "0x100_1fc00000",
+            "name": "bounded high local Hub-special boot view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          },
+          {
+            "address": "0x100_38000000",
+            "name": "node-zero remote Hub-special boot view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          }
+        ]
+      },
+      "initial_module_numbers": [
+        {
+          "component": "cx0-chassis",
+          "number": 7,
+          "reason": "Model choice: the slot the Origin 3900 guide's example names, 001c07."
+        },
+        {
+          "component": "ibrick-brick",
+          "number": 16,
+          "reason": "Model choice: a distinct slot for the I-brick."
+        }
+      ],
+      "io_boards": {
+        "ibrick-xbridge-bridge-f": {
+          "ioc3_subsystem_id": 65535,
+          "mac_source": "none",
+          "notes": "The IOC3 subsystem field is the unobserved placeholder, and no source gives where the IO7's Ethernet address comes from. The IEEE 1394 link controller's PHY is the model's lone unconnected PHY, an approximation: the fitted PHY part is unidentified, and no 1394 bus or CD-ROM is modelled.",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick",
+            "hw/misc/tsb12lv22.c"
+          ]
+        }
+      },
+      "ip35_firmware": {
+        "cpu_mode_word": 1419554181,
+        "machine_type": 0,
+        "notes": "Approximation. The stock IP35 PROM's configuration-table word for 700 MHz and 8 MB with cache tap 0xa, the tap the one Onyx 350 board (030-1812-002) with that tuple prints, so borrowed across products; the table row carries machine type 2 where this block stores 0. No Cx-brick flash block has been captured.",
+        "provenance": "derived",
+        "sources": [
+          "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected 6.210 flash payload and seed policy"
+        ]
+      },
+      "l1_controllers": {
+        "cx0-l1": {
+          "notes": "Approximation. The type byte is the C-brick's, because the printed letter is the same and the PROM needs a module class; the Cx-brick's real value (the profile's unknown Cx-5) would settle it. The firmware revision is the same approximation as the C-bricks': the 1.44.0 of every brick image in the IRIX 6.5.30 L1 firmware.",
+          "provenance": "derived",
+          "reported_type": 67,
+          "revision": {
+            "major": 1,
+            "minor": 44,
+            "patch": 0
+          },
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/l1.rst",
+            "007-4653-001 printed pages 21 and 134: 001c07 is a Cx-brick in rack 001, slot 07"
+          ]
+        },
+        "ibrick-l1": {
+          "notes": "The I-brick profile of the L1 model, reached from the Cx-brick's L1 over the XIO cable. Its firmware revision is an approximation: no capture gives a fitted I-brick's, so it is the 1.44.0 of every brick image in the IRIX 6.5.30 L1 firmware, as the C-brick profiles use.",
+          "profile": "ibrick",
+          "provenance": "derived",
+          "revision": {
+            "major": 1,
+            "minor": 44,
+            "patch": 0
+          },
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+          ]
+        }
+      },
+      "lifecycle": "implemented",
+      "machine_name": "origin3000",
+      "profile": "origin3900-memory-node",
+      "synthetic_identities": [
+        {
+          "component": "cx0-node0-bedrock",
+          "reason": "Synthetic node identity N0, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e00"
+        },
+        {
+          "component": "cx0-node1-bedrock",
+          "reason": "Synthetic node identity N1, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e01"
+        },
+        {
+          "component": "cx0-node2-bedrock",
+          "reason": "Synthetic node identity N2, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e02"
+        },
+        {
+          "component": "cx0-node3-bedrock",
+          "reason": "Synthetic node identity N3, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e03"
+        },
+        {
+          "component": "ibrick-xbridge",
+          "reason": "Synthetic I-brick XBridge identity; no physical barcode is claimed.",
+          "serial": "0x51454d555800"
+        },
+        {
+          "component": "ibrick-ioc3",
+          "reason": "Synthetic I-brick IOC3 identity; no physical barcode is claimed.",
+          "serial": "0x5e7454d55000"
+        },
+        {
+          "component": "cx0-router",
+          "reason": "Synthetic router descriptor identity; no physical barcode is claimed.",
+          "serial": "0x51454d555200"
+        }
+      ],
+      "synthetic_router_diagnostics": true,
+      "system_timekeepers": {
+        "ibrick-xbridge-bridge-f": {
+          "initial_ip27_fixture": false,
+          "kind": "m48t35-compatible",
+          "notes": "The IO7's time-of-day part is not identified; this is the Origin 300's M48T35-compatible choice, an approximation. IP35 software uses the 1968 year convention.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"
+          ],
+          "year_base": 1968
+        }
+      }
+    },
+    "generation": "SN1",
+    "harness": {
+      "console": "l1-uart",
+      "default_cpu_model": "R16000",
+      "default_topology": "origin3200",
+      "disk_bus": "scsi.0",
+      "install_media": [
+        "netboot"
+      ],
+      "netboot_adapter": "ioc3-ethernet",
+      "prom_dialogue": "ip35-l1-prompt",
+      "provenance": "derived",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-metadata"
+      ],
+      "supported_guests": [
+        "irix"
+      ]
+    },
+    "kernel_ip": "IP27",
+    "model_role": "emulation-target",
+    "name": "Origin 3900 (one memory-only node board)",
+    "notes": "A Cx-brick that mixes the two board types, which the addendum allows (007-4572-001 page 13): node boards 0 to 2 carry four processors each and node board 3 is the zero-processor board, which keeps its Bedrock, its eight DIMM slots, its router link and its XIO connection (007-4572-001 page 4). Twelve processors, and an I-brick on node board 0's XIO connector at its XBridge port A. Node board 0 and port A are this composition's choices; which XIO connector a boot I-brick uses is unknown. An IX-brick may take the I-brick's place on a real partition; no IX-brick layer exists yet. No source fixes the Cx-brick's processor clock, part, reset mode, node-board part, Bedrock revision, router port per node board, NASID base, XIO widget numbers or memory. Each node board is fitted as the Origin 350's IP53 is (four 700 MHz R16000 processors with 8 MB secondary caches, its reset mode and 2048 MB in banks 0 and 1), the Bedrock is the 200 MHz revision 2 every published inventory reports, and node board n takes router port n+2; all are approximations the Cx-brick datasheet lists. The boards are numbered NASID 0 to 3 by board number, where the Origin 3900 guide orders them board 1, 2, 0, 3 from an unknown base, so the model's NASIDs differ from the figure's. The Cx-brick's L1 reports the C-brick's type character, an approximation the stock PROM needs to name the module. The router answers the model's synthetic diagnostics, which no hardware record settles. The rack's L2 controller is not modelled."
+  },
+  "model_version": 1,
+  "open_questions": [],
+  "processors": [
+    {
+      "part": "r12000",
+      "provenance": "observed-hardware",
+      "sources": [
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200, the CPU 0 to 7, FPU and Scache lines",
+        "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row, word 0x5414a785",
+        "108-0240-002 printed page 2-4: a PIMM carries R12000 processors at 360 MHz or R12000A at 400 MHz with a 4 or 8 MB secondary cache",
+        "linux:db2ddb87143519e20a95aa36c60b36107b736a58 arch/mips/include/asm/cpu.h lines 76 and 229: R12000 implementation and revision mask"
+      ],
+      "variants": [
+        {
+          "cache_clock_mhz": 266,
+          "cache_mib": 8,
+          "clock_mhz": 400,
+          "fpu_identification": "0x0935",
+          "notes": "The Origin 3200 C-brick's selected fit. Established: a posted Origin 3200 inventory reports four 400 MHz R12000s per C-brick at revision 3.5, each with an 8 MB secondary cache at 266 MHz, and an R12010 FPU at revision 3.5. Inferred: the PRId and the FPU identification, from those printed revisions and the R10000-family implementation numbers. Approximated: the reset-mode word is the low 25 bits of the stock IP35 PROM's configuration-table word for a 400 MHz, 8 MB C-brick, the way the Origin 300's R14000 word is its row's; no capture of a C-brick's reset mode exists.",
+          "processor_identification": "0x0e35",
+          "reset_mode_bits": "0x0014a785"
+        }
+      ]
+    },
+    {
+      "part": "r14000",
+      "provenance": "observed-hardware",
+      "sources": [
+        "108-0263-004 (Origin 300 scan tools guide), configuration names",
+        "firmware:ip35-prom-6.210 CPU-configuration table, the 600 MHz, 8 MiB C-brick row, word 0x549cab85",
+        "108-0266-001 printed page 28: a C-brick PIMM option of R14000 processors with 8 MB per processor"
+      ],
+      "variants": [
+        {
+          "cache_mib": 2,
+          "clock_mhz": 500,
+          "notes": "QEMU's currently shipping 500 MHz/2 MiB Origin 300 configuration writes this exact Config0 low-25-bit reset word (readback 0x6c9aa985). No product here yet reads this field; it moves machine.firmware_config.processor_reset_mode here for a future compiler once a Bedrock-node compile path exists. The complete Config0 write mask remains unestablished for R14000, so only the literal word is carried, not a named-field encoding.",
+          "reset_mode_bits": "0x009aa985"
+        },
+        {
+          "cache_mib": 2,
+          "clock_mhz": 600
+        },
+        {
+          "cache_clock_mhz": 300,
+          "cache_mib": 8,
+          "clock_mhz": 600,
+          "notes": "The 600 MHz C-brick PIMM, part 030-1734-00x. Established: the retained inventories capture it with 8 MB per processor at 300 MHz and Tap 0xa, and print processor revisions 2.3 and 2.4; the PRId 0x0f24 is the revision 2.4 one (the model's R14000 type, implementation 0x0f). Approximated: the reset-mode word is the low 25 bits of the stock IP35 PROM's configuration-table word for a 600 MHz, 8 MB C-brick, 0x549cab85, whose SS field selects 8 MB; no capture of a C-brick's reset mode exists. Unknown: the FPU revision.",
+          "processor_identification": "0x0f24",
+          "reset_mode_bits": "0x009cab85"
+        }
+      ]
+    },
+    {
+      "part": "r16000",
+      "provenance": "derived",
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected Origin 350 processor inputs",
+        "web:graphica-onyx350-hinv  module 001c01 CPU inventory, four 800 MHz R16000 with 8 MiB cache; single-module operation remains unverified",
+        "web:irixnet-thread-2263  module 001c01 reports 1 GHz/16 MiB; Onyx 4 host assignment remains inferred"
+      ],
+      "variants": [
+        {
+          "cache_mib": 8,
+          "clock_mhz": 700,
+          "notes": "Selected software profile for the Origin 3900 IP53 runtime model. This tuple does not identify a processor stepping or prove a physical Origin 3900 configuration."
+        },
+        {
+          "cache_clock_mhz": 400,
+          "cache_mib": 8,
+          "cache_tap": 10,
+          "clock_mhz": 800,
+          "firmware_word": "0x549caf85",
+          "notes": "Captured on module 001c01 in the customized Onyx 350 system, and printed by the 030-1959-002 and 030-1959-003 boards of Origin 350 and Tezro inventories, each with a 400 MHz cache clock and tap 0xa. The flash word is the stock IP35 PROM's configuration-table word for it (row 21; the row carries machine type 2 where the profiles store 0) and the reset word is its low 25 bits, a model derivation. Processor identification differs by board and is authored where a board fits the part. The observed tuple does not prove standalone operation.",
+          "reset_mode_bits": "0x009caf85"
+        },
+        {
+          "cache_clock_mhz": 333,
+          "cache_mib": 16,
+          "clock_mhz": 1000,
+          "notes": "Public HINV reports this tuple for module 001c01, an IP59_4CPU board; the IP59 products and the Onyx 4 host experiment use it. Every retained 1.0 GHz module prints a 333 MHz cache clock. It does not establish reset behavior."
+        },
+        {
+          "cache_clock_mhz": 350,
+          "cache_mib": 4,
+          "cache_tap": 12,
+          "clock_mhz": 700,
+          "firmware_word": "0x589bad85",
+          "notes": "Origin 350 and Tezro tuple, printed by the 030-1868-001 and 030-1869-001 boards with a 350 MHz cache clock and tap 0xc. The flash word is the stock IP35 PROM's configuration-table word for it (row 26; the row carries machine type 2 where the profiles store 0) and the reset word is its low 25 bits, a model derivation. Processor identification differs by board and is authored where a board fits the part.",
+          "reset_mode_bits": "0x009bad85"
+        },
+        {
+          "cache_clock_mhz": 400,
+          "cache_mib": 4,
+          "cache_tap": 10,
+          "clock_mhz": 800,
+          "firmware_word": "0x549baf85",
+          "notes": "Tezro tuple, printed by the 030-1956-002 board with a 400 MHz cache clock and tap 0xa. The flash word is the stock IP35 PROM's configuration-table word for it (row 20; the row carries machine type 2 where the profiles store 0) and the reset word is its low 25 bits, a model derivation. Processor identification differs by board and is authored where a board fits the part.",
+          "reset_mode_bits": "0x009baf85"
+        }
+      ]
+    }
+  ],
+  "space_selection": {
+    "bits": "58:57",
+    "count": 4,
+    "mechanism": "processor-attribute",
+    "notes": "Unchanged from the Origin 200: two uncached-attribute bits the R10000-family processor drives beside the 40-bit physical address. The seven-space, address-field encoding this file once carried matches no public source, MIPS or Itanium; the Origin 200's two-bit emulation carrier therefore fits this generation as it stands.",
+    "provenance": "public-header",
+    "sources": [
+      "openbsd-sgi:2df91d80c104 sys/arch/mips64/include/cpu.h lines 92 to 113",
+      "linux-ip35:9f613a321ea03fb91bd9947cca7dda2888ccb447 arch/mips/include/asm/mach-ip35/spaces.h lines 13 to 22",
+      "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/bedrock.h lines 40 to 44"
+    ]
+  },
+  "xio_cables": [
+    {
+      "ends": [
+        "cx0-xio-0-connector",
+        "ibrick-port-a"
+      ],
+      "id": "cx0-to-ibrick",
+      "notes": "Node board 0 and port A are this composition's choices; which XIO connector and port a boot I-brick uses is unknown.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4572-001 printed page 10: XIO 0 to node 0",
+        "007-4572-001 printed pages 2 and 14: a Cx-brick attaches up to four I/O bricks; the I-, P-, X-, N-, IX- and PX-bricks are compatible"
+      ]
+    }
+  ]
+}
