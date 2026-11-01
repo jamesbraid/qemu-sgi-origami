@@ -22,6 +22,7 @@ mips_ss.add(when: 'CONFIG_SGI_CATALOGUE',
             if_true: [files('sgi-machines.c', 'sgi-graphics.c',
                             'sgi-graphics-host.c',
                             'machine-storage.c',
-                            'board-mac.c', 'sgi-cpu.c'),
+                            'board-cdrom.c', 'board-mac.c',
+                            'sgi-cpu.c'),
                       sgi_machines_embed_c],
             if_false: files('sgi-machines-qmp-stub.c'))
