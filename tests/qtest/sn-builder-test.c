@@ -10733,6 +10733,56 @@ static void test_origin3900_memory_node(void)
 }
 
 /*
+ * The model-only Origin 3200 with an I-brick on each C-brick (not a
+ * documented configuration). Each C-brick's L1 reaches its own I-brick, both
+ * keep widgets 14 and 15, and the two I-bricks take distinct identity
+ * indexes: with one shared base I/O identity the stock PROM merges the two
+ * hubs into one. Datasheet: origin3000-topologies, "A second I-brick".
+ */
+static void test_origin3200_two_ibricks(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn-builder-two-ibricks-prom-XXXXXX", &prom,
+                             &error);
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M origin3000,topology=origin3200-two-ibricks "
+                      "-cpu R12000 -smp 8 -m 8192 -bios %s -nodefaults "
+                      "-display none -S", prom);
+    for (unsigned int node = 0; node < 2; node++) {
+        g_autofree char *l1 = g_strdup_printf("/machine/node%u/l1", node);
+        g_autofree char *io_peer = qom_get_str(qts, l1, "io-peer");
+        g_autofree char *module = g_strdup_printf("/machine/module%u/l1",
+                                                  node + 2);
+
+        g_assert_cmpstr(io_peer, ==, module);
+        g_assert_cmpstr(qom_get_str(qts, io_peer, "brick-type"), ==, "ibrick");
+        g_assert_cmpuint(qom_get_uint(qts, io_peer, "identity-index"), ==,
+                         node + 2);
+    }
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module2/l1", "bay"), ==, 14);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module3/l1", "bay"), !=, 14);
+    qtest_quit(qts);
+    /*
+     * One I-brick keeps the shared index, so the single-I-brick entry is
+     * unchanged.
+     */
+    qts = qtest_initf("-M origin3000,topology=origin3200 -cpu R12000 "
+                      "-smp 8 -m 8192 -bios %s -nodefaults -display none -S",
+                      prom);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module2/l1",
+                                  "identity-index"), ==, 0);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
  * Each router L1 is given its product's board record, which the stock PROM
  * reads at router initialisation and prints an EEPROM vector read error
  * without. The Origin 3400 R-brick takes the R-brick row, the Origin 300
@@ -13815,6 +13865,8 @@ int main(int argc, char **argv)
                    test_rbrick_router_without_l1_management);
     qtest_add_func("sn/builder/cbrick/memory-node",
                    test_memory_node_serves_node0);
+    qtest_add_func("sn/builder/origin3200/two-ibricks",
+                   test_origin3200_two_ibricks);
     qtest_add_func("sn/builder/origin3900/memory-node",
                    test_origin3900_memory_node);
     qtest_add_func("sn/builder/cbrick/memory-node-scratch1-marked",

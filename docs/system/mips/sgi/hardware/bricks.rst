@@ -393,6 +393,31 @@ to be what a shipped C-brick presents.
   and no other clock, cache size or part is. The 600 MHz R14000 PIMM is a
   separate entry (:ref:`sgi-sn-cbrick-r14000`).
 
+.. _sgi-sn-origin3200-two-ibricks:
+
+Origin 3200 with an I-brick on each C-brick
+-------------------------------------------
+
+``-M origin3000,topology=origin3200-two-ibricks`` is the ``origin3200``
+brick set with a second I-brick on the second C-brick's ``XIO (II)``
+connector. It is model only: no source documents it and no inventory shows
+it, and the display name and description say so. The guide allows two I/O
+bricks of which one is an I-brick (:src:`007-4311-002 p. 87`) but names no
+second I-brick. Each I-brick keeps widgets 14 and 15 and is told apart by
+its host C-brick's module, as the Origin 300 two-module inventories name
+theirs (*inferred*). The second I-brick's rack slot (U11) and its port A
+are model choices (*approximation*).
+
+The stock IP35 PROM 6.210 finds 2 nodes and 8 CPUs and passes its
+diagnostics, and ``hinv -v`` lists an ``IBRICK Bridge`` pair under each of
+modules ``001c04`` and ``001c07``. The PROM names a node by its base I/O
+identity when the node's own is unreadable, so two I-bricks must not share
+one: the builder gives each I-brick L1 its module index as ``identity-index``
+whenever a topology has more than one, and the topology gives each I-brick a
+distinct synthetic XBridge and IOC3 serial. Without that the PROM prints the
+same hub NIC on both nodes and finds one object. What a real second I-brick
+or a dual-hosted one shows is *unknown*.
+
 .. _sgi-sn-onyx3400-ir:
 
 Onyx 3400 with InfiniteReality3 machine

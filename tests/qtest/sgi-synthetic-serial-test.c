@@ -81,6 +81,7 @@ static const TopologyExtra topology_extras[] = {
     { "origin3200", "", .unmarked = true },
     { "origin3200-r16000", "", .unmarked = true },
     { "origin3200-r14000-600mhz", "", .unmarked = true },
+    { "origin3200-two-ibricks", "", .unmarked = true },
     { "origin3400", "", .unmarked = true },
     { "origin3400-r16000", "", .unmarked = true },
     { "origin3400-r14000-600mhz", "", .unmarked = true },

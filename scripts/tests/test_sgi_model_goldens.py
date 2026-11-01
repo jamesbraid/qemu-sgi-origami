@@ -43,6 +43,7 @@ CONFIGURATIONS = {
     "origin3200": "origin3200.yaml",
     "origin3200-r16000": "origin3200-r16000.yaml",
     "origin3200-r14000-600mhz": "origin3200-r14000-600mhz.yaml",
+    "origin3200-two-ibricks": "origin3200-two-ibricks.yaml",
     "origin3900": "origin3900.yaml",
     "origin3900-memory-node": "origin3900-memory-node.yaml",
     "origin3400": "origin3400.yaml",
