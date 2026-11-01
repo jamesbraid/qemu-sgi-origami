@@ -1145,7 +1145,7 @@ def _processor(model: dict, cpu: dict) -> dict:
                     "disagrees with the C-brick's flash word "
                     + ("(none authored)" if not isinstance(flash, dict) else
                        f"{flash.get('cpu_mode_word', 0):#010x}"))
-        return {
+        record = {
             # As for the other parts, the cache is part of the name: the
             # Origin 350 and the Tezro both run 700 MHz, with 8 and 4 MiB.
             "id": f"r16000-{clock_mhz}mhz-{cache_mib}mb",
@@ -1154,6 +1154,11 @@ def _processor(model: dict, cpu: dict) -> dict:
             "cache_mib": cache_mib,
             "mode_bits": reset_mode,
         }
+        # A board that authors a PRId fits that revision of the part; one
+        # that does not keeps the CPU model's own (the 1.0 GHz part).
+        if "processor_identification" in identity:
+            record["prid"] = num(identity["processor_identification"])
+        return record
     return _processor_record(part, identity, f"CPU '{cpu['id']}'")
 
 
