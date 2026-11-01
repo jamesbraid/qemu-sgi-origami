@@ -2028,6 +2028,27 @@ class Origin3000BrickValidationTests(unittest.TestCase):
             "profile"] = "rbrick"
         self.assertFails(model, "names unsupported L1 profile 'rbrick'")
 
+    def test_brick_l1_partition_belongs_to_a_cbrick_controller(self):
+        """A C-brick's controller holds the partition ID, 1 to 63; the I/O
+        brick follows its C-brick and holds none (the partitioning
+        datasheet)."""
+        model = self.model()
+        controllers = model["machine"]["emulation"]["l1_controllers"]
+        controllers["c0-l1"]["partition"] = 1
+        controllers["c1-l1"]["partition"] = 63
+        self.assertEqual(self.problems(model), [])
+        for bad in (0, 64, "1", True):
+            with self.subTest(partition=bad):
+                model = self.model()
+                model["machine"]["emulation"]["l1_controllers"]["c0-l1"][
+                    "partition"] = bad
+                self.assertFails(model, "partition")
+        model = self.model()
+        model["machine"]["emulation"]["l1_controllers"]["ibrick-l1"][
+            "partition"] = 1
+        self.assertFails(
+            model, "'ibrick-l1' L1 profile 'ibrick' holds no partition")
+
     def test_io7_has_no_ieee1394_absent_flag(self):
         model = self.model()
         model["machine"]["emulation"]["io_boards"][

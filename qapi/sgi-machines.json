@@ -342,6 +342,8 @@
 #     record
 # @profile: Origin 3000 brick profile; absent for the Origin 300
 #     chassis controller and its relatives
+# @partition: partition ID, 1 to 63, a C-brick's controller holds;
+#     absent for an unpartitioned brick
 #
 # Since: 11.2
 ##
@@ -351,7 +353,8 @@
             '*reported-type': 'uint8',
             '*revision': 'SGIModelL1Revision',
             '*mac-eeprom-input': 'SGIModelInputBinding',
-            '*profile': 'SGIModelL1Profile' } }
+            '*profile': 'SGIModelL1Profile',
+            '*partition': 'uint8' } }
 
 ##
 # @SGIModelL1CPUContext:

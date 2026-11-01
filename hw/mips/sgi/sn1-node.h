@@ -82,6 +82,7 @@ typedef struct SN1NodeState {
     char *l1_mac_eeprom;
     /* An Origin 3000 brick's L1 profile; NULL for the Origin 300 family's. */
     char *l1_brick_type;
+    uint32_t l1_partition;
     uint8_t bedrock_revision;
     uint8_t local_region;
     uint8_t initiator_region;

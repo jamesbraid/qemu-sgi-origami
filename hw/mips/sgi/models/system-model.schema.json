@@ -1885,6 +1885,12 @@
         "profile": {
           "enum": ["cbrick", "ibrick", "nbrick", "vbrick"]
         },
+        "partition": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 63,
+          "description": "The partition ID a C-brick controller holds; absent for none."
+        },
         "provenance": {
           "$ref": "#/$defs/fact-provenance"
         },

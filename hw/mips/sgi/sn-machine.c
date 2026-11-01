@@ -212,6 +212,8 @@ typedef struct SGIMachineL1Config {
     bool has_profile;
     SGIModelL1Profile profile;
     uint8_t reported_type;
+    /* The partition the C-brick's controller holds; zero for none. */
+    uint8_t partition;
     int32_t revision[3];
     const char *mac_eeprom;
     bool has_cpu_context;
@@ -8718,6 +8720,17 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
             }
             resolved->has_profile = true;
             resolved->profile = config->profile;
+            if (config->has_partition) {
+                if (config->profile != SGI_MODEL_L1_PROFILE_CBRICK ||
+                    config->partition < 1 || config->partition > 63) {
+                    error_setg(errp, "topology '%s' controller '%s' names "
+                               "partition %u, which only a C-brick "
+                               "controller holds, from 1 to 63", t->name,
+                               controllers[i]->id, config->partition);
+                    return false;
+                }
+                resolved->partition = config->partition;
+            }
         } else {
             if (owner_node == node_count) {
                 error_setg(errp, "topology '%s' controller '%s' has L1 "
@@ -9615,6 +9628,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 if (l1->has_profile) {
                     qdev_prop_set_string(DEVICE(node), "l1-brick-type",
                                          SGIModelL1Profile_str(l1->profile));
+                    qdev_prop_set_uint32(DEVICE(node), "l1-partition",
+                                         l1->partition);
                 }
                 qdev_prop_set_uint32(DEVICE(node), "l1-type-code",
                                      l1->reported_type);
