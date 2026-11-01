@@ -677,6 +677,10 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
     if (env->r10k && env->r10k->staging) {
         cpu_address_space_init(cs, MIPSASIdx_STAGED, "cpu-staged",
                                &cpu->staged_window);
+        if (env->r10k->code_nslots) {
+            cpu_address_space_init(cs, MIPSASIdx_CODE, "cpu-staged-code",
+                                   &cpu->staged_code);
+        }
     }
 #endif
 #endif
@@ -757,7 +761,8 @@ static int mips_asidx_from_attrs(CPUState *cs, MemTxAttrs attrs)
     MIPSCPU *cpu = MIPS_CPU(cs);
 
     if (cpu->env.r10k && cpu->env.r10k->staging && mips_attrs_staged(attrs)) {
-        return MIPSASIdx_STAGED;
+        return mips_attrs_staged_code(attrs) ? MIPSASIdx_CODE :
+                                               MIPSASIdx_STAGED;
     }
     return attrs.mips_uncached && cpu->uncached_memory ?
            MIPSASIdx_UNCACHED : MIPSASIdx_CACHED;
@@ -803,6 +808,8 @@ static TCGTBCPUState mips_get_tb_cpu_state(CPUState *cs)
     return (TCGTBCPUState){
         .pc = env->active_tc.PC,
         .flags = flags,
+        /* See r10k_staged_set_tb_key(). */
+        .cs_base = env->r10k ? env->r10k->tb_key : 0,
     };
 }
 

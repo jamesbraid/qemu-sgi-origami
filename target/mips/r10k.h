@@ -317,6 +317,23 @@ typedef struct R10KState {
     GHashTable *staged_pages;
     /* Enables cached accesses to guest-staged secondary-cache lines. */
     bool staging;
+    /*
+     * Copies of staged pages' staged lines, which instruction fetch runs
+     * from (r10k_helper.c). code_pages maps a physical page number to its
+     * slot plus one, code_slot_page holds each slot's page and
+     * code_slots_used the slots in use. Derived from the arrays like
+     * staged_pages: neither migrated nor cleared by reset's memset, and
+     * emptied by a rebuild.
+     */
+    GHashTable *code_pages;
+    uint64_t *code_slot_page;
+    unsigned long *code_slots_used;
+    uint32_t code_nslots;
+    /*
+     * The TB key (cs_base) this processor's blocks are made under: zero
+     * unless a page holds a staged line, then unique to the processor.
+     */
+    uint64_t tb_key;
 } R10KState;
 
 /* The staged-line window spans more than the R10000 family's 40-bit space. */

@@ -65,16 +65,37 @@ static char *ram_blocks(QTestState *qts)
     QDict *reply = qtest_qmp(qts,
         "{'execute':'human-monitor-command',"
         "'arguments':{'command-line':'info ramblock'}}");
-    char *result = g_strdup(qdict_get_str(reply, "return"));
+    g_auto(GStrv) lines = g_strsplit(qdict_get_str(reply, "return"), "\n", -1);
+    GString *result = g_string_new("");
 
+    /* Drop the HVA column, the second from last, which differs per process. */
+    for (char **line = lines; *line; line++) {
+        g_auto(GStrv) words = g_strsplit_set(*line, " ", -1);
+        unsigned count = 0;
+        unsigned left;
+
+        for (char **word = words; *word; word++) {
+            count += **word != 0;
+        }
+        left = count;
+        for (char **word = words; *word; word++) {
+            if (**word && --left != 1) {
+                g_string_append_printf(result, "%s ", *word);
+            }
+        }
+        if (count) {
+            g_string_append_c(result, '\n');
+        }
+    }
     qobject_unref(reply);
-    return result;
+    return g_string_free(result, false);
 }
 
 static void test_population(void)
 {
     QTestState *baseline = qtest_init("-M none -cpu R10000 -S");
     g_autofree char *before = ram_blocks(baseline);
+    g_auto(GStrv) rows = g_strsplit(before, "\n", -1);
     QTestState *qts = chassis_start(POPULATION PAIRING, "");
     g_autofree char *after = ram_blocks(qts);
     g_autofree char *memory = qom_string(qts, CHASSIS "/bic", "node-memory");
@@ -88,6 +109,8 @@ static void test_population(void)
                     qlist_size(qdict_get_qlist(before_cpus, "return")));
     qobject_unref(before_cpus);
     qobject_unref(reply);
+    /* The header and the CPU's staged-code block. */
+    g_assert_cmpuint(g_strv_length(rows), ==, 3);
     g_assert_cmpstr(before, ==, after);
     g_assert_cmpstr(memory, ==, "");
     g_assert_cmpstr(uart, ==, "");

@@ -13,6 +13,8 @@
 
 #include "qemu/osdep.h"
 #include "translate.h"
+#include "internal.h"
+#include "exec/target_page.h"
 
 /*
  * Verify that the MIPS IV extension is enabled right now. On the R10000 the
@@ -497,6 +499,76 @@ void gen_prefx_r10k(DisasContext *ctx, int hint, int base, int index)
 
     gen_base_index_addr(ctx, addr, base, index);
     gen_prefetch_r10k(ctx, hint, addr);
+}
+
+/*
+ * Code fetched from a staged R10000 page comes from a copy of its staged
+ * lines or from the memory behind its other lines, by the line the fetch
+ * fell in (r10k_helper.c, "Instruction fetch from a staged page"). A
+ * block must not take an instruction from a line its source does not
+ * answer for: it ends before the first one, and a block that would start
+ * in one leaves at once through a helper that has the fetch filled again.
+ */
+void r10k_staged_code_init(DisasContext *ctx, CPUMIPSState *env)
+{
+    ctx->staged_code = false;
+#ifndef CONFIG_USER_ONLY
+    ctx->staged_code = r10k_staged_code_lines(env, ctx->base.pc_first,
+                                              ctx->mem_idx,
+                                              ctx->base.host_addr[0],
+                                              &ctx->staged_from_copy,
+                                              &ctx->staged_lines,
+                                              &ctx->staged_line_shift);
+#endif
+}
+
+static bool r10k_staged_code_line(DisasContext *ctx, vaddr pc)
+{
+    unsigned int line = (pc & ~TARGET_PAGE_MASK) >> ctx->staged_line_shift;
+
+    return ctx->staged_lines & (UINT64_C(1) << line);
+}
+
+/*
+ * Only the block's first instruction can lie in a line its source does
+ * not answer for. A block from a copy leaves; one from memory checks how
+ * it was fetched and carries on with the instruction, which then ends it.
+ * A delay slot single-stepped onto the next page took its own fill, by
+ * its own line, so the first page's lines say nothing about it.
+ */
+bool gen_staged_code_leave_r10k(DisasContext *ctx)
+{
+    if (ctx->base.pc_next - ctx->page_start >= TARGET_PAGE_SIZE ||
+        r10k_staged_code_line(ctx, ctx->base.pc_next)) {
+        return false;
+    }
+#ifndef CONFIG_USER_ONLY
+    if (!ctx->staged_from_copy) {
+        gen_helper_r10k_staged_code_check(tcg_env,
+                                          tcg_constant_tl(ctx->base.pc_next));
+        return false;
+    }
+    gen_helper_r10k_staged_code_leave(tcg_env,
+                                      tcg_constant_tl(ctx->base.pc_next));
+#endif
+    ctx->base.pc_next += 4;
+    ctx->base.is_jmp = DISAS_NORETURN;
+    return true;
+}
+
+/*
+ * This ends a block between a branch and its delay slot when the slot
+ * lies in another line, even when single-stepping, which otherwise keeps
+ * the two together: the slot's word must come from its own source.
+ */
+void r10k_staged_code_next(DisasContext *ctx)
+{
+    vaddr next = ctx->base.pc_next;
+
+    if (next - ctx->page_start < TARGET_PAGE_SIZE &&
+        !r10k_staged_code_line(ctx, next)) {
+        ctx->base.is_jmp = DISAS_TOO_MANY;
+    }
 }
 
 /* Include the auto-generated decoder. */

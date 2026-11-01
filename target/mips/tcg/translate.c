@@ -15384,6 +15384,7 @@ static void mips_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
 #else
         ctx->mem_idx = hflags_mmu_index(ctx->hflags);
 #endif
+    r10k_staged_code_init(ctx, env);
     ctx->default_tcg_memop_mask = (!(ctx->insn_flags & ISA_NANOMIPS32) &&
                                   (ctx->insn_flags & (ISA_MIPS_R6 |
                                   INSN_LOONGSON3A))) ? MO_UNALN : MO_ALIGN;
@@ -15425,6 +15426,9 @@ static void mips_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
     int insn_bytes;
     int is_slot;
 
+    if (ctx->staged_code && gen_staged_code_leave_r10k(ctx)) {
+        return;
+    }
     is_slot = ctx->hflags & MIPS_HFLAG_BMASK;
     if (ctx->insn_flags & ISA_NANOMIPS32) {
         insn_bytes = decode_isa_nanomips(env, ctx);
@@ -15469,6 +15473,9 @@ static void mips_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
 
     if (ctx->base.is_jmp != DISAS_NEXT) {
         return;
+    }
+    if (ctx->staged_code) {
+        r10k_staged_code_next(ctx);
     }
 
     /*

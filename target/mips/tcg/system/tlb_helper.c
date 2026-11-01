@@ -1237,7 +1237,8 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
             r10k_note_fill(env, address, mmu_idx);
             /* A page with a staged secondary-cache line has its own view. */
             if (r10k_staged_page(env, physical, attrs)) {
-                attrs.mips_uncached = 1;
+                physical = r10k_staged_fill(env, physical, access_type,
+                                            &prot, &attrs);
             }
         }
         tlb_set_page_with_attrs(cs, address & TARGET_PAGE_MASK,
