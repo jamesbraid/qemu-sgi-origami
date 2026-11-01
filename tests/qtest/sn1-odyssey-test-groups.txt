@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # How tests/qtest/meson.build splits sn1-odyssey-test into separate tests,
 # qtest-mips64/sn1-odyssey-test-GROUP, which meson runs at once. Each line is
 # a group and a GLib test path: one case, or a suite whose cases directly

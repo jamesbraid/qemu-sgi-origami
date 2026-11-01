@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Seconds each MIPS64 qtest took in a full run, which scripts/ci/sgi-check
 # uses to split the qtests evenly between the full run's jobs. Each value is
 # the median of the test's duration over several full runs, at four processes

@@ -1,3 +1,4 @@
+SPDX-License-Identifier: BSD-3-Clause
 Reference colour statistics for the per-board matrix tests. Each file is
 JSON written by lib_mgras_matrix.write_stats() and is named
 <board>-<feature>.json. Take them from a run that was judged correct by
