@@ -647,8 +647,15 @@ physical Tigon or Bridge behaviour. The physical byte placement is
   an edge byte at address ``a`` is requested at ``a ^ 7``. Other address
   classes keep the 4-byte rule, because the card's DMA interface does not
   see the bridge's per-page choice.
-- The statistics block uses its own byte-image write and is not
-  compensated.
+- The statistics block, head copy and refreshed copy alike, takes the
+  descriptor placement: the two words of each aligned 8-byte unit are
+  exchanged before the write, and a block at an unaligned address is
+  written unexchanged. That the block follows the descriptors is
+  *inferred*, since it is host memory written by the same DMA engine under
+  the same controls and no source describes a separate path. The
+  placement it follows is an *approximation* and is not hardware-accurate;
+  the real word placement is *unknown*. The block layout itself is
+  established.
 
 .. _sgi-tigon-direct-dma:
 
