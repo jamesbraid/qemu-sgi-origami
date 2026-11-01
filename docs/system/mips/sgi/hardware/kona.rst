@@ -223,8 +223,8 @@ Register map
 
 Offsets are from the widget's 16 MiB XIO window. Registers are 32 bits,
 big-endian. Accesses must be 4 or 8 bytes. All offsets come from the IO6
-PROM and the IRIX 6.5.30 kernel, X server and firmware loader, *software
-expectations*; reset values are model choices unless stated, since no
+PROM and the IRIX 6.5.30 kernel, X server and firmware loader, each a *software
+expectation*; reset values are model choices unless stated, since no
 pipe has been read.
 
 .. list-table::
@@ -614,8 +614,8 @@ X server and GL commands
 The X server's tokens cover graphics-context and clip loads, colour-map,
 gamma and cursor loads, display-ID maps, pixel setup, write, read, copy
 and finish, stipples, points, lines, segments, spans, boxes and
-rectangles. Word counts come from the X server's send sites, *software
-expectations*. The model draws them into the colour planes with its own
+rectangles. Word counts come from the X server's send sites, each a *software
+expectation*. The model draws them into the colour planes with its own
 rules, each an *approximation*: boxes count y down from the top display line, a
 colour-index pixel resolves through X colour-map entry ``0x2d00`` plus the
 index read as 10:10:10, and clip lists hold up to 64 rectangles.

@@ -172,8 +172,8 @@ Register map
 
 Offsets are relative to a head; add ``0x800000`` for head 1. Every
 register is a 64-bit slot. The offsets follow OpenBSD ``xbridgereg.h``,
-``widget.h`` and the Linux IP35 ``pic.h`` structure, *software
-expectations*. No public source gives PIC reset values; every reset value
+``widget.h`` and the Linux IP35 ``pic.h`` structure, each a *software
+expectation*. No public source gives PIC reset values; every reset value
 below is a model choice, an *approximation*, unless the notes say
 otherwise. "64" means aligned 64-bit access on both views; "+4" means the
 processor view's 32-bit word view also reaches the slot.

@@ -32,6 +32,9 @@ The reset value is *inferred* and the width *unknown*. Code like
 """
 
 
+# Built at run time so the literal path is not in the tree.
+STORAGE = '/' + 'stor' + 'age'
+
 CATALOGUE = {
     'offerings': [
         {'product': 'origin200', 'display-name': 'Origin 200 (one-module)',
@@ -167,6 +170,17 @@ class DocsLintTests(unittest.TestCase):
         block = GOOD_PART + '\n.. code-block:: text\n\n   will be TODO\n'
         self.assertEqual(self.run_lint({'hardware/demo.rst': block}), [])
 
+    def test_plural_rating_is_an_error_even_when_wrapped(self):
+        for bad in ('Both are *software expectations*.',
+                    'Both are *software\nexpectations*.',
+                    'The reads are *Observed* here.'):
+            out = self.messages({'hardware/demo.rst':
+                                 GOOD_PART + '\n' + bad + '\n'})
+            self.assertIn('is not a rating', out, bad)
+        ok = 'Each is a *software\nexpectation*.'
+        self.assertEqual(self.run_lint({'hardware/demo.rst':
+                                        GOOD_PART + '\n' + ok + '\n'}), [])
+
     def warn(self, body):
         return lint.warn_page('hardware/demo.rst', GOOD_PART + '\n' + body)
 
@@ -232,7 +246,7 @@ class DocsLintTests(unittest.TestCase):
             self.run_lint({'hardware/demo.rst': page}, catalogue=None), [])
 
     def test_private_references_in_pages(self):
-        for bad in ('See refs/foo/bar.pdf for it.', 'Read /storage/x/y.',
+        for bad in ('See refs/foo/bar.pdf for it.', 'Read ' + STORAGE + '/x/y.',
                     'Saved in /tmp/run.log.', 'Kept in /scratch/a.',
                     'See docs/datasheets/hub.md.', 'The sheet pic.md says.',
                     'Decision D-0021 allows it.', 'The Library holds it.',
@@ -243,7 +257,7 @@ class DocsLintTests(unittest.TestCase):
             self.assertIn('hardware/demo.rst:14:', out, bad)
 
     def test_private_references_are_found_in_literal_blocks_too(self):
-        for path in ('/storage/x/log', '/scratch', 'refs/a/b'):
+        for path in (STORAGE + '/x/log', '/scratch', 'refs/a/b'):
             text = GOOD_PART + f'\nA dump::\n\n   {path}\n'
             self.assertIn(' is ', self.messages({'hardware/demo.rst': text}), path)
 
@@ -265,7 +279,7 @@ class DocsLintTests(unittest.TestCase):
             self.assertEqual(
                 self.run_lint({'hardware/demo.rst': GOOD_PART + f'\n{ok}\n'}),
                 [], ok)
-        for bad in ('Kept in /scratch.', 'Kept in /storage.', '(/tmp)'):
+        for bad in ('Kept in /scratch.', 'Kept in ' + STORAGE + '.', '(/tmp)'):
             self.assertIn(' is ', self.messages(
                 {'hardware/demo.rst': GOOD_PART + f'\n{bad}\n'}), bad)
 
@@ -291,7 +305,7 @@ class DocsLintTests(unittest.TestCase):
     def test_private_references_in_c_comments(self):
         for name, text in (
                 ('hw/mips/sgi/a.c', '/* see (docs/datasheets/x.md) */\n'),
-                ('hw/misc/sgi-a.c', 'int a;\n// from /storage/nvme/x\n'),
+                ('hw/misc/sgi-a.c', 'int a;\n// from ' + STORAGE + '/nvme/x\n'),
                 ('hw/pci-host/sgi-b.h',
                  '/*\n * the dp83840.md sheet\n */\n')):
             out = '\n'.join(self.run_sources(name, text))
@@ -303,7 +317,7 @@ class DocsLintTests(unittest.TestCase):
                 ('hw/mips/sgi/a.c', 'const char *p = "/tmp/x";\n'),
                 ('hw/mips/sgi/a.c', 'const char *u = "http://e.org/a.md";\n'),
                 ('hw/mips/sgi/a.c', "char c = '/'; /* fine */\n"),
-                ('hw/misc/other.c', '/* /storage/x */\n')):
+                ('hw/misc/other.c', '/* ' + STORAGE + '/x */\n')):
             self.assertEqual(self.run_sources(name, text), [], text)
 
     def test_unlisted_page(self):

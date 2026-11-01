@@ -707,8 +707,8 @@ into five levels: bits 0-15 level 0, 16-31 level 1, 32-49 level 2, bit
 50 level 3 (the timer) and 51-63 level 4 (errors; bit 63 is HEART's own
 exception). Linux sends levels 0-4 to CPU interrupt lines IP2-IP6. Both
 drivers set, clear and mask bits through the registers in the map and
-read pending separately from the mask. These are *software
-expectations*. At start-up Linux writes zero to all four masks,
+read pending separately from the mask. Each is a *software
+expectation*. At start-up Linux writes zero to all four masks,
 acknowledges every bit through ``0x10028`` and adds the error sources
 ``0x8ff8000000000000`` to processor 0's mask: the HEART exception, its
 own bus error and the Crossbow and widget errors
@@ -771,8 +771,8 @@ Counter and compare
 
 OpenBSD ``xheartreg.h`` describes the count register at ``0x20000`` as 52
 bits advancing at 12.5 MHz, and names a 24-bit compare at ``0x30000`` and a
-trigger at ``0x40000``; Linux agrees on width and rate. These are *software
-expectations*. The reference Octane2's counter advanced at 12.5012 MHz
+trigger at ``0x40000``; Linux agrees on width and rate. Each is a *software
+expectation*. The reference Octane2's counter advanced at 12.5012 MHz
 against a host clock, to about 0.1% (:ref:`sgi-heart-octane2-counter`), so
 12.5 MHz is *established* for revision F. The model's count advances one
 tick per 80 ns of virtual time from zero at reset and wraps at 52 bits,
