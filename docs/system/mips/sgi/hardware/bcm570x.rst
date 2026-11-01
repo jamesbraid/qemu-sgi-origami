@@ -557,10 +557,16 @@ The send ring and the return ring take their lengths from the control
 block. The standard receive ring is fixed at 512 descriptors and the jumbo
 ring at 256, whatever the control blocks say, because the standard ring's
 length half is a buffer size, not a count. The mini ring and the on-chip
-send ring are not modelled. A host address written as two halves is
-composed high word first, unless ``MISC_CTL`` bit 3 (word swap) is set,
-which exchanges the halves. That reading of the bit is an *approximation*
-drawn from how the drivers use it for a big-endian host.
+send ring are not modelled. A host address written as two 32-bit
+halves is composed with the more significant half at the lower offset. The
+model gives ``MISC_CTL`` bit 3 (word swap) no further effect on that
+pair: with the bit set, a 32-bit access at the lower offset of an on-chip
+eight-byte field reaches its more significant word, which is what the
+drivers rely on when they write the high half first. That is *established*
+for 32-bit phases. The pair is not exchanged, and the swap-clear case (low
+half at the lower offset) is not modelled. A 64-bit target phase with the
+word swap set is *unknown*: the BAR refuses every 64-bit access and logs
+the case as unimplemented.
 
 The send ring and both receive rings live in host memory. The model reads
 and writes them through the device's own PCI bus-master address space, so

@@ -2011,14 +2011,14 @@ static void test_status_block_byte_order(const void *data)
 }
 
 /*
- * Host-address word-swap. The big-endian IRIX driver sets ENDIAN_WORDSWAP and
- * writes each 64-bit host address as two 32-bit halves word-swapped: the
- * intended low word into ADDR_HI, the intended high word into ADDR_LO.
- * The chip must swap them back when it composes the DMA target. Program a
- * status-block address word-swapped (HI <- its low word, LO <- 0) and confirm
- * the block DMAs there. Composing (HI<<32)|LO raw would target that low word
- * shifted into the top half, off the end of the transfer memory, and land
- * nothing.
+ * Host-address word swap. With ENDIAN_WORDSWAP set, a 32-bit access at +0 of
+ * an on-chip eight-byte field reaches its more significant word (Figure 93 of
+ * the family programmer's guide), so the driver writes the high half at the
+ * lower register and the low half at the next, and the pair composes as
+ * (HI << 32) | LO with no further exchange. Program a status-block address
+ * that way (HI <- its high word, LO <- its low word) and confirm the block
+ * DMAs there. A pair exchange on top would target the low word shifted into
+ * the top half, off the end of the transfer memory, and land nothing.
  */
 static void test_status_block_hostaddr_wordswap(const void *data)
 {
@@ -2037,9 +2037,9 @@ static void test_status_block_hostaddr_wordswap(const void *data)
     misc = qpci_config_readl(b.dev, BCM_PCI_MISC_CTL);
     qpci_config_writel(b.dev, BCM_PCI_MISC_CTL, misc | BCM_MISCCTL_WORDSWAP);
 
-    /* Word-swapped: low word into ADDR_HI, high word into ADDR_LO. */
-    bar_writel(&b, BCM_HCC_STATUSBLK_HI, (uint32_t)intended);
-    bar_writel(&b, BCM_HCC_STATUSBLK_LO, (uint32_t)(intended >> 32));
+    /* High word at the lower register, low word at the next. */
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, (uint32_t)(intended >> 32));
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, (uint32_t)intended);
 
     qtest_memset(b.qts, intended, 0, BCM_STATUS_BLK_SIZE);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
@@ -2048,9 +2048,33 @@ static void test_status_block_hostaddr_wordswap(const void *data)
     /* A producer-0 doorbell drives the status-block DMA. */
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
 
-    /* The swap honoured, the block lands at the intended address. */
+    /* The pair composed unexchanged, the block lands at the address. */
     qtest_memread(b.qts, intended, sb, sizeof(sb));
     g_assert_cmphex(get32dma(sb + 0), ==, BCM_STATFLAG_UPDATED);
+
+    bcm_close(&b);
+}
+
+/*
+ * A 64-bit target access with ENDIAN_WORDSWAP set is unknown in the datasheet.
+ * The model rejects it and logs it rather than choosing a half: neither
+ * register of the status-block address pair changes.
+ */
+static void test_wordswap_64bit_target_unknown(const void *data)
+{
+    Bcm b;
+    uint32_t misc;
+
+    bcm_open(&b, bcm_init());
+    misc = qpci_config_readl(b.dev, BCM_PCI_MISC_CTL);
+    qpci_config_writel(b.dev, BCM_PCI_MISC_CTL, misc | BCM_MISCCTL_WORDSWAP);
+
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, 0x11111111);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, 0x22222222);
+    qtest_writeq(b.qts, b.bar.addr + BCM_HCC_STATUSBLK_HI,
+                 0x0123456789abcdefULL);
+    g_assert_cmphex(bar_readl(&b, BCM_HCC_STATUSBLK_HI), ==, 0x11111111);
+    g_assert_cmphex(bar_readl(&b, BCM_HCC_STATUSBLK_LO), ==, 0x22222222);
 
     bcm_close(&b);
 }
@@ -3936,14 +3960,14 @@ static void test_transmit_zero_length_descriptor(const void *data)
 }
 
 /*
- * What ENDIAN_WORDSWAP reaches, and what it does not. The bit decides how the
- * chip composes the register-programmed host addresses. The driver writes
- * each 64-bit address as two halves word-swapped, the low word into the HI
- * slot. The DMA must still land where it was aimed.
+ * What ENDIAN_WORDSWAP reaches, and what it does not. The bit sets which
+ * word of an on-chip eight-byte field a 32-bit target access reaches, so the
+ * driver writes each register-programmed 64-bit address high word first and
+ * the DMA lands where it was aimed.
  *
  * It does not reach the payload: ENDIAN_WORDSWAP in MISC_CTL governs the
- * indirect register windows and the composition of those register-programmed
- * addresses, while the payload's byte order is MODE_CTL's frame-data swap
+ * target register windows, while the payload's byte order is MODE_CTL's
+ * frame-data swap
  * (all four set here, so a byte stream). So lay a word-reversed buffer down
  * and require the wire to carry it unchanged.
  */
@@ -3977,20 +4001,19 @@ static void test_transmit_frame_wordswap(const void *data)
                              sv[1], BCM_SLOT));
 
     /*
-     * The driver arms ENDIAN_WORDSWAP for the big-endian host, so the
-     * register-programmed host addresses are written word-swapped: the low
-     * word into the HI slot, the high word into the LO slot. The descriptor's
+     * The driver arms ENDIAN_WORDSWAP for the big-endian host and writes the
+     * register-programmed host addresses high word first. The descriptor's
      * own buffer address is not register-programmed. DMA accessors read it
      * from the descriptor, so it stays in order.
      */
     misc = qpci_config_readl(b.dev, BCM_PCI_MISC_CTL);
     qpci_config_writel(b.dev, BCM_PCI_MISC_CTL, misc | BCM_MISCCTL_WORDSWAP);
 
-    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 0, TX_RING_PHYS & 0xffffffff);
-    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 4, TX_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 0, TX_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 4, TX_RING_PHYS & 0xffffffff);
     ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
-    bar_writel(&b, BCM_HCC_STATUSBLK_HI, (uint32_t)STATUS_PHYS);
-    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
@@ -6476,8 +6499,9 @@ static void test_system_reset_cancels_transmit_coalescing(const void *data)
 }
 
 /*
- * The receive half of the same claim. ENDIAN_WORDSWAP composes the
- * register-programmed ring and status addresses, and the frame lands in the
+ * The receive half of the same claim. With ENDIAN_WORDSWAP set the driver
+ * writes the register-programmed ring and status addresses high word first,
+ * and the frame lands in the
  * posted buffer byte for byte as it arrived on the wire: on this route the
  * model does not transform payload, whatever the swap bits say. Off a Bridge
  * the same bits would leave a word-reversed image in the buffer instead.
@@ -6504,23 +6528,21 @@ static void test_receive_frame_wordswap(const void *data)
                              sv[1], BCM_SLOT));
 
     /*
-     * ENDIAN_WORDSWAP decides the control-block address composition, so the
-     * register-programmed host addresses are written word-swapped: the low
-     * word into the HI slot, the high word into the LO slot. The posted
-     * buffer's own address rides in the descriptor and is read through the
-     * DMA accessors, so it stays in order.
+     * The register-programmed host addresses are written high word first.
+     * The posted buffer's own address rides in the descriptor and is read
+     * through the DMA accessors, so it stays in order.
      */
     misc = qpci_config_readl(b.dev, BCM_PCI_MISC_CTL);
     qpci_config_writel(b.dev, BCM_PCI_MISC_CTL, misc | BCM_MISCCTL_WORDSWAP);
 
-    bar_writel(&b, BCM_RX_STD_RCB_HI, (uint32_t)STD_RING_PHYS);
-    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, (uint32_t)STD_RING_PHYS);
     bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
-    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, (uint32_t)RET_RING_PHYS);
-    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, (uint32_t)RET_RING_PHYS);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
-    bar_writel(&b, BCM_HCC_STATUSBLK_HI, (uint32_t)STATUS_PHYS);
-    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, (uint32_t)STATUS_PHYS);
     /*
      * One completed descriptor per update [57XX-PG105-R, printed page 454].
      */
@@ -7424,6 +7446,8 @@ int main(int argc, char **argv)
                         test_status_block_byte_order);
     qtest_add_data_func("/bcm570x/status-block-hostaddr-wordswap", NULL,
                         test_status_block_hostaddr_wordswap);
+    qtest_add_data_func("/bcm570x/wordswap-64bit-target-unknown", NULL,
+                        test_wordswap_64bit_target_unknown);
     qtest_add_data_func("/bcm570x/transmit-round-trip", NULL,
                         test_transmit_round_trip);
     qtest_add_data_func("/bcm570x/user-backend-reply-waits-for-transmit", NULL,
