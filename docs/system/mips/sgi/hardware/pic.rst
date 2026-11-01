@@ -764,6 +764,15 @@ port's rule that internal slot *n*, configuration device *n* + 1, uses
 input *n*, a *software expectation*. The physical IO9 wiring is
 *unknown*.
 
+A head with no IO9 (a free head of a Tezro or Origin 350) has no
+catalogue wiring, so the machine wires its pins to the Bedrock itself.
+For configuration device *d* from 1 to 4, INTA and INTC reach input
+*d* - 1, and INTB and INTD reach (*d* - 1) XOR 4. The INTA route is
+*inferred* board wiring. The INTB and INTD route follows IRIX, OpenBSD
+and SN2 convention, a *software expectation*; the Linux Origin 350 port
+differs. Wiring both is an *approximation*: no capture shows a free-head
+input raising an interrupt.
+
 A rising input sets its status bit. If the input is enabled, the head
 sends a set packet to the input's destination register. If the input's
 mode bit is set, a falling input sends a clear packet; OpenBSD enables
