@@ -131,11 +131,11 @@ class DocsLintTests(unittest.TestCase):
             self.assertEqual(self.run_lint({'hardware/demo.rst': text}), [],
                              block)
 
-    def test_used_in_required_except_overviews(self):
+    def test_used_in_required_on_every_part_page(self):
         text = GOOD_PART.replace('Used in :ref:`sgi-ip30`.', 'The part.')
-        self.assertIn('begin with "Used in"',
-                      self.messages({'hardware/demo.rst': text}))
-        self.assertEqual(self.run_lint({'hardware/graphics.rst': text}), [])
+        for name in ('demo', 'graphics', 'bricks'):
+            self.assertIn('begin with "Used in"',
+                          self.messages({f'hardware/{name}.rst': text}), name)
 
     def test_roadmap_phrases(self):
         for bad in ('The decoder is not yet implemented.',
