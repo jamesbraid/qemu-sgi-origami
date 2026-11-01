@@ -1387,9 +1387,11 @@ def _mode_bits(model: dict, node: dict, processor: dict) -> int:
     if processor["kind"] == "R14000" or (
             processor["kind"] == "R12000"
             and node.get("hardware_kind") == "bedrock"):
-        return _catalogued_mode_bits(
+        word = _catalogued_mode_bits(
             model, processor["kind"].lower(),
             processor["clock_hz"] // 1_000_000, processor["cache_mib"])
+        _check_ip35_board(model, processor, word)
+        return word
     if processor["kind"] == "R10000":
         return _r10000_mode_bits(model, node, processor["clock_hz"])
     if processor["kind"] == "R16000":
@@ -1397,6 +1399,34 @@ def _mode_bits(model: dict, node: dict, processor: dict) -> int:
     raise CompileError(
         f"processor kind '{processor['kind']}' has no reset-mode encoding"
     )
+
+
+def _check_ip35_board(model: dict, processor: dict, word: int) -> None:
+    """Hold a C-brick's R12000 or R14000 to its board: the reset word's SS
+    field (bits 18:16) selects 512 KiB shifted left by SS of secondary
+    cache, which must be the part's, and the low 25 bits of the board's
+    flash configuration word must be that reset word, so the PROM and the
+    processor agree on the clock and cache. Other boards author no such
+    word beside the processor."""
+    machine = model.get("machine", {})
+    if machine.get("board_ip") != "IP35":
+        return
+    selected = (f"{processor['kind']} "
+                f"{processor['clock_hz'] // 1_000_000} MHz")
+    cache_kib = 512 << ((word >> 16) & 7)
+    if cache_kib != processor["cache_mib"] * 1024:
+        raise CompileError(
+            f"{selected} reset mode {word:#010x} selects a "
+            f"{cache_kib // 1024} MiB secondary cache, not its "
+            f"{processor['cache_mib']} MiB")
+    flash = machine.get("emulation", {}).get("ip35_firmware")
+    if not isinstance(flash, dict) or (
+            (flash.get("cpu_mode_word", 0) ^ word) & 0x01ffffff):
+        raise CompileError(
+            f"{selected} reset mode {word:#010x} disagrees with the "
+            "C-brick's flash word "
+            + ("(none authored)" if not isinstance(flash, dict) else
+               f"{flash.get('cpu_mode_word', 0):#010x}"))
 
 
 def _r10000_mode_bits(model: dict, hub: dict, cpu_clock_hz: int) -> int:
