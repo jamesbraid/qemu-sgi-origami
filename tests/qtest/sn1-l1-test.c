@@ -2470,10 +2470,10 @@ static void test_env_unpowered(gconstpointer opaque)
     int fd;
     QTestState *s;
 
-    /* The state column is left-aligned in the zone rows, right in the rest. */
+    /* The state is right-aligned in 8 in the zone rows, in 10 in the rest. */
     for (char **row = rows; *row; row++) {
         g_auto(GStrv) pieces = g_strsplit(*row,
-                                          strstr(*row, "%/") ? "Enabled " :
+                                          strstr(*row, "%/") ? " Enabled" :
                                                                "   Enabled",
                                           -1);
         g_autofree char *line = g_strjoinv(strstr(*row, "%/") ? "Wait Pwr" :
@@ -2496,6 +2496,839 @@ static void test_env_unpowered(gconstpointer opaque)
     text = console_read_until(fd, PROMPT);
     masked = env_mask_readings(text);
     g_assert_cmpstr(masked, ==, waiting);
+    qtest_quit(s);
+    close(fd);
+}
+
+/* Runs one console line and returns what it printed before the prompt. */
+static char *env_run(int fd, const char *line)
+{
+    g_autofree char *input = g_strdup_printf("%s\r", line);
+
+    console_send(fd, input);
+    return console_read_until(fd, PROMPT);
+}
+
+#define ENV_RUNNING "Environmental monitoring is enabled and running.\r\n"
+#define ENV_STARS "************************************************\r\n"
+#define ENV_DISABLED \
+    "\r\n" ENV_STARS \
+    "ATTENTION: Environmental monitoring is disabled!\r\n" ENV_STARS
+#define ENV_FAILSAFES \
+    "\r\n" \
+    "!!!!!!!!!!!!!!!!  WARNING  !!!!!!!!!!!!!!!!!!!!!\r\n" \
+    "ALL TEMPERATURE MONITORING FAILSAFES DISABLED!!\r\n" \
+    "(to re-enable, use \"env on\" or \"env temp on\")\r\n" \
+    "!!!!!!!!!!!!!!!!  WARNING  !!!!!!!!!!!!!!!!!!!!!\r\n"
+#define ENV_OVERTEMP_WARNING \
+    "WARNING: environmental monitoring is disabled (with 'env off') and\r\n" \
+    "temperature monitoring is explicitly disabled (with 'env temp off');\r\n" \
+    "**** OVERTEMP SHUTDOWN IS DISABLED!!! ****\r\n"
+#define FAN_AUTO_DISABLED "Automatic fan control is disabled\r\n"
+#define ENV_MONITOR_ONLY \
+    "**** MONITOR-ONLY, NO BRICK SHUTDOWN ON POWER FAULTS ****\r\n"
+
+#define CHIMERA_PROPS(code, board) \
+    ",brick-type-code=" code ",irouter-compat=on,node-board-name=" board \
+    ",node-board-part=030-1989-003,node-board-revision=-C," \
+    "brick-serial=XQ4471,system-serial=SZ900213,auto-power=off"
+
+/*
+ * L1 datasheet, "env forms, banners and limits": with monitoring off the
+ * report starts and ends with the starred banner, and "env temp off" adds
+ * the failsafe banner to both. With monitoring on one status line replaces
+ * them. "env on" and "env off" print nothing, except that a second
+ * disabling prints the overtemp warning.
+ */
+static void test_env_on_off(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("55", "IP59_4CPU"), "");
+    g_autofree char *text = NULL;
+    g_autofree char *reply = NULL;
+
+    reply = env_run(fd, "env off");
+    g_assert_cmpstr(reply, ==, "");
+    text = env_run(fd, "env");
+    g_assert_true(g_str_has_prefix(text, ENV_DISABLED "\r\nDescription "));
+    g_assert_true(g_str_has_suffix(text, "\r\n" ENV_DISABLED));
+    g_free(reply);
+    reply = env_run(fd, "env temp off");
+    g_assert_cmpstr(reply, ==, ENV_OVERTEMP_WARNING);
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_true(g_str_has_prefix(text, ENV_DISABLED ENV_FAILSAFES
+                                         "\r\nDescription "));
+    g_assert_true(g_str_has_suffix(text, ENV_DISABLED ENV_FAILSAFES));
+    g_free(text);
+    text = env_run(fd, "env check");
+    g_assert_cmpstr(text, ==, ENV_DISABLED ENV_FAILSAFES);
+    g_free(env_run(fd, "env on"));
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_true(g_str_has_prefix(text, ENV_RUNNING "\r\nDescription "));
+    g_free(text);
+    text = env_run(fd, "env check");
+    g_assert_cmpstr(text, ==, ENV_RUNNING);
+    g_free(reply);
+    reply = env_run(fd, "env temp off");
+    g_assert_cmpstr(reply, ==, "");
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_true(g_str_has_prefix(text, ENV_RUNNING "\r\nDescription "));
+    g_assert_nonnull(strstr(text, "Disabled   Disabled   60C/140F"));
+    g_free(reply);
+    reply = env_run(fd, "env off");
+    g_assert_cmpstr(reply, ==, ENV_OVERTEMP_WARNING);
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
+ * L1 datasheet: in monitor-only mode the supply table is preceded and
+ * followed by the monitor-only line. "env power on" returns to shutdown on
+ * faults.
+ */
+static void test_env_monitor_only(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("55", "IP59_4CPU"), "");
+    g_autofree char *text = NULL;
+    g_autofree char *plain = NULL;
+    g_autofree char *reply = NULL;
+    const char *tail;
+
+    plain = env_run(fd, "env");
+    reply = env_run(fd, "env power monitor");
+    g_assert_cmpstr(reply, ==, "");
+    text = env_run(fd, "env");
+    g_assert_true(g_str_has_prefix(text, ENV_RUNNING "\r\n" ENV_MONITOR_ONLY
+                                         "Description    State "));
+    tail = strstr(text, "1.5V ");
+    g_assert_nonnull(tail);
+    tail = strstr(tail, "\r\n");
+    g_assert_true(g_str_has_prefix(tail, "\r\n" ENV_MONITOR_ONLY
+                                         "\r\nDescription     State "));
+    g_free(env_run(fd, "env power on"));
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_cmpstr(text, ==, plain);
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
+ * L1 datasheet, acknowledgements table: env reset, altitude and power print
+ * nothing; the warning, fault and temperature test events print "test event
+ * generated." and then an ATTN line; pwrdn prints only its ATTN line;
+ * env messages prints its filter and the setters repeat it with "will be";
+ * the five-value form prints "temperature limits set.". With faultsonly,
+ * events below fault severity are dropped but the acknowledgement stays.
+ * Whether the acknowledgement comes before the ATTN line is not recorded.
+ */
+static void test_env_acknowledgements(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("57", "IP59_4CPU"), "");
+    static const struct {
+        const char *line;
+        const char *reply;
+    } steps[] = {
+        { "env reset", "" },
+        { "env altitude high", "" },
+        { "env power off", "" },
+        { "env test warning", "test event generated.\r\n"
+          "\r\n001c01 ATTN: Environmental warning test\r\n" },
+        { "env test fault", "test event generated.\r\n"
+          "\r\n001c01 ATTN: Environmental fault test\r\n" },
+        { "env test tmpadv", "test event generated.\r\n"
+          "\r\n001c01 ATTN: Environmental advisory temp test\r\n" },
+        { "env test tmpcrit", "test event generated.\r\n"
+          "\r\n001c01 ATTN: Environmental critical temp test\r\n" },
+        { "env test pwrdn",
+          "\r\n001c01 ATTN: Environmental fault/powerdown test\r\n" },
+        { "env test", "ERROR: command not found.\r\n" },
+        { "env test bogus", "ERROR: command not found.\r\n" },
+        { "env test 40 45 50 55 35", "temperature limits set.\r\n" },
+        { "env messages", "all environmental events visible.\r\n" },
+        { "env messages faultsonly",
+          "only environmental faults will be visible.\r\n" },
+        { "env messages", "only environmental faults visible.\r\n" },
+        { "env test warning", "test event generated.\r\n" },
+        { "env test fault", "test event generated.\r\n"
+          "\r\n001c01 ATTN: Environmental fault test\r\n" },
+        { "env messages all", "all environmental events will be visible.\r\n" },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(steps); i++) {
+        g_autofree char *reply = env_run(fd, steps[i].line);
+
+        g_assert_cmpstr(reply, ==, steps[i].reply);
+    }
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
+ * L1 datasheet, temperature limits: type 7 is 31/48/55 with maximum 60, Q
+ * is 70/71/72 and 9 is 70/72/74 (BEDROCK on 9 is 70/75/80); high altitude
+ * lowers advisory by 3, critical by 4 and fault and maximum by 5.
+ */
+static void test_env_limits(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("55", "IP59_4CPU"), "");
+    g_autofree char *text = NULL;
+
+    g_free(env_run(fd, "env altitude high"));
+    text = env_run(fd, "env");
+    g_assert_nonnull(strstr(text, "28C/ 82F   44C/111F   50C/122F"));
+    g_assert_null(strstr(text, "31C/"));
+    g_free(env_run(fd, "env altitude low"));
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_nonnull(strstr(text, "31C/ 87F   48C/118F   55C/131F"));
+    qtest_quit(s);
+    close(fd);
+
+    s = console_start(&fd, CHIMERA_PROPS("81", "IP59_4CPU"), "");
+    g_free(env_run(fd, "fan auto off"));
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_nonnull(strstr(text, "70C/158F   71C/159F   72C/161F"));
+    qtest_quit(s);
+    close(fd);
+
+    s = console_start(&fd, CHIMERA_PROPS("57", "IP59_4CPU"), "");
+    g_free(env_run(fd, "fan auto off"));
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_nonnull(strstr(text, "70C/158F   72C/161F   74C/165F"));
+    g_assert_nonnull(strstr(text, "Not currently available"));
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
+ * L1 datasheet, "fan": plain fan prints "fan(s) are on." and then one
+ * "fan %d %-8s rpm %d" line per fan; fan on and off print nothing; fan
+ * speed prints the raw drive byte "fan %d %-8s speed: %d", which starts at
+ * each fan's low level (PS 140, exhaust 210 on IP53 and the rack-mounted
+ * workstation, PCI and ODY 140, N0 10). fan speed high writes 255 to a
+ * normal channel, 0 to an inverted one and 31 to an N0 fan; a fan number
+ * and a value write one fan; env reset restores the low levels. The zone
+ * table's current percentage follows the first fan's drive byte, inverted
+ * for the NODE zone. With fan auto off the fan table ends with
+ * "Automatic fan control is disabled" while the zone table still prints.
+ */
+static void test_fan_commands(void)
+{
+    static const char low[] =
+        "fan 0 EXHST 1  speed: 210\r\n"
+        "fan 1 PS       speed: 140\r\n"
+        "fan 2 PCI 1    speed: 140\r\n"
+        "fan 3 PCI 2    speed: 140\r\n"
+        "fan 4 ODY      speed: 140\r\n"
+        "fan 5 N0 LEFT  speed: 10\r\n"
+        "fan 6 N0 CNTR  speed: 10\r\n"
+        "fan 7 N0 RIGHT speed: 10\r\n";
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("81", "IP59_4CPU"), "");
+    g_autofree char *text = NULL;
+    g_autofree char *reply = NULL;
+    const char *fans;
+
+    reply = env_run(fd, "fan");
+    g_assert_cmpstr(reply, ==,
+        "fan(s) are on.\r\n"
+        "fan 0 EXHST 1  rpm 0\r\n"
+        "fan 1 PS       rpm 0\r\n"
+        "fan 2 PCI 1    rpm 0\r\n"
+        "fan 3 PCI 2    rpm 0\r\n"
+        "fan 4 ODY      rpm 0\r\n"
+        "fan 5 N0 LEFT  rpm 0\r\n"
+        "fan 6 N0 CNTR  rpm 0\r\n"
+        "fan 7 N0 RIGHT rpm 0\r\n");
+    g_free(reply);
+    reply = env_run(fd, "fan speed");
+    g_assert_cmpstr(reply, ==, low);
+    g_free(reply);
+    reply = env_run(fd, "fan off");
+    g_assert_cmpstr(reply, ==, "");
+    g_free(reply);
+    reply = env_run(fd, "fan");
+    g_assert_true(g_str_has_prefix(reply, "fan(s) are off.\r\n"));
+    g_free(env_run(fd, "fan on"));
+    g_free(reply);
+    reply = env_run(fd, "fan speed high");
+    g_assert_cmpstr(reply, ==, "");
+    g_free(reply);
+    reply = env_run(fd, "fan speed");
+    g_assert_cmpstr(reply, ==,
+        "fan 0 EXHST 1  speed: 0\r\n"
+        "fan 1 PS       speed: 255\r\n"
+        "fan 2 PCI 1    speed: 255\r\n"
+        "fan 3 PCI 2    speed: 255\r\n"
+        "fan 4 ODY      speed: 255\r\n"
+        "fan 5 N0 LEFT  speed: 31\r\n"
+        "fan 6 N0 CNTR  speed: 31\r\n"
+        "fan 7 N0 RIGHT speed: 31\r\n");
+    g_free(env_run(fd, "fan speed low"));
+    g_free(reply);
+    reply = env_run(fd, "fan speed");
+    g_assert_cmpstr(reply, ==, low);
+    g_free(env_run(fd, "fan speed 1 200"));
+    g_free(env_run(fd, "fan speed 0 100"));
+    text = env_run(fd, "env");
+    g_assert_nonnull(strstr(text, "78%/ 55%\r\n"));
+    g_assert_nonnull(strstr(text, "61%/ 18%\r\n"));
+    g_free(env_run(fd, "env reset"));
+    g_free(reply);
+    reply = env_run(fd, "fan speed");
+    g_assert_cmpstr(reply, ==, low);
+    g_free(reply);
+    reply = env_run(fd, "fan speed bogus");
+    g_assert_cmpstr(reply, ==, "ERROR: command not found.\r\n");
+    g_free(reply);
+    reply = env_run(fd, "fan speed 8 1");
+    g_assert_cmpstr(reply, ==, "ERROR: command not found.\r\n");
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_null(strstr(text, "Automatic fan control"));
+    g_free(reply);
+    reply = env_run(fd, "fan auto off");
+    g_assert_cmpstr(reply, ==, "");
+    g_free(text);
+    text = env_run(fd, "env");
+    fans = strstr(text, "N0 RIGHT");
+    g_assert_nonnull(fans);
+    fans = strstr(fans, "\r\n") + 2;
+    g_assert_true(g_str_has_prefix(fans, FAN_AUTO_DISABLED "\r\n"
+                                         "                              "
+                                         "Advisory "));
+    g_assert_nonnull(strstr(text, "Zone Name"));
+    g_free(env_run(fd, "fan auto on"));
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_null(strstr(text, "Automatic fan control"));
+    qtest_quit(s);
+    close(fd);
+
+    s = console_start(&fd, CHIMERA_PROPS("55", "IP59_4CPU"), "");
+    g_free(reply);
+    reply = env_run(fd, "fan auto off");
+    g_assert_cmpstr(reply, ==, "ERROR: command not found.\r\n");
+    g_free(reply);
+    reply = env_run(fd, "fan speed");
+    g_assert_true(g_str_has_prefix(reply, "fan 0 EXHST 1  speed: 190\r\n"
+                                          "fan 1 EXHST 2  speed: 190\r\n"
+                                          "fan 2 PS       speed: 140\r\n"
+                                          "fan 3 PCI 1    speed: 158\r\n"));
+    qtest_quit(s);
+    close(fd);
+
+    /* The workstation's fan channels are not mapped. */
+    s = console_start(&fd, CHIMERA_PROPS("57", "IP59_4CPU"), "");
+    g_free(reply);
+    reply = env_run(fd, "fan speed");
+    g_assert_cmpstr(reply, ==, "ERROR: command not found.\r\n");
+    qtest_quit(s);
+    close(fd);
+}
+
+/* The env settings migrate in their own subsection. */
+static void test_env_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-env-migrate-XXXXXX", &error);
+    g_autofree char *socket = NULL, *uri = NULL, *text = NULL;
+    const char *props = CHIMERA_PROPS("81", "IP59_4CPU");
+    int from_fd, to_fd, sv[2];
+    QTestState *from = console_start(&from_fd, props, ""), *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    to = qtest_initf("-M none -cpu R10000 -S -incoming defer "
+                     "-chardev socket,id=console,fd=%d "
+                     "-device sgi-l1,id=l1c,chardev=console%s" UART,
+                     sv[1], props);
+    close(sv[1]);
+    to_fd = sv[0];
+    qtest_sysbus_mmio_map(to, PATH, 0, BASE);
+    g_free(env_run(from_fd, "env off"));
+    g_free(env_run(from_fd, "env power monitor"));
+    g_free(env_run(from_fd, "env altitude high"));
+    g_free(env_run(from_fd, "env messages faultsonly"));
+    g_free(env_run(from_fd, "fan auto off"));
+    g_free(env_run(from_fd, "env test 40 45 50 55 35"));
+    g_free(env_run(from_fd, "fan off"));
+    g_free(env_run(from_fd, "fan speed 1 200"));
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(from, "completed");
+    sgi_wait_migration(to, "completed");
+    text = env_run(to_fd, "env");
+    g_assert_true(g_str_has_prefix(text, ENV_DISABLED "\r\n"
+                                         ENV_MONITOR_ONLY));
+    g_assert_nonnull(strstr(text, "Automatic fan control is disabled"));
+    /* Custom limits (50 C maximum after the altitude drop) migrated. */
+    g_assert_nonnull(strstr(text, "Disabled   Disabled   50C/122F"));
+    g_free(text);
+    text = env_run(to_fd, "env messages");
+    g_assert_cmpstr(text, ==, "only environmental faults visible.\r\n");
+    g_free(text);
+    text = env_run(to_fd, "fan");
+    g_assert_true(g_str_has_prefix(text, "fan(s) are off.\r\n"));
+    g_free(text);
+    text = env_run(to_fd, "fan speed");
+    g_assert_nonnull(strstr(text, "fan 1 PS       speed: 200\r\n"));
+    g_assert_nonnull(strstr(text, "fan 0 EXHST 1  speed: 210\r\n"));
+    qtest_quit(from);
+    qtest_quit(to);
+    close(from_fd);
+    close(to_fd);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+/*
+ * L1 datasheet, "States" and "Temperatures": a row's state is Disabled when
+ * monitoring is off.
+ */
+static void test_env_disabled_rows(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("55", "IP59_4CPU"), "");
+    g_autofree char *text = NULL;
+
+    g_free(env_run(fd, "env off"));
+    text = env_run(fd, "env");
+    g_assert_nonnull(strstr(text, "          1.8V   Disabled  10%"));
+    g_assert_null(strstr(text, "Enabled"));
+    g_assert_nonnull(strstr(text, "FAN  0  EXHST 1   Disabled "));
+    g_assert_nonnull(strstr(text, " 0 INTERFACE 0      Disabled   "));
+    qtest_quit(s);
+    close(fd);
+}
+
+/* Runs one line from the powered node's console and returns its output. */
+static char *env_run_powered(int fd, const char *line)
+{
+    g_autofree char *input = g_strdup_printf("\024%s\r", line);
+
+    console_send(fd, input);
+    console_expect(fd, ESCAPE);
+    return console_read_until(fd, RETURN_CPU0);
+}
+
+static unsigned count_of(const char *haystack, const char *needle)
+{
+    unsigned n = 0;
+
+    for (const char *p = strstr(haystack, needle); p;
+         p = strstr(p + 1, needle)) {
+        n++;
+    }
+    return n;
+}
+
+/*
+ * L1 datasheet, limits: high altitude lowers every sensor except the fixed
+ * on-node row of the workstation (type 9). On types 7 and Q the BEDROCK
+ * sensor is an ordinary row, so it drops too. The node is powered so that
+ * the BEDROCK row prints; the datasheet's altitude sentence is ambiguous
+ * for 7 and Q, and this pins the reading.
+ */
+static void test_env_altitude_powered(void)
+{
+    static const struct {
+        const char *code;
+        const char *ordinary;
+        unsigned ordinary_rows;
+        const char *bedrock;
+        unsigned bedrock_rows;
+    } cases[] = {
+        { "57", "[Autofan Control]    71C/159F", 6,
+          "[Autofan Control]    85C/185F", 1 },
+        { "81", "[Autofan Control]    70C/158F", 7, "", 0 },
+        { "55", "28C/ 82F   44C/111F   50C/122F", 6, "", 0 },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *props = g_strdup_printf(
+            ",brick-type-code=%s,irouter-compat=on,node-board-name=IP59_4CPU,"
+            "node-board-part=030-1989-003,node-board-revision=-C",
+            cases[i].code);
+        g_autofree char *text = NULL;
+        int fd;
+        QTestState *s = console_start(&fd, props, "");
+
+        console_expect(fd, POWERING ENTER_CPU0);
+        g_free(env_run_powered(fd, "env altitude high"));
+        text = env_run_powered(fd, "env");
+        g_assert_null(strstr(text, "Not currently available"));
+        g_assert_cmpuint(count_of(text, cases[i].ordinary), ==,
+                         cases[i].ordinary_rows);
+        if (cases[i].bedrock_rows) {
+            g_assert_cmpuint(count_of(text, cases[i].bedrock), ==,
+                             cases[i].bedrock_rows);
+        }
+        qtest_quit(s);
+        close(fd);
+    }
+}
+
+/*
+ * L1 datasheet, "power": the supply table of env with an on/off state from
+ * the enable bit or NC, voltages from the same readings and a margin name
+ * and value or N/A. Margin value 0 is the model's choice. The 2U list is
+ * checked on a powered module and the workstation list unpowered.
+ */
+static void test_chimera_power(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, ",brick-type-code=55,irouter-compat=on,"
+                                  "node-board-name=IP59_4CPU,"
+                                  "node-board-part=030-1989-003,"
+                                  "node-board-revision=-C", "");
+    g_autofree char *text = NULL;
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    text = env_run_powered(fd, "power");
+    g_assert_true(g_str_has_prefix(text,
+        "Supply          State Voltage    Margin  Value\r\n"));
+    g_assert_nonnull(strstr(text,
+        "          1.8V     on    1.777V  default     0\r\n"));
+    g_assert_nonnull(strstr(text,
+        "           12V     on   12.063V      N/A\r\n"));
+    g_assert_nonnull(strstr(text,
+        "          3.3V     NC    3.337V  default     0\r\n"));
+    g_assert_nonnull(strstr(text,
+        "        12V IO     NC   12.063V      N/A\r\n"));
+    g_assert_nonnull(strstr(text,
+        "      PCI 2.5V     on    2.496V  default     0\r\n"));
+    g_assert_nonnull(strstr(text,
+        "  XIO 12V BIAS     <not present>\r\n"));
+    g_assert_nonnull(strstr(text,
+        "     IP59 VCPU     on    1.269V  default     0\r\n"));
+    /* The node board's 12V is in the NC group, unlike the module's 12V. */
+    g_assert_nonnull(strstr(text,
+        "      IP59 12V     NC   11.875V      N/A\r\n"));
+    qtest_quit(s);
+    close(fd);
+
+    s = console_start(&fd, CHIMERA_PROPS("57", "IP59_4CPU"), "");
+    text = NULL;
+    {
+        g_autofree char *reply = env_run(fd, "power");
+
+        g_assert_nonnull(strstr(reply,
+            "          1.8V    off    0.000V  default     0\r\n"));
+        g_assert_nonnull(strstr(reply,
+            "        12V #2     NC    0.000V      N/A\r\n"));
+        g_assert_nonnull(strstr(reply,
+            "          2.5V    off    0.000V  default     0\r\n"));
+        g_assert_nonnull(strstr(reply,
+            "            5V     NC    0.000V      N/A\r\n"));
+        g_assert_nonnull(strstr(reply,
+            "      IP59 12V     NC    0.000V      N/A\r\n"));
+    }
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
+ * L1 datasheet: "env on" sets monitoring and also clears temperature-off
+ * and monitor-only. It does not clear "env power off" (power mode 1).
+ */
+static void test_env_on_clears(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("55", "IP59_4CPU"), "");
+    g_autofree char *text = NULL;
+
+    g_free(env_run(fd, "env temp off"));
+    g_free(env_run(fd, "env on"));
+    text = env_run(fd, "env");
+    g_assert_null(strstr(text, "Disabled   Disabled"));
+    g_assert_nonnull(strstr(text, "31C/ 87F   48C/118F   55C/131F"));
+    g_free(env_run(fd, "env power monitor"));
+    g_free(env_run(fd, "env on"));
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_null(strstr(text, "MONITOR-ONLY"));
+    g_free(env_run(fd, "env power off"));
+    g_free(env_run(fd, "env on"));
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_nonnull(strstr(text, "          1.8V   Disabled  10%"));
+    qtest_quit(s);
+    close(fd);
+}
+
+/* L1 datasheet: IP53 and IP59 do not read the same; VCPU differs. */
+static void test_chimera_vcpu_differs(void)
+{
+    g_autofree char *rows[2] = { NULL, NULL };
+    static const char *const boards[] = { "IP53_4CPU", "IP59_4CPU" };
+
+    for (unsigned i = 0; i < 2; i++) {
+        g_autofree char *props = g_strdup_printf(
+            ",brick-type-code=55,irouter-compat=on,node-board-name=%s,"
+            "node-board-part=030-1989-003,node-board-revision=-C", boards[i]);
+        g_autofree char *text = NULL;
+        const char *vcpu;
+        int fd;
+        QTestState *s = console_start(&fd, props, "");
+
+        console_expect(fd, POWERING ENTER_CPU0);
+        text = env_run_powered(fd, "power");
+        vcpu = strstr(text, "VCPU");
+        g_assert_nonnull(vcpu);
+        rows[i] = g_strndup(vcpu, strchr(vcpu, '\n') - vcpu);
+        qtest_quit(s);
+        close(fd);
+    }
+    g_assert_cmpstr(rows[0], !=, rows[1]);
+}
+
+/*
+ * L1 datasheet, "env power off": the power-monitoring setting clears the
+ * state of every supply row, which then read Disabled; fans and
+ * temperatures are untouched.
+ */
+static void test_env_power_off_rows(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("81", "IP59_4CPU"), "");
+    g_autofree char *text = NULL;
+    g_auto(GStrv) lines = NULL;
+    unsigned disabled = 0;
+
+    g_free(env_run(fd, "env power off"));
+    text = env_run(fd, "env");
+    lines = g_strsplit(text, "\r\n", -1);
+    for (char **l = lines;
+         *l && !g_str_has_prefix(*l, "Description     "); l++) {
+        if (strstr(*l, "% ")) {
+            g_assert_nonnull(strstr(*l, "Disabled"));
+            disabled++;
+        }
+    }
+    g_assert_cmpuint(disabled, ==, 21);
+    g_assert_nonnull(strstr(text, "FAN  0  EXHST 1   Wait Pwr"));
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
+ * L1 datasheet, limits: custom limits from the five-value form replace the
+ * defaults of every sensor on 7 and Q, including BEDROCK; the workstation's
+ * fixed on-node row keeps its own. Autofan running wins over "env temp off".
+ * High altitude on Q gives 67/67/67 for the full form.
+ */
+static void test_env_custom_limits(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("81", "IP59_4CPU"), "");
+    g_autofree char *text = NULL;
+
+    g_free(env_run(fd, "fan auto off"));
+    g_free(env_run(fd, "env test 40 45 50 55 35"));
+    text = env_run(fd, "env");
+    g_assert_cmpuint(count_of(text, "40C/104F   45C/113F   50C/122F"), ==, 6);
+    g_free(env_run(fd, "env altitude high"));
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_cmpuint(count_of(text, "37C/ 98F   41C/105F   45C/113F"), ==, 6);
+    g_free(env_run(fd, "env test 70 71 72 75 70"));
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_cmpuint(count_of(text, "67C/152F   67C/152F   67C/152F"), ==, 6);
+    qtest_quit(s);
+    close(fd);
+
+    s = console_start(&fd, CHIMERA_PROPS("81", "IP59_4CPU"), "");
+    g_free(env_run(fd, "env temp off"));
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_cmpuint(count_of(text, "[Autofan Control]"), ==, 6);
+    g_assert_null(strstr(text, "Disabled   Disabled"));
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
+ * A system reset is a node reset, which the controller survives: its
+ * display and log are kept (see the lifecycle test), and so are the env and
+ * fan settings, including the RAM-only ones. Only a controller start
+ * (reboot_l1, or the controller's own device reset, which runs the same
+ * start-up path) drops the RAM-only ones; the restart test covers that.
+ * The controller's own device reset is not reachable from a qtest on this
+ * machine, since a system reset does not reset the controller.
+ */
+static void test_env_node_reset_keeps(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("81", "IP59_4CPU"), "");
+    g_autofree char *text = NULL;
+    g_autofree char *reply = NULL;
+
+    g_free(env_run(fd, "env altitude high"));
+    g_free(env_run(fd, "fan auto off"));
+    g_free(env_run(fd, "env messages faultsonly"));
+    g_free(env_run(fd, "fan speed high"));
+    g_free(env_run(fd, "fan off"));
+    qtest_system_reset(s);
+    text = env_run(fd, "env");
+    g_assert_nonnull(strstr(text, "Automatic fan control is disabled"));
+    reply = env_run(fd, "env messages");
+    g_assert_cmpstr(reply, ==, "only environmental faults visible.\r\n");
+    g_free(reply);
+    reply = env_run(fd, "fan");
+    g_assert_true(g_str_has_prefix(reply, "fan(s) are off.\r\n"));
+    g_free(reply);
+    reply = env_run(fd, "fan speed");
+    g_assert_true(g_str_has_prefix(reply, "fan 0 EXHST 1  speed: 0\r\n"));
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
+ * The N0 fans' drive range is 0 to 31 (the help text of the per-fan form);
+ * the other channels take 0 to 255.
+ */
+static void test_fan_speed_ranges(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("81", "IP59_4CPU"), "");
+    g_autofree char *reply = NULL;
+
+    reply = env_run(fd, "fan speed 5 32");
+    g_assert_cmpstr(reply, ==, "ERROR: command not found.\r\n");
+    g_free(reply);
+    reply = env_run(fd, "fan speed 5 31");
+    g_assert_cmpstr(reply, ==, "");
+    g_free(reply);
+    reply = env_run(fd, "fan speed 1 255");
+    g_assert_cmpstr(reply, ==, "");
+    g_free(reply);
+    reply = env_run(fd, "fan speed 1 256");
+    g_assert_cmpstr(reply, ==, "ERROR: command not found.\r\n");
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
+ * What survives a controller restart is inferred from the datasheet:
+ * monitoring, temperature checking, altitude and the power-monitoring mode
+ * are kept; the message filter, fan auto off, custom limits and written
+ * fan levels are RAM-only and lost. This fixes that chosen behaviour.
+ */
+static void test_env_restart_resets(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("81", "IP59_4CPU"), "");
+    g_autofree char *text = NULL;
+    g_autofree char *reply = NULL;
+
+    g_free(env_run(fd, "env altitude high"));
+    g_free(env_run(fd, "env power monitor"));
+    g_free(env_run(fd, "fan auto off"));
+    g_free(env_run(fd, "env messages faultsonly"));
+    g_free(env_run(fd, "env test 40 45 50 55 35"));
+    g_free(env_run(fd, "fan speed high"));
+    console_send(fd, "reboot_l1\r");
+    console_send(fd, "\r");
+    g_free(console_read_until(fd, PROMPT));
+    text = env_run(fd, "env");
+    g_assert_true(g_str_has_prefix(text, ENV_RUNNING "\r\n" ENV_MONITOR_ONLY));
+    g_assert_null(strstr(text, "Automatic fan control"));
+    g_assert_null(strstr(text, "40C/"));
+    g_assert_nonnull(strstr(text, "[Autofan Control]    70C/158F"));
+    reply = env_run(fd, "env messages");
+    g_assert_cmpstr(reply, ==, "all environmental events visible.\r\n");
+    g_free(reply);
+    reply = env_run(fd, "fan speed");
+    g_assert_true(g_str_has_prefix(reply, "fan 0 EXHST 1  speed: 210\r\n"));
+    g_free(env_run(fd, "env off"));
+    g_free(env_run(fd, "env temp off"));
+    console_send(fd, "reboot_l1\r");
+    console_send(fd, "\r");
+    g_free(console_read_until(fd, PROMPT));
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_true(g_str_has_prefix(text, ENV_DISABLED ENV_FAILSAFES));
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
+ * The rack-mounted workstation's captured rows, written out from the
+ * datasheet and not from the model's tables: its fans and their warning
+ * RPM, the fault limit of every temperature, and the zones' names, sensors
+ * and fan indexes. Readings, targets and percentages are model values and
+ * are not checked here.
+ */
+static void test_env_q_captured_rows(void)
+{
+    static const char *const fans[] = {
+        "FAN  0  EXHST 1   Wait Pwr         1980 ",
+        "FAN  1       PS   Wait Pwr         3200 ",
+        "FAN  2    PCI 1   Wait Pwr         1980 ",
+        "FAN  3    PCI 2   Wait Pwr         1980 ",
+        "FAN  4      ODY   Wait Pwr         1679 ",
+        "FAN  5  N0 LEFT   Wait Pwr         1980 ",
+        "FAN  6  N0 CNTR   Wait Pwr         1980 ",
+        "FAN  7 N0 RIGHT   Wait Pwr         1980 ",
+    };
+    static const char *const zones[] = {
+        "^NODE +Wait Pwr +0,1,2,5,6 +47C/116F +\\d+C/ *\\d+F +0 +\\d+%/ *18%$",
+        "^PS +Wait Pwr +0,1,2,5,6 +47C/116F +\\d+C/ *\\d+F +1 +\\d+%/ *55%$",
+        "^PCI +Wait Pwr +3 +45C/113F +\\d+C/ *\\d+F +2,3 +\\d+%/ *55%$",
+        "^ODY +Wait Pwr +4 +48C/118F +\\d+C/ *\\d+F +4 +\\d+%/ *55%$",
+    };
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("81", "IP59_4CPU"), "");
+    g_autofree char *text = NULL;
+    g_auto(GStrv) lines = NULL;
+
+    text = env_run(fd, "env");
+    for (unsigned i = 0; i < G_N_ELEMENTS(fans); i++) {
+        g_assert_nonnull(strstr(text, fans[i]));
+    }
+    g_assert_nonnull(strstr(text, "75C/167F"));
+    g_assert_null(strstr(text, "76C/"));
+    /* The datasheet's zone format is %-10s %8s  %12s: exact rows. */
+    g_assert_nonnull(strstr(text, "\r\nNODE       Wait Pwr     0,1,2,5,6  "
+                                  "47C/116F  41C/105F          0   "
+                                  "18%/ 18%\r\n"));
+    g_free(env_run(fd, "env off"));
+    g_free(text);
+    text = env_run(fd, "env");
+    g_assert_nonnull(strstr(text, "\r\nODY        Disabled             4  "
+                                  "48C/118F  45C/113F          4   "
+                                  "55%/ 55%\r\n"));
+    g_assert_nonnull(strstr(text, "\r\nPCI        Disabled             3  "
+                                  "45C/113F  41C/105F        2,3   "
+                                  "55%/ 55%\r\n"));
+    g_free(text);
+    lines = NULL;
+    g_free(env_run(fd, "env on"));
+    text = env_run(fd, "env");
+    lines = g_strsplit(text, "\r\n", -1);
+    for (unsigned i = 0; i < G_N_ELEMENTS(zones); i++) {
+        bool found = false;
+
+        for (char **l = lines; *l; l++) {
+            found |= g_regex_match_simple(zones[i], *l, 0, 0);
+        }
+        g_assert_true(found);
+    }
     qtest_quit(s);
     close(fd);
 }
@@ -2539,7 +3372,7 @@ static void test_env_unmodelled(void)
     close(fd);
     /* The arguments of "env" are not modelled. */
     env_start(&fd, &s, &modelled, ",auto-power=off");
-    console_send(fd, "env check\r");
+    console_send(fd, "env limits\r");
     console_expect(fd, "ERROR: command not found.\r\n" PROMPT);
     qtest_quit(s);
     close(fd);
@@ -7418,6 +8251,23 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn1/l1/env/unpowered/rack-workstation-ip59",
                         &env_q_ip59, test_env_unpowered);
     qtest_add_func("sn1/l1/env/unmodelled", test_env_unmodelled);
+    qtest_add_func("sn1/l1/env/on-off", test_env_on_off);
+    qtest_add_func("sn1/l1/env/disabled-rows", test_env_disabled_rows);
+    qtest_add_func("sn1/l1/env/limits", test_env_limits);
+    qtest_add_func("sn1/l1/env/on-clears", test_env_on_clears);
+    qtest_add_func("sn1/l1/env/node-reset-keeps", test_env_node_reset_keeps);
+    qtest_add_func("sn1/l1/env/fan-speed-ranges", test_fan_speed_ranges);
+    qtest_add_func("sn1/l1/env/power-off-rows", test_env_power_off_rows);
+    qtest_add_func("sn1/l1/env/custom-limits", test_env_custom_limits);
+    qtest_add_func("sn1/l1/chimera/power", test_chimera_power);
+    qtest_add_func("sn1/l1/chimera/vcpu-differs", test_chimera_vcpu_differs);
+    qtest_add_func("sn1/l1/env/altitude-powered", test_env_altitude_powered);
+    qtest_add_func("sn1/l1/env/fan-commands", test_fan_commands);
+    qtest_add_func("sn1/l1/env/restart-resets", test_env_restart_resets);
+    qtest_add_func("sn1/l1/env/q-captured-rows", test_env_q_captured_rows);
+    qtest_add_func("sn1/l1/env/monitor-only", test_env_monitor_only);
+    qtest_add_func("sn1/l1/env/acknowledgements", test_env_acknowledgements);
+    qtest_add_func("sn1/l1/env/migration", test_env_migration);
     qtest_add_func("sn1/l1/power", test_power);
     qtest_add_func("sn1/l1/node-reset", test_node_reset);
     qtest_add_func("sn1/l1/signals", test_signals);
