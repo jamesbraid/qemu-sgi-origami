@@ -57,6 +57,16 @@ each platform page covers its own products.
    measured-machines
    vocabulary
 
+Running
+-------
+
+How to start each machine, with the options its catalogue entry offers.
+
+.. toctree::
+   :maxdepth: 1
+
+   running
+
 Firmware
 --------
 

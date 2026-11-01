@@ -39,6 +39,21 @@ platform pages (``ip<NN>.rst``, or ``sn.rst``) back. Link related parts
 with a ``.. seealso::`` too. On every page, mark an SGI
 glossary term with ``:term:`` at its first use.
 
+The running pages, ``running.rst`` and ``running-ip<NN>.rst``, say how
+to start a machine. They state no hardware fact, so they carry no ratings.
+Write a table of selections, inputs, devices or heads, or a command that
+creates a machine's stores, as ``.. sgi-run:: <kind> <product>``, which
+renders it from ``hw/mips/sgi/sgi-machines.json`` when the manual is
+built (``scripts/sgi_model/running_doc.py``). Write other commands by hand
+in a shell code block, using the placeholder file names that
+``running_doc.PLACEHOLDERS`` lists. Say a guest boots only by naming, with
+``:test:`name```, a functional test that boots it.
+``scripts/tests/test_sgi_running_pages.py`` checks every command in a
+page against the catalogue, that every catalogue product has a page and
+that each named test exists, and
+``tests/functional/mips64/test_sgi_manual_commands.py`` starts each
+command on a built emulator.
+
 Facts
 -----
 
