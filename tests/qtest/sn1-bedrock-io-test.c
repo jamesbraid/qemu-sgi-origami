@@ -138,6 +138,28 @@ static char *log_file_take(const char *path)
     return contents;
 }
 
+/*
+ * The bits of II scratch 0 the PROM's partition path sets and later reads
+ * (the partitioning datasheet, test 2): bit 0 marks the global master, bit 9
+ * the partition master, and bits 4+i mark processor i's progress. The
+ * register must keep each independently; a model that dropped these writes
+ * would skip the fences and the KLCONFIG update.
+ */
+static void test_scratch0_master_marks(void)
+{
+    QTestState *s = io_start("");
+    uint64_t value = 0;
+
+    for (unsigned bit = 0; bit < 16; bit++) {
+        value |= UINT64_C(1) << bit;
+        qtest_writeq(s, REG_BASE + SCRATCH0, value);
+        g_assert_cmphex(qtest_readq(s, REG_BASE + SCRATCH0), ==, value);
+    }
+    qtest_writeq(s, REG_BASE + SCRATCH0, 0x201);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + SCRATCH0), ==, 0x201);
+    qtest_quit(s);
+}
+
 static void test_widget_status(void)
 {
     g_autofree char *log = log_file_new();
@@ -1498,6 +1520,8 @@ int main(int argc, char **argv)
                    test_inbound_protection);
     qtest_add_func("sn1/bedrock-io/inbound-source-widgets",
                    test_inbound_source_widgets);
+    qtest_add_func("sn1/bedrock-io/scratch0-master-marks",
+                   test_scratch0_master_marks);
     qtest_add_func("sn1/bedrock-io/inbound-refusal-is-logged",
                    test_inbound_refusal_is_logged);
     qtest_add_func("sn1/bedrock-io/inbound-register-access",

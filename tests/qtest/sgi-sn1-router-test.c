@@ -2195,6 +2195,43 @@ static void test_uart_adjacent_registers(void)
     qtest_quit(s);
 }
 
+/*
+ * What the stock PROM leaves in a router two partitions share (the
+ * partitioning datasheet, test 4 and the router vote rows): the winning
+ * partition's fence pass ends with protection configuration bits 7:0 and
+ * all eight per-link reset masks at 0x02, and router set-up marks scratch 0
+ * with bit 63 and the router's 7-bit identifier in bits 62:56 over the
+ * 48-bit NIC. The router stores each as written and keeps the NIC bits
+ * when the mark is added by a read-modify-write.
+ */
+static void test_partition_fence_state(void)
+{
+    const uint64_t nic = UINT64_C(0x17bdd1eaf4cc);
+    QTestState *s = qtest_init(ARGS);
+    uint64_t scratch;
+
+    qtest_writeq(s, BASE + 0x100, nic);
+    scratch = qtest_readq(s, BASE + 0x100);
+    scratch = (scratch & ~(UINT64_C(0x7f) << 56)) | (UINT64_C(1) << 63) |
+              (UINT64_C(0x05) << 56);
+    qtest_writeq(s, BASE + 0x100, scratch);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==,
+                    (UINT64_C(1) << 63) | (UINT64_C(5) << 56) | nic);
+
+    qtest_writeq(s, BASE + 0x10, 0x02);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10) & 0xff, ==, 0x02);
+    for (unsigned p = 0; p < 8; p++) {
+        qtest_writeq(s, BASE + bank[p] + 0x18, 0x02);
+    }
+    for (unsigned p = 0; p < 8; p++) {
+        g_assert_cmphex(qtest_readq(s, BASE + bank[p] + 0x18) & 0xff, ==,
+                        0x02);
+    }
+    /* The second partition writes nothing; the first one's masks stay. */
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10) & 0xff, ==, 0x02);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2225,6 +2262,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/sn1-router/inactive-barrier-no-effects",
                    test_inactive_barrier_no_effects);
     qtest_add_func("/sgi/sn1-router/position", test_position);
+    qtest_add_func("/sgi/sn1-router/partition-fence-state",
+                   test_partition_fence_state);
     qtest_add_func("/sgi/sn1-router/routing", test_routing);
     qtest_add_func("/sgi/sn1-router/programming-registers",
                    test_programming_registers);
