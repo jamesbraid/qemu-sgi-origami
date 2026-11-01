@@ -14,10 +14,10 @@ Used in :ref:`sgi-ip27` (the Origin 200, ``origin200-gigachannel`` and
    Platform pages: :ref:`sgi-ip27`.
 
 The GIGAchannel is a separate I/O cabinet for the Origin 200. It holds one
-Crossbow, one Bridge with four PCI slots and five XIO slots. Two XIO cables
+:term:`Crossbow`, one :term:`Bridge` with four PCI slots and five XIO slots. Two XIO cables
 join it to one Origin 200 CPU module. The upgrade removes the module's
 passive XTalk jumper and fits a Crosstown adapter in its place, so after
-conversion the module's own Hub reaches its own IP29 Bridge only through the
+conversion the module's own :term:`Hub` reaches its own IP29 Bridge only through the
 cabinet's Crossbow. The node cannot boot without either the cabinet or a
 loopback cable :src:`007-3708-002 pp. 19-24, 63`.
 
@@ -26,7 +26,7 @@ and the converted module without a cabinet for
 ``topology=origin200-gigachannel-loopback`` (:ref:`sgi-sn-gigachannel`).
 The cabinet's own I/O is the type ``sgi-gigachannel`` in
 ``hw/mips/sgi/board-gigachannel.c``: a Bridge at widget revision 4, the
-board record firmware reads from it, a BASEIO PROM flash part and one
+board record firmware reads from it, a BASEIO :term:`PROM` flash part and one
 system-controller status word. The machine builds the cabinet's Crossbow
 (:doc:`xbow`) and puts the module's IP29 Bridge on another of its links. The
 Bridge is described in :doc:`bridge`. This page covers what is specific to
@@ -207,7 +207,7 @@ shared by two modules and cabinets cannot be daisy-chained. XIO cables must
 not be removed with either chassis powered. All *established*
 :src:`007-3708-002 pp. 19-24, 63, 109-110`.
 
-Each cable carries one complete Crosstalk link, one joining the module's Hub
+Each cable carries one complete :term:`Crosstalk` link, one joining the module's Hub
 to the cabinet and the other its IP29 Bridge. This is *inferred* from the
 Crosstown board replacing a jumper that joined Hub to Bridge. Which cable
 carries which link is *unknown*.
@@ -327,7 +327,7 @@ What the stock IP27 PROM 6.156 does (each a *software expectation*,
 - **Cabinet detection.** On each boot the PROM reads the identification
   word of widget 0 through each node's Hub. It takes a part field of
   ``0x0000`` (a Crossbow) as the cabinet. It also accepts ``0xd000``, the part
-  number of the XBridge crossbar (widget 0, *established* on :doc:`xbridge`).
+  number of the :term:`XBridge` crossbar (widget 0, *established* on :doc:`xbridge`).
   Why an IP27 PROM accepts it is *unknown*. PROM 6.11 accepts ``0x0000`` only. No board
   identity record takes part in the decision.
 - **Load address.** With a cabinet found, the PROM prints the XBOX load

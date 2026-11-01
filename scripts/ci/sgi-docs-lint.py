@@ -358,6 +358,90 @@ def lint_seealso(rel, text, where):
             '".. seealso::" on the page links back']
 
 
+# Pages the glossary rule does not read: the glossary itself, and the
+# References page, generated with the cited documents' own titles.
+GLOSSARY_EXEMPT = ('glossary.rst', 'references.rst')
+# Glossary terms the rule leaves alone. Only a term with a capital letter
+# is checked: the lowercase ones ("node", "module", "widget", "brick",
+# "node board", "hardware graph") are ordinary words that occur in many
+# senses. These capitalised terms are skipped too, with the reason.
+GLOSSARY_SKIP = {
+    'L1': 'also the first-level cache of the processor pages',
+}
+TERM_ROLE = re.compile(r':term:`([^`]*)`')
+# Everything else that is not the page's own running prose: roles,
+# literals, links, and emphasis, which cannot hold a role.
+NOT_PROSE = re.compile(
+    r':\w+:`[^`]*`|``.*?``|`[^`]*`_{0,2}|\*\*[^*]+\*\*'
+    r'|(?<![*\w])\*[^*\s](?:[^*]*[^*\s])?\*(?![*\w])', re.S)
+
+
+def glossary_terms(root):
+    """Return the glossary terms the rule checks, or [] if there is no
+    glossary."""
+    path = root / PAGES / 'glossary.rst'
+    if not path.exists():
+        return []
+    terms = []
+    for line in path.read_text().split('\n'):
+        if re.match(r'   [^\s:]', line) and any(c.isupper() for c in line) \
+                and line.strip() not in GLOSSARY_SKIP:
+            terms.append(line.strip())
+    return terms
+
+
+def term_pattern(term):
+    return r'(?<![\w-])' + r'\s+'.join(map(re.escape, term.split())) + \
+        r'(?![\w-])'
+
+
+def term_line(lines):
+    """Return the lines with everything that is not running prose
+    replaced by empty lines: titles, directive and comment lines, and
+    literal blocks."""
+    keep = {n for n, _ in prose_lines(lines)}
+    out = []
+    for i, line in enumerate(lines):
+        title = ADORN.match(line) or (
+            i + 1 < len(lines) and line.strip() and ADORN.match(lines[i + 1])
+            and not ADORN.match(line))
+        if i + 1 not in keep or title or line.lstrip().startswith('.. '):
+            out.append('')
+        else:
+            out.append(line)
+    return out
+
+
+def lint_terms(rel, text, terms):
+    """Check that the first use of each glossary term on a page is a
+    :term: link. A term in the page's own title is skipped."""
+    lines = text.split('\n')
+    title = find_title(lines)
+    heading = title[1] if title else ''
+    body = '\n'.join(term_line(lines))
+    links = [(m.start(), m.group(1)) for m in TERM_ROLE.finditer(body)]
+    plain = TERM_ROLE.sub(blank, body)
+    plain = NOT_PROSE.sub(blank, plain)
+    out = []
+    for term in terms:
+        pattern = term_pattern(term)
+        if re.search(pattern, heading):
+            continue
+        hit = re.search(pattern, plain)
+        if not hit:
+            continue
+        for start, target in links:
+            target = re.search(r'<([^>]*)>', target) or [None, target]
+            if ' '.join(target[1].lower().split()) == term.lower() and \
+                    start < hit.start():
+                break
+        else:
+            out.append(f'{rel}:{body.count(chr(10), 0, hit.start()) + 1}: '
+                       f'the first use of "{term}" must be '
+                       f':term:`{term}`, a link to the glossary')
+    return out
+
+
 def catalogue(root):
     """Return (machine and topology names, product names with a number)
     that the model offers, or None if the catalogue is absent."""
@@ -503,10 +587,13 @@ def lint(root):
     pages = sorted((root / PAGES).rglob('*.rst'))
     cat = catalogue(root)
     where, _ = page_labels(root)
+    terms = glossary_terms(root)
     for page in pages:
         rel = str(page.relative_to(root))
         findings += lint_page(rel, page.read_text())
         findings += lint_hex(rel, page.read_text())
+        if page.name not in GLOSSARY_EXEMPT:
+            findings += lint_terms(rel, page.read_text(), terms)
         if page.parent.name == 'hardware':
             findings += lint_used_in(rel, page.read_text(), cat)
             findings += lint_seealso(rel, page.read_text(), where)

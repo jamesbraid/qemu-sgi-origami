@@ -24,11 +24,11 @@ Record
   interface board.
 
 Board
-  The node board every node of a record carries, named by its IP number
+  The node board every node of a record carries, named by its :term:`IP number`
   in lower case (``ip53``, ``ip59``) and chosen with ``board=``. A record
   builds one board on every node; a topology that takes more than one
   names its default. The board is not the platform generation
-  (``generation``: SN0, SN1, IP30 or IP32) and not the node-board
+  (``generation``: :term:`SN0`, :term:`SN1`, IP30 or IP32) and not the node-board
   identity record below.
 
 Interface board
@@ -58,7 +58,7 @@ Processor
   different PRId revisions. ``-cpu`` names only the part.
 
 Runtime profile
-  The IP53-family settings a record carries in ``ip53-runtime``: its PIC
+  The IP53-family settings a record carries in ``ip53-runtime``: its :term:`PIC`
   compatibility profile, the L1 compatibility mode and its node-board
   identities. It applies to IP53 and IP59 boards alike.
 

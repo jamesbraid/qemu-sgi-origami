@@ -18,7 +18,7 @@ DP83843 (:ref:`sgi-bricks-ibrick`).
    Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip35`.
 
 The National Semiconductor DP83840A and the DP83843 PHYTER are 10/100 Mb/s
-Ethernet transceivers. Both sit behind the IOC3's MII management registers
+Ethernet transceivers. Both sit behind the :term:`IOC3`'s MII management registers
 (:doc:`ioc3`) and are reached only through them. QEMU models both as one
 type, ``dp83840``, in ``hw/net/dp83840.c`` and
 ``include/hw/net/dp83840.h``. The ``dp83843`` property selects the
@@ -99,7 +99,7 @@ PHY, rev. 0`` (:src:`marc-openbsd-sgi-139223952727384 line 173`),
 the shared OUI gives word 3 ``0x5c10`` :src:`ti-dp83843-snls021b p. 49`,
 *established* for the documented product. That the board carries the
 BVJE package, and not another DP83843 package, is *unknown*. The stock
-Origin 300 PROM's power-on Ethernet diagnostic addresses only MII
+Origin 300 :term:`PROM`'s power-on Ethernet diagnostic addresses only MII
 address 1 and warns when word 3 is not ``0x5c10``, a *software
 expectation*. Fuel uses the same selection. No inventory of a Fuel
 transceiver was read, so its part and address are an *approximation*.

@@ -6,7 +6,7 @@
 IP35: Origin 300 and Fuel
 =========================
 
-:term:`IP35 <IP number>` is the SN1 software platform, SGI's second Scalable
+:term:`IP35 <IP number>` is the :term:`SN1` software platform, SGI's second Scalable
 Node generation, built around the :term:`Bedrock` node controller. Its
 boards are the Origin 300's IP45, the Fuel's IP34, the Origin 3000
 C-brick's IP35 and the IP53 of the Origin 350 family. This page covers
@@ -46,7 +46,7 @@ SGI manuals, by document number and printed page:
 - *SGI Origin 300 PCI Expansion Module User's Guide*,
   :src:`007-4499-002`: pages 12-13 and 38.
 - *Origin 3000 System Architecture*, :src:`108-0240-002`: pages 2-26 to
-  2-29 (XBridge ports) and 2-47 (the L1 link between chassis).
+  2-29 (:term:`XBridge` ports) and 2-47 (the L1 link between chassis).
 - *Scan Tools for SGI Origin 300 System and SGI 3000 Family*,
   :src:`108-0263-004 p. 2-18` (Origin 300 processor configurations).
 - *sMDK-based Field Diagnostics*, :src:`108-0264-004` (node addresses
@@ -82,7 +82,7 @@ Public software:
   :src:`lore-kaloz-ip35-35`: the L1 brick-type letters it maps to
   products.
 - Mainline Linux at ``db2ddb871435``,
-  ``arch/mips/pci/pci-xtalk-bridge.c`` (IOC3 subsystem identities).
+  ``arch/mips/pci/pci-xtalk-bridge.c`` (:term:`IOC3` subsystem identities).
 
 Published captures:
 
@@ -406,7 +406,7 @@ linux-ip35 ``spaces.h`` lines 13-16; Linux SN1 ``bedrock.h`` lines
      - OpenBSD ``mnode.h`` line 40, ``cpu.h`` line 87, ``GENERIC-IP27``
        line 20; linux-ip35 ``spaces.h`` line 17; same value as the
        Origin 200.
-   * - Hub special
+   * - :term:`Hub` special
      - 0
      - ``0x9000_0000_0000_0000``
      - ``cpu.h`` line 98, ``mnode.h`` line 46; ``spaces.h`` line 19.

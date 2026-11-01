@@ -17,13 +17,13 @@ and in the Origin 3000 C-brick and CX-brick node boards
 
 .. seealso::
 
-   - Hub (:doc:`hub`): the node controller of the SN0 machines, which the
+   - :term:`Hub` (:doc:`hub`): the node controller of the :term:`SN0` machines, which the
      Bedrock succeeds.
 
 The Bedrock is the node controller of SGI's second Scalable Node
 generation, the successor to the Hub (:doc:`hub`). It joins up to four
 processors, node memory and its directory, one crosstalk port and one
-NUMAlink 3 port (*established*, :src:`108-0240-002 pp. 2-11 to 2-17`). QEMU models it as
+:term:`NUMAlink` 3 port (*established*, :src:`108-0240-002 pp. 2-11 to 2-17`). QEMU models it as
 ``sgi-bedrock`` in ``hw/misc/sgi-bedrock.c``, a parent that composes
 seven unit devices: two processor interfaces (``sgi-bedrock-pi.c``),
 the memory and directory interface (``sgi-bedrock-md.c``), the I/O
@@ -39,7 +39,7 @@ the silicon revision behind that label is *unknown*.
 Facts are rated as described in :ref:`sgi-ratings`. SGI's register
 headers give the Bedrock's register offsets and fields but almost no
 reset values, so most reset values here are model choices
-(*approximation*). What the stock IP35 PROM and IRIX do is a *software
+(*approximation*). What the stock IP35 :term:`PROM` and IRIX do is a *software
 expectation*; where it was observed by running that software on the
 model, it shows what the software asks of the Bedrock, not what the chip
 does.
@@ -49,7 +49,7 @@ does.
 Sources
 =======
 
-- SGI's generated SN1 register headers in the Linux history tree
+- SGI's generated :term:`SN1` register headers in the Linux history tree
   (``linux-history``) at ``7570df54ef8c``, tag v2.5.40, under
   ``include/asm-ia64/sn/sn1/``: ``hubpi.h``, ``hubpi_next.h``,
   ``hublb.h``, ``hublb_next.h``, ``hubni.h``, ``hubni_next.h``,
@@ -556,7 +556,7 @@ uses, an *approximation*. All lines are level-triggered and recomputed on
 every change.
 
 The IP53 boards add one rule (:ref:`sgi-ip53-pic`). When a processor
-clears a pending bit that a PIC input still holds asserted, the model
+clears a pending bit that a :term:`PIC` input still holds asserted, the model
 sets it again 1 ms of virtual time later, an *approximation*.
 
 .. _sgi-bedrock-pi-timer:
@@ -991,7 +991,7 @@ I/O interface
 The I/O interface is the Bedrock's crosstalk port. It turns a device's
 DMA request into the internal crossbar's format, forwards it to memory
 and holds the two block-transfer engines (:src:`108-0240-002 p. 2-16`),
-*established*. It connects to an XBridge's host
+*established*. It connects to an :term:`XBridge`'s host
 port 0xa (:doc:`xbridge`), and the ``host-widget`` property sets the value
 the widget control register reads (below). Processor I/O-space accesses leave through
 it; the inbound side takes DMA and interrupt packets from the widgets.

@@ -16,7 +16,7 @@ Octane2 system boards).
 
 .. seealso::
 
-   - Bridge (:doc:`bridge`), XBridge (:doc:`xbridge`) and PIC (:doc:`pic`):
+   - :term:`Bridge` (:doc:`bridge`), :term:`XBridge` (:doc:`xbridge`) and :term:`PIC` (:doc:`pic`):
      the XIO-to-PCI and PCI-X bridges that appear as widgets on XIO.
 
 Crossbow is SGI's eight-link XIO crossbar. It routes packets
@@ -79,7 +79,7 @@ Role and ports
      - 007-3708-002, Figures 1-4 and 1-5, printed pages 6-7; OpenBSD
        sgi ``sys/arch/sgi/sgi/ip27_machdep.c`` probes widget 8 alone for
        the Origin 200 (``openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf``).
-   * - On a GIGAchannel, link A reaches the attached module's Hub, link
+   * - On a GIGAchannel, link A reaches the attached module's :term:`Hub`, link
        9 its IP29 Bridge, link 8 the cabinet Bridge, and links B to F
        the optional positions.
      - approximation
@@ -173,7 +173,7 @@ slot on a big-endian host; this page uses the aligned offset.
      - established, spec PDF pages 91-92. The model resets the
        register to zero, the specification's value, keeps only bits
        22:20 of the select and drops a write to reserved bit 23. The
-       measured Octane2 reads 0x00800000 in both counters after PROM
+       measured Octane2 reads 0x00800000 in both counters after :term:`PROM`
        start-up, bit 23 set, which the model does not reproduce
        (:ref:`sgi-xbow-model-choices`). Counting itself is not
        modelled.
@@ -294,8 +294,7 @@ receive errors and retry counts, which the model does not reproduce.
 Measurements
 ============
 
-These reads come from the :ref:`sgi-measured-octane2`, in the PROM Command
-Monitor after the firmware had initialised the machine. The chip reports
+These reads come from the :ref:`sgi-measured-octane2`, in the PROM :term:`Command Monitor` after the firmware had initialised the machine. The chip reports
 revision code 5; the inventory prints ASIC revision 1.4. Each read is one
 32-bit load at the register's offset plus four, physical ``0x10000000``
 plus the offset, issued by the processor through HEART at widget 8, for

@@ -34,7 +34,7 @@ which the register-contract qtests use. No chip revision is modelled: the widget
 answers revision 0.
 
 No register specification, schematic or capture of the pipe's host
-interface is public. The model is built from what the IP27 PROM, the IO6
+interface is public. The model is built from what the IP27 :term:`PROM`, the IO6
 PROM, the IRIX 6.5.30 kernel, its X server and OpenGL library, and the
 firmware IRIX loads into the pipe send and expect, read as binaries. Most
 behaviour below is therefore a *software expectation* or an
@@ -47,7 +47,7 @@ Sources
 =======
 
 - The Onyx2 deskside Owner's Guide, :src:`007-3454-005 p. 28`: the XG
-  ASIC on the geometry board as the pipe's XIO attachment.
+  ASIC on the geometry board as the pipe's :term:`XIO` attachment.
 - Published inventories of real pipes, cited as *observed*: an Onyx2
   deskside InfiniteReality2 with ``hinv``, board list and ``gfxinfo -v``
   (:src:`irixnet-post-32192`), the same class of deskside's PROM
@@ -211,7 +211,7 @@ descriptors only. That answer matches no
 real pipe. The machine catalogue always sets a product.
 
 Other properties: ``fabric`` and ``fabric-hub-widget`` name the address
-space and the one Hub widget the pipe's DMA and host writes go to; ``pi``
+space and the one :term:`Hub` widget the pipe's DMA and host writes go to; ``pi``
 names the node whose processor interface counts the pipe's credits
 (:ref:`sgi-kona-credits`); ``manufacturer``, ``part`` and ``revision``
 build the identification register; ``probe-value`` is register ``0x64``;

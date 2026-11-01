@@ -7,7 +7,7 @@ Router: SN0 interconnect router
 ===============================
 
 Used in :ref:`sgi-ip27` (the Origin 2000 and Onyx2 modules). The Origin
-200 has no Router: its two towers join Hub to Hub.
+200 has no Router: its two towers join :term:`Hub` to Hub.
 
 .. seealso::
 
@@ -15,7 +15,7 @@ Used in :ref:`sgi-ip27` (the Origin 2000 and Onyx2 modules). The Origin
 
 .. seealso::
 
-   - SN1 router (:doc:`sn1-router`): the NUMAlink counterpart for SN1.
+   - :term:`SN1` router (:doc:`sn1-router`): the :term:`NUMAlink` counterpart for SN1.
 
 The Router is the six-port switch of the SN0 interconnect. It joins the
 Hubs of a module and, through cables, other modules. SGI's published
@@ -58,7 +58,7 @@ Sources
   record.
 - Linux ``arch/mips/include/asm/sn/sn0/hub.h`` at ``db2ddb871435``, as a
   software expectation for the chip identity values.
-- The IP27 PROM 6.156 image from IRIX 6.5.30, :src:`ip27-prom-6.156`,
+- The IP27 :term:`PROM` 6.156 image from IRIX 6.5.30, :src:`ip27-prom-6.156`,
   for what its Router code does and does not consume.
 
 .. _sgi-router-board:

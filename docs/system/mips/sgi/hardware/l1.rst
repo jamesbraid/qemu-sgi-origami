@@ -8,7 +8,7 @@ L1: system controller
 
 Used in :ref:`sgi-ip35` (Origin 300 and Fuel), :ref:`sgi-ip53` (Origin
 350, Onyx 350, Tezro and the Onyx4 host), the Origin 300 PCI expansion
-module (:doc:`pci-expansion`) and NUMAlink module
+module (:doc:`pci-expansion`) and :term:`NUMAlink` module
 (:ref:`sgi-bricks-numalink-module`), and the Origin 3000 and Onyx 3000
 C-, I-, N-, V-, R- and CX-bricks (:ref:`sgi-bricks`), which the
 ``origin3000`` machine's topologies build.
@@ -19,13 +19,13 @@ C-, I-, N-, V-, R- and CX-bricks (:ref:`sgi-bricks`), which the
 
 .. seealso::
 
-   - ELSC (:doc:`elsc`): the module system controller of the SN0 machines.
+   - :term:`ELSC` (:doc:`elsc`): the module system controller of the :term:`SN0` machines.
 
-The L1 is the per-chassis system controller of SN1 systems. It runs
+The L1 is the per-chassis system controller of :term:`SN1` systems. It runs
 from standby power, keeps the chassis identity, watches fans, supplies and temperatures, drives node power, reset and NMI, and
-carries the operator console. The node's Bedrock reaches it through a
+carries the operator console. The node's :term:`Bedrock` reaches it through a
 16550-style UART and a framed request and response protocol, which the
-IP35 PROM, IRIX and the public kernels use to read board records, write
+IP35 :term:`PROM`, IRIX and the public kernels use to read board records, write
 the display and pass console text.
 
 QEMU models the node-facing side as two objects in
@@ -278,7 +278,7 @@ are compatibility choices, not measured factory values.
 Register map
 ============
 
-The UART sits in Hub special space at the node's remote register window
+The UART sits in :term:`Hub` special space at the node's remote register window
 plus ``0x80``: the node's Hub special base plus ``0x3000_0080``. Each
 16550 register occupies eight bytes and is reached with 64-bit loads and
 stores whose low byte carries the data (OpenBSD ``hub.h`` lines 68-73
@@ -1277,7 +1277,7 @@ captured controller output.
        when the widget at the node's widget-0 window reports a crossbow
        part, ``0xd000`` or ``0xd100`` (OpenBSD ``xbowdevs`` names them
        XXBow and PXBow), and there an error reply abandons the
-       arbitration. An I-brick's and a V-brick's widget 0 is an XBridge,
+       arbitration. An I-brick's and a V-brick's widget 0 is an :term:`XBridge`,
        so that PROM never asks either one (software expectation). An
        I-brick or V-brick answers with the C-brick that asked at port 1
        and, when that C-brick's chip has a G-brick on its other port, the
@@ -1293,7 +1293,7 @@ captured controller output.
        10/24/01, printed page 5) and answers each about its own chip.
 
 The V-brick profile (``brick-type=vbrick``) is reached from the C-brick
-its XIO cable joins, as an I-brick's is, and knows only that C-brick. The
+its :term:`XIO` cable joins, as an I-brick's is, and knows only that C-brick. The
 V-brick has its own L1 (:src:`007-4264-002 p. 52, 128-129`),
 *established*. It is the X-brick's chassis and midplane XBridge with V12
 boards in the slots. The Origin 3000 L1 firmware has no personality of

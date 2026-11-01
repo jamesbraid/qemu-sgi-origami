@@ -8,7 +8,7 @@ IMPACT: graphics boards
 
 Used in :ref:`sgi-ip30` (Octane, Octane2) and :ref:`sgi-ip27` (Origin
 2000, and the Origin 200 with its GIGAchannel cabinet). IMPACT is SGI's
-XIO graphics family for the Octane and the Origin 2000, Origin 200 and
+:term:`XIO` graphics family for the Octane and the Origin 2000, Origin 200 and
 Onyx2, sold as SI, SI with texture, SSI and MXI and later as the E-series
 ESI, ESI with texture, ESSI and EMXI. Each board presents one XIO widget,
 built around the HQ4 host interface, with one or two GE11 or GE12 geometry
@@ -33,7 +33,7 @@ of all three graphics families is :ref:`sgi-graphics`.
 Facts are rated as described in :ref:`sgi-ratings`. No IMPACT register
 specification is public. The model is a functional profile: it gives the
 stock IRIX 6.5.30 kernel, X server and OpenGL client and the stock IP30
-PROM the registers and command words they use, and draws what those
+:term:`PROM` the registers and command words they use, and draws what those
 programs ask for. Most of the board's behaviour here is therefore an
 *approximation* or a *software expectation*.
 
@@ -954,7 +954,7 @@ driver waits for bit 0 after its DMA without a request, so the bit is
 most 500 ms of continuous work, which stays inside both kernel limits;
 when the board clears either bit is *unknown*.
 
-On SN0 machines every processor store the Hub counted on its way to the
+On :term:`SN0` machines every processor store the :term:`Hub` counted on its way to the
 board returns one graphics credit to that Hub at once, because the model
 takes every word off the port before the store completes
 (:ref:`sgi-hub`).

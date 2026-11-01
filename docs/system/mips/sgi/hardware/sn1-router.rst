@@ -20,7 +20,7 @@ model for them, an *approximation*.
 
 .. seealso::
 
-   - Router (:doc:`router`): the SN0 interconnect router.
+   - Router (:doc:`router`): the :term:`SN0` interconnect router.
 
 The SN1 router is the eight-port NUMAlink switch of the SN1 interconnect.
 In an Origin 300 system two base modules can be cabled to each other
@@ -32,7 +32,7 @@ three of those ports. QEMU models it as the ``sgi-sn1-router`` type in
 ``hw/misc/sgi-sn1-router.c``, with the interface in
 ``include/hw/misc/sgi-sn1-router.h``. The SN1 machine builder in
 ``hw/mips/sgi/sn-machine.c`` creates one per router in the topology and
-joins its numbered ports to Bedrock nodes and I/O peers with
+joins its numbered ports to :term:`Bedrock` nodes and I/O peers with
 ``sgi-net-cable`` objects (``port1-cable`` to ``port8-cable``). Only the
 topology ``origin300-numalink-pci-expansion`` has a router. An ordinary
 Origin 300 does not acquire one. This is the SN1 router, not the six-port
@@ -371,7 +371,7 @@ router. The model chooses the path as follows, an *approximation*.
    next router takes, from the link the message entered by.
 4. The output port's cable leads to the next router or to the target.
 
-Step 3 follows what the stock IP35 PROM 6.210 programs, a *software
+Step 3 follows what the stock IP35 :term:`PROM` 6.210 programs, a *software
 expectation*. On the Origin 3400 with two R-bricks (C-bricks 0 and 1 on
 ports 2 and 3 of router A, C-bricks 2 and 3 on ports 2 and 3 of router B,
 the routers joined port 1 to port 1 and port 6 to port 6) the PROM writes,

@@ -9,7 +9,7 @@ RAD1: audio controller
 Used in :ref:`sgi-ip30` (Octane, Octane2, onboard) and :ref:`sgi-ip27`
 (Origin 2000 and Onyx2, on the BaseIO-G's MediaIO daughtercard). RAD1 is
 SGI's PCI audio controller, PCI identity ``10a9:0005``. It is onboard on
-the Octane and Octane2 system board, at device 3 of the onboard Bridge,
+the Octane and Octane2 system board, at device 3 of the onboard :term:`Bridge`,
 and on the MediaIO daughtercard of the Origin 2000 and Onyx2 BaseIO-G, at
 device 7 of that board's Bridge. It moves audio between host-memory rings
 and the analog, AES3 and ADAT interfaces, and reports progress through a
@@ -261,7 +261,7 @@ Both drivers read ``0x30`` twice about 10 µs apart and print "RAD UST
 not incrementing" if it advanced by fewer than 3, *software expectation*.
 That ``0x30`` counts time is *inferred*; its period, reset value and
 wrap are *unknown*. On the reference Octane2 it reads zero and does not
-advance over several seconds at the PROM menu, before any driver has run
+advance over several seconds at the :term:`PROM` menu, before any driver has run
 (:ref:`sgi-rad1-octane2-ust`), *established* for that chip at that
 point.
 
@@ -590,7 +590,7 @@ status interrupt; the Octane driver's imports include no interrupt
 registration, *software expectation*. The reference Octane2's RAD1
 requests no interrupt pin in its configuration header
 (:ref:`sgi-rad1-octane2-config`), *established* for that chip. Whether
-the silicon can interrupt by another route is *unknown*. Bridge, Crossbow and HEART report transport errors as
+the silicon can interrupt by another route is *unknown*. Bridge, :term:`Crossbow` and HEART report transport errors as
 their own pages describe.
 
 DMA and byte order
@@ -640,8 +640,7 @@ state whose ring geometry or schedule could misdirect DMA fails to load.
 Measurements
 ============
 
-These reads come from the :ref:`sgi-measured-octane2` in the PROM Command
-Monitor, after the firmware had initialised the machine and before IRIX
+These reads come from the :ref:`sgi-measured-octane2` in the PROM :term:`Command Monitor`, after the firmware had initialised the machine and before IRIX
 loaded. No read is a reset value. The single read of configuration
 ``0x10`` was reported as a value only; the full header read below repeats
 it with its monitor output.

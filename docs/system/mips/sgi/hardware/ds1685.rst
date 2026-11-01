@@ -18,7 +18,7 @@ Used in :ref:`sgi-ip30`, on the Octane and Octane2 system boards, and
    - Timekeepers (:doc:`timekeepers`): the M48T35, DS1742 and DS1744 clocks of the Origin boards.
 
 The DS1685 is a real-time clock with 242 bytes of battery-backed RAM. On
-the Octane it sits on the IOC3's byte bus
+the Octane it sits on the :term:`IOC3`'s byte bus
 (:doc:`ioc3`). Linux uses it for the machine's power-off control, an
 *inferred* board function. A published
 Octane boot log reports a DS1687, the same die sealed with its crystal and
@@ -100,7 +100,7 @@ reach offset 0 and Linux's reach offset 3, because Linux inverts the low
 two address bits of every byte access on this machine. A port that decoded
 only offset 0 would never be reached by Linux. Beyond the first four bytes
 the device decodes nothing. How far up its span the real select answers is
-*unknown*; the IOC3 byte-bus timing description or a trace of the PROM
+*unknown*; the IOC3 byte-bus timing description or a trace of the :term:`PROM`
 touching those windows would settle it.
 
 Each region accepts byte accesses only. What a real part returns for an
@@ -326,7 +326,7 @@ sets ``PF``. Nothing in the model sets ``KF`` (no kickstart pin) or ``RF`` (no
 ``RCLR`` pin). Software can write either to one.
 
 In the model the IOC3 leaves the clock's output unconnected, so the guest
-sees no interrupt from it. Linux asks the Bridge for interrupt pin 6
+sees no interrupt from it. Linux asks the :term:`Bridge` for interrupt pin 6
 through slot 6 for the clock, and its power-button path takes a kickstart
 off that line. OpenBSD takes the Octane power button from a HEART interrupt
 and uses the clock only to read and clear ``KF``. Neither is evidence about
@@ -539,7 +539,7 @@ and that OpenBSD's driver attached to it. It does not establish any
 register value, the chip revision, the NVRAM contents, the interrupt route or
 that an Octane2 carries the same package.
 
-On the :ref:`sgi-measured-octane2`, the PROM Command Monitor's
+On the :ref:`sgi-measured-octane2`, the PROM :term:`Command Monitor`'s
 ``printenv`` listed ``AutoLoad``, ``console``, ``diskless``, ``keybd``,
 ``dbaud``, ``volume``, ``sgilogo``, ``autopower``, ``boottune``,
 ``ConsoleOut``, ``ConsoleIn``, ``cpufreq`` (``360``),

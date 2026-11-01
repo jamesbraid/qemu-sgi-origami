@@ -6,7 +6,7 @@
 PCI expansion: boards and the Origin 300 module
 ===============================================
 
-Used in :ref:`sgi-ip27` (the XIO PCI expansion board, the PCI Carrier
+Used in :ref:`sgi-ip27` (the :term:`XIO` PCI expansion board, the PCI Carrier
 Assembly and the shoehorn) and :ref:`sgi-ip35` (the Origin 300 PCI
 expansion module).
 
@@ -14,7 +14,7 @@ expansion module).
 
    Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip35`.
 
-These boards put PCI slots behind the SGI XIO and NUMAlink fabrics. This
+These boards put PCI slots behind the SGI XIO and :term:`NUMAlink` fabrics. This
 page covers the Origin 2000 XIO PCI expansion board and its PCI Carrier
 Assembly, the PCI-XTALK adapter (the "shoehorn") with the Cad Duo card that
 fits it, and the Origin 300 PCI expansion module.
@@ -23,11 +23,11 @@ QEMU builds the first three boards as ``sgi-pci-expansion``,
 ``sgi-pci-carrier`` and ``sgi-pci-shoehorn``
 (``hw/mips/sgi/board-pci-expansion.c`` and
 ``hw/mips/sgi/board-pci-shoehorn.c``). Each is an XIO board that holds one
-Bridge and its PCI bus (:doc:`bridge`). The Cad Duo is an ``sgi-ioc3``
+:term:`Bridge` and its PCI bus (:doc:`bridge`). The Cad Duo is an ``sgi-ioc3``
 (:doc:`ioc3`). The Origin 300 module is
 ``sgi-origin300-pci-expansion-module``
-(``hw/mips/sgi/origin300-pci-expansion.c``): a Bedrock with no processors or
-memory and three XBridge chips that serve six PCI buses (:doc:`bedrock`,
+(``hw/mips/sgi/origin300-pci-expansion.c``): a :term:`Bedrock` with no processors or
+memory and three :term:`XBridge` chips that serve six PCI buses (:doc:`bedrock`,
 :doc:`xbridge`). The model uses Bedrock and XBridge revision 2 for the
 module, Bridge widget revision 3 for the carrier and Bridge widget revision
 4 for the shoehorn. Facts are rated as described in :ref:`sgi-ratings`.
@@ -47,11 +47,11 @@ Sources
 - Seller photographs of a PCI-XTALK adapter, :src:`ebay-277925514107-image-1`,
   :src:`ebay-277925514107-image-3` and :src:`ebay-277925514107-image-5`.
 - A published SGI part-number list, :src:`sgi-pca-numbers`, and the IP27
-  PROM's board part-number table, :src:`ip27-prom-6.156`.
+  :term:`PROM`'s board part-number table, :src:`ip27-prom-6.156`.
 - Linux ``arch/mips/pci/pci-xtalk-bridge.c`` and ``drivers/mfd/ioc3.c`` at
   ``db2ddb871435``, OpenBSD sgi ``sys/arch/sgi/include/mnode.h``,
   ``sys/arch/sgi/pci/ioc.c`` and ``sys/arch/sgi/xbow/xbridge.c`` at
-  ``2df91d80c104``, and the Linux SN1 ``arch/ia64/sn/io/sn1/pcibr.c`` at
+  ``2df91d80c104``, and the Linux :term:`SN1` ``arch/ia64/sn/io/sn1/pcibr.c`` at
   ``linux-history:7570df54ef8c``, as software expectations.
 
 No physical machine was measured for these boards (see `Measurements`_).
@@ -63,7 +63,7 @@ XIO PCI boards
 that sets the carrier's identity as defaults. ``sgi-pci-shoehorn`` is a
 separate board class with a fixed identity. All three fit an empty XIO slot
 named with ``slot=``, for example ``-device sgi-pci-carrier,slot=io2``. The
-machine gives the board the link to that slot's Crossbow port. A slot the
+machine gives the board the link to that slot's :term:`Crossbow` port. A slot the
 topology does not name, and a slot that is already filled, are refused. A
 processor reaches the board's Bridge through its Crossbow, and the Bridge
 sends DMA and interrupt packets back out over the same link.
@@ -90,7 +90,7 @@ A card's second interrupt follows the Bridge's line rule. INTA and INTC of
 a device reach Bridge pin *device*, and INTB and INTD reach pin
 *device* ^ 4 (:doc:`bridge`). Both OpenBSD ``xbridge_intr_map`` and Linux
 ``pci-xtalk-bridge.c`` (``int_mapping[slot][1]``) use that rule, a
-*software expectation*. An add-in IOC3 raises its SuperIO interrupt on
+*software expectation*. An add-in :term:`IOC3` raises its SuperIO interrupt on
 INTB: OpenBSD ``ioc.c`` takes it from INTB for an add-in chip and from INTD
 for an on-board one, also a *software expectation*. The IOC3 sends the
 SuperIO interrupt out of a separate output, so the board connects that
@@ -265,7 +265,7 @@ and 5, a *software expectation*. The wire is *inferred* from the drivers
 above, as for every board here. A guest services INTA with the Ethernet
 handler alone, so a SuperIO source on INTA would never clear. The tests
 check that a keystroke leaves INTA low. The interrupt then takes the
-Bridge to Crossbow to Hub path of any card interrupt (:doc:`hub`).
+Bridge to Crossbow to :term:`Hub` path of any card interrupt (:doc:`hub`).
 
 .. _sgi-pci-expansion-cad-duo:
 
@@ -422,7 +422,7 @@ numbers below are printed pages.
      - *established*
      - :src:`007-4498-002 pp. 10-11, 96, 98`.
    * - The Origin 3000 P-brick is a different product, with a host
-       interface card and Crosstalk.
+       interface card and :term:`Crosstalk`.
      - *established*
      - :src:`007-4499-002 pp. 37-38`.
    * - The BIC's Bedrock II connects to XBridge U0 port ``0xa``. U0

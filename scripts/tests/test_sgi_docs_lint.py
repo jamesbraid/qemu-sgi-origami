@@ -195,6 +195,92 @@ The Octane.
                                  'Used in no machine.')
         self.assertEqual(self.run_lint({'hardware/demo.rst': text}), [])
 
+    GLOSSARY = """\
+.. SPDX-License-Identifier: BSD-3-Clause
+
+.. _sgi-glossary:
+
+========
+Glossary
+========
+
+.. glossary::
+   :sorted:
+
+   XIO
+     The I/O link.
+
+   Command Monitor
+     The PROM's menu.
+
+   L1
+     The system controller.
+
+   node
+     A node controller and its memory.
+"""
+
+    def terms(self, body, **kwargs):
+        pages = {'hardware/demo.rst': GOOD_PART + '\n' + body,
+                 'glossary.rst': self.GLOSSARY}
+        pages.update(kwargs)
+        return self.messages(pages)
+
+    def test_glossary_term_first_use_must_be_a_link(self):
+        out = self.terms('The XIO link.\n')
+        self.assertIn('hardware/demo.rst:14: the first use of "XIO" must be '
+                      ':term:`XIO`', out)
+        out = self.terms('The XIO link and :term:`XIO` again.\n')
+        self.assertIn('first use of "XIO"', out)
+
+    def test_glossary_term_linked_at_first_use_passes(self):
+        for body in ('The :term:`XIO` link, and the XIO slots.\n',
+                     'The :term:`XIO links <XIO>`, then XIO.\n',
+                     'The :term:`xio` link.\n',
+                     'The :term:`Command\nMonitor` prints a menu.\n'):
+            self.assertEqual(self.terms(body), '', body)
+
+    def test_glossary_term_wrapped_across_lines_is_found(self):
+        out = self.terms('The Command\nMonitor prints a menu.\n')
+        self.assertIn('hardware/demo.rst:14: the first use of "Command '
+                      'Monitor"', out)
+
+    def test_glossary_term_outside_prose_is_not_a_use(self):
+        for body in ('The ``XIO`` link, a :ref:`XIO <sgi-ip30>` and *XIO*\n'
+                     'and **XIO** and `XIO`_.\n',
+                     'A dump::\n\n   XIO\n',
+                     '.. code-block:: text\n\n   XIO\n',
+                     '.. _XIO:\n',
+                     'Part\n----\n\nThe :term:`XIO` link.\n',
+                     'XIO-based and XIOs and the PXIO are other words.\n'):
+            self.assertEqual(self.terms(body), '', body)
+        # A use in a section title is not the first use in the prose.
+        out = self.terms('XIO links\n---------\n\nThe XIO link.\n')
+        self.assertIn('hardware/demo.rst:17:', out)
+
+    def test_glossary_checks_capitalised_terms_only(self):
+        # "node" is an ordinary word; "L1" is also a cache level.
+        self.assertEqual(self.terms('A node has an L1 cache.\n'), '')
+
+    def test_glossary_term_in_the_page_title_is_skipped(self):
+        page = GOOD_PART.replace('Demo: a test part', 'XIO: a test part')
+        text = page + '\nThe XIO link.\n'
+        self.assertEqual(self.messages({'hardware/demo.rst': text,
+                                        'glossary.rst': self.GLOSSARY}), '')
+
+    def test_glossary_and_references_pages_are_not_checked(self):
+        refs = GOOD_PART.replace('Demo: a test part', 'References: cited')
+        out = self.messages({
+            'glossary.rst': self.GLOSSARY.replace(
+                'The I/O link.', 'The XIO link, an XIO.'),
+            'references.rst': refs + '\nThe XIO.\n',
+            'hardware/demo.rst': GOOD_PART})
+        self.assertNotIn('first use of "XIO"', out)
+
+    def test_no_glossary_means_no_term_check(self):
+        text = GOOD_PART + '\nThe XIO link.\n'
+        self.assertEqual(self.run_lint({'hardware/demo.rst': text}), [])
+
     def test_roadmap_phrases(self):
         for bad in ('The decoder is not yet implemented.',
                     'The FIFO will be modelled later.',

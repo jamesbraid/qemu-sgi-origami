@@ -15,13 +15,13 @@ module.
 
 .. seealso::
 
-   - L1 (:doc:`l1`): the system controller of the SN1 machines.
+   - L1 (:doc:`l1`): the system controller of the :term:`SN1` machines.
 
 The module system controller (MSC, also called the ELSC, the entry-level
 system controller) is a microcontroller that manages power, reset, the
 front panel and an alternate console for one module. The Origin 200 has
 one per module; an Origin 2000 or Onyx2 module has one shared by its four
-node boards. Each node's Hub reaches it over an I2C bus through a Philips
+node boards. Each node's :term:`Hub` reaches it over an I2C bus through a Philips
 PCF8584 I2C-bus controller, and the controller keeps a 2048-byte
 configuration NVRAM on the same bus. QEMU models the three parts
 separately:
@@ -78,7 +78,7 @@ Sources
   ``arch/mips/include/asm/sn/sn0/addrs.h`` at ``db2ddb871435``, as
   software expectations: the PCF8584 own-address convention and the ELSC
   name.
-- The IP27 PROM 6.156 (:src:`ip27-prom-6.156`), the IO6 PROM and the
+- The IP27 :term:`PROM` 6.156 (:src:`ip27-prom-6.156`), the IO6 PROM and the
   ``unix.IP27`` kernel shipped with IRIX 6.5.30, read as binaries, as
   software expectations: which controller commands they send, when, and
   what they do with the reply, and the PCF8584 register sequences they
@@ -486,7 +486,7 @@ sending ``pas``, a *software expectation*.
     second. An Origin 2000 module drives a 100 ms reset pulse; an Origin
     200 reset in QEMU is instantaneous. The reset reaches the module
     whose controller took the command and no other. Whether it reaches
-    the module's Routers, Crossbows and XIO boards is *unknown*, and the
+    the module's Routers, Crossbows and :term:`XIO` boards is *unknown*, and the
     model resets them with the module. IRIX 6.5.30 reboots through the
     Hub's network-interface port reset and sends ``rst`` only when its
     reboot-on-panic tunable is 2; the IO6 PROM sends it to recover from a
@@ -918,7 +918,7 @@ indices 6n to 6n+5, and its AUX slot is the third. The external AUX
 backend attaches to the master, node 0 at index 2; a backend at the
 slave's index 8 is not attached. When console output arrives with no
 backend attached, the model logs ``LOG_GUEST_ERROR`` once and keeps
-serving the protocol. The IRIX console is IOC3 serial A, not this port.
+serving the protocol. The IRIX console is :term:`IOC3` serial A, not this port.
 
 The operator's command line
 ---------------------------

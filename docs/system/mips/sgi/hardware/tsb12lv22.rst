@@ -464,7 +464,7 @@ Tests
 - ``tsb12lv22/pci-decode``: BAR relocation, and memory decode and
   bus-master control independently.
 - ``tsb12lv22/access-width``: refused sizes and misaligned accesses, on a
-  Malta machine because the SGI Bridge only passes 32-bit words.
+  Malta machine because the SGI :term:`Bridge` only passes 32-bit words.
 - ``tsb12lv22/defaults``: reset values.
 - ``tsb12lv22/masks``: writable masks, set/clear pairs, and the context
   register addresses including the ``0x19c`` and ``0x480`` non-aliases.

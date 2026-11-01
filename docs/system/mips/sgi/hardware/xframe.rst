@@ -26,7 +26,7 @@ Xframe I, codename Xena, PCI device ID ``0x5831``. A property selects the
 Xframe II device ID but not Xframe II behaviour. No machine fits the card
 by default. It goes in a free slot with ``-device xframe``, for example
 at PCI device 5 on the ``origin200`` machine, one of the slots the model
-wires to the Bridge's 64-bit data path (:doc:`bridge`). Facts are rated as
+wires to the :term:`Bridge`'s 64-bit data path (:doc:`bridge`). Facts are rated as
 described in :ref:`sgi-ratings`.
 
 .. _sgi-xframe-sources:
@@ -158,7 +158,7 @@ is bit ``63 - n``.
      - GENERAL_INT_STATUS
      - ``0``
      - Derived, never stored. Bit 23 receive traffic, 55 transmit
-       traffic, 29 receive MAC, 63 PIC block. A bit shows when its
+       traffic, 29 receive MAC, 63 :term:`PIC` block. A bit shows when its
        source is pending and unmasked at every level below GENERAL.
        The GENERAL mask does not hide it. A write is accepted and
        ignored.
@@ -898,7 +898,7 @@ machine. It covers the swapper constant through the Bridge at 64-bit and
 Bridge's swap and width settings for transmit and receive, the payload
 placement for transmit, receive and segmentation offload, the five-buffer
 ICMP split, and two interrupt sources composing through the Bridge and
-Hub.
+:term:`Hub`.
 
 ``tests/functional/mips64/test_xframe_pci.py`` boots the stock OpenBSD
 IP27 disk with the card at PCI device 5 and requires OpenBSD's PCI scan

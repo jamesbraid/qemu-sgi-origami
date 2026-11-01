@@ -13,7 +13,7 @@ or of an Origin 200 GIGAchannel cabinet (:doc:`gigachannel`).
 
    Platform pages: :ref:`sgi-ip27`.
 
-The MSCSI is SGI's XIO SCSI board: one Bridge with four QLogic ISP1040
+The MSCSI is SGI's XIO SCSI board: one :term:`Bridge` with four QLogic ISP1040
 SCSI controllers on its PCI bus.
 QEMU builds it as the ``mscsi`` preset of ``sgi-xio-baseio``
 (``hw/mips/sgi/baseio.c`` and ``hw/mips/sgi/xio-baseio.c``), placed in an
@@ -30,7 +30,7 @@ Sources
   :src:`hmm-408-b p. 33`.
 - A one-module Origin 200 GIGAchannel ``hinv -vm``,
   :src:`preterhuman-origin-200`.
-- An Origin 2000 PROM ``hinv -v``, :src:`nekonomicon-16727716`.
+- An Origin 2000 :term:`PROM` ``hinv -v``, :src:`nekonomicon-16727716`.
 - An Origin 2000 ``hinv -m``, :src:`usenet-9uhh6o`.
 - A two-module Origin 200 ``hinv -vm``, :src:`nekonomicon-16731033`.
 - The Origin 2000 XIO configuration rules, :src:`108-0175-001`.
@@ -158,7 +158,7 @@ Model limits
   The single-ended or differential split per channel is not modelled.
 - The internal SCSI cabling, external termination and the difference
   between MSCSI and MSCSI B are not modelled.
-- The board has no IOC3, Timekeeper, serial or parallel port and no flash
+- The board has no :term:`IOC3`, Timekeeper, serial or parallel port and no flash
   part. The preset refuses a console, record, MediaIO, clock or NVRAM
   backend for any of them instead of dropping it.
 - The Origin 2000's reservation of IO2 is not enforced.

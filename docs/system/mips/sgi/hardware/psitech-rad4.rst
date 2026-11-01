@@ -130,7 +130,7 @@ and BAR sizes of a real card are *unknown*; a configuration-space dump of
 a real card would settle them.
 
 ``-device psitech-rad4,bus=pci,addr=N`` places the card in Origin 200
-Bridge slot 5, 6 or 7 (:ref:`sgi-sn-graphics-pipes`). BAR2 is larger
+:term:`Bridge` slot 5, 6 or 7 (:ref:`sgi-sn-graphics-pipes`). BAR2 is larger
 than a Bridge device window, so IRIX 6.5.30 reaches it through the
 Bridge's large PCI memory range (:ref:`sgi-bridge-pio`), *software
 expectation*.

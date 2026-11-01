@@ -46,7 +46,7 @@ What the host sees
      - established
      - 007-4240-002 pp. 159, 166
    * - The brick has no L1 controller, no system-control connection and no
-       XIO or NUMAlink port. Its controller is the operator panel's
+       :term:`XIO` or :term:`NUMAlink` port. Its controller is the operator panel's
        enclosure-services microcontroller.
      - established
      - 007-4240-002 pp. 72, 83; 007-4264-002 p. 128

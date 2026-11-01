@@ -25,7 +25,7 @@ module layer there: the C-brick (``modules/c-brick.yaml``), CX-brick,
 D-brick, G-brick with its pipe, I-brick, N-brick, P-brick, R-brick,
 V-brick and X-brick, and so does the NUMAlink module
 (``modules/numalink-module.yaml``). The IX- and PX-brick have no layer.
-The machine builder builds both as PIC enclosures
+The machine builder builds both as :term:`PIC` enclosures
 (:ref:`sgi-sn-family-ixpx`).
 
 ``-M origin3000`` builds four catalogued systems: the Origin 3200
@@ -43,7 +43,7 @@ which the compiler refuses to compile. Facts are rated as described in
      - Role
      - Catalogue
    * - C-brick
-     - Compute node (one Bedrock)
+     - Compute node (one :term:`Bedrock`)
      - Layer, built in four systems
    * - CX-brick
      - Up to four compute nodes and a router
@@ -55,7 +55,7 @@ which the compiler refuses to compile. Facts are rated as described in
      - InfiniteReality graphics enclosure
      - Layer, built in the Onyx 3400 with InfiniteReality3
    * - I-brick
-     - Base I/O (XBridge, PCI, IO7)
+     - Base I/O (:term:`XBridge`, PCI, IO7)
      - Layer, built
    * - IX-brick
      - Base I/O (three PICs, PCI-X, IO9)
@@ -76,7 +76,7 @@ which the compiler refuses to compile. Facts are rated as described in
      - VPro graphics enclosure
      - Layer, built in the Onyx 3000
    * - X-brick
-     - Legacy XIO expansion (one XBridge)
+     - Legacy :term:`XIO` expansion (one XBridge)
      - Layer, reference composition
    * - NUMAlink module
      - Eight-port router for Origin 300 base modules
@@ -194,14 +194,14 @@ Connections:
   :src:`007-4240-002 pp. 115-116, 121`).
 
 Published inventories of an Origin 3200 and an Origin 3400 report the
-Bedrock as ``Hub`` revision 2 at 200 MHz and the PROM as 6.210 on every
+Bedrock as ``Hub`` revision 2 at 200 MHz and the :term:`PROM` as 6.210 on every
 C-brick (*observed*; see :ref:`sgi-sn-family-bedrock`). That the C-brick
 and Origin 300 Bedrocks are the same silicon is *inferred* from the
 matching reports. Whether ``Hub revision 2`` is the value of the Bedrock's
 revision register is *unknown*. A revision register read on a C-brick
 would settle it.
 
-Software expectations: OpenBSD reads bits 15:12 of the Hub board
+Software expectations: OpenBSD reads bits 15:12 of the :term:`Hub` board
 identification word as a product code, with 0 for a C-brick (``ip27.h``),
 and names the Bedrock widget part ``0xc110``, manufacturer ``0x036``
 (``xbowdevs``). The L1 brick-type character for an IP35 module is ``C``,
@@ -297,7 +297,7 @@ Model limits:
   stock PROM writes one base into both of that controller's BARs; the
   model answers OHCI registers at that shared base (*approximation*),
   since TI does not say which decoder answers.
-* The IO7's time-of-day part is unidentified, so its IOC3 carries the
+* The IO7's time-of-day part is unidentified, so its :term:`IOC3` carries the
   Origin 300's M48T35-compatible Timekeeper as a compatibility choice
   (*approximation*), with blank storage on every start.
 * Head E's PCI slots are empty. The I-brick's XBridge revision is the
@@ -744,7 +744,7 @@ I-brick
 =======
 
 The I-brick is the base I/O brick. It holds one XBridge with eight ports:
-Crosstown2 ports A (10) and B (11), Crosstalk ports 8, 9, C and D, and PCI
+Crosstown2 ports A (10) and B (11), :term:`Crosstalk` ports 8, 9, C and D, and PCI
 ports E and F (*established*, :src:`108-0240-002 pp. 2-26 to 2-29`). In
 the I-brick only A, B, E and F are wired. Ports A and B face compute
 nodes. Port E drives bus 2, two slots at 33 or 66 MHz. Port F drives bus
@@ -842,7 +842,7 @@ The IO9 carries an external SCSI connector, an internal SCSI port for the
 two front drive bays, a Gigabit Ethernet connector, RTI and RTO connectors
 and, through daughtercards, two or four RS-232 ports (*established*,
 :src:`007-4604-001 pp. 3, 5, 10`). A DVD-ROM is in the front bay. Its chips
-are a QLogic SCSI controller, a Broadcom BCM5701 and an IOC4. That the
+are a QLogic SCSI controller, a Broadcom BCM5701 and an :term:`IOC4`. That the
 QLogic part is an ISP12160 is *inferred* from the Origin 350's IO9, which
 carries one (:ref:`sgi-ip53-io-profile`).
 
@@ -1056,7 +1056,7 @@ with L1 commands and a 48-hour authenticator (*established*,
 :src:`108-0240-002 p. 2-20`). How the
 controller makes the ASIC refuse two ports is *unknown*.
 
-Catalogue: ``modules/r-brick.yaml``. It describes the chassis, one SN1
+Catalogue: ``modules/r-brick.yaml``. It describes the chassis, one :term:`SN1`
 router component with eight ports, an L1 and a USB hub, the eight port
 connectors, each with a cable bus a composition attaches the far end to,
 and a fabric bus for each. The router's ``node_ports`` names ports 2 to 5.

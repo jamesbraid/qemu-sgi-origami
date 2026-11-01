@@ -11,12 +11,12 @@ Used in :ref:`sgi-ip30` (Octane2, and the Octane on request),
 3000 V-brick holds V12 boards (*established*, :src:`007-4264-002 p. 10`);
 it is described on :ref:`sgi-bricks`, and the Onyx 3000 builds it
 (:ref:`sgi-sn-family-vbrick`). VPro is the graphics family SGI sold as V6, V8, V10 and V12. SGI's upgrade guide
-fits it to both the Octane and the Octane2, given Crossbow 1.4 and the ER
+fits it to both the Octane and the Octane2, given :term:`Crossbow` 1.4 and the ER
 power supply (:src:`007-4210-003 preface`), *established*. Published
 inventories name Octane V6, V8, V10 and V12 boards and a Fuel V10,
 *observed* (:ref:`sgi-odyssey-identity`). The model places it in the
 Octane2, Fuel, Tezro and Onyx 350 machines, and in the Octane only on
-request (:ref:`sgi-odyssey-placement`). Each board is one XIO widget whose
+request (:ref:`sgi-odyssey-placement`). Each board is one :term:`XIO` widget whose
 graphics engine gfxinfo calls BUZZ and whose display back end it calls
 PB&J. QEMU models the board as ``sgi-odyssey`` in
 ``hw/misc/sgi-odyssey.c``, with the optional Mesa drawing path in
@@ -201,14 +201,14 @@ registers, memory and display.
        machine's Crossbow revision and supply do not present
        (:ref:`sgi-ip30-graphics`).
    * - ``fuel``
-     - XBridge widget 13
+     - :term:`XBridge` widget 13
      - V12
      - Widget 13 *observed* in a Fuel inventory
        (:src:`tingo-fuel-irix-console`). The published board is a V10;
        the V12 default is a model choice.
    * - ``onyx350`` and ``tezro``, on either node board and, on
        ``tezro``, either interface board
-     - PIC widget 12
+     - :term:`PIC` widget 12
      - none
      - Optional, ``slot=widget-12``. The IP53 page takes widget 12
        from published Tezro and Onyx 350 inventories (:ref:`sgi-ip53`);
@@ -217,7 +217,7 @@ registers, memory and display.
 
 On the Octane2 the processor reaches the board through the short
 window at physical ``0x1b000000`` and the long window at
-``0xb000000000`` (:ref:`sgi-ip30-graphics`). On the SN1 machines a
+``0xb000000000`` (:ref:`sgi-ip30-graphics`). On the :term:`SN1` machines a
 processor store that the processor interface marks as counted returns
 one graphics credit through the ``pi`` link after the board takes it.
 
@@ -436,7 +436,7 @@ clear as two, and bit 28 set as CAS latency 2 and clear as 3, a
 properties and also sets bit 24, a constant whose meaning is *unknown*
 (*approximation*). The low bits read zero, which OpenBSD reads as an
 idle data engine. The V12 word is ``0xa1000000``. The reference
-Octane2's V12 reads that word, bit 24 included, at its PROM menu
+Octane2's V12 reads that word, bit 24 included, at its :term:`PROM` menu
 (:ref:`sgi-odyssey-measurements`), *established* for that board; bit
 24's meaning is still *unknown*.
 
@@ -475,7 +475,7 @@ Board identity part
 -------------------
 
 ``0x10d8`` and ``0x10dc`` both drive one MicroLAN slot per write, with
-the layout HEART, Bridge and Hub use: pulse width in bits 19:10, sample
+the layout HEART, :term:`Bridge` and :term:`Hub` use: pulse width in bits 19:10, sample
 offset in bits 9:2, completion in bit 1 and the sampled level in bit 0.
 The slot completes inside the write. On the wire sits an emulated
 DS2505 with family code ``0x0b`` and the ``nic-serial`` property as its
@@ -821,7 +821,7 @@ Measurements
 The reference Octane2 (:ref:`sgi-measured-octane2`) reports a V12 board,
 ``ODY128VERSIONB``, part ``030-1611-001`` revision C, at widget 11 in its
 hardware inventory (:ref:`sgi-measured-octane2-hinv`). Three of its
-registers were read in the PROM Command Monitor after the firmware had
+registers were read in the PROM :term:`Command Monitor` after the firmware had
 initialised the machine and the board, through the short window at
 physical ``0x1b000000``:
 

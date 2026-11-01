@@ -22,13 +22,13 @@ no machine profile.
 
 The SGI Origin-family boards keep their wall clock and a block of
 configuration RAM in a byte-wide, battery-backed SRAM with a clock in its
-top eight bytes. The Origin 200 IP29 board carries an M48T35 behind the IOC3
+top eight bytes. The Origin 200 IP29 board carries an M48T35 behind the :term:`IOC3`
 (:doc:`ioc3`), *observed* on a published photograph (see
 :ref:`sgi-timekeepers-parts`). The model fits an M48T35 to the Origin 2000
 and Onyx2 BaseIO boards, and an M48T35-compatible part at the same place on
 the Origin 300 IO8 and Fuel system boards. The physical parts on those
 boards are *unknown*. For the IP53 products (Origin 350, Onyx 350, Tezro and
-the Onyx4 host) the model fits a DS1744 behind the IOC4; the physical part
+the Onyx4 host) the model fits a DS1744 behind the :term:`IOC4`; the physical part
 is *unknown* too. The Octane and Octane2 use a different clock, the DS1685
 (:doc:`ds1685`).
 
@@ -387,7 +387,7 @@ modulo 4, and for cell years that are 0 modulo 4 in January and February. It
 is 1 otherwise. A record of 1 gives checksum ``0x6d`` and a record of 2
 gives ``0xad``. The image is a model fixture, an *approximation*: a real
 part has no factory contents. Its checksum follows the algorithm the stock
-BASEIO PROM checks, and its record follows what the IRIX 6.5.30 kernel
+BASEIO :term:`PROM` checks, and its record follows what the IRIX 6.5.30 kernel
 reads, both *software expectation*, stated below. The model's tests pin the
 fixture.
 

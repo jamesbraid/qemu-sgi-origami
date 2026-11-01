@@ -13,9 +13,9 @@ Used in :ref:`sgi-ip35`: the Origin 300 PCI expansion module
 
    Platform pages: :ref:`sgi-ip35`.
 
-The PCI expansion module of the Origin 300 carries one Bedrock interface
+The PCI expansion module of the Origin 300 carries one :term:`Bedrock` interface
 card, the BIC. The card holds a Bedrock ASIC. Its network interface
-drives the module's NUMAlink connector and its I/O interface reaches the
+drives the module's :term:`NUMAlink` connector and its I/O interface reaches the
 PCI motherboard (*established*, :src:`007-4499-002 pp. 38-40`;
 :ref:`sgi-pci-expansion-origin300`). The module has no processors and no
 memory. A separate L1 controller monitors it (:doc:`l1`).
@@ -47,7 +47,7 @@ Sources
 - The PCI expansion module user's guide, :src:`007-4499-002`. It describes
   the module, its BIC, and the unused processor interfaces and memory.
   Printed page 50 says the processor interfaces and memory are unused.
-- The IP35 PROM 6.210, :src:`ip35-prom-6.210`, as a software expectation:
+- The IP35 :term:`PROM` 6.210, :src:`ip35-prom-6.210`, as a software expectation:
   how it reads the board windows. Its observable behaviour fixes the
   access widths and field packing below.
 - The shipped L1 firmware 1.44.0 for the Origin 300 product group,
@@ -56,7 +56,7 @@ Sources
   :ref:`sgi-bic-startup` come from observing that firmware's start-up
   transactions.
 - OpenBSD ``sys/arch/sgi/xbow/hub.h`` at ``2df91d80c104`` for the address
-  geometry of the Hub special space's remote register window. Using that
+  geometry of the :term:`Hub` special space's remote register window. Using that
   geometry for the BIC's board windows is *inferred*, see below.
 
 Identity and placement
@@ -349,7 +349,7 @@ Model limits
 - A routed expansion (through a NUMAlink module) shares one UART and one
   set of pending registers across the compute nodes that reach it. Reset
   and migration of that arrangement are not tested.
-- The latch is not reset by a NASID change, a network event or a power
+- The latch is not reset by a :term:`NASID` change, a network event or a power
   event. Only machine reset and the BIC's own reset restore it.
 
 Tests

@@ -46,7 +46,7 @@ Sources
   reports.
 - OpenBSD ``sys/arch/sgi/sgi/ip27.h`` at ``2df91d80c104`` (``struct
   ip27_config``, ``IP27_CONFIG_OFFSET``, ``IP27_PROM_LAUNCH_SLAVE``), and
-  the SGI-authored SN1 header ``include/asm-ia64/sn/sn1/ip27config.h`` in
+  the SGI-authored :term:`SN1` header ``include/asm-ia64/sn/sn1/ip27config.h`` in
   Linux 2.5.0, as software expectations for the configuration block.
 - Linux ``arch/mips/include/asm/sn/klconfig.h``, ``sn/kldir.h`` and
   ``sn/sn0/kldir.h`` at ``db2ddb871435``, and OpenBSD
@@ -233,7 +233,7 @@ Every machine applies one binding rule (``machine-storage.c``):
 - With every boot flash bound, ``-bios`` is refused. A launcher passing a
   newer image to a machine created earlier is told so instead of booting
   the stored PROM.
-- Without ``-bios``, every boot flash must be bound. The Hub machines
+- Without ``-bios``, every boot flash must be bound. The :term:`Hub` machines
   waive this under qtest.
 - Each store must be exactly the size ``query-sgi-machines`` lists for the
   configuration. A raw file must have that exact length, not a length the
@@ -283,7 +283,7 @@ block and log. A stock payload keeps its own bytes in those places.
 IP35 boot flash and views
 -------------------------
 
-The Bedrock has two PROM selections and a local and a node-addressed boot
+The :term:`Bedrock` has two PROM selections and a local and a node-addressed boot
 space. Its flash register interface is on :doc:`hardware/bedrock`. A node
 gets its PROM in one of two ways.
 
@@ -372,7 +372,7 @@ on an identified board would settle them.
 IP30 boot flash
 ---------------
 
-The Octane's flash part, its capacity and its Bridge select are *unknown*
+The Octane's flash part, its capacity and its :term:`Bridge` select are *unknown*
 (:ref:`sgi-ip30-flash-wiring`). The model fits QEMU's Intel command-set
 part with the identifier words of the Sharp LH28F800SU, ``0x00b0`` and
 ``0x66a8`` (:src:`sharp-lh28f800su p. 9`), as a candidate part, an
@@ -700,7 +700,7 @@ processor as a bus error and returns all ones to a caller that sees only
 the value (:ref:`sgi-bridge-config`).
 
 The Origin 200 system board's Bridge carries base I/O at device numbers 0
-and 1 (SCSI) and 2 (IOC3). Its three option slots are PCI IDs 5, 6 and 7
+and 1 (SCSI) and 2 (:term:`IOC3`). Its three option slots are PCI IDs 5, 6 and 7
 (:src:`007-3415-003 p. 12-13`), *established*. Published inventories show
 the SCSI adapters at 0 and 1, the IOC3 at 2 and option cards at 5, 6 and
 7. That IRIX's slot numbers are Bridge device numbers is *inferred*. The

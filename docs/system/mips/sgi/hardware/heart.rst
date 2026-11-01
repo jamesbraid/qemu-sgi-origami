@@ -14,18 +14,18 @@ Used in :ref:`sgi-ip30`, on the Octane and Octane2 system board.
 
 .. seealso::
 
-   - Hub (:doc:`hub`): the SN0 node controller, the processor and memory
+   - :term:`Hub` (:doc:`hub`): the :term:`SN0` node controller, the processor and memory
      controller of an SN0 node, as HEART is for the Octane.
 
 HEART is the processor, memory and I/O controller of the IP30 board. It
 sits between the processor, the SDRAM
-banks and the Crossbow crossbar (:src:`octane-technical-report p. 2-15`),
+banks and the :term:`Crossbow` crossbar (:src:`octane-technical-report p. 2-15`),
 where it is widget 8 (:src:`miod-openbsd-sgi-story-4 lines 1308-1352`).
 QEMU models it as
 ``sgi-heart`` in ``hw/misc/sgi-heart.c``. The ``octane`` machine fits
 HEART revision 4 and the ``octane2`` machine HEART revision 6, which
 IRIX reports as revision F (:ref:`sgi-ip30`). The model is a functional
-profile for one processor: it gives the stock IP30 PROM and IRIX 6.5.30
+profile for one processor: it gives the stock IP30 :term:`PROM` and IRIX 6.5.30
 the registers they use, and it is not a revision-matched description
 of the chip.
 
@@ -73,7 +73,7 @@ Sources
   IRIX 6.5.30, read as binaries, as software expectations.
 - The same PROM, :src:`ip30-prom-4.17`, and the IRIX 6.5.30 IP30
   kernel it boots, run on the ``octane2`` model with QEMU's trace events
-  recording every HEART and Bridge register access. These are software
+  recording every HEART and :term:`Bridge` register access. These are software
   expectations observed on the model. The trace separates PROM from
   kernel accesses only by a gap in timing after the disk load, so which
   of the two made an access near that boundary is *inferred*, and a
@@ -504,7 +504,7 @@ is *inferred* from the names IRIX gives the type bits. The layouts of
 ``0x70``, ``0x78`` and ``0x90`` are *inferred* from how IRIX decodes
 them.
 
-The model takes the Crossbow's report of the drop (the XIO port
+The model takes the Crossbow's report of the drop (the :term:`XIO` port
 interface's ``request_dropped``) and:
 
 - for a store, sets type bit 2 and latches the processor's physical
@@ -755,7 +755,7 @@ each an *approximation* compatible with the drivers; HEART's assertion
 timing, and which processor takes an error several have armed, are
 *unknown*.
 
-Devices raise interrupts with a Crosstalk write to HEART's widget offset
+Devices raise interrupts with a :term:`Crosstalk` write to HEART's widget offset
 ``0x80``, the destination OpenBSD and Linux program into the onboard Bridge,
 a *software expectation*. The Crossbow specification gives the interrupt
 packet's data the vector in bits 7:0 and assertion in bit 8, set for an
@@ -967,7 +967,7 @@ Measurements
 ============
 
 These reads come from the :ref:`sgi-measured-octane2`, HEART revision F
-(widget revision field 6), in the PROM Command Monitor after the
+(widget revision field 6), in the PROM :term:`Command Monitor` after the
 firmware had initialised the machine. None is a reset value, and none
 was preceded by a write.
 

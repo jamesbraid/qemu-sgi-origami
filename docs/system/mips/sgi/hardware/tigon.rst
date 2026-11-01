@@ -18,12 +18,12 @@ The Alteon Tigon is a gigabit Ethernet controller with an on-chip MAC and
 two embedded RISC processors. SGI sold it as the IRIS Gigabit Ethernet
 board, a single-port PCI card in a fibre and a copper variant, for the
 Octane, Octane2, Origin 200, Origin 300, Origin 2000 and Onyx2 (both with
-an XIO adapter), Onyx 300, Origin 3000, Onyx 3000 and Fuel
+an :term:`XIO` adapter), Onyx 300, Origin 3000, Onyx 3000 and Fuel
 :src:`007-3819-004 p. 1`, *established*.
 IRIX binds it with its ``eg`` driver. QEMU models a Tigon 2 as
 ``hw/net/tigon.c`` (header ``include/hw/net/tigon.h``, type ``tigon``).
 It is an add-in PCI card: ``-device tigon`` puts it in a free slot behind
-a Bridge or XBridge. The tests use the ``origin200`` option slots and the
+a :term:`Bridge` or :term:`XBridge`. The tests use the ``origin200`` option slots and the
 ``origin300`` PCI expansion topology.
 
 The model does not run the card's firmware. It accepts the host's firmware
