@@ -214,8 +214,11 @@ values IRIX writes are each a *software expectation*.
      - Serial latch and data
      - R/W
      - Stored. On MediaIO they carry the serial word
-       (:ref:`sgi-rad1-mux`). On the Octane, ``0x88`` = 2 (relay mute)
-       or ``0x8c`` = 3 (DAC mute) silences the analog output
+       (:ref:`sgi-rad1-mux`). The IRIX 6.5.30 kernel writes ``0x8c`` =
+       2 and ``0x88`` = 3 at start, and ``0x88`` = 2 then 0 at halt; the
+       public Linux RAD1 driver writes only ``0x88`` = 3 and ``0x8c`` =
+       2, once. Each is a *software expectation*. On the Octane,
+       ``0x88`` = 2 or ``0x8c`` = 3 silences the analog output
        (:ref:`sgi-rad1-limits`).
    * - ``0x90``
      - Interface selection
@@ -396,7 +399,10 @@ descriptor, a *software expectation*. The sixteen-entry count follows
 from the four-bit link field, and the rest of the layout from those two
 entries, *inferred*. Entry 15 shares its words with the status ring's
 set B. Every entry word takes 32-bit reads and writes, except that a
-write to a channel's own set while that channel runs is refused.
+write to a channel's own set while that channel runs is refused. Above
+the descriptor RAM, the low-address words ``0x4c0``, ``0x4c8``,
+``0x4d8``, ``0x4e8`` and ``0x4f0``, which the Octane driver writes at
+start with the engines off, are stored with no effect.
 
 When an Octane output pass ends without end of descriptor, the model
 loads the entry that control bits 6:3 name into the working registers
@@ -751,10 +757,12 @@ Model limits
   output sends silence to the host and the transfer carries on, so
   positions and the start bit advance as before. A write to either
   register first plays the frames already due under the old state. The
-  IRIX and PROM start sequences write these values around playback, a
-  *software expectation*. That they mute, and that the transfer runs on
-  while the output is silent, are *inferred* from the register names and
-  values; no public source ties either register to the channel.
+  IP30 PROM writes ``0x88`` = 2 after its boot tune and the IRIX 6.5.30
+  kernel at halt, and both start sequences write the release values
+  ``0x88`` = 3 and ``0x8c`` = 2, each a *software expectation*. No traced
+  sequence writes ``0x8c`` = 3. That these values mute, and that the
+  transfer runs on while the output is silent, are *inferred*; no public
+  source ties either register to the channel.
 - Gain, clock-generator rates, PLL lock, external clocks, analog input
   selection, the serial word and the MediaIO mute bits have no effect.
 - The Octane runs no AES3 or ADAT audio channel, no ADAT-input subcode

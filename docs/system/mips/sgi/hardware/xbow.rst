@@ -557,9 +557,10 @@ Emulator choices and unknowns
      - Four of the measured Octane2's empty ports show both; what drives
        them is *unknown*.
    * - A store to the read-only error address registers fails and
-       records a register-access error, except on the PIC's
-       integrated crossbar, where it completes and still records the
-       error (``complete-posted-error-address-writes``).
+       records a register-access error on the Crossbow. The PIC's
+       integrated crossbar (``complete-posted-error-address-writes``)
+       and the XBridge's built-in crossbar complete it and still record
+       the error.
      - approximation
      - The specification makes the store an error (PDF pages 70 and
        73). The stock IP35 PROM expects it to complete on the IP53
