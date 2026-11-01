@@ -608,6 +608,15 @@ web:
     obtain:
       url: https://forums.irixnet.org/thread-2263.html
       sha256: fe7d3d15560b2e4e431975e5f299c4f80e9d31db654cfe9f718b9399f3272df7
+  irixnet-thread-2263-page-2:
+    title: "IRIXnet thread 2263, page 2, Onyx 4 inventory with IP59_4CPU node boards, hinv -vvvm"
+    publisher: "IRIXnet forums"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://forums.irixnet.org/thread-2263-page-2.html
+      sha256: 695a0de3d5037e10c38272632496162074491d8d53d0e3c36111d26e31c44382
   origin-onyx2-quick-reference-booklet:
     title: "SGI Hardware Quick-reference Booklet, Origin and Onyx2 Series"
     publisher: "Silicon Graphics"
