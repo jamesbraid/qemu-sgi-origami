@@ -75,13 +75,13 @@ Sources
   ``l1_command.c`` and ``include/asm-ia64/sn/ksys/l1.h``; the out-of-tree
   MIPS port ``linux-ip35`` at ``9f613a321ea0``,
   ``arch/mips/sgi-ip35/ip35-l1.c`` and ``ip35-console.c``. These are
-  *software expectations*.
+  each a *software expectation*.
 - The public Linux IP35 machine-identification patch,
   :src:`lore-kaloz-ip35-35`, for the brick-type characters it maps to
   products, a *software expectation*.
 - The IP35 PROM 6.210, :src:`ip35-prom-6.210`, and the IRIX 6.5.30 kernel
   objects, read as binaries, for what the stock software sends and
-  accepts. These are *software expectations*.
+  accepts. These are each a *software expectation*.
 - Published captures: a two-chassis Origin 300 under OpenBSD,
   :src:`marc-openbsd-sgi-139223952727384`; a two-chassis Origin 300
   ``cfg`` listing, :src:`nekonomicon-17314`; an Origin 350 L1 log,
@@ -559,8 +559,8 @@ General requests (task 6)
 -------------------------
 
 An unlisted code answers minus 101 before its arguments are checked.
-Extra arguments are accepted. "Sent by" names the known senders, all
-*software expectations*.
+Extra arguments are accepted. "Sent by" names the known senders, each
+a *software expectation*.
 
 .. list-table::
    :header-rows: 1
@@ -749,7 +749,7 @@ zero is 400 MHz and any other value 600 MHz. It ignores the second, a
 *software expectation*. The model answers ``(0, 0)`` by default. The
 Origin 350, Onyx 350, Tezro and Onyx 4 profiles set ``port-speed-first``
 to 1, which removes the PROM's "set to 400Mhz. Expected 600Mhz" warning.
-Both are *approximations*; no physical reply is captured.
+Each is an *approximation*; no physical reply is captured.
 
 .. _sgi-l1-records:
 
@@ -767,7 +767,7 @@ The image validates each board area by a zero byte sum and each SPD by
 byte 63 equalling the sum of bytes 0 to 62, and marks a failing area
 invalid, *inferred*. The stock PROM and IRIX read components 0 and 1 in
 64-byte chunks; OpenBSD reads SPD records and the I/O board's area for
-its Ethernet address, *software expectations*. OpenBSD's Origin 300 arm
+its Ethernet address, each a *software expectation*. OpenBSD's Origin 300 arm
 numbers memory modules differently from the image (``l1.c`` lines
 996-1015).
 
@@ -810,7 +810,7 @@ Built identity records
   takes the address from its ``MAC`` field. The address is handed to
   the node's Ethernet model.
 
-The built records are *approximations*: names, parts and revisions come
+The built records are each an *approximation*: names, parts and revisions come
 from published inventories (``IP45_2CPU``, ``030-1780-001`` revision C,
 :src:`nekonomicon-16726611`), everything else is a placeholder. With
 the marked serial the model keeps the stock PROM's NVRAM across
@@ -1134,7 +1134,7 @@ UART and every processor is paused before QEMU handles it; from the
 host console the main thread pauses all processors first. A reply queued
 before a reset may be cleared with the UART before the guest reads it.
 Resetting the whole machine, keeping the QEMU process alive for a power
-cycle, the hold times and the missing countdown are *approximations*.
+cycle, the hold times and the missing countdown are each an *approximation*.
 The ``node-power``, ``node-reset`` and ``soft-reset`` outputs report
 what the L1 did and drive nothing; no source says what a soft reset
 reaches in the node. The front-panel buttons are not modelled.

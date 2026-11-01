@@ -88,7 +88,7 @@ and 9 to 15 into a BUZZ B part, and rejects 0 and 4 to 8. gfxinfo prints
 the minor number as the revision's offset less one, so revision 2 is A.1
 and revision 10 is B.1. hinv names the board from the generation and the
 memory size: A with 32 MB is V6, A with 128 MB V8, B with 32 MB V10 and
-B with 128 MB V12. All three are *software expectations* read from the
+B with 128 MB V12. Each of the three is a *software expectation* read from the
 shipped binaries.
 
 The ``product`` property selects one board. It sets the revision, memory
@@ -185,7 +185,7 @@ registers, memory and display.
    * - ``octane2``
      - Crossbow widget 11
      - V12
-     - *Established* on the reference Octane2, whose inventory shows a
+     - *established* on the reference Octane2, whose inventory shows a
        V12 at widget 11 (:ref:`sgi-measured-octane2-hinv`).
    * - ``octane``
      - Crossbow widget 11
@@ -417,7 +417,7 @@ seven bits it waits to see zero, and writes command words to
 is the model's (*approximation*), except where a section below ties it
 to shipped software. The six BUZZ scratch registers are plain storage;
 their real function is *unknown*. The request-timeout and flow-control
-reset values are *approximations*.
+reset values are each an *approximation*.
 
 .. _sgi-odyssey-memory-config:
 
@@ -480,7 +480,7 @@ closing ``;``. Spaces pad it to one 32-byte page and the rest of the
 image is ``0xff``. ``nic-record`` supplies the field text; without it
 the product's ``Name:<board>`` is used, and without a product
 ``Name:ODY128VERSIONB``. The record layout and the two aliases are
-*approximations*; the serial is synthetic.
+each an *approximation*; the serial is synthetic.
 
 .. _sgi-odyssey-backend:
 
@@ -565,7 +565,7 @@ sends (solid fill, screen-to-screen copy and monochrome glyph
 expansion), the X server's two-dimensional primitives, pattern quads
 and image transfers, the drawable-id and overlay plane writes, and the
 OpenGL immediate-mode stream the IRIX library sends. The command
-encodings are *software expectations* read from those drivers and
+encodings are each a *software expectation* read from those drivers and
 traces; no published table defines them. How the board executes them
 is outside this page.
 

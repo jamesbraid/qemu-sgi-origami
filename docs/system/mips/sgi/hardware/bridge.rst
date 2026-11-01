@@ -660,7 +660,7 @@ status bit 11 (:src:`ip27-prom-6.156`). The IRIX 6.5.30 kernel clears the
 master time-out enable around its probe and takes the bus error as the
 answer. Linux reads every configuration word through ``get_dbe()``.
 OpenBSD clears the interrupt enable register around the read and uses a
-guarded read. These are *software expectations*. The PROM and OpenBSD
+guarded read. These are each a *software expectation*. The PROM and OpenBSD
 probe with the time-out enable clear, so a fault, not the status bit, is
 what tells them a slot is empty. The model therefore fails an unclaimed
 read back to the requester, which a processor takes as a bus error, and
@@ -923,7 +923,7 @@ Mainline Linux sets bit 19 on every slot at start of day and clears it for
 the IOC3. OpenBSD sets bits 19 and 20 on every device except the IOC3,
 IOC4 and RAD1 and confines DMA to the direct window. The IRIX 6.5.30
 kernel sets a window's swap bit for a byte-stream mapping and clears it
-for a word-values mapping. All three are *software expectations*.
+for a word-values mapping. Each of the three is a *software expectation*.
 
 .. _sgi-bridge-interrupts:
 
@@ -1208,7 +1208,7 @@ IP29 part numbers exist (:src:`preterhuman-origin-200`), *observed*. The barcode
 marked synthetic value, ``EMUN`` and an instance number. Linux maps the
 ``030-1244-`` prefix to the IP29 setup, which puts the IOC3's second
 interrupt on Bridge pin 3, and OpenBSD reaches the same pin as the first
-empty PCI device number, both *software expectations*. Other boards' records are on their own pages.
+empty PCI device number, each a *software expectation*. Other boards' records are on their own pages.
 
 .. _sgi-bridge-reset:
 

@@ -156,8 +156,8 @@ Controller start-up
 ===================
 
 The L1 of an expansion module writes its rack and bay settings into the BIC
-latch whenever it starts. Two firmware behaviours are modelled, both
-*software expectations* of the shipped L1 firmware 1.44.0
+latch whenever it starts. Two firmware behaviours are modelled, each
+a *software expectation* of the shipped L1 firmware 1.44.0
 :src:`l1-firmware-1.44.0`: it writes the high byte before the low byte,
 and it carries on with the next write after one fails. The wiring between
 controller and latch is *inferred* from the match between the controller's
@@ -184,7 +184,7 @@ each:
 Position one uses address ``0x8e`` in the L1 code but is always absent: the
 board interface accepts only position zero, address ``0x8c`` and these two
 commands, and refuses everything else without changing the latch. The two
-command values and addresses are *software expectations*, not electrical
+command values and addresses are each a *software expectation*, not electrical
 conventions and not a register map of the BIC. No guest-visible bus
 registers, acknowledgement or interrupt exist.
 

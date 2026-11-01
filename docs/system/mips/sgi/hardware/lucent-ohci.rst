@@ -64,28 +64,28 @@ Identity
      - Basis
    * - Vendor and device
      - ``0x11c1:0x5802``
-     - *Established*. The USS-312 data sheet gives ``11C1h`` and ``5802h``
+     - *established*. The USS-312 data sheet gives ``11C1h`` and ``5802h``
        :src:`lucent-uss312-ds Tables 3 and 8`. Both Origin 300 captures
        report the same, and OpenBSD ``pcidevs`` names it "AT&T/Lucent USB
        2-port".
    * - PCI revision
      - ``0x10``
-     - *Established* by the data sheet's Revision C row. *Observed* in both
-       Origin 300 captures and a Fuel IRIX capture.
+     - *established* by the data sheet's Revision C row, and *observed*
+       in both Origin 300 captures and a Fuel IRIX capture.
    * - Class
      - serial bus, USB, OHCI interface ``0x10``
-     - *Software expectation*: OpenHCI-matching drivers such as OpenBSD
+     - *software expectation*: OpenHCI-matching drivers such as OpenBSD
        ``ohci_pci.c`` require it. The class comes from the generic
        ``pci-ohci`` wrapper.
    * - PCI function
      - device 5, function 0
-     - *Observed* on the IO-8 bus in both Origin 300 captures and on the
+     - *observed* on the IO-8 bus in both Origin 300 captures and on the
        Fuel (:src:`tingo-fuel-irix-console`). The field diagnostics also
        select USB as device 5 :src:`108-0264-004 printed pages 2-10 to 2-14`.
        The base I/O models place it there.
    * - Root-hub ports
      - 2
-     - *Established*. The product identity, both captures and the user's
+     - *established*. The product identity, both captures and the user's
        guide call it two-port :src:`007-4365-002 printed pages 9, 12 and 14`.
        The type sets the inherited ``num-ports`` property to 2.
    * - OHCI revision register
@@ -96,7 +96,7 @@ Identity
        distinct from the PCI revision.
    * - Subsystem vendor and device
      - ``0xffff:0xffff``
-     - *Unknown* on SGI's boards. The data sheet gives ``0x11c1`` and
+     - *unknown* on SGI's boards. The data sheet gives ``0x11c1`` and
        ``0x5802`` as the chip's reset values, read-only unless firmware
        opens them :src:`lucent-uss312-ds Tables 3, 17 and 18`, so firmware
        may have rewritten them, and no published configuration dump shows
@@ -106,7 +106,7 @@ Identity
        from an IO-8 or a Fuel would settle it.
    * - PCI Status after reset
      - ``0x0200``
-     - *Approximation*. Medium DEVSEL only, set after the wrapper realizes.
+     - *approximation*. Medium DEVSEL only, set after the wrapper realizes.
        The data sheet gives ``0x0200`` with PMIENABLE low and ``0x0210``
        (capability list present) with it high
        :src:`lucent-uss312-ds Table 3`. Whether SGI's board ties

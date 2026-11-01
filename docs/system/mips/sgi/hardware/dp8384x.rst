@@ -194,7 +194,7 @@ compares registers ``0x00``, ``0x17`` and ``0x1c`` against the same values
 and reads registers ``0x01``, ``0x05`` and ``0x06`` before it writes any
 control register, expecting no link, no completed negotiation and no
 partner: BMSR ``0x7809`` under its mask, and zero in the other two. These
-are *software expectations*, and the model returns them. The register
+are each a *software expectation*, and the model returns them. The register
 ``0x18`` reset value ``0x8020`` copies the datasheet's default with its
 pin-latched bits modelled as normal operation, an *approximation*: no source
 gives the strapping of the board. The same test requires registers ``0x17``,

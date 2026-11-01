@@ -117,7 +117,7 @@ crossbar port ``0xa`` in the ``origin300`` and ``fuel`` machines.
    * - Crossbar (widget 0)
      - ``0x2d000001``: revision 2, part ``0xd000``, manufacturer 0,
        bit 0 set
-     - *Established* :src:`xbridge-asic-spec-0.5 p. 71`; OpenBSD names
+     - *established* :src:`xbridge-asic-spec-0.5 p. 71`; OpenBSD names
        part ``0xd000`` "XXBow". Revision 2 *observed*.
 
 OpenBSD attaches a head only for manufacturer ``0x024`` with part
@@ -416,7 +416,7 @@ A direct-window DMA address takes its target widget from direct map bits
 bit 17 is set and the offset field is zero, as on the Bridge. The
 specification states bit 17 without that condition, so the model's rule
 is an *approximation*. OpenBSD, Linux and the IP35 port write widget and
-offset and so clear bit 17, *software expectations*.
+offset and so clear bit 17, each a *software expectation*.
 
 .. _sgi-xbridge-nic:
 
@@ -460,8 +460,8 @@ says nothing of a 64-bit access. The Origin 300 IO-8 board test reads
 the IOC3's header with a 64-bit load and expects the word at the lower
 address in the upper half, a *software expectation*. The model performs
 a doubleword configuration read as two word reads, lower address first
-into the upper half, and splits a doubleword write the same way. Both
-are *approximations*. A doubleword configuration read captured on an
+into the upper half, and splits a doubleword write the same way. Each
+is an *approximation*. A doubleword configuration read captured on an
 Origin 300 would settle it.
 
 Device windows
@@ -599,7 +599,7 @@ page as ``0x4000_0000`` with swapping on. Entry bit 5 also requests
 swapping. This is an *approximation*. SGI's SN1 driver swaps a mapped
 page by setting PCI bit 29 and never sets entry bit 5 (``bridge.h``
 lines 1398-1402, ``pcibr.c`` lines 5156-5171), and the IRIX 6.5.30
-kernel does the same, both *software expectations*. The stock IP35
+kernel does the same, each a *software expectation*. The stock IP35
 PROM 6.210 programs entry 1 with bit 5 clear and issues USB DMA at
 ``0x6000_581c``, a *software expectation*. Only the bit-29 reading maps
 it. A revision-B specification or a DMA capture on an
@@ -657,7 +657,7 @@ aligned 8-byte transfers whose destination is ordinary RAM:
   each 32-bit word rather than the doubleword.
 
 Shorter, unaligned and non-RAM transfers keep the ordinary placement.
-These rules are *approximations* chosen so that the stock ``xbg``
+These rules are each an *approximation* chosen so that the stock ``xbg``
 diagnostic's Tigon DMA comparisons match. No public source states
 revision 2's placement on a wide slot, and repeated test patterns do not
 fix every byte. A PCI transaction capture on an Origin 300 that records
@@ -679,7 +679,7 @@ formed from the destination registers with host address bits 17:8 over
 address bits 47:38. The falling edge sends a clear packet, bit 8 clear,
 only when both the enable bit and the mode bit are set. OpenBSD, Linux
 and the IP35 port set the mode bit; SGI's SN1 driver clears it,
-*software expectations*.
+each a *software expectation*.
 
 Force-always register *n* sends pin *n*'s set packet on any write.
 Force-with-pin register *n* sends it only while pin *n* is asserted
@@ -689,7 +689,7 @@ specification does not say whether a force on a disabled pin is
 delivered. The model logs ``LOG_UNIMP`` and sends nothing, an
 *approximation*.
 
-Two revision-2 behaviours are *approximations* with no hardware source:
+Two revision-2 behaviours are each an *approximation* with no hardware source:
 
 - Interrupt enable stores bits 8 and 16, which the specification
   reserves :src:`xbridge-asic-spec-0.5 p. 150-151`, so an all-ones
@@ -1021,7 +1021,7 @@ to ``0xe`` or ``0xf`` resets that head. External ports leave on the
 chip's ``warm-reset-out`` lines, index port minus 8, and enter on its
 ``warm-reset`` lines. The model reads the fences as they stood before
 the core reset. The specification does not settle three points, and the
-model's answers are *approximations*:
+model's answers are each an *approximation*:
 
 - whether accepting a warm reset returns the fences to all ones (the
   model does) or keeps them, since the change list says power-on reset

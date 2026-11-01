@@ -314,7 +314,7 @@ Each item is real-hardware output unless it names another source.
   812-0788-001, which cites SGI document 007-3907-001. No public copy is
   registered. The patch payload was not examined.
 
-What the stock IP27 PROM 6.156 does (*software expectations*,
+What the stock IP27 PROM 6.156 does (each a *software expectation*,
 :src:`ip27-prom-6.156`):
 
 - **Machine type.** Every step below is taken only when the machine-type
@@ -496,7 +496,7 @@ heatsinked ASICs whose markings are not legible.
 The model presents the record without claiming a wiring. It rides the
 cabinet Bridge's own one-wire line, the line the firmware names ``io7``
 from. The ``XBOX_EXT`` record rides the IP29 Bridge's own line, because
-inventories list it beside the IP29 record. These are *approximations*. The
+inventories list it beside the IP29 record. These are each an *approximation*. The
 barcodes and serials are placeholders marked as synthetic, since a real one
 names a physical unit. A capture of the raw one-wire bytes from a real
 cabinet would settle them.
@@ -657,7 +657,7 @@ Model limits
   Bridge's flash port repeats a part smaller than a chip select. The part
   accepts only 16-bit accesses. A write that reaches it logs ``LOG_UNIMP``
   and is dropped. The Bridge itself drops writes with ``LOG_GUEST_ERROR``
-  while its flash write-enable bit is clear. These are *approximations*.
+  while its flash write-enable bit is clear. These are each an *approximation*.
 - The word cannot change while the guest runs, so the kernel's event
   messages, the orderly shutdown and the forced reset are unreachable in
   the model.

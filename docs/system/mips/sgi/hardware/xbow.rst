@@ -191,7 +191,7 @@ slot on a big-endian host; this page uses the aligned offset.
        Crossbow 2.0 half, so *inferred* for Crossbow revision 5. Existence
        *established* on the measured Octane2 (:ref:`sgi-xbow-measurements`).
        The reset value and retention across a warm reset are
-       *approximations*; the specification is silent on both.
+       each an *approximation*; the specification is silent on both.
    * - 0x0080 + 8 * link
      - Per-link reset fence
      - Revision 5 and later. One eight-bit mask per link, with the same

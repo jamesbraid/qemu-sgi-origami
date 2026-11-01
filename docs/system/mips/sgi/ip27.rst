@@ -65,7 +65,7 @@ Public software:
 
 The stock IP27 PROM 6.156, :src:`ip27-prom-6.156`, is cited by image
 address where this page states what it does. Those statements are
-*software expectations*: they say what the firmware relies on, not what
+each a *software expectation*: they say what the firmware relies on, not what
 the hardware is.
 
 Captures of real machines, each a published inventory or console:
@@ -306,7 +306,7 @@ prints "Config values loaded from PIMM" from a path that reads another
 source, so where a real Origin 200 node takes its configuration on every
 boot is *unknown*.
 
-Model limits, *approximations*:
+Model limits, each an *approximation*:
 
 - The Origin 200 node keeps Hub revision 3 and the IP29 board record
   030-1244-001 revision H for every module. Real 225 and 270 MHz

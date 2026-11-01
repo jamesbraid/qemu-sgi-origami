@@ -844,7 +844,7 @@ The Origin 300 topologies beyond one chassis:
   storage, the ``expansion-enclosure-flash`` store
   (:ref:`sgi-sn-storage`). Its startup,
   power, register visibility, interrupt map and identity are
-  *approximations* listed on :doc:`hardware/pci-expansion`.
+  each an *approximation* listed on :doc:`hardware/pci-expansion`.
 
 ``origin300-numalink-pci-expansion``
   Two base modules and a PCI expansion module through one logical
@@ -868,8 +868,8 @@ and a USB hub to the rack's L2. A documented system has two to eight
 base modules in a tall rack (:src:`007-4498-002 p. 2, 10-16, 93-98,
 130-133`). All *established*. The router chip's part number, ASIC count
 and silicon revision are *unknown*. Linux SN1 headers name an
-eight-port router family with chip identifier ``0x3017``, which ties to
-this module only by *inference*. The ``origin300-numalink-module``
+eight-port router family with chip identifier ``0x3017``. That this
+module carries it is *inferred*. The ``origin300-numalink-module``
 composition that records the full rack is a reference model;
 :doc:`hardware/bricks` gives its tall-rack cabling.
 

@@ -116,7 +116,7 @@ Both views hold the same per-head state. In the two runtime profiles the
 processor view adds three behaviours the packet view lacks: the 32-bit
 word view (:ref:`sgi-pic-word-view`), the processor byte-lane rule for
 PCI programmed I/O (:ref:`sgi-pic-pio-lanes`) and the link-error write
-(:ref:`sgi-pic-error-interrupt`). These are *approximations*: whether the
+(:ref:`sgi-pic-error-interrupt`). These are each an *approximation*: whether the
 Bedrock or PIC performs any of them, and how, is *unknown*.
 
 .. list-table::
@@ -530,7 +530,7 @@ A request that would cross the end of its window is refused before any
 PCI cycle and logs ``LOG_GUEST_ERROR``. Device bit 13 or 22 set refuses
 the request with ``LOG_UNIMP``; their physical effect is *unknown*. A
 failed PCI cycle logs ``LOG_GUEST_ERROR``; a failed read returns zero.
-These are *approximations*: PIC's real error response is *unknown*.
+These are each an *approximation*: PIC's real error response is *unknown*.
 
 .. _sgi-pic-pio-lanes:
 
@@ -668,7 +668,7 @@ XOR 7 instead, reversing each 64-bit doubleword. The board sets the
 BCM5701 at device 4. The model samples each device's width at the end of
 reset.
 
-These placements are *approximations*. They rest on two software
+These placements are each an *approximation*. They rest on two software
 expectations: the Linux IP35 port's producer, which names bit 55 the
 swap attribute (``pci-sgipic.c``), and the IRIX 6.5.30 BCM5701 driver,
 which writes big-endian descriptors with the chip's own swap bits
@@ -713,7 +713,7 @@ expectation*. Bit 6 of the value selects the Bedrock pending bank and
 bit 8 sets or clears, *established* on :ref:`sgi-bedrock-pi-interrupts`.
 A destination the Bedrock
 refuses also logs ``LOG_GUEST_ERROR``. Every packet logs ``LOG_UNIMP``
-with its destination. The packet format and address use are *approximations*:
+with its destination. The packet format and address use are each an *approximation*:
 PIC's physical interrupt packet is *unknown*.
 
 An OpenBSD account of Origin 350 bring-up reports that interrupts stopped
@@ -811,7 +811,7 @@ request RAM, its input state and its held-input sources, then loads the
 identity word and, in the runtime profiles, the control, timeout and
 Device values in the register table. The unsupported-access log limit
 also resets. Each device's ``REQ64#`` width is sampled at the end of
-reset. All reset values are *approximations*; warm-reset scope and
+reset. All reset values are each an *approximation*; warm-reset scope and
 whether request RAM survives reset are *unknown*.
 
 .. _sgi-pic-migration:

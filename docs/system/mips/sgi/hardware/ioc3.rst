@@ -32,7 +32,7 @@ clock part. Each board wires a different subset
 
 Facts are rated as described in :ref:`sgi-ratings`. SGI published no
 IOC3 specification. Register offsets and field names come from the public
-Linux and OpenBSD headers and are *software expectations*; behaviour no
+Linux and OpenBSD headers and are each a *software expectation*; behaviour no
 public source states is an *approximation* and says so.
 
 .. _sgi-ioc3-sources:
@@ -147,7 +147,7 @@ PCI revision 1 is *observed* on Origin 200 and Origin 300 systems
 ``0x0280`` is a *software expectation*: the IRIX 6.5.30 miniroot's
 configuration-space check reads the whole dword at ``0x04`` at reset and
 fails the slot when the Status half is zero. The writable latency timer
-and parity-error response are *software expectations* of the Origin 300
+and parity-error response are each a *software expectation* of the Origin 300
 IO-8 board diagnostic, which writes ``0xff00`` over the latency word and
 ``0x146`` to Command and reads both back. Linux names an error-address
 record at configuration ``0x40`` and ``0x44``; the model does not
@@ -474,7 +474,7 @@ handler for bits 6 and 15 and an edge handler for the rest
 (``drivers/mfd/ioc3.c``), which makes the two pass-throughs levels and the
 keyboard bit a latch, *software expectation*. The parallel service bit
 and the high-water, receive-full and transmit-empty bits as levels are
-*approximations*. The IRIX 6.5.30 ring console enables high water and
+each an *approximation*. The IRIX 6.5.30 ring console enables high water and
 never acknowledges it, so a latched bit would keep its service loop
 running, *software expectation*. Linux's ring driver re-reads
 transmit-empty after a write and stops it by masking, which a latch would
@@ -1096,7 +1096,7 @@ ports. The controller asserts its line for every character it takes and
 lowers it when a read leaves both holdings empty. The chip latches that
 into status bit 22, which only a write-one-to-clear acknowledges.
 Per-character assertion and the release of a clamp within the read are
-*approximations*. Writes setting the emulation or fast-clock bits (12,
+each an *approximation*. Writes setting the emulation or fast-clock bits (12,
 13) log ``LOG_UNIMP``. Reads of the transmit registers and writes to the
 receive registers log ``LOG_GUEST_ERROR``. Transmit completes inside the
 write, so the write-pending status never reads set.
@@ -1402,7 +1402,7 @@ from the Bridge's board part (``ioc3_cfg_rd()`` in
 ``arch/mips/pci/pci-xtalk-bridge.c`` at ``db2ddb871435``), and OpenBSD
 ``sys/arch/sgi/xbow/xbridge.c`` at ``2df91d80c104`` passes only the first
 ``0x20`` bytes of the header and picks the board from the one-wire part,
-both *software expectations*.
+each a *software expectation*.
 
 .. _sgi-ioc3-octane2-registers:
 

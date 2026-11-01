@@ -24,9 +24,9 @@ the timekeeper window. ATA and the general-purpose pins are not modelled.
 
 Facts are rated as described in :ref:`sgi-ratings`. SGI published no
 IOC4 specification. Register offsets and field names come from the
-public Linux and OpenBSD drivers and are *software expectations*. Reset
+public Linux and OpenBSD drivers and are each a *software expectation*. Reset
 values, access widths and timing that no public source states are
-*approximations* and say so.
+each an *approximation* and say so.
 
 .. _sgi-ioc4-sources:
 
@@ -84,7 +84,7 @@ The model reports PCI class ``0x0b4000``: base class ``0x0b``, subclass
 by an exact 24-bit class match, and its device table lists vendor SGI,
 device IOC4, any subsystem, class ``0x0b4000`` with mask ``0xffffff``
 (Linux v2.6.30 ``drivers/misc/ioc4.c``), a *software expectation*. The
-model's other configuration values are *approximations*: interrupt pin 1
+model's other configuration values are each an *approximation*: interrupt pin 1
 (INTA) and one 1 MiB 32-bit memory BAR, sized so the byte-bus select at
 ``0x80000`` falls inside it. On IP53 boards the ``pci-status-compat``
 property sets PCI Status to ``0x0220`` at realize and at every reset.
@@ -236,7 +236,7 @@ Reads of any other offset log ``LOG_UNIMP`` and return zero; writes log
 
 The layout above follows OpenBSD ``iofreg.h`` and Linux ``ioc4.h``, a
 *software expectation*. The register widths, the reset values and the
-handling of the enable-clear reads are *approximations*.
+handling of the enable-clear reads are each an *approximation*.
 
 .. _sgi-ioc4-uart:
 
@@ -290,7 +290,7 @@ expectation*. The IOC4 drives one PCI interrupt, asserted while any
 pending bit is also enabled, a *software expectation* from the same
 driver.
 
-The model's choices for these bits are *approximations*:
+The model's choices for these bits are each an *approximation*:
 
 - A UART interrupt sets its port's bit 6 and also counts as pending for
   as long as the UART holds its interrupt line. Acknowledging the bit
@@ -446,8 +446,8 @@ Byte order
 
 Ring entries reach memory through the PIC's DMA path, so the byte swap
 the PIC applies for the ring address applies to them. The IOC4 adds
-none of its own. PIO to the UART windows is in register order. Both are
-*approximations*; the IOC4's own DMA byte order is *unknown*.
+none of its own. PIO to the UART windows is in register order. Each is
+an *approximation*; the IOC4's own DMA byte order is *unknown*.
 
 .. _sgi-ioc4-dma-errors:
 
@@ -478,7 +478,7 @@ with valid bits 31-29. Control bits 0 and 1 are the keyboard and mouse
 write-pending bits.
 
 The model reuses the IOC3 controller (:doc:`ioc3`) behind an adapter
-with these *approximations*:
+with these choices, each an *approximation*:
 
 - The registers are big-endian words; the PS/2 byte is the low eight
   bits. The bus byte order of the real IOC4 controller is *unknown*.
@@ -520,7 +520,7 @@ The IOC4 maps the board's timekeeper as a subregion. A 32 KiB DS1744
 device appears whole at ``0x80000``; that is what every IP53 machine
 uses (:ref:`sgi-ip53-ds1744`). A 2 KiB DS1742 device exposes only its
 eight clock bytes at ``0x87ff8`` (:ref:`sgi-ip53-ds1742`). Without a
-timekeeper the window is empty. Both mappings are *approximations*; the
+timekeeper the window is empty. Both mappings are each an *approximation*; the
 IO9's real byte-bus decode is *unknown*.
 
 .. _sgi-ioc4-ata:

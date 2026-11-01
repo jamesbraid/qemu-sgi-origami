@@ -54,28 +54,28 @@ Identity and placement
      - Basis
    * - Vendor, device
      - ``0x104c``, ``0x8009``
-     - *Established* :src:`ti-tsb12lv22-slls290 p. 8`.
+     - *established* :src:`ti-tsb12lv22-slls290 p. 8`.
    * - Class and revision
      - ``0x0c001001``
-     - *Established*: serial bus, IEEE 1394, OHCI programming interface
+     - *established*: serial bus, IEEE 1394, OHCI programming interface
        ``0x10``, revision 01 :src:`ti-tsb12lv22-slls290 pp. 9-10`.
    * - Interrupt pin
      - INTA (``1``)
-     - *Inferred* from the interrupt-pin table and the part's single INTA
+     - *inferred* from the interrupt-pin table and the part's single INTA
        pin :src:`ti-tsb12lv22-slls290 pp. 5, 12`. The datasheet's reset
        diagram shows zero, an apparent editorial error.
    * - Status after reset
      - ``0x0210``
-     - *Established*: medium DEVSEL and capability list present
+     - *established*: medium DEVSEL and capability list present
        :src:`ti-tsb12lv22-slls290 p. 9`. Error bits 15-11 and 8 are
        write-one-clear.
    * - Command
      - writable ``0x0156``
-     - *Established*: bits 8, 6, 4, 2 and 1 :src:`ti-tsb12lv22-slls290 p. 8`.
+     - *established*: bits 8, 6, 4, 2 and 1 :src:`ti-tsb12lv22-slls290 p. 8`.
        Reset is zero.
    * - Cache line, latency timer, interrupt line
      - read/write bytes
-     - *Established* :src:`ti-tsb12lv22-slls290 pp. 10, 12`. Latency timer
+     - *established* :src:`ti-tsb12lv22-slls290 pp. 10, 12`. Latency timer
        is cleared by device reset.
    * - BAR 0, BAR 1
      - 2 KiB memory each
@@ -85,11 +85,11 @@ Identity and placement
        cross-reference to BAR 0. Its contents are *unknown*.
    * - Capability pointer
      - ``0x44``
-     - *Established*; one capability, power management, ID ``01``, next
+     - *established*; one capability, power management, ID ``01``, next
        ``00`` :src:`ti-tsb12lv22-slls290 pp. 12-13`.
    * - PM capabilities (``0x46``)
      - ``0x4001``
-     - *Inferred* from the reset diagram and per-bit descriptions: D0 and
+     - *inferred* from the reset diagram and per-bit descriptions: D0 and
        D3hot, PME from D3hot only. The summary table's ``01001`` is
        taken as an editorial error :src:`ti-tsb12lv22-slls290 pp. 13-14`.
    * - PM control and status (``0x48``)
@@ -100,16 +100,16 @@ Identity and placement
        are not writable (see limits).
    * - MIN_GNT, MAX_LAT
      - ``0x02``, ``0x04``
-     - *Approximation*. The prose gives 2 and 4 with no ROM, the reset
+     - *approximation*. The prose gives 2 and 4 with no ROM, the reset
        diagram 2 and 2 :src:`ti-tsb12lv22-slls290 p. 12`. The model takes the
        prose. The bytes are read-only and survive reset.
    * - Link enhancements (``0xf4``)
      - writable ``0x86``
-     - *Established*: bits 7, 2 and 1, reset zero
+     - *established*: bits 7, 2 and 1, reset zero
        :src:`ti-tsb12lv22-slls290 p. 15`. The bits have no effect.
    * - Subsystem identity (``0x2c``, ``0xf8``)
      - reset zero
-     - *Established* that ``0xf8`` is a read/write alias of the read-only
+     - *established* that ``0xf8`` is a read/write alias of the read-only
        ``0x2c`` :src:`ti-tsb12lv22-slls290 pp. 11, 15-16`. A write to
        ``0xf8`` is mirrored into ``0x2c``. With no ROM the value is
        whatever software wrote, which the model keeps until device reset.

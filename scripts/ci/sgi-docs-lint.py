@@ -22,10 +22,19 @@ SPDX = '.. SPDX-' 'License-Identifier: BSD-3-Clause'
 
 RATINGS = ('established', 'observed', 'software expectation', 'inferred',
            'approximation', 'unknown')
-# Italic phrases that read as a rating but are not one.
-NEAR_MISSES = ('establish', 'approximated', 'approximate', 'estimated',
-               'assumed', 'infered', 'expectation', 'software expected',
-               'observation')
+# An italic phrase starting with one of these, in any case, is a rating or
+# a variant of one (a plural, an inflection, a capital, a qualifier), so
+# it must be one of the six exactly.
+RATING_STEMS = ('establish', 'observ', 'software expect', 'infer',
+                'approximat', 'unknown')
+# Italic phrases that read as a rating but share no stem with one.
+NEAR_MISSES = ('estimated', 'assumed', 'infered', 'expectation',
+               'expectations')
+
+# Directives whose body is literal text, not prose.
+LITERAL_DIRECTIVE = re.compile(
+    r'\s*\.\. (code-block|code|sourcecode|literalinclude|parsed-literal)::')
+DIRECTIVE = re.compile(r'\s*\.\. [\w:-]+::')
 
 # Hardware pages whose opening differs from the "Used in" paragraph: the
 # graphics and brick pages are overviews of a family of parts.
@@ -87,9 +96,9 @@ def lint_page(rel, text):
         if in_hw:
             if ': ' not in t:
                 add(n, f'part title "{t}" must read "<Part>: <function>"')
-            elif t.endswith(')'):
-                add(n, f'part title "{t}" must not end in a parenthesised '
-                    'suffix')
+            elif '(' in t:
+                add(n, f'part title "{t}" must not name a machine or '
+                    'anything else in parentheses')
         elif re.match(r'ip\d+\.rst$', name.name) and \
                 not re.match(r'IP\d+: ', t):
             add(n, f'platform title "{t}" must match "IPnn: products"')
@@ -104,23 +113,32 @@ def lint_page(rel, text):
             add(j + 1, 'the first paragraph after the title must begin '
                 'with "Used in"')
 
-    in_block = False
+    # Skip literal text only: a code or literal directive's body and the
+    # block after a paragraph ending in "::". Other directives, such as
+    # list-table, seealso and note, hold prose and are checked.
+    block_indent = None
     for n, line in enumerate(lines, 1):
-        if in_block:
-            if line.strip() and not line.startswith(' '):
-                in_block = False
+        indent = len(line) - len(line.lstrip())
+        if block_indent is not None:
+            if line.strip() and indent <= block_indent:
+                block_indent = None
             else:
                 continue
-        if line.rstrip().endswith('::') or line.startswith('.. code-block'):
-            in_block = True
-            continue
+        if LITERAL_DIRECTIVE.match(line) or (
+                line.rstrip().endswith('::') and not DIRECTIVE.match(line)):
+            block_indent = indent
+            if not LITERAL_DIRECTIVE.match(line):
+                line = line.rstrip()[:-2]
+            else:
+                continue
         for m in ITALIC.finditer(LITERAL.sub('', line)):
             word = m.group(1)
             if word in RATINGS:
                 continue
-            if word.lower() in RATINGS or word.lower() in NEAR_MISSES:
+            low = word.lower()
+            if low.startswith(RATING_STEMS) or low in NEAR_MISSES:
                 add(n, f'italic "*{word}*" is not a rating; use one of the '
-                    'six in sgi-ratings')
+                    'six in sgi-ratings exactly')
     return out
 
 
