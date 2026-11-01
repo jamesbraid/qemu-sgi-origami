@@ -168,7 +168,8 @@ interface modules (PIMMs) of two processors each, and eight DIMM slots
 R12000 at 360 MHz or R12000A at 400 MHz with 4 or 8 MB of secondary cache
 per processor (*established*, :src:`108-0240-002 p. 2-4`), and the later
 internal manual adds a 500 MHz R14000 option (*established*,
-:src:`108-0266-001 p. 28`). Local memory is 512 MiB to 8 GiB in banks 0 to
+:src:`108-0266-001 p. 28`). A 600 MHz R14000 PIMM is captured as well
+(:ref:`sgi-sn-cbrick-r14000`). Local memory is 512 MiB to 8 GiB in banks 0 to
 7, two banks per DIMM pair, with the two DIMMs of a pair matching
 (*established*, :src:`108-0240-002 pp. 2-5, 2-6`). The guides disagree
 on the bank count, the minimum size and the cache size, and the layer
@@ -294,6 +295,56 @@ Model limits:
 * Head E's PCI slots are empty. The I-brick's XBridge revision is the
   model's.
 
+.. _sgi-sn-cbrick-r14000:
+
+C-brick with 600 MHz R14000 processors
+--------------------------------------
+
+``-M origin3000,topology=origin3200-r14000-600mhz``,
+``origin3400-r14000-600mhz`` and ``onyx3000-r14000-600mhz`` are the Origin
+3200, Origin 3400 and Onyx 3000 entries with every C-brick fitted with
+four 600 MHz R14000s and 8 MB secondary caches (``-cpu R14000``, processor
+``r14000-600mhz-8mb``). Everything else, the bricks, the cabling, the
+memory and the I/O, is the R12000 entry's. The Onyx 3400 with
+InfiniteReality3 is not offered with this processor, and no other clock,
+cache size or part is.
+
+The processor is a PIMM SGI documents and inventories capture. Established
+(*established*):
+
+* Retained inventories of C-bricks print 600 MHz R14000 processors with
+  8 MB secondary caches at 300 MHz, ``Tap 0xa``, on PIMM part numbers
+  ``030-1734-001`` and ``-002``, at processor revisions 2.3 and 2.4.
+* SGI's L3 Controller release notes add L1 support for a 600 MHz R14KA
+  PIMM and place it in the Origin 3000 and Origin 300 systems.
+* The stock IP35 PROM 6.210 carries a class-0 configuration row for
+  600 MHz and 8 MB, word ``0x549cab85``, reached by board-identification
+  low nibble 3. Its clock, cache and tap fields are the ones the
+  inventories print.
+
+The model's values:
+
+* The flash configuration block carries machine type 0 and ``0x549cab85``,
+  and the board-identification word's low nibble is 3 (*inferred*, from the
+  PROM row the captured PIMMs match; no C-brick flash block or register has
+  been read).
+* The reset-mode word is the low 25 bits, ``0x009cab85``. Its SS field,
+  bits 18:16, is 4, so 512 KiB shifted left by 4 is the 8 MB cache, and
+  the generator holds both the cache size and the flash word's low 25 bits
+  to it (*approximation*: no capture of a C-brick's reset mode exists).
+* PRId is ``0x0f24``, the revision 2.4 one of the two captured revisions
+  and the value the Origin 300 entry carries. The FPU identification is
+  the R14000 type's fixed ``0x00000900``; the FPU revision a PIMM prints is
+  *unknown*.
+* The cache runs at 300 MHz, the processor clock over two, as captured.
+  The Hub stays at 200 MHz (*inferred*).
+
+Not modelled: the 500 MHz R14000 option, which ``108-0266-001`` p. 28
+names and the PROM has rows for, because no inventory holds a board with it
+and no reset or flash word is captured for it; and the 600 MHz part
+``030-1823-001`` that later L1 firmware recognizes, whose processor type
+(R16000 or R14000A), cache size, tap and C-brick status are all *unknown*.
+
 .. _sgi-sn-cbrick-r16000:
 
 C-brick with 800 MHz R16000 processors
@@ -339,8 +390,8 @@ to be what a shipped C-brick presents.
   words, and most captured 800 MHz boards print 2.2; the tap is the
   PROM row's, not a measurement.
 * The Onyx 3400 with InfiniteReality3 is not offered with this processor,
-  and no other clock, cache size or part is. The C-brick's captured
-  R12000 and R14000 PIMMs are real, but this entry does not model them.
+  and no other clock, cache size or part is. The 600 MHz R14000 PIMM is a
+  separate entry (:ref:`sgi-sn-cbrick-r14000`).
 
 .. _sgi-sn-onyx3400-ir:
 

@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "ac959cc8247415776a1db3b67e13784b70eb864f1a114698da7e3483245cff17"
+    "901c340dceef342bffeb5ec7efd40ecd15b8980048630851c2c9d12ae943c761"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -212,9 +212,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 154)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 45)
-        self.assertEqual(len(layers), 107)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 161)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 48)
+        self.assertEqual(len(layers), 111)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -952,6 +952,13 @@ class FuelTests(unittest.TestCase):
                     "machine-type": 0,
                     "cpu-mode-word": 0x569caf85})
                 continue
+            if topology["name"].endswith("-r14000-600mhz"):
+                # The captured 600 MHz R14000 PIMM matches the PROM table's
+                # class-0 row for nibble 3 (cbrick.md, the PIMM captures).
+                self.assertEqual(topology["ip35-firmware"], {
+                    "machine-type": 0,
+                    "cpu-mode-word": 0x549cab85})
+                continue
             if topology["name"] in ("origin3200", "origin3400", "onyx3000",
                                     "onyx3400-ir"):
                 # The C-brick's machine-type byte and reset-mode word come
@@ -1024,8 +1031,8 @@ class FuelTests(unittest.TestCase):
                 self.assertNotIn("approximate", item["display-name"])
         # Not offered here: any other R16000 clock or cache on a C-brick,
         # the Onyx 3400 with InfiniteReality (the sources name no graphics
-        # fit), and the 500 and 600 MHz R14000 PIMMs, which are real
-        # C-brick parts but not modelled by these entries.
+        # fit), and any R14000 PIMM (the 600 MHz one is offered by
+        # test_c_brick_600mhz_r14000_is_offered_where_the_sources_put_it).
         ip35 = [item for item in catalogue["topologies"]
                 if item.get("board") == "ip35"]
         self.assertEqual(
@@ -1058,6 +1065,79 @@ class FuelTests(unittest.TestCase):
         self.assertTrue(shared)
         for item in shared:
             self.assertEqual(item["processor"], processor)
+
+    def test_c_brick_600mhz_r14000_is_offered_where_the_sources_put_it(self):
+        """The 600 MHz R14000 PIMM is SGI-documented and captured (parts
+        030-1734-00x: 600 MHz R14000, 8 MB, Tap 0xa; the L3 Controller 1.4
+        and 1.6 notes name a 600 MHz R14KA PIMM for the Origin 3000). It is
+        offered on the products a C-brick sits in without graphics, labelled
+        with its clock, and on nothing else."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        processor = {"id": "r14000-600mhz-8mb", "part": "R14000",
+                     "clock-hz": 600000000, "cache-mib": 8}
+        fitted = [item for item in catalogue["offerings"]
+                  if item.get("board") == "ip35"
+                  and item["processor"]["part"] == "R14000"]
+        self.assertEqual(
+            sorted((item["topology"], item["machine-options"])
+                   for item in fitted),
+            [("onyx3000-r14000-600mhz",
+              "origin3000,topology=onyx3000-r14000-600mhz,nodes=2"),
+             ("origin3200-r14000-600mhz",
+              "origin3000,topology=origin3200-r14000-600mhz,nodes=2"),
+             ("origin3400-r14000-600mhz",
+              "origin3000,topology=origin3400-r14000-600mhz,nodes=4")])
+        for item in fitted:
+            with self.subTest(topology=item["topology"]):
+                self.assertEqual(item["product"], "origin3000")
+                self.assertTrue(item["display-name"].endswith(
+                    "(600 MHz R14000 C-brick)"))
+                self.assertNotIn("approximate", item["display-name"])
+                self.assertEqual(item["processor"], processor)
+                self.assertEqual(item["default-cpu-model"], "R14000")
+        # Negative cases: no other R14000 clock or cache on a C-brick
+        # (the 500 MHz part has no captured board; the 030-1823-001 part's
+        # identity, cache and tap are unknown), no R16000 mixed in, and no
+        # Onyx 3400 with InfiniteReality3, for which no source names a fit.
+        ip35 = [item for item in catalogue["topologies"]
+                if item.get("board") == "ip35"]
+        self.assertEqual(
+            {slot["assembly"]["id"] for item in ip35
+             for node in item["nodes"] for slot in node["cpu-slots"]
+             if slot["assembly"]
+             and slot["assembly"]["kind"] == "R14000"},
+            {"r14000-600mhz-8mb"})
+        self.assertFalse([item for item in catalogue["offerings"]
+                          if item["topology"].startswith("onyx3400-ir-r14000")])
+        for item in ip35:
+            if not item["name"].endswith("-r14000-600mhz"):
+                continue
+            with self.subTest(topology=item["name"]):
+                assemblies = [slot["assembly"] for node in item["nodes"]
+                              for slot in node["cpu-slots"]
+                              if slot["assembly"]]
+                self.assertEqual({a["kind"] for a in assemblies},
+                                 {"R14000"})
+                # Reset word: the low 25 bits of the flash word, SS field 4
+                # (8 MiB); PRId 0x0f24, the revision 2.4 a captured PIMM
+                # prints.
+                self.assertEqual({a["mode-bits"] for a in assemblies},
+                                 {0x009cab85})
+                self.assertEqual({a["prid"] for a in assemblies}, {0x0f24})
+                self.assertEqual({a["cache-clock-hz"] for a in assemblies},
+                                 {300000000})
+
+    def test_c_brick_600mhz_models_state_what_is_unknown(self):
+        for name in ("origin3200-r14000-600mhz", "origin3400-r14000-600mhz",
+                     "onyx3000-r14000-600mhz"):
+            with self.subTest(name=name):
+                model = load_checked_system_model(
+                    INPUTS / f"{name}.yaml", model_schema=schema(INPUTS))
+                notes = model["machine"]["notes"].lower()
+                self.assertIn("fpu revision", notes)
+                self.assertIn("unknown", notes)
+                self.assertNotIn("hardware-accurate", notes)
 
     def test_c_brick_r16000_models_say_they_are_approximations(self):
         for name in ("origin3200-r16000", "origin3400-r16000",

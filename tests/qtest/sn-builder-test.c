@@ -10845,6 +10845,112 @@ static void test_cbrick_r16000_refuses_the_r12000(void)
 }
 
 /*
+ * The 600 MHz R14000 C-brick is the captured 030-1734-00x PIMM: 600 MHz,
+ * 8 MiB per processor, cache clock 300 MHz. Each C-brick topology fits it
+ * with the low 25 bits of the PROM's class-0 600 MHz word, 0x549cab85, whose
+ * SS field gives the 8 MiB cache and whose PRId is the revision 2.4 one. The
+ * reset word is an approximation: no C-brick's has been captured.
+ */
+static void test_cbrick_r14000_600mhz(void)
+{
+    static const struct {
+        const char *topology;
+        const char *smp;
+        const char *memory;
+        unsigned int cpus;
+    } cases[] = {
+        { "origin3200-r14000-600mhz", "8", "8192", 8 },
+        { "origin3400-r14000-600mhz", "16", "16384", 16 },
+        { "onyx3000-r14000-600mhz", "8", "8192", 8 },
+    };
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn-builder-cbrick-r14000-prom-XXXXXX", &prom,
+                             &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        QTestState *qts = qtest_initf(
+            "-M origin3000,topology=%s -cpu R14000 -smp %s -m %s -bios %s "
+            "-nodefaults -display none", cases[i].topology, cases[i].smp,
+            cases[i].memory, prom);
+        g_autoptr(QDict) response = qtest_qmp(
+            qts, "{'execute':'query-cpus-fast'}");
+        QList *cpus = qdict_get_qlist(response, "return");
+        g_autofree char *profile = qom_get_str(qts, "/machine/node0/l1",
+                                               "brick-type");
+        unsigned int count = 0;
+
+        g_assert_cmpstr(profile, ==, "cbrick");
+        for (const QListEntry *entry = qlist_first(cpus); entry;
+             entry = qlist_next(entry)) {
+            QDict *cpu = qobject_to(QDict, qlist_entry_obj(entry));
+            const char *path = qdict_get_str(cpu, "qom-path");
+
+            /* SS field, bits 18:16, is 4: 512 KiB << 4 is 8 MiB. */
+            g_assert_cmphex(qom_get_uint(qts, path, "reset-mode"), ==,
+                            0x009cab85);
+            g_assert_cmphex(qom_get_uint(qts, path, "r14000-prid"), ==,
+                            0x0f24);
+            count++;
+        }
+        g_assert_cmpuint(count, ==, cases[i].cpus);
+        g_assert_cmpuint(qom_get_uint(qts, "/machine/cpu-refclk",
+                                      "qtest-clock-period"), ==,
+                         CLOCK_PERIOD_FROM_HZ(600000000));
+        qtest_quit(qts);
+    }
+    g_unlink(prom);
+}
+
+/*
+ * The 600 MHz fit is an R14000 one: the C-brick's R12000 is refused, and
+ * the R12000 entry refuses the R14000.
+ */
+static void test_cbrick_r14000_refuses_other_parts(void)
+{
+    static const struct {
+        const char *topology;
+        const char *cpu;
+        const char *error;
+    } cases[] = {
+        { "origin3200-r14000-600mhz", "R12000",
+          "requires R14000, requested R12000" },
+        { "origin3200-r14000-600mhz", "R16000",
+          "requires R14000, requested R16000" },
+        { "origin3200", "R14000",
+          "R12000 board requires R12000, requested R14000" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autoptr(GError) error = NULL;
+        g_autofree char *prom = NULL;
+        g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+        g_autofree char *machine = g_strdup_printf(
+            "origin3000,topology=%s", cases[i].topology);
+        int fd = g_file_open_tmp("sn-builder-cbrick-r14000-refuse-XXXXXX",
+                                 &prom, &error);
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", machine, "-cpu", cases[i].cpu,
+            "-smp", "8", "-m", "8192", "-bios", NULL, "-nodefaults",
+            "-display", "none", NULL
+        };
+
+        g_assert_no_error(error);
+        g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                        ORIGIN3200_PROM_SIZE);
+        g_assert_cmpint(close(fd), ==, 0);
+        args[10] = prom;
+        assert_qemu_rejects(args, cases[i].error);
+        g_unlink(prom);
+    }
+}
+
+/*
  * The IO7 answers at head F devices 4, 5 and 6, its IEEE 1394 controller
  * fitted as on a real I-brick. Only c0 reaches it.
  */
@@ -13545,6 +13651,10 @@ int main(int argc, char **argv)
                    test_cbrick_r16000_approximation);
     qtest_add_func("sn/builder/cbrick/r16000-refuses-r12000",
                    test_cbrick_r16000_refuses_the_r12000);
+    qtest_add_func("sn/builder/cbrick/r14000-600mhz",
+                   test_cbrick_r14000_600mhz);
+    qtest_add_func("sn/builder/cbrick/r14000-refuses-other-parts",
+                   test_cbrick_r14000_refuses_other_parts);
     qtest_add_func("sn/builder/origin3200/io7-timekeeper",
                    test_origin3200_io7_timekeeper);
     qtest_add_func("sn/builder/origin3200/fibre-channel-doubleword-dma",
