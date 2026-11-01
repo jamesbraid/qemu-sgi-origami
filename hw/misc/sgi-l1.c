@@ -1766,6 +1766,16 @@ static void l1_chimera_brick(SGIL1State *s, const char *type)
                                                       "(null)");
 }
 
+/* One brick has itself at position 0 and nothing attached. */
+static void l1_chimera_config(SGIL1State *s)
+{
+    g_autofree char *name = l1_module_name(s);
+
+    qemu_log_mask(LOG_UNIMP, "sgi-l1: config lists only the local brick; "
+                  "attached bricks are not modelled for this board\n");
+    l1_printf(s, ":%-2u - %s (local)\r\n", 0, name);
+}
+
 /*
  * The "env" report of a Chimera interface board: type 7 is the 2U board,
  * type 9 the workstation board and type Q the rack-mounted workstation, and
@@ -2383,6 +2393,9 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
     } else if (s->profile->o3k && argc == 1 &&
                l1_word(argv[0], "config", "cfg")) {
         l1_o3k_config(s);
+    } else if (argc == 1 && l1_chimera_type_name(s) &&
+               l1_word(argv[0], "config", "cfg")) {
+        l1_chimera_config(s);
     } else if (argc == 1 && !strcmp(argv[0], "env") && l1_chimera_env(s)) {
         /* Printed by l1_chimera_env(). */
     } else if ((!strcmp(argv[0], "env") || !strcmp(argv[0], "fan")) &&

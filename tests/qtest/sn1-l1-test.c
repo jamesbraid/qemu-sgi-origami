@@ -2534,6 +2534,25 @@ static char *env_run(int fd, const char *line)
     "brick-serial=XQ4471,system-serial=SZ900213,auto-power=off"
 
 /*
+ * L1 datasheet, "config": one line per attachment position, ":%-2d %c " and
+ * the brick name, then a label. A single Chimera brick has only itself.
+ */
+static void test_chimera_config(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("57", "IP59_4CPU"), "");
+    g_autofree char *reply = NULL;
+
+    reply = env_run(fd, "config");
+    g_assert_cmpstr(reply, ==, ":0  - 001c01 (local)\r\n");
+    g_free(reply);
+    reply = env_run(fd, "cfg");
+    g_assert_cmpstr(reply, ==, ":0  - 001c01 (local)\r\n");
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
  * L1 datasheet, "env forms, banners and limits": with monitoring off the
  * report starts and ends with the starred banner, and "env temp off" adds
  * the failsafe banner to both. With monitoring on one status line replaces
@@ -8326,6 +8345,7 @@ int main(int argc, char **argv)
                         &env_q_ip59, test_env_unpowered);
     qtest_add_func("sn1/l1/env/unmodelled", test_env_unmodelled);
     qtest_add_func("sn1/l1/chimera/brick", test_chimera_brick);
+    qtest_add_func("sn1/l1/chimera/config", test_chimera_config);
     qtest_add_func("sn1/l1/env/on-off", test_env_on_off);
     qtest_add_func("sn1/l1/env/disabled-rows", test_env_disabled_rows);
     qtest_add_func("sn1/l1/env/limits", test_env_limits);
