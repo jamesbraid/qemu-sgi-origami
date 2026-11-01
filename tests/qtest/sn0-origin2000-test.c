@@ -2559,8 +2559,9 @@ static void assert_crossbow(QTestState *qts, const char *crossbow,
     g_assert_cmphex(crossbow_uint(qts, crossbow, "startup-links-alive"), ==,
                     startup_alive);
     g_assert_false(qtest_qom_get_bool(qts, path, "stop-on-link-reset"));
-    g_assert_true(qtest_qom_get_bool(qts, path,
-                                     "complete-posted-error-address-writes"));
+    /* Established only for the IP53 integrated crossbar, not the Crossbow. */
+    g_assert_false(qtest_qom_get_bool(qts, path,
+                                      "complete-posted-error-address-writes"));
     g_assert_cmphex(crossbow_uint(qts, crossbow, "link-reset-restore-alive"),
                     ==, startup_alive);
 }
