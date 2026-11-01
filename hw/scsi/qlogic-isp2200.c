@@ -171,6 +171,7 @@ enum {
 #define ISP2200_MBOX_ABORT_COMMAND      0x0015
 #define ISP2200_MBOX_GET_PORT_QUEUE     0x0029
 #define ISP2200_MBOX_SET_RETRY_COUNT    0x0032
+#define ISP2200_MBOX_SET_PORT_QUEUE     0x0039
 #define ISP2200_MBOX_RESET_LINK_STATUS  0x0052
 #define ISP2200_MBOX_GET_LINK_STATUS    0x006b
 #define ISP2200_MBOX_ABORT_TARGET       0x0017
@@ -2016,7 +2017,7 @@ static uint16_t isp2200_fc_mailbox(QLogicISP2200State *s, uint16_t cmd,
         return ISP2200_MBOX_COMPLETE;
 
     /*
-     * The four commands below come from IRIX alone and no public source
+     * The five commands below come from IRIX alone and no public source
      * gives the firmware's replies. Each answer is an approximation: it
      * keeps the guest on the path it takes when the command succeeds
      * and invents no state.
@@ -2039,6 +2040,17 @@ static uint16_t isp2200_fc_mailbox(QLogicISP2200State *s, uint16_t cmd,
     /* Accepted and forgotten: the retry pair stays the control block's. */
     case ISP2200_MBOX_SET_RETRY_COUNT:
         trace_qlogic_isp2200_approximate_reply(cmd, 0);
+        return ISP2200_MBOX_COMPLETE;
+
+    /*
+     * IRIX sends only m0 and m1 and ignores the reply. The firmware's
+     * status is unknown; 0x4000 is a model choice. Depth and throttle
+     * are not kept, and no loop ID is checked: the guest's registers
+     * come back as written.
+     */
+    case ISP2200_MBOX_SET_PORT_QUEUE:
+        trace_qlogic_isp2200_approximate_reply(cmd, in[1] >> 8);
+        memcpy(out + 1, in + 1, 7 * sizeof(uint16_t));
         return ISP2200_MBOX_COMPLETE;
 
     /* Every link counter reads zero, so there is nothing to clear. */
@@ -2079,7 +2091,8 @@ static bool isp2200_fc_owned(uint16_t cmd)
 {
     switch (cmd) {
     case 0x0015: case 0x0017: case 0x0020: case 0x0022: case 0x0029:
-    case 0x0032: case 0x0040: case 0x0041: case 0x0047: case 0x0052:
+    case 0x0032: case 0x0039: case 0x0040: case 0x0041: case 0x0047:
+    case 0x0052:
     case 0x0062: case 0x0063: case 0x0064: case 0x006a: case 0x006b:
     case 0x006c: case 0x006e: case 0x006f: case 0x0071: case 0x0072:
     case 0x0074: case 0x0075: case 0x007c: case 0x007e:
