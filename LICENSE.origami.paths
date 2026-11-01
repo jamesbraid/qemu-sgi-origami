@@ -1053,6 +1053,7 @@ hw/mips/sgi/models/layers/products/origin3200-r16000.yaml
 hw/mips/sgi/models/layers/products/origin3200-two-ibricks.yaml
 hw/mips/sgi/models/layers/products/origin3400-r16000.yaml
 hw/mips/sgi/models/layers/products/origin3400-two-routers.yaml
+hw/mips/sgi/models/layers/products/origin3400-two-partitions.yaml
 hw/mips/sgi/models/origin3200-r16000.yaml
 hw/mips/sgi/models/origin3200-two-ibricks.yaml
 hw/mips/sgi/models/origin3400-r16000.yaml
@@ -1065,6 +1066,7 @@ scripts/tests/system-model-fixtures/origin3200-r14000-600mhz/resolved.sha256
 scripts/tests/system-model-fixtures/origin3400-r14000-600mhz/resolved.json
 scripts/tests/system-model-fixtures/origin3400-r14000-600mhz/resolved.sha256
 hw/mips/sgi/models/origin3400-two-routers.yaml
+hw/mips/sgi/models/origin3400-two-partitions.yaml
 scripts/tests/system-model-fixtures/origin3200-r16000/resolved.json
 scripts/tests/system-model-fixtures/origin3200-r16000/resolved.sha256
 scripts/tests/system-model-fixtures/origin3200-two-ibricks/resolved.json
@@ -1073,6 +1075,8 @@ scripts/tests/system-model-fixtures/origin3400-r16000/resolved.json
 scripts/tests/system-model-fixtures/origin3400-r16000/resolved.sha256
 scripts/tests/system-model-fixtures/origin3400-two-routers/resolved.json
 scripts/tests/system-model-fixtures/origin3400-two-routers/resolved.sha256
+scripts/tests/system-model-fixtures/origin3400-two-partitions/resolved.json
+scripts/tests/system-model-fixtures/origin3400-two-partitions/resolved.sha256
 tests/unit/crime-rational-82-reference.h
 tests/unit/crime-texture-82-reference.c
 tests/unit/crime-texture-82-reference.h

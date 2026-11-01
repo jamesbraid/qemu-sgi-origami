@@ -50,6 +50,7 @@ CONFIGURATIONS = {
     "origin3400-two-routers": "origin3400-two-routers.yaml",
     "origin3400-r16000": "origin3400-r16000.yaml",
     "origin3400-r14000-600mhz": "origin3400-r14000-600mhz.yaml",
+    "origin3400-two-partitions": "origin3400-two-partitions.yaml",
     "onyx2-rack": "onyx2-rack.yaml",
     "onyx2-deskside": "onyx2-deskside.yaml",
     "onyx3000": "onyx3000.yaml",

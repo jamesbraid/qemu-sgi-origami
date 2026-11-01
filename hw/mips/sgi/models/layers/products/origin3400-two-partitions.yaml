@@ -1,0 +1,276 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Two Origin 3400 partitions in one cabinet: two C-bricks on router ports 2
+# and 3 of one R-brick, an I-brick on each C-brick's XIO (II) connector, and
+# the L1 partition IDs 1 and 2. Otherwise the origin3400 layer's wiring.
+layer_version: 1
+sources:
+  007-4311-002-3400: "007-4311-002 printed page 89, Appendix B: an Origin 3400 has one to eight four-processor C-bricks, at least one I-brick and at most eight I/O bricks, at most two R-bricks, in a tall rack"
+  007-4311-002-bundles: "007-4311-002 printed pages 76 to 78: every Origin 3400 bundle ships four-processor C-bricks without memory, two R-bricks, one I-brick and one L2 controller"
+  007-4311-002-one-router: "007-4311-002 printed page 55, section 5.1: the 8- to 16-processor interconnect is four C-bricks cabled to one R-brick, labelled 19, with four cables in one rack"
+  007-4311-002-l2: "007-4311-002 printed page 42: an L2 controller is required in a rack that holds an R-brick"
+  007-4240-002-cbrick-ports: "007-4240-002 printed page 196 and 007-4311-002 printed page 36: C-bricks are cabled only to router ports 2, 3, 4 and 5"
+  007-4240-002-xio: "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick"
+  108-0240-002-ports: "108-0240-002 printed pages 2-28 and 2-29: I-brick ports A and B go to compute nodes"
+layer:
+  kind: product
+  id: origin3400-two-partitions
+  requires: {assembly: ip35}
+  topology:
+    min_nodes: 2
+    max_nodes: 2
+    # This composition fixes the selected fit, four processors in each of
+    # two C-bricks, so it is the only population an emulator built from
+    # it would accept.
+    supported_cpu_populations: [[4, 4]]
+    supported_processors:
+      - {part: r12000, clock_mhz: 400, cache_mib: 8}
+    supported_bank_mib_per_node:
+      - [512, 512, 512, 512, 512, 512, 512, 512]
+      - [512, 512, 512, 512, 512, 512, 512, 512]
+    provenance: vendor-document
+    sources: [007-4311-002-3400, 007-4311-002-one-router]
+  population:
+    nodes: 2
+    cpus_per_node: [4, 4]
+    provenance: vendor-document
+    sources: [007-4311-002-one-router, 007-4311-002-3400]
+  cpu_selection:
+    default: {clock_mhz: 400, cache_mib: 8}
+    slots: [cpu0, cpu1, cpu2, cpu3]
+  memory_kits_per_node: [kit-4096-eight-512-banks, kit-4096-eight-512-banks]
+  composition_rules:
+    counts:
+      - {bricks: [c-brick], min: 1, max: 8}
+      - {bricks: [r-brick], min: 1, max: 2}
+      - {bricks: [i-brick, p-brick, x-brick], max: 8, require: i-brick}
+    provenance: vendor-document
+    sources: [007-4311-002-3400, 007-4311-002-one-router]
+    notes: >-
+      The bundles ship two R-bricks from four processors up, while the
+      guide's 8- to 16-processor drawing has one. No cited page says why a
+      bundle carries the second router, so one or two are accepted.
+  data:
+    machine:
+      name: Origin 3400 (two partitions, product combination not a documented configuration)
+      model_role: emulation-target
+      notes: >-
+        The smallest partitioned Origin 3400: two four-processor C-bricks on
+        router ports 2 and 3 of one R-brick, each with its own I-brick for
+        a system disk and a console, as the configuration guide's rules for
+        a partition require, and partition IDs 1 and 2 in the C-brick
+        controllers. The guide lists two one-C-brick partitions as a valid
+        configuration (007-4311-002 Table 6-1, printed page 63); whether a
+        product ships two C-bricks with an R-brick rather than a direct
+        cable is not stated, so this composition is a model choice. The
+        R-brick presents all eight ports, as the origin3400 composition
+        does. The rack's L2 controller is not modelled, so the controllers'
+        partition-record field reads 0 and the stock PROM takes the ID from
+        the C-brick controller alone. Each C-brick is fitted as the
+        origin3400 composition's is, four 400 MHz R12000s with 8 MB
+        secondary caches and 4096 MB in eight 512 MB banks.
+      emulation:
+        bedrock_nodes:
+          c0-bedrock: &cbrick-bedrock
+            # Product code 0 in bits 15:12 is a C-brick to OpenBSD and the
+            # stock PROM. The low nibble selects the PROM's configuration
+            # row; 2 is the 400 MHz, 8 MB row this fit matches. The other
+            # bits are unknown and read zero.
+            board_id_word: 2
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask: {mode: fitted-banks}
+            provenance: derived
+            sources: ["openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick", "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row"]
+            notes: >-
+              Approximation. Established: product code 0. Chosen: low nibble
+              2, the configuration row of the selected fit; which nibble a
+              physical C-brick presents is unknown, and a register read on a
+              matching board would settle it.
+          c1-bedrock: *cbrick-bedrock
+        l1_controllers:
+          c0-l1:
+            profile: cbrick
+            partition: 1
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            revision: {major: 1, minor: 44, patch: 0}
+            notes: >-
+              The C-brick profile of the L1 model, holding partition 1. Its
+              firmware revision, for request 0x0005, is 1.44.0: every brick
+              image in the IRIX 6.5.30 L1 firmware composite carries that
+              version and answers 1, 44, 0. Which image a fitted C-brick
+              runs is inferred, and no capture gives its revision. The ID
+              is the model's choice: the partitioning guide stores IDs in
+              the controllers and numbers them from 1, and names no value
+              for a particular brick.
+          c1-l1:
+            profile: cbrick
+            partition: 2
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            revision: {major: 1, minor: 44, patch: 0}
+            notes: >-
+              The same C-brick profile and firmware revision as c0-l1,
+              holding partition 2.
+          ibrick0-l1:
+            profile: ibrick
+            revision: {major: 1, minor: 44, patch: 0}
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            notes: The I-brick profile of the L1 model, reached from c0's L1 over the XIO cable. Its firmware revision is the same approximation as the C-bricks'.
+          ibrick1-l1:
+            profile: ibrick
+            revision: {major: 1, minor: 44, patch: 0}
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            notes: The I-brick profile of the L1 model, reached from c1's L1 over the XIO cable. Its firmware revision is the same approximation as the C-bricks'.
+        io_boards:
+          ibrick0-xbridge-bridge-f:
+            ioc3_subsystem_id: 65535
+            mac_source: none
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick, hw/misc/tsb12lv22.c]
+            notes: >-
+              The IOC3 subsystem field is the unobserved placeholder, and no
+              source gives where the IO7's Ethernet address comes from. The
+              IEEE 1394 link controller's PHY is the model's lone
+              unconnected PHY, an approximation: the fitted PHY part is
+              unidentified, and no 1394 bus or CD-ROM is modelled.
+          ibrick1-xbridge-bridge-f:
+            ioc3_subsystem_id: 65535
+            mac_source: none
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick, hw/misc/tsb12lv22.c]
+            notes: >-
+              The IOC3 subsystem field is the unobserved placeholder, and no
+              source gives where the IO7's Ethernet address comes from. The
+              IEEE 1394 link controller's PHY is the model's lone
+              unconnected PHY, an approximation: the fitted PHY part is
+              unidentified, and no 1394 bus or CD-ROM is modelled.
+        system_timekeepers:
+          ibrick0-xbridge-bridge-f:
+            kind: m48t35-compatible
+            year_base: 1968
+            initial_ip27_fixture: false
+            provenance: derived
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"]
+            notes: >-
+              The IO7's time-of-day part is not identified; this is the
+              Origin 300's M48T35-compatible choice, an approximation. IP35
+              software uses the 1968 year convention.
+          ibrick1-xbridge-bridge-f:
+            kind: m48t35-compatible
+            year_base: 1968
+            initial_ip27_fixture: false
+            provenance: derived
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"]
+            notes: >-
+              The IO7's time-of-day part is not identified; this is the
+              Origin 300's M48T35-compatible choice, an approximation. IP35
+              software uses the 1968 year convention.
+        # The IP35 flash configuration block's product values: machine type
+        # 0, the C-brick rows' class, and the 400 MHz, 8 MB row's word.
+        ip35_firmware:
+          machine_type: 0
+          cpu_mode_word: 0x5414a785
+          provenance: derived
+          sources: ["firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row and its machine-type byte"]
+          notes: Inferred from the PROM's own table, as the Origin 300's values are; no C-brick flash block has been captured.
+        # The router answers the model's synthetic diagnostics, which no
+        # hardware record settles.
+        synthetic_router_diagnostics: true
+        machine_name: origin3000
+        display_description: SGI Origin 3400 (IP35), two partitions of one C-brick and an I-brick each, on an R-brick (model only; the product combination and partition IDs are approximations)
+        profile: origin3400-two-partitions
+        lifecycle: implemented
+        # Each C-brick runs the selected fit's 4096 MB only.
+        emulator_constraints:
+          accepted_bank_sizes_mib: [4096]
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - name: CPU reset view
+              address: "0x000_001fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: local Hub-special boot view
+              address: "0x100_18000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: bounded high local Hub-special boot view
+              address: "0x100_1fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: node-zero remote Hub-special boot view
+              address: "0x100_38000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+          second_selection:
+            address: "0x100_1a000000"
+            size: "0x0080_0000"
+          provenance: derived
+          sources: [qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-carrier, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-trampolines, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip35-views]
+          notes: >-
+            The Origin 300's stock IP35 PROM 6.210 payload and views, carried
+            by each C-brick's node; the Origin 3200 inventory reports the same
+            PROM revision. Emulator compatibility policy; no fitted flash part
+            or physical reset decoder is claimed.
+        initial_module_numbers:
+          # No reviewed source places the 3400's bricks in rack slots, so
+          # these numbers are model choices; they only need to be distinct.
+          - {component: c0-chassis, number: 4, reason: "Model choice: the Origin 3200's first C-brick slot, U04."}
+          - {component: c1-chassis, number: 7, reason: "Model choice: the Origin 3200's second C-brick slot, U07."}
+          - {component: ibrick0-brick, number: 16, reason: "Model choice: a distinct slot for the first C-brick's I-brick."}
+          - {component: ibrick1-brick, number: 18, reason: "Model choice: a distinct slot for the second C-brick's I-brick."}
+          - {component: rbrick-brick, number: 20, reason: "Model choice: a distinct slot for the R-brick."}
+        synthetic_identities:
+          - component: c0-bedrock
+            serial: "0x51454d554e00"
+            reason: Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.
+          - component: c1-bedrock
+            serial: "0x51454d554e01"
+            reason: Synthetic node identity N1, carrying the "QEMU" marker; not hardware evidence.
+          - component: ibrick0-xbridge
+            serial: "0x51454d555800"
+            reason: Synthetic I-brick XBridge identity; no physical barcode is claimed.
+          - component: ibrick0-ioc3
+            serial: "0x5e7454d55000"
+            reason: Synthetic I-brick IOC3 identity; no physical barcode is claimed.
+          - component: ibrick1-xbridge
+            serial: "0x51454d555801"
+            reason: Synthetic I-brick XBridge identity; no physical barcode is claimed.
+          - component: ibrick1-ioc3
+            serial: "0x5e7454d55001"
+            reason: Synthetic I-brick IOC3 identity; no physical barcode is claimed.
+          - component: rbrick-router
+            serial: "0x51454d555200"
+            reason: Synthetic router descriptor identity; no physical barcode is claimed.
+    evidence_policy: strict
+    components:
+      - id: rack
+        name: Origin 3400 tall rack
+        kind: chassis
+        provenance: vendor-document
+        description: The tall rack that holds the whole system.
+        sources: [007-4311-002-3400]
+    # Each C-brick cable is the R-brick port bus it is fitted to.
+    connections:
+      - {component: c0-bedrock, bus: rbrick-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
+      - {component: c0-link-connector, bus: rbrick-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
+      - {component: c1-bedrock, bus: rbrick-port-3-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
+      - {component: c1-link-connector, bus: rbrick-port-3-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
+    xio_cables:
+      - id: c0-to-ibrick
+        ends: [c0-xio-ii-connector, ibrick0-port-a]
+        provenance: vendor-document
+        sources: [007-4240-002-xio, 108-0240-002-ports]
+        notes: Port A is this composition's choice; which port a boot I-brick uses is unknown.
+      - id: c1-to-ibrick
+        ends: [c1-xio-ii-connector, ibrick1-port-a]
+        provenance: vendor-document
+        sources: [007-4240-002-xio, 108-0240-002-ports]
+        notes: Port A is this composition's choice, as for the first C-brick's I-brick.
