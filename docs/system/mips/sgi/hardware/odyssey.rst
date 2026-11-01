@@ -201,8 +201,8 @@ registers, memory and display.
      - Widget 13 *observed* in a Fuel inventory
        (:src:`tingo-fuel-irix-console`). The published board is a V10;
        the V12 default is a model choice.
-   * - ``onyx350-compat``, ``tezro-tower-multi`` and their ``-ip59``
-       topologies
+   * - ``onyx350`` and ``tezro``, on either node board and, on
+       ``tezro``, either interface board
      - PIC widget 12
      - none
      - Optional, ``slot=widget-12``. The IP53 page takes widget 12

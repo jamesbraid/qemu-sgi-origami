@@ -54,6 +54,7 @@ each platform page covers its own products.
    ip35
    ip53
    measured-machines
+   vocabulary
 
 Firmware
 --------
