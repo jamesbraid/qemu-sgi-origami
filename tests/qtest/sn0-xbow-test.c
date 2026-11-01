@@ -469,6 +469,24 @@ static void test_writable_storage(void)
 }
 
 /*
+ * Posted error-address completion is off by default, so the ordinary
+ * Crossbow refuses a store to a read-only error address register and
+ * latches the access error. The property exists for the IP53 integrated
+ * crossbar alone.
+ */
+static void test_error_address_write_defaults_to_refusal(void)
+{
+    QTestState *qts = xbow_start("");
+
+    g_assert_false(qtest_qom_get_bool(qts, XBOW,
+                                      "complete-posted-error-address-writes"));
+    reg_write(qts, ERR_LOWER, 0xdeadbeef);
+    g_assert_cmphex(reg_read(qts, ERR_LOWER), ==, 0);
+    g_assert_cmphex(reg_read(qts, STATUS), ==, STATUS_ACCESS_ERROR);
+    qtest_quit(qts);
+}
+
+/*
  * Writing the error command word clears it and both error addresses, and the
  * data written is discarded. Only the discard is pinned here: this device is
  * pristine, so all three registers were already zero and clearing them proves
@@ -1535,6 +1553,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/xbow/configured-identity-survives-reset",
                    test_configured_identity_survives_reset);
     qtest_add_func("/sn0/xbow/reset-values", test_reset_values);
+    qtest_add_func("/sn0/xbow/error-address-write-defaults-to-refusal",
+                   test_error_address_write_defaults_to_refusal);
     qtest_add_func("/sn0/xbow/link-register-decode",
                    test_link_register_decode);
     qtest_add_func("/sn0/xbow/link-population", test_link_population);

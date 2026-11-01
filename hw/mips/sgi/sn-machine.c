@@ -3027,8 +3027,11 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
         object_property_add_child(OBJECT(s), name, OBJECT(crossbow));
         object_unref(OBJECT(crossbow));
         qdev_prop_set_uint64(crossbow, "span", SN0_XIO_WIDGET_SIZE);
-        qdev_prop_set_bit(crossbow,
-                          "complete-posted-error-address-writes", true);
+        /*
+         * Posted error-address completion is established only for the IP53
+         * integrated crossbar, which sgi-pic builds itself; the Crossbow
+         * and XBridge crossbars here keep the refusing default.
+         */
         qdev_prop_set_uint32(crossbow, "revision",
                              descriptor->widget_revision);
         qdev_prop_set_uint32(crossbow, "part",

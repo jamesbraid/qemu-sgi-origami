@@ -3177,6 +3177,9 @@ static void test_ip53_runtime_construction(void)
     ip53_bcm_assert_static_device(qts);
     g_assert_cmpstr(rtc, ==, "ds1744");
     g_assert_null(qom_child_type(qts, "/machine/node0", "xbridge"));
+    /* Posted error-address completion is established for this crossbar. */
+    g_assert_true(qtest_qom_get_bool(qts, "/machine/pic-pic/pxbow",
+                                     "complete-posted-error-address-writes"));
 
     response = qtest_qmp(qts, "{'execute':'query-cpus-fast'}");
     cpus = qdict_get_qlist(response, "return");
