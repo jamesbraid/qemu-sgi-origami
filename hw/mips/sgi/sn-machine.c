@@ -5061,6 +5061,49 @@ static bool sgi_machine_io9_ethernet(SGIMachineState *s,
     return true;
 }
 
+/*
+ * PCI interrupt wiring for a PIC head that carries no catalogue function.
+ * The head's eight inputs are board wiring, but the software convention is
+ * the same on every head: for configuration device d from 1 to 4, INTA and
+ * INTC drive input d - 1 and INTB and INTD drive input (d - 1) XOR 4. The
+ * INTA board trace is graded inferred in the reviewed datasheet; the INTB,
+ * INTC and INTD routes are the software convention it allows a model to
+ * wire, with no line-by-line board evidence. A device above number 4
+ * reaches no input, so the head logs its assertion as unwired.
+ */
+static void sgi_machine_wire_pic_head_intx(SGIPICState *pic, unsigned head)
+{
+    DeviceState *dev = sgi_pic_head_device(pic, head);
+
+    for (unsigned int device = 1; device <= 4; device++) {
+        unsigned int input = device - 1;
+
+        for (unsigned int pin = 0; pin < 4; pin++) {
+            unsigned int route = pin & 1 ? input ^ 4 : input;
+
+            qdev_connect_gpio_out_named(dev, "pci-intx", device * 4 + pin,
+                                        qdev_get_gpio_in(dev, route));
+        }
+    }
+}
+
+static bool sgi_machine_pic_head_has_io9(const SGIModelTopology *t,
+                                         size_t host, unsigned int head)
+{
+    const SGIModelIoBoardList *entry;
+
+    for (entry = t->io_boards; entry; entry = entry->next) {
+        const SGIModelIoBoard *board = entry->value;
+
+        if (board->populated &&
+            board->preset == SGI_MODEL_IO_BOARD_PRESET_IO9 &&
+            board->pci_host_index == host && board->pci_head == head) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool sgi_machine_build_pic_io9(SGIMachineState *s,
                                       const SGIModelTopology *t,
                                       Error **errp)
@@ -5277,6 +5320,20 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
                                                          function->pic_input));
             if (!pci_realize_and_unref(pci, bus, errp)) {
                 return false;
+            }
+        }
+    }
+
+    /*
+     * The IO9 head keeps the catalogue's per-function wiring above. Every
+     * other head takes the shared convention, so an adapter on a free
+     * head reaches the Bedrock.
+     */
+    for (i = 0; i < host_count; i++) {
+        for (unsigned int head = 0; head < 2; head++) {
+            if (!sgi_machine_pic_head_has_io9(t, i, head)) {
+                sgi_machine_wire_pic_head_intx(SGI_PIC(s->pic_hosts[i]),
+                                               head);
             }
         }
     }

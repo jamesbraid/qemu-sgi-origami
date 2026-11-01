@@ -3748,6 +3748,188 @@ static void test_tezro_one_processor_board_has_one_pic(void)
 }
 
 /*
+ * PCI interrupt routing on the heads that carry no catalogue function
+ * (docs/datasheets/tezro-tower-construction.md, "PIC head interrupt
+ * routing"): the second PIC's two heads and the IO9 PIC's other head.
+ * The convention is the software one, so this pins the model's wiring and
+ * says nothing about board traces: INTA and INTC of configuration device
+ * d, for d from 1 to 4, reach the head's input d - 1, INTB and INTD reach
+ * (d - 1) XOR 4, and a device above number 4 reaches none.
+ *
+ * Each (head, input) pair is programmed to its own Bedrock level, so the
+ * processor-interface pending word names exactly which inputs delivered a
+ * packet. Every test device calls pci_set_irq() through its "test-irq"
+ * input, as an adapter's own interrupt line does.
+ */
+#define TEZRO_INTX_LEVEL_BASE 0x20
+#define TEZRO_INTX_LEVELS_MASK (UINT64_C(0xffffff) << TEZRO_INTX_LEVEL_BASE)
+
+typedef struct TezroIntxHead {
+    const char *bus;
+    uint64_t base;
+} TezroIntxHead;
+
+static const TezroIntxHead tezro_intx_heads[] = {
+    { "pic-pic-xio-b-head-0.0", TEZRO_WIDGET(11) },
+    { "pic-pic-xio-b-head-1.0", TEZRO_WIDGET(11) + UINT64_C(0x800000) },
+    { "pic-pic-xio-f-head-1.0", TEZRO_WIDGET(15) + UINT64_C(0x800000) },
+};
+
+#define TEZRO_INTX_IO9_HEAD (TEZRO_WIDGET(15))
+
+static unsigned int tezro_intx_level(unsigned int head, unsigned int input)
+{
+    return TEZRO_INTX_LEVEL_BASE + head * 8 + input;
+}
+
+static char *tezro_intx_devices(unsigned int pin)
+{
+    GString *args = g_string_new(NULL);
+
+    for (unsigned int head = 0; head < G_N_ELEMENTS(tezro_intx_heads);
+         head++) {
+        for (unsigned int device = 1; device <= 4; device++) {
+            g_string_append_printf(args,
+                "-device sgi-bridge-dma-test,id=intx-h%u-d%u,bus=%s,"
+                "addr=%u,interrupt-pin=%u ", head, device,
+                tezro_intx_heads[head].bus, device, pin);
+        }
+    }
+    return g_string_free(args, FALSE);
+}
+
+static void tezro_intx_program(QTestState *qts, unsigned int head,
+                               uint64_t enable)
+{
+    uint64_t base = tezro_intx_heads[head].base;
+
+    for (unsigned int input = 0; input < 8; input++) {
+        qtest_writeq(qts, base + 0x130 + input * sizeof(uint64_t),
+                     ((uint64_t)tezro_intx_level(head, input) << 48) |
+                     IP53_PI_INTERRUPT_ADDRESS);
+    }
+    qtest_writeq(qts, base + 0x108, enable);
+    qtest_writeq(qts, base + 0x118, enable);
+}
+
+static void tezro_intx_set(QTestState *qts, unsigned int head,
+                           unsigned int device, bool level)
+{
+    g_autofree char *path = g_strdup_printf(
+        "/machine/peripheral/intx-h%u-d%u", head, device);
+
+    qtest_set_irq_in(qts, path, "test-irq", 0, level);
+}
+
+static uint64_t tezro_intx_pending(QTestState *qts)
+{
+    return qtest_readq(qts, IP53_PI_PENDING) & TEZRO_INTX_LEVELS_MASK;
+}
+
+static void tezro_intx_assert_quiet(QTestState *qts)
+{
+    g_assert_cmphex(tezro_intx_pending(qts), ==, 0);
+    for (unsigned int head = 0; head < G_N_ELEMENTS(tezro_intx_heads);
+         head++) {
+        g_assert_cmphex(qtest_readq(qts, tezro_intx_heads[head].base + 0x100),
+                        ==, 0);
+    }
+}
+
+/* pin is the PCI pin, 1 to 4 for INTA to INTD. */
+static void test_tezro_free_head_intx(const void *data)
+{
+    unsigned int pin = GPOINTER_TO_UINT(data);
+    g_autofree char *devices = tezro_intx_devices(pin);
+    IP53RuntimeTestFixture *fixture =
+        ip53_runtime_test_start_with_binary_profile(
+        NULL, TEZRO_MULTI_MACHINE, devices, "4", "4G", "0x009bad85");
+    QTestState *qts = fixture->qts;
+    uint64_t io9_status = qtest_readq(qts, TEZRO_INTX_IO9_HEAD + 0x100);
+    QDict *resp;
+
+    for (unsigned int head = 0; head < G_N_ELEMENTS(tezro_intx_heads);
+         head++) {
+        tezro_intx_program(qts, head, 0xff);
+    }
+    tezro_intx_assert_quiet(qts);
+
+    for (unsigned int head = 0; head < G_N_ELEMENTS(tezro_intx_heads);
+         head++) {
+        for (unsigned int device = 1; device <= 4; device++) {
+            /* INTA and INTC take d - 1, INTB and INTD (d - 1) XOR 4. */
+            unsigned int input = (device - 1) ^ (pin % 2 == 0 ? 4 : 0);
+            uint64_t base = tezro_intx_heads[head].base;
+
+            tezro_intx_set(qts, head, device, true);
+            g_assert_cmphex(qtest_readq(qts, base + 0x100), ==,
+                            UINT64_C(1) << input);
+            g_assert_cmphex(tezro_intx_pending(qts), ==,
+                            UINT64_C(1) << tezro_intx_level(head, input));
+            for (unsigned int other = 0;
+                 other < G_N_ELEMENTS(tezro_intx_heads); other++) {
+                if (other != head) {
+                    g_assert_cmphex(qtest_readq(qts,
+                        tezro_intx_heads[other].base + 0x100), ==, 0);
+                }
+            }
+            g_assert_cmphex(qtest_readq(qts, TEZRO_INTX_IO9_HEAD + 0x100),
+                            ==, io9_status);
+
+            /*
+             * The model latches status until the guest clears it, as its
+             * register contract has it: lowering the line drops the level
+             * (the pending word) and sends the clear packet only.
+             */
+            tezro_intx_set(qts, head, device, false);
+            g_assert_cmphex(tezro_intx_pending(qts), ==, 0);
+            g_assert_cmphex(qtest_readq(qts, base + 0x100), ==,
+                            UINT64_C(1) << input);
+            qtest_writeq(qts, base + 0x110, UINT64_C(1) << input);
+            tezro_intx_assert_quiet(qts);
+        }
+
+        /*
+         * No input is selected above device 4, and the head reserves those
+         * slots, so a card cannot be placed where it would raise one.
+         */
+        resp = qtest_qmp(qts, "{'execute': 'device_add', 'arguments': "
+                         "{'driver': 'sgi-bridge-dma-test', 'bus': %s, "
+                         "'addr': '5', 'interrupt-pin': 1}}",
+                         tezro_intx_heads[head].bus);
+        g_assert_true(qdict_haskey(resp, "error"));
+        qobject_unref(resp);
+        tezro_intx_assert_quiet(qts);
+    }
+    ip53_runtime_test_stop(fixture);
+}
+
+/* A masked input sets status when its line rises but sends no packet. */
+static void test_tezro_free_head_intx_masked(void)
+{
+    g_autofree char *devices = tezro_intx_devices(1);
+    IP53RuntimeTestFixture *fixture =
+        ip53_runtime_test_start_with_binary_profile(
+        NULL, TEZRO_MULTI_MACHINE, devices, "4", "4G", "0x009bad85");
+    QTestState *qts = fixture->qts;
+
+    for (unsigned int head = 0; head < G_N_ELEMENTS(tezro_intx_heads);
+         head++) {
+        uint64_t base = tezro_intx_heads[head].base;
+
+        tezro_intx_program(qts, head, 0);
+        tezro_intx_set(qts, head, 2, true);
+        g_assert_cmphex(qtest_readq(qts, base + 0x100), ==, 1U << 1);
+        g_assert_cmphex(tezro_intx_pending(qts), ==, 0);
+        tezro_intx_set(qts, head, 2, false);
+        qtest_writeq(qts, base + 0x110, 1U << 1);
+        g_assert_cmphex(qtest_readq(qts, base + 0x100), ==, 0);
+        g_assert_cmphex(tezro_intx_pending(qts), ==, 0);
+    }
+    ip53_runtime_test_stop(fixture);
+}
+
+/*
  * One tezro topology covers both interface boards: -smp 1 builds the
  * one-processor board's one PIC, two or four processors the other
  * board's two.
@@ -13054,6 +13236,15 @@ int main(int argc, char **argv)
                    test_tezro_link_reset_isolates_widgets);
     qtest_add_func("sn/builder/tezro-one-processor-board-has-one-pic",
                    test_tezro_one_processor_board_has_one_pic);
+    for (unsigned int pin = 1; pin <= 4; pin++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn/builder/tezro-free-head-intx-pin%u", pin);
+
+        qtest_add_data_func(name, GUINT_TO_POINTER(pin),
+                            test_tezro_free_head_intx);
+    }
+    qtest_add_func("sn/builder/tezro-free-head-intx-masked",
+                   test_tezro_free_head_intx_masked);
     qtest_add_func("sn/builder/ip53-bcm5701-takes-machine-mac",
                    test_ip53_bcm5701_takes_machine_mac);
     qtest_add_func("sn/builder/ip53-populations-fit-their-r16000s",
