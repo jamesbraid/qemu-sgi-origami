@@ -6,7 +6,8 @@
 InfiniteReality: graphics pipes
 ===============================
 
-Used in :ref:`sgi-ip27` (Onyx2). The Onyx 3000 G-brick holds
+Used in :ref:`sgi-ip27` (Onyx2) and :ref:`sgi-ip35` (the Onyx 3400 with
+InfiniteReality3 on the ``origin3000`` machine). The Onyx 3000 G-brick holds
 InfiniteReality3 and InfiniteReality4 pipes (*established*,
 :src:`007-4264-002 pp. 39-43`); it is described on :ref:`sgi-bricks`,
 and the Onyx 3400 with InfiniteReality3 builds it

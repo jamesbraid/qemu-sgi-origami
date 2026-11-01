@@ -6,8 +6,10 @@
 M48T35, DS1742 and DS1744: battery-backed timekeepers
 =====================================================
 
-Used in :ref:`sgi-ip27` (M48T35), :ref:`sgi-ip35` (M48T35-compatible)
-and :ref:`sgi-ip53` (DS1744-compatible). The DS1742 model is fitted by
+Used in :ref:`sgi-ip27` (M48T35), :ref:`sgi-ip35` (M48T35-compatible, on
+the Origin 300 and Fuel boards and on the IO7 of the Origin 3000 I-brick
+the ``origin3000`` machine builds, :ref:`sgi-bricks-ibrick`) and
+:ref:`sgi-ip53` (DS1744-compatible). The DS1742 model is fitted by
 no machine profile.
 
 .. seealso::
