@@ -6,7 +6,9 @@
 VICE: video and image compression engine
 ========================================
 
-Used in :ref:`sgi-ip32` (O2). VICE is a media processor on the
+Used in no machine. :ref:`sgi-ip32` describes the O2 and its CRIME
+memory controller (:doc:`crime`), the chip VICE talks to. VICE is a
+media processor on the
 processor's system bus (SysAD), which it shares with the CPU
 (:src:`099-0123-003 p. 20, 97`), *established*. It talks to CRIME over
 handshake pins. It holds a scalar and vector signal processor (the MSP), a
