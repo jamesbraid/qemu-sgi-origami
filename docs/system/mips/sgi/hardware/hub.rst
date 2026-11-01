@@ -1414,8 +1414,8 @@ zero stays on the reader's node; beyond it the access goes to the claim
 layer, which routes number zero to whichever Hub holds it. The register
 resets to 15, an *approximation*; every guest writes it first. The
 stock PROM writes code 1, OpenBSD writes 0, and Linux writes 0 on the
-boot node and 2 (8 KiB) on the others (``ip27-init.c``), all *software
-expectations*. The machine creates each window at 64 MiB and the Hub
+boot node and 2 (8 KiB) on the others (``ip27-init.c``), each a *software
+expectation*. The machine creates each window at 64 MiB and the Hub
 resizes and gates it on a store, at reset exit and after a load. The
 other spaces' reader-local windows do not depend on the register.
 

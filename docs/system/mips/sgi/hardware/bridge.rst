@@ -744,8 +744,8 @@ specification names this range the alias for 32-bit device targets and
 gives the swap for memory outside the device windows to control bit 22
 (:src:`bridge-asic-spec-4.0 p. 52-55`). Linux and OpenBSD clear control
 bits 22 and 23 at start of day. The IRIX 6.5.30 kernel reaches PCI BARs
-too large for a device window through this range. Both are *software
-expectations*.
+too large for a device window through this range. Each is a *software
+expectation*.
 
 A window cycle that no PCI target claims, because no enabled BAR of the
 selected space covers the address, is a master time-out (status bit 11).
@@ -1150,8 +1150,8 @@ family ``0x0b``, reads 64 bytes as two 32-byte pages, checks each page's
 stored CRC-16 against the residue ``0xb001``, and builds a part number from
 bytes 11-29 and 32-37 with spaces dropped. If the read fails, the probe is
 deferred and the PCI bus never appears. A valid record with an unknown
-part number attaches with no board fixups. These are *software
-expectations*.
+part number attaches with no board fixups. Each is a *software
+expectation*.
 
 When the machine gives a ``board-name``, the model stores a fixed-offset
 record:

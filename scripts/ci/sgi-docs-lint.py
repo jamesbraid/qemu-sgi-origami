@@ -322,14 +322,16 @@ def lint_page(rel, text):
             add(j + 1, 'the first paragraph after the title must begin '
                 'with "Used in"')
 
-    for n, line in prose_lines(lines):
-        for m in ITALIC.finditer(LITERAL.sub('', line)):
-            word = m.group(1)
+    for first, para in paragraphs(lines):
+        # A phrase may wrap onto the next line, so look at the paragraph.
+        for m in ITALIC.finditer(LITERAL.sub(blank, para)):
+            word = ' '.join(m.group(1).split())
             if word in RATINGS:
                 continue
             low = word.lower()
             if low.startswith(RATING_STEMS) or low in NEAR_MISSES:
-                add(n, f'italic "*{word}*" is not a rating; use one of the '
+                add(first + para.count('\n', 0, m.start()),
+                    f'italic "*{word}*" is not a rating; use one of the '
                     'six in sgi-ratings exactly')
 
     for first, para in paragraphs(lines):

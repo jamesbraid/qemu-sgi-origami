@@ -347,8 +347,8 @@ both forms.
      - ``0``
      - Read-write.
 
-The register set and the consumers' demands on it are *software
-expectations*: line status bits 5 and 6 whenever a byte can be accepted,
+The register set and the consumers' demands on it are each a *software
+expectation*: line status bits 5 and 6 whenever a byte can be accepted,
 bit 0 exactly while a byte waits, and clear-to-send, without which the
 SN1 early path and the MIPS port spin forever (``l1.c`` line 1973;
 ``ip35-l1.c`` lines 56-57). The constant values are an *approximation*:
