@@ -71,6 +71,30 @@ def first_content(lines):
     return None
 
 
+def prose_lines(lines):
+    """Yield (line number, line) for the lines that are prose.
+
+    Skip literal text only: a code or literal directive's body and the
+    block after a paragraph ending in "::". Other directives, such as
+    list-table, seealso and note, hold prose and are included.
+    """
+    block_indent = None
+    for n, line in enumerate(lines, 1):
+        indent = len(line) - len(line.lstrip())
+        if block_indent is not None:
+            if line.strip() and indent <= block_indent:
+                block_indent = None
+            else:
+                continue
+        if LITERAL_DIRECTIVE.match(line) or (
+                line.rstrip().endswith('::') and not DIRECTIVE.match(line)):
+            block_indent = indent
+            if LITERAL_DIRECTIVE.match(line):
+                continue
+            line = line.rstrip()[:-2]
+        yield n, line
+
+
 def lint_page(rel, text):
     out = []
     lines = text.split('\n')
@@ -113,24 +137,7 @@ def lint_page(rel, text):
             add(j + 1, 'the first paragraph after the title must begin '
                 'with "Used in"')
 
-    # Skip literal text only: a code or literal directive's body and the
-    # block after a paragraph ending in "::". Other directives, such as
-    # list-table, seealso and note, hold prose and are checked.
-    block_indent = None
-    for n, line in enumerate(lines, 1):
-        indent = len(line) - len(line.lstrip())
-        if block_indent is not None:
-            if line.strip() and indent <= block_indent:
-                block_indent = None
-            else:
-                continue
-        if LITERAL_DIRECTIVE.match(line) or (
-                line.rstrip().endswith('::') and not DIRECTIVE.match(line)):
-            block_indent = indent
-            if not LITERAL_DIRECTIVE.match(line):
-                line = line.rstrip()[:-2]
-            else:
-                continue
+    for n, line in prose_lines(lines):
         for m in ITALIC.finditer(LITERAL.sub('', line)):
             word = m.group(1)
             if word in RATINGS:
