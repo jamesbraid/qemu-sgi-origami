@@ -50,8 +50,12 @@ layer:
         Proposed one-node profile using the captured 800 MHz, 8 MiB
         R16000 input tuple, four CPUs, 8 GiB memory, Bedrock at 200 MHz,
         PIC revision 3 runtime profile and a launcher-configured PROM seed.
-        Reset word 0x009caf85 is an updater-derived candidate, not a measured
-        electrical reset value. The 8 GiB software bank map follows logical
+        The flash word 0x549caf85 is the stock IP35 PROM's configuration-table word
+        for 800 MHz and 8 MiB with cache tap 0xa, the tap every captured 800 MHz,
+        8 MiB board prints. The table row carries machine type 2 where this
+        profile stores 0. Reset word 0x009caf85 is the low 25 bits of that
+        flash word, a model derivation that is not itself a table row, and not a
+        measured electrical reset value. The 8 GiB software bank map follows logical
         banks 0 through 7; it does not claim physical DIMM slot positions or
         supply SPD bytes or DIMM part identities. The capture reports PROM
         6.211, while the selected held payload is 6.210. This is a
@@ -62,7 +66,7 @@ layer:
         rather than the captured module's InfiniteReality configuration.
       firmware_config:
         processor_reset_mode: 0x009caf85
-        processor_firmware_word: 0x569caf85
+        processor_firmware_word: 0x549caf85
         machine_type: 0x00000000
         flash_read_cycles: 16
         flash_write_cycles: 16

@@ -783,12 +783,12 @@ class BedrockConfigurationTests(unittest.TestCase):
 class Ip53CpuContextTests(unittest.TestCase):
     def test_full_firmware_word_and_node_clocks_reach_the_l1(self):
         for name, word, cpu_hz, reset in (
-                ("origin350", 0x569cad85, 700_000_000, 0x009cad85),
-                ("onyx350/ip53", 0x569caf85, 800_000_000, 0x009caf85),
-                ("tezro/one-processor", 0x549bad85, 700_000_000, 0x009bad85),
-                ("tezro/two-four-processor", 0x549bad85, 700_000_000,
+                ("origin350", 0x589bad85, 700_000_000, 0x009bad85),
+                ("onyx350/ip53", 0x549caf85, 800_000_000, 0x009caf85),
+                ("tezro/one-processor", 0x589bad85, 700_000_000, 0x009bad85),
+                ("tezro/two-four-processor", 0x589bad85, 700_000_000,
                  0x009bad85),
-                ("tezro-rack", 0x549bad85, 700_000_000, 0x009bad85),
+                ("tezro-rack", 0x589bad85, 700_000_000, 0x009bad85),
                 ("onyx4-host", 0x4aedb385, 1_000_000_000, 0x00edb385),
                 ("origin350/ip59", 0x4aedb385, 1_000_000_000, 0x00edb385),
                 ("tezro/two-four-processor-ip59", 0x4aedb385,

@@ -28,7 +28,7 @@ layer:
     provenance: derived
     sources: [ip53-product-capacity, ip53-runtime-review]
   cpu_selection:
-    default: {clock_mhz: 700, cache_mib: 8}
+    default: {clock_mhz: 700, cache_mib: 4}
     slots: [cpu0, cpu1, cpu2, cpu3]
   memory_kits_per_node: [kit-2048-at-banks-0-1-origin350-profile]
   data:
@@ -36,19 +36,23 @@ layer:
       name: Origin 350 IP53 software profile
       model_role: emulation-target
       notes: >-
-        One-node model profile using the selected 700 MHz, 8 MiB
-        R16000 input tuple, four CPUs, 2 GiB memory, Bedrock at 200 MHz,
+        One-node model profile using the selected 700 MHz, 4 MiB
+        R16000 input tuple, the tuple of the 030-1868-001 board, four CPUs, 2 GiB memory, Bedrock at 200 MHz,
         PIC revision 3 runtime profile and a launcher-configured PROM seed.
-        Reset word 0x009cad85 is an updater-derived candidate, not a measured
-        electrical reset value. The two-DIMM 2 GiB population and its positions
+        The flash word 0x589bad85 is the stock IP35 PROM's configuration-table word
+        for 700 MHz and 4 MiB with cache tap 0xc, the tap all but one
+        030-1868-001 board prints (that one prints 0x1c under an older PROM).
+        The table rows carry machine type 2 where this profile stores 0. Reset word 0x009bad85 is the low 25 bits of that flash
+        word, a model derivation that is not itself a table row, and not a
+        measured electrical reset value. The two-DIMM 2 GiB population and its positions
         in banks 0 and 1 are synthetic software inputs; no SPD bytes or DIMM
         part identity are supplied. The base PROM payload metadata names the
         original operator asset; the launcher applies the selected seed and
         records the configured seed hash separately. This does not establish a
         fitted flash part or stock PROM boot.
       firmware_config:
-        processor_reset_mode: 0x009cad85
-        processor_firmware_word: 0x569cad85
+        processor_reset_mode: 0x009bad85
+        processor_firmware_word: 0x589bad85
         machine_type: 0x00000000
         flash_read_cycles: 16
         flash_write_cycles: 16

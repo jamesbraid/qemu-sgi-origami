@@ -2425,9 +2425,9 @@
         }
       },
       "ip35_firmware": {
-        "cpu_mode_word": 1453108613,
+        "cpu_mode_word": 1419554181,
         "machine_type": 0,
-        "notes": "Approximation. The Origin 350's full firmware word for the 700 MHz, 8 MB R16000 fit; no Cx-brick flash block has been captured.",
+        "notes": "Approximation. The stock IP35 PROM's configuration-table word for 700 MHz and 8 MB with cache tap 0xa, the tap the one Onyx 350 board (030-1812-002) with that tuple prints, so borrowed across products; the table row carries machine type 2 where this block stores 0. No Cx-brick flash block has been captured.",
         "provenance": "derived",
         "sources": [
           "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected 6.210 flash payload and seed policy"
@@ -2595,7 +2595,7 @@
         {
           "cache_mib": 8,
           "clock_mhz": 700,
-          "notes": "Selected software profile for the Origin 350 IP53 runtime model. This tuple does not identify a processor stepping or prove a physical Origin 350 configuration."
+          "notes": "Selected software profile for the Origin 3900 IP53 runtime model. This tuple does not identify a processor stepping or prove a physical Origin 3900 configuration."
         },
         {
           "cache_mib": 8,
@@ -2610,7 +2610,7 @@
         {
           "cache_mib": 4,
           "clock_mhz": 700,
-          "notes": "Tezro compatibility tuple. Cache clock is supplied by the product component; processor identification and reset Config0 remain unknown."
+          "notes": "Origin 350 and Tezro tuple, printed by the 030-1868-001 and 030-1869-001 boards. Cache clock is supplied by the product component; processor identification and reset Config0 remain unknown."
         }
       ]
     }

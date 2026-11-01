@@ -20912,9 +20912,9 @@
         }
       ],
       "processor": {
-        "cache-mib": 8,
+        "cache-mib": 4,
         "clock-hz": 700000000,
-        "id": "r16000-700mhz-8mb",
+        "id": "r16000-700mhz-4mb",
         "part": "R16000"
       },
       "product": "origin350",
@@ -29611,7 +29611,7 @@
           "l1": {
             "cpu-context": {
               "cpu-clock-hz": 800000000,
-              "cpu-mode-word": 1453109125,
+              "cpu-mode-word": 1419554693,
               "hub-clock-hz": 200000000
             },
             "reported-type": 56,
@@ -29710,7 +29710,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 1453109125,
+        "cpu-mode-word": 1419554693,
         "machine-type": 0
       },
       "ip53-runtime": {
@@ -39968,7 +39968,7 @@
           "l1": {
             "cpu-context": {
               "cpu-clock-hz": 700000000,
-              "cpu-mode-word": 1453108613,
+              "cpu-mode-word": 1486597509,
               "hub-clock-hz": 200000000
             },
             "reported-type": 55,
@@ -40032,7 +40032,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 1453108613,
+        "cpu-mode-word": 1486597509,
         "machine-type": 0
       },
       "ip53-runtime": {
@@ -40105,44 +40105,44 @@
           "cpu-slots": [
             {
               "assembly": {
-                "cache-mib": 8,
+                "cache-mib": 4,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz-8mb",
+                "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10268037
+                "mode-bits": 10202501
               },
               "interface": 0,
               "slot": 0
             },
             {
               "assembly": {
-                "cache-mib": 8,
+                "cache-mib": 4,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz-8mb",
+                "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10268037
+                "mode-bits": 10202501
               },
               "interface": 0,
               "slot": 1
             },
             {
               "assembly": {
-                "cache-mib": 8,
+                "cache-mib": 4,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz-8mb",
+                "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10268037
+                "mode-bits": 10202501
               },
               "interface": 1,
               "slot": 0
             },
             {
               "assembly": {
-                "cache-mib": 8,
+                "cache-mib": 4,
                 "clock-hz": 700000000,
-                "id": "r16000-700mhz-8mb",
+                "id": "r16000-700mhz-4mb",
                 "kind": "R16000",
-                "mode-bits": 10268037
+                "mode-bits": 10202501
               },
               "interface": 1,
               "slot": 1
@@ -40488,7 +40488,7 @@
           "l1": {
             "cpu-context": {
               "cpu-clock-hz": 700000000,
-              "cpu-mode-word": 1453108613,
+              "cpu-mode-word": 1419554181,
               "hub-clock-hz": 200000000
             },
             "reported-type": 67,
@@ -40548,7 +40548,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 1453108613,
+        "cpu-mode-word": 1419554181,
         "machine-type": 0
       },
       "junk-uart": -1,
@@ -41597,7 +41597,7 @@
           "l1": {
             "cpu-context": {
               "cpu-clock-hz": 700000000,
-              "cpu-mode-word": 1419488645,
+              "cpu-mode-word": 1486597509,
               "hub-clock-hz": 200000000
             },
             "reported-type": 81,
@@ -41661,7 +41661,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 1419488645,
+        "cpu-mode-word": 1486597509,
         "machine-type": 0
       },
       "ip53-runtime": {
@@ -42078,7 +42078,7 @@
           "l1": {
             "cpu-context": {
               "cpu-clock-hz": 700000000,
-              "cpu-mode-word": 1419488645,
+              "cpu-mode-word": 1486597509,
               "hub-clock-hz": 200000000
             },
             "reported-type": 57,
@@ -42179,7 +42179,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 1419488645,
+        "cpu-mode-word": 1486597509,
         "machine-type": 0
       },
       "ip53-runtime": {
@@ -42313,7 +42313,7 @@
           "l1": {
             "cpu-context": {
               "cpu-clock-hz": 700000000,
-              "cpu-mode-word": 1419488645,
+              "cpu-mode-word": 1486597509,
               "hub-clock-hz": 200000000
             },
             "reported-type": 57,
@@ -42412,7 +42412,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 1419488645,
+        "cpu-mode-word": 1486597509,
         "machine-type": 0
       },
       "ip53-runtime": {

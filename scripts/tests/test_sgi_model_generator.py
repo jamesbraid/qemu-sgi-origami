@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "425a372ab7768d9186e9a83193496558a34701119d70dd51b6a59873aaf69793"
+    "9db2eac292005e403e766e268ed5b95ee95ef30d33dd13d46816f883508fb106"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -932,10 +932,10 @@ class FuelTests(unittest.TestCase):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
         ip53_words = {
-            ("origin350", "ip53"): 0x569cad85,
-            ("onyx350", "ip53"): 0x569caf85,
-            ("tezro", "ip53"): 0x549bad85,
-            ("tezro-rack", "ip53"): 0x549bad85,
+            ("origin350", "ip53"): 0x589bad85,
+            ("onyx350", "ip53"): 0x549caf85,
+            ("tezro", "ip53"): 0x589bad85,
+            ("tezro-rack", "ip53"): 0x589bad85,
             # The IP59 boards all share the 1 GHz, 16 MB word.
             ("origin350", "ip59"): 0x4aedb385,
             ("onyx350", "ip59"): 0x4aedb385,
@@ -954,12 +954,13 @@ class FuelTests(unittest.TestCase):
                     "cpu-mode-word": 0x5414a785})
                 continue
             if topology["name"] == "origin3900":
-                # The Cx-brick reuses the Origin 350's firmware word for
-                # its board.
+                # The Cx-brick's IP53 word is the table row for its
+                # 700 MHz, 8 MiB fit; its IP59 word is the Origin 350's.
                 self.assertEqual(topology["ip35-firmware"], {
                     "machine-type": 0,
-                    "cpu-mode-word": ip53_words[
-                        ("origin350", topology["board"])]})
+                    "cpu-mode-word": 0x549cad85
+                    if topology["board"] == "ip53"
+                    else ip53_words[("origin350", "ip59")]})
                 continue
             if product not in ("origin300", "fuel", "origin350",
                                "onyx350", "tezro", "onyx4-host"):
