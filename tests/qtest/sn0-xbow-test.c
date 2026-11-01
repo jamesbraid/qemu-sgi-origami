@@ -260,8 +260,8 @@ static void test_reset_values(void)
     g_assert_cmphex(reg_read(qts, ERR_CMD), ==, 0);
     g_assert_cmphex(reg_read(qts, LLP_CONTROL), ==, 0x03ff1810);
     g_assert_cmphex(reg_read(qts, ARB_RELOAD), ==, 0x00000002);
-    g_assert_cmphex(reg_read(qts, PERF_A), ==, 0x00800000);
-    g_assert_cmphex(reg_read(qts, PERF_B), ==, 0x00800000);
+    g_assert_cmphex(reg_read(qts, PERF_A), ==, 0);
+    g_assert_cmphex(reg_read(qts, PERF_B), ==, 0);
     g_assert_cmphex(reg_read(qts, NIC), ==, 0x00000002);
 
     for (widget = WIDGET_IO; widget <= WIDGET_LAST; widget++) {
@@ -452,7 +452,9 @@ static void test_writable_storage(void)
     reg_write(qts, ARB_RELOAD, 0xffffffff);
     g_assert_cmphex(reg_read(qts, ARB_RELOAD), ==, 0x3f);
     reg_write(qts, PERF_A, 0xffffffff);
-    g_assert_cmphex(reg_read(qts, PERF_A), ==, 0x00f00000);
+    g_assert_cmphex(reg_read(qts, PERF_A), ==, 0x00700000);
+    reg_write(qts, PERF_B, 0xffffffff);
+    g_assert_cmphex(reg_read(qts, PERF_B), ==, 0x00700000);
     reg_write(qts, NIC, 0xffffffff);
     g_assert_cmphex(reg_read(qts, NIC), ==, 0x000fffff);
 
@@ -465,6 +467,37 @@ static void test_writable_storage(void)
     reg_write(qts, INT_LOWER, 0xdeadbeef);
     g_assert_cmphex(reg_read(qts, INT_LOWER), ==, 0xdeadbeef);
 
+    qtest_quit(qts);
+}
+
+/*
+ * The performance counter select is three bits, 22:20, with 000 meaning
+ * link 8, and the counters come out of reset aimed there. Bit 23 is
+ * reserved, and the model stores nothing there, so a write of bit 23 leaves
+ * select 0.
+ */
+static void test_perf_counter_select(void)
+{
+    QTestState *qts = xbow_start("");
+    unsigned int select;
+
+    for (select = 0; select < 8; select++) {
+        reg_write(qts, PERF_A, select << 20);
+        reg_write(qts, PERF_B, (7 - select) << 20);
+        g_assert_cmphex(reg_read(qts, PERF_A), ==, select << 20);
+        g_assert_cmphex(reg_read(qts, PERF_B), ==, (7 - select) << 20);
+    }
+    reg_write(qts, PERF_A, 0x00800000);
+    reg_write(qts, PERF_B, 0x00800000);
+    g_assert_cmphex(reg_read(qts, PERF_A), ==, 0);
+    g_assert_cmphex(reg_read(qts, PERF_B), ==, 0);
+
+    /* Reset returns a programmed select to link 8. */
+    reg_write(qts, PERF_A, 0x00500000);
+    reg_write(qts, PERF_B, 0x00300000);
+    qtest_system_reset(qts);
+    g_assert_cmphex(reg_read(qts, PERF_A), ==, 0);
+    g_assert_cmphex(reg_read(qts, PERF_B), ==, 0);
     qtest_quit(qts);
 }
 
@@ -1553,6 +1586,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/xbow/configured-identity-survives-reset",
                    test_configured_identity_survives_reset);
     qtest_add_func("/sn0/xbow/reset-values", test_reset_values);
+    qtest_add_func("/sn0/xbow/perf-counter-select", test_perf_counter_select);
     qtest_add_func("/sn0/xbow/error-address-write-defaults-to-refusal",
                    test_error_address_write_defaults_to_refusal);
     qtest_add_func("/sn0/xbow/link-register-decode",

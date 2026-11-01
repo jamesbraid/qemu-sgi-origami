@@ -141,8 +141,9 @@
 #define XBOW_LLP_CONTROL_RESET      0x03ff1810
 #define XBOW_ARB_RELOAD_MASK        0x0000003f
 #define XBOW_ARB_RELOAD_RESET       0x00000002
-#define XBOW_PERF_SELECT_MASK       0x00f00000
-#define XBOW_PERF_RESET             0x00800000
+/* Bits 22:20 select the counted link, 000 meaning link 8; bit 23 reserved. */
+#define XBOW_PERF_SELECT_MASK       0x00700000
+#define XBOW_PERF_RESET             0x00000000
 #define XBOW_NIC_MASK               0x000fffff
 #define XBOW_NIC_RESET              0x00000002
 
