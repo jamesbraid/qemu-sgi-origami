@@ -1416,7 +1416,7 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                           "board_id_required_bits", "local_region",
                           "initiator_region", "installed_bank_mask"},
         "l1_controllers": {"reported_type", "revision", "mac_eeprom_input",
-                           "profile", "node_board"},
+                           "profile", "node_board", "partition"},
         "io_boards": {"ioc3_subsystem_id", "mac_source"},
         "pci_function_revisions": {"revision"},
     }
@@ -1536,10 +1536,20 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                         raise ResolutionError(
                             f"'{cid}' L1 profile '{entry['profile']}' takes "
                             "no reported type or MAC input")
+                    if "partition" in entry and entry["profile"] != "cbrick":
+                        raise ResolutionError(
+                            f"'{cid}' L1 profile '{entry['profile']}' holds "
+                            "no partition; only a C-brick's controller does")
                 else:
                     required(entry, "reported_type", f"'{cid}'")
                     integer(entry["reported_type"], 255,
                             f"'{cid}' reported_type", 1)
+                    if "partition" in entry:
+                        raise ResolutionError(
+                            f"'{cid}' has an L1 partition without an "
+                            "Origin 3000 profile")
+                if "partition" in entry:
+                    integer(entry["partition"], 63, f"'{cid}' partition", 1)
                 if "node_board" in entry:
                     board = entry["node_board"]
                     if (not isinstance(board, dict)

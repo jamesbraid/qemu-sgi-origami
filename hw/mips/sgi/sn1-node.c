@@ -2652,6 +2652,7 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
             qdev_prop_set_uint32(node->l1, "bay", node->l1_bay);
             qdev_prop_set_bit(node->l1, "named", true);
         }
+        qdev_prop_set_uint32(node->l1, "partition", node->l1_partition);
         if (!qdev_realize(node->l1, NULL, errp)) {
             goto fail_l1;
         }
@@ -3389,6 +3390,7 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_INT32("l1-revision-patch", SN1NodeState, l1_revision[2], -1),
     DEFINE_PROP_STRING("l1-mac-eeprom", SN1NodeState, l1_mac_eeprom),
     DEFINE_PROP_STRING("l1-brick-type", SN1NodeState, l1_brick_type),
+    DEFINE_PROP_UINT32("l1-partition", SN1NodeState, l1_partition, 0),
     DEFINE_PROP_UINT8("bedrock-revision", SN1NodeState, bedrock_revision, 0),
     DEFINE_PROP_UINT8("local-region", SN1NodeState, local_region, 0),
     DEFINE_PROP_UINT8("initiator-region", SN1NodeState, initiator_region, 0),
