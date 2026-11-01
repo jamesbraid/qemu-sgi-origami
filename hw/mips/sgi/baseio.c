@@ -673,7 +673,7 @@ static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
                             SGI_IOC3_POPULATION_SERIAL_A | \
                             SGI_IOC3_POPULATION_SERIAL_B | \
                             SGI_IOC3_POPULATION_PARALLEL)
-/* The IO-8's own transceiver: DP83843 at MII address 1 (dp83840.md). */
+/* The IO-8's own transceiver: DP83843 at MII address 1. */
 #define IO8_IOC3_PHY_ADDR 1
 
 #define IO8_USB_DEVICE           5

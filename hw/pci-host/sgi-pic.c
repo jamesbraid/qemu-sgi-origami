@@ -1117,9 +1117,7 @@ static uint32_t pic_config_address(SGIPICHead *s, hwaddr addr, unsigned size)
  * An unclaimed configuration read: no device answers the cycle, so the
  * requester sees the failure of a PCI master timeout. Error view bit 11
  * records it whatever the enable, and status bit 11 only while enable bit
- * 11 is set. The empty-slot rule and what it leaves unknown are in
- * docs/datasheets/pic.md, "Empty-slot configuration reads". The rule is
- * inferred there, not established.
+ * 11 is set. The empty-slot rule is inferred, not established.
  *
  * Unknown and not modelled: the PCI-X master-timeout bit (34), whether a
  * write of bit 0 to the reset register is a PCI-group clear, and the
@@ -1170,9 +1168,8 @@ static MemTxResult pic_read_result(SGIPICHead *s, hwaddr addr, unsigned size,
                              (cfg >> 8) & 0xff)) {
             /*
              * Device 0 is unclaimed too: what PIC returns there is
-             * unknown (pic.md, "Empty-slot configuration reads"), so the
-             * reserved window is an approximation that answers like an
-             * empty slot. A value seen without the failure is all ones.
+             * unknown, so the reserved window is an approximation that
+             * answers like an empty slot. A value seen without the failure is all ones.
              */
             qemu_log_mask(LOG_GUEST_ERROR,
                           "sgi-pic: head %u configuration miss at 0x%"
@@ -1320,7 +1317,7 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
     case 0x110:
         /*
          * One bit at a time, not Bridge's group strobes. Any write also
-         * clears the error view (pic.md, "PIC register bits"). Bit 0 and
+         * clears the error view. Bit 0 and
          * bit 6 have no field here: whether bit 0 is a PCI-group clear is
          * unknown, so a 0x41 write clears the view and leaves the rest.
          */
@@ -2182,8 +2179,7 @@ bool sgi_pic_enable_pxbow_experiment(SGIPICState *s, uint64_t span,
     /*
      * Widget zero reports revision 3 on IP53-family machines, which is
      * what every real capture prints, while the reused Crossbow model keeps
-     * the behaviour its revision input selects (docs/datasheets/pic.md,
-     * "Widget-zero identity revision"). The part stays inferred.
+     * the behaviour its revision input selects. The part stays inferred.
      */
     qdev_prop_set_int32(DEVICE(&s->pxbow), "identity-revision",
                         PIC_PXBOW_IDENTITY_REVISION);
@@ -2192,7 +2188,7 @@ bool sgi_pic_enable_pxbow_experiment(SGIPICState *s, uint64_t span,
      * address registers and expects each store to complete, with the
      * register-access error set. A real deskside Tezro passes it, which
      * establishes this for the integrated crossbar and not for the Origin
-     * 2000 Crossbow (docs/datasheets/xbow.md, "IP53 integrated crossbar").
+     * 2000 Crossbow.
      * Whether those addresses are implemented registers is unknown.
      */
     qdev_prop_set_bit(DEVICE(&s->pxbow), "complete-posted-error-address-writes",
@@ -2222,17 +2218,15 @@ bool sgi_pic_enable_pxbow_experiment(SGIPICState *s, uint64_t span,
 /*
  * Put @s on @owner's crossbar at link @widget, live from reset. The
  * crossbar at widget 0 is one per node, so a second PIC is one more of
- * its links and its windows are reached through it (pic.md, "How does the
- * second PIC reach the node?"). That is inferred from what the PROM and
- * the kernel read, and the sheet calls it a modelling consequence, not a
- * claim about silicon. @s keeps no crossbar of its own: whether the second
+ * its links and its windows are reached through it. That is inferred from what
+ * the PROM and the kernel read, a modelling consequence and not a claim
+ * about silicon. @s keeps no crossbar of its own: whether the second
  * PIC has one is unknown.
  *
  * Approximation: only the processor's accesses go through the crossbar.
  * This PIC's interrupt and DMA packets still take the typed link to the
- * host, as the first PIC's do, where pic.md describes them returning
- * through the crossbar (the "Routing" row). Limitation, recorded under
- * "Approximation: direct return of the second PIC's packets": link 11 and
+ * host, as the first PIC's do, where a crossbar path would return them
+ * through the crossbar. Limitation: link 11 and
  * widget 0 never see that traffic, so link state, fence and credit effects
  * on it are not modelled.
  */

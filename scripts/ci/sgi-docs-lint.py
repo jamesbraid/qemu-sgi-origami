@@ -73,6 +73,33 @@ CATALOGUE = 'hw/mips/sgi/sgi-machines.json'
 MACHINE_WORDS = ('machine', 'machines', 'topology', 'topologies')
 PRODUCT_NUMBER = re.compile(r'\b(?:Origin|Onyx) ?\d+\b', re.I)
 
+# Text that points at material outside this repository or at the
+# maintainers' own working documents. SGI and IRIX kernel names cannot be
+# found generically and are not looked for here.
+PRIVATE = (
+    (re.compile(r'(?<![\w./-])(?:refs|assets)/'),
+     'a path under refs/ or assets/'),
+    (re.compile(r'(?<![\w.:/-])/(?:storage|scratch)(?![\w-])'),
+     'a host storage or scratch path'),
+    (re.compile(r'\bdocs/(?:datasheets|decisions|plans|designs)/'),
+     'a path in documents that are not part of this tree'),
+    (re.compile(r'(?<![\w./-])[\w-]+\.md\b'),
+     'a Markdown document, which this tree does not carry'),
+    (re.compile(r'\bD-\d{4}\b'), 'a decision record code'),
+    (re.compile(r'\bLibrary\b|\b[Nn]otebooks?\b'),
+     'a private reference library or notebook'),
+    (re.compile(r'\b[Rr]eviewed datasheets?\b'),
+     'a reviewed datasheet, which is a maintainer document'),
+)
+# /tmp is a plausible path in an example command, so a page's literal
+# blocks may use it; prose and comments may not.
+TMP_PATH = (re.compile(r'(?<![\w.:/-])/tmp(?![\w-])'), 'a /tmp path')
+SOURCE_GLOBS = ('hw/mips/sgi/**/*.[ch]', 'hw/*/sgi-*.[ch]')
+# A C string or character literal, or a comment. Only comments are kept.
+C_TOKEN = re.compile(
+    r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])+\'|/\*.*?\*/|//[^\n]*',
+    re.S)
+
 LABEL = re.compile(r'\.\. _[^:]+:\s*$')
 ADORN = re.compile(r'([=\-~^"#*+])\1{2,}\s*$')
 LITERAL = re.compile(r'``.*?``|:\w+:`[^`]*`|`[^`]*`')
@@ -233,6 +260,26 @@ def lint_used_in(rel, text, cat):
     return out
 
 
+def lint_private(rel, text, literal_tmp_ok=False):
+    """Flag references to material that is not in this repository."""
+    out = []
+    prose = {n for n, _ in prose_lines(text.split('\n'))}
+    for pattern, what in PRIVATE + (TMP_PATH,):
+        for m in pattern.finditer(text):
+            n = text.count(chr(10), 0, m.start()) + 1
+            if pattern is TMP_PATH[0] and literal_tmp_ok and n not in prose:
+                continue
+            out.append(f'{rel}:{n}: "{m.group(0)}" is {what}')
+    return out
+
+
+def c_comments(text):
+    """Return the text with everything but comments replaced by blanks."""
+    return C_TOKEN.sub(
+        lambda m: m.group(0) if m.group(0)[:2] in ('/*', '//')
+        else blank(m), text)
+
+
 def lint_page(rel, text):
     out = []
     lines = text.split('\n')
@@ -311,6 +358,13 @@ def lint(root):
         findings += lint_page(rel, page.read_text())
         if page.parent.name == 'hardware':
             findings += lint_used_in(rel, page.read_text(), cat)
+    for page in pages:
+        findings += lint_private(str(page.relative_to(root)),
+                                 page.read_text(), literal_tmp_ok=True)
+    sources = sorted({p for g in SOURCE_GLOBS for p in root.glob(g)})
+    for src in sources:
+        findings += lint_private(str(src.relative_to(root)),
+                                 c_comments(src.read_text(errors='replace')))
     for page in pages + [root / GUIDE]:
         rel = str(page.relative_to(root))
         if page.exists() and rel not in listed:
