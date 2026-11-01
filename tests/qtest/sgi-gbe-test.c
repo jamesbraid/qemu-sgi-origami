@@ -1609,6 +1609,31 @@ static void test_timing_output_reconnect_unsynchronized(void)
     qtest_quit(q);
 }
 
+static void test_timing_output_reconnect_after_edge(void)
+{
+    static const char *sink = "/machine/peripheral/sink";
+    static const char *sink_input =
+        "/machine/peripheral/sink/unnamed-gpio-in[10]";
+    static const uint32_t sink_base = 0x17000000;
+    QTestState *q = start("-device sgi-o2-gbe,id=sink");
+
+    mode(q);
+    wr(q, 4, 12 | 2 << 8 | 3u << 14 | 1u << 20);
+    wr(q, VT(3), 30 | 20 << 12);
+    wr(q, VT(0), 0);
+    qtest_sysbus_mmio_map(q, sink, 0, sink_base);
+    qtest_set_irq_in(q, sink, NULL, 10, 0);
+
+    set_timing_output_link(q, 1, sink_input);
+    set_timing_output_link(q, 1, "");
+    qtest_clock_step(q, 2308);
+    set_timing_output_link(q, 1, sink_input);
+
+    /* Reconnect at x=25 after the x=20 edge, without a source read. */
+    g_assert_false(qtest_readl(q, sink_base) & (1u << 4));
+    qtest_quit(q);
+}
+
 
 static void test_did_overlapping_cache(void)
 {
@@ -3080,6 +3105,8 @@ int main(int argc, char **argv)
                    test_timing_output_connect_does_not_drive_level);
     qtest_add_func("/sgi-gbe/timing-output-reconnect-unsynchronized",
                    test_timing_output_reconnect_unsynchronized);
+    qtest_add_func("/sgi-gbe/timing-output-reconnect-after-edge",
+                   test_timing_output_reconnect_after_edge);
     qtest_add_func("/sgi-gbe/did-overlapping-cache",
                    test_did_overlapping_cache);
     qtest_add_func("/sgi-gbe/clock-pin-phase", test_clock_pin_phase);
