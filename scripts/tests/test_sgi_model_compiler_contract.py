@@ -4878,6 +4878,83 @@ class NodeRoleCompileTests(unittest.TestCase):
         self.assertTrue(all("role" not in node for node in entry["nodes"]))
 
 
+def _cx_brick_with_an_empty_board() -> dict:
+    """The Origin 3900 with node board 3 fitted with no processors, as the
+    Cx-brick addendum allows (007-4572-001 page 13)."""
+    model = _resolved("origin3900")
+    composition = model["composition"]
+    composition["population"]["cpus_per_node"] = [4, 4, 4, 0]
+    composition["topology"]["supported_cpu_populations"] = [[4, 4, 4, 0]]
+    return model
+
+
+class MemoryNodeBoardTests(unittest.TestCase):
+    """A node board the product sells with none or four processors, left
+    empty. The catalogue gives it the memory role."""
+
+    def test_zero_processor_board_compiles_as_a_memory_node(self):
+        entry = compile_model(_cx_brick_with_an_empty_board())
+        roles = [(node["id"], node.get("role")) for node in entry["nodes"]]
+        self.assertEqual(roles, [
+            ("cx0-node0-bedrock", None), ("cx0-node1-bedrock", None),
+            ("cx0-node2-bedrock", None),
+            ("cx0-node3-bedrock", "memory")])
+        memory = entry["nodes"][3]
+        self.assertTrue(all(slot["assembly"] is None
+                            for slot in memory["cpu_slots"]))
+        self.assertEqual(len(memory["cpu_slots"]), 4)
+        self.assertTrue(any(memory["bank_mib"]))
+        self.assertFalse(entry["nodes"][0]["slave_role"])
+
+    def test_the_memory_role_reaches_the_catalogue(self):
+        catalogue = json.loads(render_catalogue_json(
+            [_cx_brick_with_an_empty_board()]))
+        [offering] = catalogue["offerings"]
+        self.assertEqual(offering["cpus-per-node"], [4, 4, 4, 0])
+        self.assertEqual(offering["smp"], 12)
+        self.assertEqual(
+            [node.get("role") for node in catalogue["topologies"][0]["nodes"]],
+            [None, None, None, "memory"])
+
+    def test_the_console_board_cannot_be_the_empty_one(self):
+        model = _resolved("origin3900")
+        model["composition"]["population"]["cpus_per_node"] = [0, 4, 4, 4]
+        model["composition"]["topology"]["supported_cpu_populations"] = [
+            [0, 4, 4, 4]]
+        with self.assertRaisesRegex(
+                CompileError, "memory node 'cx0-node0-bedrock' cannot be the "
+                "console node"):
+            compile_model(model)
+
+    def test_a_product_that_sells_no_empty_board_refuses_one(self):
+        model = _cx_brick_with_an_empty_board()
+        del model["composition"]["topology"]["node_cpu_counts"]
+        with self.assertRaisesRegex(CompileError, "no (populated|fitted) CPU"):
+            compile_model(model)
+
+    def test_every_board_empty_is_refused(self):
+        model = _resolved("origin3900")
+        model["composition"]["population"]["cpus_per_node"] = [0, 0, 0, 0]
+        model["composition"]["topology"]["supported_cpu_populations"] = [
+            [0, 0, 0, 0]]
+        with self.assertRaisesRegex(CompileError, "cannot be the console"):
+            compile_model(model)
+
+    def test_a_memory_node_needs_memory(self):
+        model = _cx_brick_with_an_empty_board()
+        model["composition"]["population"]["memory_bank_mib_per_node"][3] = [
+            0] * 8
+        with self.assertRaisesRegex(CompileError, "no populated memory bank"):
+            compile_model(model)
+
+    def test_no_other_product_gives_a_node_the_memory_role(self):
+        for name in ("origin3200", "origin3400", "origin3900"):
+            with self.subTest(name=name):
+                entry = compile_model(_resolved(name))
+                self.assertTrue(all("role" not in node
+                                    for node in entry["nodes"]))
+
+
 class ControllerOwnerCompileTests(unittest.TestCase):
     def test_module_owner_reaches_the_controller_record(self):
         from sgi_model.model_emit import _render_topology

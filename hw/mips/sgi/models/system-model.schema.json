@@ -1543,7 +1543,8 @@
     "cpu-population": {
       "type": "array",
       "minItems": 1,
-      "items": { "type": "integer", "minimum": 1 }
+      "items": { "type": "integer", "minimum": 0 },
+      "description": "Processors per node. A node may carry none only where the product lists zero in node_cpu_counts; resolution refuses a population with no processor at all."
     },
 
     "node-population": {

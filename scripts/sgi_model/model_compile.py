@@ -1890,6 +1890,71 @@ def _bedrock_board_kind(components: dict[str, dict], node: dict,
     return hardware_kind
 
 
+def _product_fits_no_processors(model: dict) -> bool:
+    """Whether the product's node board is sold with no processors, as the
+    Cx-brick's board is (none or four), which it lists in node_cpu_counts."""
+    counts = (model["composition"].get("topology") or {}).get(
+        "node_cpu_counts")
+    return isinstance(counts, list) and 0 in counts
+
+
+def _compile_memory_node(model: dict, components: dict[str, dict],
+                         entry: dict, position: int, node_count: int,
+                         node: dict, node_asic: dict, asic_kind: str,
+                         board_kind: str | None, role: str) -> dict:
+    """A node board with a Bedrock and memory and no processor.
+
+    The console node runs the PROM, so it needs processors. The board layer
+    must be one the product sells with none; the Cx-brick's IP53 board is
+    the first.
+    """
+    if position == 0:
+        raise CompileError(
+            f"memory node '{node['id']}' cannot be the console node")
+    if not _product_fits_no_processors(model):
+        raise CompileError(
+            f"memory node '{node['id']}': board layer "
+            f"'{model['composition'].get('assembly')}' does not allow a node "
+            "with no processors")
+    if asic_kind != "bedrock":
+        raise CompileError(
+            f"memory node '{node['id']}' is not a Bedrock node")
+    if model["composition"]["population"]["cpus_per_node"][position]:
+        raise CompileError(
+            f"memory node '{node['id']}' is given processors by the "
+            "population")
+    banks = _node_bank_mib(model, position, node_count)
+    if not any(banks):
+        raise CompileError(
+            f"memory node '{node['id']}' has no populated memory bank")
+    # The node's processor slots stay empty: the wiring is the board's, and
+    # no processor is fitted.
+    compiled = {
+        "id": node["id"],
+        "module_index": entry["module_index"],
+        "slot": entry["slot"],
+        "hub_slot_bits": entry["hub_slot_bits"],
+        "asic_kind": _ASIC_RECORD_KIND[asic_kind],
+        "identity": _node_identity(model, components, node, asic_kind,
+                                   position, board_kind),
+        "bedrock": _bedrock_configuration(model, node, banks),
+        "cpu_slots": [
+            {"interface": interface, "slot": slot, "assembly": None}
+            for interface in range(_integer(node_asic, "processor_interfaces",
+                                            "node_asic", 8))
+            for slot in range(_integer(node_asic, "cpus_per_interface",
+                                       "node_asic", 8))],
+        "bank_mib": banks,
+        "accepted_memory_mib": _accepted_memory_mib(model),
+        "flash": _flash(model, components, asic_kind, entry["board_id"]),
+        "slave_role": position != 0,
+        "role": "memory",
+    }
+    if board_kind is not None:
+        compiled["board_kind"] = board_kind
+    return compiled
+
+
 def _compile_node(model: dict, components: dict[str, dict], entry: dict,
                    position: int, node_count: int) -> dict:
     node = entry["component"]
@@ -1906,17 +1971,15 @@ def _compile_node(model: dict, components: dict[str, dict], entry: dict,
     board_kind = (_bedrock_board_kind(components, node,
                                       model["machine"].get("board_ip"))
                   if asic_kind == "bedrock" else None)
-    if node_asic.get("role", "compute") == "memory":
-        # The console node runs the PROM, so it needs processors. No board
-        # layer yet allows a node with none; the first is the Cx-brick's
-        # zero-processor IP53 board.
-        if position == 0:
-            raise CompileError(
-                f"memory node '{node['id']}' cannot be the console node")
-        raise CompileError(
-            f"memory node '{node['id']}': board layer "
-            f"'{model['composition'].get('assembly')}' does not allow a node "
-            "with no processors")
+    role = node_asic.get("role", "compute")
+    selected = model["composition"]["population"]["cpus_per_node"]
+    if position >= len(selected):
+        raise CompileError("population.cpus_per_node does not cover every node")
+    if role == "memory" or (selected[position] == 0 and
+                            _product_fits_no_processors(model)):
+        return _compile_memory_node(model, components, entry, position,
+                                    node_count, node, node_asic, asic_kind,
+                                    board_kind, role)
 
     cpus = _node_cpus(model, components, node, asic_kind, entry["board_id"])
     if not cpus:
@@ -3931,6 +3994,10 @@ def _attach_ip53_l1_cpu_context(model: dict, nodes: list[dict],
         if node.get("board_kind") not in ("ip53", "ip53-cx"):
             raise CompileError(
                 "processor_firmware_word requires an IP53 Bedrock node")
+        if node.get("role") == "memory":
+            # No processor, so no context; the brick's compute boards
+            # supply the L1's.
+            continue
         assembly = next((slot["assembly"] for slot in node["cpu_slots"]
                          if slot.get("assembly") is not None), None)
         if not assembly:
