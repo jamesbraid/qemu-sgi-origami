@@ -2210,6 +2210,12 @@ static void test_partition_fence_state(void)
     QTestState *s = qtest_init(ARGS);
     uint64_t scratch;
 
+    /*
+     * Until a master sets the router up its scratch 0 bit 63 is clear, so a
+     * second PROM that discovers it first reads SPACE=RESET and takes no
+     * identifier from it.
+     */
+    g_assert_cmphex(qtest_readq(s, BASE + 0x100) >> 63, ==, 0);
     qtest_writeq(s, BASE + 0x100, nic);
     scratch = qtest_readq(s, BASE + 0x100);
     scratch = (scratch & ~(UINT64_C(0x7f) << 56)) | (UINT64_C(1) << 63) |
