@@ -527,8 +527,9 @@ static void test_router_table_vector_words(void)
         uint64_t status = vector_launch(s, A_BASE, 0, params, 0);
 
         assert_good_reply(status, params);
+        /* An entry is one 4-bit field; the bits above are not stored. */
         g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==,
-                        values[i]);
+                        values[i] & 0xf);
         status = vector_launch(s, A_BASE, 0, params + 8, 0);
         assert_good_reply(status, params + 8);
         g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, 0);
@@ -555,7 +556,8 @@ static void test_unsupported_vector_type(void)
         g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, SENTINEL);
         status = vector_launch(s, A_BASE, 0, 0x10100, 0);
         assert_good_reply(status, 0x10100);
-        g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, baseline);
+        g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==,
+                        baseline & 0xf);
     }
     qtest_quit(s);
 }

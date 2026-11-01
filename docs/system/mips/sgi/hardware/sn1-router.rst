@@ -119,12 +119,21 @@ following properties.
   Link to a realized ``sgi-l1-uart``, which backs the UART window below.
 
 Two profiles exist, an *approximation* in both. The machine builder
-selects the diagnostic profile for the one routed topology, through the
-topology record's ``synthetic-diagnostics`` flag. A router created with
-``-device`` gets the ordinary profile. The profile is fixed before realize
+selects the diagnostic profile, through the topology record's
+``synthetic-diagnostics`` flag, for every router of the ``origin300``
+expansion topology and of the Origin 3400 and Origin 3900 topologies (the
+``origin3400*`` and ``origin3900*`` entries, both routers of
+``origin3400-two-routers`` included). The Origin 2000, Onyx 2 and Onyx 3400
+topologies do not set the flag. A router
+created with ``-device`` gets the ordinary profile, so the 4-bit route
+table rule below applies to no catalogue machine: the diagnostic profile
+keeps whole 64-bit table words, because the experiments it supports write
+and read them back. Which profile the silicon matches is *unknown*; a qtest
+pins each profile's table behaviour. The profile is fixed before realize
 and migration refuses a mismatch. The diagnostic profile accepts more
-registers and masks some of them. The ordinary profile stores full words
-and refuses everything outside the public layout. Both are
+registers and masks some of them. The ordinary profile keeps each route
+table entry to its 4-bit field, stores full words elsewhere, and refuses
+everything outside the public layout. Both are
 bounded model policy, not statements about the silicon.
 
 .. _sgi-sn1-router-registers:
@@ -238,11 +247,12 @@ the same rule.
    * - ``B(L)+0x100`` to ``+0x178``
      - Global route table
      - read, write
-     - 16 full 64-bit words.
+     - 16 entries, each keeping its low 4 bits (approximation: inferred from
+       what the stock firmware writes). The diagnostic profile keeps full words.
    * - ``B(L)+0x200`` to ``+0x5f8``
      - Local route table
      - read, write
-     - 128 full 64-bit words.
+     - 128 entries, with the same 4-bit rule.
 
 The register names and the offsets of the status, protection, global
 parameter, port reset, link, error and table registers are the public
