@@ -18,8 +18,10 @@ between its own memories and main memory
 ``sgi-vice`` sysbus device in ``hw/misc/sgi-vice.c``, with the MSP's
 scalar unit in ``hw/misc/sgi-vice-msp.c`` and
 ``include/hw/misc/sgi-vice-msp.h``. No machine fits it. The ``o2``
-machine in ``hw/mips/sgi/o2.c`` does not create it, and no other machine
-does. The device is built only when ``CONFIG_SGI_VICE`` is set, which the
+machine in ``hw/mips/sgi/o2.c`` does not create it, leaves the
+``0x17000000`` aperture unmapped and wires nothing to CRIME interrupt
+bit 31, and no other machine creates it either. The device is built only
+when ``CONFIG_SGI_VICE`` is set, which the
 qtest fixture configuration selects, and the qtests reach it with
 ``-M none -device sgi-vice,...`` (see `Tests`_).
 
@@ -62,7 +64,15 @@ C, with the ID value in bits 7:4 left blank
 (:src:`099-0123-003 p. 44`). Whether a revision C part reads ``0xe1`` or ``0xe3``
 is therefore *unknown*. The specification's own table says ``0xe1``. The
 model returns ``0xe1`` and requires the ``part-id`` property to be 225
-(``0xe1``); any other value fails realize.
+(``0xe1``); any other value fails realize. The ``0xe1`` is the
+specification's published ID for the first part, so the model is a
+revision A fixture for tests. It does not claim that value for the
+revision C part the specification describes, and no source gives bits 7:4
+for revision B or C (:src:`099-0123-003 p. 44` gives bits 3:0 as 2 and 3).
+
+The specification names revision B "DX" and revision C "TRE"
+(:src:`099-0123-003 p. 44`), *established*. The ID byte a real O2 reports for either is not printed in
+the specification, so it is *unknown* here.
 
 Two pins, ``VICE_ID(1:0)``, select one of four 1 MiB windows from
 ``0x17000000`` to ``0x173fffff`` on the system bus
@@ -275,10 +285,12 @@ column gives the page of the field table.
      - 66
    * - ``0x1a0``, ``0x1e0``
      - DMA_VICE_PT_CH1, CH2
-     - 16
+     - 32
      - 0
      - read
-     - Last local address. The model has no separate chroma half.
+     - Last local address. The specification's register table gives 16
+       bits and its field table 32 (Y low, C high). The model stores 32
+       bits, with the C half always 0.
      - 66
    * - ``0x1a8``, ``0x1e8``
      - DMA_COUNT_CH1, CH2
@@ -650,11 +662,28 @@ Transfer steps
 
 The model moves data in units of at most 8 bytes. A unit is first staged
 (read from the source) and then committed (written to the destination),
-each on its own device clock. The two channels alternate. Units bound for
+each on its own device clock. The two channels alternate, channel 1 first
+after reset, and an idle channel is skipped. The specification gives no
+arbitration order between the channels, so the alternation is an
+*approximation*. Units bound for
 the instruction RAMs and the table RAM are cut to their write unit. The
 unit also stops at a row end, at a 64 KiB translation page end or at a
 512-byte tile row end. System bytes are placed independently of the local
 unit size. A source byte that reaches local memory is written in order.
+
+``DMA_MEM_PT`` holds the last calculated physical address, rounded down
+to a multiple of 4 (:src:`099-0123-003 p. 66`), *established*. The model
+updates it after translation, for both directions, and before it checks
+that the target is populated RAM, so a request refused there still
+updates it. A translation fault returns earlier and does not. The
+refused-request update is an *approximation*. The 32-bit width of
+``DMA_VICE_PT`` is *established* (:src:`099-0123-003 p. 66`) and its C
+half is an *approximation*. ``DMA_VICE_PT`` holds the local address of the latest unit.
+For a read into local memory the model updates it when the unit is
+committed, and for a write to system memory when the unit is fetched from
+local memory. The specification describes progress for reads only, so
+the write-direction rule and the update points are each an
+*approximation*. Neither register shows the contents of a real FIFO.
 Data RAM and instruction RAM writes during the commit step become visible
 to host reads on that clock. Words written to the table RAM are masked to
 22 bits.
