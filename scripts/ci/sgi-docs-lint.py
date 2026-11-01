@@ -37,10 +37,6 @@ LITERAL_DIRECTIVE = re.compile(
     r'\s*\.\. (code-block|code|sourcecode|literalinclude|parsed-literal)::')
 DIRECTIVE = re.compile(r'\s*\.\. [\w:-]+::')
 
-# Hardware pages whose opening differs from the "Used in" paragraph: the
-# graphics and brick pages are overviews of a family of parts.
-USED_IN_EXEMPT = ('graphics.rst', 'bricks.rst')
-
 # Phrases that put a plan, not the current model, on a page. "not yet" is
 # a roadmap only before a verb that says what the model does or the page
 # records; "not yet delivered" or "not yet acknowledged" describes a
@@ -401,7 +397,7 @@ def lint_page(rel, text):
                 not re.match(r'IP\d+: ', t):
             add(n, f'platform title "{t}" must match "IPnn: products"')
 
-    if title and in_hw and name.name not in USED_IN_EXEMPT:
+    if title and in_hw:
         j = title[0] + 2
         if ADORN.match(lines[title[0] - 1] if title[0] else ''):
             j += 1

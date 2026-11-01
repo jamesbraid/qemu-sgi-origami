@@ -31,8 +31,8 @@ saying that no machine fits it. It then uses these sections, in this
 order, where they apply: Sources, Identity, Register map, the behaviour
 sections, Measurements, Model limits and Tests. A part with no registers
 or no measurements leaves those sections out rather than keeping them
-empty. Family overview
-pages such as ``graphics.rst`` and ``bricks.rst`` may open differently.
+empty. The family
+overview pages ``graphics.rst`` and ``bricks.rst`` open the same way.
 
 Link related parts with ``.. seealso::``. On the overview pages, mark an
 SGI term with ``:term:`` to the glossary at its first use.
@@ -104,7 +104,7 @@ page under ``docs/system/mips/sgi/``:
   list whose lead-in paragraph ends in a colon and carries the rating.
   Write a statement about the model as one about "the model"; a
   neighbouring sentence does not cover it;
-- a "Used in" first paragraph on each part page, except the listed overviews;
+- a "Used in" first paragraph on every part page;
 - machines in the "Used in" paragraph that exist in
   ``hw/mips/sgi/sgi-machines.json``: a literal that starts with a machine
   family or is followed by "machine" or "topology", and a numbered product
