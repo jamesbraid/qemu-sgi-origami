@@ -243,6 +243,20 @@ jobs:
           echo "$PART: the SGI files are listed and licensed" > "$CI_STEP"
           python3 scripts/ci/sgi-license-check.py
 
+      # The pull-request check reads only what a change adds. Before a land,
+      # scan the whole tree too, so text the private list has learned to
+      # match since it went in cannot reach the trunk. The list is a secret;
+      # the check prints rule ids and file:line, never the patterns.
+      - name: no private identifiers in the tree
+        if: ${{ startsWith(matrix.part, 'functional') }}
+        env:
+          SGI_LEAK_DENYLIST: ${{ secrets.SGI_LEAK_DENYLIST }}
+          SGI_LEAK_REQUIRE: ${{ github.repository == 'jamesb/qemu' && '1' || '' }}
+        run: |
+          echo "$PART: no private identifiers in the tree" > "$CI_STEP"
+          set +x
+          python3 scripts/ci/sgi-leak-check.py --tree
+
       - name: build the QEMU test image
         run: |
           echo "$PART: build the QEMU test image" > "$CI_STEP"
