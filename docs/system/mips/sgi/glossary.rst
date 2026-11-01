@@ -128,10 +128,13 @@ the ratings.
      device. See :doc:`measured-machines`.
 
    IP number
-     The board-family name the platform pages use, such as IP27 for the
-     Origin 2000 platform, IP30 for the Octane and IP35 for the Origin
-     3000 platform. A platform page covers the machines that share one.
-     See :doc:`index`.
+     SGI's number for a board, also used for the software platform its
+     firmware and kernel serve. IP27 is the SN0 software platform of the
+     Origin 2000; IP30 is the Octane board; IP35 is the SN1 software
+     platform, whose boards are the Origin 3000 C-brick's IP35, the
+     Origin 300's IP45, the Fuel's IP34 and the IP53 of the Origin 350
+     family. A platform page covers the machines that share one software
+     platform. See :doc:`index`.
 
    SN0
      The first Scalable Node generation, built from the Hub and CrayLink

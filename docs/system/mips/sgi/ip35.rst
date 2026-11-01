@@ -6,9 +6,13 @@
 IP35: Origin 300 and Fuel
 =========================
 
-:term:`IP35 <IP number>` is the software platform of SGI's second Scalable Node generation,
-built around the :term:`Bedrock` node controller. QEMU models two products on it:
-``origin300`` (board IP45) and ``fuel`` (board IP34). The IP53 board of
+:term:`IP35 <IP number>` is the SN1 software platform, SGI's second Scalable
+Node generation, built around the :term:`Bedrock` node controller. Its
+boards are the Origin 300's IP45, the Fuel's IP34, the Origin 3000
+C-brick's IP35 and the IP53 of the Origin 350 family. This page covers
+two products: ``origin300`` (board IP45) and ``fuel`` (board IP34). The
+Origin 3000 C-brick compositions are under
+:ref:`sgi-ip35-brick-composition`. The IP53 board of
 the Origin 350, Onyx 350, Tezro and Onyx4 host has its own page
 (:doc:`ip53`); it shares this page's Bedrock node, address map and :term:`PROM`.
 The machine classes are in ``hw/mips/sgi/sn1.c``. Each node is an
