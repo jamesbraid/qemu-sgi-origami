@@ -682,14 +682,15 @@ int mips_r10k_profile_post_load(MIPSCPU *cpu)
 
     /* PRId is immutable configuration, including the value used by reset. */
     if ((!strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R10000") ||
-         !strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R14000")) &&
+         !strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R14000") ||
+         !strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R16000")) &&
         env->CP0_PRid != profile->prid) {
         return -EINVAL;
     }
     if (!strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R16000") &&
         (!mips_r16000_profile_active(cpu) ||
          !profile->migration_r16000_profile_seen ||
-         env->CP0_PRid != 0x00000F50 || env->active_fpu.fcr0 != 0x00000900 ||
+         env->active_fpu.fcr0 != 0x00000900 ||
          (env->CP0_Config0 & env->cpu_model->CP0_Config0_preserve_bitmask) !=
          (env->cpu_model->CP0_Config0 &
           env->cpu_model->CP0_Config0_preserve_bitmask))) {
