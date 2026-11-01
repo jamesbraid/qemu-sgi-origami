@@ -95,9 +95,15 @@ page under ``docs/system/mips/sgi/``:
 - no phrase that reads as a plan, such as "planned", "for now", "yet to", "will be modelled" or "not
   yet implemented", outside literal blocks, literals and quoted text; "not yet delivered" and the like describe a hardware state
   and pass;
-- a warning, not a failure, for a paragraph that states a register's value
-  in hex ("reads ``0x15``", "resets to ``0x80``") with neither a rating nor
-  a ``:src:`` citation in it; table rows are skipped;
+- for a paragraph or list item that states a register's value in hex
+  ("reads ``0x15``", "resets to ``0x80``"), a rating word or a ``:src:``
+  citation in it. A hex number that is an address, as in "a read at
+  ``0x10``", is not a value. These are exempt: table rows and simple
+  tables, paragraphs in a Tests section, a sentence that itself names the
+  model (or a log macro, a bus error or a test file), and the items of a
+  list whose lead-in paragraph ends in a colon and carries the rating.
+  Write a statement about the model as one about "the model"; a
+  neighbouring sentence does not cover it;
 - a "Used in" first paragraph on each part page, except the listed overviews;
 - machines in the "Used in" paragraph that exist in
   ``hw/mips/sgi/sgi-machines.json``: a literal that starts with a machine

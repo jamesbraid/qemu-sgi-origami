@@ -170,6 +170,88 @@ class DocsLintTests(unittest.TestCase):
         block = GOOD_PART + '\n.. code-block:: text\n\n   will be TODO\n'
         self.assertEqual(self.run_lint({'hardware/demo.rst': block}), [])
 
+    def hex_errors(self, body):
+        return lint.lint_hex('hardware/demo.rst', GOOD_PART + '\n' + body)
+
+    def test_hex_value_without_rating_is_an_error(self):
+        for bad in ('The register reads ``0x0015`` after reset.',
+                    'The reset value is ``0x80``, as the PROM leaves it.',
+                    'A read of the status word returns 0x1e000000.',
+                    'The reference Octane2 reads ``0x00500010`` there.'):
+            out = self.hex_errors(bad + '\n')
+            self.assertEqual(len(out), 1, bad)
+            self.assertIn('hardware/demo.rst:14: a hex value', out[0])
+
+    def test_hex_value_with_rating_or_citation_is_quiet(self):
+        for ok in ('The register reads ``0x0015`` after reset, *observed*.',
+                   'The reset value is ``0x80`` (:src:`some-id p. 4`).',
+                   'The register reads ``0x0015`` after\nreset, *inferred*.',
+                   'The register reads ``0x0015`` after\nreset, a *software\n'
+                   'expectation*.',
+                   'Offset ``0x10`` is the base.',
+                   'The model reads back what was written.'):
+            self.assertEqual(self.hex_errors(ok + '\n'), [], ok)
+
+    def test_hex_address_is_not_a_value(self):
+        for ok in ('A read at ``0x10`` is split in two.',
+                   'The ring block read from registers ``0x2450`` is used.',
+                   'The return route is ``0x27``.'):
+            self.assertEqual(self.hex_errors(ok + '\n'), [], ok)
+
+    def test_hex_value_in_model_sentence_is_quiet(self):
+        for ok in ('The model reads ``0x0015`` after reset.',
+                   'A bad access logs ``LOG_UNIMP`` and reads ``0xff``.',
+                   'The model\'s register resets to ``0x20``.'):
+            self.assertEqual(self.hex_errors(ok + '\n'), [], ok)
+
+    def test_model_in_a_neighbouring_sentence_does_not_cover(self):
+        for bad in ('The model answers. The chip reads ``0xff``.',
+                    'The chip reads ``0xff``. The model differs.'):
+            self.assertEqual(len(self.hex_errors(bad + '\n')), 1, bad)
+
+    def test_hex_reset_value_stated_after_the_number(self):
+        for bad in ('The time-out ``0x000fffff`` and link ``0x03ff1810``\n'
+                    'are the specification\'s reset values.',):
+            self.assertEqual(len(self.hex_errors(bad + '\n')), 1, bad)
+        ok = bad + ' (:src:`some-id p. 4`)'
+        self.assertEqual(self.hex_errors(ok + '\n'), [])
+
+    def test_hex_value_in_table_row_or_literal_is_quiet(self):
+        table = ('.. list-table::\n\n   * - Reset value\n     - reads '
+                 '``0x80``\n')
+        self.assertEqual(self.hex_errors(table), [])
+        simple = ('=====  =====\nReg    Value\n=====  =====\n'
+                  'a      reads ``0x80``\n=====  =====\n')
+        self.assertEqual(self.hex_errors(simple), [])
+        self.assertEqual(self.hex_errors('A dump::\n\n   reads 0x80\n'), [])
+
+    def test_hex_value_in_tests_section_is_quiet(self):
+        text = 'Tests\n=====\n\nThe case reads ``0x80`` back.\n'
+        self.assertEqual(self.hex_errors(text), [])
+        text = 'Other\n=====\n\nThe case reads ``0x80`` back.\n'
+        self.assertEqual(len(self.hex_errors(text)), 1)
+
+    def test_hex_list_items_are_checked_one_by_one(self):
+        rated = ('- The chip reads ``0x80`` (*observed*).\n'
+                 '- The part returns ``0x20``.\n')
+        out = self.hex_errors(rated)
+        self.assertEqual(len(out), 1)
+        self.assertIn(':15:', out[0])
+        self.assertIn('list item', out[0])
+        lead = ('What the driver does, a *software expectation*:\n\n'
+                '- It reads ``0x80``.\n- It writes ``0x20``.\n')
+        self.assertEqual(self.hex_errors(lead), [])
+        bare = ('What the driver does:\n\n- It reads ``0x80``.\n')
+        self.assertEqual(len(self.hex_errors(bare)), 1)
+
+    def test_hex_value_without_rating_fails_the_lint(self):
+        text = GOOD_PART + '\nThe register reads ``0x0015`` after reset.\n'
+        out = self.messages({'hardware/demo.rst': text})
+        self.assertIn('hardware/demo.rst:14: a hex value', out)
+        text += '\nThe register reads ``0x0015`` after reset, *observed*.\n'
+        text = text.replace('after reset.\n', 'after reset, *observed*.\n', 1)
+        self.assertEqual(self.run_lint({'hardware/demo.rst': text}), [])
+
     def test_plural_rating_is_an_error_even_when_wrapped(self):
         for bad in ('Both are *software expectations*.',
                     'Both are *software\nexpectations*.',
@@ -180,35 +262,6 @@ class DocsLintTests(unittest.TestCase):
         ok = 'Each is a *software\nexpectation*.'
         self.assertEqual(self.run_lint({'hardware/demo.rst':
                                         GOOD_PART + '\n' + ok + '\n'}), [])
-
-    def warn(self, body):
-        return lint.warn_page('hardware/demo.rst', GOOD_PART + '\n' + body)
-
-    def test_hex_value_without_rating_warns(self):
-        for bad in ('The register reads ``0x0015`` after reset.',
-                    'The reset value is ``0x80``, as the PROM leaves it.',
-                    'A read of the status word returns 0x1e000000.'):
-            out = self.warn(bad + '\n')
-            self.assertEqual(len(out), 1, bad)
-            self.assertIn('hardware/demo.rst:14: warning:', out[0])
-
-    def test_hex_value_with_rating_or_citation_is_quiet(self):
-        for ok in ('The register reads ``0x0015`` after reset, *observed*.',
-                   'The reset value is ``0x80`` (:src:`some-id p. 4`).',
-                   'The register reads ``0x0015`` after\nreset, *inferred*.',
-                   'Offset ``0x10`` is the base.',
-                   'The model reads back what was written.'):
-            self.assertEqual(self.warn(ok + '\n'), [], ok)
-
-    def test_hex_value_in_table_row_or_literal_is_quiet(self):
-        table = ('.. list-table::\n\n   * - Reset value\n     - reads '
-                 '``0x80``\n')
-        self.assertEqual(self.warn(table), [])
-        self.assertEqual(self.warn('A dump::\n\n   reads 0x80\n'), [])
-
-    def test_hex_warnings_do_not_fail_the_lint(self):
-        text = GOOD_PART + '\nThe register reads ``0x0015`` after reset.\n'
-        self.assertEqual(self.run_lint({'hardware/demo.rst': text}), [])
 
     def used_in(self, text):
         page = GOOD_PART.replace('Used in :ref:`sgi-ip30`.', text)

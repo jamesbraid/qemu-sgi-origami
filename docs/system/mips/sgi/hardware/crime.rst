@@ -285,8 +285,8 @@ same names, sets ``eight-128m-banks`` from its
   ``empty-renderer-status``.
 
 ``empty-renderer-status``
-  Makes one 32-bit read of the renderer status register return
-  ``0x1e000000``, the four idle bits set and nothing queued.
+  Makes the model return ``0x1e000000`` for one 32-bit read of the
+  renderer status register, the four idle bits set and nothing queued.
 
 ``prom-id-word``
   Lets a 4-byte read at offset 4 return the low ID word. A model option
@@ -630,8 +630,9 @@ project. The published captures are listed under
 Model limits
 ============
 
-- The default ID is ``0xb1``, the specification's CRIME 1.5 value. Both
-  published captures read ``0xa1`` in the low byte. The legacy profile
+- The default ID is ``0xb1``, the specification's CRIME 1.5 value
+  (:src:`sgi-crime-1.5-spec PDF p. 114`), an *approximation* for a shipped
+  O2: both published captures give ``0xa1`` in the low byte. The legacy profile
   presents ``0xa1`` with a zero upper word, while the R12000 capture's
   upper word is ``0x1000``.
 - The software interrupt register accepts fewer bits than the hardware.

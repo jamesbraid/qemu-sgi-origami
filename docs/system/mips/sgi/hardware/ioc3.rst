@@ -1579,7 +1579,7 @@ Model limits
   at its PROM menu. SuperIO status bits 29 and 30, set on that board, are
   never raised.
 - The PCI error-address record at ``0x14-0x18`` reads zero, where the
-  reference Octane2 reads ``0x00500010`` at ``0x14``. Writes to the
+  reference Octane2 reads ``0x00500010`` at ``0x14`` (*observed*). Writes to the
   configuration header in the register block are dropped. The
   interrupt-output alias page, the UART and keyboard configuration
   bytes and the SuperIO clock register file are not modelled. The main

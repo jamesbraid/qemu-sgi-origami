@@ -1497,9 +1497,10 @@ flash part on the port this says nothing about an SSRAM.
 
 The direct map reads ``0x00800000``: widget 8, offset 0 and the
 add-512 MB bit clear, the value both public drivers write and the model's
-PROM was seen writing (:ref:`sgi-heart-dma`). The request time-out
+PROM was seen writing (:ref:`sgi-heart-dma`), *observed*. The request time-out
 ``0x000fffff``, link configuration ``0x03ff1810`` and PCI/GIO time-out
-``0x00010000`` are the specification's reset values, so the firmware
+``0x00010000`` are the specification's reset values
+(:src:`bridge-asic-spec-4.0 register tables`), so the firmware
 either left them or wrote them back.
 
 .. _sgi-bridge-octane2-devices:
@@ -1644,7 +1645,7 @@ Flash selects
 
 The ``0xffffffffbfe00000`` region was also read as ``dump -w -x
 0xffffffffbfe00000#8`` and ``dump -w -x 0xffffffffbffffff0#4``, all
-``0xffffffff``. Every read completed without an exception.
+``0xffffffff``, *observed*. Every read completed without an exception.
 
 .. list-table::
    :header-rows: 1

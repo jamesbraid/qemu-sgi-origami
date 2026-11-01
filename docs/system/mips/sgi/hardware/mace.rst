@@ -959,7 +959,8 @@ Reset sets the ring base to ``0x1``, the interrupt status and mask to 0,
 the timers' counter epoch to the current virtual time and the compare latches
 to unprogrammed, resets the PCI registers, serial DMA, audio, PS/2 ports and
 identity line, holds both UARTs in reset and drives all sixteen CRIME inputs
-low. The miscellaneous control register resets to ``0x20`` (green LED off).
+low. The model resets the miscellaneous control register to ``0x20`` (green
+LED off).
 
 ``sgi-mace`` migrates as version 1, with the serial DMA, audio and UART
 state embedded. The Ethernet MAC, PS/2 ports, identity line and clock are

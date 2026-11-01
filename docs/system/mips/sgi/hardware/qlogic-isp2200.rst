@@ -134,8 +134,8 @@ neither, and the real firmware's reply is unknown. A loop ID with no port, and
 ``0x29`` for the adapter's own loop ID (the driver asks it of discovered
 ports only), get ``0x4005``, as does either while the loop is down. The
 ``qlogic_isp2200_approximate_reply`` trace event marks each of these
-replies. The NVRAM skips zero bits before the start bit, and reads of word
-addresses 128 and above return ``0xffff``. The default port name's serial
+replies. The NVRAM skips zero bits before the start bit, and the model
+returns ``0xffff`` for reads of word addresses 128 and above. The default port name's serial
 is FNV-1a over the device's QOM path, modulo ``0xfffffe``, plus one.
 
 Reset and RISC control

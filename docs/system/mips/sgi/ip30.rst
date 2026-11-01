@@ -542,8 +542,8 @@ The model's choices:
 
 - ``flash-select`` and ``flash-strap`` true in the ``octane2`` layer
   (``boot_flash_wiring``): the boot flash on select 1, with the strap
-  set. This matches the reference Octane2: the part answers at
-  ``0xc00000`` and the Bridge status reads ``0x60``, the strap and PCI
+  set. This matches the reference Octane2: on the model the part
+  answers at ``0xc00000`` and the Bridge status reads ``0x60``, the strap and PCI
   mode that board reads. The outstanding-read count of 2 in that board's
   ``0x62`` reads zero on the model (:ref:`sgi-bridge-limits`).
 - ``flash-select`` and ``flash-strap`` false in the ``octane`` layer:

@@ -385,7 +385,7 @@ Chip-wide registers (block 0)
      - Zero.
 
 A write replaces bits 23:12 and clears the local-error bits written as
-one. With ``chip-inputs`` at 1 the register reads ``0x1111`` after reset
+one. With ``chip-inputs`` at 1 the model's register reads ``0x1111`` after reset
 plus the arrival port and any link bits.
 
 **Port reset register.** A read returns zero. A write acts on the
