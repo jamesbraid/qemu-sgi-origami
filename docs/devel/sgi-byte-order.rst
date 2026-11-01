@@ -1,3 +1,5 @@
+.. SPDX-License-Identifier: BSD-3-Clause
+
 ==========================
 Byte order in the SGI fork
 ==========================

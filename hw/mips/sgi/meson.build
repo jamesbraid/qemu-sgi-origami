@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # SN machine ASIC models and machines
 # Consolidated builds for hw/mips/sgi
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # sn0-firmware.c
 sn0_firmware_widget(unsigned int node, uint8_t widget) "node %u widget %u"
 

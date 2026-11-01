@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # How tests/qtest/meson.build splits sn0-origin2000-kona-3d-test into
 # separate tests, qtest-mips64/sn0-origin2000-kona-3d-test-GROUP, which meson
 # runs at once. Each line is a group and a GLib test path: one case, or a

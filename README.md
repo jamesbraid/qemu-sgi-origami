@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: BSD-3-Clause -->
 # Origami QEMU
 
 This is a fork of [QEMU](https://www.qemu.org/) that emulates Silicon Graphics
