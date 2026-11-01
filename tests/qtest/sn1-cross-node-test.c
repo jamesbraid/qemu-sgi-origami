@@ -270,6 +270,34 @@ static void test_cable_down_makes_the_peer_unreachable(void)
     qtest_quit(qts);
 }
 
+/*
+ * The cross-partition probe (the partitioning datasheet, test 6): a kernel
+ * reads another node's directory slot with a fault-tolerant copy and treats
+ * a fault as "not present". A read of a node no number claims, or whose
+ * cable is down, must fail as a bus error at the reader and leave every
+ * other access working; it must not stop the machine.
+ */
+static void test_remote_probe_faults_and_machine_runs_on(void)
+{
+    QTestState *qts = machine_start();
+    g_autoptr(QDict) status = NULL;
+
+    /* Node 1 holds number 0 until it is numbered: nothing is at NODE(1). */
+    assert_unreachable(qts, 0, NODE(1) + PROBE);
+    assert_unreachable(qts, 0, NODE(1) + PROBE + 8);
+    g_assert_cmphex(cpu_read_ok(qts, 0, PROBE), ==, WORD0);
+    set_node_number(qts, 1, 1);
+    g_assert_cmphex(cpu_read_ok(qts, 0, NODE(1) + PROBE), ==, WORD1);
+    qtest_qom_set_bool(qts, CABLE_PATH, "down", true);
+    assert_unreachable(qts, 0, NODE(1) + PROBE);
+    g_assert_cmphex(cpu_read_ok(qts, 0, PROBE), ==, WORD0);
+    qtest_qom_set_bool(qts, CABLE_PATH, "down", false);
+    g_assert_cmphex(cpu_read_ok(qts, 0, NODE(1) + PROBE), ==, WORD1);
+    status = qtest_qmp(qts, "{'execute':'query-status'}");
+    g_assert_true(qdict_haskey(status, "return"));
+    qtest_quit(qts);
+}
+
 #define PI_CACHED_ALIAS UINT64_C(0x28)
 /* The PROM's early private data window, which forwards to node memory. */
 #define PROMDATA_PROBE UINT64_C(0x100040)
@@ -2086,6 +2114,8 @@ int main(int argc, char **argv)
                    test_renumbering_moves_the_claim);
     qtest_add_func("sn1/cross-node/local-forms-are-the-readers",
                    test_local_forms_are_the_readers);
+    qtest_add_func("sn1/cross-node/remote-probe-faults-and-machine-runs-on",
+                   test_remote_probe_faults_and_machine_runs_on);
     qtest_add_func("sn1/cross-node/cable-down-makes-the-peer-unreachable",
                    test_cable_down_makes_the_peer_unreachable);
     qtest_add_func("sn1/cross-node/prom-data-window-is-the-readers",

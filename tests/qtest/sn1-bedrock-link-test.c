@@ -620,6 +620,88 @@ static void test_port_reset_crosses_the_link(void)
     qtest_quit(s);
 }
 
+/*
+ * Partition publication (the partitioning datasheet, discriminating tests 1
+ * and 3). The stock PROM stores its partition ID in bits 55:48 of its own
+ * local-block scratch 0 with a read-modify-write that keeps the other 56
+ * bits, and learns a peer's ID by a routed read of the peer's scratch 0.
+ * It also tells a headless peer its ID by a routed write of the same byte.
+ * Bits 63:56 and 47:0 must survive each of those, and a node's reset must
+ * leave the peer's scratch 1 alone, whose bit 38 is the peer's
+ * outside-the-reset-space mark.
+ */
+#define PARTITION_KEEP      UINT64_C(0xff00ffffffffffff)
+#define PARTITION_SHIFT     48
+#define NIC_AND_FLAGS_A     UINT64_C(0xa5000000a1b2c3d4)
+#define NIC_AND_FLAGS_B     UINT64_C(0x5a000000e5f60718)
+
+static uint64_t peer_scratch0_read(QTestState *s, uint64_t from)
+{
+    uint64_t status = vector_launch(s, from, 0,
+                                    HUB_SCRATCH(0) | REQUEST_ID(0x1c8), 0);
+
+    assert_good_reply(status, HUB_SCRATCH(0) | REQUEST_ID(0x1c8));
+    return qtest_readq(s, LB(from, VECTOR_READ));
+}
+
+static void test_partition_byte_is_published(void)
+{
+    QTestState *s = pair_start("");
+    uint64_t a = NIC_AND_FLAGS_A, b = NIC_AND_FLAGS_B;
+
+    qtest_writeq(s, LB(A_BASE, SCRATCH(0)), a);
+    qtest_writeq(s, LB(B_BASE, SCRATCH(0)), b);
+    /* Each PROM publishes its own ID with a read-modify-write. */
+    a = (qtest_readq(s, LB(A_BASE, SCRATCH(0))) & PARTITION_KEEP) |
+        (UINT64_C(1) << PARTITION_SHIFT);
+    qtest_writeq(s, LB(A_BASE, SCRATCH(0)), a);
+    b = (qtest_readq(s, LB(B_BASE, SCRATCH(0))) & PARTITION_KEEP) |
+        (UINT64_C(2) << PARTITION_SHIFT);
+    qtest_writeq(s, LB(B_BASE, SCRATCH(0)), b);
+
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, SCRATCH(0))), ==,
+                    UINT64_C(0xa5010000a1b2c3d4));
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(0))), ==,
+                    UINT64_C(0x5a020000e5f60718));
+    /* The other node reads the whole word, not a narrowed byte. */
+    g_assert_cmphex(peer_scratch0_read(s, A_BASE), ==,
+                    UINT64_C(0x5a020000e5f60718));
+    g_assert_cmphex(peer_scratch0_read(s, B_BASE), ==,
+                    UINT64_C(0xa5010000a1b2c3d4));
+    /* The master's routed write of a headless peer's ID keeps the rest. */
+    b = (peer_scratch0_read(s, A_BASE) & PARTITION_KEEP) |
+        (UINT64_C(7) << PARTITION_SHIFT);
+    assert_good_reply(vector_launch(s, A_BASE, 0,
+        HUB_SCRATCH(0) | REQUEST_ID(0x7b) | TYPE_WRITE, b),
+        HUB_SCRATCH(0) | REQUEST_ID(0x7b) | TYPE_WRITE);
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(0))), ==,
+                    UINT64_C(0x5a070000e5f60718));
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, SCRATCH(0))), ==,
+                    UINT64_C(0xa5010000a1b2c3d4));
+    qtest_quit(s);
+}
+
+/*
+ * The conflict path (test 3) rests on the reset-space mark surviving the
+ * other partition's reset: B's scratch 1 bit 38 stays set when A resets B
+ * over the link, though B's scratch 0 clears with the reset.
+ */
+static void test_reset_space_mark_survives_a_peer_reset(void)
+{
+    const uint64_t mark = UINT64_C(0x4000000fff);
+    QTestState *s = pair_start("");
+
+    qtest_writeq(s, LB(B_BASE, SCRATCH(1)), mark);
+    qtest_writeq(s, LB(B_BASE, SCRATCH(0)), UINT64_C(0x0002000000001234));
+    qtest_writeq(s, LB(A_BASE, SCRATCH(1)), mark);
+    qtest_writeq(s, NI(B_BASE, NI_RESET_ENABLE), 1);
+    qtest_writeq(s, NI(A_BASE, NI_PORT_RESET), 2);
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(0))), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(1))), ==, mark);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, SCRATCH(1))), ==, mark);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -651,6 +733,10 @@ int main(int argc, char **argv)
                    test_route_zero_writes_the_peer);
     qtest_add_func("sn1/bedrock-link/unroutable-launch-latches-nothing",
                    test_unroutable_launch_latches_nothing);
+    qtest_add_func("sn1/bedrock-link/partition-byte-is-published",
+                   test_partition_byte_is_published);
+    qtest_add_func("sn1/bedrock-link/reset-space-mark-survives-peer-reset",
+                   test_reset_space_mark_survives_a_peer_reset);
     qtest_add_func("sn1/bedrock-link/refused-offset-has-no-reply",
                    test_refused_offset_has_no_reply);
     return g_test_run();
