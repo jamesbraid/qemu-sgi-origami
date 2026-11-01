@@ -85,6 +85,7 @@ SCRIPT_SUITES = MODEL_SUITES + [
     'scripts/tests/test_sgi_license_check.py',
     'scripts/tests/test_sgi_leak_check.py',
     'scripts/tests/test_sgi_docs_lint.py',
+    'scripts/tests/test_sgi_docs_model_check.py',
     'scripts/test_sanitizer_workflow.py',
 ]
 
@@ -316,6 +317,10 @@ def docs(args):
     # comes first: it is quick and names the page and line.
     run([args.python or sys.executable, '-B',
          SOURCE / 'scripts/ci/sgi-docs-lint.py'])
+    # What the pages state about machines, processors and boards must match
+    # the catalogue the emulator offers, so a page cannot go stale.
+    run([args.python or sys.executable, '-B',
+         SOURCE / 'scripts/ci/sgi-docs-model-check.py'])
     with tempfile.TemporaryDirectory() as out:
         run([args.python or sys.executable, '-m', 'sphinx', '-W', '--keep-going',
              '-q', '-b', 'html', '-d', os.path.join(out, 'doctrees'),
