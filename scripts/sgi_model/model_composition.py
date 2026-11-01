@@ -587,8 +587,14 @@ def validate_model_cpu_populations(model: dict[str, Any]) -> None:
     exact: set[tuple[int, ...]] = set()
     unoriented: set[tuple[int, ...]] = set()
 
+    # A product whose node board is sold with none or four processors lists
+    # zero among its counts; a population may then leave such a board empty,
+    # but not every board (the console node runs the PROM).
+    fits_none = 0 in (topology.get("node_cpu_counts") or [])
+
     def validate_counts(counts: list[int], label: str) -> None:
-        if not counts or any(value < 1 for value in counts):
+        if not counts or any(value < (0 if fits_none else 1)
+                             for value in counts) or not any(counts):
             raise ResolutionError(f"{label} must populate at least one CPU per node")
         if isinstance(min_nodes, int) and len(counts) < min_nodes:
             raise ResolutionError(

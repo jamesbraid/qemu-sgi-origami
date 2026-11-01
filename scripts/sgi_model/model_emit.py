@@ -149,6 +149,8 @@ def _node(raw: dict) -> dict:
         node["option-intx-map"] = raw["option_intx_map"].copy()
     if "bedrock" in raw:
         node["bedrock"] = _kebab_keys(raw["bedrock"])
+    if raw.get("role") == "memory":
+        node["role"] = "memory"
     if raw.get("board_kind") in ("ip53", "ip35", "ip53-cx"):
         node["board-kind"] = raw["board_kind"]
     return node
