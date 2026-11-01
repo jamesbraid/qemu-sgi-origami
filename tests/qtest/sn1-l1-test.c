@@ -2962,6 +2962,98 @@ static void test_chimera_brick(void)
 }
 
 /*
+ * L1 datasheet, "serial" (plain): "BSN: %s    SSN: %s    Time: <date>" with
+ * the date as "%m/%d/%Y %X %Z"; the zone name defaults to GMT (inferred),
+ * and the "Security: OFF" suffix follows only when a security setting is
+ * non-zero, which the model has none of.
+ */
+static void test_chimera_serial(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("57", "IP59_4CPU"), RTC);
+    g_autofree char *reply = NULL;
+
+    reply = env_run(fd, "serial");
+    g_assert_cmpstr(reply, ==,
+                    "BSN: XQ4471    SSN: SZ900213    "
+                    "Time: 09/07/2026 00:00:00 GMT\r\n");
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
+ * L1 datasheet, "serial all": the Data table, then the EEPROM table with
+ * the profile's row list: the 2U list for the 7 family and Q, the
+ * workstation list for 9. An empty position reads "no hardware detected".
+ * The reference rows' locations and values are not recorded.
+ */
+static void test_chimera_serial_all(void)
+{
+    static const char *const ws_rows[] = {
+        "INTERFACE   no hardware detected",
+        "IO9         no hardware detected",
+        "ODYSSEY     no hardware detected",
+        "SNOWBALL    no hardware detected",
+        "NODE        IP59_4CPU       ",
+        "IO DGHTR    no hardware detected",
+    };
+    static const char *const u2_rows[] = {
+        "INTERFACE   no hardware detected",
+        "IO9         no hardware detected",
+        "ODYSSEY     no hardware detected",
+        "RISER       no hardware detected",
+        "NODE        IP59_4CPU       ",
+        "SNOWBALL    no hardware detected",
+        "PS 1        no hardware detected",
+        "PS 2        no hardware detected",
+    };
+    int fd;
+    QTestState *s = console_start(&fd, CHIMERA_PROPS("57", "IP59_4CPU"), "");
+    g_autofree char *reply = NULL;
+    g_auto(GStrv) lines = NULL;
+
+    reply = env_run(fd, "serial all");
+    lines = g_strsplit(reply, "\r\n", -1);
+    g_assert_cmpstr(lines[0], ==,
+                    "Data                            Location      Value");
+    g_assert_cmpstr(lines[1], ==,
+                    "------------------------------  ------------  --------");
+    g_assert_cmpstr(lines[2], ==,
+                    "Local System Serial Number      NVRAM         SZ900213");
+    g_assert_cmpstr(lines[3], ==,
+                    "Reference System Serial Number  NVRAM         not set");
+    g_assert_cmpstr(lines[4], ==,
+                    "Local Brick Serial Number       EEPROM        XQ4471");
+    g_assert_cmpstr(lines[5], ==,
+                    "Reference Brick Serial Number   NVRAM         not set");
+    g_assert_cmpstr(lines[6], ==, "");
+    g_assert_cmpstr(lines[7], ==, "");
+    g_assert_cmpstr(lines[8], ==,
+                    "EEPROM      Product Name    Serial         "
+                    "Part Number           Rev  T/W    ");
+    g_assert_cmpstr(lines[9], ==,
+                    "----------  --------------  -------------  "
+                    "--------------------  ---  ------ ");
+    for (unsigned i = 0; i < G_N_ELEMENTS(ws_rows); i++) {
+        g_assert_true(g_str_has_prefix(lines[10 + i], ws_rows[i]));
+    }
+    g_assert_nonnull(strstr(lines[14], "030-1989-003"));
+    qtest_quit(s);
+    close(fd);
+
+    s = console_start(&fd, CHIMERA_PROPS("81", "IP59_4CPU"), "");
+    g_free(reply);
+    g_strfreev(lines);
+    reply = env_run(fd, "serial all");
+    lines = g_strsplit(reply, "\r\n", -1);
+    for (unsigned i = 0; i < G_N_ELEMENTS(u2_rows); i++) {
+        g_assert_true(g_str_has_prefix(lines[10 + i], u2_rows[i]));
+    }
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
  * L1 datasheet, "States" and "Temperatures": a row's state is Disabled when
  * monitoring is off.
  */
@@ -2977,6 +3069,35 @@ static void test_env_disabled_rows(void)
     g_assert_null(strstr(text, "Enabled"));
     g_assert_nonnull(strstr(text, "FAN  0  EXHST 1   Disabled "));
     g_assert_nonnull(strstr(text, " 0 INTERFACE 0      Disabled   "));
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
+ * With no serials configured, "serial" prints "(null)", the C library's
+ * text for a null string (inferred), and "serial all" prints "not set".
+ */
+static void test_chimera_serial_unset(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd,
+        ",brick-type-code=57,irouter-compat=on,node-board-name=IP59_4CPU,"
+        "node-board-part=030-1989-003,node-board-revision=-C,"
+        "auto-power=off", RTC);
+    g_autofree char *reply = NULL;
+    g_auto(GStrv) lines = NULL;
+
+    reply = env_run(fd, "serial");
+    g_assert_cmpstr(reply, ==,
+                    "BSN: (null)    SSN: (null)    "
+                    "Time: 09/07/2026 00:00:00 GMT\r\n");
+    g_free(reply);
+    reply = env_run(fd, "serial all");
+    lines = g_strsplit(reply, "\r\n", -1);
+    g_assert_cmpstr(lines[2], ==,
+                    "Local System Serial Number      NVRAM         not set");
+    g_assert_cmpstr(lines[4], ==,
+                    "Local Brick Serial Number       EEPROM        not set");
     qtest_quit(s);
     close(fd);
 }
@@ -8346,6 +8467,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/env/unmodelled", test_env_unmodelled);
     qtest_add_func("sn1/l1/chimera/brick", test_chimera_brick);
     qtest_add_func("sn1/l1/chimera/config", test_chimera_config);
+    qtest_add_func("sn1/l1/chimera/serial-all", test_chimera_serial_all);
     qtest_add_func("sn1/l1/env/on-off", test_env_on_off);
     qtest_add_func("sn1/l1/env/disabled-rows", test_env_disabled_rows);
     qtest_add_func("sn1/l1/env/limits", test_env_limits);
@@ -8359,7 +8481,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/chimera/brick-partition",
                    test_chimera_brick_partition);
     qtest_add_func("sn1/l1/env/altitude-powered", test_env_altitude_powered);
+    qtest_add_func("sn1/l1/chimera/serial-unset", test_chimera_serial_unset);
     qtest_add_func("sn1/l1/env/fan-commands", test_fan_commands);
+    qtest_add_func("sn1/l1/chimera/serial", test_chimera_serial);
     qtest_add_func("sn1/l1/env/restart-resets", test_env_restart_resets);
     qtest_add_func("sn1/l1/env/q-captured-rows", test_env_q_captured_rows);
     qtest_add_func("sn1/l1/env/monitor-only", test_env_monitor_only);
