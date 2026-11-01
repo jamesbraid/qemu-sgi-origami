@@ -1203,3 +1203,4 @@ scripts/tests/system-model-fixtures/onyx3000-r14000-600mhz/resolved.sha256
 scripts/tests/test_sgi_license_check.py
 scripts/ci/sgi-leak-check.py
 scripts/tests/test_sgi_leak_check.py
+scripts/tests/test_sgi_leak_workflows.py
