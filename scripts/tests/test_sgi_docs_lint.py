@@ -148,6 +148,35 @@ class DocsLintTests(unittest.TestCase):
         block = GOOD_PART + '\n.. code-block:: text\n\n   will be TODO\n'
         self.assertEqual(self.run_lint({'hardware/demo.rst': block}), [])
 
+    def warn(self, body):
+        return lint.warn_page('hardware/demo.rst', GOOD_PART + '\n' + body)
+
+    def test_hex_value_without_rating_warns(self):
+        for bad in ('The register reads ``0x0015`` after reset.',
+                    'The reset value is ``0x80``, as the PROM leaves it.',
+                    'A read of the status word returns 0x1e000000.'):
+            out = self.warn(bad + '\n')
+            self.assertEqual(len(out), 1, bad)
+            self.assertIn('hardware/demo.rst:14: warning:', out[0])
+
+    def test_hex_value_with_rating_or_citation_is_quiet(self):
+        for ok in ('The register reads ``0x0015`` after reset, *observed*.',
+                   'The reset value is ``0x80`` (:src:`some-id p. 4`).',
+                   'The register reads ``0x0015`` after\nreset, *inferred*.',
+                   'Offset ``0x10`` is the base.',
+                   'The model reads back what was written.'):
+            self.assertEqual(self.warn(ok + '\n'), [], ok)
+
+    def test_hex_value_in_table_row_or_literal_is_quiet(self):
+        table = ('.. list-table::\n\n   * - Reset value\n     - reads '
+                 '``0x80``\n')
+        self.assertEqual(self.warn(table), [])
+        self.assertEqual(self.warn('A dump::\n\n   reads 0x80\n'), [])
+
+    def test_hex_warnings_do_not_fail_the_lint(self):
+        text = GOOD_PART + '\nThe register reads ``0x0015`` after reset.\n'
+        self.assertEqual(self.run_lint({'hardware/demo.rst': text}), [])
+
     def test_unlisted_page(self):
         out = self.messages({'hardware/demo.rst': GOOD_PART}, listed=False)
         self.assertIn('not listed in LICENSE.origami.paths', out)

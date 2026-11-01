@@ -95,6 +95,9 @@ page under ``docs/system/mips/sgi/``:
 - no phrase that reads as a plan, such as "planned", "for now", "yet to", "will be modelled" or "not
   yet implemented", outside literal blocks, literals and quoted text; "not yet delivered" and the like describe a hardware state
   and pass;
+- a warning, not a failure, for a paragraph that states a register's value
+  in hex ("reads ``0x15``", "resets to ``0x80``") with neither a rating nor
+  a ``:src:`` citation in it; table rows are skipped;
 - a "Used in" first paragraph on each part page, except the listed overviews;
 - a listing of the page, and of this guide, in ``LICENSE.origami.paths``.
 
