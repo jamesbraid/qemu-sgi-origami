@@ -89,8 +89,10 @@ Machines
 ========
 
 Each machine builds one Bedrock node. ``-M <machine>,topology=`` selects
-a wiring the catalogue lists. An unknown name, such as ``topology=help``,
-makes the machine print the topologies it accepts and exit.
+a wiring the catalogue lists, and ``board=`` selects its node board where
+the topology takes more than one: ``ip53``, the default, or ``ip59``
+(:ref:`sgi-ip59-profiles`). An unknown name, such as ``topology=help``,
+makes the machine print the topologies it accepts, each once, and exit.
 
 .. _sgi-ip53-products:
 
@@ -111,27 +113,28 @@ Products
      - 2 GiB
      - IP53 ``030-1868-001`` revision C
    * - ``onyx350``
-     - ``onyx350-compat`` (must be named)
+     - ``onyx350`` (must be named)
      - four R16000, 800 MHz, 8 MiB
      - 8 GiB
      - IP53 ``030-2013-001`` revision D
    * - ``tezro``
-     - ``tezro-tower-one``, ``tezro-tower-multi``, ``tezro-rack`` (one
-       must be named)
-     - one, four and one R16000 respectively, 700 MHz, 4 MiB
+     - ``tezro``, ``tezro-rack`` (one must be named)
+     - one, two or four R16000, 700 MHz, 4 MiB; ``-smp`` picks the
+       interface board on ``tezro``
      - 4 GiB
-     - IP53
+     - IP53 ``030-1868-001`` or ``030-1869-001`` revision C
    * - ``onyx4-host``
-     - ``onyx4-host-ip59`` (default), ``onyx4-host-serial-compat``
+     - ``onyx4-host`` (default)
      - four R16000, 1 GHz, 16 MiB
      - 8 GiB
-     - IP53 path standing in for an IP59 board
+     - IP59 ``030-1989-003`` revision C on the IP53 board path, the only
+       board
 
 The IP53 machines accept only ``-cpu R16000``. ``-kernel`` is refused.
 ``onyx350`` and ``tezro`` have no default topology and refuse a launch
-that does not name one. Each product also has an IP59 topology,
-described in :ref:`sgi-ip59-profiles`. The products are described in
-:ref:`sgi-ip35-ip53`.
+that does not name one. Every topology but ``onyx4-host`` also builds the
+IP59 with ``board=ip59`` (:ref:`sgi-ip59-profiles`). The products are
+described in :ref:`sgi-ip35-ip53`.
 
 .. _sgi-ip53-processors:
 
@@ -226,7 +229,8 @@ Components and connections
        sensor. ``onyx350`` reports ``0xb``; the other IP53 products
        report ``0xa``, an *approximation*
    * - PIC
-     - one at widget 15; on ``tezro-tower-multi``, two, at widgets 11
+     - one at widget 15; on the Tezro two/four-processor board, two, at
+       widgets 11
        and 15
      - :ref:`sgi-ip53-pic`
    * - IO9
@@ -336,11 +340,14 @@ on :doc:`hardware/bedrock`.
 IP53 profiles
 =============
 
-The four IP53 machines run six serial profiles. Each fixes one processor
-population, one memory map and one I/O construction, and the machine
-checks the whole tuple before building anything. A launch that changes
-any member of the tuple, such as ``-smp 2`` on ``tezro-tower-multi``,
-needs ``ip53-experimental=on``. None fits a graphics pipe by default.
+The four IP53 machines run serial profiles, one per topology and board.
+Each fixes one memory map, one I/O construction and the processor
+populations it accepts, and the machine fits the processors itself with
+no machine option or ``-cpu`` property. A population, memory size or
+processor the topology does not describe is refused, and so is a
+``maxcpus`` above the ``-smp`` count. A ``-cpu`` ``reset-mode`` that
+differs from the board's word is refused. None fits a graphics pipe by
+default.
 
 .. _sgi-ip53-serial-profiles:
 
@@ -364,29 +371,29 @@ Selected inputs
      - ``0x009cad85``
      - widget 15
      - 33,333,333 Hz
-   * - ``onyx350``, ``onyx350-compat``
+   * - ``onyx350``
      - four 800 MHz R16000
      - 8 GiB
      - 8 MiB
      - ``0x009caf85``
      - widget 15
      - 33,333,333 Hz
-   * - ``tezro``, ``tezro-tower-one``
+   * - ``tezro``, ``-smp 1``: one-processor board
      - one 700 MHz R16000
      - 4 GiB
      - 4 MiB
      - ``0x009bad85``
      - widget 15
      - 66,666,667 Hz
-   * - ``tezro``, ``tezro-tower-multi``
-     - four 700 MHz R16000
+   * - ``tezro``, ``-smp 2`` or ``4``: two/four-processor board
+     - two or four 700 MHz R16000
      - 4 GiB
      - 4 MiB
      - ``0x009bad85``
      - widgets 11 and 15
      - 66,666,667 Hz
    * - ``tezro``, ``tezro-rack``
-     - one 700 MHz R16000
+     - one, two or four 700 MHz R16000
      - 4 GiB
      - 4 MiB
      - ``0x009bad85``
@@ -406,8 +413,8 @@ measured values (*approximation*). The capture facts behind each profile
 follow. Two profiles carry a node-board identity record for the L1 to
 serve, taken from their captures: ``IP53_4CPU``, ``030-1868-001``,
 revision C on ``origin350`` and ``IP53_4CPU``, ``030-2013-001``, revision
-D on ``onyx350``. The others serve none. No capture supplies raw EEPROM
-bytes.
+D on ``onyx350``. The Tezro records are in :ref:`sgi-ip35-tezro`. No
+capture supplies raw EEPROM bytes.
 
 .. _sgi-sn-family-origin350:
 
@@ -520,14 +527,34 @@ tower or a rack is an *inference* from the product family. An 800 MHz
 Tezro inventory reports the same two interface-board widgets
 (:src:`irixnet-post-26015`), *observed*.
 
-``tezro-tower-multi`` builds two PICs, at widgets 11 and 15, with the
-IO9 on the widget-15 PIC's head 0 and nothing on the other. The model
-routes its widget-0 view through the PIC that owns the IO9, an
-*approximation*: through the widget-11 PIC, the stock PROM could not
-build its configuration for the node on the model. ``tezro-tower-one``
-and ``tezro-rack`` build one PIC, at widget 15. The rack profile models
-the first enclosure only. All three topologies build the IO9
-BCM5701, and the netboot adapter is the BCM5701 on each.
+The ``tezro`` topology holds both interface boards, and ``-smp`` picks
+one: one processor builds the one-processor board, two or four the
+two/four-processor board. The two/four-processor board builds two PICs,
+at widgets 11 and 15, with the IO9 on the widget-15 PIC's head 0 and
+nothing on the other. The model routes its widget-0 view through the PIC
+that owns the IO9, an *approximation*: through the widget-11 PIC, the
+stock PROM could not build its configuration for the node on the model.
+The one-processor board builds one PIC, at widget 15. That it has one is
+*inferred* from that board's two PCI-X buses
+(:src:`007-4564-001 p. 26-31`); no inventory shows it. ``tezro-rack``
+builds one PIC, at widget 15, and models the first enclosure only. Every
+Tezro profile builds the IO9 BCM5701, and the netboot adapter is the
+BCM5701 on each.
+
+The 4 GiB is a selected memory kit, not a measured population. It
+matches the observed four-processor 700 MHz population above, with the
+bank placement *inferred*. The one-processor board's installed DIMMs are
+*unknown*, so its 4 GiB, and the rack's, only reuse that kit.
+
+The Tezro's L1 serves the node board the published Tezro inventories
+print: ``IP53_4CPU``, part ``030-1868-001``, revision ``-C``, with four
+processors on slices A to D (:src:`nekonomicon-16728583`;
+:src:`nekonomicon-16726767`), and ``IP53_2CPU``, part ``030-1869-001``,
+revision ``-C``, with two on slices A and C (:src:`preterhuman-tezro`;
+:src:`nekonomicon-16727444`), *observed*. No inventory shows a
+one-processor board, so one processor keeps the L1's generic record. The
+rack's first enclosure takes the record for its processor count,
+*inferred*.
 
 .. _sgi-ip35-onyx4:
 
@@ -554,7 +581,9 @@ as the Onyx 4 host is *inferred*.
 
 The model maps this IP59 board onto the IP53 board path, its PIC and its
 IO9 wiring, an *approximation*: no source describes the IP59 PIC, its
-revision or its routes. It builds no G2, G2N or NUMAlink peer. The
+revision or its routes. ``onyx4-host`` builds only this board: no source
+gives the Onyx 4 host an IP53 processor tuple, so ``board=ip53`` is
+refused there. It builds no G2, G2N or NUMAlink peer. The
 ``onyx4-host-g2`` and ``onyx4-host-g2n`` compositions are reference
 models that no machine builds.
 
@@ -688,9 +717,9 @@ processor clock, which both captured IP59 inventories print as ``Speed
 PIC and IO9 wiring is an *approximation*: no source describes them on
 IP59.
 
-Every IP53 product has an IP59 topology, named with ``topology=``. The
-IP53 topologies stay the defaults, except on ``onyx4-host``, whose
-default is ``onyx4-host-ip59``.
+Each IP53 topology also builds the IP59, selected with ``board=ip59``,
+at the same memory. The IP53 stays the default board. ``onyx4-host``
+builds only the IP59, which is therefore its default.
 
 .. list-table::
    :header-rows: 1
@@ -698,36 +727,42 @@ default is ``onyx4-host-ip59``.
    * - Topology
      - Machine
      - Memory
-   * - ``origin350-ip59``
+     - Boards
+   * - ``origin350``
      - ``origin350``
      - 2 GiB
-   * - ``onyx350-ip59``
+     - ``ip53`` (default), ``ip59``
+   * - ``onyx350``
      - ``onyx350``
      - 8 GiB
-   * - ``tezro-tower-one-ip59``
-     - ``tezro``, one processor
+     - ``ip53`` (default), ``ip59``
+   * - ``tezro``
+     - ``tezro``
      - 4 GiB
-   * - ``tezro-tower-multi-ip59``
-     - ``tezro``, two or four processors
-     - 4 GiB
-   * - ``tezro-rack-ip59``
+     - ``ip53`` (default), ``ip59`` with two or four processors
+   * - ``tezro-rack``
      - ``tezro``, first enclosure of a rack
      - 4 GiB
-   * - ``onyx4-host-ip59``
+     - ``ip53`` (default), ``ip59`` with two or four processors
+   * - ``onyx4-host``
      - ``onyx4-host``
      - 8 GiB
-   * - ``origin3900-ip59``
+     - ``ip59`` only
+   * - ``origin3900``
      - ``origin3000``, one Cx-brick
      - 2 GiB per node board
+     - ``ip53`` (default), ``ip59``
 
 The L1 serves the node board from its record, as on IP53. A
 four-processor node reports ``IP59_4CPU``, part ``030-1989-003``,
 revision ``-C`` (:src:`irixnet-thread-2263-page-2`), and a two-processor
 node ``IP59_2CPU``, part ``030-2059-002``, revision ``A``
 (:src:`nekonomicon-16719032`), both *observed*. The Onyx 4's second board
-is revision ``-D``, which no profile serves. A one-processor Tezro keeps
-the L1's generic record: neither inventory shows a one-processor IP59
-board, so its part and revision are *unknown*. Serial
+is revision ``-D``, which no profile serves. Neither inventory shows a
+one-processor IP59 board, so its record is *unknown*, and the IP59
+builds only on the Tezro two/four-processor board: ``board=ip59`` with
+``-smp 1`` is refused, and the rack's first enclosure takes two or four
+IP59 processors. Serial
 numbers and barcodes are synthetic.
 
 The reset mode word ``0x00edb385`` and the flash configuration word
@@ -746,7 +781,8 @@ that reading. Whether the part is an R16000A is *unknown*. The PROM
 payload is the 6.210 image the IP53 profiles use.
 
 The model builds an Origin 3900 Cx-brick with IP53 or IP59 node boards,
-not a mix: ``origin3900-ip59`` fits four IP59 boards, and the Cx-brick's L1 reports
+not a mix: ``board=ip59`` fits four IP59 boards, the generator refuses a
+record that mixes the two, and the Cx-brick's L1 reports
 the ``IP59_4CPU`` record for each. No Cx-brick inventory is published,
 so the composition is an *approximation*, and whether a Cx-brick's IP59
 is the same board as the 2U one is *unknown*. The 16 MiB cache follows
@@ -779,7 +815,8 @@ start the machine on them. For the Origin 350:
 
 .. code-block:: shell
 
-   qemu-sgi-machine-init --machine origin350,topology=origin350,nodes=1 \
+   qemu-sgi-machine-init \
+       --machine origin350,topology=origin350,nodes=1,board=ip53 \
        --boot-prom ip35prom.img state
 
    qemu-system-mips64 -M origin350,node0-flash=f,nvram0=n,nvram0-clock=c \
@@ -800,20 +837,20 @@ the start of ``-M`` change:
      - Start of ``-M``
      - PROM reports
    * - Origin 350
-     - ``origin350,topology=origin350,nodes=1``
+     - ``origin350,topology=origin350,nodes=1,board=ip53``
      - ``origin350``
      - four processors, 2048 MB
    * - Onyx 350
-     - ``onyx350,topology=onyx350-compat,nodes=1``
-     - ``onyx350,topology=onyx350-compat``
+     - ``onyx350,topology=onyx350,nodes=1,board=ip53``
+     - ``onyx350,topology=onyx350``
      - four processors, 8192 MB
    * - Tezro
-     - ``tezro,topology=tezro-tower-multi,nodes=1``
-     - ``tezro,topology=tezro-tower-multi``
+     - ``tezro,topology=tezro,nodes=1,board=ip53``
+     - ``tezro,topology=tezro``, with ``-smp 4``
      - four processors, 4096 MB
    * - Onyx 4 host
-     - ``onyx4-host,topology=onyx4-host-serial-compat,nodes=1``
-     - ``onyx4-host,topology=onyx4-host-serial-compat``
+     - ``onyx4-host,topology=onyx4-host,nodes=1``
+     - ``onyx4-host``
      - four processors, 8192 MB
 
 Booting IRIX from here needs a disk on ``scsi.0``, the first onboard SCSI
@@ -826,8 +863,8 @@ Graphics
 ========
 
 None of the IP53 machines fits a graphics pipe by default.
-``tezro-tower-multi``, ``onyx350-compat`` and their ``-ip59``
-topologies take an optional V12 at
+Both Tezro boards and ``onyx350``, on either node board, take an
+optional V12 at
 ``widget-12``, ``-device sgi-odyssey,slot=widget-12,product=v12``.
 The published 700 MHz Tezro inventory reports its V12, part ``030-1884-002`` revision D, at widget 12
 (:src:`graphica-tezro-hinv`), *observed*. The same Onyx 350 module, 001c01, was also published with a V12, part
@@ -838,9 +875,12 @@ with that pipe instead. The pipe
 links to that port of the crossbar of the PIC that owns widget 0, uses
 the Bedrock's graphics-credit handling, and is marked alive once it
 realizes. The route from either physical XIO connector to the Bedrock is
-*unknown*. On the model, with a V12 fitted to ``tezro-tower-multi``, the
-stock PROM finds the Odyssey board on nasid 0 and passes its
-diagnostics.
+*unknown*. On the one-processor Tezro board the slot reuses the
+two/four-processor board's widget 12 and route, *inferred*: the
+Tezro guide gives that board one XIO connector for a VPro board
+(:src:`007-4564-001 p. 29-30`) but names no widget. On the model, with a
+V12 fitted to the four-processor Tezro, the stock PROM finds the Odyssey
+board on nasid 0 and passes its diagnostics.
 
 The other IP53 topologies have no graphics slot. :ref:`sgi-sn-graphics-pipes`
 describes how slots, defaults and refusals work, and
