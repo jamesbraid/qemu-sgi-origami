@@ -1097,13 +1097,18 @@ def _processor(model: dict, cpu: dict) -> dict:
     part = _required(cpu, "hardware_kind", cpu["id"])
     identity = cpu.get("identity") or {}
     if part == "r16000":
-        # The R16000 fits only an IP53-family node board (the IP53 and the
-        # IP59 share its board layer), which supplies the processor's
-        # reset-mode word; nothing here is keyed by topology name.
-        if model.get("machine", {}).get("board_ip") != "IP53":
+        # The R16000 fits an IP53-family node board (the IP53 and the IP59
+        # share its board layer), which supplies the processor's reset-mode
+        # word; nothing here is keyed by topology name. A C-brick's IP35
+        # board takes one too, as an approximation: no source shows a
+        # shipped C-brick PIMM, so its flash block is the only board word
+        # there is to hold the processor to.
+        board_ip = model.get("machine", {}).get("board_ip")
+        if board_ip not in ("IP53", "IP35"):
             raise CompileError(
                 f"CPU '{cpu['id']}' is an R16000, which only an IP53-family "
-                "node board takes")
+                "node board takes (or, as an approximation, a C-brick's "
+                "IP35 board)")
         clock_mhz = _integer(identity, "clock_mhz", f"CPU '{cpu['id']}'", 32)
         cache_mib = _integer(identity, "cache_mib", f"CPU '{cpu['id']}'", 16)
         reset_mode = _integer(
@@ -1130,6 +1135,16 @@ def _processor(model: dict, cpu: dict) -> dict:
                 f"{scache_bytes:#x} bytes, reset mode {reset_mode:#010x}"
                 + ("" if board_word is None else
                    f" against the firmware block's {board_word:#010x}"))
+        if board_ip == "IP35":
+            flash = model.get("machine", {}).get("emulation", {}).get(
+                "ip35_firmware")
+            if (not isinstance(flash, dict) or
+                    (flash.get("cpu_mode_word", 0) ^ reset_mode) & 0x01ffffff):
+                raise CompileError(
+                    f"CPU '{cpu['id']}' reset mode {reset_mode:#010x} "
+                    "disagrees with the C-brick's flash word "
+                    + ("(none authored)" if not isinstance(flash, dict) else
+                       f"{flash.get('cpu_mode_word', 0):#010x}"))
         return {
             # As for the other parts, the cache is part of the name: the
             # Origin 350 and the Tezro both run 700 MHz, with 8 and 4 MiB.

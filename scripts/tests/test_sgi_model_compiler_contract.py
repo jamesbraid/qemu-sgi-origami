@@ -290,6 +290,38 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
         cpu["identity"].update(cache_mib=16, r16000_scache_bytes=0x1000000)
         self.assertEqual(_processor(model, cpu)["mode_bits"], 0x00edb385)
 
+    def test_a_c_brick_r16000_agrees_with_its_flash_word(self):
+        # The C-brick's 800 MHz R16000 is an approximation built from the
+        # PROM's class-0 table row: no source shows a shipped C-brick PIMM.
+        # The compiler still holds it to its board's flash word.
+        model = {"composition": {"product": "origin3200-r16000"},
+                 "machine": {"board_ip": "IP35", "emulation": {
+                     "ip35_firmware": {"machine_type": 0,
+                                       "cpu_mode_word": 0x569caf85}}}}
+        cpu = {"id": "cpu0", "hardware_kind": "r16000", "identity": {
+            "clock_mhz": 800, "cache_mib": 8,
+            "r16000_reset_mode": 0x009caf85,
+            "r16000_scache_bytes": 0x800000}}
+        processor = _processor(model, cpu)
+        self.assertEqual(processor["id"], "r16000-800mhz-8mb")
+        self.assertEqual(processor["mode_bits"], 0x009caf85)
+        # The same word cannot size a 4 MiB part: the 4 MiB 800 MHz boards
+        # carry a different word, and no source gives a C-brick one.
+        small = copy.deepcopy(cpu)
+        small["identity"].update(cache_mib=4, r16000_scache_bytes=0x400000)
+        with self.assertRaisesRegex(CompileError, "selects a 8 MiB"):
+            _processor(model, small)
+        # A flash word for another clock leaves the PROM and the processor
+        # disagreeing about the clock.
+        model["machine"]["emulation"]["ip35_firmware"]["cpu_mode_word"] = (
+            0x5414a785)
+        with self.assertRaisesRegex(CompileError, "flash word"):
+            _processor(model, cpu)
+        # A C-brick with no flash block has nothing to agree with.
+        del model["machine"]["emulation"]["ip35_firmware"]
+        with self.assertRaisesRegex(CompileError, "flash word"):
+            _processor(model, cpu)
+
     def test_a_record_fits_one_boards_r16000_on_every_node(self):
         model = copy.deepcopy(_resolved("origin3900"))
         compile_model(model)
