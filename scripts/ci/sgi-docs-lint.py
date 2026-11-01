@@ -57,6 +57,14 @@ ROADMAP = re.compile(
 # words: a double-quoted span, which may wrap across lines, and literals.
 QUOTED = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d|``.*?``', re.S)
 
+# A sentence that states what a register holds or returns as a hex value.
+# The page must rate it or cite it in the same paragraph. Many such
+# sentences describe the model, so this only warns.
+HEX_CLAIM = re.compile(
+    r'(?:reset value|resets? to|reads?(?: back| as)?|returns?|reports?|'
+    r'powers? up (?:as|at|to)|hardware value)\b[^.\n]*?\b0x[0-9a-fA-F]{2,}',
+    re.I)
+
 LABEL = re.compile(r'\.\. _[^:]+:\s*$')
 ADORN = re.compile(r'([=\-~^"#*+])\1{2,}\s*$')
 LITERAL = re.compile(r'``.*?``|:\w+:`[^`]*`|`[^`]*`')
@@ -133,6 +141,26 @@ def blank(m):
     return re.sub(r'[^\n]', ' ', m.group(0))
 
 
+def has_rating_or_citation(para):
+    if ':src:' in para:
+        return True
+    return any(m.group(1) in RATINGS
+               for m in ITALIC.finditer(LITERAL.sub('', para)))
+
+
+def warn_page(rel, text):
+    """Return warnings: hex value statements with no rating or citation."""
+    out = []
+    for first, para in paragraphs(text.split('\n')):
+        flat = ' '.join(para.split())
+        if flat.startswith(('* -', '- ')) and '* -' in flat:
+            continue  # a table row: its columns carry the rating
+        if HEX_CLAIM.search(flat) and not has_rating_or_citation(para):
+            out.append(f'{rel}:{first}: warning: a hex value is stated '
+                       'with no rating word or :src: in the paragraph')
+    return out
+
+
 def lint_page(rel, text):
     out = []
     lines = text.split('\n')
@@ -194,6 +222,13 @@ def lint_page(rel, text):
     return out
 
 
+def warnings(root):
+    out = []
+    for page in sorted((root / PAGES).rglob('*.rst')):
+        out += warn_page(str(page.relative_to(root)), page.read_text())
+    return out
+
+
 def lint(root):
     listed = set((root / 'LICENSE.origami.paths').read_text().split())
     findings = []
@@ -215,6 +250,8 @@ def main(argv=None):
     findings = lint(args.root)
     for f in findings:
         print(f)
+    for w in warnings(args.root):
+        print(w, file=sys.stderr)
     return 1 if findings else 0
 
 
