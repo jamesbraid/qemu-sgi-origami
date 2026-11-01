@@ -9899,6 +9899,72 @@ static void test_memory_node_serves_node0(void)
     g_unlink(prom);
 }
 
+/*
+ * The master marks a node with no processor by setting bit 38 of its
+ * scratch 1 (hub offset 0x608008) over the vector engine, and the node
+ * answers with nothing executing on it. Datasheet: origin3000-topologies,
+ * "Marking headless hubs" (established, PROM) and the headless-hub row of
+ * "Discriminating tests".
+ */
+#define MEMORY_NODE_LB_SCRATCH1 UINT64_C(0x608008)
+#define MEMORY_NODE_HEADLESS_BIT (UINT64_C(1) << 38)
+
+static QTestState *memory_node_start(const char *prom)
+{
+    return qtest_initf(
+        "-M sn-builder-bedrock-test,construction-fault=cbrick-memory-node "
+        "-cpu R14000 -smp 1 -m 128 -bios %s -nodefaults -display none -S",
+        prom);
+}
+
+static void test_memory_node_scratch1_marked(void)
+{
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = memory_node_start(prom);
+    uint64_t scratch;
+
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node1", "nr-cpus"), ==, 0);
+    scratch = memory_node_peer_access(qts, MEMORY_NODE_LB_SCRATCH1, false, 0);
+    g_assert_cmphex(scratch & MEMORY_NODE_HEADLESS_BIT, ==, 0);
+    memory_node_peer_access(qts, MEMORY_NODE_LB_SCRATCH1, true,
+                            scratch | MEMORY_NODE_HEADLESS_BIT);
+    g_assert_cmphex(memory_node_peer_access(qts, MEMORY_NODE_LB_SCRATCH1,
+                                            false, 0), ==,
+                    scratch | MEMORY_NODE_HEADLESS_BIT);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * Failing the one vector read of the memory node's scratch 1 leaves the
+ * reply invalid, which is what the firmware reports as an inaccessible
+ * headless hub, and leaves the node's other registers reachable.
+ */
+static void test_memory_node_scratch1_read_fails(void)
+{
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = memory_node_start(prom);
+    uint64_t revision;
+
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':'/machine/node1/bedrock',"
+        "'property':'x-test-refuse-vector-read','value':%" PRIu64 "}}",
+        MEMORY_NODE_LB_SCRATCH1);
+    (void)qtest_readq(qts, MEMORY_NODE_LB_LOCAL + 0x60c038);
+    qtest_writeq(qts, MEMORY_NODE_LB_LOCAL + 0x60c008, 0);
+    qtest_writeq(qts, MEMORY_NODE_LB_LOCAL + 0x60c000,
+                 MEMORY_NODE_LB_SCRATCH1 | (UINT64_C(0x1c8) << 40));
+    g_assert_cmphex(qtest_readq(qts, MEMORY_NODE_LB_LOCAL + 0x60c020) >> 63,
+                    ==, 0);
+    /* The write still lands and every other register still answers. */
+    memory_node_peer_access(qts, MEMORY_NODE_LB_SCRATCH1, true,
+                            MEMORY_NODE_HEADLESS_BIT);
+    revision = memory_node_peer_access(qts, MEMORY_NODE_LB_REVISION, false, 0);
+    g_assert_cmpuint(revision & 0xffff, !=, 0xffff);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
 /* A node's L1 UART in its processors' Hub-local register window. */
 #define MODULE_L1_UART (NASID_TEST_HUB_LOCAL_REGISTERS + 0x80)
 
@@ -13708,6 +13774,10 @@ int main(int argc, char **argv)
                    test_rbrick_router_without_l1_management);
     qtest_add_func("sn/builder/cbrick/memory-node",
                    test_memory_node_serves_node0);
+    qtest_add_func("sn/builder/cbrick/memory-node-scratch1-marked",
+                   test_memory_node_scratch1_marked);
+    qtest_add_func("sn/builder/cbrick/memory-node-scratch1-read-fails",
+                   test_memory_node_scratch1_read_fails);
     qtest_add_data_func("sn/builder/cbrick/rbrick-ports/in-order",
                         "rbrick-four",
                         test_rbrick_takes_cbricks_on_ports_2_to_5);

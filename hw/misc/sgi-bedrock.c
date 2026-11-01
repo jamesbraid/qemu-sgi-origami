@@ -1764,6 +1764,26 @@ static void bedrock_test_release_scratch1(Object *obj, Visitor *v,
     bedrock_hold_flush_scratch1(s, slot);
 }
 
+/*
+ * x-test-refuse-vector-read ADDR makes a vector read of hub register ADDR
+ * that arrives over the cable fail as a refused access does, so a test can
+ * give the firmware one unreachable register and watch it take its failure
+ * path. It is not hardware and no machine sets it.
+ */
+static void bedrock_test_refuse_vector_read(Object *obj, Visitor *v,
+                                            const char *name, void *opaque,
+                                            Error **errp)
+{
+    SGIBedrockState *s = SGI_BEDROCK(obj);
+    uint64_t addr;
+
+    if (!visit_type_uint64(v, name, &addr, errp)) {
+        return;
+    }
+    s->x_test_refuse_read_addr = addr;
+    s->x_test_refuse_read_armed = true;
+}
+
 void sgi_bedrock_lock_net_cable(SGIBedrockState *s)
 {
     s->net_cable_locked = true;
@@ -1892,6 +1912,8 @@ static void bedrock_init(Object *obj)
                             bedrock_test_withhold_scratch1);
     object_property_add(obj, "x-test-release-scratch1", "uint32", NULL,
                         bedrock_test_release_scratch1, NULL, NULL);
+    object_property_add(obj, "x-test-refuse-vector-read", "uint64", NULL,
+                        bedrock_test_refuse_vector_read, NULL, NULL);
     object_property_add_link(obj, "net-cable", TYPE_SGI_NET_CABLE,
                              (Object **)&s->net_cable,
                              bedrock_check_net_cable, 0);
@@ -2021,6 +2043,13 @@ static SGINetPacketResult bedrock_net_receive(Object *port,
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock: vector request type %d is "
                       "not modelled\n", packet->op);
         return SGI_NET_PACKET_NONE;
+    }
+    if (!write && s->x_test_refuse_read_armed &&
+        packet->addr == s->x_test_refuse_read_addr) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: vector read of hub "
+                      "offset 0x%" HWADDR_PRIx " refused by "
+                      "x-test-refuse-vector-read\n", packet->addr);
+        return SGI_NET_PACKET_ERROR;
     }
     if (sgi_bedrock_lb_hub_access(&s->lb, packet->addr,
                                   write ? &packet->data : &packet->value,

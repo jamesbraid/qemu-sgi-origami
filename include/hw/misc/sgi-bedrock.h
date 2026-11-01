@@ -40,6 +40,9 @@ struct SGIBedrockState {
     void *available_opaque;
     /* A bare routed qtest Bedrock has no power controller to toggle. */
     bool x_test_power_off;
+    /* Test-only, not migrated: see x-test-refuse-vector-read. */
+    bool x_test_refuse_read_armed;
+    uint64_t x_test_refuse_read_addr;
     MemoryRegion mmio;
     /*
      * A zero-based view of the register window, so a vector request from a
