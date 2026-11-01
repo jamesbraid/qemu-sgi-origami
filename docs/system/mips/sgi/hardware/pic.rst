@@ -794,10 +794,14 @@ The stock IP35 PROM's crossbar check stores to the two read-only error
 address registers and expects each store to complete with the
 register-access error set, a *software expectation*. The PXBOW child
 completes such a store and records the access error
-(``complete-posted-error-address-writes``). The Crossbow and XBridge
-crossbars of the other machines keep refusing it. Limiting this to the
-PXBOW is an *approximation*: no public source says which crossbars
-complete such a store, or whether those addresses are registers.
+(``complete-posted-error-address-writes``). The XBridge's built-in
+crossbar does the same: it completes every store and latches the access
+error for one it does not decode. Only the Crossbow of the Origin 2000
+and Octane refuses the store. The evidence for completion on the IP53
+crossbar is the model's own note that a real deskside Tezro passes the
+PROM check; no public capture of that check is cited, so limiting
+completion to these crossbars is an *approximation*, and whether those
+addresses are registers is *unknown*.
 
 .. _sgi-pic-reset:
 

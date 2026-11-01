@@ -120,9 +120,11 @@ Products
    * - ``tezro``
      - ``tezro``, ``tezro-rack`` (one must be named)
      - one, two or four R16000, 700 MHz, 4 MiB; ``-smp`` picks the
-       interface board on ``tezro``
+       :ref:`interface board <sgi-model-vocabulary>` on ``tezro``
      - 4 GiB
-     - IP53 ``030-1868-001`` or ``030-1869-001`` revision C
+     - IP53 ``030-1868-001`` or ``030-1869-001`` revision C on the
+       two/four-processor board; the L1's generic record on one
+       processor
    * - ``onyx4-host``
      - ``onyx4-host`` (default)
      - four R16000, 1 GHz, 16 MiB

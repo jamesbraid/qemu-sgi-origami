@@ -100,7 +100,9 @@ overrides one field and keeps the rest. The reset mode word is the
 exception: a board that drives one refuses a ``-cpu`` or ``-global``
 ``reset-mode`` that differs from it ("CPU reset-mode ... conflicts with
 the board's ..."), because the word selects the secondary cache and so
-names another processor. The ``octane`` and plain ``o2`` drive no word. Every one of these properties is
+names another processor. The ``octane`` drives no word. The plain ``o2``
+drives ``0x00198603`` and refuses any ``-cpu`` ``reset-mode``, matching
+or not (:ref:`sgi-ip32-processor`). Every one of these properties is
 fixed at realize: a later ``qom-set`` fails with "cannot change after CPU
 realization". The platform pages say which part each machine fits and at
 what clock (:ref:`sgi-ip30-processors`,
@@ -534,9 +536,9 @@ behind the CPU in its own subsections:
   present only when the configured capacity needs them.
 - ``cpu/r12000-extra`` and ``cpu/r12000-profile`` on the R12000: the
   secondary arrays the profile's geometry adds, branch prediction entries
-  512 to 2,047, and the profile values, PRId, FPU word and reset mode
-  word. Loading fails unless the destination was configured with the same
-  values, so a destination with the same capacity but another block size
+  512 to 2,047, the profile values (PRId, FPU word, reset mode word and
+  variant), and the captured syndrome and its flag. Loading fails unless
+  the destination was configured with the same profile values, so a destination with the same capacity but another block size
   or FPU word refuses the stream. ``cpu/r16000-profile`` carries the
   R16000's reset mode word the same way.
 - ``cpu/r10k-syndrome`` on the R14000 and R16000: the captured syndrome
@@ -668,10 +670,9 @@ Model limits
   alone, and it keeps the last syndrome captured on a refill or
   writeback that found an error. No machine's cache model reports such an
   error, so outside the qtests it reads zero. Its presence on the R14000
-  and R16000 is *inferred* from the IRIX Origin 2000 and Origin 3000
-  kernels reading it on every implementation ``0x0f`` part, a *software
-  expectation*, and its bit positions are carried over from the
-  R12000A.
+  and R16000 is *inferred* from software use, and its bit positions are
+  carried over from the R12000A. No hardware record shows the field on
+  either part.
 - Cold and soft reset differ only in the generic MIPS way: a QEMU system
   reset is a cold reset. A Soft Reset exception keeps WatchLo on the
   R10000 and R16000 and clears it on the R12000 and R14000, a model
