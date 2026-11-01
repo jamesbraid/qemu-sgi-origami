@@ -243,6 +243,35 @@ static void test_pio_placement(void)
     qtest_quit(qts);
 }
 
+/*
+ * An aligned doubleword to a 32-bit device (Device bit 22 clear) is two word
+ * cycles, the more significant half at the lower PCI address.  Check the PCI
+ * words through four-byte accesses, which share the same placement rule.
+ */
+static void test_pio_doubleword_half_order(void)
+{
+    QTestState *qts = qtest_init("-M none -cpu R10000 -S "
+        "-device sgi-xbridge-head,id=head "
+        "-device sgi-bridge-dma-test,bus=head.0,addr=0");
+    uint64_t fixed = BASE + 0x200000;
+
+    qtest_sysbus_mmio_map(qts, HEAD, 0, BASE);
+    qtest_writel(qts, BASE + 0x20010, 0x02000000);
+    qtest_writel(qts, BASE + 0x20014, PIO_WIDE_PCI);
+    qtest_writel(qts, BASE + 0x20004, 6);
+    reg_write(qts, 0x200, 0x1000 | (PIO_WIDE_PCI >> 20));
+
+    qtest_writeq(qts, fixed + 8, 0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readl(qts, fixed + 8), ==, 0x01234567);
+    g_assert_cmphex(qtest_readl(qts, fixed + 12), ==, 0x89abcdef);
+
+    qtest_writel(qts, fixed + 8, 0xdeadbeef);
+    qtest_writel(qts, fixed + 12, 0x13579bdf);
+    g_assert_cmphex(qtest_readq(qts, fixed + 8), ==,
+                    0xdeadbeef13579bdfULL);
+    qtest_quit(qts);
+}
+
 static void test_config_doubleword(void)
 {
     QTestState *qts = qtest_init("-M none -cpu R10000 -S "
@@ -2418,6 +2447,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/config-pio", test_config_pio);
     qtest_add_func("/sn1/xbridge/config-doubleword", test_config_doubleword);
     qtest_add_func("/sn1/xbridge/pio-placement", test_pio_placement);
+    qtest_add_func("/sn1/xbridge/pio-doubleword-half-order",
+                   test_pio_doubleword_half_order);
     qtest_add_func("/sn1/xbridge/config-type1", test_config_type1);
     qtest_add_func("/sn1/xbridge/dma-routes", test_dma_routes);
     qtest_add_func("/sn1/xbridge/dma-conversion", test_dma_conversion);

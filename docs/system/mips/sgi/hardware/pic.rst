@@ -571,7 +571,16 @@ bytes, so a 32-bit write of ``0x12345678`` produces PCI bytes ``78 56 34
 56 78``. A device declares itself self-ordered with the read-only QOM
 property ``byte-lane-self-ordered``; the IOC4 model does. The model
 decides by finding which PCI function's BAR actually answers the address.
-Eight-byte and unaligned accesses, the packet view and the fixture
+An aligned eight-byte processor access in the runtime profiles, through
+a short window or a large PCI memory window, is two 32-bit cycles with the
+more significant half at the lower PCI address, each word placed by the
+four-byte rule above. A failed first cycle ends the access, and a failed
+read returns zero. The half order is *inferred*: the vendor's published
+driver guide and the shipped network drivers expect it, but no PIC
+specification is held. One
+little-endian eight-byte transfer would put the less significant half at
+the lower address instead. The model gives a PCI function no 64-bit data
+phase. Unaligned eight-byte accesses, the packet view and the fixture
 profile use plain little-endian transfers with no address change. Which
 chip performs the physical correction is *unknown*.
 

@@ -898,6 +898,60 @@ static bool pic_cpu_pio_prepare(SGIPICHead *s, AddressSpace *as,
     return false;
 }
 
+/*
+ * Aligned eight-byte CPU PIO to a PCI function.  Inferred, not established
+ * (no PIC specification is held): two 32-bit data phases, the more
+ * significant half at the lower PCI address, each word placed by the
+ * four-byte rule.  One little-endian eight-byte transfer would put the less
+ * significant half at the lower address instead.  A failed first phase ends
+ * the transfer.  Unaligned eight-byte accesses keep the older behaviour.
+ */
+static bool pic_cpu_pio_split8(SGIPICHead *s, hwaddr addr, unsigned size,
+                               bool cpu_pio)
+{
+    return cpu_pio && pic_uses_runtime_profile(s->pic) && size == 8 &&
+        !(addr & 7);
+}
+
+static MemTxResult pic_cpu_pio_transfer8(SGIPICHead *s, AddressSpace *as,
+                                         hwaddr addr, uint64_t *value,
+                                         bool write)
+{
+    uint64_t read_value = 0;
+    unsigned i;
+
+    for (i = 0; i < 2; i++) {
+        uint8_t bytes[4] = { 0 };
+        bool native_order = pic_cpu_pio_native_order(s, as, addr + 4 * i, 4);
+        uint32_t word;
+        MemTxResult result;
+
+        if (write) {
+            word = i ? (uint32_t)*value : *value >> 32;
+            native_order ? stn_be_p(bytes, 4, word) :
+                           stn_le_p(bytes, 4, word);
+            result = address_space_write(as, addr + 4 * i,
+                                         MEMTXATTRS_UNSPECIFIED, bytes, 4);
+        } else {
+            result = address_space_read(as, addr + 4 * i,
+                                        MEMTXATTRS_UNSPECIFIED, bytes, 4);
+            if (result == MEMTX_OK) {
+                word = native_order ? ldn_be_p(bytes, 4) :
+                                      ldn_le_p(bytes, 4);
+                read_value |= i ? word : (uint64_t)word << 32;
+            }
+        }
+        if (result != MEMTX_OK) {
+            break;
+        }
+    }
+    if (!write) {
+        /* A failed transfer reads as zero, like the other access sizes. */
+        *value = i < 2 ? 0 : read_value;
+    }
+    return i < 2 ? MEMTX_ERROR : MEMTX_OK;
+}
+
 static MemTxResult pic_short_transfer(SGIPICHead *s, hwaddr addr,
                                       uint64_t *value, unsigned size,
                                       bool write, bool cpu_pio)
@@ -943,16 +997,21 @@ static MemTxResult pic_short_transfer(SGIPICHead *s, hwaddr addr,
         base &= ~1U;
     }
     pci_addr = ((hwaddr)base << 20) + offset;
-    native_order = pic_cpu_pio_prepare(s, as, &pci_addr, size, cpu_pio);
-    if (write) {
-        native_order ? stn_be_p(bytes, size, *value) :
-                       stn_le_p(bytes, size, *value);
-        result = address_space_write(as, pci_addr, MEMTXATTRS_UNSPECIFIED,
-                                     bytes, size);
+    if (pic_cpu_pio_split8(s, pci_addr, size, cpu_pio)) {
+        result = pic_cpu_pio_transfer8(s, as, pci_addr, value, write);
     } else {
-        result = address_space_read(as, pci_addr, MEMTXATTRS_UNSPECIFIED,
-                                    bytes, size);
-        *value = native_order ? ldn_be_p(bytes, size) : ldn_le_p(bytes, size);
+        native_order = pic_cpu_pio_prepare(s, as, &pci_addr, size, cpu_pio);
+        if (write) {
+            native_order ? stn_be_p(bytes, size, *value) :
+                           stn_le_p(bytes, size, *value);
+            result = address_space_write(as, pci_addr,
+                                         MEMTXATTRS_UNSPECIFIED, bytes, size);
+        } else {
+            result = address_space_read(as, pci_addr, MEMTXATTRS_UNSPECIFIED,
+                                        bytes, size);
+            *value = native_order ? ldn_be_p(bytes, size) :
+                                    ldn_le_p(bytes, size);
+        }
     }
     if (result != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -1894,6 +1953,15 @@ static uint64_t pic_range_read_common(void *opaque, hwaddr addr,
     MemTxResult result;
     bool native_order;
 
+    if (pic_cpu_pio_split8(s, addr, size, cpu_pio)) {
+        uint64_t value = 0;
+
+        if (pic_cpu_pio_transfer8(s, &s->pci_mem_as, addr, &value, false) !=
+            MEMTX_OK) {
+            pic_unsupported(s, 0x40000000 + addr, size, 0, false);
+        }
+        return value;
+    }
     native_order = pic_cpu_pio_prepare(s, &s->pci_mem_as, &addr, size,
                                        cpu_pio);
     result = address_space_read(&s->pci_mem_as, addr,
@@ -1922,6 +1990,13 @@ static void pic_range_write_common(void *opaque, hwaddr addr, uint64_t value,
     MemTxResult result;
     bool native_order;
 
+    if (pic_cpu_pio_split8(s, addr, size, cpu_pio)) {
+        if (pic_cpu_pio_transfer8(s, &s->pci_mem_as, addr, &value, true) !=
+            MEMTX_OK) {
+            pic_unsupported(s, 0x40000000 + addr, size, value, true);
+        }
+        return;
+    }
     native_order = pic_cpu_pio_prepare(s, &s->pci_mem_as, &addr, size,
                                        cpu_pio);
     native_order ? stn_be_p(bytes, size, value) :

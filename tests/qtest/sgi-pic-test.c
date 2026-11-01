@@ -1008,8 +1008,8 @@ static void test_cpu_pio_conventional_lanes(void)
     g_assert_cmphex(qtest_readb(qts, raw + 1), ==, 0x77);
     g_assert_cmphex(qtest_readb(qts, raw + 2), ==, 0x66);
     qtest_writeq(qts, short_view, UINT64_C(0x1029384756abcdef));
-    g_assert_cmphex(qtest_readq(qts, raw), ==,
-                    UINT64_C(0x1029384756abcdef));
+    g_assert_cmphex(qtest_readl(qts, raw), ==, 0x10293847);
+    g_assert_cmphex(qtest_readl(qts, raw + 4), ==, 0x56abcdef);
 
     qtest_writeb(qts, HEAD(0) + 0x600000 + 8, 0x3c);
     g_assert_cmphex(qtest_readb(qts, raw), ==, 0x3c);
@@ -1031,6 +1031,72 @@ static void test_cpu_pio_conventional_lanes(void)
         g_assert_cmphex(qtest_readb(qts, raw1 + 2), ==, 0x33);
         qtest_writel(qts, view1, 0x89abcdef);
         g_assert_cmphex(qtest_readl(qts, raw1), ==, 0x89abcdef);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * An aligned eight-byte CPU access to a 32-bit function is two word cycles,
+ * the more significant half at the lower PCI address.  Short window and large
+ * memory window, both heads, both directions.  The raw alias reads the PCI
+ * words independently of the CPU view.
+ */
+static void test_cpu_pio_doubleword_half_order(void)
+{
+    QTestState *qts = pic_runtime_cpu_start(true, NULL);
+
+    for (unsigned int head = 0; head < 2; head++) {
+        uint64_t raw = BASE + (head ? 0xc0000000ULL : 0x40000000ULL) +
+                       0x04000000 + 8;
+        uint64_t views[2] = {
+            CPU_HEAD(head) + 0x600000 + 8,
+            CPU_BASE + (head ? 0xc0000000ULL : 0x40000000ULL) + 0x04000008,
+        };
+
+        pic_short_enable_card(qts, head, 1, 0x02000000, 0x04000000, 0x3001,
+                              PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+        qtest_writeq(qts, CPU_HEAD(head) + 0x210, 0x40 | (1U << 12));
+
+        for (unsigned int v = 0; v < ARRAY_SIZE(views); v++) {
+            qtest_writel(qts, raw, 0);
+            qtest_writel(qts, raw + 4, 0);
+            qtest_writeq(qts, views[v], UINT64_C(0x0123456789abcdef));
+            g_assert_cmphex(qtest_readl(qts, raw), ==, 0x01234567);
+            g_assert_cmphex(qtest_readl(qts, raw + 4), ==, 0x89abcdef);
+
+            qtest_writel(qts, raw, 0xdeadbeef);
+            qtest_writel(qts, raw + 4, 0x13579bdf);
+            g_assert_cmphex(qtest_readq(qts, views[v]), ==,
+                            UINT64_C(0xdeadbeef13579bdf));
+            /* The word reads still follow the four-byte rule. */
+            g_assert_cmphex(qtest_readl(qts, views[v]), ==, 0xdeadbeef);
+            g_assert_cmphex(qtest_readl(qts, views[v] + 4), ==, 0x13579bdf);
+        }
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * A split eight-byte read whose word cycle fails returns zero, like the other
+ * access sizes, not a half-filled value.  The IOC4 serial registers refuse
+ * word accesses, so both cycles of a read there fail.
+ */
+static void test_cpu_pio_doubleword_failed_read(void)
+{
+    QTestState *qts = pic_runtime_cpu_start(true, NULL);
+    uint64_t views[2] = {
+        CPU_HEAD(0) + 0x600000 + 0x380,
+        CPU_BASE + 0x40000000ULL + 0x04000380,
+    };
+
+    pic_short_enable_card(qts, 0, 1, 0x02000000, 0x04000000, 0x3001,
+                          PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    qtest_writeq(qts, CPU_HEAD(0) + 0x210, 0x40 | (1U << 12));
+
+    for (unsigned int v = 0; v < ARRAY_SIZE(views); v++) {
+        g_assert_cmphex(qtest_readq(qts, views[v]), ==, 0);
     }
 
     qtest_quit(qts);
@@ -2885,10 +2951,14 @@ static void test_cpu_word_view_registers(void)
                         PIC_SHORT_MEMORY_BASE / 0x100000 | (1U << 12));
         qtest_writeq(qts, CPU_HEAD(head) + 0x200000 + 8,
                      UINT64_C(0x8877665544332211) | head);
+        /*
+         * The CPU doubleword is two word cycles, high half first, so the
+         * raw little-endian doubleword has its halves exchanged.
+         */
         g_assert_cmphex(qtest_readq(qts, BASE +
                                    (head ? 0xc0000000ULL : 0x40000000ULL) +
                                    PIC_SHORT_MEMORY_BASE + 8), ==,
-                        UINT64_C(0x8877665544332211) | head);
+                        UINT64_C(0x4433221188776655) | (uint64_t)head << 32);
         qtest_writel(qts, CPU_HEAD(head) + 0x200000 + 12, 0xaabbccdd);
         g_assert_cmphex(qtest_readl(qts, CPU_HEAD(head) + 0x200000 + 12), ==,
                         0xaabbccdd);
@@ -5319,6 +5389,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-pic/runtime-identity-bit", test_runtime_identity_bit);
     qtest_add_func("/sgi-pic/runtime-host-error-field",
                    test_runtime_host_error_field);
+    qtest_add_func("/sgi-pic/cpu-pio-doubleword-half-order",
+                   test_cpu_pio_doubleword_half_order);
+    qtest_add_func("/sgi-pic/cpu-pio-doubleword-failed-read",
+                   test_cpu_pio_doubleword_failed_read);
     qtest_add_func("/sgi-pic/cpu-word-view-registers",
                    test_cpu_word_view_registers);
     qtest_add_func("/sgi-pic/cpu-word-view-profile-isolation",
