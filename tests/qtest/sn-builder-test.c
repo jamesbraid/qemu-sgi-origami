@@ -10692,6 +10692,47 @@ static void test_origin3900_cx_brick(void)
 }
 
 /*
+ * The Origin 3900 with a memory-only node board: board 3 has a Bedrock and
+ * memory and no processor, the brick's L1 serves all four boards, and the
+ * machine runs the 12 processors of boards 0 to 2. Datasheet:
+ * origin3000-topologies, "Node boards with no processors"; Cx-brick
+ * datasheet, "Memory-only nodes".
+ */
+static void test_origin3900_memory_node(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn-builder-memory-node-prom-XXXXXX", &prom,
+                             &error);
+    QTestState *qts;
+    g_autoptr(QDict) response = NULL;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M origin3000,topology=origin3900-memory-node -cpu R16000 "
+        "-smp 12 -m 8192 -bios %s -nodefaults -display none -S", prom);
+    response = qtest_qmp(qts, "{'execute':'query-cpus-fast'}");
+
+    g_assert_cmpuint(qlist_size(qdict_get_qlist(response, "return")), ==, 12);
+    for (unsigned int node = 0; node < 4; node++) {
+        g_autofree char *path = g_strdup_printf("/machine/node%u", node);
+
+        g_assert_cmpuint(qom_get_uint(qts, path, "nr-cpus"), ==,
+                         node < 3 ? 4 : 0);
+    }
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module0/l1", "boards"), ==,
+                     0xf);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module0/l1",
+                                  "compute-boards"), ==, 0x7);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
  * Each router L1 is given its product's board record, which the stock PROM
  * reads at router initialisation and prints an EEPROM vector read error
  * without. The Origin 3400 R-brick takes the R-brick row, the Origin 300
@@ -13774,6 +13815,8 @@ int main(int argc, char **argv)
                    test_rbrick_router_without_l1_management);
     qtest_add_func("sn/builder/cbrick/memory-node",
                    test_memory_node_serves_node0);
+    qtest_add_func("sn/builder/origin3900/memory-node",
+                   test_origin3900_memory_node);
     qtest_add_func("sn/builder/cbrick/memory-node-scratch1-marked",
                    test_memory_node_scratch1_marked);
     qtest_add_func("sn/builder/cbrick/memory-node-scratch1-read-fails",

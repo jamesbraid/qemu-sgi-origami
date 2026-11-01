@@ -124,6 +124,7 @@ hw/mips/sgi/models/layers/assemblies/ip53-tezro.yaml
 hw/mips/sgi/models/layers/assemblies/ip53.yaml
 hw/mips/sgi/models/layers/modules/c-brick.yaml
 hw/mips/sgi/models/layers/modules/cx-brick.yaml
+hw/mips/sgi/models/layers/modules/cx-brick-memory-node.yaml
 hw/mips/sgi/models/layers/modules/d-brick.yaml
 hw/mips/sgi/models/layers/modules/fuel-base.yaml
 hw/mips/sgi/models/layers/modules/fuel-vpro.yaml
@@ -192,6 +193,7 @@ hw/mips/sgi/models/layers/products/origin350-reference.yaml
 hw/mips/sgi/models/layers/products/origin350.yaml
 hw/mips/sgi/models/layers/products/origin3900-ip59.yaml
 hw/mips/sgi/models/layers/products/origin3900.yaml
+hw/mips/sgi/models/layers/products/origin3900-memory-node.yaml
 hw/mips/sgi/models/layers/products/tezro-rack-ip59.yaml
 hw/mips/sgi/models/layers/products/tezro-one-processor.yaml
 hw/mips/sgi/models/layers/products/tezro-rack.yaml
@@ -230,6 +232,7 @@ hw/mips/sgi/models/origin3400.yaml
 hw/mips/sgi/models/origin350-reference.yaml
 hw/mips/sgi/models/origin350.yaml
 hw/mips/sgi/models/origin3900.yaml
+hw/mips/sgi/models/origin3900-memory-node.yaml
 hw/mips/sgi/models/references.schema.json
 hw/mips/sgi/models/references.yaml
 hw/mips/sgi/models/system-model.schema.json
@@ -1132,6 +1135,8 @@ scripts/tests/system-model-fixtures/onyx3400/resolved.json
 scripts/tests/system-model-fixtures/onyx3400/resolved.sha256
 scripts/tests/system-model-fixtures/origin3900/resolved.json
 scripts/tests/system-model-fixtures/origin3900/resolved.sha256
+scripts/tests/system-model-fixtures/origin3900-memory-node/resolved.json
+scripts/tests/system-model-fixtures/origin3900-memory-node/resolved.sha256
 tests/functional/mips64/lib_matrix.py
 tests/functional/mips64/test_irix_eg.py
 tests/functional/mips64/test_irix_io9_tg_perf.py

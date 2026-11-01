@@ -31,6 +31,7 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin3400-r16000",
     "origin3400-r14000-600mhz",
     "origin3900",
+    "origin3900-memory-node",
     "onyx3000",
     "onyx3000-r16000",
     "onyx3000-r14000-600mhz",
