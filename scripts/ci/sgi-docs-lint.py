@@ -9,6 +9,7 @@ Prints file:line: message for each finding and exits 1 if there are any.
 """
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -64,6 +65,13 @@ HEX_CLAIM = re.compile(
     r'(?:reset value|resets? to|reads?(?: back| as)?|returns?|reports?|'
     r'powers? up (?:as|at|to)|hardware value)\b[^.\n]*?\b0x[0-9a-fA-F]{2,}',
     re.I)
+
+CATALOGUE = 'hw/mips/sgi/sgi-machines.json'
+# A literal in a "Used in" paragraph is checked when it starts with the
+# name of a machine family (origin, onyx, ...) or is followed by "machine"
+# or "topology". Other literals are device ids and presets.
+MACHINE_WORDS = ('machine', 'machines', 'topology', 'topologies')
+PRODUCT_NUMBER = re.compile(r'\b(?:Origin|Onyx) ?\d+\b', re.I)
 
 LABEL = re.compile(r'\.\. _[^:]+:\s*$')
 ADORN = re.compile(r'([=\-~^"#*+])\1{2,}\s*$')
@@ -161,6 +169,70 @@ def warn_page(rel, text):
     return out
 
 
+def product_numbers(text):
+    """The numbered products in text, such as origin3000, spaces dropped."""
+    return {m.group(0).replace(' ', '').lower()
+            for m in PRODUCT_NUMBER.finditer(text)}
+
+
+def catalogue(root):
+    """Return (machine and topology names, product names with a number)
+    that the model offers, or None if the catalogue is absent."""
+    path = root / CATALOGUE
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text())
+    names = set()
+    products = set()
+    for o in data.get('offerings', []):
+        names.add(o['product'])
+        names.add(o['machine-options'].split(',')[0])
+        products.update(product_numbers(o['display-name'] + ' ' + o['product']))
+    for t in data.get('topologies', []):
+        names.add(t['name'])
+        names.add(t['product'])
+        products.update(product_numbers(t['name'] + ' ' + t['product']))
+    return names, products
+
+
+def used_in_paragraph(lines):
+    """Return (line number, text) of the paragraph starting "Used in"."""
+    for n, text in paragraphs(lines):
+        if text.startswith('Used in'):
+            return n, text
+    return None
+
+
+def lint_used_in(rel, text, cat):
+    """Check that machines named in "Used in" are in the catalogue."""
+    out = []
+    found = used_in_paragraph(text.split('\n'))
+    if not found or cat is None:
+        return out
+    names, products = cat
+    families = {re.match(r'[a-z]+', n).group(0) for n in names}
+    first, para = found
+
+    def add(offset, what):
+        out.append(f'{rel}:{first + para.count(chr(10), 0, offset)}: '
+                   f'"Used in" names {what}, which is not a machine in '
+                   f'{CATALOGUE}')
+
+    for m in re.finditer(r'``([^`]+)``(\s+\w+)?', para):
+        word = m.group(1)
+        follower = (m.group(2) or '').strip().lower()
+        if word in names or not re.fullmatch(r'[a-z][a-z0-9-]*', word):
+            continue
+        if follower in MACHINE_WORDS or \
+                re.match(r'[a-z]+', word).group(0) in families:
+            add(m.start(), f'``{word}``')
+    plain = re.sub(r'``[^`]*``', blank, para)
+    for m in PRODUCT_NUMBER.finditer(plain):
+        if m.group(0).replace(' ', '').lower() not in products:
+            add(m.start(), f'"{m.group(0)}"')
+    return out
+
+
 def lint_page(rel, text):
     out = []
     lines = text.split('\n')
@@ -233,9 +305,12 @@ def lint(root):
     listed = set((root / 'LICENSE.origami.paths').read_text().split())
     findings = []
     pages = sorted((root / PAGES).rglob('*.rst'))
+    cat = catalogue(root)
     for page in pages:
         rel = str(page.relative_to(root))
         findings += lint_page(rel, page.read_text())
+        if page.parent.name == 'hardware':
+            findings += lint_used_in(rel, page.read_text(), cat)
     for page in pages + [root / GUIDE]:
         rel = str(page.relative_to(root))
         if page.exists() and rel not in listed:

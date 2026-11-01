@@ -4,6 +4,7 @@
 
 import importlib.machinery
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,10 +32,28 @@ The reset value is *inferred* and the width *unknown*. Code like
 """
 
 
+CATALOGUE = {
+    'offerings': [
+        {'product': 'origin200', 'display-name': 'Origin 200 (one-module)',
+         'machine-options': 'origin200,topology=origin200'},
+        {'product': 'onyx2', 'display-name': 'Onyx2 deskside',
+         'machine-options': 'onyx2,topology=onyx2-deskside'},
+    ],
+    'topologies': [
+        {'name': 'origin200-dual', 'product': 'origin200'},
+        {'name': 'onyx2-deskside', 'product': 'onyx2'},
+    ],
+}
+
+
 class DocsLintTests(unittest.TestCase):
-    def run_lint(self, pages, listed=True):
+    def run_lint(self, pages, listed=True, catalogue=CATALOGUE):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            if catalogue is not None:
+                path = root / lint.CATALOGUE
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps(catalogue))
             names = []
             for name, text in pages.items():
                 path = root / lint.PAGES / name
@@ -176,6 +195,41 @@ class DocsLintTests(unittest.TestCase):
     def test_hex_warnings_do_not_fail_the_lint(self):
         text = GOOD_PART + '\nThe register reads ``0x0015`` after reset.\n'
         self.assertEqual(self.run_lint({'hardware/demo.rst': text}), [])
+
+    def used_in(self, text):
+        page = GOOD_PART.replace('Used in :ref:`sgi-ip30`.', text)
+        return self.messages({'hardware/demo.rst': page})
+
+    def test_used_in_names_catalogue_machines(self):
+        for ok in ('Used in no machine.',
+                   'Used in :ref:`sgi-ip27` (Origin 200, Onyx2 and Origin 200).',
+                   'Used in :ref:`sgi-ip27`: the ``origin200`` and the\n'
+                   '``origin200-dual`` machines.',
+                   'Used in :ref:`sgi-ip27`; the ``onyx2-deskside`` topology.',
+                   'Used in :ref:`sgi-ip27`. The ``sgi-demo`` device and the\n'
+                   '``io7`` preset are not machines.'):
+            self.assertEqual(self.used_in(ok), '', ok)
+
+    def test_used_in_flags_unknown_machines(self):
+        for bad, name in (
+                ('Used in :ref:`sgi-ip27` (``origin2100``).', 'origin2100'),
+                ('Used in the ``tezro9`` machine.', 'tezro9'),
+                ('Used in the ``pc`` topology.', 'pc'),
+                ('Used in the Origin 2100.', 'Origin 2100'),
+                ('Used in the Onyx 9.', 'Onyx 9')):
+            out = self.used_in(bad)
+            self.assertIn(f'names ``{name}``' if name[0].islower()
+                          else f'names "{name}"', out, bad)
+
+    def test_used_in_reports_the_wrapped_line(self):
+        out = self.used_in('Used in :ref:`sgi-ip27`, wrapped\n'
+                           'and then ``origin9000``.')
+        self.assertIn('hardware/demo.rst:10:', out)
+
+    def test_used_in_without_catalogue_is_not_checked(self):
+        page = GOOD_PART.replace('Used in :ref:`sgi-ip30`.', 'Used in ``origin9``.')
+        self.assertEqual(
+            self.run_lint({'hardware/demo.rst': page}, catalogue=None), [])
 
     def test_unlisted_page(self):
         out = self.messages({'hardware/demo.rst': GOOD_PART}, listed=False)

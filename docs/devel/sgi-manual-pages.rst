@@ -99,6 +99,11 @@ page under ``docs/system/mips/sgi/``:
   in hex ("reads ``0x15``", "resets to ``0x80``") with neither a rating nor
   a ``:src:`` citation in it; table rows are skipped;
 - a "Used in" first paragraph on each part page, except the listed overviews;
+- machines in the "Used in" paragraph that exist in
+  ``hw/mips/sgi/sgi-machines.json``: a literal that starts with a machine
+  family or is followed by "machine" or "topology", and a numbered product
+  such as "Origin 3000", must be an offered machine, topology or product;
+  a part no machine fits says "Used in no machine";
 - a listing of the page, and of this guide, in ``LICENSE.origami.paths``.
 
 ``scripts/ci/sgi-check model`` checks the citations and the generated files.
