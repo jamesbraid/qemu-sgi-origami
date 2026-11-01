@@ -88,6 +88,7 @@
 #define CMD_GET_PORT_QUEUE  0x0029
 #define CMD_SET_RETRY_COUNT 0x0032
 #define CMD_RESET_LINK_STAT 0x0052
+#define CMD_SET_PORT_QUEUE  0x0039
 #define CMD_GET_LINK_STATUS 0x006b
 #define CMD_ENH_PORT_DB     0x0047
 #define CMD_INITIATE_LIP    0x0062
@@ -4859,15 +4860,18 @@ static void test_retry_count(void *obj, void *data, QGuestAllocator *alloc)
 
 /*
  * Approximation: get port queue parameters, set retry count, reset link
- * status and get link status are sent by IRIX 6.5.30 and no public source
- * settles the firmware's replies. The model completes each: queue depth
- * 256 and throttle 255 for a loop ID that has a port, retry count
- * accepted and not stored, link counters all zero. A loop ID with no port
- * is refused with 0x4005, never 0x4001, which IRIX prints as an invalid
- * command. The adapter's own loop ID is answered by get link status, which
- * the driver polls for it, with the same zero counters, and refused by get
- * port queue parameters, which it asks of discovered ports only. While the
- * loop is down all of these are refused.
+ * status, get link status and set port queue parameters are sent by IRIX
+ * 6.5.30 and no public source settles the firmware's replies. The model
+ * completes each: queue depth 256 and throttle 255 for a loop ID that has
+ * a port, retry count accepted and not stored, link counters all zero. A
+ * loop ID with no port is refused with 0x4005, never 0x4001, which IRIX
+ * prints as an invalid command. The adapter's own loop ID is answered by
+ * get link status, which the driver polls for it, with the same zero
+ * counters, and refused by get port queue parameters, which it asks of
+ * discovered ports only. While the loop is down all of these but set port
+ * queue parameters are refused. That command completes with 0x4000 for
+ * any loop ID and leaves the guest's registers as written, since IRIX
+ * writes only m0 and m1 and ignores the reply.
  */
 static void test_irix_loop_commands(void *obj, void *data,
                                     QGuestAllocator *alloc)
@@ -4896,6 +4900,8 @@ static void test_irix_loop_commands(void *obj, void *data,
     qtest_memread(t.qts, buf, seen, sizeof(seen));
     g_assert_cmpmem(seen, sizeof(seen), fill, sizeof(fill));
     g_assert_cmphex(isp_call_ack(&t, CMD_RESET_LINK_STAT, 0, 0, 0), ==,
+                    MBOX_COMPLETE);
+    g_assert_cmphex(isp_call_ack(&t, CMD_SET_PORT_QUEUE, 1 << 8, 0, 0), ==,
                     MBOX_COMPLETE);
 
     isp_loop_up(&t, 0);
@@ -4938,6 +4944,33 @@ static void test_irix_loop_commands(void *obj, void *data,
         qtest_memread(t.qts, buf, seen, sizeof(seen));
         g_assert_cmpmem(seen, sizeof(seen), fill, sizeof(fill));
     }
+
+    /*
+     * Set port queue parameters: the driver writes m0 and m1 only, so m2
+     * and m3 hold what was there before. The reply is 0x4000, not 0x4001,
+     * for any loop ID, and the registers read back as written.
+     */
+    g_assert_cmphex(isp_call(&t, CMD_GET_PORT_QUEUE, 1 << 8, 0, 0), ==,
+                    MBOX_COMPLETE);
+    isp_ack(&t);
+    wr(&t, MBOX(2), 0x1234);
+    wr(&t, MBOX(3), 0x5678);
+    wr(&t, MBOX(1), 1 << 8);
+    wr(&t, MBOX(0), CMD_SET_PORT_QUEUE);
+    wr(&t, REG_HCCR, HCCR_SET_HOST);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, MBOX_COMPLETE);
+    g_assert_cmphex(rd(&t, MBOX(1)), ==, 1 << 8);
+    g_assert_cmphex(rd(&t, MBOX(2)), ==, 0x1234);
+    g_assert_cmphex(rd(&t, MBOX(3)), ==, 0x5678);
+    isp_ack(&t);
+    for (i = 0; i < ARRAY_SIZE(absent); i++) {
+        g_assert_cmphex(isp_call_ack(&t, CMD_SET_PORT_QUEUE, absent[i] << 8,
+                                     1, 1), ==, MBOX_COMPLETE);
+    }
+    g_assert_cmphex(isp_call_ack(&t, CMD_SET_PORT_QUEUE, 0, 0xffff, 0xffff),
+                    ==, MBOX_COMPLETE);
+    /* Another unserved command is still refused. */
+    g_assert_cmphex(isp_call_ack(&t, 0x003a, 0, 0, 0), ==, MBOX_INVALID);
 
     /* Neither disturbs the loop, the events, or the retry pair. */
     g_assert_cmphex(isp_call_ack(&t, CMD_RESET_LINK_STAT, 0, 0, 0), ==,

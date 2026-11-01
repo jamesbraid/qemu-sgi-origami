@@ -121,12 +121,16 @@ when it is zero from a hash of the device's QOM path, so each adapter has its
 own name and keeps it from run to run. The other fields are the values the
 public OpenBSD driver uses when it has no image.
 
-Four mailbox commands come from IRIX and have no public definition. The
+Five mailbox commands come from IRIX and have no public definition. The
 model's replies are approximations: Get Port Queue Parameters (``0x29``)
 returns queue depth 256 and throttle 255 for a loop ID with a port;
 Set Retry Count (``0x32``) and Reset Link Status (``0x52``) complete and
 change nothing; Get Link Status (``0x6b``) writes 32 zero bytes, for the
-adapter's own loop ID as well as a port's. A loop ID with no port, and
+adapter's own loop ID as well as a port's; Set Port Queue Parameters
+(``0x39``) completes with ``0x4000`` for any loop ID and leaves m1 to m7 as
+the guest wrote them. IRIX writes only m0 and m1 for it, so the queue depth
+and throttle it means to send never reach the adapter; the model keeps
+neither, and the real firmware's reply is unknown. A loop ID with no port, and
 ``0x29`` for the adapter's own loop ID (the driver asks it of discovered
 ports only), get ``0x4005``, as does either while the loop is down. The
 ``qlogic_isp2200_approximate_reply`` trace event marks each of these
