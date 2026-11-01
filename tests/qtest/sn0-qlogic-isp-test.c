@@ -1453,6 +1453,7 @@ static void test_cdrom_takes_512_byte_blocks(const void *data)
     const uint8_t tur[6] = { 0x00 };
     const uint8_t mode_sense[6] = { 0x1a, 0, 0x3f, 0, CD_MODE_BYTES, 0 };
     const uint8_t mode_select[6] = { 0x15, 0x10, 0, 0, CD_MODE_BYTES, 0 };
+    const uint8_t mode_select_pf0[6] = { 0x15, 0, 0, 0, CD_MODE_BYTES, 0 };
     const uint8_t read10[10] = { 0x28, 0, 0, 0, 0, CD_READ_LBA, 0, 0, 1, 0 };
     const uint8_t mode_sense10[10] = { 0x5a, 0, 0x3f, 0, 0, 0, 0, 0, 16, 0 };
     uint8_t mode10[16];
@@ -1521,6 +1522,11 @@ static void test_cdrom_takes_512_byte_blocks(const void *data)
     normalise_words(block, sizeof(block));
     memset(expected, 0x10 + CD_READ_LBA, sizeof(expected));
     g_assert_cmpmem(block, sizeof(block), expected, sizeof(expected));
+
+    /* The same list with PF clear, as a SCSI-2 drive also takes it. */
+    qtest_memwrite(qts, CD_DATA_PHYS, mode, sizeof(mode));
+    g_assert_cmphex(cd_command(qts, 5, 0xcd000005, mode_select_pf0,
+                               sizeof(mode_select_pf0), sizeof(mode)), ==, 0);
 
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
