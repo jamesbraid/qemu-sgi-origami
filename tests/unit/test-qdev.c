@@ -1,5 +1,6 @@
 #include "qemu/osdep.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/irq.h"
 #include "qom/object.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -40,6 +41,71 @@ static const TypeInfo my_dev_type_info = {
     .instance_size = sizeof(MyDev),
     .class_init = my_dev_class_init,
 };
+
+#define TYPE_GPIO_NOTIFY_DEV "gpio-notify-test-device"
+typedef struct GPIONotifyDev {
+    DeviceState parent_obj;
+    qemu_irq out[2];
+    unsigned changes;
+    unsigned changed_lines;
+} GPIONotifyDev;
+
+static void gpio_notify_changed(DeviceState *dev, const char *name, int n)
+{
+    GPIONotifyDev *s = (GPIONotifyDev *)dev;
+
+    g_assert_cmpstr(name, ==, "notify");
+    s->changes++;
+    s->changed_lines |= 1u << n;
+}
+
+static void gpio_notify_dev_init(Object *obj)
+{
+    GPIONotifyDev *s = (GPIONotifyDev *)obj;
+
+    qdev_init_gpio_out_named_with_notify(DEVICE(obj), s->out, "notify", 2,
+                                         gpio_notify_changed);
+}
+
+static const TypeInfo gpio_notify_dev_type_info = {
+    .name = TYPE_GPIO_NOTIFY_DEV,
+    .parent = TYPE_DEVICE,
+    .instance_size = sizeof(GPIONotifyDev),
+    .instance_init = gpio_notify_dev_init,
+};
+
+static void test_qdev_gpio_link_notifications(void)
+{
+    GPIONotifyDev *s = (GPIONotifyDev *)qdev_new(TYPE_GPIO_NOTIFY_DEV);
+    qemu_irq output = qemu_allocate_irq(NULL, NULL, 0);
+    qemu_irq intercept = qemu_allocate_irq(NULL, NULL, 0);
+
+    qdev_connect_gpio_out_named(DEVICE(s), "notify", 0, output);
+    g_assert_cmpuint(s->changes, ==, 1);
+    g_assert_cmpuint(s->changed_lines, ==, 1);
+
+    qdev_intercept_gpio_out(DEVICE(s), intercept, "notify", 0);
+    g_assert_cmpuint(s->changes, ==, 3);
+    g_assert_true(qdev_get_gpio_out_connector(DEVICE(s), "notify", 0) ==
+                  intercept);
+
+    qdev_connect_gpio_out_named(DEVICE(s), "notify", 0, NULL);
+    g_assert_cmpuint(s->changes, ==, 4);
+    g_assert_null(s->out[0]);
+
+    object_property_set_link(OBJECT(s), "notify[1]", OBJECT(intercept),
+                            &error_abort);
+    g_assert_cmpuint(s->changes, ==, 5);
+    g_assert_cmpuint(s->changed_lines, ==, 3);
+    object_property_set_link(OBJECT(s), "notify[1]", NULL, &error_abort);
+    g_assert_cmpuint(s->changes, ==, 6);
+
+    object_unparent(OBJECT(output));
+    qemu_free_irq(output);
+    object_unparent(OBJECT(intercept));
+    qemu_free_irq(intercept);
+    object_unref(OBJECT(s));
+}
 
 /*
  * Initialize a fake machine, being prepared for future tests.
@@ -222,6 +288,7 @@ int main(int argc, char **argv)
 
     module_call_init(MODULE_INIT_QOM);
     type_register_static(&my_dev_type_info);
+    type_register_static(&gpio_notify_dev_type_info);
     const TypeInfo pre_unrealize_types[] = {
         {
             .name = TYPE_PRE_UNREALIZE_BUS,
@@ -248,6 +315,8 @@ int main(int argc, char **argv)
                     test_qdev_double_realization);
 
     g_test_add_func("/qdev/pre-unrealize", test_qdev_pre_unrealize);
+    g_test_add_func("/qdev/gpio-link-notifications",
+                    test_qdev_gpio_link_notifications);
     g_test_run();
 
     return 0;

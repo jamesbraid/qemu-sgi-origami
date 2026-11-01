@@ -1523,6 +1523,45 @@ static void test_frame_lock_outputs(void)
     qtest_quit(q);
 }
 
+static void test_timing_output_connect_midline(void)
+{
+    QTestState *q = start("");
+
+    mode(q);
+    wr(q, VT(3), 20 | 10 << 12);
+    wr(q, VT(0), 0);
+    qtest_clock_step(q, 500);
+    g_assert_cmphex(rd(q, VT(0)), ==, 5);
+
+    qtest_irq_intercept_out_named(q, PATH, "timing");
+    g_assert_false(qtest_get_irq(q, 1));
+    qtest_clock_step(q, 500);
+    g_assert_true(qtest_get_irq(q, 1));
+    qtest_clock_step(q, 1000);
+    g_assert_false(qtest_get_irq(q, 1));
+    g_assert_cmphex(rd(q, VT(0)), ==, 20);
+    qtest_quit(q);
+}
+
+static void test_timing_output_connect_does_not_drive_level(void)
+{
+    QTestState *q = start("");
+
+    mode(q);
+    wr(q, VT(3), 20 | 10 << 12);
+    wr(q, VT(0), 0);
+    qtest_clock_step(q, 1500);
+    g_assert_cmphex(rd(q, VT(0)), ==, 15);
+
+    qtest_irq_intercept_out_named(q, PATH, "timing");
+    /* A new sink keeps its prior level until the next output update. */
+    g_assert_false(qtest_get_irq(q, 1));
+    qtest_clock_step(q, 500);
+    g_assert_false(qtest_get_irq(q, 1));
+    g_assert_cmphex(rd(q, VT(0)), ==, 20);
+    qtest_quit(q);
+}
+
 
 static void test_did_overlapping_cache(void)
 {
@@ -2988,6 +3027,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-gbe/depth-halves", test_depth_and_halves);
     qtest_add_func("/sgi-gbe/access-unsupported", test_access_and_unsupported);
     qtest_add_func("/sgi-gbe/frame-lock-outputs", test_frame_lock_outputs);
+    qtest_add_func("/sgi-gbe/timing-output-connect-midline",
+                   test_timing_output_connect_midline);
+    qtest_add_func("/sgi-gbe/timing-output-connect-level",
+                   test_timing_output_connect_does_not_drive_level);
     qtest_add_func("/sgi-gbe/did-overlapping-cache",
                    test_did_overlapping_cache);
     qtest_add_func("/sgi-gbe/clock-pin-phase", test_clock_pin_phase);
