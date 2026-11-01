@@ -2896,6 +2896,53 @@ static void test_env_migration(void)
 }
 
 /*
+ * L1 datasheet, "brick": no letter precedes the type name; the 2MB image
+ * prints [2MB flash]; the source is EEPROM; a brick with no board-record
+ * serial prints the C library's "(null)" (inferred).
+ */
+static void test_chimera_brick(void)
+{
+    static const struct {
+        const char *code;
+        const char *name;
+    } types[] = {
+        { "55", "Chimera Server" }, { "56", "Chimera Blade" },
+        { "57", "Chimera WS" }, { "81", "Rackmount WS" },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(types); i++) {
+        g_autofree char *props = g_strdup_printf(
+            ",brick-type-code=%s,irouter-compat=on,node-board-name=IP59_4CPU,"
+            "node-board-part=030-1989-003,node-board-revision=-C,"
+            "brick-serial=XQ4471,auto-power=off", types[i].code);
+        g_autofree char *expected = g_strdup_printf(
+            "rack: 001, slot: 01, partition: none, type: %s [2MB flash], "
+            "serial:XQ4471, source: EEPROM\r\n", types[i].name);
+        g_autofree char *reply = NULL;
+        int fd;
+        QTestState *s = console_start(&fd, props, "");
+
+        reply = env_run(fd, "brick");
+        g_assert_cmpstr(reply, ==, expected);
+        qtest_quit(s);
+        close(fd);
+    }
+    {
+        g_autofree char *reply = NULL;
+        int fd;
+        QTestState *s = console_start(&fd,
+            ",brick-type-code=57,irouter-compat=on,auto-power=off", "");
+
+        reply = env_run(fd, "brick");
+        g_assert_cmpstr(reply, ==,
+            "rack: 001, slot: 01, partition: none, type: Chimera WS "
+            "[2MB flash], serial:(null), source: EEPROM\r\n");
+        qtest_quit(s);
+        close(fd);
+    }
+}
+
+/*
  * L1 datasheet, "States" and "Temperatures": a row's state is Disabled when
  * monitoring is off.
  */
@@ -3160,6 +3207,33 @@ static void test_env_custom_limits(void)
     g_assert_null(strstr(text, "Disabled   Disabled"));
     qtest_quit(s);
     close(fd);
+}
+
+/* The partition setting prints "?" from 255 up and the number below. */
+static void test_chimera_brick_partition(void)
+{
+    static const struct {
+        const char *partition;
+        const char *text;
+    } cases[] = { { "7", "7" }, { "254", "254" }, { "255", "?" },
+                  { "300", "?" } };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *props = g_strdup_printf(
+            ",brick-type-code=55,irouter-compat=on,partition=%s,"
+            "auto-power=off", cases[i].partition);
+        g_autofree char *expected = g_strdup_printf(
+            "rack: 001, slot: 01, partition: %s, type: Chimera Server "
+            "[2MB flash], serial:(null), source: EEPROM\r\n", cases[i].text);
+        g_autofree char *reply = NULL;
+        int fd;
+        QTestState *s = console_start(&fd, props, "");
+
+        reply = env_run(fd, "brick");
+        g_assert_cmpstr(reply, ==, expected);
+        qtest_quit(s);
+        close(fd);
+    }
 }
 
 /*
@@ -8251,6 +8325,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn1/l1/env/unpowered/rack-workstation-ip59",
                         &env_q_ip59, test_env_unpowered);
     qtest_add_func("sn1/l1/env/unmodelled", test_env_unmodelled);
+    qtest_add_func("sn1/l1/chimera/brick", test_chimera_brick);
     qtest_add_func("sn1/l1/env/on-off", test_env_on_off);
     qtest_add_func("sn1/l1/env/disabled-rows", test_env_disabled_rows);
     qtest_add_func("sn1/l1/env/limits", test_env_limits);
@@ -8261,6 +8336,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/env/custom-limits", test_env_custom_limits);
     qtest_add_func("sn1/l1/chimera/power", test_chimera_power);
     qtest_add_func("sn1/l1/chimera/vcpu-differs", test_chimera_vcpu_differs);
+    qtest_add_func("sn1/l1/chimera/brick-partition",
+                   test_chimera_brick_partition);
     qtest_add_func("sn1/l1/env/altitude-powered", test_env_altitude_powered);
     qtest_add_func("sn1/l1/env/fan-commands", test_fan_commands);
     qtest_add_func("sn1/l1/env/restart-resets", test_env_restart_resets);

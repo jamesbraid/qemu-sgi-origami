@@ -1717,6 +1717,55 @@ static void l1_o3k_brick_print(SGIL1State *s)
               !l1_is_cxbrick(s) ? 'C' : (char)l1_brick_type_character(s));
 }
 
+/* The type names of the Chimera interface boards, by brick type letter. */
+static const char *l1_chimera_type_name(const SGIL1State *s)
+{
+    if (s->profile->o3k) {
+        return NULL;
+    }
+    switch (s->brick_type_code) {
+    case '7':
+        return "Chimera Server";
+    case '8':
+        return "Chimera Blade";
+    case '9':
+        return "Chimera WS";
+    case 'Q':
+        return "Rackmount WS";
+    default:
+        return NULL;
+    }
+}
+
+static void l1_chimera_brick(SGIL1State *s, const char *type)
+{
+    g_autofree char *partition = NULL;
+
+    if (!s->partition) {
+        partition = g_strdup("none");
+    } else if (s->partition < 255) {
+        partition = g_strdup_printf("%u", s->partition);
+    } else {
+        partition = g_strdup("?");
+    }
+    if (!s->brick_serial || !s->brick_serial[0]) {
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: brick with no serial prints "
+                      "(null) by inference\n");
+    }
+    /*
+     * The line has no letter before the type name. The flash text is the
+     * 2MB image's. The source comes from the type decision alone, so it
+     * is EEPROM with or without a serial; a brick with no board-record
+     * serial prints the C library's null text (inferred). The partition
+     * prints "?" from 255 up.
+     */
+    l1_printf(s, "rack: %03u, slot: %02u, partition: %s, type: %s "
+              "[2MB flash], serial:%s, source: EEPROM\r\n", s->rack, s->bay,
+              partition, type,
+              s->brick_serial && s->brick_serial[0] ? s->brick_serial :
+                                                      "(null)");
+}
+
 /*
  * The "env" report of a Chimera interface board: type 7 is the 2U board,
  * type 9 the workstation board and type Q the rack-mounted workstation, and
@@ -2298,6 +2347,8 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
 
         if (argc == 1 && s->profile->o3k) {
             l1_o3k_brick_print(s);
+        } else if (argc == 1 && l1_chimera_type_name(s)) {
+            l1_chimera_brick(s, l1_chimera_type_name(s));
         } else if (argc == 1) {
             l1_printf(s, "rack: %03u, slot: %02u, partition: none, "
                       "type: C (IP45) [1MB flash], serial: unavailable, "
