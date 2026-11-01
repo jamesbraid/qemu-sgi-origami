@@ -16,7 +16,9 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parents[2]
 PAGES = 'docs/system/mips/sgi'
 GUIDE = 'docs/devel/sgi-manual-pages.rst'
-SPDX = '.. SPDX-License-Identifier: BSD-3-Clause'
+# Split so the licence check does not read this line as the file's own
+# SPDX header naming a different licence.
+SPDX = '.. SPDX-' 'License-Identifier: BSD-3-Clause'
 
 RATINGS = ('established', 'observed', 'software expectation', 'inferred',
            'approximation', 'unknown')
