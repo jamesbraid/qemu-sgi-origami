@@ -720,6 +720,10 @@ sgi_hub_bte_launch(unsigned int engine, uint64_t control, uint64_t src, uint64_t
 sgi_hub_ni_scratch_write(uint32_t cpu_base, uint32_t nasid, unsigned int index, uint64_t value) "cpu_base %u nasid %u scratch %u value 0x%016" PRIx64
 sgi_hub_ni_link_reset(uint32_t cpu_base, uint32_t nasid) "cpu_base %u nasid %u link reset"
 
+# sgi-sn1-router.c
+sgi_sn1_router_write(void *router, unsigned ingress, uint64_t address, uint64_t value) "router %p ingress %u address 0x%" PRIx64 " stored 0x%" PRIx64
+sgi_sn1_router_route(void *router, unsigned ingress, unsigned turn, unsigned destination, unsigned output, unsigned next_turn) "router %p ingress %u turn %u destination %u output %u next_turn %u"
+
 # sgi-bedrock.c
 sgi_bedrock_hold_begin(int cpu, const char *kind, int slot, int64_t virtual_ns) "cpu %d %s hold: slot %d virtual_ns %" PRId64
 sgi_bedrock_hold_external_flush(unsigned slot, uint64_t value) "slot %u withheld scratch 1 0x%" PRIx64 " lands before an access from outside the node"
