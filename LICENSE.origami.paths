@@ -22,6 +22,7 @@ docs/system/mips/sgi/hardware/gigachannel.rst
 docs/system/mips/sgi/hardware/graphics.rst
 docs/system/mips/sgi/hardware/ds1685.rst
 docs/system/mips/sgi/hardware/heart.rst
+docs/system/mips/sgi/hardware/pbay.rst
 docs/system/mips/sgi/hardware/r10000.rst
 docs/system/mips/sgi/hardware/rad1-audio.rst
 docs/system/mips/sgi/measured-machines.rst
