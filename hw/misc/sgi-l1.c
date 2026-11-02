@@ -5303,6 +5303,11 @@ static void l1_realize(DeviceState *dev, Error **errp)
     uint32_t counts[] = { s->chassis_count, s->board_count, s->spd_count };
 
     s->irouter_profile_identity = l1_irouter_profile_identity(s);
+    if (s->l2_partition_flag > 3) {
+        error_setg(errp, "l2-partition-flag is a two-bit value");
+        return;
+    }
+    s->two_bit_setting = s->l2_partition_flag;
 
     if (s->fuel_mac_eeprom) {
         char data[513];
@@ -5931,6 +5936,7 @@ static const Property l1_properties[] = {
     DEFINE_PROP_BOOL("auto-power", SGIL1State, auto_power, true),
     DEFINE_PROP_UINT32("debug-switches", SGIL1State, debug_switches, 0),
     DEFINE_PROP_UINT32("partition", SGIL1State, partition, 0),
+    DEFINE_PROP_UINT8("l2-partition-flag", SGIL1State, l2_partition_flag, 0),
     DEFINE_PROP_STRING("system-serial", SGIL1State, system_serial),
     DEFINE_PROP_STRING("board-serial", SGIL1State, board_serial),
     DEFINE_PROP_STRING("fuel-mac-eeprom", SGIL1State, fuel_mac_eeprom),
