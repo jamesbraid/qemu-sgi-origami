@@ -4802,6 +4802,16 @@ static void l1_reset_enter(Object *obj, ResetType type)
     g_strlcpy(s->usb_test_result, "none", sizeof(s->usb_test_result));
     g_strlcpy(s->usb_test_descriptor_result, "none",
               sizeof(s->usb_test_descriptor_result));
+    /*
+     * On the Origin 3000 machine every guest restart and L1 reset command
+     * is a machine reset, and the machine resets this controller with its
+     * brick. The L1 runs on standby power and no node reset restarts it,
+     * so it keeps its settings, log and display; its own start is realize
+     * and reboot_l1. The C-brick L1s are not reset with the machine.
+     */
+    if (s->profile->o3k) {
+        return;
+    }
     l1_boot_local(s);
 }
 

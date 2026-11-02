@@ -10465,6 +10465,28 @@ static void test_origin3200_brick_l1s(void)
 }
 
 /*
+ * Every guest restart and every L1 reset command is a machine reset here.
+ * The L1 sheet has an L1 on standby power that no node reset restarts, and
+ * a restart rewrites the display's second line to "L1 running"; the
+ * I-brick's line keeps the "Powered Up" of the system's power-up instead.
+ */
+static void test_origin3200_ibrick_l1_rides_node_reset(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts = origin3200_start(&prom);
+    g_autofree char *before = qom_get_str(qts, "/machine/module2/l1",
+                                          "display-line-2");
+    g_autofree char *after = NULL;
+
+    g_assert_cmpstr(before, ==, "Powered Up");
+    qtest_system_reset(qts);
+    after = qom_get_str(qts, "/machine/module2/l1", "display-line-2");
+    g_assert_cmpstr(after, ==, "Powered Up");
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
  * The machine's l1-revision replaces the catalogue's revision on every
  * C-brick and I-brick L1.
  */
@@ -14080,6 +14102,8 @@ int main(int argc, char **argv)
                         test_cbrick_board_on_crossbar_port);
     qtest_add_func("sn/builder/origin3200/brick-l1s",
                    test_origin3200_brick_l1s);
+    qtest_add_func("sn/builder/origin3200/ibrick-l1-rides-node-reset",
+                   test_origin3200_ibrick_l1_rides_node_reset);
     qtest_add_func("sn/builder/origin3200/l1-revision-override",
                    test_origin3200_l1_revision_override);
     qtest_add_func("sn/builder/origin3400/routed-bricks",
