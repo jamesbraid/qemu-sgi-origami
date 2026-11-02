@@ -1504,6 +1504,192 @@ static void l1_l2_plain_reply(SGIL1State *s, unsigned transport,
     l1_emit_transport(s, transport, payload, 6 + 5 * (count - 1));
 }
 
+/*
+ * The L2 daemon's recurring configuration request (L2 sheet, "The daemon's
+ * recurring request" and "The reply, and the route it creates"; L1 sheet,
+ * "Request 0x0ffff00e"). An L1 becomes routable at the L2 only through the
+ * reply to this request, which lists the bricks the L1 knows by rack and
+ * bay. Grades follow the sheets and the sheets' source is one reading of one
+ * L1 package, so none of this is called hardware-accurate:
+ *
+ * - The request is class 0, selector 6 in the first integer descriptor, the
+ *   serial text or an integer 0 second, an integer third (established).
+ * - The reply is class 1 to the request's source word, status 0, the
+ *   request's code, with the descriptors integer 7, the third descriptor
+ *   echoed, a record count, the record size 0x70, a byte array of table
+ *   positions and the records (established). A nonzero third descriptor
+ *   shortens the reply to the integer 7 (established).
+ * - The reply's source word is (identity << 12) | 14 with the identity
+ *   being rack in bits 15:6 and bay in 5:0; that those are this brick's
+ *   settings is inferred.
+ * - Before it builds the reply the L1 sends two requests of its own,
+ *   selectors 2 and 13, to the same destination (established); what they
+ *   carry beyond the selector, and their consumer, are unknown. One integer
+ *   descriptor each is this model's choice.
+ * - A record's words at +0x00 (valid), +0x08 (rack) and +0x0c (bay) are the
+ *   fields the L2 routes by (established). The word at +0x60 must be nonzero
+ *   for the L1 to send the record (established); its value and the rest of
+ *   the record are unknown, so they are zero here except +0x60, which is 1,
+ *   and the text at +0x64, where the L1 keeps the serial the request
+ *   carries (the text's role is inferred). The model's table is the bricks
+ *   it lists for "config", which is an approximation: what fills the real
+ *   table is unknown.
+ * - The type of a binary descriptor is not established by the sheets.
+ */
+#define L1_L2_RECORD_VALID  0x00
+#define L1_L2_RECORD_RACK   0x08
+#define L1_L2_RECORD_BAY    0x0c
+#define L1_L2_RECORD_PRESENT 0x60
+#define L1_L2_RECORD_TEXT   0x64
+#define L1_L2_RECORD_TEXT_MAX (SGI_L1_L2_RECORD_SIZE - L1_L2_RECORD_TEXT)
+
+static void l1_l2_put_integer(uint8_t *segment, unsigned i, uint32_t value)
+{
+    stl_be_p(segment + SGI_L1_L2_SEG_DESC + 8 * i + 4, value);
+}
+
+/* A descriptor for bytes at @offset in the segment, counted as the L2 does. */
+static void l1_l2_put_data(uint8_t *segment, unsigned i, uint8_t type,
+                           unsigned data_length, unsigned offset)
+{
+    uint8_t *desc = segment + SGI_L1_L2_SEG_DESC + 8 * i;
+
+    desc[0] = type;
+    stw_be_p(desc + 2, data_length);
+    stl_be_p(desc + 4, offset + SGI_L1_L2_DESC_PREFIX);
+}
+
+static void l1_l2_header(uint8_t *segment, unsigned length, uint8_t class,
+                         uint32_t dest, uint32_t source, unsigned ndesc,
+                         const uint8_t *seq_from, uint16_t code)
+{
+    stw_be_p(segment + SGI_L1_L2_SEG_LENGTH, length);
+    segment[SGI_L1_L2_SEG_FORMAT] = 2;
+    segment[SGI_L1_L2_SEG_COUNT] = SGI_L1_L2_FIRST_SEGMENT | 1;
+    segment[SGI_L1_L2_SEG_CLASS] = class;
+    stl_be_p(segment + SGI_L1_L2_SEG_DEST, dest);
+    stl_be_p(segment + SGI_L1_L2_SEG_SOURCE, source);
+    segment[SGI_L1_L2_SEG_NDESC] = ndesc;
+    stw_be_p(segment + SGI_L1_L2_SEG_CODE, code);
+    if (seq_from) {
+        segment[SGI_L1_L2_SEG_SEQ_LOW] = seq_from[SGI_L1_L2_SEG_SEQ_LOW];
+        segment[SGI_L1_L2_SEG_SEQ_HIGH] = seq_from[SGI_L1_L2_SEG_SEQ_HIGH];
+    }
+}
+
+/* The serial text of the request's second descriptor, or NULL for none. */
+static const char *l1_l2_config_text(const uint8_t *request, unsigned length)
+{
+    const uint8_t *desc = request + SGI_L1_L2_SEG_DESC + 8;
+    unsigned text_length, offset;
+
+    if (desc[0] != SGI_L1_L2_DESC_STRING) {
+        return NULL;
+    }
+    text_length = lduw_be_p(desc + 2);
+    offset = ldl_be_p(desc + 4);
+    if (!text_length || offset < SGI_L1_L2_DESC_PREFIX ||
+        offset - SGI_L1_L2_DESC_PREFIX > length ||
+        text_length > length - (offset - SGI_L1_L2_DESC_PREFIX) ||
+        request[offset - SGI_L1_L2_DESC_PREFIX + text_length - 1]) {
+        return NULL;
+    }
+    return (const char *)request + offset - SGI_L1_L2_DESC_PREFIX;
+}
+
+static void l1_l2_config_request(SGIL1State *s, const uint8_t *request,
+                                 unsigned length)
+{
+    SGIL1ConfigRow rows[3];
+    uint8_t segment[SGI_L1_L2_SEGMENT_MAX] = { 0 };
+    uint8_t index[3];
+    unsigned ndesc = request[SGI_L1_L2_SEG_NDESC];
+    uint32_t identity, source, dest, third;
+    const char *text;
+    unsigned count, records = 0, reply_length;
+    static const uint8_t selectors[] = {
+        SGI_L1_L2_CONFIG_SELECTOR_A, SGI_L1_L2_CONFIG_SELECTOR_B
+    };
+
+    if (!l1_named(s)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: configuration request for an unnamed "
+                      "controller is not answered\n");
+        return;
+    }
+    if (ndesc != 3 || length < SGI_L1_L2_SEG_DESC + 8 * ndesc ||
+        request[SGI_L1_L2_SEG_DESC] != SGI_L1_L2_DESC_INTEGER ||
+        ldl_be_p(request + SGI_L1_L2_SEG_DESC + 4) !=
+            SGI_L1_L2_CONFIG_SELECTOR ||
+        request[SGI_L1_L2_SEG_DESC + 16] != SGI_L1_L2_DESC_INTEGER) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: configuration request is not selector 6 with "
+                      "three descriptors\n");
+        return;
+    }
+    third = ldl_be_p(request + SGI_L1_L2_SEG_DESC + 16 + 4);
+    text = l1_l2_config_text(request, length);
+    identity = ((s->rack & 0x3ff) << 6) | (s->bay & 0x3f);
+    source = (identity << 12) | SGI_L1_L2_CONFIG_TASK;
+    dest = ldl_be_p(request + SGI_L1_L2_SEG_SOURCE);
+
+    /* The L1's own requests come first on the link. */
+    for (unsigned i = 0; i < ARRAY_SIZE(selectors); i++) {
+        memset(segment, 0, sizeof(segment));
+        l1_l2_header(segment, SGI_L1_L2_SEG_DESC + 8,
+                     SGI_L1_L2_CLASS_REQUEST, SGI_L1_L2_CONFIG_DEST, source,
+                     1, NULL, 0);
+        l1_l2_put_integer(segment, 0, selectors[i]);
+        l1_l2_send(s, segment, SGI_L1_L2_SEG_DESC + 8);
+    }
+
+    memset(segment, 0, sizeof(segment));
+    if (third) {
+        reply_length = SGI_L1_L2_SEG_DESC + 8;
+        l1_l2_header(segment, reply_length, SGI_L1_L2_CLASS_RESPONSE, dest,
+                     source, 1, request, 0);
+        l1_l2_put_integer(segment, 0, SGI_L1_L2_CONFIG_REPLY_KIND);
+        l1_l2_send(s, segment, reply_length);
+        return;
+    }
+
+    count = l1_config_rows(s, rows);
+    for (unsigned i = 0; i < count; i++) {
+        if (l1_named(rows[i].brick)) {
+            index[records++] = i;
+        }
+    }
+    reply_length = SGI_L1_L2_SEG_DESC + 6 * 8 + records +
+                   records * SGI_L1_L2_RECORD_SIZE;
+    l1_l2_header(segment, reply_length, SGI_L1_L2_CLASS_RESPONSE, dest,
+                 source, 6, request, 0);
+    l1_l2_put_integer(segment, 0, SGI_L1_L2_CONFIG_REPLY_KIND);
+    l1_l2_put_integer(segment, 1, third);
+    l1_l2_put_integer(segment, 2, records);
+    l1_l2_put_integer(segment, 3, SGI_L1_L2_RECORD_SIZE);
+    l1_l2_put_data(segment, 4, SGI_L1_L2_DESC_BLOB, records,
+                   SGI_L1_L2_SEG_DESC + 48);
+    l1_l2_put_data(segment, 5, SGI_L1_L2_DESC_BLOB,
+                   records * SGI_L1_L2_RECORD_SIZE,
+                   SGI_L1_L2_SEG_DESC + 48 + records);
+    memcpy(segment + SGI_L1_L2_SEG_DESC + 48, index, records);
+    for (unsigned i = 0; i < records; i++) {
+        const SGIL1State *brick = rows[index[i]].brick;
+        uint8_t *record = segment + SGI_L1_L2_SEG_DESC + 48 + records +
+                          i * SGI_L1_L2_RECORD_SIZE;
+
+        stl_be_p(record + L1_L2_RECORD_VALID, 1);
+        stl_be_p(record + L1_L2_RECORD_RACK, brick->rack);
+        stl_be_p(record + L1_L2_RECORD_BAY, brick->bay);
+        stl_be_p(record + L1_L2_RECORD_PRESENT, 1);
+        if (!i && text) {
+            g_strlcpy((char *)record + L1_L2_RECORD_TEXT, text,
+                      L1_L2_RECORD_TEXT_MAX);
+        }
+    }
+    l1_l2_send(s, segment, reply_length);
+}
+
 static void l1_l2_segment(SGIL1State *s, const uint8_t *segment,
                           unsigned length)
 {
@@ -1523,6 +1709,13 @@ static void l1_l2_segment(SGIL1State *s, const uint8_t *segment,
         }
         s->l2_chain_tag = L1_L2_CHAIN_NONE;
         s->l2_chain_left = 0;
+        if (length >= SGI_L1_L2_SEG_DESC &&
+            segment[SGI_L1_L2_SEG_CLASS] == SGI_L1_L2_CLASS_REQUEST &&
+            dest == SGI_L1_L2_CONFIG_DEST &&
+            count == (SGI_L1_L2_FIRST_SEGMENT | 1)) {
+            l1_l2_config_request(s, segment, length);
+            return;
+        }
         if (length < SGI_L1_L2_SEG_DESC ||
             segment[SGI_L1_L2_SEG_CLASS] != SGI_L1_L2_CLASS_RESPONSE) {
             qemu_log_mask(LOG_UNIMP,
@@ -1532,6 +1725,14 @@ static void l1_l2_segment(SGIL1State *s, const uint8_t *segment,
                           segment[SGI_L1_L2_SEG_CLASS] : 0, dest,
                           length >= SGI_L1_L2_SEG_DESC ?
                           lduw_be_p(segment + SGI_L1_L2_SEG_CODE) : 0);
+            s->l2_chain_left = (count & 0x7f) > 1 ? count & 0x7f : 0;
+            return;
+        }
+        if ((dest & 0x1f) == SGI_L1_L2_CONFIG_TASK) {
+            /* An answer to the L1's own selector 2 or 13 request. */
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-l1: L2 answered a configuration request of "
+                          "the controller; nothing consumes it\n");
             s->l2_chain_left = (count & 0x7f) > 1 ? count & 0x7f : 0;
             return;
         }

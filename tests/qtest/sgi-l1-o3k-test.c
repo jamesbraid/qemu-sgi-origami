@@ -1944,6 +1944,255 @@ static void test_l2_link_down(void)
 
 
 /*
+ * The daemon's recurring configuration request (L2 sheet, "The reply, and
+ * the route it creates"). The stub plays the daemon: it sends the request
+ * and reads what the controller puts on the link, which is two requests of
+ * its own and then the reply. Integer descriptors are "00 00 0000 value".
+ */
+#define L2_CONFIG_SOURCE_WORD(rack, bay) \
+    ((((rack) << 6 | (bay)) << 12) | SGI_L1_L2_CONFIG_TASK)
+
+static uint32_t desc_integer(const uint8_t *segment, unsigned i)
+{
+    const uint8_t *desc = segment + SGI_L1_L2_SEG_DESC + 8 * i;
+
+    g_assert_cmpuint(desc[0], ==, SGI_L1_L2_DESC_INTEGER);
+    return ldl_be_p(desc + 4);
+}
+
+/* A blob descriptor's bytes: the offset counts 16 bytes off the wire. */
+static const uint8_t *desc_blob(const uint8_t *segment, size_t length,
+                                unsigned i, unsigned expect_length)
+{
+    const uint8_t *desc = segment + SGI_L1_L2_SEG_DESC + 8 * i;
+    unsigned offset = ldl_be_p(desc + 4);
+
+    g_assert_cmpuint(desc[0], ==, SGI_L1_L2_DESC_BLOB);
+    g_assert_cmpuint(lduw_be_p(desc + 2), ==, expect_length);
+    g_assert_cmpuint(offset, >=, SGI_L1_L2_DESC_PREFIX);
+    g_assert_cmpuint(offset - SGI_L1_L2_DESC_PREFIX + expect_length, <=,
+                     length);
+    return segment + offset - SGI_L1_L2_DESC_PREFIX;
+}
+
+static void expect_config_request(L2Stub *stub, uint32_t source,
+                                  uint32_t selector)
+{
+    uint8_t segment[SGI_L1_L2_SEGMENT_MAX];
+    size_t length = l2_stub_read_segment(stub, segment, L2_STUB_TIMEOUT_MS);
+
+    g_assert_cmpuint(length, ==, SGI_L1_L2_SEG_DESC + 8);
+    g_assert_cmpuint(segment[SGI_L1_L2_SEG_COUNT], ==,
+                     SGI_L1_L2_FIRST_SEGMENT | 1);
+    g_assert_cmpuint(segment[SGI_L1_L2_SEG_CLASS], ==,
+                     SGI_L1_L2_CLASS_REQUEST);
+    g_assert_cmphex(ldl_be_p(segment + SGI_L1_L2_SEG_DEST), ==,
+                    SGI_L1_L2_CONFIG_DEST);
+    g_assert_cmphex(ldl_be_p(segment + SGI_L1_L2_SEG_SOURCE), ==, source);
+    g_assert_cmpuint(segment[SGI_L1_L2_SEG_NDESC], ==, 1);
+    g_assert_cmphex(lduw_be_p(segment + SGI_L1_L2_SEG_CODE), ==, 0);
+    g_assert_cmpuint(desc_integer(segment, 0), ==, selector);
+}
+
+/*
+ * Read the reply and check its header: class 1, back to the request's
+ * source, the task 14 endpoint as source, status 0, the request's code and
+ * sequence, one segment, six descriptors.
+ */
+static size_t read_config_reply(L2Stub *stub, uint8_t *segment, uint32_t source)
+{
+    size_t length = l2_stub_read_segment(stub, segment, L2_STUB_TIMEOUT_MS);
+
+    g_assert_cmpuint(length, >=, SGI_L1_L2_SEG_DESC + 8);
+    g_assert_cmpuint(lduw_be_p(segment), ==, length);
+    g_assert_cmpuint(segment[SGI_L1_L2_SEG_COUNT], ==,
+                     SGI_L1_L2_FIRST_SEGMENT | 1);
+    g_assert_cmpuint(segment[SGI_L1_L2_SEG_CLASS], ==,
+                     SGI_L1_L2_CLASS_RESPONSE);
+    g_assert_cmpuint(segment[SGI_L1_L2_SEG_FLAGS], ==, 0);
+    g_assert_cmphex((uint32_t)ldl_be_p(segment + SGI_L1_L2_SEG_DEST), ==,
+                    L2_STUB_CONFIG_SOURCE);
+    g_assert_cmphex(ldl_be_p(segment + SGI_L1_L2_SEG_SOURCE), ==, source);
+    g_assert_cmphex(lduw_be_p(segment + SGI_L1_L2_SEG_CODE), ==, 0);
+    g_assert_cmpuint(segment[SGI_L1_L2_SEG_SEQ_LOW], ==, 0x31);
+    g_assert_cmpuint(segment[SGI_L1_L2_SEG_SEQ_HIGH], ==, 0x07);
+    return length;
+}
+
+static void test_l2_config_reply(void)
+{
+    L2Stub *stub = l2_stub_listen();
+    QTestState *s = start_linked(stub, "brick-type=cbrick,named=on,rack=1,"
+                                 "bay=4");
+    uint32_t source = L2_CONFIG_SOURCE_WORD(1, 4);
+    uint8_t segment[SGI_L1_L2_SEGMENT_MAX];
+    const uint8_t *records;
+    size_t length;
+
+    length = l2_stub_build_config_request(segment, "SN12345", 0);
+    l2_stub_write_segment(stub, segment, length);
+
+    /* The controller asks for selectors 2 and 13 before it builds the reply. */
+    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_A);
+    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_B);
+    length = read_config_reply(stub, segment, source);
+    g_assert_cmpuint(segment[SGI_L1_L2_SEG_NDESC], ==, 6);
+    g_assert_cmpuint(desc_integer(segment, 0), ==, 7);
+    g_assert_cmpuint(desc_integer(segment, 1), ==, 0);
+    g_assert_cmpuint(desc_integer(segment, 2), ==, 1);
+    g_assert_cmpuint(desc_integer(segment, 3), ==, 0x70);
+    g_assert_cmpuint(*desc_blob(segment, length, 4, 1), ==, 0);
+    records = desc_blob(segment, length, 5, 0x70);
+    g_assert_cmpuint(ldl_be_p(records), !=, 0);
+    g_assert_cmpuint(ldl_be_p(records + 0x08), ==, 1);
+    g_assert_cmpuint(ldl_be_p(records + 0x0c), ==, 4);
+    g_assert_cmpuint(ldl_be_p(records + 0x60), !=, 0);
+    g_assert_cmpstr((const char *)records + 0x64, ==, "SN12345");
+
+    /* A nonzero third descriptor ends the reply after the integer 7. */
+    length = l2_stub_build_config_request(segment, NULL, 1);
+    l2_stub_write_segment(stub, segment, length);
+    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_A);
+    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_B);
+    length = read_config_reply(stub, segment, source);
+    g_assert_cmpuint(segment[SGI_L1_L2_SEG_NDESC], ==, 1);
+    g_assert_cmpuint(length, ==, SGI_L1_L2_SEG_DESC + 8);
+    g_assert_cmpuint(desc_integer(segment, 0), ==, 7);
+    qtest_quit(s);
+    l2_stub_free(stub);
+}
+
+/* The records are the bricks the controller lists for "config". */
+static void test_l2_config_reply_attached(void)
+{
+    L2Stub *stub = l2_stub_listen();
+    g_autofree char *extra = g_strdup_printf(
+        "-chardev socket,id=l2c,path=%s ", stub->path);
+    const char *const props[] = {
+        "brick-type=cbrick,named=on,rack=1,bay=4,l2=l2c",
+        "brick-type=ibrick,named=on,rack=1,bay=31,mac=" MAC_PROP,
+        "brick-type=cbrick,named=on,rack=1,bay=7",
+    };
+    QTestState *s = start_with(3, props, extra);
+    uint32_t source = L2_CONFIG_SOURCE_WORD(1, 4);
+    uint8_t segment[SGI_L1_L2_SEGMENT_MAX];
+    const uint8_t *index, *records;
+    size_t length;
+
+    l2_stub_accept(stub);
+    for (unsigned i = 0; i < 10000 &&
+         !qtest_qom_get_bool(s, DEVICES "l1c0", "l2-link-up"); i++) {
+        g_usleep(1000);
+    }
+    link_io(s, 0, 1);
+    link_peer(s, 0, 2);
+    length = l2_stub_build_config_request(segment, NULL, 0);
+    l2_stub_write_segment(stub, segment, length);
+    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_A);
+    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_B);
+    length = read_config_reply(stub, segment, source);
+    g_assert_cmpuint(desc_integer(segment, 2), ==, 3);
+    index = desc_blob(segment, length, 4, 3);
+    records = desc_blob(segment, length, 5, 3 * 0x70);
+    for (unsigned i = 0; i < 3; i++) {
+        static const uint8_t bays[3] = { 4, 31, 7 };
+
+        g_assert_cmpuint(index[i], ==, i);
+        g_assert_cmpuint(ldl_be_p(records + 0x70 * i + 0x08), ==, 1);
+        g_assert_cmpuint(ldl_be_p(records + 0x70 * i + 0x0c), ==, bays[i]);
+        g_assert_cmpuint(ldl_be_p(records + 0x70 * i + 0x60), !=, 0);
+    }
+    qtest_quit(s);
+    l2_stub_free(stub);
+}
+
+/*
+ * Nothing in the sheets says what an unnamed controller reports, so it
+ * stays silent, and a request that is not selector 6 is not answered.
+ */
+static void test_l2_config_reply_refusals(void)
+{
+    L2Stub *stub = l2_stub_listen();
+    QTestState *s = start_linked(stub, "brick-type=cbrick");
+    uint8_t segment[SGI_L1_L2_SEGMENT_MAX];
+    size_t length = l2_stub_build_config_request(segment, NULL, 0);
+
+    l2_stub_write_segment(stub, segment, length);
+    g_assert_cmpuint(l2_stub_read_segment(stub, segment, 300), ==, 0);
+    qtest_quit(s);
+    l2_stub_free(stub);
+
+    stub = l2_stub_listen();
+    s = start_linked(stub, "brick-type=cbrick,named=on,rack=1,bay=4");
+    length = l2_stub_build_config_request(segment, NULL, 0);
+    stl_be_p(segment + SGI_L1_L2_SEG_DESC + 4, 9);
+    l2_stub_write_segment(stub, segment, length);
+    g_assert_cmpuint(l2_stub_read_segment(stub, segment, 300), ==, 0);
+    qtest_quit(s);
+    l2_stub_free(stub);
+}
+
+/*
+ * A configuration request that is cut short, or whose string descriptor
+ * points outside the segment, does no harm: the first is not answered, and
+ * the second is answered with an empty serial text (this model's choice; the
+ * sheets do not say what the L1 does with a string it cannot read). The
+ * controller stays up and answers the next good request.
+ */
+static void test_l2_config_request_malformed(void)
+{
+    L2Stub *stub = l2_stub_listen();
+    QTestState *s = start_linked(stub, "brick-type=cbrick,named=on,rack=1,"
+                                 "bay=4");
+    uint32_t source = L2_CONFIG_SOURCE_WORD(1, 4);
+    uint8_t segment[SGI_L1_L2_SEGMENT_MAX];
+    const uint8_t *records;
+    size_t length, shorter;
+    /* The string descriptor's text length and offset, each out of bounds. */
+    static const struct {
+        uint16_t text_length;
+        uint32_t offset;
+    } bad[] = {
+        { 8, 0x1000 },
+        { 200, SGI_L1_L2_SEG_DESC + 24 + 16 },
+        { 8, 4 },
+        { 0, SGI_L1_L2_SEG_DESC + 24 + 16 },
+    };
+
+    /* Three descriptors announced, two present. */
+    length = l2_stub_build_config_request(segment, "SN12345", 0);
+    shorter = SGI_L1_L2_SEG_DESC + 16;
+    stw_be_p(segment, shorter);
+    l2_stub_write_segment(stub, segment, shorter);
+    g_assert_cmpuint(l2_stub_read_segment(stub, segment, 300), ==, 0);
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(bad); i++) {
+        uint8_t *desc;
+
+        length = l2_stub_build_config_request(segment, "SN12345", 0);
+        desc = segment + SGI_L1_L2_SEG_DESC + 8;
+        stw_be_p(desc + 2, bad[i].text_length);
+        stl_be_p(desc + 4, bad[i].offset);
+        l2_stub_write_segment(stub, segment, length);
+        expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_A);
+        expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_B);
+        length = read_config_reply(stub, segment, source);
+        records = desc_blob(segment, length, 5, 0x70);
+        g_assert_cmpstr((const char *)records + 0x64, ==, "");
+    }
+
+    length = l2_stub_build_config_request(segment, "SN12345", 0);
+    l2_stub_write_segment(stub, segment, length);
+    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_A);
+    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_B);
+    length = read_config_reply(stub, segment, source);
+    records = desc_blob(segment, length, 5, 0x70);
+    g_assert_cmpstr((const char *)records + 0x64, ==, "SN12345");
+    qtest_quit(s);
+    l2_stub_free(stub);
+}
+
+/*
  * Trace output: run with the named events logged to a file, then read the
  * file once the machine has quit.
  */
@@ -2681,6 +2930,8 @@ int main(int argc, char **argv)
                    test_l2_chunk_other_destination);
     qtest_add_func("sgi-l1-o3k/l2-link/segment-trace", test_l2_segment_trace);
     qtest_add_func("sgi-l1-o3k/request-trace", test_request_trace);
+    qtest_add_func("sgi-l1-o3k/l2-link/config-request-malformed",
+                   test_l2_config_request_malformed);
     qtest_add_func("sgi-l1-o3k/l2-link/chunk-trace", test_chunk_trace);
     qtest_add_func("sgi-l1-o3k/l2-link/forward-plain", test_l2_forward_plain);
     qtest_add_func("sgi-l1-o3k/l2-link/unanswered-and-local",
@@ -2690,6 +2941,11 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/l2-link/fetch-multi-frame",
                    test_l2_fetch_multi_frame);
     qtest_add_func("sgi-l1-o3k/l2-link/noise", test_l2_link_noise);
+    qtest_add_func("sgi-l1-o3k/l2-link/config-reply", test_l2_config_reply);
+    qtest_add_func("sgi-l1-o3k/l2-link/config-reply/attached",
+                   test_l2_config_reply_attached);
+    qtest_add_func("sgi-l1-o3k/l2-link/config-reply/refusals",
+                   test_l2_config_reply_refusals);
     qtest_add_func("sgi-l1-o3k/l2-link/migration-blocker",
                    test_l2_migration_blocker);
     qtest_add_func("sgi-l1-o3k/partition-clear", test_partition_clear);
