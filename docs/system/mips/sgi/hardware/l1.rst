@@ -630,7 +630,7 @@ a *software expectation*.
      - Shape *inferred*; values an *approximation* (below).
    * - ``0x000b``
      - Read a two-bit setting. Stock PROM.
-     - One integer, initially 0.
+     - One integer, initially ``l2-partition-flag`` (0 by default).
      - Shape *inferred*; meaning *unknown*.
    * - ``0x000c``
      - Read attached bricks on ports 1 to 4. Stock PROM on the
@@ -989,9 +989,13 @@ The model:
   peer as if local there, on the requester's subchannel and UART.
 - With a query router (below), type-0 requests and, when an attached
   owner is configured, ``0x4ffff006`` requests go to it.
+- With an L2 link (:ref:`below <sgi-l1-l2-link>`) connected, a type-1
+  or type-2 request leaves on the link.
 - Everything else gets the router error reply with detail 8 and logs
-  ``LOG_UNIMP``. This includes type 4 on a standalone chassis, an
-  *approximation* of the unknown above.
+  ``LOG_UNIMP``. This includes type 4 on a standalone chassis, a
+  type-1 or type-2 request with no L2 link connected, and a type-1 or
+  type-2 request the link cannot carry. Type 4 on a standalone chassis
+  is an *approximation* of the unknown above.
 
 Two-chassis peer
 ----------------
@@ -1067,6 +1071,177 @@ for type ``0x34`` it is an *approximation*. All reply text beyond the
 configured identity is model policy, not firmware output. Multi-fragment
 messages, other commands and malformed chunks are dropped with
 ``LOG_UNIMP`` or ``LOG_GUEST_ERROR`` and get no reply.
+
+.. _sgi-l1-l2-link:
+
+L2 link
+=======
+
+An L2 is the rack controller that reaches every brick's L1 over USB. The
+model has none. The optional ``l2`` property is a chardev that stands for
+the USB bulk pair toward whatever plays the L2: the project's own
+stand-in for a test or a companion process, not a hardware wire. With
+the property unset, or while no peer is connected, nothing changes: a
+request for controller type 1 or 2 gets the router error reply with
+detail 8, and request ``0x000b`` answers the stored setting. The
+read-only ``l2-link-up`` property says whether a peer is connected.
+
+``l2-partition-flag`` (0 to 3, default 0) is the initial value of the
+two-bit setting that request ``0x000b`` returns and ``0x1008`` writes.
+The stock PROM fetches a partition record from an L2 only after a
+nonzero answer, so a test starts that fetch by setting it. It is not the
+partition ID that ``0x0009`` returns. What the setting means on a real
+controller is *unknown*.
+
+Link format
+-----------
+
+The real link carries one router segment per USB transfer. A stream
+socket has no transfer boundary, so each message on the chardev is a
+one-byte kind followed by its body. Kind 1 is a segment, and its first
+two bytes (big endian, counting themselves, at least 6 and at most
+1,024) delimit it. Other kinds are reserved: the L1 logs one with
+``LOG_GUEST_ERROR`` and skips the byte. The format is the project's own
+(``include/hw/misc/sgi-l1-l2-link.h``); the segment inside it is the
+field map of the controller's management USB stream, *established* for
+the L1 side and *inferred* for what the L2 expects:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 12 76
+
+   * - Offset
+     - Width
+     - Field
+   * - 0
+     - 2
+     - Segment length, including itself.
+   * - 2
+     - 1
+     - Format byte, 2 as the L1 builds it.
+   * - 3
+     - 1
+     - Flag byte, meaning *unknown*; the model sends 0.
+   * - 4
+     - 1
+     - Low byte of the sequence number.
+   * - 5
+     - 1
+     - Bit 7 set on the first segment of a packet; bits 6:0 the segments
+       left, counting this one on the first. A packet is up to 127
+       segments, each carrying one less than the last.
+   * - 6
+     - 1
+     - Class: request 0, response 1, event 2.
+   * - 7
+     - 1
+     - Source port, meaning *unknown*; the model sends 0.
+   * - 8
+     - 4
+     - Destination router address.
+   * - 12
+     - 4
+     - Source router address.
+   * - 16
+     - 1
+     - Descriptor count.
+   * - 17
+     - 1
+     - High byte of the sequence number.
+   * - 18
+     - 2
+     - Request or response code.
+   * - 20
+     - 8 each
+     - Descriptors. A scalar is ``00 00 0000`` and a 32-bit value.
+
+Every segment that crosses the link in either direction is the trace
+event ``sgi_l1_l2_segment`` with its bytes, so a run's traffic can be
+read from the trace.
+
+Requests toward the L2
+----------------------
+
+A plain request from the node for type 1 or 2 is forwarded as one
+request segment when every argument is an integer, because no other
+descriptor form is established. A request with another argument type
+keeps the router error reply. The stock PROM sends its partition-record
+fetch another way, as the multi-frame transport (below) carrying a
+complete inner message for controller type 1, task ``0xa``; the inner
+message already has the segment layout, so the model forwards it as it
+arrived. In a boot run of the stock firmware it was a 28-byte request
+segment with code 1 and one integer argument, 4 on the C-brick in bay 4,
+which the firmware sent after asking ``0x000b`` and followed with
+``0x1006`` once the reply came. What the argument means is *inferred*:
+an L2's partition service reads it as a brick identifier.
+While a peer is connected every profile accepts that transport for a
+request whose inner destination is controller type 1 or 2. On a profile
+without an IRouter of its own, any other chunk frame is handled as it is
+with no peer. A packet of more than one fragment is not forwarded.
+
+In both forms the source word is rewritten to the controller's own
+rack and bay key in bits 31:12, the requester's UART index and
+subchannel in bits 11:5 and task 21 in bits 4:0, the packing the
+multi-frame transport uses for its replies. That the controller's key
+fills the rest is an *approximation*; the real base is not established.
+The peer addresses its response to that word, which is how the model finds
+the requester.
+
+Responses from the L2
+---------------------
+
+A response segment whose destination names a requester with a request
+pending is returned to it.
+
+- To a plain request, the first descriptor is the reply code and every
+  further integer descriptor is one integer field of the ordinary reply.
+  A response of more than one segment, or with a descriptor that is not
+  a scalar, is logged with ``LOG_UNIMP`` and the requester gets the
+  router error reply.
+- To a chunk-transport request, each segment returns as frames of at most
+  113 payload bytes. The first frame of a segment is ``0x3001`` and
+  carries the segment's remaining-segment count in its count byte and the
+  frame's own payload length in its length field. Each later frame is
+  ``0x3003`` while the segment has more, and ``0x3002`` on the frame that
+  exhausts it; their count and length fields are zero. A segment that fits
+  one frame is a single ``0x3001``.
+
+  The stock boot firmware was run against this (a stand-in peer, the
+  two-partition Origin 3400, a nonzero ``l2-partition-flag`` on the first
+  C-brick). A 36-byte segment in one ``0x3001`` frame was accepted and its
+  integer used. A 300-byte segment in three frames, with the length field
+  of the ``0x3001`` frame holding the whole 300, made the firmware reject
+  the frame as shorter than that length; with that field holding the
+  frame's own 113 bytes it was accepted, whether the later frames carried a zero length or
+  their own. That is the reader's behavior in a model run, for this
+  firmware version only, not a capture of an L2. A reply of two segments was accepted with each segment's
+  first frame ``0x3001`` and also with only the first, so which the
+  firmware expects of a second segment, and whether it reads one, is
+  *unknown*. The firmware's wait of about four seconds for a reply is
+  *inferred*: with no reply it reported that the wait had failed and went
+  on with the partition ID its controller holds.
+
+Segments that are not responses (requests and events from the L2),
+responses that name no requester or one with nothing pending, and
+continuations out of order are logged and dropped. The L2's own
+housekeeping requests are not served, because nothing published says what
+the L1 answers.
+
+No timeout is modelled: the PROM's own wait for the reply is its
+concern. If the peer disconnects, a plain request still waiting gets the
+router error reply and pending state is cleared.
+
+Limits
+------
+
+- There is no USB device: no descriptors, endpoint halt clearing,
+  zero-length packets or 64-byte packetisation. Those are the L1's
+  firmware behaviour and wait for the firmware L1.
+- Attach, device-reset and endpoint-reset control messages are not
+  defined; the peer learns of the L1 by the connection.
+- Setting ``l2`` blocks migration and snapshots, whether or not a peer is
+  connected, because the peer's state is outside the machine.
+- The link state is not part of the saved device state.
 
 Board-side interfaces
 =====================
@@ -1186,7 +1361,8 @@ Saving is refused while a routed or bound call is in progress.
 ``sgi-l1-uart`` migrates its registers, transmitter-empty occurrence and
 queue, checks its UART index and recomputes the interrupt line. The peer
 link, ``network-422`` and ``auto-power`` are configuration and are not
-migrated. Migration works only between identical builds.
+migrated. Migration works only between identical builds. An ``l2`` link
+blocks migration and snapshots.
 
 .. _sgi-l1-origin3000:
 
@@ -1602,7 +1778,8 @@ Model limits
   firmware ran.
 - No M-Bus, environmental monitoring, events other than the deferred
   power-down, JTAG scan, flash, management USB device, task-14
-  configuration exchange or RS-422 wire protocol.
+  configuration exchange or RS-422 wire protocol. The L2 link carries
+  segments only; nothing the L2 sends on its own is served.
 - The operator commands ``env``, ``date``, ``config``, ``uart``,
   ``flash``, ``network``, ``cpu``, ``port``, ``serial``, ``autopower``,
   ``history``, ``l1dbg console`` and ``select filter`` are not modelled.
@@ -1648,3 +1825,10 @@ wiring and the Origin 350 family type selection, and
 one processor sends a framed ``0x2001`` while another spins, across
 repeated resets, and power cycles through the host console stop every
 processor. It needs the stock IP35 PROM image.
+
+``tests/qtest/sgi-l1-o3k-test.c`` covers the L2 link with a stub peer in
+``tests/qtest/sgi-l1-l2-stub.h``: the no-route reply with no peer, the
+forwarded segment bytes, the partition-record fetch and its single- and
+multi-frame replies, tolerance of junk on the link, the stored setting
+behind ``0x000b`` and the migration blocker. The stub answers one
+request and is a fixture, not an L2 model.
