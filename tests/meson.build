@@ -78,6 +78,7 @@ if 'CONFIG_TCG' in config_all_accel
 endif
 
 subdir('audio')
+subdir('sgi-l2')
 subdir('unit')
 subdir('qapi-schema')
 subdir('qtest')
