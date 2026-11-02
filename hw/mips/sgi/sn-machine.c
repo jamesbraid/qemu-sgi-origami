@@ -11574,7 +11574,7 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     sgi_board_mac_class_add_property(oc, offsetof(SGIMachineState, mac),
         "Onboard Ethernet address of node 0, carried in its L1 identity "
         "record; each further node takes the next address (default "
-        SGI_BOARD_DEFAULT_MAC ", a placeholder)");
+        "derived from the system disk path or machine name)");
 
     object_class_property_add_str(oc, "routes", sgi_machine_get_routes, NULL);
     object_class_property_set_description(oc, "routes",

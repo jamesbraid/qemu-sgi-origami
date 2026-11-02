@@ -21,6 +21,31 @@
 
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
+/*
+ * With no disk and no mac=, origin300 takes the address derived from the
+ * SHA-256 of its machine name "origin300", and fuel from that of "fuel"
+ * (sgi-board-identity.h): 08:00:69:E?:xx:xx. Worked out by hand, not by
+ * the code under test.
+ */
+#define ORIGIN300_DEFAULT_MAC "08:00:69:e5:c7:03"
+#define ORIGIN300_DEFAULT_DIGITS "080069E5C703"
+#define FUEL_DEFAULT_MAC "08:00:69:ec:be:4b"
+#define FUEL_DEFAULT_DIGITS "080069ECBE4B"
+
+/* The default IO8 board area, with the derived address in place of the old. */
+static void io8_board_default_vector(uint8_t out[80])
+{
+    unsigned sum = 0;
+
+    memcpy(out, expected_io8_board_default,
+           sizeof(expected_io8_board_default));
+    memcpy(out + 65, ORIGIN300_DEFAULT_DIGITS, 12);
+    for (size_t i = 0; i < 79; i++) {
+        sum += out[i];
+    }
+    out[79] = -sum;
+}
+
 #define SPACE_MEMORY_SPECIAL UINT64_C(0x30000000000)
 #define HUB_LOCAL_REGISTERS (SPACE_HUB + UINT64_C(0x10000000))
 
@@ -3005,7 +3030,7 @@ static void test_l1_raw_node_board_keeps_default_chassis(const void *data)
         g_dir_make_tmp("sn1-node-board-XXXXXX", &error);
     g_autofree char *board_path = NULL;
     g_autofree char *extra = NULL;
-    uint8_t board[16];
+    uint8_t board[16], io8_board[80];
     QTestState *qts;
 
     g_assert_no_error(error);
@@ -3020,8 +3045,8 @@ static void test_l1_raw_node_board_keeps_default_chassis(const void *data)
     expect_l1_area(qts, 0, L1_EEPROM_CHASSIS, expected_chassis,
                    sizeof(expected_chassis));
     expect_l1_area(qts, 0, L1_EEPROM_BOARD, board, sizeof(board));
-    expect_l1_area(qts, 1, L1_EEPROM_BOARD, expected_io8_board_default,
-                   sizeof(expected_io8_board_default));
+    io8_board_default_vector(io8_board);
+    expect_l1_area(qts, 1, L1_EEPROM_BOARD, io8_board, sizeof(io8_board));
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(board_path), ==, 0);
     g_assert_cmpint(g_rmdir(directory), ==, 0);
@@ -3176,19 +3201,20 @@ static void expect_l1_area(QTestState *qts, unsigned component,
 }
 
 /*
- * Without mac= or a raw IO8 record the machine still has one: the default
- * placeholder address, in the IO8 board area and on the IOC3 alike.
+ * Without mac= or a raw IO8 record the machine still has one: the address
+ * derived from its name, in the IO8 board area and on the IOC3 alike.
  */
 static void test_io8_default_mac(const void *data)
 {
     QTestState *qts = machine_start_with(prom_path, "-S");
     g_autofree char *mac = ioc3_mac(qts, IOC3_PATH);
+    uint8_t io8_board[80];
 
-    g_assert_cmpstr(mac, ==, "08:00:69:12:34:56");
+    g_assert_cmpstr(mac, ==, ORIGIN300_DEFAULT_MAC);
     expect_l1_area(qts, 1, L1_EEPROM_CHASSIS, expected_chassis,
                    sizeof(expected_chassis));
-    expect_l1_area(qts, 1, L1_EEPROM_BOARD, expected_io8_board_default,
-                   sizeof(expected_io8_board_default));
+    io8_board_default_vector(io8_board);
+    expect_l1_area(qts, 1, L1_EEPROM_BOARD, io8_board, sizeof(io8_board));
     qtest_quit(qts);
 }
 
@@ -3284,8 +3310,9 @@ static void l1_expect_mac_text(QTestState *qts, const char *text)
 }
 
 /*
- * Fuel's L1 keeps the address as MAC text for request 0x0008, and in its
- * system board's component 1 area; the IOC3 takes the same address.
+ * Fuel's L1 keeps the address as MAC text for request 0x0008, which the
+ * PROM turns back into the six bytes, and in its system board's component 1
+ * area; the IOC3 takes the same address. All follow mac=.
  */
 static void test_fuel_mac(const void *data)
 {
@@ -3294,7 +3321,7 @@ static void test_fuel_mac(const void *data)
         const char *text;
         const char *mac;
     } cases[] = {
-        { "", "080069123456", "08:00:69:12:34:56" },
+        { "", FUEL_DEFAULT_DIGITS, FUEL_DEFAULT_MAC },
         { ",mac=02:a1:b2:c3:d4:e5", "02A1B2C3D4E5", "02:a1:b2:c3:d4:e5" },
     };
     g_autofree char *quoted = g_shell_quote(prom_path);
@@ -3485,7 +3512,8 @@ static void test_fuel_linux_identity(const void *data)
         const char *option;
         uint8_t mac[6];
     } cases[] = {
-        { "", { 0x08, 0x00, 0x69, 0x12, 0x34, 0x56 } },
+        /* The address derived from the machine name "fuel". */
+        { "", { 0x08, 0x00, 0x69, 0xec, 0xbe, 0x4b } },
         { ",mac=02:a1:b2:c3:d4:e5", { 0x02, 0xa1, 0xb2, 0xc3, 0xd4, 0xe5 } },
     };
     g_autofree char *quoted = g_shell_quote(prom_path);

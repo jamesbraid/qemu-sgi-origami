@@ -2314,7 +2314,8 @@ static void test_reading_the_page_after_search(const void *data)
 static void test_the_default_station_address_is_an_sgi_address(const void *data)
 {
     static const uint8_t expected[6] = {
-        0x08, 0x00, 0x69, 0x12, 0x34, 0x56,
+        /* sha256("origin200"): 08:00:69, 0xe and a nibble, then two bytes. */
+        0x08, 0x00, 0x69, 0xe9, 0xbc, 0x80,
     };
     int sv[2];
     QTestState *qts;

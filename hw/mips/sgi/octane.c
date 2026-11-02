@@ -105,7 +105,7 @@ typedef struct OctaneMachineState {
     GHashTable *storage;
     bool flash_select;
     bool flash_strap;
-    /* mac=, or NULL for SGI_BOARD_DEFAULT_MAC. */
+    /* mac=, or NULL for the derived default. */
     char *mac;
 } OctaneMachineState;
 
@@ -1247,7 +1247,7 @@ static void octane_class_init(ObjectClass *oc, const void *data)
     octane_class_add_properties(oc, product);
     sgi_board_mac_class_add_property(oc, offsetof(OctaneMachineState, mac),
         "Onboard Ethernet address, held in the IOC3 bus's Ethernet-address "
-        "part (default " SGI_BOARD_DEFAULT_MAC ", a placeholder)");
+        "part (default derived from the system disk path or machine name)");
 
     /* The catalogue's processor part is the one CPU type the board takes. */
     cpu_types[0] = g_strconcat(processor->kind, MIPS_CPU_TYPE_SUFFIX, NULL);

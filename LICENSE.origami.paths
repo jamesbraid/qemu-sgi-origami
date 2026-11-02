@@ -360,6 +360,7 @@ include/hw/mips/sgi/o2-rom.h
 include/hw/mips/sgi/pi-gfx.h
 include/hw/mips/sgi/prom-image.h
 include/hw/mips/sgi/sgi-board-cdrom.h
+include/hw/mips/sgi/sgi-board-identity.h
 include/hw/mips/sgi/sgi-board-mac.h
 include/hw/mips/sgi/sgi-cpu.h
 include/hw/mips/sgi/sgi-graphics.h
@@ -973,6 +974,7 @@ tests/unit/test-i2c-masters.c
 tests/unit/test-i2c-wire.c
 tests/unit/test-onewire.c
 tests/unit/test-sgi-bedrock-ni.c
+tests/unit/test-sgi-board-identity.c
 tests/unit/test-sgi-dma.c
 tests/unit/test-sgi-gl-vmstate.c
 tests/unit/test-sgi-gl.c
