@@ -1190,6 +1190,90 @@ Every segment that crosses the link in either direction is the trace
 event ``sgi_l1_l2_segment`` with its bytes, so a run's traffic can be
 read from the trace.
 
+.. _sgi-l1-l2-user-space:
+
+Running the L2's own programs
+-----------------------------
+
+The L2's own programs, taken from the shipped controller image, run under
+the PowerPC Linux user-mode emulator (``qemu-ppc``, built with the
+``ppc-linux-user`` target) against the unpacked image as ``-L`` root with
+``-r 2.4.7``. Two pieces of this tree replace what their kernel gave
+them. Neither changes the emulator itself.
+
+``qemu-sgi-l2-hub`` is the host end of the L1 device nodes. It stands for the
+L2's USB host controller and hubs, owns the links to the L1 models and
+logs everything that crosses them with a timestamp::
+
+   qemu-sgi-l2-hub --dir DIR [--log FILE]
+
+It listens on ``DIR/l1.sock`` (a stream socket) for L1 models and on
+``DIR/dev.sock`` (sequenced packets) for the plugin. An L1 connects with
+its ``l2`` chardev as a client, for example ``-chardev
+socket,id=l2a,path=DIR/l1.sock,reconnect-ms=1000``. Each link gets the lowest
+free slot from 0 to 39, which is a USB attach, and a close is a detach. A
+slot's 9-byte device record is synthetic (bus 1, two hub ports, device
+address slot + 2, ports 1 and slot + 1): its layout is *established*, the
+values the real L2 would show are *unknown* until a rack topology supplies
+them. A segment that reaches the hub before the program has opened the
+slot's node is queued, up to 256 segments, and delivered in order on open.
+Links and nodes are served independently: a program that stops reading a
+node, or an L1 that stops reading its link, delays only that slot, and
+traffic from several L1s interleaves freely, as in the two-partition
+Origin 3400 with both C-brick L1s linked.
+A segment the program writes goes to the L1 with the length field set to
+the transfer's length, as the kernel driver does. Closing a node resets the
+device, which the hub logs; the link has no message for a reset, so the L1
+does not see it. The messages between the hub and the plugin are in
+``include/hw/misc/sgi-l2-hub.h``.
+
+``sgi-l2-shim`` (``contrib/plugins``) is a TCG plugin for ``qemu-ppc``. With
+``hub=DIR`` it serves the programs' system calls on the L1 nodes:
+
+- ``open`` of ``/dev/sgil1_cs`` and ``/dev/sgil1_N`` returns a socket
+  connected to the hub, so ``read``, ``write`` and ``poll`` run on the host
+  with one message per transfer. A slot with no L1 is ``ENODEV`` and one
+  already open is ``EBUSY``.
+- The driver's ioctls are answered: revision 2 (``0x40045306``), the device
+  record by slot or by node (``0xc0095307``, ``0x40095304``), and the four
+  resets (``0x20005301`` to ``0x20005303``, ``0x20005305``), which the hub
+  logs. Any other ioctl on a node is ``ENOTTY``.
+- ``/dev/mem`` is a regular file in the root. The programs map the flash
+  at physical ``0xfe000000`` (``0xfc000000`` first). The emulator cannot pass
+  those offsets to the host, because 32-bit PowerPC hands it the offset
+  as a signed number, so the plugin has the guest repeat the call with an
+  offset into the file. The file holds 36 MiB: the first 4 MiB stand for
+  the empty bus at ``0xfc000000`` and the flash is the 4 MiB at file offset
+  ``0x2000000``. A fresh flash is all ones.
+- Stores into the flash window are decoded after they happen and the plugin
+  corrects guest memory: auto-select presents manufacturer ``0x00010001``
+  and device ``0x22282228`` at offsets 0 and 4 until a reset command,
+  program clears bits only, sector erase fills the sector with ones
+  (31 sectors of 128 KiB, then 8 of 16 KiB) and chip erase fills the
+  window, and the command cycles leave nothing behind. All operations
+  complete at once. The command addresses, the doubled halfwords and the
+  sector map are *established* by the L2 controller sheet; the plugin does
+  not model the toggle bits the real chip shows during an operation.
+
+Without ``hub`` the plugin only logs the opens and ioctls on ``/dev``
+descriptors, which is how the system calls a program needs are collected.
+``log=FILE`` redirects the log, ``flash-log=on`` logs each store into the
+window and ``trace=on`` logs every ``/dev`` open and the ioctl results.
+
+Limits. A sequenced-packet socket does not behave exactly as the driver
+does: a read into a short buffer truncates instead of failing, an empty
+non-blocking read is ``EAGAIN``, and a second write does not wait for the
+first. The programs read with a buffer larger than any segment and only
+when ``poll`` reports data, so none of these paths is expected to run.
+Each program that maps the flash keeps its own copy of the window for
+restoring command words and for the program step, so two programs that
+program the same words see each other's results in the shared file but
+not in that copy. The plugin instruments every store, which slows the
+programs: a loop of 200 million stores took 2.2 times as long with the
+plugin loaded (0.65 s to 1.44 s on the development host). The USB-level
+rules of the real link (descriptors, endpoint halts, zero-length packets)
+are not exercised.
+
 Requests toward the L2
 ----------------------
 
