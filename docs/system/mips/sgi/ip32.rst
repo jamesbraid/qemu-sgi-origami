@@ -376,6 +376,9 @@ one SCSI disk or CD-ROM in total, at LUN 0 and target 0 to 6, on either
 bus. It refuses a second, other device kinds and unplugging. It refuses
 any other PCI device, and PCI and SCSI hotplug.
 
+The CD-ROM's INQUIRY text and block size follow :ref:`sgi-cdrom-identity`:
+the O2 PROM sets 512-byte blocks on any type-5 unit, whatever its vendor.
+
 The default network card is ``sgi-mace-eth``. ``-nic`` or ``-netdev``
 with ``macaddr`` sets its station address.
 

@@ -637,6 +637,79 @@ These are emulator choices for launchers, not hardware facts.
   this board. Supported guest ``irix``; default CPU model R10000 or
   R12000.
 
+.. _sgi-cdrom-identity:
+
+CD-ROM drive identity
+---------------------
+
+This section covers every SGI machine model that boots from a SCSI
+CD-ROM, not only the Octane. A CD-ROM the model attaches reports the
+vendor and product text its ``scsi-cd`` device carries; what the guests
+do with that text decides what to choose.
+
+The drive must report peripheral type 5. The stock PROMs classify a unit
+by type first, and a type-0 unit is a disk to them, apart from the three
+names in the table below. The IRIX kernel presents a type-0 unit as a
+CD-ROM only if its text names one (*software expectation*).
+
+No stock PROM examined reads the vendor of a type-5 unit (*software
+expectation*, read from the shipped firmware):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 76
+
+   * - PROM
+     - What it does with the INQUIRY text
+   * - Octane, Octane2 (:src:`ip30-prom-4.17 0x1fc439e4`)
+     - Only for a type-0 unit: if its text starts ``TOSHIBA CD``,
+       ``SONY    CD`` or ``LMS     CD`` the PROM sends REQUEST SENSE, a
+       vendor command ``0xc9`` and INQUIRY again. Any other type-0 text
+       is a disk. A type-5 unit takes neither path.
+   * - Origin 200, Origin 2000, Onyx2 (:src:`io6-prom-6.156 0xc000000011c3cd38`)
+     - The base-I/O PROM has the Octane's logic and the same three names;
+       the node-board PROM probes no SCSI targets.
+   * - Origin 300, Origin 3000 (:src:`ip35-prom-6.210 0xc000000013098f18`)
+     - The base-I/O PROM nested in the node PROM (the address is in the
+       unpacked nested image) has the same logic. The
+       base-I/O PROMs of the Origin 350, Tezro and Fuel are not examined:
+       *unknown*.
+   * - O2 (:src:`ip32-prom-4.18 0x8101ea68`)
+     - None. It holds no vendor string and tests only the type. It sends
+       MODE SELECT to 512-byte blocks to every type-5 unit without
+       reading the block length first, unlike the Octane's PROM, which
+       sends it only when MODE SENSE reports another length. Addresses
+       assume the load base the image's call targets imply.
+
+The Indy and Indigo2 PROM is not examined: *unknown*.
+
+IRIX 6.5.30 and 6.5.22 do not need a vendor either, with one cost
+(*software expectation*, read from the installed kernels and the media
+daemon of 6.5.30; no installed 6.5.22 media daemon was examined):
+
+- The kernel treats a text as a CD-ROM if it contains ``CDROM``,
+  ``CD-ROM``, ``CD ROM`` or ``DVD-ROM``. The test matters only for a
+  unit that reports type 0. It matches no CD-ROM brand, but a separate
+  lookup compares the vendor against ``TEAC``, ``INSITE``,
+  ``IOMEGA  Io20S`` and ``SyQuest``; what that changes is *unknown*.
+- The removable-media daemon's CD-ROM module matches the text against
+  eight brand prefixes, among them ``TOSHIBA CD``, ``SONY    CD`` and
+  ``MATSHITACD``. Toshiba texts select vendor opcodes ``0xc4`` and
+  ``0xc9``; an unlisted text gets the standard commands. QEMU's
+  ``scsi-cd`` implements neither vendor opcode and answers them with
+  ILLEGAL REQUEST, so a Toshiba text sends the daemon down paths the
+  model cannot serve, while an unlisted text containing ``CD-ROM`` does
+  not. That the daemon's software eject then fails was not run:
+  *inferred*.
+
+So a ``scsi-cd`` drive on these machines may keep QEMU's default text or
+carry the real inventory string ``TOSHIBA CD-ROM XM-5701TA``; the
+PROMs examined do not tell them apart. Prefer a text that is not a
+CD-ROM brand the daemon knows or a vendor the kernel looks up, unless
+the model answers that brand's vendor opcodes. What ``0xc4`` and ``0xc9`` do to a drive is *unknown*.
+:ref:`sgi-ip32-storage` and :ref:`sgi-sn-launch-disk-bus` add the
+machine-specific limits.
+
 .. _sgi-ip30-graphics:
 
 Graphics
