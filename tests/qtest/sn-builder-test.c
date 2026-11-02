@@ -8591,7 +8591,7 @@ static void test_routed_composer(const void *data)
     g_assert_cmpstr(peer, ==, "");
     for (unsigned i = 0; i < G_N_ELEMENTS(paths); i++) {
         g_autofree char *serial = qom_get_str(qts, paths[i], "brick-serial");
-        g_autofree char *synthetic = g_strdup_printf("model-module-%u", i);
+        g_autofree char *synthetic = g_strdup_printf("EMUM%02u", i);
         g_assert_cmpstr(serial, ==, targeted ? serials[i] : synthetic);
         g_assert_cmpuint(qom_get_uint(qts, paths[i], "bay"), ==, bays[i]);
     }
@@ -11152,6 +11152,27 @@ static void test_origin3200_two_ibricks(void)
 }
 
 /*
+ * The stock PROM turns a router L1's serial text into the number it writes to
+ * scratch 0, reading the characters as digits of a base 36 number, and the
+ * register keeps the serial in bits 47:0 beside the booted flag (bit 63) and
+ * the local identifier (bits 62:56). A serial of up to nine letters and
+ * digits stays below 2^48. A longer one, or one with a hyphen, wraps through
+ * the whole register: a router with the text "model-module-10" read back to
+ * the PROM as already booted, with a local identifier it never set.
+ */
+static void assert_serial_fits_router_scratch(QTestState *qts,
+                                              const char *path)
+{
+    g_autofree char *serial = qom_get_str(qts, path, "brick-serial");
+
+    g_assert_cmpuint(strlen(serial), >=, 1);
+    g_assert_cmpuint(strlen(serial), <=, 9);
+    for (const char *c = serial; *c; c++) {
+        g_assert_true(g_ascii_isalnum(*c));
+    }
+}
+
+/*
  * Each router L1 is given its product's board record, which the stock PROM
  * reads at router initialisation and prints an EEPROM vector read error
  * without. The Origin 3400 R-brick takes the R-brick row, each of the two
@@ -11207,6 +11228,7 @@ static void test_router_l1_board_records(void)
         board = qom_get_str(qts, cases[i].router_l1, "router-board");
         g_assert_cmpstr(profile, ==, "router");
         g_assert_cmpstr(board, ==, cases[i].board);
+        assert_serial_fits_router_scratch(qts, cases[i].router_l1);
         qtest_quit(qts);
     }
     qts = qtest_initf(
@@ -11222,6 +11244,7 @@ static void test_router_l1_board_records(void)
 
         g_assert_cmpstr(profile, ==, "router");
         g_assert_cmpstr(board, ==, "numalink-module");
+        assert_serial_fits_router_scratch(qts, "/machine/module3/l1");
     }
     qtest_quit(qts);
     g_unlink(prom);

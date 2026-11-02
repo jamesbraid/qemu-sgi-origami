@@ -615,10 +615,14 @@ second entry for the same controller (and component) are refused.
   further ``=`` characters. An entry beats ``-global
   sgi-l1.brick-serial``, and only for its controller. Without an entry or
   a global value the serial is absent, except in a topology with
-  routers, where each controller left without one gets
-  ``model-module-<index>``. Two controllers of a routed topology with
-  equal serials are refused, so such a launch gives each its own. Outside
-  that case equal serials on different controllers are allowed.
+  routers, where each controller left without one gets the synthetic
+  text serial ``EMUM<nn>``, *nn* being the index in two digits. Two
+  controllers of a routed topology with equal serials are refused, so
+  such a launch gives each its own. Outside that case equal serials on
+  different controllers are allowed. A serial given for a router's
+  controller should be at most nine letters and digits: the PROM stores
+  the router's serial in router scratch 0, and a longer one reaches the
+  register's booted flag (see :doc:`sn1-router`).
 
 ``controller-board-eeprom.N=<index>/<component>=<path>``
   Gives the controller a board identification record from a file.
