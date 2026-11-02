@@ -1671,6 +1671,38 @@ static void test_partition_clear(void)
 }
 
 /*
+ * L2 sheet, "A system with no L2": the model has no L2 or L3 controller, so a
+ * request addressed to controller type 1 or 2 gets the router error reply
+ * (-1, 8) and never a normal answer, from a named or unnamed C-brick and
+ * I-brick alike.
+ */
+static void test_no_l2_route(void)
+{
+    static const char *const props[] = {
+        "brick-type=cbrick,named=on,rack=1,bay=4",
+        "brick-type=ibrick,named=on,rack=1,bay=31,mac=" MAC_PROP,
+        "brick-type=cbrick",
+        "brick-type=ibrick,mac=" MAC_PROP,
+    };
+    static const uint32_t destinations[] = {
+        UINT32_C(0x1ffff006), UINT32_C(0x1ffff003), UINT32_C(0x2ffff006),
+        UINT32_C(0x2ffff003),
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(props); i++) {
+        QTestState *s = start_one(props[i]);
+
+        for (unsigned j = 0; j < G_N_ELEMENTS(destinations); j++) {
+            uint8_t reply[131];
+            size_t length = rpc(s, 0, destinations[j], 3, NULL, 0, 0, reply);
+
+            expect_router_error(reply, length);
+        }
+        qtest_quit(s);
+    }
+}
+
+/*
  * The partition is limited to sixteen bits: the width of the stored value,
  * not a hardware figure.
  */
@@ -2090,6 +2122,7 @@ int main(int argc, char **argv)
                    test_unnamed_attachment_gets_named);
     qtest_add_func("sgi-l1-o3k/partition-limit", test_partition_limit);
     qtest_add_func("sgi-l1-o3k/partition-identity", test_partition_identity);
+    qtest_add_func("sgi-l1-o3k/no-l2-route", test_no_l2_route);
     qtest_add_func("sgi-l1-o3k/partition-clear", test_partition_clear);
     qtest_add_func("sgi-l1-o3k/ctci", test_ctci_unimplemented);
     for (unsigned i = 0; i < G_N_ELEMENTS(link_cases); i++) {
