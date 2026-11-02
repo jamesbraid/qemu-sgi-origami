@@ -479,7 +479,8 @@ sn1_board_qtests = \
    config_all_devices.has_key('CONFIG_TEST_DEVICES') ?
     ['sgi-bic-board-interface-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_L1') ?
-    ['sn1-l1-test', 'sgi-l1-o3k-test', 'sgi-l1-cxbrick-test'] : []) + \
+    ['sn1-l1-test', 'sgi-l1-o3k-test', 'sgi-l1-cxbrick-test',
+     'sgi-l1-pbay-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_PBAY') ?
     ['sgi-pbay-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_MD') ?

@@ -7,6 +7,7 @@
 #include "hw/misc/sgi-l1.h"
 #include "hw/misc/sgi-l1-env.h"
 #include "hw/misc/sgi-l1-l2-link.h"
+#include "hw/misc/sgi-l1-pbay.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
@@ -3047,6 +3048,11 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
                 qemu_irq_pulse(s->nmi_out[i]);
             }
         }
+    } else if (!strcmp(argv[0], "pbay") && sgi_l1_pbay_active(&s->pbay)) {
+        /* Only the link's status word is established; the rest is not. */
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: the pbay command's output format "
+                      "is not established\n");
+        l1_printf(s, "%s\r\n", sgi_l1_pbay_status_name(&s->pbay));
     } else if (!strcmp(argv[0], "reboot_l1")) {
         l1_reboot(s);
         return 0;
@@ -4786,6 +4792,7 @@ static void l1_reset_enter(Object *obj, ResetType type)
 {
     SGIL1State *s = SGI_L1(obj);
 
+    sgi_l1_pbay_reset(&s->pbay);
     memset(s->irouter, 0, sizeof(s->irouter));
     memset(s->l2_pending, 0, sizeof(s->l2_pending));
     s->l2_rx_len = 0;
@@ -5973,6 +5980,11 @@ static uint64_t l1_irouter_profile_identity(const SGIL1State *s)
 
 static bool l1_links_check(SGIL1State *s, Error **errp);
 
+static void l1_pbay_log(void *opaque, const char *text)
+{
+    l1_log(opaque, "%s", text);
+}
+
 static void l1_realize(DeviceState *dev, Error **errp)
 {
     SGIL1State *s = SGI_L1(dev);
@@ -6294,6 +6306,10 @@ fuel_mac_done:
                                  l1_l2_receive, l1_l2_event, NULL, s, NULL,
                                  true);
     }
+    if (!sgi_l1_pbay_realize(&s->pbay, OBJECT(s), l1_brick_type_character(s),
+                             l1_pbay_log, s, errp)) {
+        return;
+    }
     l1_boot(s);
     if (s->auto_power) {
         /* The real countdown is skipped: a model choice. */
@@ -6608,6 +6624,9 @@ static char *l1_usb_descriptor_result_get(Object *obj, Error **errp)
 static const Property l1_properties[] = {
     DEFINE_PROP_CHR("chardev", SGIL1State, chr),
     DEFINE_PROP_CHR("l2", SGIL1State, l2_chr),
+    DEFINE_PROP_CHR("pbay", SGIL1State, pbay.chr),
+    DEFINE_PROP_UINT16("pbay-address", SGIL1State, pbay.l1_address, 0x0001),
+    DEFINE_PROP_UINT32("pbay-poll-ms", SGIL1State, pbay.poll_ms, 1000),
     DEFINE_PROP_INT32("revision-major", SGIL1State, revision_major, -1),
     DEFINE_PROP_INT32("revision-minor", SGIL1State, revision_minor, -1),
     DEFINE_PROP_INT32("revision-patch", SGIL1State, revision_patch, -1),
@@ -6824,6 +6843,7 @@ static void l1_init(Object *obj)
     SGIL1State *s = SGI_L1(obj);
 
     l1_controllers = g_slist_prepend(l1_controllers, s);
+    sgi_l1_pbay_init(obj, &s->pbay);
     object_property_add_bool(obj, "power-command-reachable",
         l1_power_command_reachable_get, l1_power_command_reachable_set);
 
@@ -6902,6 +6922,7 @@ static void l1_finalize(Object *obj)
     if (s->l2_blocker) {
         migrate_del_blocker(&s->l2_blocker);
     }
+    sgi_l1_pbay_finalize(&s->pbay);
     if (s->power_up_bh) {
         qemu_unregister_reset(l1_after_node_reset, s);
         qemu_bh_delete(s->power_up_bh);
