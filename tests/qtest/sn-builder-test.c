@@ -3840,8 +3840,10 @@ static uint64_t ip53_bcm_station_address(QTestState *qts)
 
 /*
  * Every IP53 product's IO9 BCM5701 answers with the machine's mac=, and
- * with SGI's default address when mac= is not given, the way an IOC3
- * board does, so the PROM finds an SGI address on its Ethernet.
+ * with 08:00:69 plus bytes derived from the SHA-256 of the machine name
+ * when mac= is not given and there is no disk (sgi-board-identity.h), so
+ * the PROM finds an address in SGI's OUI on its Ethernet. The expected
+ * values are worked out from the hash by hand.
  */
 static void test_ip53_bcm5701_takes_machine_mac(void)
 {
@@ -3849,12 +3851,13 @@ static void test_ip53_bcm5701_takes_machine_mac(void)
         const char *machine;
         const char *memory;
         const char *reset_mode;
+        uint64_t default_mac;
     } products[] = {
-        { "origin350", "2G", "0x009bad85" },
+        { "origin350", "2G", "0x009bad85", UINT64_C(0x080069ec991e) },
         { "onyx350,topology=onyx350", "8G",
-          "0x009caf85" },
+          "0x009caf85", UINT64_C(0x080069ee29cf) },
         { "tezro,topology=tezro", "4G",
-          "0x009bad85" },
+          "0x009bad85", UINT64_C(0x080069edb45e) },
     };
 
     for (size_t i = 0; i < G_N_ELEMENTS(products); i++) {
@@ -3867,7 +3870,7 @@ static void test_ip53_bcm5701_takes_machine_mac(void)
         char *netdev;
 
         g_assert_cmphex(ip53_bcm_station_address(fixture->qts), ==,
-                        UINT64_C(0x080069123456));
+                        products[i].default_mac);
         ip53_runtime_test_stop(fixture);
 
         fixture = ip53_runtime_test_start_with_binary_profile(

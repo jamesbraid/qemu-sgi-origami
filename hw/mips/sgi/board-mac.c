@@ -10,19 +10,75 @@
 #include "qom/object.h"
 #include "hw/core/qdev.h"
 #include "net/util.h"
+#include "hw/core/boards.h"
+#include "qemu/option.h"
+#include "system/blockdev.h"
 #include "hw/mips/sgi/sgi-board-mac.h"
+#include "hw/mips/sgi/sgi-board-identity.h"
 
 static bool sgi_board_mac_unicast(const uint8_t mac[6])
 {
     return memcmp(mac, "\0\0\0\0\0\0", 6) && !(mac[0] & 1);
 }
 
+/*
+ * The key the default identity hashes: the canonical path of the disk on
+ * SCSI bus 0, unit 0, which is where a legacy -drive if=scsi lands before
+ * the machine is built, or the machine type name when there is none. A
+ * disk attached later with -device is not visible yet, so it does not
+ * count. The file= text is hashed as given when it is not a local path.
+ */
+static char *sgi_board_identity_key(void)
+{
+    DriveInfo *dinfo = drive_get(IF_SCSI, 0, 0);
+    const char *file = dinfo && dinfo->opts ?
+                       qemu_opt_get(dinfo->opts, "file") : NULL;
+
+    if (file && file[0]) {
+        char *path = g_canonicalize_filename(file, NULL);
+#ifndef _WIN32
+        char *real = realpath(path, NULL);
+
+        if (real) {
+            g_free(path);
+            path = g_strdup(real);
+            free(real);
+        }
+#endif
+        return path;
+    }
+    return g_strdup(current_machine ?
+                    MACHINE_GET_CLASS(current_machine)->name : "sgi");
+}
+
+/* The default identity, worked out once: the disk and machine do not change. */
+static const SGIBoardIdentity *sgi_board_identity(void)
+{
+    static bool done;
+    static SGIBoardIdentity identity;
+
+    if (!done) {
+        g_autofree char *key = sgi_board_identity_key();
+
+        sgi_board_identity_from_key(key, &identity);
+        done = true;
+    }
+    return &identity;
+}
+
 char *sgi_board_mac(const char *base, unsigned int offset, Error **errp)
 {
+    g_autofree char *fallback = NULL;
     uint8_t mac[6];
     uint64_t value = 0;
 
-    if (net_parse_macaddr(mac, base ? base : SGI_BOARD_DEFAULT_MAC) < 0 ||
+    if (!base) {
+        memcpy(mac, sgi_board_identity()->mac, sizeof(mac));
+        fallback = g_strdup_printf("%02x:%02x:%02x:%02x:%02x:%02x", mac[0],
+                                   mac[1], mac[2], mac[3], mac[4], mac[5]);
+        base = fallback;
+    }
+    if (net_parse_macaddr(mac, base) < 0 ||
         !sgi_board_mac_unicast(mac)) {
         error_setg(errp, "mac must be a nonzero unicast address");
         return NULL;

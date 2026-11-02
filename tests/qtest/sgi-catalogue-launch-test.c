@@ -326,6 +326,23 @@ static void test_launch(const void *opaque)
         g_ptr_array_add(args, g_strdup("-device"));
         g_ptr_array_add(args, device);
     }
+    /*
+     * The machine derives its own address when mac= is not given, so a
+     * launcher that wants the catalogue's listed addresses names the
+     * first one, and every derived NIC follows by its offset.
+     */
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(o, "networks"), e) {
+        QDict *n = qobject_to(QDict, qlist_entry_obj(e));
+        QDict *mac = qdict_get_qdict(n, "mac");
+
+        if (qdict_get_bool(mac, "derived") &&
+            qdict_get_int(mac, "offset") == 0) {
+            g_string_append_printf(machine, ",%s=%s",
+                                   qdict_get_str(mac, "machine-property"),
+                                   qdict_get_str(mac, "default-address"));
+            break;
+        }
+    }
     g_ptr_array_add(args, g_strdup("-M"));
     g_ptr_array_add(args, g_strdup(machine->str));
     g_ptr_array_add(args, g_strdup("-cpu"));

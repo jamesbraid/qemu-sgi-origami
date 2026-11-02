@@ -11,13 +11,12 @@
 #define HW_MIPS_SGI_SGI_BOARD_MAC_H
 
 /*
- * The address when mac= is not given: SGI's 08:00:69 OUI with a fixed
- * placeholder station part. It is not any machine's factory address.
+ * The address when mac= is not given is 08:00:69:E?:xx:xx, worked out from
+ * the machine's system disk or type name; see sgi-board-identity.h.
  */
-#define SGI_BOARD_DEFAULT_MAC "08:00:69:12:34:56"
 
 /*
- * @base, or SGI_BOARD_DEFAULT_MAC when NULL, plus @offset over its 48
+ * @base, or the machine's derived default when NULL, plus @offset over its 48
  * bits, as "xx:xx:xx:xx:xx:xx": the address of node @offset, or of the
  * @offset'th onboard Ethernet where boards and nodes differ. NULL with
  * @errp set when @base is not a nonzero unicast address or the sum is

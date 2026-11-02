@@ -760,10 +760,16 @@ that transceiver. The guide's lower connector, Serial 1, is IOC3 UART A,
 *inferred* from OpenBSD's port map and a PROM menu captured on that
 connector (:src:`graphica-o350-notes`).
 
-The onboard Ethernet address comes from the L1. Without input it is the
-``mac`` machine property's placeholder ``08:00:69:12:34:56``, in SGI's
-OUI and no machine's factory value. It seeds the L1's address reply, the
-component-1 board record and the IOC3. ``fuel-mac-eeprom=<file>``
+The onboard Ethernet address comes from the L1. Without input it is
+derived: SGI's ``08:00:69`` prefix, which the firmware checks, then
+``0xE`` and the low nibble of the first byte of a SHA-256 hash, then its
+next two bytes. The hash covers the canonical path of the disk given as
+``-drive if=scsi,bus=0,unit=0``, or the machine name when there is none.
+A disk attached later with ``-device`` is not seen. The address is no
+machine's factory value, and ``mac`` replaces it. It seeds the L1's address
+reply (request ``0x0008``, the address as twelve uppercase hexadecimal
+digits, which the PROM turns back into the six bytes), the component-1
+board record and the IOC3, and follows ``mac`` when that is set. ``fuel-mac-eeprom=<file>``
 replaces it with a 512-byte record image, and a ``-nic mac=`` that
 disagrees with the record is refused. Where a physical Fuel stores this
 record is *unknown*. :doc:`hardware/l1` has the record format.

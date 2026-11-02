@@ -712,8 +712,10 @@ static void test_board_identities(gconstpointer data)
     bool octane2 = GPOINTER_TO_INT(data);
     const OctaneBoardIdentity *boards = octane_board_identities[octane2];
     QTestState *qts = octane2 ?
-        octane2_start_args("-nic user,mac=08:00:69:12:34:56") :
-        octane_start_args("-nic user,mac=08:00:69:12:34:56");
+        octane2_start_args("-M octane2,mac=08:00:69:12:34:56 "
+                           "-nic user,mac=08:00:69:12:34:56") :
+        octane_start_args("-M octane,mac=08:00:69:12:34:56 "
+                           "-nic user,mac=08:00:69:12:34:56");
     uint64_t found[3], ethernet = 0;
     uint8_t reply[3][64], broadcast[64];
     OctaneBoardIdentity low = boards[0];
@@ -864,14 +866,24 @@ static void octane_storage_rejected(const char *machine, const char *extra,
                                     const char *message);
 
 /*
- * The mac property sets the station address, as on the SN1 machines; with
- * none it is the shared 08:00:69 placeholder, and a different -nic mac= is
- * refused rather than silently overriding the board's identity.
+ * The mac property sets the station address, as on the SN1 machines. With
+ * none it is derived from the SHA-256 of the system disk's path, or of the
+ * machine name when there is no disk (sgi-board-identity.h): 08:00:69 then
+ * 0xe and a nibble, then two bytes. The expected values below are worked
+ * out from the hash by hand. A different -nic mac= is refused rather than
+ * silently overriding the board's identity.
  */
 static void test_octane_mac(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
-    static const uint8_t fallback[] = { 0x08, 0x00, 0x69, 0x12, 0x34, 0x56 };
+    /* sha256("octane") and sha256("octane2"). */
+    static const uint8_t fallback_octane[] = {
+        0x08, 0x00, 0x69, 0xe3, 0x72, 0x46
+    };
+    static const uint8_t fallback_octane2[] = {
+        0x08, 0x00, 0x69, 0xe6, 0xd3, 0x07
+    };
+    const uint8_t *fallback = octane2 ? fallback_octane2 : fallback_octane;
     static const uint8_t chosen[] = { 0x08, 0x00, 0x69, 0xaa, 0xbb, 0xcc };
     const char *machine = octane2 ? "octane2" : "octane";
     g_autofree char *conflict = g_strdup_printf(
@@ -901,12 +913,68 @@ static void test_octane_mac(gconstpointer data)
                             "mac must be a nonzero unicast address");
 }
 
+/*
+ * With a system disk on SCSI bus 0 unit 0 the address comes from the
+ * disk's canonical path instead, and mac= still wins over both.
+ */
+static void test_octane_mac_follows_disk(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("octane-mac-XXXXXX", &error);
+    g_autofree char *image = NULL;
+    g_autofree char *real = NULL;
+    g_autofree char *extra = NULL;
+    g_autoptr(GChecksum) sum = g_checksum_new(G_CHECKSUM_SHA256);
+    guint8 seed[32];
+    gsize length = sizeof(seed);
+    uint8_t mac[6], expected[6];
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    image = g_build_filename(directory, "disk.img", NULL);
+    g_assert_true(g_file_set_contents(image, "\0", 1, NULL));
+    g_assert_cmpint(truncate(image, 1 << 20), ==, 0);
+    real = realpath(image, NULL);
+    g_assert_nonnull(real);
+    g_checksum_update(sum, (const guchar *)real, -1);
+    g_checksum_get_digest(sum, seed, &length);
+    expected[0] = 0x08;
+    expected[1] = 0x00;
+    expected[2] = 0x69;
+    expected[3] = 0xe0 | (seed[0] & 0x0f);
+    expected[4] = seed[1];
+    expected[5] = seed[2];
+
+    extra = g_strdup_printf("-drive if=scsi,bus=0,unit=0,file=%s,format=raw "
+                            "-nic user", image);
+    qts = octane2 ? octane2_start_args(extra) : octane_start_args(extra);
+    octane_station_address(qts, mac);
+    g_assert_cmpmem(mac, 6, expected, 6);
+    qtest_quit(qts);
+
+    g_free(extra);
+    extra = g_strdup_printf("-M %s,mac=08:00:69:aa:bb:cc "
+                            "-drive if=scsi,bus=0,unit=0,file=%s,format=raw "
+                            "-nic user", octane2 ? "octane2" : "octane",
+                            image);
+    qts = octane2 ? octane2_start_args(extra) : octane_start_args(extra);
+    octane_station_address(qts, mac);
+    g_assert_cmphex(mac[3], ==, 0xaa);
+    qtest_quit(qts);
+
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 static void test_octane_ioc3_ethernet(bool octane2)
 {
     static const uint8_t mac[] = { 0x08, 0x00, 0x69, 0x12, 0x34, 0x56 };
     QTestState *qts = octane2 ?
-        octane2_start_args("-nic user,mac=08:00:69:12:34:56") :
-        octane_start_args("-nic user,mac=08:00:69:12:34:56");
+        octane2_start_args("-M octane2,mac=08:00:69:12:34:56 "
+                           "-nic user,mac=08:00:69:12:34:56") :
+        octane_start_args("-M octane,mac=08:00:69:12:34:56 "
+                           "-nic user,mac=08:00:69:12:34:56");
     uint8_t page[11];
     uint64_t found[3], ethernet = 0;
 
@@ -6491,6 +6559,10 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/ioc3-ethernet", test_octane_ethernet);
     qtest_add_data_func("/octane/mac", GINT_TO_POINTER(0), test_octane_mac);
     qtest_add_data_func("/octane2/mac", GINT_TO_POINTER(1), test_octane_mac);
+    qtest_add_data_func("/octane/mac-follows-disk", GINT_TO_POINTER(0),
+                        test_octane_mac_follows_disk);
+    qtest_add_data_func("/octane2/mac-follows-disk", GINT_TO_POINTER(1),
+                        test_octane_mac_follows_disk);
     qtest_add_data_func("/octane/ioc3-parallel", GINT_TO_POINTER(0),
                         test_ioc3_parallel);
     qtest_add_data_func("/octane2/ioc3-parallel", GINT_TO_POINTER(1),
