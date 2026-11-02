@@ -191,8 +191,9 @@ def _attach_processor_options(
     options = []
     for item in offered:
         if (not isinstance(item, dict) or
-                set(item) != {"part", "clock_mhz", "cache_mib",
-                              "processors_per_node"} or
+                not PROCESSOR_OPTION_REQUIRED <= set(item) or
+                set(item) - PROCESSOR_OPTION_REQUIRED
+                - PROCESSOR_OPTION_IDENTITY or
                 not isinstance(item["part"], str) or
                 not isinstance(item["clock_mhz"], int) or
                 not isinstance(item["cache_mib"], int) or
@@ -202,7 +203,8 @@ def _attach_processor_options(
                         for count in item["processors_per_node"])):
             raise ResolutionError(
                 "cpu_selection offered entries must name part, clock_mhz, "
-                "cache_mib and processors_per_node")
+                "cache_mib and processors_per_node, and may add only "
+                + ", ".join(sorted(PROCESSOR_OPTION_IDENTITY)))
         key = (item["part"], item["clock_mhz"], item["cache_mib"])
         if key not in variants:
             raise ResolutionError(
@@ -238,6 +240,12 @@ MODULE_INSTANCE_FIELDS = {
 NESTED_MODULE_INSTANCE_FIELDS = {"model", "id", "parent", "physical_slot"}
 OBSERVED_HARDWARE_FIELDS = {"mode", "sources", "note"}
 CPU_SELECTION_FIELDS = {"default", "slots", "offered"}
+PROCESSOR_OPTION_REQUIRED = {"part", "clock_mhz", "cache_mib",
+                             "processors_per_node"}
+# What an offered module adds when its board, not its clock and cache
+# alone, fixes it: the processor revision and the node board it is soldered
+# to (the IP53 boards).
+PROCESSOR_OPTION_IDENTITY = {"processor_identification", "node_board"}
 CPU_VARIANT_FIELDS = {"clock_mhz", "cache_mib"}
 
 

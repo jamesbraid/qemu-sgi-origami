@@ -44,6 +44,24 @@ layer:
       cache_mib: 4
     slots:
     - cpu0
+    # The IP53 node board's processors are soldered on, so each offered part
+    # is a board with its own revision, cache clock, tap and flash word
+    # (reset and flash words and clocks: the catalogue's variants). The 800 MHz
+    # boards are four-processor boards.
+    offered:
+      - {part: r16000, clock_mhz: 700, cache_mib: 4, processors_per_node: [1, 2, 4]}
+      - part: r16000
+        clock_mhz: 800
+        cache_mib: 4
+        processors_per_node: [4]
+        processor_identification: "0x0f42"
+        node_board: {processors: 4, name: IP53_4CPU, part: "030-1956-002", revision: "-C"}
+      - part: r16000
+        clock_mhz: 800
+        cache_mib: 8
+        processors_per_node: [4]
+        processor_identification: "0x0f42"
+        node_board: {processors: 4, name: IP53_4CPU, part: "030-1959-003", revision: "-C"}
   data:
     machine:
       name: Tezro rack first enclosure serial compatibility profile

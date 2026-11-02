@@ -21833,6 +21833,198 @@
       "topology": "origin350"
     },
     {
+      "board": "ip53",
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "default-topology": "origin350",
+      "dimms-per-node": [
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Origin 350 IP53 software profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "origin350,topology=origin350,nodes=1,board=ip53,processor=r16000-800mhz-8mb-rev22",
+      "memory-per-node-mib": {
+        "accepted": [
+          2048
+        ],
+        "default": 2048
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "unsupported",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 8,
+        "clock-hz": 800000000,
+        "id": "r16000-800mhz-8mb-rev22",
+        "part": "R16000"
+      },
+      "product": "origin350",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin350"
+    },
+    {
       "board": "ip59",
       "console": "l1-uart",
       "consoles": [
@@ -23160,6 +23352,392 @@
       "topology": "tezro-rack"
     },
     {
+      "board": "ip53",
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "dimms-per-node": [
+        6
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Tezro rack first enclosure serial compatibility profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "tezro,topology=tezro-rack,nodes=1,board=ip53,processor=r16000-800mhz-4mb-rev22",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "bcm5701-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 4,
+        "clock-hz": 800000000,
+        "id": "r16000-800mhz-4mb-rev22",
+        "part": "R16000"
+      },
+      "product": "tezro",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "tezro-rack"
+    },
+    {
+      "board": "ip53",
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "dimms-per-node": [
+        6
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Tezro rack first enclosure serial compatibility profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "tezro,topology=tezro-rack,nodes=1,board=ip53,processor=r16000-800mhz-8mb-rev22",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "bcm5701-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 8,
+        "clock-hz": 800000000,
+        "id": "r16000-800mhz-8mb-rev22",
+        "part": "R16000"
+      },
+      "product": "tezro",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "tezro-rack"
+    },
+    {
       "board": "ip59",
       "console": "l1-uart",
       "consoles": [
@@ -24100,6 +24678,392 @@
         "tftp-mode": "fixed"
       },
       "smp": 2,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "tezro"
+    },
+    {
+      "board": "ip53",
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "dimms-per-node": [
+        6
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Tezro, two/four-processor board serial compatibility profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "tezro,topology=tezro,nodes=1,board=ip53,processor=r16000-800mhz-4mb-rev22",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "bcm5701-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 4,
+        "clock-hz": 800000000,
+        "id": "r16000-800mhz-4mb-rev22",
+        "part": "R16000"
+      },
+      "product": "tezro",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "tezro"
+    },
+    {
+      "board": "ip53",
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "dimms-per-node": [
+        6
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Tezro, two/four-processor board serial compatibility profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "tezro,topology=tezro,nodes=1,board=ip53,processor=r16000-800mhz-8mb-rev22",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "bcm5701-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 8,
+        "clock-hz": 800000000,
+        "id": "r16000-800mhz-8mb-rev22",
+        "part": "R16000"
+      },
+      "product": "tezro",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
       "storage": [
         {
           "initial": "boot-prom",
@@ -28768,6 +29732,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -28779,6 +29744,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -28790,6 +29756,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -28801,6 +29768,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -28852,6 +29820,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -28863,6 +29832,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -28874,6 +29844,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -28885,6 +29856,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -31164,6 +32136,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -31175,6 +32148,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -31186,6 +32160,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -31197,6 +32172,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -31426,6 +32402,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -31437,6 +32414,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -31448,6 +32426,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -31459,6 +32438,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -31654,6 +32634,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -31665,6 +32646,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -31676,6 +32658,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -31687,6 +32670,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -40436,6 +41420,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -40447,6 +41432,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -40458,6 +41444,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -40469,6 +41456,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -40520,6 +41508,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -40531,6 +41520,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -40542,6 +41532,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -40553,6 +41544,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41288,6 +42280,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41299,6 +42292,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41310,6 +42304,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41321,6 +42316,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41372,6 +42368,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41383,6 +42380,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41394,6 +42392,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41405,6 +42404,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41456,6 +42456,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41467,6 +42468,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41478,6 +42480,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41489,6 +42492,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41540,6 +42544,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41551,6 +42556,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41562,6 +42568,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -41573,6 +42580,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 400000000,
                 "cache-mib": 8,
                 "clock-hz": 800000000,
                 "id": "r16000-800mhz-8mb",
@@ -42496,6 +43504,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 350000000,
                 "cache-mib": 4,
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
@@ -42508,6 +43517,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 350000000,
                 "cache-mib": 4,
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
@@ -42520,6 +43530,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 350000000,
                 "cache-mib": 4,
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
@@ -42532,6 +43543,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 350000000,
                 "cache-mib": 4,
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
@@ -42567,6 +43579,49 @@
           "id": "pic",
           "kind": "pic",
           "xio-attachment-index": 0
+        }
+      ],
+      "processor-options": [
+        {
+          "accepted-memory-mib": [
+            2048
+          ],
+          "assembly": {
+            "cache-clock-hz": 350000000,
+            "cache-mib": 4,
+            "clock-hz": 700000000,
+            "id": "r16000-700mhz-4mb",
+            "kind": "R16000",
+            "mode-bits": 10202501,
+            "prid": 3905
+          },
+          "cpus-per-node": [
+            4
+          ]
+        },
+        {
+          "accepted-memory-mib": [
+            2048
+          ],
+          "assembly": {
+            "cache-clock-hz": 400000000,
+            "cache-mib": 8,
+            "clock-hz": 800000000,
+            "id": "r16000-800mhz-8mb-rev22",
+            "kind": "R16000",
+            "mode-bits": 10268549,
+            "prid": 3906
+          },
+          "cpus-per-node": [
+            4
+          ],
+          "firmware-word": 1419554693,
+          "node-board": {
+            "name": "IP53_4CPU",
+            "part": "030-1959-003",
+            "processors": 4,
+            "revision": "-C"
+          }
         }
       ],
       "product": "origin350",
@@ -42727,6 +43782,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -42738,6 +43794,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -42749,6 +43806,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -42760,6 +43818,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43614,6 +44673,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43625,6 +44685,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43636,6 +44697,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43647,6 +44709,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43699,6 +44762,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43710,6 +44774,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43721,6 +44786,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43732,6 +44798,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43784,6 +44851,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43795,6 +44863,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43806,6 +44875,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43817,6 +44887,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43869,6 +44940,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43880,6 +44952,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43891,6 +44964,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -43902,6 +44976,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -44142,6 +45217,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 350000000,
                 "cache-mib": 4,
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
@@ -44154,6 +45230,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 350000000,
                 "cache-mib": 4,
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
@@ -44166,6 +45243,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 350000000,
                 "cache-mib": 4,
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
@@ -44178,6 +45256,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 350000000,
                 "cache-mib": 4,
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
@@ -44213,6 +45292,75 @@
           "id": "pic-xio-f",
           "kind": "pic",
           "xio-attachment-index": 0
+        }
+      ],
+      "processor-options": [
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "assembly": {
+            "cache-clock-hz": 350000000,
+            "cache-mib": 4,
+            "clock-hz": 700000000,
+            "id": "r16000-700mhz-4mb",
+            "kind": "R16000",
+            "mode-bits": 10202501,
+            "prid": 3905
+          },
+          "cpus-per-node": [
+            1,
+            2,
+            4
+          ]
+        },
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "assembly": {
+            "cache-clock-hz": 400000000,
+            "cache-mib": 4,
+            "clock-hz": 800000000,
+            "id": "r16000-800mhz-4mb-rev22",
+            "kind": "R16000",
+            "mode-bits": 10203013,
+            "prid": 3906
+          },
+          "cpus-per-node": [
+            4
+          ],
+          "firmware-word": 1419489157,
+          "node-board": {
+            "name": "IP53_4CPU",
+            "part": "030-1956-002",
+            "processors": 4,
+            "revision": "-C"
+          }
+        },
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "assembly": {
+            "cache-clock-hz": 400000000,
+            "cache-mib": 8,
+            "clock-hz": 800000000,
+            "id": "r16000-800mhz-8mb-rev22",
+            "kind": "R16000",
+            "mode-bits": 10268549,
+            "prid": 3906
+          },
+          "cpus-per-node": [
+            4
+          ],
+          "firmware-word": 1419554693,
+          "node-board": {
+            "name": "IP53_4CPU",
+            "part": "030-1959-003",
+            "processors": 4,
+            "revision": "-C"
+          }
         }
       ],
       "product": "tezro",
@@ -44384,6 +45532,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -44395,6 +45544,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -44406,6 +45556,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -44417,6 +45568,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -44640,6 +45792,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 350000000,
                 "cache-mib": 4,
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
@@ -44894,6 +46047,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 350000000,
                 "cache-mib": 4,
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
@@ -44906,6 +46060,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 350000000,
                 "cache-mib": 4,
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
@@ -44918,6 +46073,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 350000000,
                 "cache-mib": 4,
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
@@ -44930,6 +46086,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 350000000,
                 "cache-mib": 4,
                 "clock-hz": 700000000,
                 "id": "r16000-700mhz-4mb",
@@ -44971,6 +46128,74 @@
           "id": "pic-xio-f",
           "kind": "pic",
           "xio-attachment-index": 1
+        }
+      ],
+      "processor-options": [
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "assembly": {
+            "cache-clock-hz": 350000000,
+            "cache-mib": 4,
+            "clock-hz": 700000000,
+            "id": "r16000-700mhz-4mb",
+            "kind": "R16000",
+            "mode-bits": 10202501,
+            "prid": 3905
+          },
+          "cpus-per-node": [
+            2,
+            4
+          ]
+        },
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "assembly": {
+            "cache-clock-hz": 400000000,
+            "cache-mib": 4,
+            "clock-hz": 800000000,
+            "id": "r16000-800mhz-4mb-rev22",
+            "kind": "R16000",
+            "mode-bits": 10203013,
+            "prid": 3906
+          },
+          "cpus-per-node": [
+            4
+          ],
+          "firmware-word": 1419489157,
+          "node-board": {
+            "name": "IP53_4CPU",
+            "part": "030-1956-002",
+            "processors": 4,
+            "revision": "-C"
+          }
+        },
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "assembly": {
+            "cache-clock-hz": 400000000,
+            "cache-mib": 8,
+            "clock-hz": 800000000,
+            "id": "r16000-800mhz-8mb-rev22",
+            "kind": "R16000",
+            "mode-bits": 10268549,
+            "prid": 3906
+          },
+          "cpus-per-node": [
+            4
+          ],
+          "firmware-word": 1419554693,
+          "node-board": {
+            "name": "IP53_4CPU",
+            "part": "030-1959-003",
+            "processors": 4,
+            "revision": "-C"
+          }
         }
       ],
       "product": "tezro",
@@ -45182,6 +46407,7 @@
           "cpu-slots": [
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -45193,6 +46419,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -45204,6 +46431,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",
@@ -45215,6 +46443,7 @@
             },
             {
               "assembly": {
+                "cache-clock-hz": 333000000,
                 "cache-mib": 16,
                 "clock-hz": 1000000000,
                 "id": "r16000-1000mhz-16mb",

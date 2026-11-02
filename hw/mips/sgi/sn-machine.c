@@ -2193,6 +2193,22 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
         s->view = sgi_model_resolve_population(chassis, s->nodes_requested,
                                                errp);
         s->view_chassis = chassis;
+        /*
+         * A Bedrock board's processors are soldered on, so the module
+         * processor= names comes with its own flash word and node board.
+         * A name the topology does not offer is refused where the
+         * processor is resolved, with the names it does.
+         */
+        if (s->view && s->processor_name &&
+            s->view->generation == SGI_MODEL_GENERATION_SN1) {
+            const SGIModelProcessorOption *option =
+                sgi_model_find_processor_option(s->view, s->processor_name,
+                                                NULL);
+
+            if (option) {
+                s->view = sgi_model_fit_processor_option(s->view, option);
+            }
+        }
     }
     if (!s->view || !sgi_machine_preflight_io_descriptors(
             s->view, allow_ip53_fixture, allow_ip53_runtime,

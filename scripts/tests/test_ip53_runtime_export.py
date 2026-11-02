@@ -255,12 +255,15 @@ class IP53RuntimeExportTests(unittest.TestCase):
             models, product_models=product_models))
         offerings = [item for item in catalogue["offerings"]
                      if item["product"] == "tezro"]
+        # Every population of each board, and the two 800 MHz parts the
+        # four-processor boards are also offered with.
         self.assertEqual(
             sorted((item["topology"], tuple(item["cpus-per-node"]))
                    for item in offerings),
-            sorted((name, tuple(population))
-                   for name, facts in expected.values()
-                   for population in facts["populations"]),
+            sorted([(name, tuple(population))
+                    for name, facts in expected.values()
+                    for population in facts["populations"]] +
+                   [("tezro", (4,))] * 2 + [("tezro-rack", (4,))] * 2),
         )
         tezro = [item for item in catalogue["topologies"]
                  if item["name"] == "tezro"]

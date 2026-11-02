@@ -857,6 +857,77 @@ class Ip53CpuContextTests(unittest.TestCase):
                     model["machine"]["firmware_config"][
                         "processor_reset_mode"], reset)
 
+    def test_ip53_processor_options_carry_each_part(self):
+        # Words assembled by hand from the SysAD fields (SS 3 or 4 for
+        # 4 or 8 MiB, SysClkDiv 6 or 7 for 700 or 800 MHz, SCClkDiv 3) and
+        # the PROM table's rows (tap in bits 28:25), with the revision from
+        # the printed 2.2 (major nibble is the printed major plus 2).
+        rev22_4mb = {
+            "assembly": {
+                "id": "r16000-800mhz-4mb-rev22", "kind": "R16000",
+                "clock_hz": 800_000_000, "cache_clock_hz": 400_000_000,
+                "cache_mib": 4, "mode_bits": 0x009baf85, "prid": 0x0f42},
+            "firmware_word": 0x549baf85,
+            "node_board": {"processors": 4, "name": "IP53_4CPU",
+                           "part": "030-1956-002", "revision": "-C"},
+        }
+        rev22_8mb = {
+            "assembly": {
+                "id": "r16000-800mhz-8mb-rev22", "kind": "R16000",
+                "clock_hz": 800_000_000, "cache_clock_hz": 400_000_000,
+                "cache_mib": 8, "mode_bits": 0x009caf85, "prid": 0x0f42},
+            "firmware_word": 0x549caf85,
+            "node_board": {"processors": 4, "name": "IP53_4CPU",
+                           "part": "030-1959-003", "revision": "-C"},
+        }
+        for name, cpus, extra in (
+                ("origin350", [[4]], [rev22_8mb]),
+                ("tezro/two-four-processor", [[2, 4]],
+                 [rev22_4mb, rev22_8mb]),
+                ("tezro-rack", [[1, 2, 4]], [rev22_4mb, rev22_8mb])):
+            with self.subTest(profile=name):
+                options = compile_model(_resolved(name))["processor_options"]
+                default = options[0]["assembly"]
+
+                self.assertEqual(
+                    (default["id"], default["clock_hz"], default["mode_bits"],
+                     default["prid"], default["cache_clock_hz"]),
+                    ("r16000-700mhz-4mb", 700_000_000, 0x009bad85, 0x0f41,
+                     350_000_000))
+                self.assertNotIn("firmware_word", options[0])
+                self.assertEqual(options[0]["cpus_per_node"], cpus[0])
+                for option, want in zip(options[1:], extra):
+                    self.assertEqual(option["assembly"], want["assembly"])
+                    self.assertEqual(option["firmware_word"],
+                                     want["firmware_word"])
+                    self.assertEqual(option["node_board"], want["node_board"])
+                    self.assertEqual(option["cpus_per_node"], [4])
+                self.assertEqual(len(options), 1 + len(extra))
+
+    def test_ip53_processor_option_words_must_agree(self):
+        # A flash word whose tap or low 25 bits disagree with the
+        # catalogue, or a cache clock the reset word's divisor does not
+        # give, is refused where it is authored.
+        for field, value, message in (
+                ("firmware_word", 0x569baf85, "tap"),
+                ("firmware_word", 0x549baf84, "low 25 bits"),
+                ("cache_clock_mhz", 350, "cache clock divisor"),
+                ("reset_mode_bits", 0x009ba585, "system clock divisor")):
+            with self.subTest(field=field):
+                model = _resolved("tezro-rack")
+                variant = next(
+                    item for entry in model["processors"]
+                    if entry["part"] == "r16000"
+                    for item in entry["variants"]
+                    if (item["clock_mhz"], item["cache_mib"]) == (800, 4))
+                variant[field] = value
+                if field == "reset_mode_bits":
+                    variant["firmware_word"] = (
+                        int(variant["firmware_word"], 0) & ~0x01ffffff) | value
+
+                with self.assertRaisesRegex(ValueError, message):
+                    compile_model(model)
+
     def test_full_word_must_match_the_fitted_reset_mode(self):
         model = _resolved("origin350")
         model["machine"]["firmware_config"][
@@ -3676,14 +3747,18 @@ class CatalogueJsonTests(unittest.TestCase):
                      if item.get("launch-recipe") == "ip53-discovery"]
         topologies = {item["name"]: item for item in catalogue["topologies"]}
         # Every population each topology accepts is offered, and none asks
-        # the caller for the R16000 properties the machine fits itself.
+        # the caller for the R16000 properties the machine fits itself. The
+        # 800 MHz parts are four-processor boards: one more Origin 350
+        # offering, and two more on each Tezro topology.
         self.assertEqual(
             sorted((item["topology"], tuple(item["cpus-per-node"]))
                    for item in offerings),
-            sorted([("origin350", (4,)), ("onyx350", (4,)),
-                    ("onyx4-host", (4,)),
+            sorted([("origin350", (4,)), ("origin350", (4,)),
+                    ("onyx350", (4,)), ("onyx4-host", (4,)),
                     ("tezro", (1,)), ("tezro", (2,)), ("tezro", (4,)),
+                    ("tezro", (4,)), ("tezro", (4,)),
                     ("tezro-rack", (1,)), ("tezro-rack", (2,)),
+                    ("tezro-rack", (4,)), ("tezro-rack", (4,)),
                     ("tezro-rack", (4,))]))
         for offering in offerings:
             key = (offering["topology"], tuple(offering["cpus-per-node"]))
