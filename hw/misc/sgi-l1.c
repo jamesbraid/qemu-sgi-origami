@@ -1252,6 +1252,24 @@ static char *l1_hex_string(const uint8_t *data, unsigned length)
     return hex;
 }
 
+/* A chunk-transport frame: channel byte, result word, code, count, length. */
+static void l1_trace_chunk(const SGIL1State *s, bool to_node,
+                           unsigned transport, const uint8_t *frame,
+                           unsigned length)
+{
+    g_autofree char *hex = NULL;
+    unsigned rack, bay;
+
+    if (!trace_event_get_state_backends(TRACE_SGI_L1_CHUNK) || length < 10) {
+        return;
+    }
+    hex = l1_hex_string(frame + 10, length - 10);
+    l1_trace_name(s, &rack, &bay);
+    trace_sgi_l1_chunk(rack, bay, to_node, transport,
+                       frame[0] & 0x1f, lduw_be_p(frame + 5), frame[7],
+                       lduw_be_p(frame + 8), length - 10, hex);
+}
+
 static void l1_l2_trace_segment(const SGIL1State *s, bool to_l2,
                                 const uint8_t *segment, unsigned length)
 {
@@ -1399,6 +1417,7 @@ static void l1_l2_chunk_reply(SGIL1State *s, unsigned transport,
         chunk[0] = 0x20 | channel;
         stw_be_p(chunk + 5, code);
         memcpy(chunk + 10, segment + offset, bytes);
+        l1_trace_chunk(s, true, transport, chunk, 10 + bytes);
         l1_emit_transport(s, transport, chunk, 10 + bytes);
         offset += bytes;
     }
@@ -3879,6 +3898,7 @@ static void l1_irouter_chunk(SGIL1State *s, const uint8_t *p,
         return;
     }
     l1_o300_trace_frame(s, false, transport, p, length);
+    l1_trace_chunk(s, false, transport, p, length);
     assembly = &s->irouter[transport * SGI_L1_IROUTER_CHANNELS + channel];
     payload_length = length - 10;
     if (command == 0x3001) {
