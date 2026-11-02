@@ -49,6 +49,13 @@ struct SGIHeartState {
     uint32_t widget_control;
     uint32_t widget_request_timeout;
     uint32_t widget_error_mask;
+    /* Widget error type (0x60) and the PIO error latches (0x70, 0x78, 0x90). */
+    uint64_t widget_error_type;
+    uint64_t pio_error_upper;
+    uint64_t pio_error_lower;
+    uint64_t pio_read_timeout;
+    /* A widget error set pending bit 63, so mode bit 13 does not gate it. */
+    bool exception_from_widget;
     bool mapped[HEART_BANKS][HEART_MAX_UNITS];
 
     MemoryRegion ecc_memory;
@@ -56,7 +63,8 @@ struct SGIHeartState {
     uint64_t *ecc_words;
     uint32_t ecc_word_count;
     uint32_t ecc_word_capacity;
-    uint64_t ecc_cause;
+    /* Cause (0x10040): the ECC bits 0 and 1 and the widget error bit 16. */
+    uint64_t cause;
     uint64_t ecc_address;
     uint64_t ecc_data;
 

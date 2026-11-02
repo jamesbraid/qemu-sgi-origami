@@ -269,7 +269,8 @@ follow Linux ``heart.h``. Every reset value is the model's choice
      - 64
      - ``0``
      - write-one-to-clear
-     - Bit 0 corrected and bit 1 uncorrectable memory error.
+     - Bit 0 corrected and bit 1 uncorrectable memory error, bit 16 widget
+       error (:ref:`sgi-heart-dropped-requests`).
    * - ``0x20000``
      - Count
      - 64
@@ -342,6 +343,12 @@ fails the transaction and logs ``LOG_UNIMP``.
      - ``0``
      - read/write
      - One 32-bit word in both views.
+   * - ``0x40``
+     - Probe store
+     - 64
+     - n/a
+     - write zero only
+     - The widget probe's doubleword zero store completes and is dropped. Other widths, other values and reads are unimplemented.
    * - ``0x44``
      - Error command word
      - 32
@@ -349,23 +356,29 @@ fails the transaction and logs ``LOG_UNIMP``.
      - read; write zero only
      - A nonzero write fails.
    * - ``0x60``
-     - Error status
+     - Error type
      - 64
      - ``0``
-     - read; writes ignored
-     - No error source is modelled.
+     - write-one-to-clear
+     - Bits 2 and 3 record dropped writes and reads.
    * - ``0x68``
      - Error mask
      - 64
      - ``0``
      - read/write
      - Low 32 bits stored.
-   * - ``0x70``, ``0x78``, ``0x90``
-     - HEART-specific error words
+   * - ``0x70``, ``0x78``
+     - PIO error address, upper and lower
      - 64
      - ``0``
      - read-only
-     - Constant zero.
+     - Where a dropped write went.
+   * - ``0x90``
+     - PIO read time-out address
+     - 64
+     - ``0``
+     - read-only
+     - Where a dropped read went.
 
 The stock 6.5.30 diagnostic's register test saves, writes six masked
 patterns to, compares and restores widget ``0x28`` and ``0x68`` and
@@ -442,10 +455,12 @@ read zero at ``0x60`` and ``0x3ff7fc0f`` at ``0x68`` after PROM startup
 *inferred* from the same value on the model. What each bit means is
 *unknown*.
 
-The model has no error source. Status reads zero and a 64-bit write to
-it is accepted and changes nothing. The mask stores the low 32 bits of a
-64-bit write and drives nothing. The error command word reads zero and
-takes only a zero write.
+The only error source the model has is a request the Crossbow drops
+(:ref:`sgi-heart-dropped-requests`). A 64-bit write to the error type
+clears the bits it sets. The mask stores the low 32 bits of a 64-bit
+write; bits 2 and 3 enable pending bit 63 for a dropped request, and no
+other bit drives anything. The error command word reads zero and takes
+only a zero write.
 
 After a bus error, including the one a guarded probe of an absent PCI
 device takes, the IRIX 6.5.30 kernel reads ``0x60`` (64-bit), ``0x44``,
@@ -459,13 +474,79 @@ processor-interface words as bus-error address and miscellaneous,
 memory-error address and data, and processor-interface access error,
 with no field layout (``arch/mips/include/asm/sgi/heart.h`` lines 40-43
 and 97-102). The model answers every one of
-these reads with zero, which the kernel treats as no recorded error, an
-*approximation*: what HEART records after a Bridge timeout is *unknown*.
+these reads with zero unless a request the Crossbow dropped set them,
+which the kernel treats as no recorded error, an *approximation*: what
+HEART records after a Bridge timeout is *unknown*.
 At the reference Octane2's PROM menu, with no error pending, the widget
 words ``0x1c``, ``0x44``, ``0x60``, ``0x70``, ``0x78`` and
 ``0x90`` read zero, matching the model. The processor-interface words do
 not: ``0x88`` reads ``0x000000ffffffffff``, ``0x90`` ``0x7fffff`` and
 ``0x98`` ``0x20f30688`` (:ref:`sgi-heart-octane2-piu`).
+
+.. _sgi-heart-dropped-requests:
+
+Requests nothing answers
+------------------------
+
+A processor request HEART sends out of widget 8 that the Crossbow drops,
+to an empty or dead port, an illegal widget or HEART's own port, gets no
+response. SGI's *Octane ide Reference Guide* (108-0217-002, printed page
+A-3) shows a read of empty widget 13 (``0x900000001d00002c``) taking a
+data bus error and leaving widget error type ``0x8`` (PIO read time-out),
+``0xd000`` at ``0x90``, cause ``0x10000`` and pending bit 63, with the
+processor's IP6 set, *established* for that read. That a store fails the
+same way, by HEART's own timer, and sets type bit 2 (PIO write time-out)
+is *inferred* from the names IRIX gives the type bits. The layouts of
+``0x70``, ``0x78`` and ``0x90`` are *inferred* from how IRIX decodes
+them.
+
+The model takes the Crossbow's report of the drop (the XIO port
+interface's ``request_dropped``) and:
+
+- for a store, sets type bit 2 and latches the processor's physical
+  address: bits 39:32 in ``0x70`` bits 7:0, the processor number in
+  ``0x70`` bits 23:22 and bits 31:0 in ``0x78``. Bit 15 of ``0x70``,
+  which IRIX reads as a read-or-write flag of unknown sense, stays
+  clear. The store itself completes, as every R10000-family uncached
+  store does in this tree.
+- for a read, sets type bit 3 and latches the processor number in
+  ``0x90`` bits 19:18, the widget in bits 15:12 and widget offset bits
+  23:12 in bits 11:0. The read still fails, so the processor takes a
+  data bus error.
+- sets cause bit 16, and pending bit 63 if that type bit is set in the
+  error mask at ``0x68``. Bit 63 then reaches IP6 of every processor
+  whose mask arms it.
+
+Writing the type bits back clears them, and writing cause bit 16 back
+clears it, without touching bits 0 and 1. The latches keep their words
+until the next error of their kind. The Crossbow hands HEART an XIO
+address, not the window the processor used: an offset of less than
+16 MiB is latched as a small-window address and anything larger as a
+large-window one, so a large-window access below 16 MiB to a link that
+went down is latched with its small-window address. The processor
+number is zero with one processor fitted.
+
+Three choices here are approximations, each with a register test that
+fails without it:
+
+- The report is made while the request is dropped. HEART's time-out
+  interval is *unknown*; the IRIX kernel's guarded store probe finds cause
+  bit 16 set after a few register reads and a ``sync``, so the report is
+  visible by then, but nothing bounds it from below
+  (``/heart/drop/no-delay``).
+- The first error of each kind is held: a second dropped store before
+  type bit 2 is cleared leaves ``0x70`` and ``0x78`` alone, and likewise
+  for reads and ``0x90``. Hardware may overwrite instead
+  (``/heart/drop/hold-and-clear``).
+- Mode bit 13 does not gate a widget error's bit 63, though it still
+  gates bit 63 set by a memory error or by software. The PROM sets bit
+  13 before any guest runs, so whether HEART applies it to widget
+  errors is *unknown* (``/heart/drop/ignores-mode``).
+
+The error mask enabling only pending bit 63, with the type bit and
+cause bit 16 latched whatever it holds, is *inferred* from its name
+(``/heart/drop/error-mask``). Whether the Crossbow also flags a request
+to a dead link is *unknown* and nothing models it.
 
 .. _sgi-heart-memory:
 
@@ -1269,9 +1350,10 @@ Model limits
   disable bits Linux names. Linux restarts the machine by setting mode
   bit 23 (``arch/mips/sgi-ip30/ip30-power.c`` lines 13-22); the model
   does not reset on that write.
-- No error source: bus-error address and miscellaneous words, the
-  processor-interface access error word and the widget error registers
-  never record anything. Bridge errors do not reach HEART.
+- The only error source is a request the Crossbow drops: bus-error
+  address and miscellaneous words, the processor-interface access error
+  word and widget error type bits other than 2 and 3 never record
+  anything. Bridge errors do not reach HEART.
 - No timer interrupt: compare is stored only and trigger is absent.
   Level 3 rises only when software or an interrupt packet sets bit 50.
 - The descriptor projection, the modulo wrap and the absent-bank
@@ -1319,7 +1401,12 @@ and mask behaviour on all five levels, the level-4 outputs of processors
 the revision F mode and compare reset values
 (``/heart/revision-f-reset-words``), the one-wire master
 with and without a part, slot replacement, Crosstalk routing and DMA through
-a Bridge, the ECC subsets, reset and migration.
+a Bridge, the ECC subsets, reset and migration. ``/heart/drop/*`` checks
+requests the Crossbow drops on HEART's port: the type bits, the latched
+addresses and processor number for both windows, cause, pending bit 63
+under the error mask, routing to each processor's mask, write-one-to-clear
+and re-arming, the PROM and IRIX clear sequences, reads against writes,
+the three approximations above, reset and migration.
 
 ``tests/qtest/sgi-heart-cpu-test.c`` runs code on R10000 and R12000
 processors: a DMA into RAM the processor then executes, and double-bit

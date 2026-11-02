@@ -1145,8 +1145,13 @@ static uint64_t sgi_xbow_illegal_offset(const SGIXbowState *s, hwaddr addr)
  * sender is whatever the receiving port's link joins.
  */
 static void sgi_xbow_drop(SGIXbowState *s, unsigned int port,
-                          unsigned int widget, uint64_t offset, bool write)
+                          unsigned int widget, uint64_t offset, bool write,
+                          MemTxAttrs attrs)
 {
+    /* A debugger's access sent no packet, so no timer runs out for it. */
+    if (attrs.debug) {
+        return;
+    }
     sgi_xio_port_request_dropped(s->peer_port[port], s->peer_index[port],
                                  ((uint64_t)widget <<
                                   SGI_XIO_PACKET_ADDRESS_BITS) | offset,
@@ -1165,7 +1170,7 @@ static MemTxResult sgi_xbow_illegal_read(void *opaque, hwaddr addr,
                                         sgi_xbow_illegal_widget(s, addr),
                                         sgi_xbow_illegal_offset(s, addr));
     sgi_xbow_drop(s, context->link, sgi_xbow_illegal_widget(s, addr),
-                  sgi_xbow_illegal_offset(s, addr), false);
+                  sgi_xbow_illegal_offset(s, addr), false, attrs);
     return MEMTX_ERROR;
 }
 
@@ -1180,7 +1185,7 @@ static MemTxResult sgi_xbow_illegal_write(void *opaque, hwaddr addr,
                                         sgi_xbow_illegal_widget(s, addr),
                                         sgi_xbow_illegal_offset(s, addr));
     sgi_xbow_drop(s, context->link, sgi_xbow_illegal_widget(s, addr),
-                  sgi_xbow_illegal_offset(s, addr), true);
+                  sgi_xbow_illegal_offset(s, addr), true, attrs);
     return MEMTX_ERROR;
 }
 
@@ -1214,7 +1219,8 @@ static const MemoryRegionOps sgi_xbow_illegal_ops = {
  * same as a processor's.
  */
 static MemTxResult sgi_xbow_packet_illegal_access(SGIXbowLink *context,
-                                                  hwaddr addr, bool write)
+                                                  hwaddr addr, bool write,
+                                                  MemTxAttrs attrs)
 {
     SGIXbowState *s = context->xbow;
     unsigned int widget = XBOW_FIRST_ILLEGAL_WIDGET +
@@ -1222,7 +1228,7 @@ static MemTxResult sgi_xbow_packet_illegal_access(SGIXbowLink *context,
     uint64_t offset = addr & MAKE_64BIT_MASK(0, SGI_XIO_PACKET_ADDRESS_BITS);
 
     sgi_xbow_record_illegal_destination(s, context->link, widget, offset);
-    sgi_xbow_drop(s, context->link, widget, offset, write);
+    sgi_xbow_drop(s, context->link, widget, offset, write, attrs);
     return MEMTX_ERROR;
 }
 
@@ -1232,7 +1238,7 @@ static MemTxResult sgi_xbow_packet_illegal_read(void *opaque, hwaddr addr,
                                                 MemTxAttrs attrs)
 {
     *data = 0;
-    return sgi_xbow_packet_illegal_access(opaque, addr, false);
+    return sgi_xbow_packet_illegal_access(opaque, addr, false, attrs);
 }
 
 static MemTxResult sgi_xbow_packet_illegal_write(void *opaque, hwaddr addr,
@@ -1240,7 +1246,7 @@ static MemTxResult sgi_xbow_packet_illegal_write(void *opaque, hwaddr addr,
                                                  unsigned int size,
                                                  MemTxAttrs attrs)
 {
-    return sgi_xbow_packet_illegal_access(opaque, addr, true);
+    return sgi_xbow_packet_illegal_access(opaque, addr, true, attrs);
 }
 
 static const MemoryRegionOps sgi_xbow_packet_illegal_ops = {
@@ -1265,12 +1271,13 @@ static const MemoryRegionOps sgi_xbow_packet_illegal_ops = {
  */
 static MemTxResult sgi_xbow_unreachable_access(SGIXbowLink *context,
                                                hwaddr addr, bool write,
-                                               uint64_t slice)
+                                               uint64_t slice,
+                                               MemTxAttrs attrs)
 {
     SGIXbowState *s = context->xbow;
 
     sgi_xbow_drop(s, context->link, SGI_XBOW_FIRST_WIDGET + addr / slice,
-                  addr % slice, write);
+                  addr % slice, write, attrs);
     return MEMTX_ERROR;
 }
 
@@ -1282,7 +1289,7 @@ static MemTxResult sgi_xbow_unreachable_read(void *opaque, hwaddr addr,
 
     *data = 0;
     return sgi_xbow_unreachable_access(context, addr, false,
-                                       context->xbow->span);
+                                       context->xbow->span, attrs);
 }
 
 static MemTxResult sgi_xbow_unreachable_write(void *opaque, hwaddr addr,
@@ -1292,7 +1299,7 @@ static MemTxResult sgi_xbow_unreachable_write(void *opaque, hwaddr addr,
     SGIXbowLink *context = opaque;
 
     return sgi_xbow_unreachable_access(context, addr, true,
-                                       context->xbow->span);
+                                       context->xbow->span, attrs);
 }
 
 static MemTxResult sgi_xbow_packet_unreachable_read(void *opaque, hwaddr addr,
@@ -1302,7 +1309,7 @@ static MemTxResult sgi_xbow_packet_unreachable_read(void *opaque, hwaddr addr,
 {
     *data = 0;
     return sgi_xbow_unreachable_access(opaque, addr, false,
-                                       SGI_XIO_PACKET_SIZE);
+                                       SGI_XIO_PACKET_SIZE, attrs);
 }
 
 static MemTxResult sgi_xbow_packet_unreachable_write(void *opaque,
@@ -1312,7 +1319,7 @@ static MemTxResult sgi_xbow_packet_unreachable_write(void *opaque,
                                                      MemTxAttrs attrs)
 {
     return sgi_xbow_unreachable_access(opaque, addr, true,
-                                       SGI_XIO_PACKET_SIZE);
+                                       SGI_XIO_PACKET_SIZE, attrs);
 }
 
 static const MemoryRegionOps sgi_xbow_unreachable_ops = {

@@ -24,6 +24,12 @@
 #define HEART_MISSING_PACKET 0x3000001000ULL
 #define HEART_XTALK_RAM 0x4000000000ULL
 #define HEART_BRIDGE 0x5000000000ULL
+/* The processor's windows as they enter the Crossbow at HEART's port. */
+#define HEART_CPU_SMALL 0x6000000000ULL
+#define HEART_CPU_WIDGET(w) (HEART_CPU_SMALL + ((uint64_t)(w) << 24))
+#define HEART_CPU_LARGE14 0x7000000000ULL
+#define HEART_OWN_PACKET 0x3000002000ULL
+#define HEART_LARGE_WIDE 0x20000000000ULL
 #define HEART_BRIDGE_PATH "/machine/peripheral/bridge"
 #define HEART_BRIDGE_CARD (HEART_BRIDGE + 0xa00000)
 #define HEART_RAM 0x20000000ULL
@@ -1286,10 +1292,16 @@ static void test_widget_errors(void)
     g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0x44, &word), ==,
                      MEMTX_OK);
     g_assert_cmphex(word, ==, 0);
+    /* The probe's doubleword zero store completes; nothing else does. */
     g_assert_cmpuint(memtx_writeq(s, HEART_WIDGET + 0x40, 0), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x60), ==, 0);
+    g_assert_cmpuint(memtx_writeq(s, HEART_WIDGET + 0x40, 1), ==,
                      MEMTX_ERROR);
     g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x40, 0), ==,
                      MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x44, 0), ==,
+                     MEMTX_OK);
     g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x48, 0), ==,
                      MEMTX_ERROR);
     g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x44, 1), ==,
@@ -1791,6 +1803,8 @@ static QTestState *heart_xtalk_start(const char *extra)
     qtest_sysbus_mmio_map(s, HEART_XTALK_PATH, 3, HEART_XTALK_PACKET);
     qtest_sysbus_mmio_map(s, HEART_XTALK_PATH, 4, HEART_MISSING_PACKET);
     qtest_sysbus_mmio_map(s, HEART_XTALK_PATH, 5, HEART_XTALK_RAM);
+    qtest_sysbus_mmio_map(s, HEART_XTALK_PATH, 6, HEART_CPU_SMALL);
+    qtest_sysbus_mmio_map(s, HEART_XTALK_PATH, 7, HEART_CPU_LARGE14);
     qtest_irq_intercept_out_named(s, HEART_XTALK_PATH, "processor");
     return s;
 }
@@ -2102,6 +2116,484 @@ static void test_xtalk_migration(void)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
+/*
+ * Requests the Crossbow drops on HEART's port. Widget 14 is an empty port
+ * and 0x1e130400 its small-window address the processor would use; widget
+ * 13 is the empty port SGI's Octane ide reference guide reads. These check
+ * the model's contract, not hardware.
+ */
+#define HEART_WERR_TYPE (HEART_XTALK_REGS_WIDGET + 0x60)
+#define HEART_XTALK_REGS_WIDGET (HEART_SMALL + (8 << 24))
+#define HEART_CAUSE (HEART_XTALK_REGS + 0x10040)
+#define HEART_PENDING (HEART_XTALK_REGS + 0x10030)
+#define HEART_MASK(n) (HEART_XTALK_REGS + 0x10000 + (n) * 8)
+#define HEART_MODE_INT_EN (1ULL << 13)
+#define HEART_CAUSE_WIDGET (1ULL << 16)
+#define HEART_EXCEPTION (1ULL << 63)
+#define WERR_WRITE_TIMEOUT 0x4
+#define WERR_READ_TIMEOUT 0x8
+
+static uint64_t heart_widget_word(QTestState *s, unsigned offset)
+{
+    uint64_t value;
+
+    g_assert_cmpuint(memtx_readq(s, HEART_XTALK_REGS_WIDGET + offset,
+                                 &value), ==, MEMTX_OK);
+    return value;
+}
+
+static QTestState *heart_drop_start(uint32_t error_mask)
+{
+    QTestState *s = heart_xtalk_start("");
+
+    qtest_writeq(s, HEART_XTALK_REGS, HEART_MODE_INT_EN);
+    qtest_writeq(s, HEART_MASK(0), HEART_EXCEPTION);
+    qtest_writeq(s, HEART_XTALK_REGS_WIDGET + 0x68, error_mask);
+    return s;
+}
+
+/* (a), (b), (c): a refused store latches its type, address and cause. */
+static void test_drop_write_latch(void)
+{
+    QTestState *s = heart_drop_start(0x3ff7fc0f);
+    uint32_t word;
+
+    g_assert_cmphex(heart_widget_word(s, 0x60), ==, 0);
+    g_assert_cmpuint(memtx_writeq(s, HEART_CPU_WIDGET(14) + 0x130400, 0), ==,
+                     MEMTX_ERROR);
+    g_assert_cmphex(heart_widget_word(s, 0x60), ==, WERR_WRITE_TIMEOUT);
+    g_assert_cmphex(heart_widget_word(s, 0x70), ==, 0);
+    g_assert_cmphex(heart_widget_word(s, 0x78), ==, 0x1e130400);
+    g_assert_cmphex(heart_widget_word(s, 0x90), ==, 0);
+    g_assert_cmphex(heart_widget_word(s, 0x10), ==, 0);
+    for (unsigned offset = 0x14; offset <= 0x44; offset += 0x30) {
+        g_assert_cmpuint(memtx_readl(s, HEART_XTALK_REGS_WIDGET + offset,
+                                     &word), ==, MEMTX_OK);
+        g_assert_cmphex(word, ==, 0);
+    }
+    g_assert_cmphex(qtest_readl(s, HEART_XTALK_REGS_WIDGET + 0x1c), ==, 0);
+    g_assert_cmphex(qtest_readq(s, HEART_CAUSE), ==, HEART_CAUSE_WIDGET);
+    g_assert_cmphex(qtest_readq(s, HEART_PENDING), ==, HEART_EXCEPTION);
+    g_assert_true(qtest_get_irq(s, 4));
+    qtest_quit(s);
+}
+
+/* A large-window store latches address bits 39:32 in 0x70. */
+static void test_drop_write_large(void)
+{
+    QTestState *s = heart_drop_start(0);
+
+    qtest_writel(s, HEART_CPU_LARGE14 + 0x2345678, 0);
+    g_assert_cmphex(heart_widget_word(s, 0x60), ==, WERR_WRITE_TIMEOUT);
+    g_assert_cmphex(heart_widget_word(s, 0x70), ==, 0xe0);
+    g_assert_cmphex(heart_widget_word(s, 0x78), ==, 0x02345678);
+    qtest_quit(s);
+}
+
+/*
+ * The rebuilt address keeps 36 offset bits, so an offset the large window
+ * cannot hold does not spill into the widget number.
+ */
+static void test_drop_write_large_wide(void)
+{
+    QTestState *s = heart_drop_start(0);
+
+    qtest_sysbus_mmio_map(s, HEART_XTALK_PATH, 9, HEART_LARGE_WIDE);
+    qtest_writel(s, HEART_LARGE_WIDE + (1ULL << 36) + 0x2345678, 0);
+    g_assert_cmphex(heart_widget_word(s, 0x60), ==, WERR_WRITE_TIMEOUT);
+    g_assert_cmphex(heart_widget_word(s, 0x70), ==, 0xe0);
+    g_assert_cmphex(heart_widget_word(s, 0x78), ==, 0x02345678);
+    qtest_quit(s);
+}
+
+/*
+ * (d): the error mask's type bit enables pending bit 63 alone; the type
+ * and cause latch either way.
+ */
+static void test_drop_error_mask(void)
+{
+    for (unsigned enabled = 0; enabled < 2; enabled++) {
+        QTestState *s = heart_drop_start(enabled ? WERR_WRITE_TIMEOUT :
+                                         0x3ff7fc0b);
+
+        qtest_irq_intercept_out_named(s, HEART_XTALK_PATH, "processor");
+        qtest_writeq(s, HEART_CPU_WIDGET(14) + 0x130400, 0);
+        g_assert_cmphex(heart_widget_word(s, 0x60), ==, WERR_WRITE_TIMEOUT);
+        g_assert_cmphex(qtest_readq(s, HEART_CAUSE), ==, HEART_CAUSE_WIDGET);
+        g_assert_cmphex(qtest_readq(s, HEART_PENDING), ==,
+                        enabled ? HEART_EXCEPTION : 0);
+        g_assert_cmpint(qtest_get_irq(s, 4), ==, enabled);
+        qtest_quit(s);
+    }
+}
+
+/*
+ * (e), (j): writing back what was read clears type and cause, and re-arms
+ * the latches; until then the first error's address is held.
+ */
+static void test_drop_hold_and_clear(void)
+{
+    QTestState *s = heart_drop_start(0x3ff7fc0f);
+    uint64_t type, cause;
+
+    qtest_writeq(s, HEART_CPU_WIDGET(14) + 0x130400, 0);
+    qtest_writeq(s, HEART_CPU_WIDGET(14) + 0x800, 0);
+    g_assert_cmphex(heart_widget_word(s, 0x78), ==, 0x1e130400);
+    g_assert_cmpuint(memtx_readq(s, HEART_CPU_WIDGET(13) + 0x2c, &type),
+                     ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_readq(s, HEART_CPU_WIDGET(9) + 0x5000, &type),
+                     ==, MEMTX_ERROR);
+    g_assert_cmphex(heart_widget_word(s, 0x90), ==, 0xd000);
+    g_assert_cmphex(heart_widget_word(s, 0x78), ==, 0x1e130400);
+
+    type = heart_widget_word(s, 0x60);
+    cause = qtest_readq(s, HEART_CAUSE);
+    g_assert_cmphex(type, ==, WERR_WRITE_TIMEOUT | WERR_READ_TIMEOUT);
+    g_assert_cmpuint(memtx_writeq(s, HEART_WERR_TYPE, type), ==, MEMTX_OK);
+    qtest_writeq(s, HEART_CAUSE, cause);
+    g_assert_cmphex(heart_widget_word(s, 0x60), ==, 0);
+    g_assert_cmphex(qtest_readq(s, HEART_CAUSE), ==, 0);
+    /* Clearing leaves the latched words until the next error. */
+    g_assert_cmphex(heart_widget_word(s, 0x78), ==, 0x1e130400);
+
+    qtest_writeq(s, HEART_CPU_WIDGET(14) + 0x800, 0);
+    g_assert_cmphex(heart_widget_word(s, 0x78), ==, 0x1e000800);
+    g_assert_cmphex(heart_widget_word(s, 0x90), ==, 0xd000);
+    g_assert_cmpuint(memtx_readq(s, HEART_CPU_WIDGET(9) + 0x5000, &type),
+                     ==, MEMTX_ERROR);
+    g_assert_cmphex(heart_widget_word(s, 0x90), ==, 0x9005);
+    g_assert_cmpuint(memtx_readq(s, HEART_CPU_WIDGET(13), &type),
+                     ==, MEMTX_ERROR);
+    g_assert_cmphex(heart_widget_word(s, 0x90), ==, 0x9005);
+
+    /* Each kind clears and re-arms on its own. */
+    qtest_writeq(s, HEART_WERR_TYPE, WERR_READ_TIMEOUT);
+    g_assert_cmphex(heart_widget_word(s, 0x60), ==, WERR_WRITE_TIMEOUT);
+    g_assert_cmpuint(memtx_readq(s, HEART_CPU_WIDGET(13), &type),
+                     ==, MEMTX_ERROR);
+    g_assert_cmphex(heart_widget_word(s, 0x90), ==, 0xd000);
+    qtest_writeq(s, HEART_CPU_WIDGET(14) + 0x130400, 0);
+    g_assert_cmphex(heart_widget_word(s, 0x78), ==, 0x1e000800);
+    qtest_quit(s);
+}
+
+/*
+ * (f): a refused read fails the transaction, which the processor takes as
+ * a bus error, and sets its own type bit and latch, not the write pair.
+ */
+static void test_drop_read(void)
+{
+    QTestState *s = heart_drop_start(0x3ff7fc0f);
+    uint64_t value;
+
+    g_assert_cmpuint(memtx_readq(s, HEART_CPU_WIDGET(13) + 0x2c, &value),
+                     ==, MEMTX_ERROR);
+    g_assert_cmphex(heart_widget_word(s, 0x60), ==, WERR_READ_TIMEOUT);
+    g_assert_cmphex(heart_widget_word(s, 0x90), ==, 0xd000);
+    g_assert_cmphex(heart_widget_word(s, 0x70), ==, 0);
+    g_assert_cmphex(heart_widget_word(s, 0x78), ==, 0);
+    g_assert_cmphex(qtest_readq(s, HEART_CAUSE), ==, HEART_CAUSE_WIDGET);
+    g_assert_cmphex(qtest_readq(s, HEART_PENDING), ==, HEART_EXCEPTION);
+    qtest_quit(s);
+}
+
+/* (g): the PROM's and IRIX's clear sequences leave nothing set. */
+static void test_drop_clear_sequences(void)
+{
+    for (unsigned kernel = 0; kernel < 2; kernel++) {
+        QTestState *s = heart_drop_start(0x3ff7fc0f);
+        uint64_t pending;
+
+        qtest_irq_intercept_out_named(s, HEART_XTALK_PATH, "processor");
+        qtest_writeq(s, HEART_CPU_WIDGET(14) + 0x130400, 0);
+        qtest_readq(s, HEART_CPU_WIDGET(13));
+        g_assert_true(qtest_get_irq(s, 4));
+        if (kernel) {
+            qtest_writeq(s, HEART_WERR_TYPE, heart_widget_word(s, 0x60));
+            qtest_writel(s, HEART_XTALK_REGS_WIDGET + 0x44, 0);
+        } else {
+            qtest_writeq(s, HEART_WERR_TYPE, 0x3ff7fc0f);
+        }
+        qtest_writeq(s, HEART_CAUSE, qtest_readq(s, HEART_CAUSE));
+        pending = qtest_readq(s, HEART_PENDING);
+        qtest_writeq(s, HEART_XTALK_REGS + 0x10028, pending);
+        g_assert_cmphex(heart_widget_word(s, 0x60), ==, 0);
+        g_assert_cmphex(qtest_readq(s, HEART_CAUSE), ==, 0);
+        g_assert_cmphex(qtest_readq(s, HEART_PENDING), ==, 0);
+        g_assert_false(qtest_get_irq(s, 4));
+        qtest_quit(s);
+    }
+}
+
+/*
+ * (i): the report is visible straight after the store and the processor-ID
+ * and widget-ID reads, with no virtual time passing; a model whose report
+ * waits on a timer fails this.
+ */
+static void test_drop_no_delay(void)
+{
+    QTestState *s = heart_drop_start(0x3ff7fc0f);
+
+    qtest_writeq(s, HEART_CPU_WIDGET(14) + 0x130400, 0);
+    qtest_readq(s, HEART_XTALK_REGS + 0x50000);
+    qtest_readl(s, HEART_XTALK_REGS_WIDGET + 4);
+    qtest_readq(s, HEART_XTALK_REGS + 0x50000);
+    g_assert_cmphex(qtest_readq(s, HEART_CAUSE) & HEART_CAUSE_WIDGET, ==,
+                    HEART_CAUSE_WIDGET);
+    qtest_quit(s);
+}
+
+/*
+ * (k): mode bit 13 does not gate a widget error's bit 63, though it still
+ * gates bit 63 set any other way.
+ */
+static void test_drop_ignores_mode(void)
+{
+    QTestState *s = heart_drop_start(0x3ff7fc0f);
+
+    qtest_irq_intercept_out_named(s, HEART_XTALK_PATH, "processor");
+    qtest_writeq(s, HEART_XTALK_REGS, 0);
+    qtest_writeq(s, HEART_XTALK_REGS + 0x10020, HEART_EXCEPTION);
+    g_assert_false(qtest_get_irq(s, 4));
+    qtest_writeq(s, HEART_XTALK_REGS + 0x10028, HEART_EXCEPTION);
+    qtest_writeq(s, HEART_CPU_WIDGET(14) + 0x130400, 0);
+    g_assert_cmphex(qtest_readq(s, HEART_CAUSE), ==, HEART_CAUSE_WIDGET);
+    g_assert_cmphex(qtest_readq(s, HEART_PENDING), ==, HEART_EXCEPTION);
+    g_assert_true(qtest_get_irq(s, 4));
+    /* Acknowledging bit 63 ends the widget error's claim on it. */
+    qtest_writeq(s, HEART_XTALK_REGS + 0x10028, HEART_EXCEPTION);
+    g_assert_false(qtest_get_irq(s, 4));
+    qtest_writeq(s, HEART_XTALK_REGS + 0x10020, HEART_EXCEPTION);
+    g_assert_false(qtest_get_irq(s, 4));
+    qtest_quit(s);
+}
+
+/*
+ * Clearing bit 63 through a packet ends the widget error's claim on it, as
+ * the clear register does: a later bit 63 that the mode bit gates must not
+ * reach the processor on the stale claim.
+ */
+static void test_drop_packet_clear(void)
+{
+    for (unsigned cpu = 0; cpu < 4; cpu++) {
+        QTestState *s = heart_drop_start(0x3ff7fc0f);
+
+        qtest_writeq(s, HEART_MASK(0), 0);
+        qtest_writeq(s, HEART_MASK(cpu), HEART_EXCEPTION);
+        qtest_writeq(s, HEART_XTALK_REGS, 0);
+        qtest_writeq(s, HEART_CPU_WIDGET(14) + 0x130400, 0);
+        g_assert_true(qtest_get_irq(s, 4 + cpu));
+        qtest_writeq(s, HEART_XTALK_PACKET + 0x80, 63);
+        g_assert_cmphex(qtest_readq(s, HEART_PENDING), ==, 0);
+        g_assert_false(qtest_get_irq(s, 4 + cpu));
+        qtest_writeq(s, HEART_XTALK_REGS + 0x10020, HEART_EXCEPTION);
+        g_assert_false(qtest_get_irq(s, 4 + cpu));
+        qtest_quit(s);
+    }
+}
+
+/*
+ * A debugger reading an empty widget's window sees the access fail but
+ * must not trip the guest's error latches or interrupt.
+ */
+static void test_drop_debug_access(void)
+{
+    QTestState *s = heart_drop_start(0x3ff7fc0f);
+    uint64_t kseg1 = 0xffffffffa0000000ULL;
+    uint8_t data[8];
+
+    /*
+     * The window sits above 512 MiB, out of kseg1's reach. Move it over
+     * HEART's own widget space for the debug accesses and back after.
+     */
+    qtest_sysbus_mmio_map(s, HEART_XTALK_PATH, 6, 0x10000000);
+    g_assert_false(qtest_memread_cpu_debug(s, 0, kseg1 + 0x1e130400,
+                                           data, sizeof(data)));
+    g_assert_false(qtest_memwrite_cpu_debug(s, 0, kseg1 + 0x1e130400,
+                                            data, sizeof(data)));
+    qtest_sysbus_mmio_map(s, HEART_XTALK_PATH, 6, HEART_CPU_SMALL);
+    g_assert_cmphex(heart_widget_word(s, 0x60), ==, 0);
+    g_assert_cmphex(qtest_readq(s, HEART_CAUSE), ==, 0);
+    g_assert_cmphex(qtest_readq(s, HEART_PENDING), ==, 0);
+    g_assert_false(qtest_get_irq(s, 4));
+    qtest_quit(s);
+}
+
+/*
+ * (c) of the model choices: an illegal widget, a link that is down and a
+ * packet HEART sends to its own widget all report as the time-out of the
+ * request's direction. A processor's access to widget 8 is not among them:
+ * HEART answers that itself.
+ */
+static void test_drop_causes(void)
+{
+    static const struct {
+        uint64_t address;
+        bool link_down;
+    } cases[] = {
+        { HEART_CPU_WIDGET(3) + 0x2c, false },    /* illegal destination */
+        { HEART_CPU_WIDGET(15) + 0x2c, true },    /* link not up */
+        { HEART_OWN_PACKET + 0x80, false },       /* HEART's own widget */
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        for (unsigned read = 0; read < 2; read++) {
+            QTestState *s = heart_drop_start(0x3ff7fc0f);
+            uint64_t value;
+
+            qtest_sysbus_mmio_map(s, HEART_XTALK_PATH, 8, HEART_OWN_PACKET);
+            if (cases[i].link_down) {
+                qtest_qmp_assert_success(s,
+                    "{'execute':'qom-set','arguments':{'path':"
+                    "'/machine/peripheral/heart-xtalk/xbow',"
+                    "'property':'links-alive','value':256}}");
+            }
+            qtest_writeq(s, HEART_XTALK_REGS, 0);
+            if (read) {
+                g_assert_cmpuint(memtx_readq(s, cases[i].address, &value),
+                                 ==, MEMTX_ERROR);
+            } else {
+                memtx_writeq(s, cases[i].address, 0);
+            }
+            if (cases[i].link_down) {
+                /* HEART's registers are read through that link too. */
+                qtest_qmp_assert_success(s,
+                    "{'execute':'qom-set','arguments':{'path':"
+                    "'/machine/peripheral/heart-xtalk/xbow',"
+                    "'property':'links-alive','value':33024}}");
+            }
+            g_assert_cmphex(heart_widget_word(s, 0x60), ==,
+                            read ? WERR_READ_TIMEOUT : WERR_WRITE_TIMEOUT);
+            g_assert_cmphex(qtest_readq(s, HEART_CAUSE), ==,
+                            HEART_CAUSE_WIDGET);
+            g_assert_cmphex(qtest_readq(s, HEART_PENDING), ==,
+                            HEART_EXCEPTION);
+            g_assert_true(qtest_get_irq(s, 4));
+            qtest_quit(s);
+        }
+    }
+}
+
+/*
+ * (b) of the model choices: the write and read latches hold independently,
+ * so a read refused after a held write, or the other way round, keeps both.
+ */
+static void test_drop_independent_latches(void)
+{
+    QTestState *s = heart_drop_start(0x3ff7fc0f);
+    uint64_t value;
+
+    g_assert_cmpuint(memtx_readq(s, HEART_CPU_WIDGET(13) + 0x2c, &value),
+                     ==, MEMTX_ERROR);
+    qtest_writeq(s, HEART_CPU_WIDGET(14) + 0x130400, 0);
+    g_assert_cmphex(heart_widget_word(s, 0x60), ==,
+                    WERR_WRITE_TIMEOUT | WERR_READ_TIMEOUT);
+    g_assert_cmphex(heart_widget_word(s, 0x90), ==, 0xd000);
+    g_assert_cmphex(heart_widget_word(s, 0x78), ==, 0x1e130400);
+    /* A second of each kind is held out by the first. */
+    g_assert_cmpuint(memtx_readq(s, HEART_CPU_WIDGET(9) + 0x5000, &value),
+                     ==, MEMTX_ERROR);
+    qtest_writeq(s, HEART_CPU_WIDGET(14) + 0x800, 0);
+    g_assert_cmphex(heart_widget_word(s, 0x90), ==, 0xd000);
+    g_assert_cmphex(heart_widget_word(s, 0x78), ==, 0x1e130400);
+    qtest_quit(s);
+}
+
+/*
+ * (d) of the model choices: processors 1 to 3 follow processor 0's rule. A
+ * bit 63 raised without a widget error needs mode bit 13; a widget error's
+ * does not. Each processor answers to its own mask.
+ */
+static void test_drop_mode_per_processor(void)
+{
+    for (unsigned cpu = 1; cpu < 4; cpu++) {
+        QTestState *s = heart_drop_start(0x3ff7fc0f);
+
+        qtest_writeq(s, HEART_MASK(0), 0);
+        qtest_writeq(s, HEART_MASK(cpu), HEART_EXCEPTION);
+        qtest_writeq(s, HEART_XTALK_REGS, 0);
+        qtest_writeq(s, HEART_XTALK_REGS + 0x10020, HEART_EXCEPTION);
+        g_assert_false(qtest_get_irq(s, 4 + cpu));
+        qtest_writeq(s, HEART_XTALK_REGS, HEART_MODE_INT_EN);
+        g_assert_true(qtest_get_irq(s, 4 + cpu));
+        g_assert_false(qtest_get_irq(s, 4));
+        qtest_writeq(s, HEART_XTALK_REGS, 0);
+        g_assert_false(qtest_get_irq(s, 4 + cpu));
+        /* A widget error's bit 63 reaches the processor with the bit clear. */
+        qtest_writeq(s, HEART_XTALK_REGS + 0x10028, HEART_EXCEPTION);
+        qtest_writeq(s, HEART_CPU_WIDGET(14) + 0x130400, 0);
+        g_assert_true(qtest_get_irq(s, 4 + cpu));
+        qtest_quit(s);
+    }
+}
+
+/* The report reaches each processor whose mask arms bit 63, and no other. */
+static void test_drop_processor_routing(void)
+{
+    for (unsigned cpu = 0; cpu < 4; cpu++) {
+        QTestState *s = heart_drop_start(0x3ff7fc0f);
+
+        qtest_irq_intercept_out_named(s, HEART_XTALK_PATH, "processor");
+        qtest_writeq(s, HEART_MASK(0), 0);
+        qtest_writeq(s, HEART_MASK(cpu), HEART_EXCEPTION);
+        qtest_writeq(s, HEART_CPU_WIDGET(14) + 0x130400, 0);
+        for (unsigned line = 0; line < 8; line++) {
+            g_assert_cmpint(qtest_get_irq(s, line), ==, line == 4 + cpu);
+        }
+        qtest_quit(s);
+    }
+}
+
+/* (h): reset clears every latch; identical-build migration keeps them. */
+static void test_drop_reset_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("heart-drop-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = heart_drop_start(0x3ff7fc0f);
+    to = heart_xtalk_start("-incoming defer");
+    qtest_writeq(from, HEART_XTALK_REGS, 0);
+    qtest_writeq(from, HEART_CPU_WIDGET(14) + 0x130400, 0);
+    qtest_readq(from, HEART_CPU_WIDGET(13));
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    g_assert_cmphex(heart_widget_word(to, 0x60), ==,
+                    WERR_WRITE_TIMEOUT | WERR_READ_TIMEOUT);
+    g_assert_cmphex(heart_widget_word(to, 0x78), ==, 0x1e130400);
+    g_assert_cmphex(heart_widget_word(to, 0x90), ==, 0xd000);
+    g_assert_cmphex(qtest_readq(to, HEART_CAUSE), ==, HEART_CAUSE_WIDGET);
+    g_assert_cmphex(qtest_readq(to, HEART_PENDING), ==, HEART_EXCEPTION);
+    /* Mode bit 13 is clear: bit 63 still reaches IP6 after migration. */
+    g_assert_true(qtest_get_irq(to, 4));
+    /* The held first error survives too. */
+    qtest_writeq(to, HEART_CPU_WIDGET(14) + 0x800, 0);
+    g_assert_cmphex(heart_widget_word(to, 0x78), ==, 0x1e130400);
+
+    qtest_system_reset(to);
+    for (unsigned offset = 0x60; offset <= 0x90; offset += 8) {
+        if (offset != 0x68 && offset != 0x80 && offset != 0x88) {
+            g_assert_cmphex(heart_widget_word(to, offset), ==, 0);
+        }
+    }
+    g_assert_cmphex(qtest_readq(to, HEART_CAUSE), ==, 0);
+    g_assert_cmphex(qtest_readq(to, HEART_PENDING), ==, 0);
+    g_assert_false(qtest_get_irq(to, 4));
+    qtest_quit(to);
+    qtest_quit(from);
+    if (g_file_test(socket, G_FILE_TEST_EXISTS)) {
+        g_assert_cmpint(g_unlink(socket), ==, 0);
+    }
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2183,5 +2675,24 @@ int main(int argc, char **argv)
     qtest_add_func("/heart/bridge-dma", test_bridge_dma);
     qtest_add_func("/heart/bridge-bulk-ram", test_bridge_bulk_ram);
     g_test_add_func("/heart/xtalk-migration", test_xtalk_migration);
+    qtest_add_func("/heart/drop/write-latch", test_drop_write_latch);
+    qtest_add_func("/heart/drop/write-large", test_drop_write_large);
+    qtest_add_func("/heart/drop/write-large-wide", test_drop_write_large_wide);
+    qtest_add_func("/heart/drop/error-mask", test_drop_error_mask);
+    qtest_add_func("/heart/drop/hold-and-clear", test_drop_hold_and_clear);
+    qtest_add_func("/heart/drop/read", test_drop_read);
+    qtest_add_func("/heart/drop/clear-sequences", test_drop_clear_sequences);
+    qtest_add_func("/heart/drop/no-delay", test_drop_no_delay);
+    qtest_add_func("/heart/drop/ignores-mode", test_drop_ignores_mode);
+    qtest_add_func("/heart/drop/causes", test_drop_causes);
+    qtest_add_func("/heart/drop/independent-latches",
+                   test_drop_independent_latches);
+    qtest_add_func("/heart/drop/mode-per-processor",
+                   test_drop_mode_per_processor);
+    qtest_add_func("/heart/drop/packet-clear", test_drop_packet_clear);
+    qtest_add_func("/heart/drop/debug-access", test_drop_debug_access);
+    qtest_add_func("/heart/drop/processor-routing",
+                   test_drop_processor_routing);
+    qtest_add_func("/heart/drop/reset-migration", test_drop_reset_migration);
     return g_test_run();
 }
