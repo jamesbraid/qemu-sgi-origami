@@ -1872,10 +1872,11 @@ static void test_l2_partition_flag_refusal(void)
 /* Source word: key (rack 1, bay 4) in 31:12, tag in 11:5, return task 0x15. */
 #define L2_SOURCE_CHANNEL_10 UINT32_C(0x00044215)
 
-static QTestState *start_linked(L2Stub *stub, const char *props)
+static QTestState *start_linked_traced(L2Stub *stub, const char *props,
+                                       const char *trace)
 {
     g_autofree char *extra = g_strdup_printf(
-        "-chardev socket,id=l2c,path=%s ", stub->path);
+        "-chardev socket,id=l2c,path=%s %s", stub->path, trace);
     g_autofree char *all = g_strdup_printf("%s,l2=l2c", props);
     const char *const one[] = { all };
     QTestState *s = start_with(1, one, extra);
@@ -1888,6 +1889,11 @@ static QTestState *start_linked(L2Stub *stub, const char *props)
     }
     g_assert_true(qtest_qom_get_bool(s, DEVICES "l1c0", "l2-link-up"));
     return s;
+}
+
+static QTestState *start_linked(L2Stub *stub, const char *props)
+{
+    return start_linked_traced(stub, props, "");
 }
 
 static bool output_ready(QTestState *s, unsigned n)
@@ -1934,6 +1940,36 @@ static void test_l2_link_down(void)
     expect_partition_request(s, 0, 0xb, 2);
     qtest_quit(s);
     l2_stub_free(stub);
+}
+
+
+/*
+ * Trace output: run with the named events logged to a file, then read the
+ * file once the machine has quit.
+ */
+static char *trace_start(const char *events, char **args)
+{
+    g_autoptr(GError) error = NULL;
+    char *path = NULL;
+    int fd = g_file_open_tmp("sgi-l1-trace-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    *args = g_strdup_printf("-trace enable=%s -D %s ", events, path);
+    return path;
+}
+
+static char *trace_finish(QTestState *s, char *path)
+{
+    g_autoptr(GError) error = NULL;
+    char *text = NULL;
+
+    qtest_quit(s);
+    g_assert_true(g_file_get_contents(path, &text, NULL, &error));
+    g_assert_no_error(error);
+    g_unlink(path);
+    g_free(path);
+    return text;
 }
 
 /*
@@ -2077,6 +2113,28 @@ static void test_l2_chunk_other_destination(void)
     g_assert_cmpuint(linked_length, ==, unlinked_length);
     g_assert_cmpmem(linked, linked_length, unlinked, unlinked_length);
     qtest_quit(s);
+    l2_stub_free(stub);
+}
+
+/* A segment event names the controller whose link it crossed. */
+static void test_l2_segment_trace(void)
+{
+    g_autofree char *args = NULL;
+    char *path = trace_start("sgi_l1_l2_segment", &args);
+    L2Stub *stub = l2_stub_listen();
+    QTestState *s = start_linked_traced(stub, L2_FETCH_PROPS, args);
+    uint8_t request[28], segment[SGI_L1_L2_SEGMENT_MAX], reply[131];
+    g_autofree char *text = NULL;
+
+    send_fetch(s, request);
+    g_assert_cmpuint(l2_stub_serve(stub, segment, 2, L2_STUB_TIMEOUT_MS), ==,
+                     28);
+    receive_waiting(s, 0, reply);
+    text = trace_finish(s, path);
+    g_assert_nonnull(strstr(text,
+                            "profile=cbrick rack=1 bay=4 to_l2=1 len=28"));
+    g_assert_nonnull(strstr(text,
+                            "profile=cbrick rack=1 bay=4 to_l2=0 len=36"));
     l2_stub_free(stub);
 }
 
@@ -2564,6 +2622,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/l2-link/down", test_l2_link_down);
     qtest_add_func("sgi-l1-o3k/l2-link/chunk-other-destination",
                    test_l2_chunk_other_destination);
+    qtest_add_func("sgi-l1-o3k/l2-link/segment-trace", test_l2_segment_trace);
     qtest_add_func("sgi-l1-o3k/l2-link/forward-plain", test_l2_forward_plain);
     qtest_add_func("sgi-l1-o3k/l2-link/unanswered-and-local",
                    test_l2_unanswered_and_local);
