@@ -23,6 +23,7 @@
 #include "libqos/qgraph.h"
 #include "libqos/pci.h"
 #include "hw/pci/pci_regs.h"
+#include "sgi-scsi-cd-test.h"
 
 #define ISP_VENDOR_ID       0x1077
 #define ISP_DEVICE_ID       0x2200
@@ -2828,6 +2829,7 @@ typedef enum LoopBacking {
     LOOP_ZEROES,    /* null-co, reads zeroes, completes at once. */
     LOOP_FILE,      /* A writable raw file the test can read back. */
     LOOP_SLOW,      /* null-co, reads zeroes after a second. */
+    LOOP_CD,        /* A scsi-cd on sgi-scsi-cd-test.h's medium. */
 } LoopBacking;
 
 typedef struct LoopDisk {
@@ -2882,7 +2884,15 @@ static void *loop_test_setup(GString *cmd_line, void *arg)
     for (i = 0; i < test->config->ndisks; i++) {
         const LoopDisk *d = &test->config->disks[i];
 
-        if (d->backing == LOOP_FILE) {
+        if (d->backing == LOOP_CD) {
+            g_assert_cmpuint(files, <, ARRAY_SIZE(test->path));
+            test->path[files] = sgi_cd_medium_create();
+            g_string_append_printf(cmd_line,
+                                   " -drive id=disk%u,if=none,format=raw,"
+                                   "readonly=on,file=%s", i,
+                                   test->path[files]);
+            files++;
+        } else if (d->backing == LOOP_FILE) {
             int fd;
 
             g_assert_cmpuint(files, <, ARRAY_SIZE(test->path));
@@ -2903,9 +2913,10 @@ static void *loop_test_setup(GString *cmd_line, void *arg)
                                    ",file.latency-ns=1000000000" : "");
         }
         g_string_append_printf(cmd_line,
-                               " -device scsi-hd,bus=isp0.0,drive=disk%u,"
+                               " -device %s,bus=isp0.0,drive=disk%u,"
                                "id=port%u,scsi-id=%d,lun=%d,"
                                "port_wwn=0x%" PRIx64 ",wwn=0x%" PRIx64,
+                               d->backing == LOOP_CD ? "scsi-cd" : "scsi-hd",
                                i, i, d->loop_id, d->lun, d->port_wwn,
                                d->node_wwn);
         if (d->serial) {
@@ -4125,6 +4136,89 @@ static uint16_t isp_abort(Isp *t, uint8_t loop_id, uint16_t lun,
 }
 
 /*
+ * The CD-ROM block length contract (sgi-scsi-cd-test.h) on a loop port.
+ * The SGI machines set the quirk properties on scsi-cd; here they are
+ * globals. A loop has no bus reset, so the reset is the target reset
+ * (ABORT TARGET), which resets every LUN at the loop ID.
+ */
+static const LoopDisk cd_disks[] = {
+    { 5, 0, WWN_PORT(5), WWN_NODE(5), NULL, LOOP_CD },
+};
+
+static const LoopConfig cd_config = {
+    .disks = cd_disks,
+    .ndisks = ARRAY_SIZE(cd_disks),
+    .extra = "-global scsi-cd.quirk_mode_sense_rom_use_dbd=on "
+             "-global scsi-cd.quirk_mode_page_set_block_size=on "
+             "-global scsi-cd.quirk_mode_page_vendor_specific_apple=on",
+};
+
+typedef struct CdPort {
+    Isp *t;
+    uint64_t buf;
+    uint32_t handle;
+} CdPort;
+
+static uint8_t cd_command(void *opaque, const uint8_t *cdb, size_t cdb_len,
+                          uint8_t *data, uint32_t len, bool out,
+                          uint8_t *sense)
+{
+    CdPort *p = opaque;
+    ScsiResult r;
+
+    if (out) {
+        qtest_memwrite(p->t->qts, p->buf, data, len);
+    } else if (len) {
+        qtest_memset(p->t->qts, p->buf, 0xcc, len);
+    }
+    isp_scsi(p->t, p->handle++, 5, 0, cdb, cdb_len,
+             !len ? 0 : out ? 0x40 : 0x20, p->buf, len, 0, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_COMPLETE);
+    if (!out && len) {
+        qtest_memread(p->t->qts, p->buf, data, len);
+    }
+    if ((r.scsi_status & 0xff) == SGI_CD_CHECK_CONDITION) {
+        memcpy(sense, r.sense, 18);
+    }
+    return r.scsi_status & 0xff;
+}
+
+static void cd_target_reset(void *opaque)
+{
+    CdPort *p = opaque;
+
+    g_assert_cmphex(isp_call_ack(p->t, CMD_ABORT_TARGET, 5 << 8, 0, 0), ==,
+                    MBOX_COMPLETE);
+}
+
+/* The CSR soft reset drops the loop, so it is brought up again. */
+static void cd_soft_reset(void *opaque)
+{
+    CdPort *p = opaque;
+
+    isp_soft_reset(p->t);
+    isp_loop_up(p->t, ICB_OPT_PORT_DB);
+}
+
+static void test_cdrom_block_length(void *obj, void *data,
+                                    QGuestAllocator *alloc)
+{
+    Isp t;
+    CdPort port = { &t, guest_alloc(alloc, 2048), 0x0cd00000 };
+    const SgiCdTransport cd = { cd_command, cd_target_reset, &port, NULL,
+                                cd_soft_reset };
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    sgi_cd_check_power_on(&cd);
+    sgi_cd_check_select_512(&cd, true);
+    sgi_cd_check_reset(&cd);
+    sgi_cd_check_other_resets(&cd);
+    sgi_cd_check_select_512(&cd, false);
+    isp_close(&t);
+}
+
+/*
  * Approximation: abort matches the entry's handle bytes read as a
  * little-endian word against m3:m2, and the loop ID and LUN. A handle
  * stored most significant byte first does not match a small m2; one
@@ -5040,6 +5134,10 @@ static void isp2200_register_nodes(void)
         .before = loop_test_setup,
         .arg = (void *)&low_config,
     };
+    QOSGraphTestOptions cd_opts = {
+        .before = loop_test_setup,
+        .arg = (void *)&cd_config,
+    };
 
     add_qpci_address(&opts, &(QPCIAddress) { .devfn = QPCI_DEVFN(4, 0) });
 
@@ -5182,6 +5280,8 @@ static void isp2200_register_nodes(void)
     qos_add_test("loop-dma-refused", "qlogic-isp2200", test_loop_dma_refused,
                  &loop_opts);
     qos_add_test("port-name", "qlogic-isp2200", test_port_name, &loop_opts);
+    qos_add_test("cdrom-block-length", "qlogic-isp2200",
+                 test_cdrom_block_length, &cd_opts);
     qos_add_test("writes-behind-loop-up", "qlogic-isp2200",
                  test_writes_behind_loop_up, &loop_opts);
     qos_add_test("port-name-list-retains-m7", "qlogic-isp2200",
