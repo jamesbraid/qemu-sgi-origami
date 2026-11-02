@@ -176,8 +176,9 @@ interface modules (PIMMs) of two processors each, and eight DIMM slots
 R12000 at 360 MHz or R12000A at 400 MHz with 4 or 8 MB of secondary cache
 per processor (*established*, :src:`108-0240-002 p. 2-4`), and the later
 internal manual adds a 500 MHz R14000 option (*established*,
-:src:`108-0266-001 p. 28`). A 600 MHz R14000 PIMM is captured as well
-(:ref:`sgi-sn-cbrick-r14000`). Local memory is 512 MiB to 8 GiB in banks 0 to
+:src:`108-0266-001 p. 28`). The 500 MHz option is offered
+(:ref:`sgi-sn-cbrick-r14000-500mhz`), and a 600 MHz R14000 PIMM is captured as
+well (:ref:`sgi-sn-cbrick-r14000`). Local memory is 512 MiB to 8 GiB in banks 0 to
 7, two banks per DIMM pair, with the two DIMMs of a pair matching
 (*established*, :src:`108-0240-002 pp. 2-5, 2-6`). The guides disagree
 on the bank count, the minimum size and the cache size, and the layer
@@ -315,7 +316,8 @@ four 600 MHz R14000s and 8 MB secondary caches (``-cpu R14000``, processor
 ``r14000-600mhz-8mb``). Everything else, the bricks, the cabling, the
 memory and the I/O, is the R12000 entry's. The Onyx 3400 with
 InfiniteReality3 is not offered with this processor, and no other clock,
-cache size or part is.
+cache size or part is. The 500 MHz option is a separate entry
+(:ref:`sgi-sn-cbrick-r14000-500mhz`).
 
 The processor is a PIMM SGI documents and inventories capture. Established
 (*established*):
@@ -347,11 +349,78 @@ The model's values:
 * The cache runs at 300 MHz, the processor clock over two, as captured.
   The Hub stays at 200 MHz (*inferred*).
 
-Not modelled: the 500 MHz R14000 option, which ``108-0266-001`` p. 28
-names and the PROM has rows for, because no inventory holds a board with it
-and no reset or flash word is captured for it; and the 600 MHz part
-``030-1823-001`` that later L1 firmware recognizes, whose processor type
-(R16000 or R14000A), cache size, tap and C-brick status are all *unknown*.
+Not modelled: the 600 MHz part ``030-1823-001`` that later L1 firmware
+recognizes, whose processor type (R16000 or R14000A), cache size, tap and
+C-brick status are all *unknown*.
+
+.. _sgi-sn-cbrick-r14000-500mhz:
+
+C-brick with 500 MHz R14000 processors
+--------------------------------------
+
+``-M origin3000,topology=origin3200-r14000-500mhz``,
+``origin3400-r14000-500mhz`` and ``onyx3000-r14000-500mhz`` are the Origin
+3200, Origin 3400 and Onyx 3000 entries with every C-brick fitted with
+four 500 MHz R14000s and 8 MB secondary caches (``-cpu R14000``, processor
+``r14000-500mhz-8mb``). Everything else is the R12000 entry's. The Onyx 3400
+with InfiniteReality3 is not offered with this processor, and no other
+clock, cache size or part is. No topology mixes 500 MHz R14000 and 400 MHz
+R12000 C-bricks.
+
+The processor is a PIMM SGI documents. Established (*established*):
+
+* The C-brick owner's guide lists a 500 MHz R14000 PIMM with 8 MB per
+  processor (:src:`108-0266-001 p. 28`). The L3 Controller 1.7 release notes
+  add L1 support for the 500 MHz R14K PIMM ``030-1520-002``, the R14Ka one
+  ``030-1799-001``, and for mixing them in one C-brick.
+* The stock IP35 PROM 6.210 carries a class-0 configuration row for 500 MHz
+  and 8 MB, word ``0x549ca985``, reached by board-identification low
+  nibble 1 or 6. Nothing separates the two nibbles.
+* A public Origin 3400 inventory lists eight C-bricks with 24 processors
+  printed as 500 MHz R14000 at processor revision 1.4 and eight as 400 MHz
+  R12000, all with 8 MB secondary caches. The print has no board lines,
+  so it gives no PIMM part number, cache clock or tap.
+
+The model's values:
+
+* The flash configuration block carries machine type 0 and ``0x549ca985``
+  (*established* as the PROM's row for this part, and for an 8 MiB part by
+  the owner's guide and the data sheet), and the board-identification
+  word's low nibble is 1 (*approximation*: no C-brick flash block or
+  register has been read, and 6 reaches the same row).
+* The reset-mode word is the low 25 bits, ``0x009ca985``, and Config0 reads
+  ``0x6c9ca985`` at reset (*inferred*: no C-brick Config0 has been read;
+  the model's choice of this word is an *approximation*). Its fields are
+  EC 4 (the 200 MHz Hub clock from 500 MHz), SC 3, SS 4, so 512 KiB shifted
+  left by 4 is the 8 MB cache, SB 1, BE 1 and K0 5. What bit 23 does is
+  *unknown*; software may rewrite K0 (not traced). The stock PROM writes
+  the flash word to Config0 and checks only that the low 16 bits read back
+  (``0xa985``); it never reads SysClkDiv or SCClkDiv, and its printed
+  speeds come from the flash block. The generator holds both the cache size
+  and the flash word's low 25 bits to the SS field.
+* PRId is ``0x0f14`` (*established* for the part revision, not read on a
+  C-brick): Linux prints ``PrId 0x00000f14`` on Origin-class machines and
+  IRIX ``hinv`` prints 1.4 on IP35, but no raw PRId has been read from a
+  C-brick. The revision follows the part, not the clock: the 1.4 here is the
+  captured part's, and 500 MHz Origin 300 and Fuel listings print 2.4 and
+  2.3.
+* The cache runs at 250 MHz, the processor clock over two, and the PROM's
+  cache line prints ``Tap 0xa`` (*inferred*: the same revision and clock
+  print both on Onyx2 boards, and no C-brick line is held). The PIMM's
+  board lines are *unknown*. The Hub stays at 200 MHz (*approximation*).
+* The FPU identification is the R14000 type's ``0x00000900`` (*inferred*;
+  no FIR has been read on an IP35), not a value built from the 1.4
+  revision. IRIX ``hinv`` prints the FPU revision as the CPU's because the
+  kernel copies PRId into the FPU entry, which does not test the FIR; a raw
+  ``0x0900`` would print as an R14010 revision 0.0, as IP30 listings do. The
+  FPU revision line is therefore an *approximation* of the printed
+  1.4.
+
+A mixed system (400 MHz R12000 and 500 MHz R14000 C-bricks together, as the
+public inventory records) is not offered. A product's ``cpu_selection``
+names one processor for every C-brick, and the machine takes one ``-cpu``
+type for all its nodes, so mixing needs a per-brick selection in the
+generator and a per-node CPU type in the machine.
 
 .. _sgi-sn-two-partitions:
 
