@@ -133,6 +133,12 @@ LIVENESS_TRIES = 20000
 PARK_BOUND_TICKS = 2500000
 WOKEN_BY_POST_TICKS = PARK_BOUND_TICKS * 9 // 10
 
+# The model's backstop for a park nothing can end, 120 s of virtual time.
+# Under multi-threaded TCG the park's own bound is the awaited processors'
+# CPU time, so a park that runs for even half of this was released by the
+# backstop, not by its bound.
+PARK_BACKSTOP_TICKS = 150000000
+
 # Each interface's own two presence bits, by interface.
 PRESENCE_PI0 = 0x30
 PRESENCE_PI1 = 0xc0
@@ -503,6 +509,10 @@ class SN1Presence(QemuSystemTest):
         self.log.info('first presence reads: %s, partner post seen: %s, '
                       'polled ticks: %s',
                       [hex(v) for v in seen], live, waited)
+        # A park released only by the backstop would also finish inside the
+        # wait above, so it is checked here.
+        self.assertLess(max(waited), PARK_BACKSTOP_TICKS // 2,
+                        f'a park ran to the backstop: {waited}')
         self.assertEqual(self.read_words(BEDROCK_LOCAL + II_SCRATCH_0)[0],
                          PRESENCE_ALL)
         self.assertEqual(self.read_words(BEDROCK_LOCAL + LB_SCRATCH_3)[0], 0)

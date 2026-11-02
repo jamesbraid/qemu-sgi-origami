@@ -650,7 +650,11 @@ static bool bedrock_park_bound_met(SGIBedrockState *s, unsigned int slot)
             return false;
         }
     }
-    return !any && now - s->park_start[slot] >= SGI_BEDROCK_HOLD_MS * SCALE_MS;
+    if (any) {
+        /* Every processor it waits for has used its 2 s and not arrived. */
+        return true;
+    }
+    return now - s->park_start[slot] >= SGI_BEDROCK_HOLD_MS * SCALE_MS;
 }
 
 /*
