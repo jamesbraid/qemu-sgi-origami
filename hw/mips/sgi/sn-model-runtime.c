@@ -1228,6 +1228,102 @@ const SGIModelProcessorOption *sgi_model_find_processor_option(
     return NULL;
 }
 
+/*
+ * A node whose fitted processors @option replaces: every slot that holds
+ * one gets the option's assembly, so the board's slots stay as wired.
+ */
+static SGIModelNode *sgi_model_fit_node(const SGIModelNode *node,
+                                        SGIModelProcessor *fitted)
+{
+    SGIModelNode *copy = g_memdup2(node, sizeof(*node));
+    SGIModelCpuSlotList **tail;
+    const SGIModelCpuSlotList *entry;
+
+    copy->cpu_slots = NULL;
+    tail = &copy->cpu_slots;
+    for (entry = node->cpu_slots; entry; entry = entry->next) {
+        SGIModelCpuSlot *slot = g_memdup2(entry->value, sizeof(*slot));
+
+        if (slot->assembly) {
+            slot->assembly = fitted;
+        }
+        QAPI_LIST_APPEND(tail, slot);
+    }
+    return copy;
+}
+
+const SGIModelTopology *sgi_model_fit_processor_option(
+    const SGIModelTopology *view, const SGIModelProcessorOption *option)
+{
+    SGIModelTopology *fitted = g_memdup2(view, sizeof(*view));
+    SGIModelProcessor *assembly = option->assembly;
+    const SGIModelNodeList *node;
+    const SGIModelControllerList *controller;
+    SGIModelNodeList **node_tail = &fitted->nodes;
+    SGIModelControllerList **controller_tail = &fitted->controllers;
+
+    fitted->nodes = NULL;
+    for (node = view->nodes; node; node = node->next) {
+        const SGIModelCpuSlotList *slot = node->value->cpu_slots;
+        bool replaced = false;
+
+        for (; slot; slot = slot->next) {
+            replaced |= slot->value->assembly != NULL;
+        }
+        QAPI_LIST_APPEND(node_tail, replaced ?
+                         sgi_model_fit_node(node->value, assembly) :
+                         node->value);
+    }
+
+    if (option->has_firmware_word && view->ip35_firmware) {
+        SGIModelIp35FirmwareConfig *firmware =
+            g_memdup2(view->ip35_firmware, sizeof(*firmware));
+
+        firmware->cpu_mode_word = option->firmware_word;
+        fitted->ip35_firmware = firmware;
+    }
+
+    /* An L1's CPU context repeats the flash word and the processor clock. */
+    fitted->controllers = NULL;
+    for (controller = view->controllers; controller;
+         controller = controller->next) {
+        SGIModelController *copy = controller->value;
+
+        if (copy->l1 && copy->l1->cpu_context) {
+            SGIModelL1CPUContext *context =
+                g_memdup2(copy->l1->cpu_context, sizeof(*context));
+
+            copy = g_memdup2(copy, sizeof(*copy));
+            copy->l1 = g_memdup2(copy->l1, sizeof(*copy->l1));
+            copy->l1->cpu_context = context;
+            if (option->has_firmware_word) {
+                context->cpu_mode_word = option->firmware_word;
+            }
+            context->cpu_clock_hz = assembly->clock_hz;
+        }
+        QAPI_LIST_APPEND(controller_tail, copy);
+    }
+
+    if (option->node_board && view->ip53_runtime) {
+        SGIModelIp53Runtime *runtime =
+            g_memdup2(view->ip53_runtime, sizeof(*runtime));
+        const SGIModelIp53NodeBoardList *board;
+        SGIModelIp53NodeBoardList **board_tail = &runtime->node_boards;
+
+        runtime->has_node_boards = true;
+        runtime->node_boards = NULL;
+        for (board = view->ip53_runtime->node_boards; board;
+             board = board->next) {
+            QAPI_LIST_APPEND(board_tail,
+                             board->value->processors ==
+                             option->node_board->processors ?
+                             option->node_board : board->value);
+        }
+        fitted->ip53_runtime = runtime;
+    }
+    return fitted;
+}
+
 /* The topology @product builds with no topology=, as its offerings name. */
 static const char *sgi_model_offered_default(const SGIMachines *machines,
                                              const char *product)

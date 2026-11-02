@@ -5517,6 +5517,26 @@ static void test_machine_node_board_profiles(void)
           "0x009bad85", "0x400000", "IP53_2CPU", "030-1869-001", "-C", 0x51,
           { 1, 48, 1 }, 0x589bad85, 700, 200 },
         /*
+         * The 800 MHz revision 2.2 boards (the Origin 350 and the Tezro
+         * offer them with processor=): their own part, flash word and
+         * clock in the node-board and CPU context records.
+         */
+        { "origin350,topology=origin350,processor=r16000-800mhz-8mb-rev22",
+          "2G", 4, "0x009caf85", "0x800000", "IP53_4CPU", "030-1959-003",
+          "-C", 0x37, { 1, 18, 5 }, 0x549caf85, 800, 200 },
+        { "tezro,topology=tezro,processor=r16000-800mhz-4mb-rev22", "4G", 4,
+          "0x009baf85", "0x400000", "IP53_4CPU", "030-1956-002", "-C", 0x39,
+          { 1, 48, 1 }, 0x549baf85, 800, 200 },
+        { "tezro,topology=tezro,processor=r16000-800mhz-8mb-rev22", "4G", 4,
+          "0x009caf85", "0x800000", "IP53_4CPU", "030-1959-003", "-C", 0x39,
+          { 1, 48, 1 }, 0x549caf85, 800, 200 },
+        { "tezro,topology=tezro-rack,processor=r16000-800mhz-4mb-rev22",
+          "4G", 4, "0x009baf85", "0x400000", "IP53_4CPU", "030-1956-002",
+          "-C", 0x51, { 1, 48, 1 }, 0x549baf85, 800, 200 },
+        { "tezro,topology=tezro-rack,processor=r16000-800mhz-8mb-rev22",
+          "4G", 4, "0x009caf85", "0x800000", "IP53_4CPU", "030-1959-003",
+          "-C", 0x51, { 1, 48, 1 }, 0x549caf85, 800, 200 },
+        /*
          * The IP59 node boards: the captured four-processor record, and
          * the two-processor one where the topology fits two.
          */

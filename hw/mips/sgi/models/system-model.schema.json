@@ -302,7 +302,20 @@
               "part": { "$ref": "#/$defs/identifier" },
               "clock_mhz": { "type": "integer", "minimum": 1 },
               "cache_mib": { "type": "integer", "minimum": 1 },
-              "processors_per_node": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1 } }
+              "processors_per_node": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1 } },
+              "processor_identification": { "$ref": "#/$defs/address", "description": "The PRId of the board's part, for a board whose part differs from another's at the same clock and cache." },
+              "node_board": {
+                "type": "object",
+                "required": ["processors", "name", "part", "revision"],
+                "additionalProperties": false,
+                "description": "The node board the part is soldered to, as the L1 reports it.",
+                "properties": {
+                  "processors": { "type": "integer", "minimum": 1 },
+                  "name": { "type": "string", "minLength": 1 },
+                  "part": { "type": "string", "minLength": 1 },
+                  "revision": { "type": "string", "minLength": 1 }
+                }
+              }
             }
           }
         },
@@ -968,6 +981,14 @@
                 "reset_mode_bits": {
                   "$ref": "#/$defs/address",
                   "description": "The established Config0 low-25-bit power-on reset word for this exact R14000/R12000A clock and cache SKU, as one packed value rather than r10000-reset-mode's named fields: the public NEC manual states the R12000/R14000 Config0 bit positions (PM, EC, SB, BE, SS, SC, DSD) but no complete field-by-field encoding table for them is established the way it is for R10000, so only the literal word is carried here."
+                },
+                "cache_tap": {
+                  "type": "integer", "minimum": 0, "maximum": 31,
+                  "description": "The secondary-cache clock tap an R16000 board's flash word carries in bits 28:25 and the stock PROM prints as Tap."
+                },
+                "firmware_word": {
+                  "$ref": "#/$defs/address",
+                  "description": "The full flash configuration word the stock IP35 PROM's table gives this R16000 clock and cache SKU. Its low 25 bits are reset_mode_bits and its bits 28:25 are cache_tap."
                 },
                 "notes": { "type": "string" }
               },

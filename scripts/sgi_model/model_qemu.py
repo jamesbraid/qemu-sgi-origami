@@ -98,17 +98,20 @@ def _check_processor_ids(topologies: list[dict]) -> None:
     seen: dict[str, str] = {}
     # SN records, the ones that name a board, share processor ids.
     for topology in (item for item in topologies if "board" in item):
-        for node in topology["nodes"]:
-            for slot in node["cpu_slots"]:
-                assembly = slot["assembly"]
-                if not assembly or assembly["kind"] != "R16000":
-                    continue
-                facts = json.dumps(assembly, sort_keys=True)
-                if seen.setdefault(assembly["id"], facts) != facts:
-                    raise ValueError(
-                        f"processor id '{assembly['id']}' names two "
-                        f"different processors (topology "
-                        f"'{topology['name']}')")
+        # A processor option is selected by its id too.
+        assemblies = [slot["assembly"] for node in topology["nodes"]
+                      for slot in node["cpu_slots"]]
+        assemblies += [option["assembly"]
+                       for option in topology.get("processor_options", [])]
+        for assembly in assemblies:
+            if not assembly or assembly["kind"] != "R16000":
+                continue
+            facts = json.dumps(assembly, sort_keys=True)
+            if seen.setdefault(assembly["id"], facts) != facts:
+                raise ValueError(
+                    f"processor id '{assembly['id']}' names two "
+                    f"different processors (topology "
+                    f"'{topology['name']}')")
 
 
 def _model_key(path: pathlib.Path, model: dict) -> str:

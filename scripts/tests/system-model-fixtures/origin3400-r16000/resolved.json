@@ -592,6 +592,7 @@
       "hardware_kind": "r16000",
       "id": "c0-cpu0",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -612,6 +613,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -632,6 +637,7 @@
       "hardware_kind": "r16000",
       "id": "c0-cpu1",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -652,6 +658,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -672,6 +682,7 @@
       "hardware_kind": "r16000",
       "id": "c0-cpu2",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -692,6 +703,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -712,6 +727,7 @@
       "hardware_kind": "r16000",
       "id": "c0-cpu3",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -732,6 +748,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -862,6 +882,7 @@
       "hardware_kind": "r16000",
       "id": "c1-cpu0",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -882,6 +903,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -902,6 +927,7 @@
       "hardware_kind": "r16000",
       "id": "c1-cpu1",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -922,6 +948,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -942,6 +972,7 @@
       "hardware_kind": "r16000",
       "id": "c1-cpu2",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -962,6 +993,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -982,6 +1017,7 @@
       "hardware_kind": "r16000",
       "id": "c1-cpu3",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -1002,6 +1038,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -1132,6 +1172,7 @@
       "hardware_kind": "r16000",
       "id": "c2-cpu0",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -1152,6 +1193,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -1172,6 +1217,7 @@
       "hardware_kind": "r16000",
       "id": "c2-cpu1",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -1192,6 +1238,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -1212,6 +1262,7 @@
       "hardware_kind": "r16000",
       "id": "c2-cpu2",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -1232,6 +1283,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -1252,6 +1307,7 @@
       "hardware_kind": "r16000",
       "id": "c2-cpu3",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -1272,6 +1328,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -1402,6 +1462,7 @@
       "hardware_kind": "r16000",
       "id": "c3-cpu0",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -1422,6 +1483,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -1442,6 +1507,7 @@
       "hardware_kind": "r16000",
       "id": "c3-cpu1",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -1462,6 +1528,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -1482,6 +1552,7 @@
       "hardware_kind": "r16000",
       "id": "c3-cpu2",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -1502,6 +1573,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -1522,6 +1597,7 @@
       "hardware_kind": "r16000",
       "id": "c3-cpu3",
       "identity": {
+        "cache_clock_mhz": 400,
         "cache_mib": 8,
         "clock_mhz": 800,
         "r16000_reset_mode": 10268549,
@@ -1542,6 +1618,10 @@
           {
             "cache_mib": 4,
             "clock_mhz": 700
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 800
           }
         ]
       },
@@ -3192,19 +3272,37 @@
           "notes": "Selected software profile for the Origin 3900 IP53 runtime model. This tuple does not identify a processor stepping or prove a physical Origin 3900 configuration."
         },
         {
+          "cache_clock_mhz": 400,
           "cache_mib": 8,
+          "cache_tap": 10,
           "clock_mhz": 800,
-          "notes": "Captured on module 001c01 in the customized Onyx 350 system. This observed tuple does not prove standalone operation or establish reset behavior."
+          "firmware_word": "0x549caf85",
+          "notes": "Captured on module 001c01 in the customized Onyx 350 system, and printed by the 030-1959-002 and 030-1959-003 boards of Origin 350 and Tezro inventories, each with a 400 MHz cache clock and tap 0xa. The flash word is the stock IP35 PROM's configuration-table word for it (row 21; the row carries machine type 2 where the profiles store 0) and the reset word is its low 25 bits, a model derivation. Processor identification differs by board and is authored where a board fits the part. The observed tuple does not prove standalone operation.",
+          "reset_mode_bits": "0x009caf85"
         },
         {
+          "cache_clock_mhz": 333,
           "cache_mib": 16,
           "clock_mhz": 1000,
-          "notes": "Public HINV reports this tuple for module 001c01, an IP59_4CPU board; the IP59 products and the Onyx 4 host experiment use it. It does not establish reset behavior."
+          "notes": "Public HINV reports this tuple for module 001c01, an IP59_4CPU board; the IP59 products and the Onyx 4 host experiment use it. Every retained 1.0 GHz module prints a 333 MHz cache clock. It does not establish reset behavior."
         },
         {
+          "cache_clock_mhz": 350,
           "cache_mib": 4,
+          "cache_tap": 12,
           "clock_mhz": 700,
-          "notes": "Origin 350 and Tezro tuple, printed by the 030-1868-001 and 030-1869-001 boards. Cache clock is supplied by the product component; processor identification and reset Config0 remain unknown."
+          "firmware_word": "0x589bad85",
+          "notes": "Origin 350 and Tezro tuple, printed by the 030-1868-001 and 030-1869-001 boards with a 350 MHz cache clock and tap 0xc. The flash word is the stock IP35 PROM's configuration-table word for it (row 26; the row carries machine type 2 where the profiles store 0) and the reset word is its low 25 bits, a model derivation. Processor identification differs by board and is authored where a board fits the part.",
+          "reset_mode_bits": "0x009bad85"
+        },
+        {
+          "cache_clock_mhz": 400,
+          "cache_mib": 4,
+          "cache_tap": 10,
+          "clock_mhz": 800,
+          "firmware_word": "0x549baf85",
+          "notes": "Tezro tuple, printed by the 030-1956-002 board with a 400 MHz cache clock and tap 0xa. The flash word is the stock IP35 PROM's configuration-table word for it (row 20; the row carries machine type 2 where the profiles store 0) and the reset word is its low 25 bits, a model derivation. Processor identification differs by board and is authored where a board fits the part.",
+          "reset_mode_bits": "0x009baf85"
         }
       ]
     }

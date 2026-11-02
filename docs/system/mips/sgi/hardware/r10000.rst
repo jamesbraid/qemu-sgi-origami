@@ -132,8 +132,8 @@ bits 31:16 are zero and the implementation byte is ``0x09`` for
 ``r10000-prid`` and ``0x0f`` for the other two. The R16000 parts differ
 by revision: ``0x0f41`` (2.1, 700 MHz, 4 MiB), ``0x0f42`` (2.2, 800 MHz,
 4 or 8 MiB) and the default ``0x0f50`` (3.0, 1.0 GHz). The Origin 350
-and Tezro 700 MHz profiles fit ``0x0f41``; every other profile keeps
-``0x0f50``. An R12000 fails to
+and Tezro 700 MHz profiles fit ``0x0f41`` and their 800 MHz offerings
+``0x0f42``; every other profile keeps ``0x0f50``. An R12000 fails to
 realize unless bits 15:8 are ``0x0e``; its upper 16 bits are not
 checked. Reset installs the configured word every time, and an ``MTC0``
 to PRId leaves it unchanged.
@@ -699,7 +699,8 @@ Tests
   numbers; and migration with matching and mismatched identities. It also
   checks the ``octane2`` catalogue's R12000 PRId, FPU word and reset
   mode word; each R16000 part's PRId and Config0 reset word; the
-  Origin 350 and Tezro 700 MHz PRId; and that
+  Origin 350 and Tezro 700 MHz PRId; the PRId, Config0 reset word and
+  flash word of each of their 800 MHz offerings; and that
   ``origin200`` (R10000 and R12000), ``octane2`` and
   ``fuel`` refuse a ``-cpu`` ``reset-mode`` that differs from the
   board's.

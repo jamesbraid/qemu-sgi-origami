@@ -164,6 +164,16 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
 const SGIModelProcessorOption *sgi_model_find_processor_option(
     const SGIModelTopology *t, const char *id, Error **errp);
 
+/*
+ * @view as built with @option's processor fitted: a Bedrock topology's
+ * soldered-on processors are its option's, and so are the flash word and
+ * node board that go with them. The option's own firmware word and node
+ * board replace the topology's where it carries them. @view comes from
+ * sgi_model_resolve_population() and is not modified.
+ */
+const SGIModelTopology *sgi_model_fit_processor_option(
+    const SGIModelTopology *view, const SGIModelProcessorOption *option);
+
 /* @t's node-population row fitting exactly @nodes node boards, or NULL. */
 const SGIModelNodePopulation *sgi_model_find_population(
     const SGIModelTopology *t, unsigned int nodes);

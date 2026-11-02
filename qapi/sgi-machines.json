@@ -97,12 +97,22 @@
 #
 # @cpus-per-node: the processor counts a node may fit with it
 #
+# @firmware-word: the full flash configuration word of a module whose
+#     word differs from the topology's own (an IP53 board's processors
+#     are soldered on, so each part has its own); its low 25 bits are
+#     the assembly's @mode-bits
+#
+# @node-board: the node board the module is soldered to, as the L1
+#     reports it, in place of the topology's own
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelProcessorOption',
   'data': { 'assembly': 'SGIModelProcessor',
             'accepted-memory-mib': ['uint64'],
-            'cpus-per-node': ['uint32'] } }
+            'cpus-per-node': ['uint32'],
+            '*firmware-word': 'uint32',
+            '*node-board': 'SGIModelIp53NodeBoard' } }
 
 ##
 # @SGIModelCpuSlot:

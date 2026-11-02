@@ -1154,6 +1154,9 @@ def _processor(model: dict, cpu: dict) -> dict:
             "cache_mib": cache_mib,
             "mode_bits": reset_mode,
         }
+        if "cache_clock_mhz" in identity:
+            record["cache_clock_hz"] = 1_000_000 * _integer(
+                identity, "cache_clock_mhz", f"CPU '{cpu['id']}'", 32)
         # A board that authors a PRId fits that revision of the part; one
         # that does not keeps the CPU model's own (the 1.0 GHz part).
         if "processor_identification" in identity:
@@ -1258,6 +1261,118 @@ def _processor_options(model: dict, hub: dict, default: dict) -> list[dict]:
     if options[0]["assembly"] != default:
         raise CompileError(
             "the first offered processor is not the node's default assembly")
+    return options
+
+
+# The Config0 SCClkDiv code's divisor, in the R10000 family's encoding.
+_SECONDARY_CACHE_CLOCK_DIVISORS = {1: 1, 2: 1.5, 3: 2, 4: 2.5, 5: 3}
+
+
+def _r16000_processor_options(model: dict, hub: dict, default: dict,
+                              ip35_firmware: dict) -> list[dict]:
+    """Every R16000 module an IP53 board may be offered with, the default
+    first.
+
+    An IP53 board's processors are soldered on, so each offered part
+    brings the reset word, cache clock and flash word of its clock and
+    cache from the processors catalogue, and the revision and node board
+    of the assembly the product authors. The checks tie the words to each
+    other and to the clocks: a mistyped word is refused here, not found in
+    a guest. The default is the processor the topology's nodes already
+    fit, so it adds nothing but its place in the list.
+    """
+    hub_hz = _integer(hub.get("identity", {}), "clock_mhz",
+                      f"Bedrock '{hub['id']}'", 32) * 1_000_000
+    accepted = _accepted_memory_mib(model)
+    options = []
+    for index, option in enumerate(model["machine"]["processor_options"]):
+        label = (f"offered {option['part']} {option['clock_mhz']} MHz/"
+                 f"{option['cache_mib']} MiB")
+        if option["part"] != "r16000":
+            raise CompileError(f"{label} is not an R16000, the only part an "
+                               "IP53 board takes")
+        variant = next(
+            (item for entry in model.get("processors", [])
+             if entry.get("part") == "r16000"
+             for item in entry.get("variants", [])
+             if item.get("clock_mhz") == option["clock_mhz"]
+             and item.get("cache_mib") == option["cache_mib"]), None)
+        missing = [name for name in ("cache_clock_mhz", "reset_mode_bits",
+                                     "cache_tap", "firmware_word")
+                   if variant is None or name not in variant]
+        if missing:
+            raise CompileError(f"{label} has no catalogued {missing[0]}")
+        reset_mode = num(variant["reset_mode_bits"])
+        word = num(variant["firmware_word"])
+        clock_hz = option["clock_mhz"] * 1_000_000
+        cache_mib = option["cache_mib"]
+        # SS selects 512 KiB shifted left by it, as for the fitted default.
+        if (512 << ((reset_mode >> 16) & 7)) * 1024 != cache_mib * 1024 * 1024:
+            raise CompileError(
+                f"{label} reset mode {reset_mode:#010x} selects a "
+                f"{(512 << ((reset_mode >> 16) & 7)) // 1024} MiB secondary "
+                "cache")
+        # SysClkDiv: the processor runs at (code + 1) halves of the Hub.
+        if clock_hz * 2 != hub_hz * (((reset_mode >> 9) & 0xf) + 1):
+            raise CompileError(
+                f"{label} reset mode {reset_mode:#010x} system clock divisor "
+                "does not match the CPU and Hub clocks")
+        # SCClkDiv: the cache runs at the CPU clock over the divisor.
+        divisor = _SECONDARY_CACHE_CLOCK_DIVISORS.get((reset_mode >> 19) & 7)
+        if (divisor is None or
+                variant["cache_clock_mhz"] * 1_000_000 * divisor != clock_hz):
+            raise CompileError(
+                f"{label} reset mode {reset_mode:#010x} cache clock divisor "
+                f"does not give the {variant['cache_clock_mhz']} MHz cache "
+                "clock")
+        if (word & 0x01ffffff) != reset_mode:
+            raise CompileError(
+                f"{label} flash word {word:#010x} low 25 bits disagree with "
+                f"reset mode {reset_mode:#010x}")
+        if variant["cache_tap"] > 0xf or (word >> 25) & 0xf != variant[
+                "cache_tap"]:
+            raise CompileError(
+                f"{label} flash word {word:#010x} does not carry tap "
+                f"{variant['cache_tap']:#x} in bits 28:25")
+        # An id names one processor: the revision 2.2 parts share a clock
+        # and cache with the Onyx 350's revision 3.0 one, so theirs says so.
+        suffix = ""
+        if index and "processor_identification" in option:
+            prid = num(option["processor_identification"])
+            suffix = f"-rev{((prid >> 4) & 0xf) - 2}{prid & 0xf}"
+        assembly = {
+            "id": f"r16000-{option['clock_mhz']}mhz-{cache_mib}mb{suffix}",
+            "kind": "R16000",
+            "clock_hz": clock_hz,
+            "cache_clock_hz": variant["cache_clock_mhz"] * 1_000_000,
+            "cache_mib": cache_mib,
+            "mode_bits": reset_mode,
+        }
+        if "processor_identification" in option:
+            assembly["prid"] = num(option["processor_identification"])
+        if index == 0:
+            # The default is the processor the nodes already fit, with the
+            # revision their boards author, and its flash word is the
+            # topology's own.
+            same = ("id", "clock_hz", "cache_clock_hz", "cache_mib",
+                    "mode_bits")
+            if ({key: default.get(key) for key in same} !=
+                    {key: assembly[key] for key in same} or
+                    word != ip35_firmware["cpu_mode_word"]):
+                raise CompileError(
+                    "the first offered processor is not the node's default "
+                    "assembly and flash word")
+            assembly = default
+        record = {
+            "assembly": assembly,
+            "accepted_memory_mib": accepted,
+            "cpus_per_node": list(option["processors_per_node"]),
+        }
+        if index:
+            record["firmware_word"] = word
+            if "node_board" in option:
+                record["node_board"] = dict(option["node_board"])
+        options.append(record)
     return options
 
 
@@ -3666,6 +3781,11 @@ def compile_model(model: dict) -> dict:
                 nodes[0]["cpu_slots"][0]["assembly"])
     if generation == "SN1":
         topology["ip35_firmware"] = _compile_ip35_firmware(model)
+        if machine.get("processor_options"):
+            topology["processor_options"] = _r16000_processor_options(
+                model, graph["nodes"][0]["component"],
+                nodes[0]["cpu_slots"][0]["assembly"],
+                topology["ip35_firmware"])
     if machine.get("graphics"):
         topology["graphics"] = copy.deepcopy(machine["graphics"])
         model_graphics.attach_slot_requirements(topology)

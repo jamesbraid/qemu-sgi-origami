@@ -63,23 +63,57 @@ layer:
               physical Origin 3900 configuration.
           - clock_mhz: 800
             cache_mib: 8
+            cache_clock_mhz: 400
+            reset_mode_bits: "0x009caf85"
+            cache_tap: 0xa
+            firmware_word: "0x549caf85"
             notes: >-
-              Captured on module 001c01 in the customized Onyx 350 system.
-              This observed tuple does not prove standalone operation or
-              establish reset behavior.
+              Captured on module 001c01 in the customized Onyx 350 system,
+              and printed by the 030-1959-002 and 030-1959-003 boards of
+              Origin 350 and Tezro inventories, each with a 400 MHz cache
+              clock and tap 0xa. The flash word is the stock IP35 PROM's
+              configuration-table word for it (row 21; the row carries
+              machine type 2 where the profiles store 0) and the reset word
+              is its low 25 bits, a model derivation. Processor
+              identification differs by board and is authored where a board
+              fits the part. The observed tuple does not prove standalone
+              operation.
           - clock_mhz: 1000
             cache_mib: 16
+            cache_clock_mhz: 333
             notes: >-
               Public HINV reports this tuple for module 001c01, an IP59_4CPU
               board; the IP59 products and the Onyx 4 host experiment use it.
-              It does not establish reset behavior.
+              Every retained 1.0 GHz module prints a 333 MHz cache clock. It
+              does not establish reset behavior.
           - clock_mhz: 700
             cache_mib: 4
+            cache_clock_mhz: 350
+            reset_mode_bits: "0x009bad85"
+            cache_tap: 0xc
+            firmware_word: "0x589bad85"
             notes: >-
               Origin 350 and Tezro tuple, printed by the 030-1868-001 and
-              030-1869-001 boards. Cache clock is supplied by the product
-              component; processor identification and reset Config0 remain
-              unknown.
+              030-1869-001 boards with a 350 MHz cache clock and tap 0xc. The
+              flash word is the stock IP35 PROM's configuration-table word
+              for it (row 26; the row carries machine type 2 where the
+              profiles store 0) and the reset word is its low 25 bits, a
+              model derivation. Processor identification differs by board
+              and is authored where a board fits the part.
+          - clock_mhz: 800
+            cache_mib: 4
+            cache_clock_mhz: 400
+            reset_mode_bits: "0x009baf85"
+            cache_tap: 0xa
+            firmware_word: "0x549baf85"
+            notes: >-
+              Tezro tuple, printed by the 030-1956-002 board with a 400 MHz
+              cache clock and tap 0xa. The flash word is the stock IP35
+              PROM's configuration-table word for it (row 20; the row
+              carries machine type 2 where the profiles store 0) and the
+              reset word is its low 25 bits, a model derivation. Processor
+              identification differs by board and is authored where a board
+              fits the part.
         provenance: derived
         sources: ["qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected Origin 350 processor inputs", "web:graphica-onyx350-hinv  module 001c01 CPU inventory, four 800 MHz R16000 with 8 MiB cache; single-module operation remains unverified", "web:irixnet-thread-2263  module 001c01 reports 1 GHz/16 MiB; Onyx 4 host assignment remains inferred"]
 

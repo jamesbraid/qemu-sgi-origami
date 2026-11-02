@@ -464,6 +464,97 @@ static void test_ip53_prid(gconstpointer data)
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
+/*
+ * Every IP53 offering fits the part its board prints: the revision's PRId
+ * and the Config0 reset word of its clock and cache. Expected values are
+ * written from the printed revision (major nibble is the printed major
+ * plus 2) and the reset word's fields (SS 3 or 4 for 4 or 8 MiB, system
+ * clock divisor and cache clock divisor from the clocks), not read back
+ * from the catalogue. The flash word is the stock PROM's table row for the
+ * clock and cache, whose bits 28:25 are the tap the PROM prints. Config0
+ * reads the model's 32 KiB primary caches (IC and DC, 3 each) above the
+ * board's bits 24:0.
+ */
+typedef struct Ip53Offering {
+    const char *machine;
+    const char *memory;
+    uint32_t prid;
+    uint32_t reset_mode;
+    uint32_t flash_word;
+} Ip53Offering;
+
+static const Ip53Offering ip53_offerings[] = {
+    /* Revision 2.1, 700 MHz, 4 MiB (the default): table row 26, tap 0xc. */
+    { "origin350,topology=origin350", "2G", 0x0f41, 0x009bad85, 0x589bad85 },
+    { "tezro,topology=tezro", "4G", 0x0f41, 0x009bad85, 0x589bad85 },
+    { "tezro,topology=tezro-rack", "4G", 0x0f41, 0x009bad85, 0x589bad85 },
+    /* Revision 2.2, 800 MHz, 8 MiB: SS 4, SysClkDiv 7; row 21, tap 0xa. */
+    { "origin350,topology=origin350,processor=r16000-800mhz-8mb-rev22",
+      "2G", 0x0f42, 0x009caf85, 0x549caf85 },
+    { "tezro,topology=tezro,processor=r16000-800mhz-8mb-rev22",
+      "4G", 0x0f42, 0x009caf85, 0x549caf85 },
+    { "tezro,topology=tezro-rack,processor=r16000-800mhz-8mb-rev22",
+      "4G", 0x0f42, 0x009caf85, 0x549caf85 },
+    /* Revision 2.2, 800 MHz, 4 MiB: SS 3, SysClkDiv 7; row 20, tap 0xa. */
+    { "tezro,topology=tezro,processor=r16000-800mhz-4mb-rev22",
+      "4G", 0x0f42, 0x009baf85, 0x549baf85 },
+    { "tezro,topology=tezro-rack,processor=r16000-800mhz-4mb-rev22",
+      "4G", 0x0f42, 0x009baf85, 0x549baf85 },
+};
+
+/* Config0 as the monitor prints the first CPU's registers. */
+static uint32_t cpu_config0(QTestState *qts)
+{
+    g_autofree char *regs = qtest_hmp(qts, "info registers");
+    const char *at = strstr(regs, "Config0 ");
+
+    g_assert_nonnull(at);
+    return g_ascii_strtoull(at + strlen("Config0 "), NULL, 16);
+}
+
+/* The word the node's flash configuration block carries. */
+static uint32_t node_flash_word(QTestState *qts)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine/node0',"
+        "'property':'firmware-mode-word'}}");
+
+    return qdict_get_int(reply, "return");
+}
+
+static void test_ip53_offering(gconstpointer data)
+{
+    const Ip53Offering *o = data;
+    g_autofree char *dir = g_dir_make_tmp("r16000-identity-XXXXXX", NULL);
+    g_autofree char *prom = g_build_filename(dir, "prom.bin", NULL);
+    g_autofree char *data_store = g_build_filename(dir, "ds1744.bin", NULL);
+    g_autofree char *clock_store = g_build_filename(dir, "ds1742.bin", NULL);
+    g_autofree uint8_t *zero = g_malloc0(1476264);
+    QTestState *qts;
+
+    g_assert_true(g_file_set_contents(prom, (char *)zero, 1476264, NULL));
+    g_assert_true(g_file_set_contents(data_store, (char *)zero, 0x8000, NULL));
+    g_assert_true(g_file_set_contents(clock_store, (char *)zero, 16, NULL));
+    qts = qtest_initf(
+        "-M %s,nvram0=sgi-ds1742-data-io9,"
+        "nvram0-clock=sgi-ds1742-clock-io9 -cpu R16000 -smp 4 -m %s "
+        "-bios %s -drive if=none,id=sgi-ds1742-data-io9,file=%s,"
+        "format=raw -drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
+        "format=raw -S", o->machine, o->memory, prom, data_store,
+        clock_store);
+
+    g_assert_cmphex(cpu_property(qts, "r16000-prid"), ==, o->prid);
+    g_assert_cmphex(cpu_property(qts, "reset-mode"), ==, o->reset_mode);
+    g_assert_cmphex(cpu_config0(qts) & 0x01ffffff, ==, o->reset_mode);
+    g_assert_cmphex(cpu_config0(qts) >> 26, ==, 0x1b);
+    g_assert_cmphex(node_flash_word(qts), ==, o->flash_word);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(data_store), ==, 0);
+    g_assert_cmpint(g_unlink(clock_store), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 static void test_immutable_identity(void)
 {
     QTestState *qts;
@@ -687,6 +778,12 @@ int main(int argc, char **argv)
                         &ip53_machines[0], test_ip53_prid);
     qtest_add_data_func("/r10000/identity/tezro-prid",
                         &ip53_machines[1], test_ip53_prid);
+    for (size_t i = 0; i < G_N_ELEMENTS(ip53_offerings); i++) {
+        g_autofree char *name = g_strdup_printf(
+            "/r10000/identity/ip53-offering/%s", ip53_offerings[i].machine);
+
+        qtest_add_data_func(name, &ip53_offerings[i], test_ip53_offering);
+    }
     qtest_add_data_func("/r10000/identity/migration",
                         &r10000_octane, test_migration);
     qtest_add_data_func("/r10000/identity/r14000-migration-fuel",
