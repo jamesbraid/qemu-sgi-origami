@@ -10771,6 +10771,67 @@ static void test_origin3400_l2_link_migration_blocker(void)
 }
 
 /*
+ * The catalogue's Origin 3800 of one compute rack: four C-bricks on ports 2
+ * to 5 of each of two R-bricks. The default joins the routers port to equal
+ * port on 1 and 6; the high-bandwidth fit adds 7 and 8. Each router-to-router
+ * cable is one cable object at both routers, and no router port is on two
+ * cables.
+ */
+static void origin3800_cables(const char *topology, bool four_cables)
+{
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn-builder-origin3800-prom-XXXXXX", &prom,
+                             &error);
+    static const char *const routers[] = {
+        "/machine/module8/router", "/machine/module9/router",
+    };
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M origin3000,topology=%s "
+                      "-cpu R12000 -smp 32 " SGI_UNRESERVED_RAM("32768M")
+                      " -bios %s -nodefaults -display none", topology, prom);
+    for (unsigned int port = 1; port <= 8; port++) {
+        g_autofree char *name = g_strdup_printf("port%u-cable", port);
+        g_autofree char *first = qom_get_str(qts, routers[0], name);
+        g_autofree char *second = qom_get_str(qts, routers[1], name);
+
+        if (port == 1 || port == 6 || (four_cables && port >= 7)) {
+            g_autofree char *cable =
+                g_strdup_printf("/machine/router-link-%u", port);
+
+            g_assert_cmpstr(first, ==, cable);
+            g_assert_cmpstr(second, ==, cable);
+        } else if (port <= 5) {
+            /* Ports 2 to 5 each take a C-brick, a cable of its own. */
+            g_assert_cmpstr(first, !=, "");
+            g_assert_cmpstr(second, !=, "");
+            g_assert_cmpstr(first, !=, second);
+        } else {
+            g_assert_cmpstr(first, ==, "");
+            g_assert_cmpstr(second, ==, "");
+        }
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+static void test_origin3800_cables(void)
+{
+    origin3800_cables("origin3800", false);
+}
+
+static void test_origin3800_high_bandwidth_cables(void)
+{
+    origin3800_cables("origin3800-high-bandwidth", true);
+}
+
+/*
  * The catalogue's Onyx 3400 with InfiniteReality3: four C-bricks, an I-brick
  * on c0 and an N-brick on c1 to c3. Each I/O brick has a controller that
  * every C-brick cabled to it reaches, and each C-brick whose chip has a
@@ -11113,6 +11174,12 @@ static void test_router_l1_board_records(void)
           "-m 16384", "/machine/module4/l1", "rbrick" },
         { "origin3000,topology=origin3400-two-routers -cpu R12000 -smp 16 "
           "-m 16384", "/machine/module5/l1", "rbrick" },
+        { "origin3000,topology=origin3800 -cpu R12000 -smp 32 "
+          SGI_UNRESERVED_RAM("32768M"),
+          "/machine/module8/l1", "rbrick" },
+        { "origin3000,topology=origin3800 -cpu R12000 -smp 32 "
+          SGI_UNRESERVED_RAM("32768M"),
+          "/machine/module9/l1", "rbrick" },
         { "origin3000,topology=origin3900 -cpu R16000 -smp 16 -m 8192",
           "/machine/module0/router-l1", "cxbrick" },
         { "origin3000,topology=origin3900,board=ip59 -cpu R16000 -smp 16 -m 8192",
@@ -11469,6 +11536,8 @@ static void test_ibrick_products_fit_ieee1394(void)
         { "origin3200", "R12000", 8, 8192 },
         { "origin3400", "R12000", 16, 16384 },
         { "origin3400-two-routers", "R12000", 16, 16384 },
+        { "origin3800", "R12000", 32, 32768 },
+        { "origin3800-high-bandwidth", "R12000", 32, 32768 },
         { "onyx3000", "R12000", 8, 8192 },
         { "onyx3400-ir", "R12000", 16, 16384 },
         { "origin3900", "R16000", 16, 8192 },
@@ -11485,10 +11554,13 @@ static void test_ibrick_products_fit_ieee1394(void)
                     ORIGIN3200_PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
     for (size_t i = 0; i < G_N_ELEMENTS(products); i++) {
+        g_autofree char *ram = products[i].mib > 16384 ?
+            g_strdup_printf(SGI_UNRESERVED_RAM("%uM"), products[i].mib) :
+            g_strdup_printf("-m %u", products[i].mib);
         QTestState *qts = qtest_initf(
-            "-M origin3000,topology=%s -cpu %s -smp %u -m %u -bios %s "
+            "-M origin3000,topology=%s -cpu %s -smp %u %s -bios %s "
             "-nodefaults -display none", products[i].topology,
-            products[i].cpu, products[i].smp, products[i].mib, prom);
+            products[i].cpu, products[i].smp, ram, prom);
         QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-list',"
                                          " 'arguments': { 'path': "
                                          "'/machine' } }");
@@ -14118,6 +14190,10 @@ int main(int argc, char **argv)
                    test_origin3400_l2_link_refusals);
     qtest_add_func("sn/builder/origin3400/l2-link/migration-blocker",
                    test_origin3400_l2_link_migration_blocker);
+    qtest_add_func("sn/builder/origin3800/cables",
+                   test_origin3800_cables);
+    qtest_add_func("sn/builder/origin3800-high-bandwidth/cables",
+                   test_origin3800_high_bandwidth_cables);
     qtest_add_func("sn/builder/onyx3000/vbrick-l1-and-heads",
                    test_onyx3000_vbrick_l1_and_heads);
     qtest_add_func("sn/builder/origin3900/cx-brick",

@@ -1114,6 +1114,29 @@ vector read error for that router. IRIX 6.5.30 boots from the Origin
 3200's installed disk to a login, and ``hinv -v`` lists a router under
 modules ``001c04`` and ``001c10`` with active ports 1, 2, 3 and 6.
 
+.. _sgi-sn-origin3800:
+
+``-M origin3000,topology=origin3800`` is an Origin 3800 of one compute rack
+at 32 processors: eight four-processor C-bricks, four on ports 2 to 5 of
+each of two eight-port R-bricks, the routers joined by two cables, port 1 to
+1 and 6 to 6, and an I-brick on the first C-brick. The guide establishes the
+shape: a compute rack holds up to eight C-bricks and three R-bricks, every
+32-processor bundle ships two R-bricks, the interconnect drawing shows ten
+cables (the eight C-brick cables and two more), and the bandwidth table
+joins the routers with two cables unless the high-bandwidth option is bought
+(:src:`007-4311-002 pp. 56, 79-80, 93`). It numbers no ports. The port
+assignment is the preliminary cabling draft's (*inferred*; the draft is
+preliminary and labels this shape a 3600 Series system). The draft's rack
+units give the C-bricks module numbers 10, 13, 16, 21, 24, 29, 32 and 35 and
+the R-bricks 19 and 27. The I-brick is model-only (*approximation*): a real
+Origin 3800 puts its I-bricks in a separate I/O rack, and which C-brick XIO
+port that rack's cables reach is unknown. Each C-brick is fitted as the
+Origin 3400's is, with 4096 MB.
+
+``topology=origin3800-high-bandwidth`` adds the four-cable fit, which also
+joins ports 7 to 7 and 8 to 8. That the extra cables use equal port numbers
+is the draft's table (*inferred*) and the fit is not an orderable option.
+
 Model limits of a routed Origin 3000 build:
 
 * The L2 controller, which a rack holding an R-brick requires

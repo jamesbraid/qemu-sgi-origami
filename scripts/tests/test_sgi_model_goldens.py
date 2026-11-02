@@ -48,6 +48,8 @@ CONFIGURATIONS = {
     "origin3900-memory-node": "origin3900-memory-node.yaml",
     "origin3400": "origin3400.yaml",
     "origin3400-two-routers": "origin3400-two-routers.yaml",
+    "origin3800": "origin3800.yaml",
+    "origin3800-high-bandwidth": "origin3800-high-bandwidth.yaml",
     "origin3400-r16000": "origin3400-r16000.yaml",
     "origin3400-r14000-600mhz": "origin3400-r14000-600mhz.yaml",
     "origin3400-two-partitions": "origin3400-two-partitions.yaml",

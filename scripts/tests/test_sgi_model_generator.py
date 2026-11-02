@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "a938af93f724d5d1c5475750fe87ef5c3774b5e880eaa7ba17a42ff51d16ddc1"
+    "f22abdd437d4f9e18476b12051195c4204e171160cbe439d93fc27bb7dfbc6ac"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -212,9 +212,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 170)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 52)
-        self.assertEqual(len(layers), 116)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 174)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 54)
+        self.assertEqual(len(layers), 118)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -962,7 +962,9 @@ class FuelTests(unittest.TestCase):
             if topology["name"] in ("origin3200", "origin3400", "onyx3000",
                                     "onyx3400-ir", "origin3200-two-ibricks",
                                     "origin3400-two-routers",
-                                    "origin3400-two-partitions"):
+                                    "origin3400-two-partitions",
+                                    "origin3800",
+                                    "origin3800-high-bandwidth"):
                 # The C-brick's machine-type byte and reset-mode word come
                 # from the PROM's CPU-configuration table row.
                 self.assertEqual(topology["ip35-firmware"], {
@@ -1081,6 +1083,52 @@ class FuelTests(unittest.TestCase):
                 continue
             for controller in other["controllers"]:
                 self.assertNotIn("partition", controller.get("l1") or {})
+
+    def _origin3800_cables(self, name):
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        [topology] = [item for item in catalogue["topologies"]
+                      if item["name"] == name]
+        self.assertEqual(len(topology["routers"]), 2)
+        self.assertEqual(len(topology["nodes"]), 8)
+        ends = {cable["name"]: [(end["kind"], end["index"], end["port"])
+                                for end in cable["ends"]]
+                for cable in topology["cables"]}
+        self.assertEqual(
+            sorted(value for name, value in ends.items()
+                   if not name.startswith("router-link")),
+            [[("node", node, 0), ("router", node // 4, 2 + node % 4)]
+             for node in range(8)])
+        router_ports = [end for value in ends.values() for end in value
+                        if end[0] == "router"]
+        self.assertEqual(len(router_ports), len(set(router_ports)))
+        return ends, router_ports
+
+    def test_origin3800_default_joins_two_routers_on_two_cables(self):
+        """The shipped 32-processor Origin 3800 joins its two eight-port
+        R-bricks with two cables, the guide's ten-cable drawing; the port
+        numbers, 1 to 1 and 6 to 6, are the cabling draft's (inferred).
+        Ports 7 and 8 stay unused. Every 32-processor bundle ships two
+        R-bricks, so there is no third."""
+        ends, router_ports = self._origin3800_cables("origin3800")
+        self.assertEqual(sorted(name for name in ends
+                                if name.startswith("router-link")),
+                         ["router-link-1", "router-link-6"])
+        for port in (1, 6):
+            self.assertEqual(ends["router-link-%d" % port],
+                             [("router", 0, port), ("router", 1, port)])
+        self.assertEqual(len(router_ports), 12)
+
+    def test_origin3800_high_bandwidth_adds_ports_7_and_8(self):
+        """The high-bandwidth fit adds two cables, 7 to 7 and 8 to 8, as the
+        cabling draft's 32-processor table has it (inferred); it is not an
+        orderable option."""
+        ends, router_ports = self._origin3800_cables(
+            "origin3800-high-bandwidth")
+        for port in (1, 6, 7, 8):
+            self.assertEqual(ends["router-link-%d" % port],
+                             [("router", 0, port), ("router", 1, port)])
+        self.assertEqual(len(router_ports), 16)
 
     def test_second_ibrick_is_a_labelled_model_only_offering(self):
         """An I-brick on each C-brick is in no source, so the offering says

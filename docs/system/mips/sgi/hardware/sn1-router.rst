@@ -125,9 +125,10 @@ following properties.
 Two profiles exist, an *approximation* in both. The machine builder
 selects the diagnostic profile, through the topology record's
 ``synthetic-diagnostics`` flag, for every router of the ``origin300``
-expansion topology and of the Origin 3400 and Origin 3900 topologies (the
-``origin3400*`` and ``origin3900*`` entries, both routers of
-``origin3400-two-routers`` included). The Origin 2000, Onyx 2 and Onyx 3400
+expansion topology and of the Origin 3400, Origin 3800 and Origin 3900
+topologies (the ``origin3400*``, ``origin3800`` and ``origin3900*``
+entries, both routers of ``origin3400-two-routers`` and ``origin3800``
+included). The Origin 2000, Onyx 2 and Onyx 3400
 topologies do not set the flag. A router
 created with ``-device`` gets the ordinary profile, so the 4-bit route
 table rule below applies to no catalogue machine: the diagnostic profile

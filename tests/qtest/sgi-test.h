@@ -53,4 +53,17 @@
 #define PROM_SIZE               UINT64_C(0x1686a8)
 #define CODE_START              0x400
 
+/*
+ * Guest RAM of size, written as a string such as "32768M" or as the format
+ * "%uM", for a machine whose total is larger than a builder host's memory.
+ * Plain -m maps the RAM as one reservation, and the kernel's overcommit
+ * heuristic refuses a reservation larger than RAM plus swap whether or not
+ * a test touches the pages; reserve=off maps it without one. Use it only
+ * for the launches a small host cannot back, so the ordinary ones keep
+ * exercising -m.
+ */
+#define SGI_UNRESERVED_RAM(size) \
+    "-object memory-backend-ram,id=sgi-ram,size=" size ",reserve=off " \
+    "-machine memory-backend=sgi-ram"
+
 #endif /* SGI_TEST_H */

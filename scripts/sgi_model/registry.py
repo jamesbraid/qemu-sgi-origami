@@ -33,6 +33,8 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin3400-r14000-600mhz",
     "origin3400-two-routers",
     "origin3400-two-partitions",
+    "origin3800",
+    "origin3800-high-bandwidth",
     "origin3900",
     "origin3900-memory-node",
     "onyx3000",

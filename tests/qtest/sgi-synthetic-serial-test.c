@@ -86,6 +86,8 @@ static const TopologyExtra topology_extras[] = {
     { "origin3400-r16000", "", .unmarked = true },
     { "origin3400-r14000-600mhz", "", .unmarked = true },
     { "origin3400-two-routers", "", .unmarked = true },
+    { "origin3800", "", .unmarked = true },
+    { "origin3800-high-bandwidth", "", .unmarked = true },
     { "origin3400-two-partitions", "", .unmarked = true },
     { "origin3900", "", .unmarked = true },
     { "origin3900-memory-node", "", .unmarked = true },
@@ -611,14 +613,23 @@ static GPtrArray *catalogue_cases(void)
         c->storage = extra && extra->storage;
         c->io9 = extra && extra->io9;
         c->unmarked = extra && extra->unmarked;
+        int64_t mib = qdict_get_int(memory, "default") *
+                      qdict_get_int(offering, "nodes");
+
+        /*
+         * A catalogue total above a builder host's memory is mapped without
+         * a reservation: plain -m asks the kernel for it all at once and the
+         * overcommit heuristic refuses what exceeds RAM plus swap, though
+         * this test never touches the pages.
+         */
         c->args = g_strdup_printf(
-            "%s%s -cpu %s -smp %" PRId64 " -m %" PRId64 "M",
+            "%s%s -cpu %s -smp %" PRId64 " %s%" PRId64 "M",
             qdict_get_str(offering, "machine-options"),
             extra ? extra->machine_options : "",
             qdict_get_str(offering, "default-cpu-model"),
             qdict_get_int(offering, "smp"),
-            qdict_get_int(memory, "default") *
-            qdict_get_int(offering, "nodes"));
+            mib > 16384 ? "-machine memory-backend=ram -object "
+            "memory-backend-ram,reserve=off,id=ram,size=" : "-m ", mib);
         g_ptr_array_add(cases, c);
     }
     qtest_quit(qts);
