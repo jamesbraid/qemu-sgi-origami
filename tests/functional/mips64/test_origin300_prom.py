@@ -36,6 +36,15 @@ PASSED" and System Maintenance Menu.
 test_irix_origin300_installed_boot.py checks that same outcome
 for two CPUs while continuing through an installed IRIX boot.
 
+test_starved_processor_is_still_counted freezes one processor's host thread
+for 5 seconds, longer than the model's 2 second park bound, while the PROM
+brings the processors up, as a heavily loaded host can a thread it cannot
+schedule. The stock PROM must still find all four processors. Before the parks counted
+the waited-for processors' own CPU time instead of host time, a thread frozen
+for that long ran every park out at its bound, the join was abandoned, and
+the PROM reported the processor dead ("Other CPU on this node died") or
+started with fewer.
+
 test_reset_keeps_the_nvram_owner resets the machine at that menu and
 requires the second boot to accept its NVRAM. The PROM compares a board
 number it derives from the node board area's serial with the one it saved,
@@ -45,6 +54,11 @@ did not belong to this system" and reinitialized it. The marked serial
 in DONE.
 """
 
+import ctypes
+import os
+import sys
+import time
+
 import lib_origin300
 from lib_prom import launch_paused
 
@@ -52,6 +66,38 @@ from qemu_test import QemuSystemTest
 from qemu_test.asset import LocalAsset
 from qemu_test import skipIfMissingEnv
 from qemu_test import wait_for_console_pattern
+
+
+PTRACE_SEIZE = 0x4206
+PTRACE_INTERRUPT = 0x4207
+PTRACE_DETACH = 17
+WALL = 0x40000000
+
+
+def freeze_vcpu_thread(pid, cpu_index):
+    """Stop one vCPU host thread. Returns (thread id, libc handle) for the
+    detach, or None when the thread is not found or ptrace is refused.
+
+    ptrace stops that thread alone; SIGSTOP would stop the whole process,
+    and the other processors must keep running. The thread may be stopped
+    while it holds the big QEMU lock, which stalls the whole machine, so
+    this is at least as strong as a thread the host merely fails to
+    schedule."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.ptrace.restype = ctypes.c_long
+    libc.ptrace.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_void_p,
+                            ctypes.c_void_p]
+    for entry in os.listdir(f'/proc/{pid}/task'):
+        with open(f'/proc/{pid}/task/{entry}/comm') as comm:
+            if comm.read().strip() != f'CPU {cpu_index}/TCG':
+                continue
+        tid = int(entry)
+        if libc.ptrace(PTRACE_SEIZE, tid, None, None) != 0:
+            return None
+        libc.ptrace(PTRACE_INTERRUPT, tid, None, None)
+        os.waitpid(tid, WALL)
+        return tid, libc
+    return None
 
 
 class Origin300Prom(QemuSystemTest):
@@ -100,6 +146,43 @@ class Origin300PromMenu(QemuSystemTest):
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_four_cpus_reach_the_menu_with_all_diags_passed(self):
         self.boot_to_menu(4)
+
+    def boot_with_starved_processor(self, cpu_index, seconds):
+        firmware = self.ASSET_FIRMWARE.fetch()
+        machine, argv = lib_origin300.launch_args(firmware, 4, self.workdir)
+
+        if not sys.platform.startswith('linux'):
+            self.skipTest('needs Linux /proc and ptrace')
+        self.set_machine('origin300')
+        self.vm.set_console()
+        self.vm.set_machine(machine)
+        self.vm.add_args(*argv)
+        self.vm.add_args('-S')
+        self.vm.launch()
+        frozen = freeze_vcpu_thread(self.vm.get_pid(), cpu_index)
+        if frozen is None:
+            self.vm.shutdown()
+            self.skipTest('cannot ptrace the vCPU thread on this host')
+        tid, libc = frozen
+        self.vm.cmd('cont')
+        time.sleep(seconds)
+        libc.ptrace(PTRACE_DETACH, tid, None, None)
+        wait_for_console_pattern(
+            self, '4 CPUs on 1 nodes found',
+            failure_message='Other CPU on this node died')
+        wait_for_console_pattern(
+            self, 'ALL DIAGS PASSED',
+            failure_message='Other CPU on this node died')
+        wait_for_console_pattern(self, 'System Maintenance Menu')
+        self.vm.shutdown()
+
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
+    def test_starved_processor_is_still_counted(self):
+        # The parks start when the first other processor reaches the reset
+        # barrier, some time after 'cont'; five seconds leaves the freeze
+        # well past the 2 s bound however long that takes. With the bound
+        # counted in virtual time every park ran out in this window.
+        self.boot_with_starved_processor(2, 5.0)
 
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_reset_keeps_the_nvram_owner(self):

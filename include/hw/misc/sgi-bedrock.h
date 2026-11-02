@@ -228,6 +228,13 @@ struct SGIBedrockState {
     uint8_t park_kind[SGI_BEDROCK_PROCESSORS];
     int64_t park_start[SGI_BEDROCK_PROCESSORS];
     int64_t park_deadline[SGI_BEDROCK_PROCESSORS];
+    /*
+     * Under multi-threaded TCG a park's bound counts host CPU time the
+     * processors it waits for have used, so park_cpu_base holds every
+     * processor's thread CPU time at the start of each slot's park.
+     * park_deadline then only backstops a park that never ends.
+     */
+    int64_t park_cpu_base[SGI_BEDROCK_PROCESSORS][SGI_BEDROCK_PROCESSORS];
     uint8_t park_mask;
 };
 

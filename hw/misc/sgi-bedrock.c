@@ -2,6 +2,7 @@
 #include "qemu/osdep.h"
 #include "qapi/visitor.h"
 #include "qemu/cutils.h"
+#include "qemu/error-report.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-l1.h"
 #include "exec/cpu-interrupt.h"
@@ -48,8 +49,13 @@ bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s)
  * the ones it must follow have caught up. That is one approximation, not
  * hardware behaviour, and it is bounded: a park changes when the parked
  * processor runs next, never a value the guest reads, and every park ends
- * at SGI_BEDROCK_HOLD_MS of virtual time whether or not its condition
- * arrives. The four, in boot order:
+ * whether or not its condition arrives. Under round-robin or -icount the
+ * bound is SGI_BEDROCK_HOLD_MS of virtual time. Under multi-threaded TCG
+ * virtual time follows the host, so a host thread that is not scheduled
+ * would let a park run out on processors that had not run at all: the bound
+ * there is that much host CPU time used by the processors the park waits
+ * for, and only a long backstop (SGI_BEDROCK_HOLD_BACKSTOP_MS of virtual
+ * time) covers a park that none of them can end. The four, in boot order:
  *
  * - The reset barrier (SGI_BEDROCK_HOLD_SCRATCH1). Every processor clears
  *   LB scratch 1 on its reset path (0x1fc007ec in 6.210), and the master
@@ -86,6 +92,10 @@ bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s)
  */
 
 #define SGI_BEDROCK_HOLD_MS 2000 /* mirrors sgi-hub.c's SGI_HUB_RT_HOLD_MS */
+/* Multi-threaded TCG only: how long a park may run with no bound met. */
+#define SGI_BEDROCK_HOLD_BACKSTOP_MS 120000LL
+/* Multi-threaded TCG only: how often a park's bound is checked. */
+#define SGI_BEDROCK_HOLD_POLL_MS 50
 
 /*
  * The presence publication. Right after the reset barrier the stock PROM's
@@ -328,6 +338,84 @@ static bool bedrock_hold_ready(SGIBedrockState *s, unsigned int slot,
 }
 
 /*
+ * The slots whose arrival a park on @slot is waiting for. A waited-for slot
+ * that is itself parked is replaced by whatever it waits for, since a
+ * parked processor is not the one that has to make progress.
+ */
+static unsigned int bedrock_hold_awaited(SGIBedrockState *s, unsigned int slot,
+                                         SGIBedrockHoldKind kind,
+                                         unsigned int visited)
+{
+    unsigned int mask = 0;
+    unsigned int own = slot / SGI_BEDROCK_PI_PROCESSORS;
+    unsigned int out = 0;
+
+    switch (kind) {
+    case SGI_BEDROCK_HOLD_PRESENCE:
+        for (unsigned int i = 0; i < SGI_BEDROCK_PROCESSORS /
+             SGI_BEDROCK_PI_PROCESSORS; i++) {
+            if (i != own && bedrock_interface_populated(s, i) &&
+                !s->presence_seen[i] && bedrock_publisher_slot(s, i) >= 0) {
+                mask |= 1U << bedrock_publisher_slot(s, i);
+            }
+        }
+        break;
+    case SGI_BEDROCK_HOLD_PARTNER:
+        if (bedrock_publisher_slot(s, own) >= 0) {
+            mask |= 1U << bedrock_publisher_slot(s, own);
+        }
+        break;
+    case SGI_BEDROCK_HOLD_LIVENESS:
+        if (bedrock_hold_slot_running(s, slot ^ 1)) {
+            mask |= 1U << (slot ^ 1);
+        }
+        break;
+    case SGI_BEDROCK_HOLD_SCRATCH1:
+    default:
+        for (unsigned int p = 0; p < SGI_BEDROCK_PROCESSORS; p++) {
+            if (bedrock_hold_slot_running(s, p) && !s->hold_scratch1_seen[p]) {
+                mask |= 1U << p;
+            }
+        }
+        break;
+    }
+    mask &= ~(1U << slot);
+    for (unsigned int p = 0; p < SGI_BEDROCK_PROCESSORS; p++) {
+        if (!(mask & (1U << p))) {
+            continue;
+        }
+        if (s->park_kind[p] && !(visited & (1U << p))) {
+            out |= bedrock_hold_awaited(s, p, s->park_kind[p],
+                                        visited | (1U << slot) | (1U << p));
+        } else if (!s->park_kind[p]) {
+            out |= 1U << p;
+        }
+    }
+    return out & ~(1U << slot);
+}
+
+/*
+ * CPU time the slot's vCPU host thread has used, in ns, or -1 when it
+ * cannot be read. A thread the host has not scheduled uses none, which is
+ * what separates a processor that is late from one that is starved.
+ */
+static int64_t bedrock_hold_cpu_ns(SGIBedrockState *s, unsigned int slot)
+{
+#ifdef CONFIG_LINUX
+    CPUState *cs = bedrock_hold_cpu(s, slot);
+    struct timespec ts;
+    clockid_t clock;
+
+    if (cs && cs->thread &&
+        !pthread_getcpuclockid(cs->thread->thread, &clock) &&
+        !clock_gettime(clock, &ts)) {
+        return ts.tv_sec * NANOSECONDS_PER_SECOND + ts.tv_nsec;
+    }
+#endif
+    return -1;
+}
+
+/*
  * Land a processor's own withheld scratch-1 write, if one is waiting: at
  * that processor's next scratch-1 write, or when its park ends, before it
  * runs again, so it never observes a post it has already taken back.
@@ -412,10 +500,11 @@ static const char *bedrock_hold_kind_name(SGIBedrockHoldKind kind)
  * a guest WAIT on a processor an interrupt woke early could be ended early
  * by the release; the PROM runs these barriers with interrupts disabled.
  * The bound is on the virtual clock, so an icount run stays deterministic.
- * Under multi-threaded TCG the virtual clock follows host time, as the old
- * realtime bound did. Only an access this node's own processor issued can
- * park, and not a processor already parked. Returns the executing slot, or
- * -1.
+ * Under multi-threaded TCG the virtual clock follows host time whether or
+ * not a processor's thread is scheduled, so the bound there is the waited-for
+ * processors' own CPU time (bedrock_park_bound_met()). Only an access this
+ * node's own processor issued can park, and not a processor already parked.
+ * Returns the executing slot, or -1.
  */
 static int bedrock_park_slot(SGIBedrockState *s)
 {
@@ -439,6 +528,10 @@ static void bedrock_park_arm(SGIBedrockState *s)
     }
     if (earliest == INT64_MAX) {
         timer_del(s->park_timer);
+    } else if (qemu_tcg_mttcg_enabled()) {
+        timer_mod(s->park_timer,
+                  MIN(earliest, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                SGI_BEDROCK_HOLD_POLL_MS * SCALE_MS));
     } else {
         timer_mod(s->park_timer, earliest);
     }
@@ -475,7 +568,14 @@ static void bedrock_park_start(SGIBedrockState *s, unsigned int slot,
     s->park_kind[slot] = kind;
     s->park_mask |= 1U << slot;
     s->park_start[slot] = now;
-    s->park_deadline[slot] = now + SGI_BEDROCK_HOLD_MS * SCALE_MS;
+    if (qemu_tcg_mttcg_enabled()) {
+        s->park_deadline[slot] = now + SGI_BEDROCK_HOLD_BACKSTOP_MS * SCALE_MS;
+        for (unsigned int p = 0; p < SGI_BEDROCK_PROCESSORS; p++) {
+            s->park_cpu_base[slot][p] = bedrock_hold_cpu_ns(s, p);
+        }
+    } else {
+        s->park_deadline[slot] = now + SGI_BEDROCK_HOLD_MS * SCALE_MS;
+    }
     trace_sgi_bedrock_hold_begin(current_cpu->cpu_index,
                                  bedrock_hold_kind_name(kind), slot, now);
     cpu_interrupt(current_cpu, CPU_INTERRUPT_HALT);
@@ -513,6 +613,47 @@ static void bedrock_park_recheck(SGIBedrockState *s)
 }
 
 /*
+ * Whether a multi-threaded TCG park has met its bound: every processor it
+ * waits for has used SGI_BEDROCK_HOLD_MS of host CPU time since the park
+ * began and has still not arrived. Under any other scheduler the deadline
+ * is the bound. With nothing to wait on, or no readable CPU time, virtual
+ * time stands in, as it does there. The CPU time comes from
+ * pthread_getcpuclockid(), so only a Linux host gets the starvation fix;
+ * elsewhere, and if that call fails, multi-threaded TCG keeps the 2 s
+ * virtual-time bound and says so once.
+ */
+static bool bedrock_park_bound_met(SGIBedrockState *s, unsigned int slot)
+{
+    unsigned int awaited = bedrock_hold_awaited(s, slot, s->park_kind[slot],
+                                                1U << slot);
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    bool any = false;
+
+    if (!qemu_tcg_mttcg_enabled()) {
+        return now >= s->park_deadline[slot];
+    }
+    for (unsigned int p = 0; p < SGI_BEDROCK_PROCESSORS; p++) {
+        int64_t cpu_ns;
+
+        if (!(awaited & (1U << p))) {
+            continue;
+        }
+        cpu_ns = bedrock_hold_cpu_ns(s, p);
+        if (cpu_ns < 0 || s->park_cpu_base[slot][p] < 0) {
+            warn_report_once("sgi-bedrock: no per-thread CPU time here; "
+                             "boot parks keep the 2 s virtual-time bound");
+            return now - s->park_start[slot] >= SGI_BEDROCK_HOLD_MS * SCALE_MS;
+        }
+        any = true;
+        if (cpu_ns - s->park_cpu_base[slot][p] <
+            SGI_BEDROCK_HOLD_MS * SCALE_MS) {
+            return false;
+        }
+    }
+    return !any && now - s->park_start[slot] >= SGI_BEDROCK_HOLD_MS * SCALE_MS;
+}
+
+/*
  * A publisher's or partner's park that reaches its bound ends the join for
  * this reset: the publisher it waited for is not coming, and parking every
  * later release for the bound again would only stretch the boot the PROM
@@ -527,11 +668,24 @@ static void bedrock_park_expire(void *opaque)
     bool expired = false;
 
     for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
-        if (s->park_kind[slot] && now >= s->park_deadline[slot]) {
-            expired |= s->park_kind[slot] == SGI_BEDROCK_HOLD_PRESENCE ||
-                       s->park_kind[slot] == SGI_BEDROCK_HOLD_PARTNER;
-            bedrock_park_release(s, slot, "timed out");
+        const char *outcome = "timed out";
+
+        if (!s->park_kind[slot]) {
+            continue;
         }
+        if (now >= s->park_deadline[slot]) {
+            outcome = "gave up at the backstop";
+        } else if (!bedrock_park_bound_met(s, slot)) {
+            continue;
+        }
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock: %s hold on slot %u %s after %" PRId64
+                      " ms of virtual time\n",
+                      bedrock_hold_kind_name(s->park_kind[slot]), slot,
+                      outcome, (now - s->park_start[slot]) / SCALE_MS);
+        expired |= s->park_kind[slot] == SGI_BEDROCK_HOLD_PRESENCE ||
+                   s->park_kind[slot] == SGI_BEDROCK_HOLD_PARTNER;
+        bedrock_park_release(s, slot, outcome);
     }
     if (expired) {
         s->presence_abandoned = true;
