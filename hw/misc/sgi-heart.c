@@ -105,6 +105,7 @@
  * the reference Octane2 reads both bits clear afterwards.
  */
 #define HEART_WIDGET_CONTROL_RETRY_CLEAR 0x00000c00U
+#define HEART_WIDGET_STATUS_VALUE 0x60
 
 static void heart_ecc_map(SGIHeartState *s);
 static bool heart_ecc_dma_allowed(SGIHeartState *s, hwaddr address,
@@ -210,9 +211,15 @@ static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
                  (0xc001U << 12) | (0x0036U << 1);
         return MEMTX_OK;
     }
-    if (offset == 0x08 && size == 8 && s->widget_revision == 6 &&
-        s->widget_status_f_measured) {
-        *value = 0x60;
+    /*
+     * The status slot answers a 64-bit read and a 32-bit read of its low
+     * word with 0x60. A reference Octane2 (revision F) returned exactly
+     * that after PROM startup. The value for any other revision, and the
+     * 4-byte read at 0x8, are unknown: the constant is a model choice, not
+     * a reset value, and carries no bit meanings or side effects.
+     */
+    if ((offset == 0x08 && size == 8) || (offset == 0x0c && size == 4)) {
+        *value = HEART_WIDGET_STATUS_VALUE;
         return MEMTX_OK;
     }
     if (offset == 0x24 && size == 4) {
@@ -1331,8 +1338,6 @@ static const Property heart_properties[] = {
     DEFINE_PROP_UINT64("bank3-size", SGIHeartState, capacity[3], 0),
     DEFINE_PROP_UINT8("widget-revision", SGIHeartState, widget_revision, 0),
     DEFINE_PROP_UINT64("widget-id-64", SGIHeartState, widget_id_64, 0),
-    DEFINE_PROP_BOOL("widget-status-f-measured", SGIHeartState,
-                     widget_status_f_measured, false),
 };
 
 static void heart_init(Object *obj)

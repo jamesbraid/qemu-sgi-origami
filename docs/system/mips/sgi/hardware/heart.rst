@@ -317,12 +317,14 @@ fails the transaction and logs ``LOG_UNIMP``.
      - per machine
      - read-only
      - :ref:`sgi-heart-identity`
-   * - ``0x08``
+   * - ``0x08`` / ``0x0c``
      - Status
-     - 64
-     - ``0x60`` on ``octane2``
+     - 64 / 32
+     - ``0x60``
      - read-only
-     - Absent on ``octane``.
+     - The 64-bit read of ``0x08`` is the status zero-extended and the
+       32-bit read of ``0x0c`` is its low word. A 32-bit read of
+       ``0x08`` fails.
    * - ``0x10``
      - Error address upper, 64-bit view
      - 64
@@ -398,15 +400,17 @@ test compares, not which bits HEART implements.
 Widget status, control and request timeout
 ------------------------------------------
 
-The widget status word reads ``0x60`` on the ``octane2`` only. The
+The widget status word reads ``0x60`` on both machines. The
 reference Octane2 returned exactly that value after PROM
 startup (:ref:`sgi-heart-octane2-status`), so the value is
 *established* for that board at PROM time. It is not a reset value, and
 what the bits mean is *unknown*. The stock 6.5.30 diagnostic reads the
 slot as 64 bits and expects bits 5 and 6 set and bits 7-15 clear, a
 *software expectation*. The Octane's revision 4 status is unmeasured, so
-the ``octane`` fails the read. A 32-bit read of either half and any
-write fail on both machines.
+the ``octane`` answering ``0x60`` is a *model choice* that lets the
+diagnostic's read complete. The 32-bit read of the low word at ``0x0c``
+returns the same value. A 32-bit read of ``0x08``, the reset value and
+any write are *unknown* and fail on both machines.
 
 The IP30 PROM reads, modifies and writes the 32-bit control word at
 ``0x24``, a *software expectation*. On the model it reads zero and

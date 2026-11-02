@@ -2254,7 +2254,6 @@
           "description": "What the part reports about itself when a guest asks.",
           "properties": {
             "widget_id_64": { "$ref": "#/$defs/address" },
-            "widget_status_f_measured": { "type": "boolean" },
             "widget_part": { "$ref": "#/$defs/address" },
             "widget_mfg": { "$ref": "#/$defs/address" },
             "processor_identification": { "$ref": "#/$defs/address" },

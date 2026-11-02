@@ -1143,14 +1143,35 @@ static void test_widget_id(void)
     g_assert_cmpuint(memtx_readb(s, HEART_WIDGET, &byte), ==, MEMTX_ERROR);
     g_assert_cmpuint(memtx_readw(s, HEART_WIDGET, &half), ==, MEMTX_ERROR);
     g_assert_cmpuint(memtx_readl(s, HEART_WIDGET, &id), ==, MEMTX_ERROR);
-    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 8, &wide),
-                     ==, MEMTX_ERROR);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 4), ==, HEART_WIDGET_ID);
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
     g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 4, &id), ==, MEMTX_OK);
     g_assert_cmphex(id, ==, HEART_WIDGET_ID);
     g_assert_cmpuint(memtx_readq(s, HEART_WIDGET, &wide), ==, MEMTX_OK);
     g_assert_cmphex(wide, ==, HEART_WIDGET_ID);
+    qtest_quit(s);
+}
+
+static void test_widget_status(void)
+{
+    QTestState *s = heart_start(128, "");
+    uint64_t wide;
+    uint32_t word;
+
+    /* The 64-bit slot is the status zero-extended; +0xc is its low word. */
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 8, &wide), ==, MEMTX_OK);
+    g_assert_cmphex(wide, ==, 0x60);
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0xc, &word), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(word, ==, (uint32_t)wide);
+    /* A 4-byte read at +0x8 and any write are unknown and stay refused. */
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 8, &word), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writeq(s, HEART_WIDGET + 8, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0xc, 0), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 8, &wide), ==, MEMTX_OK);
+    g_assert_cmphex(wide, ==, 0x60);
     qtest_quit(s);
 }
 
@@ -2652,6 +2673,7 @@ int main(int argc, char **argv)
     g_test_add_func("/heart/wide-descriptor-clear",
                     test_wide_descriptor_clear);
     g_test_add_func("/heart/widget-id", test_widget_id);
+    g_test_add_func("/heart/widget-status", test_widget_status);
     g_test_add_func("/heart/widget-control", test_widget_control);
     g_test_add_func("/heart/widget-timeout", test_widget_timeout);
     g_test_add_func("/heart/widget-errors", test_widget_errors);

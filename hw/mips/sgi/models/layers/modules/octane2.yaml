@@ -46,7 +46,6 @@ layer:
       identity:
         widget_revision: 6
         widget_id_64: '0x6c00106d'
-        widget_status_f_measured: true
         # Measured: the reference Octane2's PROM read returned 0x60 (docs/system/mips/sgi/hardware/heart.rst, sgi-heart-octane2-status).
     - id: memory
       name: memory

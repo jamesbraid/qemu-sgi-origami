@@ -241,9 +241,6 @@
 #
 # @widget-id-64: reviewed 64-bit identification response
 #
-# @widget-status-f-measured: select the reviewed revision-F status
-#     response
-#
 # @bridge-widget-revision: onboard Bridge silicon revision
 #
 # @board-records: virtual identities of the fitted boards
@@ -252,7 +249,6 @@
 ##
 { 'struct': 'SGIModelHeartIdentity',
   'data': { 'widget-revision': 'uint8', 'widget-id-64': 'uint64',
-            'widget-status-f-measured': 'bool',
             'bridge-widget-revision': 'uint8',
             'board-records': ['SGIModelBoardRecord'] } }
 
