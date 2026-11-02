@@ -1507,6 +1507,59 @@ static void test_high_interrupt_levels(void)
     qtest_quit(s);
 }
 
+/*
+ * Processors 1 to 3 each have their own level-4 line, driven by their own
+ * mask alone; their lower levels are not wired. Bit 63 needs mode bit 13
+ * on every processor, as on processor 0.
+ */
+static void test_processor_error_lines(void)
+{
+    QTestState *s = heart_start(128, "");
+    const uint64_t error = 1ULL << 51;
+    const uint64_t exception = 1ULL << 63;
+    const uint64_t lower = (1ULL << 3) | (1ULL << 16) | (1ULL << 42) |
+                           (1ULL << 50);
+
+    qtest_irq_intercept_out_named(s, HEART_PATH, "processor");
+    qtest_writeq(s, HEART_REGS + 0x10020, error | exception | lower);
+    for (unsigned cpu = 1; cpu < 4; cpu++) {
+        qtest_writeq(s, HEART_REGS + 0x10000 + cpu * 8, lower);
+        for (unsigned line = 0; line < 8; line++) {
+            g_assert_false(qtest_get_irq(s, line));
+        }
+        qtest_writeq(s, HEART_REGS + 0x10000 + cpu * 8, error);
+        for (unsigned line = 0; line < 8; line++) {
+            g_assert_cmpint(qtest_get_irq(s, line), ==, line == 4 + cpu);
+        }
+        qtest_writeq(s, HEART_REGS + 0x10000 + cpu * 8, exception);
+        g_assert_false(qtest_get_irq(s, 4 + cpu));
+        qtest_writeq(s, HEART_REGS, 1ULL << 13);
+        g_assert_true(qtest_get_irq(s, 4 + cpu));
+        g_assert_false(qtest_get_irq(s, 4));
+        qtest_writeq(s, HEART_REGS, 0);
+        g_assert_false(qtest_get_irq(s, 4 + cpu));
+        qtest_writeq(s, HEART_REGS + 0x10000 + cpu * 8, 0);
+    }
+
+    /* Every processor that armed a bit takes it. */
+    for (unsigned cpu = 0; cpu < 4; cpu++) {
+        qtest_writeq(s, HEART_REGS + 0x10000 + cpu * 8, error);
+    }
+    for (unsigned line = 4; line < 8; line++) {
+        g_assert_true(qtest_get_irq(s, line));
+    }
+    qtest_writeq(s, HEART_REGS + 0x10028, error);
+    for (unsigned line = 4; line < 8; line++) {
+        g_assert_false(qtest_get_irq(s, line));
+    }
+    qtest_writeq(s, HEART_REGS + 0x10020, error);
+    qtest_system_reset(s);
+    for (unsigned line = 0; line < 8; line++) {
+        g_assert_false(qtest_get_irq(s, line));
+    }
+    qtest_quit(s);
+}
+
 static void test_processor_status(void)
 {
     QTestState *s = heart_start(128, "");
@@ -2115,6 +2168,8 @@ int main(int argc, char **argv)
     g_test_add_func("/heart/interrupts", test_interrupts);
     g_test_add_func("/heart/high-interrupt-levels",
                     test_high_interrupt_levels);
+    qtest_add_func("/heart/processor-error-lines",
+                   test_processor_error_lines);
     g_test_add_func("/heart/processor-status", test_processor_status);
     g_test_add_func("/heart/revision-f-reset-words",
                     test_revision_f_reset_words);

@@ -15,6 +15,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIHeartState, SGI_HEART)
 #define HEART_SDRAM_BASE_SIZE 0x4000
 /* SysBus MMIO indices, in the order heart_init() registers them. */
 #define HEART_MMIO_SDRAM_BASE 3
+/*
+ * The "processor" outputs: lines 0 to 4 are processor 0's interrupt
+ * levels 0 to 4 (its IP2 to IP6), lines 5 to 7 the level-4 line (IP6) of
+ * processors 1 to 3.
+ */
+#define HEART_PROCESSOR_LEVELS 5
+#define HEART_PROCESSORS 4
+#define HEART_PROCESSOR_LINES (HEART_PROCESSOR_LEVELS + HEART_PROCESSORS - 1)
 
 struct SGIHeartState {
     SysBusDevice parent_obj;
@@ -24,7 +32,7 @@ struct SGIHeartState {
     MemoryRegion packet_control;
     MemoryRegion packet_ram;
     MemoryRegion *cpu_memory;
-    qemu_irq processor[5];
+    qemu_irq processor[HEART_PROCESSOR_LINES];
     MemoryRegion backing[HEART_BANKS];
     MemoryRegion views[HEART_BANKS][HEART_MAX_UNITS];
     MemoryRegion packet_views[HEART_BANKS][HEART_MAX_UNITS];
@@ -60,7 +68,7 @@ struct SGIHeartState {
     uint64_t clock_divider;
     uint32_t compare;
     uint32_t descriptor[8];
-    uint64_t mask[4];
+    uint64_t mask[HEART_PROCESSORS];
     uint64_t pending;
     uint64_t saved_count;
     int64_t counter_epoch_ns;
