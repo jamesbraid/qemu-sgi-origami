@@ -1818,6 +1818,44 @@ static void test_partition_identity(void)
 }
 
 /*
+ * L1 sheet, request 0x000b: the stored two-bit setting, 0 by default, which
+ * the stock PROM reads to decide whether to fetch a partition record from an
+ * L2. l2-partition-flag sets its initial value so a test can start that
+ * fetch. The setting is not the partition ID that 0x0009 returns.
+ */
+static void test_l2_partition_flag(void)
+{
+    QTestState *s = start_one("brick-type=cbrick,named=on,rack=1,bay=4,"
+                              "partition=2");
+
+    expect_partition_request(s, 0, 0xb, 0);
+    qtest_quit(s);
+    for (unsigned flag = 1; flag <= 3; flag++) {
+        g_autofree char *props = g_strdup_printf(
+            "brick-type=cbrick,named=on,rack=1,bay=4,partition=2,"
+            "l2-partition-flag=%u", flag);
+
+        s = start_one(props);
+        expect_partition_request(s, 0, 0xb, flag);
+        expect_partition_request(s, 0, 9, 2);
+        qtest_quit(s);
+    }
+}
+
+static void test_l2_partition_flag_refusal(void)
+{
+    if (g_test_subprocess()) {
+        QTestState *s = start_one("brick-type=cbrick,l2-partition-flag=4");
+
+        qtest_quit(s);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*l2-partition-flag*");
+}
+
+/*
  * ctci is not modelled: it is reported as an unknown command, and nothing
  * runs on the other C-brick or its I-brick.
  */
@@ -2123,6 +2161,9 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/partition-limit", test_partition_limit);
     qtest_add_func("sgi-l1-o3k/partition-identity", test_partition_identity);
     qtest_add_func("sgi-l1-o3k/no-l2-route", test_no_l2_route);
+    qtest_add_func("sgi-l1-o3k/l2-partition-flag", test_l2_partition_flag);
+    qtest_add_func("sgi-l1-o3k/l2-partition-flag/refusal",
+                   test_l2_partition_flag_refusal);
     qtest_add_func("sgi-l1-o3k/partition-clear", test_partition_clear);
     qtest_add_func("sgi-l1-o3k/ctci", test_ctci_unimplemented);
     for (unsigned i = 0; i < G_N_ELEMENTS(link_cases); i++) {

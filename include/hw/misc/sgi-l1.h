@@ -204,6 +204,8 @@ struct SGIL1State {
     uint32_t debug_switches;
     uint32_t partition;
     uint8_t two_bit_setting;
+    /* Initial value of the two-bit setting: the L2 partition-record flag. */
+    uint8_t l2_partition_flag;
     uint8_t last_reason[2];
     char *system_serial;
     char *fuel_mac_eeprom;
