@@ -12,6 +12,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "sgi-o2-product-fixture.h"
+#include "sgi-test.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "qobject/qstring.h"
@@ -295,6 +296,7 @@ static void test_launch(const void *opaque)
     g_autofree char *out = NULL, *err = NULL;
     const QListEntry *e;
     int status;
+    int64_t ram_mib;
     O2ProductTest product = { 0 };
 
     if (ip32) {
@@ -351,9 +353,23 @@ static void test_launch(const void *opaque)
     g_ptr_array_add(args, g_strdup("-smp"));
     g_ptr_array_add(args, g_strdup_printf("%" PRId64,
                                           qdict_get_int(o, "smp")));
-    g_ptr_array_add(args, g_strdup("-m"));
-    g_ptr_array_add(args, g_strdup_printf(
-        "%" PRId64 "M", qdict_get_int(memory, "default") * nodes));
+    /*
+     * Over 16 GiB (the Origin 3800 offerings) a builder host cannot back one
+     * plain -m reservation, so those launches map their RAM unreserved.
+     */
+    ram_mib = qdict_get_int(memory, "default") * nodes;
+    if (ram_mib > 16 * 1024) {
+        g_autofree char *ram =
+            g_strdup_printf(SGI_UNRESERVED_RAM("%" PRId64 "M"), ram_mib);
+        g_auto(GStrv) words = g_strsplit(ram, " ", 0);
+
+        for (char **w = words; *w; w++) {
+            g_ptr_array_add(args, g_strdup(*w));
+        }
+    } else {
+        g_ptr_array_add(args, g_strdup("-m"));
+        g_ptr_array_add(args, g_strdup_printf("%" PRId64 "M", ram_mib));
+    }
     for (const char *const *word = (const char *const[]) {
              "-nodefaults", "-display", "none", "-S", "-accel", "qtest",
              "-qmp", "stdio", NULL }; *word; word++) {

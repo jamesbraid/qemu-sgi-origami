@@ -1197,6 +1197,47 @@ static void test_two_routers_route_by_entry_link(void)
     qtest_quit(qts);
 }
 
+/*
+ * The high-bandwidth Origin 3800 joins its two routers on ports 1, 6, 7
+ * and 8, port to equal port, with C-bricks 0 to 3 on ports 2 to 5 of router
+ * 0 and C-bricks 4 to 7 on ports 2 to 5 of router 1. The look-ahead rule
+ * holds on the cables the two-router Origin 3400 does not have. Node 4, on
+ * router 1 port 2, reaches number 0 by port 8: hub turn (8 - 2) mod 8 = 6,
+ * and router 1's link-2 field, the turn router 0 applies, is (2 - 8) mod 8 =
+ * 2. Node 5, on router 1 port 3, reaches number 1 by port 7: hub turn 4, and
+ * router 1's link-3 field (3 - 7) mod 8 = 4.
+ */
+#define ORIGIN3800_ARGS "-M origin3000,topology=origin3800-high-bandwidth " \
+                        "-cpu R12000 -smp 32 " SGI_UNRESERVED_RAM("32768M")
+
+static void test_origin3800_routes_over_ports_7_and_8(void)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(ORIGIN3800_ARGS " -bios %s", quoted);
+
+    for (unsigned int node = 0; node < 8; node++) {
+        bte_cpu_writeq(qts, node * 4, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
+                       MD_BANK0_512MB);
+    }
+    bte_cpu_writeq(qts, 0, ROUTED_PROBE, WORD0);
+    bte_cpu_writeq(qts, 4, ROUTED_PROBE, WORD1);
+    for (unsigned int node = 1; node < 8; node++) {
+        bte_cpu_writeq(qts, node * 4, BEDROCK_LOCAL + LB_REVISION,
+                       (uint64_t)node << REVISION_NODE_SHIFT);
+    }
+
+    bte_cpu_writeq(qts, 16, BEDROCK_LOCAL + NI_LOCAL_ROUTE(0), 6);
+    bte_cpu_writeq(qts, 20, BEDROCK_LOCAL + NI_LOCAL_ROUTE(1), 4);
+    assert_unreachable(qts, 16, ROUTED_PROBE);
+    assert_unreachable(qts, 20, NODE(1) + ROUTED_PROBE);
+
+    cpu_vector_write(qts, 16, 0, ROUTER_LOCAL_TABLE(2, 0), 2);
+    cpu_vector_write(qts, 20, 0, ROUTER_LOCAL_TABLE(3, 1), 4);
+    g_assert_cmphex(cpu_read_ok(qts, 16, ROUTED_PROBE), ==, WORD0);
+    g_assert_cmphex(cpu_read_ok(qts, 20, NODE(1) + ROUTED_PROBE), ==, WORD1);
+    qtest_quit(qts);
+}
+
 static void test_local_boot_view_is_the_readers(void)
 {
     char *flashes[2];
@@ -2132,6 +2173,9 @@ int main(int argc, char **argv)
                    test_routed_reset_page_follows_the_route);
     qtest_add_func("sn1/cross-node/two-routers-route-by-entry-link",
                    test_two_routers_route_by_entry_link);
+    qtest_add_func(
+        "sn1/cross-node/origin3800-high-bandwidth/routes-over-ports-7-and-8",
+        test_origin3800_routes_over_ports_7_and_8);
     qtest_add_func("sn1/cross-node/local-boot-view-is-the-readers",
                    test_local_boot_view_is_the_readers);
     qtest_add_func("sn1/cross-node/l1-uart-local-form-is-the-readers",
