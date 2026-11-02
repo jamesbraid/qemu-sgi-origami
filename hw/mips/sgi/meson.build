@@ -18,11 +18,12 @@ sgi_machines_embed_c = custom_target('sgi-machines-embed.c.inc',
 # directory to the include path of whatever target its result feeds into,
 # the way ui/shader/meson.build's generated headers reach ui/shader.c
 # through the shared genh list.
+mips_ss.add(when: 'CONFIG_SGI_BOARD_CDROM', if_true: files('board-cdrom.c'))
 mips_ss.add(when: 'CONFIG_SGI_CATALOGUE',
             if_true: [files('sgi-machines.c', 'sgi-graphics.c',
                             'sgi-graphics-host.c',
                             'machine-storage.c',
-                            'board-cdrom.c', 'board-mac.c',
+                            'board-mac.c',
                             'sgi-cpu.c'),
                       sgi_machines_embed_c],
             if_false: files('sgi-machines-qmp-stub.c'))

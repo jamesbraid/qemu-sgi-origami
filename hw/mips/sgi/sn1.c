@@ -6,6 +6,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/core/boards.h"
+#include "hw/mips/sgi/sgi-board-cdrom.h"
 #include "hw/mips/sgi/sn-machine.h"
 #include "cpu.h"
 
@@ -65,6 +66,7 @@ static void sn1_machine_class_init(ObjectClass *oc, const void *data)
     sgi_machine_class_set_default_ram(
         mc, sgi_machine_topology_default_ram(t));
     mc->default_ram_id = "sn1.ram";
+    sgi_board_cdrom_class_init(mc);
     sgi_machine_class_add_storage(oc);
 }
 
