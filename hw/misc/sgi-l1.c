@@ -1869,6 +1869,26 @@ static const char *l1_chimera_type_name(const SGIL1State *s)
     }
 }
 
+/*
+ * The Origin 300 "brick" line, shared by the console and the wire path (L1
+ * datasheet, Origin 300 brick). The model holds no flash capacity or
+ * identity source, so the flash label is EMU-UNKNOWN and the source says
+ * whether the serial was configured.
+ */
+static char *l1_o300_brick_line(SGIL1State *s)
+{
+    bool configured = s->brick_serial && s->brick_serial[0];
+    g_autofree char *partition = s->partition ?
+        g_strdup_printf("%u", s->partition) : g_strdup("none");
+
+    return g_strdup_printf(
+        "rack: %03u, slot: %02u, partition: %s, type: C (IP45) "
+        "[EMU-UNKNOWN flash], serial:%s, source: %s",
+        s->rack, s->bay, partition,
+        configured ? s->brick_serial : "EMU-UNKNOWN-BSN",
+        configured ? "CONFIGURED" : "EMULATED");
+}
+
 static void l1_chimera_brick(SGIL1State *s, const char *type)
 {
     g_autofree char *partition = NULL;
@@ -2509,9 +2529,9 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
         } else if (argc == 1 && l1_chimera_type_name(s)) {
             l1_chimera_brick(s, l1_chimera_type_name(s));
         } else if (argc == 1) {
-            l1_printf(s, "rack: %03u, slot: %02u, partition: none, "
-                      "type: C (IP45) [1MB flash], serial: unavailable, "
-                      "source: EEPROM\r\n", s->rack, s->bay);
+            g_autofree char *brick = l1_o300_brick_line(s);
+
+            l1_printf(s, "%s\r\n", brick);
         } else if (argc == 3 && !strcmp(argv[1], "slot") &&
                    !qemu_strtoul(argv[2], NULL, 10, &value)) {
             if (value < 1 || value > 39) {
@@ -3219,7 +3239,6 @@ static char *l1_o300_command_text(SGIL1State *s, const char *command)
                                  "CONFIGURED" : "EMULATED";
     const char *system_location = s->system_serial && s->system_serial[0] ?
                                   "CONFIGURED" : "EMULATED";
-    g_autofree char *partition = NULL;
     g_autoptr(GString) text = NULL;
     char node[5][64] = {
         "EMU-UNKNOWN-NODE-PRODUCT", "EMU-UNKNOWN-NODE-SERIAL",
@@ -3233,12 +3252,9 @@ static char *l1_o300_command_text(SGIL1State *s, const char *command)
     };
 
     if (!strcmp(command, "brick ")) {
-        partition = s->partition ? g_strdup_printf("%u", s->partition) :
-                                   g_strdup("none");
-        return g_strdup_printf(
-            "rack: %03u, slot: %02u, partition: %s, type: C (IP45) "
-            "[EMU-UNKNOWN flash], serial:%s, source: %s\n\n",
-            s->rack, s->bay, partition, brick_serial, brick_location);
+        g_autofree char *line = l1_o300_brick_line(s);
+
+        return g_strdup_printf("%s\n\n", line);
     }
     if (!strcmp(command, "version ")) {
         if (s->revision_major < 0) {
