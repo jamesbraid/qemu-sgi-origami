@@ -2489,13 +2489,8 @@ static void l1_expect_revision(QTestState *qts, int32_t major,
          request_length <= sizeof(request); request_length++) {
         l1_send_at(qts, L1_UART_LOCAL_BASE, request, request_length);
         length = l1_receive_at(qts, L1_UART_LOCAL_BASE, reply);
-        g_assert_cmpuint(length, ==, major < 0 ? 6 : 21);
+        g_assert_cmpuint(length, ==, 21);
         g_assert_cmphex(reply[0], ==, 0x30);
-        if (major < 0) {
-            g_assert_cmpint((int32_t)ldl_be_p(reply + 1), ==, -104);
-            g_assert_cmphex(reply[5], ==, 0);
-            continue;
-        }
         g_assert_cmpuint(ldl_be_p(reply + 1), ==, 0);
         g_assert_cmphex(reply[5], ==, 3);
         for (size_t i = 0; i < 3; i++) {
@@ -2549,12 +2544,20 @@ static void test_fuel_l1_revision(const void *data)
     g_autofree char *quoted = g_shell_quote(prom_path);
     QTestState *qts;
 
-    /* The Fuel catalogue has no L1 revision: the reply stays unknown. */
+    /* The Fuel defaults to 1.48.1, a labelled model choice. */
     qts = qtest_initf("-M fuel -cpu R14000 -smp 1 -m 512M -bios %s -S",
                       quoted);
-    l1_expect_revision(qts, -1, -1, -1);
+    l1_expect_revision(qts, 1, 48, 1);
     qtest_system_reset(qts);
-    l1_expect_revision(qts, -1, -1, -1);
+    l1_expect_revision(qts, 1, 48, 1);
+    qtest_quit(qts);
+
+    /* An override replaces the default. */
+    qts = qtest_initf("-M fuel,l1-revision=1.14.4 "
+                      "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
+    l1_expect_revision(qts, 1, 14, 4);
+    qtest_system_reset(qts);
+    l1_expect_revision(qts, 1, 14, 4);
     qtest_quit(qts);
 
     qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
@@ -2674,7 +2677,7 @@ static void test_fuel_l1_revision_migration(const void *data)
         { ",l1-revision=1.48.1", "", 1, 48, 1 },
         { ",l1-revision=1.48.1", ",l1-revision=1.14.4",
           1, 48, 1 },
-        { "", ",l1-revision=1.14.4", -1, -1, -1 },
+        { "", ",l1-revision=1.14.4", 1, 48, 1 },
     };
     g_autofree char *quoted = g_shell_quote(prom_path);
 

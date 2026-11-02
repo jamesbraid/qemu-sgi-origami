@@ -313,7 +313,7 @@ also keeps a mask of ``0xf000`` requiring ``0x4000``, so a
    * - Fuel
      - ``0x4004``
      - ``0x41`` (``A``)
-     - none
+     - 1.48.1
      - 2
 
 - Board word bits 15:12: OpenBSD reads them as the product code and
@@ -328,9 +328,11 @@ also keeps a mask of ``0xf000`` requiring ``0x4000``, so a
   (:src:`lore-kaloz-ip35-35`), a *software expectation*. No captured L1
   type reply exists for either, *unknown*.
 - L1 revision: the Fuel captures report 1.48.1 and 1.14.4, and neither
-  is tied to the modelled board, so the Fuel answers the unknown-version
-  error unless a launch supplies ``l1-revision=``. The Origin 300's 1.18.5
-  is a choice.
+  is tied to the modelled board. The Fuel defaults to 1.48.1, the
+  revision one public capture reports, a model choice. IRIX in the model
+  boots without the L1 version warnings at that value, a software effect
+  that did not decide it. ``l1-revision=`` replaces it. The Origin 300's
+  1.18.5 is a choice too.
 - Flash machine type: the value written into the PROM's configuration
   block. The PROM's Origin 300 rows carry type 1 and its Fuel rows type 2,
   a *software expectation*. A real Fuel's ``flash -f`` session answers 2

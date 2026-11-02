@@ -611,10 +611,12 @@ class BedrockConfigurationTests(unittest.TestCase):
             "board-id-word": 0x4004, "board-id-mask": 0xf000,
             "board-id-required-bits": 0x4000, "initiator-region": 0,
             "installed-bank-mask": 3, "local-region": 0})
-        # The L1 revision stays unknown: no capture fits the selected board.
+        # The L1 revision is a model choice: it matches a public capture,
+        # which is not tied to the selected board.
         l1 = topology["controllers"][0]["l1"]
         self.assertEqual(l1, {
             "reported-type": 0x41,
+            "revision": {"major": 1, "minor": 48, "patch": 1},
             "mac-eeprom-input": {
                 "option": "fuel-mac-eeprom", "required": False}})
         board = topology["io-boards"][0]
