@@ -216,7 +216,15 @@ the same rule.
    * - ``0x100`` to ``0x110``
      - Scratch 0-2
      - read, write
-     - Full words.
+     - Full words. The stock :term:`PROM` stores the router's serial in scratch 0
+       bits 47:0, the booted flag in bit 63 and a local identifier in bits
+       62:56 (*observed*), and skips a router whose scratch 0 reads as booted.
+       The model needs bit 63 clear after reset, which zero gives. The PROM
+       reads the serial text from the router's L1 as base 36 digits, so a
+       serial of more than nine letters and digits, or with another
+       character, spills into bits 63:48. That reading and the
+       nine-character limit are a software expectation seen in a run of
+       the stock PROM on the model; no landed datasheet states them.
    * - ``0x118``, ``0x120``
      - Scratch 3 and 4
      - read, write
