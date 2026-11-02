@@ -173,6 +173,7 @@ static void lb_revision_write(SGIBedrockLBState *s, uint64_t value)
                                    LB_REVISION_NODE_WIDTH);
     s->programmed_region = region;
     if (s->programmed_node != before) {
+        trace_sgi_bedrock_lb_node_number(s, before, s->programmed_node);
         lb_node_changed(s);
     }
 }
