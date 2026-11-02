@@ -25,6 +25,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/scsi/scsi.h"
 #include "hw/scsi/aic7880.h"
+#include "hw/scsi/sgi-scsi-cd.h"
 #include "scsi/utils.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -876,6 +877,7 @@ static void aic7880_complete(SCSIRequest *req, size_t residual)
 {
     AIC7880State *s = req->hba_private;
 
+    sgi_scsi_cd_command_done(req);
     aic7880_seq_invalidate(s);
     aic7880_complete_impl(req, residual);
     aic7880_run(s);
@@ -1360,6 +1362,7 @@ static void aic7880_scsi_reset(AIC7880State *s)
         scsi_req_cancel(s->req);
     }
     bus_cold_reset(BUS(&s->bus));
+    sgi_scsi_cd_bus_reset(&s->bus);
     s->selected = false;
     s->lun = 0;
     s->disconnect_allowed = false;
@@ -1474,6 +1477,7 @@ static void aic7880_reset_hold(Object *obj, ResetType type)
 
     aic7880_seq_invalidate(s);
     aic7880_reset_hold_impl(obj, type);
+    sgi_scsi_cd_adapter_reset(DEVICE(s));
     aic7880_run(s);
 }
 
