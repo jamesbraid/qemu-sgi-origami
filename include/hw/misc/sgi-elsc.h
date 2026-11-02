@@ -413,6 +413,8 @@ struct SGIElscState {
     bool fan_high;
     bool fsc_present;
     bool short_timeouts;
+    /* Missing effects already logged; not migrated, so a restore logs again. */
+    uint8_t unimp_logged;
     uint8_t margins[SGI_ELSC_SUPPLIES];
 
     /*

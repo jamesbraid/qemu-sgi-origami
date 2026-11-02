@@ -926,6 +926,28 @@ static void elsc_handle_tas(SGIElscState *s, ElscRequest *r)
     elsc_frame_response(s, buf, sizeof(buf));
 }
 
+/* The commands that accept a write whose hardware effect is not modelled. */
+enum {
+    ELSC_UNIMP_FSC = 1 << 0,
+    ELSC_UNIMP_TST = 1 << 1,
+    ELSC_UNIMP_FRE = 1 << 2,
+    ELSC_UNIMP_NIC = 1 << 3,
+};
+
+/*
+ * Log a missing effect once per controller: a guest polls some of these
+ * commands, and one line says as much as a thousand.
+ */
+static void elsc_log_unimp_once(SGIElscState *s, unsigned bit,
+                                const char *what)
+{
+    if (s->unimp_logged & bit) {
+        return;
+    }
+    s->unimp_logged |= bit;
+    qemu_log_mask(LOG_UNIMP, "sgi-elsc: %s\n", what);
+}
+
 /*
  * "nic <p> <s> <d>": one-wire identity passthrough. Three values from the
  * hex reader (pulse, sample, delay), any of them missing a bad argument,
@@ -947,6 +969,11 @@ static void elsc_handle_nic(SGIElscState *s, ElscRequest *r)
 
     if (s->module_ops && s->module_ops->onewire_slot) {
         level = s->module_ops->onewire_slot(s->module_opaque, pulse, sample);
+    } else {
+        /* The sheet gives no line level for a module without the device. */
+        elsc_log_unimp_once(s, ELSC_UNIMP_NIC,
+                            "\"nic\" with no one-wire device on this "
+                            "module; the line idles high, an approximation");
     }
     trace_sgi_elsc_nic(pulse, sample, delay,
                        s->module_ops && s->module_ops->onewire_slot, level);
@@ -1180,6 +1207,13 @@ static void elsc_handle_fsc(SGIElscState *s, ElscRequest *r)
 
     if (elsc_read_char(r, &c) && (c == '1' || c == '0')) {
         s->fsc_present = c == '1';
+        if (s->fsc_present) {
+            /* The sheet: the flag's effects exist only in the 2000 build. */
+            elsc_log_unimp_once(s, ELSC_UNIMP_FSC,
+                                "\"fsc 1\" is stored only; the serial "
+                                "display mirror and the key-switch "
+                                "power-up rule are not modelled");
+        }
     } else if (s->serial_running) {
         /* The serial reply keeps the digit the I2C reply loses. */
         elsc_frame_response_str(s, s->fsc_present ? "ok1" : "ok0");
@@ -1202,6 +1236,11 @@ static void elsc_handle_tst(SGIElscState *s, ElscRequest *r)
         return;
     }
     s->short_timeouts = c == '1';
+    if (s->short_timeouts) {
+        elsc_log_unimp_once(s, ELSC_UNIMP_TST,
+                            "\"tst 1\" is stored only; the shortened "
+                            "fan-check and power-up waits are not modelled");
+    }
     elsc_frame_ok(s);
 }
 
@@ -2013,6 +2052,9 @@ static void elsc_handle_fre(SGIElscState *s, ElscRequest *r)
         uint8_t b = v;
 
         elsc_command_nvram(s, "fre", ELSC_NVRAM_CLOCK, &b, true);
+        elsc_log_unimp_once(s, ELSC_UNIMP_FRE,
+                            "\"fre\" write is stored only; the midplane "
+                            "clock chip is not modelled");
     }
     elsc_frame_ok(s);
 }

@@ -2826,6 +2826,58 @@ static void test_request_grammar(const void *data)
     qtest_quit(qts);
 }
 
+static unsigned count_substr(const char *haystack, const char *needle)
+{
+    unsigned count = 0;
+
+    for (const char *p = strstr(haystack, needle); p;
+         p = strstr(p + 1, needle)) {
+        count++;
+    }
+    return count;
+}
+
+/*
+ * ELSC sheet, "fsc", "tst" and "nic": the Origin 2000 effects of "fsc 1",
+ * the shortened timeouts of "tst 1" and a one-wire line with no device are
+ * not modelled. The replies are unchanged, and each missing effect is
+ * logged once so that a guest which depends on it can be told apart from
+ * one that does not.
+ */
+static void test_unmodelled_effects_logged(const void *data)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *log = NULL;
+    int fd = g_file_open_tmp("sn0-elsc-unimp-XXXXXX", &path, NULL);
+    QTestState *q;
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    quoted = g_shell_quote(path);
+    args = g_strdup_printf("-M origin200 -d unimp -D %s", quoted);
+    q = qtest_init(args);
+
+    /* Clearing a flag, or a query, has no effect to lose. */
+    assert_reply(q, "fsc 0", "ok ");
+    assert_reply(q, "tst 0", "ok ");
+    assert_reply(q, "fsc", "ok ");
+    assert_reply(q, "fsc 1", "ok ");
+    assert_reply(q, "fsc 1", "ok ");
+    assert_reply(q, "tst 1", "ok ");
+    assert_reply(q, "tst 1", "ok ");
+    assert_reply(q, "nic 1 2 3", "ok 1");
+    assert_reply(q, "nic 1 2 3", "ok 1");
+    qtest_quit(q);
+
+    g_assert_true(g_file_get_contents(path, &log, NULL, NULL));
+    g_assert_cmpuint(count_substr(log, "sgi-elsc: \"fsc 1\""), ==, 1);
+    g_assert_cmpuint(count_substr(log, "sgi-elsc: \"tst 1\""), ==, 1);
+    g_assert_cmpuint(count_substr(log, "sgi-elsc: \"nic\""), ==, 1);
+    unlink(path);
+}
+
 /*
  * The commands that only keep a flag: "fan", "fsc", "tst", "tmp", "sla"
  * and "clr", byte for byte, with what each leaves for the next query.
@@ -3521,7 +3573,8 @@ static void serial_command(QTestState *qts, int fd, const char *line,
     aux_expect(qts, fd, want, strlen(want));
 }
 
-static QTestState *serial_machine(const char *machine, int *lfd, int *fd)
+static QTestState *serial_machine_with(const char *machine, const char *extra,
+                                       int *lfd, int *fd)
 {
     uint16_t port;
     g_autofree char *args = NULL;
@@ -3529,13 +3582,18 @@ static QTestState *serial_machine(const char *machine, int *lfd, int *fd)
 
     *lfd = aux_listen(&port);
     args = g_strdup_printf(
-        "-M %s " ELSC_AUX_LEADING_SERIALS
+        "-M %s %s " ELSC_AUX_LEADING_SERIALS
         "-chardev socket,id=aux,host=127.0.0.1,port=%u,reconnect-ms=10000 "
-        "-serial chardev:aux", machine, port);
+        "-serial chardev:aux", machine, extra, port);
     qts = qtest_init(args);
     *fd = aux_accept(*lfd);
     aux_drain(qts, *fd);
     return qts;
+}
+
+static QTestState *serial_machine(const char *machine, int *lfd, int *fd)
+{
+    return serial_machine_with(machine, "", lfd, fd);
 }
 
 /*
@@ -3602,6 +3660,42 @@ static void test_serial_command_line(const void *data)
     close(fd);
     close(lfd);
     qtest_quit(qts);
+}
+
+/*
+ * ELSC sheet, "fre" (Origin 2000 build, serial line): a write sets the
+ * clock-select byte and, on hardware, reprograms the midplane clock chip.
+ * The model has no such chip, keeps the byte, answers as before and logs
+ * the missing effect once.
+ */
+static void test_fre_write_logged(const void *data)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    int fd = g_file_open_tmp("sn0-fre-unimp-XXXXXX", &path, NULL);
+    int lfd, afd;
+    QTestState *q;
+    const char *first;
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    quoted = g_shell_quote(path);
+    extra = g_strdup_printf("-d unimp -D %s", quoted);
+    q = serial_machine_with("origin2000", extra, &lfd, &afd);
+    serial_command(q, afd, "pas none", "ok");
+    serial_command(q, afd, "fre 5", "ok");
+    serial_command(q, afd, "fre 6", "ok");
+    close(afd);
+    close(lfd);
+    qtest_quit(q);
+
+    g_assert_true(g_file_get_contents(path, &log, NULL, NULL));
+    first = strstr(log, "sgi-elsc: \"fre\" write");
+    g_assert_nonnull(first);
+    g_assert_null(strstr(first + 1, "sgi-elsc: \"fre\" write"));
+    unlink(path);
 }
 
 /*
@@ -4078,6 +4172,10 @@ int main(int argc, char **argv)
                         test_pwr_down_posts_pd_remote);
     qtest_add_data_func("sn0/elsc/aut-reads-and-writes-nvram", NULL,
                         test_aut_reads_and_writes_nvram);
+    qtest_add_data_func("sn0/elsc/unmodelled-effects-logged", NULL,
+                        test_unmodelled_effects_logged);
+    qtest_add_data_func("sn0/elsc/fre-write-logged", NULL,
+                        test_fre_write_logged);
     qtest_add_data_func("sn0/elsc/stored-flag-commands", NULL,
                         test_stored_flag_commands);
     qtest_add_data_func("sn0/elsc/request-grammar", NULL,
