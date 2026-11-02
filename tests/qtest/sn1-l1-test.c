@@ -2915,6 +2915,39 @@ static void test_env_migration(void)
 }
 
 /*
+ * L1 datasheet, Origin 300 "brick": the console prints the live rack, slot
+ * and partition, the unknown flash label, and an unconfigured serial as
+ * EMU-UNKNOWN-BSN from source EMULATED (CONFIGURED once brick-serial is
+ * set). The wire path prints the same fields.
+ */
+static void test_o300_console_brick(void)
+{
+    static const struct {
+        const char *props;
+        const char *expected;
+    } cases[] = {
+        { ",auto-power=off",
+          "rack: 001, slot: 01, partition: none, type: C (IP45) "
+          "[EMU-UNKNOWN flash], serial:EMU-UNKNOWN-BSN, "
+          "source: EMULATED\r\n" },
+        { ",partition=3,brick-serial=BSN1,auto-power=off",
+          "rack: 001, slot: 01, partition: 3, type: C (IP45) "
+          "[EMU-UNKNOWN flash], serial:BSN1, source: CONFIGURED\r\n" },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *reply = NULL;
+        int fd;
+        QTestState *s = console_start(&fd, cases[i].props, "");
+
+        reply = env_run(fd, "brick");
+        g_assert_cmpstr(reply, ==, cases[i].expected);
+        qtest_quit(s);
+        close(fd);
+    }
+}
+
+/*
  * L1 datasheet, "brick": no letter precedes the type name; the 2MB image
  * prints [2MB flash]; the source is EEPROM; a brick with no board-record
  * serial prints the C library's "(null)" (inferred).
@@ -8486,6 +8519,7 @@ int main(int argc, char **argv)
                         &env_q_ip59, test_env_unpowered);
     qtest_add_func("sn1/l1/env/unmodelled", test_env_unmodelled);
     qtest_add_func("sn1/l1/chimera/brick", test_chimera_brick);
+    qtest_add_func("sn1/l1/o300/console-brick", test_o300_console_brick);
     qtest_add_func("sn1/l1/chimera/config", test_chimera_config);
     qtest_add_func("sn1/l1/chimera/serial-all", test_chimera_serial_all);
     qtest_add_func("sn1/l1/env/on-off", test_env_on_off);
