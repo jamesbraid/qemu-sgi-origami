@@ -5,9 +5,9 @@
  *
  * The drive powers on at 2048-byte logical blocks and reports them in an
  * eight-byte block descriptor; MODE SELECT switches it to 512, after which
- * MODE SENSE, READ CAPACITY and READ(10) all count 512-byte blocks.
- * Each adapter's test supplies the transport; the expectations here are
- * shared.
+ * MODE SENSE, READ CAPACITY and READ(10) all count 512-byte blocks; a
+ * reset puts it back at 2048 and raises a unit attention. Each adapter's
+ * test supplies the transport; the expectations here are shared.
  *
  * Every 512-byte block of the medium is filled with its own number, so a
  * READ(10) counted in the wrong unit returns another block's bytes.
@@ -28,6 +28,9 @@
 
 #define SGI_CD_GOOD             0x00
 #define SGI_CD_CHECK_CONDITION  0x02
+#define SGI_CD_ILLEGAL_REQUEST  0x05
+#define SGI_CD_UNIT_ATTENTION   0x06
+#define SGI_CD_ASC_RESET        0x29
 
 typedef struct SgiCdTransport {
     /*
@@ -39,7 +42,19 @@ typedef struct SgiCdTransport {
     uint8_t (*command)(void *opaque, const uint8_t *cdb, size_t cdb_len,
                        uint8_t *data, uint32_t len, bool out,
                        uint8_t *sense);
+    /*
+     * Reset the CD-ROM the way the adapter's driver would: a bus reset, or
+     * a target reset on an adapter with no bus to reset.
+     */
+    void (*reset)(void *opaque);
     void *opaque;
+    /*
+     * Other resets the adapter has, each optional: a target reset, and the
+     * adapter's own soft reset. The callback leaves the adapter ready for
+     * commands again, as the driver would.
+     */
+    void (*target_reset)(void *opaque);
+    void (*soft_reset)(void *opaque);
 } SgiCdTransport;
 
 /* A medium file whose 512-byte blocks hold their own numbers. */
@@ -68,6 +83,20 @@ static inline uint8_t sgi_cd_run(const SgiCdTransport *t, const uint8_t *cdb,
 
     return t->command(t->opaque, cdb, cdb_len, data, len, out,
                       sense ? sense : scratch);
+}
+
+/* The first command after a reset collects its unit attention. */
+static inline void sgi_cd_expect_reset_attention(const SgiCdTransport *t)
+{
+    static const uint8_t tur[6] = { 0x00 };
+    uint8_t sense[18] = { 0 };
+
+    g_assert_cmphex(sgi_cd_run(t, tur, sizeof(tur), NULL, 0, false, sense),
+                    ==, SGI_CD_CHECK_CONDITION);
+    g_assert_cmphex(sense[2] & 0x0f, ==, SGI_CD_UNIT_ATTENTION);
+    g_assert_cmphex(sense[12], ==, SGI_CD_ASC_RESET);
+    g_assert_cmphex(sgi_cd_run(t, tur, sizeof(tur), NULL, 0, false, NULL),
+                    ==, SGI_CD_GOOD);
 }
 
 /* The block descriptor's length and block count, from MODE SENSE(6). */
@@ -129,6 +158,21 @@ static inline void sgi_cd_expect_read(const SgiCdTransport *t,
     g_assert_cmpmem(got, length, want, length);
 }
 
+/* READ(10) of one @length block at @lba, which lies beyond the medium. */
+static inline void sgi_cd_expect_read_refused(const SgiCdTransport *t,
+                                              uint32_t length, uint32_t lba)
+{
+    uint8_t cdb[10] = { 0x28 };
+    g_autofree uint8_t *got = g_malloc(length);
+    uint8_t sense[18] = { 0 };
+
+    stl_be_p(cdb + 2, lba);
+    stw_be_p(cdb + 7, 1);
+    g_assert_cmphex(sgi_cd_run(t, cdb, sizeof(cdb), got, length, false, sense),
+                    ==, SGI_CD_CHECK_CONDITION);
+    g_assert_cmphex(sense[2] & 0x0f, ==, SGI_CD_ILLEGAL_REQUEST);
+}
+
 /*
  * MODE SELECT(6) with a header and one descriptor asking for @length, the
  * list the Octane PROM sends. @pf is the page format bit.
@@ -187,6 +231,44 @@ static inline void sgi_cd_check_select_512(const SgiCdTransport *t, bool pf)
     sgi_cd_expect_read(t, 512, SGI_CD_BLOCKS_2048 + 1);
     sgi_cd_expect_descriptor(t, 512, SGI_CD_BLOCKS_512);
     sgi_cd_expect_capacity(t, 512, SGI_CD_BLOCKS_512);
+}
+
+/*
+ * After a reset: the reset unit attention, then 2048-byte blocks again,
+ * with the last 2048-byte block readable and the one past it refused,
+ * both before READ CAPACITY. The refusal needs the last LBA recounted in
+ * 2048s: the stale 512-byte count would still admit it.
+ */
+static inline void sgi_cd_check_reset_by(const SgiCdTransport *t,
+                                         void (*reset)(void *opaque))
+{
+    reset(t->opaque);
+    sgi_cd_expect_reset_attention(t);
+    sgi_cd_expect_read(t, 2048, SGI_CD_BLOCKS_2048 - 1);
+    sgi_cd_expect_read_refused(t, 2048, SGI_CD_BLOCKS_2048);
+    sgi_cd_expect_descriptor(t, 2048, SGI_CD_BLOCKS_2048);
+    sgi_cd_expect_capacity(t, 2048, SGI_CD_BLOCKS_2048);
+}
+
+static inline void sgi_cd_check_reset(const SgiCdTransport *t)
+{
+    sgi_cd_check_reset_by(t, t->reset);
+}
+
+/*
+ * The adapter's other resets, each from a drive set to 512 again, since
+ * the adapter hooks that restore the power-on length differ per reset.
+ */
+static inline void sgi_cd_check_other_resets(const SgiCdTransport *t)
+{
+    void (*resets[])(void *) = { t->target_reset, t->soft_reset };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(resets); i++) {
+        if (resets[i]) {
+            sgi_cd_check_select_512(t, true);
+            sgi_cd_check_reset_by(t, resets[i]);
+        }
+    }
 }
 
 #endif /* SGI_SCSI_CD_TEST_H */

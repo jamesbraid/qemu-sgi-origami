@@ -700,6 +700,26 @@ static uint8_t cd_command(void *opaque, const uint8_t *cdb, size_t cdb_len,
     return scsi_status;
 }
 
+/* Channel 0's bus reset, with no hold-off afterwards. */
+static void cd_bus_reset(void *opaque)
+{
+    const uint16_t in[] = { 0, 0 };
+
+    g_assert_cmphex(isp_mbox(opaque, ISP_MBOX_CMD_BUS_RESET, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(opaque);
+}
+
+/* A target reset for the CD-ROM's target, which only this part takes. */
+static void cd_target_reset(void *opaque)
+{
+    const uint16_t in[] = { ISP_DEVICE_WORD(0, CD_TARGET, 0), 0, 0 };
+
+    g_assert_cmphex(isp_mbox(opaque, ISP_MBOX_CMD_ABORT_TARGET, in,
+                             ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(opaque);
+}
+
 static void test_cdrom_block_length(const void *data)
 {
     g_autofree char *path = sgi_cd_medium_create();
@@ -709,7 +729,8 @@ static void test_cdrom_block_length(const void *data)
         " -drive if=none,id=cd,format=raw,readonly=on,file=%s"
         " -device scsi-cd,bus=scsi.0,scsi-id=%u,drive=cd",
         prom, medium, CD_TARGET);
-    const SgiCdTransport t = { cd_command, qts };
+    const SgiCdTransport t = { cd_command, cd_bus_reset, qts,
+                               cd_target_reset };
 
     qtest_writeq(qts, BEDROCK_NODE0 + MD_MEMORY_CONFIG,
                  origin300.memory_config);
@@ -718,6 +739,8 @@ static void test_cdrom_block_length(const void *data)
 
     sgi_cd_check_power_on(&t);
     sgi_cd_check_select_512(&t, true);
+    sgi_cd_check_reset(&t);
+    sgi_cd_check_other_resets(&t);
     sgi_cd_check_select_512(&t, false);
 
     qtest_quit(qts);

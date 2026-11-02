@@ -1395,6 +1395,9 @@ static void test_two_luns_behind_one_target(const void *data)
 #define CD_DATA_MAX                 2048
 #define CD_RING_ENTRIES             16
 #define ISP_STATUS_OFF_SENSE_DATA   32
+#define ISP_MBOX_CMD_BUS_RESET      0x0018
+#define ISP_REG_BUS_CTRL            0x08
+#define ISP_BUS_CTRL_SOFT_RESET     0x0001
 
 typedef struct CdRing {
     QTestState *qts;
@@ -1468,6 +1471,30 @@ static uint8_t cd_command(void *opaque, const uint8_t *cdb, size_t cdb_len,
     return scsi_status;
 }
 
+/* The bus-reset mailbox command, with no hold-off afterwards. */
+static void cd_bus_reset(void *opaque)
+{
+    CdRing *r = opaque;
+
+    isp_writew(r->qts, ISP_MAILBOX(0), ISP_MBOX_CMD_BUS_RESET);
+    isp_writew(r->qts, ISP_MAILBOX(1), 0);
+    isp_writew(r->qts, ISP_REG_HOST_CMD,
+               ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(isp_readw(r->qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
+    isp_mbox_ack(r->qts);
+}
+
+static void cd_ring_init(CdRing *ring);
+
+/* A soft reset clears the rings and the window, so they are set up again. */
+static void cd_soft_reset(void *opaque)
+{
+    CdRing *r = opaque;
+
+    isp_writew(r->qts, ISP_REG_BUS_CTRL, ISP_BUS_CTRL_SOFT_RESET);
+    cd_ring_init(r);
+}
+
 /* The window, bus mastering and both rings, from power-on state. */
 static void cd_ring_init(CdRing *ring)
 {
@@ -1493,13 +1520,23 @@ static void test_cdrom_block_length(const void *data)
         " -drive id=cd,if=none,file=%s,format=raw,readonly=on"
         " -device scsi-cd,bus=scsi.0,scsi-id=1,drive=cd", path);
     CdRing ring = { .qts = qtest_init(args) };
-    const SgiCdTransport t = { cd_command, &ring };
+    const SgiCdTransport t = { cd_command, cd_bus_reset, &ring, NULL,
+                               cd_soft_reset };
 
     cd_ring_init(&ring);
     sgi_cd_check_power_on(&t);
     sgi_cd_check_select_512(&t, true);
+    sgi_cd_check_reset(&t);
+    sgi_cd_check_other_resets(&t);
     /* The same list with PF clear, which a SCSI-2 drive also takes. */
     sgi_cd_check_select_512(&t, false);
+
+    /* A system reset also returns the drive to its power-on length. */
+    qtest_system_reset(ring.qts);
+    cd_ring_init(&ring);
+    sgi_cd_expect_reset_attention(&t);
+    sgi_cd_expect_read(&t, 2048, SGI_CD_BLOCKS_2048 - 1);
+    sgi_cd_expect_descriptor(&t, 2048, SGI_CD_BLOCKS_2048);
 
     qtest_quit(ring.qts);
     g_assert_cmpint(g_unlink(path), ==, 0);

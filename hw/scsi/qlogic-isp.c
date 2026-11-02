@@ -727,6 +727,7 @@ static void qlogic_isp_reset_channel_buses(QLogicISPState *s)
     for (i = 0; i < info->nchannels; i++) {
         bus_cold_reset(BUS(&s->chan[i].bus));
     }
+    sgi_scsi_cd_adapter_reset(DEVICE(s));
 }
 
 /* Only the extended RAM-load opcode consumes high address mailboxes. */
@@ -965,6 +966,7 @@ static void qlogic_isp_reset_target(QLogicISPState *s, int channel,
 
         if (sdev->id == target) {
             device_cold_reset(DEVICE(sdev));
+            sgi_scsi_cd_device_reset(sdev);
         }
     }
 }
@@ -1346,6 +1348,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         retired = qlogic_isp_retire(s, channel, -1, -1, -1, ISP_IOCB_RESET);
         trace_qlogic_isp_recovery(cmd, channel, -1, -1, 0, retired);
         bus_cold_reset(BUS(&s->chan[channel].bus));
+        sgi_scsi_cd_bus_reset(&s->chan[channel].bus);
 
         /*
          * The command itself completes at once (inferred: the drivers give
@@ -2894,6 +2897,7 @@ static void qlogic_isp_reset_hold(Object *obj, ResetType type)
     QLogicISPState *s = QLOGIC_ISP(obj);
 
     qlogic_isp_reset_state(s);
+    sgi_scsi_cd_adapter_reset(DEVICE(s));
 }
 
 static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
