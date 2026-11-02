@@ -260,9 +260,11 @@ and ``brick slot`` store a pending value applied at the next controller
 restart. The brick serial (``0x0004``) comes from ``brick-serial`` and
 the system serial (``0x0008``) from ``system-serial``, or from a station
 address (see :ref:`sgi-l1-records`). Without them both requests answer
-minus 104, except that the Fuel's brick serial defaults to ``EMUN00``, the
-synthetic text serial of the node's system board numbered by node index,
-a model choice that ``brick-serial`` replaces. The firmware revision (``0x0005``) comes from
+minus 104, except that the Fuel's brick serial defaults to ``EMUN`` and a
+hex byte of the machine's identity seed (the system disk's path or the
+machine name, hashed as for the default station address), the synthetic
+text serial of the node's system board, a model choice that
+``brick-serial`` replaces. The firmware revision (``0x0005``) comes from
 ``revision-major``, ``-minor`` and ``-patch``. All three must be set or
 none; on a machine that selects none the request answers minus 104 and
 logs ``LOG_UNIMP``.
@@ -808,7 +810,9 @@ Built identity records
   ``cpu-context-present``) are set, the controller builds a chassis
   area and a board area. The board area carries the given name, part
   and revision, the manufacturer ``SYNTHETIC``, a marked synthetic
-  serial such as ``EMUN00`` (``N`` and the ``identity-index``), and zero
+  serial, ``board-serial`` when set (the machine sets ``EMUN`` and a hex byte
+  of the identity seed, plus the node index, on the Fuel and the Origin 300
+  family), else such as ``EMUN00`` (``N`` and the ``identity-index``), and zero
   placeholder fields, and sums to zero. ``cpu-context-present`` adds the
   processor and hub clocks and a mode word for the Origin 350 family.
   ``mac-record`` adds the station address (``mac``): ``io8-board``

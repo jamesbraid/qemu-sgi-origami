@@ -229,6 +229,8 @@ struct SGIL1State {
     uint8_t board_mac[6];
     bool board_mac_valid;
     char *brick_serial;
+    /* The node's system board text serial, when the machine gives one. */
+    char *board_serial;
     char *brick_type;
     uint32_t brick_type_code;
     bool o300_l1cmd_compat;

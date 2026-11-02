@@ -2627,7 +2627,15 @@ static void test_fuel_l1_revision(const void *data)
     qtest_quit(qts);
 }
 
-/* The Fuel's brick serial defaults to a marked synthetic one. */
+static void l1_expect_mac_text(QTestState *qts, const char *text);
+
+/*
+ * The Fuel's brick serial defaults to "EMUN" and a byte of the identity
+ * seed: sha256("fuel") byte 5 is 0xe5 with no disk, and sha256("/dev/null")
+ * byte 5 is 0xd3 with that as the system disk. The disk case also pins the
+ * address text of the same seed (fd5d32...: 08:00:69:ed:5d:32). mac= moves
+ * the address and not the serial.
+ */
 static void test_fuel_l1_brick_serial(const void *data)
 {
     g_autofree char *quoted = g_shell_quote(prom_path);
@@ -2635,9 +2643,24 @@ static void test_fuel_l1_brick_serial(const void *data)
 
     qts = qtest_initf("-M fuel -cpu R14000 -smp 1 -m 512M -bios %s -S",
                       quoted);
-    l1_expect_brick_serial(qts, "EMUN00");
+    l1_expect_brick_serial(qts, "EMUNE5");
     qtest_system_reset(qts);
-    l1_expect_brick_serial(qts, "EMUN00");
+    l1_expect_brick_serial(qts, "EMUNE5");
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M fuel -cpu R14000 -smp 1 -m 512M -bios %s -S "
+                      "-drive if=scsi,bus=0,unit=0,file=/dev/null,format=raw",
+                      quoted);
+    l1_expect_brick_serial(qts, "EMUND3");
+    l1_expect_mac_text(qts, "080069ED5D32");
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M fuel,mac=02:a1:b2:c3:d4:e5 -cpu R14000 -smp 1 "
+                      "-m 512M -bios %s -S "
+                      "-drive if=scsi,bus=0,unit=0,file=/dev/null,format=raw",
+                      quoted);
+    l1_expect_brick_serial(qts, "EMUND3");
+    l1_expect_mac_text(qts, "02A1B2C3D4E5");
     qtest_quit(qts);
 
     /* A serial set on the device replaces the default. */
@@ -2986,9 +3009,29 @@ static void expect_l1_area(QTestState *qts, unsigned component,
                            size_t length);
 
 /*
+ * The vectors above carry the instance-numbered serial "EMUN00" at bytes
+ * 27-32. The origin300 machine with no disk puts "EMUN" and the sixth byte
+ * of sha256("origin300") (65c7035bfaf7...) there instead, "EMUNF7", so the
+ * checksum byte moves with it.
+ */
+static void node_board_with_serial(uint8_t *board, const uint8_t *vector,
+                                   const char *serial)
+{
+    uint8_t sum = 0;
+
+    memcpy(board, vector, 72);
+    memcpy(board + 27, serial, 6);
+    for (size_t i = 0; i < 71; i++) {
+        sum += board[i];
+    }
+    board[71] = -sum;
+}
+
+/*
  * Without files the L1 builds the node board's chassis and board areas
  * for the fitted processor count, byte for byte as the launcher's Python
- * encoder did. No memory record is invented.
+ * encoder did, with the machine's seeded serial. No memory record is
+ * invented.
  */
 static void test_l1_default_identity_records(const void *data)
 {
@@ -3004,12 +3047,13 @@ static void test_l1_default_identity_records(const void *data)
         g_autofree char *extra = g_strdup_printf("-cpu R14000 -smp %s -S",
                                                  cases[i].smp);
         QTestState *qts = machine_start_bare(extra);
-        uint8_t reply[131];
+        uint8_t reply[131], board[72];
 
+        node_board_with_serial(board, cases[i].board, "EMUNF7");
         for (unsigned reset = 0; reset < 2; reset++) {
             expect_l1_area(qts, 0, L1_EEPROM_CHASSIS, expected_chassis,
                            sizeof(expected_chassis));
-            expect_l1_area(qts, 0, L1_EEPROM_BOARD, cases[i].board, 72);
+            expect_l1_area(qts, 0, L1_EEPROM_BOARD, board, sizeof(board));
             g_assert_cmpuint(l1_eeprom_read(qts, 0, L1_EEPROM_SPD, 0, 1,
                                             reply), ==, 6);
             g_assert_cmphex(reply[4], ==, L1_REPLY_ABSENT);

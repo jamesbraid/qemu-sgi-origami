@@ -334,9 +334,10 @@ also keeps a mask of ``0xf000`` requiring ``0x4000``, so a
   that did not decide it. ``l1-revision=`` replaces it. The Origin 300's
   1.18.5 is a choice too.
 - L1 brick serial: the Fuel's L1 answers the brick-serial request with
-  the synthetic ``EMUN00`` (the node's system board, instance 0), a model
-  choice. The real format is *unknown*. Setting ``brick-serial`` on the
-  ``sgi-l1`` device, for example with ``-global``, replaces it.
+  the synthetic ``EMUN`` and a hex byte of the machine's identity seed
+  (the node's system board, node 0), a model choice. The real format is
+  *unknown*. Setting ``brick-serial`` on the ``sgi-l1`` device, for example
+  with ``-global``, replaces it.
 - Flash machine type: the value written into the PROM's configuration
   block. The PROM's Origin 300 rows carry type 1 and its Fuel rows type 2,
   a *software expectation*. A real Fuel's ``flash -f`` session answers 2
