@@ -1,0 +1,610 @@
+/* SPDX-License-Identifier: BSD-3-Clause */
+/*
+ * The L1's end of the power-bay serial link.
+ *
+ * The L1 frames each transaction itself: a start byte, the body and its
+ * checksum with the three framing bytes stuffed, and a terminator. It
+ * drops a received frame that does not start with the start byte or is
+ * not addressed to 0x0000 or to itself, and leaves the checksum to the
+ * transaction layer above. After the link opens it asks the bay for its
+ * address, tells the bay that address, reads the device type and the
+ * capability bytes, reads the bay's records and then polls its sensors.
+ */
+
+#include "qemu/osdep.h"
+#include "qemu/bswap.h"
+#include "qemu/log.h"
+#include "migration/blocker.h"
+#include "hw/misc/sgi-l1-pbay.h"
+
+#define PB_START        0xa0
+#define PB_END          0xa5
+#define PB_ESCAPE       0xaa
+#define PB_ESC_START    0xb0
+#define PB_ESC_END      0xb5
+#define PB_ESC_ESCAPE   0xba
+
+#define PB_ADDRESS      0x4400
+#define PB_HEADER       7
+#define PB_REPLY_BIT    0x80
+
+#define CMD_ADDRESS     0x02
+#define CMD_SILENT      0x10
+#define CMD_ASSIGN      0x12
+#define CMD_TYPE        0x13
+#define CMD_TUNNEL      0x20
+
+/* A model choice: the real transaction timing is not established. */
+#define PB_TIMEOUT_MS   300
+#define PB_ATTEMPTS     3
+#define PB_MAX_RECORDS  64
+
+/*
+ * The brick type characters that do not run the power-bay task in the
+ * packages the Origin 3000 compute brick uses, so the L1 has no bay link
+ * there: 0 4 7 8 9 A E G O Q V. G's second port is a console at 38400
+ * baud instead. Two older packages start the task for every letter except
+ * O; the model follows the first set.
+ */
+static bool pb_port_closed(uint32_t letter)
+{
+    return letter && strchr("04789AEGOQV", letter);
+}
+
+enum {
+    STEP_IDLE,
+    STEP_ADDRESS,
+    STEP_ASSIGN,
+    STEP_TYPE,
+    STEP_CAPABILITY,
+    STEP_RECORD_ID,
+    STEP_RECORD,
+    STEP_SENSOR,
+};
+
+static void pb_put(uint8_t *out, unsigned *n, uint8_t b)
+{
+    switch (b) {
+    case PB_START:
+        out[(*n)++] = PB_ESCAPE;
+        out[(*n)++] = PB_ESC_START;
+        break;
+    case PB_END:
+        out[(*n)++] = PB_ESCAPE;
+        out[(*n)++] = PB_ESC_END;
+        break;
+    case PB_ESCAPE:
+        out[(*n)++] = PB_ESCAPE;
+        out[(*n)++] = PB_ESC_ESCAPE;
+        break;
+    default:
+        out[(*n)++] = b;
+    }
+}
+
+static uint16_t pb_checksum(const uint8_t *body, unsigned len)
+{
+    unsigned sum = 0;
+
+    for (unsigned i = 0; i < len; i++) {
+        sum += body[i];
+    }
+    return 0xffff - (sum + len + 1);
+}
+
+static void pb_write(SGIL1Pbay *p)
+{
+    uint8_t wire[2 * (sizeof(p->request) + 2) + 2];
+    uint16_t sum = pb_checksum(p->request, p->request_len);
+    unsigned n = 0;
+
+    wire[n++] = PB_START;
+    for (unsigned i = 0; i < p->request_len; i++) {
+        pb_put(wire, &n, p->request[i]);
+    }
+    pb_put(wire, &n, sum & 0xff);
+    pb_put(wire, &n, sum >> 8);
+    wire[n++] = PB_END;
+    qemu_chr_fe_write_all(&p->chr, wire, n);
+}
+
+static void pb_fail(SGIL1Pbay *p)
+{
+    timer_del(p->timeout);
+    p->step = STEP_IDLE;
+    p->status = SGI_L1_PBAY_COMM_FAILURE;
+}
+
+/*
+ * Send a request to @dst. @netfn is the network function for a tunnelled
+ * request, which carries the target byte, the function, @cmd and @data;
+ * a plain request carries @data.
+ */
+static void pb_request(SGIL1Pbay *p, uint16_t dst, uint8_t cmd,
+                       const uint8_t *data, unsigned len, bool wait)
+{
+    uint8_t *r = p->request;
+    unsigned n = 0;
+
+    g_assert(PB_HEADER + len <= sizeof(p->request));
+    stw_le_p(r + n, dst);
+    stw_le_p(r + n + 2, p->l1_address);
+    n += 4;
+    r[n++] = 0;
+    r[n++] = p->tag++ & 0x1f;
+    r[n++] = cmd;
+    if (len) {
+        memcpy(r + n, data, len);
+    }
+    p->request_len = n + len;
+    p->request_cmd = cmd;
+    p->request_netfn = cmd == CMD_TUNNEL ? data[1] : 0;
+    p->attempts = 1;
+    pb_write(p);
+    if (wait) {
+        timer_mod(p->timeout,
+                  qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + PB_TIMEOUT_MS);
+    }
+}
+
+static void pb_tunnel(SGIL1Pbay *p, uint8_t netfn, uint8_t cmd,
+                      const uint8_t *data, unsigned len)
+{
+    uint8_t buf[16] = { p->target, netfn, cmd };
+
+    g_assert(3 + len <= sizeof(buf));
+    memcpy(buf + 3, data, len);
+    pb_request(p, p->bay, CMD_TUNNEL, buf, 3 + len, true);
+}
+
+static void pb_log(SGIL1Pbay *p, const char *fmt, ...) G_GNUC_PRINTF(2, 3);
+static void pb_log(SGIL1Pbay *p, const char *fmt, ...)
+{
+    g_autofree char *text = NULL;
+    va_list ap;
+
+    va_start(ap, fmt);
+    text = g_strdup_vprintf(fmt, ap);
+    va_end(ap);
+    p->log(p->opaque, text);
+}
+
+/*
+ * The log lines of one polling pass. Sensors 1 to 6 are the supplies: bit 0
+ * set means not inserted, bits 1 to 3 fail, predictive fail and AC fail.
+ * Sensors 7 to 14 are the DC ports: bit 0 set means the 48 V output is off
+ * and the port is skipped, bit 1 set means failed. A fault is logged when
+ * its bit goes from 0 to 1 against the value the poll stored last time.
+ * Nothing is stored at start, so a fault already present on the first pass
+ * counts as new. A supply read with bit 0 set clears its stored value; a
+ * port read with bit 0 set is skipped and keeps it.
+ *
+ * Insertion and removal compare the set of present supplies with the set
+ * stored by the last pass, which starts empty: an empty stored set logs
+ * nothing, and a pass that finds no supply present is treated as a failed
+ * read and changes nothing.
+ */
+static void pb_compare(SGIL1Pbay *p)
+{
+    uint8_t present = 0;
+
+    for (unsigned s = 1; s <= 6; s++) {
+        if (!(p->mask[s] & 1)) {
+            present |= 1 << (s - 1);
+        }
+    }
+    if (present) {
+        for (unsigned s = 1; s <= 6 && p->present; s++) {
+            if ((present ^ p->present) & (1 << (s - 1))) {
+                pb_log(p, "Power Bay DPS %u %s", s,
+                       present & (1 << (s - 1)) ? "inserted" : "removed");
+            }
+        }
+        p->present = present;
+    }
+
+    for (unsigned s = 1; s <= SGI_L1_PBAY_SENSORS; s++) {
+        uint8_t now = p->mask[s];
+        uint8_t rose = now & ~p->last_mask[s];
+
+        if (s <= 6) {
+            if (now & 1) {
+                p->last_mask[s] = 0;
+                continue;
+            }
+            if (rose & 2) {
+                pb_log(p, "Power Bay DPS %u fail, lost redundancy", s);
+            }
+            if (rose & 4) {
+                pb_log(p, "Power Bay DPS %u predictive fail", s);
+            }
+            if (rose & 8) {
+                pb_log(p, "Power Bay DPS %u AC fail, lost redundancy", s);
+            }
+        } else {
+            if (now & 1) {
+                continue;
+            }
+            if (rose & 2) {
+                pb_log(p, "Power Bay DCport %u fail, lost power to brick",
+                       s - 6);
+            }
+        }
+        p->last_mask[s] = now;
+    }
+}
+
+static void pb_poll_next(SGIL1Pbay *p)
+{
+    uint8_t number = p->sensor;
+
+    p->step = STEP_SENSOR;
+    pb_tunnel(p, 0x10, 0x2d, &number, 1);
+}
+
+static void pb_poll_start(void *opaque)
+{
+    SGIL1Pbay *p = opaque;
+
+    if (p->status != SGI_L1_PBAY_READY) {
+        return;
+    }
+    p->sensor = 1;
+    pb_poll_next(p);
+}
+
+/* @d is the tunnelled reply's data, from its first byte after the codes. */
+static void pb_step_done(SGIL1Pbay *p, const uint8_t *d, unsigned len)
+{
+    timer_del(p->timeout);
+    switch (p->step) {
+    case STEP_ADDRESS:
+        p->bay = len >= 2 ? lduw_le_p(d) : 0;
+        if (!p->bay) {
+            /* No bay answered: the L1 falls back to the usual address. */
+            p->bay = PB_ADDRESS;
+            pb_fail(p);
+            return;
+        }
+        p->step = STEP_ASSIGN;
+        {
+            uint8_t a[2];
+
+            stw_le_p(a, p->bay);
+            pb_request(p, p->bay, CMD_ASSIGN, a, 2, true);
+        }
+        break;
+    case STEP_ASSIGN:
+        p->step = STEP_TYPE;
+        pb_request(p, p->bay, CMD_TYPE, NULL, 0, true);
+        break;
+    case STEP_TYPE:
+        p->target = len >= 1 ? d[0] : 0x22;
+        p->step = STEP_CAPABILITY;
+        pb_tunnel(p, 0x00, 0x00, NULL, 0);
+        break;
+    case STEP_CAPABILITY:
+        if (len < 4) {
+            pb_fail(p);
+            return;
+        }
+        memcpy(p->capability, d + 1, 3);
+        if (p->capability[0]) {
+            qemu_log_mask(LOG_UNIMP, "sgi-l1: the power bay's supply count "
+                          "routine is not modelled\n");
+        }
+        if (p->capability[1]) {
+            p->record_id = 0;
+            p->records = 0;
+            p->step = STEP_RECORD_ID;
+            {
+                const uint8_t a[] = { 0, 0, 0, 0, 0, 5 };
+
+                pb_tunnel(p, 0x28, 0x23, a, sizeof(a));
+            }
+            break;
+        }
+        goto ready;
+    case STEP_RECORD_ID:
+        if (len < 4) {
+            pb_fail(p);
+            return;
+        }
+        /* The first reply bytes are the next id; the record's own follow. */
+        p->record_id = lduw_le_p(d + 2);
+        p->step = STEP_RECORD;
+        {
+            uint8_t a[] = { 0, 0, p->record_id & 0xff, p->record_id >> 8,
+                            0, 0xff };
+
+            pb_tunnel(p, 0x28, 0x23, a, sizeof(a));
+        }
+        break;
+    case STEP_RECORD: {
+        uint16_t next;
+
+        if (len < 2) {
+            pb_fail(p);
+            return;
+        }
+        next = lduw_le_p(d);
+        p->records++;
+        if (next == 0xffff || p->records >= PB_MAX_RECORDS) {
+            goto ready;
+        }
+        {
+            uint8_t a[] = { 0, 0, next & 0xff, next >> 8, 0, 5 };
+
+            p->step = STEP_RECORD_ID;
+            pb_tunnel(p, 0x28, 0x23, a, sizeof(a));
+        }
+        break;
+    }
+    case STEP_SENSOR:
+        if (len < 3) {
+            pb_fail(p);
+            return;
+        }
+        p->mask[p->sensor] = d[2];
+        if (p->sensor < SGI_L1_PBAY_SENSORS) {
+            p->sensor++;
+            pb_poll_next(p);
+            break;
+        }
+        pb_compare(p);
+        p->step = STEP_IDLE;
+        timer_mod(p->poll_timer,
+                  qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + p->poll_ms);
+        break;
+    default:
+        break;
+    }
+    return;
+
+ready:
+    p->step = STEP_IDLE;
+    p->status = SGI_L1_PBAY_READY;
+    pb_poll_start(p);
+}
+
+/*
+ * A received frame, unstuffed and addressed to this L1. The transaction
+ * layer checks the checksum, the control byte and tag, the command and the
+ * completion codes, and for a tunnelled reply the inner message.
+ */
+static void pb_frame(SGIL1Pbay *p)
+{
+    uint8_t *f = p->rx;
+    unsigned body, data_at;
+    uint8_t want_tag = p->request[5] & 0x1f;
+
+    if (p->step == STEP_IDLE || p->rx_len < PB_HEADER + 1 + 2) {
+        return;
+    }
+    body = p->rx_len - 2;
+    if (lduw_le_p(f + body) != pb_checksum(f, body) ||
+        !(f[5] & PB_REPLY_BIT) || (f[5] & 0x1f) != want_tag ||
+        f[6] != p->request_cmd || f[7] != 0) {
+        return;
+    }
+    data_at = 8;
+    if (p->request_cmd == CMD_TUNNEL) {
+        uint8_t reply_nf, want_nf = p->request_netfn >> 2;
+
+        if (body < 12 || f[11] != 0 || f[10] != p->request[PB_HEADER + 2]) {
+            return;
+        }
+        reply_nf = f[9];
+        if (!(reply_nf & 4) || ((reply_nf >> 2) & ~1) != (want_nf & ~1)) {
+            return;
+        }
+        data_at = 12;
+    }
+    pb_step_done(p, f + data_at, body - data_at);
+}
+
+static void pb_rx_byte(SGIL1Pbay *p, uint8_t b)
+{
+    if (!p->rx_in_frame) {
+        /*
+         * Outside a frame a stray escape byte sets the escape state, which
+         * swallows the next start byte and everything until a terminator.
+         */
+        if (b == PB_END) {
+            p->rx_escape = false;
+        } else if (b == PB_ESCAPE) {
+            p->rx_escape = true;
+        } else if (b == PB_START && !p->rx_escape) {
+            p->rx_in_frame = true;
+            p->rx_len = 0;
+            p->rx_escape = false;
+            p->rx_drop = false;
+        }
+        return;
+    }
+    if (b == PB_END) {
+        /* A terminator ends an escape too, as it does outside a frame. */
+        p->rx_in_frame = false;
+        p->rx_escape = false;
+        if (!p->rx_drop && p->rx_len) {
+            pb_frame(p);
+        }
+        return;
+    }
+    if (p->rx_drop || b == PB_START) {
+        /* A bare start byte inside a frame is dropped, not a restart. */
+        return;
+    }
+    if (p->rx_escape) {
+        p->rx_escape = false;
+        switch (b) {
+        case PB_ESC_START:
+            b = PB_START;
+            break;
+        case PB_ESC_END:
+            b = PB_END;
+            break;
+        case PB_ESC_ESCAPE:
+            b = PB_ESCAPE;
+            break;
+        default:
+            return;
+        }
+    } else if (b == PB_ESCAPE) {
+        p->rx_escape = true;
+        return;
+    }
+    if (p->rx_len == sizeof(p->rx)) {
+        p->rx_drop = true;
+        return;
+    }
+    p->rx[p->rx_len++] = b;
+    if (p->rx_len == 2) {
+        uint16_t dst = lduw_le_p(p->rx);
+
+        /* The destination must be 0x0000 or this L1's own address. */
+        if (dst && dst != p->l1_address) {
+            p->rx_drop = true;
+        }
+    }
+}
+
+static int pb_can_receive(void *opaque)
+{
+    return 256;
+}
+
+static void pb_receive(void *opaque, const uint8_t *buf, int size)
+{
+    SGIL1Pbay *p = opaque;
+
+    for (int i = 0; i < size; i++) {
+        pb_rx_byte(p, buf[i]);
+    }
+}
+
+static void pb_timeout(void *opaque)
+{
+    SGIL1Pbay *p = opaque;
+
+    if (p->step == STEP_IDLE) {
+        return;
+    }
+    if (p->attempts >= PB_ATTEMPTS) {
+        if (p->step == STEP_ADDRESS) {
+            p->bay = PB_ADDRESS;
+        }
+        pb_fail(p);
+        return;
+    }
+    p->attempts++;
+    pb_write(p);
+    timer_mod(p->timeout,
+              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + PB_TIMEOUT_MS);
+}
+
+/* The sequence: a silent request, the address, then the rest. */
+static void pb_start(void *opaque)
+{
+    SGIL1Pbay *p = opaque;
+
+    p->status = SGI_L1_PBAY_INITIALISING;
+    p->rx_in_frame = false;
+    p->rx_escape = false;
+    pb_request(p, 0, CMD_SILENT, NULL, 0, false);
+    p->step = STEP_ADDRESS;
+    pb_request(p, 0, CMD_ADDRESS, NULL, 0, true);
+}
+
+bool sgi_l1_pbay_active(const SGIL1Pbay *p)
+{
+    return p->start_bh != NULL;
+}
+
+const char *sgi_l1_pbay_status_name(const SGIL1Pbay *p)
+{
+    static const char *const names[] = {
+        [SGI_L1_PBAY_NOT_INITIALISED] = "not initialised",
+        [SGI_L1_PBAY_INITIALISING] = "busy initialising",
+        [SGI_L1_PBAY_READY] = "ready",
+        [SGI_L1_PBAY_BUSY] = "busy",
+        [SGI_L1_PBAY_FLASHING] = "busy flashing",
+        [SGI_L1_PBAY_COMM_FAILURE] = "communication failure",
+    };
+
+    return names[p->status];
+}
+
+void sgi_l1_pbay_reset(SGIL1Pbay *p)
+{
+    if (!sgi_l1_pbay_active(p)) {
+        return;
+    }
+    timer_del(p->timeout);
+    timer_del(p->poll_timer);
+    p->step = STEP_IDLE;
+    p->status = SGI_L1_PBAY_NOT_INITIALISED;
+    p->records = 0;
+    p->present = 0;
+    memset(p->mask, 0, sizeof(p->mask));
+    memset(p->last_mask, 0, sizeof(p->last_mask));
+    qemu_bh_schedule(p->start_bh);
+}
+
+void sgi_l1_pbay_init(Object *obj, SGIL1Pbay *p)
+{
+    object_property_add_uint8_ptr(obj, "pbay-status", &p->status,
+                                  OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "pbay-records", &p->records,
+                                   OBJ_PROP_FLAG_READ);
+}
+
+bool sgi_l1_pbay_realize(SGIL1Pbay *p, Object *owner, uint32_t letter,
+                         SGIL1PbayLog log, void *opaque, Error **errp)
+{
+    if (!qemu_chr_fe_backend_connected(&p->chr)) {
+        return true;
+    }
+    if (pb_port_closed(letter)) {
+        if (letter == 'G') {
+            error_setg(errp, "sgi-l1: the power-bay UART is the 38400 baud "
+                       "console on brick type '%c'", letter);
+        } else {
+            error_setg(errp, "sgi-l1: no power-bay task runs on brick "
+                       "type '%c'", letter);
+        }
+        return false;
+    }
+    if (!p->poll_ms) {
+        error_setg(errp, "sgi-l1: pbay-poll-ms must be at least 1");
+        return false;
+    }
+    /* The bay's state is outside this machine, so it is not saved. */
+    error_setg(&p->blocker,
+               "sgi-l1: migration is not supported with a power-bay link");
+    if (migrate_add_blocker(&p->blocker, errp) < 0) {
+        return false;
+    }
+    p->log = log;
+    p->opaque = opaque;
+    p->timeout = timer_new_ms(QEMU_CLOCK_REALTIME, pb_timeout, p);
+    p->poll_timer = timer_new_ms(QEMU_CLOCK_REALTIME, pb_poll_start, p);
+    p->start_bh = qemu_bh_new(pb_start, p);
+    qemu_chr_fe_set_handlers(&p->chr, pb_can_receive, pb_receive, NULL,
+                             NULL, p, NULL, true);
+    qemu_bh_schedule(p->start_bh);
+    return true;
+}
+
+void sgi_l1_pbay_finalize(SGIL1Pbay *p)
+{
+    if (p->blocker) {
+        migrate_del_blocker(&p->blocker);
+    }
+    if (p->start_bh) {
+        qemu_bh_delete(p->start_bh);
+        p->start_bh = NULL;
+        timer_free(p->timeout);
+        timer_free(p->poll_timer);
+    }
+}

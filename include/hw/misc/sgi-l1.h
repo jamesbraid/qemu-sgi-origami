@@ -5,6 +5,7 @@
 
 #include "hw/misc/sgi-l1-env.h"
 #include "hw/misc/sgi-l1-l2-link.h"
+#include "hw/misc/sgi-l1-pbay.h"
 #include "hw/core/sysbus.h"
 #include "chardev/char-fe.h"
 
@@ -314,6 +315,8 @@ struct SGIL1State {
     uint8_t cx_console_board;
     uint8_t cx_console_subchannel;
     bool cx_filter;
+    /* The optional power-bay link: not migrated, it blocks migration. */
+    SGIL1Pbay pbay;
     SGIL1EnvSettings env;
     /* The board link whose request is being answered; not migrated. */
     bool cx_serving;

@@ -297,6 +297,7 @@ hw/misc/sgi-kona-mesa-provider.c
 hw/misc/sgi-kona-mesa-provider.h
 hw/misc/sgi-kona-ports.c
 hw/misc/sgi-kona.c
+hw/misc/sgi-l1-pbay.c
 hw/misc/sgi-l1.c
 hw/misc/sgi-mgras-display.c
 hw/misc/sgi-mgras-display.h
@@ -391,6 +392,7 @@ include/hw/misc/sgi-kona-dma.h
 include/hw/misc/sgi-kona-gl-decode.h
 include/hw/misc/sgi-kona-ports.h
 include/hw/misc/sgi-kona.h
+include/hw/misc/sgi-l1-pbay.h
 include/hw/misc/sgi-l1.h
 include/hw/misc/sgi-l1-l2-link.h
 include/hw/misc/sgi-l2-hub.h
@@ -832,6 +834,7 @@ tests/qtest/sgi-heart-test.c
 tests/qtest/sgi-ioc3-eth-test.c
 tests/qtest/sgi-ioc4-test.c
 tests/qtest/sgi-l1-identity-vectors.h
+tests/qtest/sgi-l1-pbay-test.c
 tests/qtest/sgi-l1-test.h
 tests/qtest/sgi-l1-l2-stub.h
 tests/qtest/sgi-launch.h
