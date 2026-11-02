@@ -1,0 +1,124 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Publish the QEMU manual built from the tip of sgi-origami. This is the
+# plain Sphinx manual that upstream ships, with this branch's machine
+# documents in it, and it is rebuilt on every push that can change it. A
+# nightly run catches inputs the path list misses. Nobody reviews a
+# publication: the site shows whatever the branch holds.
+#
+# The Cloudflare token and account id arrive as Actions secrets. A fork, or
+# a repository without them, skips with a notice instead of failing. The
+# job holds a deploy credential, so it runs on the general runner, as the
+# project's other site deploys do, not on a build runner. The whole tree is
+# already covered by the private identifier scan, so this workflow does not
+# repeat it.
+name: publish the manual
+
+on:
+  push:
+    branches: [sgi-origami]
+    # Everything the manual reads: its own sources, the QAPI schemas, the
+    # option and command tables, the headers and sources that kernel-doc
+    # pulls in, the D-Bus interface files, and the tools that render them.
+    paths:
+      - docs/**
+      - qapi/**
+      - qga/**
+      - storage-daemon/qapi/**
+      - "*.hx"
+      - include/**
+      - system/qtest.c
+      - tests/qtest/libqos/qgraph.h
+      - tests/qtest/libqtest.h
+      - backends/dbus-vmstate1.xml
+      - tools/qemu-vnc/qemu-vnc1.xml
+      - ui/dbus-display1.xml
+      - ui/icons/**
+      - scripts/qapi/**
+      - scripts/kernel-doc.py
+      - VERSION
+      - .github/workflows/docs-publish.yml
+  # A change the path list above does not name still reaches the manual
+  # within a day.
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+
+# Deploys queue behind each other: wrangler is not safe to interrupt, and
+# the newest run is the one that matters.
+concurrency:
+  group: docs-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ github.repository == 'jamesb/qemu' && github.server_url != 'https://github.com' && github.ref == 'refs/heads/sgi-origami' }}
+    runs-on: podman-general
+    timeout-minutes: 30
+    container:
+      image: node:22-bookworm
+    env:
+      # The mirror that readers of the published manual can browse. The
+      # build points each page's source link here, not at upstream.
+      SOURCE_URL_PREFIX: https://github.com/jamesbraid/qemu-sgi-origami/blob/sgi-origami/docs/
+    steps:
+      # Decide first, so a repository without credentials does no work.
+      # The values are only tested for emptiness and never printed.
+      - name: check for deploy credentials
+        id: creds
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set +x
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::no Cloudflare credentials in this repository; not publishing the manual"
+          fi
+
+      # The build reads headers, schemas and sources outside docs/, so it
+      # needs the whole tree.
+      - uses: actions/checkout@v4
+        if: steps.creds.outputs.present == 'true'
+        with:
+          persist-credentials: false
+
+      - name: install uv
+        if: steps.creds.outputs.present == 'true'
+        run: curl -LsSf https://astral.sh/uv/0.11.27/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+
+      # These are the versions docs/requirements.txt pins for Read the Docs.
+      - name: install Sphinx
+        if: steps.creds.outputs.present == 'true'
+        run: |
+          uv venv "$RUNNER_TEMP/docs-venv"
+          uv pip install --python "$RUNNER_TEMP/docs-venv/bin/python" \
+            sphinx==7.2.6 sphinx_rtd_theme==2.0.0
+
+      # Warnings are errors, as they are for upstream's Read the Docs build.
+      # -D stamps the footer with the branch's version and the commit.
+      # -A replaces the page-source link, which conf.py points at upstream.
+      - name: build the manual
+        if: steps.creds.outputs.present == 'true'
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          version=$(cat VERSION)
+          "$RUNNER_TEMP/docs-venv/bin/python" -m sphinx -W --keep-going -b html \
+            -d "$RUNNER_TEMP/docs-doctrees" \
+            -Dversion="$version" \
+            -Drelease="$version-sgi-origami-$(printf %.12s "$COMMIT")" \
+            -A source_url_prefix="$SOURCE_URL_PREFIX" \
+            docs "$RUNNER_TEMP/docs-site"
+
+      - name: deploy
+        if: steps.creds.outputs.present == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set +x
+          npx --yes wrangler@4.123.0 pages deploy "$RUNNER_TEMP/docs-site" \
+            --project-name=origami-qemu-docs --branch=main \
+            --commit-hash="$COMMIT" --commit-dirty=true
