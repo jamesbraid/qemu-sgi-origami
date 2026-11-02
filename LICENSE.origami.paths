@@ -77,6 +77,7 @@ hw/1wire/ds2502.c
 hw/1wire/ds2505.c
 hw/1wire/meson.build
 hw/1wire/trace-events
+hw/audio/sgi-dm8.c
 hw/audio/sgi-rad1-audio.c
 hw/char/sgi-ioc-serial-dma.c
 hw/char/sgi-ioc3-parallel.c
@@ -832,6 +833,7 @@ tests/qtest/sgi-crime-render-test-groups.txt
 tests/qtest/sgi-crime-render-test.c
 tests/qtest/sgi-crime-test.c
 tests/qtest/sgi-debug-tools-test.c
+tests/qtest/sgi-dm8-test.c
 tests/qtest/sgi-gbe-test.c
 tests/qtest/sgi-graphics-pipes-test.c
 tests/qtest/sgi-heart-cpu-test.c

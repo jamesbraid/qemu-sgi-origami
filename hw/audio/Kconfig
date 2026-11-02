@@ -56,3 +56,8 @@ config SGI_RAD1_AUDIO
     bool
     default y if PCI_DEVICES
     depends on PCI
+
+config SGI_DM8_AUDIO
+    bool
+    default y if PCI_DEVICES
+    depends on PCI

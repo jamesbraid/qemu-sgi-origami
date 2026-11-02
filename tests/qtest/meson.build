@@ -501,6 +501,9 @@ sn1_board_qtests = \
      'sn1-io8-scsi-test',
      'sn1-pi-gfx-test', 'sn1-pi-polled-read-test',
      'sn1-fuel-test', 'sn1-fuel-usb-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_SN1') and
+   config_all_devices.has_key('CONFIG_SGI_DM8_AUDIO') ?
+    ['sgi-dm8-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_ODYSSEY') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn1-pio-forward-test'] : []) + \
