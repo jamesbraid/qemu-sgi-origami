@@ -219,6 +219,8 @@ Supported devices
   :doc:`hardware/lucent-ohci`
 - QLogic ISP12160 SCSI on the IO-8 and the Fuel:
   :doc:`hardware/qlogic-isp`
+- DM8 audio option card in a free PCI slot, such as the Fuel's head E device 2:
+  :doc:`hardware/sgi-dm8`
 - M48T35-compatible timekeeper: :doc:`hardware/timekeepers`
 - BIC on the Origin 300 PCI expansion module: :doc:`hardware/bic`
 - SN1 router: :doc:`hardware/sn1-router`

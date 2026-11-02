@@ -159,6 +159,7 @@ Audio
 
    hardware/rad1-audio
    hardware/ad1843
+   hardware/sgi-dm8
 
 References
 ----------
