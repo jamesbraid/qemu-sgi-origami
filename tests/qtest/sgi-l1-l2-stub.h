@@ -222,6 +222,44 @@ static inline size_t l2_stub_build_chain(uint8_t chain[][SGI_L1_L2_SEGMENT_MAX],
 }
 
 /*
+ * The daemon's recurring configuration request as the L2 sheet gives it:
+ * class 0, code 0, destination 0x0ffff00e, three descriptors (integer 6,
+ * the serial as a string or integer 0, integer @third). The source word and
+ * sequence bytes are the test's own.
+ */
+#define L2_STUB_CONFIG_SOURCE UINT32_C(0x84000001)
+
+static inline size_t l2_stub_build_config_request(uint8_t *segment,
+                                                  const char *serial,
+                                                  uint32_t third)
+{
+    size_t text = serial ? strlen(serial) + 1 : 0;
+    size_t length = SGI_L1_L2_SEG_DESC + 24 + text;
+
+    memset(segment, 0, length);
+    stw_be_p(segment + SGI_L1_L2_SEG_LENGTH, length);
+    segment[SGI_L1_L2_SEG_FORMAT] = 2;
+    segment[SGI_L1_L2_SEG_SEQ_LOW] = 0x31;
+    segment[SGI_L1_L2_SEG_COUNT] = SGI_L1_L2_FIRST_SEGMENT | 1;
+    segment[SGI_L1_L2_SEG_CLASS] = SGI_L1_L2_CLASS_REQUEST;
+    stl_be_p(segment + SGI_L1_L2_SEG_DEST, SGI_L1_L2_CONFIG_DEST);
+    stl_be_p(segment + SGI_L1_L2_SEG_SOURCE, L2_STUB_CONFIG_SOURCE);
+    segment[SGI_L1_L2_SEG_NDESC] = 3;
+    segment[SGI_L1_L2_SEG_SEQ_HIGH] = 0x07;
+    stl_be_p(segment + SGI_L1_L2_SEG_DESC + 4, SGI_L1_L2_CONFIG_SELECTOR);
+    if (serial) {
+        uint8_t *desc = segment + SGI_L1_L2_SEG_DESC + 8;
+
+        desc[0] = SGI_L1_L2_DESC_STRING;
+        stw_be_p(desc + 2, text);
+        stl_be_p(desc + 4, SGI_L1_L2_SEG_DESC + 24 + SGI_L1_L2_DESC_PREFIX);
+        memcpy(segment + SGI_L1_L2_SEG_DESC + 24, serial, text);
+    }
+    stl_be_p(segment + SGI_L1_L2_SEG_DESC + 20, third);
+    return length;
+}
+
+/*
  * Read one forwarded segment and answer it as the stub does. Returns the
  * request length, or 0 if nothing arrived in @timeout_ms; a request that is
  * not the fetch is read and left unanswered.

@@ -40,6 +40,32 @@
 
 #define SGI_L1_L2_FIRST_SEGMENT 0x80
 
+/*
+ * Descriptor types. An integer is "00 00 0000 value32". A string is
+ * "0a segment length16 offset32" with the length counting the NUL and the
+ * offset counting 16 bytes that are not on the wire (L1 sheet, chunk
+ * transport rows). The type of a binary descriptor is not established by
+ * the sheets: SGI_L1_L2_DESC_BLOB is the value this tree uses for it, laid
+ * out like a string without the NUL.
+ */
+#define SGI_L1_L2_DESC_INTEGER  0x00
+#define SGI_L1_L2_DESC_STRING   0x0a
+#define SGI_L1_L2_DESC_BLOB     0x0b
+#define SGI_L1_L2_DESC_PREFIX   0x10
+
+/*
+ * The L2 daemon's recurring configuration request and the task 14
+ * endpoint the L1 answers it from (L2 sheet, "The daemon's recurring
+ * request" and "The reply, and the route it creates").
+ */
+#define SGI_L1_L2_CONFIG_DEST   UINT32_C(0x0ffff00e)
+#define SGI_L1_L2_CONFIG_TASK   0x0e
+#define SGI_L1_L2_CONFIG_SELECTOR      6
+#define SGI_L1_L2_CONFIG_SELECTOR_A    2
+#define SGI_L1_L2_CONFIG_SELECTOR_B    13
+#define SGI_L1_L2_CONFIG_REPLY_KIND    7
+#define SGI_L1_L2_RECORD_SIZE   0x70
+
 /* Packet classes. */
 #define SGI_L1_L2_CLASS_REQUEST  0
 #define SGI_L1_L2_CLASS_RESPONSE 1

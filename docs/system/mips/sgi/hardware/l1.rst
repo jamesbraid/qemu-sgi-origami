@@ -558,10 +558,14 @@ The model routes each request by its destination (see
      - Loopback: reply code equals the request code, up to three
        arguments echoed.
      - Same.
-   * - 2, 14, 15, 16, 19
-     - Command relay, configuration exchange, JTAG scan, flash
-       programming.
+   * - 2, 15, 16, 19
+     - Command relay, JTAG scan, flash programming.
      - Dropped with ``LOG_UNIMP``, no reply.
+   * - 14
+     - Configuration exchange.
+     - Dropped with ``LOG_UNIMP``, no reply, when a node sends it. The
+       L2's own configuration request arrives on the L2 link and is
+       answered there (:ref:`sgi-l1-l2-config`).
    * - others
      - No receiver: dropped, logged in the L1's own log.
      - Dropped with ``LOG_UNIMP``, no reply.
@@ -1244,7 +1248,12 @@ does not see it. The messages between the hub and the plugin are in
   as a signed number, so the plugin has the guest repeat the call with an
   offset into the file. The file holds 36 MiB: the first 4 MiB stand for
   the empty bus at ``0xfc000000`` and the flash is the 4 MiB at file offset
-  ``0x2000000``. A fresh flash is all ones.
+  ``0x2000000``. A fresh flash is all ones. The daemon reads the flashed
+  version from the window, and only the controller image's payload (the
+  file without its 0x2c-byte file header) placed at window offset 0 passes
+  its header check; the sizes and checksums are *established*, that the
+  flash holds the payload there is *inferred*. The plugin does not fill the
+  flash: whoever prepares the file writes the payload.
 - Stores into the flash window are decoded after they happen and the plugin
   corrects guest memory: auto-select presents manufacturer ``0x00010001``
   and device ``0x22282228`` at offsets 0 and 4 until a reset command,
@@ -1338,9 +1347,69 @@ pending is returned to it.
 
 Segments that are not responses (requests and events from the L2),
 responses that name no requester or one with nothing pending, and
-continuations out of order are logged and dropped. The L2's own
-housekeeping requests are not served, because nothing published says what
-the L1 answers.
+continuations out of order are logged and dropped, except the one
+request described next. The L2's other housekeeping requests are not
+served, because nothing published says what the L1 answers.
+
+.. _sgi-l1-l2-config:
+
+The L2's configuration request
+------------------------------
+
+The L2 daemon sends each attached L1 a recurring request to destination
+``0x0ffff00e``: class request, code 0, three descriptors, the integer 6,
+the L2's serial setting as a string (or the integer 0 when it has none)
+and an integer (*established* for the shipped 1.44.0 daemon). Attaching
+gives the L2 no route to an L1. The L1 becomes routable at the L2 only
+when it answers this request, because the daemon registers it from the
+reply. With the link up, the model answers a request with exactly these
+three descriptors, the first the integer 6 and the third an integer.
+Anything else is logged with ``LOG_UNIMP`` and not answered. A controller
+whose rack or bay is unset does not answer either, because nothing says
+what a real one reports. A request cut short of its three descriptors is
+not answered. A string descriptor whose offset or length lies outside the
+segment, or whose text is not terminated inside it, is read as no serial
+text and the reply goes out without one; what a real L1 does with such a
+request is *unknown*, so each is an *approximation*.
+
+The model first sends two requests of its own on the link, to
+``0x0ffff00e``, one integer descriptor each, the selector 2 and then 13.
+That the L1 sends two requests with those selectors before it builds the
+reply is *established*; what else they carry and what consumes them are
+*unknown*, so one integer descriptor each is the model's choice. Both
+carry the reply's source word. An answer the peer sends to them is logged
+with ``LOG_UNIMP`` and dropped.
+
+The reply is one segment: class response, destination the request's
+source word, status byte 0, the request's code, and these descriptors
+(*established*): the integer 7; the request's third
+descriptor, echoed; the record count ``N``; the record size 0x70; a binary
+descriptor holding ``N`` index bytes, each a record's position; a binary
+descriptor holding ``N`` records of 0x70 bytes. A nonzero third request
+descriptor makes the reply the single integer 7 (*established*). The reply
+carries the request's two sequence bytes unchanged; that a real L1 copies
+them is *inferred*, and what it puts there otherwise is *unknown*, so the
+copy is an *approximation*.
+
+The source word is ``(identity << 12) | 0x0e`` with the identity the rack
+in bits 15:6 and the bay in bits 5:0; that these are the controller's own
+settings is *inferred*. A record has a nonzero word at +0x00, the rack in
+the word at +0x08 and the bay in the word at +0x0c, big endian
+(*established* as the fields the L2 routes by). The word at +0x60 must be
+nonzero for the L1 to send the record (*established*); the model writes 1,
+an *approximation*, since its meaning is *unknown*. The request's serial
+text, cut to 11 characters, goes to +0x64 of the first record (its role is
+*inferred*). Every other field is zero. The records are the bricks the
+``config`` command lists, the controller and the bricks cabled to it, that
+have a rack and bay. What fills the real table is *unknown*, so this is an
+*approximation*.
+
+The sheets do not establish the type byte of a binary descriptor. The
+model lays one out like a string descriptor without its NUL and uses the
+value defined in ``include/hw/misc/sgi-l1-l2-link.h``, which is the model's
+own choice and has no source. The reply follows the sheets' reading of the
+1.44.0 package for one controller type and is not claimed to reproduce a
+real L1's.
 
 No timeout is modelled: the PROM's own wait for the reply is its
 concern. If the peer disconnects, a plain request still waiting gets the
@@ -1892,9 +1961,10 @@ Model limits
   built from the readings above; a reply or a version line does not mean
   firmware ran.
 - No M-Bus, environmental monitoring, events other than the deferred
-  power-down, JTAG scan, flash, management USB device, task-14
+  power-down, JTAG scan, flash, management USB device, a node's task-14
   configuration exchange or RS-422 wire protocol. The L2 link carries
-  segments only; nothing the L2 sends on its own is served.
+  segments only; of what the L2 sends on its own, only its selector 6
+  configuration request is answered (:ref:`sgi-l1-l2-config`).
 - The operator commands ``env``, ``date``, ``config``, ``uart``,
   ``flash``, ``network``, ``cpu``, ``port``, ``serial``, ``autopower``,
   ``history``, ``l1dbg console`` and ``select filter`` are not modelled.
