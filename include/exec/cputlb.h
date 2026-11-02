@@ -102,6 +102,9 @@ void tlb_set_page(CPUState *cpu, vaddr addr,
  */
 void tlb_flush_page(CPUState *cpu, vaddr addr);
 
+/* Flush two adjacent pages with one TLB lock acquisition. */
+void tlb_flush_page_pair(CPUState *cpu, vaddr addr);
+
 /**
  * tlb_flush_page_all_cpus_synced:
  * @cpu: src CPU of the flush
@@ -228,6 +231,9 @@ void tlb_flush_range_by_mmuidx_all_cpus_synced(CPUState *cpu,
                                                unsigned bits);
 #else
 static inline void tlb_flush_page(CPUState *cpu, vaddr addr)
+{
+}
+static inline void tlb_flush_page_pair(CPUState *cpu, vaddr addr)
 {
 }
 static inline void tlb_flush_page_all_cpus_synced(CPUState *src, vaddr addr)

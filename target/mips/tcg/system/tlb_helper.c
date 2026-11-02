@@ -1912,7 +1912,6 @@ void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra)
     CPUState *cs = env_cpu(env);
     mips_tlb_flush_caches(env);
     r4k_tlb_t *tlb;
-    target_ulong addr;
     target_ulong pagesize;
     uint16_t ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
     uint32_t MMID = env->CP0_MemoryMapID;
@@ -1946,22 +1945,25 @@ void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra)
     /* 1k pages are not supported. */
     mask = tlb->PageMask | ~(TARGET_PAGE_MASK << 1);
     pagesize = (mask >> 1) + 1;
-    if (tlb->V0) {
-        addr = tlb->VPN & ~mask;
+    target_ulong even = tlb->VPN & ~mask;
+    target_ulong odd = even | pagesize;
 #if defined(TARGET_MIPS64)
-        if (addr >= (0xFFFFFFFF80000000ULL & env->SEGMask)) {
-            addr |= 0x3FFFFF0000000000ULL;
-        }
+    if (even >= (0xFFFFFFFF80000000ULL & env->SEGMask)) {
+        even |= 0x3FFFFF0000000000ULL;
+    }
+    if (odd >= (0xFFFFFFFF80000000ULL & env->SEGMask)) {
+        odd |= 0x3FFFFF0000000000ULL;
+    }
 #endif
-        r4k_flush_tlb_range(cs, addr, pagesize);
+    if (tlb->V0 && tlb->V1 && pagesize == TARGET_PAGE_SIZE &&
+        odd == even + TARGET_PAGE_SIZE) {
+        tlb_flush_page_pair(cs, even);
+        return;
+    }
+    if (tlb->V0) {
+        r4k_flush_tlb_range(cs, even, pagesize);
     }
     if (tlb->V1) {
-        addr = (tlb->VPN & ~mask) | ((mask >> 1) + 1);
-#if defined(TARGET_MIPS64)
-        if (addr >= (0xFFFFFFFF80000000ULL & env->SEGMask)) {
-            addr |= 0x3FFFFF0000000000ULL;
-        }
-#endif
-        r4k_flush_tlb_range(cs, addr, pagesize);
+        r4k_flush_tlb_range(cs, odd, pagesize);
     }
 }

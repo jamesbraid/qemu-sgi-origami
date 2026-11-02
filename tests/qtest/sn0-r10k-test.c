@@ -1265,6 +1265,8 @@ static void test_r10k_prefetch_hints(void)
 #define TLB_PAGE1_OFF       0x48
 #define TLB_PAGE2_OFF       0x50
 #define TLB_PAGE3_OFF       0x58
+#define TLB_REMAP_EVEN_OFF  0x60
+#define TLB_REMAP_ODD_OFF   0x68
 #define TLB_DONE_MAGIC      0x544c424d /* "TLBM" */
 
 #define CP0_INDEX           0
@@ -1460,6 +1462,16 @@ static void tlb_write_guest_image(int fd)
     emit_sd(&img, 18, R_T0, TLB_PAGE2_OFF);
     emit_sd(&img, 19, R_T0, TLB_PAGE3_OFF);
 
+    /* Warm both halves, then replace the pair with zeroed physical pages. */
+    emit_sd(&img, R_T2, 4, 0x1000);
+    emit_ld(&img, 16, 4, 0x1000);
+    emit_tlb_write_entry(&img, 0, 0x00020000, 0x208, 0x209);
+    emit_ld(&img, 16, 4, 0);
+    emit_ld(&img, 17, 4, 0x1000);
+    emit_lui(&img, R_T0, STATE_KSEG1_HI);
+    emit_sd(&img, 16, R_T0, TLB_REMAP_EVEN_OFF);
+    emit_sd(&img, 17, R_T0, TLB_REMAP_ODD_OFF);
+
     emit_lui(&img, R_T2, (uint16_t)(TLB_DONE_MAGIC >> 16));
     emit_addiu(&img, R_T2, R_T2, (int16_t)(TLB_DONE_MAGIC & 0xffff));
     emit_sd(&img, R_T2, R_T0, TLB_DONE_OFF);
@@ -1515,6 +1527,10 @@ static void test_r10k_tlb_interleaved(void)
                      ==, expected);
     g_assert_cmpuint(qtest_readq(qts, STATE_PHYS + TLB_PAGE3_OFF),
                      ==, expected);
+    g_assert_cmpuint(qtest_readq(qts, STATE_PHYS + TLB_REMAP_EVEN_OFF),
+                     ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, STATE_PHYS + TLB_REMAP_ODD_OFF),
+                     ==, 0);
 
     qtest_quit(qts);
 }

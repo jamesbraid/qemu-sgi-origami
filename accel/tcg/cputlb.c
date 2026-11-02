@@ -616,6 +616,36 @@ void tlb_flush_page(CPUState *cpu, vaddr addr)
     tlb_flush_page_by_mmuidx(cpu, addr, ALL_MMUIDX_BITS);
 }
 
+void tlb_flush_page_pair(CPUState *cpu, vaddr addr)
+{
+    int mmu_idx;
+    vaddr next;
+
+    assert_cpu_is_self(cpu);
+    addr &= TARGET_PAGE_MASK;
+    next = addr + TARGET_PAGE_SIZE;
+
+    tlb_debug("addr: %016" VADDR_PRIx " mmu_idx:%" PRIx16 "\n",
+              addr, ALL_MMUIDX_BITS);
+    tlb_debug("page addr: %016" VADDR_PRIx " mmu_map:0x%x\n",
+              addr, ALL_MMUIDX_BITS);
+    tlb_debug("addr: %016" VADDR_PRIx " mmu_idx:%" PRIx16 "\n",
+              next, ALL_MMUIDX_BITS);
+    tlb_debug("page addr: %016" VADDR_PRIx " mmu_map:0x%x\n",
+              next, ALL_MMUIDX_BITS);
+
+    qemu_spin_lock(&cpu->neg.tlb.c.lock);
+    for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
+        tlb_flush_page_locked(cpu, mmu_idx, addr);
+        tlb_flush_page_locked(cpu, mmu_idx, next);
+    }
+    qemu_spin_unlock(&cpu->neg.tlb.c.lock);
+
+    tb_jmp_cache_clear_page(cpu, addr - TARGET_PAGE_SIZE);
+    tb_jmp_cache_clear_page(cpu, addr);
+    tb_jmp_cache_clear_page(cpu, next);
+}
+
 void tlb_flush_page_by_mmuidx_all_cpus_synced(CPUState *src_cpu,
                                               vaddr addr,
                                               MMUIdxMap idxmap)
