@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Run the independent CRIME transfer cases concurrently. Every GLib path is
+# selected by one group; the named binary still runs all cases in one process.
+
+base /mips64/sgi/crime/mte
+base /mips64/sgi/crime/mte/legacy
+base /mips64/sgi/crime/mte/rgba32
+base /mips64/sgi/crime/mte/stipple/rotations
+base /mips64/sgi/crime/mte/stipple/masks
+base /mips64/sgi/crime/mte/stipple/phases
+base /mips64/sgi/crime/mte/stipple/start-forms
+base /mips64/sgi/crime/mte/stipple/finite-rows
+base /mips64/sgi/crime/mte/stipple/exclusions
+base /mips64/sgi/crime/mte/stipple/migration
+
+clip /mips64/sgi/crime/mte/clip
+
+tiled /mips64/sgi/crime/mte/tiled
+
+depth0 /mips64/sgi/crime/mte/stipple/failure-depth0-low
+depth0 /mips64/sgi/crime/mte/stipple/failure-depth0-high
+
+depth1 /mips64/sgi/crime/mte/stipple/failure-depth1-low
+depth1 /mips64/sgi/crime/mte/stipple/failure-depth1-high
+
+depth2 /mips64/sgi/crime/mte/stipple/failure-depth2-low
+depth2 /mips64/sgi/crime/mte/stipple/failure-depth2-high

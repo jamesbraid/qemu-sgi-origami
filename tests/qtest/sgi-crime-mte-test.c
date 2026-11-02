@@ -2139,7 +2139,7 @@ static void test_mte_stipple_rows(void)
     g_rmdir(dir);
 }
 
-static void test_mte_stipple_failure(void)
+static void test_mte_stipple_failure(gconstpointer data)
 {
     const uint32_t patterns[] = { 0, UINT32_MAX, 0x80000001, 0x96a53c81 };
     const unsigned triggers[] = { 0x10, 0x18 };
@@ -2147,152 +2147,154 @@ static void test_mte_stipple_failure(void)
     g_autofree char *dir = g_dir_make_tmp("crime-stipple-fail-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "state", NULL);
 
-    for (unsigned depth = 0; depth < 3; depth++) {
-        QTestState *s = start_state_options(
-            "-device sgi-crime-test-fixture,id=inject,"
-            "crime=/machine/peripheral/crime");
+    unsigned part = GPOINTER_TO_UINT(data);
+    unsigned depth = part / 2;
+    unsigned first_fault = part % 2 ? 8 : 0;
+    unsigned last_fault = first_fault + 8;
+    QTestState *s = start_state_options(
+        "-device sgi-crime-test-fixture,id=inject,"
+        "crime=/machine/peripheral/crime");
 
-        qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
-        qtest_set_irq_in(s, "/machine/peripheral/crime", "mace", 4, 1);
-        qtest_writeq(s, BASE + 0x18, 1U << 4);
-        qtest_qmp_assert_success(s,
-            "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
-            "'property':'memory-error-status','value':234881024}}");
-        qtest_qmp_assert_success(s,
-            "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
-            "'property':'memory-error-address','value':74565}}");
-        for (unsigned fault = 0; fault < 16; fault++) {
-            if (!depth && (fault == 12 || fault == 13)) {
-                continue;
-            }
-            unsigned variants = fault == 10 || fault == 11 ?
-                                ARRAY_SIZE(patterns) : 1;
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    qtest_set_irq_in(s, "/machine/peripheral/crime", "mace", 4, 1);
+    qtest_writeq(s, BASE + 0x18, 1U << 4);
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+        "'property':'memory-error-status','value':234881024}}");
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+        "'property':'memory-error-address','value':74565}}");
+    for (unsigned fault = first_fault; fault < last_fault; fault++) {
+        if (!depth && (fault == 12 || fault == 13)) {
+            continue;
+        }
+        unsigned variants = fault == 10 || fault == 11 ?
+                            ARRAY_SIZE(patterns) : 1;
 
-            for (unsigned variant = 0; variant < variants; variant++) {
-                for (unsigned t = 0; t < ARRAY_SIZE(triggers); t++) {
-                    MteClear c = mte_clear_default(depth);
-                    unsigned trigger = triggers[t];
-                    uint32_t words[10];
-                    uint8_t table[512], table_after[512];
-                    uint64_t table_addr = 0x15001000ULL + c.bank * 512;
+        for (unsigned variant = 0; variant < variants; variant++) {
+            for (unsigned t = 0; t < ARRAY_SIZE(triggers); t++) {
+                MteClear c = mte_clear_default(depth);
+                unsigned trigger = triggers[t];
+                uint32_t words[10];
+                uint8_t table[512], table_after[512];
+                uint64_t table_addr = 0x15001000ULL + c.bank * 512;
 
-                    if (!fault || fault == 4) {
-                        c.pattern = 0;
-                    } else if (fault == 1) {
-                        c.mask = 0;
-                    } else if (variants > 1) {
-                        c.pattern = patterns[variant];
-                    }
-                    if (fault == 4) {
-                        c.y0 = 0;
-                    }
-                    mte_clear_words(&c, words);
-                    mte_clear_memory(s, &c, true, false);
-                    mte_clear_stage(s, &c);
-                    switch (fault) {
-                    case 0:
-                    case 1:
-                        tiled_entry(s, c.bank, 17, 0);
-                        break;
-                    case 2:
-                        tiled_entry(s, c.bank, 17, 0x8400);
-                        break;
-                    case 3:
-                        tiled_entry(s, c.bank, 17, 0x9400);
-                        break;
-                    case 4:
-                        tiled_entry(s, c.bank, 16,
-                                    0x8000 | tiled_page(c.bank, 0));
-                        tiled_entry(s, c.bank, 17,
-                                    0x8000 | tiled_page(c.bank, 1));
-                        break;
-                    case 5:
-                        qtest_writel(s, MTE + 0x38, tiled_xy(8192, c.y1));
-                        break;
-                    case 6:
-                        qtest_writel(s, MTE + 0x38, tiled_xy(c.x1, 2048));
-                        break;
-                    case 7:
-                        qtest_writel(s, MTE + 0x30,
-                                     tiled_xy(c.x1 + 1, c.y0));
-                        break;
-                    case 8:
-                        qtest_writel(s, MTE + 0x30,
-                                     tiled_xy(c.x0, c.y1 + 1));
-                        break;
-                    case 9:
-                        qtest_writel(s, MTE + 0x48, UINT32_MAX);
-                        break;
-                    case 10:
-                        qtest_writel(s, MTE, (words[0] & ~0x300U) | 0x300);
-                        break;
-                    case 11:
-                        qtest_writel(s, MTE, words[0] | 0x80000000U);
-                        break;
-                    case 12:
-                        qtest_writel(s, MTE + 0x30,
-                                     tiled_xy(c.x0 + 1, c.y0));
-                        break;
-                    case 13:
-                        qtest_writel(s, MTE + 0x38,
-                                     tiled_xy(c.x1 - 1, c.y1));
-                        break;
-                    case 14:
-                        qtest_writel(s, MTE, words[0] | (1U << 11));
-                        break;
-                    case 15:
-                        qtest_writel(s, MTE, (words[0] & ~0x1cU) | (7U << 2));
-                        break;
-                    }
-                    qtest_memread(s, table_addr, table, sizeof(table));
-                    g_assert_cmphex(ldq_be_p(table), ==,
-                                    qtest_readq(s, table_addr));
-                    clip_save(s, path, before);
-                    qtest_qmp_assert_success(s, "{'execute':'cont'}");
-                    g_assert_cmpint(memtx_writel(s, MTE + 0x800 + trigger,
-                        trigger == 0x10 ? ~c.pattern : ~c.fill), ==,
-                        MEMTX_ERROR);
-                    clip_stopped(s);
-                    mte_clear_memory(s, &c, false, false);
-                    g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU,
-                                    ==, 0x1e000000);
-                    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
-                    g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, 1U << 4);
-                    g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==,
-                                    234881024);
-                    g_assert_cmphex(qtest_readq(s, BASE + 0x258), ==, 74565);
-                    for (unsigned i = 0; i < 5; i++) {
-                        g_assert_cmpint(qtest_get_irq(s, i), ==, i == 0);
-                    }
-                    qtest_memread(s, table_addr, table_after,
-                                  sizeof(table_after));
-                    g_assert_cmphex(ldq_be_p(table_after), ==,
-                                    qtest_readq(s, table_addr));
-                    for (unsigned i = 0; i < sizeof(table) / 8; i++) {
-                        g_assert_cmphex(ldq_be_p(table_after + i * 8), ==,
-                                        ldq_be_p(table + i * 8));
-                    }
-                    clip_save(s, path, after);
-                    g_assert_cmpmem(before, sizeof(before),
-                                    after, sizeof(after));
-                    unsigned bytes = 1U << depth;
-
-                    tiled_map(s, c.bank, c.x0 >= bytes ? c.x0 - bytes : 0,
-                              c.y0 ? c.y0 - 1 : 0,
-                              MIN(c.x1 + bytes, 8191), MIN(c.y1 + 1, 2047));
-                    for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
-                        if (i * 8 != trigger) {
-                            qtest_writel(s, MTE + i * 8, words[i]);
-                        }
-                    }
-                    g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==,
-                                    MEMTX_OK);
-                    mte_clear_memory(s, &c, false, true);
+                if (!fault || fault == 4) {
+                    c.pattern = 0;
+                } else if (fault == 1) {
+                    c.mask = 0;
+                } else if (variants > 1) {
+                    c.pattern = patterns[variant];
                 }
+                if (fault == 4) {
+                    c.y0 = 0;
+                }
+                mte_clear_words(&c, words);
+                mte_clear_memory(s, &c, true, false);
+                mte_clear_stage(s, &c);
+                switch (fault) {
+                case 0:
+                case 1:
+                    tiled_entry(s, c.bank, 17, 0);
+                    break;
+                case 2:
+                    tiled_entry(s, c.bank, 17, 0x8400);
+                    break;
+                case 3:
+                    tiled_entry(s, c.bank, 17, 0x9400);
+                    break;
+                case 4:
+                    tiled_entry(s, c.bank, 16,
+                                0x8000 | tiled_page(c.bank, 0));
+                    tiled_entry(s, c.bank, 17,
+                                0x8000 | tiled_page(c.bank, 1));
+                    break;
+                case 5:
+                    qtest_writel(s, MTE + 0x38, tiled_xy(8192, c.y1));
+                    break;
+                case 6:
+                    qtest_writel(s, MTE + 0x38, tiled_xy(c.x1, 2048));
+                    break;
+                case 7:
+                    qtest_writel(s, MTE + 0x30,
+                                 tiled_xy(c.x1 + 1, c.y0));
+                    break;
+                case 8:
+                    qtest_writel(s, MTE + 0x30,
+                                 tiled_xy(c.x0, c.y1 + 1));
+                    break;
+                case 9:
+                    qtest_writel(s, MTE + 0x48, UINT32_MAX);
+                    break;
+                case 10:
+                    qtest_writel(s, MTE, (words[0] & ~0x300U) | 0x300);
+                    break;
+                case 11:
+                    qtest_writel(s, MTE, words[0] | 0x80000000U);
+                    break;
+                case 12:
+                    qtest_writel(s, MTE + 0x30,
+                                 tiled_xy(c.x0 + 1, c.y0));
+                    break;
+                case 13:
+                    qtest_writel(s, MTE + 0x38,
+                                 tiled_xy(c.x1 - 1, c.y1));
+                    break;
+                case 14:
+                    qtest_writel(s, MTE, words[0] | (1U << 11));
+                    break;
+                case 15:
+                    qtest_writel(s, MTE, (words[0] & ~0x1cU) | (7U << 2));
+                    break;
+                }
+                qtest_memread(s, table_addr, table, sizeof(table));
+                g_assert_cmphex(ldq_be_p(table), ==,
+                                qtest_readq(s, table_addr));
+                clip_save(s, path, before);
+                qtest_qmp_assert_success(s, "{'execute':'cont'}");
+                g_assert_cmpint(memtx_writel(s, MTE + 0x800 + trigger,
+                    trigger == 0x10 ? ~c.pattern : ~c.fill), ==,
+                    MEMTX_ERROR);
+                clip_stopped(s);
+                mte_clear_memory(s, &c, false, false);
+                g_assert_cmphex(qtest_readl(s, STATUS) & ~0x3ffffU,
+                                ==, 0x1e000000);
+                g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
+                g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, 1U << 4);
+                g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==,
+                                234881024);
+                g_assert_cmphex(qtest_readq(s, BASE + 0x258), ==, 74565);
+                for (unsigned i = 0; i < 5; i++) {
+                    g_assert_cmpint(qtest_get_irq(s, i), ==, i == 0);
+                }
+                qtest_memread(s, table_addr, table_after,
+                              sizeof(table_after));
+                g_assert_cmphex(ldq_be_p(table_after), ==,
+                                qtest_readq(s, table_addr));
+                for (unsigned i = 0; i < sizeof(table) / 8; i++) {
+                    g_assert_cmphex(ldq_be_p(table_after + i * 8), ==,
+                                    ldq_be_p(table + i * 8));
+                }
+                clip_save(s, path, after);
+                g_assert_cmpmem(before, sizeof(before),
+                                after, sizeof(after));
+                unsigned bytes = 1U << depth;
+
+                tiled_map(s, c.bank, c.x0 >= bytes ? c.x0 - bytes : 0,
+                          c.y0 ? c.y0 - 1 : 0,
+                          MIN(c.x1 + bytes, 8191), MIN(c.y1 + 1, 2047));
+                for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
+                    if (i * 8 != trigger) {
+                        qtest_writel(s, MTE + i * 8, words[i]);
+                    }
+                }
+                g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==,
+                                MEMTX_OK);
+                mte_clear_memory(s, &c, false, true);
             }
         }
-        qtest_quit(s);
     }
+    qtest_quit(s);
     g_unlink(path);
     g_rmdir(dir);
 }
@@ -2810,122 +2812,230 @@ static void test_rgba32_migration(void)
     g_rmdir(dir);
 }
 
-int main(int argc, char **argv)
+static GPtrArray *group_paths;
+
+static void take_group_paths(int *argc, char **argv)
 {
-    static const TransferCase tests[] = {
-        { "clear", test_clear, NULL, NULL, NULL },
-        { "copy", test_copy, NULL, NULL, NULL },
-        { "invalid-translation", test_invalid_translation, NULL, NULL, NULL },
-        { "registers", test_registers, NULL, NULL, NULL },
-        { "translation-commit", test_translation_and_commit, NULL, NULL, NULL },
-        { "rejected-commands", test_rejected_commands, NULL, NULL, NULL },
-        { "overlap", test_overlap, NULL, NULL, NULL },
-        { "healthy-memory", test_healthy_memory, NULL, NULL, NULL },
-        { "banked-views", test_banked_views, NULL, NULL, NULL },
-        { "bounds-holes", test_bounds_and_holes, NULL, NULL, NULL },
-        { "source-alias", test_source_alias, NULL, NULL, NULL },
-        { "maximum-interval", test_maximum_interval, NULL, NULL, NULL },
-        { "migration", test_migration, NULL, NULL, NULL },
-        { "diagnostics", test_diagnostics, NULL, NULL, NULL },
-        { "translated-code", test_translated_code, NULL, NULL, NULL },
-        { "migration-missing-state", NULL,
-          test_migration_policy, GINT_TO_POINTER(0), NULL },
-        { "migration-unselected-state", NULL,
-          test_migration_policy, GINT_TO_POINTER(1), NULL },
-        { "migration-hardware-software-overlap", NULL,
-          test_migration_invalid_state, GUINT_TO_POINTER(0), NULL },
-        { "migration-policy", NULL,
-          test_migration_invalid_state, GUINT_TO_POINTER(1), NULL },
-        { "migration-unadmitted-parameter", NULL,
-          test_migration_invalid_state, GUINT_TO_POINTER(2), NULL },
-        { "migration-ecc-enable", NULL,
-          test_migration_invalid_state, GUINT_TO_POINTER(3), NULL },
-        { "migration-absent-section", NULL,
-          test_migration_invalid_state, GUINT_TO_POINTER(4), NULL },
-        { "migration-absent-disabled-section", NULL,
-          test_migration_invalid_state, GUINT_TO_POINTER(5), NULL },
-    };
-    static const TransferCase clip_tests[] = {
-        { "programming", test_clip_programming, NULL, NULL, "legacy-software" },
-        { "start-forms", test_clip_start_forms, NULL, NULL, "legacy-software" },
-        { "bitmap", test_clip_bitmap, NULL, NULL, "legacy-software" },
-        { "aliases", test_clip_aliases, NULL, NULL, "legacy-software" },
-        { "failure", test_clip_failure, NULL, NULL, "legacy-software" },
-        { "accesses", test_clip_accesses, NULL, NULL, "legacy-software" },
-        { "migration", test_clip_migration, NULL, NULL, "legacy-software" },
-        { "invalid-stream", test_clip_invalid_stream, NULL, NULL,
-          "legacy-software" },
-    };
-    static const TransferCase tiled_tests[] = {
-        { "fill-lanes", test_tiled_fill_lanes, NULL, NULL, "legacy-software" },
-        { "masks", test_tiled_masks, NULL, NULL, "legacy-software" },
-        { "indexed-bytes", test_tiled_indexed_bytes, NULL, NULL,
-          "legacy-software" },
-        { "canvas", test_tiled_canvas, NULL, NULL, "legacy-software" },
-        { "start-forms", test_tiled_start_forms, NULL, NULL,
-          "legacy-software" },
-        { "copy-masks", test_tiled_copy_masks, NULL, NULL, "legacy-software" },
-        { "failure", test_tiled_failure, NULL, NULL, "legacy-software" },
-        { "migration", test_tiled_migration, NULL, NULL, "legacy-software" },
-        { "profiles", test_tiled_profiles, NULL, NULL, "legacy-software" },
-    };
-    static const TransferCase stipple_tests[] = {
-        { "rotations", test_mte_stipple_rotations, NULL, NULL,
-          "legacy-software" },
-        { "masks", test_mte_stipple_masks, NULL, NULL, "legacy-software" },
-        { "phases", test_mte_stipple_phases, NULL, NULL, "legacy-software" },
-        { "start-forms", test_mte_stipple_starts, NULL, NULL,
-          "legacy-software" },
-        { "finite-rows", test_mte_stipple_rows, NULL, NULL, "legacy-software" },
-        { "failure", test_mte_stipple_failure, NULL, NULL, "legacy-software" },
-        { "exclusions", test_mte_stipple_exclusions, NULL, NULL,
-          "legacy-software" },
-        { "migration", test_mte_stipple_migration, NULL, NULL,
-          "legacy-software" },
-    };
-    static const TransferCase rgba32_tests[] = {
-        { "bytes", test_rgba32_bytes, NULL, NULL, "legacy-software" },
-        { "start-forms", test_rgba32_starts, NULL, NULL, "legacy-software" },
-        { "failure", test_rgba32_failures, NULL, NULL, "legacy-software" },
-        { "migration", test_rgba32_migration, NULL, NULL, "legacy-software" },
-    };
-    const char *profiles[] = { "1.5", "legacy-software" };
+    int kept = 1;
 
-    g_test_init(&argc, &argv, NULL);
-    for (unsigned profile = 0; profile < ARRAY_SIZE(profiles); profile++) {
-        for (unsigned i = 0; i < ARRAY_SIZE(tests); i++) {
-            TransferCase *test = g_new(TransferCase, 1);
-            g_autofree char *name = g_strdup_printf("/sgi/crime/mte/%s%s",
-                profile ? "legacy/" : "", tests[i].name);
-
-            *test = tests[i];
-            test->profile = profiles[profile];
-            qtest_add_data_func_full(name, test, run_transfer_case, g_free);
+    for (int i = 1; i < *argc; i++) {
+        if (g_str_equal(argv[i], "--group-path") && i + 1 < *argc) {
+            if (!group_paths) {
+                group_paths = g_ptr_array_new();
+            }
+            g_ptr_array_add(group_paths, argv[++i]);
+        } else {
+            argv[kept++] = argv[i];
         }
     }
-    for (unsigned i = 0; i < ARRAY_SIZE(clip_tests); i++) {
-        g_autofree char *name = g_strdup_printf("/sgi/crime/mte/clip/%s",
-                                               clip_tests[i].name);
+    argv[kept] = NULL;
+    *argc = kept;
+}
 
-        qtest_add_data_func(name, &clip_tests[i], run_transfer_case);
-    }
-    for (unsigned i = 0; i < ARRAY_SIZE(tiled_tests); i++) {
-        g_autofree char *name = g_strdup_printf("/sgi/crime/mte/tiled/%s",
-                                               tiled_tests[i].name);
+static bool in_group(const char *path)
+{
+    g_autofree char *full = g_strdup_printf("/%s/%s", qtest_get_arch(),
+                                            path);
+    g_autofree char *suite = g_path_get_dirname(full);
 
-        qtest_add_data_func(name, &tiled_tests[i], run_transfer_case);
+    if (!group_paths) {
+        return true;
     }
-    for (unsigned i = 0; i < ARRAY_SIZE(stipple_tests); i++) {
-        g_autofree char *name = g_strdup_printf("/sgi/crime/mte/stipple/%s",
-                                               stipple_tests[i].name);
+    for (guint i = 0; i < group_paths->len; i++) {
+        const char *taken = g_ptr_array_index(group_paths, i);
 
-        qtest_add_data_func(name, &stipple_tests[i], run_transfer_case);
+        if (g_str_equal(taken, full) || g_str_equal(taken, suite)) {
+            return true;
+        }
     }
-    for (unsigned i = 0; i < ARRAY_SIZE(rgba32_tests); i++) {
-        g_autofree char *name = g_strdup_printf("/sgi/crime/mte/rgba32/%s",
-                                               rgba32_tests[i].name);
+    return false;
+}
 
-        qtest_add_data_func(name, &rgba32_tests[i], run_transfer_case);
+static void add_case(const char *path, GTestFunc function,
+                     GTestDataFunc data_function, gconstpointer data,
+                     const char *profile)
+{
+    TransferCase *test;
+
+    if (!in_group(path)) {
+        return;
     }
+    test = g_new(TransferCase, 1);
+    *test = (TransferCase) { path, function, data_function, data, profile };
+    qtest_add_data_func_full(path, test, run_transfer_case, g_free);
+}
+
+int main(int argc, char **argv)
+{
+    take_group_paths(&argc, argv);
+    g_test_init(&argc, &argv, NULL);
+    add_case("sgi/crime/mte/clear", test_clear,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/copy", test_copy,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/invalid-translation", test_invalid_translation,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/registers", test_registers,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/translation-commit", test_translation_and_commit,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/rejected-commands", test_rejected_commands,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/overlap", test_overlap,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/healthy-memory", test_healthy_memory,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/banked-views", test_banked_views,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/bounds-holes", test_bounds_and_holes,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/source-alias", test_source_alias,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/maximum-interval", test_maximum_interval,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/migration", test_migration,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/diagnostics", test_diagnostics,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/translated-code", test_translated_code,
+             NULL, NULL, "1.5");
+    add_case("sgi/crime/mte/migration-missing-state", NULL,
+             test_migration_policy, GINT_TO_POINTER(0), "1.5");
+    add_case("sgi/crime/mte/migration-unselected-state", NULL,
+             test_migration_policy, GINT_TO_POINTER(1), "1.5");
+    add_case("sgi/crime/mte/migration-hardware-software-overlap", NULL,
+             test_migration_invalid_state, GUINT_TO_POINTER(0), "1.5");
+    add_case("sgi/crime/mte/migration-policy", NULL,
+             test_migration_invalid_state, GUINT_TO_POINTER(1), "1.5");
+    add_case("sgi/crime/mte/migration-unadmitted-parameter", NULL,
+             test_migration_invalid_state, GUINT_TO_POINTER(2), "1.5");
+    add_case("sgi/crime/mte/migration-ecc-enable", NULL,
+             test_migration_invalid_state, GUINT_TO_POINTER(3), "1.5");
+    add_case("sgi/crime/mte/migration-absent-section", NULL,
+             test_migration_invalid_state, GUINT_TO_POINTER(4), "1.5");
+    add_case("sgi/crime/mte/migration-absent-disabled-section", NULL,
+             test_migration_invalid_state, GUINT_TO_POINTER(5), "1.5");
+    add_case("sgi/crime/mte/legacy/clear", test_clear,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/copy", test_copy,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/invalid-translation",
+             test_invalid_translation,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/registers", test_registers,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/translation-commit",
+             test_translation_and_commit,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/rejected-commands", test_rejected_commands,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/overlap", test_overlap,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/healthy-memory", test_healthy_memory,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/banked-views", test_banked_views,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/bounds-holes", test_bounds_and_holes,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/source-alias", test_source_alias,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/maximum-interval", test_maximum_interval,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/migration", test_migration,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/diagnostics", test_diagnostics,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/translated-code", test_translated_code,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/legacy/migration-missing-state", NULL,
+             test_migration_policy, GINT_TO_POINTER(0), "legacy-software");
+    add_case("sgi/crime/mte/legacy/migration-unselected-state", NULL,
+             test_migration_policy, GINT_TO_POINTER(1), "legacy-software");
+    add_case("sgi/crime/mte/legacy/migration-hardware-software-overlap", NULL,
+             test_migration_invalid_state, GUINT_TO_POINTER(0),
+             "legacy-software");
+    add_case("sgi/crime/mte/legacy/migration-policy", NULL,
+             test_migration_invalid_state, GUINT_TO_POINTER(1),
+             "legacy-software");
+    add_case("sgi/crime/mte/legacy/migration-unadmitted-parameter", NULL,
+             test_migration_invalid_state, GUINT_TO_POINTER(2),
+             "legacy-software");
+    add_case("sgi/crime/mte/legacy/migration-ecc-enable", NULL,
+             test_migration_invalid_state, GUINT_TO_POINTER(3),
+             "legacy-software");
+    add_case("sgi/crime/mte/legacy/migration-absent-section", NULL,
+             test_migration_invalid_state, GUINT_TO_POINTER(4),
+             "legacy-software");
+    add_case("sgi/crime/mte/legacy/migration-absent-disabled-section", NULL,
+             test_migration_invalid_state, GUINT_TO_POINTER(5),
+             "legacy-software");
+    add_case("sgi/crime/mte/clip/programming", test_clip_programming,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/clip/start-forms", test_clip_start_forms,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/clip/bitmap", test_clip_bitmap,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/clip/aliases", test_clip_aliases,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/clip/failure", test_clip_failure,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/clip/accesses", test_clip_accesses,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/clip/migration", test_clip_migration,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/clip/invalid-stream", test_clip_invalid_stream,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/tiled/fill-lanes", test_tiled_fill_lanes,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/tiled/masks", test_tiled_masks,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/tiled/indexed-bytes", test_tiled_indexed_bytes,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/tiled/canvas", test_tiled_canvas,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/tiled/start-forms", test_tiled_start_forms,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/tiled/copy-masks", test_tiled_copy_masks,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/tiled/failure", test_tiled_failure,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/tiled/migration", test_tiled_migration,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/tiled/profiles", test_tiled_profiles,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/stipple/rotations", test_mte_stipple_rotations,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/stipple/masks", test_mte_stipple_masks,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/stipple/phases", test_mte_stipple_phases,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/stipple/start-forms", test_mte_stipple_starts,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/stipple/finite-rows", test_mte_stipple_rows,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/stipple/failure-depth0-low", NULL,
+             test_mte_stipple_failure, GUINT_TO_POINTER(0), "legacy-software");
+    add_case("sgi/crime/mte/stipple/failure-depth0-high", NULL,
+             test_mte_stipple_failure, GUINT_TO_POINTER(1), "legacy-software");
+    add_case("sgi/crime/mte/stipple/failure-depth1-low", NULL,
+             test_mte_stipple_failure, GUINT_TO_POINTER(2), "legacy-software");
+    add_case("sgi/crime/mte/stipple/failure-depth1-high", NULL,
+             test_mte_stipple_failure, GUINT_TO_POINTER(3), "legacy-software");
+    add_case("sgi/crime/mte/stipple/failure-depth2-low", NULL,
+             test_mte_stipple_failure, GUINT_TO_POINTER(4), "legacy-software");
+    add_case("sgi/crime/mte/stipple/failure-depth2-high", NULL,
+             test_mte_stipple_failure, GUINT_TO_POINTER(5), "legacy-software");
+    add_case("sgi/crime/mte/stipple/exclusions", test_mte_stipple_exclusions,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/stipple/migration", test_mte_stipple_migration,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/rgba32/bytes", test_rgba32_bytes,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/rgba32/start-forms", test_rgba32_starts,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/rgba32/failure", test_rgba32_failures,
+             NULL, NULL, "legacy-software");
+    add_case("sgi/crime/mte/rgba32/migration", test_rgba32_migration,
+             NULL, NULL, "legacy-software");
     return g_test_run();
 }
