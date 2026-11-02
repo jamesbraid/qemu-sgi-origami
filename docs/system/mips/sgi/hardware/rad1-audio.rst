@@ -14,11 +14,12 @@ and on the MediaIO daughtercard of the Origin 2000 and Onyx2 BaseIO-G, at
 device 7 of that board's Bridge. It moves audio between host-memory rings
 and the analog, AES3 and ADAT interfaces, and reports progress through a
 status ring in host memory. QEMU models it in
-``hw/audio/sgi-rad1-audio.c`` as two types: ``sgi-rad1-audio`` for
-MediaIO, PCI revision ``0x70``, and ``sgi-rad1-octane`` for the Octane,
-PCI revision ``0xc0``. The two share the register layout and engines but
-accept different access sets. It is unrelated to the PsiTech RAD1 graphics
-card, which has its own model and page.
+``hw/audio/sgi-rad1-audio.c`` as three types: ``sgi-rad1-audio`` for
+MediaIO, PCI revision ``0x70``, ``sgi-rad1-octane`` for the Octane, PCI
+revision ``0xc0``, and ``sgi-rad1-pci`` for the PCI Digital Audio Board,
+PCI revision ``0xd0`` (:ref:`sgi-rad1-pci-card`). They share the register
+layout and engines but accept different access sets. It is unrelated to
+the PsiTech RAD1 graphics card, which has its own model and page.
 
 .. seealso::
 
@@ -635,6 +636,85 @@ its phase and its enable and arm state, and rebases every engine's time
 reference on load so migration adds no ticks, frames or completions. A
 state whose ring geometry or schedule could misdirect DMA fails to load.
 
+.. _sgi-rad1-pci-card:
+
+PCI Digital Audio Board (board 13)
+==================================
+
+``sgi-rad1-pci`` is SGI's PCI Digital Audio Board, the card IRIX reports
+as "RAD revision 13.0" on the Tezro, Origin 350, Onyx 350 and Onyx4, and
+once on an O2 and an Origin 2000. It has ADAT optical, AES-3id coaxial
+and video-reference connectors and no analog connector (*SGI PCI Digital
+Audio Board Installation Guide*, 007-3502-003, printed pages 2, 8, 18 and
+19), *established*. The IRIX 6.5.30 IP35 audio driver skips the analog
+input and output when the board number is 13, *software expectation*, so
+the model has no analog channels. That the digital-only card is board 13
+rather than another number is *inferred*: the guide covers four part
+numbers and its own inventory example reads 12.0.
+
+The type derives from ``sgi-rad1-audio`` and shares its engines:
+AES3 and ADAT input and output (channel types 2 to 5), the AES3-input and
+ADAT-input subcode channels (6 and 7), the status DMA, the UST counter and
+the digital receiver and genlock properties. What differs:
+
+- **Identity.** ``10a9:0005``, revision ``0xd0``, class ``0x000000``,
+  subsystem ``0000:0000``, interrupt pin 0. Only the printed "13.0" is
+  *established*; the raw byte is *inferred* from it. Class, subsystem and
+  BAR flags are recorded for no capture of the card, so they take the one
+  measured RAD's values and the 32-bit non-prefetchable ``0x2000``-byte
+  BAR0 of the other types, *approximation*. PCI Status is *not measured*
+  for board 13: the model borrows the reference Octane2 RAD1's observed
+  ``0x0480`` (slow DEVSEL, fast back-to-back), an approximation that
+  assumes this card reads the same. A board-12 revision on this card would make the IP35
+  driver divide by zero (*inferred*), so ``0xd0`` is not an option.
+- **No analog interface.** Writing the enable bit of the analog input
+  (``0x4c`` bit 0) or output (``0x58`` bit 0) logs ``LOG_UNIMP`` and starts
+  nothing: positions, pointer words and rings stay untouched. The registers
+  still store what is written. No analog host voice is opened, and the
+  MediaIO serial-word ``mux-word`` property does not exist.
+- **Polled.** The driver registers no interrupt, so the card never
+  asserts INTA and has no interrupt pin, *approximation* for the pin.
+- **UST control.** ``0x40`` is stored and read back with no effect; the
+  driver writes ``6`` then ``2``, or ``4`` then ``0``, when it resets the
+  UST. What the bits do is *unknown*. The counter at ``0x30`` is the
+  MediaIO one, free-running from reset at 800 ns a tick. The IP35 driver
+  divides by 960 ns or by a period it computes from the :term:`Bedrock`
+  real-time-clock register, 800 ns for a field of 79; which one a Fuel or
+  Tezro gets is *unknown*, so 800 ns is a choice, *approximation*. It
+  passes the driver's liveness check, three ticks in 10 microseconds, and
+  stays monotonic across the control writes.
+- **Start-up values.** The board-13 driver stores ``0x05000000`` to
+  ``0x4c``, ``0`` to ``0x54``, ``0x20000000`` to ``0x50`` and zero to
+  ``0x84`` to ``0x90``, where board 12 stores ``0x03000000``,
+  ``0x40000000``, ``0x60000000`` and 2 to ``0x8c`` and ``0x90``. The card
+  stores all of them and acts on none, because only bit 0 (bit 2 for the
+  subcode channels) of the enable registers is decoded. What the other bits
+  mean is *unknown*.
+- **Bridge requests.** The driver asks for PCI priority 1 and two
+  read-response buffers (board 12: 2 and 3). Both are requests to the
+  bridge, not card state, and the :term:`XBridge` model stores its
+  buffer-assignment registers without acting on them.
+- **Positions.** Each position is a 14-bit frame count at shift 18
+  (bits 31:18). The AES3-input and ADAT-input subcode channels count in
+  bits 17:4 of their A register (shift 4) and leave bits 31:18, the parent
+  input's count, alone. The BAR0 bank and the status-slot copy are the same
+  words at the same instant.
+
+The type has no per-board property: a second type keeps a board-12 PCI card
+from being a flag on this one, since no source shows one exists.
+
+Placement is ``-device sgi-rad1-pci,bus=BUS,addr=N``. The datasheet's first
+choices are the Fuel's head E (``bus=head-e.0,addr=2``, where a real option
+card was seen) and the Tezro's second option bus (the IO9 :term:`PIC`'s head 1,
+``bus=pic-pic-xio-f-head-1.0``, a free device number). Whether a RAD runs
+in a Fuel slot is *unknown*: none of 36 Fuel inventories shows one. The O2
+model refuses every attached PCI device, so the card cannot be placed in
+its slot 3.
+
+On reset every stored word, descriptor, position and the UST control word
+return to zero and the UST restarts. The UST control word travels in its
+own migration subsection, sent only for this card.
+
 .. _sgi-rad1-measurements:
 
 Measurements
@@ -775,6 +855,13 @@ Model limits
 - MediaIO ignores set B, starts a channel whose control tag does not
   match its type after logging ``LOG_GUEST_ERROR``, clamps a ring longer
   than 1 MiB and refuses a ring that is not a whole number of frames.
+- The PCI card keeps the MediaIO channel policies: 44.1 kHz outputs, a
+  48 kHz ADAT input and AES3 input, no clock-generator registers
+  (``0xa4`` to ``0xb4`` log ``LOG_UNIMP``), and a 16-bit stereo host voice
+  per digital interface (``aes-audiodev``, ``adat-audiodev``). The
+  ``audiodev`` property has no use on it. Byte order of sample words,
+  dual-address behaviour and burst length at the card are *unknown*; words
+  go out little-endian through the Bridge's placement.
 - Subcode records are zero; nothing on the host supplies AES3 channel
   status or ADAT user bits.
 - A host input that delivers fewer frames than the sample clock owes is
@@ -807,6 +894,14 @@ sequence, word value and wrap, and migration.
 covers the MediaIO slot and identity, register storage, status DMA, every
 data channel and subcode channel, the digital receiver and genlock
 properties, the serial word, the UST counter and migration.
+
+``tests/qtest/sgi-rad1-pci-test.c``, on a Bridge test head, covers the PCI
+card's identity and BAR0, the board-13 and board-12 start-up words, the
+absent analog interface against the MediaIO type's, the UST counter and
+its control word, one-shot and continuous status DMA, a 64-bit status
+address, the bus-master gate, the position encoding of the digital and
+subcode channels, reset and migration. ``tests/qtest/sn1-rad1-pci-test.c``
+places the card on the Fuel and Tezro option buses.
 
 ``tests/unit/test-sgi-rad1-audio-pcm.c`` pins the ring-word and host
 sample conversions. The functional IRIX diagnostic matrix in

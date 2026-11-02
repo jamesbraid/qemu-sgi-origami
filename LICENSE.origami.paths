@@ -863,6 +863,7 @@ tests/qtest/sgi-pci-expansion-ni-fixture.c
 tests/qtest/sgi-pci-expansion-ni-test.c
 tests/qtest/sgi-pic-test.c
 tests/qtest/sgi-prom-container.h
+tests/qtest/sgi-rad1-pci-test.c
 tests/qtest/sgi-replay-test.c
 tests/qtest/sgi-synthetic-serial-test.c
 tests/qtest/sgi-test.h
@@ -959,6 +960,7 @@ tests/qtest/sn1-odyssey-test-groups.txt
 tests/qtest/sn1-odyssey-test.c
 tests/qtest/sn1-pci-expansion-module-test.c
 tests/qtest/sn1-pi-gfx-test.c
+tests/qtest/sn1-rad1-pci-test.c
 tests/qtest/sn1-xbridge-chip-test.c
 tests/qtest/sn1-xbridge-test.c
 tests/qtest/sn1-xbridge-xbow-test.c

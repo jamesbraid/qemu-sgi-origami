@@ -458,6 +458,8 @@ sgi_board_qtests = \
 sgi_bridge_card_qtests = \
   (config_all_devices.has_key('CONFIG_TSB12LV22') ? ['tsb12lv22-test'] : []) + \
   (config_all_devices.has_key('CONFIG_TIGON') ? ['tigon-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_RAD1_AUDIO') ?
+    ['sgi-rad1-pci-test'] : []) + \
   (config_all_devices.has_key('CONFIG_XFRAME_PCI') ? ['xframe-test'] : []) + \
   (config_all_devices.has_key('CONFIG_BCM570X') ? ['bcm570x-test'] : []) + \
   (config_all_devices.has_key('CONFIG_QLOGIC_ISP2200_PCI') ?
@@ -509,7 +511,10 @@ sn1_board_qtests = \
     ['sn1-fuel-vpro-test'] : []) + \
   (config_all_devices.has_key('CONFIG_TIGON') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
-    ['sn1-option-tigon-test'] : [])
+    ['sn1-option-tigon-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_RAD1_AUDIO') and
+   config_all_devices.has_key('CONFIG_SGI_SN1') ?
+    ['sn1-rad1-pci-test'] : [])
 
 sn0_machine_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mttcg-test',

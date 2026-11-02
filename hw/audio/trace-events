@@ -75,3 +75,4 @@ sgi_rad1_audio_wrap(unsigned int ch, uint64_t base) "ch %u ring 0x%"PRIx64
 sgi_rad1_audio_position(unsigned int ch, uint32_t frames, uint32_t pos_a, uint32_t pos_b) "ch %u +%u frames, A=0x%08x B=0x%08x"
 sgi_rad1_audio_field_events(uint64_t fields, uint32_t bits) "field %"PRIu64" slot bits 0x%x"
 sgi_rad1_audio_mux_word(uint32_t word) "mux word 0x%04x"
+sgi_rad1_pci_ust_control(uint32_t value) "UST control 0x40 = 0x%x"
