@@ -6,6 +6,7 @@
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-l1.h"
 #include "hw/misc/sgi-l1-env.h"
+#include "hw/misc/sgi-l1-l2-link.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
@@ -1195,6 +1196,373 @@ static void l1_router_error_to(SGIL1State *recipient, uint8_t channel)
 static void l1_router_error(SGIL1State *s, uint8_t channel)
 {
     l1_router_error_to(s->reply_to ? s->reply_to : s, channel);
+}
+
+/*
+ * The optional link to an L2 (docs/system/mips/sgi/hardware/l1.rst, "L2
+ * link"). While a peer holds the link, a request for controller type 1 or 2
+ * leaves as router segments and the peer's response comes back to whoever
+ * asked. With no peer, such a request gets the router error reply.
+ */
+
+/* The tag in the source word's bits 11:5 names the requester again. */
+#define L1_L2_TASK 0x15
+#define L1_L2_PENDING_NONE  0
+#define L1_L2_PENDING_PLAIN 1
+#define L1_L2_PENDING_CHUNK 2
+#define L1_L2_CHAIN_NONE 0xff
+
+static bool l1_l2_linked(const SGIL1State *s)
+{
+    return s->l2_up;
+}
+
+/*
+ * What the L1 puts in a forwarded request's source word: the controller's
+ * own key, the requester's transport and subchannel packed into bits 11:5
+ * as the chunk-transport rows of the L1 sheet pack them, and the return
+ * task. The key an unnamed controller uses is the local one: an
+ * approximation, the real value is not established.
+ */
+static uint32_t l1_l2_source(const SGIL1State *s, unsigned tag)
+{
+    uint32_t key = l1_named(s) ? ((s->rack << 6) | s->bay) : 0xffff;
+
+    return (key << 12) | (tag << 5) | L1_L2_TASK;
+}
+
+static void l1_l2_trace_segment(const SGIL1State *s, bool to_l2,
+                                const uint8_t *segment, unsigned length)
+{
+    static const char digits[] = "0123456789abcdef";
+    g_autofree char *hex = NULL;
+
+    if (!trace_event_get_state_backends(TRACE_SGI_L1_L2_SEGMENT)) {
+        return;
+    }
+    hex = g_malloc(length * 2 + 1);
+    for (unsigned i = 0; i < length; i++) {
+        hex[i * 2] = digits[segment[i] >> 4];
+        hex[i * 2 + 1] = digits[segment[i] & 0xf];
+    }
+    hex[length * 2] = 0;
+    trace_sgi_l1_l2_segment(s->profile->name, to_l2, length, hex);
+}
+
+static void l1_l2_send(SGIL1State *s, const uint8_t *segment, unsigned length)
+{
+    uint8_t message[1 + SGI_L1_L2_SEGMENT_MAX];
+
+    g_assert(length >= SGI_L1_L2_SEGMENT_MIN &&
+             length <= SGI_L1_L2_SEGMENT_MAX);
+    l1_l2_trace_segment(s, true, segment, length);
+    message[0] = SGI_L1_L2_KIND_SEGMENT;
+    memcpy(message + 1, segment, length);
+    qemu_chr_fe_write_all(&s->l2_chr, message, length + 1);
+}
+
+static void l1_l2_router_error(SGIL1State *s, unsigned transport,
+                               uint8_t channel)
+{
+    uint8_t payload[] = { 0x20 | channel, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 8 };
+
+    l1_emit_transport(s, transport, payload, sizeof(payload));
+}
+
+static bool l1_l2_destination(uint32_t address)
+{
+    return (address >> 28) == 1 || (address >> 28) == 2;
+}
+
+/*
+ * A request from the node that arrived as chunk frames and was assembled
+ * into one inner message, which is already a router segment. Returns false
+ * when the message is not for the link.
+ */
+static bool l1_l2_forward_chunked(SGIL1State *s, unsigned transport,
+                                  uint8_t channel, const uint8_t *message,
+                                  unsigned length)
+{
+    uint8_t segment[SGI_L1_L2_SEGMENT_MAX];
+    unsigned tag = transport * SGI_L1_IROUTER_CHANNELS + channel;
+
+    if (!l1_l2_linked(s) || length < SGI_L1_L2_SEG_DESC ||
+        !l1_l2_destination(ldl_be_p(message + SGI_L1_L2_SEG_DEST))) {
+        return false;
+    }
+    if (length > sizeof(segment) ||
+        lduw_be_p(message + SGI_L1_L2_SEG_LENGTH) != length ||
+        message[SGI_L1_L2_SEG_COUNT] != (SGI_L1_L2_FIRST_SEGMENT | 1)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: chunked request for the L2 is not one segment\n");
+        return true;
+    }
+    memcpy(segment, message, length);
+    stl_be_p(segment + SGI_L1_L2_SEG_SOURCE, l1_l2_source(s, tag));
+    s->l2_pending[tag] = L1_L2_PENDING_CHUNK;
+    l1_l2_send(s, segment, length);
+    return true;
+}
+
+/*
+ * A plain request from the node for the L2. Only integer arguments have a
+ * known descriptor form, so a request with any other argument keeps the
+ * router error reply. Returns true when the request left on the link.
+ */
+static bool l1_l2_forward_plain(SGIL1State *s, uint8_t channel,
+                                uint32_t address, uint16_t command,
+                                const uint8_t *args, unsigned args_len,
+                                unsigned count, unsigned transport)
+{
+    uint8_t segment[SGI_L1_L2_SEGMENT_MAX] = { 0 };
+    unsigned tag = transport * SGI_L1_IROUTER_CHANNELS + channel;
+    unsigned length = SGI_L1_L2_SEG_DESC + 8 * count;
+
+    if (!l1_l2_linked(s) || !l1_arguments(args, args_len, count) ||
+        length > sizeof(segment)) {
+        return false;
+    }
+    for (unsigned i = 0; i < count; i++) {
+        if (args[5 * i]) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-l1: request for the L2 has a non-integer "
+                          "argument\n");
+            return false;
+        }
+    }
+    stw_be_p(segment + SGI_L1_L2_SEG_LENGTH, length);
+    segment[SGI_L1_L2_SEG_FORMAT] = 2;
+    segment[SGI_L1_L2_SEG_COUNT] = SGI_L1_L2_FIRST_SEGMENT | 1;
+    segment[SGI_L1_L2_SEG_CLASS] = SGI_L1_L2_CLASS_REQUEST;
+    stl_be_p(segment + SGI_L1_L2_SEG_DEST, address);
+    stl_be_p(segment + SGI_L1_L2_SEG_SOURCE, l1_l2_source(s, tag));
+    segment[SGI_L1_L2_SEG_NDESC] = count;
+    stw_be_p(segment + SGI_L1_L2_SEG_CODE, command);
+    for (unsigned i = 0; i < count; i++) {
+        /* A scalar descriptor: type 0, segment byte 0, length 0, value. */
+        memcpy(segment + SGI_L1_L2_SEG_DESC + 8 * i + 4, args + 5 * i + 1, 4);
+    }
+    s->l2_pending[tag] = L1_L2_PENDING_PLAIN;
+    l1_l2_send(s, segment, length);
+    return true;
+}
+
+/*
+ * Frames of at most 113 inner bytes carry a segment to the node. The first
+ * frame of each segment is 0x3001 and carries the segment's count byte (low
+ * seven bits) and this frame's payload length; each later frame is 0x3003
+ * while the segment has more, and 0x3002 on the frame that exhausts it. The
+ * stock firmware's reader takes a single-frame segment and a three-frame one
+ * under this rule, and refuses a 0x3001 frame whose length field is the
+ * segment's length when that exceeds the frame's payload. Whether it reads a
+ * second segment, and what a later frame's length field holds, is not
+ * established: the model leaves it zero.
+ */
+static void l1_l2_chunk_reply(SGIL1State *s, unsigned transport,
+                              uint8_t channel, const uint8_t *segment,
+                              unsigned length)
+{
+    for (unsigned offset = 0; offset < length; ) {
+        uint8_t chunk[128] = { 0 };
+        unsigned bytes = MIN(113, length - offset);
+        bool last = offset + bytes == length;
+        uint16_t code = last ? 0x3002 : 0x3003;
+
+        if (!offset) {
+            code = 0x3001;
+            chunk[7] = segment[SGI_L1_L2_SEG_COUNT] & 0x7f;
+            stw_be_p(chunk + 8, bytes);
+        }
+        chunk[0] = 0x20 | channel;
+        stw_be_p(chunk + 5, code);
+        memcpy(chunk + 10, segment + offset, bytes);
+        l1_emit_transport(s, transport, chunk, 10 + bytes);
+        offset += bytes;
+    }
+}
+
+/* A response to a plain request: the first descriptor is the result. */
+static void l1_l2_plain_reply(SGIL1State *s, unsigned transport,
+                              uint8_t channel, const uint8_t *segment,
+                              unsigned length)
+{
+    unsigned count;
+    uint8_t payload[128];
+    int32_t result;
+
+    /* The descriptor count is past the shortest segment the link carries. */
+    count = length >= SGI_L1_L2_SEG_DESC ? segment[SGI_L1_L2_SEG_NDESC] : 0;
+    if (segment[SGI_L1_L2_SEG_COUNT] != (SGI_L1_L2_FIRST_SEGMENT | 1) ||
+        !count || count > 24 ||
+        length < SGI_L1_L2_SEG_DESC + 8 * count) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: reply from the L2 does not fit a plain "
+                      "reply\n");
+        l1_l2_router_error(s, transport, channel);
+        return;
+    }
+    for (unsigned i = 0; i < count; i++) {
+        if (segment[SGI_L1_L2_SEG_DESC + 8 * i]) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-l1: reply from the L2 has a non-integer "
+                          "descriptor\n");
+            l1_l2_router_error(s, transport, channel);
+            return;
+        }
+    }
+    result = ldl_be_p(segment + SGI_L1_L2_SEG_DESC + 4);
+    payload[0] = 0x20 | channel;
+    stl_be_p(payload + 1, result);
+    payload[5] = count - 1;
+    for (unsigned i = 1; i < count; i++) {
+        payload[6 + 5 * (i - 1)] = 0;
+        memcpy(payload + 7 + 5 * (i - 1),
+               segment + SGI_L1_L2_SEG_DESC + 8 * i + 4, 4);
+    }
+    l1_emit_transport(s, transport, payload, 6 + 5 * (count - 1));
+}
+
+static void l1_l2_segment(SGIL1State *s, const uint8_t *segment,
+                          unsigned length)
+{
+    uint8_t count = segment[SGI_L1_L2_SEG_COUNT];
+    bool first = count & SGI_L1_L2_FIRST_SEGMENT;
+    unsigned tag;
+
+    l1_l2_trace_segment(s, false, segment, length);
+    if (first) {
+        /* The destination lies beyond the shortest segment the link carries. */
+        uint32_t dest = length >= SGI_L1_L2_SEG_DESC ?
+                        ldl_be_p(segment + SGI_L1_L2_SEG_DEST) : 0;
+
+        if (s->l2_chain_left) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-l1: L2 segment chain restarted\n");
+        }
+        s->l2_chain_tag = L1_L2_CHAIN_NONE;
+        s->l2_chain_left = 0;
+        if (length < SGI_L1_L2_SEG_DESC ||
+            segment[SGI_L1_L2_SEG_CLASS] != SGI_L1_L2_CLASS_RESPONSE) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-l1: L2 sent class %u to 0x%08x, code 0x%04x; "
+                          "only responses are served\n",
+                          length > SGI_L1_L2_SEG_CLASS ?
+                          segment[SGI_L1_L2_SEG_CLASS] : 0, dest,
+                          length >= SGI_L1_L2_SEG_DESC ?
+                          lduw_be_p(segment + SGI_L1_L2_SEG_CODE) : 0);
+            s->l2_chain_left = (count & 0x7f) > 1 ? count & 0x7f : 0;
+            return;
+        }
+        if ((dest & 0x1f) != L1_L2_TASK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-l1: L2 response to 0x%08x names no requester\n",
+                          dest);
+            s->l2_chain_left = (count & 0x7f) > 1 ? count & 0x7f : 0;
+            return;
+        }
+        s->l2_chain_tag = (dest >> 5) & 0x7f;
+        s->l2_chain_first = true;
+    } else {
+        if (!s->l2_chain_left || (count & 0x7f) != s->l2_chain_left - 1) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-l1: L2 continuation segment out of order\n");
+            s->l2_chain_left = 0;
+            s->l2_chain_tag = L1_L2_CHAIN_NONE;
+            return;
+        }
+    }
+    s->l2_chain_left = (count & 0x7f) > 1 ? count & 0x7f : 0;
+    tag = s->l2_chain_tag;
+    if (tag == L1_L2_CHAIN_NONE) {
+        return;
+    }
+    if (s->l2_pending[tag] == L1_L2_PENDING_NONE) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-l1: L2 response with no request pending\n");
+        return;
+    }
+    if (s->l2_pending[tag] == L1_L2_PENDING_CHUNK) {
+        l1_l2_chunk_reply(s, tag / SGI_L1_IROUTER_CHANNELS,
+                          tag % SGI_L1_IROUTER_CHANNELS, segment, length);
+    } else if (s->l2_chain_first) {
+        l1_l2_plain_reply(s, tag / SGI_L1_IROUTER_CHANNELS,
+                          tag % SGI_L1_IROUTER_CHANNELS, segment, length);
+    }
+    s->l2_chain_first = false;
+    if (!s->l2_chain_left) {
+        s->l2_pending[tag] = L1_L2_PENDING_NONE;
+        s->l2_chain_tag = L1_L2_CHAIN_NONE;
+    }
+}
+
+static int l1_l2_can_receive(void *opaque)
+{
+    SGIL1State *s = opaque;
+
+    return sizeof(s->l2_rx) - s->l2_rx_len;
+}
+
+/* Messages are a kind byte and a segment; the segment says its own length. */
+static void l1_l2_receive(void *opaque, const uint8_t *buf, int size)
+{
+    SGIL1State *s = opaque;
+    unsigned start = 0;
+
+    memcpy(s->l2_rx + s->l2_rx_len, buf, size);
+    s->l2_rx_len += size;
+    while (s->l2_rx_len - start >= 1) {
+        const uint8_t *message = s->l2_rx + start;
+        unsigned available = s->l2_rx_len - start;
+        unsigned length;
+
+        if (message[0] != SGI_L1_L2_KIND_SEGMENT) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-l1: unknown L2 link message kind %u\n",
+                          message[0]);
+            start++;
+            continue;
+        }
+        if (available < 3) {
+            break;
+        }
+        length = lduw_be_p(message + 1);
+        if (length < SGI_L1_L2_SEGMENT_MIN || length > SGI_L1_L2_SEGMENT_MAX) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-l1: L2 segment length %u is out of range\n",
+                          length);
+            start++;
+            continue;
+        }
+        if (available < 1 + length) {
+            break;
+        }
+        l1_l2_segment(s, message + 1, length);
+        start += 1 + length;
+    }
+    memmove(s->l2_rx, s->l2_rx + start, s->l2_rx_len - start);
+    s->l2_rx_len -= start;
+}
+
+static void l1_l2_event(void *opaque, QEMUChrEvent event)
+{
+    SGIL1State *s = opaque;
+
+    if (event == CHR_EVENT_OPENED) {
+        s->l2_up = true;
+    } else if (event == CHR_EVENT_CLOSED) {
+        s->l2_up = false;
+        /* Whoever still waits for the L2 gets the no-route reply. */
+        for (unsigned tag = 0; tag < ARRAY_SIZE(s->l2_pending); tag++) {
+            if (s->l2_pending[tag] == L1_L2_PENDING_PLAIN) {
+                l1_l2_router_error(s, tag / SGI_L1_IROUTER_CHANNELS,
+                                   tag % SGI_L1_IROUTER_CHANNELS);
+            }
+        }
+        memset(s->l2_pending, 0, sizeof(s->l2_pending));
+        s->l2_rx_len = 0;
+        s->l2_chain_left = 0;
+        s->l2_chain_tag = L1_L2_CHAIN_NONE;
+    }
 }
 
 static bool l1_discovery_reference(const SGIL1State *s)
@@ -3125,6 +3493,31 @@ static bool l1_irouter_enabled(const SGIL1State *s)
            (s->irouter_compat || s->o300_l1cmd_compat);
 }
 
+/* The chunk transport also carries a request for the L2 while it is linked. */
+static bool l1_chunk_enabled(const SGIL1State *s)
+{
+    return l1_irouter_enabled(s) || l1_l2_linked(s);
+}
+
+/*
+ * Without an IRouter of its own, a linked controller takes a chunk frame only
+ * if it starts, or goes on with, a request for the L2. Any other chunk frame
+ * is handled as it is with no link, so the link adds nothing else.
+ */
+static bool l1_chunk_for_l2(const SGIL1State *s, const uint8_t *p,
+                            unsigned length, unsigned transport)
+{
+    if (transport >= SGI_L1_IROUTER_TRANSPORTS) {
+        return false;
+    }
+    if (p[6] != 1) {
+        return s->irouter[transport * SGI_L1_IROUTER_CHANNELS +
+                          (p[0] & 0x1f)].active;
+    }
+    return length >= 10 + SGI_L1_L2_SEG_DEST + 4 &&
+           l1_l2_destination(ldl_be_p(p + 10 + SGI_L1_L2_SEG_DEST));
+}
+
 static void l1_request(SGIL1State *s, unsigned transport)
 {
     SGIL1FrameState *frame = &s->frame[transport];
@@ -3430,8 +3823,16 @@ static void l1_irouter_complete_fragment(SGIL1State *s, unsigned transport,
         unsigned fragment_count = assembly->fragment_count;
 
         if (fragment_count == 1) {
-            l1_irouter_reply(s, transport, channel, assembly->data,
-                             first_length, fragment_count);
+            if (l1_l2_forward_chunked(s, transport, channel, assembly->data,
+                                      first_length)) {
+                /* Left on the link; the response comes back as chunks. */
+            } else if (l1_irouter_enabled(s)) {
+                l1_irouter_reply(s, transport, channel, assembly->data,
+                                 first_length, fragment_count);
+            } else {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-l1: chunked request has no receiver\n");
+            }
         } else {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-l1: multi-fragment IRouter dispatch is unsupported\n");
@@ -3460,16 +3861,16 @@ static void l1_irouter_chunk(SGIL1State *s, const uint8_t *p,
     if (command == 0x3001) {
         uint8_t fragments = p[7];
         uint16_t fragment_length = lduw_be_p(p + 8);
+        bool fits = fragments && fragments < 128 && fragment_length &&
+                    fragment_length <= sizeof(assembly->data) &&
+                    payload_length <= fragment_length;
 
         if (assembly->active) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "sgi-l1: replacing pending IRouter request\n");
         }
         memset(assembly, 0, sizeof(*assembly));
-        if (!l1_irouter_enabled(s) || !fragments || fragments >= 128 ||
-            !fragment_length ||
-            fragment_length > sizeof(assembly->data) ||
-            payload_length > fragment_length) {
+        if (!l1_chunk_enabled(s) || !fits) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-l1: unsupported IRouter message start\n");
             return;
@@ -3534,9 +3935,10 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
     uint8_t fields[48];
     unsigned field_count = 0, field_length = 0;
 
-    if (l1_irouter_enabled(s) && length >= 7 && !(p[0] & 0xe0) &&
+    if (l1_chunk_enabled(s) && length >= 7 && !(p[0] & 0xe0) &&
         ldl_be_p(p + 1) == 0 &&
-        p[5] == 0x30 && (p[6] == 1 || p[6] == 2 || p[6] == 3)) {
+        p[5] == 0x30 && (p[6] == 1 || p[6] == 2 || p[6] == 3) &&
+        (l1_irouter_enabled(s) || l1_chunk_for_l2(s, p, length, transport))) {
         l1_irouter_chunk(s, p, length, transport);
         return;
     }
@@ -3568,6 +3970,13 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
     address = ldl_be_p(p + 1);
     command = lduw_be_p(p + 5);
     if (!l1_local(s, address)) {
+        if (!s->reply_to && l1_l2_destination(address) &&
+            l1_l2_forward_plain(s, channel, address, command,
+                                p + MIN(length, 8),
+                                length > 8 ? length - 8 : 0,
+                                length == 7 ? 0 : p[7], transport)) {
+            return;
+        }
         if (s->query_router && ((address >> 28) == 0 ||
             (address == UINT32_C(0x4ffff006) &&
              s->query_router->attachment_count))) {
@@ -4113,6 +4522,10 @@ static void l1_reset_enter(Object *obj, ResetType type)
     SGIL1State *s = SGI_L1(obj);
 
     memset(s->irouter, 0, sizeof(s->irouter));
+    memset(s->l2_pending, 0, sizeof(s->l2_pending));
+    s->l2_rx_len = 0;
+    s->l2_chain_left = 0;
+    s->l2_chain_tag = L1_L2_CHAIN_NONE;
     s->usb_test_state.set = false;
     g_strlcpy(s->usb_test_result, "none", sizeof(s->usb_test_result));
     g_strlcpy(s->usb_test_descriptor_result, "none",
@@ -5604,6 +6017,12 @@ fuel_mac_done:
     qemu_chr_fe_set_handlers(&s->chr, l1_console_can_receive,
                              l1_console_receive, l1_console_event, NULL,
                              s, NULL, true);
+    s->l2_chain_tag = L1_L2_CHAIN_NONE;
+    if (qemu_chr_fe_backend_connected(&s->l2_chr)) {
+        qemu_chr_fe_set_handlers(&s->l2_chr, l1_l2_can_receive,
+                                 l1_l2_receive, l1_l2_event, NULL, s, NULL,
+                                 true);
+    }
     l1_boot(s);
     if (s->auto_power) {
         /* The real countdown is skipped: a model choice. */
@@ -5917,6 +6336,7 @@ static char *l1_usb_descriptor_result_get(Object *obj, Error **errp)
 
 static const Property l1_properties[] = {
     DEFINE_PROP_CHR("chardev", SGIL1State, chr),
+    DEFINE_PROP_CHR("l2", SGIL1State, l2_chr),
     DEFINE_PROP_INT32("revision-major", SGIL1State, revision_major, -1),
     DEFINE_PROP_INT32("revision-minor", SGIL1State, revision_minor, -1),
     DEFINE_PROP_INT32("revision-patch", SGIL1State, revision_patch, -1),
@@ -6177,6 +6597,11 @@ static void l1_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
 }
 
+static bool l1_l2_link_up_get(Object *obj, Error **errp)
+{
+    return SGI_L1(obj)->l2_up;
+}
+
 static void l1_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -6190,6 +6615,8 @@ static void l1_class_init(ObjectClass *klass, const void *data)
     device_class_set_props(dc, l1_properties);
     rc->phases.enter = l1_reset_enter;
     rc->phases.hold = l1_reset_hold;
+    object_class_property_add_bool(klass, "l2-link-up", l1_l2_link_up_get,
+                                   NULL);
     object_class_property_add_str(klass, "display-line-1", l1_display_first_get,
                                   NULL);
     object_class_property_add_str(klass, "display-line-2",

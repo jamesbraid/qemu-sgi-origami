@@ -18,6 +18,7 @@
 #include "sgi-migrate.h"
 #include "sgi-wait.h"
 #include "sgi-l1-test.h"
+#include "sgi-l1-l2-stub.h"
 
 #define BASE UINT64_C(0x11000000)
 #define STRIDE UINT64_C(0x1000)
@@ -112,9 +113,9 @@ static void link_peer(QTestState *s, unsigned a, unsigned b)
     qom_link(s, b, "peer", to_a);
 }
 
-static size_t rpc(QTestState *s, unsigned n, uint32_t destination,
-                  uint16_t code, const uint8_t *args, size_t args_len,
-                  unsigned count, uint8_t *reply)
+static void send_rpc(QTestState *s, unsigned n, uint32_t destination,
+                     uint16_t code, const uint8_t *args, size_t args_len,
+                     unsigned count)
 {
     uint8_t request[136] = { 0x10, destination >> 24, destination >> 16,
                              destination >> 8, destination, code >> 8, code,
@@ -125,6 +126,13 @@ static size_t rpc(QTestState *s, unsigned n, uint32_t destination,
         memcpy(request + 8, args, args_len);
     }
     sgi_l1_test_send(s, BASE + n * STRIDE, request, 8 + args_len, false);
+}
+
+static size_t rpc(QTestState *s, unsigned n, uint32_t destination,
+                  uint16_t code, const uint8_t *args, size_t args_len,
+                  unsigned count, uint8_t *reply)
+{
+    send_rpc(s, n, destination, code, args, args_len, count);
     return sgi_l1_test_receive(s, BASE + n * STRIDE, reply, 131);
 }
 
@@ -1856,6 +1864,359 @@ static void test_l2_partition_flag_refusal(void)
 }
 
 /*
+ * The link to an L2 (l1.rst, "L2 link"). The stub in sgi-l1-l2-stub.h
+ * stands in for the peer; it is a fixture, not an L2 model. Router
+ * segment offsets are those of the L1 sheet's management USB stream table.
+ */
+#define L2_FETCH_PROPS "brick-type=cbrick,named=on,rack=1,bay=4,partition=2"
+/* Source word: key (rack 1, bay 4) in 31:12, tag in 11:5, return task 0x15. */
+#define L2_SOURCE_CHANNEL_10 UINT32_C(0x00044215)
+
+static QTestState *start_linked(L2Stub *stub, const char *props)
+{
+    g_autofree char *extra = g_strdup_printf(
+        "-chardev socket,id=l2c,path=%s ", stub->path);
+    g_autofree char *all = g_strdup_printf("%s,l2=l2c", props);
+    const char *const one[] = { all };
+    QTestState *s = start_with(1, one, extra);
+
+    l2_stub_accept(stub);
+    /* The machine finishes connecting on its main loop, after accept. */
+    for (unsigned i = 0; i < 10000 &&
+         !qtest_qom_get_bool(s, DEVICES "l1c0", "l2-link-up"); i++) {
+        g_usleep(1000);
+    }
+    g_assert_true(qtest_qom_get_bool(s, DEVICES "l1c0", "l2-link-up"));
+    return s;
+}
+
+static bool output_ready(QTestState *s, unsigned n)
+{
+    return qtest_readq(s, BASE + n * STRIDE + 0x28) & 1;
+}
+
+static void wait_for_output(QTestState *s, unsigned n)
+{
+    for (unsigned i = 0; i < 10000; i++) {
+        if (output_ready(s, n)) {
+            return;
+        }
+        g_usleep(1000);
+    }
+    g_assert_not_reached();
+}
+
+static size_t receive_waiting(QTestState *s, unsigned n, uint8_t *reply)
+{
+    wait_for_output(s, n);
+    return sgi_l1_test_receive(s, BASE + n * STRIDE, reply, 131);
+}
+
+/* With no peer connected the property changes nothing: no route. */
+static void test_l2_link_down(void)
+{
+    L2Stub *stub = l2_stub_listen();
+    g_autofree char *extra = g_strdup_printf(
+        "-chardev socket,id=l2c,path=%s,server=on,wait=off ", stub->path);
+
+    l2_stub_unlisten(stub);
+    const char *const one[] = { L2_FETCH_PROPS ",l2=l2c,l2-partition-flag=2" };
+    QTestState *s = start_with(1, one, extra);
+    uint8_t reply[131];
+    size_t length;
+
+    g_assert_false(qtest_qom_get_bool(s, DEVICES "l1c0", "l2-link-up"));
+    length = rpc(s, 0, 0x1ffff00a, 3, NULL, 0, 0, reply);
+
+    expect_router_error(reply, length);
+    length = rpc(s, 0, 0x2ffff003, 3, NULL, 0, 0, reply);
+    expect_router_error(reply, length);
+    expect_partition_request(s, 0, 0xb, 2);
+    qtest_quit(s);
+    l2_stub_free(stub);
+}
+
+/*
+ * L2 sheet, "Transport over the bulk endpoints", and the interface sheet's
+ * bulk transfer layout: the forwarded request is one segment of 20 bytes
+ * and eight per argument, first-segment bit and count 1 in byte 5, class 0,
+ * destination, source, then code. The source packing is the chunk-transport
+ * rows' (transport and subchannel in 11:5, return task 0x15).
+ */
+static void test_l2_forward_plain(void)
+{
+    L2Stub *stub = l2_stub_listen();
+    QTestState *s = start_linked(stub, L2_FETCH_PROPS);
+    uint8_t args[10], segment[SGI_L1_L2_SEGMENT_MAX], reply[131];
+    size_t length;
+
+    integer(args, 0x11223344);
+    integer(args + 5, 7);
+    send_rpc(s, 0, 0x1ffff006, 0x1234, args, sizeof(args), 2);
+    length = l2_stub_read_segment(stub, segment, L2_STUB_TIMEOUT_MS);
+    g_assert_cmpuint(length, ==, 36);
+    g_assert_cmpuint(lduw_be_p(segment), ==, 36);
+    g_assert_cmpuint(segment[2], ==, 2);
+    g_assert_cmpuint(segment[5], ==, 0x81);
+    g_assert_cmpuint(segment[6], ==, 0);
+    g_assert_cmphex(ldl_be_p(segment + 8), ==, 0x1ffff006);
+    g_assert_cmphex(ldl_be_p(segment + 12), ==, L2_SOURCE_CHANNEL_10);
+    g_assert_cmpuint(segment[16], ==, 2);
+    g_assert_cmphex(lduw_be_p(segment + 18), ==, 0x1234);
+    g_assert_cmphex(ldl_be_p(segment + 20), ==, 0);
+    g_assert_cmphex(ldl_be_p(segment + 24), ==, 0x11223344);
+    g_assert_cmphex(ldl_be_p(segment + 28), ==, 0);
+    g_assert_cmphex(ldl_be_p(segment + 32), ==, 7);
+
+    /* The response comes back as the L1's ordinary reply: result, then ints. */
+    l2_stub_build_fetch_reply(reply, segment, 0x55);
+    memcpy(segment, reply, 36);
+    stl_be_p(segment + SGI_L1_L2_SEG_DESC + 4, -105);
+    l2_stub_write_segment(stub, segment, 36);
+    length = receive_waiting(s, 0, reply);
+    g_assert_cmpuint(length, ==, 11);
+    expect_code(reply, length, -105);
+    g_assert_cmpuint(reply[5], ==, 1);
+    g_assert_cmpuint(reply[6], ==, 0);
+    g_assert_cmphex(ldl_be_p(reply + 7), ==, 0x55);
+
+    /* A non-integer argument has no descriptor form: no route. */
+    args[0] = 1;
+    args[1] = 'a';
+    args[2] = 0;
+    send_rpc(s, 0, 0x1ffff006, 3, args, 3, 1);
+    length = receive_waiting(s, 0, reply);
+    expect_router_error(reply, length);
+    qtest_quit(s);
+    l2_stub_free(stub);
+}
+
+/*
+ * Local requests are served as before with the link up, and a request the
+ * stub does not answer gets no reply at all.
+ */
+static void test_l2_unanswered_and_local(void)
+{
+    L2Stub *stub = l2_stub_listen();
+    QTestState *s = start_linked(stub, L2_FETCH_PROPS ",l2-partition-flag=1");
+    uint8_t segment[SGI_L1_L2_SEGMENT_MAX];
+
+    expect_partition_request(s, 0, 0xb, 1);
+    expect_partition_request(s, 0, 9, 2);
+    send_rpc(s, 0, 0x1ffff006, 3, NULL, 0, 0);
+    g_assert_cmpuint(l2_stub_serve(stub, segment, 2, L2_STUB_TIMEOUT_MS), ==,
+                     SGI_L1_L2_SEG_DESC);
+    send_rpc(s, 0, 0x2ffff00a, 3, NULL, 0, 0);
+    g_assert_cmpuint(l2_stub_serve(stub, segment, 2, L2_STUB_TIMEOUT_MS), ==,
+                     SGI_L1_L2_SEG_DESC);
+    g_usleep(200000);
+    g_assert_false(output_ready(s, 0));
+    /* Local requests still answer after the traffic. */
+    expect_partition_request(s, 0, 0xb, 1);
+    qtest_quit(s);
+    l2_stub_free(stub);
+}
+
+/*
+ * The PROM's partition-record fetch as the sheets give it: a 0x3001 chunk
+ * (channel byte, four zero bytes, code, fragment count, 16-bit length)
+ * carrying a router segment for controller type 1, task 0xa, code 1 and one
+ * integer argument, as a boot run of the stock PROM sent it. The L1 rewrites
+ * the source word, forwards the segment, and wraps the stub's one-segment
+ * reply in a single 0x3001 frame whose count and length are the reply's.
+ */
+static size_t send_fetch(QTestState *s, uint8_t *inner)
+{
+    uint8_t frame[10 + 28] = { 0x10, 0, 0, 0, 0, 0x30, 0x01, 1, 0, 28 };
+    const uint8_t request[28] = {
+        0, 28, 2, 0, 0x55, 0x81, 0, 0,
+        0x1f, 0xff, 0xf0, 0x0a, 0xde, 0xad, 0xbe, 0xef,
+        1, 0, 0, 1,
+        /* One integer argument: the requesting brick's bay, 4 in a boot run. */
+        0, 0, 0, 0, 0, 0, 0, 4,
+    };
+
+    memcpy(inner, request, sizeof(request));
+    memcpy(frame + 10, request, sizeof(request));
+    sgi_l1_test_send(s, BASE, frame, sizeof(frame), false);
+    return sizeof(request);
+}
+
+/*
+ * A chunk request that is not for the L2 gets the same reply with a link as
+ * without one, on a profile that has no IRouter of its own: the link only adds
+ * the L2's destinations to what the chunk transport carries.
+ */
+static size_t send_chunk_other(QTestState *s, uint8_t *reply)
+{
+    uint8_t frame[10 + 28] = { 0x10, 0, 0, 0, 0, 0x30, 0x01, 1, 0, 28 };
+    const uint8_t request[28] = {
+        0, 28, 2, 0, 0x55, 0x81, 0, 0,
+        0x3f, 0xff, 0xf0, 0x0a, 0xde, 0xad, 0xbe, 0xef,
+        1, 0, 0, 1,
+        0, 0, 0, 0, 0, 0, 0, 4,
+    };
+
+    memcpy(frame + 10, request, sizeof(request));
+    sgi_l1_test_send(s, BASE, frame, sizeof(frame), false);
+    g_usleep(200000);
+    return output_ready(s, 0) ? sgi_l1_test_receive(s, BASE, reply, 131) : 0;
+}
+
+static void test_l2_chunk_other_destination(void)
+{
+    L2Stub *stub = l2_stub_listen();
+    QTestState *s = start_one(L2_FETCH_PROPS);
+    uint8_t unlinked[131], linked[131];
+    size_t unlinked_length = send_chunk_other(s, unlinked);
+    size_t linked_length;
+
+    qtest_quit(s);
+    s = start_linked(stub, L2_FETCH_PROPS);
+    linked_length = send_chunk_other(s, linked);
+    g_assert_cmpuint(linked_length, ==, unlinked_length);
+    g_assert_cmpmem(linked, linked_length, unlinked, unlinked_length);
+    qtest_quit(s);
+    l2_stub_free(stub);
+}
+
+static void test_l2_fetch_single_buffer(void)
+{
+    L2Stub *stub = l2_stub_listen();
+    QTestState *s = start_linked(stub, L2_FETCH_PROPS ",l2-partition-flag=1");
+    uint8_t sent[28], segment[SGI_L1_L2_SEGMENT_MAX], reply[131];
+    size_t length = send_fetch(s, sent);
+
+    g_assert_cmpuint(l2_stub_serve(stub, segment, 2, L2_STUB_TIMEOUT_MS), ==,
+                     length);
+    /* Same bytes, but the source word is the L1's return address. */
+    g_assert_cmpmem(segment, 12, sent, 12);
+    g_assert_cmphex(ldl_be_p(segment + 12), ==, L2_SOURCE_CHANNEL_10);
+    g_assert_cmpmem(segment + 16, 12, sent + 16, 12);
+
+    length = receive_waiting(s, 0, reply);
+    g_assert_cmpuint(length, ==, 10 + 36);
+    g_assert_cmphex(reply[0], ==, 0x30);
+    g_assert_cmphex(ldl_be_p(reply + 1), ==, 0);
+    g_assert_cmphex(lduw_be_p(reply + 5), ==, 0x3001);
+    g_assert_cmpuint(reply[7], ==, 1);
+    g_assert_cmpuint(lduw_be_p(reply + 8), ==, 36);
+    /* The PROM reads byte 3 and the word at 32 of this payload. */
+    g_assert_cmpuint(reply[10 + 3], ==, 0);
+    g_assert_cmphex(ldl_be_p(reply + 10 + 32), ==, 2);
+    /* The response is addressed to the requester the source word named. */
+    g_assert_cmphex(ldl_be_p(reply + 10 + 8), ==, L2_SOURCE_CHANNEL_10);
+    g_assert_false(output_ready(s, 0));
+    qtest_quit(s);
+    l2_stub_free(stub);
+}
+
+/*
+ * Reply frames carry at most 113 bytes. The first frame of each segment is
+ * 0x3001 with the segment's remaining-count byte and the frame's own payload
+ * length; the others are 0x3003 while the segment has more and 0x3002 on the
+ * frame that exhausts it, with a zero length field. The stock reader took the
+ * single-frame and three-frame forms of this in a boot run and refused a
+ * 0x3001 frame that carried the whole segment's length; the sizes here are
+ * the edges of the rule and chains of two and three segments.
+ */
+static void expect_frames(QTestState *s, const unsigned *sizes, unsigned n,
+                          uint8_t chain[][SGI_L1_L2_SEGMENT_MAX])
+{
+    for (unsigned i = 0; i < n; i++) {
+        for (unsigned offset = 0; offset < sizes[i]; ) {
+            uint8_t frame[131];
+            unsigned bytes = MIN(113, sizes[i] - offset);
+            bool last = offset + bytes == sizes[i];
+            uint16_t code = last ? 0x3002 : 0x3003;
+            size_t length = receive_waiting(s, 0, frame);
+
+            if (!offset) {
+                code = 0x3001;
+            }
+            g_assert_cmpuint(length, ==, 10 + bytes);
+            g_assert_cmphex(frame[0], ==, 0x30);
+            g_assert_cmphex(ldl_be_p(frame + 1), ==, 0);
+            g_assert_cmphex(lduw_be_p(frame + 5), ==, code);
+            if (code == 0x3001) {
+                g_assert_cmpuint(frame[7], ==, n - i);
+                g_assert_cmpuint(lduw_be_p(frame + 8), ==, bytes);
+            } else {
+                g_assert_cmpuint(frame[7], ==, 0);
+                g_assert_cmpuint(lduw_be_p(frame + 8), ==, 0);
+            }
+            g_assert_cmpmem(frame + 10, bytes, chain[i] + offset, bytes);
+            offset += bytes;
+        }
+    }
+    g_assert_false(output_ready(s, 0));
+}
+
+static void test_l2_fetch_multi_frame(void)
+{
+    static const struct {
+        unsigned sizes[3];
+        unsigned count;
+    } cases[] = {
+        { { 113 }, 1 }, { { 114 }, 1 }, { { 226 }, 1 }, { { 227 }, 1 },
+        { { 1024 }, 1 }, { { 300, 200 }, 2 }, { { 113, 28, 1024 }, 3 },
+    };
+
+    for (unsigned c = 0; c < G_N_ELEMENTS(cases); c++) {
+        L2Stub *stub = l2_stub_listen();
+        QTestState *s = start_linked(stub, L2_FETCH_PROPS);
+        uint8_t chain[3][SGI_L1_L2_SEGMENT_MAX], segment[1024], sent[28];
+
+        send_fetch(s, sent);
+        g_assert_cmpuint(l2_stub_read_segment(stub, segment,
+                                              L2_STUB_TIMEOUT_MS), ==, 28);
+        l2_stub_build_chain(chain, cases[c].sizes, cases[c].count, segment);
+        for (unsigned i = 0; i < cases[c].count; i++) {
+            l2_stub_write_segment(stub, chain[i], cases[c].sizes[i]);
+        }
+        expect_frames(s, cases[c].sizes, cases[c].count, chain);
+        qtest_quit(s);
+        l2_stub_free(stub);
+    }
+}
+
+/*
+ * Anything on the link that is not a well-formed segment is skipped, and a
+ * response that nobody asked for is dropped, so a later real reply still
+ * reaches the requester.
+ */
+static void test_l2_link_noise(void)
+{
+    L2Stub *stub = l2_stub_listen();
+    QTestState *s = start_linked(stub, L2_FETCH_PROPS);
+    uint8_t segment[SGI_L1_L2_SEGMENT_MAX], reply[131], noise[] = {
+        9,                          /* a kind nobody defines */
+        SGI_L1_L2_KIND_SEGMENT, 0, 3, /* a segment too short to hold a count */
+    };
+    size_t length;
+
+    l2_stub_write_raw(stub, noise, sizeof(noise));
+    /* A response for a requester that has nothing pending: channel 0x11. */
+    memset(segment, 0, 36);
+    l2_stub_build_fetch_reply(segment, segment, 1);
+    stl_be_p(segment + SGI_L1_L2_SEG_DEST, L2_SOURCE_CHANNEL_10 + 0x20);
+    l2_stub_write_segment(stub, segment, 36);
+    /* And one that names no requester at all. */
+    stl_be_p(segment + SGI_L1_L2_SEG_DEST, 0);
+    l2_stub_write_segment(stub, segment, 36);
+    send_rpc(s, 0, 0x1ffff00a, 3, NULL, 0, 0);
+    g_assert_cmpuint(l2_stub_serve(stub, segment, 2, L2_STUB_TIMEOUT_MS), ==,
+                     SGI_L1_L2_SEG_DESC);
+    length = receive_waiting(s, 0, reply);
+    g_assert_cmpuint(length, ==, 11);
+    expect_code(reply, length, 0);
+    g_assert_cmphex(ldl_be_p(reply + 7), ==, 2);
+    qtest_quit(s);
+    l2_stub_free(stub);
+}
+
+
+/*
  * ctci is not modelled: it is reported as an unknown command, and nothing
  * runs on the other C-brick or its I-brick.
  */
@@ -2164,6 +2525,17 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/l2-partition-flag", test_l2_partition_flag);
     qtest_add_func("sgi-l1-o3k/l2-partition-flag/refusal",
                    test_l2_partition_flag_refusal);
+    qtest_add_func("sgi-l1-o3k/l2-link/down", test_l2_link_down);
+    qtest_add_func("sgi-l1-o3k/l2-link/chunk-other-destination",
+                   test_l2_chunk_other_destination);
+    qtest_add_func("sgi-l1-o3k/l2-link/forward-plain", test_l2_forward_plain);
+    qtest_add_func("sgi-l1-o3k/l2-link/unanswered-and-local",
+                   test_l2_unanswered_and_local);
+    qtest_add_func("sgi-l1-o3k/l2-link/fetch-single-buffer",
+                   test_l2_fetch_single_buffer);
+    qtest_add_func("sgi-l1-o3k/l2-link/fetch-multi-frame",
+                   test_l2_fetch_multi_frame);
+    qtest_add_func("sgi-l1-o3k/l2-link/noise", test_l2_link_noise);
     qtest_add_func("sgi-l1-o3k/partition-clear", test_partition_clear);
     qtest_add_func("sgi-l1-o3k/ctci", test_ctci_unimplemented);
     for (unsigned i = 0; i < G_N_ELEMENTS(link_cases); i++) {

@@ -389,6 +389,7 @@ include/hw/misc/sgi-kona-gl-decode.h
 include/hw/misc/sgi-kona-ports.h
 include/hw/misc/sgi-kona.h
 include/hw/misc/sgi-l1.h
+include/hw/misc/sgi-l1-l2-link.h
 include/hw/misc/sgi-mgras.h
 include/hw/misc/sgi-odyssey-native-mesa.h
 include/hw/misc/sgi-odyssey-planes.h
@@ -827,6 +828,7 @@ tests/qtest/sgi-ioc3-eth-test.c
 tests/qtest/sgi-ioc4-test.c
 tests/qtest/sgi-l1-identity-vectors.h
 tests/qtest/sgi-l1-test.h
+tests/qtest/sgi-l1-l2-stub.h
 tests/qtest/sgi-launch.h
 tests/qtest/sgi-mgras-board-test.c
 tests/qtest/sgi-mgras-fifo-test.c

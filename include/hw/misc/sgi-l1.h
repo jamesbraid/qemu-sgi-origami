@@ -4,6 +4,7 @@
 #define HW_MISC_SGI_L1_H
 
 #include "hw/misc/sgi-l1-env.h"
+#include "hw/misc/sgi-l1-l2-link.h"
 #include "hw/core/sysbus.h"
 #include "chardev/char-fe.h"
 
@@ -184,6 +185,19 @@ struct SGIL1State {
     /* While answering a peer's forwarded request, where its replies go. */
     struct SGIL1State *reply_to;
     CharFrontend chr;
+    /*
+     * The optional link to an L2: not migrated, because a link blocks
+     * migration. A request in flight is remembered by the transport and
+     * subchannel it came from, which the source word names again.
+     */
+    CharFrontend l2_chr;
+    bool l2_up;
+    uint8_t l2_pending[SGI_L1_IROUTER_TRANSPORTS * SGI_L1_IROUTER_CHANNELS];
+    uint8_t l2_rx[1 + SGI_L1_L2_SEGMENT_MAX];
+    unsigned l2_rx_len;
+    uint8_t l2_chain_tag;
+    uint8_t l2_chain_left;
+    bool l2_chain_first;
     qemu_irq node_power_out;
     qemu_irq node_reset_out;
     qemu_irq soft_reset_out;
