@@ -1166,6 +1166,7 @@ tests/qtest/sgi-crime-error-test.c
 tests/qtest/sgi-crime-invalid-clear-test.c
 tests/qtest/sgi-crime-legacy-test.c
 tests/qtest/sgi-crime-mte-test.c
+tests/qtest/sgi-crime-mte-test-groups.txt
 tests/qtest/sgi-dbrick-test.c
 tests/qtest/sgi-l1-chimera-env-vectors.h
 tests/qtest/sgi-l1-cxbrick-test.c
