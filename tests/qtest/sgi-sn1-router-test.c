@@ -186,7 +186,7 @@ static void test_experimental_status_write(void)
     qtest_writeq(s, BASE + 0x20, 0x12345678);
     qtest_writeq(s, BASE + 0x28, 0x87654321);
     qtest_writeq(s, BASE + 0x100, 0xaabbccdd);
-    qtest_writeq(s, BASE + bank[3] + 0x200 + 5 * 8, 2);
+    qtest_writeq(s, BASE + bank[0] + 0x200 + 5 * 8, 2);
     set(s, "destination", 5);
     set(s, "turn", 3);
     for (unsigned p = 0; p < 8; p++) {
@@ -268,11 +268,11 @@ static void test_experimental_status_write(void)
     route_before = get(s, "route");
     g_assert_cmphex(route_before, ==, 4 | (2 << 8));
     for (unsigned i = 0; i < G_N_ELEMENTS(route_patterns); i++) {
-        experimental_status_vector(s, bank[3] + 0x200 + 5 * 8, 0,
+        experimental_status_vector(s, bank[0] + 0x200 + 5 * 8, 0,
                                    true, 2 | route_patterns[i], true);
         g_assert_cmphex(get(s, "route"), ==, route_before);
     }
-    experimental_status_vector(s, bank[3] + 0x200 + 5 * 8, 0,
+    experimental_status_vector(s, bank[0] + 0x200 + 5 * 8, 0,
                                true, 2, true);
     experimental_status_vector(s, 0x10, 0, true, UINT64_MAX, true);
     g_assert_cmphex(experimental_status_vector(s, 0x10, 0, false, 0, true),
@@ -605,7 +605,7 @@ static void assert_local_reset_state(QTestState *s, uint64_t status)
                                                    5 * 8, 0, false, 0,
                                                    true), ==, 2 + i);
     }
-    g_assert_cmphex(get(s, "route"), ==, 4 | (2 << 8));
+    g_assert_cmphex(get(s, "route"), ==, 7 | (2 << 8));
 }
 
 static void test_experimental_local_reset(void)
@@ -659,6 +659,8 @@ static void test_experimental_local_reset(void)
         "-drive if=none,id=cfg,file=%s,format=raw "
         "-device sgi-sn1-router-test,id=test,"
         "router=/machine/module3/router", prom, image);
+    /* Enter on link 4, whose table the test writes. */
+    set(s, "ingress", 4);
     set(s, "destination", 5);
     set(s, "turn", 3);
     status = experimental_status_vector(s, 0, 0, false, 0, true);
@@ -682,7 +684,7 @@ static void test_experimental_local_reset(void)
         experimental_status_vector(s, bank[p] + 0x200 + 5 * 8, 0,
                                    true, 2 + i, true);
     }
-    g_assert_cmphex(get(s, "route"), ==, 4 | (2 << 8));
+    g_assert_cmphex(get(s, "route"), ==, 7 | (2 << 8));
     experimental_status_vector(s, 0x8, 0, true, 0, false);
     g_assert_cmphex(experimental_status_vector(s, 0x10, 0,
                                                false, 0, true), ==, 0x100);
@@ -699,7 +701,7 @@ static void test_experimental_local_reset(void)
     g_assert_cmpuint(get(s, "failure"), ==, 4);
     qtest_writeq(s, BASE + 0x9, 1);
     g_assert_cmpuint(get(s, "failure"), ==, 4);
-    g_assert_cmphex(get(s, "route"), ==, 4 | (2 << 8));
+    g_assert_cmphex(get(s, "route"), ==, 7 | (2 << 8));
     experimental_status_vector(s, 0x8, 0, true, 1, true);
     assert_local_reset_state(s, status);
     g_assert_cmphex(experimental_status_vector(s, 0x518, 0, false, 0,
@@ -736,6 +738,8 @@ static void test_experimental_local_reset(void)
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
     sgi_wait_migration_status(s, "completed", 30);
     sgi_wait_migration_status(to, "completed", 30);
+    /* Enter on link 4, whose table the test wrote. */
+    set(to, "ingress", 4);
     set(to, "destination", 5);
     set(to, "turn", 3);
     assert_local_reset_state(to, status);
@@ -749,7 +753,7 @@ static void test_experimental_local_reset(void)
                                                false, 0, true), ==, 0);
     g_assert_cmphex(experimental_status_vector(to, bank[3], 0, false, 0,
                                                true), ==, 0);
-    g_assert_cmphex(get(to, "route"), ==, 4);
+    g_assert_cmphex(get(to, "route"), ==, 7);
     qtest_quit(to);
     qtest_quit(s);
     g_assert_cmpint(g_unlink(to_image), ==, 0);
@@ -881,7 +885,7 @@ static void test_experimental_zero_reset_restore(void)
     qtest_writeq(s, BASE + bank[0] + 0x10, 0xff);
     qtest_writeq(s, BASE + bank[0] + 0x18, 0xa5);
     experimental_status_vector(s, 0x18, 0, true, 0xbeef, true);
-    qtest_writeq(s, BASE + bank[3] + 0x200 + 5 * 8, 2);
+    qtest_writeq(s, BASE + bank[0] + 0x200 + 5 * 8, 2);
     set(s, "destination", 5);
     set(s, "turn", 3);
     route = get(s, "route");
@@ -918,7 +922,7 @@ static void test_experimental_zero_reset_restore(void)
     g_assert_cmphex(qtest_readq(s, BASE + bank[0] + 0x88), ==, port_error);
     g_assert_cmphex(experimental_status_vector(s, 0x18, 0, false, 0, true),
                     ==, 0xbeef);
-    g_assert_cmphex(qtest_readq(s, BASE + bank[3] + 0x200 + 5 * 8), ==, 2);
+    g_assert_cmphex(qtest_readq(s, BASE + bank[0] + 0x200 + 5 * 8), ==, 2);
     g_assert_cmpuint(experimental_router_l1_reply(s, l1_after), ==,
                      l1_size);
     g_assert_cmpmem(l1_after, l1_size, l1_before, l1_size);
@@ -1537,7 +1541,7 @@ static void test_inactive_barrier_no_effects(void)
     set(s, "vector", 8);
     qtest_writeq(s, BASE + 0x100, 0x5678);
     set(s, "vector", 0);
-    qtest_writeq(s, BASE + bank[3] + 0x200 + 5 * 8, 2);
+    qtest_writeq(s, BASE + bank[0] + 0x200 + 5 * 8, 2);
     set(s, "destination", 5);
     set(s, "turn", 3);
     for (unsigned bit = 28; bit <= 29; bit++) {
@@ -1626,17 +1630,25 @@ static void test_routing(void)
 {
     QTestState *s = qtest_init(ARGS);
 
-    /* Each table entry is a 4-bit field; the turn is its low three bits. */
+    /*
+     * Each table entry is a 4-bit field; the turn is its low three bits.
+     * The next router's turn comes from the table of the link the packet
+     * entered by, not the one it leaves by.
+     */
     qtest_writeq(s, BASE + bank[0] + 0x200 + 5 * 8,
                  UINT64_C(0xa5c3f00d17654327));
     qtest_writeq(s, BASE + bank[3] + 0x200 + 5 * 8,
                  UINT64_C(0x5a3c0ff0fedcba9a));
+    qtest_writeq(s, BASE + bank[7] + 0x200 + 5 * 8, 3);
     set(s, "destination", 5);
     set(s, "turn", 3);
-    g_assert_cmphex(get(s, "route"), ==, 4 | (2 << 8));
+    g_assert_cmphex(get(s, "route"), ==, 4 | (7 << 8));
+    set(s, "ingress", 4);
+    set(s, "turn", 5);
+    g_assert_cmphex(get(s, "route"), ==, 1 | (2 << 8));
     set(s, "ingress", 8);
     set(s, "turn", 1);
-    g_assert_cmphex(get(s, "route"), ==, 1 | (7 << 8));
+    g_assert_cmphex(get(s, "route"), ==, 1 | (3 << 8));
     set(s, "turn", 8);
     g_assert_cmphex(get(s, "route"), ==, UINT64_MAX);
     set(s, "turn", 1);
@@ -1648,16 +1660,16 @@ static void test_routing(void)
     g_assert_cmphex(get(s, "route"), ==, UINT64_MAX);
     set(s, "destination", 5);
     qtest_writeq(s, BASE + 0x10, 1 << 8);
-    g_assert_cmphex(get(s, "route"), ==, 1 | (7 << 8));
+    g_assert_cmphex(get(s, "route"), ==, 1 | (3 << 8));
     qtest_writeq(s, BASE + 0x10, (1 << 8) | (1 << 12));
-    g_assert_cmphex(get(s, "route"), ==, 1 | (7 << 8));
+    g_assert_cmphex(get(s, "route"), ==, 1 | (3 << 8));
     qtest_writeq(s, BASE + 0x10, UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, UINT64_MAX);
-    g_assert_cmphex(get(s, "route"), ==, 1 | (7 << 8));
+    g_assert_cmphex(get(s, "route"), ==, 1 | (3 << 8));
     qtest_writeq(s, BASE + 0x10, UINT64_C(0xa5c3000000001100));
     g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==,
                     UINT64_C(0xa5c3000000001100));
-    g_assert_cmphex(get(s, "route"), ==, 1 | (7 << 8));
+    g_assert_cmphex(get(s, "route"), ==, 1 | (3 << 8));
     qtest_quit(s);
 }
 

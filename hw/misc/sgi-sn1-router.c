@@ -349,7 +349,14 @@ bool sgi_sn1_router_route(SGISN1RouterState *s, unsigned ingress,
         return false;
     }
     *output = 1 + ((ingress - 1 + turn) % SGI_SN1_ROUTER_PORTS);
-    *next_turn = s->local[*output - 1][destination] & TABLE_TURN_MASK;
+    /*
+     * Look-ahead: the table of the link the packet entered by names the
+     * turn at the next router. That is where the stock PROM writes it: the
+     * next router's turn on each link a hub's traffic enters by, and 0xf
+     * on the links toward the next router. How the silicon indexes its
+     * tables is not documented; this follows what the firmware programs.
+     */
+    *next_turn = s->local[ingress - 1][destination] & TABLE_TURN_MASK;
     trace_sgi_sn1_router_route(s, ingress, turn, destination, *output,
                                *next_turn);
     return true;

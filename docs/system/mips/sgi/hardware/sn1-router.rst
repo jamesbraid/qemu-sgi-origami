@@ -362,9 +362,22 @@ router. The model chooses the path as follows, an *approximation*.
    routing as clockwise turns from the ingress port, *software
    expectation*.
 3. The next turn is the low three bits of word ``destination`` in the
-   local route table of the *output* link's bank, where ``destination`` is
-   the node number from 0 to 127.
+   local route table of the *ingress* link's bank, where ``destination`` is
+   the node number from 0 to 127. A router therefore names the turn the
+   next router takes, from the link the message entered by.
 4. The output port's cable leads to the next router or to the target.
+
+Step 3 follows what the stock IP35 PROM 6.210 programs, a *software
+expectation*. On the Origin 3400 with two R-bricks (C-bricks 0 and 1 on
+ports 2 and 3 of router A, C-bricks 2 and 3 on ports 2 and 3 of router B,
+the routers joined port 1 to port 1 and port 6 to port 6) the PROM writes,
+for each destination behind the other router, the next router's turn on
+the two links its C-bricks enter by and ``0xf`` on every other link: router
+B holds turn 1 for node 0 (into router A at port 1, out at port 2) and
+turn 5 for node 1 (in at port 6, out at port 3) on links 2 and 3, and
+``0xf`` on links 1 and 6. Read on the output link instead, those routes
+leave router A by port 8 and port 5, and every access between the two
+routers fails. How the silicon itself indexes its tables is *unknown*.
 
 The route succeeds only if every output is cabled, the path has no repeated
 router, ingress and turn combination, and it ends within 15 routers on a
@@ -458,5 +471,8 @@ window and migration, including profile mismatch.
 ``tests/qtest/sn1-bedrock-link-test.c`` covers a two-router vector read,
 the ``0x27`` return route, each cable down, a powered-off target,
 route-table words and the UART window through the Bedrock local block.
+``tests/qtest/sn1-cross-node-test.c`` reads memory across both routers of
+the Origin 3400 with two R-bricks with the PROM's table values, which fails
+when the next turn is read on the output link.
 ``tests/qtest/sn-builder-test.c`` and ``tests/qtest/sn-builder-fault-test.c``
 cover how the machine builder constructs routers and cables.
