@@ -2,8 +2,10 @@
 # Origin 3000 C-brick with a 600 MHz R14000 PIMM: the C-brick of c-brick.yaml
 # with R14000s in place of its R12000s. The part is the captured PIMM
 # 030-1734-00x (600 MHz R14000, 8 MB per processor, Tap 0xa); the clock,
-# cache and cache clock come from the architecture's R14000 variant, and the
-# PIMM's own revision and FPU revision are not held
+# cache and cache clock come from the architecture's R14000 variant; the
+# 8 MB size is established by capture, the PRId for the part revision (never
+# read raw on a C-brick), and the FPU identification and Config0 reset word
+# are inferred
 # (docs/system/mips/sgi/hardware/bricks.rst, sgi-sn-cbrick-r14000).
 layer_version: 1
 layer:

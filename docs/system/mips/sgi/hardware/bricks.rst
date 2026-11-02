@@ -322,9 +322,15 @@ cache size or part is. The 500 MHz option is a separate entry
 The processor is a PIMM SGI documents and inventories capture. Established
 (*established*):
 
-* Retained inventories of C-bricks print 600 MHz R14000 processors with
-  8 MB secondary caches at 300 MHz, ``Tap 0xa``, on PIMM part numbers
-  ``030-1734-001`` and ``-002``, at processor revisions 2.3 and 2.4.
+* A retained record of three C-bricks with six PIMMs, part numbers
+  ``030-1734-001`` and ``-002``, prints 600 MHz R14000 processors with 8 MB
+  secondary caches at 300 MHz, ``Tap 0xa``, on all 12 processors, at
+  processor revisions 2.4 (ten) and 2.3 (two) (*established* by capture, as
+  a software report: the size is the inventory tool's reading of the
+  processor's Config0 field). No SGI document gives a 600 MHz C-brick PIMM
+  size or part number. A 4 MiB C-brick PIMM is unseen and not offered; the
+  PROM's other 600 MHz words (2 and 4 MiB) belong to its Origin 300 and Fuel
+  rows, not to the C-brick class.
 * SGI's L3 Controller release notes add L1 support for a 600 MHz R14KA
   PIMM and place it in the Origin 3000 and Origin 300 systems.
 * The stock IP35 PROM 6.210 carries a class-0 configuration row for
@@ -335,19 +341,33 @@ The processor is a PIMM SGI documents and inventories capture. Established
 The model's values:
 
 * The flash configuration block carries machine type 0 and ``0x549cab85``,
-  and the board-identification word's low nibble is 3 (*inferred*, from the
-  PROM row the captured PIMMs match; no C-brick flash block or register has
-  been read).
-* The reset-mode word is the low 25 bits, ``0x009cab85``. Its SS field,
-  bits 18:16, is 4, so 512 KiB shifted left by 4 is the 8 MB cache, and
-  the generator holds both the cache size and the flash word's low 25 bits
-  to it (*approximation*: no capture of a C-brick's reset mode exists).
-* PRId is ``0x0f24``, the revision 2.4 one of the two captured revisions
-  and the value the Origin 300 entry carries. The FPU identification is
-  the R14000 type's fixed ``0x00000900``; the FPU revision a PIMM prints is
-  *unknown*.
-* The cache runs at 300 MHz, the processor clock over two, as captured.
-  The Hub stays at 200 MHz (*inferred*).
+  and the board-identification word's low nibble is 3 (*inferred*: the
+  C-brick word selecting the PROM row the captured PIMMs match; no C-brick
+  flash block or register has been read).
+* The reset-mode word is the low 25 bits, ``0x009cab85``, and Config0 reads
+  ``0x6c9cab85`` at reset (*inferred*: no C-brick Config0 has been read;
+  the model's choice of this word is an *approximation*). Its fields are
+  EC 5 (the 200 MHz Hub clock from 600 MHz), SC 3, SS 4, so 512 KiB shifted
+  left by 4 is the 8 MB cache, SB 1, BE 1 and K0 5. What bit 23 does is
+  *unknown*; software may rewrite K0 (not traced). The stock PROM writes
+  the flash word to Config0 and checks only that the low 16 bits read back
+  (``0xab85``); it never reads SysClkDiv or SCClkDiv, and its printed
+  speeds come from the flash block. The generator holds both the cache size
+  and the flash word's low 25 bits to the SS field.
+* PRId is ``0x0f24`` (*established* for the part revision, not read on a
+  C-brick): Linux prints ``PrId 0x00000f24`` on Origin-class machines and
+  IRIX ``hinv`` prints 2.4 on IP35. The captured parts print 2.4 and 2.3 and
+  the model uses 2.4; 2.3 (``0x0f23``) is *inferred*. The revision follows
+  the part, not the clock.
+* The FPU identification is the R14000 type's ``0x00000900`` (*inferred*: a
+  raw FIR is established only for a 2.4 on an Octane, and none has been
+  read on an IP35), not a value built from the revision. IRIX ``hinv``
+  prints the FPU revision as the CPU's because the kernel copies PRId into
+  the FPU entry, which does not test the FIR; a raw ``0x0900`` would print
+  as an R14010 revision 0.0, as IP30 listings do. The FPU revision line
+  is an *approximation*.
+* The cache runs at 300 MHz, the processor clock over two, as captured. The
+  Hub stays at 200 MHz (*approximation*).
 
 Not modelled: the 600 MHz part ``030-1823-001`` that later L1 firmware
 recognizes, whose processor type (R16000 or R14000A), cache size, tap and

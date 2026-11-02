@@ -40,6 +40,12 @@ static void read_identity(QTestState *qts, uint32_t expected)
     g_assert_cmphex(qtest_readl(qts, MAILBOX + 4), ==, expected);
 }
 
+/* The FPU identification register the last read_identity() captured. */
+static void assert_fpu_id(QTestState *qts, uint32_t expected)
+{
+    g_assert_cmphex(qtest_readl(qts, MAILBOX + 20), ==, expected);
+}
+
 static void test_identity(gconstpointer data)
 {
     const char *machine = data;
@@ -279,24 +285,31 @@ static void test_invalid_identity(void)
 
 /*
  * R14000 parts differ by revision: the model's default PRId is 0x0f24 and
- * r14000-prid selects another, across reset as r10000-prid does.
+ * r14000-prid selects another, across reset as r10000-prid does. The FPU
+ * identification register stays 0x0900, implementation 0x09 and revision 0,
+ * whatever the PRId: that value is inferred for the C-brick parts (the only
+ * raw read is a revision 2.4 Octane), and it is not derived from the PRId
+ * revision, so a part printed as 1.4 or 2.3 does not change it.
  */
 static void test_r14000_identity(gconstpointer data)
 {
-    bool override = GPOINTER_TO_INT(data);
-    uint32_t expected = override ? 0xf23 : 0xf24;
+    static const uint32_t prids[] = { 0xf24, 0xf23, 0xf14 };
+    uint32_t expected = prids[GPOINTER_TO_INT(data)];
+    g_autofree char *cpu = g_strdup_printf("R14000,r14000-prid=0x%x",
+                                           expected);
     QTestState *qts;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
         return;
     }
-    qts = start("malta", override ? "R14000,r14000-prid=0xf23" : "R14000",
-                "");
+    qts = start("malta", GPOINTER_TO_INT(data) ? cpu : "R14000", "");
     read_identity(qts, expected);
+    assert_fpu_id(qts, 0x900);
     g_assert_cmphex(cpu_property(qts, "r14000-prid"), ==, expected);
     qtest_system_reset(qts);
     read_identity(qts, expected);
+    assert_fpu_id(qts, 0x900);
     qtest_quit(qts);
 }
 
@@ -691,7 +704,8 @@ int main(int argc, char **argv)
 {
     /*
      * Each loop reads PRId, attempts a write, rereads it, reads Config0,
-     * then publishes the results.
+     * enables the FPU and reads its identification register, then
+     * publishes the results.
      */
     static const uint32_t code[] = {
         0x3c1aa000,             /* lui k0, 0xa000 */
@@ -709,9 +723,17 @@ int main(int argc, char **argv)
         0xaf480004,             /* sw t0, 4(k0) */
         0x40088000,             /* mfc0 t0, Config0 */
         0xaf480010,             /* sw t0, 16(k0) */
+        0x40086000,             /* mfc0 t0, Status */
+        0x3c092000,             /* lui t1, 0x2000: CU1 */
+        0x01094025,             /* or t0, t0, t1 */
+        0x40886000,             /* mtc0 t0, Status */
+        0, 0, 0, 0,           /* CP0 write hazard spacing */
+        0x44480000,             /* cfc1 t0, FIR */
+        0,                     /* load delay */
+        0xaf480014,             /* sw t0, 20(k0) */
         0x24080001,             /* addiu t0, zero, 1 */
         0xaf480008,             /* sw t0, 8(k0) */
-        0x1000ffed,             /* branch to request loop */
+        0x1000ffe2,             /* branch to request loop */
         0,                     /* delay slot */
     };
     uint8_t image[0x2000] = { 0 };
@@ -756,6 +778,8 @@ int main(int argc, char **argv)
                             GINT_TO_POINTER(0), test_r14000_identity);
         qtest_add_data_func("/r10000/identity/r14000-override",
                             GINT_TO_POINTER(1), test_r14000_identity);
+        qtest_add_data_func("/r10000/identity/r14000-override-rev14",
+                            GINT_TO_POINTER(2), test_r14000_identity);
         qtest_add_func("/r10000/identity/r14000-invalid",
                        test_r14000_invalid_identity);
         for (size_t i = 0; i < G_N_ELEMENTS(r16000_parts); i++) {

@@ -49,6 +49,10 @@ void rom_main(void)
 
     rom_assert_eq(1, 0x00000f24u, rom_get_prid());
     rom_set_status(status | ROM_ST_CU1);
+    /*
+     * Inferred for the C-brick parts: a raw FIR is established only for a
+     * revision 2.4 on an Octane, and none has been read on an IP35.
+     */
     rom_assert_eq(2, 0x00000900u, cfc1_fcr0());
 
     /*
