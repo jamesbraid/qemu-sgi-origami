@@ -1238,6 +1238,52 @@ static void test_origin3800_routes_over_ports_7_and_8(void)
     qtest_quit(qts);
 }
 
+/* A vector read from processor cpu's own node along route. */
+static uint64_t cpu_vector_read(QTestState *qts, unsigned int cpu,
+                                uint64_t route, uint64_t offset)
+{
+    uint64_t status;
+
+    (void)bte_cpu_readq(qts, cpu, BEDROCK_LOCAL + LB_VECTOR_STATUS_CLEAR);
+    bte_cpu_writeq(qts, cpu, BEDROCK_LOCAL + LB_VECTOR_ROUTE, route);
+    bte_cpu_writeq(qts, cpu, BEDROCK_LOCAL + LB_VECTOR_PARAMS,
+                   (offset & UINT64_C(0xfffff8)) | VECTOR_REQUEST(0x1c8));
+    status = bte_cpu_readq(qts, cpu, BEDROCK_LOCAL + LB_VECTOR_STATUS);
+    g_assert_cmphex(status & VECTOR_VALID, ==, VECTOR_VALID);
+    g_assert_cmphex(status & 7, ==, 0);
+    return bte_cpu_readq(qts, cpu, BEDROCK_LOCAL + LB_VECTOR_READ);
+}
+
+/*
+ * Every router leaves reset with scratch 0 to 4 clear. Scratch 0 holds the
+ * router's serial in bits 47:0 beside a booted flag in bit 63 and a local
+ * identifier in bits 62:56, which the stock PROM sets only when it programs
+ * a router; a router that powers up already flagged as booted makes the
+ * PROM skip the router's identity and numbering. A route is the port the
+ * first router sends out of, and route 0 ends at the first router.
+ */
+typedef struct RouterResetCase {
+    const char *args;
+    unsigned int routers;
+    uint64_t route[2];
+} RouterResetCase;
+
+static void test_routers_reset_unprogrammed(gconstpointer data)
+{
+    const RouterResetCase *c = data;
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf("%s -bios %s", c->args, quoted);
+
+    for (unsigned int i = 0; i < c->routers; i++) {
+        for (unsigned int word = 0; word < 5; word++) {
+            g_assert_cmphex(cpu_vector_read(qts, 0, c->route[i],
+                                            UINT64_C(0x100) + 8 * word),
+                            ==, 0);
+        }
+    }
+    qtest_quit(qts);
+}
+
 static void test_local_boot_view_is_the_readers(void)
 {
     char *flashes[2];
@@ -2176,6 +2222,13 @@ int main(int argc, char **argv)
     qtest_add_func(
         "sn1/cross-node/origin3800-high-bandwidth/routes-over-ports-7-and-8",
         test_origin3800_routes_over_ports_7_and_8);
+    qtest_add_data_func("sn1/cross-node/routers-reset-unprogrammed/one",
+                        &(const RouterResetCase){ ORIGIN3400_ARGS, 1, { 0 } },
+                        test_routers_reset_unprogrammed);
+    qtest_add_data_func("sn1/cross-node/routers-reset-unprogrammed/two",
+                        &(const RouterResetCase){ TWO_ROUTER_ARGS, 2,
+                                                  { 0, 6 } },
+                        test_routers_reset_unprogrammed);
     qtest_add_func("sn1/cross-node/local-boot-view-is-the-readers",
                    test_local_boot_view_is_the_readers);
     qtest_add_func("sn1/cross-node/l1-uart-local-form-is-the-readers",
