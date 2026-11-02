@@ -989,11 +989,16 @@ static void elsc_handle_nic(SGIElscState *s, ElscRequest *r)
  * byte that completes the ack (elsc_response_fully_read) and then run from a
  * bottom half.
  *
- * The hardware reset is module-scoped. On the single-module Origin 200 the
- * module is the whole machine, so qemu_system_reset is exact. A multi-node
- * machine has one controller per module, and this resets the whole VM;
- * QEMU has no per-module reset, so the model keeps the whole-machine reset
- * rather than refuse.
+ * The hardware reset is module-scoped. When a module owner is attached, the
+ * model hands it the acknowledged reset (module_ops->execute, from
+ * elsc_reset_wait_expired) and the owner pulses only that module's domain:
+ * the Origin 3000 machine restarts the processors and Hubs of the
+ * controller's own module and leaves the other modules and the whole
+ * machine running (sn0-module-domain-test: slave-reset, master-reset and
+ * rst-not-forwarded). Without an owner the model pulses its "reset" output
+ * instead. What a real controller's reset line reaches on such a board is
+ * unknown (graded unknown); the model keeps the pulse rather than refuse the
+ * command.
  *
  * A module owner decides what a reset reaches, and it is asked before the
  * acknowledgement is framed rather than after. Answering "ok" for an action
