@@ -6175,7 +6175,10 @@ fuel_mac_done:
         return;
     }
     if (!s->profile->compute_services) {
-        s->auto_power = false;
+        /* An I-brick's "auto-power" stands for its C-brick's power-up. */
+        if (!l1_is_ibrick(s)) {
+            s->auto_power = false;
+        }
         s->processors = 0;
     }
     if (s->profile->board_capacity &&
@@ -6311,7 +6314,15 @@ fuel_mac_done:
         return;
     }
     l1_boot(s);
-    if (s->auto_power) {
+    if (s->auto_power && l1_is_ibrick(s)) {
+        /*
+         * An I-brick has no auto power of its own: the C-brick's countdown
+         * ends in "* power up", which reaches the I-brick. The I-brick is
+         * built after its C-brick has already powered up, so it takes that
+         * power-up here, as a peer of the broadcast.
+         */
+        l1_peer_power(s, true);
+    } else if (s->auto_power) {
         /* The real countdown is skipped: a model choice. */
         l1_log(s, "auto power up initiated");
         g_autofree char *name = l1_module_name(s);
