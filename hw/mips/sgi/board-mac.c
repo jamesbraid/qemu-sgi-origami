@@ -66,6 +66,14 @@ static const SGIBoardIdentity *sgi_board_identity(void)
     return &identity;
 }
 
+char *sgi_board_default_text_serial(unsigned int node)
+{
+    char text[SGI_BOARD_TEXT_SERIAL_SIZE];
+
+    sgi_board_text_serial(sgi_board_identity(), node, text);
+    return g_strdup(text);
+}
+
 char *sgi_board_mac(const char *base, unsigned int offset, Error **errp)
 {
     g_autofree char *fallback = NULL;

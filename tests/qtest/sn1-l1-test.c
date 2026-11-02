@@ -6703,6 +6703,41 @@ static void test_identity_system_board(void)
 }
 
 /*
+ * board-serial, which the machine sets from the identity seed, replaces the
+ * instance-numbered "EMUN00" in both areas of the one system board and
+ * nothing else in them but the checksum.
+ */
+static void test_identity_system_board_serial_property(void)
+{
+    QTestState *s = start_identity(
+        "node-board-name=IP34,node-board-part=030-1707-003,"
+        "node-board-revision=-G,mac=02:a1:b2:c3:d4:e5,"
+        "mac-record=system-board,board-serial=EMUNEF");
+    const uint8_t *expected[] = { expected_system_node_board,
+                                  expected_system_logic_board };
+    const size_t sizes[] = { sizeof(expected_system_node_board),
+                             sizeof(expected_system_logic_board) };
+
+    for (unsigned component = 0; component < 2; component++) {
+        uint8_t area[80], reply[131];
+        uint8_t sum = 0;
+
+        g_assert_cmpuint(eeprom_read(s, component, 2, 0, sizes[component],
+                                     reply), ==, 12 + sizes[component]);
+        memcpy(area, reply + 12, sizes[component]);
+        g_assert_cmpmem(area + 22, 6, "EMUNEF", 6);
+        g_assert_cmpmem(area, 22, expected[component], 22);
+        g_assert_cmpmem(area + 28, sizes[component] - 29,
+                        expected[component] + 28, sizes[component] - 29);
+        for (size_t i = 0; i < sizes[component]; i++) {
+            sum += area[i];
+        }
+        g_assert_cmphex(sum, ==, 0);
+    }
+    qtest_quit(s);
+}
+
+/*
  * A raw MAC EEPROM's address goes into the component 1 area, over mac=; a
  * raw board area replaces the synthetic one it names, and only that one.
  */
@@ -8608,6 +8643,8 @@ int main(int argc, char **argv)
                    test_identity_system_board);
     qtest_add_func("sn1/l1/identity-system-board-overrides",
                    test_identity_system_board_overrides);
+    qtest_add_func("sn1/l1/identity-system-board-serial-property",
+                   test_identity_system_board_serial_property);
     qtest_add_func("sn1/l1/identity-rejects", test_identity_rejects);
     qtest_add_func("sn1/l1/brick-serial", test_brick_serial);
     qtest_add_func("sn1/l1/general-actions", test_general_actions);

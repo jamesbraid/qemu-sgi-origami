@@ -770,19 +770,20 @@ static uint32_t sgi_machine_l1_node_processors(SGIMachineState *s,
 /*
  * A brick serial for the Fuel's L1 when no property supplied one. Without
  * it the brick-serial request answers "not available", where a real brick
- * has a serial. The value is the marked synthetic text serial of the node's
- * system board, "EMUN00" for the first: the Fuel's one system board is its
- * brick, so the serial matches the board-area serials the same L1 holds
- * (sgi-synthetic-serial.h). It is a model choice, not a captured serial,
- * and the real format is unknown. A brick-serial set on the device, such
- * as by -global, replaces it. Origin 300 and its relatives fit an IO8 and
- * keep their own labelled placeholder text, so they get no default here.
+ * has a serial. The value is the synthetic text serial of the node's system
+ * board, "EMUN" and a byte of the machine's identity seed: the Fuel's one
+ * system board is its brick, so the serial matches the board-area serials
+ * the same L1 holds (sgi-board-identity.h). It is a model choice, not a
+ * captured serial, and the real format is unknown. A brick-serial set on
+ * the device, such as by -global, replaces it. Origin 300 and its relatives
+ * fit an IO8 and keep their own labelled placeholder text, so they get no
+ * default here.
  */
 static void sgi_machine_set_l1_default_serial(SGIMachineState *s,
                                               DeviceState *l1,
                                               unsigned int node_index)
 {
-    char serial[SGI_SYNTHETIC_BARCODE_SIZE];
+    g_autofree char *serial = NULL;
     SGIModelIoBoardPreset preset;
 
     if (SGI_L1(l1)->brick_serial ||
@@ -790,7 +791,7 @@ static void sgi_machine_set_l1_default_serial(SGIMachineState *s,
         preset != SGI_MODEL_IO_BOARD_PRESET_FUEL) {
         return;
     }
-    sgi_synthetic_text_serial_fit(serial, 'N', node_index);
+    serial = sgi_board_default_text_serial(node_index);
     qdev_prop_set_string(l1, "brick-serial", serial);
 }
 
@@ -840,6 +841,11 @@ static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
     qdev_prop_set_string(l1, "mac", address);
     /* Each node's board areas name their own instance, so serials differ. */
     qdev_prop_set_uint8(l1, "identity-index", node_index);
+    if (!SGI_L1(l1)->board_serial) {
+        g_autofree char *serial = sgi_board_default_text_serial(node_index);
+
+        qdev_prop_set_string(l1, "board-serial", serial);
+    }
     if (preset != SGI_MODEL_IO_BOARD_PRESET_IO8) {
         qdev_prop_set_string(l1, "mac-record", "system-board");
         qdev_prop_set_string(l1, "node-board-name", SGI_FUEL_BOARD_NAME);

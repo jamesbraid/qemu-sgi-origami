@@ -4652,7 +4652,7 @@ static void l1_build_chassis_area(SGIL1EEPROM *record)
  * serial and a zero date, the given name, part and revision, and zeroed
  * placeholder fields. An optional IP53 CPU context is separate from the
  * identity prefix. An I/O board also carries its station address. The serial
- * is component @letter's, instance
+ * is @serial when the machine gave one, else component @letter's, instance
  * @index: "EMUN00" for node 0's board. On the model, with "000000" here
  * the stock IP35 PROM reported after every reset that the NVRAM did not
  * belong to this system and reinitialized it, and with the marked serials
@@ -4661,7 +4661,7 @@ static void l1_build_chassis_area(SGIL1EEPROM *record)
 static void l1_build_board_area(SGIL1EEPROM *record, const char *name,
                                 const char *part, const char *revision,
                                 const uint8_t *mac, char letter,
-                                unsigned int index,
+                                unsigned int index, const char *serial_text,
                                 const SGIL1CPUContext *cpu_context)
 {
     static const char zeros[4];
@@ -4678,7 +4678,7 @@ static void l1_build_board_area(SGIL1EEPROM *record, const char *name,
     }
     l1_ia_text(area, "SYNTHETIC");
     l1_ia_text(area, name);
-    l1_ia_text(area, serial);
+    l1_ia_text(area, serial_text ? serial_text : serial);
     l1_ia_text(area, part);
     g_byte_array_append(area, &fru_file, 1);
     l1_ia_text(area, revision);
@@ -4883,7 +4883,7 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
                                 s->node_board_revision ?
                                     s->node_board_revision : "",
                                 NULL, 'N', s->identity_index,
-                                cpu_context_ptr);
+                                s->board_serial, cpu_context_ptr);
         }
     }
     if (io8 && !l1_component_selected(s, 1)) {
@@ -4892,7 +4892,7 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
         }
         if (!s->records[17].length) {
             l1_build_board_area(&s->records[17], "IO8", "NOTOBSERVED0", "00",
-                                mac, 'I', s->identity_index, NULL);
+                                mac, 'I', s->identity_index, NULL, NULL);
         }
         /* A supplied board area carries its own address, if it has one. */
         s->board_mac_valid = l1_io8_board_mac(&s->records[17], s->board_mac);
@@ -4916,7 +4916,8 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
         if (!s->records[17].length) {
             l1_build_board_area(&s->records[17], s->node_board_name,
                                 s->node_board_part, s->node_board_revision,
-                                s->board_mac, 'N', s->identity_index, NULL);
+                                s->board_mac, 'N', s->identity_index,
+                                s->board_serial, NULL);
         }
     }
     if (s->router_board && !l1_component_selected(s, 1)) {
@@ -4928,7 +4929,7 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
         if (!s->records[17].length) {
             l1_build_board_area(&s->records[17], "ROUTER", board->part,
                                 board->revision, NULL, 'R',
-                                s->identity_index, NULL);
+                                s->identity_index, NULL, NULL);
         }
     }
     return true;
@@ -4942,7 +4943,7 @@ static void l1_o3k_board(SGIL1State *s, unsigned component,
 {
     l1_build_chassis_area(&s->records[component]);
     l1_build_board_area(&s->records[16 + component], name, part, revision,
-                        mac, letter, index, cpu_context);
+                        mac, letter, index, NULL, cpu_context);
 }
 
 /*
@@ -5492,6 +5493,7 @@ fuel_mac_done:
     }
     if (s->debug_switches > 0xffff || s->processors > 32 ||
         (s->system_serial && strlen(s->system_serial) > 32) ||
+        (s->board_serial && strlen(s->board_serial) > 32) ||
         (s->brick_serial && strlen(s->brick_serial) > 32)) {
         error_setg(errp, "L1 setting out of range");
         return;
@@ -5930,6 +5932,7 @@ static const Property l1_properties[] = {
     DEFINE_PROP_UINT32("debug-switches", SGIL1State, debug_switches, 0),
     DEFINE_PROP_UINT32("partition", SGIL1State, partition, 0),
     DEFINE_PROP_STRING("system-serial", SGIL1State, system_serial),
+    DEFINE_PROP_STRING("board-serial", SGIL1State, board_serial),
     DEFINE_PROP_STRING("fuel-mac-eeprom", SGIL1State, fuel_mac_eeprom),
     DEFINE_PROP_STRING("mac", SGIL1State, mac),
     DEFINE_PROP_STRING("mac-record", SGIL1State, mac_record),
@@ -6209,6 +6212,7 @@ static void l1_finalize(Object *obj)
         g_free(s->selected[i].image);
     }
     g_free(s->system_serial);
+    g_free(s->board_serial);
     g_free(s->fuel_mac_eeprom);
     g_free(s->brick_serial);
     g_free(s->brick_type);

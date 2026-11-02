@@ -25,6 +25,13 @@
 char *sgi_board_mac(const char *base, unsigned int offset, Error **errp);
 
 /*
+ * The default six-character text serial of node @node's system board:
+ * "EMUN" and a hex byte of the same seed as the default address, plus
+ * @node. See sgi-board-identity.h.
+ */
+char *sgi_board_default_text_serial(unsigned int node);
+
+/*
  * Add the "mac" property to machine class @oc, kept as a string @offset
  * bytes into each instance. A value that is not a nonzero unicast address
  * is refused, as is setting it once the machine is built. @description
