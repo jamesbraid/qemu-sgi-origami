@@ -1727,6 +1727,10 @@ What the model chooses, and the limit of each choice:
   refused with an error, and the first link stays. An N-brick takes
   several. The model does not count its connectors. After ``reboot_l1`` a brick answers no peer for one second of
   virtual time.
+- An I-brick starts powered, logging ``power up (COMMAND)``: its C-brick's
+  auto power-up ends in ``* power up``, *inferred*, which reaches the
+  I-brick. With ``auto-power`` off it starts unpowered. Its ``autopower``
+  command stays refused.
 - ``power`` and ``reset`` on an I-brick act on that brick only; a C-brick
   keeps the single-node power and reset behaviour above. ``*`` runs a
   command on this brick, the other C-brick and the I-brick in turn, each

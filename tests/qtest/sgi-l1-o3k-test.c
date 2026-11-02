@@ -1140,8 +1140,19 @@ static void test_ibrick_power_is_its_own(void)
     g_autofree char *output = NULL;
 
     link_io(s, 0, 1);
-    expect_command(s, 1, "power check", "power appears off\n");
+    /*
+     * The system's start-up power-up reaches the I-brick, so it starts
+     * powered and logs the power-up that reached it.
+     */
+    expect_command(s, 1, "power check", "power appears on\n");
+    output = command(s, 1, "log", NULL);
+    g_assert_nonnull(strstr(output, "power up (COMMAND)"));
+    g_free(output);
+    expect_command(s, 1, "power up", "Power is already on\n");
     expect_command(s, 0, "power check", "power appears on\n");
+    output = command(s, 1, "power down", NULL);
+    expect_command(s, 1, "power check", "power appears off\n");
+    g_free(output);
     output = command(s, 1, "power up", NULL);
     expect_command(s, 1, "power check", "power appears on\n");
     g_free(output);
@@ -1166,13 +1177,13 @@ static void test_broadcast_and_relay(void)
     link_io(s, 0, 1);
     link_peer(s, 0, 2);
     expect_command(s, 0, "cti power check",
-                   "001i31:\npower appears off\n");
+                   "001i31:\npower appears on\n");
     expect_command(s, 0, "ctc power check",
                    "001c07:\npower appears on\n");
     expect_command(s, 0, "* power check",
                    "001c04:\npower appears on\n"
                    "001c07:\npower appears on\n"
-                   "001i31:\npower appears off\n");
+                   "001i31:\npower appears on\n");
     /* A write reaches every controller. */
     {
         g_autofree char *output = command(s, 0, "* brick partition 4", NULL);
@@ -1399,7 +1410,7 @@ static void test_relay_depth(void)
     expect_command_code(s, 0, "ctc cti power check",
                         "001c07:\n" NESTED_CTI, -1);
     /* The peer's own I-brick answers when asked from that peer. */
-    expect_command(s, 2, "cti power check", "001i30:\npower appears off\n");
+    expect_command(s, 2, "cti power check", "001i30:\npower appears on\n");
     /* The I-brick has neither. */
     expect_command_code(s, 0, "cti ctc power check",
                         "001i31:\n" UNSUPPORTED, -1);
@@ -1439,7 +1450,7 @@ static void test_relay_depth(void)
         link_io(s, 0, 1);
         output = command(s, 0, "* cti power check", NULL);
         g_assert_true(g_str_has_prefix(output,
-            "001c04:\n001i31:\npower appears off\n001i31:\n"));
+            "001c04:\n001i31:\npower appears on\n001i31:\n"));
         g_assert_true(g_str_has_suffix(output, UNSUPPORTED));
         qtest_quit(s);
     }
@@ -1523,7 +1534,7 @@ static void test_second_link_refused_keeps_first(void)
 
     link_io(s, 0, 1);
     g_assert_true(qom_link_refused(s, 2, "io-peer", DEVICES "l1c1"));
-    expect_command(s, 0, "cti power check", "001i31:\npower appears off\n");
+    expect_command(s, 0, "cti power check", "001i31:\npower appears on\n");
     expect_command(s, 0, "config", "0: 001c04\n1: 001i31\n");
     expect_command(s, 0, "cti config", "001i31:\n0: 001i31\n1: 001c04\n");
     expect_command(s, 2, "cti power check", NO_IO_BRICK);
@@ -1542,7 +1553,7 @@ static void test_cti_without_ibrick(void)
     expect_command_code(s, 0, "cti brick partition 7", NO_IO_BRICK, -1);
     expect_partition(s, 1, 0);
     link_io(s, 0, 1);
-    expect_command(s, 0, "cti power check", "001i31:\npower appears off\n");
+    expect_command(s, 0, "cti power check", "001i31:\npower appears on\n");
     qtest_quit(s);
 }
 
@@ -1578,7 +1589,7 @@ static void test_relay_during_restart(void)
     expect_command_code(s, 0, "cti power check",
                         "001i31:\nno response\n", -1);
     qtest_clock_step(s, RESTART_PAST_NS);
-    expect_command(s, 0, "cti power check", "001i31:\npower appears off\n");
+    expect_command(s, 0, "cti power check", "001i31:\npower appears on\n");
     qtest_quit(s);
 }
 
@@ -1603,19 +1614,19 @@ static void test_config_order_and_blocks(void)
     expect_command(s, 0, "config", "0: 001c04\n10: 001i31\n");
     expect_command(s, 0, "* power check",
                    "001c04:\npower appears on\n"
-                   "001i31:\npower appears off\n");
+                   "001i31:\npower appears on\n");
     link_peer(s, 0, 2);
     /* The port numbers, not the order the cables were made, set the order. */
     expect_command(s, 0, "config", "0: 001c04\n5: 001c07\n10: 001i31\n");
     expect_command(s, 0, "* power check",
                    "001c04:\npower appears on\n"
                    "001c07:\npower appears on\n"
-                   "001i31:\npower appears off\n");
+                   "001i31:\npower appears on\n");
     qom_link(s, 0, "peer", "");
     expect_command(s, 0, "config", "0: 001c04\n10: 001i31\n");
     expect_command(s, 0, "* power check",
                    "001c04:\npower appears on\n"
-                   "001i31:\npower appears off\n");
+                   "001i31:\npower appears on\n");
     qtest_quit(s);
 }
 
