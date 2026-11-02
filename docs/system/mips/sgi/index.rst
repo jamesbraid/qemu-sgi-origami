@@ -105,6 +105,7 @@ I/O and system control
    hardware/bic
    hardware/bricks
    hardware/l1
+   hardware/pbay
    hardware/elsc
    hardware/timekeepers
    hardware/ds1685
