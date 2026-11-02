@@ -1731,6 +1731,13 @@ What the model chooses, and the limit of each choice:
   auto power-up ends in ``* power up``, *inferred*, which reaches the
   I-brick. With ``auto-power`` off it starts unpowered. Its ``autopower``
   command stays refused.
+- A machine reset, which every guest restart and L1 reset command is on
+  this machine, does not restart an I-brick, N-brick or V-brick L1: the L1
+  runs on standby power, independent of brick power
+  :src:`108-0240-002 p. 2-36`, and keeps its log in NVRAM
+  :src:`007-3938-001 p. 3`, *established*; that a node reset leaves its
+  other state alone is *inferred*. Only realize and ``reboot_l1`` start
+  it.
 - ``power`` and ``reset`` on an I-brick act on that brick only; a C-brick
   keeps the single-node power and reset behaviour above. ``*`` runs a
   command on this brick, the other C-brick and the I-brick in turn, each
