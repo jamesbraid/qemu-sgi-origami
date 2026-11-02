@@ -2217,6 +2217,42 @@ static void test_l2_link_noise(void)
 
 
 /*
+ * A link carries state outside the machine, so migration is refused while
+ * the property is set, connected or not. Without it migration is not
+ * blocked by the link.
+ */
+static void test_l2_migration_blocker(void)
+{
+    L2Stub *stub = l2_stub_listen();
+    g_autofree char *extra = g_strdup_printf(
+        "-chardev socket,id=l2c,path=%s,server=on,wait=off ", stub->path);
+    const char *const linked[] = { L2_FETCH_PROPS ",l2=l2c" };
+    QTestState *s;
+    g_autoptr(QDict) reply = NULL;
+
+    l2_stub_unlisten(stub);
+    s = start_with(1, linked, extra);
+    reply = qtest_qmp(s,
+        "{'execute':'migrate','arguments':{'uri':'unix:/nonexistent'}}");
+    g_assert_true(qdict_haskey(reply, "error"));
+    g_assert_nonnull(strstr(qdict_get_str(qdict_get_qdict(reply, "error"),
+                                          "desc"), "L2 link"));
+    qtest_quit(s);
+    l2_stub_free(stub);
+
+    s = start_one(L2_FETCH_PROPS);
+    qobject_unref(reply);
+    reply = qtest_qmp(s,
+        "{'execute':'migrate','arguments':{'uri':'unix:/nonexistent'}}");
+    /* An unblocked migration starts and fails later, on the socket. */
+    if (qdict_haskey(reply, "error")) {
+        g_assert_null(strstr(qdict_get_str(qdict_get_qdict(reply, "error"),
+                                           "desc"), "L2 link"));
+    }
+    qtest_quit(s);
+}
+
+/*
  * ctci is not modelled: it is reported as an unknown command, and nothing
  * runs on the other C-brick or its I-brick.
  */
@@ -2536,6 +2572,8 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/l2-link/fetch-multi-frame",
                    test_l2_fetch_multi_frame);
     qtest_add_func("sgi-l1-o3k/l2-link/noise", test_l2_link_noise);
+    qtest_add_func("sgi-l1-o3k/l2-link/migration-blocker",
+                   test_l2_migration_blocker);
     qtest_add_func("sgi-l1-o3k/partition-clear", test_partition_clear);
     qtest_add_func("sgi-l1-o3k/ctci", test_ctci_unimplemented);
     for (unsigned i = 0; i < G_N_ELEMENTS(link_cases); i++) {
