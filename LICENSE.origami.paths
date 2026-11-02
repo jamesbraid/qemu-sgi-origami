@@ -390,6 +390,7 @@ include/hw/misc/sgi-kona-ports.h
 include/hw/misc/sgi-kona.h
 include/hw/misc/sgi-l1.h
 include/hw/misc/sgi-l1-l2-link.h
+include/hw/misc/sgi-l2-hub.h
 include/hw/misc/sgi-mgras.h
 include/hw/misc/sgi-odyssey-native-mesa.h
 include/hw/misc/sgi-odyssey-planes.h
@@ -956,6 +957,9 @@ tests/qtest/tigon-test.c
 tests/qtest/usb-ohci-transfer-test.c
 tests/qtest/xbridge-assembly-fixture.c
 tests/qtest/xframe-test.c
+tests/sgi-l2/hub-test.py
+tests/sgi-l2/l2_hub_lib.py
+tests/sgi-l2/meson.build
 tests/unit/sgi-gl-texture-test.h
 tests/unit/test-i2c-masters.c
 tests/unit/test-i2c-wire.c
@@ -1200,3 +1204,4 @@ tests/qtest/sgi-cdrom-test.c
 hw/scsi/sgi-scsi-cd.c
 include/hw/scsi/sgi-scsi-cd.h
 tests/qtest/sgi-scsi-cd-test.h
+tools/sgi/qemu-sgi-l2-hub.c
