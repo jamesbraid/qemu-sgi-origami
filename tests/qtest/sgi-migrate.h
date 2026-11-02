@@ -82,12 +82,43 @@ static inline void sgi_wait_migration_status(QTestState *s,
 }
 
 /*
- * Migrate @from over @uri and block until it reports the transfer completed.
- * The destination must already be listening for the incoming stream, either
- * via "-incoming <uri>" on its command line or a prior "migrate-incoming"
- * QMP command. This only drives @from's "migrate" command and its own
- * completion wait, matching every existing caller, none of which keeps a
- * handle to the destination QTestState here.
+ * Block until @s's run state is "postmigrate". The migration thread sets
+ * the "completed" status in migration_completion_end(), drops the BQL, and
+ * only then takes it again in migration_iteration_finish() to move the run
+ * state from finish-migrate to postmigrate. A "cont" that the main loop
+ * serves in that gap fails with "Migration is not finalized yet", so a
+ * caller that resumes the source must wait for this state, not just the
+ * status. A source that was already stopped, or in internal-error, passes
+ * through finish-migrate to postmigrate the same way.
+ */
+static inline void sgi_wait_postmigrate(QTestState *s)
+{
+    int64_t deadline = g_get_monotonic_time() +
+                       SGI_MIGRATION_WAIT_MIN_S * G_TIME_SPAN_SECOND;
+
+    for (;;) {
+        QDict *ret = qtest_qmp_assert_success_ref(s,
+            "{ 'execute': 'query-status' }");
+        g_autofree char *seen = g_strdup(qdict_get_str(ret, "status"));
+
+        qobject_unref(ret);
+        if (g_str_equal(seen, "postmigrate")) {
+            return;
+        }
+        g_assert_cmpstr(seen, ==, "finish-migrate");
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+}
+
+/*
+ * Migrate @from over @uri and block until it reports the transfer completed
+ * and has settled in the postmigrate run state, so the caller may "cont" or
+ * "stop" it at once. The destination must already be listening for the
+ * incoming stream, either via "-incoming <uri>" on its command line or a
+ * prior "migrate-incoming" QMP command. This only drives @from's "migrate"
+ * command and its own completion wait, matching every existing caller, none
+ * of which keeps a handle to the destination QTestState here.
  */
 static inline void sgi_migrate_stopped(QTestState *from, const char *uri)
 {
@@ -95,6 +126,7 @@ static inline void sgi_migrate_stopped(QTestState *from, const char *uri)
         "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
 
     sgi_wait_migration(from, "completed");
+    sgi_wait_postmigrate(from);
 }
 
 /*
