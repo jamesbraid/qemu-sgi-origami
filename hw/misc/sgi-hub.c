@@ -1760,9 +1760,16 @@ static uint64_t sgi_hub_rt_count(SGIHubState *s)
 /*
  * How long a comparator hold may last. Nothing is held during the wait, so
  * this only decides when a partner that never answers stops being waited for;
- * partner lags measured on a loaded host reach tens of milliseconds.
+ * partner lags measured on a loaded host reach tens of milliseconds. It is
+ * counted in the partner thread's own host CPU time, not wall time: a host
+ * can leave a thread unscheduled for seconds, and a wall-clock bound would
+ * then give up on a partner that has not run at all. Where that CPU time
+ * cannot be read the bound falls back to wall time, with a one-time warning,
+ * and SGI_HUB_RT_HOLD_BACKSTOP_MS of wall time ends a hold in any case.
 */
 #define SGI_HUB_RT_HOLD_MS      2000
+#define SGI_HUB_RT_HOLD_BACKSTOP_MS 120000LL
+#define SGI_HUB_RT_HOLD_POLL_MS 50
 
 /* What a held processor waits for. */
 typedef enum SGIHubRTHoldKind {
@@ -1776,6 +1783,7 @@ typedef struct SGIHubRTHold {
     unsigned int slice;
     uint64_t id;
     int64_t start; /* realtime it first ran; a yield keeps the deadline */
+    int64_t partner_cpu_base; /* the partner thread's CPU time then, or -1 */
 } SGIHubRTHold;
 
 /* This Hub's slice for the executing processor, or -1 for any other. */
@@ -1794,6 +1802,26 @@ static bool sgi_hub_slice_can_read(SGIHubState *s, unsigned int slice)
     CPUState *cs = sgi_hub_cpu(s, slice);
 
     return cs && s->pi_cpu_enable[slice] && !cs->halted && cpu_can_run(cs);
+}
+
+/*
+ * CPU time a slice's vCPU host thread has used, in ns, or -1 when the host
+ * cannot say. A thread the host has not scheduled uses none. Linux only.
+ */
+static int64_t sgi_hub_cpu_ns(SGIHubState *s, unsigned int slice)
+{
+#ifdef CONFIG_LINUX
+    CPUState *cs = sgi_hub_cpu(s, slice);
+    struct timespec ts;
+    clockid_t clock;
+
+    if (cs && cs->thread &&
+        !pthread_getcpuclockid(cs->thread->thread, &clock) &&
+        !clock_gettime(clock, &ts)) {
+        return ts.tv_sec * NANOSECONDS_PER_SECOND + ts.tv_nsec;
+    }
+#endif
+    return -1;
 }
 
 static const char *sgi_hub_rt_hold_kind_name(SGIHubRTHoldKind kind)
@@ -1916,6 +1944,8 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
     unsigned int slice = hold->slice;
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
     int64_t deadline;
+    int64_t backstop;
+    int64_t partner_ns;
     const char *outcome;
     bool yield = false;
     bool traced_wait = false;
@@ -1925,11 +1955,15 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
 
     if (!hold->start) {
         hold->start = now;
+        hold->partner_cpu_base = sgi_hub_cpu_ns(s, slice ^ 1);
     }
     deadline = hold->start + SGI_HUB_RT_HOLD_MS * SCALE_MS;
 
+    backstop = hold->start + SGI_HUB_RT_HOLD_BACKSTOP_MS * SCALE_MS;
+
     for (;;) {
         now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+        partner_ns = sgi_hub_cpu_ns(s, slice ^ 1);
         if (s->pi_rt_hold[slice] != hold->id) {
             outcome = "answered";
         } else if (!sgi_hub_slice_can_read(s, slice ^ 1)) {
@@ -1947,7 +1981,18 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
             */
             outcome = NULL;
             yield = true;
+        } else if (now >= backstop) {
+            outcome = "timed out";
+        } else if (hold->partner_cpu_base >= 0 && partner_ns >= 0) {
+            if (partner_ns - hold->partner_cpu_base >=
+                SGI_HUB_RT_HOLD_MS * SCALE_MS) {
+                outcome = "timed out";
+            } else {
+                outcome = NULL;
+            }
         } else if (now >= deadline) {
+            warn_report_once("sgi-hub: no per-thread CPU time here; "
+                             "comparator holds keep the 2 s wall-clock bound");
             outcome = "timed out";
         } else {
             outcome = NULL;
@@ -1977,7 +2022,7 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
             break;
         }
 
-        wait_ms = (deadline - now) / SCALE_MS + 1;
+        wait_ms = SGI_HUB_RT_HOLD_POLL_MS;
         traced_wait =
             trace_event_get_state_backends(TRACE_SGI_HUB_RT_HOLD_WAKE);
         if (traced_wait) {
@@ -2034,7 +2079,8 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
  * after that is the post, so the hold that keeps the post standing sits at
  * the write that takes it back (sgi_hub_rt_withhold). A hold also ends when
  * the partner can no longer run, when the held processor has a stop or a
- * deliverable interrupt, or after SGI_HUB_RT_HOLD_MS. Work queued on the held
+ * deliverable interrupt, or once the partner has used SGI_HUB_RT_HOLD_MS of
+ * CPU time without answering. Work queued on the held
  * processor runs and the hold resumes behind it: a memory map change anywhere
  * in the machine queues such work on every processor, and the stock PROM
  * makes dozens while a node's processors meet. The hold is queued work on the

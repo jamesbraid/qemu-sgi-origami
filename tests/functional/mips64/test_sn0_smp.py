@@ -4,7 +4,10 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+import ctypes
+import os
 import re
+import sys
 import time
 
 from qemu_test import QemuSystemTest
@@ -26,6 +29,17 @@ STATE_DONE_B = 0x20
 STATE_EARLY_EXIT = 0x28
 
 RTC_TICKS_PER_MS = 1250
+
+# The starved-partner exercise: CPU A posts its comparator and takes the
+# post back, CPU B reads it after a delay the host stretches by freezing B.
+STARVE_STATE_READ = 0x30
+STARVE_POST = 5
+STARVE_FREEZE_SECONDS = 5.0
+
+PTRACE_SEIZE = 0x4206
+PTRACE_INTERRUPT = 0x4207
+PTRACE_DETACH = 17
+WALL = 0x40000000
 
 # The RTC rendezvous needs CPU A to run during CPU B's 1 ms poll.  Under
 # icount a round-robin slice lasts until the next virtual-clock deadline,
@@ -423,6 +437,95 @@ def build_rtc_rendezvous():
     branch = program.branch(0x04, R_ZERO, R_ZERO)
     program.patch(branch, spin_b)
     return program
+
+
+def build_starved_partner_withdraw():
+    """CPU A posts a value in its comparator and writes zero over it before
+    its partner has read it; CPU B reads that comparator after a delay of
+    about 260 ms and records what it read. The Hub holds A's withdrawal
+    until B has read, so B must read the post however long the host leaves
+    B unscheduled."""
+    program = MipsProgram()
+
+    program.emit(mips_i(0x0f, R_ZERO, R_T0, 0x2440))
+    program.emit(mips_i(0x0d, R_T0, R_T0, 0x0080))
+    program.emit(0x40800000 | R_T0 << 16 | 12 << 11)  # mtc0 t0, Status
+    program.emit(0)
+
+    program.address_prefix(R_S0, 0x9000)              # shared RAM state
+    program.emit(mips_i(0x0f, R_ZERO, R_AT, 0x0003))
+    program.emit(mips_r(R_S0, R_AT, R_S0, 0, 0x25))
+
+    program.address_prefix(R_S1, 0x9200)              # PI_PROCESSOR_NUMBER
+    program.emit(mips_i(0x0f, R_ZERO, R_AT, 0x0100))
+    program.emit(mips_i(0x0d, R_AT, R_AT, 0x0020))
+    program.emit(mips_r(R_S1, R_AT, R_S1, 0, 0x25))
+
+    program.emit(mips_i(0x0f, R_ZERO, R_S2, 0x9200))  # PI_RT_COUNT
+    program.emit(mips_r(R_ZERO, R_S2, R_S2, 16, 0x38))
+    program.emit(mips_i(0x0d, R_S2, R_S2, 0x0103))
+    program.emit(mips_r(R_ZERO, R_S2, R_S2, 16, 0x38))
+    program.emit(mips_i(0x0d, R_S2, R_S2, 0x0100))
+
+    program.emit(mips_i(0x0f, R_ZERO, R_S3, 0x9200))  # PI_RT_COMPARE_A
+    program.emit(mips_r(R_ZERO, R_S3, R_S3, 16, 0x38))
+    program.emit(mips_i(0x0d, R_S3, R_S3, 0x0100))
+    program.emit(mips_r(R_ZERO, R_S3, R_S3, 16, 0x38))
+    program.emit(mips_i(0x0d, R_S3, R_S3, 0x0108))
+
+    program.emit(mips_i(0x19, R_ZERO, R_T1, 1))
+    program.emit(mips_i(0x37, R_S1, R_T0, 0))         # processor number
+    select_b = program.branch(0x05, R_T0, R_ZERO)
+
+    # CPU A: post, then take the post back. The branch ends the block the
+    # withdrawing store sits in, where the Hub's hold takes the processor.
+    program.emit(mips_i(0x19, R_ZERO, R_T2, STARVE_POST))
+    program.emit(mips_i(0x3f, R_S3, R_T2, 0))
+    program.emit(mips_i(0x3f, R_S3, R_ZERO, 0))
+    program.patch(program.branch(0x04, R_ZERO, R_ZERO), program.here())
+    program.emit(mips_i(0x3f, R_S0, R_T1, STATE_DONE_A))
+    program.spin()
+
+    # CPU B: wait about 260 ms on the real-time counter, then read A's post.
+    program.patch(select_b, program.here())
+    program.emit(mips_i(0x37, R_S2, R_T2, 0))
+    program.emit(mips_i(0x0f, R_ZERO, R_T3, 0x0005))
+    program.emit(mips_r(R_T2, R_T3, R_T3, 0, 0x2d))   # daddu t3,t2,t3
+    wait_rtc = program.here()
+    program.emit(mips_i(0x37, R_S2, R_T2, 0))
+    program.emit(mips_r(R_T2, R_T3, R_T4, 0, 0x2b))   # sltu t4,t2,t3
+    program.patch(program.branch(0x05, R_T4, R_ZERO), wait_rtc)
+    program.emit(mips_i(0x37, R_S3, R_T2, 0))
+    program.emit(mips_i(0x3f, R_S0, R_T2, STARVE_STATE_READ))
+    program.emit(mips_i(0x3f, R_S0, R_T1, STATE_DONE_B))
+    program.spin()
+    return program
+
+
+def freeze_vcpu_thread(pid, cpu_index):
+    """Stop one vCPU host thread. Returns (thread id, libc handle) for the
+    detach, or None when the thread is not found or ptrace is refused.
+
+    ptrace stops that thread alone; SIGSTOP would stop the whole process,
+    and the other processors must keep running. The thread may be stopped
+    while it holds the big QEMU lock, which stalls the whole machine, so
+    this is at least as strong as a thread the host merely fails to
+    schedule."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.ptrace.restype = ctypes.c_long
+    libc.ptrace.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_void_p,
+                            ctypes.c_void_p]
+    for entry in os.listdir(f'/proc/{pid}/task'):
+        with open(f'/proc/{pid}/task/{entry}/comm') as comm:
+            if comm.read().strip() != f'CPU {cpu_index}/TCG':
+                continue
+        tid = int(entry)
+        if libc.ptrace(PTRACE_SEIZE, tid, None, None) != 0:
+            return None
+        libc.ptrace(PTRACE_INTERRUPT, tid, None, None)
+        os.waitpid(tid, WALL)
+        return tid, libc
+    return None
 
 
 def build_promdata_cache_bypass():
@@ -1244,6 +1347,53 @@ class SN0SMPMachine(QemuSystemTest):
         self.assertEqual(state[STATE_EARLY_EXIT // 8], 0)
         self.assertEqual(state[STATE_DONE_A // 8], 1)
         self.assertEqual(state[STATE_DONE_B // 8], 1)
+
+    def test_starved_partner_still_reads_the_post(self):
+        if not sys.platform.startswith('linux'):
+            self.skipTest('needs Linux /proc and ptrace')
+        self.set_machine('origin200')
+        firmware = self.scratch_file('starved-partner.bin')
+        build_starved_partner_withdraw().write(firmware)
+        hub_log = self.log_file('hub-hold.log')
+
+        self.vm.set_machine(MACHINES['origin200'])
+        self.vm.add_args('-accel', 'tcg,thread=multi', '-smp', '2',
+                         '-bios', firmware,
+                         '-d', 'trace:sgi_hub_rt_hold*', '-D', hub_log)
+        self.vm.add_args('-S')
+        self.vm.launch()
+        self.vm.cmd('cont')
+
+        # B is waiting out its delay once A's withdrawal is held. Freeze B
+        # then, for longer than the hold's 2 second bound, and let it go.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if os.path.exists(hub_log) and 'withdraw' in open(
+                    hub_log, encoding='utf-8', errors='replace').read():
+                break
+            time.sleep(0.005)
+        else:
+            self.fail('CPU A never held its withdrawal')
+        frozen = freeze_vcpu_thread(self.vm.get_pid(), 1)
+        if frozen is None:
+            self.skipTest('cannot ptrace the vCPU thread on this host')
+        time.sleep(STARVE_FREEZE_SECONDS)
+        frozen[1].ptrace(PTRACE_DETACH, frozen[0], None, None)
+
+        state = self.poll_state(
+            lambda: self.read_state(TEST_STATE, 7),
+            lambda s: s[STATE_DONE_A // 8] and s[STATE_DONE_B // 8])
+        self.assertEqual(state[STATE_DONE_A // 8], 1)
+        self.assertEqual(state[STARVE_STATE_READ // 8], STARVE_POST)
+
+        # The hold must have outlasted the old 2 second wall-clock bound
+        # and been answered, or the freeze came too late to prove anything.
+        with open(hub_log, encoding='utf-8', errors='replace') as log:
+            ends = re.findall(r'hold (\w[\w ]*?) after (\d+) us', log.read())
+        self.assertTrue(ends, 'no hold ended in the log')
+        outcome, held_us = ends[0][0], int(ends[0][1])
+        self.assertEqual(outcome, 'answered')
+        self.assertGreater(held_us, 2000000)
 
     def test_uncached_promdata_bypasses_private_cache(self):
         self.set_machine('origin200')
