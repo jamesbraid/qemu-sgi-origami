@@ -44,6 +44,7 @@ config QLOGIC_ISP2200_PCI
     depends on PCI
     # The source set the adapter builds in is linked only with SCSI.
     select SCSI
+    select SGI_SCSI_CD
 
 config SGI_DBRICK
     bool

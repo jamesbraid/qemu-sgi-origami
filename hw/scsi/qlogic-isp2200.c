@@ -25,6 +25,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/pci/pci-64bit.h"
 #include "hw/scsi/scsi.h"
+#include "hw/scsi/sgi-scsi-cd.h"
 #include "migration/qemu-file-types.h"
 #include "migration/qemu-file.h"
 #include "migration/vmstate.h"
@@ -883,6 +884,7 @@ static void isp2200_reset_hold(Object *obj, ResetType type)
     s->fc_last_bytes = 0;
     g_free(s->fc_last.segs);
     memset(&s->fc_last, 0, sizeof(s->fc_last));
+    sgi_scsi_cd_adapter_reset(DEVICE(s));
 }
 
 static void isp2200_process_requests(QLogicISP2200State *s);
@@ -1483,6 +1485,7 @@ static void isp2200_scsi_complete(SCSIRequest *sreq, size_t resid)
     uint64_t unused;
     int sense_len = 0;
 
+    sgi_scsi_cd_command_done(sreq);
     /* Finished while a reset was cancelling it: it owes nothing. */
     if (req->dropping) {
         isp2200_free_request(req);
@@ -1619,6 +1622,7 @@ static void isp2200_reset_devices(QLogicISP2200State *s, int loop_id, int lun)
         if ((loop_id < 0 || sdev->id == loop_id) &&
             (lun < 0 || sdev->lun == lun)) {
             device_cold_reset(DEVICE(sdev));
+            sgi_scsi_cd_device_reset(sdev);
         }
     }
 }
@@ -2904,6 +2908,7 @@ static void isp2200_reg_write(void *opaque, hwaddr addr, uint64_t val64,
         if (val & ISP2200_CSR_SOFT_RESET) {
             isp2200_soft_reset(s);
             bus_cold_reset(BUS(&s->bus));
+            sgi_scsi_cd_bus_reset(&s->bus);
         }
         s->csr = val & ISP2200_CSR_BANK_MASK;
         break;
