@@ -147,6 +147,19 @@ static inline bool sgi_synthetic_text_from_onewire(char *buf, size_t width,
 #define SGI_SYNTHETIC_BARCODE_SIZE    9
 
 /*
+ * Write the text serial for @letter and @index into @buf, which holds
+ * SGI_SYNTHETIC_BARCODE_SIZE bytes: the shortest field the index fits,
+ * six characters below 100, seven below 1000, eight above. @index is
+ * below 10000.
+ */
+static inline void sgi_synthetic_text_serial_fit(char *buf, char letter,
+                                                 unsigned int index)
+{
+    sgi_synthetic_text_serial(buf, index < 100 ? 6 : index < 1000 ? 7 : 8,
+                              letter, index);
+}
+
+/*
  * The barcode for a board-identity record kept on a part whose ROM serial
  * is @part_serial: the board's own letter, then the part's instance, so the
  * record and the part that holds it name the same unit, and a board fitted
@@ -163,8 +176,7 @@ static inline void sgi_synthetic_barcode(char *buf, char letter,
     } else if (sgi_synthetic_onewire_serial_marked(part_serial)) {
         index = part_serial & 0xfff;
     }
-    sgi_synthetic_text_serial(buf, index < 100 ? 6 : index < 1000 ? 7 : 8,
-                              letter, index);
+    sgi_synthetic_text_serial_fit(buf, letter, index);
 }
 
 #endif /* HW_MIPS_SGI_SGI_SYNTHETIC_SERIAL_H */

@@ -56,6 +56,25 @@ static void test_text(void)
     g_assert_cmpstr(text, ==, "EMUM000001");
 }
 
+static void test_text_fit(void)
+{
+    char text[SGI_SYNTHETIC_BARCODE_SIZE];
+
+    /* Six characters up to 99, then one more per decade. */
+    sgi_synthetic_text_serial_fit(text, 'N', 0);
+    g_assert_cmpstr(text, ==, "EMUN00");
+    sgi_synthetic_text_serial_fit(text, 'N', 99);
+    g_assert_cmpstr(text, ==, "EMUN99");
+    sgi_synthetic_text_serial_fit(text, 'N', 100);
+    g_assert_cmpstr(text, ==, "EMUN100");
+    sgi_synthetic_text_serial_fit(text, 'N', 999);
+    g_assert_cmpstr(text, ==, "EMUN999");
+    sgi_synthetic_text_serial_fit(text, 'N', 1000);
+    g_assert_cmpstr(text, ==, "EMUN1000");
+    sgi_synthetic_text_serial_fit(text, 'N', 9999);
+    g_assert_cmpstr(text, ==, "EMUN9999");
+}
+
 static void test_text_from_onewire(void)
 {
     char text[16] = "untouched";
@@ -95,6 +114,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-synthetic-serial/uniqueware", test_uniqueware);
     g_test_add_func("/sgi-synthetic-serial/unmarked", test_unmarked);
     g_test_add_func("/sgi-synthetic-serial/text", test_text);
+    g_test_add_func("/sgi-synthetic-serial/text-fit", test_text_fit);
     g_test_add_func("/sgi-synthetic-serial/text-from-onewire",
                     test_text_from_onewire);
     g_test_add_func("/sgi-synthetic-serial/barcode", test_barcode);
