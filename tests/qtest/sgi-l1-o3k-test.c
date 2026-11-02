@@ -2158,6 +2158,43 @@ static void test_request_trace(void)
     g_assert_nonnull(strstr(text, "command=0x1006 count=1 args=0000001234"));
 }
 
+/*
+ * A chunk event gives each frame's code, count, length field and payload
+ * length in both directions. A 300-byte reply is three frames, and the
+ * first carries its own payload length, not the segment's.
+ */
+static void test_chunk_trace(void)
+{
+    g_autofree char *args = NULL;
+    char *path = trace_start("sgi_l1_chunk", &args);
+    L2Stub *stub = l2_stub_listen();
+    QTestState *s = start_linked_traced(stub, L2_FETCH_PROPS, args);
+    uint8_t chain[1][SGI_L1_L2_SEGMENT_MAX], segment[1024], sent[28];
+    unsigned sizes[] = { 300 };
+    uint8_t frame[131];
+    g_autofree char *text = NULL;
+
+    send_fetch(s, sent);
+    g_assert_cmpuint(l2_stub_read_segment(stub, segment, L2_STUB_TIMEOUT_MS),
+                     ==, 28);
+    l2_stub_build_chain(chain, sizes, 1, segment);
+    l2_stub_write_segment(stub, chain[0], 300);
+    for (unsigned i = 0; i < 3; i++) {
+        receive_waiting(s, 0, frame);
+    }
+    text = trace_finish(s, path);
+    g_assert_nonnull(strstr(text, "to_node=0 transport=0 channel=16 "
+                            "code=0x3001 count=1 length_field=28 payload=28"));
+    g_assert_nonnull(strstr(text, "to_node=1 transport=0 channel=16 "
+                            "code=0x3001 count=1 length_field=113 "
+                            "payload=113"));
+    g_assert_nonnull(strstr(text, "code=0x3003 count=0 length_field=0 "
+                            "payload=113"));
+    g_assert_nonnull(strstr(text, "code=0x3002 count=0 length_field=0 "
+                            "payload=74"));
+    l2_stub_free(stub);
+}
+
 static void test_l2_fetch_single_buffer(void)
 {
     L2Stub *stub = l2_stub_listen();
@@ -2644,6 +2681,7 @@ int main(int argc, char **argv)
                    test_l2_chunk_other_destination);
     qtest_add_func("sgi-l1-o3k/l2-link/segment-trace", test_l2_segment_trace);
     qtest_add_func("sgi-l1-o3k/request-trace", test_request_trace);
+    qtest_add_func("sgi-l1-o3k/l2-link/chunk-trace", test_chunk_trace);
     qtest_add_func("sgi-l1-o3k/l2-link/forward-plain", test_l2_forward_plain);
     qtest_add_func("sgi-l1-o3k/l2-link/unanswered-and-local",
                    test_l2_unanswered_and_local);
