@@ -1945,6 +1945,112 @@ What the model chooses, and the limit of each choice:
   addressing of a Cx-brick's four I/O ports is unknown. Without a peer an
   attached-brick destination answers the router's error reply.
 
+.. _sgi-l1-pbay:
+
+Power-bay link
+==============
+
+The Origin 300 L1 package reads a power bay over its second serial port
+(software port 1, the processor's on-chip UART 1, *inferred* from the
+register block's address), at 19200 baud, 8 data bits, no parity and no
+flow control, *software expectation*. The port's interrupt handler frames
+the traffic in a mode the power-bay task selects: a transmission is a
+start byte, the body with its checksum and the three framing bytes
+stuffed, and a terminator; the transaction code above the handler works
+on unframed bodies, *software expectation*. The link, its commands and the
+bay's replies are described on :doc:`pbay`. The L1 starts the power-bay
+task by the brick's type letter. In the package the Origin 3000 compute
+brick uses it does not start it for ``0``, ``4``, ``7``, ``8``, ``9``,
+``A``, ``E``, ``G``, ``O``, ``Q`` or ``V``, and the port is closed on all of
+them but ``G`` and ``O``; on ``G`` the second port is a console at 38400
+baud (setting word ``0x9600``, where 19200 is ``0x4b00``) instead of the bay
+link, *software expectation*. Two other packages carry no letter table
+and start the task for every letter except ``O``, ``G`` included although
+port 1 holds the console there; neither lists ``G`` as a supported brick, so
+the case does not arise, *inferred*. The model follows the first set.
+
+The controller has an opt-in ``pbay`` character device property carrying the
+framed bytes; ``pbay-address`` (default ``0x0001``) is the L1's own address
+and ``pbay-poll-ms`` (default 1000, at least 1; the controller refuses to
+start with 0) the time between polling passes, each an *approximation*. With the property unset, the controller behaves as it did
+before and the link does not exist. With it set, the controller refuses to
+start on a brick type that does not run the task, and blocks migration, because
+the bay's state lies outside the machine.
+
+Receive path
+------------
+
+The model follows the handler as read: it ignores every byte before a start
+byte, drops a start byte inside a frame without restarting the frame,
+unstuffs ``0xaa`` followed by ``0xb0``, ``0xb5`` or ``0xba`` and drops any
+other byte after ``0xaa``, ends the frame at the terminator and discards
+an empty one, *software expectation*. A frame whose first two body bytes
+(little-endian) are neither ``0x0000`` nor the L1's address is dropped to
+its terminator, and the checksum is not checked in this path but by the
+transaction layer, *software expectation*. A stray ``0xaa`` before the
+start byte puts the receiver in its escape state, which drops the next
+start byte and everything up to a terminator, *software expectation*. A
+terminator that ends a frame while an escape is pending clears the escape
+as well, the same reset a terminator gives outside a frame; the handler's
+treatment of that case is not read, so this is an *approximation*. The
+handler does not act on UART line errors in this mode, *software
+expectation*. The model gives each transaction 300 ms and three attempts, an
+*approximation* of timing that is *unknown*. Those timeouts and the polling
+period run on the host's real-time clock, so under ``-icount`` or record and
+replay the link's timing is not deterministic.
+
+Initialisation and polling
+--------------------------
+
+The model starts the link when the controller starts or resets, with no
+delay (the L1 waits ``100 * setting + 300`` delay units, *software
+expectation*; the setting's value is *unknown*). It sends command ``0x10``
+and then ``0x02`` to address 0 and takes the replied address, with zero or no
+reply meaning a communication failure, then ``0x12`` with that address,
+``0x13``, the ``0x00,0x00`` pair and the record loop from id 0, reading five
+bytes of each record to learn its id and then the whole record, until the
+next id is ``0xffff``, *software expectation*. It sets the status to
+"busy initialising" while it runs, to "ready" when it finishes and to
+"communication failure" when a transaction fails after its attempts. A reply
+is accepted when its checksum holds, its control byte has the reply bit and
+the request's tag, its command matches and its completion code is zero, and
+for a tunnelled request when the inner command and completion code
+match and the network function is the request's plus the response bit,
+*software expectation*.
+
+When the capability bytes say a supply count routine should run, the model
+logs ``LOG_UNIMP`` and does not run it. The L1 does not parse the records
+in the model, which counts them and exposes the count as ``pbay-records``.
+
+After the link is ready the model reads sensors 1 to 14 in turn, then again
+after each ``pbay-poll-ms``. Each pass logs to the L1 log as the polling
+task does, *software expectation*. The model keeps the last value of each
+sensor, and nothing is stored at start, so a fault already present on the
+first pass is logged. For sensors 1 to 6 (``DPS`` 1 to 6) bits 1 to 3 are
+logged as fail, predictive fail and AC fail when they go from 0 to 1; a
+supply read with bit 0 set (not inserted) clears its stored value, so its
+faults are new when it returns. The set of supplies with bit 0 clear is
+compared with the set of the previous pass: a supply that leaves is logged
+as removed and one that arrives as inserted. The first pass logs no
+presence, and a pass with no supply present changes nothing, *software
+expectation*. For sensors 7 to 14 (``DCport`` 1 to 8) a port whose bit 0 is
+set is skipped and keeps its stored value, and bit 1 is logged as a failure
+when it goes from 0 to 1. The line texts begin with ``Power Bay DPS n`` or
+``Power Bay DCport n`` and carry the words the polling task logs; the
+leading words and which word follows which bit are *inferred*. The task also
+repeats the AC-fail and port-failure reads before it logs (four and three
+consecutive sightings), logs at most one fault per supply per pass and runs
+only while the environment-monitoring setting is nonzero; the model does
+none of these and polls at ``pbay-poll-ms``, an *approximation*.
+
+The ``pbay`` command prints the link's status word (``not initialised``,
+``busy initialising``, ``ready``, ``busy``, ``busy flashing`` or
+``communication failure``) and logs ``LOG_UNIMP``: the real command's output
+format is *unknown*. ``pbay serial`` and the flash task, which are a
+FRU-shaped read of the bay and the ``0x92`` to ``0x94`` flash requests, are
+not modelled. The read-only properties ``pbay-status`` and ``pbay-records``
+expose the state for tests.
+
 Measurements
 ============
 
@@ -1985,6 +2091,11 @@ Model limits
 
 Tests
 =====
+
+``tests/qtest/sgi-l1-pbay-test.c`` plays the bay from a socket and joins
+the controller to the bay model, covering the initialisation order, polling
+and its log lines, the receive rules, a missing bay, the bricks that do not
+run the task and the migration block.
 
 ``tests/qtest/sn1-l1-test.c`` covers the UART registers, interrupts and
 their migration, framing and receive tolerance, output escaping, every

@@ -8,8 +8,8 @@ Power-bay controller: L1 power link
 
 Used in no machine. The L1 (:doc:`l1`) of an Origin 3000 rack polls the
 rack's power bay over a serial link, and ``sgi-pbay`` is the bay's end of
-that link. No machine instantiates it, and the L1 model has no power-bay
-UART to attach it to.
+that link. No machine instantiates it. The controller model's ``pbay``
+property (:ref:`sgi-l1-pbay`) takes the other end of the link.
 
 .. seealso::
 
@@ -293,10 +293,11 @@ Interface
 =========
 
 ``sgi-pbay`` is a plain device. Its ``chardev`` property names the
-character device the framed bytes travel on, joined to the L1's power-bay
-character device. ``flash-chunk``, ``state-code`` and ``input-snapshot``
-are described above. The read-only ``rx-len`` property exposes the bytes
-received of the current frame for tests.
+character device the framed bytes travel on, joined to the L1's ``pbay``
+character device. ``flash-chunk`` and ``state-code`` are described above.
+``input-snapshot`` and ``frame-status`` can also be set while the machine
+runs. The read-only ``rx-len`` property exposes the bytes received of the
+current frame for tests.
 
 Model limits
 ============
