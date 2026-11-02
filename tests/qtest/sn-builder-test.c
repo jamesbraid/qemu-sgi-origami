@@ -39,6 +39,7 @@
 #include "sgi-test.h"
 #include "sgi-migrate.h"
 #include "sgi-l1-test.h"
+#include "sgi-l1-l2-stub.h"
 
 static char *qom_get_str(QTestState *qts, const char *path, const char *prop)
 {
@@ -10616,6 +10617,137 @@ static void test_origin3400_two_partitions(void)
     g_unlink(prom);
 }
 
+static char *zero_prom_file(const char *pattern)
+{
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    char *prom = NULL;
+    int fd = g_file_open_tmp(pattern, &prom, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return prom;
+}
+
+/*
+ * controller-l2-chardev and controller-l2-partition-flag reach the L1 of the
+ * controller they name and no other. Controllers 0 and 1 of the
+ * two-partition Origin 3400 are the C-bricks' L1s, which node0 and node1 own.
+ */
+static void test_origin3400_l2_link_wiring(void)
+{
+    for (unsigned owner = 0; owner < 2; owner++) {
+        g_autofree char *prom = zero_prom_file("sn-builder-l2-prom-XXXXXX");
+        L2Stub *stub = l2_stub_listen();
+        g_autofree char *mine = g_strdup_printf("/machine/node%u/l1", owner);
+        g_autofree char *other = g_strdup_printf("/machine/node%u/l1",
+                                                 1 - owner);
+        QTestState *qts;
+
+        qts = qtest_initf("-chardev socket,id=l2a,path=%s "
+                          "-M origin3000,topology=origin3400-two-partitions,"
+                          "controller-l2-chardev.0=%u=l2a,"
+                          "controller-l2-partition-flag.0=%u=%u "
+                          "-cpu R12000 -smp 8 -m 8192 -bios %s -nodefaults "
+                          "-display none", stub->path, owner, owner,
+                          owner + 1, prom);
+        l2_stub_accept(stub);
+        for (unsigned i = 0; i < 10000 &&
+             !qom_get_bool(qts, mine, "l2-link-up"); i++) {
+            g_usleep(1000);
+        }
+        g_assert_true(qom_get_bool(qts, mine, "l2-link-up"));
+        g_assert_false(qom_get_bool(qts, other, "l2-link-up"));
+        g_assert_cmpuint(qom_get_uint(qts, mine, "l2-partition-flag"), ==,
+                         owner + 1);
+        g_assert_cmpuint(qom_get_uint(qts, other, "l2-partition-flag"), ==, 0);
+        qtest_quit(qts);
+        l2_stub_free(stub);
+        g_unlink(prom);
+    }
+}
+
+static void test_origin3400_l2_link_refusals(void)
+{
+    static const struct {
+        const char *input;
+        const char *message;
+    } cases[] = {
+        { "controller-l2-chardev.0=9=l2a", "does not take an L2 link" },
+        /* Controller 2 is an I-brick's L1, which the node does not build. */
+        { "controller-l2-chardev.0=2=l2a", "does not take an L2 link" },
+        { "controller-l2-partition-flag.0=9=1", "does not take an L2 link" },
+        { "controller-l2-chardev.0=0=missing", "does not exist" },
+        { "controller-l2-chardev.0=0/0=l2a", "invalid controller input" },
+        { "controller-l2-chardev.0=0=", "invalid controller input" },
+        { "controller-l2-chardev.0=0=l2a,controller-l2-chardev.1=0=l2b",
+          "duplicate controller input" },
+        { "controller-l2-chardev.0=0=l2a,controller-l2-chardev.1=1=l2a",
+          "controller inputs reuse" },
+        { "controller-l2-partition-flag.0=0=4", "from 0 to 3" },
+        { "controller-l2-partition-flag.0=0=x", "from 0 to 3" },
+        { "controller-l2-partition-flag.0=0=1,"
+          "controller-l2-partition-flag.1=0=2",
+          "duplicate controller input" },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *machine = g_strdup_printf(
+            "origin3000,topology=origin3400-two-partitions,%s",
+            cases[i].input);
+        const char *args[] = { qtest_qemu_binary(NULL), "-M", machine,
+            "-cpu", "R12000", "-smp", "8", "-m", "8192", "-nodefaults",
+            "-display", "none", "-chardev", "null,id=l2a", "-chardev",
+            "null,id=l2b", NULL };
+
+        assert_qemu_rejects(args, cases[i].message);
+    }
+}
+
+/*
+ * A link blocks migration, whether or not a peer is connected, and only the
+ * controller option brings the link: a machine without it migrates.
+ */
+static void test_origin3400_l2_link_migration_blocker(void)
+{
+    g_autofree char *prom = zero_prom_file("sn-builder-l2-block-prom-XXXXXX");
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn-builder-l2-block-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "l2.sock", NULL);
+    QTestState *qts;
+    QDict *reply;
+
+    g_assert_no_error(error);
+    qts = qtest_initf("-chardev socket,id=l2a,path=%s,server=on,wait=off "
+                      "-M origin3000,topology=origin3400-two-partitions,"
+                      "controller-l2-chardev.0=0=l2a "
+                      "-cpu R12000 -smp 8 -m 8192 -bios %s -nodefaults "
+                      "-display none", socket, prom);
+    reply = qtest_qmp(qts,
+        "{'execute':'migrate','arguments':{'uri':'unix:/nonexistent'}}");
+    g_assert_nonnull(strstr(qdict_get_str(qdict_get_qdict(reply, "error"),
+                                          "desc"), "L2 link"));
+    qobject_unref(reply);
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M origin3000,topology=origin3400-two-partitions "
+                      "-cpu R12000 -smp 8 -m 8192 -bios %s -nodefaults "
+                      "-display none", prom);
+    reply = qtest_qmp(qts,
+        "{'execute':'migrate','arguments':{'uri':'unix:/nonexistent'}}");
+    /* An unblocked migration starts and fails later, on the socket. */
+    if (qdict_haskey(reply, "error")) {
+        g_assert_null(strstr(qdict_get_str(qdict_get_qdict(reply, "error"),
+                                           "desc"), "L2 link"));
+    }
+    qobject_unref(reply);
+    qtest_quit(qts);
+    g_unlink(prom);
+    g_rmdir(dir);
+}
+
 /*
  * The catalogue's Onyx 3400 with InfiniteReality3: four C-bricks, an I-brick
  * on c0 and an N-brick on c1 to c3. Each I/O brick has a controller that
@@ -13956,6 +14088,12 @@ int main(int argc, char **argv)
                    test_origin3400_two_routers_cables);
     qtest_add_func("sn/builder/origin3400/two-partitions",
                    test_origin3400_two_partitions);
+    qtest_add_func("sn/builder/origin3400/l2-link/wiring",
+                   test_origin3400_l2_link_wiring);
+    qtest_add_func("sn/builder/origin3400/l2-link/refusals",
+                   test_origin3400_l2_link_refusals);
+    qtest_add_func("sn/builder/origin3400/l2-link/migration-blocker",
+                   test_origin3400_l2_link_migration_blocker);
     qtest_add_func("sn/builder/onyx3000/vbrick-l1-and-heads",
                    test_onyx3000_vbrick_l1_and_heads);
     qtest_add_func("sn/builder/origin3900/cx-brick",
