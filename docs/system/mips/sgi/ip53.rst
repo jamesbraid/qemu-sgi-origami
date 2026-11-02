@@ -109,9 +109,11 @@ Products
      - Node board
    * - ``origin350``
      - ``origin350``
-     - four R16000, 700 MHz, 4 MiB
+     - four R16000, 700 MHz, 4 MiB; or 800 MHz, 8 MiB with
+       ``processor=`` (:ref:`sgi-ip53-offerings`)
      - 2 GiB
-     - IP53 ``030-1868-001`` revision C
+     - IP53 ``030-1868-001`` revision C; ``030-1959-003`` revision C with
+       the 800 MHz part
    * - ``onyx350``
      - ``onyx350`` (must be named)
      - four R16000, 800 MHz, 8 MiB
@@ -119,11 +121,14 @@ Products
      - IP53 ``030-2013-001`` revision D
    * - ``tezro``
      - ``tezro``, ``tezro-rack`` (one must be named)
-     - one, two or four R16000, 700 MHz, 4 MiB; ``-smp`` picks the
-       :ref:`interface board <sgi-model-vocabulary>` on ``tezro``
+     - one, two or four R16000, 700 MHz, 4 MiB; or four R16000, 800 MHz,
+       4 or 8 MiB, with ``processor=`` (:ref:`sgi-ip53-offerings`);
+       ``-smp`` picks the :ref:`interface board <sgi-model-vocabulary>`
+       on ``tezro``
      - 4 GiB
      - IP53 ``030-1868-001`` or ``030-1869-001`` revision C on the
-       two/four-processor board; the L1's generic record on one
+       two/four-processor board, ``030-1956-002`` or ``030-1959-003``
+       revision C with an 800 MHz part; the L1's generic record on one
        processor
    * - ``onyx4-host``
      - ``onyx4-host`` (default)
@@ -156,6 +161,68 @@ names another revision. The Onyx 350 and the IP59 profiles keep
 A Bedrock has two processor interfaces with two processors each. The
 machine populates them diagonally: a two-processor node fits interface 0
 position A and interface 1 position A first (``sn1-topology.c``).
+
+.. _sgi-ip53-offerings:
+
+Processor offerings
+~~~~~~~~~~~~~~~~~~~
+
+An IP53 node board's processors are soldered to it, so each offering is
+a board's part with its own revision, cache, cache clock, reset word and
+flash word, not a free choice of clock and cache. The first offering of
+each machine is its default; ``processor=`` names another, and an offering
+that is not listed is refused with the ones that are.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Machine
+     - ``processor=``
+     - Part
+     - PRId
+     - Reset mode
+     - Flash word
+     - Node board
+   * - ``origin350``, ``tezro``
+     - default
+     - R16000 700 MHz, 4 MiB, cache at 350 MHz
+     - ``0x0f41``
+     - ``0x009bad85``
+     - ``0x589bad85``, tap ``0xc``
+     - ``030-1868-001``, ``030-1869-001``
+   * - ``tezro``
+     - ``r16000-800mhz-4mb-rev22``
+     - R16000 800 MHz, 4 MiB, cache at 400 MHz
+     - ``0x0f42``
+     - ``0x009baf85``
+     - ``0x549baf85``, tap ``0xa``
+     - ``030-1956-002``
+   * - ``origin350``, ``tezro``
+     - ``r16000-800mhz-8mb-rev22``
+     - R16000 800 MHz, 8 MiB, cache at 400 MHz
+     - ``0x0f42``
+     - ``0x009caf85``
+     - ``0x549caf85``, tap ``0xa``
+     - ``030-1959-003``
+
+The Origin 350 offers the 700 MHz and the 800 MHz, 8 MiB parts. The Tezro
+offers all three, on both its ``tezro`` and ``tezro-rack`` topologies;
+the 800 MHz boards are four-processor boards, so the one- and
+two-processor Tezro keeps its 700 MHz part. The id carries the revision
+because the Onyx 350's 800 MHz, 8 MiB part is revision 3.0
+(``0x0f50``), so the two share a clock and cache and not an id. An
+offering fits its board's flash word, the L1's node-board record and CPU
+context, the processor clock and the Config0 reset word together.
+
+Published inventories print each tuple with its part, cache clock and tap
+(*observed*). The PRId follows from the printed revision by the rule
+IRIX and the PROM apply to print it, major nibble the printed major plus
+2 (*inferred*). Each flash word is a row of the PROM's configuration
+table (rows 26, 20 and 21), which carries machine type 2 where the
+profiles store 0, and each reset word is its low 25 bits, a model
+derivation, not a measured value (*approximation*). The FPU
+identification stays ``0x0900``, the R12000 and R14000 value, a model
+choice no R16000 reading supports (*approximation*).
 
 .. _sgi-ip53-memory:
 
