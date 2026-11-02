@@ -6,6 +6,10 @@
 #include "qapi/error.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "system/address-spaces.h"
+#include "cpu.h"
 #include "system/qtest.h"
 #include "system/runstate.h"
 #include "system/tcg.h"
@@ -20,6 +24,112 @@ OBJECT_DECLARE_SIMPLE_TYPE(TCGIOLookupFixture, TCG_IO_RECOMPILE_FIXTURE)
 struct TCGIOLookupFixture {
     DeviceState parent_obj;
     uintptr_t old_pc;
+    MemoryRegion mmio;
+    uint64_t mmio_base;
+    uint64_t reads;
+    uint64_t acks;
+    uint32_t irq_after;
+    CPUState *cpu;
+};
+
+static uint64_t mmio_read(void *opaque, hwaddr addr, unsigned int size)
+{
+    TCGIOLookupFixture *s = opaque;
+
+    g_assert_cmphex(addr, ==, 0);
+    s->reads++;
+    if (s->reads == s->irq_after) {
+        qemu_set_irq(MIPS_CPU(s->cpu)->env.irq[2], 1);
+    }
+    return s->reads;
+}
+
+static void mmio_write(void *opaque, hwaddr addr, uint64_t value,
+                       unsigned int size)
+{
+    TCGIOLookupFixture *s = opaque;
+
+    g_assert_cmphex(addr, ==, 4);
+    s->acks++;
+    qemu_set_irq(MIPS_CPU(s->cpu)->env.irq[2], 0);
+}
+
+static const MemoryRegionOps mmio_ops = {
+    .read = mmio_read,
+    .write = mmio_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+};
+
+static bool stopped_test(Error **errp)
+{
+    if (!qtest_driver() || !tcg_enabled() || runstate_is_running()) {
+        error_setg(errp, "metadata control requires stopped qtest with TCG");
+        return false;
+    }
+    return true;
+}
+
+static void reset_io(Object *obj, bool value, Error **errp)
+{
+    TCGIOLookupFixture *s = TCG_IO_RECOMPILE_FIXTURE(obj);
+
+    if (!stopped_test(errp)) {
+        return;
+    }
+    if (value && s->cpu) {
+        s->reads = s->acks = 0;
+        qemu_set_irq(MIPS_CPU(s->cpu)->env.irq[2], 0);
+    }
+}
+
+static void flush(Object *obj, bool value, Error **errp)
+{
+    if (stopped_test(errp) && value) {
+        tb_flush__exclusive_or_serial();
+    }
+}
+
+static bool metadata_present(Object *obj, Error **errp)
+{
+    TCGIOLookupFixture *s = TCG_IO_RECOMPILE_FIXTURE(obj);
+
+    return stopped_test(errp) && s->cpu && s->cpu->tb_jmp_cache->io_tb;
+}
+
+static void realize(DeviceState *dev, Error **errp)
+{
+    TCGIOLookupFixture *s = TCG_IO_RECOMPILE_FIXTURE(dev);
+
+    if (s->mmio_base == UINT64_MAX) {
+        return;
+    }
+    if (!stopped_test(errp)) {
+        return;
+    }
+    s->cpu = qemu_get_cpu(0);
+    if (!s->cpu) {
+        error_setg(errp, "MMIO fixture requires CPU zero");
+        return;
+    }
+    memory_region_init_io(&s->mmio, OBJECT(s), &mmio_ops, s,
+                           "tcg-io-recompile-mmio", 0x1000);
+    memory_region_add_subregion(get_system_memory(), s->mmio_base, &s->mmio);
+}
+
+static void instance_init(Object *obj)
+{
+    TCGIOLookupFixture *s = TCG_IO_RECOMPILE_FIXTURE(obj);
+
+    object_property_add_uint64_ptr(obj, "reads", &s->reads, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "acks", &s->acks, OBJ_PROP_FLAG_READ);
+}
+
+static const Property properties[] = {
+    DEFINE_PROP_UINT64("mmio-base", TCGIOLookupFixture,
+                       mmio_base, UINT64_MAX),
+    DEFINE_PROP_UINT32("irq-after", TCGIOLookupFixture, irq_after, 0),
 };
 
 static TranslationBlock *allocate_tb(size_t size)
@@ -138,6 +248,12 @@ static void class_init(ObjectClass *oc, const void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     object_class_property_add_bool(oc, "exercise", NULL, exercise);
+    object_class_property_add_bool(oc, "reset-io", NULL, reset_io);
+    object_class_property_add_bool(oc, "flush", NULL, flush);
+    object_class_property_add_bool(oc, "metadata-present",
+                                   metadata_present, NULL);
+    dc->realize = realize;
+    device_class_set_props(dc, properties);
     dc->hotpluggable = false;
 }
 
@@ -146,6 +262,7 @@ static const TypeInfo fixture_type = {
     .parent = TYPE_DEVICE,
     .instance_size = sizeof(TCGIOLookupFixture),
     .class_init = class_init,
+    .instance_init = instance_init,
 };
 
 static void register_types(void)
