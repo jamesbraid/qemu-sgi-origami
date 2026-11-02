@@ -794,6 +794,7 @@ sgi_l1_eeprom(const char *profile, uint32_t component, uint32_t area, uint32_t o
 sgi_l1_cx_eeprom(uint32_t asked, uint32_t component) "asked=%u served component=%u"
 sgi_l1_read_query(const char *profile, uint16_t command) "profile=%s command=0x%04x"
 sgi_l1_o300_frame(bool reply, unsigned int transport, unsigned int length, const char *hex) "reply=%d transport=%u len=%u hex=%s"
+sgi_l1_l2_segment(const char *profile, bool to_l2, unsigned int length, const char *hex) "profile=%s to_l2=%d len=%u hex=%s"
 
 # DMA-only Hub buffers and the scalar packet fallback
 sgi_hub_ii_packet_access(uint64_t addr, unsigned size, bool write) "addr=0x%" PRIx64 " size=%u write=%d"
