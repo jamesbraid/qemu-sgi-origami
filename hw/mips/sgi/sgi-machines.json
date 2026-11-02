@@ -28773,8 +28773,7 @@
             ],
             "bridge-widget-revision": 3,
             "widget-id-64": 1275072621,
-            "widget-revision": 4,
-            "widget-status-f-measured": false
+            "widget-revision": 4
           },
           "id": "heart",
           "module-index": 0,
@@ -29463,8 +29462,7 @@
             ],
             "bridge-widget-revision": 4,
             "widget-id-64": 1811943533,
-            "widget-revision": 6,
-            "widget-status-f-measured": true
+            "widget-revision": 6
           },
           "id": "heart",
           "module-index": 0,

@@ -157,10 +157,11 @@ static void octane_heart_identity_check(QTestState *qts, bool octane2)
     g_assert_cmphex(word >> 28, ==, octane2 ? 6 : 4);
     g_assert_cmphex(word & 1, ==, 1);
     g_assert_cmpuint(memtx_readq(qts, HEART_WIDGET + 8, &wide), ==,
-                     octane2 ? MEMTX_OK : MEMTX_ERROR);
-    if (octane2) {
-        g_assert_cmphex(wide, ==, 0x60);
-    }
+                     MEMTX_OK);
+    g_assert_cmphex(wide, ==, 0x60);
+    g_assert_cmpuint(memtx_readl(qts, HEART_WIDGET + 0xc, &word), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(word, ==, 0x60);
 }
 
 static uint64_t octane_cpu_clock_period(QTestState *qts)
@@ -2078,30 +2079,32 @@ static void test_crossbow_measured_links(gconstpointer data)
     qtest_quit(qts);
 }
 
-static void test_octane2_heart_widget_status(void)
+static void test_heart_widget_status(void)
 {
     QTestState *qts = octane2_start_args("");
     uint64_t wide;
     uint32_t word;
 
-    g_assert_cmpuint(memtx_readq(qts, HEART_WIDGET + 0x08, &wide), ==,
-                     MEMTX_OK);
-    g_assert_cmphex(wide, ==, 0x60);
-    g_assert_cmpuint(memtx_readl(qts, HEART_WIDGET + 0x08, &word), !=,
-                     MEMTX_OK);
-    g_assert_cmpuint(memtx_readl(qts, HEART_WIDGET + 0x0c, &word), !=,
-                     MEMTX_OK);
-    g_assert_cmpuint(memtx_writeq(qts, HEART_WIDGET + 0x08, 0), !=,
-                     MEMTX_OK);
-    g_assert_cmpuint(memtx_writel(qts, HEART_WIDGET + 0x0c, 0), !=,
-                     MEMTX_OK);
-    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x08), ==, 0x60);
-    qtest_quit(qts);
-
-    qts = octane_start();
-    g_assert_cmpuint(memtx_readq(qts, HEART_WIDGET + 0x08, &wide), !=,
-                     MEMTX_OK);
-    qtest_quit(qts);
+    /* Measured on an Octane2; the Octane answers the same by model choice. */
+    for (int first = 1; first >= 0; first--) {
+        g_assert_cmpuint(memtx_readq(qts, HEART_WIDGET + 0x08, &wide), ==,
+                         MEMTX_OK);
+        g_assert_cmphex(wide, ==, 0x60);
+        g_assert_cmpuint(memtx_readl(qts, HEART_WIDGET + 0x0c, &word), ==,
+                         MEMTX_OK);
+        g_assert_cmphex(word, ==, 0x60);
+        g_assert_cmpuint(memtx_readl(qts, HEART_WIDGET + 0x08, &word), !=,
+                         MEMTX_OK);
+        g_assert_cmpuint(memtx_writeq(qts, HEART_WIDGET + 0x08, 0), !=,
+                         MEMTX_OK);
+        g_assert_cmpuint(memtx_writel(qts, HEART_WIDGET + 0x0c, 0), !=,
+                         MEMTX_OK);
+        g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x08), ==, 0x60);
+        qtest_quit(qts);
+        if (first) {
+            qts = octane_start();
+        }
+    }
 }
 
 static void test_flash_and_pci(void)
@@ -6549,8 +6552,7 @@ int main(int argc, char **argv)
                         test_heart_identity);
     qtest_add_data_func("/octane2/heart-identity", GINT_TO_POINTER(1),
                         test_heart_identity);
-    qtest_add_func("/octane2/heart-widget-status",
-                   test_octane2_heart_widget_status);
+    qtest_add_func("/octane/heart-widget-status", test_heart_widget_status);
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
     qtest_add_data_func("/octane/bridge-status-strap", GINT_TO_POINTER(0),
                         test_bridge_status_strap);

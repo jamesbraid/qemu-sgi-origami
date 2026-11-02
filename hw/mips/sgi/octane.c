@@ -700,9 +700,6 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
                          s->node->heart->widget_revision);
     qdev_prop_set_uint64(heart, "widget-id-64",
                         s->node->heart->widget_id_64);
-    if (s->node->heart->widget_status_f_measured) {
-        qdev_prop_set_bit(heart, "widget-status-f-measured", true);
-    }
     if (!object_property_set_link(OBJECT(heart), "cpu-memory",
                                   OBJECT(physical), errp) ||
         !sysbus_realize(SYS_BUS_DEVICE(heart), errp) ||
