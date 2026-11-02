@@ -47,7 +47,26 @@
 #define HEART_ECC_GENERATION (HEART_ECC_GENERATE | HEART_ECC_DOUBLE)
 /* Bit zero tags double-bit poison; backing-word keys are eight-byte aligned. */
 #define HEART_ECC_KEY(word) ((word) & ~7ULL)
-#define HEART_ECC_PENDING (1ULL << 63)
+/* Pending bit 63, HEART's own exception (Linux heart.h). */
+#define HEART_EXCEPTION (1ULL << 63)
+/* Cause bit 16 summarises a widget error (Octane ide transcript). */
+#define HEART_CAUSE_WIDGET_ERROR (1ULL << 16)
+/*
+ * Widget error type bits for a processor request no widget answered: bit
+ * 3 a PIO read time-out, as SGI's Octane ide reference guide
+ * (108-0217-002, printed page A-3) shows for a read of an empty widget,
+ * and bit 2 a PIO write time-out, inferred from the IRIX error report's
+ * names for the bits.
+ */
+#define HEART_WIDGET_ERROR_WRITE_TIMEOUT (1ULL << 2)
+#define HEART_WIDGET_ERROR_READ_TIMEOUT (1ULL << 3)
+/*
+ * The processor reaches widget w's small window at 0x10000000 + (w << 24)
+ * and its large window at w << 36.
+ */
+#define HEART_SMALL_WINDOW_BASE 0x10000000ULL
+#define HEART_SMALL_WINDOW_SPAN (16 * MiB)
+#define HEART_LARGE_WINDOW_SPAN (1ULL << 36)
 
 /* Revision F: the revision the reference Octane2's words come from. */
 #define HEART_REVISION_F 6
@@ -146,8 +165,15 @@ static bool heart_level4(SGIHeartState *s, unsigned int processor)
 {
     uint64_t enabled = s->pending & s->mask[processor];
 
-    if (!(s->mode & HEART_INTERRUPT_ENABLE)) {
-        enabled &= ~HEART_ECC_PENDING;
+    /*
+     * Mode bit 13 gates bit 63 as the memory-error report raises it. A
+     * widget error's bit 63 ignores the mode bit, an approximation: the
+     * PROM sets bit 13 before any guest runs here, so whether HEART gates
+     * a widget error by it is unknown. If it does, a guest that clears
+     * the bit would see no interrupt where the model raises one.
+     */
+    if (!(s->mode & HEART_INTERRUPT_ENABLE) && !s->exception_from_widget) {
+        enabled &= ~HEART_EXCEPTION;
     }
     return enabled & HEART_LEVEL4_MASK;
 }
@@ -209,10 +235,25 @@ static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
      * does on every revision here; that revision 4 answers it the same way
      * is inferred.
      */
-    if (size == 8 && (offset == 0x10 || offset == 0x60 || offset == 0x70 ||
-                      offset == 0x78 || offset == 0x90)) {
+    if (size == 8 && offset == 0x10) {
         *value = 0;
         return MEMTX_OK;
+    }
+    if (size == 8) {
+        switch (offset) {
+        case 0x60:
+            *value = s->widget_error_type;
+            return MEMTX_OK;
+        case 0x70:
+            *value = s->pio_error_upper;
+            return MEMTX_OK;
+        case 0x78:
+            *value = s->pio_error_lower;
+            return MEMTX_OK;
+        case 0x90:
+            *value = s->pio_read_timeout;
+            return MEMTX_OK;
+        }
     }
     if (offset == 0x68 && size == 8) {
         *value = s->widget_error_mask;
@@ -242,8 +283,21 @@ static MemTxResult heart_widget_write(void *opaque, hwaddr offset,
     if (offset == 0x44 && size == 4 && value == 0) {
         return MEMTX_OK;
     }
+    /*
+     * The guarded widget probe stores a doubleword zero here. Nothing
+     * reads it back, so it is accepted and dropped. Other widths and
+     * values are unknown and stay unimplemented.
+     */
+    if (offset == 0x40 && size == 8 && value == 0) {
+        return MEMTX_OK;
+    }
     if (offset == 0x60 && size == 8) {
-        /* No widget error producer exists in this model. */
+        /*
+         * Write-one-to-clear, inferred: the PROM writes every recognised
+         * bit here after probing and IRIX writes back what it read.
+         * Clearing a time-out bit re-arms its address latch.
+         */
+        s->widget_error_type &= ~value;
         return MEMTX_OK;
     }
     if (offset == 0x68 && size == 8) {
@@ -350,6 +404,9 @@ static MemTxResult heart_packet_write(void *opaque, hwaddr offset,
         s->pending |= 1ULL << vector;
     } else {
         s->pending &= ~(1ULL << vector);
+        if (vector == 63) {
+            s->exception_from_widget = false;
+        }
     }
     trace_sgi_heart_packet(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), value,
                            old_pending, s->pending, s->mask[0]);
@@ -641,8 +698,8 @@ static MemTxResult heart_ecc_access(SGIHeartState *s, hwaddr offset,
                     ((poisoned == 2 ? 0x30ULL : 0x13ULL) << 34) |
                     ((uint64_t)(requester & 3) << 43);
                 s->ecc_data = *value ^ (poisoned == 2 ? 3 : 1);
-                s->ecc_cause |= poisoned == 2 ? 2 : 1;
-                s->pending |= HEART_ECC_PENDING;
+                s->cause |= poisoned == 2 ? 2 : 1;
+                s->pending |= HEART_EXCEPTION;
                 heart_update_irq(s);
             }
             if (poisoned == 2 && (s->mode & HEART_ECC_ENABLE)) {
@@ -904,7 +961,7 @@ static uint64_t heart_read(void *opaque, hwaddr offset, unsigned size)
                                    size != 8 ? 0 :
                                    offset == 0x00 ? s->mode :
                                    offset == 0x98 ? s->ecc_address :
-                                   offset == 0xa0 ? s->ecc_data : s->ecc_cause);
+                                   offset == 0xa0 ? s->ecc_data : s->cause);
     }
 
     if (offset >= 0x20 && offset < 0x40) {
@@ -937,7 +994,7 @@ static uint64_t heart_read(void *opaque, hwaddr offset, unsigned size)
         case 0x80: return heart_status(s);
         case 0x98: return s->ecc_address;
         case 0xa0: return s->ecc_data;
-        case 0x10040: return s->ecc_cause;
+        case 0x10040: return s->cause;
         case 0xb0: return s->clock_divider;
         case 0x10000 ... 0x10018:
             if (!(offset & 7)) {
@@ -1014,7 +1071,7 @@ static MemTxResult heart_write(void *opaque, hwaddr offset, uint64_t value,
             heart_update_irq(s);
             return MEMTX_OK;
         case 0x10040:
-            s->ecc_cause &= ~value;
+            s->cause &= ~value;
             return MEMTX_OK;
         case 0x08:
             s->sdram_mode = value;
@@ -1061,6 +1118,9 @@ static MemTxResult heart_write(void *opaque, hwaddr offset, uint64_t value,
                                           offset, value, s->pending,
                                           s->pending & ~value, s->mask[0]);
             s->pending &= ~value;
+            if (value & HEART_EXCEPTION) {
+                s->exception_from_widget = false;
+            }
             heart_update_irq(s);
             return MEMTX_OK;
         default:
@@ -1086,7 +1146,7 @@ static void heart_reset_enter(Object *obj, ResetType type)
     SGIHeartState *s = SGI_HEART(obj);
 
     s->ecc_word_count = 0;
-    s->ecc_cause = 0;
+    s->cause = 0;
     s->ecc_address = 0;
     s->ecc_data = 0;
     s->mode = s->widget_revision == HEART_REVISION_F ? HEART_MODE_RESET_F : 0;
@@ -1104,6 +1164,11 @@ static void heart_reset_enter(Object *obj, ResetType type)
     s->widget_control = 0;
     s->widget_request_timeout = 0;
     s->widget_error_mask = 0;
+    s->widget_error_type = 0;
+    s->pio_error_upper = 0;
+    s->pio_error_lower = 0;
+    s->pio_read_timeout = 0;
+    s->exception_from_widget = false;
     s->counter_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     timer_del(s->onewire_timer);
     s->onewire_control = 0;
@@ -1181,7 +1246,7 @@ static const VMStateDescription vmstate_heart = {
         VMSTATE_UINT32(ecc_word_count, SGIHeartState),
         VMSTATE_VARRAY_UINT32_ALLOC(ecc_words, SGIHeartState, ecc_word_count,
                                    0, vmstate_info_uint64, uint64_t),
-        VMSTATE_UINT64(ecc_cause, SGIHeartState),
+        VMSTATE_UINT64(cause, SGIHeartState),
         VMSTATE_UINT64(ecc_address, SGIHeartState),
         VMSTATE_UINT64(ecc_data, SGIHeartState),
         VMSTATE_UINT64(mode, SGIHeartState),
@@ -1198,6 +1263,11 @@ static const VMStateDescription vmstate_heart = {
         VMSTATE_UINT32(widget_control, SGIHeartState),
         VMSTATE_UINT32(widget_request_timeout, SGIHeartState),
         VMSTATE_UINT32(widget_error_mask, SGIHeartState),
+        VMSTATE_UINT64(widget_error_type, SGIHeartState),
+        VMSTATE_UINT64(pio_error_upper, SGIHeartState),
+        VMSTATE_UINT64(pio_error_lower, SGIHeartState),
+        VMSTATE_UINT64(pio_read_timeout, SGIHeartState),
+        VMSTATE_BOOL(exception_from_widget, SGIHeartState),
         VMSTATE_UINT64(onewire_control, SGIHeartState),
         VMSTATE_INT64(onewire_remaining_ns, SGIHeartState),
         VMSTATE_BOOL(onewire_level, SGIHeartState),
@@ -1334,6 +1404,83 @@ static MemoryRegion *heart_xtalk_packet_face(Object *port,
     return &SGI_HEART(port)->packet;
 }
 
+/*
+ * The Crossbow dropped a processor request HEART sent out of widget 8, to
+ * an empty or dead port, an illegal widget or HEART's own port: no
+ * response will come, so HEART's request timer is what reports it. A
+ * read's time-out is also a bus error, which the Crossbow's failed
+ * transaction already gives the processor. A store is posted at the
+ * processor and completes. On both, HEART sets its time-out bit in the
+ * widget error type, latches where the request went, sets cause bit 16
+ * and, if the type bit is enabled in the error mask at 0x68, pending bit
+ * 63. SGI's Octane ide reference guide (108-0217-002, printed page A-3)
+ * shows a read of empty widget 13 leaving type 0x8, cause 0x10000,
+ * pending bit 63 and 0xd000 in 0x90. The field layouts of 0x70, 0x78 and
+ * 0x90 are inferred from how IRIX decodes them: 0x70 holds address bits
+ * 39:32 and the processor in bits 23:22, 0x78 address bits 31:0, and 0x90
+ * the processor in bits 19:18, the widget in 15:12 and offset bits 23:12
+ * in 11:0.
+ *
+ * Three approximations, each with a qtest that fails without it:
+ *
+ * - No report delay. HEART's time-out interval is unknown; IRIX's
+ *   guarded store probe sees cause bit 16 after a few register reads and
+ *   a sync, so the report is visible by then on hardware. The model
+ *   reports while the request is dropped, which is never too late and
+ *   may be early.
+ * - The first error is held. A second time-out of the same kind before
+ *   the guest clears its type bit leaves the latched address alone;
+ *   hardware may overwrite it instead, and no source says which.
+ * - The error mask enables pending bit 63 only. The type bit and cause
+ *   bit 16 latch whatever the mask holds, inferred from the mask's name.
+ *
+ * The processor number is the requester's, as for the memory-error
+ * record; with one processor fitted it is zero. The Crossbow passes the
+ * request's XIO address, not which window the processor used: an offset
+ * the small window can hold is taken as a small-window access, the rest
+ * as the large window's. A large-window access with an offset under 16
+ * MiB to a link that went down would be latched with its small-window
+ * address. Bit 15 of 0x70, a read-or-write flag of unknown sense, stays
+ * clear.
+ */
+static void heart_xtalk_request_dropped(Object *port, unsigned int index,
+                                        hwaddr addr, bool write)
+{
+    SGIHeartState *s = SGI_HEART(port);
+    unsigned int widget = extract64(addr, SGI_XIO_PACKET_ADDRESS_BITS, 4);
+    uint64_t offset = extract64(addr, 0, SGI_XIO_PACKET_ADDRESS_BITS);
+    uint64_t processor = (current_cpu ? current_cpu->cpu_index : 0) & 3;
+    uint64_t type = write ? HEART_WIDGET_ERROR_WRITE_TIMEOUT :
+                            HEART_WIDGET_ERROR_READ_TIMEOUT;
+
+    if (!(s->widget_error_type & type)) {
+        if (write) {
+            uint64_t physical = offset < HEART_SMALL_WINDOW_SPAN ?
+                HEART_SMALL_WINDOW_BASE +
+                (uint64_t)widget * HEART_SMALL_WINDOW_SPAN + offset :
+                ((uint64_t)widget * HEART_LARGE_WINDOW_SPAN) |
+                (offset & (HEART_LARGE_WINDOW_SPAN - 1));
+
+            s->pio_error_upper = extract64(physical, 32, 8) |
+                                 (processor << 22);
+            s->pio_error_lower = (uint32_t)physical;
+        } else {
+            s->pio_read_timeout = (processor << 18) | (widget << 12) |
+                                  extract64(offset, 12, 12);
+        }
+    }
+    s->widget_error_type |= type;
+    s->cause |= HEART_CAUSE_WIDGET_ERROR;
+    if (s->widget_error_mask & type) {
+        s->pending |= HEART_EXCEPTION;
+        s->exception_from_widget = true;
+    }
+    trace_sgi_heart_request_dropped(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                    write, widget, offset,
+                                    s->widget_error_type, s->pending);
+    heart_update_irq(s);
+}
+
 static void heart_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -1350,6 +1497,7 @@ static void heart_class_init(ObjectClass *klass, const void *data)
     pc->describe = heart_xtalk_describe;
     pc->cpu_face = heart_xtalk_cpu_face;
     pc->packet_face = heart_xtalk_packet_face;
+    pc->request_dropped = heart_xtalk_request_dropped;
 }
 
 static const TypeInfo heart_info = {
