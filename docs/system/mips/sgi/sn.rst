@@ -783,6 +783,9 @@ offering also asks launchers without a display to pass
 Origin 2000 module's dialogue, console and disk bus, since they are
 built on the same IP27 node boards and stock PROM.
 
+A CD-ROM on the bus reports a vendor and product text that the stock
+PROMs and IRIX treat as set out in :ref:`sgi-cdrom-identity`.
+
 The install media list ``netboot`` where the harness installs IRIX by
 booting the miniroot over the netboot adapter from an install server,
 the PROM's "Install System Software" from a remote directory. The IRIX
