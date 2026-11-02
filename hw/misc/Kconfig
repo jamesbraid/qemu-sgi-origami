@@ -366,6 +366,10 @@ config SGI_L1
     bool
     default y if SGI_DEVICES
 
+config SGI_PBAY
+    bool
+    default y if SGI_DEVICES
+
 config SGI_BEDROCK_NI
     bool
     default y if SGI_DEVICES

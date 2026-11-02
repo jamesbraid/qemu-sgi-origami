@@ -1612,6 +1612,7 @@ F: tests/qtest/l1-bic-startup-fixture.c
 F: tests/qtest/sn1-l1-test.c
 F: tests/qtest/sgi-l1-o3k-test.c
 F: tests/qtest/sgi-l1-cxbrick-test.c
+F: tests/qtest/sgi-pbay-test.c
 F: tests/qtest/sgi-l1-l2-stub.h
 F: contrib/plugins/sgi-l2-shim.c
 F: tests/sgi-l2/

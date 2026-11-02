@@ -311,6 +311,7 @@ hw/misc/sgi-mgras.c
 hw/misc/sgi-odyssey-native-mesa.c
 hw/misc/sgi-odyssey-planes.c
 hw/misc/sgi-odyssey.c
+hw/misc/sgi-pbay.c
 hw/misc/sgi-pio-forward.c
 hw/misc/sgi-router.c
 hw/misc/sgi-xbow.c
@@ -401,6 +402,7 @@ include/hw/misc/sgi-odyssey-native-mesa.h
 include/hw/misc/sgi-odyssey-planes.h
 include/hw/misc/sgi-odyssey.h
 include/hw/misc/sgi-onewire-slot.h
+include/hw/misc/sgi-pbay.h
 include/hw/misc/sgi-pio-forward.h
 include/hw/misc/sgi-router.h
 include/hw/misc/sgi-xbow.h
@@ -864,6 +866,7 @@ tests/qtest/sgi-mips-emit.h
 tests/qtest/sgi-o2-rom-test.c
 tests/qtest/sgi-o2-test-groups.txt
 tests/qtest/sgi-o2-test.c
+tests/qtest/sgi-pbay-test.c
 tests/qtest/sgi-pci-expansion-ni-fixture.c
 tests/qtest/sgi-pci-expansion-ni-test.c
 tests/qtest/sgi-pic-test.c
