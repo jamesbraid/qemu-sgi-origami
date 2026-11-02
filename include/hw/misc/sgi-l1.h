@@ -198,6 +198,7 @@ struct SGIL1State {
     uint8_t l2_chain_tag;
     uint8_t l2_chain_left;
     bool l2_chain_first;
+    Error *l2_blocker;
     qemu_irq node_power_out;
     qemu_irq node_reset_out;
     qemu_irq soft_reset_out;

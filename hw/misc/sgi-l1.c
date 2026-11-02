@@ -13,6 +13,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/resettable.h"
+#include "migration/blocker.h"
 #include "migration/vmstate.h"
 #include "net/util.h"
 #include "qapi/error.h"
@@ -6019,6 +6020,12 @@ fuel_mac_done:
                              s, NULL, true);
     s->l2_chain_tag = L1_L2_CHAIN_NONE;
     if (qemu_chr_fe_backend_connected(&s->l2_chr)) {
+        /* The peer's state is outside the machine, so is not saved. */
+        error_setg(&s->l2_blocker,
+                   "sgi-l1: migration is not supported with an L2 link");
+        if (migrate_add_blocker(&s->l2_blocker, errp) < 0) {
+            return;
+        }
         qemu_chr_fe_set_handlers(&s->l2_chr, l1_l2_can_receive,
                                  l1_l2_receive, l1_l2_event, NULL, s, NULL,
                                  true);
@@ -6628,6 +6635,9 @@ static void l1_finalize(Object *obj)
     SGIL1State *s = SGI_L1(obj);
 
     l1_controllers = g_slist_remove(l1_controllers, s);
+    if (s->l2_blocker) {
+        migrate_del_blocker(&s->l2_blocker);
+    }
     if (s->power_up_bh) {
         qemu_unregister_reset(l1_after_node_reset, s);
         qemu_bh_delete(s->power_up_bh);
