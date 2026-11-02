@@ -1232,11 +1232,19 @@ static uint32_t l1_l2_source(const SGIL1State *s, unsigned tag)
     return (key << 12) | (tag << 5) | L1_L2_TASK;
 }
 
+/* The rack and bay a trace names the controller by; all ones when unset. */
+static void l1_trace_name(const SGIL1State *s, unsigned *rack, unsigned *bay)
+{
+    *rack = l1_named(s) ? s->rack : 0xffff;
+    *bay = l1_named(s) ? s->bay : 0xffff;
+}
+
 static void l1_l2_trace_segment(const SGIL1State *s, bool to_l2,
                                 const uint8_t *segment, unsigned length)
 {
     static const char digits[] = "0123456789abcdef";
     g_autofree char *hex = NULL;
+    unsigned rack, bay;
 
     if (!trace_event_get_state_backends(TRACE_SGI_L1_L2_SEGMENT)) {
         return;
@@ -1247,7 +1255,8 @@ static void l1_l2_trace_segment(const SGIL1State *s, bool to_l2,
         hex[i * 2 + 1] = digits[segment[i] & 0xf];
     }
     hex[length * 2] = 0;
-    trace_sgi_l1_l2_segment(s->profile->name, to_l2, length, hex);
+    l1_trace_name(s, &rack, &bay);
+    trace_sgi_l1_l2_segment(s->profile->name, rack, bay, to_l2, length, hex);
 }
 
 static void l1_l2_send(SGIL1State *s, const uint8_t *segment, unsigned length)
