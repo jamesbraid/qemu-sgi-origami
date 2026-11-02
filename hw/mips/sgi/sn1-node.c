@@ -2044,9 +2044,11 @@ static bool sn1_node_validate_processors(SN1NodeState *node,
         uint32_t prid = sn1_cpu_processor(node->model_node, i)->prid;
 
         /*
-         * 0x0f14 is the 500 MHz C-brick part: established for the part
-         * revision (Linux prints it on Origin-class machines, IP35 hinv
-         * prints 1.4), never read raw on a C-brick.
+         * 0x0f14 and 0x0f24 are the 500 and 600 MHz C-brick parts: each
+         * established for the part revision (Linux prints it on
+         * Origin-class machines, IP35 hinv prints 1.4 and 2.4), never read
+         * raw on a C-brick. 0x0f23, the other revision the 600 MHz parts
+         * print, is inferred.
          */
         if (prid != 0x0f14 && prid != 0x0f23 && prid != 0x0f24) {
             error_setg(errp, TYPE_SGI_SN1_NODE " processor %u has unsupported "

@@ -11385,8 +11385,12 @@ static void test_cbrick_r16000_refuses_the_r12000(void)
  * The 600 MHz R14000 C-brick is the captured 030-1734-00x PIMM: 600 MHz,
  * 8 MiB per processor, cache clock 300 MHz. Each C-brick topology fits it
  * with the low 25 bits of the PROM's class-0 600 MHz word, 0x549cab85, whose
- * SS field gives the 8 MiB cache and whose PRId is the revision 2.4 one. The
- * reset word is an approximation: no C-brick's has been captured.
+ * SS field gives the 8 MiB cache (established by capture). PRId 0x0f24 is
+ * established for the part revision 2.4, never read raw on a C-brick; the
+ * captured parts also print 2.3, which the model does not use. The reset
+ * word (Config0 reads 0x6c9cab85) is inferred and an approximation: no
+ * C-brick's has been captured. The FPU identification is the R14000 type's
+ * 0x00000900 (inferred).
  */
 static void test_cbrick_r14000_600mhz(void)
 {

@@ -324,8 +324,9 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
 
     def test_a_c_brick_r14000_agrees_with_its_board(self):
         # The captured 030-1734-00x PIMM: 600 MHz R14000, 8 MB, Tap 0xa
-        # (cbrick.md, the PIMM captures); the stock PROM's class-0 row for
-        # board nibble 3 is 0x549cab85, whose low 25 bits are the reset word.
+        # (established by capture); the stock PROM's class-0 row for board
+        # nibble 3 is 0x549cab85, whose low 25 bits are the reset word
+        # (inferred: no C-brick Config0 has been read).
         model = {"composition": {"product": "origin3200-r14000-600mhz"},
                  "machine": {"board_ip": "IP35", "emulation": {
                      "ip35_firmware": {"machine_type": 0,

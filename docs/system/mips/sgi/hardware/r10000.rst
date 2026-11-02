@@ -145,7 +145,10 @@ to PRId leaves it unchanged.
 
 The FPU implementation and revision register (CP1 control register 0) is
 ``0x00000900`` on the R10000, R14000 and R16000: implementation ``0x09``,
-revision 0. The R12000 takes its word from ``r12000-fpu-id`` with no
+revision 0. For the R14000 in the 500 and 600 MHz C-brick entries the value
+is *inferred*: a raw FIR is established only for a revision 2.4 on an
+Octane, none has been read on an IP35, and the revision is not derived from
+the PRId. The R12000 takes its word from ``r12000-fpu-id`` with no
 check. The NEC manual labels its implementation-``0x09`` example as
 R10000 and leaves the revision open
 :src:`nec-vr10000-series-um-4 PDF p. 281`, so the R10000 value is not

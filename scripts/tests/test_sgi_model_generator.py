@@ -1285,9 +1285,10 @@ class FuelTests(unittest.TestCase):
                               if slot["assembly"]]
                 self.assertEqual({a["kind"] for a in assemblies},
                                  {"R14000"})
-                # Reset word: the low 25 bits of the flash word, SS field 4
-                # (8 MiB); PRId 0x0f24, the revision 2.4 a captured PIMM
-                # prints.
+                # Reset word (inferred): the low 25 bits of the flash word,
+                # SS field 4 (8 MiB, established by capture); PRId 0x0f24,
+                # established for the part revision 2.4 a captured PIMM
+                # prints, never read raw on a C-brick.
                 self.assertEqual({a["mode-bits"] for a in assemblies},
                                  {0x009cab85})
                 self.assertEqual({a["prid"] for a in assemblies}, {0x0f24})
