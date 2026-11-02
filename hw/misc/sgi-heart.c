@@ -237,13 +237,20 @@ static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
         return MEMTX_OK;
     }
     /*
-     * A 64-bit read at 0x10 spans the error upper address word. It reads
-     * zero on the reference Octane2's revision F, as the 32-bit view at 0x14
-     * does on every revision here; that revision 4 answers it the same way
-     * is inferred.
+     * The Crossbow datasheet places each common widget register on an
+     * eight-byte boundary with its data in bits 31:0, reached by a
+     * double-word packet.
+     * The 64-bit forms at 0x00, 0x08 and 0x28 are measured on an Octane2
+     * (HEART F) and handled above. For the other common slots (0x10, 0x18,
+     * 0x20, 0x30, 0x38, 0x40, 0x48, 0x50) no 64-bit read was measured: an
+     * 8-byte read returns the 32-bit register zero-extended. That is an
+     * approximation inferred from the slot layout, not a hardware claim.
+     * Registers with no modelled state read zero.
      */
-    if (size == 8 && offset == 0x10) {
-        *value = 0;
+    if (size == 8 && (offset == 0x10 || offset == 0x18 || offset == 0x20 ||
+                      offset == 0x30 || offset == 0x38 || offset == 0x40 ||
+                      offset == 0x48 || offset == 0x50)) {
+        *value = offset == 0x20 ? s->widget_control : 0;
         return MEMTX_OK;
     }
     if (size == 8) {

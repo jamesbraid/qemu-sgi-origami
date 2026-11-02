@@ -325,18 +325,25 @@ fails the transaction and logs ``LOG_UNIMP``.
      - The 64-bit read of ``0x08`` is the status zero-extended and the
        32-bit read of ``0x0c`` is its low word. A 32-bit read of
        ``0x08`` fails.
-   * - ``0x10``
-     - Error address upper, 64-bit view
+   * - ``0x10``, ``0x18``, ``0x30``, ``0x38``, ``0x48``, ``0x50``
+     - Error address upper and lower, interrupt destination upper and
+       lower, link configuration, flush
      - 64
      - ``0``
      - read-only
-     - Constant zero.
+     - Constant zero; see the note on 64-bit reads below.
    * - ``0x14``, ``0x1c``
      - Error address upper and lower
      - 32
      - ``0``
      - read-only
      - Constant zero.
+   * - ``0x20``
+     - Control, 64-bit view
+     - 64
+     - control word
+     - read-only
+     - The control word zero-extended; see the note on 64-bit reads below.
    * - ``0x24``
      - Control
      - 32
@@ -350,11 +357,11 @@ fails the transaction and logs ``LOG_UNIMP``.
      - read/write
      - One 32-bit word in both views.
    * - ``0x40``
-     - Probe store
+     - Probe store; error command word, 64-bit view
      - 64
-     - n/a
+     - ``0``
      - write zero only
-     - The widget probe's doubleword zero store completes and is dropped. Other widths, other values and reads are unimplemented.
+     - The widget probe's doubleword zero store completes and is dropped. A 64-bit read is constant zero; see the note on 64-bit reads below. Other widths, other values and 32-bit reads are unimplemented.
    * - ``0x44``
      - Error command word
      - 32
@@ -385,6 +392,20 @@ fails the transaction and logs ``LOG_UNIMP``.
      - ``0``
      - read-only
      - Where a dropped read went.
+
+The Crossbow datasheet places each common widget register on an eight-byte
+boundary with its data in bits 31:0, and allows access only by a :term:`Crosstalk`
+double-word packet. A 64-bit read of the ID (``0x00``), status (``0x08``)
+and request timeout (``0x28``) slots is *established* for one initialized
+Octane2 with HEART revision F (``0x6c00106d``, ``0x60`` and ``0x28``).
+The 64-bit reads of the other common slots (``0x10``, ``0x18``, ``0x20``,
+``0x30``, ``0x38``, ``0x40``, ``0x48``, ``0x50``) were not measured. The
+model answers them with the 32-bit register zero-extended, and zero where
+it holds no register. That is an *inferred* approximation from the slot
+layout, not a hardware claim. The block ends at ``0x58``. A 64-bit read
+at ``0x58`` and a 32-bit read of a low word not listed above fail. Any
+64-bit write to these slots fails other than a zero store to ``0x40``,
+which succeeds and is dropped.
 
 The stock 6.5.30 diagnostic's register test saves, writes six masked
 patterns to, compares and restores widget ``0x28`` and ``0x68`` and
