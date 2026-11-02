@@ -2549,8 +2549,12 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
             s->pending_rack_valid = true;
             l1_printf(s, "brick rack set to %03lu (takes effect on next "
                       "L1 reboot/power cycle)\r\n", value);
-        } else if (s->profile->o3k && argc == 3 &&
-                   !strcmp(argv[1], "partition") &&
+        } else if (argc == 3 && !strcmp(argv[1], "partition") &&
+                   !strcmp(argv[2], "none")) {
+            /* The L1 sheet's brick setter: "none" clears the stored ID. */
+            s->pending_partition = 0;
+            l1_printf(s, "brick partition cleared.\r\n");
+        } else if (argc == 3 && !strcmp(argv[1], "partition") &&
                    !qemu_strtoul(argv[2], NULL, 10, &value) &&
                    value <= 0xffff) {
             s->pending_partition = value;

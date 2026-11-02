@@ -2948,6 +2948,34 @@ static void test_o300_console_brick(void)
 }
 
 /*
+ * L1 datasheet, brick: "partition none|<n>" is accepted by the Origin 300
+ * console too, and "none" answers "brick partition cleared.". The change
+ * applies at the next L1 boot, like the rack and slot setters.
+ */
+static void test_o300_console_brick_partition(void)
+{
+    g_autofree char *reply = NULL;
+    int fd;
+    QTestState *s = console_start(&fd, ",partition=3,auto-power=off", "");
+
+    reply = env_run(fd, "brick partition 9");
+    g_assert_cmpstr(reply, ==,
+                    "brick partition set to 9 (takes effect on next "
+                    "L1 reboot/power cycle)\r\n");
+    g_free(reply);
+    reply = env_run(fd, "brick");
+    g_assert_nonnull(strstr(reply, "partition: 3,"));
+    g_free(reply);
+    reply = env_run(fd, "brick partition none");
+    g_assert_cmpstr(reply, ==, "brick partition cleared.\r\n");
+    g_free(reply);
+    reply = env_run(fd, "brick partition bogus");
+    g_assert_nonnull(strstr(reply, "invalid"));
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
  * L1 datasheet, "brick": no letter precedes the type name; the 2MB image
  * prints [2MB flash]; the source is EEPROM; a brick with no board-record
  * serial prints the C library's "(null)" (inferred).
@@ -8520,6 +8548,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/env/unmodelled", test_env_unmodelled);
     qtest_add_func("sn1/l1/chimera/brick", test_chimera_brick);
     qtest_add_func("sn1/l1/o300/console-brick", test_o300_console_brick);
+    qtest_add_func("sn1/l1/o300/console-brick-partition",
+                   test_o300_console_brick_partition);
     qtest_add_func("sn1/l1/chimera/config", test_chimera_config);
     qtest_add_func("sn1/l1/chimera/serial-all", test_chimera_serial_all);
     qtest_add_func("sn1/l1/env/on-off", test_env_on_off);

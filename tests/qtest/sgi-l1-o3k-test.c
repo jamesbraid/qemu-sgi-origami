@@ -1646,6 +1646,31 @@ static void test_unnamed_attachment_gets_named(void)
 }
 
 /*
+ * L1 datasheet, brick: "partition none" clears the stored partition and the
+ * reply is "brick partition cleared."; like a number, it applies at the
+ * next L1 boot.
+ */
+static void test_partition_clear(void)
+{
+    QTestState *s = start_one("brick-type=cbrick,named=on,rack=1,bay=4,"
+                              "partition=2");
+    g_autofree char *output = NULL;
+    uint8_t reply[131];
+    size_t length;
+
+    output = command(s, 0, "brick partition none", NULL);
+    g_assert_nonnull(strstr(output, "brick partition cleared."));
+    expect_partition(s, 0, 2);
+    g_free(output);
+    output = command(s, 0, "reboot_l1", NULL);
+    /* Read back with the partition request: independent of the brick text. */
+    length = rpc(s, 0, LOCAL_GENERAL, 0x9, NULL, 0, 0, reply);
+    expect_code(reply, length, 0);
+    g_assert_cmpuint(ldl_be_p(reply + 7), ==, 0);
+    qtest_quit(s);
+}
+
+/*
  * The partition is limited to sixteen bits: the width of the stored value,
  * not a hardware figure.
  */
@@ -2065,6 +2090,7 @@ int main(int argc, char **argv)
                    test_unnamed_attachment_gets_named);
     qtest_add_func("sgi-l1-o3k/partition-limit", test_partition_limit);
     qtest_add_func("sgi-l1-o3k/partition-identity", test_partition_identity);
+    qtest_add_func("sgi-l1-o3k/partition-clear", test_partition_clear);
     qtest_add_func("sgi-l1-o3k/ctci", test_ctci_unimplemented);
     for (unsigned i = 0; i < G_N_ELEMENTS(link_cases); i++) {
         name = g_strdup_printf("sgi-l1-o3k/link-before-realize/%u", i);
