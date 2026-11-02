@@ -258,10 +258,13 @@ the system serial (``0x0008``) from ``system-serial``, or from a station
 address (see :ref:`sgi-l1-records`). Without them both requests answer
 minus 104. The firmware revision (``0x0005``) comes from
 ``revision-major``, ``-minor`` and ``-patch``. All three must be set or
-none; without them the request answers minus 104 and logs ``LOG_UNIMP``.
+none; on a machine that selects none the request answers minus 104 and
+logs ``LOG_UNIMP``.
 The Origin 300, Origin 350, Onyx 350 and Onyx 4 machines select 1.18.5,
 the version an Origin 300 capture shows (:src:`irixnet-thread-2737`). The Tezro profiles select 1.48.1,
-the version in :src:`ip35-patch-sg0007149`. The Fuel selects none. These
+the version in :src:`ip35-patch-sg0007149`. The Fuel selects 1.48.1 too,
+the version one public Fuel capture reports; no capture ties it to the
+modelled board, and the machine's ``l1-revision`` replaces it. These
 are compatibility choices, not measured factory values.
 
 .. _sgi-l1-uart:

@@ -25534,7 +25534,12 @@
               "option": "fuel-mac-eeprom",
               "required": false
             },
-            "reported-type": 65
+            "reported-type": 65,
+            "revision": {
+              "major": 1,
+              "minor": 48,
+              "patch": 1
+            }
           },
           "module-index": 0
         }

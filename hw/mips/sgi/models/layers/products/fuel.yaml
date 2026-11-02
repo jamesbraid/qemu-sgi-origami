@@ -105,17 +105,23 @@ layer:
             # converter accepts raw '4' or 'A' but rejects 0x61. No Fuel
             # L1 identity reply is captured.
             reported_type: 65
-            # No revision: the two public Fuel captures report 1.48.1 and
-            # 1.14.4 and neither is tied to the selected revision G board,
-            # so the reply stays the observable unknown-version error.
+            # Chosen default, a model choice: 1.48.1 is the revision one
+            # public Fuel capture reports. A second reports 1.14.4, and
+            # neither is tied to the selected revision G board, so this is
+            # not a factory revision. IRIX in the model boots without the
+            # L1 version warnings at this value, a software effect that
+            # did not decide the choice. The l1-revision machine option
+            # replaces it.
+            revision: {major: 1, minor: 48, patch: 1}
             mac_eeprom_input: {option: fuel-mac-eeprom, required: false}
             provenance: guest-source
-            sources: ["web:lore-kaloz-ip35-35 brick type 'A' is SGI Fuel", "firmware:ip35-prom-6.210 I/O type lookup"]
+            sources: ["web:lore-kaloz-ip35-35 brick type 'A' is SGI Fuel", "firmware:ip35-prom-6.210 I/O type lookup", graphica-o350-notes]
             notes: >-
               The reported type comes from a published driver table and the
               PROM's accepted set, not a captured Fuel reply. The older
               Linux-MIPS IP34 constant 0x61 ('a') fails PROM 6.210's I/O
-              type lookup.
+              type lookup. The revision is a labelled model choice: it
+              matches a public Fuel L1 capture, not a verified fitment.
         io_boards:
           ip34-system-board:
             # Inferred. Mainline Linux assigns subsystem device 0xc30a to
