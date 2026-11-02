@@ -109,7 +109,7 @@ Products
      - Node board
    * - ``origin350``
      - ``origin350``
-     - four R16000, 700 MHz, 8 MiB
+     - four R16000, 700 MHz, 4 MiB
      - 2 GiB
      - IP53 ``030-1868-001`` revision C
    * - ``onyx350``
