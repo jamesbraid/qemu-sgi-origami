@@ -28,6 +28,8 @@
  * internal-clock analog input and output, and the AES3-input subcode channel
  * with no AES3 source connected. Other channels and general board controls
  * remain unsupported.
+ * The PCI Digital Audio Board (board 13) runs the MediaIO engines for the
+ * digital channels only: its analog interface does not exist.
  */
 
 #include "qemu/osdep.h"
@@ -1136,6 +1138,26 @@ static void sgi_rad1_audio_enable_write(SGIRad1AudioChannel *c, uint32_t val)
 }
 
 /*
+ * A write to the analog input's or output's enable register. The PCI Digital
+ * Audio Board has no analog circuit, so neither channel exists on it: the
+ * register still stores the word, but an enable is logged and starts nothing.
+ */
+static void sgi_rad1_audio_analog_enable(SGIRad1AudioState *s, unsigned int ch,
+                                         uint32_t val)
+{
+    if (s->digital_only) {
+        if (val & SGI_RAD1_AUDIO_ENABLE_BIT) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-rad1-audio: %s enable ignored: board 13 has no "
+                          "analog interface\n",
+                          sgi_rad1_audio_channel_info[ch].name);
+        }
+        return;
+    }
+    sgi_rad1_audio_enable_write(&s->chan[ch], val);
+}
+
+/*
  * BAR0: the documented register file. None of these offsets has an
  * independently confirmed reset value or read
  * behavior, so reads return the guest's last write. This is a register-store
@@ -1166,6 +1188,10 @@ static uint64_t sgi_rad1_audio_bar0_read(void *opaque, hwaddr addr,
     if (addr >= SGI_RAD1_AUDIO_REG_DMA_BANK_FIRST &&
         addr <= SGI_RAD1_AUDIO_REG_DMA_BANK_LAST) {
         return s->dma_bank[SGI_RAD1_AUDIO_DMA_IDX(addr)];
+    }
+
+    if (addr == SGI_RAD1_PCI_REG_UST_CONTROL && s->digital_only) {
+        return s->ust_control;
     }
 
     switch (addr) {
@@ -1238,6 +1264,13 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
         return;
     }
 
+    if (addr == SGI_RAD1_PCI_REG_UST_CONTROL && s->digital_only) {
+        /* Approximation: stored, no effect on the counter. */
+        s->ust_control = val;
+        trace_sgi_rad1_pci_ust_control(val);
+        return;
+    }
+
     switch (addr) {
     case SGI_RAD1_AUDIO_REG_UST_COUNTER:
         /* The UST counter is read-only; a write is a guest error. */
@@ -1275,7 +1308,7 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
                            (s->shift_load_data & SGI_RAD1_AUDIO_MUX_DATA);
         }
         s->shift_load_clock = val;
-        sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_IN], val);
+        sgi_rad1_audio_analog_enable(s, SGI_RAD1_AUDIO_CH_IN, val);
         break;
     case SGI_RAD1_AUDIO_REG_PREDISPATCH_C:
         s->predispatch_c = val;
@@ -1292,7 +1325,7 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
          * and its channel stop clears it, keeping bit 29 from the shadow.
          */
         s->analog_out_en = val;
-        sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_OUT], val);
+        sgi_rad1_audio_analog_enable(s, SGI_RAD1_AUDIO_CH_OUT, val);
         break;
     case SGI_RAD1_AUDIO_REG_STATUS_DMA_CTRL:
         s->status_dma_ctrl = val;
@@ -2099,6 +2132,7 @@ static void sgi_rad1_audio_reset_hold(Object *obj, ResetType type)
     s->bringup_final = 0;
     s->convergence_a = 0;
     s->convergence_b = 0;
+    s->ust_control = 0;
     memset(s->dma_bank, 0, sizeof(s->dma_bank));
     memset(s->subcode, 0, sizeof(s->subcode));
 
@@ -2138,8 +2172,19 @@ static void sgi_rad1_audio_realize(PCIDevice *dev, Error **errp)
     Error *audio_err = NULL;
     unsigned int i;
 
+    /*
+     * Board-13 Status is not measured. The model borrows the Octane RAD's
+     * observed slow DEVSEL and fast back-to-back bits (an approximation).
+     */
+    if (s->digital_only) {
+        /* Not QEMU's default subsystem pair: the card records none. */
+        pci_set_word(dev->config + PCI_SUBSYSTEM_VENDOR_ID, 0);
+        pci_set_word(dev->config + PCI_SUBSYSTEM_ID, 0);
+    }
     pci_set_word(dev->config + PCI_STATUS,
-                 PCI_STATUS_DEVSEL_MEDIUM | PCI_STATUS_FAST_BACK);
+                 (s->digital_only ? PCI_STATUS_DEVSEL_SLOW :
+                                    PCI_STATUS_DEVSEL_MEDIUM) |
+                 PCI_STATUS_FAST_BACK);
 
     /*
      * The MediaIO board always instantiates this device, so a missing audio
@@ -2170,12 +2215,15 @@ static void sgi_rad1_audio_realize(PCIDevice *dev, Error **errp)
                    "not %s", s->genlock);
         return;
     }
-    object_property_add_uint32_ptr(OBJECT(dev), "mux-word", &s->mux_word,
-                                   OBJ_PROP_FLAG_READ);
+    if (!s->digital_only) {
+        object_property_add_uint32_ptr(OBJECT(dev), "mux-word", &s->mux_word,
+                                       OBJ_PROP_FLAG_READ);
 
-    if (!audio_be_check(&s->audio_be, &audio_err)) {
-        warn_report_err(audio_err);
-        s->audio_be = NULL;
+        /* The default backend serves the analog pair only. */
+        if (!audio_be_check(&s->audio_be, &audio_err)) {
+            warn_report_err(audio_err);
+            s->audio_be = NULL;
+        }
     }
 
     memory_region_init_io(&s->bar0, OBJECT(dev), &sgi_rad1_audio_bar0_ops, s,
@@ -2199,7 +2247,9 @@ static void sgi_rad1_audio_realize(PCIDevice *dev, Error **errp)
         c->dev = s;
         c->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_rad1_audio_chan_tick,
                                 c);
-        if (sgi_rad1_audio_channel_info[i].output) {
+        if (sgi_rad1_audio_channel_info[i].output && !(s->digital_only &&
+            sgi_rad1_audio_channel_info[i].iface ==
+            SGI_RAD1_AUDIO_IFACE_ANALOG)) {
             sgi_rad1_audio_open_out(c);
         }
     }
@@ -2285,6 +2335,24 @@ static const VMStateDescription vmstate_sgi_rad1_audio_channel = {
     }
 };
 
+static bool sgi_rad1_pci_needed(void *opaque)
+{
+    SGIRad1AudioState *s = opaque;
+
+    return s->digital_only;
+}
+
+static const VMStateDescription vmstate_sgi_rad1_pci = {
+    .name = "sgi-rad1-audio/pci-card",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_rad1_pci_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(ust_control, SGIRad1AudioState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_sgi_rad1_audio = {
     .name = "sgi-rad1-audio",
     .version_id = 10,
@@ -2332,6 +2400,10 @@ static const VMStateDescription vmstate_sgi_rad1_audio = {
         VMSTATE_UINT32(mux_shift, SGIRad1AudioState),
         VMSTATE_UINT32(mux_word, SGIRad1AudioState),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_rad1_pci,
+        NULL
     }
 };
 
@@ -2536,6 +2608,23 @@ static void sgi_rad1_octane_class_init(ObjectClass *klass, const void *data)
     rc->phases.hold = sgi_rad1_octane_reset_hold;
 }
 
+static void sgi_rad1_pci_instance_init(Object *obj)
+{
+    SGIRad1AudioState *s = SGI_RAD1_AUDIO(obj);
+
+    s->digital_only = true;
+}
+
+static void sgi_rad1_pci_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    PCIDeviceClass *pc = PCI_DEVICE_CLASS(klass);
+
+    dc->desc = "SGI PCI Digital Audio Board (RAD board 13)";
+    pc->revision = SGI_RAD1_PCI_REVISION;
+    pc->class_id = PCI_CLASS_NOT_DEFINED;
+}
+
 static const TypeInfo sgi_rad1_audio_types[] = {
     {
         .name = TYPE_SGI_RAD1_AUDIO,
@@ -2551,6 +2640,12 @@ static const TypeInfo sgi_rad1_audio_types[] = {
         .name = TYPE_SGI_RAD1_OCTANE,
         .parent = TYPE_SGI_RAD1_AUDIO,
         .class_init = sgi_rad1_octane_class_init,
+    },
+    {
+        .name = TYPE_SGI_RAD1_PCI,
+        .parent = TYPE_SGI_RAD1_AUDIO,
+        .instance_init = sgi_rad1_pci_instance_init,
+        .class_init = sgi_rad1_pci_class_init,
     },
 };
 

@@ -14,6 +14,7 @@
 
 #define TYPE_SGI_RAD1_AUDIO "sgi-rad1-audio"
 #define TYPE_SGI_RAD1_OCTANE "sgi-rad1-octane"
+#define TYPE_SGI_RAD1_PCI "sgi-rad1-pci"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 
 #define SGI_RAD1_AUDIO_VENDOR_ID 0x10a9
@@ -34,6 +35,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  * verified hardware value.
  */
 #define SGI_RAD1_AUDIO_REVISION 0x70
+
+/*
+ * The PCI Digital Audio Board, board number 13: revision byte 0xd0 (board in
+ * the high nibble, chip revision 0 in the low). Only the printed "13.0" is
+ * established; the raw byte is inferred from it. Class and subsystem IDs are
+ * recorded for no capture of the card, so it presents class 0x000000 and
+ * subsystem 0000:0000 like the one RAD whose configuration has been measured,
+ * an approximation. The card has ADAT, AES-3id and video-reference
+ * connectors and no analog circuit, so the analog channels do not exist on
+ * it, and its driver does not register an interrupt, so the interrupt pin
+ * stays 0.
+ */
+#define SGI_RAD1_PCI_REVISION 0xd0
 #define SGI_RAD1_AUDIO_CLASS_ID PCI_CLASS_MULTIMEDIA_AUDIO
 
 /*
@@ -128,6 +142,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  */
 #define SGI_RAD1_AUDIO_REG_UST_COUNTER      0x30
 #define SGI_RAD1_AUDIO_UST_NS_PER_TICK      800
+
+/*
+ * UST control, written by the board-13 driver as 6 then 2 or 4 then 0 when
+ * it resets the UST. What the bits do is unknown, so the PCI card stores the
+ * word with no effect on the counter, which stays monotonic across it.
+ */
+#define SGI_RAD1_PCI_REG_UST_CONTROL        0x40
 
 /*
  * The digital channels' enables share these bring-up registers: bit 0 of 0x44
@@ -744,6 +765,14 @@ struct SGIRad1AudioState {
 
     /* Virtual-clock time captured at reset; the 0x30 UST counter's origin. */
     int64_t ust_base_ns;
+
+    /*
+     * The PCI Digital Audio Board (board 13): no analog interface, and a
+     * stored UST control word at 0x40. Set by the type, not migrated; the
+     * control word is in a subsection sent only for this card.
+     */
+    bool digital_only;
+    uint32_t ust_control;
 
     /* Octane's bounded transfer and synthetic UST policy. */
     bool octane;
