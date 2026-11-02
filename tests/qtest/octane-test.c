@@ -1739,7 +1739,7 @@ static void test_heart_diagnostic_storage(gconstpointer data)
                      MEMTX_OK);
     g_assert_cmpuint(memtx_writew(qts, HEART_WIDGET + 0x2c, 0), !=,
                      MEMTX_OK);
-    g_assert_cmpuint(memtx_readq(qts, HEART_WIDGET + 0x30, &wide), !=,
+    g_assert_cmpuint(memtx_readq(qts, HEART_WIDGET + 0x58, &wide), !=,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x28), ==, 0x0019d246);
 

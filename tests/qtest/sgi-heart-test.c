@@ -1175,6 +1175,50 @@ static void test_widget_status(void)
     qtest_quit(s);
 }
 
+static void test_widget_block_64(void)
+{
+    /* Slots with no 64-bit measurement: an approximation, not hardware. */
+    static const uint64_t slots[] = { 0x10, 0x18, 0x20, 0x30, 0x38, 0x40,
+                                      0x48, 0x50 };
+    QTestState *s = heart_start(128, "");
+    uint64_t wide;
+    uint32_t word;
+    int i;
+
+    /* Measured on an Octane2 (HEART F): ID, status and request timeout. */
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET, &wide), ==, MEMTX_OK);
+    g_assert_cmphex(wide, ==, HEART_WIDGET_ID);
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 8, &wide), ==, MEMTX_OK);
+    g_assert_cmphex(wide, ==, 0x60);
+    /* The model's request timeout resets to zero, not the measured 0x28. */
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x2c, 0x28), ==,
+                     MEMTX_OK);
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 0x28, &wide), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(wide, ==, 0x28);
+
+    /* The unmeasured slots return the 32-bit register zero-extended. */
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x24, 0x5a3c00f0), ==,
+                     MEMTX_OK);
+    for (i = 0; i < ARRAY_SIZE(slots); i++) {
+        g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + slots[i], &wide), ==,
+                         MEMTX_OK);
+        g_assert_cmphex(wide, ==, slots[i] == 0x20 ? 0x5a3c00f0 : 0);
+    }
+    /* Nonzero 64-bit writes to these slots stay refused. */
+    for (i = 0; i < ARRAY_SIZE(slots); i++) {
+        g_assert_cmpuint(memtx_writeq(s, HEART_WIDGET + slots[i], 1), ==,
+                         MEMTX_ERROR);
+    }
+    /* The block ends at +0x58; the Crossbow-specific slot is unmodelled. */
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 0x58, &wide), ==,
+                     MEMTX_ERROR);
+    /* A 32-bit read of an unmodelled low word stays refused. */
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0x34, &word), ==,
+                     MEMTX_ERROR);
+    qtest_quit(s);
+}
+
 static void test_widget_control(void)
 {
     QTestState *s = heart_start(128, "");
@@ -1207,8 +1251,10 @@ static void test_widget_control(void)
                      MEMTX_ERROR);
     g_assert_cmpuint(memtx_writew(s, HEART_WIDGET + 0x24, 0xffff), ==,
                      MEMTX_ERROR);
+    /* The 64-bit slot at +0x20 is the control word zero-extended. */
     g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 0x20, &wide), ==,
-                     MEMTX_ERROR);
+                     MEMTX_OK);
+    g_assert_cmphex(wide, ==, word);
     g_assert_cmpuint(memtx_writeq(s, HEART_WIDGET + 0x20, UINT64_MAX),
                      ==, MEMTX_ERROR);
     g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0x20, &word), ==,
@@ -1271,7 +1317,7 @@ static void test_widget_timeout(void)
                      MEMTX_ERROR);
     g_assert_cmpuint(memtx_writew(s, HEART_WIDGET + 0x2c, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 0x40, &wide), ==,
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 0x58, &wide), ==,
                      MEMTX_ERROR);
     g_assert_cmpuint(memtx_readb(s, HEART_WIDGET + 0x44, &byte), ==,
                      MEMTX_ERROR);
@@ -2674,6 +2720,7 @@ int main(int argc, char **argv)
                     test_wide_descriptor_clear);
     g_test_add_func("/heart/widget-id", test_widget_id);
     g_test_add_func("/heart/widget-status", test_widget_status);
+    g_test_add_func("/heart/widget-block-64", test_widget_block_64);
     g_test_add_func("/heart/widget-control", test_widget_control);
     g_test_add_func("/heart/widget-timeout", test_widget_timeout);
     g_test_add_func("/heart/widget-errors", test_widget_errors);
