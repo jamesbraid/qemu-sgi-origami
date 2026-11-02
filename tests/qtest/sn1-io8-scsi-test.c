@@ -24,6 +24,7 @@
 #include "libqtest.h"
 #include "libqos/libqos.h"
 #include "qobject/qdict.h"
+#include "sgi-scsi-cd-test.h"
 #include "sgi-test.h"
 #include "sgi-migrate.h"
 #include "sgi-wait.h"
@@ -660,6 +661,67 @@ static void write_sector(QTestState *qts, uint32_t handle, unsigned channel,
                    ISP_REQ_CONTROL_DATA_OUT, &seg);
     wait_for_completion(qts);
     take_status(qts, handle, status);
+}
+
+/*
+ * The CD-ROM block length contract (sgi-scsi-cd-test.h) through the
+ * ISP12160's rings. The status entry carries the autosense bytes.
+ */
+#define ISP_STATUS_OFF_SENSE_DATA 32
+#define CD_TARGET 2
+
+static uint8_t cd_command(void *opaque, const uint8_t *cdb, size_t cdb_len,
+                          uint8_t *data, uint32_t len, bool out,
+                          uint8_t *sense)
+{
+    QTestState *qts = opaque;
+    static uint32_t handle = 0xcd000000;
+    const RingSeg seg = { DIRECT64(BUF_PHYS), len };
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t scsi_status;
+
+    if (out) {
+        qtest_memwrite(qts, BUF_PHYS, data, len);
+    } else if (len) {
+        qtest_memset(qts, BUF_PHYS, BUFFER_SENTINEL, len);
+    }
+    submit_command(qts, ++handle, 0, CD_TARGET, 0, cdb, cdb_len,
+                   !len ? 0 : out ? ISP_REQ_CONTROL_DATA_OUT :
+                   ISP_REQ_CONTROL_DATA_IN, len ? &seg : NULL);
+    wait_for_completion(qts);
+    take_status(qts, handle, status);
+    scsi_status = get16le(status + ISP_STATUS_OFF_SCSI_STATUS) & 0xff;
+    if (scsi_status == SGI_CD_CHECK_CONDITION) {
+        memcpy(sense, status + ISP_STATUS_OFF_SENSE_DATA, 18);
+    }
+    if (!out && len) {
+        qtest_memread(qts, BUF_PHYS, data, len);
+    }
+    return scsi_status;
+}
+
+static void test_cdrom_block_length(const void *data)
+{
+    g_autofree char *path = sgi_cd_medium_create();
+    g_autofree char *prom = g_shell_quote(prom_path);
+    g_autofree char *medium = g_shell_quote(path);
+    QTestState *qts = qtest_initf(MACHINE_ARGS " -bios %s"
+        " -drive if=none,id=cd,format=raw,readonly=on,file=%s"
+        " -device scsi-cd,bus=scsi.0,scsi-id=%u,drive=cd",
+        prom, medium, CD_TARGET);
+    const SgiCdTransport t = { cd_command, qts };
+
+    qtest_writeq(qts, BEDROCK_NODE0 + MD_MEMORY_CONFIG,
+                 origin300.memory_config);
+    io8_scsi_attach(qts);
+    init_queues(qts);
+
+    sgi_cd_check_power_on(&t);
+    sgi_cd_check_select_512(&t, true);
+    sgi_cd_check_select_512(&t, false);
+
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
 /* The whole first sector of one disk, as the fixture wrote it. */
@@ -1450,6 +1512,8 @@ int main(int argc, char **argv)
                         NULL, test_write_transfer_from_memory);
     qtest_add_data_func("origin300/io8-scsi/channels-are-independent", NULL,
                         test_channels_are_independent);
+    qtest_add_data_func("origin300/io8-scsi/cdrom-block-length", NULL,
+                        test_cdrom_block_length);
     qtest_add_data_func("origin300/io8-scsi/completion-raises-pin", NULL,
                         test_completion_raises_head_f_pin);
 

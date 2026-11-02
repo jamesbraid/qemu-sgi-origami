@@ -22,6 +22,7 @@
 #include "hw/pci/pci-64bit.h"
 #include "hw/scsi/scsi.h"
 #include "hw/scsi/qlogic-isp.h"
+#include "hw/scsi/sgi-scsi-cd.h"
 #include "scsi/constants.h"
 #include "migration/qemu-file-types.h"
 #include "migration/qemu-file.h"
@@ -1692,6 +1693,7 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
     uint64_t unused;
     uint64_t moved;
 
+    sgi_scsi_cd_command_done(sreq);
     sense_len = scsi_req_get_sense(sreq, sense, sizeof(sense));
     if (sense_len > 0) {
         scsi_status |= ISP_SCSI_STATUS_SENSE_VALID;

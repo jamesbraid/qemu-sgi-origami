@@ -21,6 +21,7 @@ scsi_ss.add(when: 'CONFIG_MPTSAS_SCSI_PCI', if_true: files('mptsas.c', 'mptconfi
 scsi_ss.add(when: 'CONFIG_QLOGIC_ISP_SCSI_PCI', if_true: files('qlogic-isp.c'))
 scsi_ss.add(when: 'CONFIG_QLOGIC_ISP2200_PCI', if_true: files('qlogic-isp2200.c'))
 scsi_ss.add(when: 'CONFIG_SGI_DBRICK', if_true: files('sgi-dbrick.c'))
+scsi_ss.add(when: 'CONFIG_SGI_SCSI_CD', if_true: files('sgi-scsi-cd.c'))
 scsi_ss.add(when: 'CONFIG_VMW_PVSCSI_SCSI_PCI', if_true: files('vmw_pvscsi.c'))
 
 virtio_scsi_ss.add(files('virtio-scsi-dataplane.c'))

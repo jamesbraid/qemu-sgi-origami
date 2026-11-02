@@ -1208,3 +1208,6 @@ scripts/ci/sgi-leak-check.py
 scripts/tests/test_sgi_leak_check.py
 scripts/tests/test_sgi_leak_workflows.py
 tests/qtest/sgi-cdrom-test.c
+hw/scsi/sgi-scsi-cd.c
+include/hw/scsi/sgi-scsi-cd.h
+tests/qtest/sgi-scsi-cd-test.h
