@@ -133,6 +133,25 @@ static void heart_onewire_start(SGIHeartState *s, uint64_t command)
     timer_mod(s->onewire_timer, s->onewire_deadline_ns);
 }
 
+/*
+ * Each processor's mask selects what reaches that processor. Processor 0
+ * gets all five levels; processors 1 to 3 get level 4, the error level,
+ * alone. Software arms error bits in each processor's own mask (Linux
+ * ip30-irq.c arms CPU 1's own bus-error bit in mask 1), and IRIX 6.5.30
+ * arms the HEART exception, bit 63, in the mask of each processor it
+ * starts, so an error reaches every processor that armed it. Levels 0 to
+ * 3 of processors 1 to 3 have no contract yet and stay unwired.
+ */
+static bool heart_level4(SGIHeartState *s, unsigned int processor)
+{
+    uint64_t enabled = s->pending & s->mask[processor];
+
+    if (!(s->mode & HEART_INTERRUPT_ENABLE)) {
+        enabled &= ~HEART_ECC_PENDING;
+    }
+    return enabled & HEART_LEVEL4_MASK;
+}
+
 static void heart_update_irq(SGIHeartState *s)
 {
     uint64_t enabled = s->pending & s->mask[0];
@@ -146,10 +165,10 @@ static void heart_update_irq(SGIHeartState *s)
     qemu_set_irq(s->processor[1], !!(enabled & HEART_LEVEL1_MASK));
     qemu_set_irq(s->processor[2], !!(enabled & HEART_LEVEL2_MASK));
     qemu_set_irq(s->processor[3], !!(enabled & HEART_LEVEL3_MASK));
-    if (!(s->mode & HEART_INTERRUPT_ENABLE)) {
-        enabled &= ~HEART_ECC_PENDING;
+    for (unsigned int n = 0; n < HEART_PROCESSORS; n++) {
+        qemu_set_irq(s->processor[HEART_PROCESSOR_LEVELS - 1 + n],
+                     heart_level4(s, n));
     }
-    qemu_set_irq(s->processor[4], !!(enabled & HEART_LEVEL4_MASK));
 }
 
 static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
@@ -1278,7 +1297,8 @@ static void heart_init(Object *obj)
     memory_region_init(&s->sdram_base, obj, "heart.sdram-base",
                        HEART_SDRAM_BASE_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->sdram_base);
-    qdev_init_gpio_out_named(DEVICE(obj), s->processor, "processor", 5);
+    qdev_init_gpio_out_named(DEVICE(obj), s->processor, "processor",
+                             HEART_PROCESSOR_LINES);
     s->onewire_bus = onewire_create_bus(DEVICE(obj), "onewire");
     s->onewire_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                    heart_onewire_complete, s);

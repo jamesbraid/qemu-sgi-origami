@@ -238,7 +238,8 @@ follow Linux ``heart.h``. Every reset value is the model's choice
      - 64
      - ``0``
      - read/write
-     - Only mask 0 drives a processor.
+     - Mask 0 drives processor 0's five levels; masks 1-3 drive level 4
+       of processors 1-3.
    * - ``0x10020``
      - Set pending
      - 64
@@ -655,13 +656,19 @@ reference Octane2's PROM menu mask 0 reads ``0x8c0002000000003d``, with
 device bit 2 set beside the model run's bits, masks 1-3 read zero and
 pending holds the timer bit 50 (:ref:`sgi-heart-octane2-interrupts`).
 
-The model drives five outputs to CPU IP2-IP6. Each is high while some
-bit of its level is both pending and set in mask 0. Bit 63 also needs
-mode bit 13 (interrupt enable, Linux ``HM_INT_EN``) before it reaches
-IP6. A masked bit stays pending; unmasking it raises the line again
-without a new event. Masks 1-3 are stored and drive nothing. These
-output and retention rules are each an *approximation* compatible with the
-drivers; HEART's assertion timing is *unknown*.
+The model drives five outputs to processor 0's IP2-IP6. Each is high
+while some bit of its level is both pending and set in mask 0. Bit 63
+also needs mode bit 13 (interrupt enable, Linux ``HM_INT_EN``) before it
+reaches IP6. A masked bit stays pending; unmasking it raises the line
+again without a new event. Three more outputs carry level 4 (IP6) of
+processors 1-3, each under the same rule with that processor's mask:
+Linux arms its second processor's own bus-error bit, 60, in mask 1, and
+the IRIX 6.5.30 kernel arms bit 63 in the mask of every processor it
+starts, so an error reaches every processor that armed it. Levels 0-3
+of processors 1-3 drive nothing. These output and retention rules are
+each an *approximation* compatible with the drivers; HEART's assertion
+timing, and which processor takes an error several have armed, are
+*unknown*.
 
 Devices raise interrupts with a Crosstalk write to HEART's widget offset
 ``0x80``, the destination OpenBSD and Linux program into the onboard Bridge,
@@ -1254,9 +1261,9 @@ reads.
 Model limits
 ============
 
-- One processor. Status, processor ID and the interrupt outputs follow
-  that profile; masks 1-3 drive nothing and inter-processor interrupts
-  have no second target.
+- One processor. Status and processor ID follow that profile. Masks 1-3
+  drive only level-4 outputs, which no machine connects yet, and
+  inter-processor interrupts have no second target.
 - Mode bits other than 0, 1, 13, 15, 19, 20, 21 and 25 are stored with
   no effect, including the reset, refresh, cached-PROM and processor
   disable bits Linux names. Linux restarts the machine by setting mode
@@ -1307,7 +1314,8 @@ from 64 MiB to 2 GiB (``/heart/prom-probe/*``). These check the descriptor
 the probe leaves at base ``0x40``; the revision-4 cases for 64 to 512 MiB
 fail under plain modulo mapping. It also covers widget identity, control,
 request timeout, error and diagnostic registers, interrupt packets, pending
-and mask behaviour on all five levels, processor status on both revisions,
+and mask behaviour on all five levels, the level-4 outputs of processors
+1-3 (``/heart/processor-error-lines``), processor status on both revisions,
 the revision F mode and compare reset values
 (``/heart/revision-f-reset-words``), the one-wire master
 with and without a part, slot replacement, Crosstalk routing and DMA through
