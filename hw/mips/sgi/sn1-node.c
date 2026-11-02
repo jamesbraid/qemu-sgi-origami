@@ -2603,6 +2603,20 @@ bool sn1_node_supply_l1(SN1NodeState *node, DeviceState *l1,
     return object_property_set_link(OBJECT(node), "l1", OBJECT(l1), errp);
 }
 
+static bool sn1_node_set_l1_l2_link(SN1NodeState *node, Error **errp)
+{
+    if (node->l1_l2_chardev &&
+        !object_property_set_str(OBJECT(node->l1), "l2", node->l1_l2_chardev,
+                                 errp)) {
+        return false;
+    }
+    if (node->l1_l2_partition_flag) {
+        qdev_prop_set_uint8(node->l1, "l2-partition-flag",
+                            node->l1_l2_partition_flag);
+    }
+    return true;
+}
+
 static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
                                DeviceState **l1_uart_out,
                                MemoryRegion **l1_uart_region,
@@ -2653,7 +2667,8 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
             qdev_prop_set_bit(node->l1, "named", true);
         }
         qdev_prop_set_uint32(node->l1, "partition", node->l1_partition);
-        if (!qdev_realize(node->l1, NULL, errp)) {
+        if (!sn1_node_set_l1_l2_link(node, errp) ||
+            !qdev_realize(node->l1, NULL, errp)) {
             goto fail_l1;
         }
         goto uart;
@@ -2693,7 +2708,8 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
     qdev_prop_set_int32(node->l1, "revision-major", node->l1_revision[0]);
     qdev_prop_set_int32(node->l1, "revision-minor", node->l1_revision[1]);
     qdev_prop_set_int32(node->l1, "revision-patch", node->l1_revision[2]);
-    if (!qdev_realize(node->l1, NULL, errp)) {
+    if (!sn1_node_set_l1_l2_link(node, errp) ||
+        !qdev_realize(node->l1, NULL, errp)) {
         goto fail_l1;
     }
 
@@ -3391,6 +3407,9 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_STRING("l1-mac-eeprom", SN1NodeState, l1_mac_eeprom),
     DEFINE_PROP_STRING("l1-brick-type", SN1NodeState, l1_brick_type),
     DEFINE_PROP_UINT32("l1-partition", SN1NodeState, l1_partition, 0),
+    DEFINE_PROP_STRING("l1-l2-chardev", SN1NodeState, l1_l2_chardev),
+    DEFINE_PROP_UINT8("l1-l2-partition-flag", SN1NodeState,
+                      l1_l2_partition_flag, 0),
     DEFINE_PROP_UINT8("bedrock-revision", SN1NodeState, bedrock_revision, 0),
     DEFINE_PROP_UINT8("local-region", SN1NodeState, local_region, 0),
     DEFINE_PROP_UINT8("initiator-region", SN1NodeState, initiator_region, 0),

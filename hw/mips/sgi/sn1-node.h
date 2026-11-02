@@ -83,6 +83,9 @@ typedef struct SN1NodeState {
     /* An Origin 3000 brick's L1 profile; NULL for the Origin 300 family's. */
     char *l1_brick_type;
     uint32_t l1_partition;
+    /* The machine's L2 link options for this node's L1, if it has any. */
+    char *l1_l2_chardev;
+    uint8_t l1_l2_partition_flag;
     uint8_t bedrock_revision;
     uint8_t local_region;
     uint8_t initiator_region;

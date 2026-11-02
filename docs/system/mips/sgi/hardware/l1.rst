@@ -1093,6 +1093,37 @@ nonzero answer, so a test starts that fetch by setting it. It is not the
 partition ID that ``0x0009`` returns. What the setting means on a real
 controller is *unknown*.
 
+Machine options
+---------------
+
+A machine reaches a controller's L1 with two list options, each entry
+``<index>=<value>`` where *index* is the zero-based position of the
+controller in the selected topology, the same numbering as
+``controller-chardev`` (:ref:`sgi-pci-expansion-controller-inputs`):
+
+``controller-l2-chardev.N=<index>=<chardev-id>``
+  Sets the ``l2`` property of that controller's L1 to an existing
+  chardev. Each chardev serves one controller; a second entry for the
+  same controller or the same chardev id, a chardev that does not
+  exist, or one that ``controller-chardev`` already uses is refused.
+
+``controller-l2-partition-flag.N=<index>=<0 to 3>``
+  Sets ``l2-partition-flag`` on that controller's L1. It needs no
+  chardev, and a value outside 0 to 3 is refused.
+
+Both accept an expansion controller and a controller that no module owns
+and exactly one compute node names, which is a C-brick's L1 in the
+Origin 3000 topologies. A module-owned L1 serves several boards, so an
+entry for one, or for an index beyond the topology, is refused. For
+example, the two-partition Origin 3400 gives its first partition a link
+and a nonzero setting with::
+
+   -chardev socket,id=l2a,path=l2.sock \
+   -M origin3000,topology=origin3400-two-partitions,controller-l2-chardev.0=0=l2a,controller-l2-partition-flag.0=0=1
+
+Setting ``controller-l2-chardev`` blocks migration for the reason given
+under Limits.
+
 Link format
 -----------
 
