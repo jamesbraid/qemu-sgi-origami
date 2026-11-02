@@ -1,5 +1,6 @@
 .github/workflows/build.yml
 .github/workflows/leak-scan.yml
+.github/workflows/docs-publish.yml
 .github/workflows/merge-queue.yml
 .github/workflows/nightly.yml
 .github/workflows/sanitizer.yml
@@ -1238,3 +1239,4 @@ scripts/sgi_model/settings.py
 scripts/sgi_model/settings_doc.py
 scripts/tests/test_sgi_model_settings_doc.py
 docs/system/mips/sgi/settings.rst
+scripts/tests/test_sgi_docs_publish_workflow.py
