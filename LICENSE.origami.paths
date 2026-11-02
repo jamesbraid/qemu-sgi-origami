@@ -1207,3 +1207,4 @@ scripts/tests/test_sgi_license_check.py
 scripts/ci/sgi-leak-check.py
 scripts/tests/test_sgi_leak_check.py
 scripts/tests/test_sgi_leak_workflows.py
+tests/qtest/sgi-cdrom-test.c

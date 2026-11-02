@@ -46,6 +46,10 @@ config SGI_DEVICES
 config SGI_CATALOGUE
     bool
 
+# The SCSI CD-ROM behaviour every SGI machine with a CD gives scsi-cd.
+config SGI_BOARD_CDROM
+    bool
+
 config SGI_PROM_IMAGE
     bool
 
@@ -61,6 +65,7 @@ config SGI_O2_TEST
     imply TEST_DEVICES
     select SGI_CRIME
     select AIC7880_SCSI_PCI
+    select SGI_BOARD_CDROM
     select SGI_MACE
     select SGI_O2_GBE
     select SGI_O2_ROM
@@ -69,6 +74,7 @@ config SGI_OCTANE
     bool
     select PFLASH_CFI01
     select SGI_CATALOGUE
+    select SGI_BOARD_CDROM
     select SGI_PROM_IMAGE
     default y
     depends on MIPS64 && TARGET_BIG_ENDIAN
@@ -84,6 +90,7 @@ config SGI_OCTANE
 config SGI_SN0
     bool
     select SGI_CATALOGUE
+    select SGI_BOARD_CDROM
     select SGI_PROM_IMAGE
     default y
     depends on MIPS64 && TARGET_BIG_ENDIAN
@@ -123,6 +130,7 @@ config SGI_SN1
     depends on MIPS64 && TARGET_BIG_ENDIAN
     imply TEST_DEVICES
     select QLOGIC_ISP2200_PCI
+    select SGI_BOARD_CDROM
     select QLOGIC_ISP_SCSI_PCI
     select SGI_BASEIO
     select SGI_BEDROCK

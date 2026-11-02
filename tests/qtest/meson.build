@@ -608,6 +608,8 @@ sgi_qtests = \
    config_all_devices.has_key('CONFIG_SGI_SN0') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sgi-graphics-pipes-test', 'sgi-catalogue-launch-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_BOARD_CDROM') ?
+    ['sgi-cdrom-test'] : []) + \
   sn0_router_qtests + \
   sn0_ohci_qtests + \
   sgi_bridge_card_qtests + \

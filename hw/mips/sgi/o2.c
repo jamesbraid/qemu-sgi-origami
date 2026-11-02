@@ -30,6 +30,7 @@
 #include "hw/mips/sgi/crime.h"
 #include "hw/mips/sgi/mace.h"
 #include "hw/mips/sgi/o2-rom.h"
+#include "hw/mips/sgi/sgi-board-cdrom.h"
 #include "hw/mips/sgi/sgi-cpu.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
@@ -2406,6 +2407,7 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     mc->no_floppy = true;
     mc->no_cdrom = true;
     mc->auto_create_sdcard = false;
+    sgi_board_cdrom_class_init(mc);
 }
 
 static const TypeInfo o2_product_machine_type = {
