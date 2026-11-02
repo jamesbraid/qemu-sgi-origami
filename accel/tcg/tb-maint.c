@@ -779,6 +779,9 @@ void tb_flush__exclusive_or_serial(void)
            (current_cpu && cpu_in_serial_context(current_cpu)));
 
     CPU_FOREACH(cpu) {
+        if (cpu->tb_jmp_cache) {
+            cpu->tb_jmp_cache->io_tb = NULL;
+        }
         tcg_flush_jmp_cache(cpu);
     }
 
