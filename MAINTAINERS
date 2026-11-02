@@ -1613,6 +1613,7 @@ F: tests/qtest/sn1-l1-test.c
 F: tests/qtest/sgi-l1-o3k-test.c
 F: tests/qtest/sgi-l1-cxbrick-test.c
 F: tests/qtest/sgi-l1-l2-stub.h
+F: contrib/plugins/sgi-l2-shim.c
 F: tests/sgi-l2/
 F: tests/qtest/sn1-*
 F: tests/qtest/sn-promdata-window-test.c

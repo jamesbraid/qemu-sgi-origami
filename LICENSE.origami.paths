@@ -4,6 +4,7 @@
 .github/workflows/nightly.yml
 .github/workflows/sanitizer.yml
 README.md
+contrib/plugins/sgi-l2-shim.c
 docs/devel/sgi-byte-order.rst
 docs/devel/sgi-manual-pages.rst
 docs/devel/sgi-mesa-renderer.rst
@@ -972,7 +973,9 @@ tests/qtest/tigon-test.c
 tests/qtest/usb-ohci-transfer-test.c
 tests/qtest/xbridge-assembly-fixture.c
 tests/qtest/xframe-test.c
+tests/sgi-l2/guest.c
 tests/sgi-l2/hub-test.py
+tests/sgi-l2/l2-shim-test.py
 tests/sgi-l2/l2_hub_lib.py
 tests/sgi-l2/meson.build
 tests/unit/sgi-gl-texture-test.h
