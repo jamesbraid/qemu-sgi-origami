@@ -96,6 +96,7 @@ storage /mips64/o2/storage-queued-scsi-reset
 storage /mips64/o2/storage-queued-chip-reset
 storage /mips64/o2/storage-queued-pci-reset
 storage /mips64/o2/storage-diagnostic-rejections
+storage /mips64/o2/storage-cdrom-block-length
 
 dma /mips64/o2/mace-pci-functional/unused-aic-config
 dma /mips64/o2/mace-pci-functional/fresh-reads

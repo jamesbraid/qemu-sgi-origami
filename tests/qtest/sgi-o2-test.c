@@ -10,6 +10,7 @@
 #include "qobject/qjson.h"
 #include "sgi-launch.h"
 #include "sgi-o2-product-fixture.h"
+#include "sgi-scsi-cd-test.h"
 #include "sgi-mips-emit.h"
 #include "sn0-user-image.h"
 #include "sgi-wait.h"
@@ -4593,22 +4594,16 @@ static void test_mace_banked_dma_fixture_rejections(void)
     qtest_quit(qts);
 }
 
-static O2StorageTest o2_storage_start_accel_full(bool disk,
-                                                 const char *accel,
-                                                 unsigned controller,
-                                                 bool low_eth_dma,
-                                                 bool trace_scsi,
-                                                 const char *disk_path)
+/* @target is the command line that attaches the SCSI target, if any. */
+static O2StorageTest o2_storage_start_target(const char *target,
+                                             const char *accel,
+                                             bool low_eth_dma,
+                                             bool trace_scsi)
 {
     static const uint8_t rom[] = {
         0x10, 0x00, 0xff, 0xff, 0, 0, 0, 0, /* beq zero, zero, -1; nop */
     };
     O2StorageTest t = { 0 };
-    g_autofree char *target = disk ? g_strdup_printf(
-        "-drive if=none,id=disk0,file=%s,format=raw "
-        "-device scsi-hd,id=storage0,drive=disk0,bus=aic%u.0,"
-        "scsi-id=0,lun=0", disk_path ? disk_path : "null-co://",
-        controller) : g_strdup("");
     g_autofree char *trace_arg = NULL;
 
     t.dir = g_dir_make_tmp("o2-storage-XXXXXX", NULL);
@@ -4636,6 +4631,22 @@ static O2StorageTest o2_storage_start_accel_full(bool disk,
         t.rom, low_eth_dma ? ",mace-eth-low-dma-compat=on" : "",
         t.events, accel, target, trace_arg);
     return t;
+}
+
+static O2StorageTest o2_storage_start_accel_full(bool disk,
+                                                 const char *accel,
+                                                 unsigned controller,
+                                                 bool low_eth_dma,
+                                                 bool trace_scsi,
+                                                 const char *disk_path)
+{
+    g_autofree char *target = disk ? g_strdup_printf(
+        "-drive if=none,id=disk0,file=%s,format=raw "
+        "-device scsi-hd,id=storage0,drive=disk0,bus=aic%u.0,"
+        "scsi-id=0,lun=0", disk_path ? disk_path : "null-co://",
+        controller) : g_strdup("");
+
+    return o2_storage_start_target(target, accel, low_eth_dma, trace_scsi);
 }
 
 static O2StorageTest o2_storage_start_accel_eth(bool disk,
@@ -6145,6 +6156,82 @@ static char *o2_storage_low_pci_write_with_eth_mode(bool low_eth_dma)
         "\"policy\":\"diagnostic-byte-identity\""));
     g_assert_nonnull(strstr(events, "\"attempts\":1,\"records\":1,"));
     return events;
+}
+
+/*
+ * The CD-ROM block length contract (sgi-scsi-cd-test.h) through the first
+ * aic7880, which reaches memory through MACE's PCI window. The adapter has
+ * no autosense, so a CHECK CONDITION is followed by REQUEST SENSE, as the
+ * guest's driver does.
+ */
+#define O2_CD_DATA      0x1000
+#define O2_CD_SENSE     0x2000
+
+static uint8_t o2_cd_run(QTestState *qts, const uint8_t *cdb, size_t cdb_len,
+                         uint32_t address, uint32_t len, bool out)
+{
+    uint8_t status;
+
+    o2_storage_command(qts, cdb, cdb_len, address, len, out);
+    o2_storage_wait_completion(qts, 1);
+    status = qtest_readb(qts, o2_storage_aic(0x22));
+    o2_storage_ack_completion(qts);
+    return status;
+}
+
+static uint8_t o2_cd_command(void *opaque, const uint8_t *cdb, size_t cdb_len,
+                             uint8_t *data, uint32_t len, bool out,
+                             uint8_t *sense)
+{
+    static const uint8_t request_sense[6] = { 0x03, 0, 0, 0, 18, 0 };
+    QTestState *qts = opaque;
+    uint8_t status;
+
+    if (out) {
+        qtest_memwrite(qts, RAM_FULL + O2_CD_DATA, data, len);
+    } else if (len) {
+        qtest_memset(qts, RAM_FULL + O2_CD_DATA, 0xcc, len);
+    }
+    status = o2_cd_run(qts, cdb, cdb_len, O2_CD_DATA, len, out);
+    if (!out && len) {
+        qtest_memread(qts, RAM_FULL + O2_CD_DATA, data, len);
+    }
+    if (status == SGI_CD_CHECK_CONDITION) {
+        g_assert_cmphex(o2_cd_run(qts, request_sense, sizeof(request_sense),
+                                  O2_CD_SENSE, 18, false), ==, 0);
+        qtest_memread(qts, RAM_FULL + O2_CD_SENSE, sense, 18);
+    }
+    return status;
+}
+
+/* SCSIRSTO asserted and released. */
+static void o2_cd_bus_reset(void *opaque)
+{
+    QTestState *qts = opaque;
+
+    qtest_writeb(qts, o2_storage_aic(0x87), 0x04);
+    qtest_writeb(qts, o2_storage_aic(0x00), 0x01);
+    qtest_writeb(qts, o2_storage_aic(0x00), 0);
+}
+
+static void test_storage_cdrom_block_length(void)
+{
+    g_autofree char *path = sgi_cd_medium_create();
+    g_autofree char *target = g_strdup_printf(
+        "-drive if=none,id=cd0,file=%s,format=raw,readonly=on "
+        "-device scsi-cd,drive=cd0,bus=aic0.0,scsi-id=0,lun=0", path);
+    O2StorageTest t = o2_storage_start_target(target, "qtest", false, false);
+    const SgiCdTransport cd = { o2_cd_command, o2_cd_bus_reset, t.qts };
+    g_autofree char *events = NULL;
+
+    o2_storage_configure_aic(t.qts, 1);
+    o2_program_banks(t.qts);
+    sgi_cd_check_power_on(&cd);
+    sgi_cd_check_select_512(&cd, true);
+    sgi_cd_check_reset(&cd);
+    sgi_cd_check_select_512(&cd, false);
+    events = o2_storage_stop(&t);
+    g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
 static void test_low_ethernet_dma_preserves_aic_pci(void)
@@ -9098,6 +9185,8 @@ int main(int argc, char **argv)
                    test_storage_diagnostic_dma_events);
     add_case("o2/low-ethernet-dma-preserves-aic-pci",
                    test_low_ethernet_dma_preserves_aic_pci);
+    add_case("o2/storage-cdrom-block-length",
+             test_storage_cdrom_block_length);
     add_case("o2/default-aic-64m", test_default_aic_64m);
     add_case("o2/default-aic-128m", test_default_aic_128m);
     add_case("o2/default-aic-full-1g", test_default_aic_full_1g);
