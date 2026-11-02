@@ -191,6 +191,107 @@ static void test_double_bit_cpu(gconstpointer data)
     qtest_quit(s);
 }
 
+#define HEART_WIDGET 0x18000000ULL
+#define EMPTY_STORE 0x1e130400ULL
+#define EMPTY_LOAD 0x1d00002cULL
+#define MB_STORE_CAUSE 88
+#define MB_STORE_HEART_CAUSE 96
+#define MB_STORE_RETIRED 104
+#define MB_LOAD_RETIRED 108
+
+/*
+ * A store to empty widget 14 completes with no exception and, through
+ * HEART's report, leaves IP6 pending in the processor's Cause register
+ * once the guarded-probe flush (a HEART register read and a sync) is
+ * done; a load from empty widget 13 then takes the data bus error.
+ * Interrupts stay disabled throughout, as in IRIX's guarded probe.
+ */
+static void test_dropped_requests_cpu(gconstpointer data)
+{
+    bool r12000 = GPOINTER_TO_UINT(data);
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    SN0Image *p = image;
+    QTestState *s;
+    unsigned at, load;
+    uint64_t cause;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    at = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
+    sn0_patch_branch(p, at, ENTRY);
+    p->pos = SN0_VEC_GENERAL;
+    at = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
+    sn0_patch_branch(p, at, HANDLER);
+
+    p->pos = HANDLER;
+    sn0_emit_li64(p, SN0_R_K0, UNCACHED(MAILBOX));
+    save_cp0(p, SN0_CP0_CAUSE, MB_CAUSE);
+    save_cp0(p, SN0_CP0_EPC, MB_EPC);
+    sn0_emit_li(p, SN0_R_T0, 1);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_T0, MB_DONE);
+    sn0_emit_park(p);
+
+    p->pos = ENTRY;
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_li64(p, SN0_R_K0, UNCACHED(MAILBOX));
+    sn0_emit_li64(p, SN0_R_S0, UNCACHED(HEART_REGS));
+    sn0_emit_li64(p, SN0_R_S1, UNCACHED(HEART_REGS + 0x10000));
+    sn0_emit_li64(p, SN0_R_S2, UNCACHED(HEART_WIDGET));
+    sn0_emit_li64(p, SN0_R_T0, 0x3ff7fc0f);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_S2, SN0_R_T0, 0x68);
+    sn0_emit_li64(p, SN0_R_T0, ECC_IRQ);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_S1, SN0_R_T0, 0);
+    sn0_emit_li64(p, SN0_R_T0, 1ULL << 13);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_S0, SN0_R_T0, 0);
+    sn0_emit_li64(p, SN0_R_T1, UNCACHED(EMPTY_STORE));
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_T1, SN0_R_ZERO, 0);
+    sn0_emit_li(p, SN0_R_T0, 1);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_T0, MB_STORE_RETIRED);
+    /* The flush: a HEART widget read and a sync. */
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_S2, SN0_R_T0, 0);
+    sn0_emit(p, 0x0000000f);
+    save_cp0(p, SN0_CP0_CAUSE, MB_STORE_CAUSE);
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_S1, SN0_R_T0, 0x40);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T0, MB_STORE_HEART_CAUSE);
+    sn0_emit_li64(p, SN0_R_T1, UNCACHED(EMPTY_LOAD));
+    load = p->pos;
+    sn0_emit_i(p, SN0_OPC_LW, SN0_R_T1, SN0_R_T0, 0);
+    sn0_emit_li(p, SN0_R_T0, 1);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_T0, MB_LOAD_RETIRED);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_T0, MB_DONE);
+    sn0_emit_park(p);
+
+    path = sn0_image_write(image, "heart-dropped-cpu");
+    s = qtest_initf("-M %s -cpu %s -accel tcg -S -bios %s",
+        r12000 ? "octane2" : "octane",
+        r12000 ? "R12000,r12000-prid=0xe35,r12000-fpu-id=0x900,"
+        "reset-mode=0x1aa683" : "R10000", path);
+    unlink(path);
+    qtest_writel(s, HEART_REGS + 0x20, r12000 ? 0x80070000 : 0x80030000);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    g_assert_cmpuint(sn0_wait_word(s, 0, MAILBOX), ==, 1);
+    qtest_qmp_assert_success(s, "{'execute':'stop'}");
+
+    g_assert_cmphex(qtest_readl(s, MAILBOX + MB_STORE_RETIRED), ==, 1);
+    g_assert_cmphex(qtest_readq(s, MAILBOX + MB_STORE_CAUSE) & (1 << 14), ==,
+                    1 << 14);
+    g_assert_cmphex(qtest_readq(s, MAILBOX + MB_STORE_HEART_CAUSE), ==,
+                    0x10000);
+    g_assert_cmphex(qtest_readl(s, MAILBOX + MB_LOAD_RETIRED), ==, 0);
+    cause = qtest_readq(s, MAILBOX + MB_CAUSE);
+    g_assert_cmphex((cause >> 2) & 31, ==, 7);
+    g_assert_cmphex(qtest_readq(s, MAILBOX + MB_EPC), ==,
+                    0xffffffffbfc00000ULL + load);
+    g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x60), ==, 0xc);
+    g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x78), ==, EMPTY_STORE);
+    g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x90), ==, 0xd000);
+    qtest_quit(s);
+}
+
 /* The CPU must execute the replacement without a stop or map update. */
 static void test_dma_code(void)
 {
@@ -268,6 +369,10 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/heart/cpu/dma-code", test_dma_code);
+    qtest_add_data_func("/heart/cpu/r10000/dropped-requests",
+                        GUINT_TO_POINTER(0), test_dropped_requests_cpu);
+    qtest_add_data_func("/heart/cpu/r12000/dropped-requests",
+                        GUINT_TO_POINTER(1), test_dropped_requests_cpu);
     for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
         unsigned cpu = 10000;
         g_autofree char *name = NULL;
