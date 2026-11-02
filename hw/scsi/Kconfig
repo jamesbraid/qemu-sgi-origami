@@ -35,6 +35,7 @@ config QLOGIC_ISP_SCSI_PCI
     default y if SGI_DEVICES
     depends on PCI
     select SCSI
+    select SGI_SCSI_CD
 
 config QLOGIC_ISP2200_PCI
     bool
@@ -95,3 +96,7 @@ config VHOST_USER_SCSI
     default y if VIRTIO_PCI
     select VHOST_SCSI_COMMON
     depends on VIRTIO && VHOST_USER && LINUX
+
+# Block length consistency for a CD-ROM on the SGI host adapters.
+config SGI_SCSI_CD
+    bool
