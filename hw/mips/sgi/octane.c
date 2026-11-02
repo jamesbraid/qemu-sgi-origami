@@ -92,6 +92,8 @@ typedef struct OctaneMachineState {
     SGIXbowState *crossbow;
     /* The processor's physical address space, which holds the long windows. */
     MemoryRegion *physical;
+    /* HEART's link to Crossbow port 8. */
+    SGIXioLink heart_link;
     SGIXioLink graphics_links[OCTANE_GRAPHICS_WIDGETS];
     bool graphics_claimed[OCTANE_GRAPHICS_WIDGETS];
     MemoryRegion graphics_long[OCTANE_GRAPHICS_WIDGETS];
@@ -788,9 +790,13 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
          !sgi_xbow_enable_empty_port_eight_bit(crossbow, errp))) {
         return false;
     }
-    if (!sgi_xbow_attach_endpoint(crossbow, 8,
-            sgi_xio_port_cpu_face(OBJECT(heart), 0),
-            sgi_xio_port_packet_face(OBJECT(heart), 0), errp) ||
+    /*
+     * HEART joins port 8 through a link, as a board joins its port, so the
+     * Crossbow can tell HEART about the processor requests it drops.
+     */
+    sgi_xio_link_init(&s->heart_link, OBJECT(machine), "heart-link",
+                      OBJECT(heart), 0, OBJECT(xbow), 8);
+    if (!sgi_xio_link_connect(&s->heart_link, errp) ||
         !sgi_xbow_attach_endpoint(crossbow, 15,
             sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0),
             sgi_bridge_packet_face(SGI_BRIDGE(bridge)), errp) ||

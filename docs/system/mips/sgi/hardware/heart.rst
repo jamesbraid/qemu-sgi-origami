@@ -1412,14 +1412,19 @@ the three approximations above, reset and migration.
 processors: a DMA into RAM the processor then executes, and double-bit
 ECC reads that must take the data bus error exception with the right
 EPC and branch-delay state, leave the destination register untouched,
-and succeed after repair.
+and succeed after repair. ``/heart/cpu/*/dropped-requests`` stores to
+empty widget 14 and finds the store retired with IP6 pending and cause
+bit 16 set after a HEART read and a ``sync``, then loads from empty
+widget 13 and takes the data bus error.
 
 ``tests/qtest/octane-test.c`` checks HEART inside the ``octane`` and
 ``octane2`` machines: identity at both widths and the refused widths
 (``/octane/heart-identity``, ``/octane2/heart-identity``), the Octane2
 status word, the measured status, mode, compare and widget ``0x10`` words
 across a reset (``/octane2/heart-measured-words``), widget control and
-error registers, the stored diagnostic
+error registers, requests to empty widgets 13 and 14 reaching HEART's
+report (``/octane/heart-dropped-requests``,
+``/octane2/heart-dropped-requests``), the stored diagnostic
 registers on both machines, one-wire timing with the divider written,
 HEART's level 0-2 outputs, and SCSI DMA from a QLogic
 controller into HEART RAM.

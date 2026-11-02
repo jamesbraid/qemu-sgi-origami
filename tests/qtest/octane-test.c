@@ -1676,6 +1676,39 @@ static void test_heart_widget_errors(void)
     qtest_quit(qts);
 }
 
+/*
+ * A store and a read to empty Crossbow ports reach HEART's report: widget
+ * 14 at 0x1e130400 and widget 13, the port SGI's Octane ide reference
+ * guide reads. The processor-side outcome is in sgi-heart-cpu-test.c.
+ */
+static void test_heart_dropped_requests(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_UINT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+    uint32_t word;
+
+    qtest_writeq(qts, HEART_WIDGET + 0x68, 0x3ff7fc0f);
+    qtest_writeq(qts, HEART + 0x10000, 1ULL << 63);
+    qtest_writeq(qts, 0x1e130400, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x60), ==, 0x4);
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x70), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x78), ==, 0x1e130400);
+    g_assert_cmpuint(memtx_readl(qts, 0x1d00002c, &word), ==, MEMTX_ERROR);
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x60), ==, 0xc);
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x90), ==, 0xd000);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10040), ==, 0x10000);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030), ==, 1ULL << 63);
+    /* The Bridge and HEART itself answer, so they report nothing. */
+    qtest_writeq(qts, HEART_WIDGET + 0x60, 0xc);
+    qtest_writeq(qts, HEART + 0x10040, 0x10000);
+    g_assert_cmpuint(memtx_readl(qts, BRIDGE + 4, &word), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readl(qts, HEART_WIDGET + 4, &word), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x60), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10040), ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_heart_diagnostic_storage(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
@@ -6500,6 +6533,10 @@ int main(int argc, char **argv)
     qtest_add_func("/octane2/serial", test_octane2_serial);
     qtest_add_func("/octane/heart-widget-control", test_heart_widget_control);
     qtest_add_func("/octane/heart-widget-errors", test_heart_widget_errors);
+    qtest_add_data_func("/octane/heart-dropped-requests", GUINT_TO_POINTER(0),
+                        test_heart_dropped_requests);
+    qtest_add_data_func("/octane2/heart-dropped-requests", GUINT_TO_POINTER(1),
+                        test_heart_dropped_requests);
     qtest_add_data_func("/octane/heart-diagnostic-storage", GINT_TO_POINTER(0),
                         test_heart_diagnostic_storage);
     qtest_add_data_func("/octane2/heart-diagnostic-storage", GINT_TO_POINTER(1),
