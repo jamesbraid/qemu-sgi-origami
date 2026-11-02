@@ -286,6 +286,46 @@ static SGIL1State *l1_host_of(const SGIL1State *ibrick,
     return NULL;
 }
 
+typedef struct SGIL1ConfigRow {
+    unsigned index;
+    SGIL1State *brick;
+} SGIL1ConfigRow;
+
+/*
+ * This brick at index 0 and each cabled brick at its port number, in port
+ * order. Returns the number of rows, at most three.
+ */
+static unsigned l1_config_rows(SGIL1State *s, SGIL1ConfigRow rows[3])
+{
+    unsigned count = 1;
+
+    rows[0] = (SGIL1ConfigRow) { 0, s };
+    if (l1_is_iobrick(s)) {
+        /* The first of an I-brick's C-brick ports. */
+        SGIL1State *host = l1_is_nbrick(s) ? NULL : l1_host_of(s, NULL);
+
+        if (host) {
+            rows[count++] = (SGIL1ConfigRow) { 1, host };
+        }
+    } else {
+        SGIL1State *c_brick = l1_linked_peer(s);
+
+        if (s->io_peer) {
+            rows[count++] = (SGIL1ConfigRow) { s->io_port, s->io_peer };
+        }
+        if (c_brick) {
+            rows[count++] = (SGIL1ConfigRow) { s->c_port, c_brick };
+        }
+    }
+    if (count == 3 && rows[1].index > rows[2].index) {
+        SGIL1ConfigRow swap = rows[1];
+
+        rows[1] = rows[2];
+        rows[2] = swap;
+    }
+    return count;
+}
+
 /*
  * The partition ID this controller reports. PROVISIONAL: an I/O brick takes
  * its C-brick's ID and refuses a set, which is one reading of the L1 sheet's
@@ -2094,40 +2134,12 @@ static void l1_ibrick_power(SGIL1State *s, int argc, char **argv)
     }
 }
 
-typedef struct SGIL1ConfigRow {
-    unsigned index;
-    SGIL1State *brick;
-} SGIL1ConfigRow;
-
 /* The cfg listing: this brick at 0, each cabled brick at its port number. */
 static void l1_o3k_config(SGIL1State *s)
 {
-    SGIL1ConfigRow rows[3] = { { 0, s } };
-    unsigned count = 1;
+    SGIL1ConfigRow rows[3];
+    unsigned count = l1_config_rows(s, rows);
 
-    if (l1_is_iobrick(s)) {
-        /* The first of an I-brick's C-brick ports. */
-        SGIL1State *host = l1_is_nbrick(s) ? NULL : l1_host_of(s, NULL);
-
-        if (host) {
-            rows[count++] = (SGIL1ConfigRow) { 1, host };
-        }
-    } else {
-        SGIL1State *c_brick = l1_linked_peer(s);
-
-        if (s->io_peer) {
-            rows[count++] = (SGIL1ConfigRow) { s->io_port, s->io_peer };
-        }
-        if (c_brick) {
-            rows[count++] = (SGIL1ConfigRow) { s->c_port, c_brick };
-        }
-    }
-    if (count == 3 && rows[1].index > rows[2].index) {
-        SGIL1ConfigRow swap = rows[1];
-
-        rows[1] = rows[2];
-        rows[2] = swap;
-    }
     for (unsigned i = 0; i < count; i++) {
         g_autofree char *name = l1_module_name(rows[i].brick);
 
