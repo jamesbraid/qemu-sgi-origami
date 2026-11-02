@@ -3,6 +3,7 @@
 #include "libqtest.h"
 #include "qemu/bswap.h"
 #include "qobject/qdict.h"
+#include "qobject/qlist.h"
 #include "sgi-mips-emit.h"
 #include "sgi-wait.h"
 
@@ -153,6 +154,174 @@ static void test_execution(gconstpointer data)
     qtest_quit(qts);
 }
 
+#define STRESS_STOP 0x40
+#define STRESS_READY 0x44
+#define STRESS_WRITES 0x48
+#define STRESS_READER_DONE 0x4c
+#define STRESS_WRITER_DONE 0x50
+#define STRESS_COUNT 0x54
+#define STRESS_SUM 0x58
+#define STRESS_MAX_READS 0x100000u
+#define STRESS_WRITER_CODE 0x8000
+
+static void get_tb_counters(QTestState *qts, unsigned int *invalidations,
+                            unsigned int *flushes)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'tb-counters'}}", FIXTURE_PATH);
+
+    g_assert_cmpint(sscanf(qdict_get_str(reply, "return"), "%u %u",
+                           invalidations, flushes), ==, 2);
+}
+
+static void start_cpu(QTestState *qts, const char *fixture, uint32_t code)
+{
+    g_autofree char *context = g_strdup_printf("0xffffffffa000%04x "
+                                               "0xffffffffa0001000", code);
+
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'ram-context','value':%s}}", fixture, context);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'test-halted','value':false}}", fixture);
+}
+
+static void test_concurrent(void)
+{
+    /* CPU1 rewrites reader[7], the counting load itself, with the same word. */
+    const uint32_t reader[] = {
+        mips_lui(8, 0xbe00), mips_addiu(16, 0, 0), mips_addiu(17, 0, 0),
+        mips_lui(18, STRESS_MAX_READS >> 16),
+        mips_lw(11, 26, STRESS_READY), mips_itype(4, 11, 0, -2), 0,
+        mips_lw(10, 8, 0),
+        mips_rtype(16, 10, 16, 0, 0x2d), /* daddu checksum, checksum, read */
+        mips_daddiu(17, 17, 1),
+        mips_lw(11, 26, STRESS_STOP), mips_itype(5, 11, 0, 3), 0,
+        mips_itype(5, 17, 18, -7), 0,
+        mips_sd(16, 26, STRESS_SUM), mips_sw(17, 26, STRESS_COUNT),
+        mips_addiu(11, 0, 1), mips_sw(11, 26, STRESS_READER_DONE),
+        mips_itype(4, 0, 0, -1), 0,
+    };
+    const uint32_t writer[] = {
+        mips_lui(8, 0xa000), mips_ori(8, 8, CODE + 7 * 4),
+        mips_lui(9, mips_lw(10, 8, 0) >> 16),
+        mips_ori(9, 9, mips_lw(10, 8, 0)),
+        mips_addiu(10, 0, 0), mips_addiu(11, 0, 1),
+        mips_sw(11, 26, STRESS_READY),
+        mips_sw(9, 8, 0), mips_sync(), mips_addiu(10, 10, 1),
+        mips_sw(10, 26, STRESS_WRITES),
+        mips_lw(11, 26, STRESS_STOP), mips_itype(4, 11, 0, -6), 0,
+        mips_addiu(11, 0, 1), mips_sw(11, 26, STRESS_WRITER_DONE),
+        mips_itype(4, 0, 0, -1), 0,
+    };
+    g_autofree char *quoted = g_shell_quote(image_path);
+    uint8_t bytes[sizeof(reader)];
+    unsigned int invalidations, flushes;
+    uint64_t reads;
+    QTestState *qts;
+    SgiWait wait;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = qtest_initf("-M origin200 -m 128M -cpu R10000 -smp 2 -bios %s "
+        "-nic none -S -accel tcg,thread=multi "
+        "-device tcg-io-recompile-fixture,id=meta,mmio-base=0x1e000000 "
+        "-device mips-cpu-exception-fixture,id=reader,cpu-index=0 "
+        "-device mips-cpu-exception-fixture,id=writer,cpu-index=1", quoted);
+    {
+        g_autoptr(QDict) reply = qtest_qmp(qts,
+                                           "{'execute':'query-cpus-fast'}");
+        const QListEntry *entry;
+        int64_t threads[2];
+        unsigned int count = 0;
+
+        QLIST_FOREACH_ENTRY(qdict_get_qlist(reply, "return"), entry) {
+            g_assert_cmpuint(count, <, 2);
+            threads[count++] = qdict_get_int(qobject_to(QDict,
+                qlist_entry_obj(entry)), "thread-id");
+        }
+        g_assert_cmpuint(count, ==, 2);
+        g_assert_cmpint(threads[0], !=, threads[1]);
+    }
+    for (unsigned int i = 0; i < G_N_ELEMENTS(reader); i++) {
+        stl_be_p(bytes + i * 4, reader[i]);
+    }
+    qtest_memwrite(qts, CODE, bytes, sizeof(reader));
+    for (unsigned int i = 0; i < G_N_ELEMENTS(writer); i++) {
+        stl_be_p(bytes + i * 4, writer[i]);
+    }
+    qtest_memwrite(qts, STRESS_WRITER_CODE, bytes, sizeof(writer));
+    qtest_memset(qts, MAILBOX, 0, 0x80);
+    start_cpu(qts, "/machine/peripheral/reader", CODE);
+    start_cpu(qts, "/machine/peripheral/writer", STRESS_WRITER_CODE);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    for (unsigned int phase = 0; phase < 4; phase++) {
+        unsigned int old_invalidations;
+        uint32_t old_writes = qtest_readl(qts, MAILBOX + STRESS_WRITES);
+        uint64_t old_reads = counter(qts, "reads");
+
+        get_tb_counters(qts, &old_invalidations, &flushes);
+        sgi_wait_start(&wait, "concurrent MMIO/invalidation phase %u", phase);
+        do {
+            g_assert_cmpuint(qtest_readl(qts,
+                MAILBOX + STRESS_READER_DONE), ==, 0);
+            get_tb_counters(qts, &invalidations, &flushes);
+            reads = counter(qts, "reads");
+            if (reads >= old_reads + 128 &&
+                invalidations >= old_invalidations + 16 &&
+                qtest_readl(qts, MAILBOX + STRESS_WRITES) > old_writes) {
+                break;
+            }
+            sgi_wait_pause(&wait, 1000);
+        } while (true);
+        g_test_message("phase %u: reads=%" PRIu64 ", peer writes=%u, "
+                       "TB invalidations=%u", phase, reads,
+                       qtest_readl(qts, MAILBOX + STRESS_WRITES),
+                       invalidations);
+        control(qts, "queue-flush");
+        unsigned int old_flushes = flushes;
+
+        sgi_wait_start(&wait, "exclusive full TB flush, phase %u", phase);
+        do {
+            get_tb_counters(qts, &invalidations, &flushes);
+            if (flushes > old_flushes) {
+                g_test_message("phase %u: completed full TB flush %u",
+                               phase, flushes);
+                break;
+            }
+            sgi_wait_pause(&wait, 1000);
+        } while (true);
+    }
+    reads = counter(qts, "reads");
+    sgi_wait_start(&wait, "MMIO progress after final exclusive flush");
+    while (counter(qts, "reads") < reads + 128) {
+        g_assert_cmpuint(qtest_readl(qts,
+            MAILBOX + STRESS_READER_DONE), ==, 0);
+        sgi_wait_pause(&wait, 1000);
+    }
+    qtest_writel(qts, MAILBOX + STRESS_STOP, 1);
+    sgi_wait_start(&wait, "both concurrent payloads stopped");
+    while (!qtest_readl(qts, MAILBOX + STRESS_READER_DONE) ||
+           !qtest_readl(qts, MAILBOX + STRESS_WRITER_DONE)) {
+        sgi_wait_pause(&wait, 1000);
+    }
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    qtest_qmp_eventwait(qts, "STOP");
+    reads = counter(qts, "reads");
+    g_assert_cmpuint(reads, ==, qtest_readl(qts, MAILBOX + STRESS_COUNT));
+    g_assert_cmpuint(reads, <, STRESS_MAX_READS);
+    g_assert_cmpuint(qtest_readq(qts, MAILBOX + STRESS_SUM), ==,
+                      reads * (reads + 1) / 2);
+    g_assert_true(has_metadata(qts));
+    g_test_message("completed %" PRIu64 " MMIO reads, checksum=%" PRIu64,
+                   reads, qtest_readq(qts, MAILBOX + STRESS_SUM));
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *directory = NULL;
@@ -199,6 +368,8 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(1), test_execution);
     qtest_add_data_func("/tcg/io-recompile/execution/untaken-delay-irq",
                         GINT_TO_POINTER(0), test_execution);
+    qtest_add_func("/tcg/io-recompile/execution/concurrent-invalidate-flush",
+                    test_concurrent);
     int result = g_test_run();
 
     g_assert_cmpint(unlink(image_path), ==, 0);

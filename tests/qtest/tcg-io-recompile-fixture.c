@@ -17,6 +17,7 @@
 #include "tcg/tcg.h"
 #include "accel/tcg/internal-common.h"
 #include "accel/tcg/tb-jmp-cache.h"
+#include "accel/tcg/tb-context.h"
 
 #define TYPE_TCG_IO_RECOMPILE_FIXTURE "tcg-io-recompile-fixture"
 OBJECT_DECLARE_SIMPLE_TYPE(TCGIOLookupFixture, TCG_IO_RECOMPILE_FIXTURE)
@@ -89,6 +90,27 @@ static void flush(Object *obj, bool value, Error **errp)
     if (stopped_test(errp) && value) {
         tb_flush__exclusive_or_serial();
     }
+}
+
+static void queue_flush(Object *obj, bool value, Error **errp)
+{
+    TCGIOLookupFixture *s = TCG_IO_RECOMPILE_FIXTURE(obj);
+
+    if (!qtest_driver() || !tcg_enabled() ||
+        !runstate_is_running() || !s->cpu) {
+        error_setg(errp, "queued flush requires running qtest with TCG");
+        return;
+    }
+    if (value) {
+        queue_tb_flush(s->cpu);
+    }
+}
+
+static char *tb_counters(Object *obj, Error **errp)
+{
+    return g_strdup_printf("%u %u",
+        qatomic_read(&tb_ctx.tb_phys_invalidate_count),
+        qatomic_read(&tb_ctx.tb_flush_count));
 }
 
 static bool metadata_present(Object *obj, Error **errp)
@@ -250,6 +272,8 @@ static void class_init(ObjectClass *oc, const void *data)
     object_class_property_add_bool(oc, "exercise", NULL, exercise);
     object_class_property_add_bool(oc, "reset-io", NULL, reset_io);
     object_class_property_add_bool(oc, "flush", NULL, flush);
+    object_class_property_add_bool(oc, "queue-flush", NULL, queue_flush);
+    object_class_property_add_str(oc, "tb-counters", tb_counters, NULL);
     object_class_property_add_bool(oc, "metadata-present",
                                    metadata_present, NULL);
     dc->realize = realize;
