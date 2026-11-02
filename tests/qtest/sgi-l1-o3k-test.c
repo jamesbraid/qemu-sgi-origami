@@ -2138,6 +2138,26 @@ static void test_l2_segment_trace(void)
     l2_stub_free(stub);
 }
 
+/* A request event shows what the node sent, with its integer arguments. */
+static void test_request_trace(void)
+{
+    g_autofree char *args = NULL;
+    char *path = trace_start("sgi_l1_request", &args);
+    const char *const one[] = { L2_FETCH_PROPS ",l2-partition-flag=1" };
+    QTestState *s = start_with(1, one, args);
+    uint8_t arg[5];
+    g_autofree char *text = NULL;
+
+    expect_partition_request(s, 0, 0xb, 1);
+    integer(arg, 0x1234);
+    send_rpc(s, 0, LOCAL_GENERAL, 0x1006, arg, sizeof(arg), 1);
+    text = trace_finish(s, path);
+    g_assert_nonnull(strstr(text, "profile=cbrick rack=1 bay=4 transport=0 "
+                            "address=0x"));
+    g_assert_nonnull(strstr(text, "command=0x000b count=0 args="));
+    g_assert_nonnull(strstr(text, "command=0x1006 count=1 args=0000001234"));
+}
+
 static void test_l2_fetch_single_buffer(void)
 {
     L2Stub *stub = l2_stub_listen();
@@ -2623,6 +2643,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/l2-link/chunk-other-destination",
                    test_l2_chunk_other_destination);
     qtest_add_func("sgi-l1-o3k/l2-link/segment-trace", test_l2_segment_trace);
+    qtest_add_func("sgi-l1-o3k/request-trace", test_request_trace);
     qtest_add_func("sgi-l1-o3k/l2-link/forward-plain", test_l2_forward_plain);
     qtest_add_func("sgi-l1-o3k/l2-link/unanswered-and-local",
                    test_l2_unanswered_and_local);

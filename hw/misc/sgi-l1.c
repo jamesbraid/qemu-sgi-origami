@@ -1239,6 +1239,19 @@ static void l1_trace_name(const SGIL1State *s, unsigned *rack, unsigned *bay)
     *bay = l1_named(s) ? s->bay : 0xffff;
 }
 
+static char *l1_hex_string(const uint8_t *data, unsigned length)
+{
+    static const char digits[] = "0123456789abcdef";
+    char *hex = g_malloc(length * 2 + 1);
+
+    for (unsigned i = 0; i < length; i++) {
+        hex[i * 2] = digits[data[i] >> 4];
+        hex[i * 2 + 1] = digits[data[i] & 0xf];
+    }
+    hex[length * 2] = 0;
+    return hex;
+}
+
 static void l1_l2_trace_segment(const SGIL1State *s, bool to_l2,
                                 const uint8_t *segment, unsigned length)
 {
@@ -3979,6 +3992,15 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
     }
     address = ldl_be_p(p + 1);
     command = lduw_be_p(p + 5);
+    if (trace_event_get_state_backends(TRACE_SGI_L1_REQUEST)) {
+        g_autofree char *hex = l1_hex_string(p + MIN(length, 8),
+                                             length > 8 ? length - 8 : 0);
+        unsigned rack, bay;
+
+        l1_trace_name(s, &rack, &bay);
+        trace_sgi_l1_request(s->profile->name, rack, bay, transport, address,
+                             command, length == 7 ? 0 : p[7], hex);
+    }
     if (!l1_local(s, address)) {
         if (!s->reply_to && l1_l2_destination(address) &&
             l1_l2_forward_plain(s, channel, address, command,
