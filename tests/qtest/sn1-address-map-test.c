@@ -2500,6 +2500,23 @@ static void l1_expect_revision(QTestState *qts, int32_t major,
     }
 }
 
+/* Brick serial request: status 0 and one text field. */
+static void l1_expect_brick_serial(QTestState *qts, const char *serial)
+{
+    const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 4, 0 };
+    uint8_t reply[131];
+    size_t length;
+
+    l1_send_at(qts, L1_UART_LOCAL_BASE, request, sizeof(request) - 1);
+    length = l1_receive_at(qts, L1_UART_LOCAL_BASE, reply);
+    g_assert_cmphex(reply[0], ==, 0x30);
+    g_assert_cmpuint(length, ==, 6 + 2 + strlen(serial));
+    g_assert_cmpuint(ldl_be_p(reply + 1), ==, 0);
+    g_assert_cmphex(reply[5], ==, 1);
+    g_assert_cmphex(reply[6], ==, 1);
+    g_assert_cmpstr((const char *)reply + 7, ==, serial);
+}
+
 static void assert_qemu_rejects(const char *const args[], const char *message);
 
 static void test_configured_l1_requires_node(const void *data)
@@ -2582,6 +2599,28 @@ static void test_fuel_l1_revision(const void *data)
     l1_expect_revision(qts, 1, 18, 5);
     qtest_system_reset(qts);
     l1_expect_revision(qts, 1, 18, 5);
+    qtest_quit(qts);
+}
+
+/* The Fuel's brick serial defaults to a marked synthetic one. */
+static void test_fuel_l1_brick_serial(const void *data)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts;
+
+    qts = qtest_initf("-M fuel -cpu R14000 -smp 1 -m 512M -bios %s -S",
+                      quoted);
+    l1_expect_brick_serial(qts, "EMUN00");
+    qtest_system_reset(qts);
+    l1_expect_brick_serial(qts, "EMUN00");
+    qtest_quit(qts);
+
+    /* A serial set on the device replaces the default. */
+    qts = qtest_initf("-M fuel -global sgi-l1.brick-serial=T4ST42 "
+                      "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
+    l1_expect_brick_serial(qts, "T4ST42");
+    qtest_system_reset(qts);
+    l1_expect_brick_serial(qts, "T4ST42");
     qtest_quit(qts);
 }
 
@@ -7010,6 +7049,8 @@ int main(int argc, char **argv)
                         test_configured_origin300_identity);
     qtest_add_data_func("sn1/address-map/l1-revision", NULL,
                         test_fuel_l1_revision);
+    qtest_add_data_func("sn1/address-map/l1-brick-serial", NULL,
+                        test_fuel_l1_brick_serial);
     qtest_add_data_func("sn1/address-map/l1-overrides-origin300", NULL,
                         test_l1_overrides_origin300);
     qtest_add_data_func("sn1/address-map/l1-revision-machine-without-l1",

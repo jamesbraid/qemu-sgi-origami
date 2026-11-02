@@ -256,7 +256,9 @@ and ``brick slot`` store a pending value applied at the next controller
 restart. The brick serial (``0x0004``) comes from ``brick-serial`` and
 the system serial (``0x0008``) from ``system-serial``, or from a station
 address (see :ref:`sgi-l1-records`). Without them both requests answer
-minus 104. The firmware revision (``0x0005``) comes from
+minus 104, except that the Fuel's brick serial defaults to ``EMUN00``, the
+synthetic text serial of the node's system board numbered by node index,
+a model choice that ``brick-serial`` replaces. The firmware revision (``0x0005``) comes from
 ``revision-major``, ``-minor`` and ``-patch``. All three must be set or
 none; on a machine that selects none the request answers minus 104 and
 logs ``LOG_UNIMP``.

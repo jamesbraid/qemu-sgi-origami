@@ -765,6 +765,33 @@ static uint32_t sgi_machine_l1_node_processors(SGIMachineState *s,
 #define SGI_FUEL_BOARD_REVISION "-G"
 
 /*
+ * A brick serial for the Fuel's L1 when no property supplied one. Without
+ * it the brick-serial request answers "not available", where a real brick
+ * has a serial. The value is the marked synthetic text serial of the node's
+ * system board, "EMUN00" for the first: the Fuel's one system board is its
+ * brick, so the serial matches the board-area serials the same L1 holds
+ * (sgi-synthetic-serial.h). It is a model choice, not a captured serial,
+ * and the real format is unknown. A brick-serial set on the device, such
+ * as by -global, replaces it. Origin 300 and its relatives fit an IO8 and
+ * keep their own labelled placeholder text, so they get no default here.
+ */
+static void sgi_machine_set_l1_default_serial(SGIMachineState *s,
+                                              DeviceState *l1,
+                                              unsigned int node_index)
+{
+    char serial[SGI_SYNTHETIC_BARCODE_SIZE];
+    SGIModelIoBoardPreset preset;
+
+    if (SGI_L1(l1)->brick_serial ||
+        !sgi_machine_node_io_preset(s->view, node_index, &preset) ||
+        preset != SGI_MODEL_IO_BOARD_PRESET_FUEL) {
+        return;
+    }
+    sgi_synthetic_text_serial_fit(serial, 'N', node_index);
+    qdev_prop_set_string(l1, "brick-serial", serial);
+}
+
+/*
  * Gives a node's L1 what its synthetic identity records carry. The station
  * address goes in the IO8 board area on an Origin 300; on a Fuel it goes in
  * the system board's component 1 area and the MAC text record. Each further
@@ -785,6 +812,7 @@ static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
     if (!s->view) {
         return true;
     }
+    sgi_machine_set_l1_default_serial(s, l1, node_index);
     processors = sgi_machine_l1_node_processors(s, l1);
     boards = s->view->ip53_runtime ? s->view->ip53_runtime->node_boards :
              NULL;
