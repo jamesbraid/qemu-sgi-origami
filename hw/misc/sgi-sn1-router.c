@@ -12,6 +12,7 @@
 #include "qemu/bswap.h"
 #include "qemu/module.h"
 #include "system/reset.h"
+#include "trace.h"
 
 #define ROUTER_SIZE 0x600008
 #define PROTECTION_CONFIG_MASK UINT64_C(0x3fff)
@@ -316,6 +317,8 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
         } else {
             *storage = packet->data & mask;
         }
+        trace_sgi_sn1_router_write(s, ingress, address,
+                                   table ? *table : *storage);
         if (notify) {
             sgi_net_port_flood_start();
             router_changed(s);
@@ -347,6 +350,8 @@ bool sgi_sn1_router_route(SGISN1RouterState *s, unsigned ingress,
     }
     *output = 1 + ((ingress - 1 + turn) % SGI_SN1_ROUTER_PORTS);
     *next_turn = s->local[*output - 1][destination] & TABLE_TURN_MASK;
+    trace_sgi_sn1_router_route(s, ingress, turn, destination, *output,
+                               *next_turn);
     return true;
 }
 
