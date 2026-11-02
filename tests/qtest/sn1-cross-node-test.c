@@ -1098,6 +1098,77 @@ static void test_routed_reset_page_follows_the_route(void)
     qtest_quit(qts);
 }
 
+/*
+ * Across two routers the hub's route table names the turn at the first
+ * router, and each router's table, read on the link the packet entered by,
+ * names the turn at the next. These are the values the stock PROM writes on
+ * the Origin 3400 with two R-bricks: C-bricks 0 and 1 on ports 2 and 3 of
+ * router 0, C-bricks 2 and 3 on ports 2 and 3 of router 1, and the routers
+ * joined port 1 to port 1 and port 6 to port 6. Router 1 programs number 0
+ * on links 2 and 3 with turn 1 (router 0, in on port 1, out on port 2) and
+ * number 1 with turn 5 (in on port 6, out on port 3); its exit links' fields
+ * for those numbers stay unwritten.
+ */
+#define TWO_ROUTER_ARGS "-M origin3000,topology=origin3400-two-routers " \
+                        "-cpu R12000 -smp 16 -m 16384"
+#define ROUTER_LOCAL_TABLE(link, number) \
+    (router_link_bank[(link) - 1] + UINT64_C(0x200) + (number) * 8)
+
+static const uint64_t router_link_bank[] = {
+    0x10000, 0x10800, 0x20000, 0x20800, 0x30000, 0x30800, 0x40000, 0x40800,
+};
+
+/* A vector write from processor cpu's own node along route. */
+static void cpu_vector_write(QTestState *qts, unsigned int cpu,
+                             uint64_t route, uint64_t offset, uint64_t data)
+{
+    uint64_t status;
+
+    (void)bte_cpu_readq(qts, cpu, BEDROCK_LOCAL + LB_VECTOR_STATUS_CLEAR);
+    bte_cpu_writeq(qts, cpu, BEDROCK_LOCAL + LB_VECTOR_ROUTE, route);
+    bte_cpu_writeq(qts, cpu, BEDROCK_LOCAL + LB_VECTOR_DATA, data);
+    bte_cpu_writeq(qts, cpu, BEDROCK_LOCAL + LB_VECTOR_PARAMS,
+                   (offset & UINT64_C(0xfffff8)) | VECTOR_REQUEST(0x1c8) |
+                   VECTOR_WRITE);
+    status = bte_cpu_readq(qts, cpu, BEDROCK_LOCAL + LB_VECTOR_STATUS);
+    g_assert_cmphex(status & VECTOR_VALID, ==, VECTOR_VALID);
+    g_assert_cmphex(status & 7, ==, VECTOR_WRITE);
+}
+
+static void test_two_routers_route_by_entry_link(void)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(TWO_ROUTER_ARGS " -bios %s", quoted);
+
+    for (unsigned int node = 0; node < 4; node++) {
+        bte_cpu_writeq(qts, node * 4, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
+                       MD_BANK0_512MB);
+    }
+    /* Each node writes its own memory while every node still carries 0. */
+    bte_cpu_writeq(qts, 0, ROUTED_PROBE, WORD0);
+    bte_cpu_writeq(qts, 4, ROUTED_PROBE, WORD1);
+    for (unsigned int node = 1; node < 4; node++) {
+        bte_cpu_writeq(qts, node * 4, BEDROCK_LOCAL + LB_REVISION,
+                       (uint64_t)node << REVISION_NODE_SHIFT);
+    }
+
+    /* Node 2 to number 0: out of router 1 by port 1, turn 7 from port 2. */
+    bte_cpu_writeq(qts, 8, BEDROCK_LOCAL + NI_LOCAL_ROUTE(0), 7);
+    /* Node 3 to number 1: out of router 1 by port 6, turn 3 from port 3. */
+    bte_cpu_writeq(qts, 12, BEDROCK_LOCAL + NI_LOCAL_ROUTE(1), 3);
+    assert_unreachable(qts, 8, ROUTED_PROBE);
+    assert_unreachable(qts, 12, NODE(1) + ROUTED_PROBE);
+
+    /* Route 0 ends at the processor's own router: router 1. */
+    for (unsigned int link = 2; link <= 3; link++) {
+        cpu_vector_write(qts, 8, 0, ROUTER_LOCAL_TABLE(link, 0), 1);
+        cpu_vector_write(qts, 8, 0, ROUTER_LOCAL_TABLE(link, 1), 5);
+    }
+    g_assert_cmphex(cpu_read_ok(qts, 8, ROUTED_PROBE), ==, WORD0);
+    g_assert_cmphex(cpu_read_ok(qts, 12, NODE(1) + ROUTED_PROBE), ==, WORD1);
+    qtest_quit(qts);
+}
+
 static void test_local_boot_view_is_the_readers(void)
 {
     char *flashes[2];
@@ -2029,6 +2100,8 @@ int main(int argc, char **argv)
                    test_reset_page_is_node_zeros);
     qtest_add_func("sn1/cross-node/routed-reset-page-follows-the-route",
                    test_routed_reset_page_follows_the_route);
+    qtest_add_func("sn1/cross-node/two-routers-route-by-entry-link",
+                   test_two_routers_route_by_entry_link);
     qtest_add_func("sn1/cross-node/local-boot-view-is-the-readers",
                    test_local_boot_view_is_the_readers);
     qtest_add_func("sn1/cross-node/l1-uart-local-form-is-the-readers",

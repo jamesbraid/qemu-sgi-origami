@@ -10513,6 +10513,55 @@ static void test_origin3400_routed_bricks(void)
 }
 
 /*
+ * The catalogue's Origin 3400 with two R-bricks: two C-bricks on ports 2
+ * and 3 of each, and the routers joined port 1 to port 1 and port 6 to port
+ * 6. Each router-to-router cable is one cable object at both routers, and
+ * the routers' other links are their C-bricks' cables or nothing.
+ */
+static void test_origin3400_two_routers_cables(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn-builder-two-routers-prom-XXXXXX", &prom,
+                             &error);
+    static const char *const routers[] = {
+        "/machine/module4/router", "/machine/module5/router",
+    };
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M origin3000,topology=origin3400-two-routers "
+                      "-cpu R12000 -smp 16 -m 16384 -bios %s -nodefaults "
+                      "-display none", prom);
+    for (unsigned int port = 1; port <= 8; port++) {
+        g_autofree char *name = g_strdup_printf("port%u-cable", port);
+        g_autofree char *first = qom_get_str(qts, routers[0], name);
+        g_autofree char *second = qom_get_str(qts, routers[1], name);
+
+        if (port == 1 || port == 6) {
+            g_autofree char *cable =
+                g_strdup_printf("/machine/router-link-%u", port);
+
+            g_assert_cmpstr(first, ==, cable);
+            g_assert_cmpstr(second, ==, cable);
+        } else if (port == 2 || port == 3) {
+            g_assert_cmpstr(first, !=, "");
+            g_assert_cmpstr(second, !=, "");
+            g_assert_cmpstr(first, !=, second);
+        } else {
+            g_assert_cmpstr(first, ==, "");
+            g_assert_cmpstr(second, ==, "");
+        }
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
  * The catalogue's Onyx 3400 with InfiniteReality3: four C-bricks, an I-brick
  * on c0 and an N-brick on c1 to c3. Each I/O brick has a controller that
  * every C-brick cabled to it reaches, and each C-brick whose chip has a
@@ -10785,7 +10834,8 @@ static void test_origin3200_two_ibricks(void)
 /*
  * Each router L1 is given its product's board record, which the stock PROM
  * reads at router initialisation and prints an EEPROM vector read error
- * without. The Origin 3400 R-brick takes the R-brick row, the Origin 300
+ * without. The Origin 3400 R-brick takes the R-brick row, each of the two
+ * on the two-router Origin 3400 included, the Origin 300
  * NUMAlink module its row, and the router-profile L1 the Origin 3900 builder
  * puts behind a Cx-brick's router window, for either node board generation,
  * the Cx-brick row. A builder that stops naming the board brings the error
@@ -10800,6 +10850,10 @@ static void test_router_l1_board_records(void)
     } cases[] = {
         { "origin3000,topology=origin3400 -cpu R12000 -smp 16 -m 16384",
           "/machine/module4/l1", "rbrick" },
+        { "origin3000,topology=origin3400-two-routers -cpu R12000 -smp 16 "
+          "-m 16384", "/machine/module4/l1", "rbrick" },
+        { "origin3000,topology=origin3400-two-routers -cpu R12000 -smp 16 "
+          "-m 16384", "/machine/module5/l1", "rbrick" },
         { "origin3000,topology=origin3900 -cpu R16000 -smp 16 -m 8192",
           "/machine/module0/router-l1", "cxbrick" },
         { "origin3000,topology=origin3900,board=ip59 -cpu R16000 -smp 16 -m 8192",
@@ -11155,6 +11209,7 @@ static void test_ibrick_products_fit_ieee1394(void)
     } products[] = {
         { "origin3200", "R12000", 8, 8192 },
         { "origin3400", "R12000", 16, 16384 },
+        { "origin3400-two-routers", "R12000", 16, 16384 },
         { "onyx3000", "R12000", 8, 8192 },
         { "onyx3400-ir", "R12000", 16, 16384 },
         { "origin3900", "R16000", 16, 8192 },
@@ -13792,6 +13847,8 @@ int main(int argc, char **argv)
                    test_origin3200_l1_revision_override);
     qtest_add_func("sn/builder/origin3400/routed-bricks",
                    test_origin3400_routed_bricks);
+    qtest_add_func("sn/builder/origin3400/two-routers-cables",
+                   test_origin3400_two_routers_cables);
     qtest_add_func("sn/builder/onyx3000/vbrick-l1-and-heads",
                    test_onyx3000_vbrick_l1_and_heads);
     qtest_add_func("sn/builder/origin3900/cx-brick",

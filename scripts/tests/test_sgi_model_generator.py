@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "6fa6f0b7184814725d1dcb3b94a6a73e70a59bf09f94c6f1c6e4995b2d1b228c"
+    "5c083f7448d431e31a99be8a21522cef1368041c6f451b126bfc704293b5e746"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -212,9 +212,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 166)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 50)
-        self.assertEqual(len(layers), 114)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 168)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 51)
+        self.assertEqual(len(layers), 115)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -960,7 +960,8 @@ class FuelTests(unittest.TestCase):
                     "cpu-mode-word": 0x549cab85})
                 continue
             if topology["name"] in ("origin3200", "origin3400", "onyx3000",
-                                    "onyx3400-ir", "origin3200-two-ibricks"):
+                                    "onyx3400-ir", "origin3200-two-ibricks",
+                                    "origin3400-two-routers"):
                 # The C-brick's machine-type byte and reset-mode word come
                 # from the PROM's CPU-configuration table row.
                 self.assertEqual(topology["ip35-firmware"], {
@@ -1020,6 +1021,34 @@ class FuelTests(unittest.TestCase):
             if item["name"] != "origin3900-memory-node":
                 self.assertTrue(all("role" not in node
                                     for node in item["nodes"]), item["name"])
+
+    def test_two_routers_join_by_their_own_port_cables(self):
+        """Each R-brick instance omits its port 1 and port 6 buses and the
+        product authors one cable bus per router pair, so each router-to-
+        router cable joins the two routers at equal port numbers and each
+        router's port appears on one cable only."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        [topology] = [item for item in catalogue["topologies"]
+                      if item["name"] == "origin3400-two-routers"]
+        self.assertEqual(len(topology["routers"]), 2)
+        ends = {cable["name"]: [(end["kind"], end["index"], end["port"])
+                                for end in cable["ends"]]
+                for cable in topology["cables"]}
+        self.assertEqual(ends["router-link-1"],
+                         [("router", 0, 1), ("router", 1, 1)])
+        self.assertEqual(ends["router-link-6"],
+                         [("router", 0, 6), ("router", 1, 6)])
+        self.assertEqual(
+            sorted(value for name, value in ends.items()
+                   if not name.startswith("router-link")),
+            [[("node", 0, 0), ("router", 0, 2)],
+             [("node", 1, 0), ("router", 0, 3)],
+             [("node", 2, 0), ("router", 1, 2)],
+             [("node", 3, 0), ("router", 1, 3)]])
+        router_ports = [end for value in ends.values() for end in value
+                        if end[0] == "router"]
+        self.assertEqual(len(router_ports), len(set(router_ports)))
 
     def test_second_ibrick_is_a_labelled_model_only_offering(self):
         """An I-brick on each C-brick is in no source, so the offering says

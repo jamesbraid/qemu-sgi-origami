@@ -47,6 +47,7 @@ CONFIGURATIONS = {
     "origin3900": "origin3900.yaml",
     "origin3900-memory-node": "origin3900-memory-node.yaml",
     "origin3400": "origin3400.yaml",
+    "origin3400-two-routers": "origin3400-two-routers.yaml",
     "origin3400-r16000": "origin3400-r16000.yaml",
     "origin3400-r14000-600mhz": "origin3400-r14000-600mhz.yaml",
     "onyx2-rack": "onyx2-rack.yaml",

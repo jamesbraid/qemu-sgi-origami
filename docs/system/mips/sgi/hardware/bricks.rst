@@ -1019,6 +1019,33 @@ brick of this system in a slot) and the synthetic identities. Being
 routed, the composition assigns no master or slave role to a C-brick. The
 Origin 3200 forbids an R-brick.
 
+.. _sgi-sn-origin3400-two-routers:
+
+``-M origin3000,topology=origin3400-two-routers`` is the same four
+C-bricks on the two R-bricks every bundle ships: C-bricks 0 and 1 on ports
+2 and 3 of the first, C-bricks 2 and 3 on ports 2 and 3 of the second, and
+two cables between the routers, port 1 to port 1 and port 6 to port 6. The
+guide reserves ports 1, 6, 7 and 8 for R-brick links
+(:src:`007-4311-002 pp. 36-37`) and draws two cables between the two
+R-bricks of its 32-processor interconnect (:src:`007-4311-002 p. 56`) but
+numbers no ports, so the port pairing and the C-bricks' ports are
+model choices (*approximation*). The R-bricks take rack slots 19 and 25,
+where the published Origin 3400 inventory places its two. The catalogue
+expresses each router-to-router cable as a product bus that both routers
+join at their port number, and each R-brick instance omits its own port 1
+and port 6 buses (``omit_buses``), so no router port is on two cables.
+
+The stock IP35 PROM 6.210 finds 6 objects (4 hubs, 2 routers), 16
+processors, 16384 MB and both routers, passes its diagnostics and reaches
+the menu. Before it hands any hub its node number it programs each
+router's scratch 0 and protection configuration and then all eight links'
+128 local and 16 global entries, with the next router's turn on the links
+its hubs' traffic enters by (:ref:`sgi-sn1-router-routing`). Each router's
+L1 serves the R-brick board record; without it the PROM prints an EEPROM
+vector read error for that router. IRIX 6.5.30 boots from the Origin
+3200's installed disk to a login, and ``hinv -v`` lists a router under
+modules ``001c04`` and ``001c10`` with active ports 1, 2, 3 and 6.
+
 Model limits of a routed Origin 3000 build:
 
 * The L2 controller, which a rack holding an R-brick requires

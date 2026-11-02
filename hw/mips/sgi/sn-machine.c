@@ -6666,7 +6666,11 @@ static unsigned int sgi_machine_pipe_brick_number(
  */
 static const char *sgi_machine_router_board(const char *id)
 {
-    if (!strcmp(id, "rbrick-router")) {
+    /*
+     * The R-brick layer names its router "router"; a composition with one
+     * R-brick prefixes it "rbrick-", one with several "rbrick<n>-".
+     */
+    if (g_str_has_prefix(id, "rbrick") && g_str_has_suffix(id, "-router")) {
         return "rbrick";
     }
     if (!strcmp(id, "router-router")) {
