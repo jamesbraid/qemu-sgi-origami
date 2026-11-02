@@ -467,6 +467,11 @@ struct QLogicISPState {
     uint16_t rqst_cons;    /* Next request entry this device will read. */
     uint16_t resp_prod;    /* Next response slot this device will write. */
     uint16_t resp_cons;    /* Next response slot the guest has acknowledged. */
+    /*
+     * The producer count the guest last read. Not migrated: a load takes
+     * it from resp_prod, which only forgoes one kept interrupt.
+     */
+    uint16_t resp_seen;
 
     /* Completions waiting for response room, oldest first. */
     QTAILQ_HEAD(, QLogicISPPendingStatus) pending_status;
@@ -706,6 +711,7 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     s->rqst_cons = 0;
     s->resp_prod = 0;
     s->resp_cons = 0;
+    s->resp_seen = 0;
 
     qlogic_isp_drop_pending_status(s);
 
@@ -1248,6 +1254,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->resp_len = s->mailbox[1];
         s->resp_prod = 0;
         s->resp_cons = 0;
+        s->resp_seen = 0;
         /* From here reads of the pointer address answer resp_prod. */
 
         /*
@@ -1437,7 +1444,17 @@ static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
     /* The semaphore is released by the driver's separate write, not here. */
     case ISP_HOST_CMD_CLEAR_RISC_INT:
         s->risc_flags &= ~ISP_RISC_FLAG_HOST_INT;
-        s->bus_status = 0;
+        /*
+         * Approximation: a driver reads the producer count, handles the
+         * entries and only then clears. A completion posted after that
+         * read has not been handled, so the clear leaves its interrupt up
+         * instead of wiping it. What the chip does in this window is not
+         * documented; this rule suits drivers that read before the clear,
+         * and costs one empty interrupt for a driver that clears first.
+         */
+        if (s->resp_prod == s->resp_seen) {
+            s->bus_status = 0;
+        }
         qlogic_isp_update_irq(s);
         break;
 
@@ -2692,6 +2709,7 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
         if (s->resp_len == 0) {
             return s->mailbox[ISP_MAILBOX_RESPONSE_QUEUE];
         }
+        s->resp_seen = s->resp_prod;
         return s->resp_prod;
     }
 
@@ -3413,6 +3431,8 @@ static bool qlogic_isp_post_load(void *opaque, int version_id, Error **errp)
 
     memset(s->held_wire, 0, s->held_count * sizeof(s->held_wire[0]));
     s->held_count = 0;
+
+    s->resp_seen = s->resp_prod;
 
     return true;
 }

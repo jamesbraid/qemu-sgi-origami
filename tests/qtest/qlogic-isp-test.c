@@ -3437,6 +3437,65 @@ static void test_held_completion_resignals_on_drain(void *obj, void *data,
                     ISP_IOCB_COMPLETE);
 }
 
+/*
+ * A completion posted between the driver's read of the producer and its
+ * clear of the RISC interrupt has not been handled, so the clear must
+ * leave its interrupt up. The model rule is an approximation; the chip's
+ * behaviour in that window is not documented. A later read and clear
+ * still drop the line, so a quiet queue does not storm.
+ */
+static void test_clear_keeps_unseen_completion_interrupt(void *obj, void *data,
+                                                         QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 8 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 8 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   8, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   8, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x4001);
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+    g_assert_cmpuint(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+
+    /* A second completion lands after the read, before the clear. */
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x4002);
+    qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 2);
+
+    qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE, 1);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==,
+                    ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ);
+
+    /* The next pass reads both entries and its clear takes the line down. */
+    g_assert_cmpuint(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 2);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==, 0);
+}
+
 static void qlogic_isp_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
@@ -3563,6 +3622,8 @@ static void qlogic_isp_register_nodes(void)
                  test_four_completions_do_not_read_as_empty, NULL);
     qos_add_test("ack-does-not-erase-completion", "qlogic-isp1040",
                  test_ack_does_not_erase_a_later_completion, NULL);
+    qos_add_test("clear-keeps-unseen-completion-interrupt", "qlogic-isp1040",
+                 test_clear_keeps_unseen_completion_interrupt, NULL);
     qos_add_test("held-completion-resignals-on-drain", "qlogic-isp1040",
                  test_held_completion_resignals_on_drain, NULL);
 }
