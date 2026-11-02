@@ -351,6 +351,43 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
         with self.assertRaisesRegex(CompileError, "flash word"):
             _mode_bits(model, {}, processor)
 
+    def test_a_c_brick_r14000_500mhz_agrees_with_its_board(self):
+        # The stock PROM's class-0 row for board nibbles 1 and 6 is
+        # 0x549ca985: 500 MHz, SS field 4 (8 MiB), established for the PROM's
+        # row and, for the size, by the owner's guide. No C-brick flash block
+        # or Config0 has been read, so the reset word is inferred, not a
+        # capture.
+        def model_with(flash_word, reset_word=0x009ca985, cache_mib=8):
+            return {"composition": {"product": "origin3200-r14000-500mhz"},
+                    "machine": {"board_ip": "IP35", "emulation": {
+                        "ip35_firmware": {"machine_type": 0,
+                                          "cpu_mode_word": flash_word}}},
+                    "processors": [{"part": "r14000", "variants": [
+                        {"clock_mhz": 500, "cache_mib": cache_mib,
+                         "reset_mode_bits": f"{reset_word:#010x}"}]}]}
+
+        processor = {"kind": "R14000", "clock_hz": 500_000_000,
+                     "cache_mib": 8}
+        self.assertEqual(_mode_bits(model_with(0x549ca985), {}, processor),
+                         0x009ca985)
+        # A 4 MiB part cannot borrow the 8 MiB word: the SS field selects
+        # the cache.
+        small = dict(processor, cache_mib=4)
+        with self.assertRaisesRegex(CompileError, "selects a 8 MiB"):
+            _mode_bits(model_with(0x549ca985, cache_mib=4), {}, small)
+        # A flash word for another clock leaves the PROM and the processor
+        # disagreeing about the clock: the 600 MHz and 400 MHz rows are
+        # refused.
+        for other in (0x549cab85, 0x5414a785):
+            with self.subTest(flash=hex(other)):
+                with self.assertRaisesRegex(CompileError, "flash word"):
+                    _mode_bits(model_with(other), {}, processor)
+        # No flash word authored at all is refused too.
+        bare = model_with(0x549ca985)
+        del bare["machine"]["emulation"]["ip35_firmware"]
+        with self.assertRaisesRegex(CompileError, "none authored"):
+            _mode_bits(bare, {}, processor)
+
     def test_a_record_fits_one_boards_r16000_on_every_node(self):
         model = copy.deepcopy(_resolved("origin3900"))
         compile_model(model)

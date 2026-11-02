@@ -2043,7 +2043,12 @@ static bool sn1_node_validate_processors(SN1NodeState *node,
     for (unsigned int i = 0; i < node->nr_cpus; i++) {
         uint32_t prid = sn1_cpu_processor(node->model_node, i)->prid;
 
-        if (prid != 0x0f23 && prid != 0x0f24) {
+        /*
+         * 0x0f14 is the 500 MHz C-brick part: established for the part
+         * revision (Linux prints it on Origin-class machines, IP35 hinv
+         * prints 1.4), never read raw on a C-brick.
+         */
+        if (prid != 0x0f14 && prid != 0x0f23 && prid != 0x0f24) {
             error_setg(errp, TYPE_SGI_SN1_NODE " processor %u has unsupported "
                        "R14000 PRId 0x%08x", i, prid);
             return false;
