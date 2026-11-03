@@ -531,7 +531,11 @@ static void l1_reason(SGIL1State *s, uint8_t reason)
     s->last_reason[0] = reason;
 }
 
-/* The 0x8000 event: the first power-off request while up is deferred. */
+/*
+ * The 0x8000 event, sent by the deferred first power-off request. The
+ * firmware reading in the L1 datasheet (established) defers only for the
+ * type letters 9, A and Q, and only with an event subchannel registered.
+ */
 static void l1_send_event(SGIL1State *s, uint32_t code, uint32_t number,
                           const char *text)
 {
@@ -556,6 +560,14 @@ static void l1_send_event(SGIL1State *s, uint32_t code, uint32_t number,
     payload[n++] = 1;
     memcpy(payload + n, line, length);
     l1_emit(s, payload, n + length);
+}
+
+static bool l1_defers_power_down(SGIL1State *s)
+{
+    uint32_t letter = l1_brick_type_character(s);
+
+    return s->events_enabled &&
+           (letter == '9' || letter == 'A' || letter == 'Q');
 }
 
 static void l1_request_action(bool shutdown)
@@ -607,7 +619,8 @@ static void l1_power_down(SGIL1State *s, uint8_t reason, bool shutdown)
     if (!s->node_power) {
         return;
     }
-    if (reason == 1 && !s->power_down_pending && !s->capture) {
+    if (reason == 1 && !s->power_down_pending && !s->capture &&
+        l1_defers_power_down(s)) {
         s->power_down_pending = true;
         l1_send_event(s, 0x8000, 0, "Power Down: issue 'pwr d' again to "
                       "immediately power down.");
@@ -616,6 +629,9 @@ static void l1_power_down(SGIL1State *s, uint8_t reason, bool shutdown)
     s->power_down_pending = false;
     l1_reason(s, reason);
     s->node_power = false;
+    /* The power-down clears the registered event subchannel (established). */
+    s->events_enabled = false;
+    s->event_subchannel = 0;
     l1_display_set(s, 1, "Powered Down");
     l1_log(s, "power down (%s)", source);
     qemu_set_irq(s->node_power_out, 0);
@@ -2172,6 +2188,10 @@ static void l1_peer_power(SGIL1State *peer, bool up)
     }
     peer->node_power = up;
     peer->power_down_pending = false;
+    if (!up) {
+        peer->events_enabled = false;
+        peer->event_subchannel = 0;
+    }
     l1_display_set(peer, 1, up ? "Powered Up" : "Powered Down");
     l1_log(peer, "power %s (COMMAND)", up ? "up" : "down");
     qemu_set_irq(peer->node_power_out, up);

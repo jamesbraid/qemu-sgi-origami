@@ -1159,9 +1159,7 @@ static void test_l1_nmi_reaches_processors(const void *data)
         g_assert_false(qtest_get_irq(qts, line));
     }
 
-    /* The first power-off request is deferred; the second acts. */
-    l1_console_send(sv[0], "\024power down\r");
-    l1_console_until(sv[0], "to escape to L1\r\n");
+    /* An Origin 300 never defers: the first power-off request acts. */
     l1_console_send(sv[0], "\024power down\r");
     qtest_qmp_eventwait(qts, "SHUTDOWN");
     /* The display reply orders the nmi command before the check. */

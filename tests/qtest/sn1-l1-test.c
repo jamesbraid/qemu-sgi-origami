@@ -3664,9 +3664,7 @@ static void test_power(void)
     console_expect(fd, ESCAPE "power appears on\r\n" RETURN_CPU0);
     console_send(fd, "\024power up\r");
     console_expect(fd, ESCAPE "Power is already on\r\n" RETURN_CPU0);
-    /* The first power-off request while up is deferred; the second acts. */
-    console_send(fd, "\024power down\r");
-    console_expect(fd, ESCAPE RETURN_CPU0);
+    /* An Origin 300 never defers: the first power-off request acts. */
     console_send(fd, "\024power down\r");
     console_expect(fd, ESCAPE PROMPT);
     qtest_qmp_eventwait(s, "SHUTDOWN");
@@ -3796,10 +3794,7 @@ static void test_node_power_line(void)
     qtest_irq_intercept_out_named(s, L1, "node-power");
     send_frame(s, select, sizeof(select), false);
     g_assert_cmpuint(receive(s, reply), ==, 6);
-    /* The first power-off request while up is deferred; the second acts. */
-    console_send(fd, "\024power down\r");
-    console_expect(fd, ESCAPE "returning to console mode  " ID " console, "
-                       "<CTRL_T> to escape to L1\r\n");
+    /* An Origin 300 never defers: the first power-off request acts. */
     console_send(fd, "\024power down\r");
     console_expect(fd, ESCAPE PROMPT);
     qtest_qmp_eventwait(s, "SHUTDOWN");
@@ -4214,8 +4209,7 @@ static void assert_peer_display(QTestState *s, const char *expected)
 
 /*
  * A broadcast power command reaches the peer only as up or down, and a
- * power-down reaches it only once this chassis has gone down: the first
- * request, waiting for its confirmation, leaves both chassis up.
+ * power-down reaches it once this chassis has gone down.
  */
 static void test_peer_power(void)
 {
@@ -4228,10 +4222,6 @@ static void test_peer_power(void)
     assert_peer_display(s, "Powered Up");
     console_send(fd, "\024* power check\r");
     console_expect(fd, ESCAPE "power appears on\r\n" RETURN_CPU0);
-    assert_peer_display(s, "Powered Up");
-    console_send(fd, "\024* power down\r");
-    console_expect(fd, ESCAPE RETURN_CPU0);
-    assert_display(s, "Powered Up");
     assert_peer_display(s, "Powered Up");
     console_send(fd, "\024* power down\r");
     console_expect(fd, ESCAPE PROMPT);
@@ -7092,11 +7082,16 @@ static void test_reboot_request(void)
     close(fd);
 }
 
-/* The first power-off request while up sends the 0x8000 event and defers. */
-static void test_power_down_event(void)
+/*
+ * Only a brick whose type letter is 9, A or Q defers its first power-off
+ * request, and only with an event subchannel registered (established by the
+ * firmware reading in the L1 datasheet): it sends the 0x8000 event and the
+ * second request acts. The power-down also clears the registered subchannel.
+ */
+static void power_down_event(const char *props)
 {
     int fd;
-    QTestState *s = console_start(&fd, "", "-no-shutdown " RTC);
+    QTestState *s = console_start(&fd, props, "-no-shutdown " RTC);
     uint8_t reply[131], args[5];
     /* Source: rack 1 in bits 27:18, bay 1 in 17:12, task 4. */
     const uint8_t event_head[] = { 0x40 | 23, 0, 4, 0x10, 4, 0, 0, 0x80, 0, 2,
@@ -7122,6 +7117,49 @@ static void test_power_down_event(void)
     close(fd);
 }
 
+static void test_power_down_event(void)
+{
+    /* The letters 9, A and Q. */
+    power_down_event(",brick-type-code=57");
+    power_down_event(",brick-type-code=65");
+    power_down_event(",brick-type-code=81");
+}
+
+/*
+ * Any other letter, the default Origin 300 one and the C-brick and I-brick
+ * letters among them, never defers, with a registered event subchannel: the
+ * first request acts, no event is sent, and the power-down clears the
+ * registration so a later request needs a new one.
+ */
+static void power_down_no_event(const char *props)
+{
+    int fd;
+    QTestState *s = console_start(&fd, props, "-no-shutdown " RTC);
+    uint8_t reply[131], args[5];
+    QDict *reply_dict;
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    integer(args, 23);
+    g_assert_cmpuint(general(s, 0x1007, args, 5, 1, reply), ==, 6);
+    console_send(fd, "\024power down\r");
+    console_expect(fd, ESCAPE PROMPT);
+    qtest_qmp_eventwait(s, "SHUTDOWN");
+    assert_display(s, "Powered Down");
+    reply_dict = qtest_qmp(s, "{'execute':'qom-get','arguments':"
+        "{'path':%s,'property':'event-subchannel'}}", L1);
+    g_assert_cmpint(qdict_get_int(reply_dict, "return"), ==, 0);
+    qobject_unref(reply_dict);
+    qtest_quit(s);
+    close(fd);
+}
+
+static void test_power_down_no_event(void)
+{
+    power_down_no_event("");
+    /* 'C' and 'I'. */
+    power_down_no_event(",brick-type-code=67");
+    power_down_no_event(",brick-type-code=73");
+}
 
 #define DEFAULT_STATE "config=1,ep0=2,out1=1,in2=2"
 #define DEVICE_HEX "12010001ffff00405e063412000101020301"
@@ -8652,6 +8690,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/power-requests-off", test_power_requests_off);
     qtest_add_func("sn1/l1/reboot-request", test_reboot_request);
     qtest_add_func("sn1/l1/power-down-event", test_power_down_event);
+    qtest_add_func("sn1/l1/power-down-no-event", test_power_down_no_event);
     qtest_add_func("sn1/l1/uart-interrupts", test_uart_interrupts);
     qtest_add_func("sn1/l1/uart-irq-migration", test_uart_irq_migration);
     qtest_add_func("sn1/l1/node-position", test_node_position);
