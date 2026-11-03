@@ -1738,10 +1738,26 @@ What the model chooses, and the limit of each choice:
   refused with an error, and the first link stays. An N-brick takes
   several. The model does not count its connectors. After ``reboot_l1`` a brick answers no peer for one second of
   virtual time.
-- An I-brick starts powered, logging ``power up (COMMAND)``: its C-brick's
-  auto power-up ends in ``* power up``, *inferred*, which reaches the
-  I-brick. With ``auto-power`` off it starts unpowered. Its ``autopower``
-  command stays refused.
+- An I-brick at mains is off with its bridges in reset, and has no
+  power-up task of its own (*established*, firmware reading). It powers
+  on its own L1's ``power up`` or the front On/Off switch (the
+  ``power-button`` input, a rising edge), unless setting 0x77 disables the
+  switch, which the ``power-button-disabled`` property stands for
+  (*established* for the code path; that input bit 0 is the switch is
+  *inferred*; the disabled switch's message is not modelled). In a
+  machine its C-brick's auto power-up ends in ``* power up``,
+  *inferred*, which reaches the I-brick, so it starts powered, logging
+  ``power up (COMMAND)``. With ``auto-power`` off it starts unpowered.
+  Its ``autopower`` command stays refused.
+- An I-brick drives one ``reset-hold`` line, high while its bridges are
+  held in reset (also the ``reset-hold`` property). Power-down raises
+  it first; ``power up`` releases it after the supplies are on, ``power
+  up hold`` leaves it raised; ``reset`` raises and releases it, ``reset
+  hold`` leaves it raised, and ``reset`` is refused with ``power appears
+  off`` while the brick is off (*established*). The three bits are the
+  bridges' resets by the expander's own label; which chip pins they reach
+  is *unknown*, so the line is not wired to the XBridge. The supplies'
+  sequencing delays are not modelled.
 - A machine reset, which every guest restart and L1 reset command is on
   this machine, does not restart an I-brick, N-brick or V-brick L1: the L1
   runs on standby power, independent of brick power
