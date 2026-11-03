@@ -1130,7 +1130,7 @@ static void test_port_speed(void)
     qtest_quit(s);
 }
 
-static bool reset_hold(QTestState *s, unsigned n)
+static bool reset_held(QTestState *s, unsigned n)
 {
     g_autofree char *path = g_strdup_printf(DEVICES "l1c%u", n);
     QDict *response = qtest_qmp(s,
@@ -1167,7 +1167,7 @@ static void test_ibrick_power_is_its_own(void)
      * powered and logs the power-up that reached it.
      */
     expect_command(s, 1, "power check", "power appears on\n");
-    g_assert_false(reset_hold(s, 1));
+    g_assert_false(reset_held(s, 1));
     output = command(s, 1, "log", NULL);
     g_assert_nonnull(strstr(output, "power up (COMMAND)"));
     g_free(output);
@@ -1201,22 +1201,22 @@ static void test_ibrick_mains_state(void)
     g_autofree char *output = NULL;
 
     expect_command(s, 0, "power check", "power appears off\n");
-    g_assert_true(reset_hold(s, 0));
+    g_assert_true(reset_held(s, 0));
     expect_command(s, 0, "reset", "power appears off\n");
-    g_assert_true(reset_hold(s, 0));
+    g_assert_true(reset_held(s, 0));
     expect_command(s, 0, "power up hold", "");
     expect_command(s, 0, "power check", "power appears on\n");
-    g_assert_true(reset_hold(s, 0));
+    g_assert_true(reset_held(s, 0));
     /* A reset releases the bridges that the hold kept in reset. */
     expect_command(s, 0, "reset", "");
-    g_assert_false(reset_hold(s, 0));
+    g_assert_false(reset_held(s, 0));
     expect_command(s, 0, "reset hold", "");
-    g_assert_true(reset_hold(s, 0));
+    g_assert_true(reset_held(s, 0));
     expect_command(s, 0, "power down", "");
     expect_command(s, 0, "power check", "power appears off\n");
-    g_assert_true(reset_hold(s, 0));
+    g_assert_true(reset_held(s, 0));
     expect_command(s, 0, "power up", "");
-    g_assert_false(reset_hold(s, 0));
+    g_assert_false(reset_held(s, 0));
     qtest_quit(s);
 }
 
@@ -1229,12 +1229,12 @@ static void test_ibrick_power_button(void)
 
     press_power_button(s, 0);
     expect_command(s, 0, "power check", "power appears on\n");
-    g_assert_false(reset_hold(s, 0));
+    g_assert_false(reset_held(s, 0));
     output = command(s, 0, "log", NULL);
     g_assert_nonnull(strstr(output, "power up (PANEL)"));
     press_power_button(s, 0);
     expect_command(s, 0, "power check", "power appears off\n");
-    g_assert_true(reset_hold(s, 0));
+    g_assert_true(reset_held(s, 0));
     g_free(output);
     output = command(s, 0, "log", NULL);
     g_assert_nonnull(strstr(output, "power down (PANEL)"));
@@ -1250,10 +1250,72 @@ static void test_ibrick_power_button_disabled(void)
 
     press_power_button(s, 0);
     expect_command(s, 0, "power check", "power appears off\n");
-    g_assert_true(reset_hold(s, 0));
+    g_assert_true(reset_held(s, 0));
     expect_command(s, 0, "power up", "");
     press_power_button(s, 0);
     expect_command(s, 0, "power check", "power appears on\n");
+    qtest_quit(s);
+}
+
+/*
+ * An R-brick at mains is off and in reset until a "power up" reaches its L1
+ * or its front switch is pressed (established, firmware reading). It accepts
+ * power and reset from any source but cannot forward a command: "*", "ctc"
+ * and "cti" are refused. The model's auto-power, on by default, stands for
+ * the machine having powered it, a declared approximation, since nothing in
+ * the stock protocol powers a router without an L2.
+ */
+static void test_rbrick_power(void)
+{
+    QTestState *s = start_one("brick-type=router,router-board=rbrick,"
+                              "auto-power=off");
+    g_autofree char *output = NULL;
+
+    expect_command(s, 0, "power check", "power appears off\n");
+    g_assert_true(reset_held(s, 0));
+    /* A reset while off holds the router in reset and releases nothing. */
+    expect_command(s, 0, "reset", "");
+    g_assert_true(reset_held(s, 0));
+    expect_command(s, 0, "power up hold", "");
+    expect_command(s, 0, "power check", "power appears on\n");
+    g_assert_true(reset_held(s, 0));
+    expect_command(s, 0, "reset", "");
+    g_assert_false(reset_held(s, 0));
+    expect_command(s, 0, "power down", "");
+    g_assert_true(reset_held(s, 0));
+    press_power_button(s, 0);
+    expect_command(s, 0, "power check", "power appears on\n");
+    g_assert_false(reset_held(s, 0));
+    press_power_button(s, 0);
+    expect_command(s, 0, "power check", "power appears off\n");
+    expect_refused(s, 0, "* power up");
+    expect_refused(s, 0, "ctc power up");
+    expect_refused(s, 0, "cti power up");
+    expect_command(s, 0, "power check", "power appears off\n");
+    qtest_quit(s);
+
+    s = start_one("brick-type=router,router-board=rbrick");
+    expect_command(s, 0, "power check", "power appears on\n");
+    g_assert_false(reset_held(s, 0));
+    qtest_quit(s);
+}
+
+/* The R-brick L1 opens no RS-422 peer port, so no peer or io-peer joins it. */
+static void test_rbrick_has_no_peer_port(void)
+{
+    const char *const props[] = {
+        "brick-type=router,router-board=rbrick",
+        "brick-type=router,router-board=rbrick",
+        "brick-type=cbrick,named=on,rack=1,bay=4",
+        "brick-type=ibrick,named=on,rack=1,bay=31,mac=" MAC_PROP,
+    };
+    QTestState *s = start_with(4, props, "");
+
+    g_assert_true(qom_link_refused(s, 0, "peer", DEVICES "l1c1"));
+    g_assert_true(qom_link_refused(s, 0, "peer", DEVICES "l1c2"));
+    g_assert_true(qom_link_refused(s, 2, "peer", DEVICES "l1c0"));
+    g_assert_true(qom_link_refused(s, 0, "io-peer", DEVICES "l1c3"));
+    g_assert_true(qom_link_refused(s, 2, "io-peer", DEVICES "l1c0"));
     qtest_quit(s);
 }
 
@@ -3004,6 +3066,9 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/port-speed", test_port_speed);
     qtest_add_func("sgi-l1-o3k/ibrick-power", test_ibrick_power_is_its_own);
     qtest_add_func("sgi-l1-o3k/ibrick-mains-state", test_ibrick_mains_state);
+    qtest_add_func("sgi-l1-o3k/rbrick-power", test_rbrick_power);
+    qtest_add_func("sgi-l1-o3k/rbrick-no-peer-port",
+                   test_rbrick_has_no_peer_port);
     qtest_add_func("sgi-l1-o3k/ibrick-power-button", test_ibrick_power_button);
     qtest_add_func("sgi-l1-o3k/ibrick-power-button-disabled",
                    test_ibrick_power_button_disabled);
