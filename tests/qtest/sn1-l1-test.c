@@ -4232,6 +4232,58 @@ static void test_peer_power(void)
     close(fd);
 }
 
+static char *peer_notice(QTestState *s, const char *path)
+{
+    g_autoptr(QDict) reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':"
+        "{'path':%s,'property':'peer-power-notice'}}", path);
+
+    g_assert_true(qdict_haskey(reply, "return"));
+    return g_strdup(qdict_get_str(reply, "return"));
+}
+
+/*
+ * A plain power up or power down publishes a power-state notice to the
+ * cabled peer (established for the sender); a plain reset does not. What
+ * the peer does with the notice is unknown, so it only records the last
+ * one.
+ */
+static void test_peer_power_notice(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", "-no-shutdown " RTC
+                                  " -device sgi-l1,id=l1d,rack=1,bay=2");
+    g_autofree char *notice = NULL;
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    link_peers(s);
+    g_assert_cmpstr(notice = peer_notice(s, PEER), ==, "none");
+    g_free(notice);
+    console_send(fd, "\024reset\r");
+    console_expect(fd, ESCAPE RETURN_CPU0);
+    qtest_qmp_eventwait(s, "RESET");
+    g_assert_cmpstr(notice = peer_notice(s, PEER), ==, "none");
+    g_free(notice);
+    console_send(fd, "\024power down\r");
+    console_expect(fd, ESCAPE PROMPT);
+    qtest_qmp_eventwait(s, "SHUTDOWN");
+    g_assert_cmpstr(notice = peer_notice(s, PEER), ==,
+                    "#1 rack=1 bay=1 power=off");
+    g_free(notice);
+    /* The peer's own state is not the sender's. */
+    assert_peer_display(s, "Powered Up");
+    console_send(fd, "power up\r");
+    console_expect(fd, PROMPT "\r\n" ENTER_CPU0);
+    qtest_qmp_eventwait(s, "RESET");
+    g_assert_cmpstr(notice = peer_notice(s, PEER), ==,
+                    "#2 rack=1 bay=1 power=on");
+    g_free(notice);
+    notice = peer_notice(s, L1);
+    g_assert_cmpstr(notice, ==, "none");
+    qtest_quit(s);
+    close(fd);
+}
+
 /*
  * A command relayed to the peer with ctc cannot be relayed back: the peer
  * refuses a nested ctc and the requester's own collection survives, so a
@@ -8658,6 +8710,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/route-forms", test_route_forms);
     qtest_add_func("sn1/l1/peer-pair", test_peer_pair);
     qtest_add_func("sn1/l1/peer-power", test_peer_power);
+    qtest_add_func("sn1/l1/peer-power-notice", test_peer_power_notice);
     qtest_add_func("sn1/l1/peer-nested-ctc", test_peer_nested_ctc);
     qtest_add_func("sn1/l1/io-peer-slot", test_io_peer_slot);
     qtest_add_func("sn1/l1/command-interpreter", test_command_interpreter);

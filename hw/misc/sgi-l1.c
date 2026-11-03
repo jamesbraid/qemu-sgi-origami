@@ -608,6 +608,27 @@ static void l1_schedule_action(bool shutdown)
     }
 }
 
+/*
+ * After the brick's power state changes it publishes a power-state notice
+ * (a configuration event carrying rack, bay and power word) and the peer
+ * link copies it to the cabled peer. Established for the sender and for a
+ * plain "reset" publishing none. What the peer does with the notice is
+ * unknown, so the peer only records the last one. A C-brick opens the peer
+ * link on slot 1 only, so the I-brick, on slot 9, hears nothing.
+ */
+static void l1_publish_power(SGIL1State *s)
+{
+    SGIL1State *peer = l1_linked_peer(s);
+
+    if (!peer) {
+        return;
+    }
+    peer->notice_count++;
+    peer->notice_rack = s->rack;
+    peer->notice_bay = s->bay;
+    peer->notice_power = s->node_power;
+}
+
 static void l1_power_down(SGIL1State *s, uint8_t reason, bool shutdown)
 {
     const char *source = l1_reasons[reason];
@@ -635,6 +656,7 @@ static void l1_power_down(SGIL1State *s, uint8_t reason, bool shutdown)
     l1_display_set(s, 1, "Powered Down");
     l1_log(s, "power down (%s)", source);
     qemu_set_irq(s->node_power_out, 0);
+    l1_publish_power(s);
     if (shutdown) {
         /*
          * A synchronous shutdown request only wakes the main loop, which
@@ -676,6 +698,7 @@ static void l1_power_up(SGIL1State *s, uint8_t reason, bool restart)
     l1_display_set(s, 1, "Powered Up");
     l1_log(s, "power up (%s)", source);
     qemu_set_irq(s->node_power_out, 1);
+    l1_publish_power(s);
     if (restart) {
         s->power_up_pending = true;
         l1_schedule_action(false);
@@ -2195,6 +2218,7 @@ static void l1_peer_power(SGIL1State *peer, bool up)
     l1_display_set(peer, 1, up ? "Powered Up" : "Powered Down");
     l1_log(peer, "power %s (COMMAND)", up ? "up" : "down");
     qemu_set_irq(peer->node_power_out, up);
+    l1_publish_power(peer);
 }
 
 static void l1_peer_reset(SGIL1State *peer)
@@ -5298,6 +5322,10 @@ static const VMStateDescription vmstate_l1 = {
         VMSTATE_UINT8(cx_console_board, SGIL1State),
         VMSTATE_UINT8(cx_console_subchannel, SGIL1State),
         VMSTATE_BOOL(cx_filter, SGIL1State),
+        VMSTATE_UINT32(notice_count, SGIL1State),
+        VMSTATE_UINT32(notice_rack, SGIL1State),
+        VMSTATE_UINT32(notice_bay, SGIL1State),
+        VMSTATE_BOOL(notice_power, SGIL1State),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
@@ -6958,6 +6986,18 @@ static bool l1_l2_link_up_get(Object *obj, Error **errp)
     return SGI_L1(obj)->l2_up;
 }
 
+static char *l1_peer_notice_get(Object *obj, Error **errp)
+{
+    SGIL1State *s = SGI_L1(obj);
+
+    if (!s->notice_count) {
+        return g_strdup("none");
+    }
+    return g_strdup_printf("#%u rack=%u bay=%u power=%s", s->notice_count,
+                           s->notice_rack, s->notice_bay,
+                           s->notice_power ? "on" : "off");
+}
+
 static void l1_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -6977,6 +7017,8 @@ static void l1_class_init(ObjectClass *klass, const void *data)
                                   NULL);
     object_class_property_add_str(klass, "display-line-2",
                                   l1_display_get, NULL);
+    object_class_property_add_str(klass, "peer-power-notice",
+                                  l1_peer_notice_get, NULL);
 }
 
 static void l1_finalize(Object *obj)

@@ -1019,8 +1019,12 @@ describes what the two L1s exchange. ``* power up`` and ``* power down``
 act locally and then on the peer :src:`007-4365-002 p. 36-37`,
 *established*; ``* reset`` doing the same is a model choice. Both chassis
 are one QEMU machine, so the peer only records its power state, display
-and log entry. A power-down reaches the peer only once the requesting
-chassis is down. ``ctc <command>`` runs the command on the peer and
+and log entry. A plain ``power up`` or ``power down`` publishes a
+power-state notice to the peer (*established* for the sender, the
+configuration event carrying rack, bay and power word); a plain ``reset``
+publishes none. What the peer does with a notice is *unknown*, so it
+only records the last one, readable as the ``peer-power-notice``
+property. ``ctc <command>`` runs the command on the peer and
 prints the peer's id line first; a nested ``ctc`` is refused with
 ``INFO: nested ctc is unsupported.`` and ``LOG_UNIMP``. ``* debug``,
 ``ctc debug``, ``* nmi`` and console forwarding from the second chassis
