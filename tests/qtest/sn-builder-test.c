@@ -3986,21 +3986,30 @@ static void test_ip53_origin_to_onyx_machine_type_migration_refused(void)
         "sn-builder-ip53-product-migrate-XXXXXX", &error);
     g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
     g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *dest_err = NULL;
+    g_autofree char *dest_extra = NULL;
+    g_autofree char *dest_text = NULL;
     IP53RuntimeTestFixture *from, *to;
 
     if (!g_test_subprocess()) {
         g_test_trap_subprocess(NULL, 30 * G_USEC_PER_SEC,
                                G_TEST_SUBPROCESS_INHERIT_STDERR);
         g_test_trap_assert_passed();
-        g_test_trap_assert_stderr("*Machine type received is 'origin350' "
-                                  "and local is 'onyx350'*");
         return;
     }
 
     g_assert_no_error(error);
+    /*
+     * The destination's refusal goes to its own file.  Both QEMUs would
+     * otherwise share this process's stderr, and the source's "failed to
+     * save ... ram" report can land in the middle of the destination's
+     * message and break a pattern match.
+     */
+    dest_err = g_build_filename(dir, "destination.stderr", NULL);
+    dest_extra = g_strdup_printf("-incoming defer 2>%s", dest_err);
     from = ip53_runtime_test_start(
         "origin350", NULL);
-    to = ip53_onyx350_runtime_test_start("-incoming defer");
+    to = ip53_onyx350_runtime_test_start(dest_extra);
     qtest_set_expected_status(to->qts, EXIT_FAILURE);
     qtest_qmp_assert_success(to->qts,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
@@ -4015,12 +4024,17 @@ static void test_ip53_origin_to_onyx_machine_type_migration_refused(void)
         }
         g_assert_false(qtest_probe_child(to->qts));
     }
+    g_assert_true(g_file_get_contents(dest_err, &dest_text, NULL, NULL));
+    g_assert_true(g_pattern_match_simple(
+        "*Machine type received is 'origin350' and local is 'onyx350'*",
+        dest_text));
     if (qtest_probe_child(from->qts)) {
         qtest_qmp_assert_success(from->qts, "{'execute':'quit'}");
         qtest_wait_qemu(from->qts);
     }
     ip53_runtime_test_stop(to);
     ip53_runtime_test_stop(from);
+    g_unlink(dest_err);
     g_unlink(socket);
     g_rmdir(dir);
 }
