@@ -1787,6 +1787,9 @@ next brick's name line, and on task 3 they arrive as separate fields.
        a brick that is cabled.
      - The order is the model's: the guides print two different orders
        (:src:`007-3938-001 pp. 17-18`; :src:`007-3938-006 p. 27`).
+       The typed-at brick's own command runs last and the others first, as
+       the firmware hands its remote requests to the router before it runs
+       its own (*established*); the replies still print own answer first.
        ``*`` does not reach the other C-brick's I-brick, which the guides
        imply it should. ``ctci`` is not implemented: it is reported as an
        unknown command and nothing runs. The other C-brick runs the plain

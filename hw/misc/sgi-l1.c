@@ -2284,13 +2284,14 @@ static bool l1_o3k_refused(const SGIL1State *s, const char *word)
 }
 
 /*
- * Run @text on an attached controller and print what it said under its
+ * Run @text on an attached controller and return what it said under its
  * name, as ctc does. The controller is asked in-process; a controller that
  * is restarting does not answer. A command run on another controller is
  * marked as relayed, so it cannot relay or broadcast onward; the sender's
  * own part of a broadcast is not relayed, only collected under its name.
  */
-static int l1_relay(SGIL1State *s, SGIL1State *target, const char *text)
+static int l1_relay_collect(SGIL1State *s, SGIL1State *target,
+                            const char *text, char **said)
 {
     g_autofree char *name = l1_module_name(target);
     g_autofree char *output = NULL;
@@ -2302,7 +2303,7 @@ static int l1_relay(SGIL1State *s, SGIL1State *target, const char *text)
     if (target != s && l1_restarting(target)) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-l1: no response from a restarting controller\n");
-        l1_printf(s, "%s:\r\nno response\r\n", name);
+        *said = g_strdup_printf("%s:\r\nno response\r\n", name);
         return -1;
     }
     /* The output of the relayed command is collected, not printed. */
@@ -2315,19 +2316,42 @@ static int l1_relay(SGIL1State *s, SGIL1State *target, const char *text)
     target->capture = saved;
     target->serving_peer = serving;
     /* One line of its own, so a task-3 reply carries it as a field. */
-    l1_printf(s, "%s:\r\n%s", name, output);
+    *said = g_strdup_printf("%s:\r\n%s", name, output);
     return result;
 }
 
-/* A C-brick's "*": this brick, the other C-brick and the I-brick, in turn. */
+static int l1_relay(SGIL1State *s, SGIL1State *target, const char *text)
+{
+    g_autofree char *said = NULL;
+    int result = l1_relay_collect(s, target, text, &said);
+
+    l1_printf(s, "%s", said);
+    return result;
+}
+
+/*
+ * A C-brick's "*": this brick, the other C-brick and the I-brick. The
+ * firmware hands every remote request to the router before it runs the
+ * typed-at brick's own command, so the own brick acts last and the remote
+ * bricks first (established, firmware reading in the L1 datasheet). The
+ * replies print own answer first; the order of the rest follows the target
+ * table here, where the firmware's is the order they arrive (inferred).
+ */
 static int l1_o3k_broadcast(SGIL1State *s, const char *text)
 {
     SGIL1State *targets[] = { s, l1_linked_peer(s), s->io_peer };
+    char *said[ARRAY_SIZE(targets)] = { NULL };
     int result = 0;
 
-    for (unsigned i = 0; i < ARRAY_SIZE(targets); i++) {
-        if (targets[i] && l1_relay(s, targets[i], text)) {
+    for (unsigned i = ARRAY_SIZE(targets); i--;) {
+        if (targets[i] && l1_relay_collect(s, targets[i], text, &said[i])) {
             result = -1;
+        }
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(targets); i++) {
+        if (said[i]) {
+            l1_printf(s, "%s", said[i]);
+            g_free(said[i]);
         }
     }
     return result;
