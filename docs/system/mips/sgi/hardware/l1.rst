@@ -1758,6 +1758,18 @@ What the model chooses, and the limit of each choice:
   bridges' resets by the expander's own label; which chip pins they reach
   is *unknown*, so the line is not wired to the XBridge. The supplies'
   sequencing delays are not modelled.
+- An R-brick L1 (``brick-type=router`` with ``router-board=rbrick``) is
+  off at mains with its router in reset and accepts ``power up``,
+  ``power up hold``, ``power down``, ``reset`` and ``reset hold`` from any
+  request source, drives the same ``reset-hold`` line and takes the same
+  front switch (*established*, firmware reading). Its ``reset`` is not
+  refused while off: it holds the router in reset and releases it only if
+  a supply is on. It opens no RS-422 peer port, so ``peer`` and
+  ``io-peer`` refuse it, and ``*``, ``ctc`` and ``cti`` are refused on it
+  (*established*: it cannot forward). Nothing in the stock protocol
+  powers a router without an L2, so ``auto-power``, on by default,
+  starts it powered as a declared *approximation* of a machine that has
+  powered it; with ``auto-power`` off it starts off and in reset.
 - A machine reset, which every guest restart and L1 reset command is on
   this machine, does not restart an I-brick, N-brick or V-brick L1: the L1
   runs on standby power, independent of brick power

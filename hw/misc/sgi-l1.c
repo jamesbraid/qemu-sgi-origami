@@ -355,6 +355,12 @@ static bool l1_is_rbrick(const SGIL1State *s)
            s->router_board && !strcmp(s->router_board, "rbrick");
 }
 
+/* The bricks whose L1 holds downstream resets: bridges or the router. */
+static bool l1_holds_resets(const SGIL1State *s)
+{
+    return l1_is_ibrick(s) || l1_is_rbrick(s);
+}
+
 /* The controller side: operator console text, display and log. */
 
 static void G_GNUC_PRINTF(2, 3) l1_printf(SGIL1State *s, const char *fmt, ...)
@@ -2223,7 +2229,7 @@ static void l1_peer_power(SGIL1State *peer, bool up, uint8_t reason,
     if (up == peer->node_power) {
         return;
     }
-    if (l1_is_ibrick(peer) && !up) {
+    if (l1_holds_resets(peer) && !up) {
         l1_hold_resets(peer, true);
     }
     l1_reason(peer, reason);
@@ -2236,7 +2242,7 @@ static void l1_peer_power(SGIL1State *peer, bool up, uint8_t reason,
     l1_display_set(peer, 1, up ? "Powered Up" : "Powered Down");
     l1_log(peer, "power %s (%s)", up ? "up" : "down", l1_reasons[reason]);
     qemu_set_irq(peer->node_power_out, up);
-    if (l1_is_ibrick(peer) && up && !hold) {
+    if (l1_holds_resets(peer) && up && !hold) {
         l1_hold_resets(peer, false);
     }
     l1_publish_power(peer);
@@ -2252,7 +2258,8 @@ static void l1_peer_reset(SGIL1State *peer)
 }
 
 /*
- * The front On/Off switch of an I-brick: power-up when no supply is on,
+ * The front On/Off switch of an I-brick or R-brick: power-up when no supply
+ * is on,
  * power-down when some are, unless setting 0x77 disables it (established
  * for the code path; that input bit 0 is the switch is inferred). The
  * disabled switch's visible message is not modelled.
@@ -2264,9 +2271,9 @@ static void l1_power_button(void *opaque, int n, int level)
     if (!level) {
         return;
     }
-    if (!l1_is_ibrick(s)) {
+    if (!l1_holds_resets(s)) {
         qemu_log_mask(LOG_UNIMP, "sgi-l1: the front power switch is modelled "
-                      "for an I-brick only\n");
+                      "for an I-brick and an R-brick only\n");
         return;
     }
     if (s->power_button_disabled) {
@@ -2434,24 +2441,28 @@ static int l1_o3k_broadcast(SGIL1State *s, const char *text)
 }
 
 /*
- * Power and reset on an I-brick act on that brick alone. "power up",
- * "power up hold", "power down", "reset" and "reset hold" come from any
- * request source (established); "reset" is refused while the brick is off,
- * the sheet's "power appears off". A hold leaves the bridges in reset;
- * what ends a "reset hold" is inferred to be the next "reset".
+ * Power and reset on an I-brick or R-brick act on that brick alone.
+ * "power up", "power up hold", "power down", "reset" and "reset hold" come
+ * from any request source (established). An I-brick's "reset" is refused
+ * while the brick is off, the sheet's "power appears off"; an R-brick's is
+ * not refused: it holds the router in reset and releases it only if a
+ * supply is on. A hold leaves the resets held; what ends a "reset hold" is
+ * inferred to be the next "reset".
  */
-static void l1_ibrick_power(SGIL1State *s, int argc, char **argv)
+static void l1_brick_power(SGIL1State *s, int argc, char **argv)
 {
     if (l1_word(argv[0], "reset", "rst") &&
         (argc == 1 || (argc == 2 && !strcmp(argv[1], "hold")))) {
-        if (!s->node_power) {
+        if (!s->node_power && l1_is_ibrick(s)) {
             l1_printf(s, "power appears off\r\n");
             return;
         }
         l1_peer_reset(s);
         l1_hold_resets(s, true);
-        qemu_irq_pulse(s->node_reset_out);
-        l1_hold_resets(s, argc == 2);
+        if (s->node_power) {
+            qemu_irq_pulse(s->node_reset_out);
+            l1_hold_resets(s, argc == 2);
+        }
     } else if (l1_word(argv[0], "reset", "rst")) {
         l1_invalid(s, "reset");
     } else if ((argc == 2 || (argc == 3 && !strcmp(argv[2], "hold"))) &&
@@ -2983,6 +2994,16 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
         result = -1;
         goto complete;
     }
+    if (argc && l1_is_rbrick(s) &&
+        (!strcmp(argv[0], "*") || !strcmp(argv[0], "ctc") ||
+         !strcmp(argv[0], "cti"))) {
+        /* The R-brick cannot forward a command and has no peer port. */
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: command %s unsupported on the "
+                      "R-brick\n", argv[0]);
+        l1_printf(s, "INFO: command not supported on this brick type\r\n");
+        result = -1;
+        goto complete;
+    }
     if (argc && l1_is_cbrick(s) && !strcmp(argv[0], "*") &&
         (s->serving_peer || (argc > 1 && !strcmp(argv[1], "*")))) {
         /*
@@ -3069,9 +3090,9 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
         g_string_free(output, TRUE);
         goto complete;
     }
-    if (l1_is_ibrick(s) && (l1_word(argv[0], "power", "pwr") ||
-                            l1_word(argv[0], "reset", "rst"))) {
-        l1_ibrick_power(s, argc, argv);
+    if (l1_holds_resets(s) && (l1_word(argv[0], "power", "pwr") ||
+                               l1_word(argv[0], "reset", "rst"))) {
+        l1_brick_power(s, argc, argv);
         goto complete;
     }
     if (!s->profile->compute_services &&
@@ -6329,12 +6350,15 @@ fuel_mac_done:
          * An I-brick's "auto-power" stands for its C-brick's power-up. At
          * mains the I-brick is off with its bridges in reset, and has no
          * power-up task of its own (established, firmware reading in the
-         * I-brick datasheet).
+         * I-brick datasheet). An R-brick is the same, with its router in
+         * reset; the stock protocol powers it only from its own console, a
+         * USB host or its switch, so its "auto-power" is a declared
+         * approximation of a machine that has powered it.
          */
-        if (!l1_is_ibrick(s)) {
-            s->auto_power = false;
-        } else {
+        if (l1_holds_resets(s)) {
             s->reset_hold = true;
+        } else {
+            s->auto_power = false;
         }
         s->processors = 0;
     }
@@ -6471,7 +6495,7 @@ fuel_mac_done:
         return;
     }
     l1_boot(s);
-    if (s->auto_power && l1_is_ibrick(s)) {
+    if (s->auto_power && l1_holds_resets(s)) {
         /*
          * An I-brick has no auto power of its own: the C-brick's countdown
          * ends in "* power up", which reaches the I-brick. The I-brick is
@@ -6901,6 +6925,9 @@ static void l1_power_command_reachable_set(Object *obj, bool reachable,
  */
 static const char *l1_peer_fault(const SGIL1State *a, const SGIL1State *b)
 {
+    if (l1_is_rbrick(a) || l1_is_rbrick(b)) {
+        return "L1 R-brick opens no RS-422 peer port";
+    }
     if (!a->profile->o3k && !b->profile->o3k) {
         return NULL;
     }
