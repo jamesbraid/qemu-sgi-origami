@@ -90,10 +90,10 @@ from three machines.
 
 PCI Status on ``sgi-rad1-octane`` reads ``0x0480``: slow DEVSEL timing
 and fast back-to-back capable (bits 10:9 and 7, :src:`pci-local-bus-2.2`).
-That matches the reference Octane2's chip
-(:ref:`sgi-rad1-octane2-config`), *established* for that chip. The bits
-are read-only and survive a write and a machine reset. That every Octane
-board reads the same is *inferred*.
+The reference Octane2's RAD1 reads that value in a :term:`PROM` dump after
+start-up (:ref:`sgi-rad1-octane2-config`), so it is *observed* for that
+chip. The bits are read-only and survive a write and a machine reset.
+That every Octane board reads the same is *inferred*.
 
 The BaseIO-G ``hinv -v`` lists ``0x10a9:0x0005`` at PCI slot 7
 :src:`nekonomicon-17194 owner's hinv -v post`, *observed*, and the
@@ -718,10 +718,10 @@ Configuration header
        pin 0 and line 0
 
 Aligned 32-bit reads of Bridge device 3, function 0, on IP30 revision B
-with HEART revision F. The identity, class, revision, Status and
-interrupt pin are *established* for this chip: the function requests no
-interrupt pin, and its Status reports slow DEVSEL timing and fast
-back-to-back capability (bits 10:9 and 7, :src:`pci-local-bus-2.2`). The
+with HEART revision F. The identity, class, revision and interrupt pin are
+*established* for this chip: the function requests no interrupt pin. Its
+Status, slow DEVSEL timing and fast back-to-back capability (bits 10:9 and
+7, :src:`pci-local-bus-2.2`), is *observed* in this dump. The
 same machine's inventory prints "RAD audio revision 12.0". Command and
 BAR0 are what the firmware wrote. BAR0 is the base the PROM had
 assigned, not a sizing response, so it says nothing about the BAR's
