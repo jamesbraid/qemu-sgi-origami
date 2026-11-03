@@ -1847,7 +1847,10 @@ static void test_partition_clear(void)
  * L2 sheet, "A system with no L2": the model has no L2 or L3 controller, so a
  * request addressed to controller type 1 or 2 gets the router error reply
  * (-1, 8) and never a normal answer, from a named or unnamed C-brick and
- * I-brick alike.
+ * I-brick alike, and from every other L1 profile: the request is not run
+ * locally, so a host that loops "pwr d" at the L2 address gets the error
+ * and nothing else (established, firmware reading). The USB-task cases that
+ * answer details 9 and 10 are not modelled.
  */
 static void test_no_l2_route(void)
 {
@@ -1856,6 +1859,10 @@ static void test_no_l2_route(void)
         "brick-type=ibrick,named=on,rack=1,bay=31,mac=" MAC_PROP,
         "brick-type=cbrick",
         "brick-type=ibrick,mac=" MAC_PROP,
+        "brick-type=ip45",
+        "brick-type=cxbrick,named=on,rack=1,bay=4",
+        "brick-type=router,router-board=rbrick",
+        "brick-type=router",
     };
     static const uint32_t destinations[] = {
         UINT32_C(0x1ffff006), UINT32_C(0x1ffff003), UINT32_C(0x2ffff006),
