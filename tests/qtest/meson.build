@@ -38,6 +38,11 @@ slow_qtests = {
   # default in the merge queue's full run, under load. About three times
   # the quiet figure, rounded up.
   'sgi-crime-mte-test': 120,
+  # One group of sgi-crime-render-test, named TEST-GROUP. Alone it takes
+  # 22 to 25 s, and in the merge queue's four-process full run it was killed
+  # at the 60 s default (batch run 16032, 2026-11-03) while its siblings
+  # ran 10 to 52 s. About three times the quiet figure, rounded up.
+  'sgi-crime-render-test-gl-transfer-coordinate-widths': 75,
   # Alone it took 55.6 s at load average 118, 2026-10-24 (11 s on a quiet
   # host), and overran the default in full runs; three times the loaded
   # figure, rounded up.
