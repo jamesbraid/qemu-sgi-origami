@@ -953,10 +953,15 @@ power-down countdown) to the processor only on the subchannel the
 processor registered with ``0x1007``, as an event-type frame from task 4
 with a code, an integer diagnostic number and a text line
 ``\r\n<id> ATTN: <message>\r\n``, *inferred*. The model generates one
-event: the first ``power down`` while the node is up sends code
+event: the first ``power down`` of a brick whose type letter is ``9``,
+``A`` or ``Q``, with an event subchannel registered, sends code
 ``0x8000``, diagnostic 0 and ``Power Down: issue 'pwr d' again to
-immediately power down.``, and waits for the second. No environmental
-event is generated. A registered event subchannel of 4 or more survives
+immediately power down.``, and waits for the second (established). An
+Origin 300 (``4``), C-brick (``C``) or I-brick (``I``) never defers: its
+first request acts and prints nothing on the console, and every
+power-down clears the registered event subchannel, so a later event
+needs a new ``0x1007`` (established). No environmental event is
+generated. A registered event subchannel of 4 or more survives
 a controller restart; a lower one is cleared, as in the image.
 
 .. _sgi-l1-routing:
@@ -1483,9 +1488,11 @@ power off.
        QEMU system reset; the machine resumes once that reset has run.
        With the node on: ``Power is already on``.
    * - ``power down``
-     - First request while up: the ``0x8000`` event and nothing else.
-       Second: node power off, ``Powered Down``, a log entry and a QEMU
-       shutdown request. Through task 3 or ``0x2005`` it acts at once.
+     - Node power off, ``Powered Down``, a log entry, the event
+       subchannel cleared and a QEMU shutdown request. Only the type
+       letters ``9``, ``A`` and ``Q`` with a registered event subchannel
+       defer the first request (the ``0x8000`` event and nothing else;
+       the second acts). Through task 3 or ``0x2005`` it acts at once.
        With the node off it does nothing.
    * - ``0x2006``
      - Power-off without shutdown when the node is on, then power-on as
@@ -1785,9 +1792,7 @@ next brick's name line, and on task 3 they arrive as separate fields.
        unknown command and nothing runs. The other C-brick runs the plain
        command itself, so a ``*`` ``power`` or ``reset`` acts through that
        brick's own handling and may request the machine action again; the
-       model does not propagate between bricks, and the sender's own part
-       of ``* power down`` skips the two-step first request that a plain
-       ``power down`` gives.
+       model does not propagate between bricks.
      - Name, then output (:src:`007-3938-006 p. 27`).
    * - An attached brick with no rack and slot is absent in ``0x000c`` and
        ``0x000d`` and shown as ``---i--`` or ``---c--`` in ``config``.
