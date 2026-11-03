@@ -217,6 +217,11 @@ struct SGIL1State {
     bool warned_off;
     bool promreq_debug;
     bool power_down_pending;
+    /* The last power-state notice the cabled peer published to this L1. */
+    uint32_t notice_count;
+    uint32_t notice_rack;
+    uint32_t notice_bay;
+    bool notice_power;
     uint32_t debug_switches;
     uint32_t partition;
     uint8_t two_bit_setting;
