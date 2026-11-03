@@ -1130,6 +1130,28 @@ static void test_port_speed(void)
     qtest_quit(s);
 }
 
+static bool reset_hold(QTestState *s, unsigned n)
+{
+    g_autofree char *path = g_strdup_printf(DEVICES "l1c%u", n);
+    QDict *response = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'reset-hold'}}", path);
+    bool in_reset;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    in_reset = qdict_get_bool(response, "return");
+    qobject_unref(response);
+    return in_reset;
+}
+
+static void press_power_button(QTestState *s, unsigned n)
+{
+    g_autofree char *path = g_strdup_printf(DEVICES "l1c%u", n);
+
+    qtest_set_irq_in(s, path, "power-button", 0, 1);
+    qtest_set_irq_in(s, path, "power-button", 0, 0);
+}
+
 static void test_ibrick_power_is_its_own(void)
 {
     const char *const props[] = {
@@ -1145,6 +1167,7 @@ static void test_ibrick_power_is_its_own(void)
      * powered and logs the power-up that reached it.
      */
     expect_command(s, 1, "power check", "power appears on\n");
+    g_assert_false(reset_hold(s, 1));
     output = command(s, 1, "log", NULL);
     g_assert_nonnull(strstr(output, "power up (COMMAND)"));
     g_free(output);
@@ -1162,6 +1185,75 @@ static void test_ibrick_power_is_its_own(void)
     expect_command(s, 0, "power check", "power appears on\n");
     expect_identity(s, 0, LOCAL_GENERAL, packed(1, 4), 'C');
     expect_identity(s, 0, ATTACHED_IO, packed(1, 31), 'I');
+    qtest_quit(s);
+}
+
+/*
+ * An I-brick at mains is off with its bridges in reset (established for the
+ * firmware's cold start). It powers on its own L1's "power up" or the front
+ * On/Off switch, and "power up hold" leaves the bridges in reset. "reset" is
+ * refused while the brick is off. Power-down puts the bridges in reset first.
+ */
+static void test_ibrick_mains_state(void)
+{
+    QTestState *s = start_one("brick-type=ibrick,named=on,rack=1,bay=31,"
+                              "auto-power=off,mac=" MAC_PROP);
+    g_autofree char *output = NULL;
+
+    expect_command(s, 0, "power check", "power appears off\n");
+    g_assert_true(reset_hold(s, 0));
+    expect_command(s, 0, "reset", "power appears off\n");
+    g_assert_true(reset_hold(s, 0));
+    expect_command(s, 0, "power up hold", "");
+    expect_command(s, 0, "power check", "power appears on\n");
+    g_assert_true(reset_hold(s, 0));
+    /* A reset releases the bridges that the hold kept in reset. */
+    expect_command(s, 0, "reset", "");
+    g_assert_false(reset_hold(s, 0));
+    expect_command(s, 0, "reset hold", "");
+    g_assert_true(reset_hold(s, 0));
+    expect_command(s, 0, "power down", "");
+    expect_command(s, 0, "power check", "power appears off\n");
+    g_assert_true(reset_hold(s, 0));
+    expect_command(s, 0, "power up", "");
+    g_assert_false(reset_hold(s, 0));
+    qtest_quit(s);
+}
+
+/* The front switch powers an off I-brick on and an on one off. */
+static void test_ibrick_power_button(void)
+{
+    QTestState *s = start_one("brick-type=ibrick,named=on,rack=1,bay=31,"
+                              "auto-power=off,mac=" MAC_PROP);
+    g_autofree char *output = NULL;
+
+    press_power_button(s, 0);
+    expect_command(s, 0, "power check", "power appears on\n");
+    g_assert_false(reset_hold(s, 0));
+    output = command(s, 0, "log", NULL);
+    g_assert_nonnull(strstr(output, "power up (PANEL)"));
+    press_power_button(s, 0);
+    expect_command(s, 0, "power check", "power appears off\n");
+    g_assert_true(reset_hold(s, 0));
+    g_free(output);
+    output = command(s, 0, "log", NULL);
+    g_assert_nonnull(strstr(output, "power down (PANEL)"));
+    qtest_quit(s);
+}
+
+/* Setting 0x77 can disable the switch; the commands still work. */
+static void test_ibrick_power_button_disabled(void)
+{
+    QTestState *s = start_one("brick-type=ibrick,named=on,rack=1,bay=31,"
+                              "auto-power=off,power-button-disabled=on,"
+                              "mac=" MAC_PROP);
+
+    press_power_button(s, 0);
+    expect_command(s, 0, "power check", "power appears off\n");
+    g_assert_true(reset_hold(s, 0));
+    expect_command(s, 0, "power up", "");
+    press_power_button(s, 0);
+    expect_command(s, 0, "power check", "power appears on\n");
     qtest_quit(s);
 }
 
@@ -2911,6 +3003,10 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/firmware-revision", test_firmware_revision);
     qtest_add_func("sgi-l1-o3k/port-speed", test_port_speed);
     qtest_add_func("sgi-l1-o3k/ibrick-power", test_ibrick_power_is_its_own);
+    qtest_add_func("sgi-l1-o3k/ibrick-mains-state", test_ibrick_mains_state);
+    qtest_add_func("sgi-l1-o3k/ibrick-power-button", test_ibrick_power_button);
+    qtest_add_func("sgi-l1-o3k/ibrick-power-button-disabled",
+                   test_ibrick_power_button_disabled);
     qtest_add_func("sgi-l1-o3k/relay", test_broadcast_and_relay);
     qtest_add_func("sgi-l1-o3k/task3-line-endings",
                    test_task3_line_endings);

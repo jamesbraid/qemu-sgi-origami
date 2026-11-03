@@ -202,6 +202,8 @@ struct SGIL1State {
     Error *l2_blocker;
     qemu_irq node_power_out;
     qemu_irq node_reset_out;
+    /* An I-brick's bridge and PCI reset lines, high while held in reset. */
+    qemu_irq reset_hold_out;
     qemu_irq soft_reset_out;
     /* One line per node board served; only a Cx-brick serves several. */
     qemu_irq nmi_out[SGI_L1_CX_BOARDS];
@@ -210,6 +212,9 @@ struct SGIL1State {
     int32_t revision_minor;
     int32_t revision_patch;
     bool auto_power;
+    /* Setting 0x77 disables an I-brick's front On/Off switch. */
+    bool power_button_disabled;
+    bool reset_hold;
     bool node_power;
     bool power_up_pending;
     bool console_mode;

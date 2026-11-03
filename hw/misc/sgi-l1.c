@@ -2204,11 +2204,29 @@ static void l1_version(SGIL1State *s)
  * peer would, and does not request a second machine action. What a real pair
  * exchanges to propagate it is unknown.
 */
-static void l1_peer_power(SGIL1State *peer, bool up)
+static void l1_hold_resets(SGIL1State *s, bool in_reset)
+{
+    if (s->reset_hold != in_reset) {
+        s->reset_hold = in_reset;
+        qemu_set_irq(s->reset_hold_out, in_reset);
+    }
+}
+
+/*
+ * @hold is an I-brick's "power up hold", which leaves the bridges in
+ * reset. Power-down holds them in reset first (established, firmware
+ * reading in the I-brick datasheet); the bits' pins are inferred.
+ */
+static void l1_peer_power(SGIL1State *peer, bool up, uint8_t reason,
+                          bool hold)
 {
     if (up == peer->node_power) {
         return;
     }
+    if (l1_is_ibrick(peer) && !up) {
+        l1_hold_resets(peer, true);
+    }
+    l1_reason(peer, reason);
     peer->node_power = up;
     peer->power_down_pending = false;
     if (!up) {
@@ -2216,8 +2234,11 @@ static void l1_peer_power(SGIL1State *peer, bool up)
         peer->event_subchannel = 0;
     }
     l1_display_set(peer, 1, up ? "Powered Up" : "Powered Down");
-    l1_log(peer, "power %s (COMMAND)", up ? "up" : "down");
+    l1_log(peer, "power %s (%s)", up ? "up" : "down", l1_reasons[reason]);
     qemu_set_irq(peer->node_power_out, up);
+    if (l1_is_ibrick(peer) && up && !hold) {
+        l1_hold_resets(peer, false);
+    }
     l1_publish_power(peer);
 }
 
@@ -2228,6 +2249,37 @@ static void l1_peer_reset(SGIL1State *peer)
     }
     l1_display_set(peer, 1, "Reset done");
     l1_log(peer, "reset (COMMAND)");
+}
+
+/*
+ * The front On/Off switch of an I-brick: power-up when no supply is on,
+ * power-down when some are, unless setting 0x77 disables it (established
+ * for the code path; that input bit 0 is the switch is inferred). The
+ * disabled switch's visible message is not modelled.
+ */
+static void l1_power_button(void *opaque, int n, int level)
+{
+    SGIL1State *s = opaque;
+
+    if (!level) {
+        return;
+    }
+    if (!l1_is_ibrick(s)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: the front power switch is modelled "
+                      "for an I-brick only\n");
+        return;
+    }
+    if (s->power_button_disabled) {
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: power switch disabled by setting "
+                      "0x77; its message is not modelled\n");
+        return;
+    }
+    l1_peer_power(s, !s->node_power, 2, false);
+}
+
+static bool l1_reset_held_get(Object *obj, Error **errp)
+{
+    return SGI_L1(obj)->reset_hold;
 }
 
 /*
@@ -2381,22 +2433,36 @@ static int l1_o3k_broadcast(SGIL1State *s, const char *text)
     return result;
 }
 
-/* Power and reset on an I-brick act on that brick alone. */
+/*
+ * Power and reset on an I-brick act on that brick alone. "power up",
+ * "power up hold", "power down", "reset" and "reset hold" come from any
+ * request source (established); "reset" is refused while the brick is off,
+ * the sheet's "power appears off". A hold leaves the bridges in reset;
+ * what ends a "reset hold" is inferred to be the next "reset".
+ */
 static void l1_ibrick_power(SGIL1State *s, int argc, char **argv)
 {
-    if (l1_word(argv[0], "reset", "rst")) {
-        l1_peer_reset(s);
-        if (s->node_power) {
-            qemu_irq_pulse(s->node_reset_out);
+    if (l1_word(argv[0], "reset", "rst") &&
+        (argc == 1 || (argc == 2 && !strcmp(argv[1], "hold")))) {
+        if (!s->node_power) {
+            l1_printf(s, "power appears off\r\n");
+            return;
         }
-    } else if (argc == 2 && l1_word(argv[1], "up", "u")) {
+        l1_peer_reset(s);
+        l1_hold_resets(s, true);
+        qemu_irq_pulse(s->node_reset_out);
+        l1_hold_resets(s, argc == 2);
+    } else if (l1_word(argv[0], "reset", "rst")) {
+        l1_invalid(s, "reset");
+    } else if ((argc == 2 || (argc == 3 && !strcmp(argv[2], "hold"))) &&
+               l1_word(argv[1], "up", "u")) {
         if (s->node_power) {
             l1_printf(s, "Power is already on\r\n");
         } else {
-            l1_peer_power(s, true);
+            l1_peer_power(s, true, 1, argc == 3);
         }
     } else if (argc == 2 && l1_word(argv[1], "down", "d")) {
-        l1_peer_power(s, false);
+        l1_peer_power(s, false, 1, false);
     } else if (argc == 2 && !strcmp(argv[1], "check")) {
         l1_printf(s, "power appears %s\r\n", s->node_power ? "on" : "off");
     } else {
@@ -3063,7 +3129,7 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
     if (l1_word(argv[0], "power", "pwr")) {
         if (argc == 2 && l1_word(argv[1], "up", "u")) {
             if (broadcast && peer) {
-                l1_peer_power(peer, true);
+                l1_peer_power(peer, true, 1, false);
             }
             if (s->node_power) {
                 l1_printf(s, "Power is already on\r\n");
@@ -3079,7 +3145,7 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
              * chassis up.
             */
             if (broadcast && peer && !s->node_power) {
-                l1_peer_power(peer, false);
+                l1_peer_power(peer, false, 1, false);
             }
         } else if (argc == 2 && !strcmp(argv[1], "check")) {
             l1_printf(s, "power appears %s\r\n", s->node_power ? "on" : "off");
@@ -5090,6 +5156,7 @@ static int l1_post_load(void *opaque, int version_id)
         s->log_text[i][SGI_L1_LOG_TEXT - 1] = 0;
     }
     qemu_set_irq(s->node_power_out, s->node_power);
+    qemu_set_irq(s->reset_hold_out, s->reset_hold);
     return 0;
 }
 
@@ -5322,6 +5389,7 @@ static const VMStateDescription vmstate_l1 = {
         VMSTATE_UINT8(cx_console_board, SGIL1State),
         VMSTATE_UINT8(cx_console_subchannel, SGIL1State),
         VMSTATE_BOOL(cx_filter, SGIL1State),
+        VMSTATE_BOOL(reset_hold, SGIL1State),
         VMSTATE_UINT32(notice_count, SGIL1State),
         VMSTATE_UINT32(notice_rack, SGIL1State),
         VMSTATE_UINT32(notice_bay, SGIL1State),
@@ -6257,9 +6325,16 @@ fuel_mac_done:
         return;
     }
     if (!s->profile->compute_services) {
-        /* An I-brick's "auto-power" stands for its C-brick's power-up. */
+        /*
+         * An I-brick's "auto-power" stands for its C-brick's power-up. At
+         * mains the I-brick is off with its bridges in reset, and has no
+         * power-up task of its own (established, firmware reading in the
+         * I-brick datasheet).
+         */
         if (!l1_is_ibrick(s)) {
             s->auto_power = false;
+        } else {
+            s->reset_hold = true;
         }
         s->processors = 0;
     }
@@ -6403,7 +6478,7 @@ fuel_mac_done:
          * built after its C-brick has already powered up, so it takes that
          * power-up here, as a peer of the broadcast.
          */
-        l1_peer_power(s, true);
+        l1_peer_power(s, true, 1, false);
     } else if (s->auto_power) {
         /* The real countdown is skipped: a model choice. */
         l1_log(s, "auto power up initiated");
@@ -6737,6 +6812,8 @@ static const Property l1_properties[] = {
     DEFINE_PROP_UINT32("bay", SGIL1State, bay, 1),
     DEFINE_PROP_UINT32("node-position", SGIL1State, node_position, 0),
     DEFINE_PROP_BOOL("auto-power", SGIL1State, auto_power, true),
+    DEFINE_PROP_BOOL("power-button-disabled", SGIL1State,
+                     power_button_disabled, false),
     DEFINE_PROP_UINT32("debug-switches", SGIL1State, debug_switches, 0),
     DEFINE_PROP_UINT32("partition", SGIL1State, partition, 0),
     DEFINE_PROP_UINT8("l2-partition-flag", SGIL1State, l2_partition_flag, 0),
@@ -6960,6 +7037,10 @@ static void l1_init(Object *obj)
 
     qdev_init_gpio_out_named(DEVICE(obj), &s->node_power_out, "node-power", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->node_reset_out, "node-reset", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->reset_hold_out, "reset-hold",
+                             1);
+    qdev_init_gpio_in_named(DEVICE(obj), l1_power_button, "power-button", 1);
+    object_property_add_bool(obj, "reset-hold", l1_reset_held_get, NULL);
     qdev_init_gpio_out_named(DEVICE(obj), &s->soft_reset_out, "soft-reset", 1);
     qdev_init_gpio_out_named(DEVICE(obj), s->nmi_out, "nmi",
                              SGI_L1_CX_BOARDS);
