@@ -18,6 +18,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockState, SGI_BEDROCK)
 
 bool sgi_bedrock_available(SGIBedrockState *s);
 
+/*
+ * Call @notifier whenever this Bedrock's main power, or that of the
+ * Bedrock directly cabled to it, changes. For an owner that caches reach
+ * (the node, whose address decode follows the link).
+ */
+void sgi_bedrock_add_power_notifier(SGIBedrockState *s, Notifier *notifier);
+
 #define SGI_BEDROCK_SIZE 0x7e0048
 
 /* The four physical processor slots a node's two PIs together address. */
@@ -45,6 +52,8 @@ struct SGIBedrockState {
      * switch the supply. Migrated only while off.
      */
     bool unpowered;
+    /* Called, after the level changes, for owners that cache a decode. */
+    NotifierList power_notifiers;
     /* Test-only, not migrated: see x-test-refuse-vector-read. */
     bool x_test_refuse_read_armed;
     uint64_t x_test_refuse_read_addr;

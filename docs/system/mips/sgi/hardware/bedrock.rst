@@ -1880,8 +1880,26 @@ arrives while the Bedrock is off is dropped, also an *approximation*.
 Stopping the processors themselves is the node's business, not the
 Bedrock's.
 
+A compute node (``sgi-sn1-node``) forwards its own ``power`` input,
+high by default, to its Bedrock's ``main-power``. Nothing drives it yet:
+the L1's ``node-power`` output is still unconnected
+(:ref:`sgi-l1-power`). When the node is off, its memory leaves
+every other node's map. The cabled peer's claim on it is dropped on a
+direct pair, and a routed alias is disabled, so a processor read gets a
+bus error, and a block-transfer read or write fails with the transfer
+status a cable marked down gives. The Bedrock's DMA view also holds a
+low-priority alias of the whole system map under the node claims; the
+transfer tests pin that a copy cannot fall through it to an off node's
+RAM. The node's own RAM keeps its bytes while off, an *approximation*:
+DRAM loses them on hardware. Stopping the node's processors is not
+modelled here. A level driven into the node before its Bedrock exists
+is kept and handed over once it does, so the Bedrock starts unpowered.
+
 The level migrates while it is low, and nothing needs to be re-driven
-after a load. A Bedrock loaded off keeps its lines low.
+after a load. A Bedrock loaded off keeps its lines low and re-derives its
+node's decode and a directly cabled Bedrock's, as a live change does. That
+re-derive is defensive against load order; load order follows realize
+order, so no qtest exercises it.
 
 .. _sgi-bedrock-reset:
 
@@ -2089,6 +2107,14 @@ Composition and machine tests:
   (``sn1/bedrock-link/unpowered-node-clears-the-router-port``) and a
   routed target that loses and regains main power
   (``sn1/bedrock-link/routed-powered-off-target-no-reply``).
+- ``tests/qtest/sn1-cross-node-test.c``: node-number decode, the
+  block-transfer engines' routes, and an unpowered node's memory absent
+  from both the processors' and the engines' view, direct and routed,
+  also across migration, including a migration while the first node is
+  off, which guards that path and not device load order
+  (``sn1/cross-node/unpowered-node-memory-is-absent``,
+  ``sn1/cross-node/unpowered-node-survives-migration``,
+  ``sn1/cross-node/unpowered-first-node-survives-migration``).
 - ``tests/qtest/sgi-pci-expansion-ni-test.c``: the powered-off direct
   peer reply (``/sgi/pci-expansion-ni/power-vector``).
 - ``tests/qtest/sn1-pi-gfx-test.c``: graphics credits counted and
