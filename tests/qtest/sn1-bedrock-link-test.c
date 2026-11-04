@@ -515,6 +515,53 @@ static void test_routed_powered_off_target_has_no_reply(void)
     qtest_quit(s);
 }
 
+/*
+ * A Bedrock without main power reports its port disabled to the cable, so
+ * the peer finds the link lost and reads port status with link-up clear, the
+ * same value a cable marked down gives. Power returning brings the link up
+ * again with nothing written to either side.
+ */
+static void test_unpowered_peer_reads_link_down(void)
+{
+    QTestState *s = pair_start("");
+
+    g_assert_cmphex(qtest_readq(s, NI(A_BASE, PORT_STATUS)), ==, LINK_UP);
+    main_power(s, B_PATH, false);
+    g_assert_cmphex(qtest_readq(s, NI(A_BASE, PORT_STATUS)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, NI(B_BASE, PORT_STATUS)), ==, 0);
+    main_power(s, B_PATH, true);
+    g_assert_cmphex(qtest_readq(s, NI(A_BASE, PORT_STATUS)), ==, LINK_UP);
+    g_assert_cmphex(qtest_readq(s, NI(B_BASE, PORT_STATUS)), ==, LINK_UP);
+    qtest_quit(s);
+}
+
+/*
+ * The router facing an unpowered Bedrock clears that port's link bit and
+ * leaves its other port alone. Router B is read through router A by route.
+ */
+#define ROUTER_PORT_LINK(p) (UINT64_C(1) << (35 + 2 * (p)))
+
+static void test_unpowered_node_clears_the_router_port(void)
+{
+    QTestState *s = routers_start("");
+    const uint64_t params = REQUEST_ID(0x1c8);
+
+    assert_good_reply(vector_launch(s, A_BASE, 0x5, params, 0), params);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)) &
+                    (ROUTER_PORT_LINK(4) | ROUTER_PORT_LINK(7)), ==,
+                    ROUTER_PORT_LINK(4) | ROUTER_PORT_LINK(7));
+    main_power(s, B_PATH, false);
+    assert_good_reply(vector_launch(s, A_BASE, 0x5, params, 0), params);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)) &
+                    (ROUTER_PORT_LINK(4) | ROUTER_PORT_LINK(7)), ==,
+                    ROUTER_PORT_LINK(7));
+    main_power(s, B_PATH, true);
+    assert_good_reply(vector_launch(s, A_BASE, 0x5, params, 0), params);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)) &
+                    ROUTER_PORT_LINK(4), ==, ROUTER_PORT_LINK(4));
+    qtest_quit(s);
+}
+
 static void test_router_table_vector_words(void)
 {
     QTestState *s = routers_start("");
@@ -728,6 +775,10 @@ int main(int argc, char **argv)
                    test_router_loopback_reads_the_launcher);
     qtest_add_func("sn1/bedrock-link/router-loopback-refuses-a-nested-launch",
                    test_router_loopback_refuses_a_nested_launch);
+    qtest_add_func("sn1/bedrock-link/unpowered-peer-reads-link-down",
+                   test_unpowered_peer_reads_link_down);
+    qtest_add_func("sn1/bedrock-link/unpowered-node-clears-the-router-port",
+                   test_unpowered_node_clears_the_router_port);
     qtest_add_func("sn1/bedrock-link/routed-powered-off-target-no-reply",
                    test_routed_powered_off_target_has_no_reply);
     qtest_add_func("sn1/bedrock-link/router-uart-vector",
