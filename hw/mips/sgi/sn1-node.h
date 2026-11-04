@@ -241,6 +241,14 @@ typedef struct SN1NodeState {
     MemoryRegion local_form[SGI_SN1_NODE_MAX_CPUS][SN1_NODE_LOCAL_FORMS];
     Notifier node_notifier;
     Notifier cable_notifier;
+    Notifier power_notifier;
+    /*
+     * The last level written to the power input, kept only so a level driven
+     * before the Bedrock exists can be handed over at realize. Not migrated:
+     * once the Bedrock exists, its own unpowered state is authoritative,
+     * including after a load.
+     */
+    bool unpowered;
     Notifier cached_alias_notifier[2];
     bool cable_notifier_added;
     SN1FabricEndpoint endpoint;

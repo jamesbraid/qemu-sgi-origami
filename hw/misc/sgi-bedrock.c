@@ -1214,6 +1214,11 @@ static void bedrock_uart_irq(void *opaque, int n, int level)
     sgi_bedrock_pi_set_uart_irq(&s->pi[1], level);
 }
 
+void sgi_bedrock_add_power_notifier(SGIBedrockState *s, Notifier *notifier)
+{
+    notifier_list_add(&s->power_notifiers, notifier);
+}
+
 static void bedrock_lower_lines(SGIBedrockState *s)
 {
     for (unsigned int i = 0; i < ARRAY_SIZE(s->hardware_irq); i++) {
@@ -1225,6 +1230,33 @@ static void bedrock_lower_lines(SGIBedrockState *s)
 }
 
 /*
+ * The port now reads enabled or disabled to the cable, so everything that
+ * derived a route or a link bit through it must derive it again: this
+ * node's own decode, a directly cabled Bedrock's, and a router's (its flood
+ * re-renders every node's view of the fabric). One transaction defers the
+ * address-space changes they make to a single commit.
+ */
+static void bedrock_power_rederive(SGIBedrockState *s)
+{
+    Object *peer;
+    unsigned int peer_index;
+
+    memory_region_transaction_begin();
+    sgi_net_port_flood_start();
+    notifier_list_notify(&s->power_notifiers, NULL);
+    if (s->net_cable &&
+        sgi_net_cable_other_end(s->net_cable, OBJECT(s), 0, &peer,
+                                &peer_index)) {
+        if (object_dynamic_cast(peer, TYPE_SGI_BEDROCK)) {
+            notifier_list_notify(&SGI_BEDROCK(peer)->power_notifiers, NULL);
+        } else {
+            sgi_net_port_peer_changed(peer, peer_index);
+        }
+    }
+    memory_region_transaction_commit();
+}
+
+/*
  * The node's switched supply comes or goes. While it is off the Bedrock
  * answers nothing: every register access that arrives through the fabric
  * fails (sgi_bedrock_available()). Reset does not touch the level; whoever
@@ -1233,8 +1265,6 @@ static void bedrock_lower_lines(SGIBedrockState *s)
 static void bedrock_main_power(void *opaque, int n, int level)
 {
     SGIBedrockState *s = opaque;
-    Object *peer;
-    unsigned int peer_index;
 
     if (s->unpowered == !level) {
         return;
@@ -1247,27 +1277,7 @@ static void bedrock_main_power(void *opaque, int n, int level)
         sgi_bedrock_pi_recompute(&s->pi[0]);
         sgi_bedrock_pi_recompute(&s->pi[1]);
     }
-    /*
-     * The port now reads enabled or disabled to the cable, so everything
-     * that derived a route or a link bit through it must derive it again:
-     * this node's own decode, a directly cabled Bedrock's, and a router's
-     * (its flood re-renders every node's view of the fabric). One
-     * transaction defers the address-space changes they make to a single
-     * commit.
-     */
-    memory_region_transaction_begin();
-    sgi_net_port_flood_start();
-    notifier_list_notify(&s->ni.changed, NULL);
-    if (s->net_cable &&
-        sgi_net_cable_other_end(s->net_cable, OBJECT(s), 0, &peer,
-                                &peer_index)) {
-        if (object_dynamic_cast(peer, TYPE_SGI_BEDROCK)) {
-            notifier_list_notify(&SGI_BEDROCK(peer)->ni.changed, NULL);
-        } else {
-            sgi_net_port_peer_changed(peer, peer_index);
-        }
-    }
-    memory_region_transaction_commit();
+    bedrock_power_rederive(s);
 }
 
 static void bedrock_local_reset(void *opaque, int n, int level)
@@ -1763,6 +1773,13 @@ static int bedrock_post_load(void *opaque, int version_id)
          * before this level arrived; their forwards are gated from here on.
          */
         bedrock_lower_lines(s);
+        /*
+         * Nor can the decode of the owner, or of a directly cabled peer
+         * that loaded before this level arrived, be trusted to have followed
+         * the link. Notify both, as a live change does, so the result does
+         * not depend on the order the devices load in.
+         */
+        bedrock_power_rederive(s);
     }
     return 0;
 }
@@ -2149,6 +2166,7 @@ static void bedrock_init(Object *obj)
     qdev_init_gpio_in_named(dev, bedrock_uart_irq, "uart-irq", 1);
     qdev_init_gpio_in_named(dev, bedrock_local_reset, "local-reset", 1);
     qdev_init_gpio_in_named(dev, bedrock_main_power, "main-power", 1);
+    notifier_list_init(&s->power_notifiers);
     /*
      * Settable after realize as well as before: a machine wires it before
      * realize, while a -M none register test can only name a cable after

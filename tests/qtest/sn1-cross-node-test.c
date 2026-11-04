@@ -985,6 +985,202 @@ static void test_bte_data_goes_by_number(void)
 }
 
 /*
+ * A node without main power leaves every other node's map, whichever way
+ * the fabric reaches it: processor reads, and block-copy engine reads and
+ * writes, which have a low-priority alias of the whole system map under the
+ * fabric's claims and would reach its RAM through it. The RAM keeps its
+ * bytes, and power returning brings the node back unchanged. A model that
+ * only refuses register accesses fails here.
+ */
+/*
+ * Both nodes numbered (node 1 is 2) with their memory configured, one
+ * pattern resident in node 1 and another at the base of node 0. The
+ * expansion topology puts a router between them.
+ */
+static QTestState *unpowered_start(const char *topology, char **image,
+                                   const char *extra)
+{
+    bool routed = strstr(topology, "expansion") != NULL;
+    g_autoptr(GError) error = NULL;
+    uint8_t source[128], resident[128];
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-unpowered-storage-XXXXXX", image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M origin300,topology=%s%s -cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-nodefaults -display none -d guest_errors %s",
+        topology, routed ? ",expansion-storage.0=expansion-enclosure=cfg" : "",
+        prom_path, *image, extra);
+    bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + LB_REVISION, UINT64_C(2) << 32);
+    for (unsigned node = 0; node < 2; node++) {
+        bte_cpu_writeq(qts, node * 2, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
+                       MD_INSTALLED_SELECT2);
+        bte_cpu_writeq(qts, node * 2, BEDROCK_LOCAL + 0x400118, 0);
+    }
+    if (routed) {
+        bte_cpu_writeq(qts, 0, BEDROCK_LOCAL + 0x681010, 5);
+        bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + 0x681000, 3);
+    }
+    memset(source, 0x80, sizeof(source));
+    memset(resident, 0xa1, sizeof(resident));
+    g_assert_true(qtest_memwrite_cpu(qts, 0, 0x10000, source,
+                                     sizeof(source)));
+    g_assert_true(qtest_memwrite_cpu(qts, 2, NODE(2) + 0x20000, resident,
+                                     sizeof(resident)));
+    g_assert_true(qtest_memwrite_cpu(qts, 2, NODE(2) + 0x40000, resident,
+                                     sizeof(resident)));
+    return qts;
+}
+
+/* What node 0 sees of node 1's memory, whichever way the fabric reaches. */
+static void check_unpowered_memory(QTestState *qts)
+{
+    const uint64_t failed = (UINT64_C(1) << 16) | 1;
+    const uint64_t peer = NODE(2);
+    uint8_t resident[128], result[128];
+    uint8_t untouched[128] = { 0 };
+
+    memset(resident, 0xa1, sizeof(resident));
+    assert_unreachable(qts, 0, peer + 0x20000);
+    for (unsigned named = 0; named < 2; named++) {
+        for (unsigned zero = 0; zero < 2; zero++) {
+            /* The copy into the off node, and its zero fill, both fail. */
+            bte_cpu_writeq(qts, 0, 0x30000, UINT64_MAX);
+            g_assert_cmphex(bte_memory_transfer(qts, 0, 0, 0x10000,
+                peer + 0x20000, 0x30000, zero, named), ==, failed);
+            g_assert_true(qtest_memread_cpu(qts, 2, peer + 0x20000, result,
+                                            sizeof(result)));
+            g_assert_cmpmem(result, sizeof(result), resident,
+                            sizeof(resident));
+        }
+        /* A copy out of the off node leaves its reader's buffer alone. */
+        bte_cpu_writeq(qts, 0, 0x30000, UINT64_MAX);
+        g_assert_cmphex(bte_memory_transfer(qts, 0, 0, peer + 0x40000,
+            0x50000, 0x30000, false, named), ==, failed);
+        g_assert_true(qtest_memread_cpu(qts, 0, 0x50000, result,
+                                        sizeof(result)));
+        g_assert_cmpmem(result, sizeof(result), untouched,
+                        sizeof(untouched));
+    }
+}
+
+/* Power back: reachable again, with the bytes it kept. */
+static void check_repowered_memory(QTestState *qts)
+{
+    const uint64_t peer = NODE(2);
+    uint8_t source[128], result[128];
+
+    memset(source, 0x80, sizeof(source));
+    g_assert_cmphex(cpu_read_ok(qts, 0, peer + 0x20000), ==,
+                    UINT64_C(0xa1a1a1a1a1a1a1a1));
+    bte_cpu_writeq(qts, 0, 0x30000, UINT64_MAX);
+    g_assert_cmphex(bte_memory_transfer(qts, 0, 0, 0x10000, peer + 0x20000,
+                                        0x30000, false, false), ==, 0);
+    g_assert_true(qtest_memread_cpu(qts, 2, peer + 0x20000, result,
+                                    sizeof(result)));
+    g_assert_cmpmem(result, sizeof(result), source, sizeof(source));
+}
+
+static void test_unpowered_node_memory_is_absent(const void *data)
+{
+    g_autofree char *image = NULL;
+    QTestState *qts = unpowered_start(data, &image, "");
+
+    g_assert_cmphex(cpu_read_ok(qts, 0, NODE(2) + 0x20000), ==,
+                    UINT64_C(0xa1a1a1a1a1a1a1a1));
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 0);
+    check_unpowered_memory(qts);
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 1);
+    check_repowered_memory(qts);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+/*
+ * An off node stays off across a migration: the destination derives the
+ * unreachable memory from the loaded level, and power returning there
+ * brings the node back.
+ */
+static void test_unpowered_node_survives_migration(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-unpowered-migration-XXXXXX",
+                                         &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *from_image = NULL;
+    g_autofree char *to_image = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    from = unpowered_start(data, &from_image, "");
+    to = unpowered_start(data, &to_image, "-incoming defer");
+    qtest_set_irq_in(from, "/machine/node1", "power", 0, 0);
+    check_unpowered_memory(from);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    check_unpowered_memory(to);
+    qtest_set_irq_in(to, "/machine/node1", "power", 0, 1);
+    check_repowered_memory(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(from_image);
+    g_unlink(to_image);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
+/*
+ * Migrate while the first node is off. This guards that path: the stream
+ * must load and leave the first node's memory absent from both nodes' views.
+ * It does not cover device load order. The re-derive that
+ * bedrock_power_rederive() does in post_load is defensive; load order follows
+ * realize order, so no qtest can make the off Bedrock load after its peer.
+ */
+static void test_unpowered_first_node_survives_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-unpowered-first-XXXXXX",
+                                         &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *from_image = NULL;
+    g_autofree char *to_image = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    from = unpowered_start("origin300-two-chassis", &from_image, "");
+    to = unpowered_start("origin300-two-chassis", &to_image,
+                         "-incoming defer");
+    g_assert_cmphex(cpu_read_ok(from, 2, NODE(0) + 0x10000), ==,
+                    UINT64_C(0x8080808080808080));
+    qtest_set_irq_in(from, "/machine/node0", "power", 0, 0);
+    assert_unreachable(from, 2, NODE(0) + 0x10000);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    assert_unreachable(to, 2, NODE(0) + 0x10000);
+    qtest_set_irq_in(to, "/machine/node0", "power", 0, 1);
+    g_assert_cmphex(cpu_read_ok(to, 2, NODE(0) + 0x10000), ==,
+                    UINT64_C(0x8080808080808080));
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(from_image);
+    g_unlink(to_image);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
+/*
  * The local boot view is a reader-relative form of the reader's own node's
  * flash, and so is the reset view until the nodes carry different numbers.
  * Each node gets its own 16 MiB boot flash; node 1's carries a marker at
@@ -2250,6 +2446,20 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn1/cross-node/bte-memory/routed",
                         "origin300-numalink-pci-expansion",
                         test_bte_memory_route);
+    qtest_add_data_func("sn1/cross-node/unpowered-node-memory-is-absent/"
+                        "direct", "origin300-two-chassis",
+                        test_unpowered_node_memory_is_absent);
+    qtest_add_data_func("sn1/cross-node/unpowered-node-memory-is-absent/"
+                        "routed", "origin300-numalink-pci-expansion",
+                        test_unpowered_node_memory_is_absent);
+    qtest_add_data_func("sn1/cross-node/unpowered-node-survives-migration/"
+                        "direct", "origin300-two-chassis",
+                        test_unpowered_node_survives_migration);
+    qtest_add_data_func("sn1/cross-node/unpowered-node-survives-migration/"
+                        "routed", "origin300-numalink-pci-expansion",
+                        test_unpowered_node_survives_migration);
+    qtest_add_func("sn1/cross-node/unpowered-first-node-survives-migration",
+                   test_unpowered_first_node_survives_migration);
     qtest_add_func("sn1/cross-node/bte-data-goes-by-number",
                    test_bte_data_goes_by_number);
     qtest_add_func("sn1/cross-node/every-processor-starts-through-its-router",

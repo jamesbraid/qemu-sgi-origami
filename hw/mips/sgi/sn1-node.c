@@ -348,6 +348,19 @@ static void sn1_node_number_changed(Notifier *notifier, void *data)
     sn1_reset_local_unmap(node);
 }
 
+/*
+ * This node's Bedrock, or the one cabled to it, lost or regained power.
+ * Reachability follows the link, which the power just moved, so the decode
+ * of both ends and every routed alias is derived again.
+ */
+static void sn1_node_power_changed(Notifier *notifier, void *data)
+{
+    SN1NodeState *node = container_of(notifier, SN1NodeState, power_notifier);
+
+    sn1_node_update_claims(node);
+    sn1_memory_mappings_refresh(node->memory_mappings, NULL);
+}
+
 static void sn1_node_cable_changed(Notifier *notifier, void *data)
 {
     SN1NodeState *node = container_of(notifier, SN1NodeState,
@@ -668,6 +681,9 @@ static void sn1_node_init_claims(SN1NodeState *node)
         SN1_NODE_FABRIC_VIEW, 0, &node->fabric);
     node->node_notifier.notify = sn1_node_number_changed;
     node->cable_notifier.notify = sn1_node_cable_changed;
+    node->power_notifier.notify = sn1_node_power_changed;
+    sgi_bedrock_add_power_notifier(SGI_BEDROCK(node->bedrock),
+                                   &node->power_notifier);
     sgi_bedrock_lb_add_node_notifier(&SGI_BEDROCK(node->bedrock)->lb,
                                      &node->node_notifier);
     sn1_node_set_requester_ids(node);
@@ -2246,6 +2262,24 @@ static void sn1_node_bedrock_reset(void *opaque, int n, int level)
     }
 }
 
+/*
+ * The node's switched supply, from its power controller: high is on, and
+ * it is on unless a controller says otherwise. The Bedrock owns what
+ * follows from it, so the node only forwards the level. A controller can
+ * drive the input before realize has made the Bedrock, so the level is kept
+ * and handed over when the Bedrock exists.
+ */
+static void sn1_node_power(void *opaque, int n, int level)
+{
+    SN1NodeState *node = opaque;
+
+    node->unpowered = !level;
+    if (node->bedrock) {
+        qemu_set_irq(qdev_get_gpio_in_named(node->bedrock, "main-power", 0),
+                     level);
+    }
+}
+
 bool sn1_node_set_option_intx_map(SN1NodeState *node,
                                  const uint8_t map[SGI_PCI_INTX_MAP_SIZE],
                                  Error **errp)
@@ -3223,6 +3257,9 @@ static void sn1_node_realize(DeviceState *dev, Error **errp)
         return;
     }
     sn1_node_init_claims(node);
+    if (node->unpowered) {
+        sn1_node_power(node, 0, 0);
+    }
 }
 
 static void sn1_node_unrealize(DeviceState *dev)
@@ -3372,6 +3409,7 @@ static void sn1_node_instance_init(Object *obj)
                                       0);
     qdev_init_gpio_in_named(DEVICE(obj), sn1_node_bedrock_reset,
                             "bedrock-reset", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), sn1_node_power, "power", 1);
 }
 
 static void sn1_node_instance_finalize(Object *obj)
