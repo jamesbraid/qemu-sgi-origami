@@ -1397,7 +1397,8 @@ writes nothing to bring the link up: it programs the port, then polls
 bit 1 for one second of the real-time counter before it reports the
 local link down and boots alone, a *software expectation*. The model
 computes bit 1 on every read, set while a cable joins this port to a
-peer and is not marked down, clear otherwise. The header makes bits 1:0
+peer, is not marked down and has main power at both ends
+(:ref:`sgi-bedrock-power`), clear otherwise. The header makes bits 1:0
 the link-level port status and bit 2 remote power (``hubni.h`` lines
 1015-1033). What bit 0 and bit 2 read on a live link is *unknown*; the
 model reads both as 0, an *approximation*.
@@ -1858,6 +1859,17 @@ Bedrock does on hardware is *unknown*; the model treats the two alike,
 an *approximation*. Registers keep their values while the input is low,
 since the model has no cold start for a node yet.
 
+Without power the network port reads disabled to the cable, so the
+link is down at both ends. A directly cabled peer reads port status bit
+1 clear, as for a cable marked down (:ref:`sgi-bedrock-ni-link`), and a
+router's port link bit for the Bedrock clears. No capture shows a
+NUMAlink 3 port facing an unpowered node, and the landed sheets say what a
+port reads with an unpowered or held peer is *unknown*, so reading it as
+down is an *approximation*, with the value *unknown*. The Bedrock's own port
+status reads the same, clear. The Origin 300 PCI expansion's own power
+gate does not take its link down: a packet to a powered-off expansion is
+still refused on a link that reads up.
+
 The level migrates while it is low, and nothing needs to be re-driven
 after a load.
 
@@ -2061,7 +2073,11 @@ Composition and machine tests:
 - ``tests/qtest/sn1-bedrock-link-test.c``: link-up from the cable,
   route-0 vector reads and writes to the peer, refused offsets, port
   reset across the link, held scratch 1 writes against a peer's
-  vector write and a routed target that loses and regains main power
+  vector write, an unpowered peer reading link down
+  (``sn1/bedrock-link/unpowered-peer-reads-link-down``), a router port
+  clearing its link bit for an unpowered node
+  (``sn1/bedrock-link/unpowered-node-clears-the-router-port``) and a
+  routed target that loses and regains main power
   (``sn1/bedrock-link/routed-powered-off-target-no-reply``).
 - ``tests/qtest/sgi-pci-expansion-ni-test.c``: the powered-off direct
   peer reply (``/sgi/pci-expansion-ni/power-vector``).

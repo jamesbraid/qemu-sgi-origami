@@ -1218,8 +1218,34 @@ static void bedrock_uart_irq(void *opaque, int n, int level)
 static void bedrock_main_power(void *opaque, int n, int level)
 {
     SGIBedrockState *s = opaque;
+    Object *peer;
+    unsigned int peer_index;
 
+    if (s->unpowered == !level) {
+        return;
+    }
     s->unpowered = !level;
+    /*
+     * The port now reads enabled or disabled to the cable, so everything
+     * that derived a route or a link bit through it must derive it again:
+     * this node's own decode, a directly cabled Bedrock's, and a router's
+     * (its flood re-renders every node's view of the fabric). One
+     * transaction defers the address-space changes they make to a single
+     * commit.
+     */
+    memory_region_transaction_begin();
+    sgi_net_port_flood_start();
+    notifier_list_notify(&s->ni.changed, NULL);
+    if (s->net_cable &&
+        sgi_net_cable_other_end(s->net_cable, OBJECT(s), 0, &peer,
+                                &peer_index)) {
+        if (object_dynamic_cast(peer, TYPE_SGI_BEDROCK)) {
+            notifier_list_notify(&SGI_BEDROCK(peer)->ni.changed, NULL);
+        } else {
+            sgi_net_port_peer_changed(peer, peer_index);
+        }
+    }
+    memory_region_transaction_commit();
 }
 
 static void bedrock_local_reset(void *opaque, int n, int level)
@@ -2185,6 +2211,21 @@ static const char *bedrock_net_describe(Object *port, unsigned int index)
 }
 
 /*
+ * Without power the port reads disabled, so the cable reports the link
+ * down at both ends: the peer's port status bit 1 and a router's port link
+ * bit clear together, as for a cable marked down. Only the main-power input
+ * counts. The Origin 300 PCI expansion's own availability hook keeps its
+ * reviewed behaviour, a powered link whose packets are refused.
+ */
+static SGINetPortLinkState bedrock_net_link_state(Object *port,
+                                                  unsigned int index)
+{
+    return (SGINetPortLinkState) {
+        .enabled = !SGI_BEDROCK(port)->unpowered,
+    };
+}
+
+/*
  * A vector request that arrived over this node's cable. A Bedrock has one
  * port and does not forward, so only a route with nothing left in it ends
  * here, and the local block performs the access on this node's register
@@ -2316,6 +2357,7 @@ static void bedrock_class_init(ObjectClass *klass, const void *data)
     device_class_set_props(dc, bedrock_properties);
     rc->phases.enter = bedrock_reset_enter;
     npc->describe = bedrock_net_describe;
+    npc->link_state = bedrock_net_link_state;
     npc->receive = bedrock_net_receive;
     gpc->return_credits = bedrock_return_gfx_credits;
     gpc->owe_credits = bedrock_owe_gfx_credits;
