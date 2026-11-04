@@ -269,6 +269,48 @@ static void test_sparse_irq_and_nmi_slots(void)
     qtest_quit(s);
 }
 
+/*
+ * Losing main power lowers every line into the processors, and nothing
+ * raises one while the Bedrock is off: a line left high would keep an off
+ * node's processor interrupted, or reach a live peer's view. The pending
+ * state is kept, so power returning re-raises exactly what is still
+ * pending and unmasked. An NMI request arriving while off is dropped.
+ */
+static void test_main_power_lowers_the_lines(void)
+{
+    QTestState *s = start("");
+
+    qtest_irq_intercept_out_named(s, BEDROCK_PATH, "hardware-irq");
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 0x107);
+    qtest_writeq(s, PI(0, MASK_0_A), 1ULL << 7);
+    g_assert_true(qtest_get_irq(s, 0));
+
+    qtest_set_irq_in(s, BEDROCK_PATH, "main-power", 0, 0);
+    g_assert_false(qtest_get_irq(s, 0));
+    /* A second source arriving while off stays down. */
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 0x105);
+    qtest_writeq(s, PI(0, MASK_0_A), (1ULL << 7) | (1ULL << 5));
+    g_assert_false(qtest_get_irq(s, 0));
+
+    qtest_set_irq_in(s, BEDROCK_PATH, "main-power", 0, 1);
+    g_assert_true(qtest_get_irq(s, 0));
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 7);
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 5);
+    g_assert_false(qtest_get_irq(s, 0));
+    qtest_quit(s);
+
+    s = start("");
+    qtest_irq_intercept_out_named(s, BEDROCK_PATH, "nmi");
+    qtest_set_irq_in(s, BEDROCK_PATH, "main-power", 0, 0);
+    qtest_set_irq_in(s, BEDROCK_PATH, "pi-nmi", 0, 1);
+    qtest_set_irq_in(s, BEDROCK_PATH, "pi-nmi", 0, 0);
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 0);
+    qtest_set_irq_in(s, BEDROCK_PATH, "main-power", 0, 1);
+    qtest_set_irq_in(s, BEDROCK_PATH, "pi-nmi", 0, 1);
+    g_assert_true(qtest_get_irq(s, 0));
+    qtest_quit(s);
+}
+
 static void test_pending_modify_and_reflection(void)
 {
     QTestState *s = start("");
@@ -1006,6 +1048,48 @@ static void test_timer_reset_model(void)
     qtest_quit(s);
 }
 
+/*
+ * A Bedrock migrated while off arrives off, with its lines low even though
+ * the processor interfaces' own loads re-raise what is pending, and power
+ * returning raises them.
+ */
+static void test_unpowered_migrates_with_lines_low(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("sn1-bedrock-pi-power-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = start("");
+    to = start("-incoming defer");
+    qtest_irq_intercept_out_named(from, BEDROCK_PATH, "hardware-irq");
+    qtest_writeq(from, PI(0, PENDING_MODIFY), 0x107);
+    qtest_writeq(from, PI(0, MASK_0_A), 1ULL << 7);
+    g_assert_true(qtest_get_irq(from, 0));
+    qtest_set_irq_in(from, BEDROCK_PATH, "main-power", 0, 0);
+    g_assert_false(qtest_get_irq(from, 0));
+    qtest_irq_intercept_out_named(to, BEDROCK_PATH, "hardware-irq");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(from, "completed");
+    sgi_wait_migration(to, "completed");
+    g_assert_cmphex(qtest_readq(to, PI(0, PENDING_0)), ==, 1ULL << 7);
+    g_assert_false(qtest_get_irq(to, 0));
+    qtest_set_irq_in(to, BEDROCK_PATH, "main-power", 0, 1);
+    g_assert_true(qtest_get_irq(to, 0));
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
 static void test_migration_recomputes_outputs(void)
 {
     GError *error = NULL;
@@ -1353,6 +1437,8 @@ int main(int argc, char **argv)
                    test_initial_enable_rejects_empty_slot);
     qtest_add_func("sn1/bedrock-pi/sparse-irq-and-nmi-slots",
                    test_sparse_irq_and_nmi_slots);
+    qtest_add_func("sn1/bedrock-pi/main-power-lowers-the-lines",
+                   test_main_power_lowers_the_lines);
     qtest_add_func("sn1/bedrock-pi/pending-reflection",
                    test_pending_modify_and_reflection);
     qtest_add_func("sn1/bedrock-pi/coherency-pending",
@@ -1378,6 +1464,8 @@ int main(int argc, char **argv)
                    test_profile_and_counter_wrap);
     qtest_add_func("sn1/bedrock-pi/timer-reset-model",
                    test_timer_reset_model);
+    qtest_add_func("sn1/bedrock-pi/unpowered-migrates-with-lines-low",
+                   test_unpowered_migrates_with_lines_low);
     qtest_add_func("sn1/bedrock-pi/migration-recomputes-outputs",
                    test_migration_recomputes_outputs);
     qtest_add_func("sn1/bedrock-pi/migration-counter-phase",
