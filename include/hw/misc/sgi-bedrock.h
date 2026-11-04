@@ -38,8 +38,13 @@ struct SGIBedrockState {
     SysBusDevice parent_obj;
     bool (*available)(void *opaque);
     void *available_opaque;
-    /* A bare routed qtest Bedrock has no power controller to toggle. */
-    bool x_test_power_off;
+    /*
+     * The node's main power, from the "main-power" input. High is the
+     * default, so a Bedrock nothing drives is powered. It is not reset with
+     * the Bedrock: the owner of the supply drives it, and a reset does not
+     * switch the supply. Migrated only while off.
+     */
+    bool unpowered;
     /* Test-only, not migrated: see x-test-refuse-vector-read. */
     bool x_test_refuse_read_armed;
     uint64_t x_test_refuse_read_addr;

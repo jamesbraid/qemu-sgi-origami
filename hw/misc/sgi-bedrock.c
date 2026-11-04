@@ -1209,6 +1209,19 @@ static void bedrock_uart_irq(void *opaque, int n, int level)
     sgi_bedrock_pi_set_uart_irq(&s->pi[1], level);
 }
 
+/*
+ * The node's switched supply comes or goes. While it is off the Bedrock
+ * answers nothing: every register access that arrives through the fabric
+ * fails (sgi_bedrock_available()). Reset does not touch the level; whoever
+ * owns the supply drives it.
+ */
+static void bedrock_main_power(void *opaque, int n, int level)
+{
+    SGIBedrockState *s = opaque;
+
+    s->unpowered = !level;
+}
+
 static void bedrock_local_reset(void *opaque, int n, int level)
 {
     SGIBedrockState *s = opaque;
@@ -1700,8 +1713,8 @@ static int bedrock_post_load(void *opaque, int version_id)
 }
 
 /*
- * SGIBedrockState carries no migrated fields of its own outside the two
- * park subsections described last here. Its registers live
+ * SGIBedrockState carries no migrated fields of its own outside the three
+ * subsections described last here. Its registers live
  * entirely in the pi/io/md/lb/ni/xb sub-devices, each realized with its own
  * VMStateDescription (device_set_realized() registers every realized
  * sub-device by its own dc->vmsd, independent of this one). Everything else
@@ -1735,7 +1748,10 @@ static int bedrock_post_load(void *opaque, int version_id)
  * device's and would never wake it. post_load's hold reset then releases
  * it. The withheld scratch-1 writes travel while one is waiting, with the
  * order they were written in: each is a value the guest reads once it
- * lands, and post_load lands them.
+ * lands, and post_load lands them. The main-power level travels while the
+ * Bedrock is off. Nothing re-drives a level into the input after a load, and
+ * a powered Bedrock is what the input defaults to, so only the off case
+ * needs sending.
  */
 static bool bedrock_park_needed(void *opaque)
 {
@@ -1783,6 +1799,24 @@ static const VMStateDescription vmstate_sgi_bedrock_withheld = {
     },
 };
 
+static bool bedrock_unpowered_needed(void *opaque)
+{
+    SGIBedrockState *s = opaque;
+
+    return s->unpowered;
+}
+
+static const VMStateDescription vmstate_sgi_bedrock_unpowered = {
+    .name = TYPE_SGI_BEDROCK "/unpowered",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = bedrock_unpowered_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(unpowered, SGIBedrockState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_bedrock = {
     .name = TYPE_SGI_BEDROCK,
     .version_id = 1,
@@ -1794,13 +1828,12 @@ static const VMStateDescription vmstate_sgi_bedrock = {
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_bedrock_park,
         &vmstate_sgi_bedrock_withheld,
+        &vmstate_sgi_bedrock_unpowered,
         NULL
     },
 };
 
 static const Property bedrock_properties[] = {
-    DEFINE_PROP_BOOL("x-test-power-off", SGIBedrockState,
-                     x_test_power_off, false),
     DEFINE_PROP_UINT32("processor-count", SGIBedrockState,
                        processor_count, 1),
     DEFINE_PROP_UINT32("processor-mask", SGIBedrockState,
@@ -2060,6 +2093,7 @@ static void bedrock_init(Object *obj)
     qdev_init_gpio_in_named(dev, bedrock_xb_error, "xb-error", 1);
     qdev_init_gpio_in_named(dev, bedrock_uart_irq, "uart-irq", 1);
     qdev_init_gpio_in_named(dev, bedrock_local_reset, "local-reset", 1);
+    qdev_init_gpio_in_named(dev, bedrock_main_power, "main-power", 1);
     /*
      * Settable after realize as well as before: a machine wires it before
      * realize, while a -M none register test can only name a cable after
@@ -2167,7 +2201,7 @@ static const char *bedrock_net_describe(Object *port, unsigned int index)
  */
 bool sgi_bedrock_available(SGIBedrockState *s)
 {
-    return !s || (!s->x_test_power_off &&
+    return !s || (!s->unpowered &&
                   (!s->available || s->available(s->available_opaque)));
 }
 
