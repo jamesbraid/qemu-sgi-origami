@@ -1837,6 +1837,30 @@ processor interfaces:
 The I/O interface's own error interrupt, the processor nack and spool
 interrupts and the clock-error bit are never raised.
 
+.. _sgi-bedrock-power:
+
+Main power
+==========
+
+The ``main-power`` input stands for the node's switched supply. It is
+high unless something drives it low, so a Bedrock on its own is powered.
+A reset does not change it: whatever owns the supply drives it, and
+nothing in the Bedrock switches it. This is a model construct with no
+register behind it, an *approximation*.
+
+While the input is low the Bedrock answers nothing that arrives through
+the fabric. A processor on another node reading or writing its
+registers, a peer's vector request and a crosstalk packet bound for it
+all fail the way they do when the Origin 300 PCI expansion is off. The
+vector engine of the peer gets no reply, and a block transfer or a
+widget write bound for it gets an error. What a powered-down or held
+Bedrock does on hardware is *unknown*; the model treats the two alike,
+an *approximation*. Registers keep their values while the input is low,
+since the model has no cold start for a node yet.
+
+The level migrates while it is low, and nothing needs to be re-driven
+after a load.
+
 .. _sgi-bedrock-reset:
 
 Reset
@@ -2036,8 +2060,9 @@ Composition and machine tests:
   PROM's power-on programming.
 - ``tests/qtest/sn1-bedrock-link-test.c``: link-up from the cable,
   route-0 vector reads and writes to the peer, refused offsets, port
-  reset across the link and held scratch 1 writes against a peer's
-  vector write.
+  reset across the link, held scratch 1 writes against a peer's
+  vector write and a routed target that loses and regains main power
+  (``sn1/bedrock-link/routed-powered-off-target-no-reply``).
 - ``tests/qtest/sgi-pci-expansion-ni-test.c``: the powered-off direct
   peer reply (``/sgi/pci-expansion-ni/power-vector``).
 - ``tests/qtest/sn1-pi-gfx-test.c``: graphics credits counted and

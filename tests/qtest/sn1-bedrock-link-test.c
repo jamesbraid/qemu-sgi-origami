@@ -495,14 +495,23 @@ static void test_router_loopback_refuses_a_nested_launch(void)
     g_assert_cmpint(unlink(log), ==, 0);
 }
 
+static void main_power(QTestState *s, const char *path, bool on)
+{
+    qtest_set_irq_in(s, path, "main-power", 0, on);
+}
+
 static void test_routed_powered_off_target_has_no_reply(void)
 {
-    QTestState *s = routers_start(",x-test-power-off=on");
+    QTestState *s = routers_start("");
     const uint64_t params = HUB_SCRATCH(0) | REQUEST_ID(0x1c8);
 
+    assert_good_reply(vector_launch(s, A_BASE, 0x45, params, 0), params);
+    main_power(s, B_PATH, false);
     g_assert_cmphex(vector_launch(s, A_BASE, 0x45, params, 0), ==, 0);
     g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_RETURN)), ==, SENTINEL);
     g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==, SENTINEL);
+    main_power(s, B_PATH, true);
+    assert_good_reply(vector_launch(s, A_BASE, 0x45, params, 0), params);
     qtest_quit(s);
 }
 
