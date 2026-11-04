@@ -1138,18 +1138,23 @@ static const MemoryRegionOps bedrock_io_registers_ops = {
     .impl = { .min_access_size = 8, .max_access_size = 8 },
 };
 
+/*
+ * An unpowered Bedrock drives nothing into its processors: a level that
+ * arrives from a processor interface while it is off is held low here, and
+ * bedrock_main_power() re-derives the lines when power returns.
+ */
 static void bedrock_forward_irq(void *opaque, int n, int level)
 {
     SGIBedrockState *s = opaque;
 
-    qemu_set_irq(s->hardware_irq[n], level);
+    qemu_set_irq(s->hardware_irq[n], !s->unpowered && level);
 }
 
 static void bedrock_forward_nmi(void *opaque, int n, int level)
 {
     SGIBedrockState *s = opaque;
 
-    qemu_set_irq(s->nmi[n], level);
+    qemu_set_irq(s->nmi[n], !s->unpowered && level);
 }
 
 static void bedrock_forward_cpu_enable(void *opaque, int n, int level)
@@ -1209,6 +1214,16 @@ static void bedrock_uart_irq(void *opaque, int n, int level)
     sgi_bedrock_pi_set_uart_irq(&s->pi[1], level);
 }
 
+static void bedrock_lower_lines(SGIBedrockState *s)
+{
+    for (unsigned int i = 0; i < ARRAY_SIZE(s->hardware_irq); i++) {
+        qemu_set_irq(s->hardware_irq[i], 0);
+    }
+    for (unsigned int i = 0; i < ARRAY_SIZE(s->nmi); i++) {
+        qemu_set_irq(s->nmi[i], 0);
+    }
+}
+
 /*
  * The node's switched supply comes or goes. While it is off the Bedrock
  * answers nothing: every register access that arrives through the fabric
@@ -1225,6 +1240,13 @@ static void bedrock_main_power(void *opaque, int n, int level)
         return;
     }
     s->unpowered = !level;
+    if (s->unpowered) {
+        bedrock_lower_lines(s);
+    } else {
+        /* The pending banks kept their state; raise what is still due. */
+        sgi_bedrock_pi_recompute(&s->pi[0]);
+        sgi_bedrock_pi_recompute(&s->pi[1]);
+    }
     /*
      * The port now reads enabled or disabled to the cable, so everything
      * that derived a route or a link bit through it must derive it again:
@@ -1735,6 +1757,13 @@ static int bedrock_post_load(void *opaque, int version_id)
 
     bedrock_scratch1_external(s);
     sgi_bedrock_hold_reset(s);
+    if (s->unpowered) {
+        /*
+         * The processor interfaces' own post_load may have raised lines
+         * before this level arrived; their forwards are gated from here on.
+         */
+        bedrock_lower_lines(s);
+    }
     return 0;
 }
 

@@ -1870,8 +1870,18 @@ status reads the same, clear. The Origin 300 PCI expansion's own power
 gate does not take its link down: a packet to a powered-off expansion is
 still refused on a link that reads up.
 
+Power going away lowers every level and NMI output into the processors,
+and nothing raises one while the Bedrock is off: a line left high would
+keep an off node's processor interrupted. What the chip does with those
+outputs without power is *unknown*; holding them low is an
+*approximation*. The pending banks keep their state, and power returning
+raises exactly what is still pending and unmasked. An NMI request that
+arrives while the Bedrock is off is dropped, also an *approximation*.
+Stopping the processors themselves is the node's business, not the
+Bedrock's.
+
 The level migrates while it is low, and nothing needs to be re-driven
-after a load.
+after a load. A Bedrock loaded off keeps its lines low.
 
 .. _sgi-bedrock-reset:
 
@@ -2040,8 +2050,8 @@ Register-contract qtests, one per unit:
   processor, presence and enable on sparse populations, pending
   reflection and modify, coherency pending, masks, power-on and local
   reset values, error capture, the NMI predicate, the comparators and
-  profile wrap, 32-bit counter reads, and migration of outputs, counter
-  phase and enables.
+  profile wrap, 32-bit counter reads, lines held low without main
+  power, and migration of outputs, counter phase and enables.
 - ``tests/qtest/sn1-bedrock-md-test.c``: the register contract, bank
   decode, fitted populations and bank-select remapping, the self-test
   phases, completion without the timer, cancellation and migration,
