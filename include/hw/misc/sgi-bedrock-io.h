@@ -81,6 +81,12 @@ struct SGIBedrockIOState {
     uint8_t inbound_device;
     uint64_t device_mask_reset;
     bool xio_peer;
+    /*
+     * The cabled peer is held in reset or without power: its "xio-peer-power"
+     * wire is low. A wire level the peer drives, not device state, so a reset
+     * leaves it and the peer re-drives it after a load.
+     */
+    bool peer_down;
     uint64_t widget_control;
     uint64_t local_protect;
     uint64_t outbound_access;
