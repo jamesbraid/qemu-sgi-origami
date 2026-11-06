@@ -1518,9 +1518,10 @@ host console the main thread pauses all processors first. A reply queued
 before a reset may be cleared with the UART before the guest reads it.
 Resetting the whole machine, keeping the QEMU process alive for a power
 cycle, the hold times and the missing countdown are each an *approximation*.
-The ``node-power``, ``node-reset`` and ``soft-reset`` outputs report
-what the L1 did and drive nothing; no source says what a soft reset
-reaches in the node. The front-panel buttons are not modelled.
+On a C-brick the ``node-power``, ``node-reset`` and ``soft-reset``
+outputs report what the L1 did and drive nothing; no source says what a
+soft reset reaches in the node. An I-brick's and an R-brick's outputs
+drive their bridge and router, as described under their bricks. The front-panel buttons are not modelled.
 
 Reset
 =====
@@ -1756,7 +1757,16 @@ What the model chooses, and the limit of each choice:
   hold`` leaves it raised, and ``reset`` is refused with ``power appears
   off`` while the brick is off (*established*). The three bits are the
   bridges' resets by the expander's own label; which chip pins they reach
-  is *unknown*, so the line is not wired to the XBridge. The supplies'
+  is *unknown*, so in a machine the one line is the XBridge chip's
+  ``reset-hold`` input and stands for all three (*approximation*). The
+  L1's ``node-power`` output is the chip's ``main-power`` input, so a brick
+  that is off or held leaves the bridge answering nothing and its C-brick's
+  II link reading down, while the C-brick's processors and L1 run on. A
+  ``reset`` raises the hold, which restarts the bridge cold, then releases
+  it, so the ``node-reset`` pulse that follows reaches a held chip and does
+  nothing more. The chip takes the L1's levels when the machine is built, so
+  a brick the L1 starts off starts with the bridge held, and a restored
+  machine takes them from the L1's saved state. The supplies'
   sequencing delays are not modelled.
 - An R-brick L1 (``brick-type=router`` with ``router-board=rbrick``) is
   off at mains with its router in reset and accepts ``power up``,

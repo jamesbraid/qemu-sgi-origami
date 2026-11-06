@@ -6856,17 +6856,17 @@ static const char *sgi_machine_router_board(const char *id)
 }
 
 /*
- * An I-brick's L1 restarts its brick's bridge when it resets the brick: its
- * "node-reset" pulse reaches the XBridge in the same module (the chip is
- * restarted cold, which is the only reset the model gives it; which of the
- * bridge's inputs the controller's three reset bits drive is unknown).
+ * An I-brick's L1 owns its brick's bridge. Its "node-power" output is the
+ * XBridge's "main-power" input, its "reset-hold" output the chip's
+ * "reset-hold" input, and its "node-reset" pulse restarts a running chip
+ * cold. Which of the chip's pins the controller's three reset bits drive
+ * is unknown, so the one hold stands for all three.
  *
- * The L1's "node-power" output is left unconnected. The L1 starts an
- * I-brick off while its bridge runs from the start, and re-asserts "off" on
- * every migration load, so joining it to the bridge's main-power input would
- * switch the bridge off in a restored machine. Power follows once the L1
- * starts its brick on with the system. Likewise the L1 has no reset-hold
- * output yet, for the bridge's reset-hold input.
+ * The L1 settled its lines at realize, before the chip took them, so the
+ * chip takes their present levels here. The L1 starts an I-brick powered
+ * with its system and keeps its saved power state across a machine reset
+ * and a migration load, so joining the lines does not switch a restored
+ * bridge off.
  */
 static void sgi_machine_wire_ibrick_bridge(SGIMachineState *s,
     const SGIModelTopology *t, const SGIModelController *controller,
@@ -6881,13 +6881,20 @@ static void sgi_machine_wire_ibrick_bridge(SGIMachineState *s,
     crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
     for (size_t i = 0; i < crossbar_count; i++) {
         DeviceState *chip = s->enclosure_xbridges[i];
+        qemu_irq power, hold;
 
         if (crossbars[i]->module_index != controller->module_index || !chip ||
             !object_dynamic_cast(OBJECT(chip), TYPE_SGI_XBRIDGE)) {
             continue;
         }
+        power = qdev_get_gpio_in_named(chip, "main-power", 0);
+        hold = qdev_get_gpio_in_named(chip, "reset-hold", 0);
         qdev_connect_gpio_out_named(l1, "node-reset", 0,
                                     qdev_get_gpio_in_named(chip, "reset", 0));
+        qdev_connect_gpio_out_named(l1, "node-power", 0, power);
+        qdev_connect_gpio_out_named(l1, "reset-hold", 0, hold);
+        qemu_set_irq(power, SGI_L1(l1)->node_power);
+        qemu_set_irq(hold, SGI_L1(l1)->reset_hold);
         return;
     }
 }
