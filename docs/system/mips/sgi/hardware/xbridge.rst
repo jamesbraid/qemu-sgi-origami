@@ -1043,6 +1043,52 @@ The register's page says the one-shot sends a link reset and the reset
 chapter says a warm reset :src:`xbridge-asic-spec-0.5 p. 70, 122`. The
 heads reset alike for either, so the model has one line.
 
+.. _sgi-xbridge-hold:
+
+Main power and reset hold
+-------------------------
+
+The chip has two level inputs and one pulse input that a brick's
+controller drives, and one output that tells the host whether the chip
+answers:
+
+- ``main-power`` (default high) is the board's switched supply;
+- ``reset-hold`` (default low) is the controller holding the bridge in
+  reset;
+- ``reset`` restarts a running chip cold on a rising edge;
+- ``host-link`` follows the held state: it goes low when the chip becomes
+  held and high when it is released. The chip drives it on each change and
+  not at realize, when nothing is connected to it yet, so a consumer joined
+  to a chip that is not held keeps its own default of up.
+
+The chip is held while ``main-power`` is low or ``reset-hold`` is high.
+Entering the hold restarts the crossbar, both heads and their PCI
+devices cold, then refuses every access through the chip's XIO space: a
+processor read or write through any widget, and an access that arrives
+through an external port's routes, each fail with an access error and log
+``LOG_GUEST_ERROR``. With packet transport the chip also fails the
+packets it sends on the host's or a widget's behalf: a head's DMA or
+interrupt request, and a widget's packet through the crossbar. Without
+packet transport, which includes a bridge an I-brick supplies, the heads
+send to the host fabric directly and the hold does not gate them; the cold
+restart on entering the hold is what stops them, by clearing the heads'
+registers and devices. What a held bridge does with a request already on
+the wire is *unknown*. Leaving the hold needs no second reset. Both causes must be gone for the chip to answer again. A
+``reset`` pulse while held does nothing. The two levels describe wires,
+not device state, so a machine reset does not release a hold; they
+migrate in a subsection that exists only while one is active.
+
+What the controller's reset bits do is graded as follows. That the I-brick
+controller holds three bits of one expander low to hold the bridge and
+releases two of them, then the third ten ticks later, is *established*;
+that low asserts is *inferred*; which XBridge input each bit drives is
+*unknown*. The model therefore has one hold that stops the whole chip.
+That an unpowered or held bridge answers nothing, so the host reads its
+link down, is *inferred*; what a bridge behind a dead link answers on
+hardware is *unknown*. Not modelled: the ordering of the three bits'
+release, the ten tick gap, and a warm reset sent out of the external
+ports on entering the hold.
+
 .. _sgi-xbridge-migration:
 
 Migration
@@ -1106,7 +1152,7 @@ Tests
   routing, fixed destinations, head interrupts and DMA reaching the
   host, warm reset reaching the heads and external ports, external port
   attachment and routes, two chained chips, realize checks, packet
-  transport, Super Bridge heads and migration. It also drives
+  transport, main power and reset hold, Super Bridge heads and migration. It also drives
   ``sgi-xbridge-assembly-fixture`` from
   ``tests/qtest/xbridge-assembly-fixture.c``: one crossbar chip and two
   Super Bridge chips joined by cables the test chooses, giving six

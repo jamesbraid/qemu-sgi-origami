@@ -1349,6 +1349,20 @@ struct SGIXBridgeState {
     qemu_irq head_intx_sink[2][SGI_XBRIDGE_HEAD_RAW_PCI_IRQS];
     qemu_irq warm_reset_out[SGI_XBRIDGE_EXTERNAL_PORTS];
     qemu_irq warm_reset_sink[SGI_XBRIDGE_EXTERNAL_PORTS];
+    /*
+     * Held: the chip answers nothing and sends nothing. Its two causes are
+     * wires, not device state, so a reset leaves them alone: the board's
+     * main power (default present) and the reset hold its controller
+     * asserts (default released). While held, a region over the chip's whole
+     * XIO space and one over each external port's routes refuse every
+     * access.
+     */
+    bool main_power;
+    bool reset_hold;
+    bool held;
+    MemoryRegion refuse;
+    MemoryRegion route_refuse[SGI_XBRIDGE_EXTERNAL_PORTS];
+    qemu_irq host_link;
     uint8_t host_port;
     uint8_t xio_port;
     uint8_t pci_speed[2];
@@ -1451,6 +1465,39 @@ static const MemoryRegionOps chip_unmapped_ops = {
 };
 
 /*
+ * A held chip refuses every access, as a chip that is off or in reset does
+ * (inferred: no capture shows a bridge behind a dead link, and which XBridge
+ * input each of the board's three reset bits drives is unknown). The refusal
+ * is an access error rather than a read of zeros, so the host's interface
+ * sees a failed request.
+ */
+static MemTxResult chip_refuse_read(void *opaque, hwaddr addr, uint64_t *data,
+                                  unsigned size, MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-xbridge: %u-byte read at 0x%" PRIx64 " refused while "
+                  "the chip is held\n", size, (uint64_t)addr);
+    *data = 0;
+    return MEMTX_ACCESS_ERROR;
+}
+
+static MemTxResult chip_refuse_write(void *opaque, hwaddr addr, uint64_t data,
+                                   unsigned size, MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-xbridge: %u-byte write at 0x%" PRIx64 " refused while "
+                  "the chip is held\n", size, (uint64_t)addr);
+    return MEMTX_ACCESS_ERROR;
+}
+
+static const MemoryRegionOps chip_refuse_ops = {
+    .read_with_attrs = chip_refuse_read,
+    .write_with_attrs = chip_refuse_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+/*
  * A packet from the external widget for a destination the crossbar does
  * not deliver: the widget's own port (a link cannot send to itself) or an
  * external port with no widget behind it. What the chip does with one is
@@ -1510,6 +1557,9 @@ static void chip_route_external(SGIXBridgeState *s, unsigned ingress)
                           SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE);
     memory_region_add_subregion_overlap(&port->routes, 0,
                                         &port->route_none, -1);
+    /* Packets an external widget sends in cross no other refusing region. */
+    memory_region_add_subregion_overlap(
+        &port->routes, 0, &s->route_refuse[ingress - CHIP_LINK_FIRST], 1);
     chip_route_one(s, port,
                    sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->xbow),
                                           ingress - CHIP_LINK_FIRST), 0);
@@ -1551,6 +1601,78 @@ static void chip_forward(void *opaque, int line, int level)
     qemu_irq *out = opaque;
 
     qemu_set_irq(out[line], level);
+}
+
+/* Cold start of the chip's own parts: the crossbar, both heads, their PCI. */
+static void chip_cold_reset(SGIXBridgeState *s)
+{
+    if (!s->superbridge) {
+        device_cold_reset(DEVICE(&s->xbow));
+    }
+    device_cold_reset(DEVICE(&s->head[0]));
+    device_cold_reset(DEVICE(&s->head[1]));
+}
+
+/*
+ * Make the held state @held: the refusing regions, the host link and, on
+ * entering it, a cold start of the parts first so what the heads send in
+ * doing so still reaches the host. Nothing can change them while held, so
+ * release needs no second reset (approximated: only the chip's own
+ * registers and its PCI devices are cleared). @cold is false after a
+ * migration load, whose parts arrive already cold.
+ */
+static void chip_set_held(SGIXBridgeState *s, bool held, bool cold)
+{
+    if (held && !s->held && cold) {
+        chip_cold_reset(s);
+    }
+    s->held = held;
+    memory_region_transaction_begin();
+    memory_region_set_enabled(&s->refuse, held);
+    for (unsigned i = 0; i < SGI_XBRIDGE_EXTERNAL_PORTS; i++) {
+        memory_region_set_enabled(&s->route_refuse[i], held);
+    }
+    memory_region_transaction_commit();
+    qemu_set_irq(s->host_link, !held);
+}
+
+static void chip_apply_hold(SGIXBridgeState *s)
+{
+    bool held = !s->main_power || s->reset_hold;
+
+    if (held != s->held) {
+        chip_set_held(s, held, true);
+    }
+}
+
+static void chip_main_power(void *opaque, int line, int level)
+{
+    SGIXBridgeState *s = opaque;
+
+    s->main_power = level;
+    if (DEVICE(s)->realized) {
+        chip_apply_hold(s);
+    }
+}
+
+static void chip_reset_hold(void *opaque, int line, int level)
+{
+    SGIXBridgeState *s = opaque;
+
+    s->reset_hold = level;
+    if (DEVICE(s)->realized) {
+        chip_apply_hold(s);
+    }
+}
+
+/* A reset pulse restarts a running chip cold; a held one is in reset. */
+static void chip_reset_pulse(void *opaque, int line, int level)
+{
+    SGIXBridgeState *s = opaque;
+
+    if (level && DEVICE(s)->realized && !s->held) {
+        chip_cold_reset(s);
+    }
 }
 
 static void chip_head_pin(void *opaque, int pin, int level)
@@ -1613,6 +1735,9 @@ static MemTxResult chip_peer_rw(SGIXBridgeState *s, const SGIXioPeer *peer,
     SGIXBridgePacketFrame frame = { source, s->active_packet };
     MemTxResult result;
 
+    if (s->held) {
+        return MEMTX_ACCESS_ERROR;
+    }
     /* A card may start a distinct DMA transaction during head MMIO dispatch. */
     for (SGIXBridgePacketFrame *p = s->active_packet; p; p = p->previous) {
         if (p->source == source) {
@@ -1999,15 +2124,68 @@ static const Property chip_properties[] = {
                        onewire_serial[1], SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL),
 };
 
+static bool chip_hold_needed(void *opaque)
+{
+    SGIXBridgeState *s = opaque;
+
+    return !s->main_power || s->reset_hold;
+}
+
+/*
+ * The two causes of a hold are wire levels the board drives, so they travel
+ * only while one is active, in a subsection of their own.
+ */
+static const VMStateDescription vmstate_chip_hold = {
+    .name = TYPE_SGI_XBRIDGE "/hold",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = chip_hold_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(main_power, SGIXBridgeState),
+        VMSTATE_BOOL(reset_hold, SGIXBridgeState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static int chip_pre_load(void *opaque)
+{
+    SGIXBridgeState *s = opaque;
+
+    /* A stream without the subsection means the defaults: powered, free. */
+    s->main_power = true;
+    s->reset_hold = false;
+    return 0;
+}
+
+/*
+ * Held state, the refusing regions and the host link are derived from the
+ * two wires.
+ * The parts of a held chip were restarted cold when the hold began and
+ * nothing has changed them since, so the stream already carries them cold.
+ */
+static int chip_post_load(void *opaque, int version_id)
+{
+    SGIXBridgeState *s = opaque;
+
+    chip_set_held(s, chip_hold_needed(s), false);
+    return 0;
+}
+
 /* The mode is immutable; the children carry programmed state. */
 static const VMStateDescription vmstate_chip = {
     .name = TYPE_SGI_XBRIDGE,
     .version_id = 3,
     .minimum_version_id = 3,
+    .pre_load = chip_pre_load,
+    .post_load = chip_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_EQUAL(packet_context, SGIXBridgeState),
         VMSTATE_UINT8_EQUAL(mode, SGIXBridgeState),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_chip_hold,
+        NULL
     }
 };
 
@@ -2243,6 +2421,11 @@ static void chip_init(Object *obj)
     memory_region_init_io(&s->unmapped, obj, &chip_unmapped_ops, s,
                           "sgi-xbridge.unmapped", 16 * CHIP_WIDGET_SPACE);
     memory_region_add_subregion_overlap(&s->xio, 0, &s->unmapped, -1);
+    memory_region_init_io(&s->refuse, obj, &chip_refuse_ops, s,
+                          "sgi-xbridge.refuse", 16 * CHIP_WIDGET_SPACE);
+    memory_region_add_subregion_overlap(&s->xio, 0, &s->refuse, 1);
+    memory_region_set_enabled(&s->refuse, false);
+    s->main_power = true;
     for (i = 0; i < SGI_XBRIDGE_EXTERNAL_PORTS; i++) {
         SGIXBridgePort *port = &s->external[i];
         g_autofree char *name = g_strdup_printf("sgi-xbridge.port-%x", i + 8);
@@ -2251,6 +2434,10 @@ static void chip_init(Object *obj)
         memory_region_init(&port->packets, obj, name, SGI_XIO_PACKET_SIZE);
         memory_region_init(&port->routes, obj, name,
                            SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE);
+        memory_region_init_io(&s->route_refuse[i], obj, &chip_refuse_ops, s,
+                              "sgi-xbridge.route-refuse",
+                              SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE);
+        memory_region_set_enabled(&s->route_refuse[i], false);
         memory_region_init_alias(&port->view, obj, name, &s->xio,
                                  (uint64_t)(i + 8) << CHIP_WIDGET_SHIFT,
                                  CHIP_WIDGET_SPACE);
@@ -2281,6 +2468,12 @@ static void chip_init(Object *obj)
     qdev_init_gpio_in_named_with_opaque(dev, chip_warm_reset, s,
                                         "warm-reset",
                                         SGI_XBRIDGE_EXTERNAL_PORTS);
+    qdev_init_gpio_in_named_with_opaque(dev, chip_main_power, s, "main-power",
+                                        1);
+    qdev_init_gpio_in_named_with_opaque(dev, chip_reset_hold, s, "reset-hold",
+                                        1);
+    qdev_init_gpio_in_named_with_opaque(dev, chip_reset_pulse, s, "reset", 1);
+    qdev_init_gpio_out_named(dev, &s->host_link, "host-link", 1);
     qdev_init_gpio_out_named(dev, s->warm_reset_out, "warm-reset-out",
                              SGI_XBRIDGE_EXTERNAL_PORTS);
 }
