@@ -28,6 +28,7 @@
 #include <sys/wait.h>
 #include "qemu/bswap.h"
 #include "qemu/units.h"
+#include "qemu/timer.h"
 #include "hw/core/clock.h"
 #include "hw/pci/pci_regs.h"
 #include "libqtest.h"
@@ -10554,6 +10555,91 @@ static void test_origin3200_ibrick_hold(const void *data)
     g_unlink(prom);
 }
 
+/*
+ * Text typed at an L1 console, with the output read back until
+ * @until shows @count times: the L1 runs lines in order, so the last line
+ * of a batch having answered means the earlier ones have run.
+ */
+static void ibrick_console(QTestState *qts, int fd, const char *text,
+                           const char *until, unsigned count)
+{
+    g_autoptr(GString) seen = g_string_new(NULL);
+    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+
+    g_assert_cmpint(write(fd, text, strlen(text)), ==, strlen(text));
+    for (;;) {
+        struct pollfd wait = { .fd = fd, .events = POLLIN };
+        const char *at = seen->str;
+        unsigned found = 0;
+        char chunk[256];
+        ssize_t n;
+
+        while ((at = strstr(at, until))) {
+            found++;
+            at += strlen(until);
+        }
+        if (found >= count) {
+            return;
+        }
+        if (g_get_monotonic_time() >= deadline) {
+            g_test_message("L1 console showed: %s", seen->str);
+        }
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        qtest_clock_step(qts, NANOSECONDS_PER_SECOND / 10);
+        if (poll(&wait, 1, 100) == 1) {
+            n = read(fd, chunk, sizeof(chunk));
+            g_assert_cmpint(n, >, 0);
+            g_string_append_len(seen, chunk, n);
+        }
+    }
+}
+
+/* One command to the C-brick's L1: ^T escapes to it for the one line. */
+static void l1_line(QTestState *qts, int fd, const char *command,
+                    const char *until)
+{
+    g_autofree char *text = g_strdup_printf("\x14%s\r", command);
+
+    ibrick_console(qts, fd, text, until, 1);
+}
+
+/*
+ * The I-brick's L1 resetting its brick restarts the bridge cold, and does
+ * so only when the brick is on. The L1 starts it on with its system. The
+ * I-brick has no console of its own here; the C-brick's L1 relays to it.
+ */
+static void test_origin3200_ibrick_l1_reset(void)
+{
+    g_autofree char *prom = NULL, *extra = NULL;
+    int fds[2];
+    QTestState *qts;
+    uint32_t value = 0;
+    const uint64_t head_f_register = CBRICK_WIDGET(15) + 0x28 + 4;
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), ==, 0);
+    extra = g_strdup_printf("-chardev socket,id=cb,fd=%d -serial chardev:cb",
+                            fds[1]);
+    qts = origin3200_start_with(&prom, extra);
+    close(fds[1]);
+    qtest_writel(qts, head_f_register, 0x12345);
+    g_assert_cmphex(qtest_readl(qts, head_f_register), ==, 0x12345);
+    l1_line(qts, fds[0], "cti power check", "power appears on");
+    g_assert_cmphex(qtest_readl(qts, head_f_register), ==, 0x12345);
+    l1_line(qts, fds[0], "cti reset", "001i14:");
+    l1_line(qts, fds[0], "cti power check", "power appears on");
+    g_assert_true(nasid_test_cpu_readl(qts, 0, head_f_register, &value));
+    g_assert_cmphex(value, ==, 0xfffff);
+    g_assert_true(ibrick_answers(qts));
+    /* With the brick off, the reset is refused and the bridge is kept. */
+    l1_line(qts, fds[0], "cti power down", "001i14:");
+    qtest_writel(qts, head_f_register, 0x12345);
+    l1_line(qts, fds[0], "cti reset", "power appears off");
+    g_assert_cmphex(qtest_readl(qts, head_f_register), ==, 0x12345);
+    close(fds[0]);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
 static void test_origin3200_ibrick_hold_migration(void)
 {
     g_autoptr(GError) error = NULL;
@@ -14385,6 +14471,8 @@ int main(int argc, char **argv)
                         "reset-hold", test_origin3200_ibrick_hold);
     qtest_add_data_func("sn/builder/origin3200/ibrick-main-power",
                         "main-power", test_origin3200_ibrick_hold);
+    qtest_add_func("sn/builder/origin3200/ibrick-l1-reset",
+                   test_origin3200_ibrick_l1_reset);
     qtest_add_func("sn/builder/origin3200/ibrick-hold-migration",
                    test_origin3200_ibrick_hold_migration);
     qtest_add_func("sn/builder/origin3400/routed-bricks",

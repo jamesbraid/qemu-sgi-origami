@@ -6856,6 +6856,43 @@ static const char *sgi_machine_router_board(const char *id)
 }
 
 /*
+ * An I-brick's L1 restarts its brick's bridge when it resets the brick: its
+ * "node-reset" pulse reaches the XBridge in the same module (the chip is
+ * restarted cold, which is the only reset the model gives it; which of the
+ * bridge's inputs the controller's three reset bits drive is unknown).
+ *
+ * The L1's "node-power" output is left unconnected. The L1 starts an
+ * I-brick off while its bridge runs from the start, and re-asserts "off" on
+ * every migration load, so joining it to the bridge's main-power input would
+ * switch the bridge off in a restored machine. Power follows once the L1
+ * starts its brick on with the system. Likewise the L1 has no reset-hold
+ * output yet, for the bridge's reset-hold input.
+ */
+static void sgi_machine_wire_ibrick_bridge(SGIMachineState *s,
+    const SGIModelTopology *t, const SGIModelController *controller,
+    DeviceState *l1)
+{
+    g_autofree const SGIModelCrossbar **crossbars = NULL;
+    size_t crossbar_count;
+
+    if (!s->enclosure_xbridges) {
+        return;
+    }
+    crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
+    for (size_t i = 0; i < crossbar_count; i++) {
+        DeviceState *chip = s->enclosure_xbridges[i];
+
+        if (crossbars[i]->module_index != controller->module_index || !chip ||
+            !object_dynamic_cast(OBJECT(chip), TYPE_SGI_XBRIDGE)) {
+            continue;
+        }
+        qdev_connect_gpio_out_named(l1, "node-reset", 0,
+                                    qdev_get_gpio_in_named(chip, "reset", 0));
+        return;
+    }
+}
+
+/*
  * Each I/O brick's L1, an I-brick's, an N-brick's or a V-brick's: a controller
  * of the brick's own module, reached from the L1 of every C-brick whose XIO
  * cable ends on that module's crossbars. An I-brick or V-brick has one such
@@ -7018,6 +7055,9 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
             }
         }
         qemu_register_resettable(OBJECT(l1));
+        if (!vbrick && !nbrick) {
+            sgi_machine_wire_ibrick_bridge(s, t, controller, l1);
+        }
     }
     return true;
 }
