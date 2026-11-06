@@ -1078,6 +1078,16 @@ the wire is *unknown*. Leaving the hold needs no second reset. Both causes must 
 not device state, so a machine reset does not release a hold; they
 migrate in a subsection that exists only while one is active.
 
+On an I-brick the controller's ``node-reset`` output drives the chip's
+``reset`` input, so the L1's ``reset`` command restarts the bridge cold
+while the brick is on. The controller's ``node-power`` output is not yet
+connected to ``main-power``: the L1 starts an I-brick off while the bridge
+runs from the start, and re-asserts off on every migration load, so
+connecting it would switch the bridge off in a restored machine. The
+controller has no reset-hold output yet for ``reset-hold``. Both
+connections wait for the controller to start the brick on with the
+system and to hold it in reset on ``reset hold``.
+
 What the controller's reset bits do is graded as follows. That the I-brick
 controller holds three bits of one expander low to hold the bridge and
 releases two of them, then the third ten ticks later, is *established*;
