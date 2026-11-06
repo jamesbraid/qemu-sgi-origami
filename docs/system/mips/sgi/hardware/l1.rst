@@ -1770,6 +1770,11 @@ What the model chooses, and the limit of each choice:
   powers a router without an L2, so ``auto-power``, on by default,
   starts it powered as a declared *approximation* of a machine that has
   powered it; with ``auto-power`` off it starts off and in reset.
+  In a machine its ``node-power`` and ``reset-hold`` outputs are the
+  router's ``power`` and ``reset-hold`` inputs, so the router is offline
+  whenever its brick is off or held: the pin-level join is *inferred* from
+  the R-brick sheet, which records the order of the supply and the hold but
+  not the pins.
 - A machine reset, which every guest restart and L1 reset command is on
   this machine, does not restart an I-brick, N-brick or V-brick L1: the L1
   runs on standby power, independent of brick power

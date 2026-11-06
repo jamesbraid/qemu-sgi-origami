@@ -438,9 +438,11 @@ Power and reset hold
 
 The router has two named level inputs, ``power`` (high when the brick is
 supplied, high at creation) and ``reset-hold`` (high while the chip is held
-in reset, low at creation). The brick's L1 drives them. The router is
-offline while ``power`` is low or ``reset-hold`` is high, and the two
-combine: it comes back only when both allow it.
+in reset, low at creation). In a machine the brick's L1 drives them from
+its ``node-power`` and ``reset-hold`` outputs, and settles them when the
+machine is built, so a router whose L1 starts off or held starts offline. The router is offline while ``power`` is low or
+``reset-hold`` is high, and the two combine: it comes back only when both
+allow it.
 
 While offline:
 
