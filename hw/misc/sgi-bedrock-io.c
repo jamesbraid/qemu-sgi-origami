@@ -52,6 +52,7 @@
 #define II_LINK_STATUS_MASK UINT64_C(0x3ff0fff7d3f)
 #define II_LINK_RESET UINT64_C(0x3fc0fff6403)
 #define II_LINK_UP (UINT64_C(1) << 13)
+#define II_REMOTE_POWER (UINT64_C(1) << 14)
 #define II_BTE_BUSY (UINT64_C(1) << 20)
 #define II_BTE_ERROR (UINT64_C(1) << 16)
 #define II_BTE_LENGTH_MASK UINT64_C(0xffff)
@@ -342,6 +343,18 @@ static void ii_bte_run(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
     ii_bte_signal(s, bte);
 }
 
+/*
+ * With the peer held or unpowered the link reads down: bit 13 (link up) and
+ * bit 14 (remote power) clear (inferred from their names and the PROM's use
+ * of bit 13; the physical values are unmeasured). The stored bits are kept,
+ * so the link comes back as it was when the peer does.
+ */
+static uint64_t ii_link_status_read(const SGIBedrockIOState *s)
+{
+    return s->peer_down ? s->link_status & ~(II_LINK_UP | II_REMOTE_POWER) :
+                          s->link_status;
+}
+
 static uint64_t ii_read(void *opaque, hwaddr offset, unsigned size)
 {
     SGIBedrockIOState *s = opaque;
@@ -383,7 +396,7 @@ static uint64_t ii_read(void *opaque, hwaddr offset, unsigned size)
     case II_OUT_ACCESS: return s->outbound_access;
     case II_IN_ACCESS: return s->inbound_access;
     case II_DEVICE_MASK: return s->device_mask;
-    case II_LINK_STATUS: return s->link_status;
+    case II_LINK_STATUS: return ii_link_status_read(s);
     case II_LINK_LOG: return s->link_log;
     case II_INTERRUPT_DEST: return s->interrupt_destination & ~(1 << 28);
     case II_SCRATCH0:
@@ -424,6 +437,11 @@ static uint64_t ii_link_status_fixup(const SGIBedrockIOState *s,
                                      uint64_t value)
 {
     return s->xio_peer ? value : value & ~II_LINK_UP;
+}
+
+static void ii_peer_power(void *opaque, int line, int level)
+{
+    SGI_BEDROCK_IO(opaque)->peer_down = !level;
 }
 
 static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
@@ -529,8 +547,13 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
         s->device_mask |= value;
         return;
     case II_LINK_STATUS:
-        s->link_status = ii_link_status_fixup(s,
-                                              value & II_LINK_STATUS_MASK);
+        value &= II_LINK_STATUS_MASK;
+        if (s->peer_down) {
+            /* The bits read as down; a write-back of them must not stick. */
+            value = (value & ~(II_LINK_UP | II_REMOTE_POWER)) |
+                    (s->link_status & (II_LINK_UP | II_REMOTE_POWER));
+        }
+        s->link_status = ii_link_status_fixup(s, value);
         return;
     case II_LINK_LOG:
         if (value == 0) {
@@ -1282,6 +1305,8 @@ static void ii_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->regs);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->pio);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->inbound);
+    qdev_init_gpio_in_named_with_opaque(DEVICE(obj), ii_peer_power, s,
+                                        "xio-peer-power", 1);
     for (unsigned i = 0; i < 2; i++) {
         s->bte[i].io = s;
         s->bte[i].signal_bh = qemu_bh_new_guarded(ii_bte_signal_bh, &s->bte[i],

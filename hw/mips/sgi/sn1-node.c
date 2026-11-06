@@ -2504,6 +2504,20 @@ static bool sn1_node_create_ip45_xbridge(SN1NodeState *node, Error **errp)
 }
 
 /*
+ * The XBridge says whether it answers, and the Bedrock's I/O interface reads
+ * its link down while it does not. The line is a level the chip drives, so
+ * a chip nothing holds leaves the link as it was.
+ */
+static void sn1_node_follow_xbridge_link(SN1NodeState *node,
+                                         DeviceState *xbridge)
+{
+    qdev_connect_gpio_out_named(
+        xbridge, "host-link", 0,
+        qdev_get_gpio_in_named(DEVICE(&SGI_BEDROCK(node->bedrock)->io),
+                               "xio-peer-power", 0));
+}
+
+/*
  * The IP35 path: join the XBridge an XIO cable reaches in another brick.
  * The machine created that chip in its brick's module and set its
  * host-port to the port the cable meets, its other Crosstown2 port as
@@ -2530,6 +2544,7 @@ static bool sn1_node_join_supplied_xbridge(SN1NodeState *node, Error **errp)
         !sysbus_realize(SYS_BUS_DEVICE(xbridge), errp)) {
         return false;
     }
+    sn1_node_follow_xbridge_link(node, xbridge);
     for (i = 0; i < node->xbridge_widget_count; i++) {
         g_autofree char *property =
             g_strdup_printf("widget-%u", node->xbridge_widgets[i]);

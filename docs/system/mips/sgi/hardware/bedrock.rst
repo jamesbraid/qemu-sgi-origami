@@ -1163,6 +1163,20 @@ link enabled, null timeout 3, maximum retry ``0x3ff``, maximum burst
 node built without a crosstalk peer reads bit 13 clear and no write can
 set it, *inferred*. Writes keep the defined bits.
 
+The interface has an ``xio-peer-power`` input that a cabled XBridge drives
+(its ``host-link`` output). While the line is low, because the bridge is
+held in reset or without power, the register reads bits 13 and 14 clear
+and the rest of the word unchanged. Bit 13 (link up) clearing is
+*inferred* from the bit's name and the PROM's use of it; bit 14 (remote
+power) is *unknown* beyond its name; the physical word is *unknown*. The
+PROM then skips every widget access. The stored bits are kept, so a
+write-back of the word as read does not leave the link down once the
+bridge returns. That is an *approximation*: whether a write-back matters
+is *unknown*, and a real link may stay down until its port is reset.
+Nothing on a node's own board drives the line, so its link is unchanged.
+The line is a wire level: a reset leaves it, and the bridge re-drives it
+after a migration load.
+
 Widget control bits 3:0 reset to the ``host-widget`` property, ``0xa``
 unless the board sets another value, and a reset restores it. The
 property is the crossbar port where the Bedrock enters its XBridge. The

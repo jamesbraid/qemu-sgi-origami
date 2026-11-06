@@ -10487,6 +10487,109 @@ static void test_origin3200_ibrick_l1_rides_node_reset(void)
 }
 
 /*
+ * The I-brick's XBridge on the Origin 3200, held in reset or without power.
+ * c0 reads the chip's head F identity and the II's link word; a held chip
+ * fails the first and the link reads down, with bits 13 and 14 clear.
+ */
+#define IBRICK_XBRIDGE "/machine/module2/xbridge"
+#define II_LINK_UP_BIT (UINT64_C(1) << 13)
+#define II_REMOTE_POWER_BIT (UINT64_C(1) << 14)
+
+static bool ibrick_answers(QTestState *qts)
+{
+    uint32_t identity = 0;
+
+    return nasid_test_cpu_readl(qts, 0, CBRICK_WIDGET(15) + 4, &identity) &&
+           ((identity >> 12) & 0xffff) == 0xd002;
+}
+
+static uint64_t ibrick_link(QTestState *qts)
+{
+    uint64_t link = 0;
+
+    g_assert_true(nasid_test_cpu_readq(qts, 0, ORIGIN3200_II_LINK_STATUS,
+                                       &link));
+    return link;
+}
+
+static void ibrick_assert_down(QTestState *qts, uint64_t up_link)
+{
+    uint64_t link = ibrick_link(qts);
+
+    g_assert_false(ibrick_answers(qts));
+    g_assert_cmphex(link & (II_LINK_UP_BIT | II_REMOTE_POWER_BIT), ==, 0);
+    /* Nothing else in the word moves. */
+    g_assert_cmphex(link, ==, up_link & ~(II_LINK_UP_BIT |
+                                          II_REMOTE_POWER_BIT));
+}
+
+static void ibrick_assert_up(QTestState *qts, uint64_t up_link)
+{
+    g_assert_true(ibrick_answers(qts));
+    g_assert_cmphex(ibrick_link(qts), ==, up_link);
+}
+
+static void test_origin3200_ibrick_hold(const void *data)
+{
+    const char *wire = data;
+    bool power = !strcmp(wire, "main-power");
+    g_autofree char *prom = NULL;
+    QTestState *qts = origin3200_start(&prom);
+    uint64_t up_link = ibrick_link(qts);
+
+    /* The model's reset value has both bits set. */
+    g_assert_cmphex(up_link & (II_LINK_UP_BIT | II_REMOTE_POWER_BIT), ==,
+                    II_LINK_UP_BIT | II_REMOTE_POWER_BIT);
+    ibrick_assert_up(qts, up_link);
+    qtest_set_irq_in(qts, IBRICK_XBRIDGE, wire, 0, !power);
+    ibrick_assert_down(qts, up_link);
+    /*
+     * The PROM writes the word back as read, bit 8 set. That must not
+     * leave the link down once the bridge returns.
+     */
+    qtest_writeq(qts, ORIGIN3200_II_LINK_STATUS, ibrick_link(qts) | 0x100);
+    qtest_set_irq_in(qts, IBRICK_XBRIDGE, wire, 0, power);
+    ibrick_assert_up(qts, up_link | 0x100);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+static void test_origin3200_ibrick_hold_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = NULL, *prom_to = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn-builder-ibrick-hold-XXXXXX",
+                                          &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+    uint64_t up_link;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = origin3200_start_with(&prom, "-S");
+    to = origin3200_start_with(&prom_to, "-S -incoming defer");
+    up_link = ibrick_link(from);
+    qtest_set_irq_in(from, IBRICK_XBRIDGE, "reset-hold", 0, 1);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    ibrick_assert_down(to, up_link);
+    qtest_set_irq_in(to, IBRICK_XBRIDGE, "reset-hold", 0, 0);
+    ibrick_assert_up(to, up_link);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(socket);
+    g_unlink(prom);
+    g_unlink(prom_to);
+    g_rmdir(dir);
+}
+
+/*
  * The machine's l1-revision replaces the catalogue's revision on every
  * C-brick and I-brick L1.
  */
@@ -14278,6 +14381,12 @@ int main(int argc, char **argv)
                    test_origin3200_ibrick_l1_rides_node_reset);
     qtest_add_func("sn/builder/origin3200/l1-revision-override",
                    test_origin3200_l1_revision_override);
+    qtest_add_data_func("sn/builder/origin3200/ibrick-reset-hold",
+                        "reset-hold", test_origin3200_ibrick_hold);
+    qtest_add_data_func("sn/builder/origin3200/ibrick-main-power",
+                        "main-power", test_origin3200_ibrick_hold);
+    qtest_add_func("sn/builder/origin3200/ibrick-hold-migration",
+                   test_origin3200_ibrick_hold_migration);
     qtest_add_func("sn/builder/origin3400/routed-bricks",
                    test_origin3400_routed_bricks);
     qtest_add_func("sn/builder/origin3400/two-routers-cables",
