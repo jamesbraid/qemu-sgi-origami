@@ -7659,6 +7659,27 @@ static uint32_t sgi_machine_io_origin_count(SGIMachineState *s,
     return 0;
 }
 
+/*
+ * An R-brick's L1 owns the brick's supply and the router chip's reset: its
+ * "node-power" output is the router's "power" input and its "reset-hold"
+ * output the router's "reset-hold" input. The L1 settled both lines when it
+ * realized, before the router existed, so the router takes their present
+ * levels here: a brick the L1 starts off or held starts the router offline.
+ * Only the R-brick board has that power state in the L1 model; a NUMAlink
+ * module's or a Cx-brick's router keeps the router's defaults.
+ */
+static void sgi_machine_wire_router_l1(DeviceState *l1, DeviceState *router)
+{
+    SGIL1State *state = SGI_L1(l1);
+    qemu_irq power = qdev_get_gpio_in_named(router, "power", 0);
+    qemu_irq hold = qdev_get_gpio_in_named(router, "reset-hold", 0);
+
+    qdev_connect_gpio_out_named(l1, "node-power", 0, power);
+    qdev_connect_gpio_out_named(l1, "reset-hold", 0, hold);
+    qemu_set_irq(power, state->node_power);
+    qemu_set_irq(hold, state->reset_hold);
+}
+
 static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
     const SGIModelTopology *t, Error **errp)
 {
@@ -7679,6 +7700,7 @@ static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
         unsigned owner = model_module->controller_index;
         DeviceState *l1, *uart, *router;
         const char *board;
+        bool rbrick = false;
         size_t record_count;
         g_autofree const SGIModelController **controller_records =
             sgi_model_controller_array(t->controllers, &record_count);
@@ -7729,6 +7751,7 @@ static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
             if (board) {
                 qdev_prop_set_string(l1, "router-board", board);
             }
+            rbrick = board && !strcmp(board, "rbrick");
             if (!qdev_realize(l1, NULL, errp)) {
                 return false;
             }
@@ -7757,6 +7780,9 @@ static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
         if (!sysbus_realize(SYS_BUS_DEVICE(router), errp)) {
             object_unref(OBJECT(router));
             return false;
+        }
+        if (rbrick) {
+            sgi_machine_wire_router_l1(l1, router);
         }
         s->sn1_routers[index] = SGI_SN1_ROUTER(router);
         object_unref(OBJECT(router));

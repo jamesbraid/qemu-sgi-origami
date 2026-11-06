@@ -1345,14 +1345,9 @@ static char *first_router_path(QTestState *qts)
  * it off every other node's map, because the links through it read down. It
  * returns when the line does.
  */
-static void test_dead_router_removes_the_memory_behind_it(const void *data)
+/* Give node 0 a probe word and node 1's processor the route 7 to it. */
+static void routed_probe_prepare(QTestState *qts)
 {
-    const char *line = data;
-    bool power = !strcmp(line, "power");
-    g_autofree char *quoted = g_shell_quote(prom_path);
-    QTestState *qts = qtest_initf(ORIGIN3400_ARGS " -bios %s", quoted);
-    g_autofree char *router = first_router_path(qts);
-
     for (unsigned int node = 0; node < 4; node++) {
         bte_cpu_writeq(qts, node * 4, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
                        MD_BANK0_512MB);
@@ -1363,11 +1358,112 @@ static void test_dead_router_removes_the_memory_behind_it(const void *data)
                        (uint64_t)node << REVISION_NODE_SHIFT);
     }
     bte_cpu_writeq(qts, 4, BEDROCK_LOCAL + NI_LOCAL_ROUTE(0), 7);
-    g_assert_cmphex(cpu_read_ok(qts, 4, ROUTED_PROBE), ==, WORD0);
+}
 
+/* Node 0's probe word is reachable from node 1's processor over route 7. */
+static void routed_probe_setup(QTestState *qts)
+{
+    routed_probe_prepare(qts);
+    g_assert_cmphex(cpu_read_ok(qts, 4, ROUTED_PROBE), ==, WORD0);
+}
+
+static void test_dead_router_removes_the_memory_behind_it(const void *data)
+{
+    const char *line = data;
+    bool power = !strcmp(line, "power");
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(ORIGIN3400_ARGS " -bios %s", quoted);
+    g_autofree char *router = first_router_path(qts);
+
+    routed_probe_setup(qts);
     qtest_set_irq_in(qts, router, line, 0, power ? 0 : 1);
     assert_unreachable(qts, 4, ROUTED_PROBE);
     qtest_set_irq_in(qts, router, line, 0, power ? 1 : 0);
+    g_assert_cmphex(cpu_read_ok(qts, 4, ROUTED_PROBE), ==, WORD0);
+    qtest_quit(qts);
+}
+
+/* The L1 that shares the router's module: the R-brick's own controller. */
+static char *router_l1_path(const char *router)
+{
+    g_autofree char *module = g_strndup(router, strlen(router) -
+                                        strlen("/router"));
+
+    return g_strdup_printf("%s/l1", module);
+}
+
+/*
+ * With the L1's start-up power on, a routed machine boots as before: the
+ * R-brick's L1 comes up with its brick powered and the router released, and
+ * the probe word crosses the router. The L1's lines reach the router and
+ * move with it.
+ */
+static void test_router_l1_starts_powered_and_released(void)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(ORIGIN3400_ARGS " -bios %s", quoted);
+    g_autofree char *router = first_router_path(qts);
+    g_autofree char *l1 = router_l1_path(router);
+
+    g_assert_false(qtest_qom_get_bool(qts, l1, "reset-hold"));
+    routed_probe_setup(qts);
+    qtest_quit(qts);
+}
+
+/*
+ * An R-brick whose L1 starts it off, as with auto-power off, starts its
+ * router offline: the L1 settled both lines before the router existed, and
+ * the machine hands them over when it builds the router. The memory behind
+ * the router is out of every map until the front switch powers the brick up.
+ */
+static void test_router_l1_starts_off_when_its_l1_does(void)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(ORIGIN3400_ARGS
+                                  " -global sgi-l1.auto-power=off -bios %s",
+                                  quoted);
+    g_autofree char *router = first_router_path(qts);
+    g_autofree char *l1 = router_l1_path(router);
+
+    g_assert_true(qtest_qom_get_bool(qts, l1, "reset-hold"));
+    routed_probe_prepare(qts);
+    assert_unreachable(qts, 4, ROUTED_PROBE);
+    qtest_set_irq_in(qts, l1, "power-button", 0, 1);
+    qtest_set_irq_in(qts, l1, "power-button", 0, 0);
+    g_assert_false(qtest_qom_get_bool(qts, l1, "reset-hold"));
+    g_assert_cmphex(cpu_read_ok(qts, 4, ROUTED_PROBE), ==, WORD0);
+    qtest_quit(qts);
+}
+
+/*
+ * The L1's power-down raises the hold, then drops node-power: the router
+ * goes dark and the memory behind it leaves every map. Each line alone
+ * keeps it dark: the other, forced high at the router's input, does not
+ * bring it back. Power-up releases both.
+ */
+static void test_router_l1_power_follows_the_switch(void)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(ORIGIN3400_ARGS " -bios %s", quoted);
+    g_autofree char *router = first_router_path(qts);
+    g_autofree char *l1 = router_l1_path(router);
+
+    routed_probe_setup(qts);
+    qtest_set_irq_in(qts, l1, "power-button", 0, 1);
+    qtest_set_irq_in(qts, l1, "power-button", 0, 0);
+    g_assert_true(qtest_qom_get_bool(qts, l1, "reset-hold"));
+    assert_unreachable(qts, 4, ROUTED_PROBE);
+    /* The hold alone keeps the router dark, and so does the lost supply. */
+    qtest_set_irq_in(qts, router, "power", 0, 1);
+    assert_unreachable(qts, 4, ROUTED_PROBE);
+    qtest_set_irq_in(qts, router, "power", 0, 0);
+    qtest_set_irq_in(qts, router, "reset-hold", 0, 0);
+    assert_unreachable(qts, 4, ROUTED_PROBE);
+    qtest_set_irq_in(qts, router, "reset-hold", 0, 1);
+
+    qtest_set_irq_in(qts, l1, "power-button", 0, 1);
+    qtest_set_irq_in(qts, l1, "power-button", 0, 0);
+    g_assert_false(qtest_qom_get_bool(qts, l1, "reset-hold"));
     g_assert_cmphex(cpu_read_ok(qts, 4, ROUTED_PROBE), ==, WORD0);
     qtest_quit(qts);
 }
@@ -2443,6 +2539,12 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn1/cross-node/held-router-removes-its-memory",
                         "reset-hold",
                         test_dead_router_removes_the_memory_behind_it);
+    qtest_add_func("sn1/cross-node/router-l1-starts-powered-and-released",
+                   test_router_l1_starts_powered_and_released);
+    qtest_add_func("sn1/cross-node/router-l1-power-follows-the-switch",
+                   test_router_l1_power_follows_the_switch);
+    qtest_add_func("sn1/cross-node/router-l1-starts-off-when-its-l1-does",
+                   test_router_l1_starts_off_when_its_l1_does);
     qtest_add_func("sn1/cross-node/remote-reader-in-the-directory",
                    test_remote_reader_in_the_directory);
     qtest_add_func("sn1/cross-node/equal-numbers-stay-local",
