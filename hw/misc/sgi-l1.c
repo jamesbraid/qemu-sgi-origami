@@ -663,7 +663,12 @@ static void l1_power_down(SGIL1State *s, uint8_t reason, bool shutdown)
     l1_log(s, "power down (%s)", source);
     qemu_set_irq(s->node_power_out, 0);
     l1_publish_power(s);
-    if (shutdown) {
+    /*
+     * A node the machine joined to the line loses its supply and the machine
+     * ends when the last compute node is off. A controller with no node has
+     * nothing to switch, and stands for the machine.
+     */
+    if (shutdown && !s->node_driven) {
         /*
          * A synchronous shutdown request only wakes the main loop, which
          * carries it out whenever it next runs; nothing stops a peer
@@ -705,7 +710,7 @@ static void l1_power_up(SGIL1State *s, uint8_t reason, bool restart)
     l1_log(s, "power up (%s)", source);
     qemu_set_irq(s->node_power_out, 1);
     l1_publish_power(s);
-    if (restart) {
+    if (restart && !s->node_driven) {
         s->power_up_pending = true;
         l1_schedule_action(false);
     }
@@ -715,6 +720,16 @@ static void l1_power_up(SGIL1State *s, uint8_t reason, bool restart)
         l1_printf(s, "\r\n");
     }
     l1_mode_message(s, returning);
+}
+
+/* The real countdown is skipped: a model choice. */
+static void l1_auto_power_up(SGIL1State *s)
+{
+    g_autofree char *name = l1_module_name(s);
+
+    l1_log(s, "auto power up initiated");
+    l1_printf(s, "INFO: %s powering up the system.\r\n", name);
+    l1_power_up(s, 1, false);
 }
 
 static void l1_node_reset(SGIL1State *s, uint8_t reason)
@@ -5176,7 +5191,16 @@ static int l1_post_load(void *opaque, int version_id)
     for (unsigned i = 0; i < SGI_L1_LOG_ENTRIES; i++) {
         s->log_text[i][SGI_L1_LOG_TEXT - 1] = 0;
     }
-    qemu_set_irq(s->node_power_out, s->node_power);
+    /*
+     * A node the machine joined to this line carries its own supply level in
+     * the stream, with its processors and parts. Driving the line again here
+     * would run a supply cycle on a destination whose node started at the
+     * other level, in the middle of the load: it would reset parts and
+     * processors the stream has already filled, or is about to.
+     */
+    if (!s->node_driven) {
+        qemu_set_irq(s->node_power_out, s->node_power);
+    }
     qemu_set_irq(s->reset_hold_out, s->reset_hold);
     return 0;
 }
@@ -6504,12 +6528,21 @@ fuel_mac_done:
          */
         l1_peer_power(s, true, 1, false);
     } else if (s->auto_power) {
-        /* The real countdown is skipped: a model choice. */
-        l1_log(s, "auto power up initiated");
-        g_autofree char *name = l1_module_name(s);
+        l1_auto_power_up(s);
+    }
+}
 
-        l1_printf(s, "INFO: %s powering up the system.\r\n", name);
-        l1_power_up(s, 1, false);
+void sgi_l1_set_node_driven(DeviceState *dev)
+{
+    SGI_L1(dev)->node_driven = true;
+}
+
+void sgi_l1_apply_start_power(DeviceState *dev)
+{
+    SGIL1State *s = SGI_L1(dev);
+
+    if (s->profile->compute_services && s->auto_power && !s->node_power) {
+        l1_auto_power_up(s);
     }
 }
 

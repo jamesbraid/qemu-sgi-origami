@@ -421,6 +421,17 @@ struct SGIMachineState {
      * synthetic two-node fixture).
      */
     DeviceState **bedrock_nodes;
+    /*
+     * Per-node power on a Bedrock topology. A node's controller drives its
+     * supply; the machine ends only when the last compute node is off. The
+     * bottom half that checks is scheduled by a node losing power;
+     * power_shutdown says that check ended the machine, which a power-up then
+     * resumes through a reset marked power_resume (the nodes take their
+     * power from their controllers rather than from the start-up decision).
+     */
+    bool node_power_bh_pending;
+    bool power_shutdown;
+    bool power_resume;
     DeviceState **pic_hosts;
     /*
      * The XBridge each crossbar record builds in its brick's module, in
@@ -10361,6 +10372,124 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 }
 
 /*
+ * A compute node of a Bedrock topology lost or regained its supply.
+ *
+ * Losing it is checked in a bottom half, after the node's processors have
+ * been queued to stop: when no compute node is on, the machine ends, and an
+ * I-brick or R-brick (which has no processors) never keeps it alive. A
+ * node that is cycled back on before the bottom half runs keeps the machine
+ * running. Regaining it after the machine ended (-no-shutdown) resumes the
+ * machine through a reset that powers only the nodes whose controllers say
+ * they are on.
+ */
+static void sgi_machine_node_power_bh(void *opaque)
+{
+    SGIMachineState *s = opaque;
+    bool compute = false, on = false;
+
+    s->node_power_bh_pending = false;
+    for (unsigned int i = 0; i < s->num_nodes; i++) {
+        SN1NodeState *node = SN1_NODE(s->bedrock_nodes[i]);
+
+        if (!node->nr_cpus) {
+            continue;
+        }
+        compute = true;
+        /* A node whose processors are still stopping announces itself. */
+        on = on || sn1_node_powered(node) || node->stop_pending;
+    }
+    if (compute && !on && !s->power_shutdown) {
+        s->power_shutdown = true;
+        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+    }
+}
+
+static void sgi_machine_power_resume_bh(void *opaque)
+{
+    if (!runstate_is_running()) {
+        vm_start();
+    }
+}
+
+static void sgi_machine_node_power_changed(void *opaque, SN1NodeState *node,
+                                           bool powered)
+{
+    SGIMachineState *s = opaque;
+
+    if (!powered) {
+        if (!s->node_power_bh_pending) {
+            s->node_power_bh_pending = true;
+            replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
+                                             sgi_machine_node_power_bh, s);
+        }
+    } else if (s->power_shutdown && !s->power_resume) {
+        s->power_resume = true;
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
+}
+
+/*
+ * Each node's supply follows its brick's L1: the L1's "node-power" output is
+ * the node's "power" input. A Cx-brick's L1 serves several nodes, so its one
+ * line is split to them. The L1 settled its level at realize, before the node
+ * took the line, so each node takes the present level here and the machine
+ * is told of later changes only.
+ */
+static void sgi_machine_wire_node_power(SGIMachineState *s)
+{
+    for (unsigned int i = 0; i < s->num_nodes; i++) {
+        SN1NodeState *node = SN1_NODE(s->bedrock_nodes[i]);
+        DeviceState *l1 = node->l1;
+        unsigned int served = 0, line = 0;
+        DeviceState *split = NULL;
+
+        if (!l1) {
+            continue;
+        }
+        for (unsigned int j = 0; j < s->num_nodes; j++) {
+            if (j < i && SN1_NODE(s->bedrock_nodes[j])->l1 == l1) {
+                served = 0;
+                break;
+            }
+            served += SN1_NODE(s->bedrock_nodes[j])->l1 == l1;
+        }
+        if (!served) {
+            continue;
+        }
+        if (served > 1) {
+            split = qdev_new(TYPE_SPLIT_IRQ);
+            qdev_prop_set_uint32(split, "num-lines", served);
+            object_property_add_child(OBJECT(l1), "node-power-split",
+                                      OBJECT(split));
+            qdev_realize_and_unref(split, NULL, &error_fatal);
+            qdev_connect_gpio_out_named(l1, "node-power", 0,
+                                        qdev_get_gpio_in(split, 0));
+        }
+        for (unsigned int j = i; j < s->num_nodes; j++) {
+            SN1NodeState *peer = SN1_NODE(s->bedrock_nodes[j]);
+            qemu_irq power = qdev_get_gpio_in_named(DEVICE(peer), "power", 0);
+
+            if (peer->l1 != l1) {
+                continue;
+            }
+            if (split) {
+                qdev_connect_gpio_out(split, line++, power);
+            } else {
+                qdev_connect_gpio_out_named(l1, "node-power", 0, power);
+            }
+            qemu_set_irq(power, SGI_L1(l1)->node_power);
+        }
+        sgi_l1_set_node_driven(l1);
+    }
+    for (unsigned int i = 0; i < s->num_nodes; i++) {
+        SN1NodeState *node = SN1_NODE(s->bedrock_nodes[i]);
+
+        node->power_notify = sgi_machine_node_power_changed;
+        node->power_notify_opaque = s;
+    }
+}
+
+/*
  * Brings up every empty XIO slot a `-device` board claimed. The board's
  * own realize, which runs once machine init has returned and every
  * Crossbow this machine builds has realized, linked it to the slot's
@@ -10435,6 +10564,7 @@ static void sgi_machine_done(Notifier *notifier, void *data)
             nodes[i] = SN1_NODE(s->bedrock_nodes[i]);
         }
         sn1_register_reset_notifiers(nodes, s->num_nodes);
+        sgi_machine_wire_node_power(s);
     }
 }
 
@@ -10963,8 +11093,27 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
      * the Hub's own order below, so it cannot share this prefix.
      */
     if (t && sgi_machine_topology_node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_HUB) {
+        bool resume = s->power_resume;
         unsigned int i;
 
+        s->power_resume = false;
+        s->power_shutdown = false;
+        /*
+         * A reset is a mains cycle: a node whose controller left it off
+         * comes back when the controller powers on at start-up. A resume
+         * after the machine ended is the exception, where only the node
+         * that was switched on runs, and so is a snapshot load, where the
+         * controllers load their own state.
+         */
+        if (!resume && type != RESET_TYPE_SNAPSHOT_LOAD) {
+            for (i = 0; i < s->num_nodes; i++) {
+                DeviceState *l1 = SN1_NODE(s->bedrock_nodes[i])->l1;
+
+                if (l1) {
+                    sgi_l1_apply_start_power(l1);
+                }
+            }
+        }
         for (i = 0; i < s->num_nodes; i++) {
             sn1_node_reset_cpus(SN1_NODE(s->bedrock_nodes[i]));
         }
@@ -10972,6 +11121,10 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
         sn1_memory_mappings_refresh(s->sn1_memory_mappings, NULL);
         for (i = 0; i < s->num_nodes; i++) {
             sn1_node_release_cpus(SN1_NODE(s->bedrock_nodes[i]));
+        }
+        if (resume) {
+            replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
+                                             sgi_machine_power_resume_bh, s);
         }
         return;
     }
