@@ -1494,12 +1494,20 @@ power off.
        initiated`` and printing ``INFO: 001c01 powering up the system.``
    * - ``power up``
      - With the node off: node power on, console selection back to CPU
-       0, ``Powered Up``, a log entry, the console-mode text, then a
-       QEMU system reset; the machine resumes once that reset has run.
+       0, ``Powered Up``, a log entry and the console-mode text. In a
+       machine the ``node-power`` output switches that node on alone; if
+       the machine had ended because its last compute node went off
+       (``-no-shutdown``), it resumes through a QEMU system reset after
+       which only the nodes whose controllers are on run. A controller
+       with no node attached, a bare ``sgi-l1`` device, requests that
+       system reset itself and resumes the machine after it.
        With the node on: ``Power is already on``.
    * - ``power down``
      - Node power off, ``Powered Down``, a log entry, the event
-       subchannel cleared and a QEMU shutdown request. Only the type
+       subchannel cleared. In a machine the ``node-power`` output removes
+       that node's supply and the machine shuts down only when no compute
+       node is on and none has a power-up to come; a bare ``sgi-l1``
+       device requests the QEMU shutdown itself. Only the type
        letters ``9``, ``A`` and ``Q`` with a registered event subchannel
        defer the first request (the ``0x8000`` event and nothing else;
        the second acts). Through task 3 or ``0x2005`` it acts at once.
@@ -1518,16 +1526,43 @@ power off.
        ``nmi``, which the node routes to every fitted processor's NMI
        input.
 
-Each machine action is queued on the processor whose write reached the
-UART and every processor is paused before QEMU handles it; from the
-host console the main thread pauses all processors first. A reply queued
-before a reset may be cleared with the UART before the guest reads it.
-Resetting the whole machine, keeping the QEMU process alive for a power
-cycle, the hold times and the missing countdown are each an *approximation*.
-On a C-brick the ``node-power``, ``node-reset`` and ``soft-reset``
-outputs report what the L1 did and drive nothing; no source says what a
-soft reset reaches in the node. An I-brick's and an R-brick's outputs
-drive their bridge and router, as described under their bricks. The front-panel buttons are not modelled.
+A reset is still a machine action: it is queued on the processor whose
+write reached the UART and every processor is paused before QEMU handles
+it; from the host console the main thread pauses all processors first. A
+reply queued before a reset may be cleared with the UART before the guest
+reads it. Resetting the whole machine for ``reset``, the hold times and the
+missing countdown are each an *approximation*.
+
+On a C-brick, an Origin 300 and any other compute controller, the
+``node-power`` output is the power input of the node it serves, so a
+power change acts on that node alone and not on the machine (the
+Bedrock page's Main power section describes what the node does). The
+machine hands the node the controller's level when it joins them, so a
+controller that starts off, with ``auto-power`` off, leaves its node
+stopped until ``power up``. A Cx-brick's one controller serves all its
+boards' nodes and powers them together, an *approximation*: the wiring
+from the controller to the node boards is unknown. A broadcast
+``* power up`` or ``* power down`` reaches the peer's controller as well,
+which then moves its own node. The machine ends when the last compute
+node, in any partition, is off, an *approximation*: no source gives the
+rule. An I-brick or R-brick never keeps it alive, because its
+controller serves no processor. A system reset of the machine is a mains
+cycle: a controller whose node is off applies its start-up power decision
+again, so with ``auto-power`` set it switches its node back on. The
+``reset`` command and a Bedrock local reset still restart every node and
+take the same path, so they also switch on a node whose controller left it
+off, an *approximation* until a node reset is scoped to its own node.
+A ``reset`` from the console or from the guest that switches on another
+node this way does so through that node's controller, so the other node's
+console prints ``powering up the system`` as well. The machine's own
+record that it ended, and the queued check that decides it, are not
+migrated, so a ``-no-shutdown`` machine that ended and was then migrated
+does not resume when a node is powered up on the destination (see the
+Bedrock page). The ``node-reset`` and ``soft-reset``
+outputs report what the L1 did and drive nothing on a C-brick; no source
+says what a soft reset reaches in the node. An I-brick's and an R-brick's
+outputs drive their bridge and router, as described under their bricks.
+The front-panel buttons are not modelled.
 
 Reset
 =====
@@ -2185,7 +2220,14 @@ Hub forms, the interrupt reaching the processor, the operator console,
 revisions, type codes and built records on the machines.
 ``tests/qtest/sn1-bedrock-test.c`` checks the Bedrock's refusals and
 protection for the window, ``tests/qtest/sn1-cross-node-test.c`` the
-local form on a second node, ``tests/qtest/sn1-fuel-test.c`` the Fuel
+local form on a second node and, on an Origin 3200, each brick's power
+acting on its own node, the machine ending with the last one and resuming
+with only the brick switched on
+(``sn1/cross-node/brick-power-ends-the-machine-last``,
+``sn1/cross-node/broadcast-power-down-ends-the-machine``,
+``sn1/cross-node/brick-power-stops-one-counter``,
+``sn1/cross-node/last-brick-power-down-announces-after-the-stop``),
+``tests/qtest/sn1-fuel-test.c`` the Fuel
 type code and NMI routing, ``tests/qtest/sn-builder-test.c`` the peer
 wiring and the Origin 350 family type selection, and
 ``tests/qtest/sgi-sn1-router-test.c`` the router module's window.

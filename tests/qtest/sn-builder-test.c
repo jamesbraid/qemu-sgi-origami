@@ -10773,16 +10773,18 @@ static void test_origin3200_ibrick_power_leaves_the_cbrick_running(void)
 /*
  * An I-brick whose L1 starts it off, as with auto-power off, starts its
  * bridge held: nothing answers, the II link reads down, and the front
- * switch brings both up. The C-bricks' L1s take the same property and have
- * no wire to their nodes yet, so the machine still runs.
+ * switch brings both up. The C-bricks' L1s take the same property and leave
+ * their nodes off, so the test switches node 0 on to read through it.
  */
 static void test_origin3200_ibrick_starts_off_when_its_l1_does(void)
 {
     g_autofree char *prom = NULL;
     QTestState *qts = origin3200_start_with(&prom,
                                             "-global sgi-l1.auto-power=off");
-    uint64_t link = ibrick_link(qts);
+    uint64_t link;
 
+    qtest_set_irq_in(qts, "/machine/node0", "power", 0, 1);
+    link = ibrick_link(qts);
     g_assert_true(qtest_qom_get_bool(qts, IBRICK_L1, "reset-hold"));
     g_assert_false(ibrick_answers(qts));
     g_assert_cmphex(link & (II_LINK_UP_BIT | II_REMOTE_POWER_BIT), ==, 0);

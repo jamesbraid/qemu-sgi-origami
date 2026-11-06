@@ -9,8 +9,11 @@
  * does not execute under qtest.
  */
 #include "qemu/osdep.h"
+#include <poll.h>
+#include <sys/socket.h>
 #include "libqtest.h"
 #include "qemu/bswap.h"
+#include "qemu/timer.h"
 #include "qobject/qdict.h"
 #include "sgi-test.h"
 #include "sgi-wait.h"
@@ -1443,6 +1446,15 @@ static void test_router_l1_starts_off_when_its_l1_does(void)
     g_autofree char *router = first_router_path(qts);
     g_autofree char *l1 = router_l1_path(router);
 
+    /*
+     * The property reaches every L1, so the C-bricks start off too and
+     * their processors answer nothing. Switch them on, as their L1s would.
+     */
+    for (unsigned int node = 0; node < 4; node++) {
+        g_autofree char *path = g_strdup_printf("/machine/node%u", node);
+
+        qtest_set_irq_in(qts, path, "power", 0, 1);
+    }
     g_assert_true(qtest_qom_get_bool(qts, l1, "reset-hold"));
     routed_probe_prepare(qts);
     assert_unreachable(qts, 4, ROUTED_PROBE);
@@ -2628,6 +2640,17 @@ static void wait_halted(QTestState *qts, unsigned int cpu, bool halted)
     }
 }
 
+static void wait_halted_mask(QTestState *qts, unsigned int node,
+                             unsigned int mask)
+{
+    SgiWait w;
+
+    sgi_wait_start(&w, "node %u's halted mask to be 0x%x", node, mask);
+    while (halted_cpus(qts, node) != mask) {
+        g_assert_true(sgi_wait_continue(&w, 10000));
+    }
+}
+
 /* The count of the node whose first processor is @cpu; it must be readable. */
 static uint64_t node_count(QTestState *qts, unsigned int cpu)
 {
@@ -2940,6 +2963,548 @@ static void test_off_node_survives_migration(void)
     g_rmdir(dir);
 }
 
+/*
+ * The same on an Origin 3200, driven the way a person drives it: each
+ * C-brick's L1 owns its node's supply. A power-down on one brick stops that
+ * node alone and the machine goes on; the machine ends only when the last
+ * compute node is off, and a power-up after that resumes it with only the
+ * brick that was switched on running. Each brick has four processors.
+ */
+#define BRICK_CPUS 0xfU
+
+/* Virtual time moves only under the qtest accelerator, not under TCG. */
+static bool console_steps_clock = true;
+
+/*
+ * Type @text at the L1 console and read back until @until shows: the L1 runs
+ * lines in order, so the last line of a batch having answered means the
+ * earlier ones have run. ^T escapes to the L1 for one line.
+ */
+static void l1_console(QTestState *qts, int fd, const char *text,
+                       const char *until)
+{
+    g_autoptr(GString) seen = g_string_new(NULL);
+    SgiWait w;
+
+    g_assert_cmpint(write(fd, text, strlen(text)), ==, strlen(text));
+    sgi_wait_start(&w, "the L1 console to show '%s'", until);
+    while (!strstr(seen->str, until)) {
+        struct pollfd wait = { .fd = fd, .events = POLLIN };
+        char chunk[256];
+        ssize_t n;
+
+        if (console_steps_clock) {
+            qtest_clock_step(qts, NANOSECONDS_PER_SECOND / 10);
+        }
+        if (poll(&wait, 1, 100) == 1) {
+            n = read(fd, chunk, sizeof(chunk));
+            g_assert_cmpint(n, >, 0);
+            g_string_append_len(seen, chunk, n);
+        } else if (!sgi_wait_continue(&w, 1000)) {
+            g_test_message("L1 console showed: %s", seen->str);
+            g_assert_not_reached();
+        }
+    }
+}
+
+static void l1_line(QTestState *qts, int fd, const char *command,
+                    const char *until)
+{
+    g_autofree char *text = g_strdup_printf("\024%s\r", command);
+
+    l1_console(qts, fd, text, until);
+}
+
+static QTestState *origin3200_console_start(int *console, const char *bios,
+                                            const char *extra)
+{
+    g_autofree char *quoted = g_shell_quote(bios);
+    int fds[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), ==, 0);
+    qts = qtest_initf(ORIGIN3200_ARGS " -bios %s -nodefaults -display none "
+                      "-no-shutdown -chardev socket,id=cb,fd=%d "
+                      "-serial chardev:cb %s", quoted, fds[1], extra);
+    close(fds[1]);
+    *console = fds[0];
+    return qts;
+}
+
+static bool machine_running(QTestState *qts)
+{
+    QDict *status = qtest_qmp(qts, "{'execute':'query-status'}");
+    bool running = !strcmp(qdict_get_str(qdict_get_qdict(status, "return"),
+                                         "status"), "running");
+
+    qobject_unref(status);
+    return running;
+}
+
+static void wait_machine_running(QTestState *qts)
+{
+    SgiWait w;
+
+    sgi_wait_start(&w, "the machine to run");
+    while (!machine_running(qts)) {
+        g_assert_true(sgi_wait_continue(&w, 10000));
+    }
+}
+
+/* The machine stays up for one brick and ends with the last. */
+static void test_brick_power_ends_the_machine_last(void)
+{
+    g_autofree char *prom = create_counter_prom(PROM_SIZE);
+    QTestState *qts;
+    int console;
+
+    qts = origin3200_console_start(&console, prom, "");
+    g_assert_cmphex(halted_cpus(qts, 0), ==, 0);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, 0);
+
+    /* A controller whose node is off stays at its prompt. */
+    l1_console(qts, console, "\024power down\rpower check\r",
+               "power appears off");
+    g_assert_cmphex(halted_cpus(qts, 0), ==, BRICK_CPUS);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, 0);
+    g_assert_true(machine_running(qts));
+
+    /* The peer's L1 runs its own node alone, then the last one ends it. */
+    l1_console(qts, console, "ctc power down\rctc power check\r",
+               "power appears off");
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    g_assert_cmphex(halted_cpus(qts, 0), ==, BRICK_CPUS);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, BRICK_CPUS);
+    g_assert_false(machine_running(qts));
+
+    /* Power-up after the end resumes the machine with only that brick on. */
+    l1_console(qts, console, "power up\r", "");
+    qtest_qmp_eventwait(qts, "RESET");
+    wait_machine_running(qts);
+    g_assert_cmphex(halted_cpus(qts, 0), ==, 0);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, BRICK_CPUS);
+
+    /* The other brick then starts alone, with no machine reset. */
+    l1_console(qts, console, "\024ctc power up\r\024ctc power check\r",
+               "power appears on");
+    g_assert_cmphex(halted_cpus(qts, 1), ==, 0);
+    g_assert_true(machine_running(qts));
+    close(console);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/* A broadcast reaches both bricks, so it takes the last node with it. */
+static void test_broadcast_power_down_ends_the_machine(void)
+{
+    g_autofree char *prom = create_counter_prom(PROM_SIZE);
+    QTestState *qts;
+    int console;
+
+    qts = origin3200_console_start(&console, prom, "");
+    l1_console(qts, console, "\024* power down\r", "");
+    qtest_qmp_eventwait(qts, "SHUTDOWN");
+    g_assert_cmphex(halted_cpus(qts, 0), ==, BRICK_CPUS);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, BRICK_CPUS);
+
+    /* A system reset is a mains cycle: each L1 powers its node on again. */
+    qtest_system_reset(qts);
+    g_assert_cmphex(halted_cpus(qts, 0), ==, 0);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, 0);
+    l1_line(qts, console, "power check", "power appears on");
+    close(console);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * An Origin 3200 running the counting program on threaded TCG, paused, with
+ * the L1 console on a socket whose far end is returned in @console.
+ */
+static QTestState *origin3200_counter_start(int *console, const char *prom,
+                                            const char *extra)
+{
+    g_autofree char *quoted = g_shell_quote(prom);
+    int fds[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), ==, 0);
+    qts = qtest_initf(ORIGIN3200_ARGS " -bios %s -nodefaults -display none "
+                      "-no-shutdown -S -accel tcg,thread=multi "
+                      "-chardev socket,id=cb,fd=%d -serial chardev:cb %s",
+                      quoted, fds[1], extra);
+    close(fds[1]);
+    *console = fds[0];
+    return qts;
+}
+
+/*
+ * One brick's power-down with counting code on both nodes: the other node
+ * keeps counting, the stopped node's count freezes, and power-up restarts it.
+ */
+static void test_brick_power_stops_one_counter(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts;
+    int console;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_counter_prom(PROM_SIZE);
+    qts = origin3200_counter_start(&console, prom, "");
+    console_steps_clock = false;
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 0);
+    wait_count_advances(qts, 4);
+
+    l1_console(qts, console, "\024ctc power down\r\024ctc power check\r",
+               "power appears off");
+    wait_halted_mask(qts, 1, BRICK_CPUS);
+    g_assert_true(machine_running(qts));
+    wait_count_advances(qts, 0);
+    assert_count_frozen(qts, 4);
+
+    l1_console(qts, console, "\024ctc power up\r\024ctc power check\r",
+               "power appears on");
+    wait_halted_mask(qts, 1, 0);
+    wait_count_advances(qts, 4);
+    wait_count_advances(qts, 0);
+    close(console);
+    console_steps_clock = true;
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * The machine hears that the last node is off only once that node's
+ * processors have all stopped work: by the time the shutdown arrives the
+ * node's processors are halted. The processors run on their own threads and
+ * the settle is a race that closes in microseconds, so each processor's stop
+ * is delayed here (x-test-stop-delay-ms, which lets the main loop run
+ * meanwhile); a machine that ended on the supply loss alone would announce
+ * its shutdown with the processors still running.
+ */
+static void test_last_brick_power_down_announces_after_the_stop(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts;
+    QDict *event, *stamp;
+    int64_t cut, raised;
+    int console;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_counter_prom(PROM_SIZE);
+    qts = origin3200_counter_start(&console, prom,
+                                   "-global sgi-sn1-node.x-test-stop-delay-ms=1500");
+    console_steps_clock = false;
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 0);
+    wait_count_advances(qts, 4);
+
+    l1_console(qts, console, "\024power down\rpower check\r",
+               "power appears off");
+    wait_halted_mask(qts, 0, BRICK_CPUS);
+    g_assert_true(machine_running(qts));
+    /*
+     * The last node's processors are still counting when it is cut. The
+     * shutdown carries the time it was raised: it must be after the stops,
+     * which each take the delay, not at the supply loss.
+     */
+    cut = g_get_real_time();
+    l1_console(qts, console, "ctc power down\rctc power check\r",
+               "power appears off");
+    event = qtest_qmp_eventwait_ref(qts, "SHUTDOWN");
+    stamp = qdict_get_qdict(event, "timestamp");
+    raised = qdict_get_int(stamp, "seconds") * G_USEC_PER_SEC +
+             qdict_get_int(stamp, "microseconds");
+    qobject_unref(event);
+    g_assert_cmpint(raised - cut, >=, 1000 * 1000);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, BRICK_CPUS);
+    g_assert_cmphex(halted_cpus(qts, 0), ==, BRICK_CPUS);
+    close(console);
+    console_steps_clock = true;
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * A stop and continue while the last node's stops are still owed must not
+ * lose the announcement of the loss: resuming holds the off node's
+ * processors again, and the machine must still hear, once they have all
+ * stopped, that its last node is off. The stops of a loss are left unqueued
+ * for 30 seconds (x-test-stop-queue-delay-ms), so the resume finds them
+ * owed, and the shutdown must come from the resume's own stops.
+ */
+static void test_stop_cont_keeps_the_pending_announcement(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts;
+    QDict *event;
+    SgiWait w;
+    int console;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_counter_prom(PROM_SIZE);
+    qts = origin3200_counter_start(&console, prom,
+                                   "-global sgi-sn1-node."
+                                   "x-test-stop-queue-delay-ms=30000");
+    console_steps_clock = false;
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 0);
+    wait_count_advances(qts, 4);
+
+    l1_console(qts, console, "\024power down\rpower check\r",
+               "power appears off");
+    l1_console(qts, console, "ctc power down\rctc power check\r",
+               "power appears off");
+    g_assert_true(machine_running(qts));
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+
+    sgi_wait_start(&w, "the machine to shut down");
+    while (machine_running(qts)) {
+        g_assert_true(sgi_wait_continue(&w, 10000));
+    }
+    event = qtest_qmp_eventwait_ref(qts, "SHUTDOWN");
+    qobject_unref(event);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, BRICK_CPUS);
+    g_assert_cmphex(halted_cpus(qts, 0), ==, BRICK_CPUS);
+    close(console);
+    console_steps_clock = true;
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * A node that loses its supply, regains it and loses it again before its
+ * processors have drained the first stop: the stop work of the first loss
+ * must not count towards the second, or the machine would be told early.
+ * Each stop is held for a second (x-test-stop-delay-ms), so the second
+ * loss's stops finish two seconds after the first loss, and the shutdown
+ * must not be raised before.
+ */
+static void test_repeated_loss_announces_when_the_last_stop_ran(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts;
+    QDict *event, *stamp;
+    int64_t cut, raised;
+    int console;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_counter_prom(PROM_SIZE);
+    qts = origin3200_counter_start(&console, prom,
+                                   "-global sgi-sn1-node.x-test-stop-delay-ms="
+                                   "1000");
+    console_steps_clock = false;
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 0);
+    wait_count_advances(qts, 4);
+
+    qtest_set_irq_in(qts, "/machine/node0", "power", 0, 0);
+    wait_halted_mask(qts, 0, BRICK_CPUS);
+    cut = g_get_real_time();
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 0);
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 1);
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 0);
+    event = qtest_qmp_eventwait_ref(qts, "SHUTDOWN");
+    stamp = qdict_get_qdict(event, "timestamp");
+    raised = qdict_get_int(stamp, "seconds") * G_USEC_PER_SEC +
+             qdict_get_int(stamp, "microseconds");
+    qobject_unref(event);
+    g_assert_cmpint(raised - cut, >=, 1700 * 1000);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, BRICK_CPUS);
+    close(console);
+    console_steps_clock = true;
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * A load must not run a node's supply cycle. The L1 drives its node's supply
+ * again as it loads, while the Bedrock, the XBridge and the memory unit may
+ * already have loaded the source's registers; a cold reset then would wipe
+ * them. Each node's scratch register and memory configuration, written
+ * before the migration, must read back after it.
+ */
+#define LOAD_SCRATCH0 UINT64_C(0x5ca1ab1e00000000)
+#define LOAD_SCRATCH1 UINT64_C(0x5ca1ab1e00000001)
+#define LOAD_ARGS ORIGIN3200_ARGS
+
+static void load_registers_write(QTestState *qts)
+{
+    bte_cpu_writeq(qts, 0, BEDROCK_LOCAL + LB_SCRATCH2, LOAD_SCRATCH0);
+    bte_cpu_writeq(qts, 4, BEDROCK_LOCAL + LB_SCRATCH2, LOAD_SCRATCH1);
+    bte_cpu_writeq(qts, 0, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_BANK0_512MB);
+    bte_cpu_writeq(qts, 4, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_BANK0_512MB);
+}
+
+static void load_registers_check(QTestState *qts, unsigned int node)
+{
+    unsigned int cpu = node * 4;
+
+    g_assert_cmphex(bte_cpu_readq(qts, cpu, BEDROCK_LOCAL + LB_SCRATCH2), ==,
+                    node ? LOAD_SCRATCH1 : LOAD_SCRATCH0);
+    g_assert_cmphex(bte_cpu_readq(qts, cpu, BEDROCK_LOCAL + MD_MEMORY_CONFIG),
+                    ==, MD_BANK0_512MB);
+}
+
+/* Both nodes on at the source, off at the destination's start. */
+static void test_load_into_off_nodes(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-load-off-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    from = qtest_initf(LOAD_ARGS " -bios %s", quoted);
+    to = qtest_initf(LOAD_ARGS " -global sgi-l1.auto-power=off -bios %s "
+                     "-incoming defer", quoted);
+    g_assert_cmphex(halted_cpus(to, 0), ==, BRICK_CPUS);
+    g_assert_cmphex(halted_cpus(to, 1), ==, BRICK_CPUS);
+    load_registers_write(from);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    load_registers_check(to, 0);
+    load_registers_check(to, 1);
+    sgi_migrate_resume(to);
+    g_assert_cmphex(halted_cpus(to, 0), ==, 0);
+    g_assert_cmphex(halted_cpus(to, 1), ==, 0);
+    load_registers_check(to, 0);
+    load_registers_check(to, 1);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
+/* The second node off at the source, on at the destination's start. */
+static void test_load_into_on_nodes(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-load-on-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *prom = create_counter_prom(PROM_SIZE);
+    g_autofree char *quoted = g_shell_quote(prom);
+    QTestState *from, *to;
+    int console, fds[2];
+
+    g_assert_no_error(error);
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), ==, 0);
+    from = qtest_initf(LOAD_ARGS " -bios %s -nodefaults -display none "
+                       "-no-shutdown -chardev socket,id=cb,fd=%d "
+                       "-serial chardev:cb", quoted, fds[1]);
+    close(fds[1]);
+    console = fds[0];
+    to = qtest_initf(LOAD_ARGS " -bios %s -nodefaults -display none "
+                     "-no-shutdown -incoming defer", quoted);
+    load_registers_write(from);
+    l1_console(from, console, "\024ctc power down\r\024ctc power check\r",
+               "power appears off");
+    g_assert_cmphex(halted_cpus(from, 1), ==, BRICK_CPUS);
+    g_assert_cmphex(halted_cpus(to, 1), ==, 0);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    load_registers_check(to, 0);
+    g_assert_cmphex(halted_cpus(to, 0), ==, 0);
+    g_assert_cmphex(halted_cpus(to, 1), ==, BRICK_CPUS);
+    sgi_migrate_resume(to);
+    load_registers_check(to, 0);
+    g_assert_cmphex(halted_cpus(to, 0), ==, 0);
+    g_assert_cmphex(halted_cpus(to, 1), ==, BRICK_CPUS);
+    close(console);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(unlink(prom), ==, 0);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
+/* The program counter of processor @cpu, from the monitor's register dump. */
+static uint64_t cpu_pc(QTestState *qts, unsigned int cpu)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'human-monitor-command','arguments':"
+        "{'command-line':'info registers','cpu-index':%u}}", cpu);
+    const char *text, *pc;
+    uint64_t value;
+
+    g_assert_true(qdict_haskey(reply, "return"));
+    text = qdict_get_str(reply, "return");
+    pc = strstr(text, "pc=0x");
+    g_assert_nonnull(pc);
+    g_assert_cmpint(sscanf(pc + 5, "%" SCNx64, &value), ==, 1);
+    return value;
+}
+
+/*
+ * The processors are part of the stream too. A destination whose node starts
+ * off, loading a source whose node ran, must not restart them at the reset
+ * vector as its L1 drives the supply level during the load: they carry on
+ * where the source stopped them.
+ */
+static void test_load_keeps_running_processors(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-load-cpus-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *from_prom = NULL, *to_prom = NULL;
+    QTestState *from, *to;
+    uint64_t pc;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    g_assert_no_error(error);
+    from = counter_start(&from_prom, LOAD_ARGS, PROM_SIZE);
+    to = counter_start(&to_prom, LOAD_ARGS " -global sgi-l1.auto-power=off "
+                       "-incoming defer", PROM_SIZE);
+    qtest_qmp_assert_success(from, "{'execute':'cont'}");
+    wait_count_advances(from, 0);
+    wait_count_advances(from, 4);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    /* The counting loop, not the reset vector. */
+    pc = cpu_pc(to, 0);
+    g_assert_cmphex(pc & 0xfff, >=, 0x430);
+    g_assert_cmphex(pc & 0xfff, <=, 0x440);
+    pc = cpu_pc(to, 4);
+    g_assert_cmphex(pc & 0xfff, >=, 0x430);
+    g_assert_cmphex(pc & 0xfff, <=, 0x440);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    wait_count_advances(to, 0);
+    wait_count_advances(to, 4);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(unlink(from_prom), ==, 0);
+    g_assert_cmpint(unlink(to_prom), ==, 0);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -2958,6 +3523,26 @@ int main(int argc, char **argv)
                    test_node_power_stops_one_node);
     qtest_add_func("sn1/cross-node/off-node-survives-migration",
                    test_off_node_survives_migration);
+    qtest_add_func("sn1/cross-node/brick-power-ends-the-machine-last",
+                   test_brick_power_ends_the_machine_last);
+    qtest_add_func("sn1/cross-node/broadcast-power-down-ends-the-machine",
+                   test_broadcast_power_down_ends_the_machine);
+    qtest_add_func("sn1/cross-node/brick-power-stops-one-counter",
+                   test_brick_power_stops_one_counter);
+    qtest_add_func("sn1/cross-node/last-brick-power-down-announces-after-"
+                   "the-stop",
+                   test_last_brick_power_down_announces_after_the_stop);
+    qtest_add_func("sn1/cross-node/stop-cont-keeps-the-pending-announcement",
+                   test_stop_cont_keeps_the_pending_announcement);
+    qtest_add_func("sn1/cross-node/repeated-loss-announces-when-the-last-"
+                   "stop-ran",
+                   test_repeated_loss_announces_when_the_last_stop_ran);
+    qtest_add_func("sn1/cross-node/load-into-off-nodes",
+                   test_load_into_off_nodes);
+    qtest_add_func("sn1/cross-node/load-into-on-nodes",
+                   test_load_into_on_nodes);
+    qtest_add_func("sn1/cross-node/load-keeps-running-processors",
+                   test_load_keeps_running_processors);
     qtest_add_data_func("sn1/cross-node/unpowered-router-removes-its-memory",
                         "power",
                         test_dead_router_removes_the_memory_behind_it);

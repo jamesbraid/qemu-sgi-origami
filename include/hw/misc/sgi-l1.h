@@ -201,6 +201,8 @@ struct SGIL1State {
     bool l2_chain_first;
     Error *l2_blocker;
     qemu_irq node_power_out;
+    /* The machine joined a node's power input to node_power_out. */
+    bool node_driven;
     qemu_irq node_reset_out;
     /* An I-brick's bridge and PCI reset lines, high while held in reset. */
     qemu_irq reset_hold_out;
@@ -346,6 +348,18 @@ struct SGIL1State {
 };
 
 bool sgi_l1_board_mac(DeviceState *dev, uint8_t mac[6]);
+/*
+ * The machine drives a node from this controller's power output: a power
+ * change then moves that node alone and the machine ends only with its last
+ * compute node. Without it, the controller stands for the whole machine.
+ */
+void sgi_l1_set_node_driven(DeviceState *dev);
+/*
+ * A mains cycle of the machine: a compute controller whose node is off
+ * applies its start-up power decision again, powering the node on when
+ * "auto-power" is set.
+ */
+void sgi_l1_apply_start_power(DeviceState *dev);
 void sgi_l1_eeprom_digest(DeviceState *dev, uint8_t digest[32]);
 
 /* The node-side junk-bus UART window through which the Bedrock reaches it. */

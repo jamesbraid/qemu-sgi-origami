@@ -1894,9 +1894,9 @@ Stopping the processors themselves is the node's business, not the
 Bedrock's.
 
 A compute node (``sgi-sn1-node``) forwards its own ``power`` input,
-high by default, to its Bedrock's ``main-power``. Nothing drives it yet:
-the L1's ``node-power`` output is still unconnected
-(:ref:`sgi-l1-power`). When the node is off, its memory leaves
+high by default, to its Bedrock's ``main-power``. The L1 of the node's
+brick drives it from its ``node-power`` output (:ref:`sgi-l1-power`).
+When the node is off, its memory leaves
 every other node's map. The cabled peer's claim on it is dropped on a
 direct pair, and a routed alias is disabled, so a processor read gets a
 bus error, and a block-transfer read or write fails with the transfer
@@ -1943,11 +1943,43 @@ processors whose start has not yet run when the machine is saved travel in
 the stream as a mask (the ``sn1-node/start`` subsection, sent only while a
 start is owed) and the destination finishes them.
 
-The level migrates while it is low, and nothing needs to be re-driven
-after a load. A Bedrock loaded off keeps its lines low and re-derives its
-node's decode and a directly cabled Bedrock's, as a live change does. That
-re-derive is defensive against load order; load order follows realize
-order, so no qtest exercises it.
+The level migrates while it is low, and the stream is the whole truth
+about it: a Bedrock starts a load from on, so a destination that began with
+its node off ends on when the source was on, and its processors, which the
+stream carries too, are not restarted. The controller does not drive the
+node's input again as it loads, because that would run a supply cycle in
+the middle of the load and reset parts the stream has already filled
+(``sn1/cross-node/load-into-off-nodes``, ``load-into-on-nodes`` and
+``load-keeps-running-processors`` migrate between machines whose controllers
+start at different levels). A Bedrock loaded off keeps its lines low and
+re-derives its node's decode and a directly cabled Bedrock's, as a live
+change does, and so does one that was off and is loaded on. That re-derive is
+defensive against load order; load order follows realize order, so no qtest
+exercises it.
+
+What the machine decides from the supplies is not migrated: that the last
+compute node went off and ended the machine, that the check for it is
+queued, and the count of processor stops still owed after a loss. A machine
+that ended under ``-no-shutdown`` and was then migrated does not resume
+when a node is powered up on the destination, because the destination never
+knew it had ended; and a migration taken between a loss and its
+announcement loses the shutdown it would have raised, the processors being
+held off by the loaded level but the machine not ending. Both are an
+*approximation*. A loss that is announced is raised only after every
+processor of the node has stopped, and work left over from a loss that the
+supply's return cut short is ignored by the next loss. A stop and
+continue of the machine while a loss is still settling holds the
+processors again and keeps the loss's announcement, which is then raised
+once they have all stopped again
+(``sn1/cross-node/stop-cont-keeps-the-pending-announcement`` leaves a
+loss's stops unqueued with the test-only ``x-test-stop-queue-delay-ms``
+property). The test-only delay properties are not migrated, and
+``x-test-stop-delay-ms``, which sleeps with the big lock dropped, is
+refused unless the accelerator is TCG
+(``sn1/cross-node/last-brick-power-down-announces-after-the-stop`` and
+``repeated-loss-announces-when-the-last-stop-ran`` hold each stop back with
+the test-only ``x-test-stop-delay-ms`` property, since the race is
+otherwise too short to observe).
 
 .. _sgi-bedrock-reset:
 
@@ -2169,8 +2201,16 @@ Composition and machine tests:
   input and a stop and continue, and restarts when the supply returns
   (``sn1/cross-node/node-power-stops-one-node``), an off node that
   stays off across a migration
-  (``sn1/cross-node/off-node-survives-migration``), and a power-up's start
-  that is owed and runs once (``sn1/cross-node/owed-start-runs-once``).
+  (``sn1/cross-node/off-node-survives-migration``), a power-up's start
+  that is owed and runs once (``sn1/cross-node/owed-start-runs-once``),
+  the supply levels of source and destination differing in either
+  direction (``sn1/cross-node/load-into-off-nodes``,
+  ``sn1/cross-node/load-into-on-nodes``,
+  ``sn1/cross-node/load-keeps-running-processors``), and the order of a
+  last node's loss and the shutdown
+  (``sn1/cross-node/last-brick-power-down-announces-after-the-stop``,
+  ``sn1/cross-node/repeated-loss-announces-when-the-last-stop-ran``,
+  ``sn1/cross-node/stop-cont-keeps-the-pending-announcement``).
 - ``tests/qtest/sgi-pci-expansion-ni-test.c``: the powered-off direct
   peer reply (``/sgi/pci-expansion-ni/power-vector``).
 - ``tests/qtest/sn1-pi-gfx-test.c``: graphics credits counted and
