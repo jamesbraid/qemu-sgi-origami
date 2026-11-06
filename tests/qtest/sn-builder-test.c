@@ -10605,8 +10605,9 @@ static void l1_line(QTestState *qts, int fd, const char *command,
 
 /*
  * The I-brick's L1 resetting its brick restarts the bridge cold, and does
- * so only when the brick is on. The L1 starts it on with its system. The
- * I-brick has no console of its own here; the C-brick's L1 relays to it.
+ * so only when the brick is on; a brick that is off holds the bridge. The
+ * L1 starts the brick on with its system. The I-brick has no console of
+ * its own here; the C-brick's L1 relays to it.
  */
 static void test_origin3200_ibrick_l1_reset(void)
 {
@@ -10630,21 +10631,37 @@ static void test_origin3200_ibrick_l1_reset(void)
     g_assert_true(nasid_test_cpu_readl(qts, 0, head_f_register, &value));
     g_assert_cmphex(value, ==, 0xfffff);
     g_assert_true(ibrick_answers(qts));
-    /* With the brick off, the reset is refused and the bridge is kept. */
-    l1_line(qts, fds[0], "cti power down", "001i14:");
+    /*
+     * With the brick off, the bridge is held and answers nothing, the reset
+     * is refused, and power-up restarts the bridge cold.
+     */
     qtest_writel(qts, head_f_register, 0x12345);
+    l1_line(qts, fds[0], "cti power down", "001i14:");
+    g_assert_false(ibrick_answers(qts));
     l1_line(qts, fds[0], "cti reset", "power appears off");
-    g_assert_cmphex(qtest_readl(qts, head_f_register), ==, 0x12345);
+    g_assert_false(ibrick_answers(qts));
+    l1_line(qts, fds[0], "cti power up", "001i14:");
+    g_assert_true(nasid_test_cpu_readl(qts, 0, head_f_register, &value));
+    g_assert_cmphex(value, ==, 0xfffff);
     close(fds[0]);
     qtest_quit(qts);
     g_unlink(prom);
 }
 
-static void test_origin3200_ibrick_hold_migration(void)
+/*
+ * The I-brick's L1 owns the bridge's supply and hold, and a restored machine
+ * takes them from the L1's saved state: a brick the source switched off is
+ * off on the destination, and one that was running is not switched off by
+ * the load.
+ */
+#define IBRICK_L1 "/machine/module2/l1"
+
+static void test_origin3200_ibrick_power_migration(const void *data)
 {
+    bool off = !strcmp(data, "off");
     g_autoptr(GError) error = NULL;
     g_autofree char *prom = NULL, *prom_to = NULL;
-    g_autofree char *dir = g_dir_make_tmp("sn-builder-ibrick-hold-XXXXXX",
+    g_autofree char *dir = g_dir_make_tmp("sn-builder-ibrick-power-XXXXXX",
                                           &error);
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
@@ -10657,15 +10674,23 @@ static void test_origin3200_ibrick_hold_migration(void)
     from = origin3200_start_with(&prom, "-S");
     to = origin3200_start_with(&prom_to, "-S -incoming defer");
     up_link = ibrick_link(from);
-    qtest_set_irq_in(from, IBRICK_XBRIDGE, "reset-hold", 0, 1);
+    if (off) {
+        qtest_set_irq_in(from, IBRICK_L1, "power-button", 0, 1);
+        qtest_set_irq_in(from, IBRICK_L1, "power-button", 0, 0);
+        ibrick_assert_down(from, up_link);
+    }
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
     sgi_wait_migration_status(from, "completed", 30);
     sgi_wait_migration_status(to, "completed", 30);
-    ibrick_assert_down(to, up_link);
-    qtest_set_irq_in(to, IBRICK_XBRIDGE, "reset-hold", 0, 0);
+    g_assert_cmpint(qtest_qom_get_bool(to, IBRICK_L1, "reset-hold"), ==, off);
+    if (off) {
+        ibrick_assert_down(to, up_link);
+        qtest_set_irq_in(to, IBRICK_L1, "power-button", 0, 1);
+        qtest_set_irq_in(to, IBRICK_L1, "power-button", 0, 0);
+    }
     ibrick_assert_up(to, up_link);
     qtest_quit(to);
     qtest_quit(from);
@@ -10673,6 +10698,100 @@ static void test_origin3200_ibrick_hold_migration(void)
     g_unlink(prom);
     g_unlink(prom_to);
     g_rmdir(dir);
+}
+
+/* Whether the CPU the machine's first processor is halted, from the monitor. */
+static bool cpu0_halted(QTestState *qts)
+{
+    g_autofree char *cpus = qtest_hmp(qts, "info cpus");
+
+    g_assert_nonnull(cpus);
+    return strstr(cpus, "(halted)") != NULL;
+}
+
+static bool machine_running(QTestState *qts)
+{
+    QDict *status = qtest_qmp(qts, "{'execute':'query-status'}");
+    bool running = !strcmp(qdict_get_str(qdict_get_qdict(status, "return"),
+                                         "status"), "running");
+
+    qobject_unref(status);
+    return running;
+}
+
+/*
+ * The I-brick's own L1 powers the bridge and nothing else. Power-down
+ * raises the hold and drops the supply, and the bridge answers nothing
+ * while the C-brick's processors and L1 run on; "power up hold" keeps the
+ * bridge held with the supply on, and a reset releases it. The hold is the
+ * bridge's, so the II link reads down for as long. The I-brick has no
+ * console of its own here; the C-brick's L1 relays to it.
+ */
+static void test_origin3200_ibrick_power_leaves_the_cbrick_running(void)
+{
+    g_autofree char *prom = NULL, *extra = NULL;
+    int fds[2];
+    QTestState *qts;
+    uint64_t up_link;
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), ==, 0);
+    extra = g_strdup_printf("-chardev socket,id=cb,fd=%d -serial chardev:cb",
+                            fds[1]);
+    qts = origin3200_start_with(&prom, extra);
+    close(fds[1]);
+    up_link = ibrick_link(qts);
+    ibrick_assert_up(qts, up_link);
+    g_assert_true(machine_running(qts));
+    g_assert_false(qtest_qom_get_bool(qts, IBRICK_L1, "reset-hold"));
+
+    l1_line(qts, fds[0], "cti power down", "001i14:");
+    g_assert_true(qtest_qom_get_bool(qts, IBRICK_L1, "reset-hold"));
+    ibrick_assert_down(qts, up_link);
+    /* The C-brick's processors and L1 run on. */
+    g_assert_true(machine_running(qts));
+    g_assert_false(cpu0_halted(qts));
+    l1_line(qts, fds[0], "power check", "power appears on");
+
+    l1_line(qts, fds[0], "cti power up hold", "001i14:");
+    l1_line(qts, fds[0], "cti power check", "power appears on");
+    ibrick_assert_down(qts, up_link);
+    l1_line(qts, fds[0], "cti reset", "001i14:");
+    ibrick_assert_up(qts, up_link);
+    g_assert_false(qtest_qom_get_bool(qts, IBRICK_L1, "reset-hold"));
+
+    l1_line(qts, fds[0], "cti power down", "001i14:");
+    ibrick_assert_down(qts, up_link);
+    l1_line(qts, fds[0], "cti power up", "001i14:");
+    ibrick_assert_up(qts, up_link);
+    g_assert_true(machine_running(qts));
+    g_assert_false(cpu0_halted(qts));
+    close(fds[0]);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * An I-brick whose L1 starts it off, as with auto-power off, starts its
+ * bridge held: nothing answers, the II link reads down, and the front
+ * switch brings both up. The C-bricks' L1s take the same property and have
+ * no wire to their nodes yet, so the machine still runs.
+ */
+static void test_origin3200_ibrick_starts_off_when_its_l1_does(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts = origin3200_start_with(&prom,
+                                            "-global sgi-l1.auto-power=off");
+    uint64_t link = ibrick_link(qts);
+
+    g_assert_true(qtest_qom_get_bool(qts, IBRICK_L1, "reset-hold"));
+    g_assert_false(ibrick_answers(qts));
+    g_assert_cmphex(link & (II_LINK_UP_BIT | II_REMOTE_POWER_BIT), ==, 0);
+    qtest_set_irq_in(qts, IBRICK_L1, "power-button", 0, 1);
+    qtest_set_irq_in(qts, IBRICK_L1, "power-button", 0, 0);
+    g_assert_false(qtest_qom_get_bool(qts, IBRICK_L1, "reset-hold"));
+    ibrick_assert_up(qts, link | II_LINK_UP_BIT | II_REMOTE_POWER_BIT);
+    qtest_quit(qts);
+    g_unlink(prom);
 }
 
 /*
@@ -14473,8 +14592,14 @@ int main(int argc, char **argv)
                         "main-power", test_origin3200_ibrick_hold);
     qtest_add_func("sn/builder/origin3200/ibrick-l1-reset",
                    test_origin3200_ibrick_l1_reset);
-    qtest_add_func("sn/builder/origin3200/ibrick-hold-migration",
-                   test_origin3200_ibrick_hold_migration);
+    qtest_add_data_func("sn/builder/origin3200/ibrick-power-migration/on",
+                        "on", test_origin3200_ibrick_power_migration);
+    qtest_add_data_func("sn/builder/origin3200/ibrick-power-migration/off",
+                        "off", test_origin3200_ibrick_power_migration);
+    qtest_add_func("sn/builder/origin3200/ibrick-starts-off-when-its-l1-does",
+                   test_origin3200_ibrick_starts_off_when_its_l1_does);
+    qtest_add_func("sn/builder/origin3200/ibrick-power-keeps-cbrick-running",
+                   test_origin3200_ibrick_power_leaves_the_cbrick_running);
     qtest_add_func("sn/builder/origin3400/routed-bricks",
                    test_origin3400_routed_bricks);
     qtest_add_func("sn/builder/origin3400/two-routers-cables",
