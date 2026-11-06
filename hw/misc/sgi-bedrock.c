@@ -556,6 +556,13 @@ static void bedrock_park_unhalt(CPUState *cs, run_on_cpu_data data)
             break;
         }
     }
+    /*
+     * A node that lost power since the park began keeps its processors
+     * reset and halted: the release has nothing left to wake.
+     */
+    if (s->unpowered) {
+        return;
+    }
     cpu_reset_interrupt(cs, CPU_INTERRUPT_HALT);
     cs->halted = 0;
 }
@@ -1272,6 +1279,12 @@ static void bedrock_main_power(void *opaque, int n, int level)
     s->unpowered = !level;
     if (s->unpowered) {
         bedrock_lower_lines(s);
+        /*
+         * No park outlives the supply: the node stops its processors, and
+         * a release queued for one must not wake it afterwards
+         * (bedrock_park_unhalt() checks the level).
+         */
+        sgi_bedrock_hold_reset(s);
     } else {
         /* The pending banks kept their state; raise what is still due. */
         sgi_bedrock_pi_recompute(&s->pi[0]);
@@ -1767,6 +1780,16 @@ static int bedrock_post_load(void *opaque, int version_id)
 
     bedrock_scratch1_external(s);
     sgi_bedrock_hold_reset(s);
+    if (!s->unpowered && s->unpowered_before_load) {
+        /*
+         * The stream says on and this end started off, which the stream
+         * does not carry (only an off level is sent). Raise what is due and
+         * let the decode follow the link, as a live power-up does.
+         */
+        sgi_bedrock_pi_recompute(&s->pi[0]);
+        sgi_bedrock_pi_recompute(&s->pi[1]);
+        bedrock_power_rederive(s);
+    }
     if (s->unpowered) {
         /*
          * The processor interfaces' own post_load may have raised lines
@@ -1889,10 +1912,25 @@ static const VMStateDescription vmstate_sgi_bedrock_unpowered = {
     },
 };
 
+/*
+ * Only an off level is in the stream, so a load starts from on: whatever
+ * level this end had does not outlive it, and the unpowered subsection
+ * turns it off again.
+ */
+static int bedrock_pre_load(void *opaque)
+{
+    SGIBedrockState *s = opaque;
+
+    s->unpowered_before_load = s->unpowered;
+    s->unpowered = false;
+    return 0;
+}
+
 static const VMStateDescription vmstate_sgi_bedrock = {
     .name = TYPE_SGI_BEDROCK,
     .version_id = 1,
     .minimum_version_id = 1,
+    .pre_load = bedrock_pre_load,
     .post_load = bedrock_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_END_OF_LIST()

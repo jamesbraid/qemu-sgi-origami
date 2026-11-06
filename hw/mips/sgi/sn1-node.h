@@ -249,6 +249,34 @@ typedef struct SN1NodeState {
      * including after a load.
      */
     bool unpowered;
+    /*
+     * One bit per processor whose start a power-up owes and that has not run
+     * yet. Sent in the stream while non-zero, so a load finishes them.
+     */
+    uint32_t start_owed;
+    /* Processor stops a supply loss has queued and that have not run yet. */
+    uint32_t stop_pending;
+    /*
+     * Which loss the count above belongs to: bumped by each stop, so work a
+     * loss queued before the supply returned and dropped again is ignored.
+     */
+    uint32_t stop_epoch;
+    /* Test-only: see the properties' comment. */
+    uint32_t x_test_stop_delay_ms;
+    uint32_t x_test_start_delay_ms;
+    uint32_t x_test_stop_queue_delay_ms;
+    QEMUTimer *test_start_timer;
+    QEMUTimer *test_stop_timer;
+    uint32_t test_stop_epoch;
+    /*
+     * Told when the supply returns, and when a loss has settled (every
+     * processor reset and halted), once the machine has handed over the
+     * initial level. The machine owns what needs every node.
+     */
+    void (*power_notify)(void *opaque, struct SN1NodeState *node,
+                         bool powered);
+    void *power_notify_opaque;
+    VMChangeStateEntry *vm_handler;
     Notifier cached_alias_notifier[2];
     bool cable_notifier_added;
     SN1FabricEndpoint endpoint;
@@ -297,6 +325,9 @@ bool sn1_node_set_ip53_pic_widget(SN1NodeState *node, unsigned int widget,
  */
 void sn1_node_reset_cpus(SN1NodeState *node);
 void sn1_node_release_cpus(SN1NodeState *node);
+
+/* Whether the node's supply is on (its Bedrock's level once it exists). */
+bool sn1_node_powered(SN1NodeState *node);
 
 /*
  * Registers every processor's TCG notifier on the reset router of each of
