@@ -431,6 +431,44 @@ value after a local reset, a *software expectation*. The model returns
 zero there. What the hardware holds is *unknown*; a manufacturer register
 specification or a read of the part would settle it.
 
+.. _sgi-sn1-router-power:
+
+Power and reset hold
+====================
+
+The router has two named level inputs, ``power`` (high when the brick is
+supplied, high at creation) and ``reset-hold`` (high while the chip is held
+in reset, low at creation). The brick's L1 drives them. The router is
+offline while ``power`` is low or ``reset-hold`` is high, and the two
+combine: it comes back only when both allow it.
+
+While offline:
+
+- Every register access, direct or by vector, gets no reply, and a vector
+  request does not forward through it. That includes the router's L1 UART
+  window (``0x240`` to ``0x278``), which is refused like any other register
+  while the router is offline. *approximation*: the datasheet records that
+  the L1 holds the router in reset and releases it, in order, but not what
+  a held chip answers on the network, and says nothing of a UART that
+  belongs to a held chip.
+- Each port reads down at the neighbour (the neighbour's status link bit
+  clears, and a Bedrock facing it reads its port down), and the router's
+  own status reads nothing. *approximation*: the landed sheets say what a
+  port reads with an unpowered or held peer is *unknown*, and reading it as
+  down is the model's choice. What a port facing an unpowered or held node
+  reads, in the other direction, is also *unknown*.
+- Remote memory that routes through the router leaves the other nodes'
+  maps, because routing re-derives from the links.
+
+Going offline clears every stored register, table and image to zero, as a
+cold reset does, so they are cold whenever the router returns. This is an
+*approximation*: which registers a held or unpowered chip keeps is
+*unknown*. A line change that leaves the router online or offline as it
+was does nothing, and a system reset leaves both lines as they are, since
+they are wires from the L1. The warm reset a neighbour's port reset
+delivers, and whether an accepted warm reset clears the fence registers,
+are *unknown* and not modelled here.
+
 Errors and unexpected accesses
 ==============================
 
@@ -446,7 +484,9 @@ a hardware error reply, which is *unknown*.
 Migration
 =========
 
-State is the registers, tables and images above, saved at version 4. The
+State is the registers, tables and images above, saved at version 4. A
+router that is unpowered or held adds a subsection holding the two line
+states; one that is online at the source sends nothing extra. The
 revision and the profile must match between source and destination, and
 loading checks the per-link masks, scratch 3 and 4 and the global
 port definition. Migration is supported only between identical
@@ -465,8 +505,9 @@ Model limits
   are model choices.
 - Routing follows the rule above, not a known hardware rule. The global
   route table, the protection bits and active barriers have no effect.
-- Router power, management over USB or the rack L2, and L1 access through
-  the router are not modelled beyond the UART window.
+- Management over USB or the rack L2, and L1 access through the router,
+  are not modelled beyond the UART window. Supply timing and the order of
+  the reset release are not modelled; the lines are levels.
 - A stock firmware or IRIX run that gets past this router shows what the
   model does, not what the module does.
 
@@ -479,7 +520,8 @@ through a full machine. It covers register masks and refusals in both
 profiles, status and link bits as cables change, local reset, error
 registers, port reset, global port definition and diagnostic words, the
 barrier images, route-table words, the routing arithmetic, vector links,
-silent peers, cold reset, the revision range and overflow checks, the UART
+silent peers, power and reset hold on both ends of a cable, cold reset,
+the revision range and overflow checks, the UART
 window and migration, including profile mismatch.
 ``tests/qtest/sn1-bedrock-link-test.c`` covers a two-router vector read,
 the ``0x27`` return route, each cable down, a powered-off target,

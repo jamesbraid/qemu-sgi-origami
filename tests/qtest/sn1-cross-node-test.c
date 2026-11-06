@@ -1322,6 +1322,56 @@ static void test_routed_reset_page_follows_the_route(void)
     qtest_quit(qts);
 }
 
+/* The path of the first router in the machine's modules. */
+static char *first_router_path(QTestState *qts)
+{
+    for (unsigned int module = 0; module < 16; module++) {
+        g_autofree char *path = g_strdup_printf("/machine/module%u/router",
+                                                module);
+        QDict *resp = qtest_qmp(qts, "{'execute':'qom-list',"
+                                "'arguments':{'path':%s}}", path);
+        bool found = qdict_haskey(resp, "return");
+
+        qobject_unref(resp);
+        if (found) {
+            return g_steal_pointer(&path);
+        }
+    }
+    g_assert_not_reached();
+}
+
+/*
+ * A router that loses its supply or is held in reset takes the memory behind
+ * it off every other node's map, because the links through it read down. It
+ * returns when the line does.
+ */
+static void test_dead_router_removes_the_memory_behind_it(const void *data)
+{
+    const char *line = data;
+    bool power = !strcmp(line, "power");
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(ORIGIN3400_ARGS " -bios %s", quoted);
+    g_autofree char *router = first_router_path(qts);
+
+    for (unsigned int node = 0; node < 4; node++) {
+        bte_cpu_writeq(qts, node * 4, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
+                       MD_BANK0_512MB);
+    }
+    bte_cpu_writeq(qts, 0, ROUTED_PROBE, WORD0);
+    for (unsigned int node = 1; node < 4; node++) {
+        bte_cpu_writeq(qts, node * 4, BEDROCK_LOCAL + LB_REVISION,
+                       (uint64_t)node << REVISION_NODE_SHIFT);
+    }
+    bte_cpu_writeq(qts, 4, BEDROCK_LOCAL + NI_LOCAL_ROUTE(0), 7);
+    g_assert_cmphex(cpu_read_ok(qts, 4, ROUTED_PROBE), ==, WORD0);
+
+    qtest_set_irq_in(qts, router, line, 0, power ? 0 : 1);
+    assert_unreachable(qts, 4, ROUTED_PROBE);
+    qtest_set_irq_in(qts, router, line, 0, power ? 1 : 0);
+    g_assert_cmphex(cpu_read_ok(qts, 4, ROUTED_PROBE), ==, WORD0);
+    qtest_quit(qts);
+}
+
 /*
  * Across two routers the hub's route table names the turn at the first
  * router, and each router's table, read on the link the packet entered by,
@@ -2387,6 +2437,12 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
     prom_path = create_prom();
+    qtest_add_data_func("sn1/cross-node/unpowered-router-removes-its-memory",
+                        "power",
+                        test_dead_router_removes_the_memory_behind_it);
+    qtest_add_data_func("sn1/cross-node/held-router-removes-its-memory",
+                        "reset-hold",
+                        test_dead_router_removes_the_memory_behind_it);
     qtest_add_func("sn1/cross-node/remote-reader-in-the-directory",
                    test_remote_reader_in_the_directory);
     qtest_add_func("sn1/cross-node/equal-numbers-stay-local",

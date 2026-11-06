@@ -2238,6 +2238,201 @@ static void test_partition_fence_state(void)
     qtest_quit(s);
 }
 
+/*
+ * Power and reset hold. The L1 of a router brick drives both lines; the
+ * tests drive them through the router's named inputs. Grades follow the
+ * R-brick datasheet: that the held chip answers nothing, and that its
+ * registers come back cold, are approximations.
+ */
+#define PAIR_ARGS "-M none -cpu R10000 " \
+    "-device sgi-sn1-router,id=r -device sgi-sn1-router,id=peer " \
+    "-device sgi-net-cable,id=c,end0=r,end0-index=8,end1=peer,end1-index=7"
+
+static void pair_cable(QTestState *s)
+{
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/r','property':'port8-cable',"
+        "'value':'/machine/peripheral/c'}}");
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/peer','property':'port7-cable',"
+        "'value':'/machine/peripheral/c'}}");
+}
+
+static void router_line(QTestState *s, const char *id, const char *line,
+                        int level)
+{
+    g_autofree char *path = g_strdup_printf("/machine/peripheral/%s", id);
+
+    qtest_set_irq_in(s, path, line, 0, level);
+}
+
+static QTestState *pair_init(const char *fixture_on)
+{
+    g_autofree char *args = g_strdup_printf(PAIR_ARGS
+        " -device sgi-sn1-router-test,id=test,router=%s", fixture_on);
+    QTestState *s = qtest_init(args);
+
+    pair_cable(s);
+    return s;
+}
+
+#define PORT8_WORKING (UINT64_C(1) << 51)
+#define PORT7_WORKING (UINT64_C(1) << 49)
+
+static void test_power_off_peer_link_down(void)
+{
+    QTestState *s = pair_init("r");
+
+    g_assert_true(qtest_readq(s, BASE) & PORT8_WORKING);
+    router_line(s, "peer", "power", 0);
+    g_assert_false(qtest_readq(s, BASE) & PORT8_WORKING);
+    set(s, "vector", 8);
+    qtest_readq(s, BASE);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    set(s, "vector", 0);
+    router_line(s, "peer", "power", 1);
+    g_assert_true(qtest_readq(s, BASE) & PORT8_WORKING);
+    qtest_quit(s);
+}
+
+static void test_power_off_refuses_and_peer_sees_down(void)
+{
+    QTestState *s = pair_init("peer");
+
+    g_assert_true(qtest_readq(s, BASE) & PORT7_WORKING);
+    router_line(s, "r", "power", 0);
+    g_assert_false(qtest_readq(s, BASE) & PORT7_WORKING);
+    router_line(s, "r", "power", 1);
+    g_assert_true(qtest_readq(s, BASE) & PORT7_WORKING);
+    qtest_quit(s);
+}
+
+static void test_power_off_answers_nothing(void)
+{
+    QTestState *s = qtest_init(ARGS);
+
+    qtest_writeq(s, BASE + 0x100, 0x1234);
+    router_line(s, "r", "power", 0);
+    g_assert_cmphex(qtest_readq(s, BASE), ==, 0);
+    g_assert_cmpuint(get(s, "result"), ==, 0);
+    qtest_writeq(s, BASE + 0x100, 0x5678);
+    g_assert_cmpuint(get(s, "result"), ==, 0);
+    router_line(s, "r", "power", 1);
+    /* The registers are cold when the supply returns. */
+    g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, 0);
+    g_assert_cmpuint(get(s, "result"), ==, 2);
+    qtest_quit(s);
+}
+
+static void write_fences(QTestState *s)
+{
+    qtest_writeq(s, BASE + 0x10, 0x1e);
+    for (unsigned p = 0; p < 8; p++) {
+        qtest_writeq(s, BASE + bank[p] + 0x18, 0x1e);
+        qtest_writeq(s, BASE + bank[p] + 0x200, p + 1);
+    }
+    qtest_writeq(s, BASE + 0x100, 0xabcd);
+}
+
+static void test_reset_hold_answers_nothing_and_releases_cold(void)
+{
+    QTestState *s = qtest_init(ARGS);
+
+    write_fences(s);
+    router_line(s, "r", "reset-hold", 1);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 0);
+    g_assert_cmpuint(get(s, "result"), ==, 0);
+    qtest_writeq(s, BASE + 0x10, 0xff);
+    g_assert_cmpuint(get(s, "result"), ==, 0);
+    router_line(s, "r", "reset-hold", 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 0);
+    g_assert_cmpuint(get(s, "result"), ==, 2);
+    for (unsigned p = 0; p < 8; p++) {
+        g_assert_cmphex(qtest_readq(s, BASE + bank[p] + 0x18), ==, 0);
+        g_assert_cmphex(qtest_readq(s, BASE + bank[p] + 0x200), ==, 0);
+    }
+    g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_reset_hold_link_down_at_peer(void)
+{
+    QTestState *s = pair_init("peer");
+
+    router_line(s, "r", "reset-hold", 1);
+    g_assert_false(qtest_readq(s, BASE) & PORT7_WORKING);
+    router_line(s, "r", "reset-hold", 0);
+    g_assert_true(qtest_readq(s, BASE) & PORT7_WORKING);
+    qtest_quit(s);
+}
+
+static void test_held_and_off_release_independently(void)
+{
+    QTestState *s = qtest_init(ARGS);
+
+    router_line(s, "r", "power", 0);
+    router_line(s, "r", "reset-hold", 1);
+    router_line(s, "r", "power", 1);
+    qtest_readq(s, BASE);
+    g_assert_cmpuint(get(s, "result"), ==, 0);
+    router_line(s, "r", "reset-hold", 0);
+    qtest_readq(s, BASE);
+    g_assert_cmpuint(get(s, "result"), ==, 2);
+    qtest_quit(s);
+}
+
+static void test_repeated_level_keeps_registers(void)
+{
+    QTestState *s = qtest_init(ARGS);
+
+    write_fences(s);
+    router_line(s, "r", "power", 1);
+    router_line(s, "r", "reset-hold", 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 0x1e);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, 0xabcd);
+    qtest_quit(s);
+}
+
+static void test_system_reset_keeps_hold_lines(void)
+{
+    QTestState *s = qtest_init(ARGS);
+
+    router_line(s, "r", "reset-hold", 1);
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    qtest_readq(s, BASE);
+    g_assert_cmpuint(get(s, "result"), ==, 0);
+    router_line(s, "r", "reset-hold", 0);
+    qtest_readq(s, BASE);
+    g_assert_cmpuint(get(s, "result"), ==, 2);
+    qtest_quit(s);
+}
+
+static void test_held_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("sn1-router-hold-XXXXXX", NULL);
+    g_autofree char *socket = g_build_filename(dir, "socket", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = qtest_init(ARGS);
+    QTestState *to = qtest_init(ARGS " -incoming defer");
+
+    router_line(from, "r", "reset-hold", 1);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    qtest_readq(to, BASE);
+    g_assert_cmpuint(get(to, "result"), ==, 0);
+    router_line(to, "r", "reset-hold", 0);
+    qtest_readq(to, BASE);
+    g_assert_cmpuint(get(to, "result"), ==, 2);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2294,5 +2489,23 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/sn1-router/uart", test_uart);
     qtest_add_func("/sgi/sn1-router/uart-adjacent-registers",
                    test_uart_adjacent_registers);
+    qtest_add_func("/sgi/sn1-router/power/off-peer-link-down",
+                   test_power_off_peer_link_down);
+    qtest_add_func("/sgi/sn1-router/power/off-link-down-at-peer",
+                   test_power_off_refuses_and_peer_sees_down);
+    qtest_add_func("/sgi/sn1-router/power/off-answers-nothing",
+                   test_power_off_answers_nothing);
+    qtest_add_func("/sgi/sn1-router/reset-hold/answers-nothing-releases-cold",
+                   test_reset_hold_answers_nothing_and_releases_cold);
+    qtest_add_func("/sgi/sn1-router/reset-hold/link-down-at-peer",
+                   test_reset_hold_link_down_at_peer);
+    qtest_add_func("/sgi/sn1-router/reset-hold/independent-of-power",
+                   test_held_and_off_release_independently);
+    qtest_add_func("/sgi/sn1-router/reset-hold/repeated-level-is-no-op",
+                   test_repeated_level_keeps_registers);
+    qtest_add_func("/sgi/sn1-router/reset-hold/survives-system-reset",
+                   test_system_reset_keeps_hold_lines);
+    qtest_add_func("/sgi/sn1-router/reset-hold/migration",
+                   test_held_migration);
     return g_test_run();
 }
