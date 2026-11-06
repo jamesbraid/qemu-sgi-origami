@@ -46,6 +46,12 @@ struct SGISN1RouterState {
     AddressSpace uart_as;
     bool uart_as_ready;
     bool cables_locked;
+    /*
+     * The router brick's supply and reset hold, as its L1 drives them. The
+     * chip answers nothing and its links read down while either is off.
+     */
+    bool unpowered;
+    bool reset_held;
     uint8_t revision;
     uint8_t synthetic_diagnostics;
     /* Not migrated: only keeps the refused-destination log to one line. */
@@ -85,6 +91,11 @@ void sgi_sn1_router_set_changed(SGISN1RouterState *s,
 {
     s->changed = changed;
     s->changed_opaque = opaque;
+}
+
+static bool router_offline(const SGISN1RouterState *s)
+{
+    return s->unpowered || s->reset_held;
 }
 
 static void router_changed(SGISN1RouterState *s)
@@ -162,6 +173,10 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
     bool write = packet->op == SGI_NET_PACKET_WRITE;
     bool notify = true;
 
+    if (router_offline(s)) {
+        /* No reply at all, as for a vector request into a dead chip. */
+        return SGI_NET_PACKET_NONE;
+    }
     if (packet->op != SGI_NET_PACKET_READ && !write) {
         return refuse(packet, SGI_NET_PACKET_FAILURE_COMMAND);
     }
@@ -332,7 +347,8 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
 bool sgi_sn1_router_route(SGISN1RouterState *s, unsigned ingress,
     uint8_t turn, uint8_t destination, unsigned *output, uint8_t *next_turn)
 {
-    if (ingress < 1 || ingress > SGI_SN1_ROUTER_PORTS || turn > 7) {
+    if (router_offline(s) ||
+        ingress < 1 || ingress > SGI_SN1_ROUTER_PORTS || turn > 7) {
         return false;
     }
     if (destination > 127) {
@@ -372,6 +388,9 @@ static SGINetPacketResult router_receive(Object *port, unsigned ingress,
     SGINetPacketResult result;
     uint64_t reply_vector;
 
+    if (router_offline(s)) {
+        return SGI_NET_PACKET_NONE;
+    }
     if (ingress < 1 || ingress > SGI_SN1_ROUTER_PORTS) {
         return refuse(packet, SGI_NET_PACKET_FAILURE_ADDRESS);
     }
@@ -399,6 +418,18 @@ static SGINetPacketResult router_receive(Object *port, unsigned ingress,
 static bool router_forwards(Object *port, unsigned index)
 {
     return index >= 1 && index <= SGI_SN1_ROUTER_PORTS;
+}
+
+/*
+ * A router with no supply, or held in reset, has no link to bring up: its
+ * neighbours read the port down. Grade I: the link protocol needs both ends
+ * powered, and no capture shows a port facing an unpowered router.
+ */
+static SGINetPortLinkState router_link_state(Object *port, unsigned index)
+{
+    return (SGINetPortLinkState) {
+        .enabled = !router_offline(SGI_SN1_ROUTER(port)),
+    };
 }
 
 static void router_peer_changed(Object *port, unsigned index)
@@ -435,10 +466,8 @@ static const MemoryRegionOps router_ops = {
     .impl = { .min_access_size = 8, .max_access_size = 8 },
 };
 
-static void router_reset_enter(Object *obj, ResetType type)
+static void router_cold_reset(SGISN1RouterState *s)
 {
-    SGISN1RouterState *s = SGI_SN1_ROUTER(obj);
-
     /*
      * Cold-zero is a model choice. The reset value of the protection
      * configuration and the per-link reset masks, and bits 63:8 of the
@@ -450,6 +479,48 @@ static void router_reset_enter(Object *obj, ResetType type)
     memset(s->remote_reset_mask, 0, sizeof(s->remote_reset_mask));
     memset(s->local, 0, sizeof(s->local));
     memset(s->meta, 0, sizeof(s->meta));
+}
+
+static void router_reset_enter(Object *obj, ResetType type)
+{
+    router_cold_reset(SGI_SN1_ROUTER(obj));
+}
+
+/*
+ * The L1 raises either line on its own: a change that leaves the router
+ * online or offline as it was does nothing. Going offline loses the
+ * registers, so they are cold whenever the router comes back (Approximated:
+ * the R-brick datasheet records the order of the release but not which
+ * registers a held chip keeps, so cold-zero is the model's choice, as for
+ * any reset).
+ */
+static void router_set_line(SGISN1RouterState *s, bool *line, bool value)
+{
+    bool was_offline = router_offline(s);
+
+    *line = value;
+    if (router_offline(s) == was_offline) {
+        return;
+    }
+    if (!was_offline) {
+        router_cold_reset(s);
+    }
+    sgi_net_port_flood_start();
+    router_changed(s);
+}
+
+static void router_power_in(void *opaque, int n, int level)
+{
+    SGISN1RouterState *s = opaque;
+
+    router_set_line(s, &s->unpowered, !level);
+}
+
+static void router_reset_hold_in(void *opaque, int n, int level)
+{
+    SGISN1RouterState *s = opaque;
+
+    router_set_line(s, &s->reset_held, level);
 }
 
 static void router_reset_exit(Object *obj, ResetType type)
@@ -499,6 +570,24 @@ static int router_post_load(void *opaque, int version_id)
     return 0;
 }
 
+static bool router_lines_needed(void *opaque)
+{
+    return router_offline(opaque);
+}
+
+/* A subsection, so a router online at both ends keeps the stream as it was. */
+static const VMStateDescription vmstate_router_lines = {
+    .name = TYPE_SGI_SN1_ROUTER "/lines",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = router_lines_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(unpowered, SGISN1RouterState),
+        VMSTATE_BOOL(reset_held, SGISN1RouterState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_router = {
     .name = TYPE_SGI_SN1_ROUTER,
     .version_id = 4,
@@ -526,6 +615,10 @@ static const VMStateDescription vmstate_router = {
         VMSTATE_UINT64_2DARRAY(meta, SGISN1RouterState,
                              SGI_SN1_ROUTER_PORTS, META_ENTRIES),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_router_lines,
+        NULL
     },
 };
 
@@ -601,6 +694,10 @@ static void router_init(Object *obj)
         object_property_add_link(obj, name, TYPE_SGI_NET_CABLE,
             (Object **)&s->cable[p - 1], router_check_cable, 0);
     }
+    /* Levels from the brick's L1: power is high when on, hold when held. */
+    qdev_init_gpio_in_named(DEVICE(obj), router_power_in, "power", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), router_reset_hold_in,
+                            "reset-hold", 1);
     object_property_add_link(obj, "l1-uart", TYPE_SGI_L1_UART,
         (Object **)&s->uart, qdev_prop_allow_set_link_before_realize,
         OBJ_PROP_LINK_STRONG);
@@ -625,6 +722,7 @@ static void router_class_init(ObjectClass *oc, const void *data)
     rc->phases.enter = router_reset_enter;
     rc->phases.exit = router_reset_exit;
     pc->forwards = router_forwards;
+    pc->link_state = router_link_state;
     pc->peer_changed = router_peer_changed;
     pc->receive = router_receive;
 }
