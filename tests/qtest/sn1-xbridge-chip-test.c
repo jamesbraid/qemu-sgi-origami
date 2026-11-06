@@ -271,6 +271,140 @@ static void test_warm_reset_reaches_the_heads(void)
     qtest_quit(qts);
 }
 
+/*
+ * The chip answers nothing while it is held in reset or without main power,
+ * and comes back cold. The head's register at 0x28 is the probe: it reads
+ * 0xfffff after reset and keeps what is written to it.
+ */
+static void chip_dirty(QTestState *qts)
+{
+    reg_write(qts, 0xe, 0x28, 0x12345);
+    reg_write(qts, 0xf, 0x28, 0x23456);
+    g_assert_cmphex(reg_read(qts, 0xf, 0x28), ==, 0x23456);
+}
+
+static void chip_assert_silent(QTestState *qts)
+{
+    g_assert_cmphex(reg_read(qts, 0, 0), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0xe, 0), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0xf, 0), ==, 0);
+    /* A write while held reaches nothing. */
+    reg_write(qts, 0xf, 0x28, 0x777);
+}
+
+static void chip_assert_cold_and_answering(QTestState *qts)
+{
+    g_assert_cmphex(reg_read(qts, 0, 0), ==, XBOW_ID);
+    g_assert_cmphex(reg_read(qts, 0xe, 0), ==, HEAD_ID);
+    g_assert_cmphex(reg_read(qts, 0xf, 0), ==, HEAD_ID);
+    g_assert_cmphex(reg_read(qts, 0xe, 0x28), ==, 0xfffff);
+    g_assert_cmphex(reg_read(qts, 0xf, 0x28), ==, 0xfffff);
+}
+
+static void test_reset_hold(void)
+{
+    QTestState *qts = chip_start("");
+
+    chip_dirty(qts);
+    qtest_set_irq_in(qts, CHIP, "reset-hold", 0, 1);
+    chip_assert_silent(qts);
+    qtest_set_irq_in(qts, CHIP, "reset-hold", 0, 0);
+    chip_assert_cold_and_answering(qts);
+    qtest_quit(qts);
+}
+
+static void test_main_power(void)
+{
+    QTestState *qts = chip_start("");
+
+    chip_dirty(qts);
+    qtest_set_irq_in(qts, CHIP, "main-power", 0, 0);
+    chip_assert_silent(qts);
+    qtest_set_irq_in(qts, CHIP, "main-power", 0, 1);
+    chip_assert_cold_and_answering(qts);
+    qtest_quit(qts);
+}
+
+/* Either cause alone holds the chip; it answers once both are gone. */
+static void test_hold_and_power_combine(void)
+{
+    QTestState *qts = chip_start("");
+
+    qtest_set_irq_in(qts, CHIP, "main-power", 0, 0);
+    qtest_set_irq_in(qts, CHIP, "reset-hold", 0, 1);
+    qtest_set_irq_in(qts, CHIP, "main-power", 0, 1);
+    g_assert_cmphex(reg_read(qts, 0, 0), ==, 0);
+    qtest_set_irq_in(qts, CHIP, "reset-hold", 0, 0);
+    g_assert_cmphex(reg_read(qts, 0, 0), ==, XBOW_ID);
+    qtest_set_irq_in(qts, CHIP, "reset-hold", 0, 1);
+    qtest_set_irq_in(qts, CHIP, "main-power", 0, 0);
+    qtest_set_irq_in(qts, CHIP, "reset-hold", 0, 0);
+    g_assert_cmphex(reg_read(qts, 0, 0), ==, 0);
+    qtest_set_irq_in(qts, CHIP, "main-power", 0, 1);
+    g_assert_cmphex(reg_read(qts, 0, 0), ==, XBOW_ID);
+    qtest_quit(qts);
+}
+
+/* A reset pulse restarts the chip cold and leaves it answering. */
+static void test_reset_pulse(void)
+{
+    QTestState *qts = chip_start("");
+
+    chip_dirty(qts);
+    qtest_set_irq_in(qts, CHIP, "reset", 0, 1);
+    qtest_set_irq_in(qts, CHIP, "reset", 0, 0);
+    chip_assert_cold_and_answering(qts);
+    qtest_quit(qts);
+}
+
+/* The chip tells its host whether it answers, on "host-link". */
+static void test_host_link_line(void)
+{
+    QTestState *qts = chip_start("");
+
+    qtest_irq_intercept_out_named(qts, CHIP, "host-link");
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 0);
+    qtest_set_irq_in(qts, CHIP, "reset-hold", 0, 1);
+    g_assert_false(qtest_get_irq(qts, 0));
+    qtest_set_irq_in(qts, CHIP, "reset-hold", 0, 0);
+    g_assert_true(qtest_get_irq(qts, 0));
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 1);
+    qtest_set_irq_in(qts, CHIP, "main-power", 0, 0);
+    g_assert_false(qtest_get_irq(qts, 0));
+    qtest_set_irq_in(qts, CHIP, "main-power", 0, 1);
+    g_assert_true(qtest_get_irq(qts, 0));
+    qtest_quit(qts);
+}
+
+/* A held chip stays held across a save and restore, and a reset. */
+static void test_hold_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("xbridge-hold-XXXXXX", &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    QTestState *from = chip_start("");
+    QTestState *to = chip_start("-incoming defer");
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    chip_dirty(from);
+    qtest_set_irq_in(from, CHIP, "main-power", 0, 0);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    chip_assert_silent(to);
+    qtest_system_reset(to);
+    chip_assert_silent(to);
+    qtest_set_irq_in(to, CHIP, "main-power", 0, 1);
+    chip_assert_cold_and_answering(to);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    rmdir(dir);
+}
+
 static uint32_t config_read(QTestState *qts, uint64_t widget, unsigned slot)
 {
     return qtest_readl(qts, widget + 0x20000 + slot * 0x1000);
@@ -527,6 +661,26 @@ static void test_xio_widget_routes(void)
     g_assert_cmphex(qtest_readl(qts, XIO_ALIAS + 0x40), ==, 0);
     /* Nor to an external port with nothing behind it. */
     g_assert_cmphex(qtest_readl(qts, ROUTE(9, 0)), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * A held chip refuses what a widget on its external port sends through the
+ * routes, and takes it again on release.
+ */
+static void test_hold_refuses_routes(void)
+{
+    QTestState *qts = chip_start_with_xio_widget();
+
+    qtest_sysbus_mmio_map(qts, CHIP, 5, ROUTES);
+    qtest_set_irq_in(qts, CHIP, "reset-hold", 0, 1);
+    qtest_writeq(qts, ROUTE(HOST_PORT, SCRATCH), 0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(qts, FABRIC + SCRATCH), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, ROUTE(0, 4)), ==, 0);
+    qtest_set_irq_in(qts, CHIP, "reset-hold", 0, 0);
+    qtest_writeq(qts, ROUTE(HOST_PORT, SCRATCH), 0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(qts, FABRIC + SCRATCH), ==,
+                    0x0123456789abcdefULL);
     qtest_quit(qts);
 }
 
@@ -1267,6 +1421,36 @@ static void test_explicit_context_crossbar(void)
     qtest_quit(s);
 }
 
+/*
+ * With packet transport, what a widget sends through the chip reaches the
+ * host by explicit packets, and a held chip fails them: the widget's status
+ * reads an error and the host's memory is untouched. The refusal of the
+ * chip's own registers, which holds in either transport, is not what stops
+ * this. A released chip carries the same write.
+ */
+static void test_context_hold_fails_packets(void)
+{
+    const uint64_t source = UINT64_C(0x1000000000000000);
+    const uint64_t status = UINT64_C(0x60000000);
+    QTestState *s = assembly_start(
+        "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
+        "-device sgi-xio-test-target,id=source,"
+        "target-port=/machine/peripheral/assembly/chip0,target-index=8,"
+        "source-widget=14,source-device=1");
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 1, source);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 2, status);
+    qtest_set_irq_in(s, ASSEMBLY "/chip0", "reset-hold", 0, 1);
+    qtest_writeq(s, source + (UINT64_C(0xa) << 48) + 0x1000, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), !=, 0);
+    g_assert_cmphex(qtest_readq(s, FABRIC + 0x1000), ==, 0);
+    qtest_set_irq_in(s, ASSEMBLY "/chip0", "reset-hold", 0, 0);
+    qtest_writeq(s, source + (UINT64_C(0xa) << 48) + 0x1000, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), ==, 0);
+    g_assert_cmphex(qtest_readq(s, FABRIC + 0x1000), ==, 0x12345678);
+    qtest_quit(s);
+}
+
 static void test_context_nested_dma(void)
 {
     const uint64_t source = UINT64_C(0x1000000000000000);
@@ -1335,6 +1519,17 @@ int main(int argc, char **argv)
                    test_head_interrupts_reach_the_host);
     qtest_add_func("/sn1/xbridge-chip/head-dma-reaches-the-host",
                    test_head_dma_reaches_the_host);
+    qtest_add_func("/sn1/xbridge-chip/reset-hold", test_reset_hold);
+    qtest_add_func("/sn1/xbridge-chip/main-power", test_main_power);
+    qtest_add_func("/sn1/xbridge-chip/hold-and-power-combine",
+                   test_hold_and_power_combine);
+    qtest_add_func("/sn1/xbridge-chip/reset-pulse", test_reset_pulse);
+    qtest_add_func("/sn1/xbridge-chip/host-link-line", test_host_link_line);
+    qtest_add_func("/sn1/xbridge-chip/hold-migration", test_hold_migration);
+    qtest_add_func("/sn1/xbridge-chip/hold-refuses-routes",
+                   test_hold_refuses_routes);
+    qtest_add_func("/sn1/xbridge-chip/context-hold-fails-packets",
+                   test_context_hold_fails_packets);
     qtest_add_func("/sn1/xbridge-chip/warm-reset-reaches-the-heads",
                    test_warm_reset_reaches_the_heads);
     qtest_add_func("/sn1/xbridge-chip/widget-views", test_widget_views);
