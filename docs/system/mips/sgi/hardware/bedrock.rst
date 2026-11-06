@@ -1870,8 +1870,7 @@ all fail the way they do when the Origin 300 PCI expansion is off. The
 vector engine of the peer gets no reply, and a block transfer or a
 widget write bound for it gets an error. What a powered-down or held
 Bedrock does on hardware is *unknown*; the model treats the two alike,
-an *approximation*. Registers keep their values while the input is low,
-since the model has no cold start for a node yet.
+an *approximation*. Registers keep their values while the input is low.
 
 Without power the network port reads disabled to the cable, so the
 link is down at both ends. A directly cabled peer reads port status bit
@@ -1905,9 +1904,44 @@ status a cable marked down gives. The Bedrock's DMA view also holds a
 low-priority alias of the whole system map under the node claims; the
 transfer tests pin that a copy cannot fall through it to an off node's
 RAM. The node's own RAM keeps its bytes while off, an *approximation*:
-DRAM loses them on hardware. Stopping the node's processors is not
-modelled here. A level driven into the node before its Bedrock exists
-is kept and handed over once it does, so the Bedrock starts unpowered.
+DRAM loses them on hardware. A level driven into the node before its
+Bedrock exists is kept and handed over once it does, so the Bedrock
+starts unpowered.
+
+The node also stops and starts its own processors with the input. When
+the supply goes, each processor of that node is reset and halted by work
+queued on its own thread, the way the Origin 200 Hub stops one, so no
+other node's processor is paused and nothing a stopped processor was
+executing survives. The reset leaves Status.ERL set, which masks every
+interrupt, and nothing else wakes it: the interrupt and NMI lines are held
+low (above), a processor interface NMI store cannot reach a Bedrock that
+answers nothing, and a park release queued for a processor of an off node
+does nothing. The loss of the supply also ends every park. A stop and
+continue of the machine, or a migration, leaves the node stopped, because
+the halt is processor state and not a pause; a load that finds the Bedrock
+off holds the node's processors again when the machine runs, in case the
+source stopped before its queued stop ran. What the processors of an
+unpowered node do on hardware is not recorded, so the reset and halt is an
+*approximation*. The ``halted-cpus`` property of the node reports which of its
+processors are halted, as a mask by number within the node.
+
+When the supply returns the node starts cold: the Bedrock and every unit in
+it, the L1 UART window and, on a board that carries its own, the XBridge
+with the devices behind it are reset, the Bedrock is powered, and the
+processors are restarted at the reset vector from work queued on their own
+threads. The node's controller and processors are not part of that reset
+list, and no other node is reset. Which registers survive a supply cycle on
+hardware is *unknown*; the model resets them all, an *approximation*, so the
+node's number, memory configuration and routes are the firmware's to
+program again. Each processor's start is owed until its work runs, and
+the work takes the debt: a start queued twice, by a power cycle before the
+first ran or by a resume that finds one still queued, starts the
+processor once, and never resets it again after it has run
+(``sn1/cross-node/owed-start-runs-once`` leaves a power-up's starts
+unqueued with the test-only ``x-test-start-delay-ms`` property). The
+processors whose start has not yet run when the machine is saved travel in
+the stream as a mask (the ``sn1-node/start`` subsection, sent only while a
+start is owed) and the destination finishes them.
 
 The level migrates while it is low, and nothing needs to be re-driven
 after a load. A Bedrock loaded off keeps its lines low and re-derives its
@@ -2128,7 +2162,15 @@ Composition and machine tests:
   off, which guards that path and not device load order
   (``sn1/cross-node/unpowered-node-memory-is-absent``,
   ``sn1/cross-node/unpowered-node-survives-migration``,
-  ``sn1/cross-node/unpowered-first-node-survives-migration``).
+  ``sn1/cross-node/unpowered-first-node-survives-migration``), a
+  supply cycle that halts and restarts only its own node's processors
+  (``sn1/cross-node/node-power-halts-only-its-processors``), counting
+  code that runs on both nodes while one is off, ignores the Bedrock's NMI
+  input and a stop and continue, and restarts when the supply returns
+  (``sn1/cross-node/node-power-stops-one-node``), an off node that
+  stays off across a migration
+  (``sn1/cross-node/off-node-survives-migration``), and a power-up's start
+  that is owed and runs once (``sn1/cross-node/owed-start-runs-once``).
 - ``tests/qtest/sgi-pci-expansion-ni-test.c``: the powered-off direct
   peer reply (``/sgi/pci-expansion-ni/power-vector``).
 - ``tests/qtest/sn1-pi-gfx-test.c``: graphics credits counted and

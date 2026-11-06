@@ -147,7 +147,7 @@ slow_qtests = {
   'sn1-address-map-test': 1800,
   'sn1-bedrock-flash-test': 175,
   'sn1-bedrock-md-test': 160,
-  'sn1-cross-node-test': 180,
+  'sn1-cross-node-test': 420,
   'sn1-option-tigon-test': 600,
   'sn1-directory-state-test': 160,
   'sn1-fuel-test': 250,

@@ -993,6 +993,25 @@ static void test_bte_data_goes_by_number(void)
  * only refuses register accesses fails here.
  */
 /*
+ * What the PROM does for a node that starts cold: configure its memory unit
+ * and, behind a router, its route to the other node. A node whose supply
+ * returned starts cold and needs it again; its bytes do not (the model keeps
+ * them, a stated approximation).
+ */
+static void unpowered_program_node(QTestState *qts, unsigned int node,
+                                   bool routed)
+{
+    bte_cpu_writeq(qts, node * 2, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
+                   MD_INSTALLED_SELECT2);
+    bte_cpu_writeq(qts, node * 2, BEDROCK_LOCAL + 0x400118, 0);
+    if (routed) {
+        bte_cpu_writeq(qts, node * 2,
+                       BEDROCK_LOCAL + (node ? 0x681000 : 0x681010),
+                       node ? 3 : 5);
+    }
+}
+
+/*
  * Both nodes numbered (node 1 is 2) with their memory configured, one
  * pattern resident in node 1 and another at the base of node 0. The
  * expansion topology puts a router between them.
@@ -1018,15 +1037,8 @@ static QTestState *unpowered_start(const char *topology, char **image,
         topology, routed ? ",expansion-storage.0=expansion-enclosure=cfg" : "",
         prom_path, *image, extra);
     bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + LB_REVISION, UINT64_C(2) << 32);
-    for (unsigned node = 0; node < 2; node++) {
-        bte_cpu_writeq(qts, node * 2, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
-                       MD_INSTALLED_SELECT2);
-        bte_cpu_writeq(qts, node * 2, BEDROCK_LOCAL + 0x400118, 0);
-    }
-    if (routed) {
-        bte_cpu_writeq(qts, 0, BEDROCK_LOCAL + 0x681010, 5);
-        bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + 0x681000, 3);
-    }
+    unpowered_program_node(qts, 0, routed);
+    unpowered_program_node(qts, 1, routed);
     memset(source, 0x80, sizeof(source));
     memset(resident, 0xa1, sizeof(resident));
     g_assert_true(qtest_memwrite_cpu(qts, 0, 0x10000, source,
@@ -1097,6 +1109,9 @@ static void test_unpowered_node_memory_is_absent(const void *data)
     qtest_set_irq_in(qts, "/machine/node1", "power", 0, 0);
     check_unpowered_memory(qts);
     qtest_set_irq_in(qts, "/machine/node1", "power", 0, 1);
+    /* The node starts cold: its number and memory unit are the PROM's. */
+    bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + LB_REVISION, UINT64_C(2) << 32);
+    unpowered_program_node(qts, 1, strstr(data, "expansion") != NULL);
     check_repowered_memory(qts);
     qtest_quit(qts);
     g_assert_cmpint(unlink(image), ==, 0);
@@ -1129,6 +1144,8 @@ static void test_unpowered_node_survives_migration(const void *data)
     sgi_wait_migration_status(to, "completed", 30);
     check_unpowered_memory(to);
     qtest_set_irq_in(to, "/machine/node1", "power", 0, 1);
+    bte_cpu_writeq(to, 2, BEDROCK_LOCAL + LB_REVISION, UINT64_C(2) << 32);
+    unpowered_program_node(to, 1, strstr(data, "expansion") != NULL);
     check_repowered_memory(to);
     qtest_quit(to);
     qtest_quit(from);
@@ -1170,6 +1187,7 @@ static void test_unpowered_first_node_survives_migration(void)
     sgi_wait_migration_status(to, "completed", 30);
     assert_unreachable(to, 2, NODE(0) + 0x10000);
     qtest_set_irq_in(to, "/machine/node0", "power", 0, 1);
+    unpowered_program_node(to, 0, false);
     g_assert_cmphex(cpu_read_ok(to, 2, NODE(0) + 0x10000), ==,
                     UINT64_C(0x8080808080808080));
     qtest_quit(to);
@@ -2527,12 +2545,419 @@ static void test_every_processor_starts_through_its_router(void)
     g_assert_cmpint(unlink(prom), ==, 0);
 }
 
+/*
+ * Per-node power. A node's supply stops its own processors and nothing
+ * else: the other node keeps running, and the node comes back from a cold
+ * start. The processors run code that counts into the node's own
+ * real-time compare register, so a stopped node shows as a frozen count
+ * and a running one as an advancing count.
+ */
+#define COUNT_SLICE_A UINT64_C(0x108)
+
+static char *create_counter_prom(unsigned int size)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(size);
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image + 0x000, 0x100000ff); /* beq zero, zero, 0x400 */
+    stl_be_p(image + 0x004, 0x00000000); /* nop */
+    for (unsigned int offset = 0x200; offset <= 0x380; offset += 0x80) {
+        stl_be_p(image + offset, 0x1000ffff); /* beq zero, zero, self */
+    }
+    stl_be_p(image + 0x400, 0x400c6000); /* mfc0 t4, Status */
+    stl_be_p(image + 0x404, 0x358c0080); /* ori t4, t4, Status.KX */
+    stl_be_p(image + 0x408, 0x408c6000); /* mtc0 t4, Status */
+    stl_be_p(image + 0x40c, 0x00000000); /* nop */
+    stl_be_p(image + 0x410, 0x3c089200); /* lui t0, 0x9200 */
+    stl_be_p(image + 0x414, 0x0008403c); /* dsll32 t0, t0, 0 */
+    stl_be_p(image + 0x418, 0x3c090100); /* lui t1, 0x0100 */
+    stl_be_p(image + 0x41c, 0x01094025); /* or t0, t0, t1 */
+    stl_be_p(image + 0x420, 0xdd0a0020); /* ld t2, 0x20(t0) -- CPU number */
+    stl_be_p(image + 0x424, 0x314a0003); /* andi t2, t2, 3 -- the slice */
+    stl_be_p(image + 0x428, 0x1540000a); /* bne t2, zero, 0x454 -- not A */
+    stl_be_p(image + 0x42c, 0x00000000); /* nop */
+    /* Slice A counts into its own compare register, for ever. */
+    stl_be_p(image + 0x430, 0x340b0000); /* ori t3, zero, 0 */
+    stl_be_p(image + 0x434, 0x256b0001); /* addiu t3, t3, 1 */
+    stl_be_p(image + 0x438, 0xfd0b0108); /* sd t3, 0x108(t0) */
+    stl_be_p(image + 0x43c, 0x1000fffd); /* beq zero, zero, 0x434 */
+    stl_be_p(image + 0x440, 0x00000000); /* nop */
+    /* The others wait: a processor that is not counting costs nothing. */
+    stl_be_p(image + 0x454, 0x42000020); /* wait */
+    stl_be_p(image + 0x458, 0x1000fffe); /* beq zero, zero, 0x454 */
+    stl_be_p(image + 0x45c, 0x00000000); /* nop */
+
+    fd = g_file_open_tmp("sn1-cross-node-counter-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, size), ==, (ssize_t)size);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+/* Which of node @node's processors are halted, by number within the node. */
+static unsigned int halted_cpus(QTestState *qts, unsigned int node)
+{
+    g_autofree char *path = g_strdup_printf("/machine/node%u", node);
+    QDict *reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'halted-cpus'}}", path);
+    unsigned int mask;
+
+    g_assert_true(qdict_haskey(reply, "return"));
+    mask = qdict_get_int(reply, "return");
+    qobject_unref(reply);
+    return mask;
+}
+
+/* Whether processor @cpu is halted; the two-chassis nodes have two each. */
+static bool cpu_halted(QTestState *qts, unsigned int cpu)
+{
+    return halted_cpus(qts, cpu / 2) & (1U << (cpu % 2));
+}
+
+static void wait_halted(QTestState *qts, unsigned int cpu, bool halted)
+{
+    SgiWait w;
+
+    sgi_wait_start(&w, "processor %u %s", cpu,
+                   halted ? "halted" : "running");
+    while (cpu_halted(qts, cpu) != halted) {
+        g_assert_true(sgi_wait_continue(&w, 10000));
+    }
+}
+
+/* The count of the node whose first processor is @cpu; it must be readable. */
+static uint64_t node_count(QTestState *qts, unsigned int cpu)
+{
+    return cpu_read_ok(qts, cpu, BEDROCK_LOCAL + COUNT_SLICE_A);
+}
+
+/* Wait for the count to move past the value it had, and return the new one. */
+static uint64_t wait_count_advances(QTestState *qts, unsigned int cpu)
+{
+    uint64_t before = node_count(qts, cpu), now;
+    SgiWait w;
+
+    sgi_wait_start(&w, "the count of processor %u to advance", cpu);
+    while ((now = node_count(qts, cpu)) == before) {
+        g_assert_true(sgi_wait_continue(&w, 10000));
+    }
+    return now;
+}
+
+/* The count of an off node must stay where it is, however long we look. */
+static void assert_count_frozen(QTestState *qts, unsigned int cpu)
+{
+    uint64_t before = node_count(qts, cpu);
+
+    g_usleep(300 * 1000);
+    g_assert_cmphex(node_count(qts, cpu), ==, before);
+}
+
+static QTestState *counter_start(char **prom, const char *machine,
+                                 unsigned int size)
+{
+    g_autofree char *quoted = NULL;
+
+    *prom = create_counter_prom(size);
+    quoted = g_shell_quote(*prom);
+    return qtest_initf("%s -bios %s -accel tcg,thread=multi -no-shutdown -S",
+                       machine, quoted);
+}
+
+/*
+ * Node 1 loses its supply: its processors stop while node 0 keeps counting,
+ * the machine stays up, no interrupt and no NMI line wakes the stopped
+ * node, and neither does a stop and continue. When the supply returns the
+ * node starts over at the reset vector and counts again from zero.
+ */
+static void test_node_power_stops_one_node(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = counter_start(&prom, MACHINE_ARGS, PROM_SIZE);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 0);
+    wait_count_advances(qts, 2);
+
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 0);
+    wait_halted(qts, 2, true);
+    wait_halted(qts, 3, true);
+    g_assert_false(cpu_halted(qts, 0));
+    wait_count_advances(qts, 0);
+    assert_count_frozen(qts, 2);
+
+    /* The Bedrock's own NMI input is refused while the node is off. */
+    qtest_set_irq_in(qts, "/machine/node1/bedrock", "pi-nmi", 0, 1);
+    qtest_set_irq_in(qts, "/machine/node1/bedrock", "pi-nmi", 0, 0);
+    g_usleep(300 * 1000);
+    g_assert_true(cpu_halted(qts, 2));
+    assert_count_frozen(qts, 2);
+
+    /* A stop and continue is not a power-up. */
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 0);
+    g_assert_true(cpu_halted(qts, 2));
+    assert_count_frozen(qts, 2);
+
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 1);
+    wait_halted(qts, 2, false);
+    wait_count_advances(qts, 2);
+    wait_count_advances(qts, 0);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * A start a power-up owes is performed once. The returning node's starts
+ * are left owed and unqueued for two seconds (x-test-start-delay-ms); a stop
+ * and continue in that time finds them owed and starts the processors at
+ * once, as a migration's destination does, and the delayed start that
+ * arrives afterwards must find nothing left to do. A second start would
+ * reset the counting processor after it had been running, and its count
+ * would fall back to zero.
+ */
+static void test_owed_start_runs_once(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *machine = g_strdup_printf("%s -global "
+        "sgi-sn1-node.x-test-start-delay-ms=2000", MACHINE_ARGS);
+    QTestState *qts;
+    int64_t until;
+    uint64_t last;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = counter_start(&prom, machine, PROM_SIZE);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 2);
+
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 0);
+    wait_halted(qts, 2, true);
+    wait_halted(qts, 3, true);
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 1);
+    /* Nothing is queued yet: the processors stay halted. */
+    g_assert_true(cpu_halted(qts, 2));
+
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_halted(qts, 2, false);
+    wait_halted(qts, 3, false);
+    last = wait_count_advances(qts, 2);
+
+    /* The delayed start arrives within this window; the count only grows. */
+    until = g_get_monotonic_time() + 3 * G_USEC_PER_SEC;
+    while (g_get_monotonic_time() < until) {
+        uint64_t now = node_count(qts, 2);
+
+        g_assert_cmpuint(now, >=, last);
+        last = now;
+        g_usleep(5000);
+    }
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * A system reset ends an owed start. The returning node's starts are left
+ * owed for two seconds; a reset in that time starts every processor itself,
+ * and the delayed start that arrives afterwards must find nothing owed. It
+ * would otherwise reset a processor that is running, and its count would
+ * fall back to zero.
+ */
+static void test_reset_clears_an_owed_start(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *machine = g_strdup_printf("%s -global "
+        "sgi-sn1-node.x-test-start-delay-ms=2000", MACHINE_ARGS);
+    QTestState *qts;
+    int64_t until;
+    uint64_t last;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = counter_start(&prom, machine, PROM_SIZE);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 2);
+
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 0);
+    wait_halted(qts, 2, true);
+    wait_halted(qts, 3, true);
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 1);
+    g_assert_true(cpu_halted(qts, 2));
+
+    qtest_system_reset(qts);
+    wait_halted(qts, 2, false);
+    last = wait_count_advances(qts, 2);
+
+    /* The delayed start would arrive within this window. */
+    until = g_get_monotonic_time() + 3 * G_USEC_PER_SEC;
+    while (g_get_monotonic_time() < until) {
+        uint64_t now = node_count(qts, 2);
+
+        g_assert_cmpuint(now, >=, last);
+        last = now;
+        g_usleep(5000);
+    }
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * A stream that carries no owed start leaves none on the destination. The
+ * destination's node 1 is power-cycled before the stream arrives, which owes
+ * its starts for two seconds; the source's processors are running, and the
+ * delayed start must not reset them once the stream has loaded.
+ */
+static void test_load_clears_an_owed_start(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-owed-load-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *prom = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *delayed = g_strdup_printf("%s -global "
+        "sgi-sn1-node.x-test-start-delay-ms=2000", MACHINE_ARGS);
+    QTestState *from, *to;
+    int64_t until;
+    uint64_t last;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    g_assert_no_error(error);
+    from = counter_start(&prom, MACHINE_ARGS, PROM_SIZE);
+    quoted = g_shell_quote(prom);
+    to = qtest_initf("%s -bios %s -accel tcg,thread=multi -no-shutdown -S "
+                     "-incoming defer", delayed, quoted);
+    qtest_qmp_assert_success(from, "{'execute':'cont'}");
+    /* Far enough on that a restart from zero is plain to see. */
+    while (node_count(from, 2) < 3000000) {
+        g_usleep(10000);
+    }
+
+    qtest_set_irq_in(to, "/machine/node1", "power", 0, 0);
+    qtest_set_irq_in(to, "/machine/node1", "power", 0, 1);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    last = node_count(from, 2);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    /* An owed start would have reset the counting processor by now. */
+    g_usleep(200 * 1000);
+    g_assert_cmpuint(node_count(to, 2), >=, last);
+    last = wait_count_advances(to, 2);
+
+    until = g_get_monotonic_time() + 3 * G_USEC_PER_SEC;
+    while (g_get_monotonic_time() < until) {
+        uint64_t now = node_count(to, 2);
+
+        g_assert_cmpuint(now, >=, last);
+        last = now;
+        g_usleep(5000);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(socket);
+    g_rmdir(dir);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * The first node loses and regains its supply with the second running: only
+ * the first is touched. Run on the accelerator qtest uses, where nothing
+ * executes, to pin the halted state alone.
+ */
+static void test_node_power_halts_only_its_processors(void)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(MACHINE_ARGS " -bios %s", quoted);
+
+    for (unsigned int cpu = 0; cpu < 4; cpu++) {
+        g_assert_false(cpu_halted(qts, cpu));
+    }
+    qtest_set_irq_in(qts, "/machine/node0", "power", 0, 0);
+    g_assert_true(cpu_halted(qts, 0));
+    g_assert_true(cpu_halted(qts, 1));
+    g_assert_false(cpu_halted(qts, 2));
+    g_assert_false(cpu_halted(qts, 3));
+    qtest_set_irq_in(qts, "/machine/node0", "power", 0, 1);
+    for (unsigned int cpu = 0; cpu < 4; cpu++) {
+        g_assert_false(cpu_halted(qts, cpu));
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * An off node stays off across a migration, and the node that kept running
+ * is not touched by it: the destination holds the stopped processors from
+ * the loaded level and the memory stays out of the other node's view.
+ */
+static void test_off_node_survives_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-off-node-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    from = qtest_initf(MACHINE_ARGS " -bios %s", quoted);
+    to = qtest_initf(MACHINE_ARGS " -bios %s -incoming defer", quoted);
+    qtest_set_irq_in(from, "/machine/node1", "power", 0, 0);
+    g_assert_true(cpu_halted(from, 2));
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    g_assert_true(cpu_halted(to, 2));
+    g_assert_true(cpu_halted(to, 3));
+    g_assert_false(cpu_halted(to, 0));
+    g_assert_false(cpu_halted(to, 1));
+    qtest_set_irq_in(to, "/machine/node1", "power", 0, 1);
+    g_assert_false(cpu_halted(to, 2));
+    g_assert_false(cpu_halted(to, 3));
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
 
     g_test_init(&argc, &argv, NULL);
     prom_path = create_prom();
+    qtest_add_func("sn1/cross-node/owed-start-runs-once",
+                   test_owed_start_runs_once);
+    qtest_add_func("sn1/cross-node/reset-clears-an-owed-start",
+                   test_reset_clears_an_owed_start);
+    qtest_add_func("sn1/cross-node/load-clears-an-owed-start",
+                   test_load_clears_an_owed_start);
+    qtest_add_func("sn1/cross-node/node-power-halts-only-its-processors",
+                   test_node_power_halts_only_its_processors);
+    qtest_add_func("sn1/cross-node/node-power-stops-one-node",
+                   test_node_power_stops_one_node);
+    qtest_add_func("sn1/cross-node/off-node-survives-migration",
+                   test_off_node_survives_migration);
     qtest_add_data_func("sn1/cross-node/unpowered-router-removes-its-memory",
                         "power",
                         test_dead_router_removes_the_memory_behind_it);

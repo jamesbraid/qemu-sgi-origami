@@ -52,6 +52,8 @@ struct SGIBedrockState {
      * switch the supply. Migrated only while off.
      */
     bool unpowered;
+    /* The level before a load began; only meaningful while loading. */
+    bool unpowered_before_load;
     /* Called, after the level changes, for owners that cache a decode. */
     NotifierList power_notifiers;
     /* Test-only, not migrated: see x-test-refuse-vector-read. */
