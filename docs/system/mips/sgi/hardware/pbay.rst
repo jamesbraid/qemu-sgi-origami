@@ -6,10 +6,12 @@
 Power-bay controller: L1 power link
 ====================================
 
-Used in no machine. The L1 (:doc:`l1`) of an Origin 3000 rack polls the
-rack's power bay over a serial link, and ``sgi-pbay`` is the bay's end of
-that link. No machine instantiates it. The controller model's ``pbay``
-property (:ref:`sgi-l1-pbay`) takes the other end of the link.
+Used in no machine by default. The L1 (:doc:`l1`) of an Origin 3000 rack
+polls the rack's power bay over a serial link, and ``sgi-pbay`` is the bay's
+end of that link. No machine instantiates it: add it with ``-device
+sgi-pbay,chardev=<id>`` and join the other end to a controller's L1 with the
+machine option ``controller-pbay-chardev`` (:ref:`sgi-l1-pbay`), or with the
+controller model's ``pbay`` property.
 
 .. seealso::
 

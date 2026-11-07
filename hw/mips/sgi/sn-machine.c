@@ -500,6 +500,7 @@ struct SGIMachineState {
     strList *controller_board_eeprom;
     strList *controller_chardev;
     strList *controller_l2_chardev;
+    strList *controller_pbay_chardev;
     strList *controller_l2_partition_flag;
     strList *controller_brick_serial;
     strList *expansion_storage;
@@ -553,6 +554,12 @@ static const SGIMachineIdentityRecords sgi_machine_identity_records[] = {
         "controller-l2-chardev",
         offsetof(SGIMachineState, controller_l2_chardev),
         "L2 link of a controller's L1 as controller-index=chardev-id",
+        true,
+    },
+    {
+        "controller-pbay-chardev",
+        offsetof(SGIMachineState, controller_pbay_chardev),
+        "Power-bay link of a controller's L1 as controller-index=chardev-id",
         true,
     },
     {
@@ -1147,6 +1154,26 @@ static const char *sgi_machine_l2_link_for(const SGIMachineState *s,
     return chardev;
 }
 
+/* The chardev id the machine gives controller @owner's power-bay link. */
+static const char *sgi_machine_pbay_link_for(const SGIMachineState *s,
+                                             unsigned owner)
+{
+    const strList *entry;
+
+    for (entry = s->controller_pbay_chardev; entry; entry = entry->next) {
+        unsigned selected, slot;
+        const char *payload;
+
+        /* The machine validated owner=chardev-id before building devices. */
+        if (sgi_machine_controller_input(entry->value, false, "", &selected,
+                                         &slot, &payload, &error_abort) &&
+            selected == owner) {
+            return payload;
+        }
+    }
+    return NULL;
+}
+
 static bool sgi_machine_validate_controller_inputs(SGIMachineState *s,
     const SGIModelTopology *t, Error **errp)
 {
@@ -1411,6 +1438,11 @@ static bool sgi_machine_set_expansion_inputs(SGIMachineState *s,
     if (chardev && !object_property_set_str(OBJECT(l1), "l2", chardev, errp)) {
         return false;
     }
+    chardev = sgi_machine_pbay_link_for(s, owner);
+    if (chardev &&
+        !object_property_set_str(OBJECT(l1), "pbay", chardev, errp)) {
+        return false;
+    }
     if (flag) {
         qdev_prop_set_uint8(l1, "l2-partition-flag", flag);
     }
@@ -1652,6 +1684,65 @@ static bool sgi_machine_validate_l2_links(SGIMachineState *s,
                            payload);
                 return false;
             }
+        }
+    }
+    return true;
+}
+
+/*
+ * controller-pbay-chardev joins a controller's L1 to a power bay. It goes to
+ * the same controllers as the L2 link: an expansion controller's L1, and a
+ * C-brick's L1 that one compute node builds. The L1 refuses a brick type that
+ * does not run the power-bay task when it realizes.
+ */
+static bool sgi_machine_validate_pbay_links(SGIMachineState *s,
+                                            const SGIModelTopology *t,
+                                            Error **errp)
+{
+    size_t count = QAPI_LIST_LENGTH(t->controllers);
+    g_autofree bool *used = g_new0(bool, MAX(count, 1));
+    const strList *entry, *prior;
+    const strList *others[] = { s->controller_chardev,
+                                s->controller_l2_chardev };
+
+    for (entry = s->controller_pbay_chardev; entry; entry = entry->next) {
+        unsigned owner, slot = 0;
+        const char *payload;
+
+        if (!sgi_machine_controller_input(entry->value, false,
+                                          "owner=chardev-id", &owner, &slot,
+                                          &payload, errp)) {
+            return false;
+        }
+        if (owner >= count || !sgi_machine_l2_link_controller(s, t, owner)) {
+            error_setg(errp, "controller %u does not take a power-bay link",
+                       owner);
+            return false;
+        }
+        if (used[owner]) {
+            error_setg(errp, "duplicate controller input for owner %u", owner);
+            return false;
+        }
+        used[owner] = true;
+        for (prior = s->controller_pbay_chardev; prior != entry;
+             prior = prior->next) {
+            if (!strcmp(strchr(prior->value, '=') + 1, payload)) {
+                error_setg(errp, "controller inputs reuse '%s'", payload);
+                return false;
+            }
+        }
+        for (unsigned i = 0; i < ARRAY_SIZE(others); i++) {
+            for (prior = others[i]; prior; prior = prior->next) {
+                if (!strcmp(strchr(prior->value, '=') + 1, payload)) {
+                    error_setg(errp, "controller inputs reuse '%s'", payload);
+                    return false;
+                }
+            }
+        }
+        if (!qemu_chr_find(payload)) {
+            error_setg(errp, "controller power-bay chardev '%s' does not "
+                       "exist", payload);
+            return false;
         }
     }
     return true;
@@ -9369,6 +9460,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     s->ip53_fingerprint_enabled = sgi_machine_topology_has_ip53(t);
     if (!sgi_machine_validate_controller_inputs(s, t, errp) ||
         !sgi_machine_validate_l2_links(s, t, errp) ||
+        !sgi_machine_validate_pbay_links(s, t, errp) ||
         !sgi_machine_validate_expansion_storage(s, t, errp) ||
         !sgi_machine_resolve_processor(s, t, errp)) {
         return false;
@@ -9940,6 +10032,15 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                     }
                     qdev_prop_set_uint8(DEVICE(node), "l1-l2-partition-flag",
                                         l2_flag);
+                }
+                {
+                    const char *pbay = sgi_machine_pbay_link_for(s,
+                        config->controller_index);
+
+                    if (pbay) {
+                        qdev_prop_set_string(DEVICE(node), "l1-pbay-chardev",
+                                             pbay);
+                    }
                 }
                 qdev_prop_set_uint32(DEVICE(node), "l1-type-code",
                                      l1->reported_type);
