@@ -2140,11 +2140,21 @@ for a tunnelled request when the inner command and completion code
 match and the network function is the request's plus the response bit,
 *software expectation*.
 
-When the capability bytes say a supply count routine should run, the model
-logs ``LOG_UNIMP`` and does not run it. The L1 does not parse the records
-in the model, which counts them and exposes the count as ``pbay-records``.
+Of the three capability bytes, byte 1 when nonzero is stored as the fallback
+FRU device of slot 0, used until a FRU locator for entity ``0xb0`` replaces
+it; byte 2 when nonzero runs the record loop, *software expectation*. The
+model reads the loop's records for what the L1 takes from them,
+*software expectation* for the use and *inferred* for the field offsets in
+the record (they follow the public IPMI sensor and FRU-locator record
+layouts): a sensor record of entity ``0x0a`` and sensor type 8 maps its
+sensors to supplies 1 to 6, one of entity ``0x15`` and type 9 to DC ports 1 to
+8, and a FRU locator of entity ``0x0a`` (instances 1 to 6), ``0xb0`` or
+``0x15`` gives the device of FRU slot 1 to 6, 0 or 7. The records do not say
+how many sensors a record covers, so the model takes six and eight, a *model
+choice*. The count of records read is exposed as ``pbay-records`` and slot 0's
+device as ``pbay-fru-slot0``.
 
-After the link is ready the model reads sensors 1 to 14 in turn, then again
+After the link is ready the model reads the mapped supply and port sensors in turn, then again
 after each ``pbay-poll-ms``. Each pass logs to the L1 log as the polling
 task does, *software expectation*. The model keeps the last value of each
 sensor, and nothing is stored at start, so a fault already present on the
