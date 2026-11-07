@@ -437,6 +437,41 @@ static void router_peer_changed(Object *port, unsigned index)
     router_changed(SGI_SN1_ROUTER(port));
 }
 
+/*
+ * A warm reset arrives on port `arrival`. The permit is protection
+ * configuration bit arrival-1 (name and position established, meaning
+ * inferred); the reset may leave by port n when n's remote reset mask has
+ * bit arrival-1 set (working reading, approximated). Each chip is visited
+ * once per reset. The router's own registers are never touched: whether an
+ * accepted warm reset clears them is unknown, and keeping them is the
+ * model's choice.
+ */
+static bool router_warm_reset(Object *port, unsigned arrival,
+                              SGINetWarmReset *event)
+{
+    SGISN1RouterState *s = SGI_SN1_ROUTER(port);
+    uint64_t bit;
+
+    if (router_offline(s) || arrival < 1 || arrival > SGI_SN1_ROUTER_PORTS ||
+        !sgi_net_warm_reset_visit(event, port)) {
+        return false;
+    }
+    bit = UINT64_C(1) << (arrival - 1);
+    if (!(s->protection & bit)) {
+        return false;
+    }
+    for (unsigned n = 1; n <= SGI_SN1_ROUTER_PORTS; n++) {
+        Object *peer;
+        unsigned index;
+
+        if (n != arrival && (s->remote_reset_mask[n - 1] & bit) &&
+            sgi_sn1_router_port_neighbor(s, n, &peer, &index)) {
+            sgi_net_port_warm_reset(peer, index, event);
+        }
+    }
+    return true;
+}
+
 static MemTxResult router_read(void *opaque, hwaddr offset, uint64_t *value,
                                unsigned size, MemTxAttrs attrs)
 {
@@ -725,6 +760,7 @@ static void router_class_init(ObjectClass *oc, const void *data)
     pc->link_state = router_link_state;
     pc->peer_changed = router_peer_changed;
     pc->receive = router_receive;
+    pc->warm_reset = router_warm_reset;
 }
 
 static const TypeInfo router_info = {

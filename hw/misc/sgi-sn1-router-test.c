@@ -25,6 +25,7 @@ struct SGISN1RouterTestState {
     uint64_t result;
     uint64_t failure;
     uint64_t reply;
+    uint64_t warm_reset_taken;
 };
 
 static uint64_t test_access(SGISN1RouterTestState *s, hwaddr addr,
@@ -93,6 +94,27 @@ static void test_route(Object *obj, Visitor *v, const char *name,
     visit_type_uint64(v, name, &value, errp);
 }
 
+/*
+ * Setting warm-reset to a port number delivers a warm reset to that port of
+ * the router as a neighbouring chip would. warm-reset-taken reads 1 when the
+ * router took it and 0 otherwise.
+ */
+static void test_set_warm_reset(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    SGISN1RouterTestState *s = SGI_SN1_ROUTER_TEST(obj);
+    SGINetWarmReset *event;
+    uint64_t port;
+
+    if (!visit_type_uint64(v, name, &port, errp)) {
+        return;
+    }
+    event = sgi_net_warm_reset_begin(obj);
+    s->warm_reset_taken = s->router && port <= UINT_MAX &&
+        sgi_net_port_warm_reset(OBJECT(s->router), port, event);
+    sgi_net_warm_reset_end(event);
+}
+
 static void test_realize(DeviceState *dev, Error **errp)
 {
     SGISN1RouterTestState *s = SGI_SN1_ROUTER_TEST(dev);
@@ -134,6 +156,11 @@ static void test_init(Object *obj)
                                     OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "reply", &s->reply,
                                     OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "warm-reset-taken",
+                                    &s->warm_reset_taken,
+                                    OBJ_PROP_FLAG_READ);
+    object_property_add(obj, "warm-reset", "uint64", NULL,
+                        test_set_warm_reset, NULL, NULL);
     object_property_add(obj, "route", "uint64", test_route, NULL, NULL, NULL);
 }
 
@@ -153,6 +180,38 @@ static const TypeInfo test_info = {
     .class_init = test_class_init,
 };
 
+/*
+ * A chip at the far end of a cable that counts the warm resets it takes, in
+ * the place of a Bedrock until one registers for the hook.
+ */
+#define TYPE_SGI_SN1_ROUTER_TEST_PEER "sgi-sn1-router-test-peer"
+OBJECT_DECLARE_SIMPLE_TYPE(SGISN1RouterTestPeerState, SGI_SN1_ROUTER_TEST_PEER)
+
+struct SGISN1RouterTestPeerState {
+    DeviceState parent_obj;
+    uint64_t warm_resets;
+};
+
+static bool silent_warm_reset(Object *port, unsigned index,
+                              SGINetWarmReset *event)
+{
+    SGISN1RouterTestPeerState *s = SGI_SN1_ROUTER_TEST_PEER(port);
+
+    if (!sgi_net_warm_reset_visit(event, port)) {
+        return false;
+    }
+    s->warm_resets++;
+    return true;
+}
+
+static void silent_init(Object *obj)
+{
+    SGISN1RouterTestPeerState *s = SGI_SN1_ROUTER_TEST_PEER(obj);
+
+    object_property_add_uint64_ptr(obj, "warm-resets", &s->warm_resets,
+                                    OBJ_PROP_FLAG_READ);
+}
+
 static SGINetPacketResult silent_receive(Object *port, unsigned index,
                                          SGINetPacket *packet, Error **errp)
 {
@@ -163,11 +222,14 @@ static void silent_class_init(ObjectClass *oc, const void *data)
 {
     DEVICE_CLASS(oc)->user_creatable = true;
     SGI_NET_PORT_CLASS(oc)->receive = silent_receive;
+    SGI_NET_PORT_CLASS(oc)->warm_reset = silent_warm_reset;
 }
 
 static const TypeInfo silent_info = {
-    .name = "sgi-sn1-router-test-peer",
+    .name = TYPE_SGI_SN1_ROUTER_TEST_PEER,
     .parent = TYPE_DEVICE,
+    .instance_size = sizeof(SGISN1RouterTestPeerState),
+    .instance_init = silent_init,
     .class_init = silent_class_init,
     .interfaces = (const InterfaceInfo[]) {
         { TYPE_SGI_NET_PORT }, { }

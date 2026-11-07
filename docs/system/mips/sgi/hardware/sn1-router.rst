@@ -467,9 +467,59 @@ cold reset does, so they are cold whenever the router returns. This is an
 *approximation*: which registers a held or unpowered chip keeps is
 *unknown*. A line change that leaves the router online or offline as it
 was does nothing, and a system reset leaves both lines as they are, since
-they are wires from the L1. The warm reset a neighbour's port reset
-delivers, and whether an accepted warm reset clears the fence registers,
-are *unknown* and not modelled here.
+they are wires from the L1. A warm reset that arrives from a neighbour is
+a different event, described in :ref:`sgi-sn1-router-warm-reset`.
+
+.. _sgi-sn1-router-warm-reset:
+
+Warm reset forwarding
+=====================
+
+A warm reset is the reset a chip's port reset sends to the chip across a
+cable. The router passes one on, and never resets itself in doing so. In
+QEMU this is the ``warm_reset`` operation of the ``sgi-net-port`` interface
+(``include/hw/mips/sgi-net-port.h``). The caller creates the event with
+``sgi_net_warm_reset_begin()``, which names the sending chip as already
+reached, delivers it to a port with ``sgi_net_port_warm_reset()`` and frees it.
+Nothing in a machine calls it yet; the Bedrock network interface will
+register the same operation for the chip at the far end of a cable and send
+a reset through its own port. Until then the ``sgi-sn1-router-test``
+adapter sends one: setting its ``warm-reset`` property to a port number
+delivers a warm reset to that port of the router, and
+``warm-reset-taken`` reads 1 when the router took it. The
+``sgi-sn1-router-test-peer`` device stands for a far chip and counts the
+warm resets it takes in ``warm-resets``.
+
+On an arrival at port *L* the router:
+
+- Takes it only when protection configuration (``0x10``) bit *L*-1 is set.
+  The name and position of the bit are *established* (the public header
+  names it per port as "reset ok"); that it governs a reset arriving on
+  that port is *inferred*. A reset it refuses goes nowhere: it is not
+  passed on and no register changes.
+- Passes a taken reset out of every other port *n* whose link remote reset
+  mask (``B(n)+0x018``) has bit *L*-1 set and whose cable is up with both
+  ends enabled, and applies the neighbour's own rule there. The mask
+  direction, "a reset arriving on port *p* may leave by port *n* when mask
+  *n* has bit *p*-1 set", is *inferred* from the firmware's partition
+  fencing and is the working reading, an *approximation*; the opposite
+  reading is not excluded by any source.
+- Visits each chip once per reset. A router reached again by a cabled loop
+  does nothing the second time, whatever its permit says, an
+  *approximation* of how a reset event is bounded.
+- Keeps every register. Whether an accepted warm reset clears the router's
+  permit, masks, tables or scratch is *unknown*; the model keeps them all,
+  the fences and the reset-space mark in scratch 0 included, an
+  *approximation* that the partition-aware boot needs a surviving router
+  to have.
+- Does nothing while offline (unpowered or held), and does not reach a
+  neighbour whose link reads down.
+
+Not modelled: the warm-reset bit of the port reset register (bit 9, name
+*established*) stays a refused write, no consumer writes it, and the
+per-port error status bit a refused arrival is named to set (bit 36, name
+*established*, latching *inferred*) is not set, because how the register
+clears is *unknown*.
 
 Errors and unexpected accesses
 ==============================
@@ -486,7 +536,7 @@ a hardware error reply, which is *unknown*.
 Migration
 =========
 
-State is the registers, tables and images above, saved at version 4. A
+Warm reset forwarding adds no state. State is the registers, tables and images above, saved at version 4. A
 router that is unpowered or held adds a subsection holding the two line
 states; one that is online at the source sends nothing extra. The
 revision and the profile must match between source and destination, and
@@ -507,6 +557,8 @@ Model limits
   are model choices.
 - Routing follows the rule above, not a known hardware rule. The global
   route table, the protection bits and active barriers have no effect.
+- Nothing yet delivers a warm reset to the router in a machine; see
+  :ref:`sgi-sn1-router-warm-reset`.
 - Management over USB or the rack L2, and L1 access through the router,
   are not modelled beyond the UART window. Supply timing and the order of
   the reset release are not modelled; the lines are levels.
@@ -524,7 +576,11 @@ registers, port reset, global port definition and diagnostic words, the
 barrier images, route-table words, the routing arithmetic, vector links,
 silent peers, power and reset hold on both ends of a cable, cold reset,
 the revision range and overflow checks, the UART
-window and migration, including profile mismatch.
+window and migration, including profile mismatch. The warm reset cases
+cover a reset forwarded by permit and mask, a refusal when the permit is
+clear, the mask direction, three routers in a cabled ring visited once
+each, each router applying its own rule, registers kept, and an offline
+router or neighbour forwarding nothing.
 ``tests/qtest/sn1-bedrock-link-test.c`` covers a two-router vector read,
 the ``0x27`` return route, each cable down, a powered-off target,
 route-table words and the UART window through the Bedrock local block.

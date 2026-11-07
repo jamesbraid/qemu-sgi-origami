@@ -84,6 +84,44 @@ void sgi_net_port_record_check_error(Object *port, unsigned int index)
     }
 }
 
+struct SGINetWarmReset {
+    GPtrArray *visited;
+};
+
+SGINetWarmReset *sgi_net_warm_reset_begin(Object *origin)
+{
+    SGINetWarmReset *event = g_new0(SGINetWarmReset, 1);
+
+    event->visited = g_ptr_array_new();
+    sgi_net_warm_reset_visit(event, origin);
+    return event;
+}
+
+void sgi_net_warm_reset_end(SGINetWarmReset *event)
+{
+    if (event) {
+        g_ptr_array_free(event->visited, true);
+        g_free(event);
+    }
+}
+
+bool sgi_net_warm_reset_visit(SGINetWarmReset *event, Object *chip)
+{
+    if (g_ptr_array_find(event->visited, chip, NULL)) {
+        return false;
+    }
+    g_ptr_array_add(event->visited, chip);
+    return true;
+}
+
+bool sgi_net_port_warm_reset(Object *port, unsigned int index,
+                             SGINetWarmReset *event)
+{
+    SGINetPortClass *pc = SGI_NET_PORT_GET_CLASS(port);
+
+    return pc->warm_reset && pc->warm_reset(port, index, event);
+}
+
 bool sgi_net_packet_append_reply(SGINetPacket *packet, unsigned int index)
 {
     if (packet->reply_vector > (UINT64_MAX >> 4)) {
