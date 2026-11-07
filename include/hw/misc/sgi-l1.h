@@ -269,6 +269,17 @@ struct SGIL1State {
     uint32_t port_speed_first;
     uint32_t processors;
     GString *capture;
+    /* A pbay command: can its caller wait for the bay, and who waits. */
+    bool pbay_can_wait;
+    bool pbay_sync;
+    bool pbay_ok;
+    bool pbay_pending;
+    bool pbay_issued;
+    bool pbay_console;
+    uint8_t pbay_channel;
+    GString *pbay_capture;
+    /* The controller a relayed task-3 request's reply goes back through. */
+    struct SGIL1State *pbay_reply_to;
     /* Running a command the cabled peer relayed with ctc; not migrated. */
     bool serving_peer;
     uint8_t command[128];

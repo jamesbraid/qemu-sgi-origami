@@ -2340,6 +2340,7 @@ bool sgi_l1_bind_power_command(SGIL1State *issuer, SGIL1State *owner,
 }
 
 static int l1_run_line(SGIL1State *s, const char *text, bool console);
+static void l1_pbay_done(void *opaque, const char *text, bool ok);
 
 /* Restart the controller. A C-brick's or I-brick's peers hear nothing. */
 static void l1_reboot(SGIL1State *s)
@@ -3219,10 +3220,29 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
             }
         }
     } else if (!strcmp(argv[0], "pbay") && sgi_l1_pbay_active(&s->pbay)) {
-        /* Only the link's status word is established; the rest is not. */
-        qemu_log_mask(LOG_UNIMP, "sgi-l1: the pbay command's output format "
-                      "is not established\n");
-        l1_printf(s, "%s\r\n", sgi_l1_pbay_status_name(&s->pbay));
+        int done;
+
+        s->pbay_sync = true;
+        s->pbay_ok = true;
+        done = sgi_l1_pbay_command(&s->pbay, argc, argv, s->pbay_can_wait,
+                                   l1_pbay_done, s);
+        s->pbay_sync = false;
+        if (done == SGI_L1_PBAY_PENDING) {
+            /* The output follows the bay's replies, and so does the prompt. */
+            s->pbay_pending = true;
+            s->pbay_issued = true;
+            s->pbay_console = console;
+            own_prompt = true;
+        } else if (done == SGI_L1_PBAY_BAD_ARGS) {
+            l1_invalid(s, "pbay");
+            result = -1;
+        } else if (done == SGI_L1_PBAY_REFUSED) {
+            /* The refusal's text is not recorded: a model choice. */
+            l1_printf(s, "ERROR: command not found.\r\n");
+            result = -1;
+        } else if (!s->pbay_ok) {
+            result = -1;
+        }
     } else if (!strcmp(argv[0], "reboot_l1")) {
         l1_reboot(s);
         return 0;
@@ -3405,32 +3425,34 @@ complete:
     return result;
 }
 
+/* The prompt, or the return to console mode, after a command. */
+static void l1_command_finish(SGIL1State *s)
+{
+    if (s->escaped && s->node_power) {
+        l1_mode_message(s, true);
+    } else {
+        s->escaped = false;
+        l1_prompt(s);
+    }
+}
+
 static void l1_command(SGIL1State *s)
 {
     s->command[s->command_len] = 0;
     s->command_len = 0;
+    s->pbay_can_wait = true;
     l1_run_line(s, (const char *)s->command, true);
+    s->pbay_can_wait = false;
 }
 
-/* Task 3: any code with one text argument runs it and returns its lines. */
-static void l1_interpret(SGIL1State *s, uint8_t channel, const uint8_t *args,
-                         unsigned count)
+/* Task 3's reply: @output's lines, as many as fit, under @result. */
+static void l1_interpret_reply(SGIL1State *s, uint8_t channel, int result,
+                               const char *output)
 {
-    g_autofree char *output = NULL;
     uint8_t fields[121];
     unsigned length = 0, fields_count = 0;
-    int result;
-    char **lines;
+    char **lines = g_strsplit(output, "\r\n", -1);
 
-    if (count != 1 || args[0] != 1) {
-        l1_reply(s, channel, -100, 0, NULL, 0);
-        return;
-    }
-    s->capture = g_string_new(NULL);
-    result = l1_run_line(s, (const char *)args + 1, false);
-    output = g_string_free(s->capture, FALSE);
-    s->capture = NULL;
-    lines = g_strsplit(output, "\r\n", -1);
     for (char **line = lines; *line; line++) {
         unsigned n = strlen(*line);
 
@@ -3448,6 +3470,64 @@ static void l1_interpret(SGIL1State *s, uint8_t channel, const uint8_t *args,
     g_strfreev(lines);
     /* A status of minus 1 for an unknown command is a model choice. */
     l1_reply(s, channel, result, fields_count, fields, length);
+}
+
+/* Task 3: any code with one text argument runs it and returns its lines. */
+static void l1_interpret(SGIL1State *s, uint8_t channel, const uint8_t *args,
+                         unsigned count)
+{
+    g_autofree char *output = NULL;
+    int result;
+
+    if (count != 1 || args[0] != 1) {
+        l1_reply(s, channel, -100, 0, NULL, 0);
+        return;
+    }
+    s->capture = g_string_new(NULL);
+    s->pbay_can_wait = true;
+    s->pbay_issued = false;
+    result = l1_run_line(s, (const char *)args + 1, false);
+    s->pbay_can_wait = false;
+    if (s->pbay_issued) {
+        /* A pbay command waits for the bay: its reply is sent then. */
+        s->pbay_capture = s->capture;
+        s->pbay_channel = channel;
+        /* A relayed request is answered through its requester, later too. */
+        s->pbay_reply_to = s->reply_to;
+        s->capture = NULL;
+        return;
+    }
+    output = g_string_free(s->capture, FALSE);
+    s->capture = NULL;
+    l1_interpret_reply(s, channel, result, output);
+}
+
+/* A pbay command's text: now, inside the call, or when the bay has answered. */
+static void l1_pbay_done(void *opaque, const char *text, bool ok)
+{
+    SGIL1State *s = opaque;
+
+    if (s->pbay_sync) {
+        l1_printf(s, "%s", text);
+        s->pbay_ok = ok;
+        return;
+    }
+    s->pbay_pending = false;
+    if (s->pbay_console) {
+        l1_printf(s, "%s", text);
+        l1_command_finish(s);
+    } else {
+        g_autofree char *output = NULL;
+        SGIL1State *saved = s->reply_to;
+
+        g_string_append(s->pbay_capture, text);
+        output = g_string_free(s->pbay_capture, FALSE);
+        s->pbay_capture = NULL;
+        s->reply_to = s->pbay_reply_to;
+        s->pbay_reply_to = NULL;
+        l1_interpret_reply(s, s->pbay_channel, ok ? 0 : -1, output);
+        s->reply_to = saved;
+    }
 }
 
 static int l1_console_can_receive(void *opaque)
@@ -7173,6 +7253,11 @@ static void l1_finalize(Object *obj)
         migrate_del_blocker(&s->l2_blocker);
     }
     sgi_l1_pbay_finalize(&s->pbay);
+    /* A task-3 pbay command still waiting for the bay holds its text. */
+    if (s->pbay_capture) {
+        g_string_free(s->pbay_capture, TRUE);
+        s->pbay_capture = NULL;
+    }
     if (s->power_up_bh) {
         qemu_unregister_reset(l1_after_node_reset, s);
         qemu_bh_delete(s->power_up_bh);

@@ -2154,8 +2154,8 @@ how many sensors a record covers, so the model takes six and eight, a *model
 choice*. The count of records read is exposed as ``pbay-records`` and slot 0's
 device as ``pbay-fru-slot0``.
 
-After the link is ready the model reads the mapped supply and port sensors in turn, then again
-after each ``pbay-poll-ms``. Each pass logs to the L1 log as the polling
+Once polling is enabled (below) the model reads the mapped supply and port
+sensors in turn on each pass. Each pass logs to the L1 log as the polling
 task does, *software expectation*. The model keeps the last value of each
 sensor, and nothing is stored at start, so a fault already present on the
 first pass is logged. For sensors 1 to 6 (``DPS`` 1 to 6) bits 1 to 3 are
@@ -2171,17 +2171,89 @@ when it goes from 0 to 1. The line texts begin with ``Power Bay DPS n`` or
 ``Power Bay DCport n`` and carry the words the polling task logs; the
 leading words and which word follows which bit are *inferred*. The task also
 repeats the AC-fail and port-failure reads before it logs (four and three
-consecutive sightings), logs at most one fault per supply per pass and runs
-only while the environment-monitoring setting is nonzero; the model does
-none of these and polls at ``pbay-poll-ms``, an *approximation*.
+consecutive sightings) and logs at most one fault per supply per pass; the
+model does neither yet, an *approximation*.
 
-The ``pbay`` command prints the link's status word (``not initialised``,
-``busy initialising``, ``ready``, ``busy``, ``busy flashing`` or
-``communication failure``) and logs ``LOG_UNIMP``: the real command's output
-format is *unknown*. ``pbay serial`` and the flash task, which are a
-FRU-shaped read of the bay and the ``0x92`` to ``0x94`` flash requests, are
-not modelled. The read-only properties ``pbay-status`` and ``pbay-records``
-expose the state for tests.
+The pass runs only while the environment-monitoring setting (L1 setting 85,
+four bits) is nonzero, the link is ready and no other request holds the bay;
+otherwise the wait starts again. The setting is zero at power-on, so a
+controller with a bay polls nothing until ``pbay env on`` stores ``0x0f``
+(*software expectation* for the store, *inferred* that nothing else sets it).
+The model keeps the setting across a restart of the link. The pass follows
+a wait of ``pbay-poll-ms`` from the link becoming ready or from the end of
+the last request, an *approximation* of the real period.
+
+The ``pbay`` command
+--------------------
+
+The operator command is accepted on the brick types ``C356P%#=IXYRN&!``
+(the link itself opens on more), *software expectation*; on another type the
+model prints ``ERROR: command not found.``, because the refusal's text is
+*unknown*. Its fourteen forms share one handler, *software expectation*.
+The texts below paraphrase the source material, so the column heads and widths
+are a *model choice*; the rows' words and their order are *software
+expectation*.
+
+- Whatever the form, a link that is not ready prints its state text
+  (``PBay not initialized``, ``PBay busy initializing``, ``PBay busy try
+  again later``, ``PBay busy flashing``, ``PBay communication failure`` or
+  ``PBay state unknown``) and the command fails. A request that finds the
+  bay held by a polling pass or another command prints the busy text. In
+  state 5 ``pbay init`` runs the initialisation order again and prints ``PBay
+  ready`` or the state text; in any other state it prints ``PBay already
+  initialized``. The model does not repeat the task's start delay, a *model
+  choice*.
+- ``pbay version`` sends link command ``0xc0`` and prints ``PBay FW Version
+  00.18, Built 09/29/2000 14:00:00``: the version bytes second then first,
+  and the build time read as a Unix time in UTC (*inferred*). With no reply
+  it prints ``PBay version unavailable``, a *model choice*: the source
+  material gives no text.
+- ``pbay dps [digits]`` and ``pbay dcport [digits]`` read the mapped sensors
+  of the supplies 1 to 6 or the ports 1 to 8 (or the digits given) and print
+  a header and one row each. A supply row is ``Ok`` or ``Low`` (bit 3),
+  ``220Vac`` or ``110Vac`` (bit 4), ``Ok`` or ``Failing`` (bit 2) and ``Ok`` or
+  ``Failed`` (bit 1), or ``Not_Present`` alone (bit 0). A port row is ``48V
+  Off`` (bit 0) or ``48V On, `` with ``Ok`` or ``Failed`` (bit 1). An
+  unmapped supply or port prints nothing and a failed read prints ``**read
+  error**``. The string that follows a port's row when link command ``0x0b``
+  returns the port's number is *unknown*: the model does not ask and logs
+  ``LOG_UNIMP``.
+- ``pbay fru [n]`` reads the FRU device of each slot (slot 0 the bay, 1 to 6
+  the supplies; a negative ``n`` selects the seventh) with the streamed read
+  and prints manufacturer, product name, part number, version, serial and
+  the manufacturing date from the FRU's common header, product area and
+  board area. A bad checksum prints ``**FRU checksum error**``. The
+  source material does not say how the L1 addresses or sizes the reads,
+  which area each column comes from, or the labels of the first column; the
+  model reads 128 bytes from address 0, takes the columns from the product
+  area and the date from the board area, labels slot 0 ``Bay`` and the
+  seventh slot ``Card``, and prints the date as month, day and year. All of
+  that is a *model choice*. The bay model returns zeros, so against it the rows read ``**FRU
+  checksum error**``.
+- ``pbay reset`` sends the pair ``0x18,0x03`` and prints ``Ok`` or
+  ``Timeout``.
+- ``pbay env`` prints ``Power Bay env monitoring enabled`` or ``disabled``, a
+  blank line, and the ``dps`` and ``dcport`` tables; ``pbay env on`` and
+  ``off`` print nothing and store ``0x0f`` or 0 in setting 85.
+- ``pbay serial`` prints the serial in slot 0's product area (*inferred* to
+  be the fifth field), nothing when there is no slot 0. The L1 caches it at
+  start-up; the model reads it on first use, then keeps it until the link
+  starts again, a *model choice* with the same output.
+- Bare ``pbay`` prints a line per FRU device with a current in amps. Its
+  arithmetic and record selection are *unknown*: the model prints nothing and
+  logs ``LOG_UNIMP``.
+
+A command that needs the bay finishes when the bay has answered, and the
+prompt follows. Over task 3 the reply carries as many output lines as fit its
+121 bytes of fields (each line takes its text plus two bytes), whole lines
+only, and blank lines are dropped. A command relayed from another
+controller (``ctc``) cannot wait for the bay and prints an error, logging
+``LOG_UNIMP``. A request restarts the polling task's wait.
+
+The flash task and its ``0x92`` to ``0x94`` requests are not modelled. The
+read-only properties ``pbay-status``,
+``pbay-records``, ``pbay-passes`` and ``pbay-fru-slot0`` expose the state for
+tests.
 
 Measurements
 ============
