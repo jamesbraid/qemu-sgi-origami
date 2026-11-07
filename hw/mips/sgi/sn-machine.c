@@ -591,6 +591,26 @@ static bool sgi_machine_has_identity_records(SGIMachineState *s)
     return s->chassis_eeprom || s->board_eeprom || s->spd_eeprom;
 }
 
+/*
+ * Gives an L1 the machine's system serial unless the device already has
+ * one, whether from -global or an earlier call. The serial belongs to the
+ * system, not a brick, so every L1 of a machine gets the same text: the
+ * guest asks whichever L1 its node routes to. The Fuel's L1 answers with
+ * its station address instead, which the L1 seeds itself.
+ */
+void sgi_machine_set_l1_system_serial(MachineState *machine, DeviceState *l1)
+{
+    SGIMachineState *s = SGI_MACHINE(machine);
+    g_autofree char *serial = NULL;
+
+    if (SGI_L1(l1)->system_serial ||
+        !g_strcmp0(SGI_MACHINE_GET_CLASS(s)->product, "fuel")) {
+        return;
+    }
+    serial = sgi_board_default_system_serial();
+    qdev_prop_set_string(l1, "system-serial", serial);
+}
+
 static void sgi_machine_set_module_serial(SGIMachineState *s,
     unsigned owner, DeviceState *l1)
 {
@@ -610,6 +630,9 @@ static void sgi_machine_set_module_serial(SGIMachineState *s,
         if (selected == owner) {
             qdev_prop_set_string(l1, "brick-serial", payload);
         }
+    }
+    if (s->view && s->view->generation == SGI_MODEL_GENERATION_SN1) {
+        sgi_machine_set_l1_system_serial(MACHINE(s), l1);
     }
     if (s->view && s->view->generation == SGI_MODEL_GENERATION_SN1 &&
         s->view->routers && !SGI_L1(l1)->brick_serial) {
@@ -842,6 +865,7 @@ static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
         return true;
     }
     sgi_machine_set_l1_default_serial(s, l1, node_index);
+    sgi_machine_set_l1_system_serial(MACHINE(s), l1);
     processors = sgi_machine_l1_node_processors(s, l1);
     boards = s->view->ip53_runtime ? s->view->ip53_runtime->node_boards :
              NULL;
@@ -880,11 +904,6 @@ static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
         return true;
     }
     qdev_prop_set_string(l1, "mac-record", "io8-board");
-    if (!SGI_L1(l1)->system_serial) {
-        g_autofree char *serial = sgi_board_default_system_serial();
-
-        qdev_prop_set_string(l1, "system-serial", serial);
-    }
     for (size_t i = 0; i < ARRAY_SIZE(sgi_ip45_node_boards); i++) {
         if (sgi_ip45_node_boards[i].processors == processors) {
             qdev_prop_set_string(l1, "node-board-name",
@@ -7037,6 +7056,7 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
         object_unref(OBJECT(l1));
         qdev_prop_set_string(l1, "brick-type",
                              nbrick ? "nbrick" : vbrick ? "vbrick" : "ibrick");
+        sgi_machine_set_l1_system_serial(MACHINE(s), l1);
         /*
          * A V-brick's power and logic boards take the I-brick's serial
          * letters, so its module index keeps the two bricks' serials apart.
@@ -7946,6 +7966,7 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
         object_property_add_child(module, "vbrick-l1", OBJECT(l1));
         s->controllers[owner] = l1;
         qdev_prop_set_string(l1, "brick-type", "vbrick-discovery-reference");
+        sgi_machine_set_l1_system_serial(MACHINE(s), l1);
         qdev_prop_set_uint32(l1, "bay", model_module->initial_module_number);
         if (!qdev_realize(l1, NULL, errp)) {
             return false;
@@ -7973,6 +7994,7 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
         object_property_add_child(module, "l1", OBJECT(l1));
         s->controllers[a->controller_index] = l1;
         qdev_prop_set_string(l1, "brick-type", a->controller_profile);
+        sgi_machine_set_l1_system_serial(MACHINE(s), l1);
         if (modules[a->module_index]->initial_module_number) {
             qdev_prop_set_uint32(l1, "bay",
                 modules[a->module_index]->initial_module_number);

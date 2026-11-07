@@ -2712,6 +2712,7 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
             goto fail_l1;
         }
         qdev_prop_set_string(node->l1, "brick-type", node->l1_brick_type);
+        sgi_machine_set_l1_system_serial(machine, node->l1);
         qdev_prop_set_int32(node->l1, "revision-major", node->l1_revision[0]);
         qdev_prop_set_int32(node->l1, "revision-minor", node->l1_revision[1]);
         qdev_prop_set_int32(node->l1, "revision-patch", node->l1_revision[2]);

@@ -264,12 +264,15 @@ minus 104, except that the Fuel's brick serial defaults to ``EMUN`` and a
 hex byte of the machine's identity seed (the system disk's path or the
 machine name, hashed as for the default station address), the synthetic
 text serial of the node's system board, a model choice that
-``brick-serial`` replaces. The Origin 300 family's machine sets the system
-serial to ``L`` and seven digits of the same seed, another model choice
-that ``system-serial`` replaces; without one the guest's system id, and so
-FLEXlm's host id, is empty. The firmware revision (``0x0005``) comes from
-``revision-major``, ``-minor`` and ``-patch``. All three must be set or
-none; on a machine that selects none the request answers minus 104 and
+``brick-serial`` replaces. Every machine except the Fuel sets each of its
+L1s' system serial to ``L`` and seven digits of the same seed, another model
+choice that ``system-serial`` replaces. All of a machine's L1s hold the one
+value, because the serial belongs to the system and the guest sends the
+request to whichever L1 its node reaches (on a C-brick, the attached I/O
+brick's). A bare L1 device with no machine around it has none, so the
+guest's system id, and FLEXlm's host id, would be empty. The firmware
+revision (``0x0005``) comes from ``revision-major``, ``-minor`` and
+``-patch``. All three must be set or none; on a machine that selects none the request answers minus 104 and
 logs ``LOG_UNIMP``.
 The Origin 300, Origin 350, Onyx 350 and Onyx 4 machines select 1.18.5,
 the version an Origin 300 capture shows (:src:`irixnet-thread-2737`). The Tezro profiles select 1.48.1,

@@ -69,11 +69,11 @@ slow_qtests = {
   # the 27-case router binary had completed only 12 cases at that limit.
   'sgi-sn1-router-test': 300,
   'sgi-replay-test': 330,
-  # It starts every catalogue topology at its largest offering. 64.77s in a
-  # parallel run of thirty SGI qtests at a load average near 60; budget
-  # three times that, rounded up. An earlier, unmethodical figure of 171s
-  # alone at load 100 had set it to 360.
-  'sgi-synthetic-serial-test': 200,
+  # It starts every catalogue topology at its largest offering, and
+  # then nine of them twice more for the per-guest serial. 175.85s alone on
+  # a quiet host; budget three times that, rounded up. The earlier figure
+  # of 64.77s was before the serial cases.
+  'sgi-synthetic-serial-test': 540,
   # Routed cases expand the builder suite beyond its previous budget.
   'sn-builder-test': 1650,
   'sn0-address-map-test': 110,

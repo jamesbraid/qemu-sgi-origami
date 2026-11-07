@@ -338,17 +338,23 @@ also keeps a mask of ``0xf000`` requiring ``0x4000``, so a
   (the node's system board, node 0), a model choice. The real format is
   *unknown*. Setting ``brick-serial`` on the ``sgi-l1`` device, for example
   with ``-global``, replaces it.
-- L1 system serial: the Origin 300 family's L1 answers the system-serial
-  request with ``L`` and seven digits of the machine's identity seed, in
-  the span ``L0000001`` to ``L3999999`` that the L2's serial check
-  documents, a model choice. IRIX reads it for ``sysinfo -s`` and FLEXlm's
-  ``lmhostid``, which pack the letter's low nibble and the digits into
-  eight hex digits, so the guest sees a host id such as ``c1472560``. The
-  seed hashes the machine type name, because the machine has no legacy SCSI
-  drive to hash, so every Origin 300 guest shares one serial until
-  ``system-serial`` on the ``sgi-l1`` device sets another. The format of a
-  real serial's digits is *unknown* beyond the published samples. The
-  Fuel keeps its station address as the serial.
+- L1 system serial: every Bedrock machine but the Fuel (the Origin 300
+  family, the Origin 3000 and Onyx 3000 topologies, the IP53 machines and
+  the Tezro) gives all its L1s the same system serial: ``L`` and seven
+  digits of the machine's identity seed, in the span ``L0000001`` to
+  ``L3999999`` that the L2's serial check documents, a model choice. IRIX
+  reads it for ``sysinfo -s`` and FLEXlm's ``lmhostid``, which pack the
+  letter's low nibble and the digits into eight hex digits, so the guest
+  sees a host id such as ``c1472560``. A guest confirmed that packing on the
+  Origin 300 only; on the other machines it is read from the kernel's code
+  and untested in a guest. The seed is the ``identity-key`` property, else
+  the first drive with a file, else the machine type name, so guests share
+  one serial until they differ in key or drive, or ``system-serial`` on the
+  ``sgi-l1`` device sets another. The format of a real serial's digits is
+  *unknown* beyond the published samples. The Fuel keeps its station address
+  as the serial. The kernel reads hex digits 4 to 11 of those twelve as the
+  host id, so the Fuel's is ``69E`` and five digits of the seed: nonzero
+  and per guest, but a real Fuel's value is *unknown*.
 - Flash machine type: the value written into the PROM's configuration
   block. The PROM's Origin 300 rows carry type 1 and its Fuel rows type 2,
   a *software expectation*. A real Fuel's ``flash -f`` session answers 2

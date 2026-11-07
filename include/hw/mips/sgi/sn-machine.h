@@ -108,6 +108,14 @@ bool sgi_machine_set_l1_identity_records(MachineState *machine,
                                          Error **errp);
 
 /*
+ * Gives an L1 the machine's system serial before it is realized, unless the
+ * device already has one. Every L1 of a machine gets the same text, which
+ * the guest reads as its system id and licensing host id. A machine whose L1
+ * answers with its station address (the Fuel) is left alone.
+ */
+void sgi_machine_set_l1_system_serial(MachineState *machine, DeviceState *l1);
+
+/*
  * @node's position in the topology's node list, the index the identity
  * records and L1 defaults are split by. It need not equal the NASID; a
  * node the machine did not build from its topology answers its NASID.
