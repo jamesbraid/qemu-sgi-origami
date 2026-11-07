@@ -139,19 +139,28 @@ typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
 #define SGI_KONA_LOW_WINDOW_WRITE 0x00007c
 
 /*
- * The credit register the PROM and the driver poll before a command.
- * Masked with 0x7fe; the PROM waits for exactly zero, the
- * driver while the value is above zero, so zero is "go" to both and
- * anything else is "wait" to both. The model reports the port words it
- * holds and has not consumed, a count in bits 10:1: the words its
- * command-port framers hold of a packet still arriving, plus the words
- * of framed packets whose CONSUMED completion has not come back (see
- * sgi_kona_publish()). Between packets that is zero, so both readers
- * proceed. That the count sits above bit 0 is inferred from the mask and
- * from the driver's credit-request word, a count shifted left one; that
- * the register counts held words at all, rather than free space, is the
- * model's reading of the two polarities, which agree only on zero. No
- * write case is established.
+ * The graphics FIFO fill level the PROM and the driver poll before a
+ * command; it is not a credit count. Masked with 0x7fe on the second
+ * host-interface revision (0xffe on the first). The PROM waits for
+ * exactly zero, the driver while the value is above 0x300 (and arms its
+ * high-water mark at 0x700), so zero is "go" to both.
+ *
+ * Inferred: the unit is 32-bit words at two-word resolution, bit 0
+ * never set. Real consoles print values such as 26, 1458, 1640 and 1804
+ * for it, all even, and the high-water message shows level and mark in
+ * the same units. The value is not a word count shifted left by one.
+ * The FIFO's depth is unknown.
+ *
+ * Model choice: the register reports the port words the model holds and
+ * has not consumed (the words its command-port framers hold of a packet
+ * still arriving, plus the words of framed packets whose CONSUMED
+ * completion has not come back; see sgi_kona_publish()), rounded up to
+ * an even count and capped at the mask, so held data never reads as
+ * empty. The direction is the model's choice: the section that grades the
+ * unit does not fix it, and rounding down would let a single held word
+ * read as an empty FIFO. While a display list runs or words wait behind
+ * it, it reads the mask, 0x7fe: how full a real pipe's FIFO reads while
+ * it works is unknown. No write case is established.
  */
 #define SGI_KONA_CREDIT 0x800208
 #define SGI_KONA_CREDIT_MASK 0x7fe

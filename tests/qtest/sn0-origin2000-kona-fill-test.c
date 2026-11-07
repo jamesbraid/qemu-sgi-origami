@@ -1623,9 +1623,10 @@ static void test_point_framing_migrates(void)
     qtest_writel(from, REG_COMMAND, 0x1a);
     qtest_writel(from, REG_COMMAND, 0);
     qtest_writel(from, REG_COMMAND, 0);
-    g_assert_cmphex(qtest_readl(from, KONA_REG(0x800208)), ==, 8);
+    /* Four words held, read as a word count, not shifted left one. */
+    g_assert_cmphex(qtest_readl(from, KONA_REG(0x800208)), ==, 4);
     sgi_migrate_stopped(from, uri);
-    g_assert_cmphex(qtest_readl(to, KONA_REG(0x800208)), ==, 8);
+    g_assert_cmphex(qtest_readl(to, KONA_REG(0x800208)), ==, 4);
     qtest_writel(to, REG_COMMAND, 0);
     qtest_writel(to, REG_COMMAND, 0);
     qtest_writel(to, REG_COMMAND, 0x1a);

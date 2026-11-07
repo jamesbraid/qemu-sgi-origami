@@ -292,10 +292,10 @@ pipe has been read.
      - W
      - Words for the kernel command framer. Placement is a model choice.
    * - ``0x800208``
-     - Credit
+     - Graphics FIFO fill level
      - 0
      - R
-     - Held words shifted left one, mask ``0x7fe``.
+     - Held words rounded up to even, capped at ``0x7fe``; ``0x7fe`` while work is pending.
    * - ``0x800210``
      - Credit configuration
      - 0
@@ -872,14 +872,23 @@ go back when the kernel clears it. The kernel parks the target this way
 when it switches a graphics thread out, a *software expectation*; how the
 pipe holds them is *unknown*.
 
-The credit register at ``0x800208`` counts the words the framers hold and
-the words of framed packets not yet consumed, shifted left one and masked
-with ``0x7fe``. The PROM waits for zero and the kernel waits while the
-value is above zero, a *software expectation*; the two readings agree only
-on zero, and that the field counts held words is the model's reading,
-*inferred*. While display-list work is pending the register reads
-``0x7fe``, full, an *approximation*: the kernel's flow-control handler then
-enables the low-water cause and sleeps.
+The register at ``0x800208`` is the graphics FIFO's fill level, not a
+credit count: the kernel prints it as "Graphics FIFO depth is N words" and
+every user waits for it to fall (the PROM to zero, the kernel to at most
+``0x300``, with its high-water mark at ``0x700``), a *software
+expectation*. Values seen on real consoles (26, 1458, 1640, 1804) are all
+even and the high-water message shows level and mark in the same units, so
+the unit is 32-bit words at two-word resolution, *inferred*. It is not a
+word count shifted left one. The field is bits 10:1 (``0x7fe``) on the
+second host-interface revision; the FIFO's depth is *unknown*. The model
+reports the words the framers hold and the words of framed packets not yet
+consumed, rounded up to an even count and capped at ``0x7fe``, so held
+data never reads as empty. The direction is a model choice: the evidence
+fixes the unit and the resolution, not the rounding, and rounding down
+would let one held word read as an empty FIFO. While
+display-list work is pending the register reads ``0x7fe``, full, an
+*approximation*: the kernel's flow-control handler then enables the
+low-water cause and sleeps.
 
 A display list a processor invokes runs in slices on a worker, so the
 store returns while the pipe works. Command-stream stores queue behind the

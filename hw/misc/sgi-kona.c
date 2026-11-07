@@ -1576,7 +1576,7 @@ static uint32_t sgi_kona_port_held(const SGICommandPort *p)
     return p->framing ? 1 + p->argc_have : 0;
 }
 
-/* The credit register: see SGI_KONA_CREDIT. */
+/* The FIFO fill level: see SGI_KONA_CREDIT. */
 static uint32_t sgi_kona_credit(SGIKonaState *s)
 {
     uint64_t held = (uint64_t)sgi_kona_port_held(&s->textport) +
@@ -1585,7 +1585,7 @@ static uint32_t sgi_kona_credit(SGIKonaState *s)
                     sgi_kona_port_held(&s->dma.fifo_port) +
                     s->credit_pending;
 
-    return (held << 1) & SGI_KONA_CREDIT_MASK;
+    return MIN((held + 1) & ~UINT64_C(1), SGI_KONA_CREDIT_MASK);
 }
 
 /*
@@ -19632,16 +19632,15 @@ static uint64_t sgi_kona_read_word(void *opaque, hwaddr addr,
         break;
     case SGI_KONA_CREDIT:
         /*
-         * A pipe with work waiting reads as a full FIFO. The IRIX driver's
-         * flow-control handler only compares this register with 0x300:
-         * above it, it enables the low-watermark cause and puts the storing
-         * thread to sleep until that cause; at or below it, it waits a
-         * millisecond for the credits to come back and then gives up its
-         * time slice. One queued word can stand for seconds of the model's
-         * work, so a level counted in words would understate the wait; a
-         * fixed full reading gives the driver the one answer that fits.
-         * Model choice: how full a real pipe's FIFO reads while it works is
-         * unknown.
+         * The FIFO fill level, in words at two-word resolution (see
+         * SGI_KONA_CREDIT). A pipe with work waiting reads full: the
+         * IRIX driver's flow-control handler only compares the register
+         * with 0x300, above which it enables the low-watermark cause and
+         * sleeps until that cause. One queued word can stand for seconds
+         * of the model's work, so a level counted in words would
+         * understate the wait; a fixed full reading gives the driver the
+         * one answer that fits. Model choice: how full a real pipe's FIFO
+         * reads while it works is unknown.
          */
         value = sgi_kona_work_pending(s) ? SGI_KONA_CREDIT_MASK :
                                            sgi_kona_credit(s);

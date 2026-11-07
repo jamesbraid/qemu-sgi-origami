@@ -563,15 +563,17 @@ static void test_credit_register_reads_fixed_zero(void)
 }
 
 /*
- * The credit register counts the port words the model holds, in bits
- * 10:1 (mask 0x7fe), and returns them when the packet is consumed: a
- * colour-map load with its selector and two of four words in reads 6,
- * zero once complete; a kernel 0x1f1 with its token and one of three
- * words reads 4; a DMA packet with its selector and three of six words
- * on the push register reads 8. Each drops to zero, the value both the
- * PROM's and the driver's waits proceed on, once its last word arrives.
- * Bit 0 is never set. A model that read a fixed zero fails the first
- * mid-packet read.
+ * The FIFO fill level is the port words the model holds, in 32-bit words
+ * at two-word resolution (mask 0x7fe, bit 0 never set), and returns them
+ * when the packet is consumed: a colour-map load with its selector and
+ * two of four words in reads 4 (three words held, rounded up to an even
+ * count); a kernel 0x1f1 with its token and one of three words reads 2; a
+ * DMA packet with its selector and three of six words on the push
+ * register reads 4. Each drops to zero, the value both the PROM's and
+ * the driver's waits proceed on, once its last word arrives. A model that
+ * read a fixed zero fails the first mid-packet read, one that shifted
+ * the count left one reads 6, 4 and 8, and one that rounded down reads 2
+ * for the first.
  */
 static void test_credit_follows_consumption(void)
 {
@@ -582,14 +584,14 @@ static void test_credit_follows_consumption(void)
     qtest_writel(qts, REG_TEXTPORT, 0x3);
     qtest_writel(qts, REG_TEXTPORT, 7);
     qtest_writel(qts, REG_TEXTPORT, 0x40);
-    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 3 << 1);
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 4);
     qtest_writel(qts, REG_TEXTPORT, 0x80);
     qtest_writel(qts, REG_TEXTPORT, 0xc0);
     g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 0);
 
     qtest_writel(qts, REG_TEXTPORT, 0x1f1);
     qtest_writel(qts, REG_TEXTPORT, 0x10000000);
-    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 2 << 1);
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 2);
     qtest_writel(qts, REG_TEXTPORT, 0x9000);
     qtest_writel(qts, REG_TEXTPORT, 0x4000);
     g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 0);
@@ -598,7 +600,7 @@ static void test_credit_follows_consumption(void)
     qtest_writel(qts, REG_DMA_FIFO_PUSH, 0x9);
     qtest_writel(qts, REG_DMA_FIFO_PUSH, 0x9004);
     qtest_writel(qts, REG_DMA_FIFO_PUSH, 4);
-    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 4 << 1);
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 4);
     qtest_writel(qts, REG_DMA_FIFO_PUSH, 4);
     qtest_writel(qts, REG_DMA_FIFO_PUSH, 0);
     qtest_writel(qts, REG_DMA_FIFO_PUSH, 0);
@@ -619,7 +621,8 @@ static void test_credit_config_stored(void)
     g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 0);
     qtest_writel(qts, REG_TEXTPORT, 1);
     qtest_writel(qts, REG_TEXTPORT, 0x9);
-    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 1 << 1);
+    /* A single held word reads as one pair, never as empty. */
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 2);
     qtest_writel(qts, REG_TEXTPORT, 0);
     g_assert_cmphex(qtest_readl(qts, REG_CREDIT) & ~0x7feu, ==, 0);
     kona_reset();
