@@ -41,6 +41,12 @@ typedef enum SGIBedrockHoldKind {
     SGI_BEDROCK_HOLD_LIVENESS = 4,  /* a poster awaits its partner's post */
 } SGIBedrockHoldKind;
 
+/*
+ * The board that restarts the node takes the sets of Bedrocks a reset starts
+ * (sgi_bedrock_reset_event()), as a GPtrArray of SGIBedrockState *.
+ */
+typedef void (*SGIBedrockResetReach)(void *opaque, GPtrArray *bedrocks);
+
 struct SGIBedrockState {
     SysBusDevice parent_obj;
     bool (*available)(void *opaque);
@@ -94,9 +100,12 @@ struct SGIBedrockState {
     /*
      * Pulsed after every node-local reset, for the board to restart the
      * node's processors: resetting this device's own units leaves them
-     * running where they were.
+     * running where they were. Used only while no board has taken the
+     * reset (sgi_bedrock_set_reset_reach()).
      */
     qemu_irq node_reset;
+    SGIBedrockResetReach reset_reach;
+    void *reset_reach_opaque;
     uint32_t processor_count;
     uint32_t processor_mask;
     uint32_t cpu_enable_initial_mask;
@@ -275,11 +284,25 @@ bool sgi_bedrock_link_up(SGIBedrockState *s);
 bool sgi_bedrock_cabled(SGIBedrockState *s);
 
 /*
- * A warm reset sent over this node's link (network-interface port reset):
- * the Bedrock at the other end of an up cable resets if its reset enable
- * permits it. Nothing happens with no link.
+ * A reset the node's own registers started: a local reset (local block soft
+ * reset, or network interface port reset bit 2) and a port reset (bit 1),
+ * which follows the node's link. The chips the reset reaches are collected
+ * once: this node when @local, and the Bedrocks across the link that take a
+ * warm reset (reset enable bit 0 set, through any routers that pass it). A
+ * Bedrock across the link whose enable is clear is not reset and latches
+ * port errors bit 52. Nothing happens on the link side with no link.
+ *
+ * With a reach function installed it is handed the set (SGIBedrockState
+ * pointers, this node included when @local) and the Bedrocks are left for it
+ * to restart. Without one, each is reset here as a bare Bedrock does, and its
+ * "node-reset" pulses.
  */
-void sgi_bedrock_port_reset_send(SGIBedrockState *s);
+void sgi_bedrock_reset_event(SGIBedrockState *s, bool local, bool port);
+
+
+/* Install the board's reach function; NULL returns to the bare behaviour. */
+void sgi_bedrock_set_reset_reach(SGIBedrockState *s,
+                                 SGIBedrockResetReach reach, void *opaque);
 
 /*
  * Send a vector request out of this node's network port. The device at the

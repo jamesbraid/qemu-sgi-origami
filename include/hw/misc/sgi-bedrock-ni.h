@@ -44,6 +44,12 @@ struct SGIBedrockNIState {
  */
 #define SGI_BEDROCK_NI_UNCABLED (1ULL << 0)
 
+/* Port errors bit 52, "link reset in". */
+#define SGI_BEDROCK_NI_ERR_LINK_RESET_IN (1ULL << 52)
+
+/* Latch a link reset that arrived and was not taken, and raise the error. */
+void sgi_bedrock_ni_latch_link_reset(SGIBedrockNIState *s);
+
 void sgi_bedrock_ni_add_change_notifier(SGIBedrockNIState *s,
                                         Notifier *notifier);
 

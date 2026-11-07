@@ -1293,6 +1293,29 @@ static void bedrock_main_power(void *opaque, int n, int level)
     bedrock_power_rederive(s);
 }
 
+/*
+ * What a local reset does to the Bedrock's own units. A node under a board
+ * has them reset again, cold, when the board restarts the node; a Bedrock
+ * with no board resets only here.
+ */
+static void bedrock_reset_units(SGIBedrockState *s)
+{
+    device_cold_reset(DEVICE(&s->pi[0]));
+    device_cold_reset(DEVICE(&s->pi[1]));
+    device_cold_reset(DEVICE(&s->io));
+    sgi_bedrock_md_soft_reset(&s->md);
+    device_cold_reset(DEVICE(&s->lb));
+    device_cold_reset(DEVICE(&s->ni));
+    device_cold_reset(DEVICE(&s->xb));
+    /*
+     * The local-reset GPIO resets the LB and II scratch registers this
+     * device's hold state tracks (each above), without cold-resetting
+     * this device itself, so the hold state needs its own clear here
+     * too, alongside bedrock_reset_enter's for the ordinary reset path.
+     */
+    sgi_bedrock_hold_reset(s);
+}
+
 static void bedrock_local_reset(void *opaque, int n, int level)
 {
     SGIBedrockState *s = opaque;
@@ -1300,21 +1323,7 @@ static void bedrock_local_reset(void *opaque, int n, int level)
     if (level) {
         trace_sgi_bedrock_local_reset(current_cpu ? current_cpu->cpu_index
                                       : -1);
-        device_cold_reset(DEVICE(&s->pi[0]));
-        device_cold_reset(DEVICE(&s->pi[1]));
-        device_cold_reset(DEVICE(&s->io));
-        sgi_bedrock_md_soft_reset(&s->md);
-        device_cold_reset(DEVICE(&s->lb));
-        device_cold_reset(DEVICE(&s->ni));
-        device_cold_reset(DEVICE(&s->xb));
-        /*
-         * The local-reset GPIO resets the LB and II scratch registers this
-         * device's hold state tracks (each above), without cold-resetting
-         * this device itself, so the hold state needs its own clear here
-         * too, alongside bedrock_reset_enter's for the ordinary reset path.
-         */
-        sgi_bedrock_hold_reset(s);
-        qemu_irq_pulse(s->node_reset);
+        sgi_bedrock_reset_event(s, true, false);
     }
 }
 
@@ -2248,34 +2257,72 @@ bool sgi_bedrock_cabled(SGIBedrockState *s)
     return s->net_cable != NULL;
 }
 
-void sgi_bedrock_port_reset_send(SGIBedrockState *s)
+void sgi_bedrock_set_reset_reach(SGIBedrockState *s,
+                                 SGIBedrockResetReach reach, void *opaque)
 {
-    SGIBedrockState *peer;
-    Object *port;
-    unsigned int index;
+    s->reset_reach = reach;
+    s->reset_reach_opaque = opaque;
+}
+
+/*
+ * A warm reset arrives over the link. Reset enable bit 0, "warm reset
+ * enable", lets it reset the Bedrock. One with the enable clear does not
+ * restart: it latches "link reset in" (port errors bit 52) and keeps
+ * running, which is the model's choice for a reset the hub refuses,
+ * approximated (the bit's name is established, that a refusal sets it is
+ * inferred). A Bedrock that is off is never reached: its port reads as
+ * disabled (bedrock_net_link_state()), so no cable, direct or through a
+ * router, delivers a reset to it.
+ */
+static bool bedrock_net_warm_reset(Object *port, unsigned int index,
+                                   SGINetWarmReset *event)
+{
+    SGIBedrockState *s = SGI_BEDROCK(port);
     uint64_t enable = 0;
 
-    if (!bedrock_neighbor(s, &port, &index)) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: port reset with no "
-                      "link reaches nothing\n");
-        return;
+    if (!sgi_net_warm_reset_visit(event, port)) {
+        return false;
     }
-    peer = (SGIBedrockState *)object_dynamic_cast(port, TYPE_SGI_BEDROCK);
-    if (!peer) {
-        return;
-    }
-    /*
-     * Reset enable bit 0, "warm reset enable", lets a reset arriving over
-     * the link reset the Bedrock. The
-     * arriving reset is the same one a local reset request makes, on the
-     * model's reset equation.
-     */
-    sgi_bedrock_ni_regs_read(&peer->ni.regs, 0x10, &enable);
-    trace_sgi_bedrock_port_reset_arrives(sgi_bedrock_node_number(peer),
+    sgi_bedrock_ni_regs_read(&s->ni.regs, 0x10, &enable);
+    trace_sgi_bedrock_port_reset_arrives(sgi_bedrock_node_number(s),
                                          enable & 1);
-    if (enable & 1) {
-        bedrock_local_reset(peer, 0, 1);
+    if (!(enable & 1)) {
+        sgi_bedrock_ni_latch_link_reset(&s->ni);
+        return false;
     }
+    sgi_net_warm_reset_take(event, port);
+    return true;
+}
+
+void sgi_bedrock_reset_event(SGIBedrockState *s, bool local, bool port)
+{
+    SGINetWarmReset *event = sgi_net_warm_reset_begin(OBJECT(s));
+    GPtrArray *reached = sgi_net_warm_reset_taken(event);
+    Object *peer;
+    unsigned int peer_index;
+
+    if (local) {
+        sgi_net_warm_reset_take(event, OBJECT(s));
+    }
+    if (port) {
+        if (bedrock_neighbor(s, &peer, &peer_index)) {
+            sgi_net_port_warm_reset(peer, peer_index, event);
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: port reset with no "
+                          "link reaches nothing\n");
+        }
+    }
+    if (s->reset_reach) {
+        s->reset_reach(s->reset_reach_opaque, reached);
+    } else {
+        for (guint i = 0; i < reached->len; i++) {
+            SGIBedrockState *r = SGI_BEDROCK(g_ptr_array_index(reached, i));
+
+            bedrock_reset_units(r);
+            qemu_irq_pulse(r->node_reset);
+        }
+    }
+    sgi_net_warm_reset_end(event);
 }
 
 SGINetPacketResult sgi_bedrock_vector_send(SGIBedrockState *s,
@@ -2444,6 +2491,7 @@ static void bedrock_class_init(ObjectClass *klass, const void *data)
     npc->describe = bedrock_net_describe;
     npc->link_state = bedrock_net_link_state;
     npc->receive = bedrock_net_receive;
+    npc->warm_reset = bedrock_net_warm_reset;
     gpc->return_credits = bedrock_return_gfx_credits;
     gpc->owe_credits = bedrock_owe_gfx_credits;
     gpc->repay_credits = bedrock_repay_gfx_credits;

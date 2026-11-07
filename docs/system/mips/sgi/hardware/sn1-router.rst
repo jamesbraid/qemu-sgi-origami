@@ -481,12 +481,13 @@ QEMU this is the ``warm_reset`` operation of the ``sgi-net-port`` interface
 (``include/hw/mips/sgi-net-port.h``). The caller creates the event with
 ``sgi_net_warm_reset_begin()``, which names the sending chip as already
 reached, delivers it to a port with ``sgi_net_port_warm_reset()`` and frees it.
-Nothing in a machine calls it yet; the Bedrock network interface will
-register the same operation for the chip at the far end of a cable and send
-a reset through its own port. Until then the ``sgi-sn1-router-test``
-adapter sends one: setting its ``warm-reset`` property to a port number
-delivers a warm reset to that port of the router, and
-``warm-reset-taken`` reads 1 when the router took it. The
+A Bedrock registers the same operation for the chip at the far end of a
+cable, and its network interface port reset sends a reset through its own
+port (see the Bedrock page, :ref:`sgi-bedrock-reset`); the Bedrock records
+the chips the reset reaches, and the router is not one of them. The
+``sgi-sn1-router-test`` adapter sends one on its own: setting its
+``warm-reset`` property to a port number delivers a warm reset to that port of
+the router, and ``warm-reset-taken`` reads 1 when the router took it. The
 ``sgi-sn1-router-test-peer`` device stands for a far chip and counts the
 warm resets it takes in ``warm-resets``.
 
@@ -557,8 +558,9 @@ Model limits
   are model choices.
 - Routing follows the rule above, not a known hardware rule. The global
   route table, the protection bits and active barriers have no effect.
-- Nothing yet delivers a warm reset to the router in a machine; see
-  :ref:`sgi-sn1-router-warm-reset`.
+- In a machine, a Bedrock's port reset delivers a warm reset to the router
+  and the router only passes it on; see :ref:`sgi-sn1-router-warm-reset`.
+  The router is reset only when the board resets the whole machine.
 - Management over USB or the rack L2, and L1 access through the router,
   are not modelled beyond the UART window. Supply timing and the order of
   the reset release are not modelled; the lines are levels.

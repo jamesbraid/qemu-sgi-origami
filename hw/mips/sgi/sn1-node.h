@@ -286,6 +286,17 @@ typedef struct SN1NodeState {
     void (*power_notify)(void *opaque, struct SN1NodeState *node,
                          bool powered);
     void *power_notify_opaque;
+    /*
+     * Told when a reset starts at the node: from its brick's L1 (bedrocks is
+     * NULL), or from its Bedrock (bedrocks holds the Bedrock of every node
+     * the reset reaches, this one's among them for a local reset). The
+     * machine owns what restarts, because only it knows whether the reach
+     * covers every powered node. Without it a node restarts alone for its L1
+     * and restarts the machine for a Bedrock reset.
+     */
+    void (*reset_notify)(void *opaque, struct SN1NodeState *node,
+                         GPtrArray *bedrocks);
+    void *reset_notify_opaque;
     VMChangeStateEntry *vm_handler;
     Notifier cached_alias_notifier[2];
     bool cable_notifier_added;
@@ -351,6 +362,12 @@ bool sn1_node_powered(SN1NodeState *node);
  * rising edge.
  */
 void sn1_node_restart(SN1NodeState *node);
+
+/*
+ * Ask for a reset of the whole machine and stop every processor, from the
+ * processor that is running or, with none, the main thread.
+ */
+void sn1_node_request_machine_reset(void);
 
 /*
  * Registers every processor's TCG notifier on the reset router of each of

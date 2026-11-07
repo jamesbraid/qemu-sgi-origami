@@ -86,6 +86,7 @@ void sgi_net_port_record_check_error(Object *port, unsigned int index)
 
 struct SGINetWarmReset {
     GPtrArray *visited;
+    GPtrArray *taken;
 };
 
 SGINetWarmReset *sgi_net_warm_reset_begin(Object *origin)
@@ -93,6 +94,7 @@ SGINetWarmReset *sgi_net_warm_reset_begin(Object *origin)
     SGINetWarmReset *event = g_new0(SGINetWarmReset, 1);
 
     event->visited = g_ptr_array_new();
+    event->taken = g_ptr_array_new();
     sgi_net_warm_reset_visit(event, origin);
     return event;
 }
@@ -101,6 +103,7 @@ void sgi_net_warm_reset_end(SGINetWarmReset *event)
 {
     if (event) {
         g_ptr_array_free(event->visited, true);
+        g_ptr_array_free(event->taken, true);
         g_free(event);
     }
 }
@@ -112,6 +115,16 @@ bool sgi_net_warm_reset_visit(SGINetWarmReset *event, Object *chip)
     }
     g_ptr_array_add(event->visited, chip);
     return true;
+}
+
+void sgi_net_warm_reset_take(SGINetWarmReset *event, Object *chip)
+{
+    g_ptr_array_add(event->taken, chip);
+}
+
+GPtrArray *sgi_net_warm_reset_taken(SGINetWarmReset *event)
+{
+    return event->taken;
 }
 
 bool sgi_net_port_warm_reset(Object *port, unsigned int index,

@@ -3599,6 +3599,8 @@ static void test_restart_one_node(void)
 /*
  * A node whose supply is off is not reached: neither its own reset nor the
  * other node's starts it, and it starts normally when the supply returns.
+ * The powered node's reset reaches every powered compute node, so the
+ * machine resets as a whole and keeps the off node off.
  */
 static void test_restart_does_not_start_an_off_node(void)
 {
@@ -3619,10 +3621,10 @@ static void test_restart_does_not_start_an_off_node(void)
     wait_halted(qts, 2, true);
     qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 1);
     qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 0);
+    g_assert_true(cpu_halted(qts, 2));
     qtest_set_irq_in(qts, "/machine/node0", "reset", 0, 1);
     qtest_set_irq_in(qts, "/machine/node0", "reset", 0, 0);
-    wait_restart_window(qts, 0, 2);
-    /* Longer than the start delay: an owed start would have run by now. */
+    qtest_qmp_eventwait(qts, "RESET");
     g_usleep((RESTART_DELAY_MS + 500) * 1000);
     g_assert_true(cpu_halted(qts, 2));
     assert_count_frozen(qts, 2);
@@ -3933,7 +3935,8 @@ static void test_l1_reset_restarts_its_node(const void *data)
 /*
  * An L1 does not restart a node whose brick is off: its reset is refused
  * with the supply down, and the brick that is on can still be reset without
- * switching the other on.
+ * switching the other on. That brick's reset reaches every powered compute
+ * node, so the machine resets as a whole and keeps the off brick off.
  */
 static void test_l1_reset_leaves_an_off_brick_off(void)
 {
@@ -3949,15 +3952,251 @@ static void test_l1_reset_leaves_an_off_brick_off(void)
     g_assert_cmphex(halted_cpus(qts, 1), ==, BRICK_CPUS);
     l1_console(qts, console, "\024ctc reset\r\024* reset\r\024power check\r",
                "power appears on");
-    g_assert_cmphex(halted_cpus(qts, 0), ==, BRICK_CPUS);
+    qtest_qmp_eventwait(qts, "RESET");
     wait_halted_mask(qts, 0, 0);
-    /* The restart delay has passed; the off brick was not started by it. */
+    /* The reset has run; the off brick was not started by it. */
     g_assert_cmphex(halted_cpus(qts, 1), ==, BRICK_CPUS);
 
     l1_console(qts, console, "\024ctc power up\r\024ctc power check\r",
                "power appears on");
     wait_halted_mask(qts, 1, 0);
     close(console);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * Bedrock resets reach nodes by the registers the PROM programs. Processor
+ * @cpu writes its own hub: the network interface's reset enable, then port
+ * reset (bit 1, follow the link) with or without local reset (bit 2). The
+ * peer takes the warm reset only while its own enable is set; otherwise it
+ * keeps running and latches port errors bit 52. Two nodes with their enables
+ * set are every powered compute node, so the machine resets as a whole
+ * (RESET event), keeping each L1's power state.
+ */
+#define NI_PORT_RESET UINT64_C(0x680008)
+#define NI_RESET_ENABLE UINT64_C(0x680010)
+#define NI_PORT_ERRORS UINT64_C(0x680100)
+#define NI_LINK_RESET_IN (UINT64_C(1) << 52)
+#define PARTITION_MARK UINT64_C(0x4000000fff)
+#define RESTART_WORD UINT64_C(0x0ead0030)
+#define SENTINEL0 UINT64_C(0x00000000a5a5a5a5)
+
+static void hub_write(QTestState *qts, unsigned int cpu, uint64_t offset,
+                      uint64_t value)
+{
+    bte_cpu_writeq(qts, cpu, BEDROCK_LOCAL + offset, value);
+}
+
+static uint64_t hub_read(QTestState *qts, unsigned int cpu, uint64_t offset)
+{
+    return bte_cpu_readq(qts, cpu, BEDROCK_LOCAL + offset);
+}
+
+/* Both nodes counting, the survivors and a clearable word set as a kernel's. */
+static QTestState *bedrock_reset_start(char **prom, const char *machine)
+{
+    QTestState *qts = counter_start(prom, machine, PROM_SIZE);
+
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 0);
+    wait_count_advances(qts, 2);
+    for (unsigned int node = 0; node < 2; node++) {
+        hub_write(qts, node * 2, LB_SCRATCH0, SENTINEL0 + node);
+        hub_write(qts, node * 2, LB_SCRATCH1, PARTITION_MARK);
+        hub_write(qts, node * 2, LB_SCRATCH2, RESTART_WORD + node);
+    }
+    return qts;
+}
+
+static void assert_no_machine_reset(QTestState *qts)
+{
+    g_autoptr(QDict) reset = qtest_qmp_event_ref(qts, "RESET");
+
+    g_assert_null(reset);
+}
+
+static void test_bedrock_reset_reaches_every_node(const void *data)
+{
+    unsigned int writer = GPOINTER_TO_UINT(data);
+    g_autofree char *prom = NULL;
+    g_autofree char *machine = restart_machine(MACHINE_ARGS);
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = bedrock_reset_start(&prom, machine);
+    /* The PROM's end state for an unpartitioned pair: both enables set. */
+    hub_write(qts, 0, NI_RESET_ENABLE, 1);
+    hub_write(qts, 2, NI_RESET_ENABLE, 1);
+
+    hub_write(qts, writer, NI_RESET_ENABLE, 1);
+    hub_write(qts, writer, NI_PORT_RESET, 6);
+    qtest_qmp_eventwait(qts, "RESET");
+    wait_restart_runs(qts, 0, 2);
+    wait_restart_runs(qts, 2, 2);
+    for (unsigned int node = 0; node < 2; node++) {
+        /* The local block's scratch 0 cleared; 1 and 2 are kept. */
+        g_assert_cmphex(hub_read(qts, node * 2, LB_SCRATCH0), ==, 0);
+        g_assert_cmphex(hub_read(qts, node * 2, LB_SCRATCH1), ==,
+                        PARTITION_MARK);
+        g_assert_cmphex(hub_read(qts, node * 2, LB_SCRATCH2), ==,
+                        RESTART_WORD + node);
+        g_assert_cmphex(hub_read(qts, node * 2, NI_PORT_ERRORS), ==, 0);
+    }
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * The peer's enable is clear: only the writer's node restarts, the peer keeps
+ * counting with its registers and identity as they were, latches bit 52 and
+ * nothing else, and the machine does not reset. Its link stays up.
+ */
+static void test_bedrock_reset_leaves_a_disabled_peer_running(const void *data)
+{
+    unsigned int writer = GPOINTER_TO_UINT(data);
+    unsigned int peer = writer ? 0 : 2;
+    g_autofree char *prom = NULL;
+    g_autofree char *machine = restart_machine(MACHINE_ARGS);
+    QTestState *qts;
+    uint64_t identity, status;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = bedrock_reset_start(&prom, machine);
+    hub_write(qts, peer, NI_RESET_ENABLE, 0);
+    identity = hub_read(qts, peer, LB_REVISION);
+    status = hub_read(qts, peer, 0);
+    g_assert_cmphex(status & 2, ==, 2);
+
+    hub_write(qts, writer, NI_RESET_ENABLE, 1);
+    hub_write(qts, writer, NI_PORT_RESET, 6);
+    wait_restart_window(qts, writer, 2);
+    g_assert_false(cpu_halted(qts, peer));
+    wait_count_advances(qts, peer);
+    g_assert_true(machine_running(qts));
+    g_assert_cmphex(hub_read(qts, peer, NI_PORT_ERRORS), ==, NI_LINK_RESET_IN);
+    g_assert_cmphex(hub_read(qts, peer, LB_SCRATCH0), ==,
+                    SENTINEL0 + (writer ? 0 : 1));
+    g_assert_cmphex(hub_read(qts, peer, LB_SCRATCH1), ==, PARTITION_MARK);
+    g_assert_cmphex(hub_read(qts, peer, LB_SCRATCH2), ==,
+                    RESTART_WORD + (writer ? 0 : 1));
+    g_assert_cmphex(hub_read(qts, peer, NI_RESET_ENABLE), ==, 0);
+    g_assert_cmphex(hub_read(qts, peer, LB_REVISION), ==, identity);
+    /* The link reads up at the survivor, as it must for a later bus error. */
+    g_assert_cmphex(hub_read(qts, peer, 0), ==, status);
+    g_assert_cmphex(hub_read(qts, writer, NI_PORT_ERRORS), ==, 0);
+    wait_restart_runs(qts, writer, 2);
+    g_assert_cmphex(hub_read(qts, writer, LB_SCRATCH0), ==, 0);
+    g_assert_cmphex(hub_read(qts, writer, LB_SCRATCH2), ==,
+                    RESTART_WORD + (writer ? 1 : 0));
+    wait_count_advances(qts, peer);
+    assert_no_machine_reset(qts);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * A local reset restarts the writer's node whatever its reset enable says,
+ * and has no link effect: the peer is not marked or restarted.
+ */
+static void test_bedrock_local_reset_ignores_the_enable(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *machine = restart_machine(MACHINE_ARGS);
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = bedrock_reset_start(&prom, machine);
+    hub_write(qts, 0, NI_RESET_ENABLE, 0);
+    hub_write(qts, 2, NI_RESET_ENABLE, 1);
+    hub_write(qts, 0, NI_PORT_RESET, 4);
+    wait_restart_window(qts, 0, 2);
+    g_assert_false(cpu_halted(qts, 2));
+    wait_count_advances(qts, 2);
+    g_assert_cmphex(hub_read(qts, 2, NI_PORT_ERRORS), ==, 0);
+    g_assert_cmphex(hub_read(qts, 2, LB_SCRATCH0), ==, SENTINEL0 + 1);
+    wait_restart_runs(qts, 0, 2);
+    assert_no_machine_reset(qts);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * A port reset alone follows the link and does not reset the writer: the
+ * peer with its enable set restarts, as does everything that is powered, so
+ * the reach is one node of two and only that node restarts.
+ */
+static void test_bedrock_port_reset_alone_restarts_the_peer(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *machine = restart_machine(MACHINE_ARGS);
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = bedrock_reset_start(&prom, machine);
+    hub_write(qts, 2, NI_RESET_ENABLE, 1);
+    hub_write(qts, 0, NI_PORT_RESET, 2);
+    wait_restart_window(qts, 2, 2);
+    g_assert_false(cpu_halted(qts, 0));
+    wait_count_advances(qts, 0);
+    g_assert_cmphex(hub_read(qts, 0, LB_SCRATCH0), ==, SENTINEL0);
+    wait_restart_runs(qts, 2, 2);
+    assert_no_machine_reset(qts);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * A node whose supply is off is never reached. The writer's node is then
+ * every powered compute node, so the machine resets as a whole and the off
+ * node is not started by it: the machine keeps each L1's power state.
+ */
+static void test_bedrock_reset_never_reaches_an_off_node(void)
+{
+    g_autofree char *prom = create_counter_prom(PROM_SIZE);
+    QTestState *qts;
+    int console;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = origin3200_counter_start(&console, prom, "");
+    console_steps_clock = false;
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 0);
+    wait_count_advances(qts, 4);
+    l1_console(qts, console, "\024ctc power down\r\024ctc power check\r",
+               "power appears off");
+    wait_halted_mask(qts, 1, BRICK_CPUS);
+
+    hub_write(qts, 0, NI_RESET_ENABLE, 1);
+    hub_write(qts, 0, NI_PORT_RESET, 6);
+    qtest_qmp_eventwait(qts, "RESET");
+    wait_halted_mask(qts, 0, 0);
+    wait_count_advances(qts, 0);
+    g_usleep(500 * 1000);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, BRICK_CPUS);
+    l1_console(qts, console, "\024ctc power check\r", "power appears off");
+    l1_console(qts, console, "\024power check\r", "power appears on");
+
+    l1_console(qts, console, "\024ctc power up\r\024ctc power check\r",
+               "power appears on");
+    wait_halted_mask(qts, 1, 0);
+    close(console);
+    console_steps_clock = true;
     qtest_quit(qts);
     g_assert_cmpint(unlink(prom), ==, 0);
 }
@@ -4198,6 +4437,186 @@ static void test_power_return_rearms_the_cache_as_ram_window(void)
     check_cycle_rearms_the_cache_as_ram_window(1, car_power_cycle);
 }
 
+/*
+ * A node board with no processor (the Origin 3900 memory node, node 3 here)
+ * has nothing to stop, so a restart or a supply return of it must finish
+ * from the call itself: the processors' last stop is what finishes one
+ * otherwise, and with none it never comes. Nothing on the node runs, so
+ * qtest reaches it as the PROM would, over the router with a vector access
+ * from node 0.
+ */
+#define MEMORY_NODE_ARGS "-M origin3000,topology=origin3900-memory-node " \
+                         "-cpu R16000 -smp 12 -m 8192"
+#define MEMORY_NODE 3
+#define MEMORY_NODE_ROUTE UINT64_C(5)
+#define LB_SOFT_RESET UINT64_C(0x604018)
+
+static uint64_t memory_node_access(QTestState *qts, uint64_t hub_offset,
+                                   bool write, uint64_t data)
+{
+    (void)qtest_readq(qts, BEDROCK_LOCAL + LB_VECTOR_STATUS_CLEAR);
+    qtest_writeq(qts, BEDROCK_LOCAL + LB_VECTOR_ROUTE, MEMORY_NODE_ROUTE);
+    qtest_writeq(qts, BEDROCK_LOCAL + LB_VECTOR_DATA, data);
+    qtest_writeq(qts, BEDROCK_LOCAL + LB_VECTOR_PARAMS,
+                 (hub_offset & UINT64_C(0xfffff8)) | VECTOR_REQUEST(0x1c8) |
+                 (write ? VECTOR_WRITE : 0));
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + LB_VECTOR_STATUS) &
+                    VECTOR_VALID, ==, VECTOR_VALID);
+    return qtest_readq(qts, BEDROCK_LOCAL + LB_VECTOR_READ);
+}
+
+/*
+ * The sections the migration stream of @qts names. The stream is the
+ * machine's whole RAM, so only its tail is kept, saved to @path: the
+ * description of every section the stream carries ends it. The stream is
+ * checked for @control, which the node always writes, so that a tail that
+ * lost the description cannot pass for one that lacks a section. Returns
+ * the tail, to search with stream_names().
+ */
+static char *stream_tail(QTestState *qts, const char *path, gsize *length)
+{
+    g_autofree char *uri = g_strdup_printf("exec:tail -c 4000000 >%s", path);
+    char *contents = NULL;
+    SgiWait w;
+
+    qtest_qmp_assert_success(qts, "{'execute':'migrate','arguments':"
+                             "{'uri':%s}}", uri);
+    sgi_wait_migration(qts, "completed");
+    /* The tail may still be writing: the description ends in "]}". */
+    sgi_wait_start(&w, "the stream's description to be saved");
+    for (;;) {
+        g_free(contents);
+        contents = NULL;
+        if (g_file_get_contents(path, &contents, length, NULL) &&
+            *length >= 2 && !memcmp(contents + *length - 2, "]}", 2)) {
+            break;
+        }
+        g_assert_true(sgi_wait_continue(&w, 10000));
+    }
+    g_assert_true(memmem(contents, *length, "sn1-node", 8));
+    return contents;
+}
+
+/* Whether @tail names @section; it holds binary state, so no strstr(). */
+static bool stream_names(const char *tail, gsize length, const char *section)
+{
+    return memmem(tail, length, section, strlen(section)) != NULL;
+}
+
+static QTestState *memory_node_start(char **prom, char **stream)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-memory-node-XXXXXX", &error);
+    g_autofree char *quoted = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    int fd = g_file_open_tmp("sn1-memory-node-prom-XXXXXX", prom, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    *stream = g_build_filename(dir, "stream", NULL);
+    quoted = g_shell_quote(*prom);
+    return qtest_initf(MEMORY_NODE_ARGS " -bios %s -nodefaults -display none",
+                       quoted);
+}
+
+static void memory_node_quit(QTestState *qts, char *prom, char *stream)
+{
+    g_autofree char *dir = g_path_get_dirname(stream);
+
+    qtest_quit(qts);
+    g_unlink(stream);
+    g_rmdir(dir);
+    g_assert_cmpint(unlink(prom), ==, 0);
+    g_free(prom);
+    g_free(stream);
+}
+
+/*
+ * A reset that reaches the memory node alone restarts it: its parts are
+ * reset as a supply cycle resets them, the compute nodes keep running and
+ * the machine does not reset, and no restart stays owed to a migration.
+ */
+static void test_processorless_node_restart_finishes(void)
+{
+    char *prom, *stream, *tail;
+    QTestState *qts = memory_node_start(&prom, &stream);
+    gsize length;
+    uint64_t before = memory_node_access(qts, MD_MEMORY_CONFIG, false, 0);
+    QDict *reply = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                             "{'path':'/machine/node3','property':'nr-cpus'}}");
+
+    g_assert_cmpint(qdict_get_int(reply, "return"), ==, 0);
+    qobject_unref(reply);
+    memory_node_access(qts, MD_MEMORY_CONFIG, true, MD_BANK0_512MB);
+    g_assert_cmphex(memory_node_access(qts, MD_MEMORY_CONFIG, false, 0), ==,
+                    MD_BANK0_512MB);
+
+    memory_node_access(qts, LB_SOFT_RESET, true, 1);
+    g_assert_cmphex(memory_node_access(qts, MD_MEMORY_CONFIG, false, 0), ==,
+                    before);
+    assert_no_machine_reset(qts);
+    for (unsigned int node = 0; node < MEMORY_NODE; node++) {
+        g_assert_cmphex(halted_cpus(qts, node), ==, 0);
+    }
+    tail = stream_tail(qts, stream, &length);
+    g_assert_false(stream_names(tail, length, "sn1-node/restart"));
+    g_free(tail);
+    memory_node_quit(qts, prom, stream);
+}
+
+/*
+ * A node restart pulses the reset input of the XBridge cabled to its I/O
+ * interface, and a bridge that is not held restarts cold: on the two
+ * partition Origin 3400 each C-brick's I-brick bridge sits on widget 15 of
+ * its own node. Restarting node 0 clears what was programmed into its
+ * bridge, and leaves node 1's bridge, its node and the machine alone. The
+ * bridge's interrupt enable stands for the state the PROM finds again.
+ */
+#define TWO_PARTITIONS_ARGS \
+    "-M origin3000,topology=origin3400-two-partitions " \
+    "-cpu R12000 -smp 8 -m 8192"
+
+/* Each node's own processor 0 reaches its bridge on widget 15, locally. */
+#define CABLED_BRIDGE_ENABLE (XBRIDGE_F + XBRIDGE_INT_ENABLE + 4)
+
+static uint32_t cabled_bridge_enable(QTestState *qts, unsigned int node)
+{
+    uint8_t bytes[4];
+
+    g_assert_true(qtest_memread_cpu(qts, node * 4, CABLED_BRIDGE_ENABLE,
+                                    bytes, sizeof(bytes)));
+    return ldl_be_p(bytes);
+}
+
+static void cabled_bridge_set_enable(QTestState *qts, unsigned int node,
+                                     uint32_t value)
+{
+    uint8_t bytes[4];
+
+    stl_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, node * 4, CABLED_BRIDGE_ENABLE,
+                                     bytes, sizeof(bytes)));
+}
+
+static void test_restart_resets_the_cabled_bridge(void)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(TWO_PARTITIONS_ARGS " -bios %s", quoted);
+
+    for (unsigned int node = 0; node < 2; node++) {
+        cabled_bridge_set_enable(qts, node, 0x5a);
+        g_assert_cmphex(cabled_bridge_enable(qts, node), ==, 0x5a);
+    }
+    qtest_set_irq_in(qts, "/machine/node0", "reset", 0, 1);
+    qtest_set_irq_in(qts, "/machine/node0", "reset", 0, 0);
+    g_assert_cmphex(cabled_bridge_enable(qts, 0), ==, 0);
+    g_assert_cmphex(cabled_bridge_enable(qts, 1), ==, 0x5a);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, 0);
+    assert_no_machine_reset(qts);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -4217,6 +4636,10 @@ int main(int argc, char **argv)
                    test_restart_survives_migration);
     qtest_add_func("sn1/cross-node/restart-keeps-the-survivors",
                    test_restart_keeps_the_survivors);
+    qtest_add_func("sn1/cross-node/processorless-node-restart-finishes",
+                   test_processorless_node_restart_finishes);
+    qtest_add_func("sn1/cross-node/restart-resets-the-cabled-bridge",
+                   test_restart_resets_the_cabled_bridge);
     qtest_add_func("sn1/cross-node/restart-ignores-an-off-node",
                    test_restart_ignores_an_off_node);
     qtest_add_data_func("sn1/cross-node/l1-reset-restarts-its-node/own",
@@ -4231,6 +4654,24 @@ int main(int argc, char **argv)
                    test_l1_reset_leaves_an_off_brick_off);
     qtest_add_func("sn1/cross-node/l1-reset-restarts-a-counting-node",
                    test_l1_reset_restarts_a_counting_node);
+    qtest_add_data_func("sn1/cross-node/bedrock-reset-reaches-every-node/"
+                        "node0", GUINT_TO_POINTER(0),
+                        test_bedrock_reset_reaches_every_node);
+    qtest_add_data_func("sn1/cross-node/bedrock-reset-reaches-every-node/"
+                        "node1", GUINT_TO_POINTER(2),
+                        test_bedrock_reset_reaches_every_node);
+    qtest_add_data_func("sn1/cross-node/bedrock-reset-leaves-a-disabled-peer/"
+                        "node0", GUINT_TO_POINTER(0),
+                        test_bedrock_reset_leaves_a_disabled_peer_running);
+    qtest_add_data_func("sn1/cross-node/bedrock-reset-leaves-a-disabled-peer/"
+                        "node1", GUINT_TO_POINTER(2),
+                        test_bedrock_reset_leaves_a_disabled_peer_running);
+    qtest_add_func("sn1/cross-node/bedrock-local-reset-ignores-the-enable",
+                   test_bedrock_local_reset_ignores_the_enable);
+    qtest_add_func("sn1/cross-node/bedrock-port-reset-alone-restarts-the-peer",
+                   test_bedrock_port_reset_alone_restarts_the_peer);
+    qtest_add_func("sn1/cross-node/bedrock-reset-never-reaches-an-off-node",
+                   test_bedrock_reset_never_reaches_an_off_node);
     qtest_add_func("sn1/cross-node/owed-start-runs-once",
                    test_owed_start_runs_once);
     qtest_add_func("sn1/cross-node/reset-clears-an-owed-start",

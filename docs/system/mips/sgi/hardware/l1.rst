@@ -1528,8 +1528,9 @@ power off.
    * - ``reset``, ``0x2001``
      - With the node on: ``Reset done``, a log entry and a pulse on
        ``node-reset``. In a machine the pulse restarts that brick's node
-       alone; a bare ``sgi-l1`` device requests a QEMU system reset itself.
-       With the node off the L1 does nothing.
+       alone, or resets the machine as a whole when that node is every
+       powered compute node (below); a bare ``sgi-l1`` device requests a QEMU
+       system reset itself. With the node off the L1 does nothing.
    * - ``softreset``
      - With the node on: ``Sft rst done``, a log entry and a pulse on
        ``soft-reset``.
@@ -1565,13 +1566,21 @@ again, so with ``auto-power`` set it switches its node back on. The
 node and nothing else (*established* for the controller, which acts on its
 brick only; that a front-panel reset switch takes the same path is
 *inferred*, and the switch is not modelled): ``node-reset`` is the
-node's ``reset`` input, and a Cx-brick's one pulse restarts every board's
-node. A node whose supply is off is never reached, so a ``reset`` does not
-switch it on. ``* reset`` runs the same on the peer's controller first and
-then on this one, as ``* power`` does; ``ctc reset`` reaches the peer
-alone, and a peer whose node is off ignores it. The Bedrock local reset
-that a guest writes is not this path and still restarts the whole machine
-(see the Bedrock page). The ``reset`` command, a ``reset hold`` and
+first node's ``reset`` input, and the machine restarts every board's
+node of a Cx-brick for it. A node whose supply is off is never reached, so a
+``reset`` does not switch it on. ``* reset`` runs the same on the peer's
+controller first and then on this one, as ``* power`` does; ``ctc reset``
+reaches the peer alone, and a peer whose node is off ignores it. When a
+``reset`` reaches every powered compute node, as on a one-node machine such
+as a Fuel or an Origin 300, or when the peer is off, the machine resets as
+a whole with each controller keeping its power state, and the ``RESET`` event
+is emitted. This whole-machine reset is an *approximation*: it also
+restarts the routers and every controller, which a node reset does not, and
+it applies because an unpartitioned guest cannot survive one brick
+restarting (*inferred*). When another powered compute node is not reached,
+only the named brick's node restarts and no ``RESET`` event is emitted. The
+Bedrock resets that a guest writes reach nodes by registers (see the
+Bedrock page) and use the same rule. The ``reset`` command, a ``reset hold`` and
 release pair, the front-panel reset switch and ``0x2001`` all drive one
 group of Bedrock control lines (*established* for the L1 image; that the
 switch input is the physical switch is *inferred*), while ``nmi`` drives one

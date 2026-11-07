@@ -1995,7 +1995,8 @@ sends the L1, and for the peer's side of ``* reset`` (see the L1 page).
 Nothing else is touched: no other node, no router and no L1. A node
 without power is never reached, so the reset leaves it off and does not
 start it, and a node whose supply is on is restarted whatever its state
-was.
+was. When the nodes a reset reaches are every powered compute node the
+machine resets as a whole instead (:ref:`sgi-bedrock-reset`).
 
 The restart is the supply loss's stop and the power-up's start joined by a
 reset of the parts. Each processor is reset and halted from work queued on
@@ -2047,9 +2048,8 @@ is an *approximation*, kept because a bridge left running could send
 transfers into a node that is restarting. A restart through an IX-brick's or
 PX-brick's PIC, which has no reset input, leaves the PIC alone. A processor
 that an NMI or a park release wakes between its stop and the restart's start
-is reset again by the start. The same restart will serve the Bedrock's own
-resets; today a Bedrock local reset and a guest restart still reset the whole
-machine, below.
+is reset again by the start. The Bedrock's own resets reach nodes by the
+rule in :ref:`sgi-bedrock-reset` and use the same restart.
 
 The kernel's reset request may come from every processor of the node,
 repeatedly, and from the boot processor later than from the others. Each
@@ -2083,11 +2083,14 @@ Four requests reset the Bedrock in the model:
 
 - a machine reset applies every unit's reset;
 - port reset bit 2, local reset, resets the node whatever reset enable
-  holds;
+  holds (*established* for the register meaning; the enable not blocking it
+  is the reviewed reading, an *approximation*);
 - local block soft reset bit 0 does the same;
-- port reset bit 1 sends a reset over the cable, and the Bedrock at the
-  far end takes it as a local reset when its own reset enable bit 0 is
-  set. With no link the write logs ``LOG_GUEST_ERROR``.
+- port reset bit 1 sends a warm reset over the cable, and the Bedrock at the
+  far end takes it when its own reset enable bit 0 is set. A router between
+  the two passes it on by its own rule
+  (:ref:`sgi-sn1-router-warm-reset`). With no link the write logs
+  ``LOG_GUEST_ERROR``.
 
 Port reset bit 0, link reset, reaches nothing. The header calls reset
 enable a warm-reset enable that lets the link-level protocol reset the
@@ -2095,19 +2098,74 @@ Bedrock (``hubni.h`` line 1079, ``hubni_next.h`` line 143),
 *established*. Whether it also gates a local reset is *unknown*; the
 model does not gate it.
 
+**The reach of a reset.** A write of the port reset register or of the
+soft reset register collects a set of nodes once, from the registers as they
+stand when it is written. The set holds the writer's node when bit 2 (or the
+soft reset) is set, and the Bedrocks that take the warm reset when bit 1 is
+set: a directly cabled Bedrock whose reset enable bit 0 is set joins, a
+router passes the reset on through its permit and masks, and each
+chip is visited once per reset. A powered-off node is never reached. The
+set follows the registers the firmware programmed and nothing else; the
+partition number the L1 reports plays no part, so there is no partition
+approximation here. Then:
+
+- when the set is every powered compute node, the machine resets as a whole,
+  keeping each L1's power state, and the ``RESET`` event is emitted. This is
+  the unpartitioned case: a one-node machine, or a pair with both enables
+  set, which is what the stock firmware leaves and a reboot writes. It
+  is an *approximation*: it also restarts the routers and every L1, which a
+  node reset does not. It applies because an unpartitioned guest cannot
+  survive one brick restarting (*inferred*; the firmware finds the survivor
+  outside its reset space and the two then disagree about the node
+  numbering, and what a running kernel does then is *unknown*). A
+  machine reset starts an L1 whose node was off as it was, so an off node
+  stays off;
+- otherwise each node in the set restarts alone (:ref:`sgi-bedrock-node-restart`)
+  and the others, which are not in the set, run on. No ``RESET`` event is
+  emitted.
+
+A Bedrock that receives a warm reset it does not take, because its reset
+enable bit 0 is clear, keeps running: it is not reset, its registers and its
+identity word are left alone, its link stays up, and it latches port errors
+bit 52, "link reset in", which raises its network interface error interrupt.
+The bit's name is *established*; that a refused reset sets it is *inferred*,
+and the model latches it, an *approximation*. No other error bit is set and
+no interrupt is raised without one. A kernel that receives it with the reset
+enable clear (and a partition number of zero) prints a notice and goes on;
+that is the kernel's behaviour, not the model's, and the model sets only
+bit 52. A powered-off Bedrock is not reached and latches nothing. No
+link-up interrupt follows a peer's restart, and the model does not drop the
+survivor's link across it. Which of the survivor's registers an arriving
+warm reset leaves is *unknown*; the model leaves all of them.
+
+Which Bedrock registers a full reset clears beyond a soft reset, and whether
+the reset enable survives either, are *unknown*. The reset enable register
+returns to zero with the interface's registers, so the firmware writes it
+again before it resets, as the stock firmware and IRIX do.
+
+A Bedrock with no board, as in a register test, resets the units it reaches
+directly (the writer's, and a peer that takes the warm reset) and pulses each
+one's ``node-reset`` output once, for a board to restart the processors.
+
 A local reset applies each unit's reset, the memory unit's soft reset in
-place of its full one, and then asks the machine to reset. The stock
-PROM and the IRIX 6.5.30 kernel write reset enable and then local plus
-port reset. OpenBSD writes local plus link reset (OpenBSD
-``sys/arch/sgi/sgi/ip27_machdep.c`` at ``2df91d80c104``). None jumps to
-the firmware itself, a *software expectation*.
-A published Origin 350 console running PROM 6.210 prints "Resetting the
-system..." after a POD ``reset`` and goes straight to the PROM banner
-(:src:`graphica-o350-notes`), *observed*. The model therefore
-restarts the whole machine, an *approximation*: the node's I/O, its L1
-and, on a cabled pair, the other node restart with it. What else a local
-reset reaches on the chip is *unknown*. Because the machine reset
-follows, the memory unit's soft-reset survivors do not outlast it.
+place of its full one. The stock PROM and the IRIX 6.5.30 kernel write reset
+enable and then local plus port reset. OpenBSD writes local plus link
+reset (OpenBSD ``sys/arch/sgi/sgi/ip27_machdep.c`` at ``2df91d80c104``). None
+jumps to the firmware itself, a *software expectation*. A published Origin
+350 console running PROM 6.210 prints "Resetting the system..." after a POD
+``reset`` and goes straight to the PROM banner (:src:`graphica-o350-notes`),
+*observed*. A restarted node therefore returns to the firmware's reset vector.
+What else a local reset reaches on the chip is *unknown*. A node that
+restarts is reset the way a supply cycle resets it (see Node restart), so
+the memory unit's soft-reset survivors do not outlast it.
+
+The reach is exercised by ``sn1/cross-node/bedrock-reset-reaches-every-node``
+(each node writing), ``bedrock-reset-leaves-a-disabled-peer`` (each node
+writing), ``bedrock-local-reset-ignores-the-enable``,
+``bedrock-port-reset-alone-restarts-the-peer`` and
+``bedrock-reset-never-reaches-an-off-node``, and, with no machine, by
+``sn1/bedrock-link/refused-port-reset-latches-link-reset-in`` and
+``port-reset-crosses-two-routers``.
 
 What each reset keeps, from the unit sections above:
 
@@ -2221,7 +2279,8 @@ Model limits
   network interface's error counting are not modelled. Without a router
   the vector engine reaches only the far end of the node's own cable.
 - No MicroLAN identity part is attached.
-- A local reset restarts the whole machine.
+- A reset that reaches every powered compute node resets the whole machine,
+  routers and L1s included, with each L1 keeping its power state.
 - Unexpected accesses: holes between units, wrong widths and refused
   memory, directory, ECC, fetch-and-op or flash accesses fail with a
   bus error. Reads and writes of undecoded register offsets inside a

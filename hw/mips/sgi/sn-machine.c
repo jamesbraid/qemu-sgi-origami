@@ -10530,17 +10530,85 @@ static void sgi_machine_node_power_changed(void *opaque, SN1NodeState *node,
 }
 
 /*
+ * A reset starts at @node and reaches @reached (a Bedrock reset collects the
+ * Bedrocks it reaches; an L1 reset, the nodes of its brick). A node that is
+ * off is never reached.
+ *
+ * When the reach holds every powered compute node the machine resets as a
+ * whole, with each L1 keeping its power state: an unpartitioned guest cannot
+ * survive one brick restarting (inferred), and a one-node machine has no
+ * other brick. This is an approximation: it also restarts the routers and
+ * every L1, which a node reset does not, and the machine's RESET event is
+ * emitted. Otherwise each reached node restarts alone and the rest keep
+ * running. The reach follows the registers the PROM programmed: no
+ * partition number enters.
+ */
+static void sgi_machine_reset_nodes(SGIMachineState *s,
+                                    SN1NodeState **reached, unsigned count)
+{
+    bool reaches_any = false, reaches_all = true;
+
+    for (unsigned i = 0; i < s->num_nodes; i++) {
+        SN1NodeState *node = SN1_NODE(s->bedrock_nodes[i]);
+        bool in_reach = false;
+
+        for (unsigned j = 0; j < count; j++) {
+            in_reach = in_reach || reached[j] == node;
+        }
+        if (!node->nr_cpus || !sn1_node_powered(node)) {
+            continue;
+        }
+        reaches_any = reaches_any || in_reach;
+        reaches_all = reaches_all && in_reach;
+    }
+    if (reaches_any && reaches_all) {
+        s->power_resume = true;
+        sn1_node_request_machine_reset();
+        return;
+    }
+    for (unsigned j = 0; j < count; j++) {
+        sn1_node_restart(reached[j]);
+    }
+}
+
+/* A Bedrock reset started at @origin reached these Bedrocks, or an L1's. */
+static void sgi_machine_node_reset_reach(void *opaque, SN1NodeState *origin,
+                                         GPtrArray *bedrocks)
+{
+    SGIMachineState *s = opaque;
+    g_autofree SN1NodeState **reached = g_new0(SN1NodeState *, s->num_nodes);
+    unsigned count = 0;
+
+    for (unsigned i = 0; i < s->num_nodes; i++) {
+        SN1NodeState *node = SN1_NODE(s->bedrock_nodes[i]);
+        bool in_reach;
+
+        if (bedrocks) {
+            in_reach = g_ptr_array_find(bedrocks, node->bedrock, NULL);
+        } else {
+            /* An L1 resets all its brick's nodes, a Cx-brick's boards. */
+            in_reach = node == origin || (origin->l1 && node->l1 == origin->l1);
+        }
+        if (in_reach) {
+            reached[count++] = node;
+        }
+    }
+    sgi_machine_reset_nodes(s, reached, count);
+}
+
+/*
  * Each node's supply follows its brick's L1: the L1's "node-power" output is
  * the node's "power" input. A Cx-brick's L1 serves several nodes, so its one
  * line is split to them. The L1 settled its level at realize, before the node
  * took the line, so each node takes the present level here and the machine
  * is told of later changes only.
  *
- * The L1's "node-reset" pulse is the node's "reset" input, joined the same
- * way: an L1 reset, the reset request a kernel sends it and a peer's
- * broadcast restart that brick's node or nodes and nothing else. The
- * C-brick L1 asserts no reset hold, so its "reset-hold" line is not joined.
- * A pulse is an edge with no level to settle.
+ * The L1's "node-reset" pulse is the "reset" input of the brick's first node,
+ * which stands for the brick: an L1 reset, the reset request a kernel sends
+ * it and a peer's broadcast restart that brick's node or nodes
+ * (sgi_machine_node_reset_reach()). The C-brick L1 asserts no reset hold, so
+ * its "reset-hold" line is not joined. A pulse is an edge with no level to
+ * settle. Every node's own Bedrock hands its resets to the same function.
  */
 static void sgi_machine_wire_node_power(SGIMachineState *s)
 {
@@ -10548,7 +10616,7 @@ static void sgi_machine_wire_node_power(SGIMachineState *s)
         SN1NodeState *node = SN1_NODE(s->bedrock_nodes[i]);
         DeviceState *l1 = node->l1;
         unsigned int served = 0, line = 0;
-        DeviceState *split = NULL, *reset_split = NULL;
+        DeviceState *split = NULL;
 
         if (!l1) {
             continue;
@@ -10571,28 +10639,22 @@ static void sgi_machine_wire_node_power(SGIMachineState *s)
             qdev_realize_and_unref(split, NULL, &error_fatal);
             qdev_connect_gpio_out_named(l1, "node-power", 0,
                                         qdev_get_gpio_in(split, 0));
-            reset_split = qdev_new(TYPE_SPLIT_IRQ);
-            qdev_prop_set_uint32(reset_split, "num-lines", served);
-            object_property_add_child(OBJECT(l1), "node-reset-split",
-                                      OBJECT(reset_split));
-            qdev_realize_and_unref(reset_split, NULL, &error_fatal);
-            qdev_connect_gpio_out_named(l1, "node-reset", 0,
-                                        qdev_get_gpio_in(reset_split, 0));
         }
         for (unsigned int j = i; j < s->num_nodes; j++) {
             SN1NodeState *peer = SN1_NODE(s->bedrock_nodes[j]);
             qemu_irq power = qdev_get_gpio_in_named(DEVICE(peer), "power", 0);
-            qemu_irq reset = qdev_get_gpio_in_named(DEVICE(peer), "reset", 0);
 
             if (peer->l1 != l1) {
                 continue;
             }
             if (split) {
-                qdev_connect_gpio_out(split, line, power);
-                qdev_connect_gpio_out(reset_split, line++, reset);
+                qdev_connect_gpio_out(split, line++, power);
             } else {
                 qdev_connect_gpio_out_named(l1, "node-power", 0, power);
-                qdev_connect_gpio_out_named(l1, "node-reset", 0, reset);
+            }
+            if (peer == node) {
+                qdev_connect_gpio_out_named(l1, "node-reset", 0,
+                    qdev_get_gpio_in_named(DEVICE(peer), "reset", 0));
             }
             qemu_set_irq(power, SGI_L1(l1)->node_power);
         }
@@ -10603,6 +10665,8 @@ static void sgi_machine_wire_node_power(SGIMachineState *s)
 
         node->power_notify = sgi_machine_node_power_changed;
         node->power_notify_opaque = s;
+        node->reset_notify = sgi_machine_node_reset_reach;
+        node->reset_notify_opaque = s;
     }
 }
 
