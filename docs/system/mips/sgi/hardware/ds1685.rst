@@ -182,9 +182,13 @@ column is what the model holds after realize and a first machine reset, an
        :src:`maxim-ds1685-ds1687-rev-10-12 p. 19`.
    * - ``41h``-``47h``, bank 1
      - Serial number and CRC
-     - ``00h``
+     - ``00h``, or the board's
      - read-only
-     - Seven bytes.
+     - Seven bytes. The ``serial`` property, a 48-bit number, sets them:
+       ``41h`` holds its most significant byte and ``47h`` the one-wire CRC
+       over ``40h``-``46h``, both *inferred*. Zero, the default, leaves all
+       seven at zero. The O2 sets it from its identity seed
+       (:ref:`sgi-ip32-system-serial`).
    * - ``48h``, bank 1
      - Century
      - from clock
@@ -233,8 +237,9 @@ The register contents and bit positions are *established*
 :src:`maxim-ds1685-ds1687-rev-10-12 p. 9, 17-22`. The 242 bytes of user RAM
 are the 50 common bytes, 64 bank-0 bytes and 128 extended-RAM bytes
 :src:`maxim-ds1685-ds1687-rev-10-12 p. 1, 14`, *established*. The model keeps
-the serial number and CRC at zero, because no public source gives a value
-for either, *unknown*. The CRC algorithm is not in the datasheet.
+the serial number and CRC at zero unless the board sets the ``serial``
+property, because no public source gives a value for either, *unknown*. The
+CRC algorithm is not in the datasheet.
 
 Register A, B and C
 -------------------
@@ -555,8 +560,9 @@ hold, in what layout, or that the clock holds any of them.
 Model limits
 ============
 
-- Register power-up values, the initial calendar format and the zero serial
-  number are model choices, not facts about the part.
+- Register power-up values, the initial calendar format and the serial
+  number, zero or a board's synthetic one, are model choices, not facts
+  about the part.
 - The ``IRQ`` output is not connected on the Octane.
 - ``INCR`` never reads one. The 122 microsecond window is not modelled.
 - No pins are modelled: ``SQW`` and the 32.768 kHz output, ``KS``, ``RCLR``,

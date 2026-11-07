@@ -63,6 +63,7 @@ config SGI_O2_TEST
     default y
     depends on SGI_DEVICES
     imply TEST_DEVICES
+    select SGI_CATALOGUE
     select SGI_CRIME
     select AIC7880_SCSI_PCI
     select SGI_BOARD_CDROM

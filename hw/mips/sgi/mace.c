@@ -1229,6 +1229,7 @@ static void mace_init(Object *obj)
     object_property_add_alias(obj, "drive", OBJECT(&s->rtc), "drive");
     object_property_add_alias(obj, "clock-drive", OBJECT(&s->rtc),
                               "clock-drive");
+    object_property_add_alias(obj, "rtc-serial", OBJECT(&s->rtc), "serial");
     object_initialize_child(obj, "uart-a", &s->uart[0], TYPE_SERIAL);
     object_initialize_child(obj, "uart-b", &s->uart[1], TYPE_SERIAL);
     object_property_add_alias(obj, "chardev-a", OBJECT(&s->uart[0]),

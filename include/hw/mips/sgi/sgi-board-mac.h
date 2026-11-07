@@ -47,8 +47,22 @@ char *sgi_board_default_system_serial(void);
  */
 bool sgi_board_identity_is_seeded(void);
 
+/*
+ * The default 48-bit silicon serial number for a board's real-time clock,
+ * from seed bytes 14 to 19. Nonzero. See sgi-board-identity.h.
+ */
+uint64_t sgi_board_default_silicon_serial(void);
+
 /* The ten-character module serial of module @module, "K" and nine more. */
 char *sgi_board_default_module_serial(unsigned int module);
+
+/*
+ * Add only the "identity-key" property to machine class @oc, for a board
+ * whose station address does not come from the seed (the O2 reads its own
+ * from the identity chip). Same meaning and rules as the one
+ * sgi_board_mac_class_add_property() adds.
+ */
+void sgi_board_identity_key_class_add_property(ObjectClass *oc);
 
 /*
  * Add the "mac" and "identity-key" properties to machine class @oc, kept

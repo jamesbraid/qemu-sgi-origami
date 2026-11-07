@@ -8241,6 +8241,53 @@ static void check_product_composition(bool plus)
     o2_product_cleanup(&t);
 }
 
+/*
+ * The clock's silicon serial, which the guest reads for its system id, comes
+ * from the identity key: it is nonzero, valid, and differs between keys. The
+ * digest values are sha256 bytes 14 to 19 of the key, worked out outside
+ * the model, and 0x82 is the one-wire CRC of 0x71 and those six bytes.
+ */
+static void o2_product_clock_serial(const char *key, uint8_t serial[7])
+{
+    O2ProductTest t = { 0 };
+    QTestState *qts;
+
+    o2_product_prepare(&t);
+    if (key) {
+        char *machine = g_strdup_printf("%s,identity-key=%s", t.machine, key);
+
+        g_free(t.machine);
+        t.machine = machine;
+    }
+    qts = o2_product_start(&t);
+    /* Bank 1 is selected by register A bit 4; the cells are 0x100 apart. */
+    qtest_writeb(qts, 0x1f3a0000 + 0x0a * 0x100, 0x30);
+    g_assert_cmphex(qtest_readb(qts, 0x1f3a0000 + 0x40 * 0x100), ==, 0x71);
+    for (unsigned i = 0; i < 7; i++) {
+        serial[i] = qtest_readb(qts, 0x1f3a0000 + (0x41 + i) * 0x100);
+    }
+    qtest_quit(qts);
+    o2_product_cleanup(&t);
+}
+
+static void test_product_system_serial(void)
+{
+    static const uint8_t disk[7] = { 0xba, 0x6c, 0x42, 0x2b, 0xe9, 0x28, 0x82 };
+    static const uint8_t other[7] = { 0xa6, 0xc3, 0x3b, 0x22, 0x05, 0x0a,
+                                      0xea };
+    uint8_t first[7], second[7], named[7];
+
+    o2_product_clock_serial("/x/disk.img", first);
+    g_assert_cmpmem(first, 7, disk, 7);
+    o2_product_clock_serial("origami", second);
+    g_assert_cmpmem(second, 7, other, 7);
+    /* With no key the serial still exists, from the machine name. */
+    o2_product_clock_serial(NULL, named);
+    g_assert_cmpint(memcmp(named, "\0\0\0\0\0\0\0", 7), !=, 0);
+    g_assert_cmpint(memcmp(named, first, 7), !=, 0);
+    g_assert_cmpint(memcmp(named, second, 7), !=, 0);
+}
+
 static void test_product_composition(void)
 {
     check_product_composition(false);
@@ -9302,5 +9349,6 @@ int main(int argc, char **argv)
     add_case("o2/product-composition", test_product_composition);
     add_case("o2/product-native-pci", test_product_native_pci);
     add_case("o2/product-configuration", test_product_configuration);
+    add_case("o2/product-system-serial", test_product_system_serial);
     return g_test_run();
 }
