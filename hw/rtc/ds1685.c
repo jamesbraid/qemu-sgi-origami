@@ -697,6 +697,39 @@ static bool ds1685_bank1_reserved(uint8_t reg)
     }
 }
 
+/*
+ * Bank 1 registers 40h-46h are the model number and a 48-bit serial and
+ * 47h is a CRC byte "used to validate" them (Maxim DS1685/DS1687, silicon
+ * serial number). The data sheet gives neither byte order nor algorithm.
+ * Here 41h holds the most significant serial byte, and the CRC is the
+ * Dallas one-wire polynomial x^8 + x^5 + x^4 + 1 over 40h-46h, which is
+ * what such serial numbers conventionally carry. Both are inferred. A
+ * serial of zero keeps all seven bytes zero, as before the property
+ * existed.
+ */
+static uint8_t ds1685_serial_reg(const DS1685State *s, uint8_t reg)
+{
+    uint8_t bytes[7] = { DS1685_MODEL_NUMBER };
+    uint8_t crc = 0;
+
+    if (!s->serial) {
+        return 0;
+    }
+    for (int i = 0; i < 6; i++) {
+        bytes[1 + i] = s->serial >> (8 * (5 - i));
+    }
+    if (reg != DS1685_SERIAL_CRC) {
+        return bytes[reg - DS1685_MODEL];
+    }
+    for (int i = 0; i < 7; i++) {
+        crc ^= bytes[i];
+        for (int bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0x8c : crc >> 1;
+        }
+    }
+    return crc;
+}
+
 static uint8_t ds1685_read_reg(DS1685State *s, uint8_t reg)
 {
     if (reg < DS1685_UPPER_FIRST) {
@@ -743,6 +776,9 @@ static uint8_t ds1685_read_reg(DS1685State *s, uint8_t reg)
          * message names the clock.
          */
         return s->ext[EXT(reg)] & ~DS1685_4A_INCR;
+
+    case DS1685_SERIAL_FIRST ... DS1685_SERIAL_CRC:
+        return ds1685_serial_reg(s, reg);
 
     case DS1685_EXTRAM_DATA:
         return s->extram[s->ext[EXT(DS1685_EXTRAM_ADDR)] &
@@ -1087,6 +1123,11 @@ static void ds1685_realize(DeviceState *dev, Error **errp)
 {
     DS1685State *s = DS1685(dev);
 
+    if (s->serial >> 48) {
+        error_setg(errp, "ds1685: serial is a 48-bit number");
+        return;
+    }
+
     /*
      * The vendor declares almost every power-up value undefined. These are
      * chosen once, here, from the set no driver can tell from working
@@ -1094,8 +1135,8 @@ static void ds1685_realize(DeviceState *dev, Error **errp)
      * about the part, which is exactly why they are here and not in reset:
      * the four values reset applies are the vendor's, and these are ours.
      *
-     * The serial number and its check byte stay zero. No public source gives
-     * a value for either, and no driver on our paths validates them.
+     * The serial number and its check byte stay zero unless the board sets
+     * the serial property. No public source gives a value for either.
      */
     s->held_seconds = ds1685_reference_seconds();
     s->counter_held = true;
@@ -1223,6 +1264,7 @@ static const VMStateDescription vmstate_ds1685 = {
 static const Property ds1685_properties[] = {
     DEFINE_PROP_DRIVE("drive", DS1685State, blk),
     DEFINE_PROP_DRIVE("clock-drive", DS1685State, clock_blk),
+    DEFINE_PROP_UINT64("serial", DS1685State, serial, 0),
 };
 
 static void ds1685_class_init(ObjectClass *oc, const void *data)

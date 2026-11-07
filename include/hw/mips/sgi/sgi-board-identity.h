@@ -25,6 +25,9 @@
  * answers the same request with its station address as 12 hex digits and
  * follows mac= instead.
  *
+ * The O2's real-time clock carries a 48-bit silicon serial number, seed
+ * bytes 14 to 19 big-endian, never zero.
+ *
  * These are synthetic values, not any machine's factory identity.
  */
 
@@ -49,12 +52,14 @@ typedef struct SGIBoardIdentity {
     uint8_t text_byte;
     uint32_t system_serial;
     uint32_t module_serial;
+    uint64_t silicon_serial;
 } SGIBoardIdentity;
 
 /*
  * Fill @id with 08:00:69:(0xe0 | seed[0] & 0xf):seed[1]:seed[2], seed[5]
- * and the system serial number from seed[6..9], where seed is the SHA-256
- * of @key.
+ * the system serial number from seed[6..9], the module serial from
+ * seed[10..13] and the silicon serial from seed[14..19], where seed is the
+ * SHA-256 of @key.
  */
 static inline void sgi_board_identity_from_key(const char *key,
                                                SGIBoardIdentity *id)
@@ -78,6 +83,14 @@ static inline void sgi_board_identity_from_key(const char *key,
                          seed[8] << 8 | seed[9]) % 3999999 + 1;
     id->module_serial = (uint32_t)seed[10] << 24 | seed[11] << 16 |
                         seed[12] << 8 | seed[13];
+    /* Seed bytes 14 to 19, big-endian; never zero, which means "unset". */
+    id->silicon_serial = 0;
+    for (int i = 14; i < 20; i++) {
+        id->silicon_serial = id->silicon_serial << 8 | seed[i];
+    }
+    if (!id->silicon_serial) {
+        id->silicon_serial = 1;
+    }
 }
 
 /* "EMUN" and the seed byte plus @node as uppercase hex, modulo 256. */

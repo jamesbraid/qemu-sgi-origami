@@ -411,6 +411,49 @@ saved state, so the machine registers a migration blocker and an
 unmigratable state description. The register test profile, with 64 or
 128 MiB of RAM, has no blocker.
 
+.. _sgi-ip32-system-serial:
+
+System serial number
+====================
+
+An IRIX guest builds its system id, and so ``sysinfo -s`` and the FLEXlm
+host id, from a serial number the hardware gives it. The model supplies one
+that is nonzero and differs between guests.
+
+- MACE lists a unique 56-bit silicon serial number embedded in the
+  calendar clock module and describes it as the "system serial # and
+  ethernet address" (:src:`sgi-mace-2.0-spec p. 121`), *established*. The
+  DS1685 and DS1687 hold it in bank 1: ``40h`` is the model number
+  ``71h``, ``41h`` to ``46h`` a 48-bit serial and ``47h`` a CRC byte that
+  validates them (:src:`maxim-ds1685-ds1687-rev-10-12 p. 19`),
+  *established*.
+- That IRIX reads its system id from this clock serial, and not from the
+  identity chip's ROM serial, is *inferred* from the MACE text. No IRIX
+  IP32 kernel was available to confirm it, and the stock PROM's strings
+  show only the identity chip's Ethernet address path. The identity chip
+  keeps the serial the user gave it (``identity-test-serial``), so a guest
+  that reads that instead still sees the user's value.
+- The model returned zero in all seven bytes before this, so a guest that
+  read the clock saw a zero system id on every machine, an *approximation*.
+- Now the clock returns a serial derived from the machine's identity seed,
+  the same SHA-256 seed that gives the other SGI boards their default
+  station address (see ``sgi-board-identity.h``). The serial is seed
+  bytes 14 to 19 as a big-endian number, never zero. Register ``41h``
+  holds its most significant byte. The CRC is the one-wire CRC
+  (``x^8 + x^5 + x^4 + 1``) over ``40h`` to ``46h``. The data sheet gives
+  neither the byte order nor the algorithm, so both are *inferred*, and
+  the values are synthetic, not any machine's factory serial.
+- ``identity-key=TEXT`` sets the seed. Without it the seed is the first
+  drive with a file the machine can see when it is built, else the machine
+  name, which is the same for every guest. A disk attached with
+  ``-device`` is not visible then, so a launcher that attaches the system
+  disk that way must pass the disk's host path as ``identity-key``.
+  The option names the seed, not the serial: ``identity-test-serial`` and
+  the Ethernet station address are separate inputs.
+- The fitted O2's serial bytes, and whether the same number appears in the
+  identity chip, are *unknown*. A published record of a real O2's clock
+  registers would settle them.
+
 .. _sgi-ip32-graphics:
 
 Graphics
@@ -492,6 +535,8 @@ Model limits
 - The processor reset words, the O2+ identity values and the pixel clock
   are model choices.
 - The product refuses migration; the register test profile does not.
+- The clock's silicon serial is synthetic, and its byte order and CRC
+  algorithm are inferred (:ref:`sgi-ip32-system-serial`).
 - Each chip page lists its own limits and how an unexpected access shows
   up.
 
@@ -504,10 +549,11 @@ Tests
   inputs and refusals, both variants' processor and Config0, serial
   backends, native PCI, the eight-bank memory and its aliases, the
   private boot store, the interrupt chain, the flash aliases, and the SCSI
-  paths; with ``register-test-profile=on``, the diagnostic options.
+  paths, and the clock serial the identity key gives; with
+  ``register-test-profile=on``, the diagnostic options.
 - ``tests/qtest/sgi-o2-id-test.c``: the MACE identity line.
 - ``tests/qtest/sgi-o2-platform-inputs-test.c``: the password-clear input
-  and the DS1685 backends.
+  and the DS1685 backends and silicon serial.
 - ``tests/qtest/sgi-o2-rom-test.c``: the flash window and synthetic
   images.
 - ``tests/qtest/o2-r10k-scache-reset-test.c``: the secondary cache

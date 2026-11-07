@@ -31,6 +31,7 @@
 #include "hw/mips/sgi/mace.h"
 #include "hw/mips/sgi/o2-rom.h"
 #include "hw/mips/sgi/sgi-board-cdrom.h"
+#include "hw/mips/sgi/sgi-board-mac.h"
 #include "hw/mips/sgi/sgi-cpu.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
@@ -2072,6 +2073,13 @@ static void o2_init(MachineState *machine)
     qdev_prop_set_bit(mace, "misc-word-pio", s->mace_misc_word_pio);
     qdev_prop_set_bit(mace, "mace-eth-low-dma-compat",
                      s->mace_eth_low_dma_compat);
+    /*
+     * MACE documents the clock's silicon serial as the system serial. Derive
+     * it from the identity seed so that guests differ; see the system serial
+     * section of docs/system/mips/sgi/ip32.rst.
+     */
+    qdev_prop_set_uint64(mace, "rtc-serial",
+                         sgi_board_default_silicon_serial());
     if (s->identity_diagnostic) {
         qdev_prop_set_string(mace, "identity-test-serial",
                              s->identity_test_serial);
@@ -2408,6 +2416,7 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     mc->no_cdrom = true;
     mc->auto_create_sdcard = false;
     sgi_board_cdrom_class_init(mc);
+    sgi_board_identity_key_class_add_property(oc);
 }
 
 static const TypeInfo o2_product_machine_type = {

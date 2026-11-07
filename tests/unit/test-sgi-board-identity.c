@@ -81,6 +81,38 @@ static void test_system_serial_span(void)
     }
 }
 
+/*
+ * The silicon serial is seed bytes 14 to 19 as a big-endian number:
+ * sha256("/x/disk.img") continues ...ba6c422be928..., and sha256("origami")
+ * has a6c33b22050a there.
+ */
+static void test_silicon_serial(void)
+{
+    SGIBoardIdentity id;
+
+    sgi_board_identity_from_key("/x/disk.img", &id);
+    g_assert_cmphex(id.silicon_serial, ==, 0xba6c422be928ULL);
+    sgi_board_identity_from_key("origami", &id);
+    g_assert_cmphex(id.silicon_serial, ==, 0xa6c33b22050aULL);
+}
+
+/* Any key gives a nonzero 48-bit serial, and different keys differ. */
+static void test_silicon_serial_span(void)
+{
+    uint64_t previous = 0;
+
+    for (unsigned i = 0; i < 4096; i++) {
+        g_autofree char *key = g_strdup_printf("/disk/%u.img", i);
+        SGIBoardIdentity id;
+
+        sgi_board_identity_from_key(key, &id);
+        g_assert_cmphex(id.silicon_serial, !=, 0);
+        g_assert_cmphex(id.silicon_serial >> 48, ==, 0);
+        g_assert_cmphex(id.silicon_serial, !=, previous);
+        previous = id.silicon_serial;
+    }
+}
+
 /* The "E" nibble marker and "EMUN" survive whatever the key hashes to. */
 static void test_markers_hold_for_any_key(void)
 {
@@ -123,6 +155,9 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-board-identity/system-serial-span",
                     test_system_serial_span);
     g_test_add_func("/sgi-board-identity/module-serial", test_module_serial);
+    g_test_add_func("/sgi-board-identity/silicon-serial", test_silicon_serial);
+    g_test_add_func("/sgi-board-identity/silicon-serial-span",
+                    test_silicon_serial_span);
     g_test_add_func("/sgi-board-identity/keys-differ", test_keys_differ);
     return g_test_run();
 }

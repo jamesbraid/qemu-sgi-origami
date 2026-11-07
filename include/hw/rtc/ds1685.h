@@ -156,6 +156,9 @@ struct DS1685State {
 
     BlockBackend *blk;
     BlockBackend *clock_blk;
+
+    /* Silicon serial in bank 1, 41h-46h with a CRC at 47h; zero is unset. */
+    uint64_t serial;
     VMChangeStateEntry *vmstate_change;
     QEMUBH *save_bh;
     bool incoming;

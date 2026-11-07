@@ -142,6 +142,11 @@ static void sgi_board_identity_key_set(Object *obj, Visitor *v,
     }
 }
 
+uint64_t sgi_board_default_silicon_serial(void)
+{
+    return sgi_board_identity()->silicon_serial;
+}
+
 char *sgi_board_default_text_serial(unsigned int node)
 {
     char text[SGI_BOARD_TEXT_SERIAL_SIZE];
@@ -231,13 +236,8 @@ static void sgi_board_mac_set_visit(Object *obj, Visitor *v,
     *slot = value;
 }
 
-void sgi_board_mac_class_add_property(ObjectClass *oc, size_t offset,
-                                      const char *description)
+void sgi_board_identity_key_class_add_property(ObjectClass *oc)
 {
-    object_class_property_add(oc, "mac", "str", sgi_board_mac_get_visit,
-                              sgi_board_mac_set_visit, NULL,
-                              (void *)(uintptr_t)offset);
-    object_class_property_set_description(oc, "mac", description);
     object_class_property_add(oc, "identity-key", "str",
                               sgi_board_identity_key_get,
                               sgi_board_identity_key_set, NULL, NULL);
@@ -245,4 +245,14 @@ void sgi_board_mac_class_add_property(ObjectClass *oc, size_t offset,
         "Text the default station address and serial numbers are derived "
         "from, such as the host path of the system disk, so that guests "
         "differ (default the system disk path or machine name)");
+}
+
+void sgi_board_mac_class_add_property(ObjectClass *oc, size_t offset,
+                                      const char *description)
+{
+    object_class_property_add(oc, "mac", "str", sgi_board_mac_get_visit,
+                              sgi_board_mac_set_visit, NULL,
+                              (void *)(uintptr_t)offset);
+    object_class_property_set_description(oc, "mac", description);
+    sgi_board_identity_key_class_add_property(oc);
 }

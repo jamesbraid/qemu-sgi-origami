@@ -183,6 +183,67 @@ static void assert_start_rejected(const char *options, const char *reason)
     }
 }
 
+/* The one-wire CRC, polynomial x^8 + x^5 + x^4 + 1, written out bitwise. */
+static uint8_t crc8(const uint8_t *bytes, unsigned length)
+{
+    uint8_t crc = 0;
+
+    for (unsigned i = 0; i < length; i++) {
+        crc ^= bytes[i];
+        for (unsigned bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0x8c : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+static void read_clock_serial(QTestState *s, uint8_t bytes[8])
+{
+    rtc_write(s, 0x0b, 0x86);
+    rtc_write(s, 0x0a, 0x30);
+    for (unsigned i = 0; i < 8; i++) {
+        bytes[i] = rtc_read(s, 0x40 + i);
+    }
+    rtc_write(s, 0x0a, 0x20);
+    rtc_write(s, 0x0b, 0x06);
+}
+
+/*
+ * The clock's silicon serial: model byte, six serial bytes from the identity
+ * key and a CRC that checks them. It is read-only and survives a reset.
+ */
+static void test_clock_serial(void)
+{
+    static const uint8_t keyed[8] = { 0x71, 0xba, 0x6c, 0x42, 0x2b, 0xe9,
+                                      0x28, 0x82 };
+    uint8_t bytes[8], again[8], named[8];
+    QTestState *s = qtest_initf("-M o2,register-test-profile=on,"
+        "password-clear-input=1,identity-key=/x/disk.img -m 64M "
+        "-nodefaults -rtc base=2024-01-01T00:00:00,clock=vm");
+
+    read_clock_serial(s, bytes);
+    g_assert_cmpmem(bytes, 8, keyed, 8);
+    g_assert_cmphex(crc8(bytes, 7), ==, bytes[7]);
+    rtc_write(s, 0x0a, 0x30);
+    for (unsigned i = 1; i < 8; i++) {
+        rtc_write(s, 0x40 + i, 0);
+    }
+    rtc_write(s, 0x0a, 0x20);
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    read_clock_serial(s, again);
+    g_assert_cmpmem(again, 8, keyed, 8);
+    qtest_quit(s);
+
+    /* Without a key the serial is still set, from the machine name. */
+    s = o2_start("");
+    read_clock_serial(s, named);
+    g_assert_cmphex(named[0], ==, 0x71);
+    g_assert_cmphex(crc8(named, 7), ==, named[7]);
+    g_assert_cmpint(memcmp(named + 1, keyed + 1, 6), !=, 0);
+    g_assert_cmpint(memcmp(named + 1, "\0\0\0\0\0\0", 6), !=, 0);
+    qtest_quit(s);
+}
+
 static void test_refused_inputs(void)
 {
     g_autofree char *dir = g_dir_make_tmp("o2-rtc-invalid-XXXXXX", NULL);
@@ -239,6 +300,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/o2-platform/board-input", test_board_input);
     qtest_add_func("/sgi/o2-platform/rtc-alarm-route", test_rtc_alarm_route);
     qtest_add_func("/sgi/o2-platform/rtc-storage", test_rtc_storage);
+    qtest_add_func("/sgi/o2-platform/clock-serial", test_clock_serial);
     qtest_add_func("/sgi/o2-platform/refused-inputs", test_refused_inputs);
     return g_test_run();
 }
