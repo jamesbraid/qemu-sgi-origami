@@ -16,6 +16,11 @@
  *  - every L1 that builds a node board's identity areas names its own
  *    instance, so no two nodes' board-area serials match.
  *
+ *  - every L1 answers the system-serial request with one value, the same
+ *    on all the machine's L1s: "L" and seven digits, whose low nibbles the
+ *    guest packs into a nonzero host id, or on the Fuel the station
+ *    address as twelve hex digits. Two identity keys give two serials.
+ *
  * Every one-wire part is included, the module controllers' MODULEID and
  * midplane parts too. The scheme's values are repeated here as literals,
  * not taken from the header that defines them.
@@ -116,6 +121,11 @@ typedef struct Inventory {
     GHashTable *barcodes;      /* barcode -> path */
     GHashTable *l1_instances;  /* identity-index -> path */
     unsigned int parts;
+    char *system_serial;       /* what the first L1 holds */
+    unsigned int l1s;
+    unsigned int l1_unset;     /* L1s with no system serial */
+    char *unset_path;          /* the first of them */
+    unsigned int l1_differing; /* L1s that disagree with the first */
 } Inventory;
 
 static bool onewire_serial_marked(uint64_t serial)
@@ -202,9 +212,36 @@ static QDict *find_prop(QList *properties, const char *name)
     return NULL;
 }
 
+static void check_system_serial(Inventory *inv, const char *path,
+                                QList *properties)
+{
+    QDict *type = find_prop(properties, "type");
+    QDict *serial = find_prop(properties, "system-serial");
+    g_autofree char *text = NULL;
+
+    if (!type || !serial || strcmp(qdict_get_str(type, "value"), "sgi-l1")) {
+        return;
+    }
+    text = prop_str(serial, path);
+    inv->l1s++;
+    if (!text || !*text) {
+        if (!inv->l1_unset++) {
+            inv->unset_path = g_strdup(path);
+        }
+        return;
+    }
+    g_test_message("%s system serial %s", path, text);
+    if (!inv->system_serial) {
+        inv->system_serial = g_steal_pointer(&text);
+    } else if (strcmp(inv->system_serial, text)) {
+        inv->l1_differing++;
+    }
+}
+
 static void check_object(Inventory *inv, const char *path,
                          QList *properties)
 {
+    check_system_serial(inv, path, properties);
     QDict *serial = find_prop(properties, "serial");
     QDict *family = find_prop(properties, "family");
     QDict *identity = find_prop(properties, "identity-index");
@@ -337,6 +374,52 @@ static char *blank_image(size_t size)
     return path;
 }
 
+/*
+ * The host id the guest builds from a system serial. A serial of twelve
+ * characters, the Fuel's station address, is read as hex digits 4 to 11,
+ * as the kernel's system-id routine does for that board. Any other is
+ * packed the way its licensing host id is: the low nibble of each of
+ * the first ten characters, most significant first. Zero means no
+ * license can match.
+ */
+static uint64_t host_id(const char *serial)
+{
+    uint64_t id = 0;
+
+    if (strlen(serial) == 12) {
+        g_autofree char *digits = g_strndup(serial + 4, 8);
+
+        return g_ascii_strtoull(digits, NULL, 16);
+    }
+    for (size_t i = 0; serial[i] && i < 10; i++) {
+        id = (id << 4) | (serial[i] & 0xf);
+    }
+    return id;
+}
+
+static void check_system_serials(const Inventory *inv, const MachineCase *c)
+{
+    if (!inv->l1s || c->ip32) {
+        return;
+    }
+    if (inv->l1_unset) {
+        g_error("%s and %u more L1s have no system serial", inv->unset_path,
+                inv->l1_unset - 1);
+    }
+    g_assert_cmpuint(inv->l1_differing, ==, 0);
+    g_assert_nonnull(inv->system_serial);
+    if (g_str_has_prefix(c->name, "fuel")) {
+        /* The Fuel's station address, which the PROM turns into bytes. */
+        g_assert_cmpuint(strlen(inv->system_serial), ==, 12);
+        g_assert_true(g_regex_match_simple("^[0-9A-F]{12}$",
+                                           inv->system_serial, 0, 0));
+    } else {
+        g_assert_true(g_regex_match_simple("^L[0-9]{7}$",
+                                           inv->system_serial, 0, 0));
+    }
+    g_assert_cmphex(host_id(inv->system_serial), !=, 0);
+}
+
 static void test_machine_serials(const void *data)
 {
     const MachineCase *c = data;
@@ -396,6 +479,7 @@ static void test_machine_serials(const void *data)
         g_assert_cmpstr(qdict_get_str(reply, "return"), ==, product.serial);
     }
     qtest_quit(qts);
+    check_system_serials(&inv, c);
 
     /*
      * Earlier profiles expose a synthetic one-wire or L1 board identity.
@@ -410,6 +494,7 @@ static void test_machine_serials(const void *data)
     g_hash_table_destroy(inv.roms);
     g_hash_table_destroy(inv.barcodes);
     g_hash_table_destroy(inv.l1_instances);
+    g_free(inv.system_serial);
     if (c->ip32) {
         o2_product_cleanup(&product);
     } else {
@@ -449,6 +534,111 @@ static void test_routes_unavailable_on_bedrock(void)
     g_assert_true(qdict_haskey(response, "error"));
     qtest_quit(qts);
     g_unlink(prom);
+}
+
+/*
+ * The system serial an L1 of machine case @c answers with when the
+ * machine's identity-key is @key, read from the first L1 found.
+ */
+static char *serial_for_key(const MachineCase *c, const char *key)
+{
+    g_autofree char *machine = g_strndup(c->args, strcspn(c->args, ", "));
+    const char *rest = c->args + strlen(machine);
+    g_autofree char *prom = blank_image(c->ip35 ? IP35_PROM_SIZE :
+                                        IP27_FLASH_SIZE);
+    g_autofree char *io9_data = NULL;
+    g_autofree char *io9_clock = NULL;
+    g_autofree char *storage = NULL;
+    g_autoptr(GString) extra = g_string_new("");
+    Inventory inv = {
+        .roms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                      g_free),
+        .barcodes = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                          g_free),
+        .l1_instances = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                              g_free, g_free),
+    };
+    QTestState *qts;
+    char *serial;
+
+    if (c->io9) {
+        io9_data = blank_image(0x8000);
+        io9_clock = blank_image(16);
+    }
+    if (c->storage) {
+        storage = blank_image(EXPANSION_STORAGE);
+    }
+    if (io9_data) {
+        g_string_append_printf(extra,
+            " -drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw"
+            " -drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw",
+            io9_data, io9_clock);
+    }
+    if (storage) {
+        g_string_append_printf(extra,
+            " -drive if=none,id=cfg,file=%s,format=raw", storage);
+    }
+    qts = qtest_initf("-M %s,identity-key=%s%s -bios %s %s -display none -S",
+                      machine, key, rest, prom, extra->str);
+    walk(qts, &inv, "/machine");
+    qtest_quit(qts);
+    check_system_serials(&inv, c);
+    serial = g_steal_pointer(&inv.system_serial);
+    g_hash_table_destroy(inv.roms);
+    g_hash_table_destroy(inv.barcodes);
+    g_hash_table_destroy(inv.l1_instances);
+    g_unlink(prom);
+    if (io9_data) {
+        g_unlink(io9_data);
+        g_unlink(io9_clock);
+    }
+    if (storage) {
+        g_unlink(storage);
+    }
+    return serial;
+}
+
+/*
+ * Guests that differ in their identity key differ in system serial, and
+ * so in host id, and one key always gives the same serial, so a
+ * node-locked license stays valid across restarts.
+ */
+static void test_serial_follows_identity_key(const void *data)
+{
+    const MachineCase *c = data;
+    g_autofree char *machine = g_strndup(c->args, strcspn(c->args, ", "));
+    g_autofree char *first = NULL;
+    g_autofree char *again = NULL;
+    g_autofree char *other = NULL;
+
+    if (!qtest_has_machine(machine)) {
+        g_test_skip("machine not built in");
+        return;
+    }
+    first = serial_for_key(c, "/disks/guest-a.img");
+    again = serial_for_key(c, "/disks/guest-a.img");
+    other = serial_for_key(c, "/disks/guest-b.img");
+    g_assert_nonnull(first);
+    g_assert_cmpstr(first, ==, again);
+    g_assert_cmpstr(first, !=, other);
+    g_assert_cmphex(host_id(first), !=, host_id(other));
+}
+
+/* One of each family is enough to show the key reaches every kind of L1. */
+static bool case_checks_identity_key(const char *name)
+{
+    static const char * const names[] = {
+        "fuel", "origin3200", "origin3400-two-routers", "onyx3000",
+        "origin350-ip53", "onyx350-ip53", "origin3900-ip53",
+        "tezro-ip53-2cpu", "tezro-rack-ip53",
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(names); i++) {
+        if (g_str_equal(name, names[i])) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static const TopologyExtra *topology_extra(const char *topology)
@@ -668,6 +858,13 @@ int main(int argc, char **argv)
             "sgi/synthetic-serial/%s", c->name);
 
         qtest_add_data_func(path, c, test_machine_serials);
+        if (case_checks_identity_key(c->name)) {
+            g_autofree char *seed_path = g_strdup_printf(
+                "sgi/synthetic-serial-key/%s", c->name);
+
+            qtest_add_data_func(seed_path, c,
+                                test_serial_follows_identity_key);
+        }
     }
     qtest_add_func("sgi/synthetic-serial/routes-unavailable-on-bedrock",
                    test_routes_unavailable_on_bedrock);
