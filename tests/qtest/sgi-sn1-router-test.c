@@ -2433,6 +2433,277 @@ static void test_held_migration(void)
     rmdir(dir);
 }
 
+/*
+ * Warm reset forwarding. The adapter plays a neighbouring chip and delivers
+ * a warm reset to a port of router r; test-peer devices stand in for the
+ * chips across the other cables and count the resets they take. Router
+ * registers of the second and third routers are reached by vector from r.
+ * The permit and the mask direction are inferred (see the manual page).
+ */
+#define RING_ARGS ARGS " -device sgi-sn1-router,id=b " \
+    "-device sgi-sn1-router,id=c " \
+    "-device sgi-sn1-router-test-peer,id=pa " \
+    "-device sgi-sn1-router-test-peer,id=pb " \
+    "-device sgi-sn1-router-test-peer,id=pc " \
+    "-device sgi-sn1-router-test-peer,id=pd " \
+    "-device sgi-net-cable,id=ca,end0=r,end0-index=3,end1=pa,end1-index=0 " \
+    "-device sgi-net-cable,id=cb,end0=b,end0-index=1,end1=pb,end1-index=0 " \
+    "-device sgi-net-cable,id=cc,end0=c,end0-index=1,end1=pc,end1-index=0 " \
+    "-device sgi-net-cable,id=cd,end0=r,end0-index=2,end1=pd,end1-index=0 " \
+    "-device sgi-net-cable,id=rb,end0=r,end0-index=8,end1=b,end1-index=7 " \
+    "-device sgi-net-cable,id=bc,end0=b,end0-index=8,end1=c,end1-index=7 " \
+    "-device sgi-net-cable,id=cr,end0=c,end0-index=8,end1=r,end1-index=1"
+
+#define VECTOR_B 8
+#define VECTOR_C 0x88
+
+static void attach(QTestState *s, const char *router, unsigned port,
+                   const char *cable)
+{
+    g_autofree char *path = g_strdup_printf("/machine/peripheral/%s", router);
+    g_autofree char *prop = g_strdup_printf("port%u-cable", port);
+    g_autofree char *value = g_strdup_printf("/machine/peripheral/%s", cable);
+
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':%s,'property':%s,'value':%s}}", path, prop, value);
+}
+
+static QTestState *ring_init(void)
+{
+    QTestState *s = qtest_init(RING_ARGS);
+
+    attach(s, "r", 3, "ca");
+    attach(s, "b", 1, "cb");
+    attach(s, "c", 1, "cc");
+    attach(s, "r", 2, "cd");
+    attach(s, "r", 8, "rb");
+    attach(s, "b", 7, "rb");
+    attach(s, "b", 8, "bc");
+    attach(s, "c", 7, "bc");
+    attach(s, "c", 8, "cr");
+    attach(s, "r", 1, "cr");
+    return s;
+}
+
+static void reg_write(QTestState *s, uint64_t vector, uint64_t addr,
+                      uint64_t value)
+{
+    set(s, "vector", vector);
+    qtest_writeq(s, BASE + addr, value);
+    g_assert_cmpuint(get(s, "result"), ==, 2);
+    set(s, "vector", 0);
+}
+
+static uint64_t reg_read(QTestState *s, uint64_t vector, uint64_t addr)
+{
+    uint64_t value;
+
+    set(s, "vector", vector);
+    value = qtest_readq(s, BASE + addr);
+    g_assert_cmpuint(get(s, "result"), ==, 2);
+    set(s, "vector", 0);
+    return value;
+}
+
+static uint64_t peer_count(QTestState *s, const char *id)
+{
+    g_autofree char *path = g_strdup_printf("/machine/peripheral/%s", id);
+    QDict *r = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'warm-resets'}}", path);
+    uint64_t value = qnum_get_uint(qobject_to(QNum, qdict_get(r, "return")));
+
+    qobject_unref(r);
+    return value;
+}
+
+static void warm_reset(QTestState *s, unsigned port)
+{
+    set(s, "warm-reset", port);
+}
+
+/* Program one router: permit bits and the eight per-link masks. */
+static void program(QTestState *s, uint64_t vector, uint64_t permit,
+                    const uint64_t mask[8])
+{
+    reg_write(s, vector, 0x10, permit);
+    for (unsigned p = 0; p < 8; p++) {
+        reg_write(s, vector, bank[p] + 0x18, mask[p]);
+    }
+}
+
+static void test_warm_reset_forwarded(void)
+{
+    QTestState *s = ring_init();
+    /*
+     * Arrival on port 4 (an unwired port; the adapter is the sender). The
+     * permit is bit 3. Ports 3 and 8 may forward it (bit 3 in their masks).
+     * Port 2 has a peer, but its mask carries no bit for port 4. Port 1
+     * carries the bit for port 3, the wrong direction for this arrival.
+     * Port 4's own mask has the bit set, which does not send it back.
+     */
+    const uint64_t mask[8] = { 0x04, 0, 0x08, 0x08, 0, 0, 0, 0x08 };
+    uint64_t before[12];
+
+    program(s, 0, 0x08, mask);
+    /* Cut the ring so only the first router's own ports take part. */
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/rb','property':'down','value':true}}");
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/cr','property':'down','value':true}}");
+    qtest_writeq(s, BASE + 0x100, UINT64_C(1) << 63);
+    qtest_writeq(s, BASE + bank[3] + 0x200, 5);
+    for (unsigned i = 0; i < 8; i++) {
+        before[i] = qtest_readq(s, BASE + bank[i] + 0x18);
+    }
+    before[8] = qtest_readq(s, BASE + 0x10);
+    before[9] = qtest_readq(s, BASE + 0x100);
+    before[10] = qtest_readq(s, BASE + bank[3] + 0x200);
+
+    warm_reset(s, 4);
+    g_assert_cmpuint(get(s, "warm-reset-taken"), ==, 1);
+    g_assert_cmpuint(peer_count(s, "pa"), ==, 1);
+    g_assert_cmpuint(peer_count(s, "pd"), ==, 0);
+    g_assert_cmpuint(peer_count(s, "pb"), ==, 0);
+    g_assert_cmpuint(peer_count(s, "pc"), ==, 0);
+    /* An accepted reset leaves the router's registers as they were. */
+    for (unsigned i = 0; i < 8; i++) {
+        g_assert_cmphex(qtest_readq(s, BASE + bank[i] + 0x18), ==, before[i]);
+    }
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, before[8]);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, before[9]);
+    g_assert_cmphex(qtest_readq(s, BASE + bank[3] + 0x200), ==, before[10]);
+    qtest_quit(s);
+}
+
+static void test_warm_reset_refused_without_permit(void)
+{
+    QTestState *s = ring_init();
+    const uint64_t open_masks[8] = { 0xff, 0xff, 0xff, 0xff,
+                                     0xff, 0xff, 0xff, 0xff };
+
+    /* Every mask open, but the arrival port's permit bit (bit 3) clear. */
+    program(s, 0, 0xf7, open_masks);
+    warm_reset(s, 4);
+    g_assert_cmpuint(get(s, "warm-reset-taken"), ==, 0);
+    g_assert_cmpuint(peer_count(s, "pa"), ==, 0);
+    g_assert_cmpuint(peer_count(s, "pd"), ==, 0);
+    g_assert_cmpuint(peer_count(s, "pb"), ==, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 0xf7);
+    /* Setting the bit lets the same arrival through. */
+    qtest_writeq(s, BASE + 0x10, 0xff);
+    warm_reset(s, 4);
+    g_assert_cmpuint(get(s, "warm-reset-taken"), ==, 1);
+    g_assert_cmpuint(peer_count(s, "pa"), ==, 1);
+    qtest_quit(s);
+}
+
+static void test_warm_reset_ring_visits_each_chip_once(void)
+{
+    QTestState *s = ring_init();
+    /* Arrival on port 4 of r; every router passes it to every other port. */
+    const uint64_t open_masks[8] = { 0xff, 0xff, 0xff, 0xff,
+                                     0xff, 0xff, 0xff, 0xff };
+
+    program(s, 0, 0xff, open_masks);
+    program(s, VECTOR_B, 0xff, open_masks);
+    program(s, VECTOR_C, 0xff, open_masks);
+    warm_reset(s, 4);
+    g_assert_cmpuint(get(s, "warm-reset-taken"), ==, 1);
+    /*
+     * r reaches b through port 8 and c through port 1; b and c each reach
+     * the other and r again. Every chip still takes it exactly once.
+     */
+    g_assert_cmpuint(peer_count(s, "pa"), ==, 1);
+    g_assert_cmpuint(peer_count(s, "pd"), ==, 1);
+    g_assert_cmpuint(peer_count(s, "pb"), ==, 1);
+    g_assert_cmpuint(peer_count(s, "pc"), ==, 1);
+    /* None of the three routers lost a register. */
+    g_assert_cmphex(reg_read(s, 0, 0x10), ==, 0xff);
+    g_assert_cmphex(reg_read(s, VECTOR_B, 0x10), ==, 0xff);
+    g_assert_cmphex(reg_read(s, VECTOR_C, 0x10), ==, 0xff);
+    g_assert_cmphex(reg_read(s, VECTOR_C, bank[7] + 0x18), ==, 0xff);
+    /* A second reset is a new event. */
+    warm_reset(s, 4);
+    g_assert_cmpuint(peer_count(s, "pa"), ==, 2);
+    g_assert_cmpuint(peer_count(s, "pc"), ==, 2);
+    qtest_quit(s);
+}
+
+static void test_warm_reset_second_router_applies_its_own_rule(void)
+{
+    QTestState *s = ring_init();
+    const uint64_t open_masks[8] = { 0xff, 0xff, 0xff, 0xff,
+                                     0xff, 0xff, 0xff, 0xff };
+    /*
+     * r forwards only out port 8 (bit 3 in mask 8). b arrives on port 7, so
+     * it needs permit bit 6, and its masks pass a port 7 arrival only to
+     * port 1. c is never offered the reset: b's port 8 mask has no bit 6.
+     */
+    const uint64_t r_masks[8] = { 0, 0, 0, 0, 0, 0, 0, 0x08 };
+    const uint64_t b_masks[8] = { 0x40, 0, 0, 0, 0, 0, 0, 0 };
+
+    program(s, 0, 0x08, r_masks);
+    program(s, VECTOR_B, 0x40, b_masks);
+    program(s, VECTOR_C, 0xff, open_masks);
+    warm_reset(s, 4);
+    g_assert_cmpuint(peer_count(s, "pb"), ==, 1);
+    g_assert_cmpuint(peer_count(s, "pc"), ==, 0);
+    g_assert_cmpuint(peer_count(s, "pa"), ==, 0);
+    /* b with its permit clear refuses what r passes on, and stops there. */
+    reg_write(s, VECTOR_B, 0x10, 0);
+    warm_reset(s, 4);
+    g_assert_cmpuint(peer_count(s, "pb"), ==, 1);
+    g_assert_cmpuint(get(s, "warm-reset-taken"), ==, 1);
+    qtest_quit(s);
+}
+
+static void test_warm_reset_offline_router_forwards_nothing(void)
+{
+    QTestState *s = ring_init();
+    const uint64_t open_masks[8] = { 0xff, 0xff, 0xff, 0xff,
+                                     0xff, 0xff, 0xff, 0xff };
+
+    program(s, 0, 0xff, open_masks);
+    router_line(s, "r", "reset-hold", 1);
+    warm_reset(s, 4);
+    g_assert_cmpuint(get(s, "warm-reset-taken"), ==, 0);
+    g_assert_cmpuint(peer_count(s, "pa"), ==, 0);
+    router_line(s, "r", "reset-hold", 0);
+    /* The registers came back cold, so the permit is clear. */
+    warm_reset(s, 4);
+    g_assert_cmpuint(get(s, "warm-reset-taken"), ==, 0);
+    program(s, 0, 0xff, open_masks);
+    router_line(s, "r", "power", 0);
+    warm_reset(s, 4);
+    g_assert_cmpuint(get(s, "warm-reset-taken"), ==, 0);
+    router_line(s, "r", "power", 1);
+    program(s, 0, 0xff, open_masks);
+    warm_reset(s, 4);
+    g_assert_cmpuint(get(s, "warm-reset-taken"), ==, 1);
+    g_assert_cmpuint(peer_count(s, "pa"), ==, 1);
+    qtest_quit(s);
+}
+
+static void test_warm_reset_offline_neighbour_not_reached(void)
+{
+    QTestState *s = ring_init();
+    const uint64_t open_masks[8] = { 0xff, 0xff, 0xff, 0xff,
+                                     0xff, 0xff, 0xff, 0xff };
+
+    program(s, 0, 0xff, open_masks);
+    program(s, VECTOR_C, 0xff, open_masks);
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/cr','property':'down','value':true}}");
+    router_line(s, "b", "power", 0);
+    warm_reset(s, 4);
+    /* b is off and the link to c from r is down: only r's own ports. */
+    g_assert_cmpuint(peer_count(s, "pa"), ==, 1);
+    g_assert_cmpuint(peer_count(s, "pb"), ==, 0);
+    g_assert_cmpuint(peer_count(s, "pc"), ==, 0);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2505,6 +2776,18 @@ int main(int argc, char **argv)
                    test_repeated_level_keeps_registers);
     qtest_add_func("/sgi/sn1-router/reset-hold/survives-system-reset",
                    test_system_reset_keeps_hold_lines);
+    qtest_add_func("/sgi/sn1-router/warm-reset/forwarded-by-permit-and-mask",
+                   test_warm_reset_forwarded);
+    qtest_add_func("/sgi/sn1-router/warm-reset/refused-without-permit",
+                   test_warm_reset_refused_without_permit);
+    qtest_add_func("/sgi/sn1-router/warm-reset/ring-visits-each-chip-once",
+                   test_warm_reset_ring_visits_each_chip_once);
+    qtest_add_func("/sgi/sn1-router/warm-reset/each-router-applies-its-rule",
+                   test_warm_reset_second_router_applies_its_own_rule);
+    qtest_add_func("/sgi/sn1-router/warm-reset/offline-router-forwards-nothing",
+                   test_warm_reset_offline_router_forwards_nothing);
+    qtest_add_func("/sgi/sn1-router/warm-reset/offline-neighbour-not-reached",
+                   test_warm_reset_offline_neighbour_not_reached);
     qtest_add_func("/sgi/sn1-router/reset-hold/migration",
                    test_held_migration);
     return g_test_run();

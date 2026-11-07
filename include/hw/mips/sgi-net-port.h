@@ -103,6 +103,12 @@ typedef struct SGINetPacket {
     unsigned int hops;
 } SGINetPacket;
 
+/*
+ * One warm reset travelling the network. It records the chips the reset has
+ * reached so that a cabled loop visits each chip once.
+ */
+typedef struct SGINetWarmReset SGINetWarmReset;
+
 typedef struct SGINetPortLinkState {
     /* Whether this port itself is administratively enabled. */
     bool enabled;
@@ -170,6 +176,18 @@ struct SGINetPortClass {
                                   SGINetPacket *packet, Error **errp);
 
     /*
+     * A warm reset arrives on this port from the device across its cable.
+     * The device takes it or refuses it and returns whether it took it. A
+     * chip first calls sgi_net_warm_reset_visit() with itself; when that
+     * returns false the chip has already seen this reset and does nothing.
+     * A Router that takes the reset passes it on out the ports its own
+     * registers allow, by calling sgi_net_port_warm_reset() on each
+     * neighbour. Optional; a port without it takes nothing.
+     */
+    bool (*warm_reset)(Object *port, unsigned int index,
+                       SGINetWarmReset *event);
+
+    /*
      * This port observed a reply-path data error and is charging it against
      * whoever sent to it (a Router's per-port diagnostic bit, checked by the
      * sender during a read's backward path walk).
@@ -195,6 +213,25 @@ bool sgi_net_port_negotiate_eight_bit(Object *port, unsigned int index,
 SGINetPacketResult sgi_net_port_receive(Object *port, unsigned int index,
                                         SGINetPacket *packet, Error **errp);
 void sgi_net_port_record_check_error(Object *port, unsigned int index);
+
+/*
+ * Start a warm reset that leaves origin (which counts as visited), deliver it
+ * to a port with sgi_net_port_warm_reset(), and free it with
+ * sgi_net_warm_reset_end().
+ */
+SGINetWarmReset *sgi_net_warm_reset_begin(Object *origin);
+void sgi_net_warm_reset_end(SGINetWarmReset *event);
+
+/* Record chip as visited; false if this reset had already reached it. */
+bool sgi_net_warm_reset_visit(SGINetWarmReset *event, Object *chip);
+
+/*
+ * Deliver the reset to a port. Returns whether the chip behind it took the
+ * reset; false for a refusal, a chip the reset had already reached, or a
+ * port without a warm reset hook.
+ */
+bool sgi_net_port_warm_reset(Object *port, unsigned int index,
+                             SGINetWarmReset *event);
 
 /*
  * Append one hop's arrival port to the packet's reply vector, low nybble
