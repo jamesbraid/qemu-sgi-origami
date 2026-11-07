@@ -183,14 +183,17 @@ typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
 #define SGI_KONA_RESET_ARG 0x800220
 
 /*
- * The kernel driver's own initialisation writes 0x100 here, from a shadow in
- * its per-device state, between its SGI_KONA_RESET_STROBE and
- * SGI_KONA_RESET_ARG writes. No driver read of this offset is established, so
- * reading zero is an approximation. This model accepts and stores the write,
- * but always answers a plain 0 on read -- unlike this window's other
- * plain-storage registers, which echo back what was written.
+ * The interrupt-enable register. Established: the kernel driver only
+ * stores to it (a 32-bit store; 0x100 after the reset pulse, 0xf7c at
+ * start, and bits 1 and 2 toggled from a software copy) and never reads
+ * it. Inferred: its bits match the interrupt cause register's, twelve
+ * on the second host-interface revision (mask 0xfff, ten on the first).
+ * The model stores those twelve bits and reads them back. Unknown: the
+ * reset value and whether bits above the mask read zero; the model
+ * resets it to 0 and drops the upper bits. A read has no side effect.
  */
 #define SGI_KONA_INT_ENABLE 0x800230
+#define SGI_KONA_INT_ENABLE_MASK 0xfff
 
 /*
  * The mailbox interrupt-cause register. Bit MAILBOX is established:

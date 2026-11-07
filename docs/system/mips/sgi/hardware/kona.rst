@@ -309,8 +309,9 @@ pipe has been read.
    * - ``0x800230``
      - Interrupt enable
      - 0
-     - W
-     - Stored, reads zero. Enables the video and low-water causes.
+     - R/W
+     - Twelve bits, mask ``0xfff``, stored and read back. Enables the video
+       and low-water causes.
    * - ``0x800238``
      - Interrupt cause
      - 0
@@ -912,6 +913,14 @@ from the IMPACT model, *inferred*. With no destination programmed it logs
 ``LOG_GUEST_ERROR`` and sends nothing. The XG vector is stored and never
 sent.
 
+The interrupt enable at ``0x800230`` is only ever stored by the kernel (a
+32-bit store; ``0x100`` after reset, ``0xf7c`` at start, bits 1 and 2
+toggled from a software copy), a *software expectation*. Its bits are
+*inferred* to match the cause register's, twelve on the second revision.
+The model stores those twelve bits and reads them back. The reset value
+and what the bits above the mask read are *unknown*; the model resets to
+zero and drops them. A read has no side effect.
+
 The general vector carries the cause bits:
 
 - Mailbox, bit 4: set when a reply or completion word is queued. A
@@ -1093,7 +1102,7 @@ Model limits
   guest loads. Display-mode commands ``0x1e6``, display-ID configuration
   ``0x133`` and ``0x1ff`` are consumed without effect.
 - The low-water and activity rules are the model's readings; the
-  interrupt enable reads zero.
+  interrupt enable's reset value is unknown.
 - The kernel's interrupt handlers write ``0x800228``, which is not
   modelled; that write, and any other unlisted register access, logs
   ``LOG_UNIMP``.

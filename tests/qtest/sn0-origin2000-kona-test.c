@@ -703,12 +703,10 @@ static void kona_assert_offset_not_unimplemented(const char *found,
  * 0x8000 to REG_RESET_ARG. Each write must be accepted without an
  * unimplemented-offset log.
  *
- * The readbacks alone cannot show that: REG_INT_ENABLE used to fall to
- * the unimplemented-offset default, which also reads zero, and the other
- * two registers already echoed their writes. So this runs its own
- * instance with -d unimp and checks the log names none of the three
- * offsets. One deliberately unimplemented read at the end proves the log
- * would have caught one.
+ * The readbacks alone cannot show that, so this runs its own instance
+ * with -d unimp and checks the log names none of the three offsets. One
+ * deliberately unimplemented read at the end proves the log would have
+ * caught one.
  */
 static void test_konainitialize_register_sequence_is_accepted(void)
 {
@@ -722,7 +720,7 @@ static void test_konainitialize_register_sequence_is_accepted(void)
     g_assert_cmphex(qtest_readl(s, REG_RESET_STROBE), ==, 0);
 
     qtest_writel(s, REG_INT_ENABLE, 0x100);
-    g_assert_cmphex(qtest_readl(s, REG_INT_ENABLE), ==, 0);
+    g_assert_cmphex(qtest_readl(s, REG_INT_ENABLE), ==, 0x100);
 
     qtest_writel(s, REG_RESET_ARG, 0x8000);
     g_assert_cmphex(qtest_readl(s, REG_RESET_ARG), ==, 0x8000);
@@ -737,6 +735,28 @@ static void test_konainitialize_register_sequence_is_accepted(void)
     kona_assert_offset_not_unimplemented(found, 0x800300);
     kona_assert_offset_not_unimplemented(found, 0x800230);
     kona_assert_offset_not_unimplemented(found, 0x800220);
+}
+
+/*
+ * The interrupt enable stores its twelve bits and reads them back; the
+ * kernel's own values 0x100 and 0xf7c round-trip, bits above bit 11 are
+ * dropped, it resets to 0 and the host-interface reset pulse clears it.
+ */
+static void test_int_enable_stores_twelve_bits(void)
+{
+    kona_reset();
+    g_assert_cmphex(qtest_readl(qts, REG_INT_ENABLE), ==, 0);
+    qtest_writel(qts, REG_INT_ENABLE, 0x100);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_ENABLE), ==, 0x100);
+    qtest_writel(qts, REG_INT_ENABLE, 0xf7c);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_ENABLE), ==, 0xf7c);
+    qtest_writel(qts, REG_INT_ENABLE, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_ENABLE), ==, 0xfff);
+    qtest_writel(qts, REG_RESET_STROBE, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_ENABLE), ==, 0);
+    qtest_writel(qts, REG_INT_ENABLE, 0x6);
+    kona_reset();
+    g_assert_cmphex(qtest_readl(qts, REG_INT_ENABLE), ==, 0);
 }
 
 static void test_eeprom_data_answers_checked_address_and_zero_elsewhere(void)
@@ -1939,6 +1959,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona/"
                    "konainitialize-register-sequence-is-accepted",
                    test_konainitialize_register_sequence_is_accepted);
+    qtest_add_func("sn0/origin2000/kona/int-enable-stores-twelve-bits",
+                   test_int_enable_stores_twelve_bits);
     qtest_add_func("sn0/origin2000/kona/"
                    "eeprom-data-answers-checked-address-and-zero-elsewhere",
                    test_eeprom_data_answers_checked_address_and_zero_elsewhere);

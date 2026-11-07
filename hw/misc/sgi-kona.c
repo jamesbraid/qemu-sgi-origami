@@ -19652,8 +19652,7 @@ static uint64_t sgi_kona_read_word(void *opaque, hwaddr addr,
         value = s->reset_arg;
         break;
     case SGI_KONA_INT_ENABLE:
-        /* Approximation: reads zero. See the header comment. */
-        value = 0;
+        value = s->int_enable;
         break;
     case SGI_KONA_INT_CAUSE:
         if (s->reason_queue_len) {
@@ -19806,7 +19805,7 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
         s->credit_config = value;
         break;
     case SGI_KONA_INT_ENABLE:
-        s->int_enable = value;
+        s->int_enable = value & SGI_KONA_INT_ENABLE_MASK;
         sgi_kona_video_deliver(s);
         break;
     case SGI_KONA_INT_CAUSE:
