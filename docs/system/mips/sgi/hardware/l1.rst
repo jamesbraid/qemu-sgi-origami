@@ -2078,10 +2078,11 @@ the case does not arise, *inferred*. The model follows the first set.
 
 The controller has an opt-in ``pbay`` character device property carrying the
 framed bytes; ``pbay-address`` (default ``0x0001``) is the L1's own address
-and ``pbay-poll-ms`` (default 1000, at least 1; the controller refuses to
-start with 0) the time between polling passes, each an *approximation*.
-``pbay-tick-us`` is described under the receive path. With the property unset, the controller behaves as it did
-before and the link does not exist. With it set, the controller refuses to
+and ``pbay-poll-ms`` (default 0) overrides the poll period for tests. The
+default period is the source material's, 6000 + 100 * bay ticks (:ref:`below
+<sgi-l1-pbay-poll>`). ``pbay-tick-us`` is described under the receive path.
+With the property unset, the controller behaves as it did before and the
+link does not exist. With it set, the controller refuses to
 start on a brick type that does not run the task, and blocks migration, because
 the bay's state lies outside the machine.
 
@@ -2154,34 +2155,66 @@ how many sensors a record covers, so the model takes six and eight, a *model
 choice*. The count of records read is exposed as ``pbay-records`` and slot 0's
 device as ``pbay-fru-slot0``.
 
-Once polling is enabled (below) the model reads the mapped supply and port
-sensors in turn on each pass. Each pass logs to the L1 log as the polling
-task does, *software expectation*. The model keeps the last value of each
-sensor, and nothing is stored at start, so a fault already present on the
-first pass is logged. For sensors 1 to 6 (``DPS`` 1 to 6) bits 1 to 3 are
-logged as fail, predictive fail and AC fail when they go from 0 to 1; a
-supply read with bit 0 set (not inserted) clears its stored value, so its
-faults are new when it returns. The set of supplies with bit 0 clear is
-compared with the set of the previous pass: a supply that leaves is logged
-as removed and one that arrives as inserted. The first pass logs no
-presence, and a pass with no supply present changes nothing, *software
-expectation*. For sensors 7 to 14 (``DCport`` 1 to 8) a port whose bit 0 is
-set is skipped and keeps its stored value, and bit 1 is logged as a failure
-when it goes from 0 to 1. The line texts begin with ``Power Bay DPS n`` or
-``Power Bay DCport n`` and carry the words the polling task logs; the
-leading words and which word follows which bit are *inferred*. The task also
-repeats the AC-fail and port-failure reads before it logs (four and three
-consecutive sightings) and logs at most one fault per supply per pass; the
-model does neither yet, an *approximation*.
+.. _sgi-l1-pbay-poll:
 
-The pass runs only while the environment-monitoring setting (L1 setting 85,
-four bits) is nonzero, the link is ready and no other request holds the bay;
-otherwise the wait starts again. The setting is zero at power-on, so a
-controller with a bay polls nothing until ``pbay env on`` stores ``0x0f``
-(*software expectation* for the store, *inferred* that nothing else sets it).
-The model keeps the setting across a restart of the link. The pass follows
-a wait of ``pbay-poll-ms`` from the link becoming ready or from the end of
-the last request, an *approximation* of the real period.
+The polling task waits on its queue for ``6000 + 100 * bay`` ticks (60 s plus
+1 s per bay number at 10 ms a tick, *software expectation* for the formula,
+*inferred* for the tick). A request to the bay restarts the wait and a
+timeout runs the poll. The model arms the wait when the link becomes ready
+and after every command or pass that uses the bay; a change of the
+monitoring setting is not a request to the bay. The poll does nothing, and
+the wait starts again, unless the environment-monitoring setting (L1
+setting 85, four bits) is nonzero, the status is ready and no other request
+holds the bay; it sets the status to "busy" while it runs. The setting is
+zero at power-on, so a controller with a bay polls nothing until ``pbay env
+on`` stores ``0x0f`` (*software expectation* for the store, *inferred* that
+nothing else sets it). Bit 0 of the setting enables the presence and AC-fail
+tests, bit 1 the supply-fail test, bit 2 the predictive-fail test and bit 3
+the DC ports, *software expectation*. ``pbay-poll-ms``, when nonzero,
+replaces the period for tests; ``pbay-tick-us`` scales it otherwise.
+
+A pass reads the supplies' sensors (when any of bits 0 to 2 is set) and the
+ports' (bit 3), and each message goes to the L1 log, *software expectation*.
+The line texts begin with ``Power Bay DPS n`` or ``Power Bay DCport n`` and
+carry the words the polling task logs. The model keeps the last value of each
+sensor, and nothing is stored at start, so a fault already present on the
+first pass counts as new. For sensors 1 to 6 (``DPS`` 1 to 6) bit 0 set means
+not inserted and clears the stored value, so a returning supply's faults are
+new. Per supply the first matching test wins, so a pass logs at most one
+fault for it: AC fail (bit 3 newly set), then fail (bit 1), then predictive
+fail (bit 2). Fail and predictive fail are logged at once. An AC fail is
+logged on the fourth consecutive sighting, with three immediate re-reads of
+all six supplies between; a supply whose bit is gone at any re-read is not
+logged. For sensors 7 to 14 (``DCport`` 1 to 8) a port whose bit 0 is set is
+skipped and keeps its stored value, and bit 1 newly set on a port is logged
+on the third consecutive sighting, with a re-read of the ports after 100
+ticks. The source material does not say whether the two port re-reads are one
+wait each or one wait in all, nor whether a supply with an AC candidate that
+fails the debounce still lets the fail test run; the model waits 100 ticks
+before each of two re-reads and lets the AC candidate take the supply's turn,
+a *model choice*. A consequence of that choice: a supply with a new AC-fail
+bit that then fails the debounce, and whose fail bit is also set, logs
+neither fault on that pass, and the fail is new again only if its bit goes
+from 0 to 1 later. The fail and predictive tests use the last reading.
+
+The set of supplies with bit 0 clear is compared with L1 setting 105, the
+expected-supply mask (bit n-1 for supply n; zero means no presence messages).
+A supply that leaves it is logged as removed and one that arrives as
+inserted, then the present set is written back when it differs. So the first
+pass on a fresh record logs nothing and stores the baseline, and a pass that
+finds no supply present is a failed read that skips the step, *software
+expectation*. A supply whose single read fails (no answer after the retries)
+is treated like one that is not present for that pass, so with the other
+supplies answering it is logged as removed and as inserted when it answers
+again; how the task treats one failed read is not in the source material, so
+this is a *model choice*. Settings 85 and 105 are the L1's, so a restart of the
+link keeps them; the previous readings are RAM and are cleared. The model does
+not migrate any of this, because a configured link blocks migration.
+
+Each message goes through the L1's event formatter, which adds two numbers
+and sends an event; the wrapper's text and the numbers' meaning are *unknown*.
+The model logs the bare message to the L1 log only, and logs ``LOG_UNIMP``
+for the wrapper.
 
 The ``pbay`` command
 --------------------

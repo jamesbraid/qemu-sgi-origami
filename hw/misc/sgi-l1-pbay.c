@@ -36,11 +36,10 @@
 #define CMD_TUNNEL      0x20
 
 /*
- * Retries (datasheet "Transaction retries and timeouts"): every request
- * allows three transmissions with up to three reads each. A read that times
- * out goes to the next transmission, which waits PB_RESEND_TICKS first; a
- * frame that fails the reply checks costs a read, and the next read is made
- * without resending.
+ * Retries: every request allows three transmissions with up to three reads
+ * each. A read that times out goes to the next transmission, which waits
+ * PB_RESEND_TICKS first; a frame that fails the reply checks costs a read,
+ * and the next read is made without resending.
  */
 #define PB_TRANSMISSIONS    3
 #define PB_READS            3
@@ -54,8 +53,9 @@
 /* Task start waits 100 * bay + 300 ticks, bay being L1 setting 2. */
 #define PB_START_TICKS(bay) (100 * (bay) + 300)
 #define PB_MAX_RECORDS      64
+#define SCALE_MS            1000000
 
-/* The sensor and FRU-locator records the L1 reads (datasheet "Polling"). */
+/* The sensor and FRU-locator records the L1 reads. */
 #define REC_SENSOR_FULL     0x01
 #define REC_SENSOR_COMPACT  0x02
 #define REC_FRU_LOCATOR     0x11
@@ -110,6 +110,7 @@ enum {
     WAIT_START,
     WAIT_READ,
     WAIT_RESEND,
+    WAIT_REREAD,
 };
 
 /*
@@ -126,6 +127,7 @@ static void pb_wait(SGIL1Pbay *p, unsigned kind, uint64_t ticks)
 }
 
 static void pb_begin(SGIL1Pbay *p);
+static void pb_poll_read(SGIL1Pbay *p, unsigned phase);
 static void pb_bad_reply(SGIL1Pbay *p);
 
 static void pb_put(uint8_t *out, unsigned *n, uint8_t b)
@@ -244,44 +246,55 @@ static void pb_log(SGIL1Pbay *p, const char *fmt, ...)
     va_start(ap, fmt);
     text = g_strdup_vprintf(fmt, ap);
     va_end(ap);
+    qemu_log_mask(LOG_UNIMP, "sgi-l1: pbay: the event wrapper around a log "
+                  "message is not modelled\n");
     p->log(p->opaque, text);
 }
 
 /*
- * The log lines of one polling pass. Sensors 1 to 6 are the supplies: bit 0
- * set means not inserted, bits 1 to 3 fail, predictive fail and AC fail.
- * Sensors 7 to 14 are the DC ports: bit 0 set means the 48 V output is off
- * and the port is skipped, bit 1 set means failed. A fault is logged when
- * its bit goes from 0 to 1 against the value the poll stored last time.
- * Nothing is stored at start, so a fault already present on the first pass
- * counts as new. A supply read with bit 0 set clears its stored value; a
- * port read with bit 0 set is skipped and keeps it.
+ * The log lines of one polling pass, from the reading of each supply and
+ * port. Sensors 1 to 6 are the supplies: bit 0 set means not inserted, bits
+ * 1 to 3 fail, predictive fail and AC fail. Sensors 7 to 14 are the DC
+ * ports: bit 0 set means the 48 V output is off and the port is skipped,
+ * bit 1 set means failed. A fault is logged when its bit
+ * goes from 0 to 1 against the value the poll stored last time, and each
+ * test needs its bit of the monitoring setting. Nothing is stored at start,
+ * so a fault already present on the first pass counts as new. A supply read
+ * with bit 0 set clears its stored value; a port read with bit 0 set is
+ * skipped and keeps it. Per supply the first matching test wins (AC fail,
+ * fail, predictive fail), so one fault is logged per supply per pass.
+ * @ac_ok and @port_ok are the supplies whose AC fail and the ports whose
+ * failure stayed in sight through the re-reads.
  *
- * Insertion and removal compare the set of present supplies with the set
- * stored by the last pass, which starts empty: an empty stored set logs
- * nothing, and a pass that finds no supply present is treated as a failed
- * read and changes nothing.
+ * Insertion and removal compare the set of present supplies with the set in
+ * setting 105, which survives a restart of the link: zero logs nothing, the
+ * present set is written back when it differs, and a pass that finds no
+ * supply present is treated as a failed read and skips the step.
  */
-static void pb_compare(SGIL1Pbay *p)
+static void pb_evaluate(SGIL1Pbay *p, uint8_t ac_ok, uint8_t port_ok)
 {
-    uint8_t present = 0;
+    uint8_t env = p->env_mask;
 
-    for (unsigned s = 1; s <= PB_SUPPLIES; s++) {
-        if (!(p->supply[s] & 1)) {
-            present |= 1 << (s - 1);
-        }
-    }
-    if (present) {
-        for (unsigned s = 1; s <= PB_SUPPLIES && p->present; s++) {
-            if ((present ^ p->present) & (1 << (s - 1))) {
-                pb_log(p, "Power Bay DPS %u %s", s,
-                       present & (1 << (s - 1)) ? "inserted" : "removed");
+    if (env & 1) {
+        uint8_t present = 0;
+
+        for (unsigned s = 1; s <= PB_SUPPLIES; s++) {
+            if (!(p->supply[s] & 1)) {
+                present |= 1 << (s - 1);
             }
         }
-        p->present = present;
+        if (present) {
+            for (unsigned s = 1; s <= PB_SUPPLIES && p->present; s++) {
+                if ((present ^ p->present) & (1 << (s - 1))) {
+                    pb_log(p, "Power Bay DPS %u %s", s,
+                           present & (1 << (s - 1)) ? "inserted" : "removed");
+                }
+            }
+            p->present = present;
+        }
     }
 
-    for (unsigned s = 1; s <= PB_SUPPLIES; s++) {
+    for (unsigned s = 1; s <= PB_SUPPLIES && (env & 7); s++) {
         uint8_t now = p->supply[s];
         uint8_t rose = now & ~p->supply_last[s];
 
@@ -289,24 +302,24 @@ static void pb_compare(SGIL1Pbay *p)
             p->supply_last[s] = 0;
             continue;
         }
-        if (rose & 2) {
+        if ((env & 1) && (rose & 8)) {
+            if (ac_ok & (1 << (s - 1))) {
+                pb_log(p, "Power Bay DPS %u AC fail, lost redundancy", s);
+            }
+        } else if ((env & 2) && (rose & 2)) {
             pb_log(p, "Power Bay DPS %u fail, lost redundancy", s);
-        }
-        if (rose & 4) {
+        } else if ((env & 4) && (rose & 4)) {
             pb_log(p, "Power Bay DPS %u predictive fail", s);
-        }
-        if (rose & 8) {
-            pb_log(p, "Power Bay DPS %u AC fail, lost redundancy", s);
         }
         p->supply_last[s] = now;
     }
-    for (unsigned n = 1; n <= PB_PORTS; n++) {
+    for (unsigned n = 1; n <= PB_PORTS && (env & 8); n++) {
         uint8_t now = p->port[n];
 
         if (now & 1) {
             continue;
         }
-        if ((now & ~p->port_last[n]) & 2) {
+        if (((now & ~p->port_last[n]) & 2) && (port_ok & (1 << (n - 1)))) {
             pb_log(p, "Power Bay DCport %u fail, lost power to brick", n);
         }
         p->port_last[n] = now;
@@ -324,8 +337,8 @@ static uint8_t pb_sensor_at(const SGIL1Pbay *p, unsigned pos)
 }
 
 /*
- * The operator's texts for each state of the link. The sheet paraphrases
- * them: each starts "PBay " and ends in a newline.
+ * The operator's texts for each state of the link. They are paraphrased
+ * from the source material: each starts "PBay " and ends in a newline.
  */
 static const char *pb_state_text(const SGIL1Pbay *p)
 {
@@ -345,10 +358,17 @@ static const char *pb_state_text(const SGIL1Pbay *p)
     }
 }
 
+/*
+ * The poll task waits 6000 + 100 * bay ticks on its queue: a request
+ * restarts the wait and a timeout runs the poll. pbay-poll-ms, when nonzero,
+ * replaces the period for tests.
+ */
 static void pb_poll_arm(SGIL1Pbay *p)
 {
-    timer_mod(p->poll_timer,
-              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + p->poll_ms);
+    int64_t ns = p->poll_ms ? (int64_t)p->poll_ms * SCALE_MS :
+                 (6000 + 100 * (int64_t)p->bay_number) * p->tick_us * 1000;
+
+    timer_mod_ns(p->poll_timer, qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + ns);
 }
 
 /* The bay semaphore: a job holds it from its first request to its end. */
@@ -398,6 +418,7 @@ static void pb_out(SGIL1Pbay *p, const char *fmt, ...)
 
 /* The sensor scan: read each wanted, mapped sensor in turn. */
 static void pb_scan_done(SGIL1Pbay *p);
+static void pb_poll_scanned(SGIL1Pbay *p);
 
 static void pb_scan_next(SGIL1Pbay *p)
 {
@@ -478,18 +499,7 @@ static void pb_scan_done(SGIL1Pbay *p)
 {
     switch (p->job.kind) {
     case JOB_POLL:
-        for (unsigned s = 1; s <= PB_SUPPLIES; s++) {
-            p->supply[s] = ((p->job.got >> (s - 1)) & 1) ?
-                           p->job.value[s - 1] : 1;
-        }
-        for (unsigned n = 1; n <= PB_PORTS; n++) {
-            unsigned pos = PB_SUPPLIES + n - 1;
-
-            p->port[n] = ((p->job.got >> pos) & 1) ? p->job.value[pos] : 1;
-        }
-        pb_compare(p);
-        p->passes++;
-        pb_job_end(p, true);
+        pb_poll_scanned(p);
         break;
     case JOB_DPS:
         pb_dps_table(p);
@@ -526,9 +536,9 @@ static void pb_scan_reply(SGIL1Pbay *p, const uint8_t *d, unsigned len)
 /*
  * The FRU image of a device is read as one streamed read (pair 0x28,0x11):
  * the device byte, two address bytes of zero and a count of PB_FRU_BYTES. The
- * sheet does not say how the L1 sizes or addresses its reads (the latch
- * bytes' meaning and the device's addressing are unknown), so this is a
- * model choice.
+ * source material does not say how the L1 sizes or addresses its reads (the
+ * latch bytes' meaning and the device's addressing are unknown), so this is
+ * a model choice.
  */
 #define PB_FRU_BYTES    0x80
 
@@ -581,10 +591,11 @@ static bool pb_field(const uint8_t *area, unsigned size, unsigned *pos,
 /*
  * Decode an IPMI-shaped FRU image (public FRU storage definition): an 8-byte
  * common header with a zero sum, then areas at 8-byte offsets, each ending in
- * a zero-sum checksum. The sheet names the areas and the board date but not
- * which area each column comes from; the model takes the manufacturer, product
- * name, part number, version and serial from the product area and the date
- * from the board area, a model choice. False on a checksum error.
+ * a zero-sum checksum. The source material names the areas and the board
+ * date but not which area each column comes from; the model takes the
+ * manufacturer, product name, part number, version and serial from the
+ * product area and the date from the board area, a model choice. False on a
+ * checksum error.
  */
 static bool pb_fru_decode(const uint8_t *img, unsigned len, PbFru *f)
 {
@@ -708,7 +719,7 @@ static void pb_fru_reply(SGIL1Pbay *p, const uint8_t *d, unsigned len)
 static void pb_version_reply(SGIL1Pbay *p, const uint8_t *d, unsigned len)
 {
     if (!d || len < 6) {
-        /* The sheet gives no text for no reply: a model choice. */
+        /* No text is known for no reply: a model choice. */
         pb_out(p, "PBay version unavailable\r\n");
         pb_job_end(p, false);
         return;
@@ -763,10 +774,126 @@ static bool pb_job_step(const SGIL1Pbay *p)
 }
 
 /*
- * The poll task's pass: all the mapped sensors, then the comparison. It does
- * nothing unless monitoring is enabled (setting 85 nonzero), the status is
- * ready and the bay semaphore is free; the wait then starts again.
+ * The poll task's pass. It does nothing unless monitoring is enabled
+ * (setting 85 nonzero), the status is ready and the bay semaphore is free;
+ * the wait then starts again. A pass reads the supplies (when any of the
+ * setting's bits 0 to 2 is set), re-reads them up to three times while an AC
+ * fail is in sight, reads the ports (bit 3), re-reads them after 100 ticks
+ * while a failure is in sight, then logs.
  */
+enum {
+    PHASE_SUPPLIES,
+    PHASE_AC_REREAD,
+    PHASE_PORTS,
+    PHASE_PORT_REREAD,
+};
+
+#define PB_AC_REREADS       3
+#define PB_PORT_REREADS     2
+#define PB_PORT_REREAD_TICKS 100
+
+static void pb_poll_read(SGIL1Pbay *p, unsigned phase)
+{
+    p->job.phase = phase;
+    p->job.want = phase == PHASE_SUPPLIES || phase == PHASE_AC_REREAD ?
+                  0x3f : 0x3fc0;
+    p->job.tried = 0;
+    p->job.got = 0;
+    pb_scan_start(p);
+}
+
+static void pb_poll_finish(SGIL1Pbay *p)
+{
+    pb_evaluate(p, p->job.ac_cand, p->job.port_cand);
+    p->passes++;
+    pb_job_end(p, true);
+}
+
+static void pb_poll_ports(SGIL1Pbay *p)
+{
+    if (p->env_mask & 8) {
+        pb_poll_read(p, PHASE_PORTS);
+    } else {
+        pb_poll_finish(p);
+    }
+}
+
+/* Keep the readings of this scan; a sensor that did not answer is absent. */
+static void pb_poll_take(SGIL1Pbay *p)
+{
+    for (unsigned s = 1; s <= PB_SUPPLIES; s++) {
+        if ((p->job.tried >> (s - 1)) & 1) {
+            p->supply[s] = ((p->job.got >> (s - 1)) & 1) ?
+                           p->job.value[s - 1] : 1;
+        }
+    }
+    for (unsigned n = 1; n <= PB_PORTS; n++) {
+        unsigned pos = PB_SUPPLIES + n - 1;
+
+        if ((p->job.tried >> pos) & 1) {
+            p->port[n] = ((p->job.got >> pos) & 1) ? p->job.value[pos] : 1;
+        }
+    }
+}
+
+static void pb_poll_scanned(SGIL1Pbay *p)
+{
+    pb_poll_take(p);
+    switch (p->job.phase) {
+    case PHASE_SUPPLIES:
+    case PHASE_AC_REREAD:
+        if (p->job.phase == PHASE_SUPPLIES) {
+            p->job.ac_cand = 0;
+            p->job.reread = 0;
+            for (unsigned s = 1; s <= PB_SUPPLIES && (p->env_mask & 1); s++) {
+                if (!(p->supply[s] & 1) && (p->supply[s] & 8) &&
+                    !(p->supply_last[s] & 8)) {
+                    p->job.ac_cand |= 1 << (s - 1);
+                }
+            }
+        } else {
+            /* A supply stays a candidate while its AC fail is still there. */
+            for (unsigned s = 1; s <= PB_SUPPLIES; s++) {
+                if ((p->supply[s] & 9) != 8) {
+                    p->job.ac_cand &= ~(1 << (s - 1));
+                }
+            }
+            p->job.reread++;
+        }
+        if (p->job.ac_cand && p->job.reread < PB_AC_REREADS) {
+            pb_poll_read(p, PHASE_AC_REREAD);
+        } else {
+            pb_poll_ports(p);
+        }
+        break;
+    case PHASE_PORTS:
+    case PHASE_PORT_REREAD:
+        if (p->job.phase == PHASE_PORTS) {
+            p->job.port_cand = 0;
+            p->job.reread = 0;
+            for (unsigned n = 1; n <= PB_PORTS; n++) {
+                if ((p->port[n] & 3) == 2 && !(p->port_last[n] & 2)) {
+                    p->job.port_cand |= 1 << (n - 1);
+                }
+            }
+        } else {
+            for (unsigned n = 1; n <= PB_PORTS; n++) {
+                if ((p->port[n] & 3) != 2) {
+                    p->job.port_cand &= ~(1 << (n - 1));
+                }
+            }
+            p->job.reread++;
+        }
+        if (p->job.port_cand && p->job.reread < PB_PORT_REREADS) {
+            p->job.phase = PHASE_PORT_REREAD;
+            pb_wait(p, WAIT_REREAD, PB_PORT_REREAD_TICKS);
+        } else {
+            pb_poll_finish(p);
+        }
+        break;
+    }
+}
+
 static void pb_poll_start(void *opaque)
 {
     SGIL1Pbay *p = opaque;
@@ -776,8 +903,19 @@ static void pb_poll_start(void *opaque)
         pb_poll_arm(p);
         return;
     }
-    pb_job_begin(p, JOB_POLL, 0x3fff, NULL, NULL);
-    pb_scan_start(p);
+    pb_job_begin(p, JOB_POLL, 0, NULL, NULL);
+    p->job.ac_cand = 0;
+    p->job.port_cand = 0;
+    /* What is not read stays absent. */
+    for (unsigned s = 1; s <= PB_SUPPLIES; s++) {
+        p->supply[s] = 1;
+    }
+    memset(p->port, 1, sizeof(p->port));
+    if (p->env_mask & 7) {
+        pb_poll_read(p, PHASE_SUPPLIES);
+    } else {
+        pb_poll_ports(p);
+    }
 }
 
 /*
@@ -1098,6 +1236,9 @@ static void pb_timeout(void *opaque)
             pb_read_expired(p);
         }
         break;
+    case WAIT_REREAD:
+        pb_poll_read(p, PHASE_PORT_REREAD);
+        break;
     case WAIT_RESEND:
         if (p->step != STEP_IDLE) {
             p->transmissions++;
@@ -1140,9 +1281,8 @@ bool sgi_l1_pbay_active(const SGIL1Pbay *p)
 }
 
 /*
- * The brick types whose L1 takes the pbay command (datasheet "Which bricks
- * run the power-bay task"). Y and & fold to X and N in the L1; both forms
- * are in the string.
+ * The brick types whose L1 takes the pbay command. Y and & fold to X and N in
+ * the L1; both forms are in the string.
  */
 #define PB_COMMAND_BRICKS   "C356P\x25#=IXYRN&!"    /* 0x25 is a percent sign */
 
@@ -1335,7 +1475,7 @@ void sgi_l1_pbay_reset(SGIL1Pbay *p)
     p->step = STEP_IDLE;
     p->status = SGI_L1_PBAY_NOT_INITIALISED;
     p->records = 0;
-    p->present = 0;
+    /* Setting 105 (p->present) and setting 85 are the L1's: they stay. */
     memset(p->supply_last, 0, sizeof(p->supply_last));
     memset(p->port_last, 0, sizeof(p->port_last));
     qemu_bh_schedule(p->start_bh);
@@ -1367,10 +1507,6 @@ bool sgi_l1_pbay_realize(SGIL1Pbay *p, Object *owner, uint32_t letter,
             error_setg(errp, "sgi-l1: no power-bay task runs on brick "
                        "type '%c'", letter);
         }
-        return false;
-    }
-    if (!p->poll_ms) {
-        error_setg(errp, "sgi-l1: pbay-poll-ms must be at least 1");
         return false;
     }
     if (!p->tick_us) {

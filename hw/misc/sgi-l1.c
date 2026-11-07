@@ -6932,7 +6932,7 @@ static const Property l1_properties[] = {
     DEFINE_PROP_CHR("l2", SGIL1State, l2_chr),
     DEFINE_PROP_CHR("pbay", SGIL1State, pbay.chr),
     DEFINE_PROP_UINT16("pbay-address", SGIL1State, pbay.l1_address, 0x0001),
-    DEFINE_PROP_UINT32("pbay-poll-ms", SGIL1State, pbay.poll_ms, 1000),
+    DEFINE_PROP_UINT32("pbay-poll-ms", SGIL1State, pbay.poll_ms, 0),
     DEFINE_PROP_UINT32("pbay-tick-us", SGIL1State, pbay.tick_us, 10000),
     DEFINE_PROP_INT32("revision-major", SGIL1State, revision_major, -1),
     DEFINE_PROP_INT32("revision-minor", SGIL1State, revision_minor, -1),
