@@ -13,6 +13,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
+#include "qemu/cutils.h"
 #include "qemu/log.h"
 #include "migration/blocker.h"
 #include "hw/misc/sgi-l1-pbay.h"
@@ -84,7 +85,24 @@ enum {
     STEP_CAPABILITY,
     STEP_RECORD_ID,
     STEP_RECORD,
-    STEP_SENSOR,
+    /* The steps of a job (an operator command or a polling pass). */
+    STEP_SCAN,
+    STEP_FRU,
+    STEP_VERSION,
+    STEP_RESET,
+};
+
+enum {
+    JOB_NONE,
+    JOB_POLL,
+    JOB_VERSION,
+    JOB_DPS,
+    JOB_DCPORT,
+    JOB_ENV,
+    JOB_RESET,
+    JOB_FRU,
+    JOB_SERIAL,
+    JOB_INIT,
 };
 
 enum {
@@ -156,12 +174,23 @@ static void pb_write(SGIL1Pbay *p)
     qemu_chr_fe_write_all(&p->chr, wire, n);
 }
 
+static void pb_job_end(SGIL1Pbay *p, bool ok);
+static void pb_out(SGIL1Pbay *p, const char *fmt, ...) G_GNUC_PRINTF(2, 3);
+static const char *pb_state_text(const SGIL1Pbay *p);
+static void pb_job_reply(SGIL1Pbay *p, const uint8_t *d, unsigned len);
+static bool pb_job_step(const SGIL1Pbay *p);
+
+/* An initialisation transaction gave up. */
 static void pb_fail(SGIL1Pbay *p)
 {
     timer_del(p->timeout);
     p->wait = WAIT_NONE;
     p->step = STEP_IDLE;
     p->status = SGI_L1_PBAY_COMM_FAILURE;
+    if (p->job.kind == JOB_INIT) {
+        pb_out(p, "%s\r\n", pb_state_text(p));
+        pb_job_end(p, false);
+    }
 }
 
 /*
@@ -294,39 +323,461 @@ static uint8_t pb_sensor_at(const SGIL1Pbay *p, unsigned pos)
                                p->port_sensor[pos - PB_SUPPLIES + 1];
 }
 
-static void pb_poll_next(SGIL1Pbay *p)
+/*
+ * The operator's texts for each state of the link. The sheet paraphrases
+ * them: each starts "PBay " and ends in a newline.
+ */
+static const char *pb_state_text(const SGIL1Pbay *p)
+{
+    switch (p->status) {
+    case SGI_L1_PBAY_NOT_INITIALISED:
+        return "PBay not initialized";
+    case SGI_L1_PBAY_INITIALISING:
+        return "PBay busy initializing";
+    case SGI_L1_PBAY_BUSY:
+        return "PBay busy try again later";
+    case SGI_L1_PBAY_FLASHING:
+        return "PBay busy flashing";
+    case SGI_L1_PBAY_COMM_FAILURE:
+        return "PBay communication failure";
+    default:
+        return "PBay state unknown";
+    }
+}
+
+static void pb_poll_arm(SGIL1Pbay *p)
+{
+    timer_mod(p->poll_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + p->poll_ms);
+}
+
+/* The bay semaphore: a job holds it from its first request to its end. */
+static void pb_job_begin(SGIL1Pbay *p, unsigned kind, uint16_t want,
+                         SGIL1PbayDone done, void *opaque)
+{
+    p->job.kind = kind;
+    p->job.want = want;
+    p->job.tried = 0;
+    p->job.got = 0;
+    p->job.pos = 0;
+    p->job.serial[0] = 0;
+    p->job.done = done;
+    p->job.opaque = opaque;
+    p->job.out = g_string_new(NULL);
+    p->status = SGI_L1_PBAY_BUSY;
+}
+
+static void pb_job_end(SGIL1Pbay *p, bool ok)
+{
+    SGIL1PbayDone done = p->job.done;
+    void *opaque = p->job.opaque;
+    g_autofree char *text = g_string_free(p->job.out, FALSE);
+
+    p->job.out = NULL;
+    p->job.kind = JOB_NONE;
+    p->job.done = NULL;
+    p->step = STEP_IDLE;
+    if (p->status == SGI_L1_PBAY_BUSY) {
+        p->status = SGI_L1_PBAY_READY;
+    }
+    /* A request restarts the poll task's wait. */
+    pb_poll_arm(p);
+    if (done) {
+        done(opaque, text, ok);
+    }
+}
+
+static void pb_out(SGIL1Pbay *p, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    g_string_append_vprintf(p->job.out, fmt, ap);
+    va_end(ap);
+}
+
+/* The sensor scan: read each wanted, mapped sensor in turn. */
+static void pb_scan_done(SGIL1Pbay *p);
+
+static void pb_scan_next(SGIL1Pbay *p)
 {
     uint8_t number;
 
-    while (p->sensor < PB_SUPPLIES + PB_PORTS && !pb_sensor_at(p, p->sensor)) {
-        p->sensor++;
+    while (p->job.pos < PB_SUPPLIES + PB_PORTS &&
+           !(((p->job.want >> p->job.pos) & 1) &&
+             pb_sensor_at(p, p->job.pos))) {
+        p->job.pos++;
     }
-    if (p->sensor == PB_SUPPLIES + PB_PORTS) {
-        pb_compare(p);
-        p->step = STEP_IDLE;
-        timer_mod(p->poll_timer,
-                  qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + p->poll_ms);
+    if (p->job.pos >= PB_SUPPLIES + PB_PORTS) {
+        pb_scan_done(p);
         return;
     }
-    number = pb_sensor_at(p, p->sensor);
-    p->step = STEP_SENSOR;
+    number = pb_sensor_at(p, p->job.pos);
+    p->job.tried |= 1 << p->job.pos;
+    p->step = STEP_SCAN;
     pb_tunnel(p, 0x10, 0x2d, &number, 1);
 }
 
+static void pb_scan_start(SGIL1Pbay *p)
+{
+    p->job.pos = 0;
+    pb_scan_next(p);
+}
+
+/*
+ * The `dps` table. A supply the records did not map prints nothing; one
+ * whose read failed prints an error; one with bit 0 set prints only that it
+ * is not present.
+ */
+static void pb_dps_table(SGIL1Pbay *p)
+{
+    pb_out(p, "DPS  AC State  AC Range  Predictive Fail  Fail\r\n"
+              "---  --------  --------  ---------------  ------\r\n");
+    for (unsigned s = 1; s <= PB_SUPPLIES; s++) {
+        unsigned pos = s - 1;
+        uint8_t v = p->job.value[pos];
+
+        if (!((p->job.tried >> pos) & 1)) {
+            continue;
+        }
+        if (!((p->job.got >> pos) & 1)) {
+            pb_out(p, "%u    **read error**\r\n", s);
+        } else if (v & 1) {
+            pb_out(p, "%u    Not_Present\r\n", s);
+        } else {
+            pb_out(p, "%u    %-8s  %-8s  %-15s  %s\r\n", s,
+                   v & 8 ? "Low" : "Ok", v & 16 ? "110Vac" : "220Vac",
+                   v & 4 ? "Failing" : "Ok", v & 2 ? "Failed" : "Ok");
+        }
+    }
+}
+
+/* The `dcport` table; the extra text of a row is not modelled. */
+static void pb_dcport_table(SGIL1Pbay *p)
+{
+    pb_out(p, "DcPort     State\r\n----------------------\r\n");
+    for (unsigned n = 1; n <= PB_PORTS; n++) {
+        unsigned pos = PB_SUPPLIES + n - 1;
+        uint8_t v = p->job.value[pos];
+
+        if (!((p->job.tried >> pos) & 1)) {
+            continue;
+        }
+        if (!((p->job.got >> pos) & 1)) {
+            pb_out(p, "%u          **read error**\r\n", n);
+        } else if (v & 1) {
+            pb_out(p, "%u          48V Off\r\n", n);
+        } else {
+            pb_out(p, "%u          48V On, %s\r\n", n,
+                   v & 2 ? "Failed" : "Ok");
+        }
+    }
+}
+
+static void pb_scan_done(SGIL1Pbay *p)
+{
+    switch (p->job.kind) {
+    case JOB_POLL:
+        for (unsigned s = 1; s <= PB_SUPPLIES; s++) {
+            p->supply[s] = ((p->job.got >> (s - 1)) & 1) ?
+                           p->job.value[s - 1] : 1;
+        }
+        for (unsigned n = 1; n <= PB_PORTS; n++) {
+            unsigned pos = PB_SUPPLIES + n - 1;
+
+            p->port[n] = ((p->job.got >> pos) & 1) ? p->job.value[pos] : 1;
+        }
+        pb_compare(p);
+        p->passes++;
+        pb_job_end(p, true);
+        break;
+    case JOB_DPS:
+        pb_dps_table(p);
+        pb_job_end(p, true);
+        break;
+    case JOB_DCPORT:
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: pbay dcport: the text appended to "
+                      "a port's row is not modelled\n");
+        pb_dcport_table(p);
+        pb_job_end(p, true);
+        break;
+    case JOB_ENV:
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: pbay dcport: the text appended to "
+                      "a port's row is not modelled\n");
+        pb_dps_table(p);
+        pb_dcport_table(p);
+        pb_job_end(p, true);
+        break;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void pb_scan_reply(SGIL1Pbay *p, const uint8_t *d, unsigned len)
+{
+    if (d && len >= 3) {
+        p->job.value[p->job.pos] = d[2];
+        p->job.got |= 1 << p->job.pos;
+    }
+    p->job.pos++;
+    pb_scan_next(p);
+}
+
+/*
+ * The FRU image of a device is read as one streamed read (pair 0x28,0x11):
+ * the device byte, two address bytes of zero and a count of PB_FRU_BYTES. The
+ * sheet does not say how the L1 sizes or addresses its reads (the latch
+ * bytes' meaning and the device's addressing are unknown), so this is a
+ * model choice.
+ */
+#define PB_FRU_BYTES    0x80
+
+typedef struct PbFru {
+    char mfg[16], name[32], part[16], version[8], serial[24];
+    bool has_date;
+    uint32_t minutes;
+} PbFru;
+
+static bool pb_area_ok(const uint8_t *img, unsigned len, unsigned offset)
+{
+    unsigned at = offset * 8, size, sum = 0;
+
+    if (at + 2 > len || img[at] != 1) {
+        return false;
+    }
+    size = img[at + 1] * 8;
+    if (!size || at + size > len) {
+        return false;
+    }
+    for (unsigned i = 0; i < size; i++) {
+        sum += img[at + i];
+    }
+    return !(sum & 0xff);
+}
+
+/* One type/length field of an area; false at its end marker or its end. */
+static bool pb_field(const uint8_t *area, unsigned size, unsigned *pos,
+                     char *out, size_t cap)
+{
+    unsigned n;
+
+    if (*pos >= size || area[*pos] == 0xc1) {
+        return false;
+    }
+    n = area[*pos] & 0x3f;
+    if (*pos + 1 + n > size) {
+        return false;
+    }
+    for (unsigned i = 0; i < n && i + 1 < cap; i++) {
+        uint8_t c = area[*pos + 1 + i];
+
+        out[i] = c >= 0x20 && c < 0x7f ? c : '?';
+        out[i + 1] = 0;
+    }
+    *pos += 1 + n;
+    return true;
+}
+
+/*
+ * Decode an IPMI-shaped FRU image (public FRU storage definition): an 8-byte
+ * common header with a zero sum, then areas at 8-byte offsets, each ending in
+ * a zero-sum checksum. The sheet names the areas and the board date but not
+ * which area each column comes from; the model takes the manufacturer, product
+ * name, part number, version and serial from the product area and the date
+ * from the board area, a model choice. False on a checksum error.
+ */
+static bool pb_fru_decode(const uint8_t *img, unsigned len, PbFru *f)
+{
+    unsigned sum = 0;
+
+    memset(f, 0, sizeof(*f));
+    if (len < 8 || img[0] != 1) {
+        return false;
+    }
+    for (unsigned i = 0; i < 8; i++) {
+        sum += img[i];
+    }
+    if (sum & 0xff) {
+        return false;
+    }
+    if (img[3]) {
+        if (!pb_area_ok(img, len, img[3])) {
+            return false;
+        }
+        f->has_date = true;
+        f->minutes = img[img[3] * 8 + 3] | img[img[3] * 8 + 4] << 8 |
+                     img[img[3] * 8 + 5] << 16;
+    }
+    if (img[4]) {
+        const uint8_t *area = img + img[4] * 8;
+        unsigned size = area[1] * 8, pos = 3;
+
+        if (!pb_area_ok(img, len, img[4])) {
+            return false;
+        }
+        if (pb_field(area, size, &pos, f->mfg, sizeof(f->mfg)) &&
+            pb_field(area, size, &pos, f->name, sizeof(f->name)) &&
+            pb_field(area, size, &pos, f->part, sizeof(f->part)) &&
+            pb_field(area, size, &pos, f->version, sizeof(f->version))) {
+            pb_field(area, size, &pos, f->serial, sizeof(f->serial));
+        }
+    }
+    return true;
+}
+
+static void pb_fru_row(SGIL1Pbay *p, unsigned slot, const uint8_t *img,
+                       unsigned len)
+{
+    char first[16];
+    PbFru f;
+
+    if (slot == 0) {
+        pstrcpy(first, sizeof(first), "Bay");
+    } else if (slot == PB_FRU_SLOTS - 1) {
+        pstrcpy(first, sizeof(first), "Card");
+    } else {
+        snprintf(first, sizeof(first), "%u", slot);
+    }
+    if (!img || !pb_fru_decode(img, len, &f)) {
+        pb_out(p, "%-5s %s\r\n", first,
+               img ? "**FRU checksum error**" : "**read error**");
+        return;
+    }
+    pb_out(p, "%-5s %-6.5s %-14.13s %-12.11s %-5.4s %-14.13s ", first, f.mfg,
+           f.name, f.part, f.version, f.serial);
+    if (f.has_date) {
+        /* Minutes from 1996-01-01 UTC. */
+        g_autoptr(GDateTime) t = g_date_time_new_from_unix_utc(
+            820454400 + (int64_t)f.minutes * 60);
+
+        pb_out(p, "%02d/%02d/%04d", g_date_time_get_month(t),
+               g_date_time_get_day_of_month(t), g_date_time_get_year(t));
+    } else {
+        pb_out(p, "-");
+    }
+    pb_out(p, "\r\n");
+}
+
+/* Read the next wanted slot's FRU device, or finish. */
+static void pb_fru_next(SGIL1Pbay *p)
+{
+    while (p->job.pos < PB_FRU_SLOTS &&
+           !(((p->job.want >> p->job.pos) & 1) &&
+             p->fru_device[p->job.pos])) {
+        p->job.pos++;
+    }
+    if (p->job.pos >= PB_FRU_SLOTS) {
+        if (p->job.kind == JOB_SERIAL) {
+            g_free(p->serial);
+            p->serial = g_strdup(p->job.serial);
+            pb_out(p, "%s%s", p->serial, p->serial[0] ? "\r\n" : "");
+        }
+        pb_job_end(p, true);
+        return;
+    }
+    {
+        const uint8_t a[] = { p->fru_device[p->job.pos], 0, 0, PB_FRU_BYTES };
+
+        p->step = STEP_FRU;
+        pb_tunnel(p, 0x28, 0x11, a, sizeof(a));
+    }
+}
+
+static void pb_fru_reply(SGIL1Pbay *p, const uint8_t *d, unsigned len)
+{
+    bool ok = d && len >= 1 + PB_FRU_BYTES && d[0] == PB_FRU_BYTES;
+
+    if (p->job.kind == JOB_SERIAL) {
+        PbFru f;
+
+        p->job.serial[0] = 0;
+        if (ok && pb_fru_decode(d + 1, PB_FRU_BYTES, &f)) {
+            pstrcpy(p->job.serial, sizeof(p->job.serial), f.serial);
+        }
+    } else {
+        pb_fru_row(p, p->job.pos, ok ? d + 1 : NULL, PB_FRU_BYTES);
+    }
+    p->job.pos++;
+    pb_fru_next(p);
+}
+
+/*
+ * The other jobs are one request: `version` (link command 0xc0) and `reset`
+ * (pair 0x18,0x03).
+ */
+static void pb_version_reply(SGIL1Pbay *p, const uint8_t *d, unsigned len)
+{
+    if (!d || len < 6) {
+        /* The sheet gives no text for no reply: a model choice. */
+        pb_out(p, "PBay version unavailable\r\n");
+        pb_job_end(p, false);
+        return;
+    }
+    {
+        /* Built time: a Unix time, UTC (inferred). */
+        g_autoptr(GDateTime) t = g_date_time_new_from_unix_utc(
+            lduw_le_p(d + 2) | (int64_t)lduw_le_p(d + 4) << 16);
+
+        pb_out(p, "PBay FW Version %02d.%02d, Built %02d/%02d/%04d "
+                  "%02d:%02d:%02d\r\n", d[1], d[0],
+               g_date_time_get_month(t), g_date_time_get_day_of_month(t),
+               g_date_time_get_year(t), g_date_time_get_hour(t),
+               g_date_time_get_minute(t), g_date_time_get_second(t));
+    }
+    pb_job_end(p, true);
+}
+
+static void pb_reset_reply(SGIL1Pbay *p, const uint8_t *d, unsigned len)
+{
+    pb_out(p, d ? "Ok\r\n" : "Timeout\r\n");
+    pb_job_end(p, d != NULL);
+}
+
+/*
+ * A reply, or d == NULL when the transaction gave up, for the step of a
+ * job.
+ */
+static void pb_job_reply(SGIL1Pbay *p, const uint8_t *d, unsigned len)
+{
+    switch (p->step) {
+    case STEP_SCAN:
+        pb_scan_reply(p, d, len);
+        break;
+    case STEP_FRU:
+        pb_fru_reply(p, d, len);
+        break;
+    case STEP_VERSION:
+        pb_version_reply(p, d, len);
+        break;
+    case STEP_RESET:
+        pb_reset_reply(p, d, len);
+        break;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static bool pb_job_step(const SGIL1Pbay *p)
+{
+    return p->step >= STEP_SCAN;
+}
+
+/*
+ * The poll task's pass: all the mapped sensors, then the comparison. It does
+ * nothing unless monitoring is enabled (setting 85 nonzero), the status is
+ * ready and the bay semaphore is free; the wait then starts again.
+ */
 static void pb_poll_start(void *opaque)
 {
     SGIL1Pbay *p = opaque;
 
-    if (p->status != SGI_L1_PBAY_READY) {
+    if (!p->env_mask || p->status != SGI_L1_PBAY_READY ||
+        p->step != STEP_IDLE) {
+        pb_poll_arm(p);
         return;
     }
-    p->sensor = 0;
-    /* A sensor the records did not map reads as a supply that is absent. */
-    for (unsigned s = 1; s <= PB_SUPPLIES; s++) {
-        p->supply[s] = 1;
-    }
-    memset(p->port, 1, sizeof(p->port));
-    pb_poll_next(p);
+    pb_job_begin(p, JOB_POLL, 0x3fff, NULL, NULL);
+    pb_scan_start(p);
 }
 
 /*
@@ -372,6 +823,10 @@ static void pb_step_done(SGIL1Pbay *p, const uint8_t *d, unsigned len)
 {
     timer_del(p->timeout);
     p->wait = WAIT_NONE;
+    if (pb_job_step(p)) {
+        pb_job_reply(p, d, len);
+        return;
+    }
     switch (p->step) {
     case STEP_ADDRESS:
         p->bay = len >= 2 ? lduw_le_p(d) : 0;
@@ -461,19 +916,6 @@ static void pb_step_done(SGIL1Pbay *p, const uint8_t *d, unsigned len)
         }
         break;
     }
-    case STEP_SENSOR:
-        if (len < 3) {
-            pb_fail(p);
-            return;
-        }
-        if (p->sensor < PB_SUPPLIES) {
-            p->supply[p->sensor + 1] = d[2];
-        } else {
-            p->port[p->sensor - PB_SUPPLIES + 1] = d[2];
-        }
-        p->sensor++;
-        pb_poll_next(p);
-        break;
     default:
         break;
     }
@@ -482,13 +924,22 @@ static void pb_step_done(SGIL1Pbay *p, const uint8_t *d, unsigned len)
 ready:
     p->step = STEP_IDLE;
     p->status = SGI_L1_PBAY_READY;
-    pb_poll_start(p);
+    if (p->job.kind == JOB_INIT) {
+        pb_out(p, "PBay ready\r\n");
+        pb_job_end(p, true);
+    } else {
+        pb_poll_arm(p);
+    }
 }
 
 /* No reply came in time: the next transmission, or give up. */
 static void pb_read_expired(SGIL1Pbay *p)
 {
     if (p->transmissions >= PB_TRANSMISSIONS) {
+        if (pb_job_step(p)) {
+            pb_job_reply(p, NULL, 0);
+            return;
+        }
         if (p->step == STEP_ADDRESS) {
             p->bay = PB_ADDRESS;
         }
@@ -688,24 +1139,195 @@ bool sgi_l1_pbay_active(const SGIL1Pbay *p)
     return p->start_bh != NULL;
 }
 
-const char *sgi_l1_pbay_status_name(const SGIL1Pbay *p)
-{
-    static const char *const names[] = {
-        [SGI_L1_PBAY_NOT_INITIALISED] = "not initialised",
-        [SGI_L1_PBAY_INITIALISING] = "busy initialising",
-        [SGI_L1_PBAY_READY] = "ready",
-        [SGI_L1_PBAY_BUSY] = "busy",
-        [SGI_L1_PBAY_FLASHING] = "busy flashing",
-        [SGI_L1_PBAY_COMM_FAILURE] = "communication failure",
-    };
+/*
+ * The brick types whose L1 takes the pbay command (datasheet "Which bricks
+ * run the power-bay task"). Y and & fold to X and N in the L1; both forms
+ * are in the string.
+ */
+#define PB_COMMAND_BRICKS   "C356P\x25#=IXYRN&!"    /* 0x25 is a percent sign */
 
-    return names[p->status];
+static bool pb_digits(const char *text, unsigned limit, uint16_t *mask)
+{
+    *mask = 0;
+    for (; *text; text++) {
+        if (*text < '1' || *text > '0' + limit) {
+            return false;
+        }
+        *mask |= 1 << (*text - '1');
+    }
+    return *mask != 0;
+}
+
+static void pb_command_done(SGIL1PbayDone done, void *opaque,
+                            const char *text, bool ok)
+{
+    done(opaque, text, ok);
+}
+
+int sgi_l1_pbay_command(SGIL1Pbay *p, int argc, char **argv, bool can_wait,
+                        SGIL1PbayDone done, void *opaque)
+{
+    const char *sub = argc > 1 ? argv[1] : NULL;
+    uint16_t want = 0;
+    unsigned kind = JOB_NONE;
+    bool bare = argc == 1, init = false, env_set = false;
+    bool env_on = false;
+    g_autofree char *text = NULL;
+
+    if (!p->letter || !strchr(PB_COMMAND_BRICKS, p->letter)) {
+        return SGI_L1_PBAY_REFUSED;
+    }
+    if (bare) {
+        /* Parsed below with the state check. */
+    } else if (!strcmp(sub, "version") && argc == 2) {
+        kind = JOB_VERSION;
+    } else if (!strcmp(sub, "dps") && argc <= 3) {
+        kind = JOB_DPS;
+        want = 0x3f;
+        if (argc == 3 && !pb_digits(argv[2], PB_SUPPLIES, &want)) {
+            return SGI_L1_PBAY_BAD_ARGS;
+        }
+    } else if (!strcmp(sub, "dcport") && argc <= 3) {
+        uint16_t ports = 0xff;
+
+        kind = JOB_DCPORT;
+        if (argc == 3 && !pb_digits(argv[2], PB_PORTS, &ports)) {
+            return SGI_L1_PBAY_BAD_ARGS;
+        }
+        want = ports << PB_SUPPLIES;
+    } else if (!strcmp(sub, "fru") && argc <= 3) {
+        int slot;
+
+        kind = JOB_FRU;
+        want = 0x7f;
+        if (argc == 3) {
+            /* A negative argument selects the seventh device. */
+            if (qemu_strtoi(argv[2], NULL, 10, &slot) < 0 || slot > 6) {
+                return SGI_L1_PBAY_BAD_ARGS;
+            }
+            want = 1 << (slot < 0 ? PB_FRU_SLOTS - 1 : slot);
+        }
+    } else if (!strcmp(sub, "reset") && argc == 2) {
+        kind = JOB_RESET;
+    } else if (!strcmp(sub, "env") && argc <= 3) {
+        if (argc == 3) {
+            if (strcmp(argv[2], "on") && strcmp(argv[2], "off")) {
+                return SGI_L1_PBAY_BAD_ARGS;
+            }
+            env_set = true;
+            env_on = !strcmp(argv[2], "on");
+        } else {
+            kind = JOB_ENV;
+            want = 0x3fff;
+        }
+    } else if (!strcmp(sub, "init") && argc == 2) {
+        init = true;
+    } else if (!strcmp(sub, "serial") && argc == 2) {
+        kind = JOB_SERIAL;
+        want = 1;
+    } else {
+        return SGI_L1_PBAY_BAD_ARGS;
+    }
+
+    if (init) {
+        if (p->status != SGI_L1_PBAY_COMM_FAILURE) {
+            pb_command_done(done, opaque, "PBay already initialized\r\n",
+                            true);
+            return SGI_L1_PBAY_DONE;
+        }
+        if (!can_wait) {
+            goto no_wait;
+        }
+        /*
+         * The start-up runs again from the initialisation order. Whether
+         * the task's start delay applies again is not stated: the model
+         * skips it, a model choice.
+         */
+        pb_job_begin(p, JOB_INIT, 0, done, opaque);
+        p->status = SGI_L1_PBAY_INITIALISING;
+        g_free(p->serial);
+        p->serial = NULL;
+        pb_begin(p);
+        return SGI_L1_PBAY_PENDING;
+    }
+    if (p->status != SGI_L1_PBAY_READY || p->step != STEP_IDLE) {
+        /* A poll in progress holds the semaphore. */
+        text = g_strdup_printf("%s\r\n", p->status == SGI_L1_PBAY_READY ?
+                               "PBay busy try again later" :
+                               pb_state_text(p));
+        pb_command_done(done, opaque, text, false);
+        return SGI_L1_PBAY_DONE;
+    }
+    if (env_set) {
+        p->env_mask = env_on ? 0x0f : 0;
+        pb_command_done(done, opaque, "", true);
+        return SGI_L1_PBAY_DONE;
+    }
+    if (bare) {
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: pbay: the per-device current "
+                      "figures are not modelled; their source is unknown\n");
+        pb_command_done(done, opaque, "", true);
+        return SGI_L1_PBAY_DONE;
+    }
+    if (kind == JOB_SERIAL && p->serial) {
+        text = g_strdup_printf("%s%s", p->serial, p->serial[0] ? "\r\n" : "");
+        pb_command_done(done, opaque, text, true);
+        return SGI_L1_PBAY_DONE;
+    }
+    if (!can_wait) {
+        goto no_wait;
+    }
+
+    pb_job_begin(p, kind, want, done, opaque);
+    switch (kind) {
+    case JOB_VERSION:
+        p->step = STEP_VERSION;
+        pb_request(p, p->bay, 0xc0, NULL, 0, true);
+        break;
+    case JOB_RESET:
+        p->step = STEP_RESET;
+        pb_tunnel(p, 0x18, 0x03, NULL, 0);
+        break;
+    case JOB_ENV:
+        pb_out(p, "Power Bay env monitoring %s\r\n\r\n",
+               p->env_mask ? "enabled" : "disabled");
+        pb_scan_start(p);
+        break;
+    case JOB_DPS:
+    case JOB_DCPORT:
+        pb_scan_start(p);
+        break;
+    case JOB_FRU:
+        pb_out(p, "Dps  Mfg   Product Name  Part Number Rev  Serial        "
+                  "Mfg Date\r\n"
+                  "---- ----- ------------- ----------- ---- ------------- "
+                  "--------\r\n");
+        /* fall through */
+    default:
+        p->job.pos = 0;
+        pb_fru_next(p);
+        break;
+    }
+    return SGI_L1_PBAY_PENDING;
+
+no_wait:
+    qemu_log_mask(LOG_UNIMP, "sgi-l1: pbay: a command that talks to the bay "
+                  "cannot run through a relayed command\n");
+    pb_command_done(done, opaque,
+                    "ERROR: pbay is not available here\r\n", false);
+    return SGI_L1_PBAY_DONE;
 }
 
 void sgi_l1_pbay_reset(SGIL1Pbay *p)
 {
     if (!sgi_l1_pbay_active(p)) {
         return;
+    }
+    if (p->job.kind != JOB_NONE) {
+        /* The link goes down under a command that was waiting for it. */
+        p->status = SGI_L1_PBAY_NOT_INITIALISED;
+        pb_out(p, "%s\r\n", pb_state_text(p));
+        pb_job_end(p, false);
     }
     timer_del(p->timeout);
     timer_del(p->poll_timer);
@@ -724,6 +1346,8 @@ void sgi_l1_pbay_init(Object *obj, SGIL1Pbay *p)
     object_property_add_uint8_ptr(obj, "pbay-status", &p->status,
                                   OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "pbay-records", &p->records,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "pbay-passes", &p->passes,
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint8_ptr(obj, "pbay-fru-slot0", &p->fru_device[0],
                                   OBJ_PROP_FLAG_READ);
@@ -761,6 +1385,7 @@ bool sgi_l1_pbay_realize(SGIL1Pbay *p, Object *owner, uint32_t letter,
     }
     p->log = log;
     p->opaque = opaque;
+    p->letter = letter;
     p->timeout = timer_new_ns(QEMU_CLOCK_REALTIME, pb_timeout, p);
     p->poll_timer = timer_new_ms(QEMU_CLOCK_REALTIME, pb_poll_start, p);
     p->start_bh = qemu_bh_new(pb_start, p);
@@ -774,6 +1399,12 @@ void sgi_l1_pbay_finalize(SGIL1Pbay *p)
 {
     if (p->blocker) {
         migrate_del_blocker(&p->blocker);
+    }
+    g_free(p->serial);
+    p->serial = NULL;
+    if (p->job.out) {
+        g_string_free(p->job.out, TRUE);
+        p->job.out = NULL;
     }
     if (p->start_bh) {
         qemu_bh_delete(p->start_bh);

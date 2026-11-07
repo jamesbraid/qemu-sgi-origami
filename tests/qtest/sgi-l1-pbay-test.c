@@ -20,6 +20,14 @@
 #define BASE UINT64_C(0x11000000)
 #define L1 "/machine/peripheral/l1c"
 #define LOCAL_COMMAND UINT32_C(0x0ffff003)
+/*
+ * The destination of a task-3 request relayed to the I/O brick attached to
+ * the issuing L1. It is LOCAL_COMMAND with the type-4 prefix, the form of
+ * the attached-brick address that sgi_l1_query_route() recognises for task
+ * 6, which the router strips before serving the request. The tree has no
+ * shared definition of it: sgi-l1.c spells such addresses as literals.
+ */
+#define ATTACHED_IO_COMMAND UINT32_C(0x4ffff003)
 #define L1_ADDRESS 0x0102
 #define IO_TIMEOUT_MS 20000
 
@@ -33,19 +41,26 @@ typedef struct Request {
 typedef struct Rig {
     QTestState *qts;
     int bay;            /* the test's end, or -1 when a bay model holds it */
+    int console;        /* the operator console's other end */
     Request *held;      /* a request read ahead of its pass, or NULL */
     Request last;       /* the last request read, to skip a repeat */
 } Rig;
 
+static char *console_command(Rig *r, const char *text);
+
+/* The controller's brick options; a test may change them. */
+static const char *rig_brick = "brick-type=cbrick,named=on,rack=1,bay=7";
+
 static void rig_start(Rig *r, bool scripted, const char *l1_props,
                       const char *extra)
 {
-    int sv[2];
+    int sv[2], cs[2];
     g_autofree char *bay = scripted ? g_strdup("") :
         g_strdup_printf("-chardev socket,id=pb,fd=%d "
                         "-device sgi-pbay,id=pbay,chardev=pb", 0);
 
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, cs), ==, 0);
     if (!scripted) {
         g_free(bay);
         bay = g_strdup_printf("-chardev socket,id=pb,fd=%d "
@@ -54,25 +69,59 @@ static void rig_start(Rig *r, bool scripted, const char *l1_props,
     r->held = NULL;
     memset(&r->last, 0, sizeof(r->last));
     r->qts = qtest_initf("-M none -cpu R10000 -S -d unimp "
-        "-chardev socket,id=pa,fd=%d %s "
-        "-device sgi-l1,id=l1c,brick-type=cbrick,named=on,rack=1,bay=7,"
-        "pbay=pa,pbay-address=0x%04x,pbay-poll-ms=50,pbay-tick-us=200%s "
+        "-chardev socket,id=pa,fd=%d -chardev socket,id=cn,fd=%d %s "
+        "-device sgi-l1,id=l1c,%s,"
+        "chardev=cn,pbay=pa,pbay-address=0x%04x,pbay-poll-ms=50,pbay-tick-us=200%s "
         "-device sgi-l1-uart,id=l1u,controller=l1c %s",
-        sv[0], bay, L1_ADDRESS, l1_props, extra);
+        sv[0], cs[0], bay, rig_brick, L1_ADDRESS, l1_props, extra);
     qtest_sysbus_mmio_map(r->qts, "/machine/peripheral/l1u", 0, BASE);
     close(sv[0]);
+    close(cs[0]);
+    r->console = cs[1];
     if (scripted) {
         r->bay = sv[1];
     } else {
         close(sv[1]);
         r->bay = -1;
     }
+    /* The power-up notice comes first; a command brings the prompt. */
+    g_free(console_command(r, "version"));
+}
+
+/*
+ * A C-brick with the UART window, cabled to an I-brick that holds the
+ * scripted bay link: a request for the attached I/O brick runs on the
+ * I-brick and its reply must come back through the C-brick.
+ */
+static void rig_start_pair(Rig *r)
+{
+    int sv[2];
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    r->held = NULL;
+    memset(&r->last, 0, sizeof(r->last));
+    r->qts = qtest_initf("-M none -cpu R10000 -S -d unimp "
+        "-chardev socket,id=pa,fd=%d "
+        "-device sgi-l1,id=l1c,brick-type=ibrick,named=on,rack=1,bay=7,"
+        "mac=02:ab:10:00:00:01,pbay=pa,pbay-address=0x%04x,"
+        "pbay-poll-ms=50,pbay-tick-us=200 "
+        "-device sgi-l1,id=l1h,brick-type=cbrick,named=on,rack=1,bay=4,"
+        "io-peer=/machine/peripheral/l1c "
+        "-device sgi-l1-uart,id=l1u,controller=l1h",
+        sv[0], L1_ADDRESS);
+    qtest_sysbus_mmio_map(r->qts, "/machine/peripheral/l1u", 0, BASE);
+    close(sv[0]);
+    r->bay = sv[1];
+    r->console = -1;
 }
 
 static void rig_stop(Rig *r)
 {
     if (r->bay >= 0) {
         close(r->bay);
+    }
+    if (r->console >= 0) {
+        close(r->console);
     }
     qtest_quit(r->qts);
 }
@@ -97,17 +146,40 @@ static void wait_status(Rig *r, unsigned want)
     }
 }
 
-/* One operator command through the UART window; its lines, one per line. */
-static char *command(Rig *r, const char *text)
+/* Wait until the UART window at @base has a frame to read. */
+static void wait_frame(Rig *r, uint64_t base)
 {
-    uint8_t request[136] = { 0x10, 0x0f, 0xff, 0xf0, 0x03, 0, 0, 1 };
-    uint8_t reply[131];
-    GString *out = g_string_new(NULL);
-    size_t length, offset = 6;
+    int64_t end = g_get_monotonic_time() + 20 * G_TIME_SPAN_SECOND;
+
+    while (qtest_readq(r->qts, base + 0x28) != 0x61) {
+        g_assert_cmpint(g_get_monotonic_time(), <, end);
+        g_usleep(2000);
+    }
+}
+
+/* Send one task-3 request (an operator command) to @destination. */
+static void task3_send(Rig *r, uint32_t destination, const char *text)
+{
+    uint8_t request[136] = { 0x10, destination >> 24, destination >> 16,
+                             destination >> 8, destination, 0, 0, 1 };
 
     request[8] = 1;
     memcpy(request + 9, text, strlen(text) + 1);
     sgi_l1_test_send(r->qts, BASE, request, 9 + strlen(text) + 1, false);
+}
+
+/*
+ * The reply to a task-3 request, which may wait for the bay: its lines, one
+ * per line, and in @fields how many there were and in @code its status.
+ */
+static char *task3_receive(Rig *r, int32_t *code, unsigned *fields,
+                           size_t *wire)
+{
+    uint8_t reply[131];
+    GString *out = g_string_new(NULL);
+    size_t length, offset = 6;
+
+    wait_frame(r, BASE);
     length = sgi_l1_test_receive(r->qts, BASE, reply, 131);
     for (unsigned i = 0; i < reply[5]; i++) {
         g_assert_cmpuint(reply[offset], ==, 1);
@@ -117,7 +189,76 @@ static char *command(Rig *r, const char *text)
         offset += strlen((const char *)reply + offset) + 1;
     }
     g_assert_cmpuint(offset, ==, length);
+    if (code) {
+        *code = ldl_be_p(reply + 1);
+    }
+    if (fields) {
+        *fields = reply[5];
+    }
+    if (wire) {
+        *wire = length;
+    }
     return g_string_free(out, FALSE);
+}
+
+/* One operator command through the UART window; its lines, one per line. */
+static char *command(Rig *r, const char *text)
+{
+    task3_send(r, LOCAL_COMMAND, text);
+    return task3_receive(r, NULL, NULL, NULL);
+}
+
+
+/*
+ * The operator console. The controller starts in console mode, so a command
+ * is Ctrl-T, the line and a return; the output comes back between the
+ * escape's prompt and the return to console mode. The bay may need serving
+ * between sending the line and finishing it.
+ */
+static void console_send(Rig *r, const char *text)
+{
+    g_autofree char *line = g_strdup_printf("\024%s\r", text);
+    size_t n = strlen(line);
+    ssize_t w = write(r->console, line, n);
+
+    g_assert_cmpint(w, ==, n);
+}
+
+static char *console_finish(Rig *r)
+{
+    GString *out = g_string_new(NULL);
+    struct pollfd p = { .fd = r->console, .events = POLLIN };
+    const char *start, *end;
+    char *text;
+
+    do {
+        char c;
+
+        g_assert_cmpint(poll(&p, 1, IO_TIMEOUT_MS), ==, 1);
+        g_assert_cmpint(read(r->console, &c, 1), ==, 1);
+        g_string_append_c(out, c);
+    } while (!(strstr(out->str, "returning to console mode") &&
+               g_str_has_suffix(out->str, "to escape to L1\r\n")));
+    start = strstr(out->str, "-L1> ");
+    g_assert_nonnull(start);
+    start += 5;
+    end = strstr(start, "returning to console mode");
+    text = g_strndup(start, end - start);
+    g_string_free(out, TRUE);
+    return text;
+}
+
+static char *console_command(Rig *r, const char *text)
+{
+    console_send(r, text);
+    return console_finish(r);
+}
+
+/* Switch the environment monitoring on, as `pbay env on` does. */
+static void monitoring_on(Rig *r)
+{
+    wait_status(r, 2);
+    g_free(console_command(r, "pbay env on"));
 }
 
 /* The bay side of a socket. */
@@ -421,21 +562,27 @@ static uint8_t sensor_number(unsigned n)
     return n <= 6 ? supply_base + n - 1 : port_base + n - 7;
 }
 
-/* One polling pass; @masks[n] is the reading of supply or port n in turn. */
-static void serve_pass(Rig *r, const uint8_t masks[15])
+/* Sensor reads of supplies or ports @first to @last (1 to 14 in turn). */
+static void serve_range(Rig *r, const uint8_t masks[15], unsigned first,
+                        unsigned last)
 {
     Request q;
 
-    for (unsigned n = 1; n <= 14; n++) {
+    for (unsigned n = first; n <= last; n++) {
         bay_read(r, &q);
         EXPECT_LINK(&q, 0x20, 0x4400, 0x22, 0x10, 0x2d, sensor_number(n));
         TUNNEL_REPLY(r, &q, 0x00, 0x00, masks[n], 0x00);
     }
 }
 
+/* One polling pass; @masks[n] is the reading of supply or port n in turn. */
+static void serve_pass(Rig *r, const uint8_t masks[15])
+{
+    serve_range(r, masks, 1, 14);
+}
+
 static void test_init_sequence(void)
 {
-    uint8_t clear[15] = { 0 };
     Rig r;
 
     rig_start(&r, true, "", "");
@@ -443,11 +590,11 @@ static void test_init_sequence(void)
     wait_status(&r, 2);
     g_assert_cmpuint(l1_u(&r, "pbay-records"), ==, 12);
     {
-        g_autofree char *out = command(&r, "pbay");
+        /* The per-device current figures are not modelled: no output. */
+        g_autofree char *out = console_command(&r, "pbay");
 
-        g_assert_cmpstr(out, ==, "ready\n");
+        g_assert_cmpstr(out, ==, "");
     }
-    serve_pass(&r, clear);
     rig_stop(&r);
 }
 
@@ -479,6 +626,7 @@ static void test_polling_log(void)
 
     rig_start(&r, true, "", "");
     serve_init(&r);
+    monitoring_on(&r);
     g_free(command(&r, "log clear"));
     serve_pass(&r, masks);      /* a clear bay logs nothing */
     r.held = g_new(Request, 1);
@@ -543,6 +691,7 @@ static void test_first_pass(void)
 
     rig_start(&r, true, "", "");
     serve_init(&r);
+    monitoring_on(&r);
     g_free(command(&r, "log clear"));
     masks[2] = 0x04;
     masks[5] = 0x01;
@@ -572,7 +721,7 @@ static void test_sensor_map(void)
     port_base = 40;
     rig_start(&r, true, "", "");
     serve_init(&r);
-    wait_status(&r, 2);
+    monitoring_on(&r);
     serve_pass(&r, clear);
     rig_stop(&r);
     supply_base = 1;
@@ -605,6 +754,511 @@ static void test_fru_fallback(void)
     serve_init_with(&r, 0x00, 0x00);
     wait_status(&r, 2);
     g_assert_cmphex(l1_u(&r, "pbay-fru-slot0"), ==, 0);
+    rig_stop(&r);
+}
+
+/* Every line of @text matches the matching pattern, in order. */
+static void expect_lines(const char *text, const char *const *patterns,
+                         unsigned n)
+{
+    g_auto(GStrv) lines = g_strsplit(text, "\r\n", -1);
+
+    g_assert_cmpuint(g_strv_length(lines), ==, n + 1);
+    g_assert_cmpstr(lines[n], ==, "");
+    for (unsigned i = 0; i < n; i++) {
+        g_assert_true(g_regex_match_simple(patterns[i], lines[i], 0, 0));
+    }
+}
+
+/* Take whatever the L1 has sent that the test has not read. */
+static void bay_drain(Rig *r)
+{
+    struct pollfd p = { .fd = r->bay, .events = POLLIN };
+    uint8_t b[256];
+
+    while (poll(&p, 1, 0) == 1) {
+        g_assert_cmpint(read(r->bay, b, sizeof(b)), >, 0);
+    }
+    r->held = NULL;
+    memset(&r->last, 0, sizeof(r->last));
+}
+
+static void test_states(void)
+{
+    g_autofree char *out = NULL;
+    Request q;
+    Rig r;
+
+    /* The task is still waiting for its start delay. */
+    rig_start(&r, true, ",pbay-tick-us=5000", "");
+    out = console_command(&r, "pbay");
+    g_assert_cmpstr(out, ==, "PBay busy initializing\r\n");
+    rig_stop(&r);
+
+    /* No bay: communication failure; init runs the start-up again. */
+    rig_start(&r, true, "", "");
+    wait_status(&r, 5);
+    g_free(out);
+    out = console_command(&r, "pbay version");
+    g_assert_cmpstr(out, ==, "PBay communication failure\r\n");
+    bay_drain(&r);
+    console_send(&r, "pbay init");
+    serve_init(&r);
+    g_free(out);
+    out = console_finish(&r);
+    g_assert_cmpstr(out, ==, "PBay ready\r\n");
+    wait_status(&r, 2);
+    g_free(out);
+    out = console_command(&r, "pbay init");
+    g_assert_cmpstr(out, ==, "PBay already initialized\r\n");
+
+    /* A second command while one waits for the bay is refused. */
+    console_send(&r, "pbay version");
+    bay_read(&r, &q);
+    g_assert_cmphex(q.cmd, ==, 0xc0);
+    g_free(out);
+    out = command(&r, "pbay version");
+    g_assert_nonnull(strstr(out, "PBay busy try again later"));
+    REPLY(&r, &q, 0x00, 0x12, 0x00, 0x60, 0xa0, 0xd4, 0x39, 0x80);
+    g_free(out);
+    out = console_finish(&r);
+    g_assert_cmpstr(out, ==,
+                    "PBay FW Version 00.18, Built 09/29/2000 14:00:00\r\n");
+    rig_stop(&r);
+}
+
+static void test_version_and_reset(void)
+{
+    g_autofree char *out = NULL;
+    Request q;
+    Rig r;
+
+    rig_start(&r, true, "", "");
+    serve_init(&r);
+    wait_status(&r, 2);
+
+    console_send(&r, "pbay reset");
+    bay_read(&r, &q);
+    EXPECT_LINK(&q, 0x20, 0x4400, 0x22, 0x18, 0x03);
+    TUNNEL_REPLY(&r, &q, 0x00);
+    out = console_finish(&r);
+    g_assert_cmpstr(out, ==, "Ok\r\n");
+
+    /* No reply to either: three transmissions, then the failure text. */
+    console_send(&r, "pbay reset");
+    g_free(out);
+    out = console_finish(&r);
+    g_assert_cmpstr(out, ==, "Timeout\r\n");
+    bay_drain(&r);
+    console_send(&r, "pbay version");
+    g_free(out);
+    out = console_finish(&r);
+    g_assert_cmpstr(out, ==, "PBay version unavailable\r\n");
+    wait_status(&r, 2);
+    rig_stop(&r);
+}
+
+static void test_dps_dcport_env(void)
+{
+    static const char *const dps_head[] = {
+        "^DPS +AC State +AC Range +Predictive Fail +Fail$", "^-+( +-+)*$",
+    };
+    uint8_t masks[15] = { 0 };
+    g_autofree char *out = NULL;
+    g_auto(GStrv) lines = NULL;
+    Rig r;
+
+    rig_start(&r, true, "", "");
+    serve_init(&r);
+    wait_status(&r, 2);
+
+    masks[2] = 0x01;
+    masks[3] = 0x18;
+    masks[4] = 0x04;
+    masks[5] = 0x02;
+    console_send(&r, "pbay dps");
+    serve_range(&r, masks, 1, 6);
+    out = console_finish(&r);
+    {
+        const char *const rows[] = {
+            dps_head[0], dps_head[1],
+            "^1 +Ok +220Vac +Ok +Ok$", "^2 +Not_Present$",
+            "^3 +Low +110Vac +Ok +Ok$", "^4 +Ok +220Vac +Failing +Ok$",
+            "^5 +Ok +220Vac +Ok +Failed$", "^6 +Ok +220Vac +Ok +Ok$",
+        };
+
+        expect_lines(out, rows, G_N_ELEMENTS(rows));
+    }
+
+    /* Digits pick the supplies; only those are read. */
+    console_send(&r, "pbay dps 53");
+    serve_range(&r, masks, 3, 3);
+    serve_range(&r, masks, 5, 5);
+    g_free(out);
+    out = console_finish(&r);
+    g_assert_nonnull(strstr(out, "\r\n3 "));
+    g_assert_nonnull(strstr(out, "\r\n5 "));
+    g_assert_null(strstr(out, "\r\n1 "));
+
+    masks[7 + 1] = 0x01;
+    masks[7 + 2] = 0x02;
+    console_send(&r, "pbay dcport");
+    serve_range(&r, masks, 7, 14);
+    g_free(out);
+    out = console_finish(&r);
+    {
+        const char *const rows[] = {
+            "^DcPort +State$", "^-+$",
+            "^1 +48V On, Ok$", "^2 +48V Off$", "^3 +48V On, Failed$",
+            "^4 +48V On, Ok$", "^5 +48V On, Ok$", "^6 +48V On, Ok$",
+            "^7 +48V On, Ok$", "^8 +48V On, Ok$",
+        };
+
+        expect_lines(out, rows, G_N_ELEMENTS(rows));
+    }
+
+    /* A sensor that does not answer prints an error and the rest go on. */
+    console_send(&r, "pbay dps 12");
+    {
+        Request q;
+
+        bay_read(&r, &q);
+        for (unsigned i = 0; i < 2; i++) {
+            bay_read_raw(&r, &q);
+        }
+        serve_range(&r, masks, 2, 2);
+    }
+    g_free(out);
+    out = console_finish(&r);
+    g_assert_nonnull(strstr(out, "\r\n1 "));
+    g_assert_nonnull(strstr(out, "**read error**"));
+    g_assert_nonnull(strstr(out, "\r\n2 "));
+
+    /* env: the setting, a blank line, then both tables. */
+    g_free(out);
+    out = console_command(&r, "pbay env on");
+    g_assert_cmpstr(out, ==, "");
+    console_send(&r, "pbay env");
+    serve_range(&r, masks, 1, 14);
+    g_free(out);
+    out = console_finish(&r);
+    g_assert_true(g_str_has_prefix(out, "Power Bay env monitoring enabled"
+                                        "\r\n\r\nDPS "));
+    g_assert_nonnull(strstr(out, "\r\nDcPort "));
+    rig_stop(&r);
+}
+
+/* A FRU image: board area (date and manufacturer) and product area. */
+static void fru_image(uint8_t *img, const char *serial, unsigned minutes,
+                      bool good)
+{
+    uint8_t *board = img + 8, *prod = img + 24;
+    const char *fields[] = { "SGI", "PWR SUPPLY", "030-1234", "A1", serial };
+    unsigned n = 3;
+    uint8_t sum = 0;
+
+    memset(img, 0, 128);
+    img[0] = 1;
+    img[3] = 1;
+    img[4] = 3;
+    img[7] = -(1 + 1 + 3);
+    board[0] = 1;
+    board[1] = 2;
+    board[3] = minutes & 0xff;
+    board[4] = (minutes >> 8) & 0xff;
+    board[5] = minutes >> 16;
+    board[6] = 0xc1;
+    for (unsigned i = 0; i < 16; i++) {
+        sum += board[i];
+    }
+    board[15] = -sum;
+    prod[0] = 1;
+    prod[1] = 6;
+    for (unsigned i = 0; i < G_N_ELEMENTS(fields); i++) {
+        prod[n++] = 0xc0 | strlen(fields[i]);
+        memcpy(prod + n, fields[i], strlen(fields[i]));
+        n += strlen(fields[i]);
+    }
+    prod[n] = 0xc1;
+    sum = 0;
+    for (unsigned i = 0; i < 48; i++) {
+        sum += prod[i];
+    }
+    prod[47] = -sum;
+    if (!good) {
+        prod[10] ^= 1;
+    }
+}
+
+static void serve_fru(Rig *r, uint8_t device, const uint8_t *img)
+{
+    Request q;
+    uint8_t d[1 + 128] = { 0x80 };
+
+    memcpy(d + 1, img, 128);
+    bay_read(r, &q);
+    EXPECT_LINK(&q, 0x20, 0x4400, 0x22, 0x28, 0x11, device, 0x00, 0x00, 0x80);
+    tunnel_reply(r, &q, d, sizeof(d));
+}
+
+/*
+ * The FRU table and the serial. 1996-01-01 plus 2,720,160 minutes is
+ * 2001-03-04.
+ */
+static void test_fru_and_serial(void)
+{
+    uint8_t good[128], bad[128];
+    g_autofree char *out = NULL;
+    Rig r;
+
+    fru_image(good, "SN12345678A", 2720160, true);
+    fru_image(bad, "SN12345678A", 2720160, false);
+    rig_start(&r, true, "", "");
+    serve_init(&r);
+    wait_status(&r, 2);
+
+    /* Slot 0 is the bay (device ae), 1 to 6 the supplies (a0 to aa). */
+    console_send(&r, "pbay fru");
+    serve_fru(&r, 0xae, good);
+    for (unsigned i = 1; i <= 6; i++) {
+        serve_fru(&r, 0xa0 + 2 * (i - 1), i == 2 ? bad : good);
+    }
+    out = console_finish(&r);
+    {
+        const char *const rows[] = {
+            "^Dps +Mfg +Product Name +Part Number +Rev +Serial +Mfg Date$",
+            "^-+( +-+)*$",
+            "^Bay +SGI +PWR SUPPLY +030-1234 +A1 +SN12345678A +03/04/2001$",
+            "^1 +SGI +PWR SUPPLY +030-1234 +A1 +SN12345678A +03/04/2001$",
+            "^2 +\\*\\*FRU checksum error\\*\\*$",
+            "^3 +SGI ", "^4 +SGI ", "^5 +SGI ", "^6 +SGI ",
+        };
+
+        expect_lines(out, rows, G_N_ELEMENTS(rows));
+    }
+
+    /* A negative argument selects the seventh device (ac). */
+    console_send(&r, "pbay fru -1");
+    serve_fru(&r, 0xac, good);
+    g_free(out);
+    out = console_finish(&r);
+    g_assert_nonnull(strstr(out, "\r\nCard "));
+
+    /* The serial is read from slot 0 once and then kept. */
+    console_send(&r, "pbay serial");
+    serve_fru(&r, 0xae, good);
+    g_free(out);
+    out = console_finish(&r);
+    g_assert_cmpstr(out, ==, "SN12345678A\r\n");
+    g_free(out);
+    out = console_command(&r, "pbay serial");
+    g_assert_cmpstr(out, ==, "SN12345678A\r\n");
+    rig_stop(&r);
+}
+
+static void test_arguments_and_bricks(void)
+{
+    g_autofree char *out = NULL;
+    Rig r;
+
+    rig_start(&r, true, "", "");
+    serve_init(&r);
+    wait_status(&r, 2);
+    out = console_command(&r, "pbay dps 7");
+    g_assert_nonnull(strstr(out, "invalid arguments for 'pbay'"));
+    g_free(out);
+    out = console_command(&r, "pbay frobnicate");
+    g_assert_nonnull(strstr(out, "invalid arguments for 'pbay'"));
+    rig_stop(&r);
+
+    /*
+     * The command takes the brick types in C356P%#=IXYRN&! only; a type
+     * the link opens for, such as D, refuses it.
+     */
+    rig_brick = "brick-type-code=68,bay=7";
+    rig_start(&r, true, "", "");
+    rig_brick = "brick-type=cbrick,named=on,rack=1,bay=7";
+    g_free(out);
+    out = console_command(&r, "pbay");
+    g_assert_nonnull(strstr(out, "ERROR: command not found."));
+    rig_stop(&r);
+}
+
+/* Polling does nothing until `pbay env on`. */
+static void test_poll_gate(void)
+{
+    struct pollfd p;
+    Request q;
+    Rig r;
+
+    rig_start(&r, true, "", "");
+    serve_init(&r);
+    wait_status(&r, 2);
+    p = (struct pollfd){ .fd = r.bay, .events = POLLIN };
+    /* Five poll periods of 50 ms. */
+    g_usleep(250 * 1000);
+    g_assert_cmpint(poll(&p, 1, 0), ==, 0);
+    g_free(console_command(&r, "pbay env on"));
+    bay_read(&r, &q);
+    g_assert_cmphex(q.cmd, ==, 0x20);
+    g_free(console_command(&r, "pbay env off"));
+    rig_stop(&r);
+}
+
+/*
+ * Task 3 (the command interpreter request) runs a pbay command that waits
+ * for the bay: the reply is sent when the bay has answered, with status 0 for
+ * a command that succeeded and -1 for one that failed.
+ */
+static void test_task3_pbay_reply(void)
+{
+    g_autofree char *out = NULL;
+    int32_t code;
+    Request q;
+    Rig r;
+
+    rig_start(&r, true, "", "");
+    serve_init(&r);
+    wait_status(&r, 2);
+
+    task3_send(&r, LOCAL_COMMAND, "pbay version");
+    bay_read(&r, &q);
+    g_assert_cmphex(q.cmd, ==, 0xc0);
+    REPLY(&r, &q, 0x00, 0x12, 0x00, 0x60, 0xa0, 0xd4, 0x39, 0x80);
+    out = task3_receive(&r, &code, NULL, NULL);
+    g_assert_cmpstr(out, ==,
+                    "PBay FW Version 00.18, Built 09/29/2000 14:00:00\n");
+    g_assert_cmpint(code, ==, 0);
+
+    task3_send(&r, LOCAL_COMMAND, "pbay reset");
+    bay_read(&r, &q);
+    EXPECT_LINK(&q, 0x20, 0x4400, 0x22, 0x18, 0x03);
+    TUNNEL_REPLY(&r, &q, 0x00);
+    g_free(out);
+    out = task3_receive(&r, &code, NULL, NULL);
+    g_assert_cmpstr(out, ==, "Ok\n");
+    g_assert_cmpint(code, ==, 0);
+
+    /* No reply to the reset: the failure text, and status -1. */
+    task3_send(&r, LOCAL_COMMAND, "pbay reset");
+    g_free(out);
+    out = task3_receive(&r, &code, NULL, NULL);
+    g_assert_cmpstr(out, ==, "Timeout\n");
+    g_assert_cmpint(code, ==, -1);
+    rig_stop(&r);
+}
+
+/*
+ * A reply holds the lines that fit in 121 bytes of fields, two bytes of
+ * framing and the text with its terminator each, and no partial line.
+ */
+static void test_task3_pbay_truncation(void)
+{
+    uint8_t masks[15] = { 0 };
+    g_autofree char *full = NULL, *out = NULL;
+    g_auto(GStrv) lines = NULL;
+    unsigned fields, used = 0, i;
+    size_t wire;
+    Rig r;
+
+    rig_start(&r, true, "", "");
+    serve_init(&r);
+    wait_status(&r, 2);
+
+    console_send(&r, "pbay dps");
+    serve_range(&r, masks, 1, 6);
+    full = console_finish(&r);
+    lines = g_strsplit(full, "\r\n", -1);
+
+    task3_send(&r, LOCAL_COMMAND, "pbay dps");
+    serve_range(&r, masks, 1, 6);
+    out = task3_receive(&r, NULL, &fields, &wire);
+    g_assert_cmpuint(fields, >, 0);
+    for (i = 0; i < fields; i++) {
+        used += 2 + strlen(lines[i]);
+    }
+    g_assert_cmpuint(used, <=, 121);
+    g_assert_cmpuint(wire, ==, 6 + used);
+    /* The table is longer than the reply, and the next line did not fit. */
+    g_assert_cmpuint(g_strv_length(lines) - 1, >, fields);
+    g_assert_cmpuint(used + 2 + strlen(lines[fields]), >, 121);
+    rig_stop(&r);
+}
+
+/*
+ * The limit is 121 bytes of fields whatever the lines are. The log's lines
+ * are the text of an entry after 18 bytes of date and time, so entries make
+ * lines of any length: three lines that add up to 121 with their framing
+ * all fit, with a fourth line to show the reply stopped for want of room
+ * and not of lines, and a line that would bring 121 bytes to 122 does not.
+ * Either side of the limit is a byte away from a wrong limit.
+ */
+static void log_lines_reply(Rig *r, const unsigned *texts, unsigned count,
+                            unsigned *fields, size_t *wire)
+{
+    g_autofree char *out = NULL;
+
+    g_free(command(r, "log clear"));
+    for (unsigned i = 0; i < count; i++) {
+        g_autofree char *line = g_strdup_printf("log insert %.*s",
+                                                (int)texts[i],
+                                                "abcdefghijklmnopqrstuvwxyz"
+                                                "abcdefghijklmnopqrstuvwxyz");
+
+        g_free(command(r, line));
+    }
+    task3_send(r, LOCAL_COMMAND, "log");
+    out = task3_receive(r, NULL, fields, wire);
+}
+
+static void test_task3_reply_limit(void)
+{
+    /* A line costs 2 + 18 + its text; the first three cost 41 + 41 + 39. */
+    const unsigned exact[] = { 21, 21, 19, 1 };
+    /* 41 + 41 = 82, and a third line of 40 would make 122. */
+    const unsigned over[] = { 21, 21, 20, 1 };
+    unsigned fields;
+    size_t wire;
+    Rig r;
+
+    rig_start(&r, true, "", "");
+    serve_init(&r);
+    wait_status(&r, 2);
+
+    log_lines_reply(&r, exact, G_N_ELEMENTS(exact), &fields, &wire);
+    g_assert_cmpuint(fields, ==, 3);
+    g_assert_cmpuint(wire, ==, 6 + 121);
+
+    log_lines_reply(&r, over, G_N_ELEMENTS(over), &fields, &wire);
+    g_assert_cmpuint(fields, ==, 2);
+    g_assert_cmpuint(wire, ==, 6 + 82);
+    rig_stop(&r);
+}
+
+/*
+ * A task-3 request relayed to an I/O brick that has a power-bay link runs
+ * on that brick, and its reply, sent once the bay has answered, goes back to
+ * the requester and not out of the I/O brick's own link.
+ */
+static void test_task3_pbay_forwarded(void)
+{
+    g_autofree char *out = NULL;
+    int32_t code;
+    Request q;
+    Rig r;
+
+    rig_start_pair(&r);
+    serve_init(&r);
+    wait_status(&r, 2);
+
+    task3_send(&r, ATTACHED_IO_COMMAND, "pbay version");
+    bay_read(&r, &q);
+    g_assert_cmphex(q.cmd, ==, 0xc0);
+    REPLY(&r, &q, 0x00, 0x12, 0x00, 0x60, 0xa0, 0xd4, 0x39, 0x80);
+    out = task3_receive(&r, &code, NULL, NULL);
+    g_assert_cmpstr(out, ==,
+                    "PBay FW Version 00.18, Built 09/29/2000 14:00:00\n");
+    g_assert_cmpint(code, ==, 0);
     rig_stop(&r);
 }
 
@@ -775,8 +1429,8 @@ static void test_no_bay(void)
         g_assert_cmpmem(again.body, again.len, q.body, q.len);
     }
     wait_status(&r, 5);
-    out = command(&r, "pbay");
-    g_assert_cmpstr(out, ==, "communication failure\n");
+    out = console_command(&r, "pbay");
+    g_assert_cmpstr(out, ==, "PBay communication failure\r\n");
     rig_stop(&r);
 
     /* A zero address in the reply means no bay either. */
@@ -797,14 +1451,16 @@ static void test_with_bay_model(void)
     rig_start(&r, false, "", "");
     wait_status(&r, 2);
     g_assert_cmpuint(l1_u(&r, "pbay-records"), ==, 12);
-    out = command(&r, "pbay");
-    g_assert_cmpstr(out, ==, "ready\n");
-    g_free(out);
+    monitoring_on(&r);
 
     /*
      * Pulling supply 1 shows in the log after a later pass. A reply holds
      * only the first lines of the log, so start it empty.
      */
+    while (l1_u(&r, "pbay-passes") < 1) {
+        g_assert_cmpint(g_get_monotonic_time(), <, end);
+        g_usleep(5000);
+    }
     g_free(command(&r, "log clear"));
     qtest_qmp_assert_success(r.qts,
         "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/pbay',"
@@ -937,6 +1593,18 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-l1-pbay/first-pass", test_first_pass);
     qtest_add_func("/sgi-l1-pbay/sensor-map", test_sensor_map);
     qtest_add_func("/sgi-l1-pbay/fru-fallback", test_fru_fallback);
+    qtest_add_func("/sgi-l1-pbay/states", test_states);
+    qtest_add_func("/sgi-l1-pbay/version-and-reset", test_version_and_reset);
+    qtest_add_func("/sgi-l1-pbay/dps-dcport-env", test_dps_dcport_env);
+    qtest_add_func("/sgi-l1-pbay/fru-and-serial", test_fru_and_serial);
+    qtest_add_func("/sgi-l1-pbay/arguments-and-bricks",
+                   test_arguments_and_bricks);
+    qtest_add_func("/sgi-l1-pbay/poll-gate", test_poll_gate);
+    qtest_add_func("/sgi-l1-pbay/task3-reply", test_task3_pbay_reply);
+    qtest_add_func("/sgi-l1-pbay/task3-truncation",
+                   test_task3_pbay_truncation);
+    qtest_add_func("/sgi-l1-pbay/task3-reply-limit", test_task3_reply_limit);
+    qtest_add_func("/sgi-l1-pbay/task3-forwarded", test_task3_pbay_forwarded);
     qtest_add_func("/sgi-l1-pbay/receive-rules", test_receive_rules);
     qtest_add_func("/sgi-l1-pbay/start-delay-and-resends",
                    test_start_delay_and_resends);
