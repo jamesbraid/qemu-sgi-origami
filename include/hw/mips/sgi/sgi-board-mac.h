@@ -10,6 +10,8 @@
 #ifndef HW_MIPS_SGI_SGI_BOARD_MAC_H
 #define HW_MIPS_SGI_SGI_BOARD_MAC_H
 
+#include "hw/mips/sgi/sgi-board-identity.h"
+
 /*
  * The address when mac= is not given is 08:00:69:E?:xx:xx, worked out from
  * the machine's system disk or type name; see sgi-board-identity.h.
@@ -32,10 +34,27 @@ char *sgi_board_mac(const char *base, unsigned int offset, Error **errp);
 char *sgi_board_default_text_serial(unsigned int node);
 
 /*
- * Add the "mac" property to machine class @oc, kept as a string @offset
- * bytes into each instance. A value that is not a nonzero unicast address
- * is refused, as is setting it once the machine is built. @description
- * says which boards take it.
+ * The default system serial, "L" and seven digits of the same seed. Every
+ * node of a machine shares it: it names the system, not a board. See
+ * sgi-board-identity.h.
+ */
+char *sgi_board_default_system_serial(void);
+
+/*
+ * Whether the identity came from a disk or identity-key, not the machine
+ * name, so two guests differ. Models whose catalogue serials predate the
+ * seed keep them unless this is true.
+ */
+bool sgi_board_identity_is_seeded(void);
+
+/* The ten-character module serial of module @module, "K" and nine more. */
+char *sgi_board_default_module_serial(unsigned int module);
+
+/*
+ * Add the "mac" and "identity-key" properties to machine class @oc, kept
+ * as a string @offset bytes into each instance. A value that is not a
+ * nonzero unicast address is refused, as is setting it once the machine is
+ * built. @description says which boards take it.
  */
 void sgi_board_mac_class_add_property(ObjectClass *oc, size_t offset,
                                       const char *description);

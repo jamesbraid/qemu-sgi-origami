@@ -2542,6 +2542,47 @@ static void l1_expect_brick_serial(QTestState *qts, const char *serial)
     g_assert_cmpstr((const char *)reply + 7, ==, serial);
 }
 
+/* System serial request: status 0 and one text field, or minus 104. */
+static void l1_expect_system_serial(QTestState *qts, const char *serial)
+{
+    const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 8, 0 };
+    uint8_t reply[131];
+    size_t length;
+
+    l1_send_at(qts, L1_UART_LOCAL_BASE, request, sizeof(request) - 1);
+    length = l1_receive_at(qts, L1_UART_LOCAL_BASE, reply);
+    g_assert_cmphex(reply[0], ==, 0x30);
+    g_assert_cmpuint(length, ==, 6 + 2 + strlen(serial));
+    g_assert_cmpuint(ldl_be_p(reply + 1), ==, 0);
+    g_assert_cmphex(reply[5], ==, 1);
+    g_assert_cmphex(reply[6], ==, 1);
+    g_assert_cmpstr((const char *)reply + 7, ==, serial);
+}
+
+/*
+ * The Origin 300 answers the system serial request, which the guest's
+ * system-id call and FLEXlm's host id read, with "L" and seven digits of
+ * the identity seed: sha256("origin300") bytes 6 to 9 give L1472560. The
+ * machine has no legacy SCSI drive for the seed to hash, so the machine
+ * type name stands in, as it does for the default address. A serial set on
+ * the device replaces it.
+ */
+static void test_origin300_system_serial(const void *data)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = machine_start_bare("-cpu R14000 -smp 2 -S");
+
+    l1_expect_system_serial(qts, "L1472560");
+    qtest_system_reset(qts);
+    l1_expect_system_serial(qts, "L1472560");
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M origin300 -bios %s -cpu R14000 -smp 2 -S "
+                      "-global sgi-l1.system-serial=M2001347", quoted);
+    l1_expect_system_serial(qts, "M2001347");
+    qtest_quit(qts);
+}
+
 static void assert_qemu_rejects(const char *const args[], const char *message);
 
 static void test_configured_l1_requires_node(const void *data)
@@ -7123,6 +7164,8 @@ int main(int argc, char **argv)
                         test_fuel_l1_revision);
     qtest_add_data_func("sn1/address-map/l1-brick-serial", NULL,
                         test_fuel_l1_brick_serial);
+    qtest_add_data_func("sn1/address-map/l1-origin300-system-serial", NULL,
+                        test_origin300_system_serial);
     qtest_add_data_func("sn1/address-map/l1-overrides-origin300", NULL,
                         test_l1_overrides_origin300);
     qtest_add_data_func("sn1/address-map/l1-revision-machine-without-l1",

@@ -880,6 +880,11 @@ static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
         return true;
     }
     qdev_prop_set_string(l1, "mac-record", "io8-board");
+    if (!SGI_L1(l1)->system_serial) {
+        g_autofree char *serial = sgi_board_default_system_serial();
+
+        qdev_prop_set_string(l1, "system-serial", serial);
+    }
     for (size_t i = 0; i < ARRAY_SIZE(sgi_ip45_node_boards); i++) {
         if (sgi_ip45_node_boards[i].processors == processors) {
             qdev_prop_set_string(l1, "node-board-name",
@@ -5547,8 +5552,11 @@ static bool sgi_machine_realize_crossbars(SGIMachineState *s,
 static void sgi_machine_attach_module_parts(SGIMachineState *s,
                                             const SGIModelTopology *t,
                                             const SGIModelModule *module,
+                                            unsigned int module_index,
                                             SN0ModuleManagementState *mgmt)
 {
+    g_autofree char *seeded_serial = NULL;
+    const char *module_serial = module->serial;
     g_autofree const SGIModelNode **nodes = NULL;
     g_autofree unsigned int *module_nodes = NULL;
     char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
@@ -5567,8 +5575,17 @@ static void sgi_machine_attach_module_parts(SGIMachineState *s,
             module->midplane_record->revision, module->midplane_record->name,
         };
     }
+    /*
+     * The catalogue's serial is the same on every guest. A guest with its
+     * own identity seed gets a derived one, which the kernel reads as its
+     * system id and FLEXlm as its host id.
+     */
+    if (sgi_board_identity_is_seeded()) {
+        seeded_serial = sgi_board_default_module_serial(module_index);
+        module_serial = seeded_serial;
+    }
     sgi_sn0_module_management_attach_parts(
-        mgmt, module->serial, module->identity_serial,
+        mgmt, module_serial, module->identity_serial,
         module->midplane_record ? &midplane : NULL, module->midplane_serial,
         &error_fatal);
 
@@ -6471,7 +6488,7 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
             qdev_prop_set_chr(dev, "chardev", aux);
         }
         qdev_realize_and_unref(dev, NULL, &error_fatal);
-        sgi_machine_attach_module_parts(s, t, module,
+        sgi_machine_attach_module_parts(s, t, module, controller_index,
                                         SGI_SN0_MODULE_MANAGEMENT(dev));
         s->module_mgmt[controller_index] = SGI_SN0_MODULE_MANAGEMENT(dev);
         qdev_connect_gpio_out_named(
