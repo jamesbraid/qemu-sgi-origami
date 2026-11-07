@@ -1115,7 +1115,7 @@ controller is *unknown*.
 Machine options
 ---------------
 
-A machine reaches a controller's L1 with two list options, each entry
+A machine reaches a controller's L1 with three list options, each entry
 ``<index>=<value>`` where *index* is the zero-based position of the
 controller in the selected topology, the same numbering as
 ``controller-chardev`` (:ref:`sgi-pci-expansion-controller-inputs`):
@@ -1130,7 +1130,16 @@ controller in the selected topology, the same numbering as
   Sets ``l2-partition-flag`` on that controller's L1. It needs no
   chardev, and a value outside 0 to 3 is refused.
 
-Both accept an expansion controller and a controller that no module owns
+``controller-pbay-chardev.N=<index>=<chardev-id>``
+  Sets the ``pbay`` property of that controller's L1 to an existing
+  chardev, joining it to a power bay (:ref:`sgi-l1-pbay`; the bay end is
+  the ``sgi-pbay`` device). The same rules as the L2 link apply, and a
+  chardev that ``controller-chardev`` or ``controller-l2-chardev`` uses is
+  refused too. The L1 refuses to start on a brick type that does not run the
+  power-bay task. The option sets no timing: the ``pbay-tick-us`` and
+  ``pbay-poll-ms`` properties are reached with ``-global sgi-l1.<property>``.
+
+All accept an expansion controller and a controller that no module owns
 and exactly one compute node names, which is a C-brick's L1 in the
 Origin 3000 topologies. A module-owned L1 serves several boards, so an
 entry for one, or for an index beyond the topology, is refused. For
@@ -1141,7 +1150,8 @@ and a nonzero setting with::
    -M origin3000,topology=origin3400-two-partitions,controller-l2-chardev.0=0=l2a,controller-l2-partition-flag.0=0=1
 
 Setting ``controller-l2-chardev`` blocks migration for the reason given
-under Limits.
+under Limits; ``controller-pbay-chardev`` blocks it because the bay's state
+lies outside the machine.
 
 Link format
 -----------

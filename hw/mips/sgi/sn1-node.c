@@ -3010,6 +3010,11 @@ static bool sn1_node_set_l1_l2_link(SN1NodeState *node, Error **errp)
         qdev_prop_set_uint8(node->l1, "l2-partition-flag",
                             node->l1_l2_partition_flag);
     }
+    if (node->l1_pbay_chardev &&
+        !object_property_set_str(OBJECT(node->l1), "pbay",
+                                 node->l1_pbay_chardev, errp)) {
+        return false;
+    }
     return true;
 }
 
@@ -3907,6 +3912,7 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_STRING("l1-brick-type", SN1NodeState, l1_brick_type),
     DEFINE_PROP_UINT32("l1-partition", SN1NodeState, l1_partition, 0),
     DEFINE_PROP_STRING("l1-l2-chardev", SN1NodeState, l1_l2_chardev),
+    DEFINE_PROP_STRING("l1-pbay-chardev", SN1NodeState, l1_pbay_chardev),
     DEFINE_PROP_UINT8("l1-l2-partition-flag", SN1NodeState,
                       l1_l2_partition_flag, 0),
     DEFINE_PROP_UINT8("bedrock-revision", SN1NodeState, bedrock_revision, 0),

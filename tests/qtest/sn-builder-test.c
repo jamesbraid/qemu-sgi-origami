@@ -11047,6 +11047,136 @@ static void test_origin3400_l2_link_refusals(void)
 }
 
 /*
+ * controller-pbay-chardev joins the L1 of the controller it names to a power
+ * bay and no other. A bay model on the other end of a socket pair serves the
+ * initialisation, and the operator's pbay command shows its answer on the
+ * L1's console (serial line 0 is node 0's).
+ */
+static char *pbay_console(int fd, const char *want)
+{
+    GString *out = g_string_new(NULL);
+    struct pollfd p = { .fd = fd, .events = POLLIN };
+
+    while (!strstr(out->str, want)) {
+        char c;
+
+        g_assert_cmpint(poll(&p, 1, 30000), ==, 1);
+        g_assert_cmpint(read(fd, &c, 1), ==, 1);
+        g_string_append_c(out, c);
+    }
+    return g_string_free(out, FALSE);
+}
+
+static void pbay_console_send(int fd, const char *text)
+{
+    g_assert_cmpint(write(fd, text, strlen(text)), ==, strlen(text));
+}
+
+static void pbay_wait_status(QTestState *qts, const char *l1, unsigned want)
+{
+    for (unsigned i = 0; i < 30000 &&
+         qom_get_uint(qts, l1, "pbay-status") != want; i++) {
+        g_usleep(1000);
+    }
+    g_assert_cmpuint(qom_get_uint(qts, l1, "pbay-status"), ==, want);
+}
+
+static void test_origin3400_pbay_link_wiring(void)
+{
+    g_autofree char *prom = zero_prom_file("sn-builder-pbay-prom-XXXXXX");
+    const char *mine = "/machine/node0/l1", *other = "/machine/node1/l1";
+    int link[2], console[2];
+    char *out;
+    QTestState *qts;
+    uint64_t passes;
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, link), ==, 0);
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, console), ==, 0);
+    qts = qtest_initf("-chardev socket,id=pbay,fd=%d "
+                      "-chardev socket,id=bay,fd=%d "
+                      "-device sgi-pbay,chardev=bay "
+                      "-chardev socket,id=con,fd=%d -serial chardev:con "
+                      "-global sgi-l1.pbay-tick-us=200 "
+                      "-global sgi-l1.pbay-poll-ms=50 "
+                      "-M origin3000,topology=origin3400-two-partitions,"
+                      "controller-pbay-chardev.0=0=pbay "
+                      "-cpu R12000 -smp 8 -m 8192 -bios %s -nodefaults "
+                      "-display none", link[0], link[1], console[0], prom);
+    close(link[0]);
+    close(link[1]);
+    close(console[0]);
+    pbay_wait_status(qts, mine, 2);
+    g_assert_cmpuint(qom_get_uint(qts, mine, "pbay-records"), ==, 12);
+    g_assert_cmpuint(qom_get_uint(qts, other, "pbay-status"), ==, 0);
+
+    pbay_console_send(console[1], "\024pbay version\r");
+    out = pbay_console(console[1], "PBay FW Version 00.18, Built "
+                                   "09/29/2000 14:00:00");
+    g_free(out);
+    /* The command ends with the return to console mode. */
+    out = pbay_console(console[1], "to escape to L1\r\n");
+    g_free(out);
+
+    /* Monitoring is off until pbay env on; then passes begin. */
+    passes = qom_get_uint(qts, mine, "pbay-passes");
+    g_assert_cmpuint(passes, ==, 0);
+    pbay_console_send(console[1], "\024pbay env on\r");
+    out = pbay_console(console[1], "to escape to L1\r\n");
+    g_free(out);
+    for (unsigned i = 0; i < 30000 &&
+         qom_get_uint(qts, mine, "pbay-passes") <= passes; i++) {
+        g_usleep(1000);
+    }
+    g_assert_cmpuint(qom_get_uint(qts, mine, "pbay-passes"), >, passes);
+    g_assert_cmpuint(qom_get_uint(qts, other, "pbay-passes"), ==, 0);
+    close(console[1]);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+static void test_origin3400_pbay_link_refusals(void)
+{
+    static const struct {
+        const char *input;
+        const char *message;
+    } cases[] = {
+        { "controller-pbay-chardev.0=9=pb", "does not take a power-bay link" },
+        { "controller-pbay-chardev.0=2=pb", "does not take a power-bay link" },
+        { "controller-pbay-chardev.0=0=missing", "does not exist" },
+        { "controller-pbay-chardev.0=0/0=pb", "invalid controller input" },
+        { "controller-pbay-chardev.0=0=pb,controller-pbay-chardev.1=0=pc",
+          "duplicate controller input" },
+        { "controller-pbay-chardev.0=0=pb,controller-pbay-chardev.1=1=pb",
+          "controller inputs reuse" },
+        { "controller-pbay-chardev.0=0=pb,controller-l2-chardev.0=1=pb",
+          "controller inputs reuse" },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *machine = g_strdup_printf(
+            "origin3000,topology=origin3400-two-partitions,%s",
+            cases[i].input);
+        const char *args[] = { qtest_qemu_binary(NULL), "-M", machine,
+            "-cpu", "R12000", "-smp", "8", "-m", "8192", "-nodefaults",
+            "-display", "none", "-chardev", "null,id=pb", "-chardev",
+            "null,id=pc", NULL };
+
+        assert_qemu_rejects(args, cases[i].message);
+    }
+
+    /* The expansion controller's own chardev input is a reuse too. */
+    {
+        const char *args[] = { qtest_qemu_binary(NULL), "-M",
+            "sn-builder-expansion-test,activate=true,"
+            "controller-chardev.0=1=pb,controller-pbay-chardev.0=1=pb",
+            "-cpu", "R14000", "-nodefaults", "-display", "none",
+            "-chardev", "null,id=pb", NULL };
+
+        assert_qemu_rejects(args, "controller inputs reuse");
+    }
+}
+
+/*
  * A link blocks migration, whether or not a peer is connected, and only the
  * controller option brings the link: a machine without it migrates.
  */
@@ -14620,6 +14750,10 @@ int main(int argc, char **argv)
                    test_origin3400_l2_link_wiring);
     qtest_add_func("sn/builder/origin3400/l2-link/refusals",
                    test_origin3400_l2_link_refusals);
+    qtest_add_func("sn/builder/origin3400/pbay-link/wiring",
+                   test_origin3400_pbay_link_wiring);
+    qtest_add_func("sn/builder/origin3400/pbay-link/refusals",
+                   test_origin3400_pbay_link_refusals);
     qtest_add_func("sn/builder/origin3400/l2-link/migration-blocker",
                    test_origin3400_l2_link_migration_blocker);
     qtest_add_func("sn/builder/origin3800/cables",
