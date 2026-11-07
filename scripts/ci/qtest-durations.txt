@@ -48,6 +48,7 @@ qtest-mips64/sgi-heart-test 13
 qtest-mips64/sgi-ioc3-eth-test 51
 qtest-mips64/sgi-ioc4-test 14
 qtest-mips64/sgi-kona-read-defense-test 12
+qtest-mips64/sgi-l1-pbay-test 35
 qtest-mips64/sgi-mace-test 4
 qtest-mips64/sgi-machine-init-test 7
 qtest-mips64/sgi-machine-storage-test 13
