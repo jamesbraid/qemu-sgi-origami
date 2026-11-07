@@ -10700,13 +10700,21 @@ static void test_origin3200_ibrick_power_migration(const void *data)
     g_rmdir(dir);
 }
 
-/* Whether the CPU the machine's first processor is halted, from the monitor. */
+/*
+ * Whether the machine's first processor is halted, from its node's mask of
+ * halted processors ("info cpus" never prints a halt on this target).
+ */
 static bool cpu0_halted(QTestState *qts)
 {
-    g_autofree char *cpus = qtest_hmp(qts, "info cpus");
+    QDict *reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine/node0',"
+        "'property':'halted-cpus'}}");
+    bool halted;
 
-    g_assert_nonnull(cpus);
-    return strstr(cpus, "(halted)") != NULL;
+    g_assert_true(qdict_haskey(reply, "return"));
+    halted = qdict_get_int(reply, "return") & 1;
+    qobject_unref(reply);
+    return halted;
 }
 
 static bool machine_running(QTestState *qts)
