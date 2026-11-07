@@ -1984,6 +1984,96 @@ refused unless the accelerator is TCG
 the test-only ``x-test-stop-delay-ms`` property, since the race is
 otherwise too short to observe).
 
+.. _sgi-bedrock-node-restart:
+
+Node restart
+============
+
+A node has a ``reset`` input, a pulse, that restarts that one node. Its
+brick's L1 drives it for an L1 ``reset``, for the reset request a kernel
+sends the L1, and for the peer's side of ``* reset`` (see the L1 page).
+Nothing else is touched: no other node, no router and no L1. A node
+without power is never reached, so the reset leaves it off and does not
+start it, and a node whose supply is on is restarted whatever its state
+was.
+
+The restart is the supply loss's stop and the power-up's start joined by a
+reset of the parts. Each processor is reset and halted from work queued on
+its own thread, so a processor never runs between the reset and the reset of
+the parts it uses. When the last has stopped, the node resets in one memory
+transaction: the Bedrock and its units, the L1 UART window and, on a board
+that carries its own, the XBridge are cold-reset as a supply cycle resets
+them, and the reset input of an XBridge in another brick cabled to the
+node's I/O interface is pulsed. That bridge is reset cold with the PCI
+devices behind it only if it takes the pulse, and it ignores one while it is
+held, which it is when its main power is off or its reset hold is asserted.
+A node with no processors has nothing to stop and resets its parts at once.
+Then the processors are started at the reset vector from work queued on
+their own threads. The Bedrock's supply level is
+not touched, so the node's port keeps reading up to its neighbour through
+the restart, and the memory keeps its bytes. Each processor's cache-as-RAM
+window (:ref:`sgi-prom-image-early-window`) is re-armed with the cold reset,
+an *approximation*: on hardware the window is part of the PROM's cache-only
+phase, which the restarted processor runs again. The node's identity word
+returns to the machine's configured number and region size, as at a machine
+reset; no other node's identity word, registers or memory configuration is
+touched, so a running neighbour keeps its number across the restart.
+
+The restart's debts follow the power-up's. A newer restart or a loss
+makes the stops and starts a restart queued before it do nothing (a count
+and an epoch, shared with the supply loss), so a node restarts once and a
+loss that overtakes a restart leaves it off. A load that finds a restart
+whose stops had not all run restarts the node again when the machine runs,
+because the queued work is not in the stream: the ``sn1-node/restart``
+subsection is sent only while one is owed, and the processors' starts are
+the existing owed-start mask.
+
+Which registers the L1's reset group leaves in the Bedrock is *unknown*
+for every register; the headers' survivors are stated for a soft reset, or
+for a reset that names no line. The model resets everything a supply cycle
+resets, so the survivors are what the units keep through any reset, an
+*approximation*: local block scratch 1 and 2, the error bits and the
+processor interfaces' protection, region present, cached-alias size, CPU
+enable and error stack registers. Scratch 2 is the one survivor with a
+software reason, the kernel's restart word, which the PROM reads after
+the reset; the other survivors follow from the units. Which of the L1's
+reset lines reaches which Bedrock input is *unknown* too: the reset,
+the reset hold and release pair, the kernel's request and the front-panel
+switch drive one control group, and the model joins that group to this
+input. No L1 path reaches an I-brick's bridge (*established*): the PROM
+warm-resets it over the link after it runs (*established* for the write,
+*inferred* for the response). Resetting the bridge when the node restarts
+is an *approximation*, kept because a bridge left running could send
+transfers into a node that is restarting. A restart through an IX-brick's or
+PX-brick's PIC, which has no reset input, leaves the PIC alone. A processor
+that an NMI or a park release wakes between its stop and the restart's start
+is reset again by the start. The same restart will serve the Bedrock's own
+resets; today a Bedrock local reset and a guest restart still reset the whole
+machine, below.
+
+The kernel's reset request may come from every processor of the node,
+repeatedly, and from the boot processor later than from the others. Each
+request restarts the node again, so one that arrives while the processors
+are stopping only starts the restart over, one while the node is off does
+nothing, and a request never reaches another node
+(``sn1/cross-node/l1-reset-request-restarts-its-node``).
+
+The node's ``reset`` input is exercised by
+``sn1/cross-node/restart-one-node``,
+``restart-does-not-start-an-off-node``, ``loss-overtakes-a-restart``,
+``restart-in-flight-restarts-once``, ``restart-survives-migration``,
+``restart-keeps-the-survivors``, ``restart-ignores-an-off-node`` and
+``restart-rearms-the-cache-as-ram-window``, and,
+through the L1, by ``l1-reset-restarts-its-node``, ``l1-reset-request-restarts-its-node``,
+``l1-reset-leaves-an-off-brick-off`` and
+``l1-reset-restarts-a-counting-node``. The tests that run guest code hold
+the restarted node's starts back with the test-only
+``x-test-start-delay-ms`` so the held processor can be seen;
+``loss-overtakes-a-restart`` and
+``restart-in-flight-restarts-once`` hold each stop with
+``x-test-stop-delay-ms``; ``restart-survives-migration`` holds the stops
+back with ``x-test-stop-queue-delay-ms``.
+
 .. _sgi-bedrock-reset:
 
 Reset
