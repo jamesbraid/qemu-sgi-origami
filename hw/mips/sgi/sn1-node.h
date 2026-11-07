@@ -255,11 +255,18 @@ typedef struct SN1NodeState {
      * yet. Sent in the stream while non-zero, so a load finishes them.
      */
     uint32_t start_owed;
-    /* Processor stops a supply loss has queued and that have not run yet. */
+    /*
+     * A node restart has stopped, or is stopping, the processors and has not
+     * yet reset the node's parts and queued their starts. Sent in the stream
+     * while set, so a load runs the restart again.
+     */
+    bool restart_owed;
+    /* Processor stops a loss or a restart has queued and not yet run. */
     uint32_t stop_pending;
     /*
-     * Which loss the count above belongs to: bumped by each stop, so work a
-     * loss queued before the supply returned and dropped again is ignored.
+     * Which loss or restart the count above belongs to: bumped by each stop,
+     * so work queued before the supply returned and dropped again, or before
+     * a later restart, is ignored.
      */
     uint32_t stop_epoch;
     /* Test-only: see the properties' comment. */
@@ -269,6 +276,8 @@ typedef struct SN1NodeState {
     QEMUTimer *test_start_timer;
     QEMUTimer *test_stop_timer;
     uint32_t test_stop_epoch;
+    /* Whether the stops the queue delay holds back are a restart's. */
+    bool test_stop_restart;
     /*
      * Told when the supply returns, and when a loss has settled (every
      * processor reset and halted), once the machine has handed over the
@@ -329,6 +338,19 @@ void sn1_node_release_cpus(SN1NodeState *node);
 
 /* Whether the node's supply is on (its Bedrock's level once it exists). */
 bool sn1_node_powered(SN1NodeState *node);
+
+/*
+ * Restart this one node: stop its processors from work queued on their own
+ * threads, and once the last has stopped cold-reset the node's parts (the
+ * Bedrock, the node's own XBridge) and pulse the reset input of the XBridge
+ * cabled to its I/O interface, which restarts only if it is not held (its
+ * main power off or its reset hold asserted), then start the processors at
+ * the reset vector. A node without processors resets its parts at once.
+ * No other node, router or L1 is touched. A node without power is never
+ * reached and is left as it is. The node's "reset" input calls this on a
+ * rising edge.
+ */
+void sn1_node_restart(SN1NodeState *node);
 
 /*
  * Registers every processor's TCG notifier on the reset router of each of

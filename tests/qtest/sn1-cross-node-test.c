@@ -19,6 +19,7 @@
 #include "sgi-wait.h"
 #include "sgi-mips-emit.h"
 #include "sgi-migrate.h"
+#include "sgi-l1-test.h"
 
 #define MACHINE_ARGS "-M origin300,topology=origin300-two-chassis " \
                      "-cpu R14000 -smp 4 -m 1024"
@@ -3506,6 +3507,499 @@ static void test_load_keeps_running_processors(void)
 }
 
 /*
+ * Node restart. A reset acts on one node: its processors stop, its parts
+ * are reset and the processors start again at the reset vector, while the
+ * other node goes on. The restarted node's starts are left owed for
+ * RESTART_DELAY_MS (x-test-start-delay-ms) so that the window between the
+ * reset and the start can be seen: the counting processor is held, and its
+ * count, which lives in the Bedrock the reset cleared, reads zero.
+ */
+#define RESTART_DELAY_MS 2000
+#define LB_SCRATCH0 UINT64_C(0x608000)
+#define LB_SCRATCH1 UINT64_C(0x608008)
+
+static char *restart_machine(const char *base)
+{
+    return g_strdup_printf("%s -global sgi-sn1-node.x-test-start-delay-ms=%d",
+                           base, RESTART_DELAY_MS);
+}
+
+/* Whether processor @cpu is halted, when each node has @per_node of them. */
+static bool cpu_halted_in(QTestState *qts, unsigned int cpu,
+                          unsigned int per_node)
+{
+    return halted_cpus(qts, cpu / per_node) & (1U << (cpu % per_node));
+}
+
+/* Wait until processor @cpu is held with the count its reset cleared. */
+static void wait_restart_window(QTestState *qts, unsigned int cpu,
+                                unsigned int per_node)
+{
+    SgiWait w;
+
+    sgi_wait_start(&w, "processor %u to be held with its count cleared", cpu);
+    while (!cpu_halted_in(qts, cpu, per_node) || node_count(qts, cpu) != 0) {
+        g_assert_true(sgi_wait_continue(&w, 10000));
+    }
+}
+
+/* The restarted processor leaves its hold and counts up from the vector. */
+static void wait_restart_runs(QTestState *qts, unsigned int cpu,
+                              unsigned int per_node)
+{
+    SgiWait w;
+
+    sgi_wait_start(&w, "processor %u to start", cpu);
+    while (cpu_halted_in(qts, cpu, per_node)) {
+        g_assert_true(sgi_wait_continue(&w, 10000));
+    }
+    wait_count_advances(qts, cpu);
+}
+
+/*
+ * One node of the two-chassis Origin 300 restarts while the other counts on.
+ * The restarted node's processor is held with a cleared count, the other
+ * node is never halted and its count keeps rising, and the held node then
+ * counts again from its reset vector.
+ */
+static void test_restart_one_node(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *machine = restart_machine(MACHINE_ARGS);
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = counter_start(&prom, machine, PROM_SIZE);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 0);
+    wait_count_advances(qts, 2);
+
+    qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 1);
+    qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 0);
+    wait_restart_window(qts, 2, 2);
+    g_assert_false(cpu_halted(qts, 0));
+    wait_count_advances(qts, 0);
+    g_assert_true(machine_running(qts));
+    wait_restart_runs(qts, 2, 2);
+
+    /* And the other way round. */
+    qtest_set_irq_in(qts, "/machine/node0", "reset", 0, 1);
+    qtest_set_irq_in(qts, "/machine/node0", "reset", 0, 0);
+    wait_restart_window(qts, 0, 2);
+    g_assert_false(cpu_halted(qts, 2));
+    wait_count_advances(qts, 2);
+    wait_restart_runs(qts, 0, 2);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * A node whose supply is off is not reached: neither its own reset nor the
+ * other node's starts it, and it starts normally when the supply returns.
+ */
+static void test_restart_does_not_start_an_off_node(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *machine = restart_machine(MACHINE_ARGS);
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = counter_start(&prom, machine, PROM_SIZE);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 0);
+    wait_count_advances(qts, 2);
+
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 0);
+    wait_halted(qts, 2, true);
+    qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 1);
+    qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 0);
+    qtest_set_irq_in(qts, "/machine/node0", "reset", 0, 1);
+    qtest_set_irq_in(qts, "/machine/node0", "reset", 0, 0);
+    wait_restart_window(qts, 0, 2);
+    /* Longer than the start delay: an owed start would have run by now. */
+    g_usleep((RESTART_DELAY_MS + 500) * 1000);
+    g_assert_true(cpu_halted(qts, 2));
+    assert_count_frozen(qts, 2);
+    wait_restart_runs(qts, 0, 2);
+
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 1);
+    wait_restart_runs(qts, 2, 2);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * A restart whose processors are still stopping is overtaken by a loss of
+ * the supply: the node ends off and the stale restart neither resets its
+ * parts nor starts it. Each stop is held for a second
+ * (x-test-stop-delay-ms), long enough to cut in.
+ */
+static void test_loss_overtakes_a_restart(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *machine = g_strdup_printf("%s -global "
+        "sgi-sn1-node.x-test-stop-delay-ms=1000 -global "
+        "sgi-sn1-node.x-test-start-delay-ms=%d", MACHINE_ARGS,
+        RESTART_DELAY_MS);
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = counter_start(&prom, machine, PROM_SIZE);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 2);
+
+    qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 1);
+    qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 0);
+    /* The stops are asleep: the node still counts. */
+    wait_count_advances(qts, 2);
+    wait_count_advances(qts, 0);
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 0);
+    wait_halted(qts, 2, true);
+    wait_halted(qts, 3, true);
+    g_usleep((RESTART_DELAY_MS + 2500) * 1000);
+    g_assert_true(cpu_halted(qts, 2));
+    assert_count_frozen(qts, 2);
+    wait_count_advances(qts, 0);
+
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 1);
+    wait_restart_runs(qts, 2, 2);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * A second reset while the first is still stopping the processors takes
+ * over: the node restarts once, and a processor that has started is not
+ * reset again by the first reset's work, which would drop its count.
+ */
+static void test_restart_in_flight_restarts_once(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *machine = g_strdup_printf("%s -global "
+        "sgi-sn1-node.x-test-stop-delay-ms=500 -global "
+        "sgi-sn1-node.x-test-start-delay-ms=%d", MACHINE_ARGS,
+        RESTART_DELAY_MS);
+    QTestState *qts;
+    int64_t until;
+    uint64_t last;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = counter_start(&prom, machine, PROM_SIZE);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 2);
+
+    qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 1);
+    qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 0);
+    qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 1);
+    qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 0);
+    wait_restart_window(qts, 2, 2);
+    wait_restart_runs(qts, 2, 2);
+    last = node_count(qts, 2);
+
+    /* The first restart's stops and starts arrive within this window. */
+    until = g_get_monotonic_time() + 3 * G_USEC_PER_SEC;
+    while (g_get_monotonic_time() < until) {
+        uint64_t now = node_count(qts, 2);
+
+        g_assert_cmpuint(now, >=, last);
+        last = now;
+        g_usleep(5000);
+    }
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * A node migrated while its restart is still stopping the processors is
+ * restarted by the destination when it runs: the stops queued on the source
+ * do not travel, so the stream says the restart is owed. The source holds the
+ * stops back (x-test-stop-queue-delay-ms) so that its processors are still
+ * counting when the stream is taken; the destination holds the starts back so
+ * that the restart it runs can be seen as a held processor with a cleared
+ * count.
+ */
+static void test_restart_survives_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-restart-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *prom = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *held = g_strdup_printf("%s -global "
+        "sgi-sn1-node.x-test-stop-queue-delay-ms=60000", MACHINE_ARGS);
+    g_autofree char *delayed = restart_machine(MACHINE_ARGS);
+    QTestState *from, *to;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    g_assert_no_error(error);
+    from = counter_start(&prom, held, PROM_SIZE);
+    quoted = g_shell_quote(prom);
+    to = qtest_initf("%s -bios %s -accel tcg,thread=multi -no-shutdown -S "
+                     "-incoming defer", delayed, quoted);
+    qtest_qmp_assert_success(from, "{'execute':'cont'}");
+    while (node_count(from, 2) < 3000000) {
+        g_usleep(10000);
+    }
+
+    qtest_set_irq_in(from, "/machine/node1", "reset", 0, 1);
+    qtest_set_irq_in(from, "/machine/node1", "reset", 0, 0);
+    /* Nothing is queued yet: the processor goes on counting. */
+    wait_count_advances(from, 2);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+
+    wait_restart_window(to, 2, 2);
+    wait_restart_runs(to, 2, 2);
+    wait_count_advances(to, 0);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(socket);
+    g_rmdir(dir);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * What a restart keeps, on the accelerator qtest uses, where it runs at
+ * once. The node's parts are reset as a supply cycle resets them, so local
+ * block scratch 0 and the memory unit's configuration are cleared, while
+ * scratch 1 and 2 (the kernel's restart word) and RAM keep what they held.
+ * The other node is not touched at all, identity word included: a machine
+ * reset would show as its memory configuration falling back to the default.
+ */
+static void test_restart_keeps_the_survivors(void)
+{
+    QTestState *qts = machine_start();
+    uint64_t revision0 = qtest_readq(qts, BEDROCK_LOCAL + LB_REVISION);
+    uint64_t revision1 = peer_access(qts, LB_REVISION, false, 0);
+
+    peer_access(qts, LB_SCRATCH0, true, 0x77);
+    peer_access(qts, LB_SCRATCH1, true, 0x88);
+    qtest_writeq(qts, BEDROCK_LOCAL + LB_SCRATCH0, 0x55);
+    g_assert_cmphex(peer_access(qts, LB_SCRATCH0, false, 0), ==, 0x77);
+
+    qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 1);
+    qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 0);
+
+    g_assert_cmphex(peer_access(qts, LB_SCRATCH0, false, 0), ==, 0);
+    g_assert_cmphex(peer_access(qts, LB_SCRATCH1, false, 0), ==, 0x88);
+    g_assert_cmphex(peer_access(qts, LB_SCRATCH2, false, 0), ==, SCRATCH1);
+    g_assert_cmphex(peer_access(qts, MD_MEMORY_CONFIG, false, 0), !=,
+                    MD_INSTALLED_SELECT2);
+    g_assert_cmphex(peer_access(qts, LB_REVISION, false, 0), ==, revision1);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + LB_REVISION), ==,
+                    revision0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + LB_SCRATCH0), ==, 0x55);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + LB_SCRATCH2), ==,
+                    SCRATCH0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG), ==,
+                    MD_INSTALLED_SELECT2);
+    g_assert_cmphex(qtest_readq(qts, PROBE), ==, WORD0);
+    qtest_quit(qts);
+}
+
+/*
+ * The same reset leaves a neighbour whose supply is off alone, on the
+ * accelerator qtest uses.
+ */
+static void test_restart_ignores_an_off_node(void)
+{
+    QTestState *qts = machine_start();
+
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 0);
+    g_assert_true(cpu_halted(qts, 2));
+    qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 1);
+    qtest_set_irq_in(qts, "/machine/node1", "reset", 0, 0);
+    g_assert_true(cpu_halted(qts, 2));
+    g_assert_true(cpu_halted(qts, 3));
+    qtest_set_irq_in(qts, "/machine/node0", "reset", 0, 1);
+    qtest_set_irq_in(qts, "/machine/node0", "reset", 0, 0);
+    g_assert_true(cpu_halted(qts, 2));
+    g_assert_false(cpu_halted(qts, 0));
+    qtest_set_irq_in(qts, "/machine/node1", "power", 0, 1);
+    g_assert_false(cpu_halted(qts, 2));
+    qtest_quit(qts);
+}
+
+/*
+ * The kernel's reset request reaches the node's own L1 through its UART
+ * window (destination 0x0ffff006, the general local requests), from every
+ * processor of the node and repeatedly: one request
+ * restarts the node, more of them while it is stopped or after it has
+ * started restart it again, and the other node is never touched.
+ */
+#define L1_UART_WINDOW (HUB_LOCAL_REGISTERS + UINT64_C(0x80))
+#define L1_REQUEST_RESET 0x2001
+
+static void send_reset_request(QTestState *qts, uint64_t window)
+{
+    uint8_t request[8] = { 0x10, 0x0f, 0xff, 0xf0, 0x06,
+                           L1_REQUEST_RESET >> 8, L1_REQUEST_RESET & 0xff, 0 };
+
+    sgi_l1_test_send(qts, window, request, sizeof(request), false);
+}
+
+static void test_l1_reset_request_restarts_its_node(void)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    g_autofree char *machine = restart_machine(MACHINE_ARGS);
+    QTestState *qts = qtest_initf("%s -bios %s", machine, quoted);
+
+    g_assert_cmphex(halted_cpus(qts, 0), ==, 0);
+    send_reset_request(qts, L1_UART_WINDOW);
+    g_assert_cmphex(halted_cpus(qts, 0), ==, 3);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, 0);
+    /* More requests while the processors are stopped are harmless. */
+    send_reset_request(qts, L1_UART_WINDOW);
+    send_reset_request(qts, L1_UART_WINDOW);
+    g_assert_cmphex(halted_cpus(qts, 0), ==, 3);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, 0);
+    wait_halted_mask(qts, 0, 0);
+
+    /* A request after the node has started restarts it again. */
+    send_reset_request(qts, L1_UART_WINDOW);
+    g_assert_cmphex(halted_cpus(qts, 0), ==, 3);
+    wait_halted_mask(qts, 0, 0);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * The L1 of each Origin 3200 brick restarts its own node. "reset" acts on
+ * the brick typed at, "ctc reset" on the peer over the L1 link, and "*
+ * reset" on both. Nothing else is touched. Run on the accelerator qtest
+ * uses, where a restarted node's processors stay halted while the starts
+ * are owed (x-test-start-delay-ms) and a node that was not restarted shows
+ * none halted: a brick that is not named stays as it is and the machine
+ * does not reset.
+ */
+typedef struct L1ResetCase {
+    const char *command;
+    bool node0;
+    bool node1;
+} L1ResetCase;
+
+static const L1ResetCase l1_reset_own = { "reset", true, false };
+static const L1ResetCase l1_reset_peer = { "ctc reset", false, true };
+static const L1ResetCase l1_reset_both = { "* reset", true, true };
+
+static void test_l1_reset_restarts_its_node(const void *data)
+{
+    const L1ResetCase *c = data;
+    g_autofree char *prom = create_counter_prom(PROM_SIZE);
+    g_autofree char *extra = g_strdup_printf("-global "
+        "sgi-sn1-node.x-test-start-delay-ms=%d", RESTART_DELAY_MS);
+    g_autofree char *line = g_strdup_printf("\024%s\r\024power check\r",
+                                            c->command);
+    QTestState *qts;
+    int console;
+
+    qts = origin3200_console_start(&console, prom, extra);
+    g_assert_cmphex(halted_cpus(qts, 0), ==, 0);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, 0);
+    l1_console(qts, console, line, "power appears on");
+    g_assert_cmphex(halted_cpus(qts, 0), ==, c->node0 ? BRICK_CPUS : 0);
+    g_assert_cmphex(halted_cpus(qts, 1), ==, c->node1 ? BRICK_CPUS : 0);
+    /* The starts arrive once the delay has passed. */
+    if (c->node0) {
+        wait_halted_mask(qts, 0, 0);
+    }
+    if (c->node1) {
+        wait_halted_mask(qts, 1, 0);
+    }
+    close(console);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * An L1 does not restart a node whose brick is off: its reset is refused
+ * with the supply down, and the brick that is on can still be reset without
+ * switching the other on.
+ */
+static void test_l1_reset_leaves_an_off_brick_off(void)
+{
+    g_autofree char *prom = create_counter_prom(PROM_SIZE);
+    g_autofree char *extra = g_strdup_printf("-global "
+        "sgi-sn1-node.x-test-start-delay-ms=%d", RESTART_DELAY_MS);
+    QTestState *qts;
+    int console;
+
+    qts = origin3200_console_start(&console, prom, extra);
+    l1_console(qts, console, "\024ctc power down\r\024ctc power check\r",
+               "power appears off");
+    g_assert_cmphex(halted_cpus(qts, 1), ==, BRICK_CPUS);
+    l1_console(qts, console, "\024ctc reset\r\024* reset\r\024power check\r",
+               "power appears on");
+    g_assert_cmphex(halted_cpus(qts, 0), ==, BRICK_CPUS);
+    wait_halted_mask(qts, 0, 0);
+    /* The restart delay has passed; the off brick was not started by it. */
+    g_assert_cmphex(halted_cpus(qts, 1), ==, BRICK_CPUS);
+
+    l1_console(qts, console, "\024ctc power up\r\024ctc power check\r",
+               "power appears on");
+    wait_halted_mask(qts, 1, 0);
+    close(console);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
+ * The L1's restart reaches a running node: the processors of the brick
+ * count again from the reset vector while the other brick's count never
+ * stops.
+ */
+static void test_l1_reset_restarts_a_counting_node(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *extra = g_strdup_printf("-global "
+        "sgi-sn1-node.x-test-start-delay-ms=%d", RESTART_DELAY_MS);
+    QTestState *qts;
+    int console;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_counter_prom(PROM_SIZE);
+    qts = origin3200_counter_start(&console, prom, extra);
+    console_steps_clock = false;
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_count_advances(qts, 0);
+    wait_count_advances(qts, 4);
+
+    l1_console(qts, console, "\024reset\r\024power check\r",
+               "power appears on");
+    wait_restart_window(qts, 0, 4);
+    g_assert_false(cpu_halted_in(qts, 4, 4));
+    wait_count_advances(qts, 4);
+    g_assert_true(machine_running(qts));
+    wait_restart_runs(qts, 0, 4);
+    close(console);
+    console_steps_clock = true;
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
  * A node cycled while its processors run outside the PROM's cache-as-RAM
  * phase must serve that phase again when they start. The phase gives each
  * processor a private block at physical 0x100000 for its stack
@@ -3634,6 +4128,14 @@ static void car_power_cycle(QTestState *qts, unsigned int node)
     qtest_set_irq_in(qts, path, "power", 0, 1);
 }
 
+static void car_restart(QTestState *qts, unsigned int node)
+{
+    g_autofree char *path = g_strdup_printf("/machine/node%u", node);
+
+    qtest_set_irq_in(qts, path, "reset", 0, 1);
+    qtest_set_irq_in(qts, path, "reset", 0, 0);
+}
+
 static void check_cycle_rearms_the_cache_as_ram_window(unsigned int node,
                                                        CarCycle cycle)
 {
@@ -3686,6 +4188,11 @@ static void check_cycle_rearms_the_cache_as_ram_window(unsigned int node,
     g_rmdir(dir);
 }
 
+static void test_restart_rearms_the_cache_as_ram_window(void)
+{
+    check_cycle_rearms_the_cache_as_ram_window(0, car_restart);
+}
+
 static void test_power_return_rearms_the_cache_as_ram_window(void)
 {
     check_cycle_rearms_the_cache_as_ram_window(1, car_power_cycle);
@@ -3697,6 +4204,33 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
     prom_path = create_prom();
+    qtest_add_func("sn1/cross-node/restart-one-node", test_restart_one_node);
+    qtest_add_func("sn1/cross-node/restart-rearms-the-cache-as-ram-window",
+                   test_restart_rearms_the_cache_as_ram_window);
+    qtest_add_func("sn1/cross-node/restart-does-not-start-an-off-node",
+                   test_restart_does_not_start_an_off_node);
+    qtest_add_func("sn1/cross-node/loss-overtakes-a-restart",
+                   test_loss_overtakes_a_restart);
+    qtest_add_func("sn1/cross-node/restart-in-flight-restarts-once",
+                   test_restart_in_flight_restarts_once);
+    qtest_add_func("sn1/cross-node/restart-survives-migration",
+                   test_restart_survives_migration);
+    qtest_add_func("sn1/cross-node/restart-keeps-the-survivors",
+                   test_restart_keeps_the_survivors);
+    qtest_add_func("sn1/cross-node/restart-ignores-an-off-node",
+                   test_restart_ignores_an_off_node);
+    qtest_add_data_func("sn1/cross-node/l1-reset-restarts-its-node/own",
+                        &l1_reset_own, test_l1_reset_restarts_its_node);
+    qtest_add_data_func("sn1/cross-node/l1-reset-restarts-its-node/peer",
+                        &l1_reset_peer, test_l1_reset_restarts_its_node);
+    qtest_add_data_func("sn1/cross-node/l1-reset-restarts-its-node/both",
+                        &l1_reset_both, test_l1_reset_restarts_its_node);
+    qtest_add_func("sn1/cross-node/l1-reset-request-restarts-its-node",
+                   test_l1_reset_request_restarts_its_node);
+    qtest_add_func("sn1/cross-node/l1-reset-leaves-an-off-brick-off",
+                   test_l1_reset_leaves_an_off_brick_off);
+    qtest_add_func("sn1/cross-node/l1-reset-restarts-a-counting-node",
+                   test_l1_reset_restarts_a_counting_node);
     qtest_add_func("sn1/cross-node/owed-start-runs-once",
                    test_owed_start_runs_once);
     qtest_add_func("sn1/cross-node/reset-clears-an-owed-start",

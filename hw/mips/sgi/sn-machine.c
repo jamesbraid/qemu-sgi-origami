@@ -10535,6 +10535,12 @@ static void sgi_machine_node_power_changed(void *opaque, SN1NodeState *node,
  * line is split to them. The L1 settled its level at realize, before the node
  * took the line, so each node takes the present level here and the machine
  * is told of later changes only.
+ *
+ * The L1's "node-reset" pulse is the node's "reset" input, joined the same
+ * way: an L1 reset, the reset request a kernel sends it and a peer's
+ * broadcast restart that brick's node or nodes and nothing else. The
+ * C-brick L1 asserts no reset hold, so its "reset-hold" line is not joined.
+ * A pulse is an edge with no level to settle.
  */
 static void sgi_machine_wire_node_power(SGIMachineState *s)
 {
@@ -10542,7 +10548,7 @@ static void sgi_machine_wire_node_power(SGIMachineState *s)
         SN1NodeState *node = SN1_NODE(s->bedrock_nodes[i]);
         DeviceState *l1 = node->l1;
         unsigned int served = 0, line = 0;
-        DeviceState *split = NULL;
+        DeviceState *split = NULL, *reset_split = NULL;
 
         if (!l1) {
             continue;
@@ -10565,18 +10571,28 @@ static void sgi_machine_wire_node_power(SGIMachineState *s)
             qdev_realize_and_unref(split, NULL, &error_fatal);
             qdev_connect_gpio_out_named(l1, "node-power", 0,
                                         qdev_get_gpio_in(split, 0));
+            reset_split = qdev_new(TYPE_SPLIT_IRQ);
+            qdev_prop_set_uint32(reset_split, "num-lines", served);
+            object_property_add_child(OBJECT(l1), "node-reset-split",
+                                      OBJECT(reset_split));
+            qdev_realize_and_unref(reset_split, NULL, &error_fatal);
+            qdev_connect_gpio_out_named(l1, "node-reset", 0,
+                                        qdev_get_gpio_in(reset_split, 0));
         }
         for (unsigned int j = i; j < s->num_nodes; j++) {
             SN1NodeState *peer = SN1_NODE(s->bedrock_nodes[j]);
             qemu_irq power = qdev_get_gpio_in_named(DEVICE(peer), "power", 0);
+            qemu_irq reset = qdev_get_gpio_in_named(DEVICE(peer), "reset", 0);
 
             if (peer->l1 != l1) {
                 continue;
             }
             if (split) {
-                qdev_connect_gpio_out(split, line++, power);
+                qdev_connect_gpio_out(split, line, power);
+                qdev_connect_gpio_out(reset_split, line++, reset);
             } else {
                 qdev_connect_gpio_out_named(l1, "node-power", 0, power);
+                qdev_connect_gpio_out_named(l1, "node-reset", 0, reset);
             }
             qemu_set_irq(power, SGI_L1(l1)->node_power);
         }

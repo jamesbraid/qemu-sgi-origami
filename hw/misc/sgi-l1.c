@@ -742,7 +742,13 @@ static void l1_node_reset(SGIL1State *s, uint8_t reason)
     l1_log(s, "reset (%s)", l1_reasons[reason]);
     /* The hold time is not modeled: the line pulses. */
     qemu_irq_pulse(s->node_reset_out);
-    l1_schedule_action(false);
+    /*
+     * A node the machine joined to the line restarts alone. A controller
+     * with no node stands for the machine.
+     */
+    if (!s->node_driven) {
+        l1_schedule_action(false);
+    }
 }
 
 /* The machine resumes only once the reset that power-up asked for has run. */
@@ -2221,11 +2227,13 @@ static void l1_version(SGIL1State *s)
 }
 
 /*
- * The peer's side of a broadcast power or reset command. Both chassis are one
- * QEMU machine here, so the requesting L1's own action already powers or
- * resets every node; the peer only records the state and log entry a real
- * peer would, and does not request a second machine action. What a real pair
- * exchanges to propagate it is unknown.
+ * The peer's side of a broadcast power or reset command. A peer whose node
+ * the machine joined to its lines switches or restarts that node itself, so
+ * the requester's own action touches its own brick only. For a peer with no
+ * node of its own both chassis are one QEMU machine, so the requesting L1's
+ * action already powers or resets every node: the peer only records the
+ * state and log entry a real peer would, and does not request a second
+ * machine action. What a real pair exchanges to propagate it is unknown.
 */
 static void l1_hold_resets(SGIL1State *s, bool in_reset)
 {
@@ -2272,6 +2280,14 @@ static void l1_peer_reset(SGIL1State *peer)
     }
     l1_display_set(peer, 1, "Reset done");
     l1_log(peer, "reset (COMMAND)");
+    /*
+     * A peer that has a node of its own restarts it. A peer with none is a
+     * brick whose own request already acts for the machine, so it only
+     * records the command, as before.
+     */
+    if (peer->node_driven) {
+        qemu_irq_pulse(peer->node_reset_out);
+    }
 }
 
 /*

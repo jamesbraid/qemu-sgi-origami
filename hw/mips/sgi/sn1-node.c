@@ -1014,6 +1014,7 @@ void sn1_node_reset_cpus(SN1NodeState *node)
         timer_del(node->test_stop_timer);
     }
     node->start_owed = 0;
+    node->restart_owed = false;
     node->stop_pending = 0;
     node->stop_epoch++;
     for (i = 0; i < node->nr_cpus; i++) {
@@ -1071,6 +1072,31 @@ typedef struct SN1NodeStopWork {
 } SN1NodeStopWork;
 
 /*
+ * Test-only: let the main loop run while a stop is pending, by sleeping with
+ * the BQL dropped. That is safe on a TCG vCPU thread, which nothing else
+ * needs while it waits. Under the qtest accelerator the work runs inline on
+ * the main thread, and dropping the BQL there would let other main-thread
+ * code run inside this call; realize refuses the delay unless the
+ * accelerator is TCG.
+ */
+static void sn1_node_test_stop_delay(SN1NodeState *node)
+{
+    bool locked;
+
+    if (!node->x_test_stop_delay_ms) {
+        return;
+    }
+    locked = bql_locked();
+    if (locked) {
+        bql_unlock();
+    }
+    g_usleep(node->x_test_stop_delay_ms * 1000);
+    if (locked) {
+        bql_lock();
+    }
+}
+
+/*
  * A processor whose node lost power keeps nothing, so it is reset as it
  * stops and halted, the way sgi_hub_cpu_power_off() stops a Hub processor.
  * A plain halt would end at the first interrupt that is enabled and
@@ -1085,26 +1111,7 @@ static void sn1_node_cpu_power_off(CPUState *cs, run_on_cpu_data data)
     g_autofree SN1NodeStopWork *work = data.host_ptr;
     SN1NodeState *node = work->node;
 
-    if (node->x_test_stop_delay_ms) {
-        /*
-         * Test-only: let the main loop run while this stop is pending, by
-         * sleeping with the BQL dropped. That is safe on a TCG vCPU thread,
-         * which nothing else needs while it waits. Under the qtest
-         * accelerator the work runs inline on the main thread, and
-         * dropping the BQL there would let other main-thread code run
-         * inside this call; realize refuses the delay unless the
-         * accelerator is TCG.
-         */
-        bool locked = bql_locked();
-
-        if (locked) {
-            bql_unlock();
-        }
-        g_usleep(node->x_test_stop_delay_ms * 1000);
-        if (locked) {
-            bql_lock();
-        }
-    }
+    sn1_node_test_stop_delay(node);
     if (!sn1_node_powered(node)) {
         cpu_reset(cs);
         cs->halted = 1;
@@ -1124,8 +1131,12 @@ static void sn1_node_cpu_power_off(CPUState *cs, run_on_cpu_data data)
     }
 }
 
-/* Queue the stop work of the loss numbered @epoch on every processor. */
-static void sn1_node_queue_stops(SN1NodeState *node, uint32_t epoch)
+/*
+ * Queue @func, a stop of the loss or restart numbered @epoch, on every
+ * processor.
+ */
+static void sn1_node_queue_stops(SN1NodeState *node, uint32_t epoch,
+                                 run_on_cpu_func func)
 {
     for (unsigned int i = 0; i < node->nr_cpus; i++) {
         CPUState *cs = CPU(node->cpu[i]);
@@ -1135,18 +1146,22 @@ static void sn1_node_queue_stops(SN1NodeState *node, uint32_t epoch)
         work->node = node;
         work->epoch = epoch;
         if (sn1_node_cpu_paused(cs)) {
-            sn1_node_cpu_power_off(cs, data);
+            func(cs, data);
         } else {
-            async_run_on_cpu(cs, sn1_node_cpu_power_off, data);
+            async_run_on_cpu(cs, func, data);
         }
     }
 }
+
+static void sn1_node_cpu_restart_stop(CPUState *cs, run_on_cpu_data data);
 
 static void sn1_node_test_stop_timer(void *opaque)
 {
     SN1NodeState *node = opaque;
 
-    sn1_node_queue_stops(node, node->test_stop_epoch);
+    sn1_node_queue_stops(node, node->test_stop_epoch,
+                         node->test_stop_restart ?
+                         sn1_node_cpu_restart_stop : sn1_node_cpu_power_off);
 }
 
 /*
@@ -1166,6 +1181,9 @@ static void sn1_node_stop_cpus(SN1NodeState *node, bool announce)
     announce = announce || node->stop_pending;
     node->stop_epoch++;
     node->stop_pending = announce ? node->nr_cpus : 0;
+    /* A loss ends a restart that was under way; the node is off. */
+    node->restart_owed = false;
+    node->test_stop_restart = false;
     if (loss && node->test_stop_timer) {
         node->test_stop_epoch = node->stop_epoch;
         timer_mod(node->test_stop_timer,
@@ -1173,7 +1191,7 @@ static void sn1_node_stop_cpus(SN1NodeState *node, bool announce)
                   node->x_test_stop_queue_delay_ms);
         return;
     }
-    sn1_node_queue_stops(node, node->stop_epoch);
+    sn1_node_queue_stops(node, node->stop_epoch, sn1_node_cpu_power_off);
 }
 
 /* Which of the node's processors @cs is. */
@@ -1234,9 +1252,9 @@ static void sn1_node_test_start_timer(void *opaque)
 }
 
 /*
- * @power_up is a supply returning, which honours the test-only start delay:
- * the starts stay owed, with nothing queued, until the delay passes. A
- * resume that finds a start owed queues it at once.
+ * @power_up is a supply returning or a node restart, which honours the
+ * test-only start delay: the starts stay owed, with nothing queued, until
+ * the delay passes. A resume that finds a start owed queues it at once.
  */
 static void sn1_node_start_cpus(SN1NodeState *node, bool power_up)
 {
@@ -2574,6 +2592,106 @@ static void sn1_node_cold_reset_parts(SN1NodeState *node)
 }
 
 /*
+ * The last stopped processor of a node restart ran, or the node has none:
+ * nothing of the node executes now, so its parts are reset and the
+ * processors are started.
+ *
+ * Every part of the node is cold-reset, as a supply cycle resets it: which
+ * registers the L1's reset group leaves in the Bedrock is unknown, so the
+ * units keep only what their own resets keep (local block scratch 1 and 2,
+ * the error bits, the processor interfaces' survivors), which includes the
+ * restart word the kernel stored in scratch 2. The reset input of an
+ * XBridge in another brick cabled to the node's I/O interface is pulsed, and
+ * the bridge restarts cold with the PCI devices behind it only if it takes
+ * the pulse: it ignores one while it is held, which it is when its main
+ * power is off or its reset hold is asserted (an off bridge reads as held).
+ * No L1 path reaches that bridge and the PROM warm-resets it over the link
+ * later; resetting it here is an approximation, because a bridge left
+ * running could DMA into a node that is restarting. The memory keeps its
+ * bytes. The Bedrock's supply level is not touched, so the node's port keeps
+ * reading up to its neighbour.
+ */
+static void sn1_node_finish_restart(SN1NodeState *node)
+{
+    node->restart_owed = false;
+    /* One transaction: every other node's view changes at a single commit. */
+    memory_region_transaction_begin();
+    sn1_node_cold_reset_parts(node);
+    if (node->supplied_xbridge) {
+        qemu_irq_pulse(qdev_get_gpio_in_named(node->supplied_xbridge, "reset",
+                                              0));
+    }
+    sn1_node_start_cpus(node, true);
+    memory_region_transaction_commit();
+}
+
+/*
+ * One processor's stop for a node restart. Like a supply loss it runs on the
+ * processor's own thread and resets and halts the processor, so a processor
+ * of the node never runs between the restart and the reset of the parts it
+ * uses. The restart that numbered the work still wants it only while its
+ * epoch is current and the node has power: a later restart, a loss or a
+ * load owns the processor otherwise.
+ */
+static void sn1_node_cpu_restart_stop(CPUState *cs, run_on_cpu_data data)
+{
+    g_autofree SN1NodeStopWork *work = data.host_ptr;
+    SN1NodeState *node = work->node;
+
+    sn1_node_test_stop_delay(node);
+    if (work->epoch != node->stop_epoch || !sn1_node_powered(node)) {
+        return;
+    }
+    cpu_reset(cs);
+    cs->halted = 1;
+    cs->exception_index = EXCP_HLT;
+    if (node->stop_pending && !--node->stop_pending) {
+        sn1_node_finish_restart(node);
+    }
+}
+
+void sn1_node_restart(SN1NodeState *node)
+{
+    /* A node without power is not reached by a reset. */
+    if (!node->bedrock || !sn1_node_powered(node)) {
+        return;
+    }
+    /*
+     * A restart replaces a start or restart still under way: its work finds
+     * the epoch or the owed bits changed and does nothing.
+     */
+    if (node->test_start_timer) {
+        timer_del(node->test_start_timer);
+    }
+    node->start_owed = 0;
+    node->stop_epoch++;
+    /* Nothing runs on a node without processors, so nothing waits to stop. */
+    if (!node->nr_cpus) {
+        node->stop_pending = 0;
+        sn1_node_finish_restart(node);
+        return;
+    }
+    node->stop_pending = node->nr_cpus;
+    node->restart_owed = true;
+    if (node->test_stop_timer) {
+        node->test_stop_epoch = node->stop_epoch;
+        node->test_stop_restart = true;
+        timer_mod(node->test_stop_timer,
+                  qemu_clock_get_ms(QEMU_CLOCK_REALTIME) +
+                  node->x_test_stop_queue_delay_ms);
+        return;
+    }
+    sn1_node_queue_stops(node, node->stop_epoch, sn1_node_cpu_restart_stop);
+}
+
+static void sn1_node_reset_input(void *opaque, int n, int level)
+{
+    if (level) {
+        sn1_node_restart(opaque);
+    }
+}
+
+/*
  * The node's switched supply, from its power controller: high is on, and
  * it is on unless a controller says otherwise. The Bedrock owns what
  * follows from it, so the node forwards the level and then stops or starts
@@ -2618,7 +2736,8 @@ static void sn1_node_power(void *opaque, int n, int level)
  * from the Bedrock's migrated level, but its processors' queued stop may not
  * have run when the source stopped, and a start still owed was lost with the
  * queue: hold an off node again, and finish a start that was owed. Both are
- * idempotent.
+ * idempotent. A restart still owed starts over, since its queued work did
+ * not travel.
  */
 static void sn1_node_vm_changed(void *opaque, bool running, RunState state)
 {
@@ -2629,6 +2748,8 @@ static void sn1_node_vm_changed(void *opaque, bool running, RunState state)
     }
     if (!sn1_node_powered(node)) {
         sn1_node_stop_cpus(node, false);
+    } else if (node->restart_owed) {
+        sn1_node_restart(node);
     } else if (node->start_owed) {
         sn1_node_start_cpus(node, false);
     }
@@ -3805,12 +3926,39 @@ static const VMStateDescription vmstate_sn1_node_start = {
     },
 };
 
-/* A stream without the start subsection owes no start, whatever we held. */
+/*
+ * A restart that has not reset the node's parts yet. The queued stops are
+ * not part of the stream, so the destination restarts the node again when
+ * the VM runs (sn1_node_vm_changed()). Sent only while one is owed.
+ */
+static bool sn1_node_restart_needed(void *opaque)
+{
+    SN1NodeState *node = opaque;
+
+    return node->restart_owed;
+}
+
+static const VMStateDescription vmstate_sn1_node_restart = {
+    .name = "sn1-node/restart",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sn1_node_restart_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(restart_owed, SN1NodeState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/*
+ * A stream without the start or restart subsection owes neither, whatever we
+ * held.
+ */
 static int sn1_node_start_pre_load(void *opaque)
 {
     SN1NodeState *node = opaque;
 
     node->start_owed = 0;
+    node->restart_owed = false;
     return 0;
 }
 
@@ -3834,6 +3982,7 @@ static const VMStateDescription vmstate_sn1_node = {
         &vmstate_sn1_node_promdata,
         &vmstate_sn1_node_leds,
         &vmstate_sn1_node_start,
+        &vmstate_sn1_node_restart,
         NULL
     }
 };
@@ -3870,6 +4019,7 @@ static void sn1_node_instance_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), sn1_node_bedrock_reset,
                             "bedrock-reset", 1);
     qdev_init_gpio_in_named(DEVICE(obj), sn1_node_power, "power", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), sn1_node_reset_input, "reset", 1);
 }
 
 static void sn1_node_instance_finalize(Object *obj)

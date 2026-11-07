@@ -1526,8 +1526,10 @@ power off.
      - Power-off without shutdown when the node is on, then power-on as
        for ``power up``, both with reason 3.
    * - ``reset``, ``0x2001``
-     - With the node on: ``Reset done``, a log entry, a pulse on
-       ``node-reset`` and a QEMU system reset.
+     - With the node on: ``Reset done``, a log entry and a pulse on
+       ``node-reset``. In a machine the pulse restarts that brick's node
+       alone; a bare ``sgi-l1`` device requests a QEMU system reset itself.
+       With the node off the L1 does nothing.
    * - ``softreset``
      - With the node on: ``Sft rst done``, a log entry and a pulse on
        ``soft-reset``.
@@ -1536,12 +1538,12 @@ power off.
        ``nmi``, which the node routes to every fitted processor's NMI
        input.
 
-A reset is still a machine action: it is queued on the processor whose
-write reached the UART and every processor is paused before QEMU handles
-it; from the host console the main thread pauses all processors first. A
-reply queued before a reset may be cleared with the UART before the guest
-reads it. Resetting the whole machine for ``reset``, the hold times and the
-missing countdown are each an *approximation*.
+A bare ``sgi-l1`` device with no node still stands for the machine: its
+reset is queued on the processor whose write reached the UART and every
+processor is paused before QEMU handles it; from the host console the
+main thread pauses all processors first. A reply queued before a reset may
+be cleared with the UART before the guest reads it. The hold time of a
+reset and the missing countdown are each an *approximation*.
 
 On a C-brick, an Origin 300 and any other compute controller, the
 ``node-power`` output is the power input of the node it serves, so a
@@ -1559,18 +1561,36 @@ rule. An I-brick or R-brick never keeps it alive, because its
 controller serves no processor. A system reset of the machine is a mains
 cycle: a controller whose node is off applies its start-up power decision
 again, so with ``auto-power`` set it switches its node back on. The
-``reset`` command and a Bedrock local reset still restart every node and
-take the same path, so they also switch on a node whose controller left it
-off, an *approximation* until a node reset is scoped to its own node.
-A ``reset`` from the console or from the guest that switches on another
-node this way does so through that node's controller, so the other node's
-console prints ``powering up the system`` as well. The machine's own
+``reset`` command and the ``0x2001`` request restart the controller's own
+node and nothing else (*established* for the controller, which acts on its
+brick only; that a front-panel reset switch takes the same path is
+*inferred*, and the switch is not modelled): ``node-reset`` is the
+node's ``reset`` input, and a Cx-brick's one pulse restarts every board's
+node. A node whose supply is off is never reached, so a ``reset`` does not
+switch it on. ``* reset`` runs the same on the peer's controller first and
+then on this one, as ``* power`` does; ``ctc reset`` reaches the peer
+alone, and a peer whose node is off ignores it. The Bedrock local reset
+that a guest writes is not this path and still restarts the whole machine
+(see the Bedrock page). The ``reset`` command, a ``reset hold`` and
+release pair, the front-panel reset switch and ``0x2001`` all drive one
+group of Bedrock control lines (*established* for the L1 image; that the
+switch input is the physical switch is *inferred*), while ``nmi`` drives one
+other line and ``softreset`` a third. Which Bedrock input each line reaches
+is *unknown*: the model sends the one pulse to the node's restart
+(*approximation*), which cold-resets the Bedrock and the node's other
+parts as a supply cycle does and leaves the kernel's restart word in local
+block scratch 2. The L1 accepts ``0x2001`` from any processor of its node,
+repeatedly, and restarts its own node only; the L1 does not reach an
+I-brick's bridge. The C-brick controller never
+asserts a reset hold, because ``reset hold``, ``reset release`` and ``power
+up hold`` are not modelled on it, so its ``reset-hold`` line is not joined
+to the node. The machine's own
 record that it ended, and the queued check that decides it, are not
 migrated, so a ``-no-shutdown`` machine that ended and was then migrated
 does not resume when a node is powered up on the destination (see the
-Bedrock page). The ``node-reset`` and ``soft-reset``
-outputs report what the L1 did and drive nothing on a C-brick; no source
-says what a soft reset reaches in the node. An I-brick's and an R-brick's
+Bedrock page). The ``soft-reset`` output reports what the L1 did and
+drives nothing on a C-brick; no source says what a soft reset reaches in the
+node, so ``softreset`` stays unconnected. An I-brick's and an R-brick's
 outputs drive their bridge and router, as described under their bricks.
 The front-panel buttons are not modelled.
 
@@ -1836,8 +1856,7 @@ What the model chooses, and the limit of each choice:
   whenever its brick is off or held: the pin-level join is *inferred* from
   the R-brick sheet, which records the order of the supply and the hold but
   not the pins.
-- A machine reset, which every guest restart and L1 reset command is on
-  this machine, does not restart an I-brick, N-brick or V-brick L1: the L1
+- A machine reset, which a guest restart is on this machine, does not restart an I-brick, N-brick or V-brick L1: the L1
   runs on standby power, independent of brick power
   :src:`108-0240-002 p. 2-36`, and keeps its log in NVRAM
   :src:`007-3938-001 p. 3`, *established*; that a node reset leaves its
