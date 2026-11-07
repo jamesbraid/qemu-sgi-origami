@@ -69,6 +69,10 @@ static void sgi_kona_dma_convert_row(void *opaque, uint8_t conversion,
     SGIKonaState *s = opaque;
     SGIKonaDma *d = &s->dma;
 
+    /* Guest pixels here are four bytes each, as the loop reads them. */
+    if (unlikely(s->rec) && to_plane) {
+        sgi_kona_record_pixels_row(s->rec, false, src, pixels * 4);
+    }
     for (unsigned i = 0; i < pixels; i++) {
         if (to_plane) {
             ((uint32_t *)dst)[i] = ldl_be_p(src + i * 4);
@@ -78,6 +82,9 @@ static void sgi_kona_dma_convert_row(void *opaque, uint8_t conversion,
         } else {
             stl_be_p(dst + i * 4, ((const uint32_t *)src)[i]);
         }
+    }
+    if (unlikely(s->rec) && !to_plane) {
+        sgi_kona_record_pixels_row(s->rec, true, dst, pixels * 4);
     }
 }
 
@@ -102,6 +109,29 @@ static const SGIHeadOps sgi_kona_dma_head_ops = {
     .convert_row = sgi_kona_dma_convert_row,
     .dma_address = sgi_kona_dma_address,
 };
+
+/*
+ * What the fetch just read from guest memory, a segment at a time, as the
+ * guest stored it: the fetch keeps the words in host order.
+ */
+static void sgi_kona_dma_record_list(SGIKonaState *s,
+                                     const SGICommandFetch *f)
+{
+    for (unsigned i = 0; i < f->nsegments; i++) {
+        const SGIFetchSegment *seg = &f->segments[i];
+        g_autofree uint8_t *bytes = g_malloc(seg->nwords * 4);
+
+        for (uint32_t w = 0; w < seg->nwords; w++) {
+            if (f->little_endian) {
+                stl_le_p(bytes + w * 4, seg->words[w]);
+            } else {
+                stl_be_p(bytes + w * 4, seg->words[w]);
+            }
+        }
+        sgi_kona_record_dma_read(s->rec, SGI_KONA_REC_SRC_LIST, seg->addr,
+                                 bytes, seg->nwords * 4);
+    }
+}
 
 /* A packet the engine refuses before any transfer: one FAILED record. */
 static void sgi_kona_dma_refuse(SGIKonaState *s, uint64_t cookie,
@@ -131,6 +161,9 @@ static int sgi_kona_dma_item(SGIKonaState *s, SGIPixelDMA *t,
     t->seq = s->dma.seq++;
     ret = sgi_dma_pixels_map(t, &bus, pl, &s->mem);
     if (!ret) {
+        if (unlikely(s->rec)) {
+            sgi_kona_record_pixels_begin(s->rec, t->offset, t->pitch);
+        }
         ret = sgi_dma_pixels_run(t, &s->mem, &sgi_kona_dma_head_ops, s);
     }
     t->cookie = ret || last ? cookie : SGI_KONA_DMA_COOKIE_NONE;
@@ -667,6 +700,9 @@ static void sgi_kona_dma_invoke(SGIKonaState *s, bool pool,
                              SGI_KONA_DMA_COOKIE_NONE, SGI_FAIL_BUSY);
         }
         return;
+    }
+    if (pool && unlikely(s->rec)) {
+        sgi_kona_dma_record_list(s, f);
     }
 
     /*

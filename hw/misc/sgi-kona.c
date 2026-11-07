@@ -1426,6 +1426,9 @@ static void sgi_kona_swap_published(SGIKonaState *s, const SGICompletion *c)
         /* Channel 0's scanout repaints itself after a swap; the rest too. */
         sgi_kona_invalidate_all(s);
         trace_sgi_kona_retrace_done(tag);
+        if (unlikely(s->rec)) {
+            sgi_kona_record_mark(s->rec, SGI_KONA_REC_MARK_FRAME, tag);
+        }
         if (owner && owner->context == slot && slot >= 0 &&
             slot < SGI_KONA_CONTEXTS && s->state[slot] &&
             s->contexts[slot].valid &&
@@ -2346,7 +2349,11 @@ static bool sgi_kona_raise_vector(SGIKonaState *s, bool general)
         trace_sgi_kona_ge_interrupt(where, vector);
     }
     result = sgi_xio_send_interrupt(&s->fabric_as, where, vector, true);
-
+    if (unlikely(s->rec)) {
+        sgi_kona_record_interrupt(s->rec, general ? SGI_KONA_REC_INT_GENERAL :
+                                  SGI_KONA_REC_INT_GE, vector,
+                                  result == MEMTX_OK);
+    }
     if (result != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: %s interrupt delivery failed (result %d)\n",
@@ -2379,6 +2386,10 @@ static bool sgi_kona_host_write(SGIKonaState *s, uint64_t addr,
         return false;
     }
     trace_sgi_kona_host_write(addr, len);
+    if (unlikely(s->rec)) {
+        sgi_kona_record_dma_write(s->rec, SGI_KONA_REC_SRC_HOST, addr, buf,
+                                  len);
+    }
     return true;
 }
 
@@ -2439,8 +2450,15 @@ static bool sgi_kona_reason_unread(SGIKonaState *s)
         !sgi_kona_fabric_compose(s, s->fabric_hub_widget, s->reason_page,
                                  &where) ||
         dma_memory_read(&s->fabric_as, where, bytes, sizeof(bytes),
-                        MEMTXATTRS_UNSPECIFIED) != MEMTX_OK ||
-        ldl_be_p(bytes) != s->reason_posted) {
+                        MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+        s->reason_unread = false;
+        return false;
+    }
+    if (unlikely(s->rec)) {
+        sgi_kona_record_dma_read(s->rec, SGI_KONA_REC_SRC_HOST,
+                                 s->reason_page, bytes, sizeof(bytes));
+    }
+    if (ldl_be_p(bytes) != s->reason_posted) {
         s->reason_unread = false;
     }
     return s->reason_unread;
@@ -7106,6 +7124,9 @@ static void sgi_kona_gl_swap(SGIKonaState *s, unsigned i)
 {
     s->state[i]->window.displayed_bank ^= 1;
     trace_sgi_kona_gl_swap(i, s->state[i]->window.displayed_bank);
+    if (unlikely(s->rec)) {
+        sgi_kona_record_mark(s->rec, SGI_KONA_REC_MARK_SWAP, i);
+    }
     sgi_kona_gl_set_drawable(s, i);
 }
 
@@ -17291,6 +17312,10 @@ static bool sgi_kona_device_read(SGIKonaState *s, uint64_t device,
             s->dma_read_fault = true;
             return false;
         }
+        if (unlikely(s->rec)) {
+            sgi_kona_record_dma_read(s->rec, SGI_KONA_REC_SRC_IMAGE, host,
+                                     buf, chunk);
+        }
         if (trace_event_get_state_backends(TRACE_SGI_KONA_DMA_CHUNK)) {
             char hex[4096 * 2 + 1];
 
@@ -20342,6 +20367,9 @@ static MemTxResult sgi_kona_read(void *opaque, hwaddr addr,
                 sgi_kona_read_word(opaque, addr + 4, 4);
     }
     trace_sgi_kona_pio_read(sequence, cpu, addr, value, size);
+    if (unlikely(s->rec)) {
+        sgi_kona_record_load(s->rec, size, addr, value);
+    }
     sgi_head_work_leave();
     *data = value;
     return MEMTX_OK;
@@ -20396,6 +20424,9 @@ static MemTxResult sgi_kona_write(void *opaque, hwaddr addr,
         return MEMTX_OK;
     }
     trace_sgi_kona_pio_write(s->trace_sequence++, cpu, addr, value, size);
+    if (unlikely(s->rec)) {
+        sgi_kona_record_store(s->rec, size, addr, value);
+    }
 
     /*
      * A store whose words wait behind the work keeps its credit until the
@@ -20660,6 +20691,14 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
      * The provider can fail construction; initialise the fabric address
      * space only after that last fallible step. Finalize owns its teardown.
      */
+    if (s->record) {
+        s->rec = sgi_kona_record_open(s->record, s->part, s->revision,
+                                      s->rm_count, s->texture_mb, s->product,
+                                      errp);
+        if (!s->rec) {
+            return false;
+        }
+    }
     address_space_init(&s->fabric_as, s->fabric, "sgi-kona.fabric");
     if (s->flash_blk) {
         s->flash_vm_change =
@@ -21212,12 +21251,32 @@ static bool sgi_kona_test_get_work_pending(Object *obj, Error **errp)
     return sgi_kona_work_pending(SGI_KONA(obj));
 }
 
+/* Writing a value puts a user marker with it in the recording, if any. */
+static void sgi_kona_set_record_mark(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    uint32_t value;
+
+    if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    if (!s->rec) {
+        error_setg(errp, "sgi-kona: no record file is open");
+        return;
+    }
+    sgi_kona_record_mark(s->rec, SGI_KONA_REC_MARK_USER, value);
+}
+
 static void sgi_kona_instance_init(Object *obj)
 {
     SGIKonaState *s = SGI_KONA(obj);
 
     sgi_kona_texture_init(&s->textures);
     s->context_current = SGI_KONA_CONTEXT_NONE;
+    object_property_add(obj, "x-record-mark", "uint32", NULL,
+                        sgi_kona_set_record_mark, NULL, NULL);
     object_property_add(obj, "x-test-context-digest", "str",
                         sgi_kona_test_get_context_digest, NULL, NULL, NULL);
     object_property_add(obj, "x-test-context-current", "int32",
@@ -21369,6 +21428,8 @@ static void sgi_kona_instance_finalize(Object *obj)
     if (DEVICE(obj)->realized) {
         address_space_destroy(&s->fabric_as);
     }
+    sgi_kona_record_free(s->rec);
+    s->rec = NULL;
     sgi_kona_contexts_clear(s);
     sgi_board_memory_cleanup(&s->mem);
     sgi_board_memory_cleanup(&s->desktop_mem);
@@ -21404,6 +21465,9 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
 
     /* Reset abandons the display list in progress and the words behind. */
     sgi_kona_work_abandon(s);
+    if (unlikely(s->rec)) {
+        sgi_kona_record_mark(s->rec, SGI_KONA_REC_MARK_RESET, 0);
+    }
 
     sgi_kona_texture_reset(&s->textures);
     sgi_kona_texture_upload_clear(s);
@@ -21664,6 +21728,8 @@ static const Property sgi_kona_properties[] = {
                       shared_identity_index, SGI_KONA_OWN_IDENTITY),
     DEFINE_PROP_UINT64("geometry-serial", SGIKonaState, onewire_serial, 0),
     DEFINE_PROP_STRING("product", SGIKonaState, product),
+    /* Save the stream the guest sends the pipe to this file. */
+    DEFINE_PROP_STRING("record", SGIKonaState, record),
     DEFINE_PROP_STRING("geometry", SGIKonaState, geometry),
     DEFINE_PROP_STRING("rm-type", SGIKonaState, rm_type),
     DEFINE_PROP_UINT32("rm-count", SGIKonaState, rm_count, 0),
