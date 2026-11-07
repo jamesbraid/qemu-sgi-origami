@@ -226,6 +226,16 @@ void sgi_net_warm_reset_end(SGINetWarmReset *event);
 bool sgi_net_warm_reset_visit(SGINetWarmReset *event, Object *chip);
 
 /*
+ * A chip that is reset by the warm reset records itself, so the origin can
+ * hand the set of chips to restart to whoever restarts them. The routers a
+ * reset passes through are not recorded: they are not reset.
+ */
+void sgi_net_warm_reset_take(SGINetWarmReset *event, Object *chip);
+
+/* The chips recorded so far, in the order they were reached. */
+GPtrArray *sgi_net_warm_reset_taken(SGINetWarmReset *event);
+
+/*
  * Deliver the reset to a port. Returns whether the chip behind it took the
  * reset; false for a refusal, a chip the reset had already reached, or a
  * port without a warm reset hook.

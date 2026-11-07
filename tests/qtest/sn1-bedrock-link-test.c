@@ -676,6 +676,165 @@ static void test_port_reset_crosses_the_link(void)
     qtest_quit(s);
 }
 
+#define NI_PORT_ERRORS (UINT64_C(0x0100))
+#define LINK_RESET_IN  (UINT64_C(1) << 52)
+
+/*
+ * A warm reset the hub does not take sets port errors bit 52, "link reset in"
+ * (an approximation: the bit's name is established, that a refusal sets it is
+ * inferred), and nothing else: the refused hub keeps running with its
+ * registers as they were, and the sender is not marked. A hub that is off is
+ * never reached, so it latches nothing. A reset the hub takes leaves no
+ * latch, as the reset cleared the interface's registers.
+ */
+static void test_refused_port_reset_latches_link_reset_in(void)
+{
+    QTestState *s = pair_start("");
+
+    qtest_writeq(s, LB(B_BASE, SCRATCH(0)), 0xb0);
+    qtest_writeq(s, LB(B_BASE, SCRATCH(1)), 0xb1);
+    qtest_writeq(s, LB(B_BASE, SCRATCH(2)), 0xb2);
+    qtest_writeq(s, NI(B_BASE, NI_RESET_ENABLE), 0);
+    qtest_writeq(s, NI(A_BASE, NI_PORT_RESET), 2);
+    g_assert_cmphex(qtest_readq(s, NI(B_BASE, NI_PORT_ERRORS)), ==,
+                    LINK_RESET_IN);
+    g_assert_cmphex(qtest_readq(s, NI(A_BASE, NI_PORT_ERRORS)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(0))), ==, 0xb0);
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(1))), ==, 0xb1);
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(2))), ==, 0xb2);
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, REVISION)), ==,
+                    BEDROCK_IDENTITY);
+    g_assert_cmphex(qtest_readq(s, NI(B_BASE, PORT_STATUS)), ==, LINK_UP);
+    g_assert_cmphex(qtest_readq(s, NI(B_BASE, NI_RESET_ENABLE)), ==, 0);
+
+    /* A reset the hub takes clears the latch with the rest of the registers. */
+    qtest_writeq(s, NI(B_BASE, NI_RESET_ENABLE), 1);
+    qtest_writeq(s, NI(A_BASE, NI_PORT_RESET), 2);
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(0))), ==, 0);
+    g_assert_cmphex(qtest_readq(s, NI(B_BASE, NI_PORT_ERRORS)), ==, 0);
+
+    /*
+     * A hub that is off is not reached, with its enable clear or set. It
+     * answers nothing while off, so what the reset did shows once the supply
+     * is back: no latch, and registers, identity and link as they were.
+     */
+    for (unsigned enable = 0; enable <= 1; enable++) {
+        qtest_writeq(s, LB(B_BASE, SCRATCH(0)), 0xb0);
+        qtest_writeq(s, NI(B_BASE, NI_RESET_ENABLE), enable);
+        main_power(s, B_PATH, false);
+        qtest_writeq(s, NI(A_BASE, NI_PORT_RESET), 2);
+        main_power(s, B_PATH, true);
+        g_assert_cmphex(qtest_readq(s, NI(B_BASE, NI_PORT_ERRORS)), ==, 0);
+        g_assert_cmphex(qtest_readq(s, NI(A_BASE, NI_PORT_ERRORS)), ==, 0);
+        g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(0))), ==, 0xb0);
+        g_assert_cmphex(qtest_readq(s, LB(B_BASE, REVISION)), ==,
+                        BEDROCK_IDENTITY);
+        g_assert_cmphex(qtest_readq(s, NI(B_BASE, PORT_STATUS)), ==, LINK_UP);
+        g_assert_cmphex(qtest_readq(s, NI(B_BASE, NI_RESET_ENABLE)), ==,
+                        enable);
+    }
+    qtest_quit(s);
+}
+
+/*
+ * The reset crosses two routers when each lets it: router A takes an arrival
+ * on its port 2 when protection configuration bit 1 is set and passes it out
+ * of port 5 when that port's reset mask has bit 1 set; router B takes it on
+ * port 7 (bit 6) and passes it out of port 4 (mask bit 6). The reading of
+ * the mask direction is inferred, and this pins it. The routers keep every
+ * register, whatever the outcome.
+ */
+#define ROUTER_PROTECTION    UINT64_C(0x10)
+#define ROUTER_MASK_PORT5    UINT64_C(0x30018)
+#define ROUTER_MASK_PORT4    UINT64_C(0x20818)
+#define TO_ROUTER_A          0x0
+#define TO_ROUTER_B          0x5
+
+static void router_set(QTestState *s, uint64_t route, uint64_t reg,
+                       uint64_t value)
+{
+    uint64_t params = reg | TYPE_WRITE | REQUEST_ID(0x21);
+
+    assert_good_reply(vector_launch(s, A_BASE, route, params, value), params);
+}
+
+static uint64_t router_get(QTestState *s, uint64_t route, uint64_t reg)
+{
+    uint64_t params = reg | REQUEST_ID(0x22);
+
+    assert_good_reply(vector_launch(s, A_BASE, route, params, 0), params);
+    return qtest_readq(s, LB(A_BASE, VECTOR_READ));
+}
+
+static void routed_reset_setup(QTestState *s, uint64_t a_permit,
+                               uint64_t a_mask, uint64_t b_permit,
+                               uint64_t b_mask)
+{
+    router_set(s, TO_ROUTER_A, ROUTER_PROTECTION, a_permit);
+    router_set(s, TO_ROUTER_A, ROUTER_MASK_PORT5, a_mask);
+    router_set(s, TO_ROUTER_B, ROUTER_PROTECTION, b_permit);
+    router_set(s, TO_ROUTER_B, ROUTER_MASK_PORT4, b_mask);
+}
+
+static void routed_reset_check_routers(QTestState *s, uint64_t a_permit,
+                                       uint64_t a_mask, uint64_t b_permit,
+                                       uint64_t b_mask)
+{
+    g_assert_cmphex(router_get(s, TO_ROUTER_A, ROUTER_PROTECTION), ==,
+                    a_permit);
+    g_assert_cmphex(router_get(s, TO_ROUTER_A, ROUTER_MASK_PORT5), ==, a_mask);
+    g_assert_cmphex(router_get(s, TO_ROUTER_B, ROUTER_PROTECTION), ==,
+                    b_permit);
+    g_assert_cmphex(router_get(s, TO_ROUTER_B, ROUTER_MASK_PORT4), ==, b_mask);
+}
+
+static void test_port_reset_crosses_two_routers_by_permit_and_mask(void)
+{
+    static const struct {
+        uint64_t a_permit, a_mask, b_permit, b_mask;
+        const char *why;
+    } closed[] = {
+        { 0, 0x02, 0x40, 0x40, "router A's permit is clear" },
+        { 0x02, 0x02, 0, 0x40, "router B's permit is clear" },
+        { 0x02, 0, 0x40, 0x40, "router A's mask is clear" },
+        { 0x02, 0x01, 0x40, 0x40, "router A's mask names another arrival" },
+        { 0x02, 0x02, 0x40, 0x02, "router B's mask names another arrival" },
+        { 0x01, 0x02, 0x40, 0x40, "router A's permit names another arrival" },
+    };
+    QTestState *s = routers_start("");
+
+    qtest_writeq(s, LB(B_BASE, SCRATCH(0)), 0xb0);
+    qtest_writeq(s, NI(B_BASE, NI_RESET_ENABLE), 1);
+    for (unsigned i = 0; i < G_N_ELEMENTS(closed); i++) {
+        g_test_message("closed: %s", closed[i].why);
+        routed_reset_setup(s, closed[i].a_permit, closed[i].a_mask,
+                           closed[i].b_permit, closed[i].b_mask);
+        qtest_writeq(s, NI(A_BASE, NI_PORT_RESET), 2);
+        /* Stopped on the way: B is not reset, and nothing marks it. */
+        g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(0))), ==, 0xb0);
+        g_assert_cmphex(qtest_readq(s, NI(B_BASE, NI_PORT_ERRORS)), ==, 0);
+        routed_reset_check_routers(s, closed[i].a_permit, closed[i].a_mask,
+                                   closed[i].b_permit, closed[i].b_mask);
+    }
+
+    /* Open end to end, and B's enable clear: B refuses and latches bit 52. */
+    routed_reset_setup(s, 0x02, 0x02, 0x40, 0x40);
+    qtest_writeq(s, NI(B_BASE, NI_RESET_ENABLE), 0);
+    qtest_writeq(s, NI(A_BASE, NI_PORT_RESET), 2);
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(0))), ==, 0xb0);
+    g_assert_cmphex(qtest_readq(s, NI(B_BASE, NI_PORT_ERRORS)), ==,
+                    LINK_RESET_IN);
+    g_assert_cmphex(qtest_readq(s, NI(A_BASE, NI_PORT_ERRORS)), ==, 0);
+    routed_reset_check_routers(s, 0x02, 0x02, 0x40, 0x40);
+
+    /* With the enable set B is reset. */
+    qtest_writeq(s, NI(B_BASE, NI_RESET_ENABLE), 1);
+    qtest_writeq(s, NI(A_BASE, NI_PORT_RESET), 2);
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(0))), ==, 0);
+    routed_reset_check_routers(s, 0x02, 0x02, 0x40, 0x40);
+    qtest_quit(s);
+}
+
 /*
  * Partition publication (the partitioning datasheet, discriminating tests 1
  * and 3). The stock PROM stores its partition ID in bits 55:48 of its own
@@ -789,6 +948,10 @@ int main(int argc, char **argv)
                    "posts", test_peer_scratch1_write_follows_withheld_posts);
     qtest_add_func("sn1/bedrock-link/port-reset-crosses-the-link",
                    test_port_reset_crosses_the_link);
+    qtest_add_func("sn1/bedrock-link/refused-port-reset-latches-link-reset-in",
+                   test_refused_port_reset_latches_link_reset_in);
+    qtest_add_func("sn1/bedrock-link/port-reset-crosses-two-routers",
+                   test_port_reset_crosses_two_routers_by_permit_and_mask);
     qtest_add_func("sn1/bedrock-link/route-zero-writes-the-peer",
                    test_route_zero_writes_the_peer);
     qtest_add_func("sn1/bedrock-link/unroutable-launch-latches-nothing",

@@ -2486,33 +2486,43 @@ static void sn1_node_request_reset(CPUState *cs, run_on_cpu_data data)
     }
 }
 
-/*
- * A Bedrock local reset restarts the node's processors at the reset
- * vector, so the firmware runs again. No register description says so;
- * every consumer that reboots relies on it and never jumps to the firmware
- * itself. The stock IP35 PROM prints "Resetting the system...", writes the
- * network interface's reset enable and then local plus port reset, and
- * branches back into a loop; IRIX 6.5.30's restart path repeats the same
- * two writes every 3 s; OpenBSD resets its IP35 nodes with local plus link
- * reset.
- *
- * The model restarts the whole machine, as the Origin 200's Hub local reset
- * and the L1's reset command already do: the node's I/O, its L1 and, on a
- * cabled pair, the other node start again with it. What else a local reset
- * reaches on hardware is not established. IRIX and OpenBSD write every node,
- * so restarting them all matches what they ask for; the PROM's own reset
- * writes only its node, and the PROM clears the peer's reset enable after
- * discovery, so on a cabled pair restarting the peer may over-reach.
- */
-static void sn1_node_bedrock_reset(void *opaque, int n, int level)
+void sn1_node_request_machine_reset(void)
 {
-    if (!level) {
-        return;
-    }
     if (current_cpu) {
         async_run_on_cpu(current_cpu, sn1_node_request_reset, RUN_ON_CPU_NULL);
     } else {
+        /* Chardev input runs on the main thread with the BQL held. */
+        pause_all_vcpus();
         qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
+}
+
+/*
+ * A Bedrock reset (network interface port or local reset, local block soft
+ * reset) reached these Bedrocks, this node's among them or not. A machine
+ * that has taken the node decides what restarts; a node on its own restarts
+ * the whole machine, as the Origin 200's Hub local reset and the L1's reset
+ * command do.
+ *
+ * A local reset restarts the node's processors at the reset vector, so the
+ * firmware runs again. No register description says so; every consumer that
+ * reboots relies on it and never jumps to the firmware itself. The stock IP35
+ * PROM prints "Resetting the system...", writes the network interface's
+ * reset enable and then local plus port reset, and branches back into a
+ * loop; IRIX 6.5.30's restart path repeats the same two writes every 3 s;
+ * OpenBSD resets its IP35 nodes with local plus link reset.
+ */
+static void sn1_node_bedrock_reach(void *opaque, GPtrArray *bedrocks)
+{
+    SN1NodeState *node = opaque;
+
+    if (!bedrocks->len) {
+        return;
+    }
+    if (node->reset_notify) {
+        node->reset_notify(node->reset_notify_opaque, node, bedrocks);
+    } else {
+        sn1_node_request_machine_reset();
     }
 }
 
@@ -2686,8 +2696,15 @@ void sn1_node_restart(SN1NodeState *node)
 
 static void sn1_node_reset_input(void *opaque, int n, int level)
 {
-    if (level) {
-        sn1_node_restart(opaque);
+    SN1NodeState *node = opaque;
+
+    if (!level) {
+        return;
+    }
+    if (node->reset_notify) {
+        node->reset_notify(node->reset_notify_opaque, node, NULL);
+    } else {
+        sn1_node_restart(node);
     }
 }
 
@@ -3393,9 +3410,8 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     qdev_connect_gpio_out_named(l1_uart_dev, "uart", 0,
                                 qdev_get_gpio_in_named(node->bedrock,
                                                        "uart-irq", 0));
-    qdev_connect_gpio_out_named(node->bedrock, "node-reset", 0,
-                                qdev_get_gpio_in_named(DEVICE(node),
-                                                       "bedrock-reset", 0));
+    sgi_bedrock_set_reset_reach(SGI_BEDROCK(node->bedrock),
+                                sn1_node_bedrock_reach, node);
 
     if (node->supplied_xbridge) {
         if (!sn1_node_join_supplied_xbridge(node, errp)) {
@@ -4016,8 +4032,6 @@ static void sn1_node_instance_init(Object *obj)
                         sn1_node_get_halted_cpus, NULL, NULL, NULL);
     node->cpuclk = qdev_init_clock_in(DEVICE(obj), "cpu-refclk", NULL, NULL,
                                       0);
-    qdev_init_gpio_in_named(DEVICE(obj), sn1_node_bedrock_reset,
-                            "bedrock-reset", 1);
     qdev_init_gpio_in_named(DEVICE(obj), sn1_node_power, "power", 1);
     qdev_init_gpio_in_named(DEVICE(obj), sn1_node_reset_input, "reset", 1);
 }

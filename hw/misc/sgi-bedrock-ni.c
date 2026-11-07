@@ -19,6 +19,12 @@ static void ni_update_irq(SGIBedrockNIState *s)
     qemu_set_irq(s->error, sgi_bedrock_ni_regs_error_level(&s->regs));
 }
 
+void sgi_bedrock_ni_latch_link_reset(SGIBedrockNIState *s)
+{
+    s->regs.errors |= SGI_BEDROCK_NI_ERR_LINK_RESET_IN;
+    ni_update_irq(s);
+}
+
 static uint64_t ni_read(void *opaque, hwaddr offset, unsigned size)
 {
     SGIBedrockNIState *s = opaque;
@@ -53,15 +59,19 @@ static void ni_write(void *opaque, hwaddr offset, uint64_t value,
 
     /*
      * Port reset, bit 1 of the reset register, sends a warm reset over the
-     * link; a composed Bedrock delivers it to the
-     * node at the other end.
-    */
-    if (offset == 0x08 && (value & 2) && s->bedrock) {
-        sgi_bedrock_port_reset_send(s->bedrock);
-    }
+     * link. A composed Bedrock collects it with the local reset, bit 2, into
+     * one reset set, so a board sees the whole set at once.
+     */
+    bool port = offset == 0x08 && (value & 2) && s->bedrock;
+
     switch (sgi_bedrock_ni_regs_write(&s->regs, offset, value)) {
     case SGI_BEDROCK_NI_LOCAL_RESET:
-        qemu_irq_pulse(s->local_reset);
+        if (port) {
+            sgi_bedrock_reset_event(s->bedrock, true, true);
+            port = false;
+        } else {
+            qemu_irq_pulse(s->local_reset);
+        }
         break;
     case SGI_BEDROCK_NI_UNIMPLEMENTED:
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-ni: unimplemented write at "
@@ -75,6 +85,9 @@ static void ni_write(void *opaque, hwaddr offset, uint64_t value,
     case SGI_BEDROCK_NI_WRITTEN:
         notifier_list_notify(&s->changed, NULL);
         break;
+    }
+    if (port) {
+        sgi_bedrock_reset_event(s->bedrock, false, true);
     }
     ni_update_irq(s);
 }

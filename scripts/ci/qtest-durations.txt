@@ -161,13 +161,13 @@ qtest-mips64/sn1-address-map-test 93
 qtest-mips64/sn1-bedrock-flash-test 31
 qtest-mips64/sn1-bedrock-io-test 8
 qtest-mips64/sn1-bedrock-lb-test 4
-qtest-mips64/sn1-bedrock-link-test 2
+qtest-mips64/sn1-bedrock-link-test 4
 qtest-mips64/sn1-bedrock-md-test 43
 qtest-mips64/sn1-bedrock-pi-test 8
 qtest-mips64/sn1-bedrock-test 6
 qtest-mips64/sn1-bedrock-xb-test 2
 qtest-mips64/sn1-cpu-identity-test 1
-qtest-mips64/sn1-cross-node-test 10
+qtest-mips64/sn1-cross-node-test 120
 qtest-mips64/sn1-directory-state-test 23
 qtest-mips64/sn1-fuel-test 39
 qtest-mips64/sn1-fuel-usb-test 3
