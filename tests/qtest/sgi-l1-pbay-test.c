@@ -4,15 +4,16 @@
  * the test holds, so the frames the L1 sends can be checked; others join the
  * L1 to a power-bay controller model through a socket pair.
  *
- * The frames and replies are the power-bay controller datasheet's: the
- * initialisation order, the worked tunnelled frames and the L1's receive
- * rules. The text the pbay command prints is not established, so these
- * cases check only the status word.
+ * The frames and replies follow the power-bay controller's documented
+ * behaviour: the initialisation order, the worked tunnelled frames and the
+ * L1's receive rules. The text the pbay command prints is not established,
+ * so these cases check only the status word.
  */
 #include "qemu/osdep.h"
 #include <poll.h>
 #include <sys/socket.h>
 #include "qemu/bswap.h"
+#include "qemu/timer.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-l1-test.h"
@@ -42,14 +43,20 @@ typedef struct Rig {
     QTestState *qts;
     int bay;            /* the test's end, or -1 when a bay model holds it */
     int console;        /* the operator console's other end */
-    Request *held;      /* a request read ahead of its pass, or NULL */
     Request last;       /* the last request read, to skip a repeat */
+    int64_t started;    /* just before QEMU was launched */
 } Rig;
 
 static char *console_command(Rig *r, const char *text);
 
-/* The controller's brick options; a test may change them. */
-static const char *rig_brick = "brick-type=cbrick,named=on,rack=1,bay=7";
+/*
+ * The controller's brick options; a test may change them. Slot 1 keeps the
+ * task's start delay (100 * slot + 300 ticks) short; the cases that measure
+ * the delay use slot 7.
+ */
+#define RIG_BRICK "brick-type=cbrick,named=on,rack=1,bay=1"
+#define RIG_BRICK_SLOT7 "brick-type=cbrick,named=on,rack=1,bay=7"
+static const char *rig_brick = RIG_BRICK;
 
 static void rig_start(Rig *r, bool scripted, const char *l1_props,
                       const char *extra)
@@ -66,12 +73,12 @@ static void rig_start(Rig *r, bool scripted, const char *l1_props,
         bay = g_strdup_printf("-chardev socket,id=pb,fd=%d "
                               "-device sgi-pbay,id=pbay,chardev=pb", sv[1]);
     }
-    r->held = NULL;
     memset(&r->last, 0, sizeof(r->last));
+    r->started = g_get_monotonic_time();
     r->qts = qtest_initf("-M none -cpu R10000 -S -d unimp "
         "-chardev socket,id=pa,fd=%d -chardev socket,id=cn,fd=%d %s "
         "-device sgi-l1,id=l1c,%s,"
-        "chardev=cn,pbay=pa,pbay-address=0x%04x,pbay-poll-ms=50,pbay-tick-us=200%s "
+        "chardev=cn,pbay=pa,pbay-address=0x%04x,pbay-poll-ms=100,pbay-tick-us=1000%s "
         "-device sgi-l1-uart,id=l1u,controller=l1c %s",
         sv[0], cs[0], bay, rig_brick, L1_ADDRESS, l1_props, extra);
     qtest_sysbus_mmio_map(r->qts, "/machine/peripheral/l1u", 0, BASE);
@@ -98,13 +105,13 @@ static void rig_start_pair(Rig *r)
     int sv[2];
 
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    r->held = NULL;
     memset(&r->last, 0, sizeof(r->last));
+    r->started = g_get_monotonic_time();
     r->qts = qtest_initf("-M none -cpu R10000 -S -d unimp "
         "-chardev socket,id=pa,fd=%d "
         "-device sgi-l1,id=l1c,brick-type=ibrick,named=on,rack=1,bay=7,"
         "mac=02:ab:10:00:00:01,pbay=pa,pbay-address=0x%04x,"
-        "pbay-poll-ms=50,pbay-tick-us=200 "
+        "pbay-poll-ms=100,pbay-tick-us=1000 "
         "-device sgi-l1,id=l1h,brick-type=cbrick,named=on,rack=1,bay=4,"
         "io-peer=/machine/peripheral/l1c "
         "-device sgi-l1-uart,id=l1u,controller=l1h",
@@ -143,6 +150,16 @@ static void wait_status(Rig *r, unsigned want)
     while (l1_u(r, "pbay-status") != want) {
         g_assert_cmpint(g_get_monotonic_time(), <, end);
         g_usleep(2000);
+    }
+}
+
+static void wait_passes(Rig *r, unsigned want)
+{
+    int64_t end = g_get_monotonic_time() + 20 * G_TIME_SPAN_SECOND;
+
+    while (l1_u(r, "pbay-passes") < want) {
+        g_assert_cmpint(g_get_monotonic_time(), <, end);
+        g_usleep(1000);
     }
 }
 
@@ -366,13 +383,6 @@ static void bay_read_raw(Rig *r, Request *q)
  */
 static void bay_read(Rig *r, Request *q)
 {
-    if (r->held) {
-        *q = *r->held;
-        g_free(r->held);
-        r->held = NULL;
-        r->last = *q;
-        return;
-    }
     do {
         bay_read_raw(r, q);
     } while (q->len == r->last.len &&
@@ -430,9 +440,8 @@ static void expect_link(const Request *q, uint8_t cmd, uint16_t dst,
     } while (0)
 
 /*
- * The bay's twelve records (datasheet "Record reads"), the bytes after the
- * record id. Sensors 1 to 6 are the supplies and 7 to 14 the DC ports unless
- * a test moves them.
+ * The bay's twelve records, the bytes after the record id. Sensors 1 to 6 are
+ * the supplies and 7 to 14 the DC ports unless a test moves them.
  */
 static unsigned supply_base = 1, port_base = 7;
 
@@ -486,11 +495,10 @@ static size_t record_bytes(unsigned id, uint8_t *out)
 }
 
 /*
- * Play the bay through the initialisation sequence of datasheet section
- * "L1 behaviour a model must serve": 0x10 and 0x02 to address 0, 0x12 with
- * the replied address, 0x13, the 0x00,0x00 capability pair, then the record
- * loop until the next id 0xffff. @fru is capability byte 1 and @records
- * byte 2.
+ * Play the bay through the initialisation sequence the L1 expects: 0x10 and
+ * 0x02 to address 0, 0x12 with the replied address, 0x13, the 0x00,0x00
+ * capability pair, then the record loop until the next id 0xffff. @fru is
+ * capability byte 1 and @records byte 2.
  */
 static void serve_init_with(Rig *r, uint8_t fru, uint8_t records)
 {
@@ -589,8 +597,16 @@ typedef struct Pass {
     const uint8_t *port[2];
 } Pass;
 
+/*
+ * Serve a pass and return once the L1 has compared it ("pbay-passes" has
+ * gone up), so its log is final. The next pass starts a poll period later;
+ * a command run in between must finish before that request's three
+ * transmissions are spent, or the L1 gives the link up.
+ */
 static void serve_script(Rig *r, const Pass *ps)
 {
+    unsigned before = l1_u(r, "pbay-passes");
+
     serve_range(r, ps->first, 1, 6);
     for (unsigned i = 0; i < ps->ac_rereads; i++) {
         serve_range(r, ps->ac[i] ? ps->ac[i] : ps->first, 1, 6);
@@ -599,6 +615,7 @@ static void serve_script(Rig *r, const Pass *ps)
     for (unsigned i = 0; i < ps->port_rereads; i++) {
         serve_range(r, ps->port[i] ? ps->port[i] : ps->first, 7, 14);
     }
+    wait_passes(r, before + 1);
 }
 
 /* One polling pass with no fault coming into sight. */
@@ -625,17 +642,13 @@ static void test_init_sequence(void)
 }
 
 /*
- * Serve one pass and then read the first request of the next, which proves
- * the L1 compared the pass; the L1's log must then hold @expect and nothing
- * else new. The request is kept for the next pass.
+ * Serve one pass; the L1's log must then hold @expect and nothing else new.
  */
 static void pass_expect_script(Rig *r, const Pass *ps, const char *expect)
 {
     g_autofree char *log = NULL;
 
     serve_script(r, ps);
-    r->held = g_new(Request, 1);
-    bay_read(r, r->held);
     log = command(r, "log");
     if (expect) {
         g_assert_nonnull(strstr(log, expect));
@@ -660,8 +673,6 @@ static void test_polling_log(void)
     monitoring_on(&r);
     g_free(command(&r, "log clear"));
     serve_pass(&r, masks);      /* a clear bay logs nothing */
-    r.held = g_new(Request, 1);
-    bay_read(&r, r.held);
     g_free(command(&r, "log clear"));
 
     masks[1] = 0x02;
@@ -732,8 +743,6 @@ static void test_first_pass(void)
     masks[2] = 0x04;
     masks[5] = 0x01;
     serve_pass(&r, masks);
-    r.held = g_new(Request, 1);
-    bay_read(&r, r.held);
     log = command(&r, "log");
     g_assert_nonnull(strstr(log, "Power Bay DPS 2 predictive fail"));
     g_assert_null(strstr(log, "DPS 5"));
@@ -815,7 +824,6 @@ static void bay_drain(Rig *r)
     while (poll(&p, 1, 0) == 1) {
         g_assert_cmpint(read(r->bay, b, sizeof(b)), >, 0);
     }
-    r->held = NULL;
     memset(&r->last, 0, sizeof(r->last));
 }
 
@@ -1106,37 +1114,67 @@ static void test_arguments_and_bricks(void)
     out = console_command(&r, "pbay frobnicate");
     g_assert_nonnull(strstr(out, "invalid arguments for 'pbay'"));
     rig_stop(&r);
-
-    /*
-     * The command takes the brick types in C356P%#=IXYRN&! only; a type
-     * the link opens for, such as D, refuses it.
-     */
-    rig_brick = "brick-type-code=68,bay=7";
-    rig_start(&r, true, "", "");
-    rig_brick = "brick-type=cbrick,named=on,rack=1,bay=7";
-    g_free(out);
-    out = console_command(&r, "pbay");
-    g_assert_nonnull(strstr(out, "ERROR: command not found."));
-    rig_stop(&r);
 }
 
-/* Polling does nothing until `pbay env on`. */
+/*
+ * The command takes the brick types in C356P%#=IXYRN&! only. Every letter of
+ * the set takes it, and a letter outside the set whose link does open (G and
+ * V do not, which test_closed_port covers) refuses it.
+ */
+static void test_command_brick_filter(void)
+{
+    const char *accepted = "C356P\x25#=IXYRN&!";
+    const char *refused = "BDFHJKLMSTUWZ12";
+
+    for (const char *c = accepted; *c; c++) {
+        g_autofree char *out = NULL;
+        g_autofree char *brick = g_strdup_printf("brick-type-code=%d,bay=1",
+                                                 *c);
+        Rig r;
+
+        rig_brick = brick;
+        rig_start(&r, true, ",pbay-tick-us=5000", "");
+        rig_brick = RIG_BRICK;
+        out = console_command(&r, "pbay");
+        g_assert_cmpstr(out, ==, "PBay busy initializing\r\n");
+        rig_stop(&r);
+    }
+    for (const char *c = refused; *c; c++) {
+        g_autofree char *out = NULL;
+        g_autofree char *brick = g_strdup_printf("brick-type-code=%d,bay=1",
+                                                 *c);
+        Rig r;
+
+        rig_brick = brick;
+        rig_start(&r, true, ",pbay-tick-us=5000", "");
+        rig_brick = RIG_BRICK;
+        out = console_command(&r, "pbay");
+        g_assert_nonnull(strstr(out, "ERROR: command not found."));
+        rig_stop(&r);
+    }
+}
+
+/*
+ * Polling does nothing until `pbay env on` (setting 85): with it off no
+ * request is sent and no pass completes, and a pass completes after it is on.
+ */
 static void test_poll_gate(void)
 {
+    uint8_t clear[15] = { 0 };
     struct pollfd p;
-    Request q;
     Rig r;
 
     rig_start(&r, true, "", "");
     serve_init(&r);
     wait_status(&r, 2);
     p = (struct pollfd){ .fd = r.bay, .events = POLLIN };
-    /* Five poll periods of 50 ms. */
-    g_usleep(250 * 1000);
+    /* Five poll periods of 100 ms. */
+    g_usleep(500 * 1000);
     g_assert_cmpint(poll(&p, 1, 0), ==, 0);
+    g_assert_cmpuint(l1_u(&r, "pbay-passes"), ==, 0);
     g_free(console_command(&r, "pbay env on"));
-    bay_read(&r, &q);
-    g_assert_cmphex(q.cmd, ==, 0x20);
+    serve_pass(&r, clear);
+    g_assert_cmpuint(l1_u(&r, "pbay-passes"), ==, 1);
     g_free(console_command(&r, "pbay env off"));
     rig_stop(&r);
 }
@@ -1159,8 +1197,6 @@ static void test_debounce(void)
     monitoring_on(&r);
     g_free(command(&r, "log clear"));
     serve_pass(&r, clear);
-    r.held = g_new(Request, 1);
-    bay_read(&r, r.held);
     g_free(command(&r, "log clear"));
 
     /* Seen on the first read and two re-reads, gone on the third. */
@@ -1183,8 +1219,9 @@ static void test_debounce(void)
 
 /*
  * One fault per supply per pass: the first matching test wins, AC fail
- * before fail before predictive fail. The monitoring setting's bits each
- * enable their tests.
+ * before fail before predictive fail. The setting's single bits (bit 2 alone
+ * is predictive fail) cannot be set through the pbay command, which writes
+ * all of them or none, so only the all-on case is exercised.
  */
 static void test_one_fault_per_supply(void)
 {
@@ -1198,13 +1235,9 @@ static void test_one_fault_per_supply(void)
     serve_init(&r);
     monitoring_on(&r);
     serve_pass(&r, clear);
-    r.held = g_new(Request, 1);
-    bay_read(&r, r.held);
     g_free(command(&r, "log clear"));
 
     serve_script(&r, &(Pass){ .first = all, .ac_rereads = 3 });
-    r.held = g_new(Request, 1);
-    bay_read(&r, r.held);
     log = command(&r, "log");
     g_assert_nonnull(strstr(log, "Power Bay DPS 1 AC fail"));
     g_assert_null(strstr(log, "DPS 1 fail"));
@@ -1213,8 +1246,39 @@ static void test_one_fault_per_supply(void)
     g_assert_null(strstr(log, "DPS 2 predictive"));
     g_free(command(&r, "log clear"));
 
-    /* Bit 2 of the setting is predictive fail alone: fail is not tested. */
     g_free(console_command(&r, "pbay env off"));
+    rig_stop(&r);
+}
+
+/*
+ * reboot_l1 restarts every task, the power-bay link included. Settings 85
+ * and 105 are the L1's, so they survive: monitoring is still on, and a supply
+ * missing from the stored expected set is reported removed by the first pass
+ * after the restart, where a fresh record would log nothing.
+ */
+static void test_restart_keeps_settings(void)
+{
+    uint8_t clear[15] = { 0 }, gone[15] = { 0 };
+    g_autofree char *log = NULL;
+    Rig r;
+
+    gone[3] = 0x01;
+    rig_start(&r, true, "", "");
+    serve_init(&r);
+    monitoring_on(&r);
+    serve_pass(&r, clear);          /* the baseline: all six */
+    console_send(&r, "reboot_l1");
+    /* The controller is restarting for a second of virtual time. */
+    qtest_clock_step(r.qts, NANOSECONDS_PER_SECOND * 2);
+    wait_status(&r, 1);
+    bay_drain(&r);
+    serve_init(&r);
+    wait_status(&r, 2);
+    g_free(command(&r, "log clear"));
+    /* Monitoring is still on: the pass comes unprompted. */
+    serve_pass(&r, gone);
+    log = command(&r, "log");
+    g_assert_nonnull(strstr(log, "Power Bay DPS 3 removed"));
     rig_stop(&r);
 }
 
@@ -1376,8 +1440,37 @@ static void test_task3_pbay_forwarded(void)
 }
 
 /*
+ * A new slot number takes effect at the next restart, and the power-bay
+ * task's start delay (100 * bay + 300 ticks) follows it. The bound is a
+ * lower one: the old slot's delay is far shorter than the new one's.
+ */
+static void test_restart_uses_new_slot(void)
+{
+    int64_t t0, t1;
+    Request q;
+    Rig r;
+
+    rig_start(&r, true, ",pbay-tick-us=500", "");
+    serve_init(&r);
+    wait_status(&r, 2);
+    g_free(console_command(&r, "brick slot 39"));
+    t0 = g_get_monotonic_time();
+    console_send(&r, "reboot_l1");
+    qtest_clock_step(r.qts, NANOSECONDS_PER_SECOND * 2);
+    wait_status(&r, 1);
+    bay_drain(&r);
+    bay_read_raw(&r, &q);
+    t1 = g_get_monotonic_time();
+    g_assert_cmphex(q.cmd, ==, 0x10);
+    g_assert_cmpint(t1 - t0, >=, (100 * 39 + 300) * 500 * 9 / 10);
+    rig_stop(&r);
+}
+
+/*
  * The poll task waits 6000 + 100 * bay ticks (bay 7: 6700), and a request
- * restarts the wait. The bounds are lower ones.
+ * restarts the wait. The bound is a lower one, measured from before the
+ * reply that restarts the wait: a late read of the next request can only
+ * make the interval longer.
  */
 static void test_poll_period(void)
 {
@@ -1385,7 +1478,9 @@ static void test_poll_period(void)
     Request q;
     Rig r;
 
+    rig_brick = RIG_BRICK_SLOT7;
     rig_start(&r, true, ",pbay-poll-ms=0,pbay-tick-us=100", "");
+    rig_brick = RIG_BRICK;
     serve_init(&r);
     wait_status(&r, 2);
     g_free(console_command(&r, "pbay env on"));
@@ -1393,13 +1488,14 @@ static void test_poll_period(void)
     /* A request to the bay restarts the wait; setting a mask does not. */
     console_send(&r, "pbay version");
     bay_read(&r, &q);
+    t0 = g_get_monotonic_time();
     REPLY(&r, &q, 0x00, 0x12, 0x00, 0x60, 0xa0, 0xd4, 0x39, 0x80);
     g_free(console_finish(&r));
-    t0 = g_get_monotonic_time();
     bay_read(&r, &q);
     t1 = g_get_monotonic_time();
     g_assert_cmphex(q.cmd, ==, 0x20);
-    g_assert_cmpint(t1 - t0, >=, 6700 * 100 * 9 / 10);
+    /* The clocks read whole microseconds. */
+    g_assert_cmpint(t1 - t0 + 2, >=, 6700 * 100);
     rig_stop(&r);
 }
 
@@ -1500,36 +1596,45 @@ static void test_receive_rules(void)
 /*
  * Task start waits 100 * bay + 300 ticks before the first request (bay 7
  * here), and a transaction sends three times: a read that times out waits 20
- * ticks and resends. The bounds are lower ones so a loaded host cannot fail
- * them.
+ * ticks and resends. Both bounds are lower ones and are measured from before
+ * QEMU launched, which is before the L1's timers started, so a slow test or
+ * a loaded host can only lengthen what they measure.
  */
 static void test_start_delay_and_resends(void)
 {
     Request q, again;
-    int64_t t0, t1, t2;
+    int64_t t1, t2;
     Rig r;
 
+    rig_brick = RIG_BRICK_SLOT7;
     rig_start(&r, true, ",pbay-tick-us=500", "");
-    t0 = g_get_monotonic_time();
+    rig_brick = RIG_BRICK;
     bay_read_raw(&r, &q);
     t1 = g_get_monotonic_time();
-    g_assert_cmpint(t1 - t0, >=, 1000 * 500 * 9 / 10);
+    g_assert_cmpint(t1 - r.started, >=, 1000 * 500);
     g_assert_cmphex(q.cmd, ==, 0x10);
     bay_read_raw(&r, &q);
     g_assert_cmphex(q.cmd, ==, 0x02);
-    t1 = g_get_monotonic_time();
     bay_read_raw(&r, &again);
     t2 = g_get_monotonic_time();
     g_assert_cmpmem(again.body, again.len, q.body, q.len);
-    /* A read lasts at least 100 ticks, then 20 more before the resend. */
-    g_assert_cmpint(t2 - t1, >=, 120 * 500 * 9 / 10);
+    /*
+     * The address request follows the silent one at once. A read lasts at
+     * least 100 ticks, then 20 more before the resend.
+     */
+    g_assert_cmpint(t2 - r.started, >=, (1000 + 120) * 500);
     rig_stop(&r);
 }
 
 /*
  * A frame that fails the reply checks costs a read, and three of them end
  * the transmission without waiting out a read timeout: the resend follows
- * after 20 ticks, well before the 100 to 200 ticks a silent read takes.
+ * after 20 ticks, well before the 100 to 200 ticks a silent read takes. The
+ * only upper bound in this file: it is the 20 ticks against the least a
+ * silent read lasts, 100, so a host that stalls the test for under 80 ticks
+ * (2.4 s at 30 ms a tick) cannot fail it. The tick is long for that reason;
+ * the start delay of this brick, 400 ticks (12 s), is the price, and stays
+ * inside the 20 s read timeout.
  */
 static void test_bad_frames_cost_reads(void)
 {
@@ -1537,7 +1642,7 @@ static void test_bad_frames_cost_reads(void)
     int64_t t0, t1;
     Rig r;
 
-    rig_start(&r, true, ",pbay-tick-us=10000", "");
+    rig_start(&r, true, ",pbay-tick-us=30000", "");
     bay_read_raw(&r, &q);
     bay_read_raw(&r, &q);
     g_assert_cmphex(q.cmd, ==, 0x02);
@@ -1549,7 +1654,21 @@ static void test_bad_frames_cost_reads(void)
     bay_read_raw(&r, &again);
     t1 = g_get_monotonic_time();
     g_assert_cmpmem(again.body, again.len, q.body, q.len);
-    g_assert_cmpint(t1 - t0, <, 1000 * 1000);
+    g_assert_cmpint(t1 - t0, <, 100 * 30000);
+
+    /*
+     * Two bad frames leave a read: a good reply after them is taken, and
+     * the next request follows and not a resend. This is the part that
+     * needs no clock, and a bad frame that ended the transmission at once
+     * would fail it.
+     */
+    for (unsigned i = 0; i < 2; i++) {
+        bay_reply_from(&r, &again, 0x4400, (uint8_t[]){ 0x00, 0x00, 0x44 }, 3,
+                       true);
+    }
+    REPLY(&r, &again, 0x00, 0x00, 0x44);
+    bay_read_raw(&r, &q);
+    g_assert_cmphex(q.cmd, ==, 0x12);
     rig_stop(&r);
 }
 
@@ -1656,9 +1775,8 @@ static char *start_on_brick(char letter, const char *props, int *exit_status)
 }
 
 /*
- * Datasheet "Which bricks run the power-bay task": the task does not start,
- * and the L1 refuses the link, on 0 4 7 8 9 A E G O Q V. G's second port is
- * a 38400 baud console, not the bay link.
+ * The power-bay task does not start, and the L1 refuses the link, on 0 4 7 8
+ * 9 A E G O Q V. G's second port is a 38400 baud console, not the bay link.
  */
 static void test_closed_port(void)
 {
@@ -1736,15 +1854,21 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-l1-pbay/fru-and-serial", test_fru_and_serial);
     qtest_add_func("/sgi-l1-pbay/arguments-and-bricks",
                    test_arguments_and_bricks);
+    qtest_add_func("/sgi-l1-pbay/command-brick-filter",
+                   test_command_brick_filter);
     qtest_add_func("/sgi-l1-pbay/poll-gate", test_poll_gate);
     qtest_add_func("/sgi-l1-pbay/debounce", test_debounce);
     qtest_add_func("/sgi-l1-pbay/one-fault-per-supply",
                    test_one_fault_per_supply);
+    qtest_add_func("/sgi-l1-pbay/restart-keeps-settings",
+                   test_restart_keeps_settings);
     qtest_add_func("/sgi-l1-pbay/task3-reply", test_task3_pbay_reply);
     qtest_add_func("/sgi-l1-pbay/task3-truncation",
                    test_task3_pbay_truncation);
     qtest_add_func("/sgi-l1-pbay/task3-reply-limit", test_task3_reply_limit);
     qtest_add_func("/sgi-l1-pbay/task3-forwarded", test_task3_pbay_forwarded);
+    qtest_add_func("/sgi-l1-pbay/restart-new-slot",
+                   test_restart_uses_new_slot);
     qtest_add_func("/sgi-l1-pbay/period", test_poll_period);
     qtest_add_func("/sgi-l1-pbay/receive-rules", test_receive_rules);
     qtest_add_func("/sgi-l1-pbay/start-delay-and-resends",

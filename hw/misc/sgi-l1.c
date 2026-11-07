@@ -837,6 +837,8 @@ static void l1_boot_local(SGIL1State *s)
     s->bic_startup_needed = s->bic_startup != SGI_L1_BIC_STARTUP_NONE;
     s->rack = s->pending_rack;
     s->bay = s->pending_bay;
+    /* The power-bay task's delays follow the slot, read at each start. */
+    s->pbay.bay_number = s->bay;
     s->rack_valid = s->pending_rack_valid;
     s->bay_valid = s->pending_bay_valid;
     s->partition = s->pending_partition;
@@ -2345,6 +2347,8 @@ static void l1_pbay_done(void *opaque, const char *text, bool ok);
 /* Restart the controller. A C-brick's or I-brick's peers hear nothing. */
 static void l1_reboot(SGIL1State *s)
 {
+    /* Every task restarts, the power-bay task among them. */
+    sgi_l1_pbay_reset(&s->pbay);
     l1_boot(s);
     if (s->profile->o3k) {
         s->restart_until = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
@@ -6594,7 +6598,6 @@ fuel_mac_done:
                                  l1_l2_receive, l1_l2_event, NULL, s, NULL,
                                  true);
     }
-    s->pbay.bay_number = s->bay;
     if (!sgi_l1_pbay_realize(&s->pbay, OBJECT(s), l1_brick_type_character(s),
                              l1_pbay_log, s, errp)) {
         return;

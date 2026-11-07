@@ -2123,7 +2123,9 @@ time and the virtual clock is stopped while the guest is halted, so under
 Initialisation and polling
 --------------------------
 
-The model starts the link when the controller starts or resets. The task
+The model starts the link when the controller starts, when it is reset and
+when ``reboot_l1`` restarts it (a C-brick's L1 is not reset with the
+machine, so only that command restarts its link). The task
 sets the status to "busy initialising" and waits ``100 * bay + 300`` ticks,
 ``bay`` being the controller's ``bay`` property (L1 setting 2), before its
 first request: 3 s plus 1 s per bay number at 10 ms a tick, *software
