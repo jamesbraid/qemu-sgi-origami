@@ -32,6 +32,10 @@ typedef struct SGIL1Pbay {
     CharFrontend chr;
     uint16_t l1_address;
     uint32_t poll_ms;
+    /* The L1's kernel tick in microseconds: 10000 for its 100 Hz tick. */
+    uint32_t tick_us;
+    /* L1 setting 2, the bay number: it sets the start delay. */
+    uint32_t bay_number;
 
     /* The owning controller's log. */
     SGIL1PbayLog log;
@@ -45,7 +49,9 @@ typedef struct SGIL1Pbay {
     uint8_t status;
     uint8_t step;
     uint8_t tag;
-    uint8_t attempts;
+    uint8_t wait;
+    uint8_t transmissions;
+    uint8_t reads;
     uint16_t bay;
     uint8_t target;
     uint8_t capability[3];

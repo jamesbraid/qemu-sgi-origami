@@ -56,7 +56,7 @@ static void rig_start(Rig *r, bool scripted, const char *l1_props,
     r->qts = qtest_initf("-M none -cpu R10000 -S -d unimp "
         "-chardev socket,id=pa,fd=%d %s "
         "-device sgi-l1,id=l1c,brick-type=cbrick,named=on,rack=1,bay=7,"
-        "pbay=pa,pbay-address=0x%04x,pbay-poll-ms=50%s "
+        "pbay=pa,pbay-address=0x%04x,pbay-poll-ms=50,pbay-tick-us=200%s "
         "-device sgi-l1-uart,id=l1u,controller=l1c %s",
         sv[0], bay, L1_ADDRESS, l1_props, extra);
     qtest_sysbus_mmio_map(r->qts, "/machine/peripheral/l1u", 0, BASE);
@@ -570,6 +570,62 @@ static void test_receive_rules(void)
     rig_stop(&r);
 }
 
+/*
+ * Task start waits 100 * bay + 300 ticks before the first request (bay 7
+ * here), and a transaction sends three times: a read that times out waits 20
+ * ticks and resends. The bounds are lower ones so a loaded host cannot fail
+ * them.
+ */
+static void test_start_delay_and_resends(void)
+{
+    Request q, again;
+    int64_t t0, t1, t2;
+    Rig r;
+
+    rig_start(&r, true, ",pbay-tick-us=500", "");
+    t0 = g_get_monotonic_time();
+    bay_read_raw(&r, &q);
+    t1 = g_get_monotonic_time();
+    g_assert_cmpint(t1 - t0, >=, 1000 * 500 * 9 / 10);
+    g_assert_cmphex(q.cmd, ==, 0x10);
+    bay_read_raw(&r, &q);
+    g_assert_cmphex(q.cmd, ==, 0x02);
+    t1 = g_get_monotonic_time();
+    bay_read_raw(&r, &again);
+    t2 = g_get_monotonic_time();
+    g_assert_cmpmem(again.body, again.len, q.body, q.len);
+    /* A read lasts at least 100 ticks, then 20 more before the resend. */
+    g_assert_cmpint(t2 - t1, >=, 120 * 500 * 9 / 10);
+    rig_stop(&r);
+}
+
+/*
+ * A frame that fails the reply checks costs a read, and three of them end
+ * the transmission without waiting out a read timeout: the resend follows
+ * after 20 ticks, well before the 100 to 200 ticks a silent read takes.
+ */
+static void test_bad_frames_cost_reads(void)
+{
+    Request q, again;
+    int64_t t0, t1;
+    Rig r;
+
+    rig_start(&r, true, ",pbay-tick-us=10000", "");
+    bay_read_raw(&r, &q);
+    bay_read_raw(&r, &q);
+    g_assert_cmphex(q.cmd, ==, 0x02);
+    t0 = g_get_monotonic_time();
+    for (unsigned i = 0; i < 3; i++) {
+        bay_reply_from(&r, &q, 0x4400, (uint8_t[]){ 0x00, 0x00, 0x44 }, 3,
+                       true);
+    }
+    bay_read_raw(&r, &again);
+    t1 = g_get_monotonic_time();
+    g_assert_cmpmem(again.body, again.len, q.body, q.len);
+    g_assert_cmpint(t1 - t0, <, 1000 * 1000);
+    rig_stop(&r);
+}
+
 static void test_no_bay(void)
 {
     Request q, again;
@@ -693,7 +749,7 @@ static void test_closed_port(void)
     }
 }
 
-/* A poll period of zero would poll without pause, so it is refused. */
+/* A poll period or tick of zero would run without pause, so it is refused. */
 static void test_poll_period(void)
 {
     g_autofree char *err = NULL;
@@ -702,6 +758,10 @@ static void test_poll_period(void)
     err = start_on_brick('C', ",pbay-poll-ms=0", &status);
     g_assert_cmpint(status, !=, 0);
     g_assert_nonnull(strstr(err, "pbay-poll-ms"));
+    g_free(err);
+    err = start_on_brick('C', ",pbay-tick-us=0", &status);
+    g_assert_cmpint(status, !=, 0);
+    g_assert_nonnull(strstr(err, "pbay-tick-us"));
 }
 
 static void test_blocks_migration(void)
@@ -744,6 +804,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-l1-pbay/polling-log", test_polling_log);
     qtest_add_func("/sgi-l1-pbay/first-pass", test_first_pass);
     qtest_add_func("/sgi-l1-pbay/receive-rules", test_receive_rules);
+    qtest_add_func("/sgi-l1-pbay/start-delay-and-resends",
+                   test_start_delay_and_resends);
+    qtest_add_func("/sgi-l1-pbay/bad-frames-cost-reads",
+                   test_bad_frames_cost_reads);
     qtest_add_func("/sgi-l1-pbay/no-bay", test_no_bay);
     qtest_add_func("/sgi-l1-pbay/bay-model", test_with_bay_model);
     qtest_add_func("/sgi-l1-pbay/closed-port", test_closed_port);

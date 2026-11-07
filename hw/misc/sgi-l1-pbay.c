@@ -34,10 +34,25 @@
 #define CMD_TYPE        0x13
 #define CMD_TUNNEL      0x20
 
-/* A model choice: the real transaction timing is not established. */
-#define PB_TIMEOUT_MS   300
-#define PB_ATTEMPTS     3
-#define PB_MAX_RECORDS  64
+/*
+ * Retries (datasheet "Transaction retries and timeouts"): every request
+ * allows three transmissions with up to three reads each. A read that times
+ * out goes to the next transmission, which waits PB_RESEND_TICKS first; a
+ * frame that fails the reply checks costs a read, and the next read is made
+ * without resending.
+ */
+#define PB_TRANSMISSIONS    3
+#define PB_READS            3
+#define PB_RESEND_TICKS     20
+/*
+ * The driver loads a read's countdown with 2 and decrements it every 100
+ * ticks, so a read lasts 1 to 2 periods. The model takes the middle: a
+ * model choice, as the phase is unknown.
+ */
+#define PB_READ_TICKS       150
+/* Task start waits 100 * bay + 300 ticks, bay being L1 setting 2. */
+#define PB_START_TICKS(bay) (100 * (bay) + 300)
+#define PB_MAX_RECORDS      64
 
 /*
  * The brick type characters that do not run the power-bay task in the
@@ -61,6 +76,29 @@ enum {
     STEP_RECORD,
     STEP_SENSOR,
 };
+
+enum {
+    WAIT_NONE,
+    WAIT_START,
+    WAIT_READ,
+    WAIT_RESEND,
+};
+
+/*
+ * Timers use the host clock: the bay is a host peer and answers in real
+ * time, so the virtual clock (stopped in a qtest, and frozen while the
+ * guest is halted) would never fire them. Under icount or record and replay
+ * the link's timing is therefore not deterministic.
+ */
+static void pb_wait(SGIL1Pbay *p, unsigned kind, uint64_t ticks)
+{
+    p->wait = kind;
+    timer_mod_ns(p->timeout, qemu_clock_get_ns(QEMU_CLOCK_REALTIME) +
+                 ticks * p->tick_us * 1000);
+}
+
+static void pb_begin(SGIL1Pbay *p);
+static void pb_bad_reply(SGIL1Pbay *p);
 
 static void pb_put(uint8_t *out, unsigned *n, uint8_t b)
 {
@@ -111,6 +149,7 @@ static void pb_write(SGIL1Pbay *p)
 static void pb_fail(SGIL1Pbay *p)
 {
     timer_del(p->timeout);
+    p->wait = WAIT_NONE;
     p->step = STEP_IDLE;
     p->status = SGI_L1_PBAY_COMM_FAILURE;
 }
@@ -139,11 +178,11 @@ static void pb_request(SGIL1Pbay *p, uint16_t dst, uint8_t cmd,
     p->request_len = n + len;
     p->request_cmd = cmd;
     p->request_netfn = cmd == CMD_TUNNEL ? data[1] : 0;
-    p->attempts = 1;
+    p->transmissions = 1;
+    p->reads = PB_READS;
     pb_write(p);
     if (wait) {
-        timer_mod(p->timeout,
-                  qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + PB_TIMEOUT_MS);
+        pb_wait(p, WAIT_READ, PB_READ_TICKS);
     }
 }
 
@@ -257,6 +296,7 @@ static void pb_poll_start(void *opaque)
 static void pb_step_done(SGIL1Pbay *p, const uint8_t *d, unsigned len)
 {
     timer_del(p->timeout);
+    p->wait = WAIT_NONE;
     switch (p->step) {
     case STEP_ADDRESS:
         p->bay = len >= 2 ? lduw_le_p(d) : 0;
@@ -367,6 +407,30 @@ ready:
     pb_poll_start(p);
 }
 
+/* No reply came in time: the next transmission, or give up. */
+static void pb_read_expired(SGIL1Pbay *p)
+{
+    if (p->transmissions >= PB_TRANSMISSIONS) {
+        if (p->step == STEP_ADDRESS) {
+            p->bay = PB_ADDRESS;
+        }
+        pb_fail(p);
+        return;
+    }
+    pb_wait(p, WAIT_RESEND, PB_RESEND_TICKS);
+}
+
+/* A frame that failed the reply checks costs a read; no resend yet. */
+static void pb_bad_reply(SGIL1Pbay *p)
+{
+    if (--p->reads == 0) {
+        timer_del(p->timeout);
+        pb_read_expired(p);
+        return;
+    }
+    pb_wait(p, WAIT_READ, PB_READ_TICKS);
+}
+
 /*
  * A received frame, unstuffed and addressed to this L1. The transaction
  * layer checks the checksum, the control byte and tag, the command and the
@@ -378,13 +442,18 @@ static void pb_frame(SGIL1Pbay *p)
     unsigned body, data_at;
     uint8_t want_tag = p->request[5] & 0x1f;
 
-    if (p->step == STEP_IDLE || p->rx_len < PB_HEADER + 1 + 2) {
+    if (p->step == STEP_IDLE || p->wait != WAIT_READ) {
+        return;
+    }
+    if (p->rx_len < PB_HEADER + 1 + 2) {
+        pb_bad_reply(p);
         return;
     }
     body = p->rx_len - 2;
     if (lduw_le_p(f + body) != pb_checksum(f, body) ||
         !(f[5] & PB_REPLY_BIT) || (f[5] & 0x1f) != want_tag ||
         f[6] != p->request_cmd || f[7] != 0) {
+        pb_bad_reply(p);
         return;
     }
     data_at = 8;
@@ -392,10 +461,12 @@ static void pb_frame(SGIL1Pbay *p)
         uint8_t reply_nf, want_nf = p->request_netfn >> 2;
 
         if (body < 12 || f[11] != 0 || f[10] != p->request[PB_HEADER + 2]) {
+            pb_bad_reply(p);
             return;
         }
         reply_nf = f[9];
         if (!(reply_nf & 4) || ((reply_nf >> 2) & ~1) != (want_nf & ~1)) {
+            pb_bad_reply(p);
             return;
         }
         data_at = 12;
@@ -486,24 +557,41 @@ static void pb_receive(void *opaque, const uint8_t *buf, int size)
 static void pb_timeout(void *opaque)
 {
     SGIL1Pbay *p = opaque;
+    unsigned kind = p->wait;
 
-    if (p->step == STEP_IDLE) {
-        return;
-    }
-    if (p->attempts >= PB_ATTEMPTS) {
-        if (p->step == STEP_ADDRESS) {
-            p->bay = PB_ADDRESS;
+    p->wait = WAIT_NONE;
+    switch (kind) {
+    case WAIT_START:
+        pb_begin(p);
+        break;
+    case WAIT_READ:
+        if (p->step != STEP_IDLE) {
+            pb_read_expired(p);
         }
-        pb_fail(p);
-        return;
+        break;
+    case WAIT_RESEND:
+        if (p->step != STEP_IDLE) {
+            p->transmissions++;
+            p->reads = PB_READS;
+            pb_write(p);
+            pb_wait(p, WAIT_READ, PB_READ_TICKS);
+        }
+        break;
     }
-    p->attempts++;
-    pb_write(p);
-    timer_mod(p->timeout,
-              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + PB_TIMEOUT_MS);
 }
 
 /* The sequence: a silent request, the address, then the rest. */
+static void pb_begin(SGIL1Pbay *p)
+{
+    pb_request(p, 0, CMD_SILENT, NULL, 0, false);
+    p->step = STEP_ADDRESS;
+    pb_request(p, 0, CMD_ADDRESS, NULL, 0, true);
+}
+
+/*
+ * Task start: status 1, the port opens, and the task waits
+ * 100 * bay + 300 ticks before its first request.
+ */
 static void pb_start(void *opaque)
 {
     SGIL1Pbay *p = opaque;
@@ -511,9 +599,7 @@ static void pb_start(void *opaque)
     p->status = SGI_L1_PBAY_INITIALISING;
     p->rx_in_frame = false;
     p->rx_escape = false;
-    pb_request(p, 0, CMD_SILENT, NULL, 0, false);
-    p->step = STEP_ADDRESS;
-    pb_request(p, 0, CMD_ADDRESS, NULL, 0, true);
+    pb_wait(p, WAIT_START, PB_START_TICKS(p->bay_number));
 }
 
 bool sgi_l1_pbay_active(const SGIL1Pbay *p)
@@ -542,6 +628,7 @@ void sgi_l1_pbay_reset(SGIL1Pbay *p)
     }
     timer_del(p->timeout);
     timer_del(p->poll_timer);
+    p->wait = WAIT_NONE;
     p->step = STEP_IDLE;
     p->status = SGI_L1_PBAY_NOT_INITIALISED;
     p->records = 0;
@@ -579,6 +666,10 @@ bool sgi_l1_pbay_realize(SGIL1Pbay *p, Object *owner, uint32_t letter,
         error_setg(errp, "sgi-l1: pbay-poll-ms must be at least 1");
         return false;
     }
+    if (!p->tick_us) {
+        error_setg(errp, "sgi-l1: pbay-tick-us must be at least 1");
+        return false;
+    }
     /* The bay's state is outside this machine, so it is not saved. */
     error_setg(&p->blocker,
                "sgi-l1: migration is not supported with a power-bay link");
@@ -587,7 +678,7 @@ bool sgi_l1_pbay_realize(SGIL1Pbay *p, Object *owner, uint32_t letter,
     }
     p->log = log;
     p->opaque = opaque;
-    p->timeout = timer_new_ms(QEMU_CLOCK_REALTIME, pb_timeout, p);
+    p->timeout = timer_new_ns(QEMU_CLOCK_REALTIME, pb_timeout, p);
     p->poll_timer = timer_new_ms(QEMU_CLOCK_REALTIME, pb_poll_start, p);
     p->start_bh = qemu_bh_new(pb_start, p);
     qemu_chr_fe_set_handlers(&p->chr, pb_can_receive, pb_receive, NULL,
