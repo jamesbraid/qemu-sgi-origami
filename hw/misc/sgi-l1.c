@@ -6514,6 +6514,7 @@ fuel_mac_done:
                                  l1_l2_receive, l1_l2_event, NULL, s, NULL,
                                  true);
     }
+    s->pbay.bay_number = s->bay;
     if (!sgi_l1_pbay_realize(&s->pbay, OBJECT(s), l1_brick_type_character(s),
                              l1_pbay_log, s, errp)) {
         return;
@@ -6852,6 +6853,7 @@ static const Property l1_properties[] = {
     DEFINE_PROP_CHR("pbay", SGIL1State, pbay.chr),
     DEFINE_PROP_UINT16("pbay-address", SGIL1State, pbay.l1_address, 0x0001),
     DEFINE_PROP_UINT32("pbay-poll-ms", SGIL1State, pbay.poll_ms, 1000),
+    DEFINE_PROP_UINT32("pbay-tick-us", SGIL1State, pbay.tick_us, 10000),
     DEFINE_PROP_INT32("revision-major", SGIL1State, revision_major, -1),
     DEFINE_PROP_INT32("revision-minor", SGIL1State, revision_minor, -1),
     DEFINE_PROP_INT32("revision-patch", SGIL1State, revision_patch, -1),

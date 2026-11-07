@@ -2079,7 +2079,8 @@ the case does not arise, *inferred*. The model follows the first set.
 The controller has an opt-in ``pbay`` character device property carrying the
 framed bytes; ``pbay-address`` (default ``0x0001``) is the L1's own address
 and ``pbay-poll-ms`` (default 1000, at least 1; the controller refuses to
-start with 0) the time between polling passes, each an *approximation*. With the property unset, the controller behaves as it did
+start with 0) the time between polling passes, each an *approximation*.
+``pbay-tick-us`` is described under the receive path. With the property unset, the controller behaves as it did
 before and the link does not exist. With it set, the controller refuses to
 start on a brick type that does not run the task, and blocks migration, because
 the bay's state lies outside the machine.
@@ -2101,17 +2102,31 @@ terminator that ends a frame while an escape is pending clears the escape
 as well, the same reset a terminator gives outside a frame; the handler's
 treatment of that case is not read, so this is an *approximation*. The
 handler does not act on UART line errors in this mode, *software
-expectation*. The model gives each transaction 300 ms and three attempts, an
-*approximation* of timing that is *unknown*. Those timeouts and the polling
-period run on the host's real-time clock, so under ``-icount`` or record and
-replay the link's timing is not deterministic.
+expectation*. Every request allows three transmissions with up to three
+reads each. A read that times out goes to the next transmission, which waits
+20 ticks first; a frame that fails the reply checks costs a read and the next
+read is made without resending, *software expectation*. A read lasts 1 to 2
+periods of 100 ticks, *software expectation*; the model gives each read 150
+ticks, a *model choice* because the phase is *unknown*. A tick is 10 ms
+(*inferred* from the 100 Hz timer); the ``pbay-tick-us`` property (default
+10000, at least 1) sets it in microseconds, so tests can shorten every tick
+timing at once. The first start-up request, command ``0x10``, has no reply
+and is sent once: the source material does not say whether it is sent three
+times, and no reply could be accepted for it, a *model choice*. A write that
+finds a byte waiting in the UART is retried after a tick in the L1; the model's
+receiver is never busy, so that retry is not modelled. The timers run on the
+host's real-time clock, because the bay is a host peer that answers in real
+time and the virtual clock is stopped while the guest is halted, so under
+``-icount`` or record and replay the link's timing is not deterministic.
 
 Initialisation and polling
 --------------------------
 
-The model starts the link when the controller starts or resets, with no
-delay (the L1 waits ``100 * setting + 300`` delay units, *software
-expectation*; the setting's value is *unknown*). It sends command ``0x10``
+The model starts the link when the controller starts or resets. The task
+sets the status to "busy initialising" and waits ``100 * bay + 300`` ticks,
+``bay`` being the controller's ``bay`` property (L1 setting 2), before its
+first request: 3 s plus 1 s per bay number at 10 ms a tick, *software
+expectation* for the formula and *inferred* for the tick. It sends command ``0x10``
 and then ``0x02`` to address 0 and takes the replied address, with zero or no
 reply meaning a communication failure, then ``0x12`` with that address,
 ``0x13``, the ``0x00,0x00`` pair and the record loop from id 0, reading five
