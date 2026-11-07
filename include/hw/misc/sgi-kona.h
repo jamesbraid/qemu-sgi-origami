@@ -26,6 +26,7 @@
 #include "hw/misc/sgi-kona-flash.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/misc/sgi-kona-ports.h"
+#include "hw/misc/sgi-kona-record.h"
 #include "hw/misc/sgi-kona-texture.h"
 #include "system/memory.h"
 #include "ui/sgi-renderer.h"
@@ -1974,6 +1975,9 @@ struct SGIKonaState {
     char *product;
     char *geometry;
     char *rm_type;
+    /* The stream recorder's file name, and the recorder it opens. */
+    char *record;
+    SGIKonaRecorder *rec;
     uint32_t rm_count;
     uint32_t texture_mb;
     uint32_t channels;

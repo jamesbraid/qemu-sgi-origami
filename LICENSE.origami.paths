@@ -311,6 +311,7 @@ hw/misc/sgi-kona-gl-selectors.c.inc
 hw/misc/sgi-kona-mesa-provider.c
 hw/misc/sgi-kona-mesa-provider.h
 hw/misc/sgi-kona-ports.c
+hw/misc/sgi-kona-record.c
 hw/misc/sgi-kona-texture.c
 hw/misc/sgi-kona.c
 hw/misc/sgi-l1-pbay.c
@@ -408,6 +409,7 @@ include/hw/misc/sgi-ioc4.h
 include/hw/misc/sgi-kona-dma.h
 include/hw/misc/sgi-kona-gl-decode.h
 include/hw/misc/sgi-kona-ports.h
+include/hw/misc/sgi-kona-record.h
 include/hw/misc/sgi-kona-texture.h
 include/hw/misc/sgi-kona.h
 include/hw/misc/sgi-l1-pbay.h
@@ -948,6 +950,7 @@ tests/qtest/sn0-origin2000-kona-gl-test.c
 tests/qtest/sn0-origin2000-kona-glyph-test.c
 tests/qtest/sn0-origin2000-kona-pi-credit-test.c
 tests/qtest/sn0-origin2000-kona-pixel-test.c
+tests/qtest/sn0-origin2000-kona-record-test.c
 tests/qtest/sn0-origin2000-kona-scanout-test.c
 tests/qtest/sn0-origin2000-kona-test.c
 tests/qtest/sn0-origin2000-kona-textport-test.c

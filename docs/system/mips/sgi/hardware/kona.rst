@@ -219,7 +219,9 @@ build the identification register; ``probe-value`` is register ``0x64``;
 ``list-memory-size`` sizes resident display-list memory (default 15 MiB,
 a nonzero multiple of 4,096 up to 64 MiB, a model choice); ``host-gpu``
 lets GL draws use the host's GPU through Mesa instead of the CPU
-rasterizer, with the same board memory as the result.
+rasterizer, with the same board memory as the result; ``record`` names a
+file that receives the stream the guest sends the pipe
+(:ref:`sgi-kona-record`).
 
 .. _sgi-kona-register-map:
 
@@ -1062,6 +1064,131 @@ firmware-load sizes differ, and the ``list-memory-size`` must match. A
 host-GPU renderer's state is not migrated: it is stopped before loading.
 Migration works only between identical builds.
 
+.. _sgi-kona-record:
+
+Recording the stream
+====================
+
+With ``-device sgi-kona,record=FILE``, or ``record`` set on the machine's
+pipe, the pipe saves what the guest sends it and what it answers, so the
+stream can be replayed into another model of the same board and the
+answers compared in order. It is off by default. A pipe without ``record``
+pays one pointer test at each recording point, no more than a disabled
+trace point costs. The file is created when the pipe is realized and
+closed when QEMU exits. A reset during the run puts a marker in the file
+and does not restart it. A recording is for a straight run from reset: an
+incoming migration or snapshot load changes the guest state without a
+marker.
+
+The format is binary and versioned. All integers are little-endian. The
+file is not compressed. It begins with the 8 bytes ``KONAREC`` and a NUL,
+then a ``u32`` format version, 1 here, then records. A record is a tag
+byte and its fields, with no padding:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Tag
+     - Fields
+     - Meaning
+   * - ``C``
+     - part ``u32``, revision ``u32``, rm_count ``u32``, texture_mb
+       ``u32``, n ``u8``, n bytes of ``product``
+     - The board, once, first. The product name is not NUL-terminated and
+       is empty when the pipe has none.
+   * - ``W``
+     - size ``u8``, off ``u32``, val ``u64``
+     - A guest store of 4 or 8 bytes at byte offset ``off`` in the pipe's
+       register aperture, in the order the pipe received it. ``val`` is
+       the numeric value, not byte-swapped. A store whose words the pipe
+       holds behind its work is recorded when it arrives.
+   * - ``R``
+     - size ``u8``, off ``u32``, val ``u64``
+     - A guest load and the numeric value the pipe answered. A load
+       identical to the one before it, with no other record between, is
+       not kept.
+   * - ``D``
+     - src ``u8``, addr ``u64``, n ``u32``, n bytes
+     - Guest memory the pipe read, as read, at the point of the read.
+       The bytes are in memory order, as the guest stored them.
+   * - ``O``
+     - src ``u8``, addr ``u64``, n ``u32``, n bytes
+     - Guest memory the pipe wrote: replies, the reason and return pages,
+       image-DMA results and rows read back from the framebuffer. The
+       bytes are in memory order.
+   * - ``I``
+     - kind ``u8``, vector ``u8``, delivered ``u8``
+     - An interrupt the pipe raised, kind 0 general or 1 geometry engine,
+       and whether the fabric accepted it.
+   * - ``M``
+     - kind ``u32``, arg ``u32``
+     - A marker. Kind 1 is a reset, 2 a buffer swap taking effect (``arg``
+       is the context), 3 a retrace completion (``arg`` is its tag) and
+       ``0x100`` a mark made by writing a value to the pipe's
+       ``x-record-mark`` property (``arg`` is the value).
+   * - ``E``
+     - count ``u64``
+     - The end, written when the file is closed: the number of records
+       before it. A file with no ``E`` was cut off, and its last record
+       may be partial.
+
+``src`` of a ``D`` or ``O`` record is 1 for a direct access to host memory:
+the reason page and its read-back, the return page, and every image-DMA
+write (the pipe's reply to a pixel or texture read). It is 2 for an
+image-DMA read through the map RAM, 3 for a display-list fetch and 4 for
+the rows of a pixel rectangle. For 1 to 3, ``addr`` is the guest physical
+address of the first byte as the pipe issues it, before the fabric adds
+the Hub widget. Image-DMA reads and writes are recorded one chunk at a
+time, each of at most 4,096 bytes and never across a 16 KiB map-RAM page,
+each at its own address; a reader that wants the run joins contiguous
+chunks. A list is one record per range, under the address of the range's
+first byte, and a range that crosses pages is one run of bytes. For 4,
+``addr`` is the byte offset of the row in the buffer the transfer's page
+list describes, from the start of that buffer: the transfer's offset plus
+the row number times its pitch, not a plane coordinate. A fetch or access
+that fails is not recorded.
+
+The file leaves out:
+
+- accesses the model refuses because they arrive from inside a graphics
+  head's own work, and stores after a context has failed;
+- an interrupt the pipe cannot send, for want of a destination or a fabric
+  address;
+- the board's configuration beyond the ``C`` record (geometry, raster
+  manager type, channels, probe value, list memory size, serial and flash
+  contents), which a replay model must be given out of band; one-wire and
+  flash reads appear as ordinary ``R`` records;
+- changes the pipe makes on its own timers, such as cause bits set at a
+  retrace, which a replay sees only through the ``R`` answers.
+
+Identical consecutive loads are dropped because polling loops would
+otherwise dominate the file. That is safe for a replay that checks the
+answers in order, because the interrupt cause register is the only
+register whose read does anything, and when it does it writes ``O`` and
+``I`` records, which end the run of identical loads. A reader must not
+count loads. A load the model refuses is not recorded either.
+
+The file is buffered. It is flushed every 4,096 records, after the ``C``
+record and after every marker, so a script that writes to ``x-record-mark``
+and then reads the file sees everything before its marker. A process
+killed without a chance to exit loses the records since the last flush,
+and the last record may be partial. The first failed write is reported and
+stops the recording without an ``E`` record.
+
+``W`` and ``R`` have the layout of the same-named records in the VPro
+model's recording in the Iris emulator, and the header has the same shape:
+a magic, a ``u32`` version, little-endian integers. Only those are shared.
+Iris's reader knows ``W``, ``R``, ``B``, ``b`` and ``H``, and rejects any
+other tag, so it rejects this file at its first record, ``C``. The six
+tags ``C``, ``D``, ``O``, ``I``, ``M`` and ``E`` are new here, and ``B``,
+``b`` and ``H`` do not occur. The magic differs (``KONAREC`` for
+``ODSYREC``). ``D`` and ``O`` carry a byte count where
+Iris has quadword blocks and single bytes, and ``M`` carries a kind and
+an argument where Iris's ``H`` carries a plane hash. Iris drops identical
+consecutive loads only until the next store or mark; here any other record
+ends the run. The file is not gzip: compress it with ``gzip`` for Iris's
+container.
+
 Measurements
 ============
 
@@ -1123,6 +1250,9 @@ The qtests fit the pipe with ``-device sgi-kona`` on
 - ``tests/qtest/sn0-origin2000-kona-dma-test.c`` and
   ``sn0-origin2000-kona-xdma-test.c``: the DMA packet, list records,
   refusals, completions and X image DMA.
+- ``tests/qtest/sn0-origin2000-kona-record-test.c``: a scripted image DMA
+  with ``record`` set; the file's header, stores, loads, DMA bytes,
+  interrupt, markers and end count.
 - ``tests/qtest/sn0-origin2000-kona-pi-credit-test.c``: credits returned
   to the Hub from processor stores.
 - ``tests/qtest/sn0-origin2000-kona-scanout-test.c``: board memory,

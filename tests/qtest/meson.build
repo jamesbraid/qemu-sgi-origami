@@ -162,6 +162,7 @@ slow_qtests = {
   # 376.6 s alone at load average 94, 2026-10-24 (302 s on a quiet host);
   # three times the loaded figure, rounded up.
   'sn0-origin2000-kona-pixel-test': 1140,
+  'sn0-origin2000-kona-record-test': 70,
   'sn0-origin2000-kona-xdma-test': 70,
   'sn0-origin2000-pflash-test': 80,
   'sn0-origin2000-test': 430,
@@ -621,6 +622,7 @@ sn0_machine_qtests = \
                                                    'sn0-origin2000-kona-gl-test',
                                                    'sn0-origin2000-kona-3d-test',
                                                    'sn0-origin2000-kona-xdma-test',
+                                                   'sn0-origin2000-kona-record-test',
                                                    'sn0-origin2000-kona-pi-credit-test',
                                                    'sn0-onyx2-test',
                                                    'sn0-display-heads-test'] : [])

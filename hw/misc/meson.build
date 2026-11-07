@@ -61,6 +61,7 @@ system_ss.add(when: 'CONFIG_SGI_KONA',
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-texture.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-gl-decode.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-dma.c'))
+system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-record.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA',
               if_true: files('sgi-kona-mesa-provider.c'))
 system_ss.add(when: 'CONFIG_SIFIVE_TEST', if_true: files('sifive_test.c'))
