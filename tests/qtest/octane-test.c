@@ -914,6 +914,69 @@ static void test_octane_mac(gconstpointer data)
 }
 
 /*
+ * IRIX builds the system id sysinfo -s and FLEXlm's lmhostid report from
+ * the onboard station address: the last four bytes of 08:00:69:xx:xx:xx,
+ * so 0x69xxxxxx (inferred from Octane output in public newsgroup posts;
+ * see the IP30 manual page). It follows mac= and identity-key. Two
+ * guests with different identity keys therefore get different nonzero
+ * ids, and one key always gives the same id.
+ */
+static uint32_t octane_system_id(const uint8_t mac[6])
+{
+    return ldl_be_p(mac + 2);
+}
+
+static void test_octane_system_id(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    const char *machine = octane2 ? "octane2" : "octane";
+    const char *keys[] = { "guest-a.img", "guest-b.img", "guest-a.img" };
+    uint32_t id[G_N_ELEMENTS(keys)];
+    uint8_t mac[6], expected[6];
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(keys); i++) {
+        g_autoptr(GChecksum) sum = g_checksum_new(G_CHECKSUM_SHA256);
+        guint8 seed[32];
+        gsize length = sizeof(seed);
+
+        g_free(extra);
+        extra = g_strdup_printf("-M %s,identity-key=%s -nic user", machine,
+                                keys[i]);
+        qts = octane2 ? octane2_start_args(extra) : octane_start_args(extra);
+        octane_station_address(qts, mac);
+        qtest_quit(qts);
+
+        g_checksum_update(sum, (const guchar *)keys[i], -1);
+        g_checksum_get_digest(sum, seed, &length);
+        expected[0] = 0x08;
+        expected[1] = 0x00;
+        expected[2] = 0x69;
+        expected[3] = 0xe0 | (seed[0] & 0x0f);
+        expected[4] = seed[1];
+        expected[5] = seed[2];
+        g_assert_cmpmem(mac, 6, expected, 6);
+
+        id[i] = octane_system_id(mac);
+        g_assert_cmphex(id[i] >> 24, ==, 0x69);
+        g_assert_cmphex(id[i], !=, 0);
+    }
+    g_assert_cmphex(id[0], !=, id[1]);
+    g_assert_cmphex(id[0], ==, id[2]);
+
+    /* An explicit mac= still decides, as on the other IP30 identities. */
+    qts = octane2 ?
+        octane2_start_args("-M octane2,mac=08:00:69:aa:bb:cc,"
+                           "identity-key=guest-a.img -nic user") :
+        octane_start_args("-M octane,mac=08:00:69:aa:bb:cc,"
+                          "identity-key=guest-a.img -nic user");
+    octane_station_address(qts, mac);
+    qtest_quit(qts);
+    g_assert_cmphex(octane_system_id(mac), ==, 0x69aabbcc);
+}
+
+/*
  * With a system disk on SCSI bus 0 unit 0 the address comes from the
  * disk's canonical path instead, and mac= still wins over both.
  */
@@ -6559,6 +6622,10 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/ioc3-ethernet", test_octane_ethernet);
     qtest_add_data_func("/octane/mac", GINT_TO_POINTER(0), test_octane_mac);
     qtest_add_data_func("/octane2/mac", GINT_TO_POINTER(1), test_octane_mac);
+    qtest_add_data_func("/octane/system-id", GINT_TO_POINTER(0),
+                        test_octane_system_id);
+    qtest_add_data_func("/octane2/system-id", GINT_TO_POINTER(1),
+                        test_octane_system_id);
     qtest_add_data_func("/octane/mac-follows-disk", GINT_TO_POINTER(0),
                         test_octane_mac_follows_disk);
     qtest_add_data_func("/octane2/mac-follows-disk", GINT_TO_POINTER(1),

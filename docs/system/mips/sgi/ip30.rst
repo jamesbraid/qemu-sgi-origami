@@ -478,6 +478,33 @@ rest of each record is not:
 - Physical ROM serials, page checksums, padding and unused memory on real
   IP30 boards are *unknown*.
 
+.. _sgi-ip30-system-id:
+
+System id
+---------
+
+IRIX reports a 32-bit system id through ``sysinfo -s`` and, as the
+FLEXlm host id, through ``lmhostid``. On an Octane it is the last four
+bytes of the onboard station address, so a card at
+``08:00:69:0b:ea:40`` gives ``0x690bea40``, decimal 1762388544
+(*inferred*). The basis is public newsgroup posts that show an Octane's
+``sysinfo`` output next to its station address, and a reply that gives
+the same rule. No IP30 kernel was available to
+confirm which source the kernel reads, the IOC3 Ethernet-address part or
+the PROM's copy of it, and the model gives both the same address.
+
+The model keeps no separate system id. It follows the ``mac`` property:
+the address in the IOC3 Ethernet-address part, ``08:00:69`` and then
+``0xe`` and a nibble and two more bytes of the seed (:doc:`hardware/ioc3`).
+The id is therefore never zero and differs between guests whose seeds
+differ. The seed is ``identity-key`` when set, else the host path of the
+first drive with a file, else the machine name, so two guests started
+with neither share an id. A launcher that attaches the disk with
+``-device`` passes its host path as ``identity-key``. These ids are
+synthetic and are not any machine's factory identity. Only the
+register-level station address is tested; no IRIX guest has read the id
+back (*unverified*).
+
 .. _sgi-ip30-missing:
 
 Missing devices
