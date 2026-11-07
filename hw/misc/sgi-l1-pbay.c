@@ -54,6 +54,16 @@
 #define PB_START_TICKS(bay) (100 * (bay) + 300)
 #define PB_MAX_RECORDS      64
 
+/* The sensor and FRU-locator records the L1 reads (datasheet "Polling"). */
+#define REC_SENSOR_FULL     0x01
+#define REC_SENSOR_COMPACT  0x02
+#define REC_FRU_LOCATOR     0x11
+#define ENTITY_SUPPLY       0x0a
+#define ENTITY_PORT         0x15
+#define ENTITY_BAY          0xb0
+#define SENSOR_SUPPLY       8
+#define SENSOR_PORT         9
+
 /*
  * The brick type characters that do not run the power-bay task in the
  * packages the Origin 3000 compute brick uses, so the L1 has no bay link
@@ -227,13 +237,13 @@ static void pb_compare(SGIL1Pbay *p)
 {
     uint8_t present = 0;
 
-    for (unsigned s = 1; s <= 6; s++) {
-        if (!(p->mask[s] & 1)) {
+    for (unsigned s = 1; s <= PB_SUPPLIES; s++) {
+        if (!(p->supply[s] & 1)) {
             present |= 1 << (s - 1);
         }
     }
     if (present) {
-        for (unsigned s = 1; s <= 6 && p->present; s++) {
+        for (unsigned s = 1; s <= PB_SUPPLIES && p->present; s++) {
             if ((present ^ p->present) & (1 << (s - 1))) {
                 pb_log(p, "Power Bay DPS %u %s", s,
                        present & (1 << (s - 1)) ? "inserted" : "removed");
@@ -242,41 +252,63 @@ static void pb_compare(SGIL1Pbay *p)
         p->present = present;
     }
 
-    for (unsigned s = 1; s <= SGI_L1_PBAY_SENSORS; s++) {
-        uint8_t now = p->mask[s];
-        uint8_t rose = now & ~p->last_mask[s];
+    for (unsigned s = 1; s <= PB_SUPPLIES; s++) {
+        uint8_t now = p->supply[s];
+        uint8_t rose = now & ~p->supply_last[s];
 
-        if (s <= 6) {
-            if (now & 1) {
-                p->last_mask[s] = 0;
-                continue;
-            }
-            if (rose & 2) {
-                pb_log(p, "Power Bay DPS %u fail, lost redundancy", s);
-            }
-            if (rose & 4) {
-                pb_log(p, "Power Bay DPS %u predictive fail", s);
-            }
-            if (rose & 8) {
-                pb_log(p, "Power Bay DPS %u AC fail, lost redundancy", s);
-            }
-        } else {
-            if (now & 1) {
-                continue;
-            }
-            if (rose & 2) {
-                pb_log(p, "Power Bay DCport %u fail, lost power to brick",
-                       s - 6);
-            }
+        if (now & 1) {
+            p->supply_last[s] = 0;
+            continue;
         }
-        p->last_mask[s] = now;
+        if (rose & 2) {
+            pb_log(p, "Power Bay DPS %u fail, lost redundancy", s);
+        }
+        if (rose & 4) {
+            pb_log(p, "Power Bay DPS %u predictive fail", s);
+        }
+        if (rose & 8) {
+            pb_log(p, "Power Bay DPS %u AC fail, lost redundancy", s);
+        }
+        p->supply_last[s] = now;
     }
+    for (unsigned n = 1; n <= PB_PORTS; n++) {
+        uint8_t now = p->port[n];
+
+        if (now & 1) {
+            continue;
+        }
+        if ((now & ~p->port_last[n]) & 2) {
+            pb_log(p, "Power Bay DCport %u fail, lost power to brick", n);
+        }
+        p->port_last[n] = now;
+    }
+}
+
+/*
+ * The sensor behind poll position @pos (0 to 5 the supplies, 6 to 13 the
+ * ports), or 0 when the records did not map it.
+ */
+static uint8_t pb_sensor_at(const SGIL1Pbay *p, unsigned pos)
+{
+    return pos < PB_SUPPLIES ? p->supply_sensor[pos + 1] :
+                               p->port_sensor[pos - PB_SUPPLIES + 1];
 }
 
 static void pb_poll_next(SGIL1Pbay *p)
 {
-    uint8_t number = p->sensor;
+    uint8_t number;
 
+    while (p->sensor < PB_SUPPLIES + PB_PORTS && !pb_sensor_at(p, p->sensor)) {
+        p->sensor++;
+    }
+    if (p->sensor == PB_SUPPLIES + PB_PORTS) {
+        pb_compare(p);
+        p->step = STEP_IDLE;
+        timer_mod(p->poll_timer,
+                  qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + p->poll_ms);
+        return;
+    }
+    number = pb_sensor_at(p, p->sensor);
     p->step = STEP_SENSOR;
     pb_tunnel(p, 0x10, 0x2d, &number, 1);
 }
@@ -288,8 +320,51 @@ static void pb_poll_start(void *opaque)
     if (p->status != SGI_L1_PBAY_READY) {
         return;
     }
-    p->sensor = 1;
+    p->sensor = 0;
+    /* A sensor the records did not map reads as a supply that is absent. */
+    for (unsigned s = 1; s <= PB_SUPPLIES; s++) {
+        p->supply[s] = 1;
+    }
+    memset(p->port, 1, sizeof(p->port));
     pb_poll_next(p);
+}
+
+/*
+ * Take what a record tells the L1: the sensors behind the supplies and DC
+ * ports (a sensor record of entity 0x0a and type 8, or of entity 0x15 and
+ * type 9, whose sensor numbers run on from its own; the records do not
+ * say how many, so the model takes six and eight), and the FRU device of
+ * each slot (a FRU locator of entity 0x0a instances 1 to 6, 0xb0 for slot 0
+ * and 0x15 for the seventh slot). @r is the record after its id.
+ */
+static void pb_record(SGIL1Pbay *p, const uint8_t *r, unsigned len)
+{
+    if (len < 12) {
+        return;
+    }
+    switch (r[1]) {
+    case REC_SENSOR_FULL:
+    case REC_SENSOR_COMPACT:
+        if (r[6] == ENTITY_SUPPLY && r[10] == SENSOR_SUPPLY) {
+            for (unsigned i = 1; i <= PB_SUPPLIES; i++) {
+                p->supply_sensor[i] = r[5] + i - 1;
+            }
+        } else if (r[6] == ENTITY_PORT && r[10] == SENSOR_PORT) {
+            for (unsigned i = 1; i <= PB_PORTS; i++) {
+                p->port_sensor[i] = r[5] + i - 1;
+            }
+        }
+        break;
+    case REC_FRU_LOCATOR:
+        if (r[10] == ENTITY_SUPPLY && r[11] >= 1 && r[11] <= PB_SUPPLIES) {
+            p->fru_device[r[11]] = r[4];
+        } else if (r[10] == ENTITY_BAY) {
+            p->fru_device[0] = r[4];
+        } else if (r[10] == ENTITY_PORT) {
+            p->fru_device[PB_FRU_SLOTS - 1] = r[4];
+        }
+        break;
+    }
 }
 
 /* @d is the tunnelled reply's data, from its first byte after the codes. */
@@ -329,9 +404,12 @@ static void pb_step_done(SGIL1Pbay *p, const uint8_t *d, unsigned len)
             return;
         }
         memcpy(p->capability, d + 1, 3);
+        /*
+         * Byte 1, when nonzero, is the fallback FRU device of slot 0 until a
+         * locator for entity 0xb0 replaces it. No record has been read yet.
+         */
         if (p->capability[0]) {
-            qemu_log_mask(LOG_UNIMP, "sgi-l1: the power bay's supply count "
-                          "routine is not modelled\n");
+            p->fru_device[0] = p->capability[0];
         }
         if (p->capability[1]) {
             p->record_id = 0;
@@ -368,6 +446,9 @@ static void pb_step_done(SGIL1Pbay *p, const uint8_t *d, unsigned len)
             return;
         }
         next = lduw_le_p(d);
+        if (len > 4) {
+            pb_record(p, d + 4, len - 4);
+        }
         p->records++;
         if (next == 0xffff || p->records >= PB_MAX_RECORDS) {
             goto ready;
@@ -385,16 +466,13 @@ static void pb_step_done(SGIL1Pbay *p, const uint8_t *d, unsigned len)
             pb_fail(p);
             return;
         }
-        p->mask[p->sensor] = d[2];
-        if (p->sensor < SGI_L1_PBAY_SENSORS) {
-            p->sensor++;
-            pb_poll_next(p);
-            break;
+        if (p->sensor < PB_SUPPLIES) {
+            p->supply[p->sensor + 1] = d[2];
+        } else {
+            p->port[p->sensor - PB_SUPPLIES + 1] = d[2];
         }
-        pb_compare(p);
-        p->step = STEP_IDLE;
-        timer_mod(p->poll_timer,
-                  qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + p->poll_ms);
+        p->sensor++;
+        pb_poll_next(p);
         break;
     default:
         break;
@@ -583,6 +661,9 @@ static void pb_timeout(void *opaque)
 /* The sequence: a silent request, the address, then the rest. */
 static void pb_begin(SGIL1Pbay *p)
 {
+    memset(p->supply_sensor, 0, sizeof(p->supply_sensor));
+    memset(p->port_sensor, 0, sizeof(p->port_sensor));
+    memset(p->fru_device, 0, sizeof(p->fru_device));
     pb_request(p, 0, CMD_SILENT, NULL, 0, false);
     p->step = STEP_ADDRESS;
     pb_request(p, 0, CMD_ADDRESS, NULL, 0, true);
@@ -633,8 +714,8 @@ void sgi_l1_pbay_reset(SGIL1Pbay *p)
     p->status = SGI_L1_PBAY_NOT_INITIALISED;
     p->records = 0;
     p->present = 0;
-    memset(p->mask, 0, sizeof(p->mask));
-    memset(p->last_mask, 0, sizeof(p->last_mask));
+    memset(p->supply_last, 0, sizeof(p->supply_last));
+    memset(p->port_last, 0, sizeof(p->port_last));
     qemu_bh_schedule(p->start_bh);
 }
 
@@ -644,6 +725,8 @@ void sgi_l1_pbay_init(Object *obj, SGIL1Pbay *p)
                                   OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "pbay-records", &p->records,
                                    OBJ_PROP_FLAG_READ);
+    object_property_add_uint8_ptr(obj, "pbay-fru-slot0", &p->fru_device[0],
+                                  OBJ_PROP_FLAG_READ);
 }
 
 bool sgi_l1_pbay_realize(SGIL1Pbay *p, Object *owner, uint32_t letter,

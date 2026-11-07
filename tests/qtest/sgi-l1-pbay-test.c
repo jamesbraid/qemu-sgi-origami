@@ -289,12 +289,69 @@ static void expect_link(const Request *q, uint8_t cmd, uint16_t dst,
     } while (0)
 
 /*
+ * The bay's twelve records (datasheet "Record reads"), the bytes after the
+ * record id. Sensors 1 to 6 are the supplies and 7 to 14 the DC ports unless
+ * a test moves them.
+ */
+static unsigned supply_base = 1, port_base = 7;
+
+static size_t record_bytes(unsigned id, uint8_t *out)
+{
+    static const uint8_t r3[] = { 0x01, 0x12, 0x0b, 0x22, 0x01, 0xcb, 0x00,
+                                  0x00, 0x00, 0x00, 0x15, 0x01, 0x00, 0x00 };
+    uint8_t tail[] = { 0x00, 0x03, 0x09, 0x71, 0x00, 0x00, 0x00, 0x00, 0x03,
+                       0x00, 0xc0, 0x00, 0x00, 0x08, 0x81, 0x00, 0x00, 0x00,
+                       0x00, 0x00, 0x00, 0x00 };
+    size_t n = 0;
+
+    memset(out, 0, 48);
+    out[n++] = id;
+    out[n++] = 0;
+    if (id == 1 || id == 2) {
+        const uint8_t head[] = { 0x01, 0x02, 0x1b, 0x22, 0x00 };
+
+        memcpy(out + n, head, sizeof(head));
+        n += sizeof(head);
+        out[n++] = id == 1 ? port_base : supply_base;
+        out[n++] = id == 1 ? 0x15 : 0x0a;
+        out[n++] = 0x01;
+        memcpy(out + n, tail, sizeof(tail));
+        out[n + 2] = id == 1 ? 0x09 : 0x08;
+        return n + sizeof(tail);
+    }
+    if (id == 3) {
+        memcpy(out + n, r3, sizeof(r3));
+        return n + sizeof(r3);
+    }
+    if (id == 12) {
+        const uint8_t head[] = { 0x01, 0x01, 0x2c, 0x22, 0x00, 0x0f, 0x14,
+                                 0x09, 0x00, 0x03, 0x03, 0x01 };
+
+        memcpy(out + n, head, sizeof(head));
+        return n + 48 - 2;
+    }
+    {
+        static const uint8_t device[] = { 0xa0, 0xa2, 0xa4, 0xa6, 0xa8, 0xaa,
+                                          0xac, 0xae };
+        static const uint8_t entity[] = { 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a,
+                                          0x15, 0xb0 };
+        const uint8_t head[] = { 0x01, 0x11, 0x0b, 0x22, device[id - 4], 0x80,
+                                 0x00, 0x00, 0x10, 0x00, entity[id - 4],
+                                 id <= 9 ? id - 3 : 1, 0x00, 0x00 };
+
+        memcpy(out + n, head, sizeof(head));
+        return n + sizeof(head);
+    }
+}
+
+/*
  * Play the bay through the initialisation sequence of datasheet section
  * "L1 behaviour a model must serve": 0x10 and 0x02 to address 0, 0x12 with
  * the replied address, 0x13, the 0x00,0x00 capability pair, then the record
- * loop until the next id 0xffff.
+ * loop until the next id 0xffff. @fru is capability byte 1 and @records
+ * byte 2.
  */
-static void serve_init(Rig *r)
+static void serve_init_with(Rig *r, uint8_t fru, uint8_t records)
 {
     Request q;
     unsigned id = 0;
@@ -312,9 +369,14 @@ static void serve_init(Rig *r)
     REPLY(r, &q, 0x00, 0x22);
     bay_read(r, &q);
     EXPECT_LINK(&q, 0x20, 0x4400, 0x22, 0x00, 0x00);
-    TUNNEL_REPLY(r, &q, 0x00, 0x22, 0x22, 0x00, 0x00);
+    TUNNEL_REPLY(r, &q, 0x00, fru, records, 0x00, 0x00);
+    if (!records) {
+        return;
+    }
 
     for (;;) {
+        uint8_t rec[48];
+        size_t n;
         uint16_t next;
 
         /* Five bytes to learn the record id... */
@@ -325,13 +387,23 @@ static void serve_init(Rig *r)
         if (!id) {
             next = 2;
         }
-        TUNNEL_REPLY(r, &q, next & 0xff, next >> 8, id ? id : 1, 0x00, 0x01,
-                     0x02, 0x1b);
+        n = record_bytes(id ? id : 1, rec);
+        {
+            uint8_t d[7] = { next & 0xff, next >> 8 };
+
+            memcpy(d + 2, rec, 5);
+            tunnel_reply(r, &q, d, sizeof(d));
+        }
         /* ...then the record with the full count. */
         bay_read(r, &q);
         EXPECT_LINK(&q, 0x20, 0x4400, 0x22, 0x28, 0x23, 0x00, 0x00,
                     id ? id : 1, 0x00, 0x00, 0xff);
-        TUNNEL_REPLY(r, &q, next & 0xff, next >> 8, id ? id : 1, 0x00);
+        {
+            uint8_t d[2 + 48] = { next & 0xff, next >> 8 };
+
+            memcpy(d + 2, rec, n);
+            tunnel_reply(r, &q, d, 2 + n);
+        }
         if (next == 0xffff) {
             break;
         }
@@ -339,14 +411,24 @@ static void serve_init(Rig *r)
     }
 }
 
-/* One polling pass; @masks[n] is sensor n's reading. */
+static void serve_init(Rig *r)
+{
+    serve_init_with(r, 0x22, 0x22);
+}
+
+static uint8_t sensor_number(unsigned n)
+{
+    return n <= 6 ? supply_base + n - 1 : port_base + n - 7;
+}
+
+/* One polling pass; @masks[n] is the reading of supply or port n in turn. */
 static void serve_pass(Rig *r, const uint8_t masks[15])
 {
     Request q;
 
     for (unsigned n = 1; n <= 14; n++) {
         bay_read(r, &q);
-        EXPECT_LINK(&q, 0x20, 0x4400, 0x22, 0x10, 0x2d, n);
+        EXPECT_LINK(&q, 0x20, 0x4400, 0x22, 0x10, 0x2d, sensor_number(n));
         TUNNEL_REPLY(r, &q, 0x00, 0x00, masks[n], 0x00);
     }
 }
@@ -473,6 +555,56 @@ static void test_first_pass(void)
     g_free(command(&r, "log clear"));
     masks[5] = 0x00;
     pass_expect(&r, masks, "Power Bay DPS 5 inserted");
+    rig_stop(&r);
+}
+
+/*
+ * The sensors behind the supplies and DC ports come from the sensor
+ * records, so the poll reads whatever numbers they give. Moved, the pass
+ * asks for the new ones.
+ */
+static void test_sensor_map(void)
+{
+    uint8_t clear[15] = { 0 };
+    Rig r;
+
+    supply_base = 21;
+    port_base = 40;
+    rig_start(&r, true, "", "");
+    serve_init(&r);
+    wait_status(&r, 2);
+    serve_pass(&r, clear);
+    rig_stop(&r);
+    supply_base = 1;
+    port_base = 7;
+}
+
+/*
+ * Capability byte 1, when nonzero, is the fallback FRU device of slot 0; a
+ * FRU locator for entity 0xb0 replaces it. With byte 2 zero the record loop
+ * does not run, so the fallback stands.
+ */
+static void test_fru_fallback(void)
+{
+    Rig r;
+
+    rig_start(&r, true, "", "");
+    serve_init(&r);
+    wait_status(&r, 2);
+    g_assert_cmphex(l1_u(&r, "pbay-fru-slot0"), ==, 0xae);
+    rig_stop(&r);
+
+    rig_start(&r, true, "", "");
+    serve_init_with(&r, 0x5a, 0x00);
+    wait_status(&r, 2);
+    g_assert_cmpuint(l1_u(&r, "pbay-records"), ==, 0);
+    g_assert_cmphex(l1_u(&r, "pbay-fru-slot0"), ==, 0x5a);
+    rig_stop(&r);
+
+    rig_start(&r, true, "", "");
+    serve_init_with(&r, 0x00, 0x00);
+    wait_status(&r, 2);
+    g_assert_cmphex(l1_u(&r, "pbay-fru-slot0"), ==, 0);
     rig_stop(&r);
 }
 
@@ -803,6 +935,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-l1-pbay/init-sequence", test_init_sequence);
     qtest_add_func("/sgi-l1-pbay/polling-log", test_polling_log);
     qtest_add_func("/sgi-l1-pbay/first-pass", test_first_pass);
+    qtest_add_func("/sgi-l1-pbay/sensor-map", test_sensor_map);
+    qtest_add_func("/sgi-l1-pbay/fru-fallback", test_fru_fallback);
     qtest_add_func("/sgi-l1-pbay/receive-rules", test_receive_rules);
     qtest_add_func("/sgi-l1-pbay/start-delay-and-resends",
                    test_start_delay_and_resends);

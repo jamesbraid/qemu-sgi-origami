@@ -23,7 +23,10 @@ enum {
 };
 
 #define SGI_L1_PBAY_FRAME_MAX   300
-#define SGI_L1_PBAY_SENSORS     14
+#define PB_SUPPLIES             6
+#define PB_PORTS                8
+/* FRU slot 0 is the bay, 1 to 6 the supplies, 7 the seventh device. */
+#define PB_FRU_SLOTS            8
 
 typedef void (*SGIL1PbayLog)(void *opaque, const char *text);
 
@@ -58,8 +61,16 @@ typedef struct SGIL1Pbay {
     uint16_t record_id;
     uint32_t records;
     uint8_t sensor;
-    uint8_t mask[SGI_L1_PBAY_SENSORS + 1];
-    uint8_t last_mask[SGI_L1_PBAY_SENSORS + 1];
+    /* From the records: the sensor of each supply and port (0 unmapped). */
+    uint8_t supply_sensor[PB_SUPPLIES + 1];
+    uint8_t port_sensor[PB_PORTS + 1];
+    /* The FRU device byte of each slot (0 none). */
+    uint8_t fru_device[PB_FRU_SLOTS];
+    /* Index n is supply or port n; the last pass's reading, and the poll's. */
+    uint8_t supply[PB_SUPPLIES + 1];
+    uint8_t port[PB_PORTS + 1];
+    uint8_t supply_last[PB_SUPPLIES + 1];
+    uint8_t port_last[PB_PORTS + 1];
     /* The supplies present at the last pass, bit n-1 for supply n. */
     uint8_t present;
 
