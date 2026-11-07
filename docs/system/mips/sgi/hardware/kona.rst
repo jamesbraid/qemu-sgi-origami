@@ -959,20 +959,33 @@ The return page ``0x1f2`` registers takes configuration, flash, video and
 read answers: data first, then a nonzero word 0. Page words with bit 28
 set are host physical pages; otherwise the address is a device address
 translated through the map RAM. Both readings are *inferred* from the
-kernel's two uses.
+kernel's two uses (the same split a DMA packet has, below).
 
 .. _sgi-kona-dma:
 
 DMA
 ===
 
-The kernel's DMA packet is token ``0x1eb`` and six words: the device
-address shifted right 12; its low 12 bits ORed with the tag ``0x9000``;
+The kernel's DMA packet is token ``0x1eb`` and six words: the address
+high word, the device address shifted right 12 (or, with bit 28 set, an
+absolute host frame, below); its low 12 bits ORed with the tag ``0x9000``;
 the total byte count; the per-line byte count; the gap between lines; and
 ``0x100`` when the sender waits for completion. This is a *software
 expectation*. A completion posts mailbox word ``0x100`` under cause bit 4
 and sends the general vector; that the pipe posts the packet's last word
 is *inferred*.
+
+A packet's high word with bit 28 clear is a device address (``io >> 12``)
+translated through the map RAM: entry ``word >> 2``, offset
+``((word & 3) << 12) | (low & 0xfff)``. With bit 28 set it is an absolute
+4 KiB host frame, used without the map RAM. The kernel builds both forms
+(*established*: the DMA, pool, context-save and swap pairs are mapped; the
+event page, the return-data buffer and the diagnostic map's physical kind
+are physical). That the pipe's XG applies the translation, and that bit 28
+is the decode, are *inferred*; the exact decode, what an invalid entry
+does beyond the model's failed completion, and whether a physical frame
+carries the Hub node number are *unknown*. A mapped page the map RAM does
+not map fails the packet, logged ``LOG_GUEST_ERROR``.
 
 What the packet's bytes feed depends on what precedes it, an
 *approximation* resting on the senders:

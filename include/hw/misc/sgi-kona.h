@@ -921,13 +921,28 @@ typedef struct SGIKonaPendingSwap {
 #define SGI_KONA_COMMAND_TOKEN_MASK 0x1ff
 
 /*
- * Bit 28 of a command's page word marks a host physical page; without it
- * the page word is a device address translated through the XG map RAM.
- * Inferred from the driver's two uses (its buffer allocation and its
- * context swap).
+ * Bit 28 of the high word of an address pair (a DMA packet's, and the
+ * page word of a command that names a page) marks an absolute 4 KiB
+ * host frame; without it the word is a device address (io >> 12)
+ * translated through the XG map RAM. Established from the kernel
+ * driver's use: its DMA, DMA pool, context save and memory swap pairs are
+ * mapped, and three kernel pages (the event page, the return-data buffer
+ * and the diagnostic map's physical kind) are physical. Inferred: that
+ * the pipe's XG applies the translation, and that bit 28 is the decode
+ * (it is also the map RAM entry's invalid bit). Unknown: what a mapped
+ * word does at an invalid entry beyond the model's refusal, and whether
+ * the physical frame carries the Hub node number in its upper bits.
  */
 #define SGI_KONA_PAGE_WORD_PHYSICAL (1u << 28)
 #define SGI_KONA_PAGE_WORD_FRAME    0x0fffffffu
+
+/*
+ * Set in the address the DMA engine and the map-RAM readers pass around
+ * to mark an absolute host address, which they use without a map RAM
+ * lookup. The model's own marker, above any address bit a device or host
+ * address uses.
+ */
+#define SGI_KONA_ADDR_HOST (UINT64_C(1) << 60)
 
 /*
  * An XG map RAM entry as the 6.5.30 driver's page mapper writes

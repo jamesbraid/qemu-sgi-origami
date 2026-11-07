@@ -304,6 +304,35 @@ static void sgi_kona_dma_list(SGIKonaState *s, const SGIDMAPageList *pl,
 }
 
 /*
+ * The host page list of a packet's buffer, contiguous in the device
+ * address space: each 4 KiB page through the map RAM, or taken as it
+ * stands for an absolute host frame. The buffer spans `span` bytes from
+ * the page containing io. False, logged, at a page the map RAM does not
+ * map.
+ */
+static bool sgi_kona_dma_packet_pages(SGIKonaState *s, uint64_t io,
+                                      uint32_t in_page, uint64_t span,
+                                      SGIDMAPageList *pl, uint64_t **pages)
+{
+    pl->npages = DIV_ROUND_UP(span, SGI_KONA_DMA_PAGE_SIZE);
+    pl->page_size = SGI_KONA_DMA_PAGE_SIZE;
+    *pages = g_new(uint64_t, pl->npages);
+    for (uint32_t i = 0; i < pl->npages; i++) {
+        uint64_t device = io - in_page + (uint64_t)i * SGI_KONA_DMA_PAGE_SIZE;
+
+        if (!sgi_kona_device_address(s, device, &(*pages)[i])) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-kona: dma buffer page at device address 0x%"
+                          PRIx64 " has no map RAM entry; refusing\n",
+                          device);
+            return false;
+        }
+    }
+    pl->addr = *pages;
+    return true;
+}
+
+/*
  * The packet, words 1 to 6. Every size is the guest's: the per-line count
  * must be whole words and divide the total, and the buffer the lines and
  * gaps span must fit SGI_KONA_DMA_MAX_PAGES, or the packet is refused
@@ -351,7 +380,18 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
         sgi_kona_dma_refuse(s, cookie, SGI_FAIL_BUS);
         return;
     }
-    io = ((uint64_t)w[0] << 12) | (w[1] & 0xfff);
+    /*
+     * Bit 28 of word 1 set: an absolute host frame, used as it stands;
+     * clear: a device address, translated through the map RAM as it is
+     * read (SGI_KONA_PAGE_WORD_PHYSICAL).
+     */
+    if (w[0] & SGI_KONA_PAGE_WORD_PHYSICAL) {
+        io = SGI_KONA_ADDR_HOST |
+             ((uint64_t)(w[0] & SGI_KONA_PAGE_WORD_FRAME) << 12) |
+             (w[1] & 0xfff);
+    } else {
+        io = ((uint64_t)w[0] << 12) | (w[1] & 0xfff);
+    }
     in_page = io & (SGI_KONA_DMA_PAGE_SIZE - 1);
 
     if (!per_line ||
@@ -377,14 +417,13 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
         return;
     }
 
-    /* The buffer is contiguous in the device address space. */
-    pl.npages = DIV_ROUND_UP(span, SGI_KONA_DMA_PAGE_SIZE);
-    pl.page_size = SGI_KONA_DMA_PAGE_SIZE;
-    pages = g_new(uint64_t, pl.npages);
-    for (uint32_t i = 0; i < pl.npages; i++) {
-        pages[i] = io - in_page + (uint64_t)i * SGI_KONA_DMA_PAGE_SIZE;
+    if ((record || (!texture && !pixels && !bitmap && !filter && !discard &&
+                    !sgi_kona_x_pixel_dma_waiting(s) &&
+                    d->test_framebuffer)) &&
+        !sgi_kona_dma_packet_pages(s, io, in_page, span, &pl, &pages)) {
+        sgi_kona_dma_refuse(s, cookie, SGI_FAIL_BUS);
+        return;
     }
-    pl.addr = pages;
 
     if (record) {
         sgi_kona_dma_list(s, &pl, in_page, lines, total, cookie);

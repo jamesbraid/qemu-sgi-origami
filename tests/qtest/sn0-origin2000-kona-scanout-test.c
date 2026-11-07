@@ -143,7 +143,8 @@ static void kona_dma_packet(QTestState *s, uint32_t addr, unsigned count)
 {
     qtest_qom_set_bool(s, KONA_QOM_PATH, "x-test-dma-framebuffer", true);
     qtest_writel(s, REG_DMA_FIFO_PUSH, 0x1eb);
-    qtest_writel(s, REG_DMA_FIFO_PUSH, addr >> 12);
+    /* Bit 28 set: addr is an absolute host address, not a mapped one. */
+    qtest_writel(s, REG_DMA_FIFO_PUSH, (addr >> 12) | 0x10000000u);
     qtest_writel(s, REG_DMA_FIFO_PUSH, (addr & 0xfffu) | KONA_DMA_ADDR_TAG);
     qtest_writel(s, REG_DMA_FIFO_PUSH, count * 4);
     qtest_writel(s, REG_DMA_FIFO_PUSH, count * 4);

@@ -85,6 +85,8 @@
 #define KONA_DMA_PACKET     0x1ebu
 #define KONA_DMA_LIST_WRITE 0x1c8u
 #define KONA_DMA_ADDR_TAG   0x9000u
+/* Bit 28 of a packet's high word: an absolute host frame, no map RAM. */
+#define KONA_DMA_HOST_FRAME 0x10000000u
 #define KONA_DMA_DONE_WORD  0x100u
 
 /* SGICompletionKind and SGIFailure (include/hw/display/sgi/head-ops.h). */
@@ -200,13 +202,28 @@ static void kona_dma_packet_raw(QTestState *s, const uint32_t w[6])
     qtest_writel(s, REG_DMA_FIFO_KICK, 0);
 }
 
-/* A well-formed packet: buffer at addr, lines of per_line bytes. */
+/*
+ * A well-formed packet: buffer at host address addr, lines of per_line
+ * bytes. The high word has bit 28 set, so addr is used as it stands.
+ */
 static void kona_dma_packet(QTestState *s, uint64_t addr, uint32_t total,
                             uint32_t per_line, uint32_t gap, uint32_t done)
 {
     kona_dma_packet_raw(s, (const uint32_t[6]) {
-        (uint32_t)(addr >> 12),
+        (uint32_t)(addr >> 12) | KONA_DMA_HOST_FRAME,
         ((uint32_t)addr & 0xfffu) | KONA_DMA_ADDR_TAG,
+        total, per_line, gap, done,
+    });
+}
+
+/* The same, with bit 28 clear: device address `device` through the map RAM. */
+static void kona_dma_packet_mapped(QTestState *s, uint64_t device,
+                                   uint32_t total, uint32_t per_line,
+                                   uint32_t gap, uint32_t done)
+{
+    kona_dma_packet_raw(s, (const uint32_t[6]) {
+        (uint32_t)(device >> 12),
+        ((uint32_t)device & 0xfffu) | KONA_DMA_ADDR_TAG,
         total, per_line, gap, done,
     });
 }
@@ -391,6 +408,73 @@ static void test_dma_tag_mismatch_refused(void)
 
     kona_dma_packet(qts, addr, 16, 16, 0, KONA_DMA_DONE_WORD);
     g_assert_cmphex(kona_fb_word(qts, 0, 0), ==, dma_pixels[0]);
+}
+
+/* The XG map RAM: one entry per 16 KiB device page. */
+#define MAPRAM_ENTRY(i)  KONA_REG(0x100000 + 4 * (uint64_t)(i))
+#define MAPRAM_16K_PAGE  0x20000000u
+
+#define DMA_MAPPED_DEVICE UINT64_C(0x1b234)
+#define DMA_MAPPED_HOST   UINT64_C(0x33234)
+
+/*
+ * A packet whose high word has bit 28 clear is a device address through
+ * the map RAM. Device 0x1b234 is high word 0x1b, low word 0x9234; entry
+ * 0x1b >> 2 = 6, here the 16 KiB page of host frame 0x30, puts the buffer
+ * at 0x30000 + 0x3234. Data at the untranslated address 0x1b234 is a
+ * decoy that must not be read.
+ */
+static void test_dma_mapped_packet_translates_through_map_ram(void)
+{
+    static const uint32_t decoy[4] = { 1, 2, 3, 4 };
+
+    kona_reset();
+    kona_write_be32_array(qts, DMA_MAPPED_DEVICE, decoy, 4);
+    kona_write_be32_array(qts, DMA_MAPPED_HOST, dma_pixels, 4);
+    qtest_writel(qts, MAPRAM_ENTRY(6), MAPRAM_16K_PAGE | 0x30);
+
+    kona_dma_packet_mapped(qts, DMA_MAPPED_DEVICE, 16, 16, 0,
+                           KONA_DMA_DONE_WORD);
+
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmphex(kona_fb_word(qts, i, 0), ==, dma_pixels[i]);
+    }
+    kona_assert_last_completion(qts, DONE_WRITTEN, COOKIE_MAILBOX_DONE, 16);
+}
+
+/*
+ * The same map RAM entry does not touch a packet with bit 28 set: the
+ * frame 0x1b is taken as it stands, 0x1b234 holding the decoy.
+ */
+static void test_dma_physical_packet_bypasses_map_ram(void)
+{
+    static const uint32_t decoy[4] = { 1, 2, 3, 4 };
+
+    kona_reset();
+    kona_write_be32_array(qts, DMA_MAPPED_DEVICE, decoy, 4);
+    kona_write_be32_array(qts, DMA_MAPPED_HOST, dma_pixels, 4);
+    qtest_writel(qts, MAPRAM_ENTRY(6), MAPRAM_16K_PAGE | 0x30);
+
+    kona_dma_packet(qts, DMA_MAPPED_DEVICE, 16, 16, 0, KONA_DMA_DONE_WORD);
+
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmphex(kona_fb_word(qts, i, 0), ==, decoy[i]);
+    }
+    kona_assert_last_completion(qts, DONE_WRITTEN, COOKIE_MAILBOX_DONE, 16);
+}
+
+/* A mapped address whose entry maps nothing fails with BUS, moving nothing. */
+static void test_dma_mapped_packet_without_entry_refused(void)
+{
+    kona_reset();
+    kona_write_be32_array(qts, DMA_MAPPED_DEVICE, dma_pixels, 4);
+
+    kona_dma_packet_mapped(qts, DMA_MAPPED_DEVICE, 16, 16, 0,
+                           KONA_DMA_DONE_WORD);
+
+    g_assert_cmphex(kona_fb_word(qts, 0, 0), ==, 0);
+    kona_assert_last_completion(qts, DONE_FAILED, COOKIE_MAILBOX_DONE,
+                                FAIL_BUS);
 }
 
 #define DMA_WIDE_SRC UINT64_C(0x20000)
@@ -619,7 +703,7 @@ static void test_dma_partial_packet_holds_state_across_pushes(void)
     kona_write_be32_array(qts, addr, dma_pixels, 4);
 
     kona_dma_push_word(qts, KONA_DMA_PACKET);
-    kona_dma_push_word(qts, (uint32_t)(addr >> 12));
+    kona_dma_push_word(qts, (uint32_t)(addr >> 12) | KONA_DMA_HOST_FRAME);
     kona_dma_push_word(qts, ((uint32_t)addr & 0xfffu) | KONA_DMA_ADDR_TAG);
     kona_dma_push_word(qts, 16);
     g_assert_cmphex(kona_fb_word(qts, 0, 0), ==, 0);
@@ -646,7 +730,7 @@ static void test_dma_command_page_reaches_engine(void)
     uint64_t addr = dma_node_addr(DMA_PAGE_SRC);
     static const uint32_t record[] = { KONA_DMA_LIST_WRITE, 0x40, 8 };
     uint32_t packet[] = {
-        KONA_DMA_PACKET, (uint32_t)(addr >> 12),
+        KONA_DMA_PACKET, (uint32_t)(addr >> 12) | KONA_DMA_HOST_FRAME,
         ((uint32_t)addr & 0xfffu) | KONA_DMA_ADDR_TAG, 8, 8, 0,
         KONA_DMA_DONE_WORD,
     };
@@ -1261,7 +1345,7 @@ static void test_dma_migration(void)
     kona_write_be32_array(from, addr, dma_pixels, 4);
     kona_dma_list_write(from, 0x100, 16);
     kona_dma_push_word(from, KONA_DMA_PACKET);
-    kona_dma_push_word(from, (uint32_t)(addr >> 12));
+    kona_dma_push_word(from, (uint32_t)(addr >> 12) | KONA_DMA_HOST_FRAME);
     kona_dma_push_word(from, ((uint32_t)addr & 0xfffu) | KONA_DMA_ADDR_TAG);
     kona_dma_push_word(from, 16);
 
@@ -1345,6 +1429,14 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona/dma/"
                    "completion-cookie-follows-word-6",
                    test_dma_completion_cookie_follows_word_6);
+    qtest_add_func("sn0/origin2000/kona/dma/"
+                   "mapped-packet-translates-through-map-ram",
+                   test_dma_mapped_packet_translates_through_map_ram);
+    qtest_add_func("sn0/origin2000/kona/dma/physical-packet-bypasses-map-ram",
+                   test_dma_physical_packet_bypasses_map_ram);
+    qtest_add_func("sn0/origin2000/kona/dma/"
+                   "mapped-packet-without-entry-refused",
+                   test_dma_mapped_packet_without_entry_refused);
     qtest_add_func("sn0/origin2000/kona/dma/tag-mismatch-refused",
                    test_dma_tag_mismatch_refused);
     qtest_add_func("sn0/origin2000/kona/dma/line-wider-than-plane-refused",
