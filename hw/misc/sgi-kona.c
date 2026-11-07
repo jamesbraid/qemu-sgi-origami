@@ -2356,6 +2356,13 @@ static bool sgi_kona_raise_vector(SGIKonaState *s, bool general)
     return true;
 }
 
+/* The widget the pipe's DMA requests go to: see SGI_KONA_WIDGET_CONTROL. */
+unsigned sgi_kona_dma_widget(const SGIKonaState *s)
+{
+    return (s->widget_control >> SGI_KONA_WIDGET_CONTROL_DMA_DEST_SHIFT) &
+           SGI_KONA_WIDGET_CONTROL_DMA_DEST_MASK;
+}
+
 /*
  * Write `len` bytes at host physical `addr` through the board's fabric to
  * the fixed fabric_hub_widget, the same address space and destination the
@@ -2367,7 +2374,7 @@ static bool sgi_kona_host_write(SGIKonaState *s, uint64_t addr,
     hwaddr where;
     MemTxResult result;
 
-    if (!sgi_kona_fabric_compose(s, s->fabric_hub_widget, addr, &where)) {
+    if (!sgi_kona_fabric_compose(s, sgi_kona_dma_widget(s), addr, &where)) {
         return false;
     }
     result = dma_memory_write(&s->fabric_as, where, buf, len,
@@ -2436,7 +2443,7 @@ static bool sgi_kona_reason_unread(SGIKonaState *s)
         return false;
     }
     if (!s->reason_page_valid ||
-        !sgi_kona_fabric_compose(s, s->fabric_hub_widget, s->reason_page,
+        !sgi_kona_fabric_compose(s, sgi_kona_dma_widget(s), s->reason_page,
                                  &where) ||
         dma_memory_read(&s->fabric_as, where, bytes, sizeof(bytes),
                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK ||
@@ -17272,6 +17279,7 @@ static bool sgi_kona_device_read(SGIKonaState *s, uint64_t device,
     while (len) {
         uint64_t index = device >> SGI_KONA_MAPRAM_PAGE_SHIFT;
         uint32_t chunk = MIN(MIN(len, 4096), page - (device & (page - 1)));
+        unsigned widget = sgi_kona_dma_widget(s);
         uint64_t host;
         hwaddr where;
 
@@ -17285,8 +17293,7 @@ static bool sgi_kona_device_read(SGIKonaState *s, uint64_t device,
             s->dma_read_fault = true;
             return false;
         }
-        if (!sgi_kona_fabric_compose(s, s->fabric_hub_widget, host,
-                                     &where) ||
+        if (!sgi_kona_fabric_compose(s, widget, host, &where) ||
             dma_memory_read(&s->fabric_as, where, buf, chunk,
                             MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -17326,7 +17333,7 @@ static bool sgi_kona_device_write(SGIKonaState *s, uint64_t device,
             !sgi_kona_command_page(s, "DMA write", device >> 12,
                                     device & 0xfff, &host, &mapped) ||
             !mapped ||
-            !sgi_kona_fabric_compose(s, s->fabric_hub_widget, host, &where) ||
+            !sgi_kona_fabric_compose(s, sgi_kona_dma_widget(s), host, &where) ||
             (validate ? !dma_memory_valid(&s->fabric_as, where, chunk,
                                            DMA_DIRECTION_FROM_DEVICE,
                                            MEMTXATTRS_UNSPECIFIED) :
@@ -19749,7 +19756,10 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
     cpu = current_cpu ? current_cpu->cpu_index : -1;
     switch (addr) {
     case SGI_KONA_WIDGET_CONTROL:
-        /* Unknown control fields are stored without interpreted effects. */
+        /*
+         * Bits 25:22 steer the pipe's DMA (sgi_kona_dma_widget()); the
+         * other fields are stored without interpreted effects.
+         */
         s->widget_control = value;
         break;
     case SGI_KONA_ONEWIRE:
@@ -21431,7 +21441,9 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->test_renderer_skew = false;
     s->test_renderer_fail_hold = 0;
 
-    s->widget_control = 0;
+    s->widget_control = (s->fabric_hub_widget &
+                         SGI_KONA_WIDGET_CONTROL_DMA_DEST_MASK) <<
+                        SGI_KONA_WIDGET_CONTROL_DMA_DEST_SHIFT;
     s->onewire_reg = 0;
 
     /* Increment 2: register-window plain storage and the mailbox queue. */

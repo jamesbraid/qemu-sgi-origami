@@ -42,16 +42,16 @@
 
 /*
  * Compose the fabric address the DMA engine's guest-memory transfers issue
- * on s->fabric_as. The packet names no destination widget, so the address
- * goes to the one fixed widget fabric_hub_widget names; see the struct
- * field comment on SGIKonaState's fabric_hub_widget.
+ * on s->fabric_as. The packet names no destination widget; the address
+ * goes to the one the widget control register names (sgi_kona_dma_widget()).
  */
 static bool sgi_kona_dma_address(void *opaque, uint64_t address,
                                  hwaddr *fabric)
 {
     SGIKonaState *s = opaque;
 
-    return sgi_xio_compose("sgi-kona", s->fabric_hub_widget, address, fabric);
+    return sgi_xio_compose("sgi-kona", sgi_kona_dma_widget(s), address,
+                           fabric);
 }
 
 /*

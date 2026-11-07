@@ -60,8 +60,20 @@ typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
 /* Widget-header identification, the generic crosstalk layout. */
 #define SGI_KONA_WIDGET_ID 0x000004
 
-/* A plain, generic crosstalk register; this model interprets none of it. */
+/*
+ * The widget control register. Established from the kernel driver's
+ * reset path: it writes the master widget of the node that owns the pipe
+ * into bits 25:22. Inferred, partly from the field's name in a stock
+ * diagnostic tool's register table: that those bits are the widget the
+ * pipe's DMA requests go to. The rest of the register is stored and
+ * read back without interpreted effects. The power-on value is unknown;
+ * the model resets the field to the board's fabric-hub-widget, which a
+ * driver overwrites, so a guest that never programs it still reaches its
+ * host node.
+ */
 #define SGI_KONA_WIDGET_CONTROL 0x000024
+#define SGI_KONA_WIDGET_CONTROL_DMA_DEST_SHIFT 22
+#define SGI_KONA_WIDGET_CONTROL_DMA_DEST_MASK  0xf
 
 /*
  * The 3-bit subsystem-classification register. This model returns
@@ -1388,14 +1400,12 @@ struct SGIKonaState {
     AddressSpace fabric_as;
 
     /*
-     * Approximated: the six-word DMA packet (see hw/misc/sgi-kona-dma.c)
-     * carries no destination-widget field at all, unlike the MGRAS, whose
-     * widget number arrives in a separate register. fabric_hub_widget
-     * instead names a single fixed XIO widget the DMA engine's packets and
-     * the board's host-memory writes always target; this model cannot
-     * express a topology where the engine's destination Hub varies by
-     * descriptor or by guest-address node. The machine sets it to the
-     * board's own node's Hub; a -device board sets it explicitly.
+     * The six-word DMA packet (see hw/misc/sgi-kona-dma.c) carries no
+     * destination widget; the pipe's widget control register does (bits
+     * 25:22, SGI_KONA_WIDGET_CONTROL). fabric_hub_widget is that field's
+     * reset value, so a guest that never programs it reaches the board's
+     * own node's Hub. The machine sets it to that Hub; a -device board
+     * sets it explicitly.
      */
     uint32_t fabric_hub_widget;
 
@@ -2157,6 +2167,9 @@ bool sgi_kona_x_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
  */
 bool sgi_kona_device_address(SGIKonaState *s, uint64_t device,
                              uint64_t *host);
+
+/* The crosstalk widget the pipe's DMA requests go to. */
+unsigned sgi_kona_dma_widget(const SGIKonaState *s);
 
 /* A plain command-page word through the page's decoder. */
 void sgi_kona_command_word(SGIKonaState *s, uint32_t word);

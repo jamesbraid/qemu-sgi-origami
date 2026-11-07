@@ -212,8 +212,9 @@ descriptors only. That answer matches no
 real pipe. The machine catalogue always sets a product.
 
 Other properties: ``fabric`` and ``fabric-hub-widget`` name the address
-space and the one :term:`Hub` widget the pipe's DMA and host writes go to; ``pi``
-names the node whose processor interface counts the pipe's credits
+space and the :term:`Hub` widget the pipe's DMA and host writes go to until
+the guest programs the widget control register; ``pi`` names the node
+whose processor interface counts the pipe's credits
 (:ref:`sgi-kona-credits`); ``manufacturer``, ``part`` and ``revision``
 build the identification register; ``probe-value`` is register ``0x64``;
 ``list-memory-size`` sizes resident display-list memory (default 15 MiB,
@@ -233,7 +234,7 @@ expectation*; reset values are model choices unless stated, since no
 pipe has been read.
 
 .. sgi-registers: base=0x2000b000000 width=32
-   skip=0x64:probe-value,0x800230:write-only,0x8003c0:write-only,0xc00108:write-only
+   skip=0x24:set-by-property,0x64:probe-value,0x800230:write-only,0x8003c0:write-only,0xc00108:write-only
    skiprow="XG map RAM:bulk"
    qemu="-M origin2000,nodes=1,x-uncatalogued-graphics=on -smp 1 -m 64M -device sgi-kona,id=kona0,slot=io4"
 
@@ -252,9 +253,13 @@ pipe has been read.
      - Revision 31:28, part 27:12, manufacturer 11:1, bit 0 one.
    * - ``0x000024``
      - Widget control
-     - 0
+     - ``fabric-hub-widget`` << 22
      - R/W
-     - Stored, no effect.
+     - Stored. Bits 25:22 are the widget the pipe's DMA requests go to,
+       *inferred* from the kernel's reset path (it writes the owning
+       node's master widget there) and the field's name in a stock
+       diagnostic tool's table; the rest has no effect.
+       The power-on value is *unknown*, the reset value a model choice.
    * - ``0x000034``, ``0x00003c``
      - Interrupt destination, upper and lower
      - 0
@@ -1009,12 +1014,18 @@ word, a tagged offset and a length, both multiples of 16 KiB and at most
 from the pool and ``0x16f`` moves one in list memory. Pool pages are
 translated through the map RAM at each read.
 
-The packet names no destination widget. Every DMA and host write goes to
-the one widget ``fabric-hub-widget`` names, an *approximation* that cannot
-express a pipe mastering several Hubs. Guest words are big-endian and
-stored whole. An access aimed at these registers from inside a graphics
-head's own work is refused, logged ``LOG_GUEST_ERROR``, and returns an
-access error.
+The packet names no destination widget. Bits 25:22 of the widget control
+register do, *inferred* from the kernel's reset path, which writes the
+master widget of the node that owns the pipe there, and from the field's
+name in a stock diagnostic tool's table. Every DMA and host write
+goes there; the model resets the field to ``fabric-hub-widget`` so a guest
+that never programs it reaches its own node's Hub. A read from a widget
+with no memory behind it moves zeros and the packet still completes as
+written, as before this field was honoured; whether a real pipe reports
+a bus error there is *unknown*. Guest words are
+big-endian and stored whole. An access aimed at these registers from
+inside a graphics head's own work is refused, logged ``LOG_GUEST_ERROR``,
+and returns an access error.
 
 .. _sgi-kona-raster:
 
@@ -1074,7 +1085,8 @@ Reset
 =====
 
 Reset abandons display-list work and every word queued behind it, clears
-every register above to zero, the map RAM, the mailbox, the reason queue,
+every register above to zero (the widget control register to its
+``fabric-hub-widget`` field), the map RAM, the mailbox, the reason queue,
 the framers and their open commands, all contexts and textures, the colour
 maps, gamma, cursor images and board memory, and returns the channels to
 their start-up state. The firmware load record and stored load words are

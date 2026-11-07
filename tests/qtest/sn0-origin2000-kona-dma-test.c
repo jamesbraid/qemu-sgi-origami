@@ -1183,6 +1183,34 @@ static void test_list_read_waits_for_slices(void)
     kona_list_check_finished();
 }
 
+/*
+ * Bits 25:22 of the widget control register name the widget the DMA goes
+ * to. The machine resets them to the board's Hub, widget 9; pointing them
+ * at widget 1 sends the read where no memory answers: the packet still
+ * completes as written, but with zeros (the model's existing handling of
+ * a read that finds nothing), and restoring the field lets the next
+ * packet through.
+ */
+static void test_dma_destination_follows_widget_control(void)
+{
+    uint32_t control;
+
+    kona_reset();
+    control = qtest_readl(qts, REG_WIDGET_CONTROL);
+    g_assert_cmphex(control, ==, 9u << 22);
+    kona_write_be32_array(qts, DMA_FWD_SRC, dma_pixels, 4);
+
+    qtest_writel(qts, REG_WIDGET_CONTROL, (control & ~(0xfu << 22)) | 1u << 22);
+    kona_dma_packet(qts, DMA_FWD_SRC, 16, 16, 0, KONA_DMA_DONE_WORD);
+    g_assert_cmphex(kona_fb_word(qts, 0, 0), ==, 0);
+    kona_assert_last_completion(qts, DONE_WRITTEN, COOKIE_MAILBOX_DONE, 16);
+
+    qtest_writel(qts, REG_WIDGET_CONTROL, control);
+    kona_dma_packet(qts, DMA_FWD_SRC, 16, 16, 0, KONA_DMA_DONE_WORD);
+    g_assert_cmphex(kona_fb_word(qts, 0, 0), ==, dma_pixels[0]);
+    kona_assert_last_completion(qts, DONE_WRITTEN, COOKIE_MAILBOX_DONE, 16);
+}
+
 /* A machine that stops has finished the work: nothing is left to migrate. */
 static void test_list_finishes_before_stop(void)
 {
@@ -1486,6 +1514,9 @@ int main(int argc, char **argv)
                    test_list_runs_in_slices);
     qtest_add_func("sn0/origin2000/kona/dma/list-read-waits-for-slices",
                    test_list_read_waits_for_slices);
+    qtest_add_func("sn0/origin2000/kona/dma/"
+                   "destination-follows-widget-control",
+                   test_dma_destination_follows_widget_control);
     qtest_add_func("sn0/origin2000/kona/dma/list-finishes-before-stop",
                    test_list_finishes_before_stop);
     qtest_add_func("sn0/origin2000/kona/dma/list-reset-abandons-slices",

@@ -48,9 +48,8 @@
  *   - A pipe-memory address is a byte offset into the list plane. How
  *     the pipe places the display-list region the kernel reserves is
  *     unknown, so the model's list plane is that region, from offset 0.
- *   - The destination widget: the packet names none, so SGIKonaState's
- *     fabric_hub_widget names one fixed widget (see that struct's
- *     comment).
+ *   - The destination widget: the packet names none; bits 25:22 of the
+ *     widget control register do (sgi_kona_dma_widget()).
  *
  * The packet and the record reach the engine two ways: on the push
  * register, and on the +0xc10000 command page, where the traced guest
