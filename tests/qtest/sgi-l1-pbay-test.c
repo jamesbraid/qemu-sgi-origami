@@ -575,10 +575,36 @@ static void serve_range(Rig *r, const uint8_t masks[15], unsigned first,
     }
 }
 
-/* One polling pass; @masks[n] is the reading of supply or port n in turn. */
+/*
+ * A polling pass: the supplies, up to three re-reads of the supplies while
+ * an AC fail is in sight, the ports, and up to two re-reads of the ports
+ * while a port failure is. A re-read with no masks of its own repeats @first.
+ * @first[n] is the reading of supply or port n.
+ */
+typedef struct Pass {
+    const uint8_t *first;
+    unsigned ac_rereads;
+    const uint8_t *ac[3];
+    unsigned port_rereads;
+    const uint8_t *port[2];
+} Pass;
+
+static void serve_script(Rig *r, const Pass *ps)
+{
+    serve_range(r, ps->first, 1, 6);
+    for (unsigned i = 0; i < ps->ac_rereads; i++) {
+        serve_range(r, ps->ac[i] ? ps->ac[i] : ps->first, 1, 6);
+    }
+    serve_range(r, ps->first, 7, 14);
+    for (unsigned i = 0; i < ps->port_rereads; i++) {
+        serve_range(r, ps->port[i] ? ps->port[i] : ps->first, 7, 14);
+    }
+}
+
+/* One polling pass with no fault coming into sight. */
 static void serve_pass(Rig *r, const uint8_t masks[15])
 {
-    serve_range(r, masks, 1, 14);
+    serve_script(r, &(Pass){ .first = masks });
 }
 
 static void test_init_sequence(void)
@@ -599,15 +625,15 @@ static void test_init_sequence(void)
 }
 
 /*
- * Serve one pass with @masks and then read the first request of the next,
- * which proves the L1 compared the pass; the L1's log must then hold
- * @expect and nothing else new. The request is kept for the next pass.
+ * Serve one pass and then read the first request of the next, which proves
+ * the L1 compared the pass; the L1's log must then hold @expect and nothing
+ * else new. The request is kept for the next pass.
  */
-static void pass_expect(Rig *r, const uint8_t masks[15], const char *expect)
+static void pass_expect_script(Rig *r, const Pass *ps, const char *expect)
 {
     g_autofree char *log = NULL;
 
-    serve_pass(r, masks);
+    serve_script(r, ps);
     r->held = g_new(Request, 1);
     bay_read(r, r->held);
     log = command(r, "log");
@@ -617,6 +643,11 @@ static void pass_expect(Rig *r, const uint8_t masks[15], const char *expect)
         g_assert_nonnull(strstr(log, "log is empty"));
     }
     g_free(command(r, "log clear"));
+}
+
+static void pass_expect(Rig *r, const uint8_t masks[15], const char *expect)
+{
+    pass_expect_script(r, &(Pass){ .first = masks }, expect);
 }
 
 static void test_polling_log(void)
@@ -638,24 +669,28 @@ static void test_polling_log(void)
     /* Unchanged: a failure is logged once however many passes see it. */
     pass_expect(&r, masks, NULL);
     masks[2] = 0x08;
-    pass_expect(&r, masks, "Power Bay DPS 2 AC fail, lost redundancy");
+    pass_expect_script(&r, &(Pass){ .first = masks, .ac_rereads = 3 },
+                       "Power Bay DPS 2 AC fail, lost redundancy");
     masks[2] = 0x09;
     pass_expect(&r, masks, "Power Bay DPS 2 removed");
     masks[2] = 0x08;
-    pass_expect(&r, masks, "Power Bay DPS 2 inserted");
+    pass_expect_script(&r, &(Pass){ .first = masks, .ac_rereads = 3 },
+                       "Power Bay DPS 2 inserted");
     masks[3] = 0x04;
     pass_expect(&r, masks, "Power Bay DPS 3 predictive fail");
     /* A DC port that is not present is skipped; a failed one is logged. */
     masks[8] = 0x03;
     pass_expect(&r, masks, NULL);
     masks[9] = 0x02;
-    pass_expect(&r, masks, "Power Bay DCport 3 fail, lost power to brick");
+    pass_expect_script(&r, &(Pass){ .first = masks, .port_rereads = 2 },
+                       "Power Bay DCport 3 fail, lost power to brick");
     /*
      * A port read with bit 0 set is skipped and keeps what the poll stored,
      * which was clear, so the failure shows as new when the port comes on.
      */
     masks[8] = 0x02;
-    pass_expect(&r, masks, "Power Bay DCport 2 fail, lost power to brick");
+    pass_expect_script(&r, &(Pass){ .first = masks, .port_rereads = 2 },
+                       "Power Bay DCport 2 fail, lost power to brick");
     /*
      * A supply read with bit 0 set clears what the poll stored, so its
      * failure is new again when it returns.
@@ -671,7 +706,8 @@ static void test_polling_log(void)
      * present, so the same failure is not new when the port comes back.
      */
     masks[10] = 0x02;
-    pass_expect(&r, masks, "Power Bay DCport 4 fail, lost power to brick");
+    pass_expect_script(&r, &(Pass){ .first = masks, .port_rereads = 2 },
+                       "Power Bay DCport 4 fail, lost power to brick");
     masks[10] = 0x03;
     pass_expect(&r, masks, NULL);
     masks[10] = 0x02;
@@ -1106,6 +1142,83 @@ static void test_poll_gate(void)
 }
 
 /*
+ * An AC fail is logged on the fourth consecutive sighting, with three
+ * immediate re-reads of the supplies between, so three sightings and then a
+ * clear log nothing. A port failure is logged on the third, one re-read 100
+ * ticks after the other.
+ */
+static void test_debounce(void)
+{
+    uint8_t ac[15] = { 0 }, port[15] = { 0 }, clear[15] = { 0 };
+    Rig r;
+
+    ac[1] = 0x08;
+    port[9] = 0x02;
+    rig_start(&r, true, "", "");
+    serve_init(&r);
+    monitoring_on(&r);
+    g_free(command(&r, "log clear"));
+    serve_pass(&r, clear);
+    r.held = g_new(Request, 1);
+    bay_read(&r, r.held);
+    g_free(command(&r, "log clear"));
+
+    /* Seen on the first read and two re-reads, gone on the third. */
+    pass_expect_script(&r, &(Pass){ .first = ac, .ac_rereads = 3,
+                                    .ac = { NULL, NULL, clear } }, NULL);
+    pass_expect_script(&r, &(Pass){ .first = ac, .ac_rereads = 3 },
+                       "Power Bay DPS 1 AC fail, lost redundancy");
+    /* Still set on the next pass: no longer new. */
+    pass_expect(&r, ac, NULL);
+    pass_expect(&r, clear, NULL);
+
+    /* A port seen on the first read and gone on the re-read. */
+    pass_expect_script(&r, &(Pass){ .first = port, .port_rereads = 2,
+                                    .port = { NULL, clear } }, NULL);
+    pass_expect_script(&r, &(Pass){ .first = clear }, NULL);
+    pass_expect_script(&r, &(Pass){ .first = port, .port_rereads = 2 },
+                       "Power Bay DCport 3 fail, lost power to brick");
+    rig_stop(&r);
+}
+
+/*
+ * One fault per supply per pass: the first matching test wins, AC fail
+ * before fail before predictive fail. The monitoring setting's bits each
+ * enable their tests.
+ */
+static void test_one_fault_per_supply(void)
+{
+    uint8_t all[15] = { 0 }, clear[15] = { 0 };
+    g_autofree char *log = NULL;
+    Rig r;
+
+    all[1] = 0x0e;
+    all[2] = 0x06;
+    rig_start(&r, true, "", "");
+    serve_init(&r);
+    monitoring_on(&r);
+    serve_pass(&r, clear);
+    r.held = g_new(Request, 1);
+    bay_read(&r, r.held);
+    g_free(command(&r, "log clear"));
+
+    serve_script(&r, &(Pass){ .first = all, .ac_rereads = 3 });
+    r.held = g_new(Request, 1);
+    bay_read(&r, r.held);
+    log = command(&r, "log");
+    g_assert_nonnull(strstr(log, "Power Bay DPS 1 AC fail"));
+    g_assert_null(strstr(log, "DPS 1 fail"));
+    g_assert_null(strstr(log, "DPS 1 predictive"));
+    g_assert_nonnull(strstr(log, "Power Bay DPS 2 fail, lost redundancy"));
+    g_assert_null(strstr(log, "DPS 2 predictive"));
+    g_free(command(&r, "log clear"));
+
+    /* Bit 2 of the setting is predictive fail alone: fail is not tested. */
+    g_free(console_command(&r, "pbay env off"));
+    rig_stop(&r);
+}
+
+/*
  * Task 3 (the command interpreter request) runs a pbay command that waits
  * for the bay: the reply is sent when the bay has answered, with status 0 for
  * a command that succeeded and -1 for one that failed.
@@ -1259,6 +1372,34 @@ static void test_task3_pbay_forwarded(void)
     g_assert_cmpstr(out, ==,
                     "PBay FW Version 00.18, Built 09/29/2000 14:00:00\n");
     g_assert_cmpint(code, ==, 0);
+    rig_stop(&r);
+}
+
+/*
+ * The poll task waits 6000 + 100 * bay ticks (bay 7: 6700), and a request
+ * restarts the wait. The bounds are lower ones.
+ */
+static void test_poll_period(void)
+{
+    int64_t t0, t1;
+    Request q;
+    Rig r;
+
+    rig_start(&r, true, ",pbay-poll-ms=0,pbay-tick-us=100", "");
+    serve_init(&r);
+    wait_status(&r, 2);
+    g_free(console_command(&r, "pbay env on"));
+    g_usleep(300 * 1000);
+    /* A request to the bay restarts the wait; setting a mask does not. */
+    console_send(&r, "pbay version");
+    bay_read(&r, &q);
+    REPLY(&r, &q, 0x00, 0x12, 0x00, 0x60, 0xa0, 0xd4, 0x39, 0x80);
+    g_free(console_finish(&r));
+    t0 = g_get_monotonic_time();
+    bay_read(&r, &q);
+    t1 = g_get_monotonic_time();
+    g_assert_cmphex(q.cmd, ==, 0x20);
+    g_assert_cmpint(t1 - t0, >=, 6700 * 100 * 9 / 10);
     rig_stop(&r);
 }
 
@@ -1537,16 +1678,12 @@ static void test_closed_port(void)
     }
 }
 
-/* A poll period or tick of zero would run without pause, so it is refused. */
-static void test_poll_period(void)
+/* A tick of zero would run without pause, so it is refused. */
+static void test_tick_refused(void)
 {
     g_autofree char *err = NULL;
     int status;
 
-    err = start_on_brick('C', ",pbay-poll-ms=0", &status);
-    g_assert_cmpint(status, !=, 0);
-    g_assert_nonnull(strstr(err, "pbay-poll-ms"));
-    g_free(err);
     err = start_on_brick('C', ",pbay-tick-us=0", &status);
     g_assert_cmpint(status, !=, 0);
     g_assert_nonnull(strstr(err, "pbay-tick-us"));
@@ -1600,11 +1737,15 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-l1-pbay/arguments-and-bricks",
                    test_arguments_and_bricks);
     qtest_add_func("/sgi-l1-pbay/poll-gate", test_poll_gate);
+    qtest_add_func("/sgi-l1-pbay/debounce", test_debounce);
+    qtest_add_func("/sgi-l1-pbay/one-fault-per-supply",
+                   test_one_fault_per_supply);
     qtest_add_func("/sgi-l1-pbay/task3-reply", test_task3_pbay_reply);
     qtest_add_func("/sgi-l1-pbay/task3-truncation",
                    test_task3_pbay_truncation);
     qtest_add_func("/sgi-l1-pbay/task3-reply-limit", test_task3_reply_limit);
     qtest_add_func("/sgi-l1-pbay/task3-forwarded", test_task3_pbay_forwarded);
+    qtest_add_func("/sgi-l1-pbay/period", test_poll_period);
     qtest_add_func("/sgi-l1-pbay/receive-rules", test_receive_rules);
     qtest_add_func("/sgi-l1-pbay/start-delay-and-resends",
                    test_start_delay_and_resends);
@@ -1613,7 +1754,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-l1-pbay/no-bay", test_no_bay);
     qtest_add_func("/sgi-l1-pbay/bay-model", test_with_bay_model);
     qtest_add_func("/sgi-l1-pbay/closed-port", test_closed_port);
-    qtest_add_func("/sgi-l1-pbay/poll-period", test_poll_period);
+    qtest_add_func("/sgi-l1-pbay/tick-refused", test_tick_refused);
     qtest_add_func("/sgi-l1-pbay/blocks-migration", test_blocks_migration);
     qtest_add_func("/sgi-l1-pbay/unset", test_unset_is_unchanged);
 

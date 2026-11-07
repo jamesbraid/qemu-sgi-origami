@@ -84,7 +84,10 @@ typedef struct SGIL1Pbay {
     uint8_t port[PB_PORTS + 1];
     uint8_t supply_last[PB_SUPPLIES + 1];
     uint8_t port_last[PB_PORTS + 1];
-    /* The supplies present at the last pass, bit n-1 for supply n. */
+    /*
+     * L1 setting 105, the supplies expected present, bit n-1 for supply n:
+     * the last pass's set. It survives a restart of the link.
+     */
     uint8_t present;
 
     /*
@@ -101,6 +104,9 @@ typedef struct SGIL1Pbay {
         uint8_t kind;
         uint16_t want;      /* sensor positions or FRU slots to read */
         uint16_t tried, got;
+        uint8_t phase, reread;
+        /* Supplies in sight of AC fail and ports of failure, mid-pass. */
+        uint8_t ac_cand, port_cand;
         unsigned pos;
         uint8_t value[PB_SUPPLIES + PB_PORTS];
         char serial[24];
