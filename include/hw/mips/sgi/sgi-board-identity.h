@@ -16,9 +16,14 @@
  * and the L1 brick serial, is "EMUN" and one hex byte of the seed. Node n
  * adds n to that byte. Neither is derived from the address.
  *
- * No SGI machine we model has a free-standing hex system serial: the
- * L1's system serial (request 0x0008) is the station address as 12 hex
- * digits and follows mac=.
+ * The system serial, which the L1 answers to request 0x0008 on the
+ * Origin 300 and which the guest's system-id call and FLEXlm's host id
+ * read, is "L" and seven digits: seed bytes 6 to 9, big-endian, modulo
+ * 3999999, plus one. The L2's serial check documents the form as a letter
+ * and seven digits up to 3999999, and the guest packs the digits into its
+ * system id, so a marked "EMU" text would not survive it. The Fuel's L1
+ * answers the same request with its station address as 12 hex digits and
+ * follows mac= instead.
  *
  * These are synthetic values, not any machine's factory identity.
  */
@@ -33,14 +38,23 @@
 /* Room for "EMUNxx" and the terminator. */
 #define SGI_BOARD_TEXT_SERIAL_SIZE 7
 
+/* Room for "Lnnnnnnn" and the terminator. */
+#define SGI_BOARD_SYSTEM_SERIAL_SIZE 9
+
+/* Room for "Knnnnnnnnn" and the terminator. */
+#define SGI_BOARD_MODULE_SERIAL_SIZE 11
+
 typedef struct SGIBoardIdentity {
     uint8_t mac[6];
     uint8_t text_byte;
+    uint32_t system_serial;
+    uint32_t module_serial;
 } SGIBoardIdentity;
 
 /*
- * Fill @id with 08:00:69:(0xe0 | seed[0] & 0xf):seed[1]:seed[2] and
- * seed[5], where seed is the SHA-256 of @key.
+ * Fill @id with 08:00:69:(0xe0 | seed[0] & 0xf):seed[1]:seed[2], seed[5]
+ * and the system serial number from seed[6..9], where seed is the SHA-256
+ * of @key.
  */
 static inline void sgi_board_identity_from_key(const char *key,
                                                SGIBoardIdentity *id)
@@ -60,6 +74,10 @@ static inline void sgi_board_identity_from_key(const char *key,
     id->mac[4] = seed[1];
     id->mac[5] = seed[2];
     id->text_byte = seed[5];
+    id->system_serial = ((uint32_t)seed[6] << 24 | seed[7] << 16 |
+                         seed[8] << 8 | seed[9]) % 3999999 + 1;
+    id->module_serial = (uint32_t)seed[10] << 24 | seed[11] << 16 |
+                        seed[12] << 8 | seed[13];
 }
 
 /* "EMUN" and the seed byte plus @node as uppercase hex, modulo 256. */
@@ -69,6 +87,28 @@ static inline void sgi_board_text_serial(
 {
     snprintf(text_serial, SGI_BOARD_TEXT_SERIAL_SIZE, "EMUN%02X",
              (id->text_byte + node) & 0xff);
+}
+
+/* "L" and the seven-digit system serial number. */
+static inline void sgi_board_system_serial(
+    const SGIBoardIdentity *id, char text[SGI_BOARD_SYSTEM_SERIAL_SIZE])
+{
+    snprintf(text, SGI_BOARD_SYSTEM_SERIAL_SIZE, "L%07u", id->system_serial);
+}
+
+/*
+ * The ten-character module serial the Origin 200, Origin 2000 and Onyx2
+ * modules carry: "K", eight digits from seed bytes 10 to 13 plus @module
+ * modulo 10^8, and the module's last digit, so every module of one machine
+ * differs and the guest's system id differs between machines.
+ */
+static inline void sgi_board_module_serial(
+    const SGIBoardIdentity *id, unsigned int module,
+    char text[SGI_BOARD_MODULE_SERIAL_SIZE])
+{
+    snprintf(text, SGI_BOARD_MODULE_SERIAL_SIZE, "K%08u%u",
+             (unsigned)((id->module_serial + module) % 100000000u),
+             module % 10);
 }
 
 #endif /* HW_MIPS_SGI_SGI_BOARD_IDENTITY_H */

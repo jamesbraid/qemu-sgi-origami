@@ -13,6 +13,7 @@
 #include "hw/core/boards.h"
 #include "qemu/option.h"
 #include "system/blockdev.h"
+#include "system/block-backend.h"
 #include "hw/mips/sgi/sgi-board-mac.h"
 #include "hw/mips/sgi/sgi-board-identity.h"
 
@@ -22,18 +23,47 @@ static bool sgi_board_mac_unicast(const uint8_t mac[6])
 }
 
 /*
- * The key the default identity hashes: the canonical path of the disk on
- * SCSI bus 0, unit 0, which is where a legacy -drive if=scsi lands before
- * the machine is built, or the machine type name when there is none. A
- * disk attached later with -device is not visible yet, so it does not
- * count. The file= text is hashed as given when it is not a local path.
+ * The key the default identity hashes, in order of preference: the
+ * machine's identity-key property, which a launcher sets to something
+ * unique per guest such as the host path of its disk; the canonical path of
+ * the first drive with a file, found by the legacy drive table, which is
+ * where a -drive lands before the machine is built; or the machine type
+ * name. A disk attached later with -device or -blockdev is not visible yet,
+ * so it does not count, and a guest started that way shares the machine
+ * name's identity unless it sets identity-key. The file= text is hashed as
+ * given when it is not a local path.
  */
+static char *sgi_board_explicit_key;
+static bool sgi_board_identity_done;
+static bool sgi_board_identity_seeded;
+
 static char *sgi_board_identity_key(void)
 {
     DriveInfo *dinfo = drive_get(IF_SCSI, 0, 0);
     const char *file = dinfo && dinfo->opts ?
                        qemu_opt_get(dinfo->opts, "file") : NULL;
 
+    if (sgi_board_explicit_key) {
+        sgi_board_identity_seeded = true;
+        return g_strdup(sgi_board_explicit_key);
+    }
+    if (!file) {
+        for (BlockBackend *blk = blk_next(NULL); blk; blk = blk_next(blk)) {
+            dinfo = blk_legacy_dinfo(blk);
+            /*
+             * Only a disk counts. if=none and pflash drives back parts such
+             * as the IO9 timekeeper and the firmware flash, whose files are
+             * not the guest's identity.
+             */
+            file = dinfo && dinfo->opts &&
+                   (dinfo->type == IF_SCSI || dinfo->type == IF_IDE) ?
+                   qemu_opt_get(dinfo->opts, "file") : NULL;
+            if (file && file[0]) {
+                break;
+            }
+            file = NULL;
+        }
+    }
     if (file && file[0]) {
         char *path = g_canonicalize_filename(file, NULL);
 #ifndef _WIN32
@@ -45,6 +75,7 @@ static char *sgi_board_identity_key(void)
             free(real);
         }
 #endif
+        sgi_board_identity_seeded = true;
         return path;
     }
     return g_strdup(current_machine ?
@@ -54,16 +85,61 @@ static char *sgi_board_identity_key(void)
 /* The default identity, worked out once: the disk and machine do not change. */
 static const SGIBoardIdentity *sgi_board_identity(void)
 {
-    static bool done;
     static SGIBoardIdentity identity;
 
-    if (!done) {
+    if (!sgi_board_identity_done) {
         g_autofree char *key = sgi_board_identity_key();
 
         sgi_board_identity_from_key(key, &identity);
-        done = true;
+        sgi_board_identity_done = true;
     }
     return &identity;
+}
+
+bool sgi_board_identity_is_seeded(void)
+{
+    sgi_board_identity();
+    return sgi_board_identity_seeded;
+}
+
+char *sgi_board_default_module_serial(unsigned int module)
+{
+    char text[SGI_BOARD_MODULE_SERIAL_SIZE];
+
+    sgi_board_module_serial(sgi_board_identity(), module, text);
+    return g_strdup(text);
+}
+
+static void sgi_board_identity_key_get(Object *obj, Visitor *v,
+                                       const char *name, void *opaque,
+                                       Error **errp)
+{
+    g_autofree char *text = g_strdup(sgi_board_explicit_key ?
+                                     sgi_board_explicit_key : "");
+
+    visit_type_str(v, name, &text, errp);
+}
+
+static void sgi_board_identity_key_set(Object *obj, Visitor *v,
+                                       const char *name, void *opaque,
+                                       Error **errp)
+{
+    char *value;
+
+    if (!visit_type_str(v, name, &value, errp)) {
+        return;
+    }
+    if (sgi_board_identity_done) {
+        error_setg(errp, "%s cannot change once the identity is derived",
+                   name);
+        g_free(value);
+        return;
+    }
+    g_free(sgi_board_explicit_key);
+    sgi_board_explicit_key = value[0] ? value : NULL;
+    if (!sgi_board_explicit_key) {
+        g_free(value);
+    }
 }
 
 char *sgi_board_default_text_serial(unsigned int node)
@@ -71,6 +147,14 @@ char *sgi_board_default_text_serial(unsigned int node)
     char text[SGI_BOARD_TEXT_SERIAL_SIZE];
 
     sgi_board_text_serial(sgi_board_identity(), node, text);
+    return g_strdup(text);
+}
+
+char *sgi_board_default_system_serial(void)
+{
+    char text[SGI_BOARD_SYSTEM_SERIAL_SIZE];
+
+    sgi_board_system_serial(sgi_board_identity(), text);
     return g_strdup(text);
 }
 
@@ -154,4 +238,11 @@ void sgi_board_mac_class_add_property(ObjectClass *oc, size_t offset,
                               sgi_board_mac_set_visit, NULL,
                               (void *)(uintptr_t)offset);
     object_class_property_set_description(oc, "mac", description);
+    object_class_property_add(oc, "identity-key", "str",
+                              sgi_board_identity_key_get,
+                              sgi_board_identity_key_set, NULL, NULL);
+    object_class_property_set_description(oc, "identity-key",
+        "Text the default station address and serial numbers are derived "
+        "from, such as the host path of the system disk, so that guests "
+        "differ (default the system disk path or machine name)");
 }

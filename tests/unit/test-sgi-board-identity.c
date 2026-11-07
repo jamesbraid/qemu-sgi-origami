@@ -25,6 +25,62 @@ static void test_worked_vector(void)
     g_assert_cmpstr(text, ==, "EMUN00");
 }
 
+/*
+ * The system serial is "L" and seven digits: seed bytes 6 to 9 as a
+ * big-endian word, modulo 3999999, plus one. That keeps it inside the
+ * L0000001 to L3999999 span the L2's serial check documents and off the
+ * all-zero value it treats as disabling.
+ */
+static void test_system_serial(void)
+{
+    SGIBoardIdentity id;
+    char text[SGI_BOARD_SYSTEM_SERIAL_SIZE];
+
+    sgi_board_identity_from_key("/x/disk.img", &id);
+    sgi_board_system_serial(&id, text);
+    g_assert_cmpstr(text, ==, "L0350094");
+    sgi_board_identity_from_key("origin300", &id);
+    sgi_board_system_serial(&id, text);
+    g_assert_cmpstr(text, ==, "L1472560");
+}
+
+/* The module serial is ten characters, "K" first, and differs per module. */
+static void test_module_serial(void)
+{
+    SGIBoardIdentity id;
+    char text[SGI_BOARD_MODULE_SERIAL_SIZE];
+
+    sgi_board_identity_from_key("/x/disk.img", &id);
+    sgi_board_module_serial(&id, 0, text);
+    g_assert_cmpstr(text, ==, "K421463670");
+    sgi_board_module_serial(&id, 1, text);
+    g_assert_cmpstr(text, ==, "K421463681");
+    sgi_board_identity_from_key("/x/disk2.img", &id);
+    sgi_board_module_serial(&id, 0, text);
+    g_assert_cmpstr(text, !=, "K421463670");
+    g_assert_cmpuint(strlen(text), ==, 10);
+}
+
+/* Whatever the key hashes to, the serial stays inside the documented span. */
+static void test_system_serial_span(void)
+{
+    for (unsigned i = 0; i < 4096; i++) {
+        g_autofree char *key = g_strdup_printf("/disk/%u.img", i);
+        SGIBoardIdentity id;
+        char text[SGI_BOARD_SYSTEM_SERIAL_SIZE];
+        guint64 value;
+
+        sgi_board_identity_from_key(key, &id);
+        sgi_board_system_serial(&id, text);
+        g_assert_cmpuint(strlen(text), ==, 8);
+        g_assert_cmpint(text[0], ==, 'L');
+        g_assert_true(strspn(text + 1, "0123456789") == 7);
+        value = g_ascii_strtoull(text + 1, NULL, 10);
+        g_assert_cmpuint(value, >=, 1);
+        g_assert_cmpuint(value, <=, 3999999);
+    }
+}
+
 /* The "E" nibble marker and "EMUN" survive whatever the key hashes to. */
 static void test_markers_hold_for_any_key(void)
 {
@@ -63,6 +119,10 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-board-identity/worked-vector", test_worked_vector);
     g_test_add_func("/sgi-board-identity/markers",
                     test_markers_hold_for_any_key);
+    g_test_add_func("/sgi-board-identity/system-serial", test_system_serial);
+    g_test_add_func("/sgi-board-identity/system-serial-span",
+                    test_system_serial_span);
+    g_test_add_func("/sgi-board-identity/module-serial", test_module_serial);
     g_test_add_func("/sgi-board-identity/keys-differ", test_keys_differ);
     return g_test_run();
 }

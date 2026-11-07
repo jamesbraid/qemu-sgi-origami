@@ -264,7 +264,10 @@ minus 104, except that the Fuel's brick serial defaults to ``EMUN`` and a
 hex byte of the machine's identity seed (the system disk's path or the
 machine name, hashed as for the default station address), the synthetic
 text serial of the node's system board, a model choice that
-``brick-serial`` replaces. The firmware revision (``0x0005``) comes from
+``brick-serial`` replaces. The Origin 300 family's machine sets the system
+serial to ``L`` and seven digits of the same seed, another model choice
+that ``system-serial`` replaces; without one the guest's system id, and so
+FLEXlm's host id, is empty. The firmware revision (``0x0005``) comes from
 ``revision-major``, ``-minor`` and ``-patch``. All three must be set or
 none; on a machine that selects none the request answers minus 104 and
 logs ``LOG_UNIMP``.
