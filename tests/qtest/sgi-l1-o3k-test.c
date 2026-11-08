@@ -2132,19 +2132,38 @@ static uint32_t desc_integer(const uint8_t *segment, unsigned i)
     return ldl_be_p(desc + 4);
 }
 
-/* A blob descriptor's bytes: the offset counts 16 bytes off the wire. */
-static const uint8_t *desc_blob(const uint8_t *segment, size_t length,
-                                unsigned i, unsigned expect_length)
+/*
+ * A data descriptor's bytes: the offset counts 16 bytes off the wire, and
+ * the second byte is the 1-based number of the segment holding them.
+ */
+static const uint8_t *desc_data(const uint8_t *segment, size_t length,
+                                unsigned i, unsigned type,
+                                unsigned expect_length)
 {
     const uint8_t *desc = segment + SGI_L1_L2_SEG_DESC + 8 * i;
     unsigned offset = ldl_be_p(desc + 4);
 
-    g_assert_cmpuint(desc[0], ==, SGI_L1_L2_DESC_BLOB);
+    g_assert_cmphex(desc[0], ==, type);
+    g_assert_cmpuint(desc[1], ==, 1);
     g_assert_cmpuint(lduw_be_p(desc + 2), ==, expect_length);
     g_assert_cmpuint(offset, >=, SGI_L1_L2_DESC_PREFIX);
     g_assert_cmpuint(offset - SGI_L1_L2_DESC_PREFIX + expect_length, <=,
                      length);
     return segment + offset - SGI_L1_L2_DESC_PREFIX;
+}
+
+/* The selector 6 reply: the index array by reference, the records copied. */
+static const uint8_t *desc_index(const uint8_t *segment, size_t length,
+                                 unsigned n)
+{
+    return desc_data(segment, length, 4, SGI_L1_L2_DESC_BYTES_REF, n);
+}
+
+static const uint8_t *desc_records(const uint8_t *segment, size_t length,
+                                   unsigned n)
+{
+    return desc_data(segment, length, 5, SGI_L1_L2_DESC_BYTES,
+                     n * SGI_L1_L2_RECORD_SIZE);
 }
 
 static void expect_config_request(L2Stub *stub, uint32_t source,
@@ -2213,8 +2232,8 @@ static void test_l2_config_reply(void)
     g_assert_cmpuint(desc_integer(segment, 1), ==, 0);
     g_assert_cmpuint(desc_integer(segment, 2), ==, 1);
     g_assert_cmpuint(desc_integer(segment, 3), ==, 0x70);
-    g_assert_cmpuint(*desc_blob(segment, length, 4, 1), ==, 0);
-    records = desc_blob(segment, length, 5, 0x70);
+    g_assert_cmpuint(*desc_index(segment, length, 1), ==, 0);
+    records = desc_records(segment, length, 1);
     g_assert_cmpuint(ldl_be_p(records), !=, 0);
     g_assert_cmpuint(ldl_be_p(records + 0x08), ==, 1);
     g_assert_cmpuint(ldl_be_p(records + 0x0c), ==, 4);
@@ -2264,8 +2283,8 @@ static void test_l2_config_reply_attached(void)
     expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_B);
     length = read_config_reply(stub, segment, source);
     g_assert_cmpuint(desc_integer(segment, 2), ==, 3);
-    index = desc_blob(segment, length, 4, 3);
-    records = desc_blob(segment, length, 5, 3 * 0x70);
+    index = desc_index(segment, length, 3);
+    records = desc_records(segment, length, 3);
     for (unsigned i = 0; i < 3; i++) {
         static const uint8_t bays[3] = { 4, 31, 7 };
 
@@ -2349,7 +2368,7 @@ static void test_l2_config_request_malformed(void)
         expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_A);
         expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_B);
         length = read_config_reply(stub, segment, source);
-        records = desc_blob(segment, length, 5, 0x70);
+        records = desc_records(segment, length, 1);
         g_assert_cmpstr((const char *)records + 0x64, ==, "");
     }
 
@@ -2358,7 +2377,7 @@ static void test_l2_config_request_malformed(void)
     expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_A);
     expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_B);
     length = read_config_reply(stub, segment, source);
-    records = desc_blob(segment, length, 5, 0x70);
+    records = desc_records(segment, length, 1);
     g_assert_cmpstr((const char *)records + 0x64, ==, "SN12345");
     qtest_quit(s);
     l2_stub_free(stub);

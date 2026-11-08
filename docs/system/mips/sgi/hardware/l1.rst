@@ -1408,8 +1408,8 @@ with ``LOG_UNIMP`` and dropped.
 The reply is one segment: class response, destination the request's
 source word, status byte 0, the request's code, and these descriptors
 (*established*): the integer 7; the request's third
-descriptor, echoed; the record count ``N``; the record size 0x70; a binary
-descriptor holding ``N`` index bytes, each a record's position; a binary
+descriptor, echoed; the record count ``N``; the record size 0x70; a bytes
+descriptor holding ``N`` index bytes, each a record's position; a bytes
 descriptor holding ``N`` records of 0x70 bytes. A nonzero third request
 descriptor makes the reply the single integer 7 (*established*). The reply
 carries the request's two sequence bytes unchanged; that a real L1 copies
@@ -1429,10 +1429,23 @@ text, cut to 11 characters, goes to +0x64 of the first record (its role is
 have a rack and bay. What fills the real table is *unknown*, so this is an
 *approximation*.
 
-The sheets do not establish the type byte of a binary descriptor. The
-model lays one out like a string descriptor without its NUL and uses the
-value defined in ``include/hw/misc/sgi-l1-l2-link.h``, which is the model's
-own choice and has no source. The reply follows the sheets' reading of the
+The reply's descriptors are built the way the L1's packet builder builds
+them. The integers have type ``0x00``. The index array (descriptor 4) is
+referenced in place, type ``0x01``, and the record block (descriptor 5) is a
+copy, type ``0x09``; the two are different bytes in one packet
+(*established* for the values the L1 builds, *inferred* that they reach the
+wire unchanged, because the L1's USB path was not traced for a rewrite). The
+low three bits of a type are the kind (0 integer, 1 bytes, 2 string); bit 3
+(``0x08``) is a construction flag, "free the caller's buffer", that stays in
+the type byte, and readers test the kind bits only. A data descriptor is
+eight bytes: type, segment byte, 16-bit length and a 32-bit offset from the
+start of the segment record, which sits 0x10 bytes before the first wire
+byte. The segment byte is the 1-based number of the segment that holds the
+payload, so it is 1 on both blobs of this single-segment reply
+(*established*: the L1's own reader returns nothing for a data descriptor
+whose segment byte is 0). A reply of more than eight records would continue
+into a second segment whose descriptors carry 2 (*inferred*); the model's
+table never reaches that size. The reply follows the sheets' reading of the
 1.44.0 package for one controller type and is not claimed to reproduce a
 real L1's.
 

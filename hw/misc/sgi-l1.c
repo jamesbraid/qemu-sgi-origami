@@ -1604,7 +1604,10 @@ static void l1_l2_plain_reply(SGIL1State *s, unsigned transport,
  *   carries (the text's role is inferred). The model's table is the bricks
  *   it lists for "config", which is an approximation: what fills the real
  *   table is unknown.
- * - The type of a binary descriptor is not established by the sheets.
+ * - The descriptor types are those the L1 builds: the index array by
+ *   reference, type 0x01, and the record block as a copy, type 0x09, each
+ *   with segment byte 1 (established for the values the L1 builds; that
+ *   they reach the wire unchanged along the USB path is inferred).
  */
 #define L1_L2_RECORD_VALID  0x00
 #define L1_L2_RECORD_RACK   0x08
@@ -1618,13 +1621,19 @@ static void l1_l2_put_integer(uint8_t *segment, unsigned i, uint32_t value)
     stl_be_p(segment + SGI_L1_L2_SEG_DESC + 8 * i + 4, value);
 }
 
-/* A descriptor for bytes at @offset in the segment, counted as the L2 does. */
+/*
+ * A descriptor for bytes at @offset in the one-segment packet, counted as
+ * the L2 does. The second byte is the number of the segment that holds the
+ * payload, which the L1's own reader needs: it returns nothing for 0. That
+ * the byte survives the USB path unchanged is inferred, not traced.
+ */
 static void l1_l2_put_data(uint8_t *segment, unsigned i, uint8_t type,
                            unsigned data_length, unsigned offset)
 {
     uint8_t *desc = segment + SGI_L1_L2_SEG_DESC + 8 * i;
 
     desc[0] = type;
+    desc[1] = 1;
     stw_be_p(desc + 2, data_length);
     stl_be_p(desc + 4, offset + SGI_L1_L2_DESC_PREFIX);
 }
@@ -1653,7 +1662,8 @@ static const char *l1_l2_config_text(const uint8_t *request, unsigned length)
     const uint8_t *desc = request + SGI_L1_L2_SEG_DESC + 8;
     unsigned text_length, offset;
 
-    if (desc[0] != SGI_L1_L2_DESC_STRING) {
+    /* A reader tests the kind bits only. */
+    if ((desc[0] & SGI_L1_L2_DESC_KIND) != SGI_L1_L2_KIND_STRING) {
         return NULL;
     }
     text_length = lduw_be_p(desc + 2);
@@ -1737,9 +1747,9 @@ static void l1_l2_config_request(SGIL1State *s, const uint8_t *request,
     l1_l2_put_integer(segment, 1, third);
     l1_l2_put_integer(segment, 2, records);
     l1_l2_put_integer(segment, 3, SGI_L1_L2_RECORD_SIZE);
-    l1_l2_put_data(segment, 4, SGI_L1_L2_DESC_BLOB, records,
+    l1_l2_put_data(segment, 4, SGI_L1_L2_DESC_BYTES_REF, records,
                    SGI_L1_L2_SEG_DESC + 48);
-    l1_l2_put_data(segment, 5, SGI_L1_L2_DESC_BLOB,
+    l1_l2_put_data(segment, 5, SGI_L1_L2_DESC_BYTES,
                    records * SGI_L1_L2_RECORD_SIZE,
                    SGI_L1_L2_SEG_DESC + 48 + records);
     memcpy(segment + SGI_L1_L2_SEG_DESC + 48, index, records);
