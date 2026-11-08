@@ -717,9 +717,24 @@ The ``MODULEID`` pages carry the module serial in the layout the Hub
 module-serial record uses: format byte ``0x01``, the ten-character
 serial, the name at page one offset sixteen, ``0xff`` in every other
 field and a stored CRC per page. The serial is a synthetic value
-marked as the model's own, a ``K`` followed by nine characters, with the
-module number last. It cannot carry the ``EMU`` marker other synthetic
-text serials use, because the model keeps a leading ``K`` (*approximation*).
+marked as the model's own: ``KEMU``, the kind digit, the machine's ``emu-id``
+as four digits and the module number 0 to 9, so ``emu-id=42`` gives
+``KEMU100420`` for the first module and ``KEMU100421`` for the next
+(*approximation*; :ref:`sgi-identity`). A machine with no ``emu-id`` has
+``KEMU100000``. ``serial=`` gives module 0 a text that starts with ``K``, because the
+guest ignores a module serial that does not (*software expectation*, from the
+analysis of the IRIX 6.5.30 IP27 kernel, entry ``unix.IP27-6.5.30``, at address
+``0xc000000000040974``; see :ref:`sgi-identity`), padded on the left with ``K`` to the record's ten
+characters (*approximation*), so ``K0017299`` is ``KKK0017299`` and folds to
+``b0017299``. ``hostid=`` gives ``KK`` and the eight-character spelling of an
+id; module ``i`` then has the id plus ``i``, spelled the same way. They must
+agree when both are given, and ``mac=`` sets only the port's address. The first
+module is module 0, which the catalogue calls module 1. The module's catalogue serial is no longer used. A machine with
+more than ten modules is refused, as the digit cannot name an eleventh. The
+FLEXlm host id folds the serial's low nibbles, ``d5100420`` for the first
+module here; IRIX prints one id per module on a real Origin 2000, and the
+machine's ``hostids`` lists one per module (the catalogue has no Origin 2000
+or Onyx2 of more than one module, so the list holds one id).
 The four-node module's midplane record is ``8P12_MPLN``, part
 030-0762-006 revision H (*approximation*: the rack inventories of
 :src:`nekonomicon-16285` print this part at revision K); which midplane

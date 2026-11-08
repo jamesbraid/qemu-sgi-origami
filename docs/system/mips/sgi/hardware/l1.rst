@@ -260,13 +260,14 @@ and ``brick slot`` store a pending value applied at the next controller
 restart. The brick serial (``0x0004``) comes from ``brick-serial`` and
 the system serial (``0x0008``) from ``system-serial``, or from a station
 address (see :ref:`sgi-l1-records`). Without them both requests answer
-minus 104, except that the Fuel's brick serial defaults to ``EMUN`` and a
-hex byte of the machine's identity seed (the system disk's path or the
-machine name, hashed as for the default station address), the synthetic
-text serial of the node's system board, a model choice that
-``brick-serial`` replaces. Every machine except the Fuel sets each of its
-L1s' system serial to ``L`` and seven digits of the same seed, another model
-choice that ``system-serial`` replaces. All of a machine's L1s hold the one
+minus 104, except that the Fuel's brick serial defaults to ``EMUN`` and
+the node number as a hex byte, the synthetic text serial of the node's
+system board, a model choice that ``brick-serial`` replaces; it does not
+follow any identity input, because the PROM ties its NVRAM to it.
+Every machine except the Fuel sets each of its L1s' system serial to
+``LEMU``, the kind digit, the machine's ``emu-id`` as four digits and ``0``,
+or the text ``serial=`` or ``hostid=`` gives (:ref:`sgi-identity`), another
+model choice that ``system-serial`` replaces. All of a machine's L1s hold the one
 value, because the serial belongs to the system and the guest sends the
 request to whichever L1 its node reaches (on a C-brick, the attached I/O
 brick's). A bare L1 device with no machine around it has none, so the
@@ -820,9 +821,9 @@ Built identity records
   ``cpu-context-present``) are set, the controller builds a chassis
   area and a board area. The board area carries the given name, part
   and revision, the manufacturer ``SYNTHETIC``, a marked synthetic
-  serial, ``board-serial`` when set (the machine sets ``EMUN`` and a hex byte
-  of the identity seed, plus the node index, on the Fuel and the Origin 300
-  family), else such as ``EMUN00`` (``N`` and the ``identity-index``), and zero
+  serial, ``board-serial`` when set (the machine sets ``EMUN`` and the node
+  index as a hex byte on the Fuel and the Origin 300 family), else such as
+  ``EMUN00`` (``N`` and the ``identity-index``), and zero
   placeholder fields, and sums to zero. ``cpu-context-present`` adds the
   processor and hub clocks and a mode word for the Origin 350 family.
   ``mac-record`` adds the station address (``mac``): ``io8-board``

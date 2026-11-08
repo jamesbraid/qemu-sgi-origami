@@ -494,16 +494,22 @@ confirm which source the kernel reads, the IOC3 Ethernet-address part or
 the PROM's copy of it, and the model gives both the same address.
 
 The model keeps no separate system id. It follows the ``mac`` property:
-the address in the IOC3 Ethernet-address part, ``08:00:69`` and then
-``0xe`` and a nibble and two more bytes of the seed (:doc:`hardware/ioc3`).
-The id is therefore never zero and differs between guests whose seeds
-differ. The seed is ``identity-key`` when set, else the host path of the
-first drive with a file, else the machine name, so two guests started
-with neither share an id. A launcher that attaches the disk with
-``-device`` passes its host path as ``identity-key``. These ids are
-synthetic and are not any machine's factory identity. Only the
-register-level station address is tested; no IRIX guest has read the id
-back (*unverified*).
+the address in the IOC3 Ethernet-address part (:doc:`hardware/ioc3`). With
+no ``mac=`` the address comes from the machine's identity inputs
+(:ref:`sgi-identity`): ``emu-id=42`` gives ``08:00:69:e1:02:a0`` and the id
+``0x69e102a0``, and no input gives ``08:00:69:e1:00:00``. ``hostid=`` sets the
+address directly, as 8 digits starting ``69`` or as the 6-digit shorthand with
+the ``69`` implied, so ``hostid=0bea40`` gives ``08:00:69:0b:ea:40``.
+``serial=`` is accepted only when its text folds to an id starting ``69``.
+``mac=``, ``hostid=`` and ``serial=`` must agree when more than one is given.
+The id is therefore never zero and differs between guests with different
+inputs. The read-only ``hostids`` property reports the id from the address the
+machine holds. A guest started with no input shares the ``emu-id`` 0 id with
+every other such guest. These ids are synthetic and are not any machine's
+factory identity. The register-level station address and ``hostids`` are
+tested, and Octane and Octane2 guests printed the last four bytes of their
+station address as ``lmhostid`` (*software expectation*, measured on
+this model).
 
 .. _sgi-ip30-missing:
 

@@ -497,6 +497,10 @@ struct SGIMachineState {
     char *fuel_mac_eeprom;
     /* mac=: node 0's onboard Ethernet address; NULL selects the default. */
     char *mac;
+    /* emu-id=, serial= and hostid=, and what they come to. */
+    SGIBoardIdentityInputs identity;
+    /* Each module's serial text as attached, by module index. */
+    GPtrArray *module_serials;
     strList *controller_board_eeprom;
     strList *controller_chardev;
     strList *controller_l2_chardev;
@@ -625,7 +629,7 @@ void sgi_machine_set_l1_system_serial(MachineState *machine, DeviceState *l1)
         !g_strcmp0(SGI_MACHINE_GET_CLASS(s)->product, "fuel")) {
         return;
     }
-    serial = sgi_board_default_system_serial();
+    serial = sgi_board_default_system_serial(&s->identity.id);
     qdev_prop_set_string(l1, "system-serial", serial);
 }
 
@@ -901,7 +905,7 @@ static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
     if (!sgi_machine_node_io_preset(s->view, node_index, &preset)) {
         return true;
     }
-    address = sgi_board_mac(s->mac, node_index, errp);
+    address = sgi_board_mac(s->mac, &s->identity.id, node_index, errp);
     if (!address) {
         return false;
     }
@@ -3693,7 +3697,7 @@ static char *sgi_machine_onboard_mac(SGIMachineState *s,
          i++, entry = entry->next) {
         ethernet += sgi_machine_onboard_ethernet(entry->value);
     }
-    return sgi_board_mac(s->mac, ethernet, errp);
+    return sgi_board_mac(s->mac, &s->identity.id, ethernet, errp);
 }
 
 static bool sgi_machine_instantiate_ip29_io(
@@ -5676,8 +5680,7 @@ static void sgi_machine_attach_module_parts(SGIMachineState *s,
                                             unsigned int module_index,
                                             SN0ModuleManagementState *mgmt)
 {
-    g_autofree char *seeded_serial = NULL;
-    const char *module_serial = module->serial;
+    g_autofree char *module_serial = NULL;
     g_autofree const SGIModelNode **nodes = NULL;
     g_autofree unsigned int *module_nodes = NULL;
     char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
@@ -5697,14 +5700,22 @@ static void sgi_machine_attach_module_parts(SGIMachineState *s,
         };
     }
     /*
-     * The catalogue's serial is the same on every guest. A guest with its
-     * own identity seed gets a derived one, which the kernel reads as its
-     * system id and FLEXlm as its host id.
+     * The module serial names the emulator and the machine's serial, with
+     * the module's number last; FLEXlm builds one host id from each module's.
+     * The catalogue's serial is not used.
      */
-    if (sgi_board_identity_is_seeded()) {
-        seeded_serial = sgi_board_default_module_serial(module_index);
-        module_serial = seeded_serial;
+    module_serial = sgi_board_default_module_serial(&s->identity.id,
+                                                    module_index,
+                                                    &error_fatal);
+    if (!s->module_serials) {
+        s->module_serials = g_ptr_array_new_with_free_func(g_free);
     }
+    if (s->module_serials->len <= module_index) {
+        g_ptr_array_set_size(s->module_serials, module_index + 1);
+    }
+    g_free(g_ptr_array_index(s->module_serials, module_index));
+    g_ptr_array_index(s->module_serials, module_index) =
+        g_strdup(module_serial);
     sgi_sn0_module_management_attach_parts(
         mgmt, module_serial, module->identity_serial,
         module->midplane_record ? &midplane : NULL, module->midplane_serial,
@@ -11227,9 +11238,24 @@ static void sgi_machine_plug(const HotplugHandler *hotplug_dev,
     sgi_graphics_pipes_plug(&SGI_MACHINE(hotplug_dev)->pipes, dev);
 }
 
+/* The Origin 200 and Fuel take their id from the station address. */
+static SGIBoardFamily sgi_machine_family(SGIMachineState *s)
+{
+    const char *product = SGI_MACHINE_GET_CLASS(s)->product;
+
+    if (!g_strcmp0(product, "fuel") || !g_strcmp0(product, "origin200")) {
+        return SGI_BOARD_FAMILY_ADDRESS;
+    }
+    return !g_strcmp0(product, "origin2000") || !g_strcmp0(product, "onyx2") ?
+           SGI_BOARD_FAMILY_MODULE : SGI_BOARD_FAMILY_TEXT;
+}
+
 void sgi_machine_init(MachineState *machine)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
+
+    sgi_board_identity_resolve(&s->identity, sgi_machine_family(s), s->mac,
+                               &error_fatal);
 
     /*
      * Every device the builder realizes maps its regions with a commit of
@@ -12003,10 +12029,85 @@ static void sgi_machine_instance_finalize(Object *obj)
     }
     g_free(s->fuel_mac_eeprom);
     g_free(s->mac);
+    g_free(s->identity.serial);
+    g_free(s->identity.hostid);
+    if (s->module_serials) {
+        g_ptr_array_free(s->module_serials, true);
+    }
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         qapi_free_strList(*sgi_machine_identity_slot(
             obj, (void *)&sgi_machine_identity_records[i]));
     }
+}
+
+/*
+ * The host ids IRIX prints: one per module, node or L1, as real machines list
+ * several. The Origin 200 takes the last four bytes of each node's station
+ * address; the Origin 2000 and Onyx2 fold each module's serial; every other
+ * product folds the system serial of each node's L1, or on the Fuel takes the
+ * 12 hex digits of its station address. All of it is read from what the built
+ * machine holds, so mac=, a system-serial given to the L1 and fuel-mac-eeprom
+ * are reflected.
+ */
+static bool sgi_machine_hostids(Object *obj, GArray *ids, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    const char *product = SGI_MACHINE_GET_CLASS(s)->product;
+    uint32_t id;
+
+    if (!g_strcmp0(product, "origin200")) {
+        for (unsigned int node = 0; node < MAX(s->num_nodes, 1); node++) {
+            g_autofree char *text = sgi_board_mac(s->mac, &s->identity.id, node,
+                                                  errp);
+            uint8_t mac[6];
+
+            if (!text || net_parse_macaddr(mac, text) < 0) {
+                return false;
+            }
+            id = sgi_board_hostid_from_mac(mac);
+            g_array_append_val(ids, id);
+        }
+        return true;
+    }
+    if (!g_strcmp0(product, "origin2000") || !g_strcmp0(product, "onyx2")) {
+        for (guint i = 0; s->module_serials && i < s->module_serials->len;
+             i++) {
+            const char *text = g_ptr_array_index(s->module_serials, i);
+
+            if (text) {
+                id = sgi_board_hostid_from_text(text);
+                g_array_append_val(ids, id);
+            }
+        }
+        if (!ids->len) {
+            error_setg(errp, "%s has no module serial", product);
+            return false;
+        }
+        return true;
+    }
+    for (uint32_t i = 0; s->bedrock_nodes && i < s->num_nodes; i++) {
+        DeviceState *l1 = SN1_NODE(s->bedrock_nodes[i])->l1;
+        const char *text = l1 ? SGI_L1(l1)->system_serial : NULL;
+
+        if (!text || !text[0]) {
+            continue;
+        }
+        if (!g_strcmp0(product, "fuel")) {
+            if (!sgi_board_hostid_from_hex_text(text, &id)) {
+                error_setg(errp, "the fuel L1 text '%s' is not 12 hex digits",
+                           text);
+                return false;
+            }
+        } else {
+            id = sgi_board_hostid_from_text(text);
+        }
+        g_array_append_val(ids, id);
+    }
+    if (!ids->len) {
+        error_setg(errp, "%s has no L1 with a system serial", product);
+        return false;
+    }
+    return true;
 }
 
 static void sgi_machine_class_init(ObjectClass *oc, const void *data)
@@ -12206,7 +12307,11 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     sgi_board_mac_class_add_property(oc, offsetof(SGIMachineState, mac),
         "Onboard Ethernet address of node 0, carried in its L1 identity "
         "record; each further node takes the next address (default "
-        "derived from the system disk path or machine name)");
+        "derived from the machine's identity inputs, with room for 16 nodes "
+        "or ports). It sets the port's address in every store that holds it "
+        "and, on the Origin 200 and Fuel, the system id");
+    sgi_board_identity_class_add_properties(oc,
+        offsetof(SGIMachineState, identity), sgi_machine_hostids);
 
     object_class_property_add_str(oc, "routes", sgi_machine_get_routes, NULL);
     object_class_property_set_description(oc, "routes",

@@ -353,7 +353,7 @@ static void test_fuel_mac_eeprom_machine(const void *data)
     qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
                       "ioc3-subsystem-id=0xc30a,"
                       "l1-type-code=0x41,bedrock-revision=0x2,"
-                      "fuel-mac-eeprom=%s,mac=02:00:00:00:00:01 "
+                      "fuel-mac-eeprom=%s,mac=08:00:69:00:00:01 "
                       "-bios %s -S -nic user", path,
                       (const char *)data);
     qobject_unref(response);

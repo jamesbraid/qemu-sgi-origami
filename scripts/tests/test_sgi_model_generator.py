@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "653527f2975f34b60aeb11174164d356fb821f8d809ba54b07bac6b979f355cd"
+    "cdd90d749ad93c01f3201422a79804997ebd0fb5db9b1dfa8b61eb5190469237"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -751,7 +751,7 @@ class StorageTests(unittest.TestCase):
                     "required": False,
                     "mac": {"derived": True,
                             "machine-property": "mac", "offset": 0,
-                            "default-address": "08:00:69:12:34:56",
+                            "default-address": "08:00:69:e1:00:00",
                             "required-prefix": "08:00:69"}}])
 
 
@@ -1391,20 +1391,24 @@ class FuelTests(unittest.TestCase):
 
     def test_overrides_follow_what_each_machine_binds(self):
         """The Bedrock board values are listed only where a Bedrock, an L1
-        and an IO8 or Fuel board bind them; every machine takes mac=, an
-        Origin 2000's plain BaseIO takes baseio-preset=, and the processor
-        part's PRId is a -cpu property."""
+        and an IO8 or Fuel board bind them; every machine takes mac=,
+        emu-id=, serial= and hostid=, an Origin 2000's plain BaseIO takes
+        baseio-preset=, and the processor part's PRId is a -cpu property. The
+        O2 takes only emu-id=."""
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
-        bedrock = ["bedrock-revision", "board-id-word", "ioc3-subsystem-id",
-                   "l1-revision", "l1-type-code", "mac"]
+        bedrock = ["bedrock-revision", "board-id-word", "emu-id", "hostid",
+                   "ioc3-subsystem-id", "l1-revision", "l1-type-code", "mac",
+                   "serial"]
         expected = {
             "fuel": (bedrock, ["r14000-prid"]),
             "origin300": (bedrock, ["r14000-prid"]),
-            "origin200": (["mac"], ["r10000-prid"]),
-            "origin2000": (["baseio-preset", "mac"], ["r10000-prid"]),
-            "octane": (["flash-select", "flash-strap", "mac"],
-                       ["r10000-prid"]),
+            "origin200": (["emu-id", "hostid", "mac", "serial"],
+                          ["r10000-prid"]),
+            "origin2000": (["baseio-preset", "emu-id", "hostid", "mac",
+                            "serial"], ["r10000-prid"]),
+            "octane": (["emu-id", "flash-select", "flash-strap", "hostid",
+                        "mac", "serial"], ["r10000-prid"]),
         }
         # The board drives the reset-mode word; only the identity is
         # the launch's to override.

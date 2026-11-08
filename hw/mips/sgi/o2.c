@@ -76,6 +76,8 @@ typedef struct O2MachineState {
     char *rom_at29_upper_lock;
     char *storage_event_file;
     char *identity_test_serial;
+    /* emu-id=: the number the clock serial carries, 0 by default. */
+    SGIBoardIdentityInputs identity;
     char *identity_eprom_file;
     char *identity_status;
     char *password_clear_input;
@@ -2074,12 +2076,13 @@ static void o2_init(MachineState *machine)
     qdev_prop_set_bit(mace, "mace-eth-low-dma-compat",
                      s->mace_eth_low_dma_compat);
     /*
-     * MACE documents the clock's silicon serial as the system serial. Derive
-     * it from the identity seed so that guests differ; see the system serial
-     * section of docs/system/mips/sgi/ip32.rst.
+     * MACE documents the clock's silicon serial as the system serial. Mark
+     * it with the machine's kind and emu-id; see the system serial section
+     * of docs/system/mips/sgi/ip32.rst.
      */
     qdev_prop_set_uint64(mace, "rtc-serial",
-                         sgi_board_default_silicon_serial());
+                         sgi_board_clock_serial(SGI_BOARD_KIND,
+                                                s->identity.emu_id));
     if (s->identity_diagnostic) {
         qdev_prop_set_string(mace, "identity-test-serial",
                              s->identity_test_serial);
@@ -2416,7 +2419,14 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     mc->no_cdrom = true;
     mc->auto_create_sdcard = false;
     sgi_board_cdrom_class_init(mc);
-    sgi_board_identity_key_class_add_property(oc);
+    /*
+     * Only emu-id, no serial, hostid, mac or hostids: IRIX reads the O2's
+     * station address, which comes from -nic and the identity chip's inputs,
+     * and the model derives neither, so the machine cannot say what the
+     * guest will print.
+     */
+    sgi_board_identity_class_add_properties(oc,
+        offsetof(O2MachineState, identity), NULL);
 }
 
 static const TypeInfo o2_product_machine_type = {

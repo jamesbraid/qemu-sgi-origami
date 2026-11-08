@@ -726,8 +726,9 @@ _ONBOARD_ETHERNETS = {
     "bcm5701": ("bcm5701-ethernet", "bcm570x", "tg"),
 }
 # The board station address QEMU gives an onboard Ethernet when mac= is
-# not set (include/hw/mips/sgi/sgi-board-mac.h's SGI_BOARD_DEFAULT_MAC).
-_BOARD_DEFAULT_MAC = 0x080069123456
+# not set and the serial is 0 (include/hw/mips/sgi/sgi-board-identity.h:
+# 08:00:69:E, the QEMU kind 1, then the serial and a node or port number).
+_BOARD_DEFAULT_MAC = 0x080069E10000
 # The address prefix the IP53 PROM's BCM5701 driver accepts: the PROM
 # rejects an address outside 08:00:69 and then can't open the interface.
 # The PROM enforces this, not QEMU.
@@ -1094,8 +1095,10 @@ def _overrides(topology: dict, part: str) -> list[dict]:
     its processor part @part. The machine refuses a board override its
     configuration does not bind, so each is listed only where one is."""
     if topology["generation"] == "IP32":
-        return []
-    machine = ["mac"]
+        # The O2 takes its station address from -nic and the identity chip,
+        # so only the emu-id, which marks its clock, applies.
+        return [{"property": "emu-id", "target": "machine"}]
+    machine = ["mac", "emu-id", "serial", "hostid"]
     if any(node["asic_kind"] == "BEDROCK" for node in topology["nodes"]):
         machine += ["board-id-word", "bedrock-revision"]
     if any("l1" in controller for controller in topology["controllers"]):

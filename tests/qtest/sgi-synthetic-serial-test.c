@@ -17,9 +17,11 @@
  *    instance, so no two nodes' board-area serials match.
  *
  *  - every L1 answers the system-serial request with one value, the same
- *    on all the machine's L1s: "L" and seven digits, whose low nibbles the
- *    guest packs into a nonzero host id, or on the Fuel the station
- *    address as twelve hex digits. Two identity keys give two serials.
+ *    on all the machine's L1s: "LEMU", the kind digit, the four-digit
+ *    serial and "0", whose low nibbles the guest packs into the host id, or
+ *    on the Fuel the station address as twelve hex digits. Two serials give
+ *    two system serials, and the machine's hostid property agrees with the
+ *    value the guest would compute from what the L1 answers.
  *
  * Every one-wire part is included, the module controllers' MODULEID and
  * midplane parts too. The scheme's values are repeated here as literals,
@@ -126,6 +128,7 @@ typedef struct Inventory {
     unsigned int l1_unset;     /* L1s with no system serial */
     char *unset_path;          /* the first of them */
     unsigned int l1_differing; /* L1s that disagree with the first */
+    GPtrArray *l1_macs;        /* each L1's station address, if collecting */
 } Inventory;
 
 static bool onewire_serial_marked(uint64_t serial)
@@ -221,6 +224,16 @@ static void check_system_serial(Inventory *inv, const char *path,
 
     if (!type || !serial || strcmp(qdict_get_str(type, "value"), "sgi-l1")) {
         return;
+    }
+    if (inv->l1_macs) {
+        QDict *mac = find_prop(properties, "mac");
+        char *mac_text = mac ? prop_str(mac, path) : NULL;
+
+        if (mac_text && *mac_text) {
+            g_ptr_array_add(inv->l1_macs, mac_text);
+        } else {
+            g_free(mac_text);
+        }
     }
     text = prop_str(serial, path);
     inv->l1s++;
@@ -379,8 +392,8 @@ static char *blank_image(size_t size)
  * characters, the Fuel's station address, is read as hex digits 4 to 11,
  * as the kernel's system-id routine does for that board. Any other is
  * packed the way its licensing host id is: the low nibble of each of
- * the first ten characters, most significant first. Zero means no
- * license can match.
+ * the first ten characters, most significant first, keeping the low 32 bits.
+ * Zero means no license can match.
  */
 static uint64_t host_id(const char *serial)
 {
@@ -394,7 +407,7 @@ static uint64_t host_id(const char *serial)
     for (size_t i = 0; serial[i] && i < 10; i++) {
         id = (id << 4) | (serial[i] & 0xf);
     }
-    return id;
+    return id & 0xffffffff;
 }
 
 static void check_system_serials(const Inventory *inv, const MachineCase *c)
@@ -414,10 +427,38 @@ static void check_system_serials(const Inventory *inv, const MachineCase *c)
         g_assert_true(g_regex_match_simple("^[0-9A-F]{12}$",
                                            inv->system_serial, 0, 0));
     } else {
-        g_assert_true(g_regex_match_simple("^L[0-9]{7}$",
+        g_assert_true(g_regex_match_simple("^LEMU1[0-9]{4}0$",
                                            inv->system_serial, 0, 0));
     }
     g_assert_cmphex(host_id(inv->system_serial), !=, 0);
+}
+
+/*
+ * The walk above read every identity property. A built machine refuses to
+ * have them set; setting each to boundary values must give an error, never
+ * abort, and leave the machine answering.
+ */
+static void check_identity_properties_robust(QTestState *qts)
+{
+    static const char * const sets[][2] = {
+        { "emu-id", "0" }, { "emu-id", "4096" }, { "emu-id", "-1" },
+        { "serial", "''" }, { "serial", "'ABCDEFGHIJK'" },
+        { "hostid", "''" }, { "hostid", "'ffffffff'" }, { "hostid", "'69'" },
+        { "hostids", "'69e10000'" }, { "mac", "'00:00:00:00:00:00'" },
+    };
+    g_autoptr(QDict) status = NULL;
+
+    for (size_t i = 0; i < G_N_ELEMENTS(sets); i++) {
+        g_autofree char *request = g_strdup_printf(
+            "{'execute':'qom-set','arguments':{'path':'/machine',"
+            "'property':'%s','value':%s}}", sets[i][0], sets[i][1]);
+        g_autoptr(QDict) reply = qtest_qmp(qts, "%s", request);
+
+        g_assert_true(qdict_haskey(reply, "return") ||
+                      qdict_haskey(reply, "error"));
+    }
+    status = qtest_qmp(qts, "{'execute':'query-status'}");
+    g_assert_true(qdict_haskey(status, "return"));
 }
 
 static void test_machine_serials(const void *data)
@@ -471,6 +512,7 @@ static void test_machine_serials(const void *data)
     qts = qtest_initf("-M %s %s %s %s -display none -S", c->args, prom_option,
                       drive ? drive : "", io9_drives ? io9_drives : "");
     walk(qts, &inv, "/machine");
+    check_identity_properties_robust(qts);
     if (c->ip32) {
         g_autoptr(QDict) reply = qtest_qmp(qts,
             "{'execute':'qom-get','arguments':{'path':'/machine',"
@@ -538,9 +580,12 @@ static void test_routes_unavailable_on_bedrock(void)
 
 /*
  * The system serial an L1 of machine case @c answers with when the
- * machine's identity-key is @key, read from the first L1 found.
+ * machine's emu-id is @number, read from the first L1 found. *@hostid is
+ * the machine's own hostid property.
  */
-static char *serial_for_key(const MachineCase *c, const char *key)
+static char *serial_for_number(const MachineCase *c, unsigned int number,
+                               uint64_t *hostid, GPtrArray *macs,
+                               char **hostids)
 {
     g_autofree char *machine = g_strndup(c->args, strcspn(c->args, ", "));
     const char *rest = c->args + strlen(machine);
@@ -558,9 +603,11 @@ static char *serial_for_key(const MachineCase *c, const char *key)
         .l1_instances = g_hash_table_new_full(g_str_hash, g_str_equal,
                                               g_free, g_free),
     };
+    g_autoptr(QDict) response = NULL;
     QTestState *qts;
     char *serial;
 
+    inv.l1_macs = macs;
     if (c->io9) {
         io9_data = blank_image(0x8000);
         io9_clock = blank_image(16);
@@ -578,9 +625,20 @@ static char *serial_for_key(const MachineCase *c, const char *key)
         g_string_append_printf(extra,
             " -drive if=none,id=cfg,file=%s,format=raw", storage);
     }
-    qts = qtest_initf("-M %s,identity-key=%s%s -bios %s %s -display none -S",
-                      machine, key, rest, prom, extra->str);
+    qts = qtest_initf("-M %s,emu-id=%u%s -bios %s %s -display none -S",
+                      machine, number, rest, prom, extra->str);
     walk(qts, &inv, "/machine");
+    response = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                         "{'path':'/machine','property':'hostid'}}");
+    g_assert_true(qdict_haskey(response, "return"));
+    *hostid = g_ascii_strtoull(qdict_get_str(response, "return"), NULL, 16);
+    if (hostids) {
+        qobject_unref(response);
+        response = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                             "{'path':'/machine','property':'hostids'}}");
+        g_assert_true(qdict_haskey(response, "return"));
+        *hostids = g_strdup(qdict_get_str(response, "return"));
+    }
     qtest_quit(qts);
     check_system_serials(&inv, c);
     serial = g_steal_pointer(&inv.system_serial);
@@ -599,33 +657,128 @@ static char *serial_for_key(const MachineCase *c, const char *key)
 }
 
 /*
- * Guests that differ in their identity key differ in system serial, and
- * so in host id, and one key always gives the same serial, so a
- * node-locked license stays valid across restarts.
+ * Guests that differ in serial differ in system serial, and so in host id,
+ * and one serial always gives the same values, so a node-locked license stays
+ * valid across restarts. The hostid property is the value the guest computes
+ * from what its L1 answers, and the worked values hold: serial 42 is
+ * LEMU100420 and d5100420, and the Fuel's host id is its address's last four
+ * bytes, 69e102a0.
  */
-static void test_serial_follows_identity_key(const void *data)
+static void test_serial_sets_hostid(const void *data)
 {
     const MachineCase *c = data;
     g_autofree char *machine = g_strndup(c->args, strcspn(c->args, ", "));
     g_autofree char *first = NULL;
     g_autofree char *again = NULL;
     g_autofree char *other = NULL;
+    g_autofree char *zero = NULL;
+    g_autofree char *first_ids = NULL;
+    g_auto(GStrv) listed = NULL;
+    uint64_t first_id, again_id, other_id, zero_id;
+    bool fuel = g_str_has_prefix(c->name, "fuel");
 
     if (!qtest_has_machine(machine)) {
         g_test_skip("machine not built in");
         return;
     }
-    first = serial_for_key(c, "/disks/guest-a.img");
-    again = serial_for_key(c, "/disks/guest-a.img");
-    other = serial_for_key(c, "/disks/guest-b.img");
+    first = serial_for_number(c, 42, &first_id, NULL, &first_ids);
+    again = serial_for_number(c, 42, &again_id, NULL, NULL);
+    other = serial_for_number(c, 43, &other_id, NULL, NULL);
+    zero = serial_for_number(c, 0, &zero_id, NULL, NULL);
     g_assert_nonnull(first);
     g_assert_cmpstr(first, ==, again);
     g_assert_cmpstr(first, !=, other);
-    g_assert_cmphex(host_id(first), !=, host_id(other));
+    g_assert_cmphex(first_id, ==, host_id(first));
+    g_assert_cmphex(again_id, ==, first_id);
+    g_assert_cmphex(other_id, ==, host_id(other));
+    g_assert_cmphex(other_id, !=, first_id);
+    g_assert_cmphex(zero_id, ==, host_id(zero));
+    /*
+     * IRIX prints one id per node, and the machine's hostid is the first.
+     * Every L1 of a machine shares one system serial, so a system-serial
+     * machine repeats it; the Fuel has one node.
+     */
+    listed = g_strsplit(first_ids, " ", -1);
+    g_assert_cmpuint(g_strv_length(listed), >=, 1);
+    g_assert_cmphex(g_ascii_strtoull(listed[0], NULL, 16), ==, first_id);
+    if (!fuel) {
+        for (char **id = listed; *id; id++) {
+            g_assert_cmpstr(*id, ==, listed[0]);
+        }
+    }
+    if (fuel) {
+        g_assert_cmpstr(first, ==, "080069E102A0");
+        g_assert_cmphex(first_id, ==, 0x69e102a0);
+        g_assert_cmpstr(zero, ==, "080069E10000");
+    } else {
+        g_assert_cmpstr(first, ==, "LEMU100420");
+        g_assert_cmphex(first_id, ==, 0xd5100420);
+        g_assert_cmpstr(zero, ==, "LEMU100000");
+        g_assert_cmphex(zero_id, ==, 0xd5100000);
+    }
 }
 
-/* One of each family is enough to show the key reaches every kind of L1. */
-static bool case_checks_identity_key(const char *name)
+/*
+ * The default station address of node n adds n to the machine's address, and
+ * the sub-index has a nibble to itself, so no node's address changes the kind
+ * or the serial, even at the largest serial. Checked on the L1 of each node
+ * of a two-chassis Origin 300, whose addresses the machine derives per node.
+ */
+static void test_node_offsets(void)
+{
+    MachineCase c = {
+        .name = (char *)"origin300-two-chassis",
+        .args = (char *)"origin300,topology=origin300-two-chassis,nodes=2 "
+                        "-cpu R14000 -smp 8 -m 1024M",
+        .ip35 = true,
+    };
+    static const unsigned int serials[] = { 0, 42, 4095 };
+
+    if (!qtest_has_machine("origin300")) {
+        g_test_skip("machine not built in");
+        return;
+    }
+    for (size_t i = 0; i < G_N_ELEMENTS(serials); i++) {
+        g_autoptr(GPtrArray) macs = g_ptr_array_new_with_free_func(g_free);
+        g_autofree char *text = NULL;
+        g_autofree char *hostids = NULL;
+        g_autofree char *want = NULL;
+        g_auto(GStrv) listed = NULL;
+        uint64_t hostid;
+        unsigned int seen = 0;
+
+        text = serial_for_number(&c, serials[i], &hostid, macs, &hostids);
+        g_assert_cmpuint(macs->len, >=, 2);
+        for (guint n = 0; n < macs->len; n++) {
+            unsigned int b[6];
+            const char *mac = g_ptr_array_index(macs, n);
+
+            g_assert_cmpint(sscanf(mac, "%x:%x:%x:%x:%x:%x", &b[0], &b[1],
+                                   &b[2], &b[3], &b[4], &b[5]), ==, 6);
+            g_assert_cmphex(b[0], ==, 0x08);
+            g_assert_cmphex(b[2], ==, 0x69);
+            g_assert_cmphex(b[3], ==, 0xe1);
+            g_assert_cmphex((b[4] << 4) | (b[5] >> 4), ==, serials[i]);
+            seen |= 1u << (b[5] & 0xf);
+        }
+        /*
+         * The two chassis' L1s share one system serial, so the machine lists
+         * one id per node and they are all the same d5 id, as an Origin 3000
+         * prints it.
+         */
+        listed = g_strsplit(hostids, " ", -1);
+        g_assert_cmpuint(g_strv_length(listed), ==, 2);
+        g_assert_cmpstr(listed[0], ==, listed[1]);
+        g_assert_cmphex(g_ascii_strtoull(listed[0], NULL, 16), ==, hostid);
+        want = g_strdup_printf("LEMU1%04u0", serials[i]);
+        g_assert_cmpstr(text, ==, want);
+        /* Each node took its own sub-index, 0 up. */
+        g_assert_cmpuint(seen, ==, (1u << 2) - 1);
+    }
+}
+
+/* One of each family is enough to show the serial reaches every kind of L1. */
+static bool case_checks_serial(const char *name)
 {
     static const char * const names[] = {
         "fuel", "origin3200", "origin3400-two-routers", "onyx3000",
@@ -858,14 +1011,14 @@ int main(int argc, char **argv)
             "sgi/synthetic-serial/%s", c->name);
 
         qtest_add_data_func(path, c, test_machine_serials);
-        if (case_checks_identity_key(c->name)) {
-            g_autofree char *seed_path = g_strdup_printf(
-                "sgi/synthetic-serial-key/%s", c->name);
+        if (case_checks_serial(c->name)) {
+            g_autofree char *serial_path = g_strdup_printf(
+                "sgi/synthetic-serial-number/%s", c->name);
 
-            qtest_add_data_func(seed_path, c,
-                                test_serial_follows_identity_key);
+            qtest_add_data_func(serial_path, c, test_serial_sets_hostid);
         }
     }
+    qtest_add_func("sgi/synthetic-serial-node-offsets", test_node_offsets);
     qtest_add_func("sgi/synthetic-serial/routes-unavailable-on-bedrock",
                    test_routes_unavailable_on_bedrock);
     return g_test_run();
