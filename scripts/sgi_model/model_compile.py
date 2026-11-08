@@ -3164,6 +3164,29 @@ def _compile_pic_io_records(model: dict, graph: dict,
     return host_records, io9_boards, host_attachments
 
 
+def _module_rack(model: dict, module_id: str) -> int | None:
+    """The rack number of the nearest numbered chassis above a module.
+
+    None when the model numbers no racks, so an unnumbered topology
+    compiles to the record it always did. validate_rack_numbers has already
+    required every module of a numbered topology to sit in a numbered rack.
+    """
+    numbers = {item["component"]: item["number"] for item in
+               model["machine"].get("emulation", {}).get("rack_numbers", [])
+               or []}
+    if not numbers:
+        return None
+    components = _components_by_id(model)
+    seen: set[str] = set()
+    parent = components.get(module_id, {}).get("parent")
+    while parent in components and parent not in seen:
+        if parent in numbers:
+            return numbers[parent]
+        seen.add(parent)
+        parent = components[parent].get("parent")
+    raise CompileError(f"module '{module_id}' is not in a numbered rack")
+
+
 def _compile_module(model: dict, module_id: str, module_index: int,
                      node_entries: list[dict], controllers: list[dict],
                      io_peer_entries: list[dict]) -> dict:
@@ -3196,6 +3219,9 @@ def _compile_module(model: dict, module_id: str, module_index: int,
     if peers:
         record["io_peers"] = peers
     root = _components_by_id(model).get(module_id, {})
+    rack = _module_rack(model, module_id)
+    if rack is not None:
+        record["rack"] = rack
     if "brick_type" in root:
         record["brick_type"] = root["brick_type"]
     if root.get("controller") == "absent":

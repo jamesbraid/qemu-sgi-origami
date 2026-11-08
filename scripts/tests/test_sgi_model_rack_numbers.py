@@ -5,7 +5,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["pyyaml>=6", "jsonschema>=4"]
 # ///
-"""Tests for `machine.emulation.rack_numbers`: schema and validation.
+"""Tests for `machine.emulation.rack_numbers`: schema, validation, compiler.
 
 The models here are the resolved Origin 3800 with its bricks moved into
 numbered racks, so a rejection names the one rule the change breaks. No
@@ -23,6 +23,8 @@ INPUTS = ROOT / "hw/mips/sgi/models"
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from sgi_model import system_model as _resolver
+from sgi_model.model_compile import compile_model
+from sgi_model.model_emit import _render_topology
 from sgi_model.model_validation import (
     check_schema, load_checked_system_model, schema,
 )
@@ -348,6 +350,35 @@ class RackNumberValidationTests(unittest.TestCase):
         model = _origin3800()
         _set_bay(model, "c1-chassis", 200)
         _resolver._validate_resolved_system_model(model)
+
+
+class RackNumberCompileTests(unittest.TestCase):
+    def modules(self, model):
+        return {module["id"]: module
+                for module in compile_model(model)["modules"]}
+
+    def test_modules_carry_their_racks_number(self):
+        modules = self.modules(_racked_origin3800())
+        for ident in _CBRICKS[:4] + _RBRICKS[:1]:
+            self.assertEqual(modules[ident]["rack"], 1, ident)
+        for ident in _CBRICKS[4:] + _RBRICKS[1:]:
+            self.assertEqual(modules[ident]["rack"], 2, ident)
+        self.assertEqual(modules["ibrick-brick"]["rack"], 101)
+        # The bay is still the module number.
+        self.assertEqual(modules["c0-chassis"]["initial_module_number"], 10)
+
+    def test_modules_of_an_unnumbered_topology_have_no_rack(self):
+        for module in compile_model(_origin3800())["modules"]:
+            self.assertNotIn("rack", module)
+
+    def test_catalogue_record_names_the_rack_only_when_there_is_one(self):
+        entry = compile_model(_racked_origin3800())
+        emitted = {module["id"]: module for module in
+                   _render_topology(entry, "origin3800")["modules"]}
+        self.assertEqual(emitted["ibrick-brick"]["rack"], 101)
+        plain = _render_topology(compile_model(_origin3800()), "origin3800")
+        for module in plain["modules"]:
+            self.assertNotIn("rack", module)
 
 
 class ShippedTopologiesAreUnracked(unittest.TestCase):
