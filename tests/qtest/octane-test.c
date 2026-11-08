@@ -867,23 +867,16 @@ static void octane_storage_rejected(const char *machine, const char *extra,
 
 /*
  * The mac property sets the station address, as on the SN1 machines. With
- * none it is derived from the SHA-256 of the system disk's path, or of the
- * machine name when there is no disk (sgi-board-identity.h): 08:00:69 then
- * 0xe and a nibble, then two bytes. The expected values below are worked
- * out from the hash by hand. A different -nic mac= is refused rather than
- * silently overriding the board's identity.
+ * none it is derived from the machine's serial (sgi-board-identity.h):
+ * 08:00:69, E and the kind, then the serial's high byte and its low nibble
+ * over a zero sub-index. Serial 0, not configured, gives 08:00:69:e1:00:00.
+ * A different -nic mac= is refused rather than silently overriding the
+ * board's identity.
  */
 static void test_octane_mac(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
-    /* sha256("octane") and sha256("octane2"). */
-    static const uint8_t fallback_octane[] = {
-        0x08, 0x00, 0x69, 0xe3, 0x72, 0x46
-    };
-    static const uint8_t fallback_octane2[] = {
-        0x08, 0x00, 0x69, 0xe6, 0xd3, 0x07
-    };
-    const uint8_t *fallback = octane2 ? fallback_octane2 : fallback_octane;
+    static const uint8_t fallback[] = { 0x08, 0x00, 0x69, 0xe1, 0x00, 0x00 };
     static const uint8_t chosen[] = { 0x08, 0x00, 0x69, 0xaa, 0xbb, 0xcc };
     const char *machine = octane2 ? "octane2" : "octane";
     g_autofree char *conflict = g_strdup_printf(
@@ -913,104 +906,218 @@ static void test_octane_mac(gconstpointer data)
                             "mac must be a nonzero unicast address");
 }
 
+static char *octane_qom_str(QTestState *qts, const char *property)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine',"
+        "'property':%s}}", property);
+
+    g_assert_true(qdict_haskey(response, "return"));
+    return g_strdup(qdict_get_str(response, "return"));
+}
+
+static uint64_t octane_qom_uint(QTestState *qts, const char *property)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine',"
+        "'property':%s}}", property);
+
+    g_assert_true(qdict_haskey(response, "return"));
+    return qdict_get_int(response, "return");
+}
+
 /*
  * IRIX builds the system id sysinfo -s and FLEXlm's lmhostid report from
  * the onboard station address: the last four bytes of 08:00:69:xx:xx:xx,
- * so 0x69xxxxxx (inferred from Octane output in public newsgroup posts;
- * see the IP30 manual page). It follows mac= and identity-key. Two
- * guests with different identity keys therefore get different nonzero
- * ids, and one key always gives the same id.
+ * so 0x69xxxxxx. Measured in Octane and Octane2 guests; see the IP30
+ * manual page. The machine's inputs set that address and the hostid and
+ * hostids properties report the id from the address it holds, so the two
+ * agree. emu-id 42 is 08:00:69:e1:02:a0 and 69e102a0, emu-id 43 differs, and
+ * one emu-id always gives the same id.
  */
 static uint32_t octane_system_id(const uint8_t mac[6])
 {
     return ldl_be_p(mac + 2);
 }
 
+/* Starts @machine with @options and reads its address and ids. */
+static void octane_identity(bool octane2, const char *options,
+                            uint8_t mac[6], char **hostid, char **hostids)
+{
+    g_autofree char *extra = g_strdup_printf("-M %s%s%s -nic user",
+        octane2 ? "octane2" : "octane", options[0] ? "," : "", options);
+    QTestState *qts = octane2 ? octane2_start_args(extra) :
+                                octane_start_args(extra);
+
+    octane_station_address(qts, mac);
+    *hostid = octane_qom_str(qts, "hostid");
+    *hostids = octane_qom_str(qts, "hostids");
+    qtest_quit(qts);
+}
+
 static void test_octane_system_id(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
-    const char *machine = octane2 ? "octane2" : "octane";
-    const char *keys[] = { "guest-a.img", "guest-b.img", "guest-a.img" };
-    uint32_t id[G_N_ELEMENTS(keys)];
-    uint8_t mac[6], expected[6];
-    g_autofree char *extra = NULL;
-    QTestState *qts;
+    static const struct {
+        const char *options;
+        uint8_t mac[6];
+        const char *id;
+    } cases[] = {
+        { "", { 0x08, 0x00, 0x69, 0xe1, 0x00, 0x00 }, "69e10000" },
+        { "emu-id=0", { 0x08, 0x00, 0x69, 0xe1, 0x00, 0x00 }, "69e10000" },
+        { "emu-id=42", { 0x08, 0x00, 0x69, 0xe1, 0x02, 0xa0 }, "69e102a0" },
+        { "emu-id=43", { 0x08, 0x00, 0x69, 0xe1, 0x02, 0xb0 }, "69e102b0" },
+        { "emu-id=4095", { 0x08, 0x00, 0x69, 0xe1, 0xff, 0xf0 }, "69e1fff0" },
+        /* hostid wins over emu-id; the short form is the same as the long. */
+        { "emu-id=42,hostid=69aabbcc", { 0x08, 0x00, 0x69, 0xaa, 0xbb, 0xcc },
+          "69aabbcc" },
+        { "hostid=aabbcc", { 0x08, 0x00, 0x69, 0xaa, 0xbb, 0xcc },
+          "69aabbcc" },
+        { "hostid=0BEA40", { 0x08, 0x00, 0x69, 0x0b, 0xea, 0x40 },
+          "690bea40" },
+        /* serial folds to the id: F9N102J0 is 69e102a0. */
+        { "serial=F9N102J0", { 0x08, 0x00, 0x69, 0xe1, 0x02, 0xa0 },
+          "69e102a0" },
+        { "serial=F9N102J0,hostid=e102a0",
+          { 0x08, 0x00, 0x69, 0xe1, 0x02, 0xa0 }, "69e102a0" },
+        /* mac sets the id, and agrees with hostid. */
+        { "emu-id=42,mac=08:00:69:aa:bb:cc",
+          { 0x08, 0x00, 0x69, 0xaa, 0xbb, 0xcc }, "69aabbcc" },
+        { "mac=08:00:69:aa:bb:cc,hostid=aabbcc",
+          { 0x08, 0x00, 0x69, 0xaa, 0xbb, 0xcc }, "69aabbcc" },
+    };
 
-    for (unsigned int i = 0; i < G_N_ELEMENTS(keys); i++) {
-        g_autoptr(GChecksum) sum = g_checksum_new(G_CHECKSUM_SHA256);
-        guint8 seed[32];
-        gsize length = sizeof(seed);
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *hostid = NULL, *hostids = NULL;
+        uint8_t mac[6];
 
-        g_free(extra);
-        extra = g_strdup_printf("-M %s,identity-key=%s -nic user", machine,
-                                keys[i]);
-        qts = octane2 ? octane2_start_args(extra) : octane_start_args(extra);
-        octane_station_address(qts, mac);
-        qtest_quit(qts);
-
-        g_checksum_update(sum, (const guchar *)keys[i], -1);
-        g_checksum_get_digest(sum, seed, &length);
-        expected[0] = 0x08;
-        expected[1] = 0x00;
-        expected[2] = 0x69;
-        expected[3] = 0xe0 | (seed[0] & 0x0f);
-        expected[4] = seed[1];
-        expected[5] = seed[2];
-        g_assert_cmpmem(mac, 6, expected, 6);
-
-        id[i] = octane_system_id(mac);
-        g_assert_cmphex(id[i] >> 24, ==, 0x69);
-        g_assert_cmphex(id[i], !=, 0);
+        octane_identity(octane2, cases[i].options, mac, &hostid, &hostids);
+        g_test_message("%s", cases[i].options);
+        g_assert_cmpmem(mac, 6, cases[i].mac, 6);
+        g_assert_cmpstr(hostid, ==, cases[i].id);
+        g_assert_cmpstr(hostids, ==, cases[i].id);
+        g_assert_cmphex(octane_system_id(mac), ==,
+                        g_ascii_strtoull(cases[i].id, NULL, 16));
     }
-    g_assert_cmphex(id[0], !=, id[1]);
-    g_assert_cmphex(id[0], ==, id[2]);
-
-    /* An explicit mac= still decides, as on the other IP30 identities. */
-    qts = octane2 ?
-        octane2_start_args("-M octane2,mac=08:00:69:aa:bb:cc,"
-                           "identity-key=guest-a.img -nic user") :
-        octane_start_args("-M octane,mac=08:00:69:aa:bb:cc,"
-                          "identity-key=guest-a.img -nic user");
-    octane_station_address(qts, mac);
-    qtest_quit(qts);
-    g_assert_cmphex(octane_system_id(mac), ==, 0x69aabbcc);
 }
 
 /*
- * With a system disk on SCSI bus 0 unit 0 the address comes from the
- * disk's canonical path instead, and mac= still wins over both.
+ * Inputs that do not fit the address families are refused, with a message
+ * naming what is wrong and a suggestion that is itself accepted. Nothing
+ * changes once the machine is built, and hostids is read-only.
  */
-static void test_octane_mac_follows_disk(gconstpointer data)
+static void test_octane_identity_refusals(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    const char *machine = octane2 ? "octane2" : "octane";
+    g_autofree char *bios = g_strdup_printf("-bios %s", flash_path);
+    static const struct {
+        const char *options;
+        const char *message;
+    } refused[] = {
+        { "emu-id=4096", "emu-id must be 0 to 4095, not 4096" },
+        { "serial=M2100887",
+          "serial folds to d2100887; this machine's host id comes from its "
+          "station address, which always starts 69; use hostid=100887 or "
+          "mac=08:00:69:10:08:87" },
+        { "hostid=d2100887",
+          "hostid=d2100887: this machine's host id is 69 plus 6 hex digits; "
+          "use hostid=100887 or mac=08:00:69:10:08:87" },
+        { "hostid=0bea4",
+          "hostid must be 6 hex digits (the 69 is implied) or 8 starting "
+          "69, not '0bea4'" },
+        { "hostid=690bea400",
+          "hostid must be 6 hex digits (the 69 is implied) or 8 starting "
+          "69, not '690bea400'" },
+        { "mac=52:54:00:12:34:56",
+          "mac=52:54:00:12:34:56: this machine's station address must start "
+          "08:00:69; use mac=08:00:69:12:34:56 or hostid=123456" },
+        { "serial=AB:CD", "serial 'AB:CD' must be 1 to 10 printable "
+          "characters, none of ':' or ';'" },
+        { "serial=F9N102J0,hostid=69aabbcc",
+          "serial F9N102J0 folds to 69e102a0 but hostid=69aabbcc gives "
+          "69aabbcc;" },
+        { "mac=08:00:69:e1:02:a0,hostid=aabbcc",
+          "mac=08:00:69:e1:02:a0 gives host id 69e102a0 but hostid=aabbcc "
+          "gives 69aabbcc; this machine's host id comes from its station "
+          "address, so it would take 69e102a0 from mac; make them agree" },
+        { "mac=08:00:69:e1:02:a0,serial=F9N102J1", "folds to 69e102a1" },
+    };
+    g_autoptr(QDict) response = NULL;
+    QTestState *qts;
+
+    for (size_t i = 0; i < G_N_ELEMENTS(refused); i++) {
+        g_autofree char *bad = g_strdup_printf("%s,%s", machine,
+                                               refused[i].options);
+
+        octane_storage_rejected(bad, bios, refused[i].message);
+    }
+    /* The suggestions in the messages are accepted. */
+    for (size_t i = 0; i < 2; i++) {
+        g_autofree char *hostid = NULL, *hostids = NULL;
+        uint8_t mac[6];
+
+        octane_identity(octane2, i ? "mac=08:00:69:10:08:87" :
+                                     "hostid=100887", mac, &hostid,
+                        &hostids);
+        g_assert_cmpstr(hostid, ==, "69100887");
+    }
+
+    qts = octane2 ? octane2_start_args("-M octane2,emu-id=7 -nic user") :
+                    octane_start_args("-M octane,emu-id=7 -nic user");
+    g_assert_cmpuint(octane_qom_uint(qts, "emu-id"), ==, 7);
+    /* kind is a constant of the emulator, not a property. */
+    response = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                         "{'path':'/machine','property':'kind'}}");
+    g_assert_true(qdict_haskey(response, "error"));
+    qobject_unref(response);
+    response = qtest_qmp(qts, "{'execute':'qom-set','arguments':"
+                         "{'path':'/machine','property':'emu-id',"
+                         "'value':8}}");
+    g_assert_true(qdict_haskey(response, "error"));
+    qobject_unref(response);
+    response = qtest_qmp(qts, "{'execute':'qom-set','arguments':"
+                         "{'path':'/machine','property':'serial',"
+                         "'value':'M2100887'}}");
+    g_assert_true(qdict_haskey(response, "error"));
+    qobject_unref(response);
+    response = qtest_qmp(qts, "{'execute':'qom-set','arguments':"
+                         "{'path':'/machine','property':'hostid',"
+                         "'value':'69aabbcc'}}");
+    g_assert_true(qdict_haskey(response, "error"));
+    qobject_unref(response);
+    response = qtest_qmp(qts, "{'execute':'qom-set','arguments':"
+                         "{'path':'/machine','property':'hostids',"
+                         "'value':'69aabbcc'}}");
+    g_assert_true(qdict_haskey(response, "error"));
+    g_assert_cmpuint(octane_qom_uint(qts, "emu-id"), ==, 7);
+    qtest_quit(qts);
+}
+
+/*
+ * The system disk no longer seeds the address: two disks give the same one,
+ * and mac= still wins.
+ */
+static void test_octane_mac_ignores_disk(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
     g_autoptr(GError) error = NULL;
     g_autofree char *directory = g_dir_make_tmp("octane-mac-XXXXXX", &error);
     g_autofree char *image = NULL;
-    g_autofree char *real = NULL;
     g_autofree char *extra = NULL;
-    g_autoptr(GChecksum) sum = g_checksum_new(G_CHECKSUM_SHA256);
-    guint8 seed[32];
-    gsize length = sizeof(seed);
-    uint8_t mac[6], expected[6];
+    static const uint8_t expected[6] = { 0x08, 0x00, 0x69, 0xe1, 0x02, 0xa0 };
+    uint8_t mac[6];
     QTestState *qts;
 
     g_assert_no_error(error);
     image = g_build_filename(directory, "disk.img", NULL);
     g_assert_true(g_file_set_contents(image, "\0", 1, NULL));
     g_assert_cmpint(truncate(image, 1 << 20), ==, 0);
-    real = realpath(image, NULL);
-    g_assert_nonnull(real);
-    g_checksum_update(sum, (const guchar *)real, -1);
-    g_checksum_get_digest(sum, seed, &length);
-    expected[0] = 0x08;
-    expected[1] = 0x00;
-    expected[2] = 0x69;
-    expected[3] = 0xe0 | (seed[0] & 0x0f);
-    expected[4] = seed[1];
-    expected[5] = seed[2];
 
-    extra = g_strdup_printf("-drive if=scsi,bus=0,unit=0,file=%s,format=raw "
-                            "-nic user", image);
+    extra = g_strdup_printf("-M %s,emu-id=42 "
+                            "-drive if=scsi,bus=0,unit=0,file=%s,format=raw "
+                            "-nic user", octane2 ? "octane2" : "octane",
+                            image);
     qts = octane2 ? octane2_start_args(extra) : octane_start_args(extra);
     octane_station_address(qts, mac);
     g_assert_cmpmem(mac, 6, expected, 6);
@@ -6626,10 +6733,14 @@ int main(int argc, char **argv)
                         test_octane_system_id);
     qtest_add_data_func("/octane2/system-id", GINT_TO_POINTER(1),
                         test_octane_system_id);
-    qtest_add_data_func("/octane/mac-follows-disk", GINT_TO_POINTER(0),
-                        test_octane_mac_follows_disk);
-    qtest_add_data_func("/octane2/mac-follows-disk", GINT_TO_POINTER(1),
-                        test_octane_mac_follows_disk);
+    qtest_add_data_func("/octane/identity-refusals", GINT_TO_POINTER(0),
+                        test_octane_identity_refusals);
+    qtest_add_data_func("/octane2/identity-refusals", GINT_TO_POINTER(1),
+                        test_octane_identity_refusals);
+    qtest_add_data_func("/octane/mac-ignores-disk", GINT_TO_POINTER(0),
+                        test_octane_mac_ignores_disk);
+    qtest_add_data_func("/octane2/mac-ignores-disk", GINT_TO_POINTER(1),
+                        test_octane_mac_ignores_disk);
     qtest_add_data_func("/octane/ioc3-parallel", GINT_TO_POINTER(0),
                         test_ioc3_parallel);
     qtest_add_data_func("/octane2/ioc3-parallel", GINT_TO_POINTER(1),

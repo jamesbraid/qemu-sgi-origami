@@ -66,9 +66,12 @@ class IP30CatalogueTests(unittest.TestCase):
         # Board values with catalogue defaults are machine properties; the
         # processor part's are -cpu properties.
         self.assertEqual(offering["overrides"], [
+            {"property": "emu-id", "target": "machine"},
             {"property": "flash-select", "target": "machine"},
             {"property": "flash-strap", "target": "machine"},
+            {"property": "hostid", "target": "machine"},
             {"property": "mac", "target": "machine"},
+            {"property": "serial", "target": "machine"},
             {"property": "r12000-prid", "target": "cpu"},
             {"property": "r12000-fpu-id", "target": "cpu"}])
         self.assertEqual(len(offering["scsi-adapters"]), 2)

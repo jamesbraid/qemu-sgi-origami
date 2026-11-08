@@ -11,6 +11,7 @@ docs/devel/sgi-mesa-renderer.rst
 docs/devel/testing/sgi.rst
 docs/sphinx/sgiref.py
 docs/system/mips/sgi/index.rst
+docs/system/mips/sgi/identity.rst
 docs/system/devices/sgi-mace-i2c.rst
 docs/system/mips/sgi/glossary.rst
 docs/system/mips/sgi/hardware/baseio.rst
@@ -991,6 +992,7 @@ tests/unit/test-i2c-wire.c
 tests/unit/test-onewire.c
 tests/unit/test-sgi-bedrock-ni.c
 tests/unit/test-sgi-board-identity.c
+tests/unit/test-sgi-board-mac.c
 tests/unit/test-sgi-dma.c
 tests/unit/test-sgi-gl-vmstate.c
 tests/unit/test-sgi-gl.c
@@ -1216,6 +1218,7 @@ tests/qtest/sgi-mace-i2c-test.c
 tests/qtest/sgi-mace-test.c
 tests/qtest/sgi-mace-video-test.c
 tests/qtest/sgi-machine-init-test.c
+tests/qtest/sgi-identity-props-test.c
 tests/qtest/sgi-machine-storage-test.c
 tests/qtest/sgi-o2-product-fixture.h
 tests/qtest/sgi-pci-expansion-ni-fixture.h

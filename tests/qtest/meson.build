@@ -73,6 +73,7 @@ slow_qtests = {
   # then nine of them twice more for the per-guest serial. 175.85s alone on
   # a quiet host; budget three times that, rounded up. The earlier figure
   # of 64.77s was before the serial cases.
+  'sgi-identity-props-test': 300,
   'sgi-synthetic-serial-test': 540,
   # Routed cases expand the builder suite beyond its previous budget.
   'sn-builder-test': 1650,
@@ -630,6 +631,10 @@ sgi_qtests = \
    config_all_devices.has_key('CONFIG_SGI_SN1') and
    is_variable('qemu_sgi_machine_init') ?
     ['sgi-machine-init-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_SN0') and
+   config_all_devices.has_key('CONFIG_SGI_SN1') and
+   config_all_devices.has_key('CONFIG_SGI_OCTANE') ?
+    ['sgi-identity-props-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_ODYSSEY') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn1-odyssey-test', 'sn1-odyssey-query-test'] : []) + \

@@ -10,7 +10,7 @@ fork_unit_tests = [
   'test-sn1-topology',
   'test-sn-model', 'test-sgi-prom-image', 'test-sgi-initial-flash',
   'test-sgi-machine-init', 'test-sgi-synthetic-serial',
-  'test-sgi-board-identity',
+  'test-sgi-board-identity', 'test-sgi-board-mac',
   'test-sgi-bedrock-ni', 'test-sgi-pi-gfx', 'test-sgi-head-guard',
   'test-sgi-graphics-host',
   'test-sgi-rad1-audio-pcm', 'test-sgi-odyssey-planes',
@@ -141,6 +141,7 @@ tests = {
   'test-sgi-synthetic-serial': [],
   # all code tested by test-sgi-board-identity is inside its header
   'test-sgi-board-identity': [],
+  'test-sgi-board-mac': ['../../hw/mips/sgi/board-mac.c', qom, hwcore],
   # all code tested by test-sgi-rad1-audio-pcm is inside sgi-rad1-audio-pcm.h
   'test-sgi-rad1-audio-pcm': [],
   'test-logging': [],

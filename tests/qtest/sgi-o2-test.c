@@ -8242,19 +8242,20 @@ static void check_product_composition(bool plus)
 }
 
 /*
- * The clock's silicon serial, which the guest reads for its system id, comes
- * from the identity key: it is nonzero, valid, and differs between keys. The
- * digest values are sha256 bytes 14 to 19 of the key, worked out outside
- * the model, and 0x82 is the one-wire CRC of 0x71 and those six bytes.
+ * The clock's silicon serial is the marker 45 4d 55, the kind and the
+ * machine's serial as two bytes. It is read from the product machine here;
+ * the CRC and reset checks are in the platform inputs test. The O2 does not
+ * derive its station address from the serial: that comes from -nic.
  */
-static void o2_product_clock_serial(const char *key, uint8_t serial[7])
+static void o2_product_clock_serial(const char *serial_option,
+                                    uint8_t serial[7])
 {
     O2ProductTest t = { 0 };
     QTestState *qts;
 
     o2_product_prepare(&t);
-    if (key) {
-        char *machine = g_strdup_printf("%s,identity-key=%s", t.machine, key);
+    if (serial_option) {
+        char *machine = g_strdup_printf("%s,%s", t.machine, serial_option);
 
         g_free(t.machine);
         t.machine = machine;
@@ -8272,20 +8273,100 @@ static void o2_product_clock_serial(const char *key, uint8_t serial[7])
 
 static void test_product_system_serial(void)
 {
-    static const uint8_t disk[7] = { 0xba, 0x6c, 0x42, 0x2b, 0xe9, 0x28, 0x82 };
-    static const uint8_t other[7] = { 0xa6, 0xc3, 0x3b, 0x22, 0x05, 0x0a,
-                                      0xea };
-    uint8_t first[7], second[7], named[7];
+    static const uint8_t forty_two[7] = { 0x45, 0x4d, 0x55, 0x01, 0x00,
+                                          0x2a, 0x00 };
+    uint8_t first[7], second[7], unset[7];
 
-    o2_product_clock_serial("/x/disk.img", first);
-    g_assert_cmpmem(first, 7, disk, 7);
-    o2_product_clock_serial("origami", second);
-    g_assert_cmpmem(second, 7, other, 7);
-    /* With no key the serial still exists, from the machine name. */
-    o2_product_clock_serial(NULL, named);
-    g_assert_cmpint(memcmp(named, "\0\0\0\0\0\0\0", 7), !=, 0);
-    g_assert_cmpint(memcmp(named, first, 7), !=, 0);
-    g_assert_cmpint(memcmp(named, second, 7), !=, 0);
+    o2_product_clock_serial("emu-id=42", first);
+    g_assert_cmpmem(first, 6, forty_two, 6);
+    o2_product_clock_serial("emu-id=43", second);
+    g_assert_cmphex(second[5], ==, 0x2b);
+    g_assert_cmpint(memcmp(first, second, 6), !=, 0);
+    o2_product_clock_serial(NULL, unset);
+    g_assert_cmphex(unset[3], ==, 0x01);
+    g_assert_cmphex(unset[4], ==, 0);
+    g_assert_cmphex(unset[5], ==, 0);
+}
+
+/*
+ * emu-id= on the product machine. IRIX reads the O2's station address, which
+ * comes from -nic and the identity chip's inputs and which this model does not
+ * derive from anything, so the machine takes no serial, hostid or mac and has
+ * no hostid, hostids or kind property; emu-id reaches the clock only. An
+ * emu-id past 4095 is refused, and nothing changes once the machine is built.
+ */
+static uint64_t o2_machine_uint(QTestState *qts, const char *property)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine',"
+        "'property':%s}}", property);
+
+    g_assert_true(qdict_haskey(response, "return"));
+    return qdict_get_int(response, "return");
+}
+
+static void test_product_serial_no_hostid(void)
+{
+    static const char *const absent[] = {
+        "kind", "serial", "hostid", "hostids", "mac",
+    };
+    O2ProductTest t = { 0 };
+    g_autoptr(QDict) response = NULL;
+    g_autofree char *machine = NULL;
+    QTestState *qts;
+
+    o2_product_prepare(&t);
+    machine = g_strdup_printf("%s,emu-id=42", t.machine);
+    g_free(t.machine);
+    t.machine = g_steal_pointer(&machine);
+    qts = o2_product_start(&t);
+    g_assert_cmpuint(o2_machine_uint(qts, "emu-id"), ==, 42);
+    for (size_t i = 0; i < G_N_ELEMENTS(absent); i++) {
+        qobject_unref(response);
+        response = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                             "{'path':'/machine','property':%s}}",
+                             absent[i]);
+        g_assert_true(qdict_haskey(response, "error"));
+    }
+    qobject_unref(response);
+    response = qtest_qmp(qts, "{'execute':'qom-set','arguments':"
+                         "{'path':'/machine','property':'emu-id',"
+                         "'value':43}}");
+    g_assert_true(qdict_haskey(response, "error"));
+    g_assert_cmpuint(o2_machine_uint(qts, "emu-id"), ==, 42);
+    qtest_quit(qts);
+    o2_product_cleanup(&t);
+}
+
+static void test_product_serial_refused(void)
+{
+    static const struct {
+        const char *option;
+        const char *message;
+    } refused[] = {
+        { "emu-id=4096", "emu-id must be 0 to 4095, not 4096" },
+        { "serial=M2100887", "serial" },
+        { "hostid=69e102a0", "hostid" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(refused); i++) {
+        O2ProductTest t = { 0 };
+        g_autofree char *machine = NULL;
+
+        o2_product_prepare(&t);
+        machine = g_strdup_printf("%s,%s", t.machine, refused[i].option);
+        g_free(t.machine);
+        t.machine = g_steal_pointer(&machine);
+        {
+            const char *args[] = {
+                qtest_qemu_binary(NULL), "-M", t.machine, "-nodefaults",
+                "-display", "none", "-S", "-qmp", "stdio", NULL,
+            };
+
+            assert_qtest_launch_rejected(args, refused[i].message);
+        }
+        o2_product_cleanup(&t);
+    }
 }
 
 static void test_product_composition(void)
@@ -9350,5 +9431,7 @@ int main(int argc, char **argv)
     add_case("o2/product-native-pci", test_product_native_pci);
     add_case("o2/product-configuration", test_product_configuration);
     add_case("o2/product-system-serial", test_product_system_serial);
+    add_case("o2/product-serial-no-hostid", test_product_serial_no_hostid);
+    add_case("o2/product-serial-refused", test_product_serial_refused);
     return g_test_run();
 }

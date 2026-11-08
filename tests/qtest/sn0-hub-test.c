@@ -3499,16 +3499,18 @@ static unsigned int onewire_cpu_search_all(QTestState *qts, unsigned int cpu,
  * node's Hub alone, as real inventories list them only under slot n1: the
  * n1 bus answers with the IP27 node part and both module parts, every other
  * node's bus with its own node part only. The MODULEID pages carry the
- * module serial; the midplane record is module 1's, byte for byte as the
+ * module serial, which follows the machine's serial (here none, so
+ * KEMU100000); the midplane record is module 1's, byte for byte as the
  * module one-wire records contract gives it.
  */
 static void test_origin2000_module_parts_on_n1_only(const void *data)
 {
     static const uint8_t expected_pages[2][32] = {
-        { 0x01, 0x4b, 0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d,
-          0x49, 0x30, 0x31, 0xff, 0xff, 0xff, 0xff, 0xff,
+        /* "KEMU100000": module 0 of a machine with no serial configured. */
+        { 0x01, 0x4b, 0x45, 0x4d, 0x55, 0x31, 0x30, 0x30,
+          0x30, 0x30, 0x30, 0xff, 0xff, 0xff, 0xff, 0xff,
           0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-          0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf9, 0x27 },
+          0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x2a, 0x5a },
         { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
           0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
           0x4d, 0x4f, 0x44, 0x55, 0x4c, 0x45, 0x49, 0x44,
@@ -3638,6 +3640,132 @@ static void test_origin2000_module_parts_on_n1_only(const void *data)
     }
 
     qtest_quit(qts);
+}
+
+/*
+ * The MODULEID part's first page holds the module serial the kernel reads as
+ * its system id. With emu-id=N it is "KEMU", the kind, the four-digit emu-id
+ * and the module number, 0 for the module the host id comes from; with
+ * serial=TEXT it is TEXT, which must start with K and is padded on the left
+ * with K to ten characters; with hostid=ID it is "KK" and the
+ * eight-character spelling of ID. The machine's hostid is the fold IRIX makes
+ * of the serial: emu-id 42 is KEMU100420 and d5100420. IRIX prints one id per
+ * module and the machine's hostids lists them; the catalogue has no Origin
+ * 2000 or Onyx2 of two modules, so the list here is one id, and the module
+ * digit's range and the id-plus-module spelling are the unit test's. mac=
+ * sets only the port's address and leaves the id alone.
+ */
+static void module_id_serial(QTestState *qts, char text[11])
+{
+    uint64_t module_rom = ONEWIRE_FAMILY_DS2502 | (0x51454d555900ULL << 8);
+    uint8_t request[3] = { 0xc3, 0, 0 };
+    uint8_t page[32];
+
+    module_rom |= (uint64_t)onewire_crc8(module_rom, 7) << 56;
+    onewire_cpu_search_for_identity(qts, 0, module_rom);
+    for (unsigned int i = 0; i < sizeof(request); i++) {
+        onewire_cpu_write_byte(qts, 0, request[i]);
+    }
+    onewire_cpu_read_byte(qts, 0);
+    for (unsigned int i = 0; i < sizeof(page); i++) {
+        page[i] = onewire_cpu_read_byte(qts, 0);
+    }
+    g_assert_cmphex(page[0], ==, 0x01);
+    memcpy(text, page + 1, 10);
+    text[10] = 0;
+}
+
+static char *machine_qom_str(QTestState *qts, const char *property)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine',"
+        "'property':%s}}", property);
+
+    g_assert_true(qdict_haskey(response, "return"));
+    return g_strdup(qdict_get_str(response, "return"));
+}
+
+static void test_origin2000_serial_hostid(const void *data)
+{
+    const char *machine = data;
+    static const struct {
+        const char *options;
+        const char *text;
+        const char *id;
+    } cases[] = {
+        { "", "KEMU100000", "d5100000" },
+        { ",emu-id=42", "KEMU100420", "d5100420" },
+        { ",emu-id=4095", "KEMU140950", "d5140950" },
+        { ",serial=K0017299", "KKK0017299", "b0017299" },
+        { ",serial=K210088799", "K210088799", "10088799" },
+        { ",serial=KEMU100887", "KEMU100887", "d5100887" },
+        { ",emu-id=42,serial=K0017299", "KKK0017299", "b0017299" },
+        { ",hostid=d2100887", "KKM2100887", "d2100887" },
+        { ",hostid=d21a0f87", "KKM21J0O87", "d21a0f87" },
+        { ",hostid=ffffffff", "KKOOOOOOOO", "ffffffff" },
+        { ",hostid=00000001", "KKP0000001", "00000001" },
+        { ",serial=K0017299,hostid=b0017299", "KKK0017299", "b0017299" },
+        { ",emu-id=42,mac=02:a1:b2:c3:d4:e5", "KEMU100420", "d5100420" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *args = g_strdup_printf("-M %s%s", machine,
+                                                cases[i].options);
+        g_autofree char *hostid = NULL, *hostids = NULL;
+        char text[11];
+        QTestState *qts = qtest_init(args);
+
+        g_test_message("%s", args);
+        module_id_serial(qts, text);
+        g_assert_cmpstr(text, ==, cases[i].text);
+        hostid = machine_qom_str(qts, "hostid");
+        hostids = machine_qom_str(qts, "hostids");
+        g_assert_cmpstr(hostid, ==, cases[i].id);
+        g_assert_cmpstr(hostids, ==, cases[i].id);
+        qtest_quit(qts);
+    }
+}
+
+static void test_origin2000_identity_refusals(const void *data)
+{
+    const char *machine = data;
+    static const struct {
+        const char *options;
+        const char *message;
+    } refused[] = {
+        { "emu-id=4096", "emu-id must be 0 to 4095, not 4096" },
+        { "serial=M2100887",
+          "serial 'M2100887' must start with K on this machine: the guest "
+          "ignores a module serial that does not" },
+        { "serial=K0017299,hostid=b0017298",
+          "serial K0017299 folds to b0017299 but hostid=b0017298; this "
+          "machine's host id comes from its serial text, so they must name "
+          "the same id" },
+        { "hostid=e102a0", "hostid must be 8 hex digits, not 'e102a0'" },
+        { "serial=M21008870000", "serial 'M21008870000' must be 1 to 10 "
+          "printable characters, none of ':' or ';'" },
+        { "serial=AB:CD", "serial 'AB:CD' must be 1 to 10 printable "
+          "characters, none of ':' or ';'" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(refused); i++) {
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", NULL, "-display", "none", "-S",
+            "-qmp", "stdio", NULL,
+        };
+        g_autofree char *spec = g_strdup_printf("%s,%s", machine,
+                                                refused[i].options);
+
+        g_autofree char *err = NULL;
+        int status;
+
+        args[2] = spec;
+        g_assert_true(g_spawn_sync(NULL, (char **)args, NULL,
+                                   G_SPAWN_STDOUT_TO_DEV_NULL, NULL, NULL,
+                                   NULL, &err, &status, NULL));
+        g_assert_false(g_spawn_check_exit_status(status, NULL));
+        g_assert_nonnull(strstr(err, refused[i].message));
+    }
 }
 
 /*
@@ -6842,6 +6970,14 @@ int main(int argc, char **argv)
                         test_dual_origin200_pimm_records_are_per_node);
     qtest_add_data_func("sn0/hub/origin2000-module-parts-on-n1-only",
                         NULL, test_origin2000_module_parts_on_n1_only);
+    qtest_add_data_func("sn0/hub/origin2000-serial-hostid", "origin2000",
+                        test_origin2000_serial_hostid);
+    qtest_add_data_func("sn0/hub/onyx2-serial-hostid", "onyx2",
+                        test_origin2000_serial_hostid);
+    qtest_add_data_func("sn0/hub/origin2000-identity-refusals", "origin2000",
+                        test_origin2000_identity_refusals);
+    qtest_add_data_func("sn0/hub/onyx2-identity-refusals", "onyx2",
+                        test_origin2000_identity_refusals);
     qtest_add_data_func("sn0/hub/onyx2-deskside-n1-has-no-midplane",
                         NULL, test_onyx2_deskside_n1_has_no_midplane);
     qtest_add_data_func("sn0/hub/pending-banks-reject-writes", NULL,

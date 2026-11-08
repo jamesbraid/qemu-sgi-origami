@@ -1038,7 +1038,8 @@ What the chip does with those writes is *unknown*; the stored values are
 an *approximation* that satisfies the stock diagnostic's read-back.
 
 A default-generated MAC address takes SGI's ``08:00:69`` prefix, because
-the firmware expects a real part's prefix in the station-address part.
+the firmware expects a real part's prefix in the station-address part. The
+machines derive it from their identity inputs (:ref:`sgi-identity`).
 An address given with ``mac`` or ``board-mac`` is kept as given, and a
 ``-nic mac=`` that differs from ``board-mac`` is refused.
 

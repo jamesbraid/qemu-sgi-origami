@@ -209,20 +209,24 @@ static void read_clock_serial(QTestState *s, uint8_t bytes[8])
 }
 
 /*
- * The clock's silicon serial: model byte, six serial bytes from the identity
- * key and a CRC that checks them. It is read-only and survives a reset.
+ * The clock's silicon serial: model byte, six serial bytes and a CRC that
+ * checks them. The six bytes are 45 4d 55 ("EMU"), the kind and the machine's
+ * emu-id as two bytes. The clock is read-only and the serial survives a
+ * reset.
  */
 static void test_clock_serial(void)
 {
-    static const uint8_t keyed[8] = { 0x71, 0xba, 0x6c, 0x42, 0x2b, 0xe9,
-                                      0x28, 0x82 };
-    uint8_t bytes[8], again[8], named[8];
+    static const uint8_t marked[8] = { 0x71, 0x45, 0x4d, 0x55, 0x01, 0x00,
+                                       0x2a, 0 };
+    static const uint8_t top[7] = { 0x71, 0x45, 0x4d, 0x55, 0x01, 0x0f,
+                                    0xff };
+    uint8_t bytes[8], again[8], unset[8];
     QTestState *s = qtest_initf("-M o2,register-test-profile=on,"
-        "password-clear-input=1,identity-key=/x/disk.img -m 64M "
+        "password-clear-input=1,emu-id=42 -m 64M "
         "-nodefaults -rtc base=2024-01-01T00:00:00,clock=vm");
 
     read_clock_serial(s, bytes);
-    g_assert_cmpmem(bytes, 8, keyed, 8);
+    g_assert_cmpmem(bytes, 7, marked, 7);
     g_assert_cmphex(crc8(bytes, 7), ==, bytes[7]);
     rtc_write(s, 0x0a, 0x30);
     for (unsigned i = 1; i < 8; i++) {
@@ -231,16 +235,27 @@ static void test_clock_serial(void)
     rtc_write(s, 0x0a, 0x20);
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
     read_clock_serial(s, again);
-    g_assert_cmpmem(again, 8, keyed, 8);
+    g_assert_cmpmem(again, 8, bytes, 8);
     qtest_quit(s);
 
-    /* Without a key the serial is still set, from the machine name. */
+    /* The largest serial fills the low two bytes. */
+    s = qtest_initf("-M o2,register-test-profile=on,"
+        "password-clear-input=1,emu-id=4095 -m 64M "
+        "-nodefaults -rtc base=2024-01-01T00:00:00,clock=vm");
+    read_clock_serial(s, bytes);
+    g_assert_cmpmem(bytes, 7, top, 7);
+    g_assert_cmphex(crc8(bytes, 7), ==, bytes[7]);
+    qtest_quit(s);
+
+    /* Without an emu-id the marker is there with zeros: not configured. */
     s = o2_start("");
-    read_clock_serial(s, named);
-    g_assert_cmphex(named[0], ==, 0x71);
-    g_assert_cmphex(crc8(named, 7), ==, named[7]);
-    g_assert_cmpint(memcmp(named + 1, keyed + 1, 6), !=, 0);
-    g_assert_cmpint(memcmp(named + 1, "\0\0\0\0\0\0", 6), !=, 0);
+    read_clock_serial(s, unset);
+    g_assert_cmphex(unset[0], ==, 0x71);
+    g_assert_cmphex(crc8(unset, 7), ==, unset[7]);
+    g_assert_cmpmem(unset + 1, 3, marked + 1, 3);
+    g_assert_cmphex(unset[4], ==, 0x01);
+    g_assert_cmphex(unset[5], ==, 0);
+    g_assert_cmphex(unset[6], ==, 0);
     qtest_quit(s);
 }
 

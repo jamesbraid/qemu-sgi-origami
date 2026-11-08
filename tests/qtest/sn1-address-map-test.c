@@ -22,15 +22,14 @@
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
 /*
- * With no disk and no mac=, origin300 takes the address derived from the
- * SHA-256 of its machine name "origin300", and fuel from that of "fuel"
- * (sgi-board-identity.h): 08:00:69:E?:xx:xx. Worked out by hand, not by
- * the code under test.
+ * With no emu-id= and no mac=, origin300 and fuel take the address for emu-id
+ * 0 (sgi-board-identity.h): 08:00:69:E1:00:00. emu-id=42 gives
+ * 08:00:69:E1:02:A0. Worked out by hand, not by the code under test.
  */
-#define ORIGIN300_DEFAULT_MAC "08:00:69:e5:c7:03"
-#define ORIGIN300_DEFAULT_DIGITS "080069E5C703"
-#define FUEL_DEFAULT_MAC "08:00:69:ec:be:4b"
-#define FUEL_DEFAULT_DIGITS "080069ECBE4B"
+#define ORIGIN300_DEFAULT_MAC "08:00:69:e1:00:00"
+#define ORIGIN300_DEFAULT_DIGITS "080069E10000"
+#define FUEL_DEFAULT_MAC "08:00:69:e1:00:00"
+#define FUEL_DEFAULT_DIGITS "080069E10000"
 
 /* The default IO8 board area, with the derived address in place of the old. */
 static void io8_board_default_vector(uint8_t out[80])
@@ -2559,31 +2558,163 @@ static void l1_expect_system_serial(QTestState *qts, const char *serial)
     g_assert_cmpstr((const char *)reply + 7, ==, serial);
 }
 
-/*
- * The Origin 300 answers the system serial request, which the guest's
- * system-id call and FLEXlm's host id read, with "L" and seven digits of
- * the identity seed: sha256("origin300") bytes 6 to 9 give L1472560. The
- * machine has no legacy SCSI drive for the seed to hash, so the machine
- * type name stands in, as it does for the default address. A serial set on
- * the device replaces it.
- */
-static void test_origin300_system_serial(const void *data)
+static char *machine_str_property(QTestState *qts, const char *property)
 {
-    g_autofree char *quoted = g_shell_quote(prom_path);
-    QTestState *qts = machine_start_bare("-cpu R14000 -smp 2 -S");
+    g_autoptr(QDict) result = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine',"
+        "'property':%s}}", property);
 
-    l1_expect_system_serial(qts, "L1472560");
-    qtest_system_reset(qts);
-    l1_expect_system_serial(qts, "L1472560");
-    qtest_quit(qts);
+    g_assert_true(qdict_haskey(result, "return"));
+    return g_strdup(qdict_get_str(result, "return"));
+}
 
-    qts = qtest_initf("-M origin300 -bios %s -cpu R14000 -smp 2 -S "
-                      "-global sgi-l1.system-serial=M2001347", quoted);
-    l1_expect_system_serial(qts, "M2001347");
-    qtest_quit(qts);
+static uint64_t machine_uint_property(QTestState *qts, const char *property)
+{
+    g_autoptr(QDict) result = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine',"
+        "'property':%s}}", property);
+
+    g_assert_true(qdict_haskey(result, "return"));
+    return qdict_get_int(result, "return");
 }
 
 static void assert_qemu_rejects(const char *const args[], const char *message);
+static char *ioc3_mac(QTestState *qts, const char *path);
+
+/* Starts @machine and refuses it with @message. */
+static void identity_rejects(const char *machine, const char *smp,
+                             const char *message)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", machine, "-cpu", "R14000", "-smp", smp,
+        "-m", "512M", "-bios", prom_path, "-display", "none", "-qtest",
+        "stdio", "-accel", "qtest", NULL,
+    };
+
+    assert_qemu_rejects(args, message);
+}
+
+/*
+ * The Origin 300 answers the system serial request, which the guest's
+ * system-id call and FLEXlm's host id read, with the text its inputs give:
+ * "LEMU", the kind digit, the four-digit emu-id and "0" (LEMU100000 with
+ * nothing set, LEMU100420 for emu-id=42, host id d5100420); serial as given;
+ * or the eight-character spelling of hostid. serial and hostid are two
+ * spellings of one id and must agree, mac= sets only the port's address, and
+ * a serial set on the device replaces them all, with hostid following what
+ * the L1 holds.
+ */
+static void test_origin300_system_serial(const void *data)
+{
+    static const struct {
+        const char *options;
+        const char *text;
+        const char *id;
+    } cases[] = {
+        { "", "LEMU100000", "d5100000" },
+        { ",emu-id=42", "LEMU100420", "d5100420" },
+        { ",emu-id=4095", "LEMU140950", "d5140950" },
+        { ",serial=M2100887", "M2100887", "d2100887" },
+        { ",serial=LEMU100420", "LEMU100420", "d5100420" },
+        { ",emu-id=42,serial=M2100887", "M2100887", "d2100887" },
+        { ",hostid=d2100887", "M2100887", "d2100887" },
+        { ",hostid=d21a0f87", "M21J0O87", "d21a0f87" },
+        { ",hostid=00000001", "P0000001", "00000001" },
+        { ",hostid=ffffffff", "OOOOOOOO", "ffffffff" },
+        { ",hostid=c0000000", "L0000000", "c0000000" },
+        { ",hostid=69e102a0", "F9N102J0", "69e102a0" },
+        { ",serial=M2100887,hostid=d2100887", "M2100887", "d2100887" },
+        /* mac= is the port's address and leaves the id alone. */
+        { ",emu-id=42,mac=02:a1:b2:c3:d4:e5", "LEMU100420", "d5100420" },
+    };
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = machine_start_bare("-cpu R14000 -smp 2 -S");
+    g_autofree char *id = NULL;
+
+    l1_expect_system_serial(qts, "LEMU100000");
+    id = machine_str_property(qts, "hostid");
+    g_assert_cmpstr(id, ==, "d5100000");
+    qtest_system_reset(qts);
+    l1_expect_system_serial(qts, "LEMU100000");
+    qtest_quit(qts);
+
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *hostid = NULL, *hostids = NULL;
+        unsigned int emu_id = 0;
+
+        qts = qtest_initf("-M origin300%s -bios %s -cpu R14000 -smp 2 -S",
+                          cases[i].options, quoted);
+        g_test_message("%s", cases[i].options);
+        l1_expect_system_serial(qts, cases[i].text);
+        hostid = machine_str_property(qts, "hostid");
+        hostids = machine_str_property(qts, "hostids");
+        g_assert_cmpstr(hostid, ==, cases[i].id);
+        g_assert_cmpstr(hostids, ==, cases[i].id);
+        if (strstr(cases[i].options, "emu-id=42")) {
+            emu_id = 42;
+        } else if (strstr(cases[i].options, "emu-id=4095")) {
+            emu_id = 4095;
+        }
+        g_assert_cmpuint(machine_uint_property(qts, "emu-id"), ==, emu_id);
+        qtest_quit(qts);
+    }
+
+    /* A serial set on the device is a debug input and wins over all. */
+    qts = qtest_initf("-M origin300,serial=M2100887 -bios %s -cpu R14000 "
+                      "-smp 2 -S -global sgi-l1.system-serial=M2001347",
+                      quoted);
+    l1_expect_system_serial(qts, "M2001347");
+    g_free(id);
+    id = machine_str_property(qts, "hostid");
+    g_assert_cmpstr(id, ==, "d2001347");
+    g_free(id);
+    id = machine_str_property(qts, "hostids");
+    g_assert_cmpstr(id, ==, "d2001347");
+    qtest_quit(qts);
+}
+
+/* The port's address follows mac= in the L1 record and the IOC3 alike. */
+static void test_origin300_mac_leaves_the_id(const void *data)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf("-M origin300,emu-id=42,"
+                                  "mac=02:a1:b2:c3:d4:e5 -bios %s -cpu "
+                                  "R14000 -smp 2 -S", quoted);
+    g_autofree char *mac = ioc3_mac(qts, IOC3_PATH);
+    g_autofree char *id = machine_str_property(qts, "hostid");
+
+    g_assert_cmpstr(mac, ==, "02:a1:b2:c3:d4:e5");
+    g_assert_cmpstr(id, ==, "d5100420");
+    qtest_quit(qts);
+}
+
+/* Inputs the IP35 machines refuse, with the rule in the message. */
+static void test_origin300_identity_refusals(const void *data)
+{
+    static const struct {
+        const char *options;
+        const char *message;
+    } refused[] = {
+        { "emu-id=4096", "emu-id must be 0 to 4095, not 4096" },
+        { "serial=M21008870000", "serial 'M21008870000' must be 1 to 10 "
+          "printable characters, none of ':' or ';'" },
+        { "serial=AB:CD", "serial 'AB:CD' must be 1 to 10 printable "
+          "characters, none of ':' or ';'" },
+        { "serial=M2100887,hostid=d2100888",
+          "serial M2100887 folds to d2100887 but hostid=d2100888; this "
+          "machine's host id comes from its serial text, so they must name "
+          "the same id" },
+        { "hostid=e102a0", "hostid must be 8 hex digits, not 'e102a0'" },
+        { "hostid=d210088g", "hostid must be 8 hex digits, not 'd210088g'" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(refused); i++) {
+        g_autofree char *machine = g_strdup_printf("origin300,%s",
+                                                   refused[i].options);
+
+        identity_rejects(machine, "2", refused[i].message);
+    }
+}
 
 static void test_configured_l1_requires_node(const void *data)
 {
@@ -2671,37 +2802,42 @@ static void test_fuel_l1_revision(const void *data)
 static void l1_expect_mac_text(QTestState *qts, const char *text);
 
 /*
- * The Fuel's brick serial defaults to "EMUN" and a byte of the identity
- * seed: sha256("fuel") byte 5 is 0xe5 with no disk, and sha256("/dev/null")
- * byte 5 is 0xd3 with that as the system disk. The disk case also pins the
- * address text of the same seed (fd5d32...: 08:00:69:ed:5d:32). mac= moves
- * the address and not the serial.
+ * The Fuel's brick serial defaults to "EMUN" and the node number: EMUN00
+ * whatever the machine's identity inputs, because the PROM ties its NVRAM to
+ * the board serial and would start the NVRAM afresh if it changed. emu-id=42
+ * gives the address text 080069E102A0 and the host id 69e102a0. A system
+ * disk no longer matters. mac= moves the address and its host id, not the
+ * serial.
  */
 static void test_fuel_l1_brick_serial(const void *data)
 {
     g_autofree char *quoted = g_shell_quote(prom_path);
+    g_autofree char *id = NULL;
     QTestState *qts;
 
     qts = qtest_initf("-M fuel -cpu R14000 -smp 1 -m 512M -bios %s -S",
                       quoted);
-    l1_expect_brick_serial(qts, "EMUNE5");
+    l1_expect_brick_serial(qts, "EMUN00");
     qtest_system_reset(qts);
-    l1_expect_brick_serial(qts, "EMUNE5");
+    l1_expect_brick_serial(qts, "EMUN00");
     qtest_quit(qts);
 
-    qts = qtest_initf("-M fuel -cpu R14000 -smp 1 -m 512M -bios %s -S "
-                      "-drive if=scsi,bus=0,unit=0,file=/dev/null,format=raw",
-                      quoted);
-    l1_expect_brick_serial(qts, "EMUND3");
-    l1_expect_mac_text(qts, "080069ED5D32");
+    qts = qtest_initf("-M fuel,emu-id=42 -cpu R14000 -smp 1 -m 512M -bios %s "
+                      "-S -drive if=scsi,bus=0,unit=0,file=/dev/null,"
+                      "format=raw", quoted);
+    l1_expect_brick_serial(qts, "EMUN00");
+    l1_expect_mac_text(qts, "080069E102A0");
+    id = machine_str_property(qts, "hostid");
+    g_assert_cmpstr(id, ==, "69e102a0");
     qtest_quit(qts);
 
-    qts = qtest_initf("-M fuel,mac=02:a1:b2:c3:d4:e5 -cpu R14000 -smp 1 "
-                      "-m 512M -bios %s -S "
-                      "-drive if=scsi,bus=0,unit=0,file=/dev/null,format=raw",
-                      quoted);
-    l1_expect_brick_serial(qts, "EMUND3");
-    l1_expect_mac_text(qts, "02A1B2C3D4E5");
+    qts = qtest_initf("-M fuel,emu-id=42,mac=08:00:69:a1:b2:c3 -cpu R14000 "
+                      "-smp 1 -m 512M -bios %s -S", quoted);
+    l1_expect_brick_serial(qts, "EMUN00");
+    l1_expect_mac_text(qts, "080069A1B2C3");
+    g_free(id);
+    id = machine_str_property(qts, "hostid");
+    g_assert_cmpstr(id, ==, "69a1b2c3");
     qtest_quit(qts);
 
     /* A serial set on the device replaces the default. */
@@ -2711,6 +2847,75 @@ static void test_fuel_l1_brick_serial(const void *data)
     qtest_system_reset(qts);
     l1_expect_brick_serial(qts, "T4ST42");
     qtest_quit(qts);
+}
+
+/*
+ * The Fuel's id is its station address's last four bytes, and its L1 reports
+ * the address as twelve hex digits. hostid sets it in full (69aabbcc) or in
+ * the six-digit shorthand (aabbcc); serial must fold to 69xxxxxx; mac sets it
+ * too; the inputs must agree; and hostids reads back the full id.
+ */
+static void test_fuel_identity_inputs(const void *data)
+{
+    static const struct {
+        const char *options;
+        const char *text;
+        const char *id;
+    } cases[] = {
+        { "", "080069E10000", "69e10000" },
+        { ",emu-id=42", "080069E102A0", "69e102a0" },
+        { ",hostid=69aabbcc", "080069AABBCC", "69aabbcc" },
+        { ",hostid=aabbcc", "080069AABBCC", "69aabbcc" },
+        { ",hostid=0bea40", "0800690BEA40", "690bea40" },
+        { ",emu-id=42,hostid=0bea40", "0800690BEA40", "690bea40" },
+        { ",serial=F9N102J0", "080069E102A0", "69e102a0" },
+        { ",mac=08:00:69:aa:bb:cc,hostid=aabbcc", "080069AABBCC",
+          "69aabbcc" },
+        { ",hostid=100887", "080069100887", "69100887" },
+    };
+    static const struct {
+        const char *options;
+        const char *message;
+    } refused[] = {
+        { "emu-id=4096", "emu-id must be 0 to 4095, not 4096" },
+        { "serial=M2100887",
+          "serial folds to d2100887; this machine's host id comes from its "
+          "station address, which always starts 69; use hostid=100887 or "
+          "mac=08:00:69:10:08:87" },
+        { "hostid=d2100887",
+          "hostid=d2100887: this machine's host id is 69 plus 6 hex digits; "
+          "use hostid=100887 or mac=08:00:69:10:08:87" },
+        { "hostid=0bea4", "hostid must be 6 hex digits (the 69 is implied) "
+          "or 8 starting 69, not '0bea4'" },
+        { "mac=02:a1:b2:c3:d4:e5",
+          "mac=02:a1:b2:c3:d4:e5: this machine's station address must start "
+          "08:00:69; use mac=08:00:69:c3:d4:e5 or hostid=c3d4e5" },
+        { "mac=08:00:69:e1:02:a0,hostid=aabbcc",
+          "mac=08:00:69:e1:02:a0 gives host id 69e102a0 but hostid=aabbcc "
+          "gives 69aabbcc; this machine's host id comes from its station "
+          "address, so it would take 69e102a0 from mac; make them agree" },
+    };
+    g_autofree char *quoted = g_shell_quote(prom_path);
+
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        QTestState *qts = qtest_initf("-M fuel%s -cpu R14000 -smp 1 -m 512M "
+                                      "-bios %s -S", cases[i].options,
+                                      quoted);
+        g_autofree char *hostid = machine_str_property(qts, "hostid");
+        g_autofree char *hostids = machine_str_property(qts, "hostids");
+
+        g_test_message("%s", cases[i].options);
+        l1_expect_mac_text(qts, cases[i].text);
+        g_assert_cmpstr(hostid, ==, cases[i].id);
+        g_assert_cmpstr(hostids, ==, cases[i].id);
+        qtest_quit(qts);
+    }
+    for (size_t i = 0; i < G_N_ELEMENTS(refused); i++) {
+        g_autofree char *machine = g_strdup_printf("fuel,%s",
+                                                   refused[i].options);
+
+        identity_rejects(machine, "1", refused[i].message);
+    }
 }
 
 static void test_fuel_l1_revision_rejects_invalid(const void *data)
@@ -3051,9 +3256,9 @@ static void expect_l1_area(QTestState *qts, unsigned component,
 
 /*
  * The vectors above carry the instance-numbered serial "EMUN00" at bytes
- * 27-32. The origin300 machine with no disk puts "EMUN" and the sixth byte
- * of sha256("origin300") (65c7035bfaf7...) there instead, "EMUNF7", so the
- * checksum byte moves with it.
+ * 27-32. The origin300 machine puts "EMUN" and the node number there, so
+ * "EMUN00" for node 0 whatever its emu-id= (the PROM ties NVRAM ownership to
+ * this serial); the checksum byte moves with a different serial.
  */
 static void node_board_with_serial(uint8_t *board, const uint8_t *vector,
                                    const char *serial)
@@ -3071,7 +3276,7 @@ static void node_board_with_serial(uint8_t *board, const uint8_t *vector,
 /*
  * Without files the L1 builds the node board's chassis and board areas
  * for the fitted processor count, byte for byte as the launcher's Python
- * encoder did, with the machine's seeded serial. No memory record is
+ * encoder did, with the machine's serial. No memory record is
  * invented.
  */
 static void test_l1_default_identity_records(const void *data)
@@ -3087,10 +3292,21 @@ static void test_l1_default_identity_records(const void *data)
     for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
         g_autofree char *extra = g_strdup_printf("-cpu R14000 -smp %s -S",
                                                  cases[i].smp);
+        g_autofree char *quoted = g_shell_quote(prom_path);
+        g_autofree char *with_serial = g_strdup_printf(
+            "-M origin300,emu-id=42 -cpu R14000 -smp %s -bios %s -S",
+            cases[i].smp, quoted);
         QTestState *qts = machine_start_bare(extra);
         uint8_t reply[131], board[72];
 
-        node_board_with_serial(board, cases[i].board, "EMUNF7");
+        node_board_with_serial(board, cases[i].board, "EMUN00");
+        /* A different machine serial leaves the board's serial alone. */
+        {
+            QTestState *other = qtest_init(with_serial);
+
+            expect_l1_area(other, 0, L1_EEPROM_BOARD, board, sizeof(board));
+            qtest_quit(other);
+        }
         for (unsigned reset = 0; reset < 2; reset++) {
             expect_l1_area(qts, 0, L1_EEPROM_CHASSIS, expected_chassis,
                            sizeof(expected_chassis));
@@ -3407,7 +3623,8 @@ static void test_fuel_mac(const void *data)
         const char *mac;
     } cases[] = {
         { "", FUEL_DEFAULT_DIGITS, FUEL_DEFAULT_MAC },
-        { ",mac=02:a1:b2:c3:d4:e5", "02A1B2C3D4E5", "02:a1:b2:c3:d4:e5" },
+        { ",emu-id=42", "080069E102A0", "08:00:69:e1:02:a0" },
+        { ",mac=08:00:69:a1:b2:c3", "080069A1B2C3", "08:00:69:a1:b2:c3" },
     };
     g_autofree char *quoted = g_shell_quote(prom_path);
 
@@ -3597,9 +3814,10 @@ static void test_fuel_linux_identity(const void *data)
         const char *option;
         uint8_t mac[6];
     } cases[] = {
-        /* The address derived from the machine name "fuel". */
-        { "", { 0x08, 0x00, 0x69, 0xec, 0xbe, 0x4b } },
-        { ",mac=02:a1:b2:c3:d4:e5", { 0x02, 0xa1, 0xb2, 0xc3, 0xd4, 0xe5 } },
+        /* The address for serial 0, then for serial 42. */
+        { "", { 0x08, 0x00, 0x69, 0xe1, 0x00, 0x00 } },
+        { ",emu-id=42", { 0x08, 0x00, 0x69, 0xe1, 0x02, 0xa0 } },
+        { ",mac=08:00:69:a1:b2:c3", { 0x08, 0x00, 0x69, 0xa1, 0xb2, 0xc3 } },
     };
     g_autofree char *quoted = g_shell_quote(prom_path);
 
@@ -7164,8 +7382,14 @@ int main(int argc, char **argv)
                         test_fuel_l1_revision);
     qtest_add_data_func("sn1/address-map/l1-brick-serial", NULL,
                         test_fuel_l1_brick_serial);
+    qtest_add_data_func("sn1/address-map/fuel-identity-inputs", NULL,
+                        test_fuel_identity_inputs);
     qtest_add_data_func("sn1/address-map/l1-origin300-system-serial", NULL,
                         test_origin300_system_serial);
+    qtest_add_data_func("sn1/address-map/l1-origin300-mac-leaves-id", NULL,
+                        test_origin300_mac_leaves_the_id);
+    qtest_add_data_func("sn1/address-map/l1-origin300-identity-refusals",
+                        NULL, test_origin300_identity_refusals);
     qtest_add_data_func("sn1/address-map/l1-overrides-origin300", NULL,
                         test_l1_overrides_origin300);
     qtest_add_data_func("sn1/address-map/l1-revision-machine-without-l1",

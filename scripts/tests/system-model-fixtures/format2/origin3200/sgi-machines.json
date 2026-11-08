@@ -76,6 +76,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -85,6 +93,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {

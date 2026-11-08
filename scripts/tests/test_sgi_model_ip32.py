@@ -46,7 +46,8 @@ class IP32CatalogueTests(unittest.TestCase):
                          ["aic0.0", "aic1.0"])
         self.assertEqual(offering["scsi-adapters"][1]["targets"], [])
         self.assertEqual(offering["disk-bus"], "aic0.0")
-        self.assertEqual(offering["overrides"], [])
+        self.assertEqual(offering["overrides"],
+                         [{"property": "emu-id", "target": "machine"}])
         self.assertEqual(offering["networks"][0]["nic-model"], "sgi-mace-eth")
 
     def test_o2plus_is_a_cpu_variant_of_the_same_machine(self):

@@ -71,7 +71,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -92,6 +92,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "ioc3-subsystem-id",
           "target": "machine"
         },
@@ -105,6 +113,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -270,7 +282,12 @@
         }
       ],
       "nodes": 1,
-      "overrides": [],
+      "overrides": [
+        {
+          "property": "emu-id",
+          "target": "machine"
+        }
+      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 195000000,
@@ -384,7 +401,12 @@
         }
       ],
       "nodes": 1,
-      "overrides": [],
+      "overrides": [
+        {
+          "property": "emu-id",
+          "target": "machine"
+        }
+      ],
       "processor": {
         "cache-mib": 2,
         "clock-hz": 400000000,
@@ -502,7 +524,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -515,6 +537,10 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
           "property": "flash-select",
           "target": "machine"
         },
@@ -523,7 +549,15 @@
           "target": "machine"
         },
         {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -727,7 +761,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -740,6 +774,10 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
           "property": "flash-select",
           "target": "machine"
         },
@@ -748,7 +786,15 @@
           "target": "machine"
         },
         {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -945,7 +991,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -958,7 +1004,19 @@
       "nodes": 2,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -1175,7 +1233,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -1188,7 +1246,19 @@
       "nodes": 2,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -1405,7 +1475,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -1418,7 +1488,19 @@
       "nodes": 2,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -1633,7 +1715,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -1646,7 +1728,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -1855,7 +1949,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -1868,7 +1962,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -2083,7 +2189,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -2096,7 +2202,19 @@
       "nodes": 4,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -2335,7 +2453,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -2348,7 +2466,19 @@
       "nodes": 4,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -2587,7 +2717,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -2600,7 +2730,19 @@
       "nodes": 4,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -2839,7 +2981,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -2852,7 +2994,19 @@
       "nodes": 4,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -3091,7 +3245,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -3104,7 +3258,19 @@
       "nodes": 4,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -3341,7 +3507,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -3354,7 +3520,19 @@
       "nodes": 3,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -3585,7 +3763,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -3598,7 +3776,19 @@
       "nodes": 3,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -3829,7 +4019,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -3842,7 +4032,19 @@
       "nodes": 3,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -4073,7 +4275,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -4086,7 +4288,19 @@
       "nodes": 3,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -4315,7 +4529,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -4328,7 +4542,19 @@
       "nodes": 2,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -4551,7 +4777,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -4564,7 +4790,19 @@
       "nodes": 2,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -4787,7 +5025,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -4800,7 +5038,19 @@
       "nodes": 2,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -5021,7 +5271,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -5034,7 +5284,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -5249,7 +5511,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -5262,7 +5524,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -5434,6 +5708,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -5443,6 +5725,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -5702,6 +5988,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -5711,6 +6005,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -5970,6 +6268,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -5979,6 +6285,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -6238,6 +6548,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -6247,6 +6565,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -6526,6 +6848,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -6535,6 +6865,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -6840,7 +7174,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -6862,6 +7196,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -6871,6 +7213,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -7033,7 +7379,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -7055,6 +7401,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -7064,6 +7418,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -7225,7 +7583,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -7247,6 +7605,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -7256,6 +7622,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -7425,7 +7795,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -7441,7 +7811,7 @@
           "interface": "ef1",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:57",
+            "default-address": "08:00:69:e1:00:01",
             "derived": true,
             "machine-property": "mac",
             "offset": 1
@@ -7454,7 +7824,19 @@
       "nodes": 2,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -7674,7 +8056,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -7690,7 +8072,7 @@
           "interface": "ef1",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:57",
+            "default-address": "08:00:69:e1:00:01",
             "derived": true,
             "machine-property": "mac",
             "offset": 1
@@ -7703,7 +8085,19 @@
       "nodes": 2,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -7927,7 +8321,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -7943,7 +8337,7 @@
           "interface": "ef1",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:57",
+            "default-address": "08:00:69:e1:00:01",
             "derived": true,
             "machine-property": "mac",
             "offset": 1
@@ -7956,7 +8350,19 @@
       "nodes": 2,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -8180,7 +8586,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -8196,7 +8602,7 @@
           "interface": "ef1",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:57",
+            "default-address": "08:00:69:e1:00:01",
             "derived": true,
             "machine-property": "mac",
             "offset": 1
@@ -8209,7 +8615,19 @@
       "nodes": 2,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -8431,7 +8849,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -8444,7 +8862,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -8612,7 +9042,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -8625,7 +9055,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -8793,7 +9235,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -8806,7 +9248,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -8974,7 +9428,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -8987,7 +9441,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -9159,7 +9625,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -9172,7 +9638,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -9344,7 +9822,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -9357,7 +9835,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -9534,7 +10024,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -9547,7 +10037,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -9726,7 +10228,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -9739,7 +10241,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -9918,7 +10432,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -9931,7 +10445,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -10110,7 +10636,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -10123,7 +10649,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -10306,7 +10844,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -10319,7 +10857,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -10502,7 +11052,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -10515,7 +11065,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -10693,7 +11255,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -10706,7 +11268,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -10874,7 +11448,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -10887,7 +11461,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -11055,7 +11641,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -11068,7 +11654,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -11236,7 +11834,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -11249,7 +11847,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -11421,7 +12031,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -11434,7 +12044,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -11606,7 +12228,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -11619,7 +12241,19 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -11829,7 +12463,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -11846,7 +12480,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -12073,7 +12719,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -12090,7 +12736,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -12317,7 +12975,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -12334,7 +12992,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -12561,7 +13231,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -12578,7 +13248,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -12805,7 +13487,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -12822,7 +13504,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -13047,7 +13741,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -13064,7 +13758,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -13283,7 +13989,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -13300,7 +14006,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -13519,7 +14237,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -13536,7 +14254,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -13755,7 +14485,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -13772,7 +14502,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -13989,7 +14731,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -14006,7 +14748,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -14217,7 +14971,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -14234,7 +14988,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -14445,7 +15211,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -14462,7 +15228,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -14671,7 +15449,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -14688,7 +15466,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -14891,7 +15681,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -14908,7 +15698,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -15117,7 +15919,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -15134,7 +15936,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -15361,7 +16175,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -15378,7 +16192,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -15605,7 +16431,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -15622,7 +16448,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -15849,7 +16687,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -15866,7 +16704,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -16093,7 +16943,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -16110,7 +16960,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -16335,7 +17197,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -16352,7 +17214,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -16571,7 +17445,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -16588,7 +17462,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -16807,7 +17693,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -16824,7 +17710,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -17043,7 +17941,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -17060,7 +17958,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -17277,7 +18187,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -17294,7 +18204,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -17505,7 +18427,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -17522,7 +18444,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -17733,7 +18667,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -17750,7 +18684,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -17959,7 +18905,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -17976,7 +18922,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -18179,7 +19137,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -18196,7 +19154,19 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -18376,6 +19346,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "ioc3-subsystem-id",
           "target": "machine"
         },
@@ -18389,6 +19367,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -18626,6 +19608,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "ioc3-subsystem-id",
           "target": "machine"
         },
@@ -18639,6 +19629,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -18876,6 +19870,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "ioc3-subsystem-id",
           "target": "machine"
         },
@@ -18889,6 +19891,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -19126,6 +20132,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "ioc3-subsystem-id",
           "target": "machine"
         },
@@ -19139,6 +20153,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -19337,7 +20355,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -19358,6 +20376,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "ioc3-subsystem-id",
           "target": "machine"
         },
@@ -19371,6 +20397,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -19530,7 +20560,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -19551,6 +20581,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "ioc3-subsystem-id",
           "target": "machine"
         },
@@ -19564,6 +20602,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -19731,7 +20773,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -19747,7 +20789,7 @@
           "interface": "ef1",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:57",
+            "default-address": "08:00:69:e1:00:01",
             "derived": true,
             "machine-property": "mac",
             "offset": 1
@@ -19768,6 +20810,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "ioc3-subsystem-id",
           "target": "machine"
         },
@@ -19781,6 +20831,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -19981,7 +21035,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -19997,7 +21051,7 @@
           "interface": "ef1",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:57",
+            "default-address": "08:00:69:e1:00:01",
             "derived": true,
             "machine-property": "mac",
             "offset": 1
@@ -20018,6 +21072,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "ioc3-subsystem-id",
           "target": "machine"
         },
@@ -20031,6 +21093,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -20231,7 +21297,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -20247,7 +21313,7 @@
           "interface": "ef1",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:57",
+            "default-address": "08:00:69:e1:00:01",
             "derived": true,
             "machine-property": "mac",
             "offset": 1
@@ -20268,6 +21334,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "ioc3-subsystem-id",
           "target": "machine"
         },
@@ -20281,6 +21355,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -20481,7 +21559,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -20497,7 +21575,7 @@
           "interface": "ef1",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:57",
+            "default-address": "08:00:69:e1:00:01",
             "derived": true,
             "machine-property": "mac",
             "offset": 1
@@ -20518,6 +21596,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "ioc3-subsystem-id",
           "target": "machine"
         },
@@ -20531,6 +21617,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -20723,7 +21813,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -20744,6 +21834,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "ioc3-subsystem-id",
           "target": "machine"
         },
@@ -20757,6 +21855,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -20910,7 +22012,7 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0
@@ -20931,6 +22033,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "ioc3-subsystem-id",
           "target": "machine"
         },
@@ -20944,6 +22054,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -21116,6 +22230,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -21125,6 +22247,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -21384,6 +22510,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -21393,6 +22527,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -21652,6 +22790,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -21661,6 +22807,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -21933,6 +23083,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -21942,6 +23100,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -22349,6 +23511,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -22358,6 +23528,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -22637,6 +23811,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -22646,6 +23828,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -22933,6 +24119,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -22942,6 +24136,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -23229,6 +24427,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -23238,6 +24444,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -23522,6 +24732,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -23531,6 +24749,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -23954,6 +25176,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -23963,6 +25193,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -24254,6 +25488,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -24263,6 +25505,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -24543,7 +25789,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -24565,6 +25811,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -24574,6 +25828,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -24735,7 +25993,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -24757,6 +26015,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -24766,6 +26032,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -24927,7 +26197,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -24949,6 +26219,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -24958,6 +26236,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -25162,6 +26444,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -25171,6 +26461,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -25518,6 +26812,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -25527,6 +26829,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -25824,6 +27130,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -25833,6 +27147,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -26102,6 +27420,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -26111,6 +27437,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -26380,6 +27710,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -26389,6 +27727,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -26666,7 +28008,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -26688,6 +28030,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -26697,6 +28047,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -26859,7 +28213,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -26881,6 +28235,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -26890,6 +28252,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -27052,7 +28418,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -27074,6 +28440,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -27083,6 +28457,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -27245,7 +28623,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -27267,6 +28645,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -27276,6 +28662,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -27438,7 +28828,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -27460,6 +28850,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -27469,6 +28867,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -27631,7 +29033,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -27653,6 +29055,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -27662,6 +29072,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -27824,7 +29238,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -27846,6 +29260,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -27855,6 +29277,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -28017,7 +29443,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -28039,6 +29465,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -28048,6 +29482,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -28210,7 +29648,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -28232,6 +29670,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -28241,6 +29687,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -28403,7 +29853,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -28425,6 +29875,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -28434,6 +29892,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -28596,7 +30058,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -28618,6 +30080,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -28627,6 +30097,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -28789,7 +30263,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -28811,6 +30285,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -28820,6 +30302,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -28982,7 +30468,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -29004,6 +30490,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -29013,6 +30507,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {
@@ -29175,7 +30673,7 @@
           "interface": "tg0",
           "kind": "bcm5701-ethernet",
           "mac": {
-            "default-address": "08:00:69:12:34:56",
+            "default-address": "08:00:69:e1:00:00",
             "derived": true,
             "machine-property": "mac",
             "offset": 0,
@@ -29197,6 +30695,14 @@
           "target": "machine"
         },
         {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
           "property": "l1-revision",
           "target": "machine"
         },
@@ -29206,6 +30712,10 @@
         },
         {
           "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
           "target": "machine"
         },
         {

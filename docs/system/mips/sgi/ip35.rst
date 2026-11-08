@@ -334,27 +334,38 @@ also keeps a mask of ``0xf000`` requiring ``0x4000``, so a
   that did not decide it. ``l1-revision=`` replaces it. The Origin 300's
   1.18.5 is a choice too.
 - L1 brick serial: the Fuel's L1 answers the brick-serial request with
-  the synthetic ``EMUN`` and a hex byte of the machine's identity seed
-  (the node's system board, node 0), a model choice. The real format is
-  *unknown*. Setting ``brick-serial`` on the ``sgi-l1`` device, for example
+  the synthetic ``EMUN`` and the node number as a hex byte (the node's system
+  board, node 0), a model choice. It follows no identity input: the PROM ties
+  its NVRAM to the node board's serial and starts the NVRAM afresh when it
+  changes (:ref:`sgi-identity`). The real format is *unknown*. Setting ``brick-serial`` on the ``sgi-l1`` device, for example
   with ``-global``, replaces it.
 - L1 system serial: every Bedrock machine but the Fuel (the Origin 300
   family, the Origin 3000 and Onyx 3000 topologies, the IP53 machines and
-  the Tezro) gives all its L1s the same system serial: ``L`` and seven
-  digits of the machine's identity seed, in the span ``L0000001`` to
-  ``L3999999`` that the L2's serial check documents, a model choice. IRIX
-  reads it for ``sysinfo -s`` and FLEXlm's ``lmhostid``, which pack the
-  letter's low nibble and the digits into eight hex digits, so the guest
-  sees a host id such as ``c1472560``. A guest confirmed that packing on the
-  Origin 300 only; on the other machines it is read from the kernel's code
-  and untested in a guest. The seed is the ``identity-key`` property, else
-  the first drive with a file, else the machine type name, so guests share
-  one serial until they differ in key or drive, or ``system-serial`` on the
-  ``sgi-l1`` device sets another. The format of a real serial's digits is
-  *unknown* beyond the published samples. The Fuel keeps its station address
-  as the serial. The kernel reads hex digits 4 to 11 of those twelve as the
-  host id, so the Fuel's is ``69E`` and five digits of the seed: nonzero
-  and per guest, but a real Fuel's value is *unknown*.
+  the Tezro) gives all its L1s the same system serial. With ``emu-id=N`` it is
+  ``LEMU``, the kind digit, ``N`` as four digits and ``0``, ten characters, a
+  model choice; with no input ``LEMU100000``. ``serial=`` gives any text of up
+  to ten characters as written, and ``hostid=`` gives the eight-character
+  spelling of an id, such as ``M2100887`` for ``d2100887``. They must agree
+  when both are given, and ``mac=`` sets only the port's address, in the L1
+  record and the IOC3, and leaves the id alone. IRIX reads the text for
+  ``sysinfo -s`` and FLEXlm's ``lmhostid``, which fold the low nibble of each
+  of the first ten characters into eight hex digits, so ``emu-id=42`` gives
+  ``LEMU100420`` and the host id ``d5100420`` (*software expectation*, measured on an Origin 300
+  guest on this model; on the other machines it is read from the kernel's code
+  and untested in a guest). ``system-serial`` on the ``sgi-l1`` device is a
+  debug input that wins over all of them. The format of a real serial's digits is
+  *unknown* beyond the published samples, and a real L2's check of the text is
+  *unknown* (:ref:`sgi-identity`). Real IRIX prints one id per node, so the
+  machine's ``hostids`` repeats the id for each node. The Fuel keeps its
+  station address as the serial. The kernel reads hex digits 4 to 11 of those
+  twelve as the host id, so the Fuel's is ``69E``, the kind digit and the
+  ``emu-id`` and sub-index digits: ``69e102a0`` for ``emu-id=42``. On the Fuel
+  ``hostid=`` sets the address (8 digits starting ``69``, or 6 digits with the
+  ``69`` implied), ``serial=`` is refused unless it folds to an id starting
+  ``69``, and ``mac=`` sets the id; they must agree. A real Fuel's value is
+  *unknown*. ``system-serial`` and ``fuel-mac-eeprom=`` are debug inputs that
+  override them, and the ``hostid`` and ``hostids`` properties follow the
+  override.
 - Flash machine type: the value written into the PROM's configuration
   block. The PROM's Origin 300 rows carry type 1 and its Fuel rows type 2,
   a *software expectation*. A real Fuel's ``flash -f`` session answers 2
@@ -780,11 +791,10 @@ connector (:src:`graphica-o350-notes`).
 
 The onboard Ethernet address comes from the L1. Without input it is
 derived: SGI's ``08:00:69`` prefix, which the firmware checks, then
-``0xE`` and the low nibble of the first byte of a SHA-256 hash, then its
-next two bytes. The hash covers the canonical path of the disk given as
-``-drive if=scsi,bus=0,unit=0``, or the machine name when there is none.
-A disk attached later with ``-device`` is not seen. The address is no
-machine's factory value, and ``mac`` replaces it. It seeds the L1's address
+``0xE`` and the kind digit, then the ``emu-id``'s high byte and its low nibble
+over the node number (:ref:`sgi-identity`). A machine with no ``emu-id`` has
+``08:00:69:e1:00:00`` for node 0. The address is no machine's factory value,
+and ``mac`` replaces it. It seeds the L1's address
 reply (request ``0x0008``, the address as twelve uppercase hexadecimal
 digits, which the PROM turns back into the six bytes), the component-1
 board record and the IOC3, and follows ``mac`` when that is set. ``fuel-mac-eeprom=<file>``

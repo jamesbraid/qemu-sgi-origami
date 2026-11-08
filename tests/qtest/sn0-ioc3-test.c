@@ -1953,8 +1953,10 @@ static QTestState *sn0_ioc3_attach_with_mac(int host_fd, const char *mac)
     return qts;
 }
 
-static const uint8_t onewire_test_mac[6] = { 0x52, 0x54, 0x00, 0x11, 0x22, 0x33 };
-#define ONEWIRE_TEST_MAC_STR "52:54:00:11:22:33"
+static const uint8_t onewire_test_mac[6] = {
+    0x08, 0x00, 0x69, 0x11, 0x22, 0x33
+};
+#define ONEWIRE_TEST_MAC_STR "08:00:69:11:22:33"
 
 /* One bus slot, returning the level sampled. This uses the same helper shape
  * sn0-bridge-test.c's nic_slot() uses for the Bridge's identical engine. */
@@ -2309,26 +2311,149 @@ static void test_reading_the_page_after_search(const void *data)
 /*
  * A backend with no mac= must get an SGI address: the PROM reads the
  * one-wire part before enabling the engine, and that is the firmware-visible
- * contract deciding whether netboot starts.
+ * contract deciding whether netboot starts. The address comes from the
+ * machine's identity inputs: 08:00:69:E1:00:00 with none, 08:00:69:E1:02:A0
+ * for emu-id=42, 08:00:69:aa:bb:cc for hostid=aabbcc or 69aabbcc, whose host
+ * id is the address's last four bytes.
  */
-static void test_the_default_station_address_is_an_sgi_address(const void *data)
+static void assert_default_address_and_hostid(const char *extra,
+                                              const uint8_t expected[6],
+                                              const char *hostid)
 {
-    static const uint8_t expected[6] = {
-        /* sha256("origin200"): 08:00:69, 0xe and a nibble, then two bytes. */
-        0x08, 0x00, 0x69, 0xe9, 0xbc, 0x80,
-    };
+    g_autoptr(QDict) response = NULL;
     int sv[2];
     QTestState *qts;
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+    qts = sn0_ioc3_attach_with_netdev_options(sv[1], extra);
     /* Route the MicroLAN engine onto its pin, as a driver does before use. */
     qtest_writel(qts, PIN_CONTROL_SET, PIN_MICROLAN_ENABLE);
 
     assert_ethernet_address_page(qts, ONEWIRE_SELECT_SEARCH, 0xf0, expected);
+    response = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                         "{'path':'/machine','property':'hostid'}}");
+    g_assert_true(qdict_haskey(response, "return"));
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==, hostid);
+    qobject_unref(response);
+    response = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                         "{'path':'/machine','property':'hostids'}}");
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==, hostid);
 
     qtest_quit(qts);
     close(sv[0]);
+}
+
+static void test_the_default_station_address_is_an_sgi_address(const void *data)
+{
+    static const uint8_t unset[6] = { 0x08, 0x00, 0x69, 0xe1, 0x00, 0x00 };
+    static const uint8_t forty_two[6] = { 0x08, 0x00, 0x69, 0xe1, 0x02, 0xa0 };
+    static const uint8_t chosen[6] = { 0x08, 0x00, 0x69, 0xaa, 0xbb, 0xcc };
+
+    assert_default_address_and_hostid("", unset, "69e10000");
+    assert_default_address_and_hostid("-M emu-id=42", forty_two, "69e102a0");
+    assert_default_address_and_hostid("-M hostid=aabbcc", chosen, "69aabbcc");
+    assert_default_address_and_hostid("-M hostid=69aabbcc,emu-id=42", chosen,
+                                      "69aabbcc");
+    assert_default_address_and_hostid("-M serial=F9N102J0", forty_two,
+                                      "69e102a0");
+}
+
+/*
+ * The second node of a dual Origin 200 takes the address plus one, which
+ * stays in the sub-index nibble at the largest emu-id: it never reaches the
+ * kind or the emu-id. IRIX prints one id per chassis, so hostids lists both.
+ * An explicit mac= decides and the ids follow it; hostid sets node 0's id and
+ * node 1 adds one.
+ */
+static void assert_dual_ids(const char *options, const char *first,
+                            const char *both)
+{
+    g_autofree char *args = g_strdup_printf(
+        "-M origin200,topology=origin200-dual%s -smp 4 -m 128M", options);
+    QTestState *qts = qtest_init(args);
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine',"
+        "'property':'hostid'}}");
+
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==, first);
+    qobject_unref(response);
+    response = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                         "{'path':'/machine','property':'hostids'}}");
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==, both);
+    qtest_quit(qts);
+}
+
+static void test_dual_node_default_addresses_keep_the_serial(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,topology=origin200-dual,"
+                                 "emu-id=4095 -smp 4 -m 128M");
+    g_autofree char *network = qtest_hmp(qts, "info network");
+
+    g_assert_nonnull(strstr(network, "macaddr=08:00:69:e1:ff:f0"));
+    g_assert_nonnull(strstr(network, "macaddr=08:00:69:e1:ff:f1"));
+    qtest_quit(qts);
+
+    assert_dual_ids(",emu-id=4095", "69e1fff0", "69e1fff0 69e1fff1");
+    assert_dual_ids(",hostid=0bea40", "690bea40", "690bea40 690bea41");
+    assert_dual_ids(",hostid=69e102a0", "69e102a0", "69e102a0 69e102a1");
+    assert_dual_ids(",emu-id=4095,mac=08:00:69:00:00:10", "69000010",
+                    "69000010 69000011");
+    assert_dual_ids(",mac=08:00:69:00:00:10,hostid=000010", "69000010",
+                    "69000010 69000011");
+}
+
+/* Inputs the Origin 200 refuses, with the rule and a working suggestion. */
+static void test_origin200_identity_refusals(const void *data)
+{
+    static const struct {
+        const char *options;
+        const char *message;
+    } refused[] = {
+        { "emu-id=4096", "emu-id must be 0 to 4095, not 4096" },
+        { "serial=M2100887",
+          "serial folds to d2100887; this machine's host id comes from its "
+          "station address, which always starts 69; use hostid=100887 or "
+          "mac=08:00:69:10:08:87" },
+        { "hostid=d2100887",
+          "hostid=d2100887: this machine's host id is 69 plus 6 hex digits; "
+          "use hostid=100887 or mac=08:00:69:10:08:87" },
+        { "hostid=0bea4", "hostid must be 6 hex digits (the 69 is implied) "
+          "or 8 starting 69, not '0bea4'" },
+        { "mac=52:54:00:12:34:56",
+          "mac=52:54:00:12:34:56: this machine's station address must start "
+          "08:00:69; use mac=08:00:69:12:34:56 or hostid=123456" },
+        { "topology=origin200-dual,mac=08:00:69:ff:ff:ff",
+          "node 1 of mac=08:00:69:ff:ff:ff would leave the 08:00:69 block, "
+          "which this machine's station address must stay in; use "
+          "mac=08:00:69:xx:xx:xx with room for the nodes, or a lower hostid" },
+        { "topology=origin200-dual,hostid=ffffff",
+          "node 1 of mac=08:00:69:ff:ff:ff would leave the 08:00:69 block" },
+        { "serial=F9N102J0,hostid=aabbcc",
+          "serial F9N102J0 folds to 69e102a0 but hostid=aabbcc gives "
+          "69aabbcc" },
+        { "mac=08:00:69:e1:02:a0,hostid=aabbcc",
+          "mac=08:00:69:e1:02:a0 gives host id 69e102a0 but hostid=aabbcc "
+          "gives 69aabbcc; this machine's host id comes from its station "
+          "address, so it would take 69e102a0 from mac; make them agree" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(refused); i++) {
+        g_autofree char *machine = g_strdup_printf("origin200,%s",
+                                                   refused[i].options);
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", machine, "-smp", "4", "-m", "128M",
+            "-S", "-display", "none", "-qtest", "stdio", "-accel", "qtest",
+            NULL,
+        };
+        g_autofree char *err = NULL;
+        int status;
+
+        g_assert_true(g_spawn_sync(NULL, (char **)args, NULL,
+                                   G_SPAWN_STDOUT_TO_DEV_NULL, NULL, NULL,
+                                   NULL, &err, &status, NULL));
+        g_assert_false(g_spawn_check_exit_status(status, NULL));
+        g_assert_nonnull(strstr(err, refused[i].message));
+    }
 }
 
 /*
@@ -2370,14 +2495,17 @@ static void test_dual_node_addresses_follow_mac(const void *data)
 }
 
 
-/* The converse: mac= is the operator's word, never rewritten, even inside
- * the generator's own range, the one range address bytes cannot attribute. */
+/*
+ * mac= is the operator's word and is never rewritten: an address in the
+ * 08:00:69 block, the only one an Origin 200 takes, reaches the part as given.
+ * One outside the block is refused (test_origin200_identity_refusals).
+ */
 static const uint8_t explicit_prefix_mac[6] = {
-    0x52, 0x54, 0x00, 0x12, 0x34, 0x56
+    0x08, 0x00, 0x69, 0x12, 0x34, 0x56
 };
-#define EXPLICIT_PREFIX_MAC_STR "52:54:00:12:34:56"
+#define EXPLICIT_PREFIX_MAC_STR "08:00:69:12:34:56"
 
-static void test_an_explicit_mac_in_the_generator_range_stays(const void *data)
+static void test_an_explicit_mac_stays(const void *data)
 {
     int sv[2];
     QTestState *qts;
@@ -6980,8 +7108,12 @@ int main(int argc, char **argv)
                         test_reading_the_page_after_search);
     qtest_add_data_func("sn0/ioc3/one-wire-default-mac-is-sgi", NULL,
                         test_the_default_station_address_is_an_sgi_address);
+    qtest_add_data_func("sn0/ioc3/dual-node-default-keeps-serial", NULL,
+                        test_dual_node_default_addresses_keep_the_serial);
+    qtest_add_data_func("sn0/ioc3/identity-refusals", NULL,
+                        test_origin200_identity_refusals);
     qtest_add_data_func("sn0/ioc3/one-wire-explicit-mac-survives", NULL,
-                        test_an_explicit_mac_in_the_generator_range_stays);
+                        test_an_explicit_mac_stays);
     qtest_add_data_func("sn0/ioc3/conflicting-nic-mac-refused", NULL,
                         test_a_conflicting_nic_mac_is_refused);
     qtest_add_data_func("sn0/ioc3/dual-node-addresses-follow-mac", NULL,

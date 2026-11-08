@@ -53,6 +53,7 @@ each platform page covers its own products.
    ip32
    ip35
    ip53
+   identity
    measured-machines
    vocabulary
 

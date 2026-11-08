@@ -187,7 +187,7 @@ column is what the model holds after realize and a first machine reset, an
      - Seven bytes. The ``serial`` property, a 48-bit number, sets them:
        ``41h`` holds its most significant byte and ``47h`` the one-wire CRC
        over ``40h``-``46h``, both *inferred*. Zero, the default, leaves all
-       seven at zero. The O2 sets it from its identity seed
+       seven at zero. The O2 sets it from its ``emu-id``
        (:ref:`sgi-ip32-system-serial`).
    * - ``48h``, bank 1
      - Century

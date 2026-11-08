@@ -44,6 +44,7 @@
 #include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/sgi-board-cdrom.h"
 #include "hw/mips/sgi/sgi-board-mac.h"
+#include "net/util.h"
 #include "hw/mips/sgi/sgi-cpu.h"
 #include "hw/mips/sgi/prom-image.h"
 #include "hw/mips/sgi/sgi-machines.h"
@@ -107,6 +108,8 @@ typedef struct OctaneMachineState {
     bool flash_strap;
     /* mac=, or NULL for the derived default. */
     char *mac;
+    /* emu-id=, serial= and hostid=, and what they come to. */
+    SGIBoardIdentityInputs identity;
 } OctaneMachineState;
 
 /* Whether @t is a topology this machine can build: one HEART node. */
@@ -377,6 +380,22 @@ static void octane_reset(MachineState *machine, ResetType type)
     }
 }
 
+/* IRIX takes the host id from the last four bytes of the station address. */
+static bool octane_hostids(Object *obj, GArray *ids, Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+    g_autofree char *text = sgi_board_mac(s->mac, &s->identity.id, 0, errp);
+    uint8_t mac[6];
+    uint32_t id;
+
+    if (!text || net_parse_macaddr(mac, text) < 0) {
+        return false;
+    }
+    id = sgi_board_hostid_from_mac(mac);
+    g_array_append_val(ids, id);
+    return true;
+}
+
 static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
                            const char *nvram, const char *nvram_clock,
                            Error **errp)
@@ -385,7 +404,7 @@ static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
     PCIBus *bus = PCI_HOST_BRIDGE(bridge)->bus;
     const SGIModelIoBoard *board = s->model->io_boards ?
         s->model->io_boards->value : NULL;
-    g_autofree char *mac = sgi_board_mac(s->mac, 0, errp);
+    g_autofree char *mac = sgi_board_mac(s->mac, &s->identity.id, 0, errp);
     PCIDevice *pci;
     Chardev *parallel_chr;
 
@@ -1014,12 +1033,20 @@ static void octane_init_graphics(OctaneMachineState *s, Error **errp)
 
 static void octane_init(MachineState *machine)
 {
+    OctaneMachineState *s = (OctaneMachineState *)machine;
+
+    sgi_board_identity_resolve(&s->identity, SGI_BOARD_FAMILY_ADDRESS, s->mac,
+                               &error_fatal);
     octane_realize(machine, false, &error_fatal);
     octane_init_graphics((OctaneMachineState *)machine, &error_fatal);
 }
 
 static void octane2_init(MachineState *machine)
 {
+    OctaneMachineState *s = (OctaneMachineState *)machine;
+
+    sgi_board_identity_resolve(&s->identity, SGI_BOARD_FAMILY_ADDRESS, s->mac,
+                               &error_fatal);
     octane_realize(machine, true, &error_fatal);
     octane_init_graphics((OctaneMachineState *)machine, &error_fatal);
 }
@@ -1108,6 +1135,8 @@ static void octane_instance_finalize(Object *obj)
     g_free(s->topology_name);
     sgi_graphics_pipes_cleanup(&s->pipes);
     g_free(s->mac);
+    g_free(s->identity.serial);
+    g_free(s->identity.hostid);
     if (s->storage) {
         g_hash_table_destroy(s->storage);
     }
@@ -1247,7 +1276,10 @@ static void octane_class_init(ObjectClass *oc, const void *data)
     octane_class_add_properties(oc, product);
     sgi_board_mac_class_add_property(oc, offsetof(OctaneMachineState, mac),
         "Onboard Ethernet address, held in the IOC3 bus's Ethernet-address "
-        "part (default derived from the system disk path or machine name)");
+        "part; it sets the system id (default derived from the machine's "
+        "identity inputs)");
+    sgi_board_identity_class_add_properties(oc,
+        offsetof(OctaneMachineState, identity), octane_hostids);
 
     /* The catalogue's processor part is the one CPU type the board takes. */
     cpu_types[0] = g_strconcat(processor->kind, MIPS_CPU_TYPE_SUFFIX, NULL);
