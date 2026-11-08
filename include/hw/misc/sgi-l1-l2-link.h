@@ -41,16 +41,25 @@
 #define SGI_L1_L2_FIRST_SEGMENT 0x80
 
 /*
- * Descriptor types. An integer is "00 00 0000 value32". A string is
- * "0a segment length16 offset32" with the length counting the NUL and the
- * offset counting 16 bytes that are not on the wire (L1 sheet, chunk
- * transport rows). The type of a binary descriptor is not established by
- * the sheets: SGI_L1_L2_DESC_BLOB is the value this tree uses for it, laid
- * out like a string without the NUL.
+ * Descriptor types (L1 sheet, "Request 0x0ffff00e", descriptor type bytes).
+ * The low three bits are the kind: 0 integer, 1 bytes, 2 string. Bit 3 is
+ * a construction flag ("free the caller's buffer") that the packet builder
+ * leaves in the type byte; readers test the kind bits only. The L1 builds
+ * four types: an integer 0x00 ("00 00 0000 value32"), bytes copied into the
+ * packet 0x09, bytes referenced in place 0x01, and a string 0x0a, whose
+ * length counts the NUL. Every data descriptor is "type segment length16
+ * offset32" with the segment byte the 1-based number of the segment that
+ * holds the payload, and the offset counting 16 bytes that are not on the
+ * wire. A data descriptor whose segment byte is 0 reads as absent.
  */
 #define SGI_L1_L2_DESC_INTEGER  0x00
+#define SGI_L1_L2_DESC_BYTES_REF 0x01
+#define SGI_L1_L2_DESC_BYTES    0x09
 #define SGI_L1_L2_DESC_STRING   0x0a
-#define SGI_L1_L2_DESC_BLOB     0x0b
+#define SGI_L1_L2_DESC_KIND     0x07
+#define SGI_L1_L2_KIND_INTEGER  0
+#define SGI_L1_L2_KIND_BYTES    1
+#define SGI_L1_L2_KIND_STRING   2
 #define SGI_L1_L2_DESC_PREFIX   0x10
 
 /*
@@ -65,6 +74,9 @@
 #define SGI_L1_L2_CONFIG_SELECTOR_B    13
 #define SGI_L1_L2_CONFIG_REPLY_KIND    7
 #define SGI_L1_L2_RECORD_SIZE   0x70
+/* The module table: own entries 0-4, port 1 peer 5-9, port 2 peer 10-14. */
+#define SGI_L1_TABLE_GROUP      5
+#define SGI_L1_TABLE_GROUPS     3
 
 /* Packet classes. */
 #define SGI_L1_L2_CLASS_REQUEST  0
