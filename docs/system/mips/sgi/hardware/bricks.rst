@@ -1226,6 +1226,42 @@ Origin 3400's is, with 4096 MB.
 joins ports 7 to 7 and 8 to 8. That the extra cables use equal port numbers
 is the draft's table (*inferred*) and the fit is not an orderable option.
 
+.. _sgi-sn-rack-numbers:
+
+A topology may number its racks with ``machine.emulation.rack_numbers``, a
+list of ``{component, number, reason}`` entries that name rack chassis
+components. A module takes the number of its nearest numbered chassis
+ancestor, and ``initial_module_numbers`` stays the bay. That a brick's L1
+keeps a rack number beside its bay, and that the PROM turns the pair into a
+module identifier, is *established* by a replay of the PROM's encoder. The
+model checks these rules only when racks are numbered:
+
+* The number is one of the 64 the encoder accepts: 001 to 008, 011 to 018,
+  021 to 028, 031 to 038, and 101 to 104, 111 to 114 and so on to 171 to
+  174 (*established*, same replay). The L1 stores other numbers and the
+  PROM then fails to build an identifier for that brick.
+* The bay is 1 to 39, the range the Origin 300 L1 package's ``brick slot``
+  command accepts (*established* for that package; which L1 package an
+  Origin 3800 uses is *unknown*). A (rack, bay) pair is unique, so two
+  racks may both have a bay 10. A Cx-brick's router port takes its bay plus
+  four, so the pair is claimed at both bays, and a Cx-brick whose router
+  bay would pass 39 is rejected (*approximation*: the offset is the L1
+  model's board numbering, not a captured hardware fact).
+* Every numbered rack holds a module and every module sits in a numbered
+  rack. This is a rule of the model's schema (*approximation*).
+* For the Origin 3800, a compute rack (number below 100) holds only C- and
+  R-bricks, at most eight C-bricks and two R-bricks, and an I/O rack
+  (number 100 and up) holds only I-, P-, X- and D-bricks, at most eight.
+  The rack contents and the I/O-rack limit of eight are *established* by
+  the cabling guide's rack tables. A shipped compute rack takes up to three
+  R-bricks; the two-R-brick cap is a model cap, because the third is the
+  MetaRouter slot, whose wiring the PROM accepts is *unknown*.
+
+Topologies that number no rack keep the module number rules above
+unchanged: unique across the whole system, 1 to 255. No shipped topology
+numbers a rack yet, and the machine builder does not read rack numbers, so
+every L1 answers rack 1.
+
 Model limits of a routed Origin 3000 build:
 
 * The L2 controller, which a rack holding an R-brick requires
@@ -1481,6 +1517,19 @@ Figure 2-24 links, two slots on each chip's buses), that each brick hangs
 off the second C-brick of its Origin 3200 composition, that the X-brick
 counts against the I/O-brick limit and that the X-brick composition does
 not compile.
+
+``scripts/tests/test_sgi_model_rack_numbers.py`` checks the ``rack_numbers``
+schema and each rule above on the Origin 3800 with its bricks moved into
+numbered racks: a rejection for an invalid rack number, a repeated rack or
+rack number, a bay of 0 or 40, a repeated (rack, bay) pair, a module outside
+any numbered rack, an empty rack, an I-brick in a compute rack, a C-brick in
+an I/O rack, a brick with no letter and too many C-, R- or I/O bricks, and
+acceptance of two racks that share a bay. It also checks that the Origin
+2000 module number rules and the unnumbered SN1 rules are unchanged, that a
+Cx-brick claims its router bay and none passes bay 39, that a null
+``rack_numbers`` leaves the module number rules in force and that no
+shipped topology numbers a
+rack.
 
 ``tests/qtest/sn-builder-test.c`` builds the C-brick fixtures from
 ``tests/qtest/sn-builder-fault-test.c``. ``sn/builder/cbrick/origin3200-xbrick-slots``
