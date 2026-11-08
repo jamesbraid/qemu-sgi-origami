@@ -1234,6 +1234,7 @@ def validate_initial_module_numbers(model: dict[str, Any]) -> None:
     required = {cid for cid, item in components.items() if item.get("kind") == "module"}
     seen_components: set[str] = set()
     seen_numbers: set[int] = set()
+    racked = emulation.get("rack_numbers") is not None
     for entry in policy:
         if (not isinstance(entry, dict) or set(entry) != {"component", "number", "reason"}
                 or not isinstance(entry["component"], str)
@@ -1247,15 +1248,224 @@ def validate_initial_module_numbers(model: dict[str, Any]) -> None:
         if cid in seen_components:
             raise ResolutionError(f"initial module number has repeated component '{cid}'")
         number = entry["number"]
-        if type(number) is not int or not 1 <= number <= 255:
-            raise ResolutionError(f"module '{cid}' number must be an integer from 1 through 255")
-        if number in seen_numbers:
-            raise ResolutionError(f"initial module identity has repeated number {number}")
+        if racked:
+            # The bay is a rack-relative number: validate_rack_numbers
+            # checks its range and its uniqueness within the rack.
+            if type(number) is not int:
+                raise ResolutionError(f"module '{cid}' bay must be an integer")
+        else:
+            if type(number) is not int or not 1 <= number <= 255:
+                raise ResolutionError(
+                    f"module '{cid}' number must be an integer from 1 "
+                    "through 255")
+            if number in seen_numbers:
+                raise ResolutionError(
+                    f"initial module identity has repeated number {number}")
+            seen_numbers.add(number)
         seen_components.add(cid)
-        seen_numbers.add(number)
     missing = required - seen_components
     if missing:
-        raise ResolutionError(f"initial_module_numbers missing module '{sorted(missing)[0]}'")
+        raise ResolutionError(
+            f"initial_module_numbers missing module '{sorted(missing)[0]}'")
+
+
+# The rack numbers the PROM's module-identifier encoder accepts (Origin
+# topologies datasheet, "Where the rack number lives and its range",
+# established by a replay of the encoder; that datasheet section has not
+# yet had an independent review):
+# 001 to 008, 011 to 018, 021 to 028, 031 to 038, then 101 to 104, 111 to
+# 114 and so on to 171 to 174.
+VALID_RACK_NUMBERS = frozenset(
+    [tens * 10 + unit for tens in range(4) for unit in range(1, 9)] +
+    [100 + tens * 10 + unit for tens in range(8) for unit in range(1, 5)])
+
+# The Origin 300 L1 package's `brick slot` accepts bays 1 to 39 (same
+# datasheet section). Which L1 package an Origin 3800 uses is unknown.
+MAX_RACK_BAY = 39
+
+# An Origin 3800 compute rack holds only C- and R-bricks, up to eight C and
+# three R, and an I/O rack (number 100 and up) only I-, P-, X- and D-bricks,
+# eight at most. The third R-brick is the MetaRouter slot, which the model
+# leaves out, so the rule here allows two. The compute and I/O rack rows
+# come from the datasheet's R-brick and I-brick pages and its "Beyond one
+# rack" section; the I-brick page's I/O-rack cabling facts and the
+# "Beyond one rack" section have not yet had an independent review.
+COMPUTE_RACK_BRICKS = frozenset("CR")
+IO_RACK_BRICKS = frozenset("IPXD")
+MAX_COMPUTE_RACK_C_BRICKS = 8
+MAX_COMPUTE_RACK_R_BRICKS = 2
+MAX_IO_RACK_BRICKS = 8
+
+# A Cx-brick's router port takes the brick's bay plus this many, so the
+# pair is claimed at both bays.
+CX_BRICK_ROUTER_BAY_OFFSET = 4
+
+
+def _brick_letter(component: dict[str, Any]) -> str | None:
+    """The brick letter of a module: its L1 brick type where the model sets
+    one, else the leading letter of a name like "R-brick"."""
+    letter = component.get("brick_type")
+    if isinstance(letter, str):
+        return letter
+    name = component.get("name")
+    if isinstance(name, str) and re.fullmatch(r"[A-Z]-brick", name):
+        return name[0]
+    return None
+
+
+def _numbered_rack(components: dict[str, dict[str, Any]],
+                   racks: dict[str, int], module_id: str) -> str | None:
+    """The nearest numbered chassis above a module, or None."""
+    seen: set[str] = set()
+    parent = components[module_id].get("parent")
+    while (isinstance(parent, str) and parent in components and
+           parent not in seen):
+        seen.add(parent)
+        if parent in racks:
+            return parent
+        parent = components[parent].get("parent")
+    return None
+
+
+def validate_rack_numbers(model: dict[str, Any]) -> None:
+    """`machine.emulation.rack_numbers`, if present, numbers the rack
+    chassis of an SN1 target.
+
+    A module's rack is the number of its nearest numbered chassis ancestor.
+    With racks numbered the bay (`initial_module_numbers`) must be 1 to 39
+    and unique within its rack, every rack holds a module and every module
+    sits in a numbered rack. An Origin 3800 adds per-rack composition rules.
+    Without rack numbers nothing here applies and the module number rules
+    stay as they are.
+    """
+    machine = model.get("machine", {})
+    emulation = machine.get("emulation", {})
+    entries = emulation.get("rack_numbers")
+    if entries is None:
+        return
+    if (machine.get("model_role") != "emulation-target" or
+            emulation.get("lifecycle") != "implemented"):
+        raise ResolutionError(
+            "rack_numbers requires an implemented emulation target")
+    if machine.get("generation") != "SN1":
+        raise ResolutionError("rack_numbers requires an SN1 target")
+    if not emulation.get("l1_controllers"):
+        raise ResolutionError(
+            "rack_numbers requires a target whose bricks carry L1 controllers")
+    if not isinstance(entries, list):
+        raise ResolutionError("rack_numbers must be a list")
+    bays = emulation.get("initial_module_numbers")
+    if not isinstance(bays, list):
+        raise ResolutionError("rack_numbers requires initial_module_numbers")
+    validate_component_ids(model)
+    components = {item["id"]: item for item in model.get("components", [])}
+    racks: dict[str, int] = {}
+    seen_numbers: set[int] = set()
+    for entry in entries:
+        if (not isinstance(entry, dict) or
+                set(entry) != {"component", "number", "reason"} or
+                not isinstance(entry["component"], str) or
+                not isinstance(entry["reason"], str) or
+                not entry["reason"].strip()):
+            raise ResolutionError("invalid rack number entry")
+        cid, number = entry["component"], entry["number"]
+        if cid not in components:
+            raise ResolutionError(
+                f"rack number names unknown component '{cid}'")
+        if components[cid].get("kind") != "chassis":
+            raise ResolutionError(
+                f"rack number component '{cid}' is not a chassis")
+        if cid in racks:
+            raise ResolutionError(f"rack number has repeated component '{cid}'")
+        if type(number) is not int or number not in VALID_RACK_NUMBERS:
+            raise ResolutionError(
+                f"rack number {number} is not one the PROM encodes "
+                "(001-008, 011-018, 021-028, 031-038, 101-104 to 171-174)")
+        if number in seen_numbers:
+            raise ResolutionError(f"rack number has repeated number {number}")
+        racks[cid] = number
+        seen_numbers.add(number)
+
+    modules = {cid: item for cid, item in components.items()
+               if item.get("kind") == "module"}
+    bay_of = {entry["component"]: entry["number"]
+              for entry in bays if isinstance(entry, dict)}
+    rack_of: dict[str, str] = {}
+    members: dict[str, list[str]] = {cid: [] for cid in racks}
+    for mid in modules:
+        rack = _numbered_rack(components, racks, mid)
+        if rack is None:
+            raise ResolutionError(f"module '{mid}' is not in a numbered rack")
+        rack_of[mid] = rack
+        members[rack].append(mid)
+    for cid, held in members.items():
+        if not held:
+            raise ResolutionError(f"rack '{cid}' holds no module")
+
+    claimed: dict[tuple[int, int], str] = {}
+    for mid in modules:
+        bay = bay_of.get(mid)
+        if type(bay) is not int or not 1 <= bay <= MAX_RACK_BAY:
+            raise ResolutionError(
+                f"module '{mid}' bay must be an integer from 1 through "
+                f"{MAX_RACK_BAY}")
+        spans = [bay]
+        if modules[mid].get("name") == "Cx-brick":
+            router_bay = bay + CX_BRICK_ROUTER_BAY_OFFSET
+            if router_bay > MAX_RACK_BAY:
+                raise ResolutionError(
+                    f"module '{mid}' claims router bay {router_bay}, past "
+                    f"bay {MAX_RACK_BAY}")
+            spans.append(router_bay)
+        for at in spans:
+            key = (racks[rack_of[mid]], at)
+            if key in claimed:
+                raise ResolutionError(
+                    f"modules '{claimed[key]}' and '{mid}' have repeated "
+                    f"rack {key[0]} bay {key[1]}")
+            claimed[key] = mid
+
+    profile = emulation.get("profile")
+    if isinstance(profile, str) and (
+            profile == "origin3800" or profile.startswith("origin3800-")):
+        _validate_origin3800_rack_bricks(components, racks, members)
+
+
+def _validate_origin3800_rack_bricks(
+        components: dict[str, dict[str, Any]], racks: dict[str, int],
+        members: dict[str, list[str]]) -> None:
+    for cid, held in members.items():
+        number = racks[cid]
+        io_rack = number >= 100
+        kind = "I/O rack" if io_rack else "compute rack"
+        allowed = IO_RACK_BRICKS if io_rack else COMPUTE_RACK_BRICKS
+        counts: dict[str, int] = {}
+        for mid in held:
+            letter = _brick_letter(components[mid])
+            if letter is None:
+                raise ResolutionError(
+                    f"module '{mid}' in {kind} {number} has no brick letter "
+                    "the Origin 3800 rack rules can place")
+            if letter not in allowed:
+                article = "an" if letter in "AEFHILMNORSX" else "a"
+                raise ResolutionError(
+                    f"{kind} {number} holds {article} {letter}-brick "
+                    f"('{mid}')")
+            counts[letter] = counts.get(letter, 0) + 1
+        if io_rack:
+            if len(held) > MAX_IO_RACK_BRICKS:
+                raise ResolutionError(
+                    f"{kind} {number} holds {len(held)} bricks, at most "
+                    f"{MAX_IO_RACK_BRICKS}")
+            continue
+        if counts.get("C", 0) > MAX_COMPUTE_RACK_C_BRICKS:
+            raise ResolutionError(
+                f"{kind} {number} holds {counts['C']} C-bricks, at most "
+                f"{MAX_COMPUTE_RACK_C_BRICKS}")
+        if counts.get("R", 0) > MAX_COMPUTE_RACK_R_BRICKS:
+            raise ResolutionError(
+                f"{kind} {number} holds {counts['R']} R-bricks, at most "
+                f"{MAX_COMPUTE_RACK_R_BRICKS}")
 
 
 def validate_hub_ni_revision_overrides(model: dict[str, Any]) -> None:
@@ -1719,6 +1929,7 @@ def check_composition(model: dict[str, Any]) -> dict[str, Any]:
     validate_synthetic_identities(model)
     validate_unique_synthetic_serials(model)
     validate_initial_module_numbers(model)
+    validate_rack_numbers(model)
     validate_hub_ni_revision_overrides(model)
     validate_board_identity_overrides(model)
     validate_system_timekeepers(model)

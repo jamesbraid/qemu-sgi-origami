@@ -571,6 +571,20 @@
                 }
               }
             },
+            "rack_numbers": {
+              "type": "array",
+              "description": "Rack numbers for an implemented SN1 target whose bricks carry L1 controllers, keyed by rack chassis component. A module takes the number of its nearest numbered chassis ancestor, as the rack setting of each of its L1s; initial_module_numbers stays the bay. Absent, every brick is in rack 1 and uniqueness is by bay alone. Present, uniqueness is by rack and bay, and every rack holds a module and every module sits in a numbered rack. The resolver further restricts a number to the 64 the PROM's module-identifier encoder accepts.",
+              "items": {
+                "type": "object",
+                "required": ["component", "number", "reason"],
+                "additionalProperties": false,
+                "properties": {
+                  "component": { "$ref": "#/$defs/identifier" },
+                  "number": { "type": "integer", "minimum": 1, "maximum": 1023 },
+                  "reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
             "l1_management": {
               "type": "object",
               "additionalProperties": false,
