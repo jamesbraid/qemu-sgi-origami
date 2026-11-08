@@ -1389,7 +1389,8 @@ gives the L2 no route to an L1. The L1 becomes routable at the L2 only
 when it answers this request, because the daemon registers it from the
 reply. With the link up, the model answers a request with exactly these
 three descriptors, the first the integer 6 and the third an integer.
-Anything else is logged with ``LOG_UNIMP`` and not answered. A controller
+Anything else is logged with ``LOG_UNIMP`` and not answered, except a
+six-descriptor selector 2 or 13 request (:ref:`sgi-l1-table-exchange`). A controller
 whose rack or bay is unset does not answer either, because nothing says
 what a real one reports. A request cut short of its three descriptors is
 not answered. A string descriptor whose offset or length lies outside the
@@ -1397,13 +1398,10 @@ segment, or whose text is not terminated inside it, is read as no serial
 text and the reply goes out without one; what a real L1 does with such a
 request is *unknown*, so each is an *approximation*.
 
-The model first sends two requests of its own on the link, to
-``0x0ffff00e``, one integer descriptor each, the selector 2 and then 13.
-That the L1 sends two requests with those selectors before it builds the
-reply is *established*; what else they carry and what consumes them are
-*unknown*, so one integer descriptor each is the model's choice. Both
-carry the reply's source word. An answer the peer sends to them is logged
-with ``LOG_UNIMP`` and dropped.
+Before it builds the reply, on every selector 6 request that is answered, the
+controller starts the L1-to-peer-L1 table exchange of selectors 2 and 13
+(next section). Neither selector is a request to the L2 and neither crosses
+the L2 link.
 
 The reply is one segment: class response, destination the request's
 source word, status byte 0, the request's code, and these descriptors
@@ -1418,16 +1416,26 @@ copy is an *approximation*.
 
 The source word is ``(identity << 12) | 0x0e`` with the identity the rack
 in bits 15:6 and the bay in bits 5:0; that these are the controller's own
-settings is *inferred*. A record has a nonzero word at +0x00, the rack in
-the word at +0x08 and the bay in the word at +0x0c, big endian
-(*established* as the fields the L2 routes by). The word at +0x60 must be
-nonzero for the L1 to send the record (*established*); the model writes 1,
-an *approximation*, since its meaning is *unknown*. The request's serial
-text, cut to 11 characters, goes to +0x64 of the first record (its role is
-*inferred*). Every other field is zero. The records are the bricks the
-``config`` command lists, the controller and the bricks cabled to it, that
-have a rack and bay. What fills the real table is *unknown*, so this is an
-*approximation*.
+settings is *inferred*. The records come from the controller's module table
+of fifteen entries of 0x70 bytes: its own entries at 0 to 4, the entries
+learned from the peer on serial port 1 at 5 to 9 and from port 2 at 10 to 14
+(*established* for the stores; the naming is *inferred*). An entry is listed
+when its word at +0x60 is nonzero (*established*), and a group of five whose
+first entry's string at +0x40 repeats an earlier group's is left out
+(*established* for the omission; that the L2 is the consumer of the
+entries learned from a peer is *inferred*). The index array holds each
+listed entry's table index. A record has a nonzero word at +0x00, the rack
+in the word at +0x08 and the bay in the word at +0x0c, big endian
+(*established* as the fields the L2 routes by); the word at +0x60 is 1, an
+*approximation* since its meaning is *unknown*. Every other field is zero
+except two the model chooses: the text at +0x40, which holds the brick's
+module name so the repeat test has something to compare, and the serial
+text at +0x64 of the controller's own entry 0, the request's text cut to 11
+characters (its role is *inferred*). A request whose text cannot be read
+leaves the stored text unchanged, an *approximation*. The controller's own
+entries are itself at 0 and, at 1, its I-brick (or, for an I-brick, its
+host C-brick), with the rest empty. What fills the real table is *unknown*,
+so those entries are an *approximation*.
 
 The reply's descriptors are built the way the L1's packet builder builds
 them. The integers have type ``0x00``. The index array (descriptor 4) is
@@ -1453,6 +1461,54 @@ No timeout is modelled: the PROM's own wait for the reply is its
 concern. If the peer disconnects, a plain request still waiting gets the
 router error reply and pending state is cleared.
 
+.. _sgi-l1-table-exchange:
+
+The table exchange with a peer L1
+---------------------------------
+
+Selectors 2 and 13 are the L1's exchange of module-table entries with a
+peer L1 over a peer serial port, not requests to the L2: selector 2 goes to
+port 1 and selector 13 to port 2, posted to that port's writer only when its
+handles are open (*established* from one reading of the 1.44.0 package for
+the Fuel, Origin 300 and PE builds; which package a C-brick ships is
+*inferred*). A C-brick opens ports 1 and 9, so a paired C-brick is port 1,
+selector 13 is never sent, and selector 2 is sent only while the pair's
+``peer`` link is set on both controllers and ``network-422`` is up on both
+(*inferred*: the receiver gets a packet only through a port of its own that
+is open). A controller that is not named, or is restarting, does not
+answer, as for selector 6. The
+peer is a direct call between the paired controllers; the RS-422 framing is
+not modelled. ``sgi_l1_peer_segment`` traces each packet.
+
+The request is one 628-byte segment: class 0 (*inferred*, the
+builder's class argument), code 0, destination ``0x0ffff00e``, the sender's
+task 14 word as source, six descriptors (*established*): the selector as an
+integer, then five byte copies, type ``0x09``, segment byte 1, length 0x70,
+the sender's own entries 0 to 4. The receiver clears the five entries of the
+arrival port's group, copies descriptors 1 to 5 into them, each the smaller
+of 0x70 and descriptor 1's length, and sets the first entry's +0x60 to 1
+(*established*). Nothing is stored when the status byte is nonzero or the
+arrival is not a peer port. It then answers with a response, class 1,
+status 0, to the request's source word, the same selector and its own entries
+0 to 4, also when it stored nothing (*established* from the branch order).
+The sender stores the response's entries as the group for the selector it
+sent. A selector 2 or 13 request that arrives on the L2 link is answered the
+same way and stores nothing; no sender of one is known (*established* for the
+branch, *unknown* whether any L2 sends it).
+
+Not modelled: the follow-up that sends the opposite selector to the other
+peer port after a store (what it is for is *inferred*), a second peer port,
+the two-descriptor form of selector 6 (the daemon never sends it; such a
+request is logged and not answered) and a reply of more than eight records,
+which would need a second segment. Whether a port that is initialised but
+uncabled counts as open is *unknown*; a controller with no ``peer`` sends
+nothing.
+
+The learned entries and the serial text are not migrated. Only a request
+that arrived on an L2 link, or the exchange that request starts, fills them,
+and a controller with an L2 link blocks migration, as does a machine that
+holds one for its peer; they are cleared when the controller itself starts.
+
 Limits
 ------
 
@@ -1462,7 +1518,8 @@ Limits
 - Attach, device-reset and endpoint-reset control messages are not
   defined; the peer learns of the L1 by the connection.
 - Setting ``l2`` blocks migration and snapshots, whether or not a peer is
-  connected, because the peer's state is outside the machine.
+  connected, because the peer's state is outside the machine. The blocker
+  is process-wide, so it also covers a paired L1 that has no ``l2`` chardev.
 - The link state is not part of the saved device state.
 
 Board-side interfaces
@@ -2357,10 +2414,11 @@ Model limits
   built from the readings above; a reply or a version line does not mean
   firmware ran.
 - No M-Bus, environmental monitoring, events other than the deferred
-  power-down, JTAG scan, flash, management USB device, a node's task-14
-  configuration exchange or RS-422 wire protocol. The L2 link carries
-  segments only; of what the L2 sends on its own, only its selector 6
-  configuration request is answered (:ref:`sgi-l1-l2-config`).
+  power-down, JTAG scan, flash, management USB device or RS-422 wire
+  protocol. The L2 link carries segments only; of what the L2 sends on its
+  own, only its selector 6 configuration request is answered
+  (:ref:`sgi-l1-l2-config`), and the peer table exchange it starts is a
+  direct call between paired C-bricks (:ref:`sgi-l1-table-exchange`).
 - The operator commands ``env``, ``date``, ``config``, ``uart``,
   ``flash``, ``network``, ``cpu``, ``port``, ``serial``, ``autopower``,
   ``history``, ``l1dbg console`` and ``select filter`` are not modelled.
