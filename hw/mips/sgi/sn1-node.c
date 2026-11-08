@@ -1259,7 +1259,11 @@ static void sn1_node_test_start_timer(void *opaque)
 static void sn1_node_start_cpus(SN1NodeState *node, bool power_up)
 {
     sn1_node_prepare_start(node);
-    node->start_owed = MAKE_64BIT_MASK(0, node->nr_cpus);
+    /*
+     * MAKE_64BIT_MASK() of no bits is all of them: a node without
+     * processors owes no start.
+     */
+    node->start_owed = node->nr_cpus ? MAKE_64BIT_MASK(0, node->nr_cpus) : 0;
     if (power_up && node->test_start_timer) {
         timer_mod(node->test_start_timer,
                   qemu_clock_get_ms(QEMU_CLOCK_REALTIME) +

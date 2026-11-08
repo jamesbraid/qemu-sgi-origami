@@ -4565,6 +4565,21 @@ static void test_processorless_node_restart_finishes(void)
     memory_node_quit(qts, prom, stream);
 }
 
+/* The same node's supply returning owes no start either. */
+static void test_processorless_node_power_up_owes_no_start(void)
+{
+    char *prom, *stream, *tail;
+    QTestState *qts = memory_node_start(&prom, &stream);
+    gsize length;
+
+    qtest_set_irq_in(qts, "/machine/node3", "power", 0, 0);
+    qtest_set_irq_in(qts, "/machine/node3", "power", 0, 1);
+    tail = stream_tail(qts, stream, &length);
+    g_assert_false(stream_names(tail, length, "sn1-node/start"));
+    g_free(tail);
+    memory_node_quit(qts, prom, stream);
+}
+
 /*
  * A node restart pulses the reset input of the XBridge cabled to its I/O
  * interface, and a bridge that is not held restarts cold: on the two
@@ -4638,6 +4653,8 @@ int main(int argc, char **argv)
                    test_restart_keeps_the_survivors);
     qtest_add_func("sn1/cross-node/processorless-node-restart-finishes",
                    test_processorless_node_restart_finishes);
+    qtest_add_func("sn1/cross-node/processorless-node-power-up-owes-no-start",
+                   test_processorless_node_power_up_owes_no_start);
     qtest_add_func("sn1/cross-node/restart-resets-the-cabled-bridge",
                    test_restart_resets_the_cabled_bridge);
     qtest_add_func("sn1/cross-node/restart-ignores-an-off-node",
