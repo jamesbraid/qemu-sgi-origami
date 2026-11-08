@@ -1259,8 +1259,11 @@ model checks these rules only when racks are numbered:
 
 Topologies that number no rack keep the module number rules above
 unchanged: unique across the whole system, 1 to 255. No shipped topology
-numbers a rack yet, and the machine builder does not read rack numbers, so
-every L1 answers rack 1.
+numbers a rack yet, and the compiled catalogue carries no rack field for
+any of them. A numbered topology's module records carry ``rack``. The
+machine builder does not read it yet, so every L1 answers rack 1. The
+catalogue's QAPI module record has no ``rack`` field, so a topology that
+numbers a rack cannot be catalogued until the builder stage adds it.
 
 Model limits of a routed Origin 3000 build:
 
@@ -1527,9 +1530,9 @@ an I/O rack, a brick with no letter and too many C-, R- or I/O bricks, and
 acceptance of two racks that share a bay. It also checks that the Origin
 2000 module number rules and the unnumbered SN1 rules are unchanged, that a
 Cx-brick claims its router bay and none passes bay 39, that a null
-``rack_numbers`` leaves the module number rules in force and that no
-shipped topology numbers a
-rack.
+``rack_numbers`` leaves the module number rules in force, that a module
+record carries ``rack`` only in a numbered topology and that no shipped
+topology numbers a rack.
 
 ``tests/qtest/sn-builder-test.c`` builds the C-brick fixtures from
 ``tests/qtest/sn-builder-fault-test.c``. ``sn/builder/cbrick/origin3200-xbrick-slots``
