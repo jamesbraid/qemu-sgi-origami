@@ -3505,6 +3505,192 @@ static void test_load_keeps_running_processors(void)
     g_rmdir(dir);
 }
 
+/*
+ * A node cycled while its processors run outside the PROM's cache-as-RAM
+ * phase must serve that phase again when they start. The phase gives each
+ * processor a private block at physical 0x100000 for its stack
+ * (hw/mips/sgi/sn-promdata.c) before the memory unit has any bank enabled.
+ * Whether the window answers is state of the processor's block, not of the
+ * memory unit: a machine reset re-arms it, and a node's own cold reset must
+ * as well. Otherwise a processor that left the phase before the cycle (the
+ * PROM monitor and the kernel both run outside it) finds the window gone
+ * after it, and its first stack access reaches the memory unit that the
+ * cycle has just reset.
+ *
+ * The image's processor A of each node enters the phase from the PROM and
+ * stores into the window, then leaves it by clearing the phase bit and
+ * spinning in its node's memory. Once the node's poll has seen it leave, the
+ * test marks local block scratch 2, which the cycle keeps, and cycles the
+ * node.
+ * The second pass enters the phase again, stores 0x2222 into the window
+ * and loads it back into the count register. A load that faults takes the
+ * general exception vector, which stores 0xbad there instead.
+ */
+#define CAR_PHASE_BIT 2
+#define CAR_LATCHED 1
+#define CAR_STORED UINT64_C(0x2222)
+#define CAR_FAULTED UINT64_C(0xbad)
+#define CAR_SPIN UINT64_C(0x01000000)
+
+static char *create_cache_as_ram_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    unsigned int pc;
+    int fd;
+
+#define EMIT(word) do { stl_be_p(image + pc, (word)); pc += 4; } while (0)
+#define BRANCH(op, rs, rt, target) \
+    EMIT(mips_branch((op), (rs), (rt), ((int)(target) - (int)pc - 4) / 4))
+    stl_be_p(image + 0x000, 0x100000ff); /* beq zero, zero, 0x400 */
+    for (pc = 0x200; pc <= 0x300; pc += 0x80) {
+        stl_be_p(image + pc, 0x1000ffff); /* beq zero, zero, self */
+    }
+    /* General exception: report the fault through the count register. */
+    pc = 0x380;
+    EMIT(mips_ori(11, 0, CAR_FAULTED));     /* ori t3, zero, 0xbad */
+    EMIT(mips_sd(11, 8, COUNT_SLICE_A));    /* sd t3, 0x108(t0) */
+    EMIT(0x1000ffff);                       /* beq zero, zero, self */
+    EMIT(mips_nop());
+
+    pc = 0x400;
+    EMIT(mips_mfc0(12, 12));                /* mfc0 t4, Status */
+    EMIT(mips_ori(12, 12, 0x0080));         /* Status.KX */
+    EMIT(mips_lui(13, 0x2000));             /* Status.CU1 */
+    EMIT(mips_rtype(12, 13, 12, 0, 0x25));  /* or t4, t4, t5 */
+    EMIT(mips_mtc0(12, 12));                /* mtc0 t4, Status */
+    EMIT(mips_nop());
+    EMIT(mips_nop());
+    EMIT(mips_lui(8, 0x9200));              /* t0: the local Bedrock */
+    EMIT(mips_dsll32(8, 8));
+    EMIT(mips_lui(9, 0x0100));
+    EMIT(mips_rtype(8, 9, 8, 0, 0x25));     /* or t0, t0, t1 */
+    EMIT(mips_ld(10, 8, 0x20));             /* ld t2, CPU number */
+    EMIT(mips_andi(10, 10, 3));
+    BRANCH(MIPS_OPC_BNE, 10, 0, 0x500);
+    EMIT(mips_nop());
+    /* Processor A: local block scratch 2 says which pass this is. */
+    EMIT(mips_lui(14, 0x0060));
+    EMIT(mips_ori(14, 14, 0x8010));
+    EMIT(mips_daddu(14, 14, 8));
+    EMIT(mips_ld(13, 14, 0));               /* ld t5, scratch 2 */
+    EMIT(mips_ori(10, 0, CAR_PHASE_BIT));
+    EMIT(0x44aa0000);                       /* dmtc1 t2, f0: enter phase */
+    EMIT(mips_lui(9, 0x8010));              /* t1: cached window */
+    BRANCH(MIPS_OPC_BNE, 13, 0, 0x480);
+    EMIT(mips_nop());
+    /* First pass: latch the window, then leave the phase outside the PROM. */
+    EMIT(mips_ori(10, 0, 0x1111));
+    EMIT(mips_sw(10, 9, 0));
+    EMIT(mips_ori(11, 0, CAR_LATCHED));
+    EMIT(mips_sd(11, 8, COUNT_SLICE_A));
+    EMIT(0x44a00000);                       /* dmtc1 zero, f0 */
+    EMIT(mips_lui(9, 0xa100));              /* uncached CAR_SPIN */
+    EMIT(mips_rtype(9, 0, 0, 0, 0x08));     /* jr t1 */
+    EMIT(mips_nop());
+    g_assert_cmpuint(pc, <=, 0x480);
+    /* Second pass: store into the window and read it back. */
+    pc = 0x480;
+    EMIT(mips_ori(10, 0, CAR_STORED));
+    EMIT(mips_sw(10, 9, 0));
+    EMIT(mips_lw(11, 9, 0));
+    EMIT(mips_nop());
+    EMIT(mips_sd(11, 8, COUNT_SLICE_A));
+    EMIT(0x1000ffff);                       /* beq zero, zero, self */
+    EMIT(mips_nop());
+    /* The other processors wait. */
+    pc = 0x500;
+    EMIT(0x42000020);                       /* wait */
+    EMIT(0x1000fffe);                       /* beq zero, zero, 0x500 */
+    EMIT(mips_nop());
+#undef BRANCH
+#undef EMIT
+
+    fd = g_file_open_tmp("sn1-cross-node-car-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static bool car_left_traced(const char *path, unsigned int cpu)
+{
+    g_autofree char *contents = NULL;
+    g_autofree char *needle = g_strdup_printf("sn_promdata_phase cpu %u leave",
+                                              cpu);
+
+    return g_file_get_contents(path, &contents, NULL, NULL) &&
+           strstr(contents, needle) != NULL;
+}
+
+typedef void (*CarCycle)(QTestState *qts, unsigned int node);
+
+static void car_power_cycle(QTestState *qts, unsigned int node)
+{
+    g_autofree char *path = g_strdup_printf("/machine/node%u", node);
+
+    qtest_set_irq_in(qts, path, "power", 0, 0);
+    qtest_set_irq_in(qts, path, "power", 0, 1);
+}
+
+static void check_cycle_rearms_the_cache_as_ram_window(unsigned int node,
+                                                       CarCycle cycle)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = create_cache_as_ram_prom();
+    g_autofree char *quoted = g_shell_quote(prom);
+    g_autofree char *dir = g_dir_make_tmp("sn1-car-cycle-XXXXXX", &error);
+    g_autofree char *trace = NULL;
+    unsigned int cpu = node * 2;
+    g_autoptr(QDict) reset = NULL;
+    QTestState *qts;
+    uint64_t count;
+    SgiWait w;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    g_assert_no_error(error);
+    trace = g_build_filename(dir, "trace", NULL);
+    qts = qtest_initf("%s -bios %s -accel tcg,thread=multi -no-shutdown -S "
+                      "-trace enable=sn_promdata_phase,file=%s",
+                      MACHINE_ARGS, quoted, trace);
+    /* The spin loop of the node's first pass: beq zero, zero, self; nop. */
+    bte_cpu_writeq(qts, cpu, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
+                   MD_INSTALLED_SELECT2);
+    bte_cpu_writeq(qts, cpu, CAR_SPIN, UINT64_C(0x1000ffff00000000));
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+
+    sgi_wait_start(&w, "processor %u to leave the cache-as-RAM phase", cpu);
+    while (node_count(qts, cpu) != CAR_LATCHED ||
+           !car_left_traced(trace, cpu)) {
+        g_assert_true(sgi_wait_continue(&w, 10000));
+    }
+
+    bte_cpu_writeq(qts, cpu, BEDROCK_LOCAL + LB_SCRATCH2, 1);
+    cycle(qts, node);
+
+    sgi_wait_start(&w, "processor %u's second pass to report", cpu);
+    while ((count = node_count(qts, cpu)) != CAR_STORED &&
+           count != CAR_FAULTED) {
+        g_assert_true(sgi_wait_continue(&w, 10000));
+    }
+    g_assert_cmphex(count, ==, CAR_STORED);
+    reset = qtest_qmp_event_ref(qts, "RESET");
+    g_assert_null(reset);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+    g_unlink(trace);
+    g_rmdir(dir);
+}
+
+static void test_power_return_rearms_the_cache_as_ram_window(void)
+{
+    check_cycle_rearms_the_cache_as_ram_window(1, car_power_cycle);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -3523,6 +3709,9 @@ int main(int argc, char **argv)
                    test_node_power_stops_one_node);
     qtest_add_func("sn1/cross-node/off-node-survives-migration",
                    test_off_node_survives_migration);
+    qtest_add_func("sn1/cross-node/power-return-rearms-the-cache-as-ram-"
+                   "window",
+                   test_power_return_rearms_the_cache_as_ram_window);
     qtest_add_func("sn1/cross-node/brick-power-ends-the-machine-last",
                    test_brick_power_ends_the_machine_last);
     qtest_add_func("sn1/cross-node/broadcast-power-down-ends-the-machine",

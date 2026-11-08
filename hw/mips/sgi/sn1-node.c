@@ -2557,6 +2557,20 @@ static void sn1_node_cold_reset_parts(SN1NodeState *node)
         device_cold_reset(g_ptr_array_index(roots, i));
     }
     g_ptr_array_free(scan.devices, true);
+    /*
+     * Each processor's cache-as-RAM window is not a device under the node:
+     * the machine's reset re-arms it through sn_promdata_reset(), registered
+     * with qemu_register_reset(), which a node's own cold reset never runs.
+     * A processor that left the PROM's cache-only phase before this reset
+     * would otherwise find the window disabled when it starts again, and its
+     * stack at 0x100000 would reach a memory unit that has just lost its bank
+     * configuration. The Hub's module restart re-arms it the same way.
+     */
+    for (unsigned int i = 0; i < node->nr_cpus; i++) {
+        if (node->promdata[i].present) {
+            sn_promdata_reset(&node->promdata[i]);
+        }
+    }
 }
 
 /*

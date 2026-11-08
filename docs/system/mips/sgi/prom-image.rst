@@ -653,6 +653,8 @@ node numbers and reaches its own copies through node-qualified
 addresses. The model keeps a node's memory at its fixed placement and
 changes only how the node answers.
 
+.. _sgi-prom-image-early-window:
+
 PROM early window
 -----------------
 
