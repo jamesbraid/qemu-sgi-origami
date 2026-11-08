@@ -1933,8 +1933,11 @@ threads. The node's controller and processors are not part of that reset
 list, and no other node is reset. Which registers survive a supply cycle on
 hardware is *unknown*; the model resets them all, an *approximation*, so the
 node's number, memory configuration and routes are the firmware's to
-program again. Each processor's start is owed until its work runs, and
-the work takes the debt: a start queued twice, by a power cycle before the
+program again. The model re-arms each processor's cache-as-RAM window
+(:ref:`sgi-prom-image-early-window`) with that reset, an *approximation*:
+on hardware the window is part of the PROM's cache-only phase, which the
+restarted processor runs again. Each processor's start is owed until its
+work runs, and the work takes the debt: a start queued twice, by a power cycle before the
 first ran or by a resume that finds one still queued, starts the
 processor once, and never resets it again after it has run
 (``sn1/cross-node/owed-start-runs-once`` leaves a power-up's starts
@@ -2201,8 +2204,10 @@ Composition and machine tests:
   input and a stop and continue, and restarts when the supply returns
   (``sn1/cross-node/node-power-stops-one-node``), an off node that
   stays off across a migration
-  (``sn1/cross-node/off-node-survives-migration``), a power-up's start
-  that is owed and runs once (``sn1/cross-node/owed-start-runs-once``),
+  (``sn1/cross-node/off-node-survives-migration``), a supply cycle that
+  re-arms a processor's cache-as-RAM window
+  (``sn1/cross-node/power-return-rearms-the-cache-as-ram-window``), a
+  power-up's start that is owed and runs once (``sn1/cross-node/owed-start-runs-once``),
   the supply levels of source and destination differing in either
   direction (``sn1/cross-node/load-into-off-nodes``,
   ``sn1/cross-node/load-into-on-nodes``,
