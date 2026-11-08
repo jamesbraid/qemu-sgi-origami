@@ -200,6 +200,14 @@ struct SGIL1State {
     uint8_t l2_chain_left;
     bool l2_chain_first;
     Error *l2_blocker;
+    /*
+     * The L1's module table beyond its own entries (the entries learned
+     * from the peer on port 1, then port 2) and the serial text the L2's
+     * request carried. Neither is migrated: only a request that arrived on
+     * an L2 link fills them, and that link blocks migration.
+     */
+    uint8_t peer_table[2][SGI_L1_TABLE_GROUP][SGI_L1_L2_RECORD_SIZE];
+    char l2_serial[SGI_L1_L2_RECORD_SIZE - SGI_L1_L2_RECORD_TEXT];
     qemu_irq node_power_out;
     /* The machine joined a node's power input to node_power_out. */
     bool node_driven;

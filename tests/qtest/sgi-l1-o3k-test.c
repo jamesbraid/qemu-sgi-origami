@@ -2116,13 +2116,47 @@ static void test_l2_link_down(void)
 
 
 /*
+ * Trace output: run with the named events logged to a file, then read the
+ * file once the machine has quit.
+ */
+static char *trace_start(const char *events, char **args)
+{
+    g_autoptr(GError) error = NULL;
+    char *path = NULL;
+    int fd = g_file_open_tmp("sgi-l1-trace-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    *args = g_strdup_printf("-trace enable=%s -D %s ", events, path);
+    return path;
+}
+
+static char *trace_finish(QTestState *s, char *path)
+{
+    g_autoptr(GError) error = NULL;
+    char *text = NULL;
+
+    qtest_quit(s);
+    g_assert_true(g_file_get_contents(path, &text, NULL, &error));
+    g_assert_no_error(error);
+    g_unlink(path);
+    g_free(path);
+    return text;
+}
+
+/*
  * The daemon's recurring configuration request (L2 sheet, "The reply, and
  * the route it creates"). The stub plays the daemon: it sends the request
- * and reads what the controller puts on the link, which is two requests of
- * its own and then the reply. Integer descriptors are "00 00 0000 value".
+ * and reads what the controller puts on the link, which is the reply alone.
+ * Integer descriptors are "00 00 0000 value".
  */
 #define L2_CONFIG_SOURCE_WORD(rack, bay) \
     ((((rack) << 6 | (bay)) << 12) | SGI_L1_L2_CONFIG_TASK)
+
+static unsigned segment_ndesc(const uint8_t *segment)
+{
+    return segment[SGI_L1_L2_SEG_NDESC];
+}
 
 static uint32_t desc_integer(const uint8_t *segment, unsigned i)
 {
@@ -2166,29 +2200,10 @@ static const uint8_t *desc_records(const uint8_t *segment, size_t length,
                      n * SGI_L1_L2_RECORD_SIZE);
 }
 
-static void expect_config_request(L2Stub *stub, uint32_t source,
-                                  uint32_t selector)
-{
-    uint8_t segment[SGI_L1_L2_SEGMENT_MAX];
-    size_t length = l2_stub_read_segment(stub, segment, L2_STUB_TIMEOUT_MS);
-
-    g_assert_cmpuint(length, ==, SGI_L1_L2_SEG_DESC + 8);
-    g_assert_cmpuint(segment[SGI_L1_L2_SEG_COUNT], ==,
-                     SGI_L1_L2_FIRST_SEGMENT | 1);
-    g_assert_cmpuint(segment[SGI_L1_L2_SEG_CLASS], ==,
-                     SGI_L1_L2_CLASS_REQUEST);
-    g_assert_cmphex(ldl_be_p(segment + SGI_L1_L2_SEG_DEST), ==,
-                    SGI_L1_L2_CONFIG_DEST);
-    g_assert_cmphex(ldl_be_p(segment + SGI_L1_L2_SEG_SOURCE), ==, source);
-    g_assert_cmpuint(segment[SGI_L1_L2_SEG_NDESC], ==, 1);
-    g_assert_cmphex(lduw_be_p(segment + SGI_L1_L2_SEG_CODE), ==, 0);
-    g_assert_cmpuint(desc_integer(segment, 0), ==, selector);
-}
-
 /*
  * Read the reply and check its header: class 1, back to the request's
  * source, the task 14 endpoint as source, status 0, the request's code and
- * sequence, one segment, six descriptors.
+ * sequence, one segment.
  */
 static size_t read_config_reply(L2Stub *stub, uint8_t *segment, uint32_t source)
 {
@@ -2223,9 +2238,7 @@ static void test_l2_config_reply(void)
     length = l2_stub_build_config_request(segment, "SN12345", 0);
     l2_stub_write_segment(stub, segment, length);
 
-    /* The controller asks for selectors 2 and 13 before it builds the reply. */
-    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_A);
-    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_B);
+    /* The selector 2 and 13 exchange goes to a peer L1, never to the L2. */
     length = read_config_reply(stub, segment, source);
     g_assert_cmpuint(segment[SGI_L1_L2_SEG_NDESC], ==, 6);
     g_assert_cmpuint(desc_integer(segment, 0), ==, 7);
@@ -2243,8 +2256,6 @@ static void test_l2_config_reply(void)
     /* A nonzero third descriptor ends the reply after the integer 7. */
     length = l2_stub_build_config_request(segment, NULL, 1);
     l2_stub_write_segment(stub, segment, length);
-    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_A);
-    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_B);
     length = read_config_reply(stub, segment, source);
     g_assert_cmpuint(segment[SGI_L1_L2_SEG_NDESC], ==, 1);
     g_assert_cmpuint(length, ==, SGI_L1_L2_SEG_DESC + 8);
@@ -2253,7 +2264,10 @@ static void test_l2_config_reply(void)
     l2_stub_free(stub);
 }
 
-/* The records are the bricks the controller lists for "config". */
+/*
+ * The records are the controller's own entries, its I-brick's at 1, and the
+ * entries a paired C-brick sent at 5.
+ */
 static void test_l2_config_reply_attached(void)
 {
     L2Stub *stub = l2_stub_listen();
@@ -2279,22 +2293,412 @@ static void test_l2_config_reply_attached(void)
     link_peer(s, 0, 2);
     length = l2_stub_build_config_request(segment, NULL, 0);
     l2_stub_write_segment(stub, segment, length);
-    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_A);
-    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_B);
     length = read_config_reply(stub, segment, source);
     g_assert_cmpuint(desc_integer(segment, 2), ==, 3);
     index = desc_index(segment, length, 3);
     records = desc_records(segment, length, 3);
     for (unsigned i = 0; i < 3; i++) {
         static const uint8_t bays[3] = { 4, 31, 7 };
+        /* Own entries 0 and 1, then the partner's entry 0 at 5. */
+        static const uint8_t table_index[3] = { 0, 1, 5 };
 
-        g_assert_cmpuint(index[i], ==, i);
+        g_assert_cmpuint(index[i], ==, table_index[i]);
         g_assert_cmpuint(ldl_be_p(records + 0x70 * i + 0x08), ==, 1);
         g_assert_cmpuint(ldl_be_p(records + 0x70 * i + 0x0c), ==, bays[i]);
         g_assert_cmpuint(ldl_be_p(records + 0x70 * i + 0x60), !=, 0);
     }
     qtest_quit(s);
     l2_stub_free(stub);
+}
+
+/*
+ * Selectors 2 and 13 are the L1's table exchange with a peer L1, not
+ * requests to the L2 (L1 sheet, "Selectors 2 and 13"). The pair here is
+ * two C-bricks joined with "peer"; each also has an L2 stub so that its
+ * table can be read back as the selector 6 reply. The first brick has an
+ * I-brick, so it owns table entries 0 and 1 and the partner's entry 0 lands
+ * at 5 and its I-brick's at 6.
+ */
+#define PAIR_A "brick-type=cbrick,named=on,rack=1,bay=4,l2=l2a"
+#define PAIR_B "brick-type=cbrick,named=on,rack=1,bay=7,l2=l2b"
+#define PAIR_IO "brick-type=ibrick,named=on,rack=1,bay=31,mac=" MAC_PROP
+
+static QTestState *start_pair(L2Stub *a, L2Stub *b, const char *props_a,
+                              const char *props_b, bool with_io,
+                              const char *trace)
+{
+    g_autofree char *extra = g_strdup_printf(
+        "-chardev socket,id=l2a,path=%s -chardev socket,id=l2b,path=%s %s",
+        a->path, b->path, trace);
+    const char *const props[] = { props_a, PAIR_IO, props_b };
+    QTestState *s = start_with(3, props, extra);
+
+    l2_stub_accept(a);
+    l2_stub_accept(b);
+    for (unsigned i = 0; i < 10000 &&
+         !(qtest_qom_get_bool(s, DEVICES "l1c0", "l2-link-up") &&
+           qtest_qom_get_bool(s, DEVICES "l1c2", "l2-link-up")); i++) {
+        g_usleep(1000);
+    }
+    g_assert_true(qtest_qom_get_bool(s, DEVICES "l1c0", "l2-link-up"));
+    g_assert_true(qtest_qom_get_bool(s, DEVICES "l1c2", "l2-link-up"));
+    if (with_io) {
+        link_io(s, 0, 1);
+    }
+    link_peer(s, 0, 2);
+    return s;
+}
+
+/* Ask a stub's controller for its table; return the reply's length. */
+static size_t ask_table(L2Stub *stub, uint32_t source, const char *serial,
+                        uint32_t third, uint8_t *reply)
+{
+    uint8_t request[SGI_L1_L2_SEGMENT_MAX];
+
+    l2_stub_write_segment(stub, request,
+        l2_stub_build_config_request(request, serial, third));
+    return read_config_reply(stub, reply, source);
+}
+
+/* The record at table index @want, or NULL when the reply omits it. */
+static const uint8_t *table_record(const uint8_t *reply, size_t length,
+                                   unsigned want)
+{
+    unsigned n = desc_integer(reply, 2);
+    const uint8_t *index = desc_index(reply, length, n);
+    const uint8_t *records = desc_records(reply, length, n);
+
+    for (unsigned i = 0; i < n; i++) {
+        if (index[i] == want) {
+            return records + i * SGI_L1_L2_RECORD_SIZE;
+        }
+    }
+    return NULL;
+}
+
+static void test_l2_config_peer_table(void)
+{
+    L2Stub *a = l2_stub_listen(), *b = l2_stub_listen();
+    QTestState *s = start_pair(a, b, PAIR_A, PAIR_B, true, "");
+    uint8_t reply[SGI_L1_L2_SEGMENT_MAX];
+    const uint8_t *record;
+    size_t length;
+
+    /*
+     * Every selector 6 request starts the exchange, a nonzero third
+     * descriptor included: the reply is the integer 7 alone, and the
+     * partner has stored this brick's entries all the same.
+     */
+    length = ask_table(a, L2_CONFIG_SOURCE_WORD(1, 4), "SN12345", 1, reply);
+    g_assert_cmpuint(segment_ndesc(reply), ==, 1);
+    g_assert_cmpuint(length, ==, SGI_L1_L2_SEG_DESC + 8);
+
+    /* The partner lists its own entry 0, then this brick's 0 and 1 at 5, 6. */
+    length = ask_table(b, L2_CONFIG_SOURCE_WORD(1, 7), "SN99999", 0, reply);
+    g_assert_cmpuint(desc_integer(reply, 2), ==, 3);
+    record = table_record(reply, length, 0);
+    g_assert_nonnull(record);
+    g_assert_cmpuint(ldl_be_p(record + 0x0c), ==, 7);
+    g_assert_cmpstr((const char *)record + 0x64, ==, "SN99999");
+    record = table_record(reply, length, 5);
+    g_assert_nonnull(record);
+    g_assert_cmpuint(ldl_be_p(record + 0x08), ==, 1);
+    g_assert_cmpuint(ldl_be_p(record + 0x0c), ==, 4);
+    g_assert_cmpuint(ldl_be_p(record + 0x60), !=, 0);
+    g_assert_cmpstr((const char *)record + 0x64, ==, "SN12345");
+    record = table_record(reply, length, 6);
+    g_assert_nonnull(record);
+    g_assert_cmpuint(ldl_be_p(record + 0x0c), ==, 31);
+    g_assert_null(table_record(reply, length, 1));
+    g_assert_null(table_record(reply, length, 10));
+
+    /*
+     * The partner's request refreshed this brick's entries 5 to 9 with its
+     * own, serial text included, and the I-brick's entry 1 is unchanged.
+     */
+    length = ask_table(a, L2_CONFIG_SOURCE_WORD(1, 4), NULL, 0, reply);
+    g_assert_cmpuint(desc_integer(reply, 2), ==, 3);
+    record = table_record(reply, length, 5);
+    g_assert_nonnull(record);
+    g_assert_cmpuint(ldl_be_p(record + 0x0c), ==, 7);
+    g_assert_cmpstr((const char *)record + 0x64, ==, "SN99999");
+    record = table_record(reply, length, 0);
+    g_assert_nonnull(record);
+    /* A request without readable text leaves the stored serial alone. */
+    g_assert_cmpstr((const char *)record + 0x64, ==, "SN12345");
+    g_assert_nonnull(table_record(reply, length, 1));
+    qtest_quit(s);
+    l2_stub_free(a);
+    l2_stub_free(b);
+}
+
+/*
+ * A selector 2 or 13 request that arrives on the L2 link is answered with
+ * the six-descriptor reply and stores nothing: the arrival port is not a
+ * peer port (L1 sheet, receiver step 4; no sender of it is known).
+ */
+static void test_l2_table_request_from_the_link(void)
+{
+    L2Stub *stub = l2_stub_listen();
+    QTestState *s = start_linked(stub, "brick-type=cbrick,named=on,rack=1,"
+                                 "bay=4");
+    uint32_t source = L2_CONFIG_SOURCE_WORD(1, 4);
+    uint8_t segment[SGI_L1_L2_SEGMENT_MAX];
+    static const uint32_t selectors[] = { 2, 13 };
+    size_t length;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(selectors); i++) {
+        const uint8_t *own;
+
+        length = l2_stub_build_table_request(segment, selectors[i]);
+        l2_stub_write_segment(stub, segment, length);
+        length = read_config_reply(stub, segment, source);
+        g_assert_cmpuint(length, ==, 628);
+        g_assert_cmpuint(segment[SGI_L1_L2_SEG_NDESC], ==, 6);
+        g_assert_cmpuint(desc_integer(segment, 0), ==, selectors[i]);
+        own = desc_data(segment, length, 1, SGI_L1_L2_DESC_BYTES,
+                        SGI_L1_L2_RECORD_SIZE);
+        g_assert_cmpuint(ldl_be_p(own + 0x08), ==, 1);
+        g_assert_cmpuint(ldl_be_p(own + 0x0c), ==, 4);
+        g_assert_cmpuint(ldl_be_p(own + 0x60), !=, 0);
+        for (unsigned e = 2; e <= 5; e++) {
+            own = desc_data(segment, length, e, SGI_L1_L2_DESC_BYTES,
+                            SGI_L1_L2_RECORD_SIZE);
+            g_assert_cmpuint(ldl_be_p(own + 0x60), ==, 0);
+        }
+    }
+
+    /* Nothing was stored: the table lists this brick alone. */
+    length = ask_table(stub, source, NULL, 0, segment);
+    g_assert_cmpuint(desc_integer(segment, 2), ==, 1);
+
+    /* A request for a selector the model does not serve gets no answer. */
+    length = l2_stub_build_table_request(segment, 3);
+    l2_stub_write_segment(stub, segment, length);
+    g_assert_cmpuint(l2_stub_read_segment(stub, segment, 300), ==, 0);
+    qtest_quit(s);
+    l2_stub_free(stub);
+
+    /* An unnamed controller does not answer, as for selector 6. */
+    stub = l2_stub_listen();
+    s = start_linked(stub, "brick-type=cbrick");
+    length = l2_stub_build_table_request(segment, 2);
+    l2_stub_write_segment(stub, segment, length);
+    g_assert_cmpuint(l2_stub_read_segment(stub, segment, 300), ==, 0);
+    qtest_quit(s);
+    l2_stub_free(stub);
+}
+
+/* A partner whose RS-422 link is not up hears nothing, and sends nothing. */
+static void test_l2_config_peer_closed(void)
+{
+    g_autofree char *args = NULL;
+    char *path = trace_start("sgi_l1_peer_segment", &args);
+    L2Stub *a = l2_stub_listen(), *b = l2_stub_listen();
+    QTestState *s = start_pair(a, b, PAIR_A, PAIR_B ",network-422=off", true,
+                               args);
+    uint8_t reply[SGI_L1_L2_SEGMENT_MAX];
+    g_autofree char *text = NULL;
+
+    ask_table(a, L2_CONFIG_SOURCE_WORD(1, 4), NULL, 0, reply);
+    g_assert_cmpuint(desc_integer(reply, 2), ==, 2);
+    ask_table(b, L2_CONFIG_SOURCE_WORD(1, 7), NULL, 0, reply);
+    g_assert_cmpuint(desc_integer(reply, 2), ==, 1);
+    l2_stub_free(a);
+    l2_stub_free(b);
+    text = trace_finish(s, path);
+    g_assert_null(strstr(text, "sgi_l1_peer_segment"));
+}
+
+/*
+ * A group whose first entry names a brick already collected is dropped, as
+ * the real walk drops a partner reached by both ports. Two controllers that
+ * share a rack and bay show it with one port.
+ */
+static void test_l2_config_peer_repeat_dropped(void)
+{
+    L2Stub *a = l2_stub_listen(), *b = l2_stub_listen();
+    QTestState *s = start_pair(a, b, PAIR_A, "brick-type=cbrick,named=on,"
+                               "rack=1,bay=4,l2=l2b", false, "");
+    uint8_t reply[SGI_L1_L2_SEGMENT_MAX];
+
+    ask_table(a, L2_CONFIG_SOURCE_WORD(1, 4), NULL, 0, reply);
+    g_assert_cmpuint(desc_integer(reply, 2), ==, 1);
+    qtest_quit(s);
+    l2_stub_free(a);
+    l2_stub_free(b);
+}
+
+/* The first brick's table size after one request; the exchange ran if 3. */
+static unsigned table_count(L2Stub *stub, uint32_t source)
+{
+    uint8_t reply[SGI_L1_L2_SEGMENT_MAX];
+
+    ask_table(stub, source, NULL, 0, reply);
+    return desc_integer(reply, 2);
+}
+
+/* A partner that is not named is not exchanged with: no packet, no entry. */
+static void test_l2_config_peer_unnamed(void)
+{
+    g_autofree char *args = NULL;
+    char *path = trace_start("sgi_l1_peer_segment", &args);
+    L2Stub *a = l2_stub_listen(), *b = l2_stub_listen();
+    QTestState *s = start_pair(a, b, PAIR_A, "brick-type=cbrick,l2=l2b",
+                               true, args);
+    g_autofree char *text = NULL;
+
+    /* Its own entry and its I-brick's, and nothing from the partner. */
+    g_assert_cmpuint(table_count(a, L2_CONFIG_SOURCE_WORD(1, 4)), ==, 2);
+    l2_stub_free(a);
+    l2_stub_free(b);
+    text = trace_finish(s, path);
+    g_assert_null(strstr(text, "sgi_l1_peer_segment"));
+}
+
+/*
+ * A partner that is restarting sits the exchange out, and takes part again
+ * once it is back.
+ */
+static void test_l2_config_peer_restarting(void)
+{
+    g_autofree char *args = NULL;
+    char *path = trace_start("sgi_l1_peer_segment", &args);
+    L2Stub *a = l2_stub_listen(), *b = l2_stub_listen();
+    QTestState *s = start_pair(a, b, PAIR_A, PAIR_B, true, args);
+    uint32_t source = L2_CONFIG_SOURCE_WORD(1, 4);
+    uint8_t reply[SGI_L1_L2_SEGMENT_MAX];
+    g_autofree char *output = NULL;
+    g_autofree char *text = NULL;
+    const uint8_t *record;
+    size_t length;
+
+    output = command(s, 2, "reboot_l1", NULL);
+    g_assert_cmpuint(table_count(a, source), ==, 2);
+    qtest_clock_step(s, RESTART_INSIDE_NS);
+    g_assert_cmpuint(table_count(a, source), ==, 2);
+    qtest_clock_step(s, RESTART_PAST_NS);
+    length = ask_table(a, source, NULL, 0, reply);
+    g_assert_cmpuint(desc_integer(reply, 2), ==, 3);
+    record = table_record(reply, length, 5);
+    g_assert_nonnull(record);
+    g_assert_cmpuint(ldl_be_p(record + 0x0c), ==, 7);
+    l2_stub_free(a);
+    l2_stub_free(b);
+    text = trace_finish(s, path);
+    /* Packets appear only after the partner was back: this one exchange. */
+    g_assert_nonnull(strstr(text, "bay=4 port=1 sent=1 len=628"));
+    g_assert_nonnull(strstr(text, "bay=7 port=1 sent=1 len=628"));
+}
+
+/*
+ * A receiver whose own link is down takes nothing in: with the partner's
+ * "peer" cleared, the first brick's request sends nothing, and neither does
+ * the partner's, whose packet would arrive at a closed port.
+ */
+static void test_l2_config_peer_one_way(void)
+{
+    g_autofree char *args = NULL;
+    char *path = trace_start("sgi_l1_peer_segment", &args);
+    L2Stub *a = l2_stub_listen(), *b = l2_stub_listen();
+    QTestState *s = start_pair(a, b, PAIR_A, PAIR_B, true, args);
+    g_autofree char *text = NULL;
+
+    qom_link(s, 0, "peer", "");
+    g_assert_cmpuint(table_count(b, L2_CONFIG_SOURCE_WORD(1, 7)), ==, 1);
+    g_assert_cmpuint(table_count(a, L2_CONFIG_SOURCE_WORD(1, 4)), ==, 2);
+    l2_stub_free(a);
+    l2_stub_free(b);
+    text = trace_finish(s, path);
+    g_assert_null(strstr(text, "sgi_l1_peer_segment"));
+}
+
+/*
+ * The exchange packet on the peer link (L1 sheet: class request, code 0,
+ * destination 0x0ffff00e, source the task 14 word, six descriptors, one
+ * 628-byte segment) and the receiver's reply.
+ */
+static bool trace_segment(const char *text, const char *prefix,
+                          uint8_t *segment, size_t *length)
+{
+    const char *line = strstr(text, prefix);
+    const char *hex = line ? strstr(line, "hex=") : NULL;
+
+    if (!hex) {
+        return false;
+    }
+    hex += 4;
+    *length = strspn(hex, "0123456789abcdef") / 2;
+    for (size_t i = 0; i < *length; i++) {
+        unsigned byte;
+
+        g_assert_cmpint(sscanf(hex + 2 * i, "%2x", &byte), ==, 1);
+        segment[i] = byte;
+    }
+    return true;
+}
+
+static void test_l2_config_peer_packets(void)
+{
+    g_autofree char *args = NULL;
+    char *path = trace_start("sgi_l1_peer_segment", &args);
+    L2Stub *a = l2_stub_listen(), *b = l2_stub_listen();
+    QTestState *s = start_pair(a, b, PAIR_A, PAIR_B, true, args);
+    uint8_t reply[SGI_L1_L2_SEGMENT_MAX], packet[SGI_L1_L2_SEGMENT_MAX];
+    g_autofree char *text = NULL;
+    size_t length;
+
+    ask_table(a, L2_CONFIG_SOURCE_WORD(1, 4), "SN12345", 0, reply);
+    l2_stub_free(a);
+    l2_stub_free(b);
+    text = trace_finish(s, path);
+
+    /* One request leaves the first brick, on port 1 only. */
+    g_assert_null(strstr(text, "port=2"));
+    g_assert_true(trace_segment(text,
+        "profile=cbrick rack=1 bay=4 port=1 sent=1 len=628", packet,
+        &length));
+    g_assert_cmpuint(length, ==, 628);
+    g_assert_cmpuint(lduw_be_p(packet), ==, 628);
+    g_assert_cmpuint(packet[SGI_L1_L2_SEG_COUNT], ==,
+                     SGI_L1_L2_FIRST_SEGMENT | 1);
+    g_assert_cmpuint(packet[SGI_L1_L2_SEG_CLASS], ==,
+                     SGI_L1_L2_CLASS_REQUEST);
+    g_assert_cmpuint(packet[SGI_L1_L2_SEG_FLAGS], ==, 0);
+    g_assert_cmphex(ldl_be_p(packet + SGI_L1_L2_SEG_DEST), ==,
+                    SGI_L1_L2_CONFIG_DEST);
+    g_assert_cmphex(ldl_be_p(packet + SGI_L1_L2_SEG_SOURCE), ==,
+                    L2_CONFIG_SOURCE_WORD(1, 4));
+    g_assert_cmpuint(packet[SGI_L1_L2_SEG_NDESC], ==, 6);
+    g_assert_cmphex(lduw_be_p(packet + SGI_L1_L2_SEG_CODE), ==, 0);
+    g_assert_cmpuint(desc_integer(packet, 0), ==, SGI_L1_L2_CONFIG_SELECTOR_A);
+    for (unsigned i = 1; i <= 5; i++) {
+        const uint8_t *entry = desc_data(packet, length, i,
+                                         SGI_L1_L2_DESC_BYTES,
+                                         SGI_L1_L2_RECORD_SIZE);
+
+        /* Entries 0 and 1 are this brick and its I-brick; 2 to 4 are empty. */
+        g_assert_cmpuint(ldl_be_p(entry + 0x60), ==, i <= 2 ? 1 : 0);
+        g_assert_cmpuint(ldl_be_p(entry + 0x0c), ==,
+                         i == 1 ? 4 : i == 2 ? 31 : 0);
+    }
+
+    /* The partner stored them and answered with its own, a response. */
+    g_assert_true(trace_segment(text,
+        "profile=cbrick rack=1 bay=7 port=1 sent=1 len=628", packet,
+        &length));
+    g_assert_cmpuint(packet[SGI_L1_L2_SEG_CLASS], ==,
+                     SGI_L1_L2_CLASS_RESPONSE);
+    g_assert_cmpuint(packet[SGI_L1_L2_SEG_FLAGS], ==, 0);
+    g_assert_cmphex(ldl_be_p(packet + SGI_L1_L2_SEG_DEST), ==,
+                    L2_CONFIG_SOURCE_WORD(1, 4));
+    g_assert_cmphex(ldl_be_p(packet + SGI_L1_L2_SEG_SOURCE), ==,
+                    L2_CONFIG_SOURCE_WORD(1, 7));
+    g_assert_cmpuint(packet[SGI_L1_L2_SEG_NDESC], ==, 6);
+    g_assert_cmpuint(desc_integer(packet, 0), ==, SGI_L1_L2_CONFIG_SELECTOR_A);
+    g_assert_cmpuint(ldl_be_p(desc_data(packet, length, 1,
+                                        SGI_L1_L2_DESC_BYTES,
+                                        SGI_L1_L2_RECORD_SIZE) + 0x0c), ==, 7);
 }
 
 /*
@@ -2365,8 +2769,6 @@ static void test_l2_config_request_malformed(void)
         stw_be_p(desc + 2, bad[i].text_length);
         stl_be_p(desc + 4, bad[i].offset);
         l2_stub_write_segment(stub, segment, length);
-        expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_A);
-        expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_B);
         length = read_config_reply(stub, segment, source);
         records = desc_records(segment, length, 1);
         g_assert_cmpstr((const char *)records + 0x64, ==, "");
@@ -2374,42 +2776,11 @@ static void test_l2_config_request_malformed(void)
 
     length = l2_stub_build_config_request(segment, "SN12345", 0);
     l2_stub_write_segment(stub, segment, length);
-    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_A);
-    expect_config_request(stub, source, SGI_L1_L2_CONFIG_SELECTOR_B);
     length = read_config_reply(stub, segment, source);
     records = desc_records(segment, length, 1);
     g_assert_cmpstr((const char *)records + 0x64, ==, "SN12345");
     qtest_quit(s);
     l2_stub_free(stub);
-}
-
-/*
- * Trace output: run with the named events logged to a file, then read the
- * file once the machine has quit.
- */
-static char *trace_start(const char *events, char **args)
-{
-    g_autoptr(GError) error = NULL;
-    char *path = NULL;
-    int fd = g_file_open_tmp("sgi-l1-trace-XXXXXX", &path, &error);
-
-    g_assert_no_error(error);
-    g_assert_cmpint(close(fd), ==, 0);
-    *args = g_strdup_printf("-trace enable=%s -D %s ", events, path);
-    return path;
-}
-
-static char *trace_finish(QTestState *s, char *path)
-{
-    g_autoptr(GError) error = NULL;
-    char *text = NULL;
-
-    qtest_quit(s);
-    g_assert_true(g_file_get_contents(path, &text, NULL, &error));
-    g_assert_no_error(error);
-    g_unlink(path);
-    g_free(path);
-    return text;
 }
 
 /*
@@ -3140,6 +3511,22 @@ int main(int argc, char **argv)
                    test_l2_fetch_multi_frame);
     qtest_add_func("sgi-l1-o3k/l2-link/noise", test_l2_link_noise);
     qtest_add_func("sgi-l1-o3k/l2-link/config-reply", test_l2_config_reply);
+    qtest_add_func("sgi-l1-o3k/l2-link/config-peer-table",
+                   test_l2_config_peer_table);
+    qtest_add_func("sgi-l1-o3k/l2-link/config-peer-packets",
+                   test_l2_config_peer_packets);
+    qtest_add_func("sgi-l1-o3k/l2-link/config-peer-closed",
+                   test_l2_config_peer_closed);
+    qtest_add_func("sgi-l1-o3k/l2-link/config-peer-repeat-dropped",
+                   test_l2_config_peer_repeat_dropped);
+    qtest_add_func("sgi-l1-o3k/l2-link/config-peer-unnamed",
+                   test_l2_config_peer_unnamed);
+    qtest_add_func("sgi-l1-o3k/l2-link/config-peer-restarting",
+                   test_l2_config_peer_restarting);
+    qtest_add_func("sgi-l1-o3k/l2-link/config-peer-one-way",
+                   test_l2_config_peer_one_way);
+    qtest_add_func("sgi-l1-o3k/l2-link/table-request-from-the-link",
+                   test_l2_table_request_from_the_link);
     qtest_add_func("sgi-l1-o3k/l2-link/config-reply/attached",
                    test_l2_config_reply_attached);
     qtest_add_func("sgi-l1-o3k/l2-link/config-reply/refusals",

@@ -260,6 +260,44 @@ static inline size_t l2_stub_build_config_request(uint8_t *segment,
 }
 
 /*
+ * A selector 2 or 13 table request as an L1 sends it to a peer (L1 sheet,
+ * "Selectors 2 and 13"): class 0, code 0, destination 0x0ffff00e, six
+ * descriptors, the selector then five 0x70-byte copies. The entries' bytes
+ * are the test's filler: byte k of entry e is e + k, with the present word
+ * at +0x60 zero.
+ */
+static inline size_t l2_stub_build_table_request(uint8_t *segment,
+                                                 uint32_t selector)
+{
+    size_t length = SGI_L1_L2_SEG_DESC + 6 * 8 + 5 * SGI_L1_L2_RECORD_SIZE;
+
+    memset(segment, 0, length);
+    stw_be_p(segment + SGI_L1_L2_SEG_LENGTH, length);
+    segment[SGI_L1_L2_SEG_FORMAT] = 2;
+    segment[SGI_L1_L2_SEG_SEQ_LOW] = 0x31;
+    segment[SGI_L1_L2_SEG_COUNT] = SGI_L1_L2_FIRST_SEGMENT | 1;
+    segment[SGI_L1_L2_SEG_CLASS] = SGI_L1_L2_CLASS_REQUEST;
+    stl_be_p(segment + SGI_L1_L2_SEG_DEST, SGI_L1_L2_CONFIG_DEST);
+    stl_be_p(segment + SGI_L1_L2_SEG_SOURCE, L2_STUB_CONFIG_SOURCE);
+    segment[SGI_L1_L2_SEG_NDESC] = 6;
+    segment[SGI_L1_L2_SEG_SEQ_HIGH] = 0x07;
+    stl_be_p(segment + SGI_L1_L2_SEG_DESC + 4, selector);
+    for (unsigned e = 0; e < 5; e++) {
+        uint8_t *desc = segment + SGI_L1_L2_SEG_DESC + 8 * (1 + e);
+        unsigned wire = SGI_L1_L2_SEG_DESC + 48 + e * SGI_L1_L2_RECORD_SIZE;
+
+        desc[0] = SGI_L1_L2_DESC_BYTES;
+        desc[1] = 1;
+        stw_be_p(desc + 2, SGI_L1_L2_RECORD_SIZE);
+        stl_be_p(desc + 4, wire + SGI_L1_L2_DESC_PREFIX);
+        for (unsigned k = 0; k < SGI_L1_L2_RECORD_SIZE; k++) {
+            segment[wire + k] = k >= 0x60 && k < 0x64 ? 0 : e + k;
+        }
+    }
+    return length;
+}
+
+/*
  * Read one forwarded segment and answer it as the stub does. Returns the
  * request length, or 0 if nothing arrived in @timeout_ms; a request that is
  * not the fetch is read and left unanswered.
