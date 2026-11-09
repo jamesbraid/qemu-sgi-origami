@@ -756,6 +756,62 @@ other pairing samples the model's texels as they are, an *approximation*:
 the pipe would reinterpret the words the level holds. A border read of such
 a decoded level is refused.
 
+Texture loads across a context switch
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A ``0x174`` streams its rows straight into texture memory as they arrive;
+the pipe stages no copy of the texels, and rows already written stay
+there across a switch (*established*). What a switch saves and restores
+for each context is the load's control state: the load registers, the
+count of words still owed, the pass-through counter, the continuation and
+the contents of the engine FIFO. It saves no texels, and a half-done
+load carries on from the restored state (*established*; that the raster
+boards have no path to pull texels back from memory is *inferred*).
+``0x176`` reads one word, adds one to a 20-bit counter and stores the
+result in the entry; it checks nothing about whether the level's rows have
+all arrived (*established*).
+
+Texture memory is one pool for the whole pipe. The kernel gives each owner
+disjoint blocks and tells the pipe each block's offset through two
+registers the context switch saves, one for loads and one for drawing
+(``0x5001`` and ``0x101a``), as the block's page number masked with
+``0x3fff`` shifted left 12 bits (*software expectation*). Level addresses in
+loads and binds are relative to the block (*software expectation*), so
+the hardware adds the offset; that it adds it is *inferred*. The tables
+from entries to addresses belong to each context (*software expectation*).
+The 513-entry id table belongs to the firmware, not to a context, and is
+flushed at every activation, so no load or bind id outlives a switch
+(*software expectation*, from the pipe firmware). Processes in a
+kernel share group can share one block (*software expectation*).
+
+The model keeps each context's load as the context's own. A load that is
+finished and waiting for its ``0x176``, or whose rows are due by DMA, is
+set aside with its context at a switch and returns with it, whatever the
+context that ran meanwhile had in flight, including a load with rows still
+owed. A load still taking FIFO rows travels with the open command and
+comes back with it. No switch refuses a restore, drops a level or lets
+one context's load finish another's. Staging the rows instead of writing
+them through is an *approximation* with the same visible result, since
+the model publishes the level at ``0x176``. The model completes the level
+from the current context's own load and does not depend on which context
+loaded last.
+
+Texture objects are keyed by context and entry, so the pool is not
+shared: two contexts that load the same entry number hold two textures,
+as the kernel's disjoint blocks and per-context tables make them, but the
+global-offset registers are not modelled, a block shared within a share
+group is not shared, and the flush of the id table at activation is not
+modelled. These are limits of the model, not hardware behaviour.
+
+The model also discards the current context's own finished load in three
+places where the hardware keeps the rows already written. This is an
+*approximation*: a finished load waiting for its ``0x176`` is dropped when
+the context sends a data-run command other than ``0x174`` (a polygon
+stipple row run, the pop-lights words or a bitmap), when it sends
+DrawPixels, or when it sends a ``0x174`` for a different entry. The
+hardware has no record to lose in these cases, so a ``0x176`` after any of
+them would still find its rows.
+
 Detail textures
 ~~~~~~~~~~~~~~~
 

@@ -10844,13 +10844,18 @@ static void sgi_kona_texture_upload_clear(SGIKonaState *s)
  * afterwards; the client library sends the two from the same context, but
  * a context switch can fall between them, and the other context's own
  * commands would then replace or clear the load. Each context's load is
- * therefore its own (inferred: what the pipe saves at a switch is
- * unknown) once its rows are in, or while its rows are to come
- * by DMA (atlantis's DMA load has been seen switched out before its DMA
- * packet): when context `slot` becomes current, such a load another
- * context made is set aside with that context, and one `slot` set aside
- * comes back. A load still taking FIFO rows travels with the open command
- * instead (sgi_kona_input_save()), and anything else is left as it was.
+ * therefore its own: a switch saves and restores a load's control state
+ * with its context and never the texels, which a load streams into
+ * texture memory as its rows arrive (established; the model stages the
+ * rows instead, so the texels it has staged travel with the load). A
+ * load that is finished, or whose rows are to come by DMA (atlantis's DMA
+ * load has been seen switched out before its DMA packet), is set aside
+ * with its context when another becomes current, and comes back with it
+ * whatever the other context left in the pipe. A load still taking FIFO
+ * rows travels with the open command instead (sgi_kona_input_save()), so
+ * the context that becomes current while that command is suspended takes
+ * its own load back once the command has been saved
+ * (sgi_kona_user_input()).
  */
 static bool sgi_kona_texture_upload_parkable(const SGIKonaTextureUpload *u)
 {
@@ -10874,7 +10879,6 @@ static void sgi_kona_texture_upload_switch(SGIKonaState *s, int slot)
     }
     state = slot != SGI_KONA_CONTEXT_NONE ? s->state[slot] : NULL;
     if (state && sgi_kona_texture_upload_parkable(&state->parked_upload) &&
-        s->texture_upload_context == SGI_KONA_CONTEXT_NONE &&
         !s->texture_upload.count && !s->texture_upload.complete) {
         g_free(s->texture_upload.pixels);
         s->texture_upload = state->parked_upload;
@@ -19087,6 +19091,7 @@ static void sgi_kona_input_save(SGIKonaState *s, int owner)
         if (uploads & SGI_KONA_RUN_TEXTURE) {
             v->texture_upload = s->texture_upload;
             s->texture_upload = (SGIKonaTextureUpload) { 0 };
+            s->texture_upload_context = SGI_KONA_CONTEXT_NONE;
         }
         if (uploads & SGI_KONA_RUN_IMAGE) {
             v->gl_image_upload = s->gl_image_upload;
@@ -19126,9 +19131,13 @@ static void sgi_kona_input_save(SGIKonaState *s, int owner)
 
 /*
  * Move a saved GL data run back. Its uploads replace the live ones, which
- * hold nothing of an open command; one that still holds a finished upload
- * of another context, waiting for its load identifier or its DMA, loses
- * it, logged for each kind.
+ * hold nothing of an open command. A texture load the pipe holds for
+ * another context was set aside with that context when this one became
+ * current (sgi_kona_texture_upload_switch()), so a finished upload still
+ * live is this context's own, from before the run began, and the run's
+ * replaces it as a new load does; the image, bitmap and pixel map slots
+ * have no such per-context place, and one still holding a finished
+ * upload of another context loses it, logged for each kind.
  */
 static void sgi_kona_gl_run_displaces(SGIKonaState *s, const char *what)
 {
@@ -19148,6 +19157,7 @@ static void sgi_kona_gl_run_restore(SGIKonaState *s, SGIKonaSavedInput *v)
         }
         sgi_kona_texture_upload_clear(s);
         s->texture_upload = v->texture_upload;
+        s->texture_upload_context = s->context_current;
         v->texture_upload = (SGIKonaTextureUpload) { 0 };
     }
     if (v->gl_image_upload.count) {
@@ -19261,6 +19271,8 @@ static void sgi_kona_user_input(SGIKonaState *s)
             sgi_kona_kernel_port_resume(s, &s->kernel_port_suspended);
         } else {
             sgi_kona_input_save(s, owner);
+            /* The open command's load has left; this context's returns. */
+            sgi_kona_texture_upload_switch(s, current);
         }
         s->suspended_owner = SGI_KONA_CONTEXT_NONE;
     }
