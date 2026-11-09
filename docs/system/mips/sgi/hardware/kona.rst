@@ -680,7 +680,38 @@ The reading of format 6, type 3 and storage ``0xd`` as luminance in
 unsigned shorts is *inferred* from the model's own format table and the
 2-byte texel the firmware reads; the code meanings beyond the texel size
 are *unknown*. The conversion is an *approximation*: the model holds
-levels as 8-bit RGBA and the pipe's own conversions are *unknown*. The
+levels as 8-bit RGBA and the pipe's own conversions are *unknown*.
+
+The sum does not touch a 16-bit single-component level. One resolver
+decides it for the texel read and the pixel read alike, and a source of
+one component expands to (L, 0, 0, fill), so the sum is L and a 16-bit
+word comes back unchanged (*inferred*, from the firmware's expansion; no
+recording shows it and there is no hardware measurement). A read as
+format 6, type 3, storage ``0xd`` of a level that holds 16-bit words
+therefore returns those words as they sit in texture memory, not a decoded
+colour, and the library loads them back unchanged under storage ``0xd``
+(*established* for the sequence, from the Quake GL trace; *inferred* for
+the raw words). The model applies this to a level loaded under ``0xd``
+(16-bit luminance), ``0x10`` (four bits a component) or ``0x14`` (five
+bits and a one-bit alpha). A ``0xd`` load of format 6, type 3 keeps its
+word whole, the high byte in red, which a luminance sample reads, and the
+low byte in green. A ``0x10`` or ``0x14`` level is held as 8-bit
+components, so the word returned is the model's packing. The lane layout
+of storage ``0x14`` (red in bits 15:11, green 10:6, blue 5:1, alpha in
+bit 0) and of the four-component 4-4-4-4 form of ``0x10`` (the first texel
+in the top 16 bits of a word) is *established*, from the firmware's
+formatter and a second source. The model's reduction of
+8-bit components to 4 or 5 bits (it truncates when packing and replicates
+the top bits when unpacking), its alpha lane for the formats without alpha
+(it writes 1 or ``0xf``), and its handling of the other formats that share
+storage ``0x10`` (3-3-2, RGB2, RGBA2 and the quad-group formats, whose
+layouts differ and which it packs as 4-4-4-4) are each an *approximation*. The raw return is keyed in the model on the
+read's code ``0xd`` together with the held level's storage; the pipe keys
+it on the read's code alone, as the description of the source texels
+(*established*, the raw return *inferred*). A level held as ``0x30`` and
+read with code ``0xd`` is a layout mismatch the pipe's behaviour for
+which is *unknown*; the model returns the colour sum, an *approximation*. A
+level of any other storage, such as ``0x30``, still gets the sum. The
 bracketed copy form (format 7, type 3, storage ``0x28``) is unchanged. A
 read the model cannot produce, for want of a matching level or of the
 format, type or size, is answered with zeros, so the client draws a black

@@ -5437,6 +5437,84 @@ static void test_texture_readback_lookup(gconstpointer opaque)
     }
 }
 
+/*
+ * Quake GL's menu pictures. The library loads a picture as format 5, type
+ * 1 into storage 0x14 (RGB5_A1), reads it back as format 6, type 3,
+ * storage 0xd, frees and retakes its cache entry, loads those words back
+ * as storage 0xd into the same entry and address, and binds it as 0x14.
+ * The bind carries no storage code for the level: it samples whatever
+ * words are there in its own format, so the picture must come back as it
+ * went. The texels are whole 5-bit steps, which the 16-bit words keep.
+ */
+static const uint32_t roundtrip_source[4] = {
+    0x102184ff, 0x84ff10ff, 0xff2110ff, 0x21ffffff,
+};
+
+/* The model's own 5-5-5-1 packing of roundtrip_source (see kona.rst). */
+static const uint16_t roundtrip_words[4] = { 0x1121, 0x87c5, 0xf905, 0x27ff };
+
+static void roundtrip_load(QTestState *s, uint32_t handle, uint32_t format,
+                           uint32_t type, uint32_t storage,
+                           const uint32_t *words, unsigned count)
+{
+    uint32_t h[20];
+
+    memcpy(h, texture_header, sizeof(h));
+    h[3] = format;
+    h[4] = type;
+    h[9] = storage;
+    h[10] = handle;
+    h[17] = 0x2200;
+    kona_command(s, 0x174, h, 20);
+    for (unsigned k = 0; k < count; k++) {
+        qtest_writel(s, REG_COMMAND, words[k]);
+    }
+    kona_command(s, 0x176, (uint32_t[]) { handle }, 1);
+}
+
+/* The bind of a picture in RGB5_A1 (index 31, storage 0x14). */
+static void roundtrip_bind(QTestState *s, uint32_t handle)
+{
+    uint32_t record[22] = { 0x44, 0x101010, 256u << 10, 0x23 };
+
+    kona_command(s, 0x1d5, (uint32_t[]) { handle, (2u << 28) | (31 << 12),
+                                         0x14 << 14, 0x11, 1 }, 5);
+    kona_command(s, 0x179, record, 22);
+}
+
+/*
+ * Mode 0: the 0x14 picture reads back as the 16-bit words of its texels,
+ * not as a luminance sum of its colour channels (every texel sums past
+ * one, so the sum would read 0xffff). Mode 2: a 16-bit luminance level,
+ * whose words do not fit one byte, reads back as it was loaded.
+ */
+static void test_texture_roundtrip(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const uint32_t luminance[2] = { 0x1234abcd, 0x00ffffff };
+    uint8_t actual[8], expected[8];
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    if (mode == 2) {
+        roundtrip_load(s, 0x21, 6, 3, 0xd, luminance, 2);
+        for (unsigned k = 0; k < 2; k++) {
+            stl_be_p(expected + 4 * k, luminance[k]);
+        }
+    } else {
+        roundtrip_bind(s, 0x21);
+        roundtrip_load(s, 0x21, 5, 1, 0x14, roundtrip_source, 4);
+        for (unsigned k = 0; k < 4; k++) {
+            stw_be_p(expected + 2 * k, roundtrip_words[k]);
+        }
+    }
+    readback_ask(s, 6, 3, 0x23, 0, 0, 1, 0xde1);
+    g_assert_cmphex(qtest_readl(s, RETURN_PAGE), ==, 1);
+    qtest_memread(s, RETURN_PAGE + 8, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
+    qtest_quit(s);
+}
+
 static const uint32_t texture_8x8_headers[2][20];
 static const uint32_t texture_8x8_sources[2][64];
 static void texture_words(QTestState *s, const uint32_t *v, unsigned n,
@@ -20577,6 +20655,10 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(2), test_texture_readback_bare);
     add_case("sn0/origin2000/kona-3d/texture/readback-bare-formats",
              test_texture_readback_formats);
+    add_data_case("sn0/origin2000/kona-3d/texture/roundtrip-words",
+                  GUINT_TO_POINTER(0), test_texture_roundtrip);
+    add_data_case("sn0/origin2000/kona-3d/texture/roundtrip-luminance",
+                  GUINT_TO_POINTER(2), test_texture_roundtrip);
     static const char *lookup_cases[] = {
         "by-address", "other-exponents", "extent-past-level", "other-bank",
         "other-address", "other-target", "no-return-page",
