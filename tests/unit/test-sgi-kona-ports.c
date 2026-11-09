@@ -529,7 +529,7 @@ static const struct {
     { 0x48, 1, NR, 0 }, { 0x49, U, 22, 4 }, { 0x4a, 1, 23, 20 },
     { 0x4b, 5, NR, 0 }, { 0x4c, 1, 24, 16 }, { 0x4d, 1, NR, 0 },
     { 0x4e, U, NR, 0 }, { 0x4f, 7, NR, 0 }, { 0x50, 1, 25, 68 },
-    { 0x51, U, 26, 136 }, { 0x52, 6, 27, 4 }, { 0x53, 1, NR, 0 },
+    { 0x51, U, NR, 0 }, { 0x52, 6, 27, 4 }, { 0x53, 1, NR, 0 },
     { 0x54, 1, NR, 0 }, { 0x55, 1, 28, 4 }, { 0x56, 3, NR, 0 },
     { 0x57, U, 29, 8 }, { 0x58, 3, NR, 0 }, { 0x59, U, 30, 8 },
     { 0x5a, 1, NR, 0 }, { 0x5b, 42, NR, 0 }, { 0x5c, U, 31, 164 },
@@ -582,7 +582,8 @@ static void test_video_table_shape(void)
         g_assert_cmpuint(v->reply_bytes, <=, SGI_KONA_VIDEO_MAX_REPLY_BYTES);
     }
     for (unsigned id = 0; id < SGI_KONA_VIDEO_REPLY_IDS; id++) {
-        g_assert_true(id_used[id]);
+        /* Reply 26 is kept in the size table but no command sends it. */
+        g_assert_cmpint(id_used[id], ==, id != 26);
     }
 }
 
