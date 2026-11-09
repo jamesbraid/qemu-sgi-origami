@@ -717,8 +717,20 @@ read the model cannot produce, for want of a matching level or of the
 format, type or size, is answered with zeros, so the client draws a black
 texture rather than hanging, and logged ``LOG_UNIMP``. A bare read with
 no current return page is logged ``LOG_GUEST_ERROR`` and posts nothing.
-A bracketed read of a level that is not the copy form is answered with
-zeros as before.
+A bracketed read that is not the copy form is answered by output DMA
+with the same packed image the bare form returns. It is written from the
+first byte of the range the ``0x1f5`` describes: the high address word is
+the map page, the low word the page offset plus ``0x9000``, the length the
+padded image size, the line length equal to the length and the stride zero,
+on output-DMA channel 0. There is no return-page header and no completion
+word. The ``0x1f6`` then posts engine event ``0x100`` with the context's
+slot, the bytes left over (the length less those delivered) and a status
+word whose bit 11 (``0x800``) is overflow (*established* for the framing,
+from the firmware; *inferred* that the image is the bare form's, and the
+padding is *unknown*, zero in the model). The model delivers the image only
+when the range is one line with no stride and holds the whole image; any
+other bracketed read is answered with zeros, as before, and logged
+``LOG_UNIMP``.
 
 Detail textures
 ~~~~~~~~~~~~~~~
