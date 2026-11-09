@@ -1091,6 +1091,7 @@ static void sgi_mace_eth_unrealize(DeviceState *dev)
 
 static const Property sgi_mace_eth_properties[] = {
     DEFINE_NIC_PROPERTIES(SGIMACEEthState, conf),
+    DEFINE_PROP_BOOL("mac-generated", SGIMACEEthState, mac_generated, false),
     DEFINE_PROP_LINK("dma-memory", SGIMACEEthState, dma_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_BOOL("phy-ics1890", SGIMACEEthState, phy_ics1890, false),

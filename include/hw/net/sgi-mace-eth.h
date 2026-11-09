@@ -55,6 +55,8 @@ struct SGIMACEEthState {
     MemoryRegion *dma_mr;
     AddressSpace dma_as;
     NICConf conf;
+    /* Set with mac when the address came from the default generator. */
+    bool mac_generated;
     NICState *nic;
     ICS1890State *phy;
     QEMUTimer *mdio_timer;

@@ -113,7 +113,7 @@ typedef struct MachineCase {
     char *name;
     char *args;            /* -M and its options, -cpu, -smp, -m, -device */
     bool ip35;             /* takes the IP35 PROM size */
-    bool ip32;             /* has explicit caller-owned ROM and identity */
+    bool ip32;             /* has an explicit caller-owned ROM */
     bool storage;          /* binds the expansion configuration storage */
     bool io9;              /* needs IO9 timekeeper backends */
     bool unmarked;         /* exposes no synthetic identity */
@@ -135,8 +135,14 @@ typedef struct Inventory {
 
 static bool onewire_serial_marked(uint64_t serial)
 {
+    /*
+     * The O2's identity chip carries 45 4d 55, the kind and two zero bytes,
+     * a marker of its own because the serial belongs to the die and not to
+     * any machine.
+     */
     return (serial >> 16) == ONEWIRE_PREFIX ||
-           ((serial >> 12) & 0xffffff) == UNIQUEWARE_MARKER;
+           ((serial >> 12) & 0xffffff) == UNIQUEWARE_MARKER ||
+           (serial & 0xffffff) == 0x554d45;
 }
 
 static bool text_serial_marked(const char *text)
@@ -469,8 +475,7 @@ static void test_machine_serials(const void *data)
     g_autofree char *machine = g_strndup(c->args, strcspn(c->args, ", "));
     g_autofree char *prom = NULL;
     g_autofree char *prom_option = NULL;
-    /* Caller bytes yield the marked ROM serial 0x51454d550001. */
-    O2ProductTest product = { .serial = "0100554d4551" };
+    O2ProductTest product = { 0 };
     g_autofree char *storage = NULL;
     g_autofree char *drive = NULL;
     g_autofree char *io9_data = NULL;
@@ -518,9 +523,9 @@ static void test_machine_serials(const void *data)
     if (c->ip32) {
         g_autoptr(QDict) reply = qtest_qmp(qts,
             "{'execute':'qom-get','arguments':{'path':'/machine',"
-            "'property':'identity-test-serial'}}");
+            "'property':'hostids'}}");
 
-        g_assert_cmpstr(qdict_get_str(reply, "return"), ==, product.serial);
+        g_assert_cmpstr(qdict_get_str(reply, "return"), ==, "69e10000");
     }
     qtest_quit(qts);
     check_system_serials(&inv, c);
@@ -529,7 +534,7 @@ static void test_machine_serials(const void *data)
      * Earlier profiles expose a synthetic one-wire or L1 board identity.
      * An IP53 IO9 profile can expose neither; the walk still checks any
      * matching identity properties it does expose. IP32's identity is
-     * caller-provided rather than synthesized; check its input above.
+     * the machine's own synthetic chip; check its host id above.
      */
     if (!c->io9 && !c->unmarked) {
         g_assert_cmpuint(inv.parts + g_hash_table_size(inv.l1_instances),

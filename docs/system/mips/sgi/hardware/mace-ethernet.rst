@@ -178,6 +178,15 @@ compared with bits ``8 * (5 - i)`` of the register. The specification's
 prose and the drivers disagree, *unknown* for the chip; a read of the
 register on hardware would settle it.
 
+The register is software-programmed: reset leaves it 0 and the model never
+loads it. The adapter's ``mac`` (its QEMU address) reaches only ``info
+network`` and packet captures, never a guest. In an O2 the machine sets
+``mac`` to the address the identity chip holds and refuses a ``-nic mac=`` that
+differs (:ref:`sgi-ip32-system-serial`); the firmware reads the chip and
+programs the register. A guest read back the chip's address from the register
+in each of the seven model boots where it was read, whatever the adapter's
+``mac`` was.
+
 Interrupt status
 ================
 

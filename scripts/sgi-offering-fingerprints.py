@@ -283,23 +283,18 @@ def launch_arguments(binary, offering, directory, machine_options):
 
 
 def o2_machine(directory, machine):
-    """The synthetic ROM and identity inputs the O2 launch test supplies."""
+    """The synthetic ROM the O2 launch test supplies; the machine builds its
+    own identity chip."""
     rom = os.path.join(directory, "synthetic-rom")
-    ident = os.path.join(directory, "synthetic-identity")
     data = bytearray(512 * 1024)
     data[0] = 0x5a
     data[-1] = 0xa5
     with open(rom, "wb") as f:
         f.write(data)
-    with open(ident, "wb") as f:
-        f.write(bytes(((i * 37) ^ 0xa5) & 0xff for i in range(128)))
     options = (f"o2,rom-image={rom},rom-size=524288,rom-offset=0,"
                "rom-pad-byte=238,rom-at29c040a-protection=disabled,"
                "rom-at29c040a-lower-lock=unlocked,"
-               "rom-at29c040a-upper-lock=unlocked,"
-               "identity-test-serial=1032547698ba,"
-               f"identity-eprom-file={ident},"
-               "identity-status=0123456789abcd,password-clear-input=0")
+               "rom-at29c040a-upper-lock=unlocked,password-clear-input=0")
     return options + machine[machine.index(","):] if "," in machine \
         else options
 

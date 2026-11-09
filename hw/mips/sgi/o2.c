@@ -40,6 +40,7 @@
 #include "hw/scsi/aic7880.h"
 #include "migration/blocker.h"
 #include "migration/vmstate.h"
+#include "net/util.h"
 #include "qemu/module.h"
 #include "qemu/notify.h"
 #include "system/address-spaces.h"
@@ -67,6 +68,14 @@
 #define O2_RESET_ROM_VADDR 0xffffffffbfc00000ULL
 #define O2_PRIVATE_POLL_NS (1 * SCALE_MS)
 #define O2_PROM_SB64_RESET_MODE 0x00198603
+/* The identity chip's memory, DS2502 data bytes. */
+#define O2_IDENTITY_SIZE 128
+/*
+ * The chip's status bytes, an approximation like the memory filler: seven
+ * 0xff, the DS2502's unprogrammed state, then the fixed 0x00 the responder
+ * adds itself.
+ */
+#define O2_IDENTITY_STATUS "ffffffffffffff"
 
 typedef struct O2MachineState {
     MachineState parent;
@@ -75,11 +84,13 @@ typedef struct O2MachineState {
     char *rom_at29_lower_lock;
     char *rom_at29_upper_lock;
     char *storage_event_file;
-    char *identity_test_serial;
     /* emu-id=: the number the clock serial carries, 0 by default. */
     SGIBoardIdentityInputs identity;
+    char *mac;
     char *identity_eprom_file;
-    char *identity_status;
+    /* The identity chip the product machine built or replayed. */
+    uint8_t identity_image[O2_IDENTITY_SIZE];
+    bool identity_ready;
     char *password_clear_input;
     uint32_t rom_size;
     uint32_t rom_offset;
@@ -657,25 +668,6 @@ static void o2_set_mace_eth_low_dma_compat(Object *obj, bool value,
     s->mace_eth_low_dma_compat = value;
 }
 
-static char *o2_get_identity_test_serial(Object *obj, Error **errp)
-{
-    return g_strdup(((O2MachineState *)obj)->identity_test_serial);
-}
-
-static void o2_set_identity_test_serial(Object *obj, const char *value,
-                                        Error **errp)
-{
-    O2MachineState *s = (O2MachineState *)obj;
-
-    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
-        error_setg(errp, "identity-test-serial cannot change once the "
-                         "machine is built");
-        return;
-    }
-    g_free(s->identity_test_serial);
-    s->identity_test_serial = g_strdup(value);
-}
-
 static char *o2_get_identity_eprom_file(Object *obj, Error **errp)
 {
     return g_strdup(((O2MachineState *)obj)->identity_eprom_file);
@@ -693,25 +685,6 @@ static void o2_set_identity_eprom_file(Object *obj, const char *value,
     }
     g_free(s->identity_eprom_file);
     s->identity_eprom_file = g_strdup(value);
-}
-
-static char *o2_get_identity_status(Object *obj, Error **errp)
-{
-    return g_strdup(((O2MachineState *)obj)->identity_status);
-}
-
-static void o2_set_identity_status(Object *obj, const char *value,
-                                   Error **errp)
-{
-    O2MachineState *s = (O2MachineState *)obj;
-
-    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
-        error_setg(errp, "identity-status cannot change once the "
-                         "machine is built");
-        return;
-    }
-    g_free(s->identity_status);
-    s->identity_status = g_strdup(value);
 }
 
 static char *o2_get_password_clear_input(Object *obj, Error **errp)
@@ -1437,6 +1410,112 @@ static void o2_apply_product_defaults(O2MachineState *s)
     s->phy_address = 8;
 }
 
+/*
+ * IRIX takes the host id from the last four bytes of the station address,
+ * which the PROM reads from the first six bytes of the identity chip's
+ * memory in reverse order. The id is those bytes of the image the machine
+ * built or was given, not of any adapter address.
+ */
+static bool o2_hostids(Object *obj, GArray *ids, Error **errp)
+{
+    O2MachineState *s = (O2MachineState *)obj;
+    uint32_t id;
+
+    if (!s->identity_ready) {
+        error_setg(errp, "hostids is unknown: the register-test profile's "
+                   "identity chip is not built from the identity inputs");
+        return false;
+    }
+    id = ldl_le_p(s->identity_image);
+    g_array_append_val(ids, id);
+    return true;
+}
+
+/*
+ * Fill s->identity_image: the file given as identity-eprom-file, or a
+ * synthetic chip holding the station address reversed in bytes 0 to 5 and
+ * 0xff, the DS2502's unprogrammed state, everywhere else. The filler is an
+ * approximation: only the address and its byte order are measured, and the
+ * contents of a fitted O2's chip are not known. Returns the address the
+ * adapter takes ("xx:xx:xx:xx:xx:xx"),
+ * or an empty string when a replayed image's first six bytes are not a
+ * unicast address, and NULL with @errp set on failure.
+ */
+static char *o2_build_identity(O2MachineState *s, Error **errp)
+{
+    g_autofree char *text = NULL;
+    uint8_t mac[6];
+
+    if (s->identity_eprom_file) {
+        g_autofree char *contents = NULL;
+        g_autoptr(GError) io_error = NULL;
+        GStatBuf info;
+        gsize length;
+
+        if (g_stat(s->identity_eprom_file, &info) < 0) {
+            error_setg_errno(errp, errno,
+                             "o2 cannot stat identity-eprom-file '%s'",
+                             s->identity_eprom_file);
+            return NULL;
+        }
+        if (!S_ISREG(info.st_mode) || info.st_size != O2_IDENTITY_SIZE) {
+            error_setg(errp, "o2 identity-eprom-file needs exactly 128 bytes "
+                             "in a regular file");
+            return NULL;
+        }
+        if (!g_file_get_contents(s->identity_eprom_file, &contents, &length,
+                                 &io_error) || length != O2_IDENTITY_SIZE) {
+            error_setg(errp, "o2 cannot read identity-eprom-file: %s",
+                       io_error ? io_error->message : "short read");
+            return NULL;
+        }
+        memcpy(s->identity_image, contents, O2_IDENTITY_SIZE);
+        for (unsigned i = 0; i < 6; i++) {
+            mac[i] = s->identity_image[5 - i];
+        }
+        s->identity_ready = true;
+        if (!memcmp(mac, "\0\0\0\0\0\0", 6) || (mac[0] & 1)) {
+            return g_strdup("");
+        }
+        return g_strdup_printf("%02x:%02x:%02x:%02x:%02x:%02x", mac[0],
+                               mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
+    text = sgi_board_mac(s->mac, &s->identity.id, 0, errp);
+    if (!text || net_parse_macaddr(mac, text) < 0) {
+        return NULL;
+    }
+    memset(s->identity_image, 0xff, O2_IDENTITY_SIZE);
+    for (unsigned i = 0; i < 6; i++) {
+        s->identity_image[i] = mac[5 - i];
+    }
+    s->identity_ready = true;
+    return g_steal_pointer(&text);
+}
+
+/* Hand the built chip to MACE, which wires it to the identity line. */
+static void o2_set_identity_inputs(DeviceState *mace, O2MachineState *s,
+                                   const char *station)
+{
+    g_autoptr(GString) image = g_string_sized_new(2 * O2_IDENTITY_SIZE);
+    g_autofree char *serial = NULL;
+
+    for (unsigned i = 0; i < O2_IDENTITY_SIZE; i++) {
+        g_string_append_printf(image, "%02x", s->identity_image[i]);
+    }
+    /*
+     * A chip's ROM serial belongs to its die, not to the system, so it
+     * carries the marker and no machine id: 45 4d 55, the kind, 00 00.
+     */
+    serial = g_strdup_printf("%012" PRIx64,
+                             sgi_board_clock_serial(SGI_BOARD_KIND, 0));
+    qdev_prop_set_string(mace, "identity-test-serial", serial);
+    qdev_prop_set_string(mace, "identity-status", O2_IDENTITY_STATUS);
+    qdev_prop_set_string(mace, "identity-eprom-hex", image->str);
+    if (station[0]) {
+        qdev_prop_set_string(mace, "board-mac", station);
+    }
+}
+
 static void o2_instance_finalize(Object *obj)
 {
     O2MachineState *s = (O2MachineState *)obj;
@@ -1474,9 +1553,8 @@ static void o2_instance_finalize(Object *obj)
     g_free(s->rom_at29_lower_lock);
     g_free(s->rom_at29_upper_lock);
     g_free(s->storage_event_file);
-    g_free(s->identity_test_serial);
+    g_free(s->mac);
     g_free(s->identity_eprom_file);
-    g_free(s->identity_status);
     g_free(s->password_clear_input);
 }
 
@@ -1560,11 +1638,9 @@ static void o2_init(MachineState *machine)
             error_report("o2 requires exactly 1 GiB of RAM");
             exit(1);
         }
-        if (!s->rom_image || !s->password_clear_input ||
-            !s->identity_test_serial || !s->identity_eprom_file ||
-            !s->identity_status) {
-            error_report("o2 requires explicit ROM, identity and "
-                         "password-clear inputs");
+        if (!s->rom_image || !s->password_clear_input) {
+            error_report("o2 requires explicit ROM and password-clear "
+                         "inputs");
             exit(1);
         }
         if (s->rom_size != 512 * KiB || s->rom_offset != 0) {
@@ -1593,25 +1669,23 @@ static void o2_init(MachineState *machine)
                      "explicit processor, renderer, display and ROM settings");
         exit(1);
     }
-    if (!s->identity_diagnostic &&
-        (s->identity_test_serial || s->identity_eprom_file ||
-         s->identity_status)) {
-        error_report("o2 identity inputs require "
-                     "identity-diagnostic=on");
-        exit(1);
-    }
     if (s->mace_misc_word_pio && !s->identity_diagnostic) {
         error_report("o2 mace-misc-word-pio requires "
                      "identity-diagnostic=on");
         exit(1);
     }
-    if (s->identity_diagnostic &&
-        (!s->identity_test_serial || !s->identity_eprom_file ||
-         !s->identity_status)) {
-        error_report("o2 identity diagnostic requires "
-                     "identity-test-serial, identity-eprom-file and "
-                     "identity-status");
+    if (!s->product &&
+        (s->mac || s->identity_eprom_file ||
+         (s->identity.serial && s->identity.serial[0]) ||
+         (s->identity.hostid && s->identity.hostid[0]))) {
+        error_report("o2 mac, serial, hostid and identity-eprom-file need "
+                     "the product machine: register-test-profile takes its "
+                     "identity chip from sgi-mace-id properties");
         exit(1);
+    }
+    if (s->product) {
+        sgi_board_identity_resolve(&s->identity, SGI_BOARD_FAMILY_ADDRESS,
+                                   s->mac, &error_fatal);
     }
     if (s->diagnostic_lower_pci_byte_identity &&
         (!s->banked_ram || machine->ram_size != O2_RAM_BANKED_SIZE ||
@@ -2083,12 +2157,14 @@ static void o2_init(MachineState *machine)
     qdev_prop_set_uint64(mace, "rtc-serial",
                          sgi_board_clock_serial(SGI_BOARD_KIND,
                                                 s->identity.emu_id));
-    if (s->identity_diagnostic) {
-        qdev_prop_set_string(mace, "identity-test-serial",
-                             s->identity_test_serial);
-        qdev_prop_set_string(mace, "identity-eprom-file",
-                             s->identity_eprom_file);
-        qdev_prop_set_string(mace, "identity-status", s->identity_status);
+    if (s->product) {
+        g_autofree char *station = o2_build_identity(s, &err);
+
+        if (!station) {
+            error_report_err(err);
+            exit(1);
+        }
+        o2_set_identity_inputs(mace, s, station);
     }
     object_property_add_child(OBJECT(machine), "mace", OBJECT(mace));
     qdev_prop_set_bit(mace, "aic-pci-diagnostic", s->aic_pci_diagnostic);
@@ -2375,21 +2451,19 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "rom-at29c040a-upper-lock",
                                   o2_get_rom_at29_upper_lock,
                                   o2_set_rom_at29_upper_lock);
-    object_class_property_add_str(oc, "identity-test-serial",
-                                  o2_get_identity_test_serial,
-                                  o2_set_identity_test_serial);
     object_class_property_add_str(oc, "identity-eprom-file",
                                   o2_get_identity_eprom_file,
                                   o2_set_identity_eprom_file);
+    object_class_property_set_description(oc, "identity-eprom-file",
+        "Debug input: a file of exactly 128 bytes that replaces the identity "
+        "chip's memory, for replaying a captured part. It wins over mac, "
+        "serial, hostid and emu-id, and the host id is read from it");
     object_class_property_add_str(oc, "password-clear-input",
                                   o2_get_password_clear_input,
                                   o2_set_password_clear_input);
     object_class_property_set_description(oc, "password-clear-input",
         "Raw external password-clear input (0 or 1); required with rom-image; "
         "omission without ROM selects synthetic zero");
-    object_class_property_add_str(oc, "identity-status",
-                                  o2_get_identity_status,
-                                  o2_set_identity_status);
     object_class_property_add(oc, "cpu-clock-hz", "uint64",
                               o2_get_cpu_clock_hz, NULL, NULL, NULL);
     object_class_property_add(oc, "rom-size", "uint32",
@@ -2419,14 +2493,13 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     mc->no_cdrom = true;
     mc->auto_create_sdcard = false;
     sgi_board_cdrom_class_init(mc);
-    /*
-     * Only emu-id, no serial, hostid, mac or hostids: IRIX reads the O2's
-     * station address, which comes from -nic and the identity chip's inputs,
-     * and the model derives neither, so the machine cannot say what the
-     * guest will print.
-     */
+    sgi_board_mac_class_add_property(oc, offsetof(O2MachineState, mac),
+        "Station address, held in the first six bytes of the identity "
+        "chip's memory in reverse order, as IRIX reads it; it sets the host "
+        "id and the Ethernet adapter's address. Must start 08:00:69 (default "
+        "derived from the machine's identity inputs)");
     sgi_board_identity_class_add_properties(oc,
-        offsetof(O2MachineState, identity), NULL);
+        offsetof(O2MachineState, identity), o2_hostids);
 }
 
 static const TypeInfo o2_product_machine_type = {
