@@ -2087,14 +2087,10 @@
 #     requires ``topology=``; absent means false
 #
 # @board: the board this record builds on every node, named by its
-#     IP number in lower case (``ip53``, ``ip59``); ``board=`` selects
-#     it.  Every SN0 and SN1 record names one.  Not the platform
-#     @generation, and not the per-processor-count identity in
-#     @SGIModelIp53NodeBoard.  Within one topology name, records of
-#     one board accept disjoint CPU totals
-#
-# @default-board: the board the topology builds with no ``board=``;
-#     present wherever @board is
+#     IP number in lower case (``ip53``, ``ip59``).  Every SN0 and SN1
+#     record names one.  Not the platform @generation, and not the
+#     per-processor-count identity in @SGIModelIp53NodeBoard.  A
+#     topology name is unique, so it already selects the board
 #
 # @board-slots: every slot a board other than a graphics pipe goes in:
 #     the BaseIO slot and the empty XIO slots.  Present from catalogue
@@ -2132,7 +2128,6 @@
             '*ip53-runtime': 'SGIModelIp53Runtime',
             '*machine-default': 'bool',
             '*board': 'str',
-            '*default-board': 'str',
             '*board-slots': ['SGIModelBoardSlot'] } }
 
 ##
@@ -3046,10 +3041,6 @@
 #     ``topology=``, when one exists; absence means the launcher must
 #     require an explicit topology selection.
 #
-# @board: the board this offering builds, where its topology names
-#     one; @machine-options names it wherever the topology takes more
-#     than one board
-#
 # @display-name: human-readable name of this configuration
 #
 # @nodes: node count of this configuration
@@ -3057,7 +3048,11 @@
 # @machine-options: the ``-M`` value that selects exactly this
 #     configuration's product, topology and node count
 #
-# @cpus-per-node: this offering's accepted population, per node
+# @cpus-per-node: this offering's accepted population, per node.  A
+#     launcher given a per-node split (``4:2``) finds the offering
+#     whose @cpus-per-node equals it and uses its @machine-options,
+#     which carry ``population=`` exactly where the CPU total in @smp
+#     does not name one split
 #
 # @dimms-per-node: this offering's fitted DIMM count, per node
 #
@@ -3122,8 +3117,7 @@
 #     ``TOPOLOGY.POPULATION[.PROCESSOR]``: the topology's name, each
 #     node's CPU count joined by ``-``, and the processor's id when
 #     the topology offers more than one.  Unique in the catalogue.
-#     For tests and tools; a person types the parts.  Present from
-#     catalogue version 3
+#     For tests and tools; a person types the parts
 #
 # @hostid-source: what the guest's host id derives from.  Present from
 #     catalogue version 3
@@ -3147,11 +3141,10 @@
 # Since: 11.2
 ##
 { 'struct': 'SGIModelOffering',
-  'data': { '*id': 'str',
+  'data': { 'id': 'str',
             'product': 'str',
             'topology': 'str',
             '*default-topology': 'str',
-            '*board': 'str',
             'display-name': 'str',
             'nodes': 'uint32',
             'machine-options': 'str',
@@ -3199,8 +3192,9 @@
 #
 # @schema: catalogue schema name (``sgi-machines``)
 #
-# @version: catalogue schema version.  2 adds the record and offering
-#     @board, under which records share a topology name
+# @version: catalogue schema version.  3 gives every topology a
+#     unique name and every offering an @id, so no selection names a
+#     board
 #
 # @topologies: every configuration the builder can construct
 #

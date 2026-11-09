@@ -1,7 +1,6 @@
 {
   "offerings": [
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -33,6 +32,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
       "hardware-inputs": [],
+      "id": "onyx2-deskside.2-2",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -243,7 +243,6 @@
       "topology": "onyx2-deskside"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -275,6 +274,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
       "hardware-inputs": [],
+      "id": "onyx2-deskside.1-1",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -485,7 +485,6 @@
       "topology": "onyx2-deskside"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -517,6 +516,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
       "hardware-inputs": [],
+      "id": "onyx2-deskside.2-1",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -727,7 +727,6 @@
       "topology": "onyx2-deskside"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -757,6 +756,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
       "hardware-inputs": [],
+      "id": "onyx2-deskside.2",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -961,7 +961,6 @@
       "topology": "onyx2-deskside"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -991,6 +990,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
       "hardware-inputs": [],
+      "id": "onyx2-deskside.1",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -1234,7 +1234,6 @@
           "widget-revision": 2
         }
       ],
-      "default-board": "ip27",
       "description": "SGI Onyx2 deskside, one InfiniteReality pipe on XIO4",
       "generation": "sn0",
       "graphics": {
@@ -1912,5 +1911,5 @@
       ]
     }
   ],
-  "version": 2
+  "version": 3
 }

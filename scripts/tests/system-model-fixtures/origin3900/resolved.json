@@ -1615,10 +1615,6 @@
     "architecture": "sn1",
     "assembly": "ip53",
     "board": "ip53",
-    "boards": [
-      "ip53",
-      "ip59"
-    ],
     "connector_population": [
       {
         "component": "cx0-numalink-a",
@@ -1693,7 +1689,6 @@
         ]
       }
     ],
-    "default_board": "ip53",
     "layers": [
       {
         "id": "sn1",
@@ -1820,7 +1815,7 @@
         "007-4572-001 printed pages 3, 4 and 13: one to four IP53 node boards, each with zero or four processors, processors added in increments of four"
       ]
     },
-    "product": "origin3900",
+    "product": "origin3900-ip53",
     "topology": {
       "max_nodes": 4,
       "min_nodes": 1,

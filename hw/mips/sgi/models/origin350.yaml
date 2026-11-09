@@ -1,19 +1,21 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Origin 350, with an IP53 node board or its 1 GHz successor, the IP59.
 # The product name identifies the product; selected emulation inputs
-# remain explicitly approximate. board= picks the node board.
+# remain explicitly approximate. Each node board is its own topology.
 configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip53.yaml
 variants:
   - id: ip53
+    name: origin350-ip53
     board: ip53
     default: true
     layers:
       - layers/modules/ip53-origin350-module.yaml
       - layers/products/origin350.yaml
   - id: ip59
+    name: origin350-ip59
     board: ip59
     layers:
       - layers/modules/ip59-origin350-module.yaml

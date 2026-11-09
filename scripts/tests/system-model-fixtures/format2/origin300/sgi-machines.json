@@ -1,7 +1,6 @@
 {
   "offerings": [
     {
-      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -22,6 +21,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
       "hardware-inputs": [],
+      "id": "origin300.2",
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -200,7 +200,6 @@
       "topology": "origin300"
     },
     {
-      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -221,6 +220,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
       "hardware-inputs": [],
+      "id": "origin300.4",
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -422,7 +422,6 @@
         }
       ],
       "crossbars": [],
-      "default-board": "ip45",
       "description": "SGI Origin 300 (IP45)",
       "generation": "sn1",
       "io-boards": [
@@ -628,5 +627,5 @@
       "xio-slots": []
     }
   ],
-  "version": 2
+  "version": 3
 }

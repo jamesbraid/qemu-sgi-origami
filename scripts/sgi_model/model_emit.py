@@ -441,7 +441,6 @@ def _render_topology(topology: dict, machine_name: str,
         result["machine-default"] = True
     if "board" in topology:
         result["board"] = topology["board"]
-        result["default-board"] = topology["default_board"]
     return result
 
 def _node_population(raw: dict) -> dict:
@@ -1121,18 +1120,30 @@ def _overrides(topology: dict, part: str) -> list[dict]:
 
 
 def _machine_options(machine_name: str, topology: dict, nodes: int,
-                     processor: str | None = None) -> str:
+                     processor: str | None = None,
+                     population: tuple[int, ...] | None = None) -> str:
     """The `-M` value selecting one offering: product, topology and node
-    count, the same three for every machine, the board wherever the
-    topology takes more than one, and the processor module where it is not
-    the topology's default."""
+    count, the same three for every machine, the per-node CPU split where
+    the CPU total alone does not name one population, and the processor
+    module where it is not the topology's default. The topology name fixes
+    the board."""
     if topology["generation"] == "IP32":
         return (machine_name if topology["name"] == "o2"
                 else f"{machine_name},variant={topology['name']}")
     options = f"{machine_name},topology={topology['name']},nodes={nodes}"
-    if len(topology.get("boards", ())) > 1:
-        options += f",board={topology['board']}"
+    if population is not None:
+        options += ",population=" + ":".join(str(c) for c in population)
     return options if processor is None else f"{options},processor={processor}"
+
+
+def _offering_id(topology: dict, cpu_population: tuple[int, ...],
+                 processor: str | None) -> str:
+    """`TOPOLOGY.POPULATION[.PROCESSOR]`: the topology's name, each node's
+    CPU count joined by `-`, and the processor's id when the topology
+    offers more than one. `.` separates the fields, since names contain
+    `-`."""
+    result = f"{topology['name']}." + "-".join(str(c) for c in cpu_population)
+    return result if processor is None else f"{result}.{processor}"
 
 
 def _processor_choices(topology: dict) -> list[dict]:
@@ -1289,8 +1300,13 @@ def _offerings_for(model: dict, topology: dict,
     rows = sorted((row for row in topology["node_populations"]
                    if row["grade"] != "UNKNOWN"),
                   key=lambda row: -len(row["nodes"]))
+    choices = _processor_choices(topology)
     for row in rows:
         nodes = len(row["nodes"])
+        # -smp gives only a CPU total, so two splits of one total over the
+        # same node count need population= to tell them apart.
+        splits = [tuple(cpus) for other in rows if len(other["nodes"]) == nodes
+                  for cpus in other["supported_cpu_populations"]]
         resources = _resources_for(topology, harness, product,
                                    dimms_per_node[:nodes], nodes,
                                    tuple(row["nodes"]))
@@ -1304,24 +1320,28 @@ def _offerings_for(model: dict, topology: dict,
         )
         for choice, cpu_population in (
                 (choice, cpu_population)
-                for choice in _processor_choices(topology)
+                for choice in choices
                 for cpu_population in row["supported_cpu_populations"]
                 if choice["cpus_per_node"] is None or
                 set(cpu_population) <= set(choice["cpus_per_node"])):
             assembly = choice["assembly"]
+            ambiguous = sum(sum(other) == sum(cpu_population)
+                            for other in splits) > 1
             offerings.append({
+                "id": _offering_id(
+                    topology, tuple(cpu_population),
+                    assembly["id"] if len(choices) > 1 else None),
                 "product": machine_name,
                 "topology": configuration_name,
                 **({"default-topology": selected_default}
                    if (selected_default := default_topology(
                        machine_name, product_models)) is not None else {}),
-                **({"board": topology["board"]}
-                   if "board" in topology else {}),
                 "display-name": model["machine"]["name"],
                 "nodes": nodes,
                 "machine-options": _machine_options(
                     machine_name, topology, nodes,
-                    None if choice["default"] else assembly["id"]),
+                    None if choice["default"] else assembly["id"],
+                    tuple(cpu_population) if ambiguous else None),
                 "cpus-per-node": list(cpu_population),
                 "dimms-per-node": list(dimms_per_node[:nodes]),
                 "smp": sum(cpu_population),
@@ -1396,9 +1416,9 @@ def render_catalogue_json(models: list[dict], *,
         offerings.extend(_offerings_for(model, topology, product_models))
     catalogue = {
         "schema": "sgi-machines",
-        # 2: records sharing a topology name differ by board, and
-        # machine-options spell board= on multi-board topologies.
-        "version": 2,
+        # 3: offerings carry an id; topology names are unique, so a name
+        # fixes the board and no selection spells board=.
+        "version": 3,
         # QAPI's optional-member convention: an absent key, never a JSON
         # null, so both sections drop their None values; the harness reads
         # them with .get().

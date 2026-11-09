@@ -440,7 +440,7 @@ typedef struct Ip53Machine {
 
 static const Ip53Machine ip53_machines[] = {
     { "origin350", "2G" },
-    { "tezro,topology=tezro", "4G" },
+    { "tezro,topology=tezro-ip53", "4G" },
 };
 
 static void test_ip53_prid(gconstpointer data)
@@ -498,20 +498,20 @@ typedef struct Ip53Offering {
 
 static const Ip53Offering ip53_offerings[] = {
     /* Revision 2.1, 700 MHz, 4 MiB (the default): table row 26, tap 0xc. */
-    { "origin350,topology=origin350", "2G", 0x0f41, 0x009bad85, 0x589bad85 },
-    { "tezro,topology=tezro", "4G", 0x0f41, 0x009bad85, 0x589bad85 },
-    { "tezro,topology=tezro-rack", "4G", 0x0f41, 0x009bad85, 0x589bad85 },
+    { "origin350,topology=origin350-ip53", "2G", 0x0f41, 0x009bad85, 0x589bad85 },
+    { "tezro,topology=tezro-ip53", "4G", 0x0f41, 0x009bad85, 0x589bad85 },
+    { "tezro,topology=tezro-rack-ip53", "4G", 0x0f41, 0x009bad85, 0x589bad85 },
     /* Revision 2.2, 800 MHz, 8 MiB: SS 4, SysClkDiv 7; row 21, tap 0xa. */
-    { "origin350,topology=origin350,processor=r16000-800mhz-8mb-rev22",
+    { "origin350,topology=origin350-ip53,processor=r16000-800mhz-8mb-rev22",
       "2G", 0x0f42, 0x009caf85, 0x549caf85 },
-    { "tezro,topology=tezro,processor=r16000-800mhz-8mb-rev22",
+    { "tezro,topology=tezro-ip53,processor=r16000-800mhz-8mb-rev22",
       "4G", 0x0f42, 0x009caf85, 0x549caf85 },
-    { "tezro,topology=tezro-rack,processor=r16000-800mhz-8mb-rev22",
+    { "tezro,topology=tezro-rack-ip53,processor=r16000-800mhz-8mb-rev22",
       "4G", 0x0f42, 0x009caf85, 0x549caf85 },
     /* Revision 2.2, 800 MHz, 4 MiB: SS 3, SysClkDiv 7; row 20, tap 0xa. */
-    { "tezro,topology=tezro,processor=r16000-800mhz-4mb-rev22",
+    { "tezro,topology=tezro-ip53,processor=r16000-800mhz-4mb-rev22",
       "4G", 0x0f42, 0x009baf85, 0x549baf85 },
-    { "tezro,topology=tezro-rack,processor=r16000-800mhz-4mb-rev22",
+    { "tezro,topology=tezro-rack-ip53,processor=r16000-800mhz-4mb-rev22",
       "4G", 0x0f42, 0x009baf85, 0x549baf85 },
 };
 

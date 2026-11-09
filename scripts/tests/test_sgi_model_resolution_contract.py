@@ -3503,7 +3503,7 @@ class Origin3900Tests(unittest.TestCase):
     def test_origin3900_compiles_to_four_cabled_r16000_nodes(self):
         from sgi_model.model_compile import compile_model
         topology = compile_model(self.resolve())
-        self.assertEqual(topology["name"], "origin3900")
+        self.assertEqual(topology["name"], "origin3900-ip53")
         self.assertEqual([node["board_kind"] for node in topology["nodes"]],
                          ["ip53-cx"] * 4)
         # One module and one L1 for the four boards, with the router inside
@@ -3946,20 +3946,23 @@ class Onyx3400IrTargetTests(unittest.TestCase):
 
 
 class CompositionVariantTests(unittest.TestCase):
-    """A composition that declares board variants resolves once per
-    variant, every one under the composition's own name."""
+    """A composition that declares variants resolves once per variant,
+    each under the topology name that variant gives it."""
 
     VARIANTS = {
         "configuration_version": 1,
         "layers": ["layers/architectures/sn1.yaml",
                    "layers/assemblies/ip53-tezro.yaml"],
         "variants": [
-            {"id": "one-processor", "board": "ip53",
+            {"id": "one-processor", "name": "tezro-one-processor",
+             "board": "ip53",
              "layers": ["layers/modules/ip53-tezro-module.yaml",
                         "layers/products/tezro-one-processor.yaml"]},
-            {"id": "two-four-processor", "board": "ip53", "default": True,
+            {"id": "two-four-processor", "name": "tezro-ip53",
+             "board": "ip53", "default": True,
              "layers": ["layers/products/tezro-two-four-processor.yaml"]},
-            {"id": "two-four-processor-ip59", "board": "ip59",
+            {"id": "two-four-processor-ip59", "name": "tezro-ip59",
+             "board": "ip59",
              "layers": ["layers/products/tezro-two-four-processor-ip59.yaml"]},
         ],
     }
@@ -3984,15 +3987,17 @@ class CompositionVariantTests(unittest.TestCase):
         self.assertEqual(
             yaml.safe_load((INPUTS / "tezro.yaml").read_text()), self.VARIANTS)
 
-    def test_each_variant_resolves_under_the_composition_name(self):
+    def test_each_variant_resolves_under_its_own_name(self):
         path = INPUTS / "tezro.yaml"
         models = _resolver.load_system_models(path)
         self.assertEqual(
             [(model["composition"]["product"], model["composition"]["variant"])
              for model in models],
-            [("tezro", {"id": "one-processor", "default": False}),
-             ("tezro", {"id": "two-four-processor", "default": True}),
-             ("tezro", {"id": "two-four-processor-ip59", "default": False})])
+            [("tezro-one-processor",
+              {"id": "one-processor", "default": False}),
+             ("tezro-ip53", {"id": "two-four-processor", "default": True}),
+             ("tezro-ip59",
+              {"id": "two-four-processor-ip59", "default": False})])
         self.assertEqual(
             [[layer["id"] for layer in model["composition"]["layers"]
               if layer["kind"] in ("module", "product")] for model in models],
@@ -4051,6 +4056,9 @@ class CompositionVariantTests(unittest.TestCase):
              "unsupported field 'model_role'"),
             (lambda d: d["variants"][1].update(id="one-processor"),
              "lists variant 'one-processor' twice"),
+            (lambda d: d["variants"][1].update(name="tezro-one-processor"),
+             "names topology 'tezro-one-processor' twice"),
+            (lambda d: d["variants"][1].pop("name"), "needs a topology name"),
             (lambda d: d["variants"][0].update(id="One"), "invalid id"),
             (lambda d: d["variants"][0].update(layers=[]), "has no layers"),
         )
@@ -4065,22 +4073,16 @@ class CompositionVariantTests(unittest.TestCase):
         models = _resolver.load_system_models(INPUTS / "tezro.yaml")
         self.assertEqual(
             [(model["composition"]["board"],
-              model["composition"]["default_board"],
-              model["composition"]["boards"],
               _resolver.declared_board(model)) for model in models],
-            [("ip53", "ip53", ["ip53", "ip59"], "ip53"),
-             ("ip53", "ip53", ["ip53", "ip59"], "ip53"),
-             ("ip59", "ip53", ["ip53", "ip59"], "ip59")])
+            [("ip53", "ip53"), ("ip53", "ip53"), ("ip59", "ip59")])
 
     def test_a_composition_names_one_board_for_all(self):
         document = copy.deepcopy(self.UNNAMED)
         document["board"] = "ip53"
         models = _resolver.load_system_models(self.write(document))
         self.assertEqual(
-            [(model["composition"]["board"],
-              model["composition"]["default_board"],
-              model["composition"]["boards"]) for model in models],
-            [("ip53", "ip53", ["ip53"])] * 2)
+            [model["composition"]["board"] for model in models],
+            ["ip53"] * 2)
         self.assertIsNone(_resolver.declared_board(
             _resolver.load_system_model(INPUTS / "origin200.yaml")))
 
@@ -4097,34 +4099,24 @@ class CompositionVariantTests(unittest.TestCase):
                     _resolver.ResolutionError, message):
                 _resolver.load_system_models(self.write(document))
 
-    def test_a_topology_with_several_boards_spells_the_board(self):
+    def test_machine_options_name_the_topology_and_never_a_board(self):
         from sgi_model.model_emit import _machine_options
 
-        record = {"name": "tezro", "generation": "SN1"}
+        record = {"name": "tezro-ip59", "generation": "SN1", "board": "ip59"}
         self.assertEqual(_machine_options("tezro", record, 1),
-                         "tezro,topology=tezro,nodes=1")
-        record.update(board="ip53", default_board="ip53", boards=["ip53"])
-        self.assertEqual(_machine_options("tezro", record, 1),
-                         "tezro,topology=tezro,nodes=1")
-        record.update(boards=["ip53", "ip59"])
-        self.assertEqual(_machine_options("tezro", record, 1),
-                         "tezro,topology=tezro,nodes=1,board=ip53")
-        record.update(board="ip59")
-        self.assertEqual(_machine_options("tezro", record, 1),
-                         "tezro,topology=tezro,nodes=1,board=ip59")
+                         "tezro,topology=tezro-ip59,nodes=1")
+        self.assertEqual(
+            _machine_options("origin300", {"name": "origin300",
+                                           "generation": "SN1"}, 2,
+                             population=(4, 2)),
+            "origin300,topology=origin300,nodes=2,population=4:2")
 
-    def test_cpu_totals_are_disjoint_within_one_board(self):
-        from sgi_model.model_qemu import _check_variant_totals
+    def test_catalogue_refuses_a_topology_name_two_records_share(self):
+        from sgi_model.model_qemu import _check_unique_names
 
-        def record(board, *totals):
-            return {"name": "tezro", "board": board,
-                    "supported_cpu_populations": [[n] for n in totals]}
-
-        _check_variant_totals([record("ip53", 1), record("ip53", 2, 4),
-                               record("ip59", 1), record("ip59", 2, 4)])
-        with self.assertRaisesRegex(ValueError, "both accept 1 CPUs as ip59"):
-            _check_variant_totals([record("ip53", 1), record("ip59", 1),
-                                   record("ip59", 1, 2)])
+        _check_unique_names([{"name": "tezro-ip53"}, {"name": "tezro-ip59"}])
+        with self.assertRaisesRegex(ValueError, "names two records"):
+            _check_unique_names([{"name": "tezro"}, {"name": "tezro"}])
 
     def test_catalogue_refuses_one_processor_id_for_two_processors(self):
         from sgi_model.model_qemu import _check_processor_ids
@@ -4148,17 +4140,6 @@ class CompositionVariantTests(unittest.TestCase):
             0x009cad85)
         with self.assertRaisesRegex(ValueError, "names two different"):
             _check_processor_ids([origin350, cx_brick])
-
-    def test_catalogue_refuses_variants_sharing_a_cpu_total(self):
-        from sgi_model.model_qemu import _check_variant_totals
-
-        one = {"name": "tezro", "supported_cpu_populations": [[1]]}
-        many = {"name": "tezro", "supported_cpu_populations": [[4], [2]]}
-        _check_variant_totals([one, many])
-        with self.assertRaisesRegex(ValueError, "both accept 2 CPUs"):
-            _check_variant_totals([
-                one, many,
-                {"name": "tezro", "supported_cpu_populations": [[2]]}])
 
 
 if __name__ == "__main__":

@@ -1300,8 +1300,6 @@ def resolve_system_model(
             raise ResolutionError(
                 f"composition '{path}' names invalid board '{board}'")
         resolved["composition"]["board"] = board
-        resolved["composition"]["default_board"] = board
-        resolved["composition"]["boards"] = [board]
     return resolved
 
 
@@ -1317,27 +1315,23 @@ _BOARD = re.compile(r"^ip[0-9]+$")
 
 def _resolve_variants(
         path: pathlib.Path, document: dict[str, Any]) -> list[dict[str, Any]]:
-    """Resolve a composition, once per board variant when it declares some.
+    """Resolve a composition, once per variant when it declares some.
 
     A product sold with more than one board for the same machine (the
-    Tezro's one-processor and two/four-processor interface boards) is one
-    composition whose `variants` each add their own layers to the shared
-    ones. Every variant resolves to a complete model of its own and
-    compiles to its own topology record, but all of them take the
-    composition's file name as their product, which is the topology name
-    QEMU and launchers select. The emulator tells the records apart by the
-    CPU totals each accepts. Exactly one variant is the default: the one a
-    caller that names no variant gets, and the one the machine describes
-    itself from.
+    Tezro's one-processor and two/four-processor interface boards, the
+    IP53 and IP59 node boards) is one composition whose `variants` each
+    add their own layers to the shared ones. Every variant resolves to a
+    complete model of its own and compiles to its own topology record,
+    which takes the variant's `name`: topology names are unique in the
+    catalogue, so the name alone selects the record and its board.
+    Exactly one variant is the default: the one a caller that names no
+    variant gets, and the one the machine describes itself from.
 
     A composition whose topology takes more than one node board (the
     IP53 and its 1 GHz successor, the IP59) names the board each variant
-    builds in `board`, or one board for the whole composition. The machine
-    picks the board by its board property, the default variant's when that
-    is not given, and then the variant by -smp, so the CPU totals need be
-    disjoint only within one board. Either every model of a composition
-    names a board or none does; one that names none builds the board its
-    board layer describes.
+    builds in `board`. Either every model of a composition names a board
+    or none does; one that names none builds the board its board layer
+    describes.
     """
     variants = document.get("variants")
     if variants is None:
@@ -1354,21 +1348,29 @@ def _resolve_variants(
         raise ResolutionError(f"{label} has an invalid layer list")
     models = []
     seen: set[str] = set()
+    names: set[str] = set()
     for variant in variants:
         if not isinstance(variant, dict):
             raise ResolutionError(
                 f"{label} has a variant that is not a mapping")
         unknown = sorted(set(variant) - {
-            "id", "default", "layers", "board", "module_instances"})
+            "id", "name", "default", "layers", "board", "module_instances"})
         if unknown:
             raise ResolutionError(
                 f"{label} variant has unsupported field '{unknown[0]}'")
         ident = variant.get("id")
         if not isinstance(ident, str) or not _IDENTIFIER.match(ident):
-            raise ResolutionError(f"{label} variant has an invalid id")
+            raise ResolutionError(f"{label} has a variant with an invalid id")
         if ident in seen:
             raise ResolutionError(f"{label} lists variant '{ident}' twice")
         seen.add(ident)
+        name = variant.get("name")
+        if not isinstance(name, str) or not _IDENTIFIER.match(name):
+            raise ResolutionError(
+                f"{label} variant '{ident}' needs a topology name")
+        if name in names:
+            raise ResolutionError(f"{label} names topology '{name}' twice")
+        names.add(name)
         default = variant.get("default", False)
         if not isinstance(default, bool):
             raise ResolutionError(
@@ -1387,7 +1389,7 @@ def _resolve_variants(
             composition["module_instances"] = copy.deepcopy(
                 variant["module_instances"])
         model = resolve_system_model(path, composition)
-        model["composition"]["product"] = path.stem
+        model["composition"]["product"] = name
         model["composition"]["variant"] = {"id": ident, "default": default}
         models.append(model)
     if sum(model["composition"]["variant"]["default"] for model in models) != 1:
@@ -1396,14 +1398,6 @@ def _resolve_variants(
     if declared == {True, False}:
         raise ResolutionError(
             f"{label} names a board for some variants but not all")
-    if declared == {True}:
-        default_board = next(
-            model["composition"]["board"] for model in models
-            if model["composition"]["variant"]["default"])
-        boards = sorted({model["composition"]["board"] for model in models})
-        for model in models:
-            model["composition"]["default_board"] = default_board
-            model["composition"]["boards"] = boards
     return models
 
 

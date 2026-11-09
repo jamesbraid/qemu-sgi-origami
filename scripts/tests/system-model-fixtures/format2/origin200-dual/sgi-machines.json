@@ -1,7 +1,6 @@
 {
   "offerings": [
     {
-      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -38,6 +37,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Dual-module Origin 200",
       "hardware-inputs": [],
+      "id": "origin200-dual.2-2.r10000-180mhz-1mb",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -262,7 +262,6 @@
       "topology": "origin200-dual"
     },
     {
-      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -299,6 +298,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Dual-module Origin 200",
       "hardware-inputs": [],
+      "id": "origin200-dual.2-2.r10000-180mhz-2mb",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -523,7 +523,6 @@
       "topology": "origin200-dual"
     },
     {
-      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -560,6 +559,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Dual-module Origin 200",
       "hardware-inputs": [],
+      "id": "origin200-dual.2-2.r10000-225mhz-2mb",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -788,7 +788,6 @@
       "topology": "origin200-dual"
     },
     {
-      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -825,6 +824,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Dual-module Origin 200",
       "hardware-inputs": [],
+      "id": "origin200-dual.2-2.r12000-270mhz-4mb",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -1083,7 +1083,6 @@
       "console": 0,
       "controllers": [],
       "crossbars": [],
-      "default-board": "ip29",
       "description": "SGI Origin 200 (IP29)",
       "generation": "sn0",
       "graphics": {
@@ -1646,5 +1645,5 @@
       "xio-slots": []
     }
   ],
-  "version": 2
+  "version": 3
 }

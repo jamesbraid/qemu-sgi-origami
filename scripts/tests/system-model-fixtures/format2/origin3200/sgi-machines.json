@@ -1,7 +1,6 @@
 {
   "offerings": [
     {
-      "board": "ip35",
       "console": "l1-uart",
       "consoles": [
         {
@@ -30,6 +29,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 3200",
       "hardware-inputs": [],
+      "id": "origin3200.4-4",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -358,7 +358,6 @@
           "widget-revision": 2
         }
       ],
-      "default-board": "ip35",
       "description": "SGI Origin 3200 (IP35), two C-bricks and an I-brick",
       "generation": "sn1",
       "io-boards": [
@@ -675,5 +674,5 @@
       "xio-slots": []
     }
   ],
-  "version": 2
+  "version": 3
 }

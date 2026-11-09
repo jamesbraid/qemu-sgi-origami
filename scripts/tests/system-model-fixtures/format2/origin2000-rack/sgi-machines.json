@@ -1,7 +1,6 @@
 {
   "offerings": [
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -37,6 +36,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "id": "origin2000-rack.2-2-2-2",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -257,7 +257,6 @@
       "topology": "origin2000-rack"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -293,6 +292,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "id": "origin2000-rack.1-1-1-1",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -513,7 +513,6 @@
       "topology": "origin2000-rack"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -549,6 +548,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "id": "origin2000-rack.2-1-1-1",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -769,7 +769,6 @@
       "topology": "origin2000-rack"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -805,6 +804,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "id": "origin2000-rack.2-2-1-1",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -1025,7 +1025,6 @@
       "topology": "origin2000-rack"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1061,6 +1060,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "id": "origin2000-rack.2-2-2-1",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -1281,7 +1281,6 @@
       "topology": "origin2000-rack"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1315,6 +1314,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "id": "origin2000-rack.2-2-2",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -1529,7 +1529,6 @@
       "topology": "origin2000-rack"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1563,6 +1562,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "id": "origin2000-rack.1-1-1",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -1777,7 +1777,6 @@
       "topology": "origin2000-rack"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1811,6 +1810,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "id": "origin2000-rack.2-1-1",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -2025,7 +2025,6 @@
       "topology": "origin2000-rack"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2059,6 +2058,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "id": "origin2000-rack.2-2-1",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -2273,7 +2273,6 @@
       "topology": "origin2000-rack"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2305,6 +2304,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "id": "origin2000-rack.2-2",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -2513,7 +2513,6 @@
       "topology": "origin2000-rack"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2545,6 +2544,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "id": "origin2000-rack.1-1",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -2753,7 +2753,6 @@
       "topology": "origin2000-rack"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2785,6 +2784,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "id": "origin2000-rack.2-1",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -2993,7 +2993,6 @@
       "topology": "origin2000-rack"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -3023,6 +3022,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "id": "origin2000-rack.2",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -3225,7 +3225,6 @@
       "topology": "origin2000-rack"
     },
     {
-      "board": "ip27",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -3255,6 +3254,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "id": "origin2000-rack.1",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -3566,7 +3566,6 @@
           "widget-revision": 2
         }
       ],
-      "default-board": "ip27",
       "description": "SGI Origin 2000 rack module",
       "generation": "sn0",
       "graphics": {
@@ -5776,5 +5775,5 @@
       ]
     }
   ],
-  "version": 2
+  "version": 3
 }

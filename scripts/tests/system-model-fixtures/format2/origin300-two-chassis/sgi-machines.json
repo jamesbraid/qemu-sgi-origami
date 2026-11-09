@@ -1,7 +1,6 @@
 {
   "offerings": [
     {
-      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -30,6 +29,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Two-chassis Origin 300",
       "hardware-inputs": [],
+      "id": "origin300-two-chassis.2-2",
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -263,7 +263,6 @@
       "topology": "origin300-two-chassis"
     },
     {
-      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -292,6 +291,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Two-chassis Origin 300",
       "hardware-inputs": [],
+      "id": "origin300-two-chassis.4-2",
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -310,7 +310,7 @@
         "disk-image",
         "netboot"
       ],
-      "machine-options": "origin300,topology=origin300-two-chassis,nodes=2",
+      "machine-options": "origin300,topology=origin300-two-chassis,nodes=2,population=4:2",
       "memory-per-node-mib": {
         "accepted": [
           512
@@ -525,7 +525,6 @@
       "topology": "origin300-two-chassis"
     },
     {
-      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -554,6 +553,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Two-chassis Origin 300",
       "hardware-inputs": [],
+      "id": "origin300-two-chassis.2-4",
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -572,7 +572,7 @@
         "disk-image",
         "netboot"
       ],
-      "machine-options": "origin300,topology=origin300-two-chassis,nodes=2",
+      "machine-options": "origin300,topology=origin300-two-chassis,nodes=2,population=2:4",
       "memory-per-node-mib": {
         "accepted": [
           512
@@ -787,7 +787,6 @@
       "topology": "origin300-two-chassis"
     },
     {
-      "board": "ip45",
       "console": "l1-uart",
       "consoles": [
         {
@@ -816,6 +815,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Two-chassis Origin 300",
       "hardware-inputs": [],
+      "id": "origin300-two-chassis.4-4",
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -1102,7 +1102,6 @@
         }
       ],
       "crossbars": [],
-      "default-board": "ip45",
       "description": "SGI Origin 300 (IP45), two chassis",
       "generation": "sn1",
       "io-boards": [
@@ -1494,5 +1493,5 @@
       "xio-slots": []
     }
   ],
-  "version": 2
+  "version": 3
 }

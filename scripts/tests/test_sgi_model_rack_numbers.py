@@ -28,7 +28,7 @@ from sgi_model.model_emit import _render_topology
 from sgi_model.model_validation import (
     check_schema, load_checked_system_model, schema,
 )
-from sgi_model.registry import IMPLEMENTED_TOPOLOGIES
+from sgi_model.registry import IMPLEMENTED_COMPOSITIONS
 
 _CACHE: dict[str, dict] = {}
 
@@ -383,11 +383,8 @@ class RackNumberCompileTests(unittest.TestCase):
 
 class ShippedTopologiesAreUnracked(unittest.TestCase):
     def test_no_implemented_topology_numbers_a_rack(self):
-        for name in IMPLEMENTED_TOPOLOGIES:
-            stem = name.partition("/")[0]
-            path = INPUTS / f"{stem}.yaml"
-            if not path.exists():
-                continue
+        for name in sorted(IMPLEMENTED_COMPOSITIONS):
+            path = INPUTS / f"{name}.yaml"
             with self.subTest(name=name):
                 model = _resolver.load_system_model(path)
                 self.assertNotIn(

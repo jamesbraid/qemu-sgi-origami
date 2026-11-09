@@ -37,7 +37,8 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin3400-two-partitions",
     "origin3800",
     "origin3800-high-bandwidth",
-    "origin3900",
+    "origin3900-ip53",
+    "origin3900-ip59",
     "origin3900-memory-node",
     "onyx3000",
     "onyx3000-r16000",
@@ -47,12 +48,34 @@ IMPLEMENTED_TOPOLOGIES = (
     "onyx2-deskside",
     "origin300-numalink-pci-expansion",
     "origin300-pci-expansion",
-    "origin350",
+    "origin350-ip53",
+    "origin350-ip59",
     "onyx4-host",
-    "onyx350",
-    "tezro",
-    "tezro-rack",
+    "onyx350-ip53",
+    "onyx350-ip59",
+    "tezro-one-processor",
+    "tezro-ip53",
+    "tezro-ip59",
+    "tezro-rack-ip53",
+    "tezro-rack-ip59",
 )
+
+# The compositions that declare variants, by file name, each compiling to
+# several topologies; every other composition compiles to the topology of
+# its own name.
+VARIANT_COMPOSITIONS = {
+    "origin350": ("origin350-ip53", "origin350-ip59"),
+    "onyx350": ("onyx350-ip53", "onyx350-ip59"),
+    "origin3900": ("origin3900-ip53", "origin3900-ip59"),
+    "tezro": ("tezro-one-processor", "tezro-ip53", "tezro-ip59"),
+    "tezro-rack": ("tezro-rack-ip53", "tezro-rack-ip59"),
+}
+
+# The authored compositions the implemented topologies compile from.
+IMPLEMENTED_COMPOSITIONS = frozenset(
+    name for name in IMPLEMENTED_TOPOLOGIES
+    if not any(name in names for names in VARIANT_COMPOSITIONS.values())
+) | frozenset(VARIANT_COMPOSITIONS)
 
 # Authored reference compositions are useful for comparing product topology,
 # but their unresolved hardware inputs keep them out of the runtime catalogue.
@@ -68,28 +91,28 @@ REFERENCE_TOPOLOGIES = (
     "onyx4-host-g2n",
 )
 
-# The IP53-family runtime profiles: catalogue product id and board to the
-# QEMU machine name and the emulation profile it must carry. The ip59
-# entries are the same products with the 1 GHz node board and processors.
+# The IP53-family runtime profiles: topology name to the QEMU machine name
+# and the emulation profile it must carry. The ip59 entries are the same
+# products with the 1 GHz node board and processors.
 IP53_RUNTIME_PROFILES = {
-    ("origin350", "ip53"): ("origin350", "ip53-origin350"),
-    ("origin350", "ip59"): ("origin350", "ip59-origin350"),
-    ("onyx4-host", "ip59"): ("onyx4-host", "ip59-onyx4-host"),
-    ("onyx350", "ip53"): ("onyx350", "ip53-onyx350"),
-    ("onyx350", "ip59"): ("onyx350", "ip59-onyx350"),
-    ("tezro", "ip53"): ("tezro", "tezro-serial-compat"),
-    ("tezro", "ip59"): ("tezro", "ip59-tezro"),
-    ("tezro-rack", "ip53"): ("tezro", "tezro-rack-serial-compat"),
-    ("tezro-rack", "ip59"): ("tezro", "ip59-tezro-rack"),
+    "origin350-ip53": ("origin350", "ip53-origin350"),
+    "origin350-ip59": ("origin350", "ip59-origin350"),
+    "onyx4-host": ("onyx4-host", "ip59-onyx4-host"),
+    "onyx350-ip53": ("onyx350", "ip53-onyx350"),
+    "onyx350-ip59": ("onyx350", "ip59-onyx350"),
+    "tezro-one-processor": ("tezro", "tezro-serial-compat"),
+    "tezro-ip53": ("tezro", "tezro-serial-compat"),
+    "tezro-ip59": ("tezro", "ip59-tezro"),
+    "tezro-rack-ip53": ("tezro", "tezro-rack-serial-compat"),
+    "tezro-rack-ip59": ("tezro", "ip59-tezro-rack"),
 }
 TEZRO_RUNTIME_PRODUCTS = frozenset(
-    product for (product, _), (machine, _) in IP53_RUNTIME_PROFILES.items()
+    product for product, (machine, _) in IP53_RUNTIME_PROFILES.items()
     if machine == "tezro")
 
 
 def ip53_runtime_profile(model: dict) -> tuple[str, str] | None:
     """The (machine, emulation profile) the IP53-family runtime profile of
-    @model's product and board must carry, or None for no such profile."""
-    composition = model.get("composition", {})
+    @model's topology must carry, or None for no such profile."""
     return IP53_RUNTIME_PROFILES.get(
-        (composition.get("product"), composition.get("board", "ip53")))
+        model.get("composition", {}).get("product"))
