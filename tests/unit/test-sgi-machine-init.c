@@ -214,6 +214,8 @@ static void test_inputs_checked(void)
 #define IP35_LABEL (8 * 1024 * 1024 + 0x1e0000 + 0x10)
 /* The exact payload every Bedrock topology's -bios must be. */
 #define IP35_PROM_SIZE 1476264
+/* The O2's flash array, which its PROM image fills exactly. */
+#define O2_PROM_SIZE (512 * 1024)
 
 typedef struct StoreSize {
     const char *name;
@@ -222,6 +224,7 @@ typedef struct StoreSize {
 
 static char *boot_prom;
 static char *ip35_prom;
+static char *o2_prom;
 static char *io_prom;
 
 static char *make_image(const char *name, size_t size, uint8_t seed)
@@ -301,8 +304,10 @@ static char *create_and_check(const char *stem, const char *machine,
                 g_str_has_prefix(machine, "onyx4,") ||
                 g_str_has_prefix(machine, "tezro,") ||
                 g_str_has_prefix(machine, "fuel,");
+    bool o2 = g_str_has_prefix(machine, "o2");
     const char *args[] = {
-        "--machine", machine, "--boot-prom", ip35 ? ip35_prom : boot_prom,
+        "--machine", machine, "--boot-prom",
+        ip35 ? ip35_prom : o2 ? o2_prom : boot_prom,
         dir, NULL, NULL, NULL,
     };
     ToolRun run;
@@ -707,6 +712,51 @@ static void test_origin3000_offerings(void)
     }
 }
 
+/*
+ * The O2's PROM is the flash array as supplied. Its state record starts as
+ * zeroes, which the machine takes as a flash nothing has programmed, and the
+ * DS1685's RAM and clock record start zeroed.
+ */
+static void test_o2(void)
+{
+    static const StoreSize stores[] = {
+        { "node0-flash", O2_PROM_SIZE }, { "node0-flash-state", 512 },
+        { "nvram0", 512 }, { "nvram0-clock", 24 },
+    };
+    static const char *const machines[] = { "o2", "o2,variant=o2plus" };
+
+    for (size_t i = 0; i < ARRAY_SIZE(machines); i++) {
+        g_autofree char *dir = create_and_check("o2", machines[i], false,
+                                                stores, ARRAY_SIZE(stores));
+        gsize size;
+        g_autofree uint8_t *flash = read_store(dir, "node0-flash", &size);
+
+        g_assert_cmpuint(size, ==, O2_PROM_SIZE);
+        for (size_t offset = 0; offset < size; offset++) {
+            g_assert_cmphex(flash[offset], ==, (uint8_t)(0x31 + offset * 7));
+        }
+        assert_zero_store(dir, "node0-flash-state");
+        assert_zero_store(dir, "nvram0");
+        assert_zero_store(dir, "nvram0-clock");
+        remove_tree(dir);
+    }
+}
+
+/* An O2 PROM of any other size is refused, and nothing is created. */
+static void test_o2_prom_size(void)
+{
+    g_autofree char *dir = scratch_path("o2-short");
+    ToolRun run = run_tool("--machine", "o2", "--boot-prom", boot_prom, dir,
+                           NULL);
+    g_autofree char *message = g_strdup_printf(
+        "PROM image '%s' is %d bytes; the flash holds exactly %d", boot_prom,
+        PAYLOAD_SIZE, O2_PROM_SIZE);
+
+    assert_refused(&run, message);
+    tool_run_clear(&run);
+    g_assert_false(g_file_test(dir, G_FILE_TEST_EXISTS));
+}
+
 /* An IP35 PROM the machine would refuse as -bios is refused here too. */
 static void test_ip35_prom_size(void)
 {
@@ -990,6 +1040,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-machine-init/ip53-offerings", test_ip53_offerings);
     g_test_add_func("/sgi-machine-init/origin3000-offerings",
                     test_origin3000_offerings);
+    g_test_add_func("/sgi-machine-init/o2", test_o2);
+    g_test_add_func("/sgi-machine-init/o2-prom-size", test_o2_prom_size);
     g_test_add_func("/sgi-machine-init/ip35-prom-size", test_ip35_prom_size);
     g_test_add_func("/sgi-machine-init/fuel", test_fuel);
     g_test_add_func("/sgi-machine-init/octane", test_octane);
@@ -1008,13 +1060,16 @@ int main(int argc, char **argv)
                     test_bad_image_cleanup);
     boot_prom = make_image("boot-prom", PAYLOAD_SIZE, 0x27);
     ip35_prom = make_image("ip35-prom", IP35_PROM_SIZE, 0x27);
+    o2_prom = make_image("o2-prom", O2_PROM_SIZE, 0x31);
     io_prom = make_image("io-prom", IO_PROM_SIZE, 0x06);
     ret = g_test_run();
     g_assert_cmpint(g_unlink(boot_prom), ==, 0);
     g_assert_cmpint(g_unlink(io_prom), ==, 0);
     g_assert_cmpint(g_unlink(ip35_prom), ==, 0);
+    g_assert_cmpint(g_unlink(o2_prom), ==, 0);
     g_free(boot_prom);
     g_free(ip35_prom);
+    g_free(o2_prom);
     g_free(io_prom);
 
     g_assert_cmpint(g_rmdir(scratch), ==, 0);

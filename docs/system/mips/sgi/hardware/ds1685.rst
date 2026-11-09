@@ -394,6 +394,9 @@ are refused. A block drive named ``<id>-clock`` is picked up as the clock
 store of the drive ``<id>`` when no explicit clock drive is given. A drive
 property on a board with no DS1685 is refused.
 
+The O2's MACE takes the same two items. Its NVRAM and clock record start
+zeroed, and it has no older drive names.
+
 NVRAM image
 -----------
 

@@ -358,9 +358,18 @@ machine's identity properties, so it needs no input of its own
 (:ref:`sgi-ip32-system-serial`).
 
 The machine refuses ``-bios``, ``-kernel``, ``-initrd`` and ``-append``.
-Block backends named ``o2flash`` and ``o2flash-state`` keep the flash and
-its protection state across runs. ``nvram0`` and ``nvram0-clock`` keep
-the DS1685's RAM and clock.
+Four stores keep the machine's state across runs, bound by the catalogue's
+storage items (``query-sgi-machines`` lists them with their sizes, and
+``qemu-sgi-machine-init`` creates them): ``node0-flash``, the 512 KiB flash
+array, and ``node0-flash-state``, its 512-byte protection record
+(:doc:`hardware/at29c040a`), which need ``rom-at29c040a=on``; and
+``nvram0`` and ``nvram0-clock``, the DS1685's RAM and clock record
+(:doc:`hardware/ds1685`). Each is the name of a block node or drive of
+exactly the listed size (a clock record at least that size). A new machine's
+array is the PROM image as given, with no container decoded, and its other
+stores are zero. A store the machine does not list is refused, as is a flash
+store with no ``rom-image``, which the machine still requires and does not
+use once the flash is bound.
 
 At reset the processor fetches from ``0xbfc00000``, the uncached view of
 the flash. What happens next depends on the image. The qtests run

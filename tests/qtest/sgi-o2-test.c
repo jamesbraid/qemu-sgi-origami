@@ -8946,7 +8946,7 @@ static void test_o2plus_configuration(void)
             "driver=raw,node-name=nvram0,file.driver=file,file.filename=%s",
             nvram);
         g_autofree char *machine = g_strdup_printf(
-            "%s,rom-image=%s,identity-eprom-file=%s", t.machine,
+            "%s,rom-image=%s,identity-eprom-file=%s,nvram0=nvram0", t.machine,
             missing, missing);
         g_autofree char *after = NULL;
         uint8_t sentinel[512];

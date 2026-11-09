@@ -1945,6 +1945,10 @@ static void test_storage_board_rules(void)
                                        index, index);
             }
         }
+        /* The O2's DS1685 backs the NVRAM and clock of its one board. */
+        if (t->generation == SGI_MODEL_GENERATION_IP32) {
+            g_string_append(expected, "nvram0 nvram0-clock ");
+        }
         /* Module stores follow the nodes this offering fits. */
         fitted = sgi_model_resolve_population(t, offering->nodes,
                                               &error_abort);

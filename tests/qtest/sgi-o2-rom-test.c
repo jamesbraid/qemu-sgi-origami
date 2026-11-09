@@ -72,8 +72,11 @@ static QTestState *start_at29_extra(const char *image,
 {
     g_autofree char *options = g_strdup_printf(
         ",rom-at29c040a=on,rom-at29c040a-protection=%s,"
-        "rom-at29c040a-lower-lock=%s,rom-at29c040a-upper-lock=%s",
-        protection, lower_lock, upper_lock);
+        "rom-at29c040a-lower-lock=%s,rom-at29c040a-upper-lock=%s%s%s",
+        protection, lower_lock, upper_lock,
+        strstr(qemu_extra, "id=o2flash,") ? ",node0-flash=o2flash" : "",
+        strstr(qemu_extra, "id=o2flash-state,") ?
+        ",node0-flash-state=o2flash-state" : "");
 
     return start_o2(image, options, qemu_extra);
 }
@@ -1416,7 +1419,10 @@ static void backing_startup_error(const char *seed, const char *array_drive,
         selected ? ",rom-at29c040a=on,rom-at29c040a-protection=disabled,"
                    "rom-at29c040a-lower-lock=unlocked,"
                    "rom-at29c040a-upper-lock=unlocked" : "");
-    const char *args[24] = { qtest_qemu_binary(NULL), "-M", machine,
+    g_autofree char *bound = g_strdup_printf("%s%s%s", machine,
+        array_drive ? ",node0-flash=o2flash" : "",
+        state_drive ? ",node0-flash-state=o2flash-state" : "");
+    const char *args[24] = { qtest_qemu_binary(NULL), "-M", bound,
         "-cpu", "R10000", "-m", "64M", "-accel", "qtest",
         "-nodefaults", "-display", "none", "-qmp", "stdio" };
     unsigned n = 14;
@@ -1470,13 +1476,13 @@ static void test_at29_backing_validation(void)
                            "state backend must be writable");
     g_assert_true(g_file_set_contents(array, "", 0, NULL));
     backing_startup_error(seed_path, array_drive, state_drive, true,
-                           "array backend requires exactly");
+                           "node0-flash is 0 bytes");
     g_assert_true(g_file_set_contents(array, (const char *)seed,
                                       512 * 1024, NULL));
     g_assert_true(g_file_set_contents(state, (const char *)zero,
                                       sizeof(zero), NULL));
     backing_startup_error(seed_path, array_drive, state_drive, true,
-                           "state backend requires exactly");
+                           "node0-flash-state is 1024 bytes");
     const unsigned invalid_offsets[] = { 0, 7, 8, 9, 32, 64 };
     for (unsigned i = 0; i < ARRAY_SIZE(invalid_offsets); i++) {
         make_at29_state(state, seed, 0);

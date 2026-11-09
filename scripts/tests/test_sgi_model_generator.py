@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "ca724a642027673f3b35f0e8bafb24e6546274460bbf29b3d0f4ff80d3e2035e"
+    "3e98dd94f01725510a9100f9624e1dec6cf25a43a1a43e0b751071bab5f946b3"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -559,7 +559,13 @@ class StorageTests(unittest.TestCase):
                     self.assertEqual(offering["machine-options"],
                                      "o2" if offering["topology"] == "o2"
                                      else "o2,variant=o2plus")
-                    self.assertEqual(offering["storage"], [])
+                    self.assertEqual(
+                        [(item["name"], item["size"], item["initial"])
+                         for item in offering["storage"]],
+                        [("node0-flash", 524288, "boot-prom"),
+                         ("node0-flash-state", 512, "zero"),
+                         ("nvram0", 512, "zero"),
+                         ("nvram0-clock", 24, "zero")])
                     self.assertEqual(offering["firmware"]["kind"], "ip32-prom")
                     self.assertEqual(offering["init-inputs"], [{
                         "name": "boot-prom", "kind": "ip32-prom", "required": True}])
@@ -629,8 +635,9 @@ class StorageTests(unittest.TestCase):
                 if offering["product"] in {"origin200", "origin2000", "onyx2"}
                 else {"zero"}
                 if offering["product"] in ds1744_products
+                or offering.get("launch-recipe") == "ip32"
                 else set()
-                if offering.get("launch-recipe") in ("ip53-discovery", "ip32")
+                if offering.get("launch-recipe") == "ip53-discovery"
                 else {"zero"})
             with self.subTest(options=offering["machine-options"]):
                 self.assertEqual(nvram, expected)

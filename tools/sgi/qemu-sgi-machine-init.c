@@ -192,6 +192,35 @@ static SGIIP27FlashValues ip27_flash_values(const SGIModelTopology *t,
 }
 
 /*
+ * The O2's PROM is read as the machine's rom-image is: the file's bytes,
+ * which are the whole 512 KiB flash array, with no container to decode.
+ */
+static SGIPromImage *load_raw_input(const char *path,
+                                    const SGIModelStorageItem *item,
+                                    Error **errp)
+{
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) gerr = NULL;
+    SGIPromImage *image;
+    gsize length;
+
+    if (!g_file_get_contents(path, &contents, &length, &gerr)) {
+        error_setg(errp, "cannot read PROM image '%s': %s", path,
+                   gerr->message);
+        return NULL;
+    }
+    if (length != item->size) {
+        error_setg(errp, "PROM image '%s' is %zu bytes; the flash holds "
+                   "exactly %" PRIu64, path, (size_t)length, item->size);
+        return NULL;
+    }
+    image = g_new0(SGIPromImage, 1);
+    image->file = g_bytes_new_take(g_steal_pointer(&contents), length);
+    image->payload = g_bytes_ref(image->file);
+    return image;
+}
+
+/*
  * The decoded image for @input, sized for @item. The boot PROM fills a
  * whole IP27 or IP30 flash or half an IP35 flash (one of its two
  * positions). The I/O PROM is stored as supplied, container included, so
@@ -210,6 +239,8 @@ static SGIPromImage *load_input(const SGIModelInitInput *input,
     case SGI_MODEL_INIT_INPUT_KIND_IP35_PROM:
         return sgi_prom_image_load(path, item->size / SGI_IP35_FLASH_POSITIONS,
                                    errp);
+    case SGI_MODEL_INIT_INPUT_KIND_IP32_PROM:
+        return load_raw_input(path, item, errp);
     case SGI_MODEL_INIT_INPUT_KIND_IO6_PROM:
         image = sgi_prom_image_load(path, item->size, errp);
         if (image && g_bytes_get_size(image->file) > item->size) {
@@ -314,6 +345,10 @@ static void build_item(const SGIModelStorageItem *item,
         break;
     case SGI_MODEL_INIT_INPUT_KIND_IP30_PROM:
         sgi_ip30_initial_flash(buf, item->size, data, length);
+        break;
+    case SGI_MODEL_INIT_INPUT_KIND_IP32_PROM:
+        g_assert(length == item->size);
+        memcpy(buf, data, length);
         break;
     default:
         g_assert_not_reached();
