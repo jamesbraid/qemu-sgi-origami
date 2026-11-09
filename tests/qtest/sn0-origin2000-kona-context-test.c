@@ -1753,7 +1753,12 @@ static const uint32_t gl_run_texels[4] = {
     0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
 };
 
-static void gl_run_texture_start(QTestState *s)
+/* A second context's, the same load identifier and different texels. */
+static const uint32_t gl_other_texels[4] = {
+    0x112233ff, 0x445566ff, 0x778899ff, 0xaabbccff,
+};
+
+static void gl_texture_start(QTestState *s, const uint32_t *texels)
 {
     uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
 
@@ -1763,17 +1768,48 @@ static void gl_run_texture_start(QTestState *s)
     kona_command(s, 0x174, (uint32_t[]){ 0xde1, 2, 2, 5, 1, 0, 0, 0, 0, 0x30,
                                          5, 0, 0, 1, 1, 0, 0x23, 0x2181, 0,
                                          0 }, 20);
-    qtest_writel(s, REG_COMMAND, gl_run_texels[0]);
-    qtest_writel(s, REG_COMMAND, gl_run_texels[1]);
+    qtest_writel(s, REG_COMMAND, texels[0]);
+    qtest_writel(s, REG_COMMAND, texels[1]);
+}
+
+/* The load's last two texel words, which complete it but do not publish it. */
+static void gl_texture_rows(QTestState *s, const uint32_t *texels)
+{
+    qtest_writel(s, REG_COMMAND, texels[2]);
+    qtest_writel(s, REG_COMMAND, texels[3]);
+}
+
+/* The load identifier that publishes the level, then the texel probe. */
+static void gl_texture_publish(QTestState *s, const uint32_t *texels)
+{
+    kona_command(s, 0x176, (uint32_t[]){ 5 }, 1);
+    for (unsigned k = 0; k < 4; k++) {
+        g_assert_cmphex(texture_pixel(s, k % 2, k / 2), ==, texels[k]);
+    }
+}
+
+static void gl_run_texture_start(QTestState *s)
+{
+    gl_texture_start(s, gl_run_texels);
 }
 
 static void gl_run_texture_finish(QTestState *s)
 {
-    qtest_writel(s, REG_COMMAND, gl_run_texels[2]);
-    qtest_writel(s, REG_COMMAND, gl_run_texels[3]);
-    kona_command(s, 0x176, (uint32_t[]){ 5 }, 1);
-    for (unsigned k = 0; k < 4; k++) {
-        g_assert_cmphex(texture_pixel(s, k % 2, k / 2), ==, gl_run_texels[k]);
+    gl_texture_rows(s, gl_run_texels);
+    gl_texture_publish(s, gl_run_texels);
+}
+
+/* A DMA packet for the texture load waiting on it, as the pipe's own. */
+static void kona_dma_packet(QTestState *s, uint64_t io, uint32_t total,
+                            uint32_t per_line, uint32_t gap)
+{
+    uint32_t packet[] = {
+        0x1eb, io >> 12, (io & 0xfff) | 0x9000,
+        total, per_line, gap, 0x100,
+    };
+
+    for (unsigned k = 0; k < ARRAY_SIZE(packet); k++) {
+        qtest_writel(s, KONA_REG(0x80007c), packet[k]);
     }
 }
 
@@ -1801,6 +1837,214 @@ static void test_suspended_texture_load_survives(void)
     gl_run_texture_finish(s);
     assert_textport_in_step(s);
     qtest_quit(s);
+}
+
+/*
+ * Two contexts load a texture level each, with the same load identifier
+ * and different texels, and the kernel switches between them in the
+ * middle of both loads. Each load's rows and its publication belong to
+ * its own context.
+ */
+static void test_texture_loads_interleave_across_switches(void)
+{
+    QTestState *s = qtest_init(MIGRATION_ARGS);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    gl_texture_start(s, gl_run_texels);
+    context_deactivate(s, 1);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    gl_texture_start(s, gl_other_texels);
+    context_deactivate(s, 2);
+    context_restore_physical(s, SAVE_A);
+    gl_texture_rows(s, gl_run_texels);
+    context_deactivate(s, 1);
+    context_restore_physical(s, SAVE_B);
+    gl_texture_rows(s, gl_other_texels);
+    gl_texture_publish(s, gl_other_texels);
+    context_deactivate(s, 2);
+    context_restore_physical(s, SAVE_A);
+    gl_texture_publish(s, gl_run_texels);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+}
+
+/*
+ * A's load is complete and waiting for its publication when A is switched
+ * out, and B is in the middle of a load, rows still owed, when A is
+ * switched back in. The pipe holds A's load for A whatever B is doing, so
+ * A's publication finds it and B's rows still complete B's own load. A
+ * model with one live upload slot that restored only into an empty one
+ * refused A's load, and the level was never published.
+ */
+static void test_texture_publish_after_other_context_mid_load(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    gl_texture_start(s, gl_run_texels);
+    gl_texture_rows(s, gl_run_texels);
+    context_deactivate(s, 1);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    gl_texture_start(s, gl_other_texels);
+    context_deactivate(s, 2);
+    context_restore_physical(s, SAVE_A);
+    gl_texture_publish(s, gl_run_texels);
+    context_deactivate(s, 1);
+    context_restore_physical(s, SAVE_B);
+    gl_texture_rows(s, gl_other_texels);
+    gl_texture_publish(s, gl_other_texels);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_null(strstr(found, "texture publication without"));
+}
+
+/*
+ * A's run is restored while the pipe holds another context's finished
+ * load. B's finished load waits for its publication with a pixel map run
+ * open when B is switched out, so the load is not part of any run that
+ * travels with B; A's saved texture run then returns, and B's load must
+ * survive it. A model that kept the finished load in the one live slot
+ * dropped it when A's run came back.
+ */
+static void test_texture_run_restore_keeps_other_contexts_load(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    gl_texture_start(s, gl_run_texels);
+    context_deactivate(s, 1);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    gl_texture_start(s, gl_other_texels);
+    gl_texture_rows(s, gl_other_texels);
+    kona_command(s, 0x35, (uint32_t[]){ 0xc72, 4, 0x40400000, 256, 0, 1 }, 6);
+    context_deactivate(s, 2);
+    context_restore_physical(s, SAVE_A);
+    gl_run_texture_finish(s);
+    context_deactivate(s, 1);
+    context_restore_physical(s, SAVE_B);
+    qtest_writel(s, REG_COMMAND, 2);
+    qtest_writel(s, REG_COMMAND, 3);
+    gl_texture_publish(s, gl_other_texels);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_null(strstr(found, "texture publication without"));
+    g_assert_null(strstr(found, "gives way to"));
+}
+
+/*
+ * A's load takes its rows by DMA and is switched out before the packet.
+ * B loads and finishes a level of its own, then is switched out, and A
+ * comes back: the DMA packet, A's publication and B's publication each
+ * find their own load. A model that set aside only finished loads let B's
+ * first header replace A's, and A's level was never published.
+ */
+static void test_texture_dma_load_switched_out_beside_other_context(void)
+{
+    static const uint32_t header[20] = {
+        0xde1, 2, 2, 5, 1, 0, 1, 0, 0, 0x14, 21, 0, 0, 1, 1, 0, 0x23, 0x2204,
+        0, 0,
+    };
+    uint32_t record[22] = { 0x44, 0x101010, 256u << 10, 0x23 };
+    uint8_t source[16];
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    for (unsigned k = 0; k < sizeof(source); k++) {
+        source[k] = 0x10 + k;
+    }
+    qtest_memwrite(s, 0x3c0000, source, sizeof(source));
+    qtest_writel(s, REG_MAPRAM(0), 0x20000000 | (0x3c0000 >> 12));
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x1d5, (uint32_t[]){ 21, (2u << 28) | (31 << 12),
+                                         0x14 << 14, 0x11, 1 }, 5);
+    kona_command(s, 0x179, record, 22);
+    kona_command(s, 0x174, header, 20);
+    context_deactivate(s, 1);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    gl_texture_start(s, gl_other_texels);
+    gl_texture_rows(s, gl_other_texels);
+    context_deactivate(s, 2);
+    context_restore_physical(s, SAVE_A);
+    kona_dma_packet(s, 0, 16, 16, 0);
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
+    kona_command(s, 0x176, (uint32_t[]){ 21 }, 1);
+    g_assert_cmphex(texture_pixel(s, 0, 0), ==, 0x10111213);
+    g_assert_cmphex(texture_pixel(s, 1, 1), ==, 0x1c1d1e1f);
+    context_deactivate(s, 1);
+    context_restore_physical(s, SAVE_B);
+    gl_texture_publish(s, gl_other_texels);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_null(strstr(found, "texture publication without"));
+}
+
+/*
+ * The same two loads over a migration: B's open load is live and A's
+ * finished one is set aside when the stream is taken.
+ */
+static void test_migration_of_live_load_beside_set_aside_load(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-context-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MIGRATION_ARGS);
+    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+
+    context_first_physical(from, SAVE_A, RETURN_A);
+    qtest_writel(from, REG_KICK, 0);
+    gl_texture_start(from, gl_run_texels);
+    gl_texture_rows(from, gl_run_texels);
+    context_deactivate(from, 1);
+    context_first_physical(from, SAVE_B, RETURN_B);
+    qtest_writel(from, REG_KICK, 0);
+    gl_texture_start(from, gl_other_texels);
+
+    sgi_migrate_stopped(from, uri);
+
+    gl_texture_rows(to, gl_other_texels);
+    gl_texture_publish(to, gl_other_texels);
+    context_deactivate(to, 2);
+    context_restore_physical(to, SAVE_A);
+    gl_texture_publish(to, gl_run_texels);
+    assert_textport_in_step(to);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
 }
 
 /* The same with a migration while B is current and A's run is saved. */
@@ -4183,6 +4427,21 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-context/"
                    "suspended-texture-load-survives",
                    test_suspended_texture_load_survives);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "texture-loads-interleave-across-switches",
+                   test_texture_loads_interleave_across_switches);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "texture-publish-after-other-context-mid-load",
+                   test_texture_publish_after_other_context_mid_load);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "texture-run-restore-keeps-other-contexts-load",
+                   test_texture_run_restore_keeps_other_contexts_load);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "texture-dma-load-switched-out-beside-other-context",
+                   test_texture_dma_load_switched_out_beside_other_context);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "migration-of-live-load-beside-set-aside-load",
+                   test_migration_of_live_load_beside_set_aside_load);
     qtest_add_func("sn0/origin2000/kona-context/migration-of-saved-gl-run",
                    test_migration_of_saved_gl_run);
     qtest_add_func("sn0/origin2000/kona-context/"
