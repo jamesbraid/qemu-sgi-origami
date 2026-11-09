@@ -1,6 +1,28 @@
 {
   "offerings": [
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -30,6 +52,10 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin200",
+      "devices": {
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         2,
         2
@@ -37,6 +63,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Dual-module Origin 200",
       "hardware-inputs": [],
+      "hostid-source": "address",
       "id": "origin200-dual.2-2.r10000-180mhz-1mb",
       "identity-inputs": [],
       "init-inputs": [
@@ -149,6 +176,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -162,6 +190,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -175,6 +204,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.2",
           "targets": [
             1,
@@ -188,6 +218,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.3",
           "targets": [
             1,
@@ -199,6 +230,57 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "bringup",
+          "kind": "bring-up",
+          "name": "bringup",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "elsc_node1",
+          "kind": "system-controller",
+          "name": "elsc-node1",
+          "node": 1,
+          "serial": 8
         }
       ],
       "smp": 4,
@@ -262,6 +344,28 @@
       "topology": "origin200-dual"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -291,6 +395,10 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin200",
+      "devices": {
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         2,
         2
@@ -298,6 +406,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Dual-module Origin 200",
       "hardware-inputs": [],
+      "hostid-source": "address",
       "id": "origin200-dual.2-2.r10000-180mhz-2mb",
       "identity-inputs": [],
       "init-inputs": [
@@ -410,6 +519,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -423,6 +533,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -436,6 +547,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.2",
           "targets": [
             1,
@@ -449,6 +561,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.3",
           "targets": [
             1,
@@ -460,6 +573,57 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "bringup",
+          "kind": "bring-up",
+          "name": "bringup",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "elsc_node1",
+          "kind": "system-controller",
+          "name": "elsc-node1",
+          "node": 1,
+          "serial": 8
         }
       ],
       "smp": 4,
@@ -523,6 +687,28 @@
       "topology": "origin200-dual"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -552,6 +738,10 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin200",
+      "devices": {
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         2,
         2
@@ -559,6 +749,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Dual-module Origin 200",
       "hardware-inputs": [],
+      "hostid-source": "address",
       "id": "origin200-dual.2-2.r10000-225mhz-2mb",
       "identity-inputs": [],
       "init-inputs": [
@@ -675,6 +866,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -688,6 +880,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -701,6 +894,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.2",
           "targets": [
             1,
@@ -714,6 +908,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.3",
           "targets": [
             1,
@@ -725,6 +920,57 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "bringup",
+          "kind": "bring-up",
+          "name": "bringup",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "elsc_node1",
+          "kind": "system-controller",
+          "name": "elsc-node1",
+          "node": 1,
+          "serial": 8
         }
       ],
       "smp": 4,
@@ -788,6 +1034,28 @@
       "topology": "origin200-dual"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -817,6 +1085,10 @@
       ],
       "default-cpu-model": "R12000",
       "default-topology": "origin200",
+      "devices": {
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         2,
         2
@@ -824,6 +1096,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Dual-module Origin 200",
       "hardware-inputs": [],
+      "hostid-source": "address",
       "id": "origin200-dual.2-2.r12000-270mhz-4mb",
       "identity-inputs": [],
       "init-inputs": [
@@ -944,6 +1217,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -957,6 +1231,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -970,6 +1245,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.2",
           "targets": [
             1,
@@ -983,6 +1259,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.3",
           "targets": [
             1,
@@ -994,6 +1271,57 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "bringup",
+          "kind": "bring-up",
+          "name": "bringup",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "elsc_node1",
+          "kind": "system-controller",
+          "name": "elsc-node1",
+          "node": 1,
+          "serial": 8
         }
       ],
       "smp": 4,

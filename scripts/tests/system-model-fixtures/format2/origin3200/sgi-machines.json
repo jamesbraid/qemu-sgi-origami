@@ -1,6 +1,28 @@
 {
   "offerings": [
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "l1-uart",
       "consoles": [
         {
@@ -22,6 +44,10 @@
       ],
       "default-cpu-model": "R12000",
       "default-topology": "origin3200",
+      "devices": {
+        "tablet": true,
+        "usb": true
+      },
       "dimms-per-node": [
         8,
         8
@@ -29,6 +55,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 3200",
       "hardware-inputs": [],
+      "hostid-source": "text",
       "id": "origin3200.4-4.r12000-400mhz-8mb",
       "identity-inputs": [],
       "init-inputs": [
@@ -119,6 +146,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             0,
@@ -251,6 +279,50 @@
           "type": "fc-loop"
         }
       ],
+      "serial-lines": [
+        {
+          "chardev": "l1",
+          "kind": "console",
+          "name": "l1",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_a",
+          "kind": "second-port",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "l1_node1",
+          "kind": "system-controller",
+          "name": "l1-node1",
+          "node": 1,
+          "serial": 5
+        }
+      ],
       "smp": 8,
       "storage": [
         {
@@ -285,6 +357,28 @@
       "topology": "origin3200"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "l1-uart",
       "consoles": [
         {
@@ -306,6 +400,10 @@
       ],
       "default-cpu-model": "R14000",
       "default-topology": "origin3200",
+      "devices": {
+        "tablet": true,
+        "usb": true
+      },
       "dimms-per-node": [
         8,
         8
@@ -313,6 +411,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 3200",
       "hardware-inputs": [],
+      "hostid-source": "text",
       "id": "origin3200.4-4.r14000-500mhz-8mb",
       "identity-inputs": [],
       "init-inputs": [
@@ -399,6 +498,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             0,
@@ -531,6 +631,50 @@
           "type": "fc-loop"
         }
       ],
+      "serial-lines": [
+        {
+          "chardev": "l1",
+          "kind": "console",
+          "name": "l1",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_a",
+          "kind": "second-port",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "l1_node1",
+          "kind": "system-controller",
+          "name": "l1-node1",
+          "node": 1,
+          "serial": 5
+        }
+      ],
       "smp": 8,
       "storage": [
         {
@@ -565,6 +709,28 @@
       "topology": "origin3200"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "l1-uart",
       "consoles": [
         {
@@ -586,6 +752,10 @@
       ],
       "default-cpu-model": "R14000",
       "default-topology": "origin3200",
+      "devices": {
+        "tablet": true,
+        "usb": true
+      },
       "dimms-per-node": [
         8,
         8
@@ -593,6 +763,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 3200",
       "hardware-inputs": [],
+      "hostid-source": "text",
       "id": "origin3200.4-4.r14000-600mhz-8mb",
       "identity-inputs": [],
       "init-inputs": [
@@ -679,6 +850,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             0,
@@ -811,6 +983,50 @@
           "type": "fc-loop"
         }
       ],
+      "serial-lines": [
+        {
+          "chardev": "l1",
+          "kind": "console",
+          "name": "l1",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_a",
+          "kind": "second-port",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "l1_node1",
+          "kind": "system-controller",
+          "name": "l1-node1",
+          "node": 1,
+          "serial": 5
+        }
+      ],
       "smp": 8,
       "storage": [
         {
@@ -845,6 +1061,28 @@
       "topology": "origin3200"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "l1-uart",
       "consoles": [
         {
@@ -866,6 +1104,10 @@
       ],
       "default-cpu-model": "R16000",
       "default-topology": "origin3200",
+      "devices": {
+        "tablet": true,
+        "usb": true
+      },
       "dimms-per-node": [
         8,
         8
@@ -873,6 +1115,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 3200",
       "hardware-inputs": [],
+      "hostid-source": "text",
       "id": "origin3200.4-4.r16000-800mhz-8mb",
       "identity-inputs": [],
       "init-inputs": [
@@ -959,6 +1202,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             0,
@@ -1089,6 +1333,50 @@
             125
           ],
           "type": "fc-loop"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "l1",
+          "kind": "console",
+          "name": "l1",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_a",
+          "kind": "second-port",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "l1_node1",
+          "kind": "system-controller",
+          "name": "l1-node1",
+          "node": 1,
+          "serial": 5
         }
       ],
       "smp": 8,

@@ -1,6 +1,28 @@
 {
   "offerings": [
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -27,6 +49,16 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-rack",
+      "devices": {
+        "audio": {
+          "device": "sgi-rad1-audio",
+          "input": false,
+          "output": true,
+          "requires-product": "io6g"
+        },
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         4,
         4,
@@ -36,6 +68,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "hostid-source": "module",
       "id": "origin2000-rack.2-2-2-2",
       "identity-inputs": [],
       "init-inputs": [
@@ -173,6 +206,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -186,6 +220,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -197,6 +232,64 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "mio_a",
+          "kind": "media-io",
+          "name": "mio-a",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-a"
+        },
+        {
+          "chardev": "mio_b",
+          "kind": "media-io",
+          "name": "mio-b",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-b"
+        },
+        {
+          "chardev": "mio_parallel",
+          "kind": "media-io",
+          "name": "mio-parallel",
+          "node": 0,
+          "property": "parallel"
         }
       ],
       "smp": 8,
@@ -257,6 +350,28 @@
       "topology": "origin2000-rack"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -283,6 +398,16 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-rack",
+      "devices": {
+        "audio": {
+          "device": "sgi-rad1-audio",
+          "input": false,
+          "output": true,
+          "requires-product": "io6g"
+        },
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         4,
         4,
@@ -292,6 +417,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "hostid-source": "module",
       "id": "origin2000-rack.1-1-1-1",
       "identity-inputs": [],
       "init-inputs": [
@@ -429,6 +555,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -442,6 +569,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -453,6 +581,64 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "mio_a",
+          "kind": "media-io",
+          "name": "mio-a",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-a"
+        },
+        {
+          "chardev": "mio_b",
+          "kind": "media-io",
+          "name": "mio-b",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-b"
+        },
+        {
+          "chardev": "mio_parallel",
+          "kind": "media-io",
+          "name": "mio-parallel",
+          "node": 0,
+          "property": "parallel"
         }
       ],
       "smp": 4,
@@ -513,6 +699,28 @@
       "topology": "origin2000-rack"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -539,6 +747,16 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-rack",
+      "devices": {
+        "audio": {
+          "device": "sgi-rad1-audio",
+          "input": false,
+          "output": true,
+          "requires-product": "io6g"
+        },
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         4,
         4,
@@ -548,6 +766,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "hostid-source": "module",
       "id": "origin2000-rack.2-1-1-1",
       "identity-inputs": [],
       "init-inputs": [
@@ -685,6 +904,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -698,6 +918,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -709,6 +930,64 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "mio_a",
+          "kind": "media-io",
+          "name": "mio-a",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-a"
+        },
+        {
+          "chardev": "mio_b",
+          "kind": "media-io",
+          "name": "mio-b",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-b"
+        },
+        {
+          "chardev": "mio_parallel",
+          "kind": "media-io",
+          "name": "mio-parallel",
+          "node": 0,
+          "property": "parallel"
         }
       ],
       "smp": 5,
@@ -769,6 +1048,28 @@
       "topology": "origin2000-rack"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -795,6 +1096,16 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-rack",
+      "devices": {
+        "audio": {
+          "device": "sgi-rad1-audio",
+          "input": false,
+          "output": true,
+          "requires-product": "io6g"
+        },
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         4,
         4,
@@ -804,6 +1115,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "hostid-source": "module",
       "id": "origin2000-rack.2-2-1-1",
       "identity-inputs": [],
       "init-inputs": [
@@ -941,6 +1253,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -954,6 +1267,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -965,6 +1279,64 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "mio_a",
+          "kind": "media-io",
+          "name": "mio-a",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-a"
+        },
+        {
+          "chardev": "mio_b",
+          "kind": "media-io",
+          "name": "mio-b",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-b"
+        },
+        {
+          "chardev": "mio_parallel",
+          "kind": "media-io",
+          "name": "mio-parallel",
+          "node": 0,
+          "property": "parallel"
         }
       ],
       "smp": 6,
@@ -1025,6 +1397,28 @@
       "topology": "origin2000-rack"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1051,6 +1445,16 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-rack",
+      "devices": {
+        "audio": {
+          "device": "sgi-rad1-audio",
+          "input": false,
+          "output": true,
+          "requires-product": "io6g"
+        },
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         4,
         4,
@@ -1060,6 +1464,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "hostid-source": "module",
       "id": "origin2000-rack.2-2-2-1",
       "identity-inputs": [],
       "init-inputs": [
@@ -1197,6 +1602,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -1210,6 +1616,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -1221,6 +1628,64 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "mio_a",
+          "kind": "media-io",
+          "name": "mio-a",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-a"
+        },
+        {
+          "chardev": "mio_b",
+          "kind": "media-io",
+          "name": "mio-b",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-b"
+        },
+        {
+          "chardev": "mio_parallel",
+          "kind": "media-io",
+          "name": "mio-parallel",
+          "node": 0,
+          "property": "parallel"
         }
       ],
       "smp": 7,
@@ -1281,6 +1746,28 @@
       "topology": "origin2000-rack"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1306,6 +1793,16 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-rack",
+      "devices": {
+        "audio": {
+          "device": "sgi-rad1-audio",
+          "input": false,
+          "output": true,
+          "requires-product": "io6g"
+        },
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         4,
         4,
@@ -1314,6 +1811,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "hostid-source": "module",
       "id": "origin2000-rack.2-2-2",
       "identity-inputs": [],
       "init-inputs": [
@@ -1451,6 +1949,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -1464,6 +1963,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -1475,6 +1975,64 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "mio_a",
+          "kind": "media-io",
+          "name": "mio-a",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-a"
+        },
+        {
+          "chardev": "mio_b",
+          "kind": "media-io",
+          "name": "mio-b",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-b"
+        },
+        {
+          "chardev": "mio_parallel",
+          "kind": "media-io",
+          "name": "mio-parallel",
+          "node": 0,
+          "property": "parallel"
         }
       ],
       "smp": 6,
@@ -1529,6 +2087,28 @@
       "topology": "origin2000-rack"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1554,6 +2134,16 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-rack",
+      "devices": {
+        "audio": {
+          "device": "sgi-rad1-audio",
+          "input": false,
+          "output": true,
+          "requires-product": "io6g"
+        },
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         4,
         4,
@@ -1562,6 +2152,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "hostid-source": "module",
       "id": "origin2000-rack.1-1-1",
       "identity-inputs": [],
       "init-inputs": [
@@ -1699,6 +2290,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -1712,6 +2304,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -1723,6 +2316,64 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "mio_a",
+          "kind": "media-io",
+          "name": "mio-a",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-a"
+        },
+        {
+          "chardev": "mio_b",
+          "kind": "media-io",
+          "name": "mio-b",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-b"
+        },
+        {
+          "chardev": "mio_parallel",
+          "kind": "media-io",
+          "name": "mio-parallel",
+          "node": 0,
+          "property": "parallel"
         }
       ],
       "smp": 3,
@@ -1777,6 +2428,28 @@
       "topology": "origin2000-rack"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1802,6 +2475,16 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-rack",
+      "devices": {
+        "audio": {
+          "device": "sgi-rad1-audio",
+          "input": false,
+          "output": true,
+          "requires-product": "io6g"
+        },
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         4,
         4,
@@ -1810,6 +2493,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "hostid-source": "module",
       "id": "origin2000-rack.2-1-1",
       "identity-inputs": [],
       "init-inputs": [
@@ -1947,6 +2631,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -1960,6 +2645,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -1971,6 +2657,64 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "mio_a",
+          "kind": "media-io",
+          "name": "mio-a",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-a"
+        },
+        {
+          "chardev": "mio_b",
+          "kind": "media-io",
+          "name": "mio-b",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-b"
+        },
+        {
+          "chardev": "mio_parallel",
+          "kind": "media-io",
+          "name": "mio-parallel",
+          "node": 0,
+          "property": "parallel"
         }
       ],
       "smp": 4,
@@ -2025,6 +2769,28 @@
       "topology": "origin2000-rack"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2050,6 +2816,16 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-rack",
+      "devices": {
+        "audio": {
+          "device": "sgi-rad1-audio",
+          "input": false,
+          "output": true,
+          "requires-product": "io6g"
+        },
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         4,
         4,
@@ -2058,6 +2834,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "hostid-source": "module",
       "id": "origin2000-rack.2-2-1",
       "identity-inputs": [],
       "init-inputs": [
@@ -2195,6 +2972,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -2208,6 +2986,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -2219,6 +2998,64 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "mio_a",
+          "kind": "media-io",
+          "name": "mio-a",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-a"
+        },
+        {
+          "chardev": "mio_b",
+          "kind": "media-io",
+          "name": "mio-b",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-b"
+        },
+        {
+          "chardev": "mio_parallel",
+          "kind": "media-io",
+          "name": "mio-parallel",
+          "node": 0,
+          "property": "parallel"
         }
       ],
       "smp": 5,
@@ -2273,6 +3110,28 @@
       "topology": "origin2000-rack"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2297,6 +3156,16 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-rack",
+      "devices": {
+        "audio": {
+          "device": "sgi-rad1-audio",
+          "input": false,
+          "output": true,
+          "requires-product": "io6g"
+        },
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         4,
         4
@@ -2304,6 +3173,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "hostid-source": "module",
       "id": "origin2000-rack.2-2",
       "identity-inputs": [],
       "init-inputs": [
@@ -2441,6 +3311,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -2454,6 +3325,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -2465,6 +3337,64 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "mio_a",
+          "kind": "media-io",
+          "name": "mio-a",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-a"
+        },
+        {
+          "chardev": "mio_b",
+          "kind": "media-io",
+          "name": "mio-b",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-b"
+        },
+        {
+          "chardev": "mio_parallel",
+          "kind": "media-io",
+          "name": "mio-parallel",
+          "node": 0,
+          "property": "parallel"
         }
       ],
       "smp": 4,
@@ -2513,6 +3443,28 @@
       "topology": "origin2000-rack"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2537,6 +3489,16 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-rack",
+      "devices": {
+        "audio": {
+          "device": "sgi-rad1-audio",
+          "input": false,
+          "output": true,
+          "requires-product": "io6g"
+        },
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         4,
         4
@@ -2544,6 +3506,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "hostid-source": "module",
       "id": "origin2000-rack.1-1",
       "identity-inputs": [],
       "init-inputs": [
@@ -2681,6 +3644,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -2694,6 +3658,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -2705,6 +3670,64 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "mio_a",
+          "kind": "media-io",
+          "name": "mio-a",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-a"
+        },
+        {
+          "chardev": "mio_b",
+          "kind": "media-io",
+          "name": "mio-b",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-b"
+        },
+        {
+          "chardev": "mio_parallel",
+          "kind": "media-io",
+          "name": "mio-parallel",
+          "node": 0,
+          "property": "parallel"
         }
       ],
       "smp": 2,
@@ -2753,6 +3776,28 @@
       "topology": "origin2000-rack"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -2777,6 +3822,16 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-rack",
+      "devices": {
+        "audio": {
+          "device": "sgi-rad1-audio",
+          "input": false,
+          "output": true,
+          "requires-product": "io6g"
+        },
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         4,
         4
@@ -2784,6 +3839,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "hostid-source": "module",
       "id": "origin2000-rack.2-1",
       "identity-inputs": [],
       "init-inputs": [
@@ -2921,6 +3977,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -2934,6 +3991,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -2945,6 +4003,64 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "mio_a",
+          "kind": "media-io",
+          "name": "mio-a",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-a"
+        },
+        {
+          "chardev": "mio_b",
+          "kind": "media-io",
+          "name": "mio-b",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-b"
+        },
+        {
+          "chardev": "mio_parallel",
+          "kind": "media-io",
+          "name": "mio-parallel",
+          "node": 0,
+          "property": "parallel"
         }
       ],
       "smp": 3,
@@ -2993,6 +4109,28 @@
       "topology": "origin2000-rack"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -3016,12 +4154,23 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-rack",
+      "devices": {
+        "audio": {
+          "device": "sgi-rad1-audio",
+          "input": false,
+          "output": true,
+          "requires-product": "io6g"
+        },
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         4
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "hostid-source": "module",
       "id": "origin2000-rack.2",
       "identity-inputs": [],
       "init-inputs": [
@@ -3159,6 +4308,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -3172,6 +4322,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -3183,6 +4334,64 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "mio_a",
+          "kind": "media-io",
+          "name": "mio-a",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-a"
+        },
+        {
+          "chardev": "mio_b",
+          "kind": "media-io",
+          "name": "mio-b",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-b"
+        },
+        {
+          "chardev": "mio_parallel",
+          "kind": "media-io",
+          "name": "mio-parallel",
+          "node": 0,
+          "property": "parallel"
         }
       ],
       "smp": 2,
@@ -3225,6 +4434,28 @@
       "topology": "origin2000-rack"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -3248,12 +4479,23 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-rack",
+      "devices": {
+        "audio": {
+          "device": "sgi-rad1-audio",
+          "input": false,
+          "output": true,
+          "requires-product": "io6g"
+        },
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         4
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 rack module",
       "hardware-inputs": [],
+      "hostid-source": "module",
       "id": "origin2000-rack.1",
       "identity-inputs": [],
       "init-inputs": [
@@ -3391,6 +4633,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -3404,6 +4647,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -3415,6 +4659,64 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
+        },
+        {
+          "chardev": "mio_a",
+          "kind": "media-io",
+          "name": "mio-a",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-a"
+        },
+        {
+          "chardev": "mio_b",
+          "kind": "media-io",
+          "name": "mio-b",
+          "node": 0,
+          "property": "sgi-xio-baseio.mio-chardev-b"
+        },
+        {
+          "chardev": "mio_parallel",
+          "kind": "media-io",
+          "name": "mio-parallel",
+          "node": 0,
+          "property": "parallel"
         }
       ],
       "smp": 1,

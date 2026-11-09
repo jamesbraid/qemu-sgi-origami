@@ -1,6 +1,28 @@
 {
   "offerings": [
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "l1-uart",
       "consoles": [
         {
@@ -15,12 +37,17 @@
       ],
       "default-cpu-model": "R14000",
       "default-topology": "origin300",
+      "devices": {
+        "tablet": true,
+        "usb": true
+      },
       "dimms-per-node": [
         2
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
       "hardware-inputs": [],
+      "hostid-source": "text",
       "id": "origin300.2",
       "identity-inputs": [
         "chassis-eeprom",
@@ -140,6 +167,7 @@
       ],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -159,6 +187,43 @@
             15
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "l1",
+          "kind": "console",
+          "name": "l1",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_a",
+          "kind": "second-port",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 4
         }
       ],
       "smdk": {
@@ -200,6 +265,28 @@
       "topology": "origin300"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "l1-uart",
       "consoles": [
         {
@@ -214,12 +301,17 @@
       ],
       "default-cpu-model": "R14000",
       "default-topology": "origin300",
+      "devices": {
+        "tablet": true,
+        "usb": true
+      },
       "dimms-per-node": [
         2
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
       "hardware-inputs": [],
+      "hostid-source": "text",
       "id": "origin300.4",
       "identity-inputs": [
         "chassis-eeprom",
@@ -339,6 +431,7 @@
       ],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -358,6 +451,43 @@
             15
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "l1",
+          "kind": "console",
+          "name": "l1",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_a",
+          "kind": "second-port",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 4
         }
       ],
       "smdk": {

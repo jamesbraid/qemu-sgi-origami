@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "141e345401cc7c7e707292c8ddcf31a8accb8dc314e9af67ccfa16ceb8dbd24e"
+    "3ab1be24f46fd6a49191220e0e66668c9952f0298183c294b334987dfbbe3c74"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -677,11 +677,33 @@ class StorageTests(unittest.TestCase):
             if not listed:
                 continue
             expected = [{"type": "scsi", "bus": f"scsi.{index}",
-                         "targets": targets[kind]}
+                         "targets": targets[kind], "boot-target": 1}
                         for index, kind in enumerate(
                             kind for kind in listed if kind in targets)]
             with self.subTest(options=offering["machine-options"]):
                 self.assertEqual(offering["scsi-adapters"], expected)
+
+    def test_offerings_carry_the_facts_launchers_kept_in_tables(self):
+        """Every offering names what its host id derives from, how its
+        clock may be set, the devices it takes and the serial lines a
+        launch backs, with no two lines at one -serial position. The O2
+        counts instructions at shift 3 only."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        for row in catalogue["offerings"]:
+            with self.subTest(offering=row["id"]):
+                self.assertEqual(row["hostid-source"] == "o2",
+                                 row["product"] == "o2")
+                self.assertIn(row["hostid-source"],
+                              {"text", "module", "address", "o2"})
+                self.assertIn("usb", row["devices"])
+                positions = [line["serial"] for line in row["serial-lines"]
+                             if "serial" in line]
+                self.assertTrue(positions)
+                self.assertEqual(len(positions), len(set(positions)))
+                if row["product"] == "o2":
+                    self.assertEqual(row["clock"]["icount-shifts"], [3])
+                    self.assertEqual(row["clock"]["default-icount-shift"], 3)
 
     def test_ip53_offerings_list_the_io9_isp12160(self):
         for offering in self.catalogue["offerings"]:
@@ -691,7 +713,7 @@ class StorageTests(unittest.TestCase):
             with self.subTest(options=offering["machine-options"]):
                 self.assertEqual(offering["scsi-adapters"], [
                     {"type": "scsi", "bus": "scsi.0",
-                     "targets": list(range(1, 16))}])
+                     "targets": list(range(1, 16)), "boot-target": 1}])
 
     def test_networks_follow_the_listed_pci_functions(self):
         """Every onboard Ethernet a topology's I/O boards list is one

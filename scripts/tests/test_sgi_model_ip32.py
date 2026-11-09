@@ -45,6 +45,8 @@ class IP32CatalogueTests(unittest.TestCase):
         self.assertEqual([a["bus"] for a in offering["scsi-adapters"]],
                          ["aic0.0", "aic1.0"])
         self.assertEqual(offering["scsi-adapters"][1]["targets"], [])
+        self.assertEqual(offering["scsi-adapters"][0]["boot-target"], 1)
+        self.assertEqual(offering["hostid-source"], "o2")
         self.assertEqual(offering["disk-bus"], "aic0.0")
         self.assertEqual(offering["overrides"],
                          [{"property": "emu-id", "target": "machine"}])
