@@ -770,6 +770,11 @@ static void test_native_growth(void)
     sgi_kona_texture_cleanup(&s);
 }
 
+/*
+ * The pipe keeps no storage code per level. A load of the same entry, bank
+ * and address overwrites the level whatever storage it names, and a
+ * binding reads whatever words are there in its own format.
+ */
 static void test_native_format(void)
 {
     SGIKonaTextureState src, dst;
@@ -779,6 +784,7 @@ static void test_native_format(void)
         [0] = SGI_GL_TEXTURE_2D, [1] = 1, [2] = 1, [10] = 7,
         [9] = 0x30, [17] = 0x2181, [18] = 17,
     };
+    const uint32_t whole[4] = { 1, 2, 3, 4 };
     GByteArray *a;
 
     sgi_kona_texture_init(&src);
@@ -794,19 +800,31 @@ static void test_native_format(void)
     h[9] = 0xe;
     g_assert_true(sgi_kona_texture_native_upload(&src, h, green,
                                                 SGI_GL_ALPHA, SGI_GL_ALPHA));
+    g_assert_cmpuint(sgi_kona_texture_lookup(&src, 0, 7)->native_count, ==, 1);
     g_assert_true(sgi_kona_texture_native_table(&src, 7, table));
     g_assert_true(sgi_kona_texture_bind(&src, 7, &p));
-    g_assert_cmpuint(sgi_kona_texture_resolve(&src)->pyramid->count, ==, 0);
+    assert_image(&src, green, 1, 1);
+    /* A binding's storage code does not choose a level. */
     g_assert_true(sgi_kona_texture_native_format(&src, 7, 0x30));
-    assert_image(&src, red, 1, 1);
+    assert_image(&src, green, 1, 1);
     g_assert_false(sgi_kona_texture_native_format(&src, 7, 0x80));
-    assert_image(&src, red, 1, 1);
+    assert_image(&src, green, 1, 1);
     a = save(&src);
     g_assert_true(load(a, &dst));
-    assert_image(&dst, red, 1, 1);
-    g_byte_array_unref(a);
-    g_assert_true(sgi_kona_texture_native_format(&dst, 7, 0xe));
     assert_image(&dst, green, 1, 1);
+    g_byte_array_unref(a);
+    /* A part of a level in another format cannot merge with the rest. */
+    h[10] = 8;
+    h[9] = 0x30;
+    h[1] = h[2] = 2;
+    h[13] = h[14] = 1;
+    h[18] = 19;
+    g_assert_true(sgi_kona_texture_native_upload(&src, h, whole, SGI_GL_RGBA,
+                                                 SGI_GL_RGBA));
+    h[9] = 0xe;
+    h[1] = h[2] = h[11] = h[12] = 1;
+    g_assert_false(sgi_kona_texture_native_upload(&src, h, green,
+                                                  SGI_GL_ALPHA, SGI_GL_ALPHA));
     sgi_kona_texture_cleanup(&src);
     sgi_kona_texture_cleanup(&dst);
 }
@@ -829,6 +847,50 @@ static void test_native_pack16(void)
     g_assert_cmphex(sgi_kona_texture_unpack16(0x14, 0xfffe), ==, 0xffffff00);
     g_assert_cmphex(sgi_kona_texture_pack16(0x10, 0x112233ff), ==, 0x123f);
     g_assert_cmphex(sgi_kona_texture_unpack16(0x10, 0x123f), ==, 0x112233ff);
+}
+
+/*
+ * A level that holds 16-bit luminance words (red high byte, green low) is
+ * read by a binding in that binding's format: as colour, when it names a
+ * 16-bit colour storage, otherwise as it is. The bound level, loaded
+ * under storage 0xd and bound as 0x14, gives the colour the words spell.
+ */
+static void test_native_luminance_words(void)
+{
+    SGIKonaTextureState s;
+    SGIKonaTextureParams p;
+    uint32_t table[16];
+    uint32_t h[20] = {
+        [0] = SGI_GL_TEXTURE_2D, [1] = 1, [2] = 1, [10] = 9,
+        [8] = SGI_KONA_TEXTURE_WORDS16, [9] = 0xd, [17] = 0x2204, [18] = 17,
+    };
+    /* The word 0x1121, as the loader holds a luminance word. */
+    const uint32_t words[] = { 0x112100ff };
+    const uint32_t colour[] = { 0x102184ff };
+
+    sgi_kona_texture_init(&s);
+    sgi_kona_texture_defaults(&p);
+    p.min_filter = p.mag_filter = SGI_GL_NEAREST;
+    for (unsigned k = 0; k < ARRAY_SIZE(table); k++) {
+        table[k] = UINT32_MAX;
+    }
+    table[0] = 17;
+    g_assert_true(sgi_kona_texture_native_upload(&s, h, words,
+                                                SGI_GL_LUMINANCE,
+                                                SGI_GL_LUMINANCE));
+    g_assert_true(sgi_kona_texture_native_table(&s, 9, table));
+    g_assert_true(sgi_kona_texture_bind(&s, 9, &p));
+    assert_image(&s, words, 1, 1);
+    g_assert_true(sgi_kona_texture_native_format(&s, 9, 0xd));
+    assert_image(&s, words, 1, 1);
+    g_assert_true(sgi_kona_texture_native_format(&s, 9, 0x14));
+    assert_image(&s, colour, 1, 1);
+    /* The same words in the 4-bit format are another colour. */
+    g_assert_true(sgi_kona_texture_native_format(&s, 9, 0x10));
+    assert_image(&s, (const uint32_t[]) { 0x11112211 }, 1, 1);
+    g_assert_true(sgi_kona_texture_native_format(&s, 9, 0x30));
+    assert_image(&s, words, 1, 1);
+    sgi_kona_texture_cleanup(&s);
 }
 
 static void test_native_migration(void)
@@ -3022,6 +3084,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi/kona/texture/native-volume/sampling",
                     test_native_volume_sampling);
     g_test_add_func("/sgi/kona/texture/native-pack16", test_native_pack16);
+    g_test_add_func("/sgi/kona/texture/native-luminance-words",
+                    test_native_luminance_words);
     g_test_add_func("/sgi/kona/texture/native-migration",
                     test_native_migration);
     g_test_add_func("/sgi/kona/texture/native-sampling", test_native_sampling);
