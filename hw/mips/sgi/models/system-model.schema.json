@@ -304,6 +304,8 @@
               "cache_mib": { "type": "integer", "minimum": 1 },
               "processors_per_node": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1 } },
               "processor_identification": { "$ref": "#/$defs/address", "description": "The PRId of the board's part, for a board whose part differs from another's at the same clock and cache." },
+              "board_id_word": { "type": "integer", "minimum": 0, "description": "The Bedrock board identity response a node reports with this module, for a C-brick whose PIMM sets it." },
+              "cpu_mode_word": { "$ref": "#/$defs/address", "description": "The flash configuration word the PROM table holds for this module's clock, whose low 25 bits are its reset word." },
               "node_board": {
                 "type": "object",
                 "required": ["processors", "name", "part", "revision"],

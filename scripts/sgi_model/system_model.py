@@ -244,8 +244,10 @@ PROCESSOR_OPTION_REQUIRED = {"part", "clock_mhz", "cache_mib",
                              "processors_per_node"}
 # What an offered module adds when its board, not its clock and cache
 # alone, fixes it: the processor revision and the node board it is soldered
-# to (the IP53 boards).
-PROCESSOR_OPTION_IDENTITY = {"processor_identification", "node_board"}
+# to (the IP53 boards), and the Bedrock board identity and flash word a
+# C-brick's PIMM brings (the IP35 boards).
+PROCESSOR_OPTION_IDENTITY = {"processor_identification", "node_board",
+                             "board_id_word", "cpu_mode_word"}
 CPU_VARIANT_FIELDS = {"clock_mhz", "cache_mib"}
 
 

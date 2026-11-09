@@ -309,8 +309,9 @@ Model limits:
 C-brick with 600 MHz R14000 processors
 --------------------------------------
 
-``-M origin3000,topology=origin3200-r14000-600mhz``,
-``origin3400-r14000-600mhz`` and ``onyx3000-r14000-600mhz`` are the Origin
+``-M origin3000,topology=origin3200,processor=r14000-600mhz-8mb``,
+``topology=origin3400,processor=r14000-600mhz-8mb`` and
+``topology=onyx3000,processor=r14000-600mhz-8mb`` are the Origin
 3200, Origin 3400 and Onyx 3000 entries with every C-brick fitted with
 four 600 MHz R14000s and 8 MB secondary caches (``-cpu R14000``, processor
 ``r14000-600mhz-8mb``). Everything else, the bricks, the cabling, the
@@ -378,8 +379,9 @@ C-brick status are all *unknown*.
 C-brick with 500 MHz R14000 processors
 --------------------------------------
 
-``-M origin3000,topology=origin3200-r14000-500mhz``,
-``origin3400-r14000-500mhz`` and ``onyx3000-r14000-500mhz`` are the Origin
+``-M origin3000,topology=origin3200,processor=r14000-500mhz-8mb``,
+``topology=origin3400,processor=r14000-500mhz-8mb`` and
+``topology=onyx3000,processor=r14000-500mhz-8mb`` are the Origin
 3200, Origin 3400 and Onyx 3000 entries with every C-brick fitted with
 four 500 MHz R14000s and 8 MB secondary caches (``-cpu R14000``, processor
 ``r14000-500mhz-8mb``). Everything else is the R12000 entry's. The Onyx 3400
@@ -480,26 +482,26 @@ fetches a record and takes the ID from the controller alone.
 C-brick with 800 MHz R16000 processors
 --------------------------------------
 
-``-M origin3000,topology=origin3200-r16000``, ``origin3400-r16000`` and
-``onyx3000-r16000`` are the Origin 3200, Origin 3400 and Onyx 3000
-entries with every C-brick fitted with four 800 MHz R16000s and 8 MB
-secondary caches (``-cpu R16000``, processor ``r16000-800mhz-8mb``).
+``-M origin3000,topology=origin3200,processor=r16000-800mhz-8mb``,
+``topology=origin3400,processor=r16000-800mhz-8mb`` and
+``topology=onyx3000,processor=r16000-800mhz-8mb`` are the Origin 3200,
+Origin 3400 and Onyx 3000 entries with every C-brick fitted with four
+800 MHz R16000s and 8 MB secondary caches (``-cpu R16000``, processor ``r16000-800mhz-8mb``).
 Everything else, the bricks, the cabling, the memory and the I/O, is the
 R12000 entry's.
 
-This is an approximation. Third parties report such a PIMM, and one
-(sgistuff) dates its announcement to October 2003; no SGI document found
-names an R16000 C-brick (SGI's own Origin 3000 data sheet and bricks page of
-that time list an R16000 only for the Cx-brick), and no capture of one
-exists. The report may be a
-confusion with the Cx-brick, whose node boards SGI does document with an
-R16000; the page that lists the C-brick row also lists a 1 GHz IP35 row
-that nothing supports. The values below are model
-choices, each marked with what it rests on, and the entries do not claim
-to be what a shipped C-brick presents.
+The 800 MHz R16000 is a real SGI part: an irixnet forum sale of an
+"SGI Fuel 800Mhz R16K" and sgidepot's Fuel page, which lists Fuel
+processors from R14K/500 (2 MB L2) to R16K/900 MHz (8 MB L2) at 600, 700
+and 800 MHz, both establish it. Both are Fuel sources, so they show the
+part, not a C-brick fitted with it, and no capture of an Origin 3000
+C-brick with one exists; SGI's own Origin 3000 data sheet of that time
+lists an R16000 only for the Cx-brick. These offerings are therefore an
+*approximation*: the values below are model choices, each marked with
+what it rests on, and the option does not claim to be what a shipped
+C-brick presents.
 
-* The clock and cache are the third-party report's (reported, not
-  established). The cache is 8 MB, which every C-brick PIMM held in
+* The clock is the part's (established for the Fuel). The cache is 8 MB, which every C-brick PIMM held in
   captures carries, rather than the 4 MB of some 800 MHz boards (inferred).
 * The reset-mode word is ``0x009caf85``, the 800 MHz, 8 MB word the
   IP53 Onyx 350 entry carries, so the processor is the same

@@ -32,6 +32,13 @@ static const char * const sgi_sn1_r16000_cpu_types[] = {
     NULL,
 };
 
+/* The Origin 3000's processor= alone picks its C-brick's part. */
+static const char *origin3000_get_default_cpu_type(const MachineState *ms)
+{
+    return sgi_machine_processor_cpu_type(ms, "origin3000",
+                                          MIPS_CPU_TYPE_NAME("R12000"));
+}
+
 /*
  * The Bedrock products differ only in catalogue data, so one class init
  * serves each, described by the topology the catalogue names as its
@@ -59,6 +66,7 @@ static void sn1_machine_class_init(ObjectClass *oc, const void *data)
                           sgi_sn1_r14000_cpu_types;
     if (g_str_equal(product, "origin3000")) {
         mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R12000");
+        mc->get_default_cpu_type = origin3000_get_default_cpu_type;
     }
     mc->default_cpus = sgi_machine_topology_default_cpus(t);
     mc->min_cpus = sgi_machine_product_min_cpus(product);

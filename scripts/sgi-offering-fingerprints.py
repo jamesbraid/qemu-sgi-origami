@@ -182,8 +182,29 @@ def topology_named(catalogue, offering):
     return records[0]
 
 
+def fit_clock_option(topology, offering):
+    """@topology as an Origin 3000 clock option fits it: the option's
+    processor in every fitted slot, its board identity in each Bedrock and
+    its flash word, as the machine applies them. Any other topology comes
+    back as it is."""
+    for option in topology.get("processor-options", []):
+        if (option["assembly"]["id"] != offering["processor"]["id"]
+                or "board-id-word" not in option):
+            continue
+        fitted = copy.deepcopy(topology)
+        for node in fitted["nodes"]:
+            node["bedrock"]["board-id-word"] = option["board-id-word"]
+            for slot in node["cpu-slots"]:
+                if slot.get("assembly"):
+                    slot["assembly"] = option["assembly"]
+        fitted["ip35-firmware"]["cpu-mode-word"] = option["firmware-word"]
+        return fitted
+    return topology
+
+
 def record_hash(catalogue, offering, topology=None):
     topology = topology or topology_named(catalogue, offering)
+    topology = fit_clock_option(topology, offering)
     part = {k: offering[k] for k in OFFERING_FIELDS if k in offering}
     top = {k: v for k, v in topology.items() if k not in TOPOLOGY_IGNORED}
     # The one product renamed (onyx4-host to onyx4) appears in its records.

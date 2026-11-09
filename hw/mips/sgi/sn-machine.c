@@ -12247,6 +12247,32 @@ static const char *origin200_get_default_cpu_type(const MachineState *ms)
     return sgi_origin200_cpu_types[0];
 }
 
+const char *sgi_machine_processor_cpu_type(const MachineState *ms,
+                                           const char *product,
+                                           const char *fallback)
+{
+    SGIMachineState *s = SGI_MACHINE(ms);
+    const SGIModelTopology *t;
+    const SGIModelProcessorOptionList *entry;
+
+    if (!s->processor_name) {
+        return fallback;
+    }
+    t = sgi_model_product_topology(sgi_machines(), product,
+                                   s->topology_name ? s->topology_name :
+                                   SGI_MACHINE_GET_CLASS(s)->default_topology);
+    for (entry = t ? t->processor_options : NULL; entry;
+         entry = entry->next) {
+        if (g_str_equal(entry->value->assembly->id, s->processor_name)) {
+            g_autofree char *name = g_strdup_printf(
+                MIPS_CPU_TYPE_NAME("%s"), entry->value->assembly->kind);
+
+            return g_intern_string(name);
+        }
+    }
+    return fallback;
+}
+
 static void origin200_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);

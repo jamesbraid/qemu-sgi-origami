@@ -35,8 +35,7 @@ machine pages cite. Facts are rated as described in :ref:`sgi-ratings`.
      - :ref:`sgi-mgras`
    * - VPro (V6, V8, V10, V12), called Odyssey
      - ``sgi-odyssey``
-     - ``octane2``, ``fuel``, ``onyx350``, ``tezro``, ``onyx3000``,
-       ``onyx3000-r16000``; ``octane`` only on request
+     - ``octane2``, ``fuel``, ``onyx350``, ``tezro``, ``onyx3000``; ``octane`` only on request
      - :ref:`sgi-odyssey`
    * - InfiniteReality pipe, called KONA
      - ``sgi-kona``

@@ -27,6 +27,9 @@ layer:
     supported_cpu_populations: [[4, 4]]
     supported_processors:
       - {part: r12000, clock_mhz: 400, cache_mib: 8}
+      - {part: r14000, clock_mhz: 500, cache_mib: 8}
+      - {part: r14000, clock_mhz: 600, cache_mib: 8}
+      - {part: r16000, clock_mhz: 800, cache_mib: 8}
     supported_bank_mib_per_node:
       - [512, 512, 512, 512, 512, 512, 512, 512]
     provenance: vendor-document
@@ -42,6 +45,21 @@ layer:
   cpu_selection:
     default: {clock_mhz: 400, cache_mib: 8}
     slots: [cpu0, cpu1, cpu2, cpu3]
+    # Each C-brick PIMM brings its Bedrock board identity and the flash word
+    # the PROM table row for its clock holds; the 400 MHz R12000 is the
+    # fitted default. The 500 and 600 MHz R14000 PIMMs are SGI-documented
+    # (the C-brick owner's guide lists them with 8 MB per processor). The
+    # 800 MHz R16000 is a real part, but no source shows it in a C-brick, so
+    # that option approximates the machine; its cache tap 0xb and board
+    # identity 5 are the model's own choices.
+    offered:
+      - {part: r12000, clock_mhz: 400, cache_mib: 8, processors_per_node: [4]}
+      - {part: r14000, clock_mhz: 500, cache_mib: 8, processors_per_node: [4],
+         board_id_word: 1, cpu_mode_word: "0x549ca985"}
+      - {part: r14000, clock_mhz: 600, cache_mib: 8, processors_per_node: [4],
+         board_id_word: 3, cpu_mode_word: "0x549cab85"}
+      - {part: r16000, clock_mhz: 800, cache_mib: 8, processors_per_node: [4],
+         board_id_word: 5, cpu_mode_word: "0x569caf85"}
   memory_kits_per_node: [kit-4096-eight-512-banks, kit-4096-eight-512-banks]
   # The one pipe slot is the V-brick's V12 record, which the pipe fitted
   # by -device sgi-odyssey,slot=vbrick-v12 claims; the V-brick exists to

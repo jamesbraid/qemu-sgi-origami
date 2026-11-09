@@ -1366,6 +1366,21 @@
           "cache_mib": 8,
           "clock_mhz": 400,
           "part": "r12000"
+        },
+        {
+          "cache_mib": 8,
+          "clock_mhz": 500,
+          "part": "r14000"
+        },
+        {
+          "cache_mib": 8,
+          "clock_mhz": 600,
+          "part": "r14000"
+        },
+        {
+          "cache_mib": 8,
+          "clock_mhz": 800,
+          "part": "r16000"
         }
       ]
     }
@@ -2035,7 +2050,47 @@
     "kernel_ip": "IP27",
     "model_role": "emulation-target",
     "name": "Onyx 3000",
-    "notes": "An Onyx 3000 with one InfinitePerformance (VPro V12) pipe: two C-bricks joined LINK (NI) to LINK (NI) with no R-brick, the I-brick on the first C-brick's XIO (II) connector at its XBridge port A, and a V-brick on the second C-brick's XIO (II) connector at its midplane XBridge's port A, with one V12 board on Crosstalk port 8. The port A choices follow the documented host ports; which port a boot I-brick uses and which V-brick connector is port A are unknown. Port 8 is this composition's choice among the four Crosstalk ports; which port a V12 slot uses, and so the V12's widget number, is unknown. The V-brick carries no L1, as its address and identity are unknown. The C-bricks take the Origin 3200 C-brick's whole fit, four 400 MHz R12000s with 8 MB caches and 4096 MB: the C-brick layer holds four processors, and no Onyx 3000 source fixes the fit, so it is a model choice and an approximation. Two C-bricks are the fewest a one-pipe system holds, one for the pipe and one for the I-brick, and the most this unrouted composition joins; a routed Onyx 3000 is not described. The four-processor fit is not an asserted Onyx 3000 fit."
+    "notes": "An Onyx 3000 with one InfinitePerformance (VPro V12) pipe: two C-bricks joined LINK (NI) to LINK (NI) with no R-brick, the I-brick on the first C-brick's XIO (II) connector at its XBridge port A, and a V-brick on the second C-brick's XIO (II) connector at its midplane XBridge's port A, with one V12 board on Crosstalk port 8. The port A choices follow the documented host ports; which port a boot I-brick uses and which V-brick connector is port A are unknown. Port 8 is this composition's choice among the four Crosstalk ports; which port a V12 slot uses, and so the V12's widget number, is unknown. The V-brick carries no L1, as its address and identity are unknown. The C-bricks take the Origin 3200 C-brick's whole fit, four 400 MHz R12000s with 8 MB caches and 4096 MB: the C-brick layer holds four processors, and no Onyx 3000 source fixes the fit, so it is a model choice and an approximation. Two C-bricks are the fewest a one-pipe system holds, one for the pipe and one for the I-brick, and the most this unrouted composition joins; a routed Onyx 3000 is not described. The four-processor fit is not an asserted Onyx 3000 fit.",
+    "processor_options": [
+      {
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "part": "r12000",
+        "processors_per_node": [
+          4
+        ]
+      },
+      {
+        "board_id_word": 1,
+        "cache_mib": 8,
+        "clock_mhz": 500,
+        "cpu_mode_word": "0x549ca985",
+        "part": "r14000",
+        "processors_per_node": [
+          4
+        ]
+      },
+      {
+        "board_id_word": 3,
+        "cache_mib": 8,
+        "clock_mhz": 600,
+        "cpu_mode_word": "0x549cab85",
+        "part": "r14000",
+        "processors_per_node": [
+          4
+        ]
+      },
+      {
+        "board_id_word": 5,
+        "cache_mib": 8,
+        "clock_mhz": 800,
+        "cpu_mode_word": "0x569caf85",
+        "part": "r16000",
+        "processors_per_node": [
+          4
+        ]
+      }
+    ]
   },
   "model_version": 1,
   "open_questions": [],

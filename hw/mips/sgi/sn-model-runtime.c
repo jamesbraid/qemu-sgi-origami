@@ -1169,12 +1169,19 @@ const SGIModelProcessorOption *sgi_model_find_processor_option(
  * one gets the option's assembly, so the board's slots stay as wired.
  */
 static SGIModelNode *sgi_model_fit_node(const SGIModelNode *node,
-                                        SGIModelProcessor *fitted)
+                                        const SGIModelProcessorOption *option)
 {
+    SGIModelProcessor *fitted = option->assembly;
     SGIModelNode *copy = g_memdup2(node, sizeof(*node));
     SGIModelCpuSlotList **tail;
     const SGIModelCpuSlotList *entry;
 
+    /* A C-brick's PIMM sets the board identity its Bedrock reports. */
+    if (option->has_board_id_word && node->bedrock) {
+        copy->bedrock = g_memdup2(node->bedrock, sizeof(*node->bedrock));
+        copy->bedrock->has_board_id_word = true;
+        copy->bedrock->board_id_word = option->board_id_word;
+    }
     copy->cpu_slots = NULL;
     tail = &copy->cpu_slots;
     for (entry = node->cpu_slots; entry; entry = entry->next) {
@@ -1207,7 +1214,7 @@ const SGIModelTopology *sgi_model_fit_processor_option(
             replaced |= slot->value->assembly != NULL;
         }
         QAPI_LIST_APPEND(node_tail, replaced ?
-                         sgi_model_fit_node(node->value, assembly) :
+                         sgi_model_fit_node(node->value, option) :
                          node->value);
     }
 

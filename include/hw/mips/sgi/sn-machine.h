@@ -95,6 +95,15 @@ uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t);
 void sgi_machine_class_set_default_ram(MachineClass *mc, uint64_t bytes);
 
 /*
+ * The CPU type of the processor option @ms's processor= names in @product's
+ * selected topology, or @fallback when none is named or offered: the part a
+ * machine fits by default, so that processor= alone selects its module.
+ */
+const char *sgi_machine_processor_cpu_type(const MachineState *ms,
+                                           const char *product,
+                                           const char *fallback);
+
+/*
  * Copies the machine's chassis-eeprom/board-eeprom/spd-eeprom identity-record
  * file lists onto an L1 device before it is realized. Takes the L1 explicitly
  * because it lives on the node (sgi-sn1-node), while the file lists it reads
