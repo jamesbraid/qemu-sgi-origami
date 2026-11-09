@@ -9681,9 +9681,10 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
  * the texture is used again. Its words, from the reader's descriptor in the GL
  * client library: 0 the target, 1 and 2 the width and height, 3 and 4 the
  * format and type the copy is written in, 5 the copy's storage code, 7 to 12
- * the region's first and last texel, 14 the geometry word and 16 and 17 the two
- * bank addresses a texel load names the texture's destination by (load header
- * words 16, 18 and 19). Established from the library and a guest trace: a
+ * the region's first and last texel, 14 the size exponents (load header word
+ * 16) and 16 and 17 the two bank addresses a texel load names the texture's
+ * destination by (load header words 18 and 19). Established from the library
+ * and a guest trace: a
  * 1024x1024 texture stored as 0x30 was read back as format 7, type 3, copy
  * storage 0x28, and loaded back with those same three codes. Outside a bracket
  * the library waits on the return page.
@@ -9745,6 +9746,180 @@ static void sgi_kona_gl_read_texels_zero(SGIKonaState *s)
     d->data = g_malloc0(d->count);
 }
 
+/*
+ * The reply to a texel readback sent outside a select-feed bracket: the
+ * return-data page, the data at +8 and then a non-zero word 0, the only
+ * word the client polls (it has no timeout). A reader whose bytes fit
+ * SGI_KONA_SMALL_RETURN_BYTES is sent bare; larger ones are bracketed and
+ * complete by output DMA. Established from a guest trace of Quake GL: after
+ * a 64x64 level was loaded (format 5, type 1, storage 0x14), a bare 0x52
+ * asked for it as format 6, type 3, storage 0xd, and the client waited on
+ * word 0 forever when nothing was posted. It then loaded the same bytes
+ * back as a format 6, type 3 texel load.
+ *
+ * The level is found by what the read copies from the texture's load: the
+ * size exponents (word 14, load word 16), the bank (bit 28 of word 13, load
+ * word 17 bit 3) and the address (word 16, which in the traces equals the
+ * load's word 18 in bank zero and word 19 in bank one), as the copy form
+ * finds its level; the storage code is the answer's, not the level's, so it
+ * is not compared. That the address word is this pair's first in every bank
+ * is inferred from six reads in one trace, five of them in bank one. A
+ * read that reaches past the level's extent is refused when packing.
+ * Approximated: the model keeps a level as 8-bit RGBA, so the reply is
+ * that level converted to the requested format and type, tightly packed:
+ * RED, GREEN, BLUE, ALPHA, RGB, RGBA, LUMINANCE, and LUMINANCE_ALPHA, in
+ * unsigned bytes (type 1) or unsigned shorts (type 3, each byte times 257).
+ * The pipe's colour path puts an RGB sum in front of a luminance or
+ * luminance-alpha destination unless the source holds one channel
+ * (established stage selection; the sum clamped at 1.0 is inferred), so
+ * a level of colour channels gives R+G+B clamped, and a single-channel
+ * level, which the model stores in red, gives that channel. Luminance-alpha
+ * keeps alpha. A texture the model does not hold, or a format, type or
+ * size it cannot produce, is answered with zeros and logged, so the client
+ * draws black rather than hanging. What a real pipe returns for a lossy
+ * conversion is unknown.
+ */
+/*
+ * A luminance destination sums the colour channels unless the source is a
+ * single-channel level, which the model holds in red.
+ */
+static uint8_t luminance(const SGIKonaTextureLevel *image, const uint8_t c[4])
+{
+    switch (image->base_format) {
+    case SGI_GL_RGB:
+    case SGI_GL_RGBA:
+        return MIN(c[0] + c[1] + c[2], 255);
+    default:
+        return c[0];
+    }
+}
+
+static bool sgi_kona_gl_texels_pack(const SGIKonaTextureLevel *image,
+                                    const uint32_t *args, uint32_t width,
+                                    uint32_t height, uint8_t *out)
+{
+    uint32_t format = args[3], type = args[4];
+    unsigned comps;
+
+    if (!image || args[9] || args[12] || (type != 1 && type != 3) ||
+        format > 7 || args[7] > args[10] || args[8] > args[11] ||
+        args[10] >= image->width || args[11] >= image->height) {
+        return false;
+    }
+    comps = sgi_kona_gl_texture_pixel_bytes(format, 1);
+    for (uint32_t y = 0; y < height; y++) {
+        for (uint32_t x = 0; x < width; x++) {
+            uint32_t px = image->pixels[(uint64_t)(args[8] + y) *
+                                        image->width + args[7] + x];
+            uint8_t c[4] = { px >> 24, px >> 16, px >> 8, px };
+            uint8_t v[4];
+
+            switch (format) {
+            case 0:             /* RED */
+                v[0] = c[0];
+                break;
+            case 6:             /* LUMINANCE */
+                v[0] = luminance(image, c);
+                break;
+            case 1:             /* GREEN */
+                v[0] = c[1];
+                break;
+            case 2:             /* BLUE */
+                v[0] = c[2];
+                break;
+            case 3:             /* ALPHA */
+                v[0] = c[3];
+                break;
+            case 7:             /* LUMINANCE_ALPHA */
+                v[0] = luminance(image, c);
+                v[1] = c[3];
+                break;
+            default:            /* RGB, RGBA */
+                memcpy(v, c, sizeof(v));
+                break;
+            }
+            for (unsigned k = 0; k < comps; k++) {
+                if (type == 3) {
+                    stw_be_p(out, v[k] * 257);
+                    out += 2;
+                } else {
+                    *out++ = v[k];
+                }
+            }
+        }
+    }
+    return true;
+}
+
+static void sgi_kona_gl_read_texels_bare(SGIKonaState *s, const uint32_t *args,
+                                         uint32_t width, uint32_t height)
+{
+    const SGIKonaTextureLevel *image = NULL;
+    uint32_t handle = UINT32_MAX;
+    g_autofree uint8_t *data = NULL;
+    uint64_t bytes;
+    unsigned unit;
+
+    if (!sgi_kona_x_read_current(s)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: texel readback with no "
+                      "current return page; not answered\n");
+        return;
+    }
+    unit = sgi_kona_gl_texture_pixel_bytes(args[3], args[4]);
+    if (args[3] == SGI_KONA_TEXTURE_COPY_FORMAT &&
+        args[4] == SGI_KONA_TEXTURE_COPY_TYPE &&
+        args[5] == SGI_KONA_TEXTURE_COPY_STORAGE) {
+        unit = 4;
+    }
+    bytes = (uint64_t)width * height * unit;
+    if (!unit || bytes > SGI_KONA_SMALL_RETURN_BYTES) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: texel readback of format %u "
+                      "type %u, %ux%u, outside a DMA bracket; answered "
+                      "with an empty page\n", args[3], args[4], width,
+                      height);
+        bytes = 0;
+    }
+    data = g_malloc0(bytes);
+    if (bytes) {
+        bool done = false;
+
+        if (args[3] == SGI_KONA_TEXTURE_COPY_FORMAT &&
+            args[4] == SGI_KONA_TEXTURE_COPY_TYPE &&
+            args[5] == SGI_KONA_TEXTURE_COPY_STORAGE) {
+            done = !args[9] && !args[12] &&
+                   sgi_kona_texture_find_native(&s->textures, args[0],
+                       SGI_KONA_TEXTURE_COPIED_STORAGE, args[14],
+                       (args[13] >> 28) & 1, args[16], args[17],
+                       args[10] + 1, args[11] + 1, &handle, &image) == 1;
+            if (done) {
+                for (uint32_t y = 0; y < height; y++) {
+                    for (uint32_t x = 0; x < width; x++) {
+                        stl_be_p(data + ((uint64_t)y * width + x) * 4,
+                                 image->pixels[(uint64_t)(args[8] + y) *
+                                               image->width + args[7] + x]);
+                    }
+                }
+            }
+        } else if (args[0] == SGI_GL_TEXTURE_2D &&
+                   sgi_kona_texture_find_level(&s->textures, args[0],
+                       args[14], (args[13] >> 28) & 1, args[16], &handle,
+                       &image) == 1) {
+            done = sgi_kona_gl_texels_pack(image, args, width, height, data);
+        }
+        if (!done) {
+            memset(data, 0, bytes);
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: texel readback of format %u "
+                          "type %u storage 0x%x, %ux%u, not producible; "
+                          "answered with zeros\n", args[3], args[4], args[5],
+                          width, height);
+        }
+    }
+    trace_sgi_kona_gl_read_texels(args[0], width, height, args[15],
+                                  args[16], args[17], handle);
+    trace_sgi_kona_gl_reply(SGI_KONA_CMD_GL_READ_TEXELS, handle, bytes);
+    sgi_kona_post_return(s, SGI_KONA_CMD_GL_READ_TEXELS, 8, data, bytes);
+}
+
 static void sgi_kona_gl_read_texels(SGIKonaState *s, const uint32_t *args)
 {
     SGIKonaGLReadDMA *d = &s->gl_read_dma;
@@ -9755,6 +9930,13 @@ static void sgi_kona_gl_read_texels(SGIKonaState *s, const uint32_t *args)
 
     width = args[10] - args[7] + 1;
     height = args[11] - args[8] + 1;
+    if (!d->active) {
+        if (args[10] < args[7] || args[11] < args[8]) {
+            width = height = 0;
+        }
+        sgi_kona_gl_read_texels_bare(s, args, width, height);
+        return;
+    }
     if (args[3] == SGI_KONA_TEXTURE_COPY_FORMAT &&
         args[4] == SGI_KONA_TEXTURE_COPY_TYPE &&
         args[5] == SGI_KONA_TEXTURE_COPY_STORAGE) {
@@ -9781,10 +9963,8 @@ static void sgi_kona_gl_read_texels(SGIKonaState *s, const uint32_t *args)
                       "sgi-kona: texel readback of %u "
                       "textures matching banks 0x%x 0x%x storage 0x%x; %s\n",
                       found, args[16], args[17], args[5],
-                      d->active ? "answered with zeros" : "refused");
-        if (d->active) {
-            sgi_kona_gl_read_texels_zero(s);
-        }
+                      "answered with zeros");
+        sgi_kona_gl_read_texels_zero(s);
         return;
     }
     data = g_malloc(bytes);
@@ -9796,35 +9976,26 @@ static void sgi_kona_gl_read_texels(SGIKonaState *s, const uint32_t *args)
             stl_be_p(data + ((uint64_t)y * width + x) * 4, row[x]);
         }
     }
-    if (d->active) {
-        if (d->refused || d->count || d->context != s->context_current ||
-            !sgi_kona_context_owner(s, d->context, d->generation)) {
-            qemu_log_mask(LOG_UNIMP, "sgi-kona: texel readback DMA "
-                          "refused\n");
-            sgi_kona_gl_read_dma_refuse(s);
-            return;
-        }
-        memset(d->header, 0, sizeof(d->header));
-        d->header[0] = width;
-        d->header[1] = height;
-        if (!sgi_kona_gl_read_dma_layout(d, d->header,
-                                         SGI_KONA_CMD_GL_READ_TEXELS)) {
-            qemu_log_mask(LOG_UNIMP, "sgi-kona: texel readback DMA "
-                          "refused\n");
-            sgi_kona_gl_read_dma_refuse(s);
-            return;
-        }
-        d->selector = SGI_KONA_CMD_GL_READ_TEXELS;
-        d->count = bytes;
-        d->data = g_steal_pointer(&data);
-    } else if (bytes <= SGI_KONA_SMALL_RETURN_BYTES &&
-               sgi_kona_x_read_current(s)) {
-        trace_sgi_kona_gl_reply(SGI_KONA_CMD_GL_READ_TEXELS, handle, bytes);
-        sgi_kona_post_return(s, SGI_KONA_CMD_GL_READ_TEXELS, 8, data, bytes);
-    } else {
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: texel readback of 0x%" PRIx64
-                      " bytes outside a DMA bracket; not answered\n", bytes);
+    if (d->refused || d->count || d->context != s->context_current ||
+        !sgi_kona_context_owner(s, d->context, d->generation)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: texel readback DMA "
+                      "refused\n");
+        sgi_kona_gl_read_dma_refuse(s);
+        return;
     }
+    memset(d->header, 0, sizeof(d->header));
+    d->header[0] = width;
+    d->header[1] = height;
+    if (!sgi_kona_gl_read_dma_layout(d, d->header,
+                                     SGI_KONA_CMD_GL_READ_TEXELS)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: texel readback DMA "
+                      "refused\n");
+        sgi_kona_gl_read_dma_refuse(s);
+        return;
+    }
+    d->selector = SGI_KONA_CMD_GL_READ_TEXELS;
+    d->count = bytes;
+    d->data = g_steal_pointer(&data);
 }
 
 static bool sgi_kona_device_write(SGIKonaState *s, uint64_t device,
