@@ -1167,7 +1167,7 @@ static void test_native_detail(void)
         [10] = 77, [13] = 1, [14] = 1, [16] = 0x23, [17] = 0x2181,
         [18] = 23,
     };
-    uint32_t args[6] = { 77, 1, 1, 2, 23, 0 };
+    uint32_t args[6] = { 77, 1, 1, 2, 0, 23 };
     const uint32_t base[] = { 0x80808080 };
     const uint32_t detail[] = {
         0xc0408080, 0xc0408080, 0xc0408080, 0xc0408080,
@@ -1243,20 +1243,34 @@ static void test_native_detail(void)
     args[3] = 63;
     g_assert_false(sgi_kona_texture_detail_bind(&src, args));
     args[3] = 2;
+    /*
+     * The pipe keeps the pair and never resolves the entry, so a wrong
+     * entry still finds the image at the pair. A different size or pair
+     * finds nothing.
+     */
     for (unsigned mismatch = 0; mismatch < 3; mismatch++) {
         args[0] = mismatch == 0 ? 78 : 77;
         args[1] = mismatch == 1 ? 0 : 1;
-        args[4] = mismatch == 2 ? 24 : 23;
+        args[5] = mismatch == 2 ? 24 : 23;
         g_assert_true(sgi_kona_texture_detail_bind(&src, args));
         im = sgi_kona_texture_resolve(&src);
         out[0] = .123f;
-        g_assert_false(sgi_gl_texture_apply_pixel(&state, im,
-                                                 coord, color, out));
-        g_assert_cmpfloat(out[0], ==, .123f);
+        if (mismatch) {
+            g_assert_false(sgi_gl_texture_apply_pixel(&state, im,
+                                                     coord, color, out));
+            g_assert_cmpfloat(out[0], ==, .123f);
+        } else {
+            g_assert_true(sgi_gl_texture_apply_pixel(&state, im,
+                                                    coord, color, out));
+            g_assert_nonnull(im->detail_image);
+            g_assert_cmpfloat_with_epsilon(out[0], (128.0 / 255) *
+                                           (1 + .25 * (129.0 / 255)),
+                                           .000001);
+        }
     }
     args[0] = 77;
     args[1] = 1;
-    args[4] = 23;
+    args[5] = 23;
     /* Shared storage does not make RGB and RGBA internal formats identical. */
     args[3] = 38;
     g_assert_true(sgi_kona_texture_detail_bind(&src, args));
@@ -1272,12 +1286,12 @@ static void test_native_detail(void)
                                                 SGI_GL_RGBA, SGI_GL_RGBA));
     im = sgi_kona_texture_resolve(&src);
     g_assert_false(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
+    /* UINT32_MAX locates by pair, and finds both. */
     args[0] = UINT32_MAX;
     g_assert_true(sgi_kona_texture_detail_bind(&src, args));
     im = sgi_kona_texture_resolve(&src);
     g_assert_null(im->detail_image);
-    g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
-    g_assert_cmpfloat_with_epsilon(out[0], 128.0 / 255, .000001);
+    g_assert_false(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
     sgi_kona_texture_cleanup(&src);
     sgi_kona_texture_cleanup(&dst);
 }
@@ -1342,6 +1356,58 @@ static void test_native_detail_load(void)
                                                  SGI_GL_RGBA, SGI_GL_RGBA));
     sgi_kona_texture_cleanup(&src);
     sgi_kona_texture_cleanup(&dst);
+}
+
+/*
+ * The binding resolves by address pair. UINT32_MAX as the entry locates
+ * by pair across every texture; two images at one pair are the two banks
+ * of a load, told apart by the bank the base texture binds in.
+ */
+static void test_native_detail_resolve(void)
+{
+    SGIKonaTextureState s;
+    SGIKonaTextureParams p;
+    uint32_t h[20] = {
+        [0] = SGI_GL_DETAIL_TEXTURE_2D_SGIS, [1] = 2, [2] = 2, [9] = 0x30,
+        [10] = 3, [13] = 1, [14] = 1, [16] = 0x23, [17] = 0x2181,
+        [18] = 23,
+    };
+    /* Row 2 is RGBA in storage 0x30 and row 38 is RGB in the same. */
+    uint32_t args[6] = { UINT32_MAX, 1, 1, 2, 23, 23 };
+    const uint32_t bank0[4] = { 0x10203040, 0x10203040, 0x10203040,
+                                0x10203040 };
+    const uint32_t bank1[4] = { 0x50607080, 0x50607080, 0x50607080,
+                                0x50607080 };
+    const SGIGLTexImage *im;
+    uint32_t texel;
+
+    sgi_kona_texture_init(&s);
+    sgi_kona_texture_defaults(&p);
+    p.mag_filter = SGI_GL_LINEAR_DETAIL_SGIS;
+    g_assert_true(sgi_kona_texture_upload(&s, 9, 0, 1, 1, SGI_GL_RGBA,
+                                         SGI_GL_RGBA, bank0));
+    g_assert_true(sgi_kona_texture_bind(&s, 9, &p));
+    g_assert_true(sgi_kona_texture_native_upload(&s, h, bank0, SGI_GL_RGBA,
+                                                SGI_GL_RGBA));
+    /* Bank one keeps the address in word 19. */
+    h[17] |= 8;
+    h[18] = 0;
+    h[19] = 23;
+    g_assert_true(sgi_kona_texture_native_upload(&s, h, bank1, SGI_GL_RGBA,
+                                                SGI_GL_RGBA));
+    g_assert_true(sgi_kona_texture_detail_bind(&s, args));
+    im = sgi_kona_texture_resolve(&s);
+    g_assert_nonnull(im->detail_image);
+    g_assert_cmpuint(im->mag_filter, ==, SGI_GL_LINEAR_DETAIL_SGIS);
+    g_assert_true(im->detail_image->read_texel(im->detail_image->opaque, 0, 0,
+                                               0, &texel));
+    g_assert_cmphex(texel, ==, 0x10203040);
+    g_assert_true(sgi_kona_texture_native_bank(&s, 9, true));
+    im = sgi_kona_texture_resolve(&s);
+    g_assert_true(im->detail_image->read_texel(im->detail_image->opaque, 0, 0,
+                                               0, &texel));
+    g_assert_cmphex(texel, ==, 0x50607080);
+    sgi_kona_texture_cleanup(&s);
 }
 
 static void native_volume_setup(SGIKonaTextureState *s,
@@ -2839,6 +2905,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi/kona/texture/native-internal-format",
                     test_native_internal_format);
     g_test_add_func("/sgi/kona/texture/native-detail", test_native_detail);
+    g_test_add_func("/sgi/kona/texture/native-detail-resolve",
+                    test_native_detail_resolve);
     g_test_add_func("/sgi/kona/texture/native-detail-load",
                     test_native_detail_load);
     g_test_add_func("/sgi/kona/texture/native-repeat-interior",
