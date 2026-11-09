@@ -143,7 +143,6 @@ layer:
         console: l1-uart
         prom_dialogue: ip35-l1-prompt
         default_cpu_model: R14000
-        disk_bus: scsi.0
         netboot_adapter: ioc3-ethernet
         default_topology: one-chassis
         identity_record_slots: [node-board, io-board]

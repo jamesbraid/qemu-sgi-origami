@@ -4837,7 +4837,6 @@
       "console": "ioc3-serial-a",
       "default_cpu_model": "R10000",
       "default_topology": "onyx2-rack",
-      "disk_bus": "scsi.0",
       "install_media": [
         "disk-image",
         "netboot"

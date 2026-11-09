@@ -151,7 +151,6 @@ layer:
         launch_recipe: ip53-discovery
         prom_dialogue: none
         default_cpu_model: R16000
-        disk_bus: scsi.0
         netboot_adapter: unsupported
         smdk:
           package_path: assets/boot/smdk

@@ -64,12 +64,9 @@
         4,
         4
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "hardware-inputs": [],
       "hostid-source": "module",
       "id": "onyx2-rack.2-2-2-2",
-      "identity-inputs": [],
       "init-inputs": [
         {
           "kind": "ip27-prom",
@@ -168,28 +165,6 @@
         }
       ],
       "nodes": 4,
-      "overrides": [
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r10000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -285,6 +260,81 @@
           "name": "mio-parallel",
           "node": 0,
           "property": "parallel"
+        }
+      ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "0x926",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "choices": [
+            {
+              "description": "the firmware's no-diag switch",
+              "name": "no-diag",
+              "value": 1
+            },
+            {
+              "description": "the firmware's heavy-diag switch",
+              "name": "heavy-diag",
+              "value": 2
+            },
+            {
+              "description": "the firmware's mfg-diag switch",
+              "name": "mfg-diag",
+              "value": 3
+            },
+            {
+              "description": "the firmware's verbose switch",
+              "name": "verbose",
+              "value": 4
+            },
+            {
+              "description": "the firmware's global-pod switch",
+              "name": "global-pod",
+              "value": 8
+            },
+            {
+              "description": "the firmware's local-pod switch",
+              "name": "local-pod",
+              "value": 16
+            },
+            {
+              "description": "the firmware's no-mem-pod switch",
+              "name": "no-mem-pod",
+              "value": 24
+            },
+            {
+              "description": "the firmware's default-env switch",
+              "name": "default-env",
+              "value": 32
+            },
+            {
+              "description": "the firmware's bypass-io6 switch",
+              "name": "bypass-io6",
+              "value": 64
+            },
+            {
+              "description": "the firmware's no-global-master switch",
+              "name": "no-global-master",
+              "value": 128
+            },
+            {
+              "description": "power-on diagnostics mode: global POD, which a multi-node machine arbitrates across its modules",
+              "name": "pod",
+              "value": 8
+            },
+            {
+              "description": "skip the PROM's power-on diagnostics",
+              "name": "skip-prom-diags",
+              "value": 1
+            }
+          ],
+          "name": "dip-switches",
+          "required": false
         }
       ],
       "smp": 8,
@@ -353,7 +403,6 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "onyx2-rack"
     },
     {
@@ -420,12 +469,9 @@
         4,
         4
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "hardware-inputs": [],
       "hostid-source": "module",
       "id": "onyx2-rack.1-1-1-1",
-      "identity-inputs": [],
       "init-inputs": [
         {
           "kind": "ip27-prom",
@@ -524,28 +570,6 @@
         }
       ],
       "nodes": 4,
-      "overrides": [
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r10000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -641,6 +665,81 @@
           "name": "mio-parallel",
           "node": 0,
           "property": "parallel"
+        }
+      ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "0x926",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "choices": [
+            {
+              "description": "the firmware's no-diag switch",
+              "name": "no-diag",
+              "value": 1
+            },
+            {
+              "description": "the firmware's heavy-diag switch",
+              "name": "heavy-diag",
+              "value": 2
+            },
+            {
+              "description": "the firmware's mfg-diag switch",
+              "name": "mfg-diag",
+              "value": 3
+            },
+            {
+              "description": "the firmware's verbose switch",
+              "name": "verbose",
+              "value": 4
+            },
+            {
+              "description": "the firmware's global-pod switch",
+              "name": "global-pod",
+              "value": 8
+            },
+            {
+              "description": "the firmware's local-pod switch",
+              "name": "local-pod",
+              "value": 16
+            },
+            {
+              "description": "the firmware's no-mem-pod switch",
+              "name": "no-mem-pod",
+              "value": 24
+            },
+            {
+              "description": "the firmware's default-env switch",
+              "name": "default-env",
+              "value": 32
+            },
+            {
+              "description": "the firmware's bypass-io6 switch",
+              "name": "bypass-io6",
+              "value": 64
+            },
+            {
+              "description": "the firmware's no-global-master switch",
+              "name": "no-global-master",
+              "value": 128
+            },
+            {
+              "description": "power-on diagnostics mode: global POD, which a multi-node machine arbitrates across its modules",
+              "name": "pod",
+              "value": 8
+            },
+            {
+              "description": "skip the PROM's power-on diagnostics",
+              "name": "skip-prom-diags",
+              "value": 1
+            }
+          ],
+          "name": "dip-switches",
+          "required": false
         }
       ],
       "smp": 4,
@@ -709,7 +808,6 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "onyx2-rack"
     },
     {
@@ -776,12 +874,9 @@
         4,
         4
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "hardware-inputs": [],
       "hostid-source": "module",
       "id": "onyx2-rack.2-1-1-1",
-      "identity-inputs": [],
       "init-inputs": [
         {
           "kind": "ip27-prom",
@@ -880,28 +975,6 @@
         }
       ],
       "nodes": 4,
-      "overrides": [
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r10000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -997,6 +1070,81 @@
           "name": "mio-parallel",
           "node": 0,
           "property": "parallel"
+        }
+      ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "0x926",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "choices": [
+            {
+              "description": "the firmware's no-diag switch",
+              "name": "no-diag",
+              "value": 1
+            },
+            {
+              "description": "the firmware's heavy-diag switch",
+              "name": "heavy-diag",
+              "value": 2
+            },
+            {
+              "description": "the firmware's mfg-diag switch",
+              "name": "mfg-diag",
+              "value": 3
+            },
+            {
+              "description": "the firmware's verbose switch",
+              "name": "verbose",
+              "value": 4
+            },
+            {
+              "description": "the firmware's global-pod switch",
+              "name": "global-pod",
+              "value": 8
+            },
+            {
+              "description": "the firmware's local-pod switch",
+              "name": "local-pod",
+              "value": 16
+            },
+            {
+              "description": "the firmware's no-mem-pod switch",
+              "name": "no-mem-pod",
+              "value": 24
+            },
+            {
+              "description": "the firmware's default-env switch",
+              "name": "default-env",
+              "value": 32
+            },
+            {
+              "description": "the firmware's bypass-io6 switch",
+              "name": "bypass-io6",
+              "value": 64
+            },
+            {
+              "description": "the firmware's no-global-master switch",
+              "name": "no-global-master",
+              "value": 128
+            },
+            {
+              "description": "power-on diagnostics mode: global POD, which a multi-node machine arbitrates across its modules",
+              "name": "pod",
+              "value": 8
+            },
+            {
+              "description": "skip the PROM's power-on diagnostics",
+              "name": "skip-prom-diags",
+              "value": 1
+            }
+          ],
+          "name": "dip-switches",
+          "required": false
         }
       ],
       "smp": 5,
@@ -1065,7 +1213,6 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "onyx2-rack"
     },
     {
@@ -1132,12 +1279,9 @@
         4,
         4
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "hardware-inputs": [],
       "hostid-source": "module",
       "id": "onyx2-rack.2-2-1-1",
-      "identity-inputs": [],
       "init-inputs": [
         {
           "kind": "ip27-prom",
@@ -1236,28 +1380,6 @@
         }
       ],
       "nodes": 4,
-      "overrides": [
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r10000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -1353,6 +1475,81 @@
           "name": "mio-parallel",
           "node": 0,
           "property": "parallel"
+        }
+      ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "0x926",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "choices": [
+            {
+              "description": "the firmware's no-diag switch",
+              "name": "no-diag",
+              "value": 1
+            },
+            {
+              "description": "the firmware's heavy-diag switch",
+              "name": "heavy-diag",
+              "value": 2
+            },
+            {
+              "description": "the firmware's mfg-diag switch",
+              "name": "mfg-diag",
+              "value": 3
+            },
+            {
+              "description": "the firmware's verbose switch",
+              "name": "verbose",
+              "value": 4
+            },
+            {
+              "description": "the firmware's global-pod switch",
+              "name": "global-pod",
+              "value": 8
+            },
+            {
+              "description": "the firmware's local-pod switch",
+              "name": "local-pod",
+              "value": 16
+            },
+            {
+              "description": "the firmware's no-mem-pod switch",
+              "name": "no-mem-pod",
+              "value": 24
+            },
+            {
+              "description": "the firmware's default-env switch",
+              "name": "default-env",
+              "value": 32
+            },
+            {
+              "description": "the firmware's bypass-io6 switch",
+              "name": "bypass-io6",
+              "value": 64
+            },
+            {
+              "description": "the firmware's no-global-master switch",
+              "name": "no-global-master",
+              "value": 128
+            },
+            {
+              "description": "power-on diagnostics mode: global POD, which a multi-node machine arbitrates across its modules",
+              "name": "pod",
+              "value": 8
+            },
+            {
+              "description": "skip the PROM's power-on diagnostics",
+              "name": "skip-prom-diags",
+              "value": 1
+            }
+          ],
+          "name": "dip-switches",
+          "required": false
         }
       ],
       "smp": 6,
@@ -1421,7 +1618,6 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "onyx2-rack"
     },
     {
@@ -1488,12 +1684,9 @@
         4,
         4
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "hardware-inputs": [],
       "hostid-source": "module",
       "id": "onyx2-rack.2-2-2-1",
-      "identity-inputs": [],
       "init-inputs": [
         {
           "kind": "ip27-prom",
@@ -1592,28 +1785,6 @@
         }
       ],
       "nodes": 4,
-      "overrides": [
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r10000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -1709,6 +1880,81 @@
           "name": "mio-parallel",
           "node": 0,
           "property": "parallel"
+        }
+      ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "0x926",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "choices": [
+            {
+              "description": "the firmware's no-diag switch",
+              "name": "no-diag",
+              "value": 1
+            },
+            {
+              "description": "the firmware's heavy-diag switch",
+              "name": "heavy-diag",
+              "value": 2
+            },
+            {
+              "description": "the firmware's mfg-diag switch",
+              "name": "mfg-diag",
+              "value": 3
+            },
+            {
+              "description": "the firmware's verbose switch",
+              "name": "verbose",
+              "value": 4
+            },
+            {
+              "description": "the firmware's global-pod switch",
+              "name": "global-pod",
+              "value": 8
+            },
+            {
+              "description": "the firmware's local-pod switch",
+              "name": "local-pod",
+              "value": 16
+            },
+            {
+              "description": "the firmware's no-mem-pod switch",
+              "name": "no-mem-pod",
+              "value": 24
+            },
+            {
+              "description": "the firmware's default-env switch",
+              "name": "default-env",
+              "value": 32
+            },
+            {
+              "description": "the firmware's bypass-io6 switch",
+              "name": "bypass-io6",
+              "value": 64
+            },
+            {
+              "description": "the firmware's no-global-master switch",
+              "name": "no-global-master",
+              "value": 128
+            },
+            {
+              "description": "power-on diagnostics mode: global POD, which a multi-node machine arbitrates across its modules",
+              "name": "pod",
+              "value": 8
+            },
+            {
+              "description": "skip the PROM's power-on diagnostics",
+              "name": "skip-prom-diags",
+              "value": 1
+            }
+          ],
+          "name": "dip-switches",
+          "required": false
         }
       ],
       "smp": 7,
@@ -1777,7 +2023,6 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "onyx2-rack"
     },
     {
@@ -1842,12 +2087,9 @@
         4,
         4
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "hardware-inputs": [],
       "hostid-source": "module",
       "id": "onyx2-rack.2-2-2",
-      "identity-inputs": [],
       "init-inputs": [
         {
           "kind": "ip27-prom",
@@ -1946,28 +2188,6 @@
         }
       ],
       "nodes": 3,
-      "overrides": [
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r10000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -2063,6 +2283,81 @@
           "name": "mio-parallel",
           "node": 0,
           "property": "parallel"
+        }
+      ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "0x926",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "choices": [
+            {
+              "description": "the firmware's no-diag switch",
+              "name": "no-diag",
+              "value": 1
+            },
+            {
+              "description": "the firmware's heavy-diag switch",
+              "name": "heavy-diag",
+              "value": 2
+            },
+            {
+              "description": "the firmware's mfg-diag switch",
+              "name": "mfg-diag",
+              "value": 3
+            },
+            {
+              "description": "the firmware's verbose switch",
+              "name": "verbose",
+              "value": 4
+            },
+            {
+              "description": "the firmware's global-pod switch",
+              "name": "global-pod",
+              "value": 8
+            },
+            {
+              "description": "the firmware's local-pod switch",
+              "name": "local-pod",
+              "value": 16
+            },
+            {
+              "description": "the firmware's no-mem-pod switch",
+              "name": "no-mem-pod",
+              "value": 24
+            },
+            {
+              "description": "the firmware's default-env switch",
+              "name": "default-env",
+              "value": 32
+            },
+            {
+              "description": "the firmware's bypass-io6 switch",
+              "name": "bypass-io6",
+              "value": 64
+            },
+            {
+              "description": "the firmware's no-global-master switch",
+              "name": "no-global-master",
+              "value": 128
+            },
+            {
+              "description": "power-on diagnostics mode: global POD, which a multi-node machine arbitrates across its modules",
+              "name": "pod",
+              "value": 8
+            },
+            {
+              "description": "skip the PROM's power-on diagnostics",
+              "name": "skip-prom-diags",
+              "value": 1
+            }
+          ],
+          "name": "dip-switches",
+          "required": false
         }
       ],
       "smp": 6,
@@ -2125,7 +2420,6 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "onyx2-rack"
     },
     {
@@ -2190,12 +2484,9 @@
         4,
         4
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "hardware-inputs": [],
       "hostid-source": "module",
       "id": "onyx2-rack.1-1-1",
-      "identity-inputs": [],
       "init-inputs": [
         {
           "kind": "ip27-prom",
@@ -2294,28 +2585,6 @@
         }
       ],
       "nodes": 3,
-      "overrides": [
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r10000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -2411,6 +2680,81 @@
           "name": "mio-parallel",
           "node": 0,
           "property": "parallel"
+        }
+      ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "0x926",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "choices": [
+            {
+              "description": "the firmware's no-diag switch",
+              "name": "no-diag",
+              "value": 1
+            },
+            {
+              "description": "the firmware's heavy-diag switch",
+              "name": "heavy-diag",
+              "value": 2
+            },
+            {
+              "description": "the firmware's mfg-diag switch",
+              "name": "mfg-diag",
+              "value": 3
+            },
+            {
+              "description": "the firmware's verbose switch",
+              "name": "verbose",
+              "value": 4
+            },
+            {
+              "description": "the firmware's global-pod switch",
+              "name": "global-pod",
+              "value": 8
+            },
+            {
+              "description": "the firmware's local-pod switch",
+              "name": "local-pod",
+              "value": 16
+            },
+            {
+              "description": "the firmware's no-mem-pod switch",
+              "name": "no-mem-pod",
+              "value": 24
+            },
+            {
+              "description": "the firmware's default-env switch",
+              "name": "default-env",
+              "value": 32
+            },
+            {
+              "description": "the firmware's bypass-io6 switch",
+              "name": "bypass-io6",
+              "value": 64
+            },
+            {
+              "description": "the firmware's no-global-master switch",
+              "name": "no-global-master",
+              "value": 128
+            },
+            {
+              "description": "power-on diagnostics mode: global POD, which a multi-node machine arbitrates across its modules",
+              "name": "pod",
+              "value": 8
+            },
+            {
+              "description": "skip the PROM's power-on diagnostics",
+              "name": "skip-prom-diags",
+              "value": 1
+            }
+          ],
+          "name": "dip-switches",
+          "required": false
         }
       ],
       "smp": 3,
@@ -2473,7 +2817,6 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "onyx2-rack"
     },
     {
@@ -2538,12 +2881,9 @@
         4,
         4
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "hardware-inputs": [],
       "hostid-source": "module",
       "id": "onyx2-rack.2-1-1",
-      "identity-inputs": [],
       "init-inputs": [
         {
           "kind": "ip27-prom",
@@ -2642,28 +2982,6 @@
         }
       ],
       "nodes": 3,
-      "overrides": [
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r10000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -2761,6 +3079,81 @@
           "property": "parallel"
         }
       ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "0x926",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "choices": [
+            {
+              "description": "the firmware's no-diag switch",
+              "name": "no-diag",
+              "value": 1
+            },
+            {
+              "description": "the firmware's heavy-diag switch",
+              "name": "heavy-diag",
+              "value": 2
+            },
+            {
+              "description": "the firmware's mfg-diag switch",
+              "name": "mfg-diag",
+              "value": 3
+            },
+            {
+              "description": "the firmware's verbose switch",
+              "name": "verbose",
+              "value": 4
+            },
+            {
+              "description": "the firmware's global-pod switch",
+              "name": "global-pod",
+              "value": 8
+            },
+            {
+              "description": "the firmware's local-pod switch",
+              "name": "local-pod",
+              "value": 16
+            },
+            {
+              "description": "the firmware's no-mem-pod switch",
+              "name": "no-mem-pod",
+              "value": 24
+            },
+            {
+              "description": "the firmware's default-env switch",
+              "name": "default-env",
+              "value": 32
+            },
+            {
+              "description": "the firmware's bypass-io6 switch",
+              "name": "bypass-io6",
+              "value": 64
+            },
+            {
+              "description": "the firmware's no-global-master switch",
+              "name": "no-global-master",
+              "value": 128
+            },
+            {
+              "description": "power-on diagnostics mode: global POD, which a multi-node machine arbitrates across its modules",
+              "name": "pod",
+              "value": 8
+            },
+            {
+              "description": "skip the PROM's power-on diagnostics",
+              "name": "skip-prom-diags",
+              "value": 1
+            }
+          ],
+          "name": "dip-switches",
+          "required": false
+        }
+      ],
       "smp": 4,
       "storage": [
         {
@@ -2821,7 +3214,6 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "onyx2-rack"
     },
     {
@@ -2886,12 +3278,9 @@
         4,
         4
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "hardware-inputs": [],
       "hostid-source": "module",
       "id": "onyx2-rack.2-2-1",
-      "identity-inputs": [],
       "init-inputs": [
         {
           "kind": "ip27-prom",
@@ -2990,28 +3379,6 @@
         }
       ],
       "nodes": 3,
-      "overrides": [
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r10000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -3107,6 +3474,81 @@
           "name": "mio-parallel",
           "node": 0,
           "property": "parallel"
+        }
+      ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "0x926",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "choices": [
+            {
+              "description": "the firmware's no-diag switch",
+              "name": "no-diag",
+              "value": 1
+            },
+            {
+              "description": "the firmware's heavy-diag switch",
+              "name": "heavy-diag",
+              "value": 2
+            },
+            {
+              "description": "the firmware's mfg-diag switch",
+              "name": "mfg-diag",
+              "value": 3
+            },
+            {
+              "description": "the firmware's verbose switch",
+              "name": "verbose",
+              "value": 4
+            },
+            {
+              "description": "the firmware's global-pod switch",
+              "name": "global-pod",
+              "value": 8
+            },
+            {
+              "description": "the firmware's local-pod switch",
+              "name": "local-pod",
+              "value": 16
+            },
+            {
+              "description": "the firmware's no-mem-pod switch",
+              "name": "no-mem-pod",
+              "value": 24
+            },
+            {
+              "description": "the firmware's default-env switch",
+              "name": "default-env",
+              "value": 32
+            },
+            {
+              "description": "the firmware's bypass-io6 switch",
+              "name": "bypass-io6",
+              "value": 64
+            },
+            {
+              "description": "the firmware's no-global-master switch",
+              "name": "no-global-master",
+              "value": 128
+            },
+            {
+              "description": "power-on diagnostics mode: global POD, which a multi-node machine arbitrates across its modules",
+              "name": "pod",
+              "value": 8
+            },
+            {
+              "description": "skip the PROM's power-on diagnostics",
+              "name": "skip-prom-diags",
+              "value": 1
+            }
+          ],
+          "name": "dip-switches",
+          "required": false
         }
       ],
       "smp": 5,
@@ -3169,7 +3611,6 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "onyx2-rack"
     },
     {
@@ -3232,12 +3673,9 @@
         4,
         4
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "hardware-inputs": [],
       "hostid-source": "module",
       "id": "onyx2-rack.2-2",
-      "identity-inputs": [],
       "init-inputs": [
         {
           "kind": "ip27-prom",
@@ -3336,28 +3774,6 @@
         }
       ],
       "nodes": 2,
-      "overrides": [
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r10000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -3455,6 +3871,81 @@
           "property": "parallel"
         }
       ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "0x926",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "choices": [
+            {
+              "description": "the firmware's no-diag switch",
+              "name": "no-diag",
+              "value": 1
+            },
+            {
+              "description": "the firmware's heavy-diag switch",
+              "name": "heavy-diag",
+              "value": 2
+            },
+            {
+              "description": "the firmware's mfg-diag switch",
+              "name": "mfg-diag",
+              "value": 3
+            },
+            {
+              "description": "the firmware's verbose switch",
+              "name": "verbose",
+              "value": 4
+            },
+            {
+              "description": "the firmware's global-pod switch",
+              "name": "global-pod",
+              "value": 8
+            },
+            {
+              "description": "the firmware's local-pod switch",
+              "name": "local-pod",
+              "value": 16
+            },
+            {
+              "description": "the firmware's no-mem-pod switch",
+              "name": "no-mem-pod",
+              "value": 24
+            },
+            {
+              "description": "the firmware's default-env switch",
+              "name": "default-env",
+              "value": 32
+            },
+            {
+              "description": "the firmware's bypass-io6 switch",
+              "name": "bypass-io6",
+              "value": 64
+            },
+            {
+              "description": "the firmware's no-global-master switch",
+              "name": "no-global-master",
+              "value": 128
+            },
+            {
+              "description": "power-on diagnostics mode: global POD, which a multi-node machine arbitrates across its modules",
+              "name": "pod",
+              "value": 8
+            },
+            {
+              "description": "skip the PROM's power-on diagnostics",
+              "name": "skip-prom-diags",
+              "value": 1
+            }
+          ],
+          "name": "dip-switches",
+          "required": false
+        }
+      ],
       "smp": 4,
       "storage": [
         {
@@ -3509,7 +4000,6 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "onyx2-rack"
     },
     {
@@ -3572,12 +4062,9 @@
         4,
         4
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "hardware-inputs": [],
       "hostid-source": "module",
       "id": "onyx2-rack.1-1",
-      "identity-inputs": [],
       "init-inputs": [
         {
           "kind": "ip27-prom",
@@ -3676,28 +4163,6 @@
         }
       ],
       "nodes": 2,
-      "overrides": [
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r10000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -3795,6 +4260,81 @@
           "property": "parallel"
         }
       ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "0x926",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "choices": [
+            {
+              "description": "the firmware's no-diag switch",
+              "name": "no-diag",
+              "value": 1
+            },
+            {
+              "description": "the firmware's heavy-diag switch",
+              "name": "heavy-diag",
+              "value": 2
+            },
+            {
+              "description": "the firmware's mfg-diag switch",
+              "name": "mfg-diag",
+              "value": 3
+            },
+            {
+              "description": "the firmware's verbose switch",
+              "name": "verbose",
+              "value": 4
+            },
+            {
+              "description": "the firmware's global-pod switch",
+              "name": "global-pod",
+              "value": 8
+            },
+            {
+              "description": "the firmware's local-pod switch",
+              "name": "local-pod",
+              "value": 16
+            },
+            {
+              "description": "the firmware's no-mem-pod switch",
+              "name": "no-mem-pod",
+              "value": 24
+            },
+            {
+              "description": "the firmware's default-env switch",
+              "name": "default-env",
+              "value": 32
+            },
+            {
+              "description": "the firmware's bypass-io6 switch",
+              "name": "bypass-io6",
+              "value": 64
+            },
+            {
+              "description": "the firmware's no-global-master switch",
+              "name": "no-global-master",
+              "value": 128
+            },
+            {
+              "description": "power-on diagnostics mode: global POD, which a multi-node machine arbitrates across its modules",
+              "name": "pod",
+              "value": 8
+            },
+            {
+              "description": "skip the PROM's power-on diagnostics",
+              "name": "skip-prom-diags",
+              "value": 1
+            }
+          ],
+          "name": "dip-switches",
+          "required": false
+        }
+      ],
       "smp": 2,
       "storage": [
         {
@@ -3849,7 +4389,6 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "onyx2-rack"
     },
     {
@@ -3912,12 +4451,9 @@
         4,
         4
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "hardware-inputs": [],
       "hostid-source": "module",
       "id": "onyx2-rack.2-1",
-      "identity-inputs": [],
       "init-inputs": [
         {
           "kind": "ip27-prom",
@@ -4016,28 +4552,6 @@
         }
       ],
       "nodes": 2,
-      "overrides": [
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r10000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -4135,6 +4649,81 @@
           "property": "parallel"
         }
       ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "0x926",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "choices": [
+            {
+              "description": "the firmware's no-diag switch",
+              "name": "no-diag",
+              "value": 1
+            },
+            {
+              "description": "the firmware's heavy-diag switch",
+              "name": "heavy-diag",
+              "value": 2
+            },
+            {
+              "description": "the firmware's mfg-diag switch",
+              "name": "mfg-diag",
+              "value": 3
+            },
+            {
+              "description": "the firmware's verbose switch",
+              "name": "verbose",
+              "value": 4
+            },
+            {
+              "description": "the firmware's global-pod switch",
+              "name": "global-pod",
+              "value": 8
+            },
+            {
+              "description": "the firmware's local-pod switch",
+              "name": "local-pod",
+              "value": 16
+            },
+            {
+              "description": "the firmware's no-mem-pod switch",
+              "name": "no-mem-pod",
+              "value": 24
+            },
+            {
+              "description": "the firmware's default-env switch",
+              "name": "default-env",
+              "value": 32
+            },
+            {
+              "description": "the firmware's bypass-io6 switch",
+              "name": "bypass-io6",
+              "value": 64
+            },
+            {
+              "description": "the firmware's no-global-master switch",
+              "name": "no-global-master",
+              "value": 128
+            },
+            {
+              "description": "power-on diagnostics mode: global POD, which a multi-node machine arbitrates across its modules",
+              "name": "pod",
+              "value": 8
+            },
+            {
+              "description": "skip the PROM's power-on diagnostics",
+              "name": "skip-prom-diags",
+              "value": 1
+            }
+          ],
+          "name": "dip-switches",
+          "required": false
+        }
+      ],
       "smp": 3,
       "storage": [
         {
@@ -4189,7 +4778,6 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "onyx2-rack"
     },
     {
@@ -4250,12 +4838,9 @@
       "dimms-per-node": [
         4
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "hardware-inputs": [],
       "hostid-source": "module",
       "id": "onyx2-rack.2",
-      "identity-inputs": [],
       "init-inputs": [
         {
           "kind": "ip27-prom",
@@ -4354,28 +4939,6 @@
         }
       ],
       "nodes": 1,
-      "overrides": [
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r10000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -4473,6 +5036,81 @@
           "property": "parallel"
         }
       ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "0x926",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "choices": [
+            {
+              "description": "the firmware's no-diag switch",
+              "name": "no-diag",
+              "value": 1
+            },
+            {
+              "description": "the firmware's heavy-diag switch",
+              "name": "heavy-diag",
+              "value": 2
+            },
+            {
+              "description": "the firmware's mfg-diag switch",
+              "name": "mfg-diag",
+              "value": 3
+            },
+            {
+              "description": "the firmware's verbose switch",
+              "name": "verbose",
+              "value": 4
+            },
+            {
+              "description": "the firmware's global-pod switch",
+              "name": "global-pod",
+              "value": 8
+            },
+            {
+              "description": "the firmware's local-pod switch",
+              "name": "local-pod",
+              "value": 16
+            },
+            {
+              "description": "the firmware's no-mem-pod switch",
+              "name": "no-mem-pod",
+              "value": 24
+            },
+            {
+              "description": "the firmware's default-env switch",
+              "name": "default-env",
+              "value": 32
+            },
+            {
+              "description": "the firmware's bypass-io6 switch",
+              "name": "bypass-io6",
+              "value": 64
+            },
+            {
+              "description": "the firmware's no-global-master switch",
+              "name": "no-global-master",
+              "value": 128
+            },
+            {
+              "description": "power-on diagnostics mode: local POD, which a single-node machine arbitrates itself",
+              "name": "pod",
+              "value": 16
+            },
+            {
+              "description": "skip the PROM's power-on diagnostics",
+              "name": "skip-prom-diags",
+              "value": 1
+            }
+          ],
+          "name": "dip-switches",
+          "required": false
+        }
+      ],
       "smp": 2,
       "storage": [
         {
@@ -4521,7 +5159,6 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "onyx2-rack"
     },
     {
@@ -4582,12 +5219,9 @@
       "dimms-per-node": [
         4
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "hardware-inputs": [],
       "hostid-source": "module",
       "id": "onyx2-rack.1",
-      "identity-inputs": [],
       "init-inputs": [
         {
           "kind": "ip27-prom",
@@ -4686,28 +5320,6 @@
         }
       ],
       "nodes": 1,
-      "overrides": [
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r10000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -4805,6 +5417,81 @@
           "property": "parallel"
         }
       ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "0x926",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "choices": [
+            {
+              "description": "the firmware's no-diag switch",
+              "name": "no-diag",
+              "value": 1
+            },
+            {
+              "description": "the firmware's heavy-diag switch",
+              "name": "heavy-diag",
+              "value": 2
+            },
+            {
+              "description": "the firmware's mfg-diag switch",
+              "name": "mfg-diag",
+              "value": 3
+            },
+            {
+              "description": "the firmware's verbose switch",
+              "name": "verbose",
+              "value": 4
+            },
+            {
+              "description": "the firmware's global-pod switch",
+              "name": "global-pod",
+              "value": 8
+            },
+            {
+              "description": "the firmware's local-pod switch",
+              "name": "local-pod",
+              "value": 16
+            },
+            {
+              "description": "the firmware's no-mem-pod switch",
+              "name": "no-mem-pod",
+              "value": 24
+            },
+            {
+              "description": "the firmware's default-env switch",
+              "name": "default-env",
+              "value": 32
+            },
+            {
+              "description": "the firmware's bypass-io6 switch",
+              "name": "bypass-io6",
+              "value": 64
+            },
+            {
+              "description": "the firmware's no-global-master switch",
+              "name": "no-global-master",
+              "value": 128
+            },
+            {
+              "description": "power-on diagnostics mode: local POD, which a single-node machine arbitrates itself",
+              "name": "pod",
+              "value": 16
+            },
+            {
+              "description": "skip the PROM's power-on diagnostics",
+              "name": "skip-prom-diags",
+              "value": 1
+            }
+          ],
+          "name": "dip-switches",
+          "required": false
+        }
+      ],
       "smp": 1,
       "storage": [
         {
@@ -4853,12 +5540,358 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "onyx2-rack"
     }
   ],
   "references": [],
   "schema": "sgi-machines",
+  "setting-definitions": [
+    {
+      "allow-empty": false,
+      "description": "A captured chassis record for one board's one-wire part.",
+      "identity": true,
+      "kind": "file",
+      "name": "chassis-eeprom",
+      "target": {
+        "form": "list",
+        "kind": "machine",
+        "property": "chassis-eeprom"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "A captured board record for one board's one-wire part.",
+      "identity": true,
+      "kind": "file",
+      "name": "board-eeprom",
+      "target": {
+        "form": "list",
+        "kind": "machine",
+        "property": "board-eeprom"
+      }
+    },
+    {
+      "allow-empty": true,
+      "description": "A captured SPD record for one DIMM; an empty value means no record.",
+      "identity": false,
+      "kind": "file",
+      "name": "spd-eeprom",
+      "target": {
+        "form": "list",
+        "kind": "machine",
+        "property": "spd-eeprom"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The Fuel L1's station address image.",
+      "identity": true,
+      "kind": "file",
+      "name": "fuel-mac-eeprom",
+      "size": 512,
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "fuel-mac-eeprom"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "A captured board record for one component of an expansion controller, keyed CONTROLLER/COMPONENT.",
+      "identity": true,
+      "kind": "file",
+      "name": "controller-board-eeprom",
+      "target": {
+        "form": "keyed-list",
+        "kind": "machine",
+        "property": "controller-board-eeprom"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The brick serial one expansion controller reports; it beats brick-serial for that controller.",
+      "identity": true,
+      "kind": "text",
+      "max-length": 32,
+      "min-length": 1,
+      "name": "controller-brick-serial",
+      "pattern": "[!-+--~]+",
+      "target": {
+        "form": "keyed-list",
+        "kind": "machine",
+        "property": "controller-brick-serial"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The brick serial every system controller reports.",
+      "identity": true,
+      "kind": "text",
+      "max-length": 32,
+      "min-length": 1,
+      "name": "brick-serial",
+      "pattern": "[!-+--~]+",
+      "target": {
+        "device": "sgi-l1",
+        "form": "plain",
+        "kind": "global",
+        "property": "brick-serial"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The L1's debug switch word.",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 65535,
+      "minimum": 0,
+      "name": "debug-switches",
+      "target": {
+        "device": "sgi-l1",
+        "form": "plain",
+        "kind": "global",
+        "property": "debug-switches"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "Accept the L1 commands the model marks synthetic.",
+      "identity": false,
+      "kind": "boolean",
+      "name": "origin300-l1cmd-compat",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "origin300-l1cmd-compat"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The Bedrock board identity response.",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 18446744073709551615,
+      "minimum": 0,
+      "name": "board-id-word",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "board-id-word"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The Bedrock revision.",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 255,
+      "minimum": 0,
+      "name": "bedrock-revision",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "bedrock-revision"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The L1's reported type character.",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 255,
+      "minimum": 0,
+      "name": "l1-type-code",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "l1-type-code"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The L1's reported firmware revision, MAJOR.MINOR.PATCH.",
+      "identity": false,
+      "kind": "text",
+      "max-length": 32,
+      "min-length": 5,
+      "name": "l1-revision",
+      "pattern": "[0-9]+\\.[0-9]+\\.[0-9]+",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "l1-revision"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The IOC3 PCI subsystem id.",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 65535,
+      "minimum": 0,
+      "name": "ioc3-subsystem-id",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "ioc3-subsystem-id"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The Octane board's flash select input.",
+      "identity": false,
+      "kind": "boolean",
+      "name": "flash-select",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "flash-select"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The Octane board's flash strap input.",
+      "identity": false,
+      "kind": "boolean",
+      "name": "flash-strap",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "flash-strap"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The processor revision register of the offering's part (the part's own -cpu property: r10000-prid, r12000-prid, r14000-prid or r16000-prid).",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 4294967295,
+      "minimum": 0,
+      "name": "prid",
+      "target": {
+        "form": "plain",
+        "kind": "cpu",
+        "property": "prid"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The FPU revision register of the offering's part (the -cpu property r12000-fpu-id).",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 4294967295,
+      "minimum": 0,
+      "name": "fpu-id",
+      "target": {
+        "form": "plain",
+        "kind": "cpu",
+        "property": "fpu-id"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The O2 board's password clear input, whose fitted value is unknown.",
+      "identity": false,
+      "kind": "enum",
+      "name": "password-clear-input",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "password-clear-input"
+      },
+      "values": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "allow-empty": false,
+      "description": "The O2 ROM part's software data protection at power-up, whose value is unknown.",
+      "identity": false,
+      "kind": "enum",
+      "name": "rom-at29c040a-protection",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "rom-at29c040a-protection"
+      },
+      "values": [
+        "disabled",
+        "enabled"
+      ]
+    },
+    {
+      "allow-empty": false,
+      "description": "The O2 ROM part's lower boot block lock at power-up, whose state is unknown.",
+      "identity": false,
+      "kind": "enum",
+      "name": "rom-at29c040a-lower-lock",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "rom-at29c040a-lower-lock"
+      },
+      "values": [
+        "unlocked",
+        "locked"
+      ]
+    },
+    {
+      "allow-empty": false,
+      "description": "The O2 ROM part's upper boot block lock at power-up, whose state is unknown.",
+      "identity": false,
+      "kind": "enum",
+      "name": "rom-at29c040a-upper-lock",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "rom-at29c040a-upper-lock"
+      },
+      "values": [
+        "unlocked",
+        "locked"
+      ]
+    },
+    {
+      "allow-empty": false,
+      "description": "A captured O2 identity chip image.",
+      "identity": true,
+      "kind": "file",
+      "name": "identity-eprom-file",
+      "size": 128,
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "identity-eprom-file"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The system controller's DIP switch word, as asserted bits.",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 255,
+      "minimum": 0,
+      "name": "dip-switches",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "elsc-dip-switches"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "A debug input: fit the Hub's junk-bus UART, a bring-up serial port no shipped machine is known to have.",
+      "identity": false,
+      "kind": "boolean",
+      "name": "junk-uart",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "junk-uart"
+      }
+    }
+  ],
   "topologies": [
     {
       "board": "ip27",

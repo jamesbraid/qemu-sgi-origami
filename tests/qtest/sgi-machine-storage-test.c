@@ -293,9 +293,9 @@ static void test_machine_help_lists_storage(void)
     }
 }
 
-/* Whether type @type has a property named @name. */
-static bool type_has_property(QTestState *qts, const char *type,
-                              const char *name)
+/* The QOM type of property @name of @type, or NULL if it has none. */
+static char *property_type(QTestState *qts, const char *type,
+                           const char *name)
 {
     g_autoptr(QDict) reply = qtest_qmp(qts,
         "{'execute': 'qom-list-properties', 'arguments': {'typename': %s}}",
@@ -306,44 +306,95 @@ static bool type_has_property(QTestState *qts, const char *type,
         QDict *property = qobject_to(QDict, qlist_entry_obj(entry));
 
         if (g_str_equal(qdict_get_str(property, "name"), name)) {
-            return true;
+            return g_strdup(qdict_get_str(property, "type"));
         }
     }
-    return false;
+    return NULL;
+}
+
+static QDict *setting_definition(QList *definitions, const char *name)
+{
+    const QListEntry *entry;
+
+    QLIST_FOREACH_ENTRY(definitions, entry) {
+        QDict *definition = qobject_to(QDict, qlist_entry_obj(entry));
+
+        if (g_str_equal(qdict_get_str(definition, "name"), name)) {
+            return definition;
+        }
+    }
+    g_error("no setting definition named %s", name);
 }
 
 /*
- * Every override an offering lists is a property of its machine or of its
- * processor part's CPU type, so a launcher can take the list instead of
- * keeping its own.
+ * Every setting an offering lists names a property that exists on the
+ * machine type, the global device type or the processor part's CPU type,
+ * with a QOM type its kind and form can set, so a launcher can take the
+ * list instead of keeping its own.
  */
-static void test_overrides_name_properties(void)
+static void test_settings_name_properties(void)
 {
     QTestState *qts = qtest_init("-M none");
     g_autoptr(QDict) reply = qtest_qmp(qts,
         "{'execute': 'query-sgi-machines'}");
-    QList *offerings = qdict_get_qlist(qdict_get_qdict(reply, "return"),
-                                       "offerings");
+    QDict *catalogue = qdict_get_qdict(reply, "return");
+    QList *definitions = qdict_get_qlist(catalogue, "setting-definitions");
     const QListEntry *entry, *item;
     unsigned int checked = 0;
 
-    QLIST_FOREACH_ENTRY(offerings, entry) {
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(catalogue, "offerings"), entry) {
         QDict *offering = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *part = qdict_get_str(qdict_get_qdict(offering,
+                                                         "processor"), "part");
         g_autofree char *machine = g_strdup_printf(
             "%s-machine", qdict_get_str(offering, "product"));
         g_autofree char *cpu = g_strdup_printf(
             "%s-mips64-cpu", qdict_get_str(offering, "default-cpu-model"));
 
-        QLIST_FOREACH_ENTRY(qdict_get_qlist(offering, "overrides"), item) {
-            QDict *override = qobject_to(QDict, qlist_entry_obj(item));
-            const char *name = qdict_get_str(override, "property");
-            bool on_cpu = g_str_equal(qdict_get_str(override, "target"),
-                                      "cpu");
+        QLIST_FOREACH_ENTRY(qdict_get_qlist(offering, "settings"), item) {
+            QDict *setting = qobject_to(QDict, qlist_entry_obj(item));
+            const char *name = qdict_get_str(setting, "name");
+            QDict *definition = setting_definition(definitions, name);
+            QDict *target = qdict_get_qdict(definition, "target");
+            const char *kind = qdict_get_str(definition, "kind");
+            const char *form = qdict_get_str(target, "form");
+            const char *where = qdict_get_str(target, "kind");
+            const char *property = qdict_get_str(target, "property");
+            g_autofree char *cpu_property = NULL;
+            g_autofree char *found = NULL;
+            const char *type;
 
-            if (!type_has_property(qts, on_cpu ? cpu : machine, name)) {
-                g_error("%s lists %s, which %s lacks",
-                        qdict_get_str(offering, "machine-options"), name,
-                        on_cpu ? cpu : machine);
+            if (g_str_equal(where, "cpu")) {
+                /* One prid and one fpu-id; the part names the property. */
+                g_autofree char *lower = g_ascii_strdown(part, -1);
+
+                cpu_property = g_strdup_printf("%s-%s", lower, property);
+                property = cpu_property;
+                type = cpu;
+            } else if (g_str_equal(where, "global")) {
+                type = qdict_get_str(target, "device");
+            } else {
+                type = machine;
+            }
+            /* A default says how well it is known, and only a default. */
+            g_assert_cmpint(qdict_haskey(setting, "default"), ==,
+                            qdict_haskey(setting, "default-provenance"));
+            found = property_type(qts, type, property);
+            if (!found) {
+                g_error("%s lists setting %s, whose property %s %s lacks",
+                        qdict_get_str(offering, "id"), name, property, type);
+            }
+            if (!g_str_equal(form, "plain")) {
+                g_assert_true(g_str_equal(found, "strList") ||
+                              g_str_equal(found, "list"));
+            } else if (g_str_equal(kind, "integer")) {
+                g_assert_true(g_str_has_prefix(found, "uint"));
+            } else if (g_str_equal(kind, "boolean")) {
+                g_assert_cmpstr(found, ==, "bool");
+            } else {
+                g_assert_true(g_str_equal(found, "str") ||
+                              g_str_equal(found, "string") ||
+                              g_str_has_prefix(found, "str"));
             }
             checked++;
         }
@@ -934,8 +985,8 @@ int main(int argc, char **argv)
                    test_sn0_node_flash_refusals);
     qtest_add_func("/sgi-machine-storage/machine-help",
                    test_machine_help_lists_storage);
-    qtest_add_func("/sgi-machine-storage/overrides-name-properties",
-                   test_overrides_name_properties);
+    qtest_add_func("/sgi-machine-storage/settings-name-properties",
+                   test_settings_name_properties);
     qtest_add_func("/sgi-machine-storage/shared-node-refused",
                    test_shared_node_refused);
     qtest_add_func("/sgi-machine-storage/sn1-node-flash/bound",

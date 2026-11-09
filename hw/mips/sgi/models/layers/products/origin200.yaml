@@ -99,10 +99,8 @@ layer:
         console: ioc3-serial-a
         prom_dialogue: ip27-menu
         default_cpu_model: R10000
-        disk_bus: scsi.0
         netboot_adapter: ioc3-ethernet
         default_topology: single-node
-        has_synthesized_firmware_toggle: false
         needs_debug_leds_off: true
         supported_guests: [irix, linux, openbsd, gentoo]
         install_media: [disk-image, netboot]

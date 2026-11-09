@@ -19,7 +19,7 @@
       "then": {
         "properties": { "machine": { "properties": { "harness": {
           "not": { "anyOf": [
-            { "required": ["prom_dialogue"] }, { "required": ["disk_bus"] },
+            { "required": ["prom_dialogue"] },
             { "required": ["netboot_adapter"] }, { "required": ["default_topology"] },
             { "required": ["supported_guests"] }, { "required": ["install_media"] }
           ] },
@@ -28,7 +28,7 @@
       },
       "else": {
         "properties": { "machine": { "properties": { "harness": { "required": [
-          "prom_dialogue", "disk_bus", "netboot_adapter", "default_topology",
+          "prom_dialogue", "netboot_adapter", "default_topology",
           "supported_guests", "install_media"
         ] } } } }
       }
@@ -910,11 +910,9 @@
               "description": "IOC3 serial ports an IP35 launch places after the L1 line, in the machine's serial-line order. Omitted means only the console port when that is IOC3 serial A."
             },
             "prom_dialogue": { "enum": ["ip27-menu", "ip35-l1-prompt", "none"], "description": "Which stock-firmware dialogue a launcher drives: the IP27 command monitor, or the IP35 L1 system controller's prompt in front of it." },
-            "disk_bus": { "type": "string", "minLength": 1, "description": "Default SCSI bus id guest launchers attach the boot disk to." },
             "netboot_adapter": { "type": "string", "minLength": 1, "description": "Adapter kind the stock PROM's netboot command has been confirmed to drive." },
             "default_topology": { "type": "string", "minLength": 1, "description": "Stable harness label for this product's one wiring shape today; not a selectable property." },
             "timekeeper_nvram": { "type": "boolean", "description": "Whether the selected board exposes a Timekeeper NVRAM store. Omitted means the documented base I/O board default applies." },
-            "has_synthesized_firmware_toggle": { "type": "boolean", "description": "True when this product's QEMU machine accepts a synthesized-firmware= property a launcher can turn off. Omitted or false means the property does not exist on this machine." },
             "needs_debug_leds_off": { "type": "boolean", "description": "True when a launch with no -display needs debug-leds=off, since the firmware's indicator-code display has nothing to show them on. Independent of has_synthesized_firmware_toggle." },
             "identity_inputs": {
               "type": "array",

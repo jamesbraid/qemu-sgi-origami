@@ -65,15 +65,13 @@ class IP30CatalogueTests(unittest.TestCase):
                           "select": True, "strap": True})
         # Board values with catalogue defaults are machine properties; the
         # processor part's are -cpu properties.
-        self.assertEqual(offering["overrides"], [
-            {"property": "emu-id", "target": "machine"},
-            {"property": "flash-select", "target": "machine"},
-            {"property": "flash-strap", "target": "machine"},
-            {"property": "hostid", "target": "machine"},
-            {"property": "mac", "target": "machine"},
-            {"property": "serial", "target": "machine"},
-            {"property": "r12000-prid", "target": "cpu"},
-            {"property": "r12000-fpu-id", "target": "cpu"}])
+        self.assertEqual(
+            [(item["name"], item.get("default"))
+             for item in offering["settings"]],
+            [("flash-select", "on"), ("flash-strap", "on"),
+             ("prid", "0xe35"), ("fpu-id", "0x900")])
+        self.assertTrue(all(item.get("default-provenance") == "approximated"
+                            for item in offering["settings"][:2]))
         self.assertEqual(len(offering["scsi-adapters"]), 2)
         self.assertEqual(len(offering["consoles"]), 2)
         self.assertEqual(len(offering["networks"]), 1)

@@ -2176,7 +2176,8 @@
 ##
 # @SGIModelFirmware:
 #
-# Firmware expected by an offering's PROM.
+# Firmware expected by an offering's PROM.  The record keeps the shape
+# it had in catalogue version 2.
 #
 # @kind: firmware contract for this machine generation
 # @argument: QEMU argument used to supply the image
@@ -2502,35 +2503,6 @@
             'part': 'str',
             'clock-hz': 'uint64',
             'cache-mib': 'uint16' } }
-
-##
-# @SGIModelOverrideTarget:
-#
-# Where a launch sets an override.
-#
-# @machine: a ``-M`` property of the offering's machine
-#
-# @cpu: a ``-cpu`` property of the offering's processor part
-#
-# Since: 11.2
-##
-{ 'enum': 'SGIModelOverrideTarget', 'data': ['machine', 'cpu'] }
-
-##
-# @SGIModelOverride:
-#
-# One identity or board value the catalogue gives a configuration that
-# a launch may override.  With none given, the machine uses the
-# catalogue's value.
-#
-# @property: the property's name
-#
-# @target: where the property is set
-#
-# Since: 11.2
-##
-{ 'struct': 'SGIModelOverride',
-  'data': { 'property': 'str', 'target': 'SGIModelOverrideTarget' } }
 
 ##
 # @SGIModelSmdkTftpMode:
@@ -2874,8 +2846,13 @@
 #
 # @kind: the target
 #
-# @property: the property's name; for a @cpu target the CPU property
-#     the offering's processor part names (prid, fpu-id)
+# @property: the property's name.  For a @cpu target it is the
+#     suffix of the CPU property: the offering's processor part
+#     (@SGIModelOffering @processor @part) in lower case, a hyphen and
+#     this name give the QEMU property, so ``prid`` on an R12000
+#     offering is ``r12000-prid`` and ``fpu-id`` is ``r12000-fpu-id``,
+#     set as ``-cpu MODEL,r12000-prid=VALUE`` with MODEL the
+#     offering's @default-cpu-model
 #
 # @device: the QOM type, for @global only
 #
@@ -2893,7 +2870,7 @@
 # @SGIModelSettingDefinition:
 #
 # What a setting is, written once for the whole catalogue.  A
-# machine input a launcher gives with ``--set NAME[.KEY]=VALUE``.
+# machine input a launch tool may offer as ``NAME[.KEY]=VALUE``.
 #
 # @name: the setting's name, ``[a-z][a-z0-9-]*``
 #
@@ -3082,20 +3059,9 @@
 #
 # @prom-dialogue: which PROM console dialogue this product speaks
 #
-# @disk-bus: default disk bus a launcher attaches a boot disk to
-#
 # @netboot-adapter: adapter kind a netboot launch uses: the @kind of
 #     the @networks entry whose @default is true, or unsupported where
 #     netboot is not offered
-#
-# @identity-inputs: named identity/SPD inputs this offering accepts
-#
-# @hardware-inputs: product-specific launch inputs the configuration
-#     binds, and whether each is required.  Overrides of the
-#     catalogue's own values are in @overrides
-#
-# @overrides: every identity or board value the catalogue gives this
-#     configuration that a launch may override, and where
 #
 # @smdk: selected diagnostic launch recipe, when supported
 #
@@ -3105,9 +3071,6 @@
 # @install-media: install media kinds this offering supports
 #
 # @default-cpu-model: default ``-cpu`` value for this offering
-#
-# @synthesized-firmware-toggle: whether this product's PROM accepts a
-#     debug toggle for a synthesized (non-stock) firmware image
 #
 # @needs-debug-leds-off: whether this product's PROM dialogue needs
 #     its debug LEDs disabled before booting a guest
@@ -3130,11 +3093,15 @@
 # @serial-lines: every serial line a launch backs, in the order the
 #     machine reads their ``-serial`` positions
 #
-# @settings: the machine inputs a launch may give with ``--set``.
-#     Present from catalogue version 3
+# @settings: the machine inputs a launch may give, each as
+#     ``NAME[.KEY]=VALUE``.
+#     Each entry names a @setting-definitions record, which says what
+#     the value is and which QEMU property it sets, and adds the keys,
+#     default and named values this offering has.  The identity
+#     interface is not a setting
 #
-# @setting-groups: the @settings that go together.  Present from
-#     catalogue version 3
+#
+# @setting-groups: the @settings that go together
 #
 # Since: 11.2
 ##
@@ -3161,23 +3128,18 @@
             'console': 'str',
             '*launch-recipe': 'SGIModelLaunchRecipe',
             'prom-dialogue': 'str',
-            'disk-bus': 'str',
             'netboot-adapter': 'str',
-            'identity-inputs': ['str'],
-            'hardware-inputs': ['SGIModelInputBinding'],
-            'overrides': ['SGIModelOverride'],
             '*smdk': 'SGIModelSmdkRecipe',
             'supported-guests': ['str'],
             'install-media': ['str'],
             'default-cpu-model': 'str',
-            'synthesized-firmware-toggle': 'bool',
             'needs-debug-leds-off': 'bool',
             'hostid-source': 'SGIModelHostidSource',
             'clock': 'SGIModelClock',
             'devices': 'SGIModelDevices',
             'serial-lines': ['SGIModelSerialLine'],
-            '*settings': ['SGIModelOfferingSetting'],
-            '*setting-groups': ['SGIModelSettingGroup'] } }
+            'settings': ['SGIModelOfferingSetting'],
+            'setting-groups': ['SGIModelSettingGroup'] } }
 
 ##
 # @SGIMachines:
@@ -3202,7 +3164,7 @@
 #     They are not buildable or selectable.
 #
 # @setting-definitions: what every setting an offering lists is.
-#     Present from catalogue version 3
+#
 #
 # Since: 11.2
 ##
@@ -3212,7 +3174,7 @@
             'topologies': ['SGIModelTopology'],
             'offerings': ['SGIModelOffering'],
             '*references': ['SGIModelReference'],
-            '*setting-definitions': ['SGIModelSettingDefinition'] } }
+            'setting-definitions': ['SGIModelSettingDefinition'] } }
 
 ##
 # @SGIModelReference:

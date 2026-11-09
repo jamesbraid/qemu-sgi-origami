@@ -1802,8 +1802,6 @@
       "console": "ioc3-serial-a",
       "default_cpu_model": "R10000",
       "default_topology": "single-node",
-      "disk_bus": "scsi.0",
-      "has_synthesized_firmware_toggle": false,
       "install_media": [
         "disk-image",
         "netboot"

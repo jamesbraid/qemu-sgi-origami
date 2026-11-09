@@ -1219,3 +1219,8 @@ hw/scsi/sgi-scsi-cd.c
 include/hw/scsi/sgi-scsi-cd.h
 tests/qtest/sgi-scsi-cd-test.h
 tools/sgi/qemu-sgi-l2-hub.c
+
+scripts/sgi_model/settings.py
+scripts/sgi_model/settings_doc.py
+scripts/tests/test_sgi_model_settings_doc.py
+docs/system/mips/sgi/settings.rst

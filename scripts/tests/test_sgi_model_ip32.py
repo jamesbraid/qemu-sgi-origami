@@ -47,9 +47,6 @@ class IP32CatalogueTests(unittest.TestCase):
         self.assertEqual(offering["scsi-adapters"][1]["targets"], [])
         self.assertEqual(offering["scsi-adapters"][0]["boot-target"], 1)
         self.assertEqual(offering["hostid-source"], "o2")
-        self.assertEqual(offering["disk-bus"], "aic0.0")
-        self.assertEqual(offering["overrides"],
-                         [{"property": "emu-id", "target": "machine"}])
         self.assertEqual(offering["networks"][0]["nic-model"], "sgi-mace-eth")
 
     def test_o2plus_is_a_cpu_variant_of_the_same_machine(self):
@@ -72,7 +69,6 @@ class IP32CatalogueTests(unittest.TestCase):
         self.assertEqual(offering["product"], "o2")
         self.assertEqual(offering["machine-options"], "o2,variant=o2plus")
         self.assertEqual(offering["default-cpu-model"], "R12000")
-        self.assertEqual(offering["disk-bus"], "aic0.0")
         self.assertEqual(offering["default-topology"], "o2")
         self.assertEqual(offering["memory-per-node-mib"], {
             "default": 1024, "accepted": [1024]})

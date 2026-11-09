@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "53fdac592cca7eefc79df88349084748a024a81c43cfb447e001c4dbd578a8ac"
+    "ca724a642027673f3b35f0e8bafb24e6546274460bbf29b3d0f4ff80d3e2035e"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -983,10 +983,9 @@ class FuelTests(unittest.TestCase):
         self.assertNotIn("required-properties", text)
         catalogue = json.loads(text)
         for offering in catalogue["offerings"]:
-            cpu = [item["property"] for item in offering["overrides"]
-                   if item["target"] == "cpu"]
+            names = [item["name"] for item in offering["settings"]]
             with self.subTest(topology=offering["topology"]):
-                self.assertNotIn("reset-mode", " ".join(cpu))
+                self.assertNotIn("reset-mode", " ".join(names))
 
     def test_ip35_firmware_names_each_product_machine_type(self):
         """Origin 300 and Fuel keep reset-mode words; the IP53-family
@@ -1223,43 +1222,123 @@ class FuelTests(unittest.TestCase):
              for c in topology["xio-cables"]],
             [("c0-to-ibrick", [0, 0]), ("c1-to-ibrick2", [1, 1])])
 
-    def test_overrides_follow_what_each_machine_binds(self):
-        """The Bedrock board values are listed only where a Bedrock, an L1
-        and an IO8 or Fuel board bind them; every machine takes mac=,
-        emu-id=, serial= and hostid=, an Origin 2000's plain BaseIO takes
-        baseio-preset=, and the processor part's PRId is a -cpu property. The
-        O2 takes only emu-id=."""
+    def test_settings_follow_what_each_machine_binds(self):
+        """The Bedrock board values are offered only where a Bedrock, an
+        L1 and an IO8 or Fuel board bind them, an Origin 2000's own
+        BaseIO is a board slot rather than a setting, the processor
+        part's registers are one prid and one fpu-id, and the O2 requires
+        the inputs whose fitted values nobody knows."""
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
-        bedrock = ["bedrock-revision", "board-id-word", "emu-id", "hostid",
-                   "ioc3-subsystem-id", "l1-revision", "l1-type-code", "mac",
-                   "serial"]
+        definitions = {item["name"] for item in
+                       catalogue["setting-definitions"]}
+        bedrock = ["board-id-word", "bedrock-revision", "l1-type-code",
+                   "l1-revision"]
+        records = ["chassis-eeprom", "board-eeprom"]
         expected = {
-            "fuel": (bedrock, ["r14000-prid"]),
-            "origin300": (bedrock, ["r14000-prid"]),
-            "origin200": (["emu-id", "hostid", "mac", "serial"],
-                          ["r10000-prid"]),
-            "origin2000": (["baseio-preset", "emu-id", "hostid", "mac",
-                            "serial"], ["r10000-prid"]),
-            "octane": (["emu-id", "flash-select", "flash-strap", "hostid",
-                        "mac", "serial"], ["r10000-prid"]),
+            "fuel": bedrock + ["ioc3-subsystem-id", "prid"] + records +
+                    ["fuel-mac-eeprom"],
+            "origin300": bedrock + ["ioc3-subsystem-id", "prid"] + records +
+                         ["spd-eeprom", "brick-serial", "debug-switches",
+                          "origin300-l1cmd-compat"],
+            "origin200": ["prid", "dip-switches", "junk-uart"],
+            "origin2000": ["prid", "dip-switches"],
+            "onyx2": ["prid", "dip-switches"],
+            "origin3000": bedrock + ["prid"],
+            "origin350": bedrock + ["prid"] + records,
+            "onyx350": bedrock + ["prid"] + records,
+            "onyx4": bedrock + ["prid"] + records,
+            "tezro": bedrock + ["prid"] + records,
+            "octane": ["flash-select", "flash-strap", "prid"],
+            "octane2": ["flash-select", "flash-strap", "prid"],
+            "o2": ["password-clear-input", "rom-at29c040a-protection",
+                   "rom-at29c040a-lower-lock", "rom-at29c040a-upper-lock",
+                   "identity-eprom-file"],
         }
-        # The board drives the reset-mode word; only the identity is
-        # the launch's to override.
-        r12000 = ["r12000-prid", "r12000-fpu-id"]
         for row in catalogue["offerings"]:
-            if row["product"] not in expected:
-                continue
-            machine, cpu = expected[row["product"]]
-            if row["processor"]["part"] == "R12000":
-                cpu = r12000
-            with self.subTest(offering=row["machine-options"]):
+            names = [item["name"] for item in row["settings"]]
+            want = list(expected[row["product"]])
+            if row["processor"]["part"] == "R12000" and "prid" in want:
+                want.insert(want.index("prid") + 1, "fpu-id")
+            if "controller-brick-serial" in names:
+                # The Origin 300 expansion topologies add their controllers.
+                want += ["controller-brick-serial",
+                         "controller-board-eeprom"]
+            with self.subTest(offering=row["id"]):
+                self.assertEqual(names, want)
+                self.assertLessEqual(set(names), definitions)
+                for item in row["settings"]:
+                    slots = item.get("slots")
+                    if slots:
+                        self.assertEqual(len(slots["keys"]),
+                                         len(slots["labels"]))
+                        self.assertEqual(len(set(slots["keys"])),
+                                         len(slots["keys"]))
+                    if item.get("group"):
+                        self.assertIn(item["group"], [
+                            g["name"] for g in row["setting-groups"]])
+                for group in row["setting-groups"]:
+                    self.assertLessEqual(set(group["members"]), set(names))
+            for item in row["settings"]:
+                if item["name"] == "junk-uart":
+                    # Off unless fitted; no shipped machine is known to
+                    # have the part, so there is no default to show.
+                    self.assertNotIn("default", item)
+                    self.assertFalse(item["required"])
+            if row["product"] == "o2":
                 self.assertEqual(
-                    [o["property"] for o in row["overrides"]
-                     if o["target"] == "machine"], machine)
-                self.assertEqual(
-                    [o["property"] for o in row["overrides"]
-                     if o["target"] == "cpu"], cpu)
+                    {item["name"] for item in row["settings"]
+                     if item["required"]},
+                    {"password-clear-input", "rom-at29c040a-protection",
+                     "rom-at29c040a-lower-lock", "rom-at29c040a-upper-lock"})
+                self.assertFalse([item for item in row["settings"]
+                                  if "default" in item])
+        for row in catalogue["offerings"]:
+            for gone in ("overrides", "hardware-inputs", "identity-inputs",
+                         "synthesized-firmware-toggle", "disk-bus", "board"):
+                self.assertNotIn(gone, row)
+
+    def test_every_default_has_a_provenance_and_a_basis(self):
+        """A default is shown with how well it is known and where it is
+        read from; a setting with no default shows neither."""
+        from sgi_model.settings import DEFAULT_BASIS
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        seen = set()
+        for row in catalogue["offerings"]:
+            for item in row["settings"]:
+                with self.subTest(offering=row["id"], setting=item["name"]):
+                    if "default" in item:
+                        self.assertIn(item["default-provenance"], {
+                            "established", "inferred", "approximated"})
+                        self.assertIn(item["name"], DEFAULT_BASIS)
+                        seen.add(item["name"])
+                    else:
+                        self.assertNotIn("default-provenance", item)
+        self.assertEqual(seen, set(DEFAULT_BASIS))
+
+    def test_board_id_word_default_is_the_chosen_options(self):
+        """The Origin 3000's C-brick processor options bring their own
+        board identity word, which the machine applies; the default shown
+        is that word, not the unfitted topology's."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        topologies = {item["name"]: item for item in catalogue["topologies"]}
+        checked = 0
+        for row in catalogue["offerings"]:
+            for option in topologies[row["topology"]].get(
+                    "processor-options", []):
+                if (option["assembly"]["id"] != row["processor"]["id"]
+                        or "board-id-word" not in option):
+                    continue
+                default = next(item["default"] for item in row["settings"]
+                               if item["name"] == "board-id-word")
+                with self.subTest(offering=row["id"]):
+                    self.assertEqual(default, str(option["board-id-word"]))
+                checked += 1
+        # Three options on each of the Origin 3200, Origin 3400 and Onyx
+        # 3000 bases.
+        self.assertEqual(checked, 9)
 
     def test_origin2000_pipe_asks_for_the_baseio_g(self):
         """An Origin 2000's plain BaseIO has no keyboard or mouse port, so

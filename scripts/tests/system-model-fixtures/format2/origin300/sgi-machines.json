@@ -44,18 +44,9 @@
       "dimms-per-node": [
         2
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Origin 300",
-      "hardware-inputs": [],
       "hostid-source": "text",
       "id": "origin300.2",
-      "identity-inputs": [
-        "chassis-eeprom",
-        "board-eeprom",
-        "spd-eeprom",
-        "brick-serial",
-        "l1-debug-switches"
-      ],
       "init-inputs": [
         {
           "kind": "ip35-prom",
@@ -95,48 +86,6 @@
         }
       ],
       "nodes": 1,
-      "overrides": [
-        {
-          "property": "bedrock-revision",
-          "target": "machine"
-        },
-        {
-          "property": "board-id-word",
-          "target": "machine"
-        },
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "ioc3-subsystem-id",
-          "target": "machine"
-        },
-        {
-          "property": "l1-revision",
-          "target": "machine"
-        },
-        {
-          "property": "l1-type-code",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r14000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 2,
         "clock-hz": 500000000,
@@ -145,26 +94,7 @@
       },
       "product": "origin300",
       "prom-dialogue": "ip35-l1-prompt",
-      "resources": [
-        {
-          "argument": "chassis-eeprom.N=",
-          "count": 2,
-          "kind": "identity-eeprom",
-          "scope": "board"
-        },
-        {
-          "argument": "board-eeprom.N=",
-          "count": 2,
-          "kind": "identity-eeprom",
-          "scope": "board"
-        },
-        {
-          "argument": "spd-eeprom.N=",
-          "count": 2,
-          "kind": "spd-eeprom",
-          "scope": "dimm"
-        }
-      ],
+      "resources": [],
       "scsi-adapters": [
         {
           "boot-target": 1,
@@ -226,6 +156,98 @@
           "serial": 4
         }
       ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "32769",
+          "default-provenance": "approximated",
+          "name": "board-id-word",
+          "required": false
+        },
+        {
+          "name": "bedrock-revision",
+          "required": false
+        },
+        {
+          "name": "l1-type-code",
+          "required": false
+        },
+        {
+          "name": "l1-revision",
+          "required": false
+        },
+        {
+          "name": "ioc3-subsystem-id",
+          "required": false
+        },
+        {
+          "default": "0xf24",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "name": "chassis-eeprom",
+          "required": false,
+          "slots": {
+            "keys": [
+              "0",
+              "1"
+            ],
+            "labels": [
+              "node 0 node-board",
+              "node 0 io-board"
+            ],
+            "scope": "board"
+          }
+        },
+        {
+          "name": "board-eeprom",
+          "required": false,
+          "slots": {
+            "keys": [
+              "0",
+              "1"
+            ],
+            "labels": [
+              "node 0 node-board",
+              "node 0 io-board"
+            ],
+            "scope": "board"
+          }
+        },
+        {
+          "name": "spd-eeprom",
+          "required": false,
+          "slots": {
+            "keys": [
+              "0",
+              "1"
+            ],
+            "labels": [
+              "node 0 DIMM 0",
+              "node 0 DIMM 1"
+            ],
+            "scope": "dimm"
+          }
+        },
+        {
+          "name": "brick-serial",
+          "required": false
+        },
+        {
+          "default": "0",
+          "default-provenance": "approximated",
+          "name": "debug-switches",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "origin300-l1cmd-compat",
+          "required": false
+        }
+      ],
       "smdk": {
         "diagnostic-mac-bootarg": false,
         "discovery-prerequisites": [
@@ -261,7 +283,6 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "origin300"
     },
     {
@@ -308,18 +329,9 @@
       "dimms-per-node": [
         2
       ],
-      "disk-bus": "scsi.0",
       "display-name": "Origin 300",
-      "hardware-inputs": [],
       "hostid-source": "text",
       "id": "origin300.4",
-      "identity-inputs": [
-        "chassis-eeprom",
-        "board-eeprom",
-        "spd-eeprom",
-        "brick-serial",
-        "l1-debug-switches"
-      ],
       "init-inputs": [
         {
           "kind": "ip35-prom",
@@ -359,48 +371,6 @@
         }
       ],
       "nodes": 1,
-      "overrides": [
-        {
-          "property": "bedrock-revision",
-          "target": "machine"
-        },
-        {
-          "property": "board-id-word",
-          "target": "machine"
-        },
-        {
-          "property": "emu-id",
-          "target": "machine"
-        },
-        {
-          "property": "hostid",
-          "target": "machine"
-        },
-        {
-          "property": "ioc3-subsystem-id",
-          "target": "machine"
-        },
-        {
-          "property": "l1-revision",
-          "target": "machine"
-        },
-        {
-          "property": "l1-type-code",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "serial",
-          "target": "machine"
-        },
-        {
-          "property": "r14000-prid",
-          "target": "cpu"
-        }
-      ],
       "processor": {
         "cache-mib": 2,
         "clock-hz": 500000000,
@@ -409,26 +379,7 @@
       },
       "product": "origin300",
       "prom-dialogue": "ip35-l1-prompt",
-      "resources": [
-        {
-          "argument": "chassis-eeprom.N=",
-          "count": 2,
-          "kind": "identity-eeprom",
-          "scope": "board"
-        },
-        {
-          "argument": "board-eeprom.N=",
-          "count": 2,
-          "kind": "identity-eeprom",
-          "scope": "board"
-        },
-        {
-          "argument": "spd-eeprom.N=",
-          "count": 2,
-          "kind": "spd-eeprom",
-          "scope": "dimm"
-        }
-      ],
+      "resources": [],
       "scsi-adapters": [
         {
           "boot-target": 1,
@@ -490,6 +441,98 @@
           "serial": 4
         }
       ],
+      "setting-groups": [],
+      "settings": [
+        {
+          "default": "32769",
+          "default-provenance": "approximated",
+          "name": "board-id-word",
+          "required": false
+        },
+        {
+          "name": "bedrock-revision",
+          "required": false
+        },
+        {
+          "name": "l1-type-code",
+          "required": false
+        },
+        {
+          "name": "l1-revision",
+          "required": false
+        },
+        {
+          "name": "ioc3-subsystem-id",
+          "required": false
+        },
+        {
+          "default": "0xf24",
+          "default-provenance": "inferred",
+          "name": "prid",
+          "required": false
+        },
+        {
+          "name": "chassis-eeprom",
+          "required": false,
+          "slots": {
+            "keys": [
+              "0",
+              "1"
+            ],
+            "labels": [
+              "node 0 node-board",
+              "node 0 io-board"
+            ],
+            "scope": "board"
+          }
+        },
+        {
+          "name": "board-eeprom",
+          "required": false,
+          "slots": {
+            "keys": [
+              "0",
+              "1"
+            ],
+            "labels": [
+              "node 0 node-board",
+              "node 0 io-board"
+            ],
+            "scope": "board"
+          }
+        },
+        {
+          "name": "spd-eeprom",
+          "required": false,
+          "slots": {
+            "keys": [
+              "0",
+              "1"
+            ],
+            "labels": [
+              "node 0 DIMM 0",
+              "node 0 DIMM 1"
+            ],
+            "scope": "dimm"
+          }
+        },
+        {
+          "name": "brick-serial",
+          "required": false
+        },
+        {
+          "default": "0",
+          "default-provenance": "approximated",
+          "name": "debug-switches",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "origin300-l1cmd-compat",
+          "required": false
+        }
+      ],
       "smdk": {
         "diagnostic-mac-bootarg": false,
         "discovery-prerequisites": [
@@ -525,12 +568,358 @@
       "supported-guests": [
         "irix"
       ],
-      "synthesized-firmware-toggle": false,
       "topology": "origin300"
     }
   ],
   "references": [],
   "schema": "sgi-machines",
+  "setting-definitions": [
+    {
+      "allow-empty": false,
+      "description": "A captured chassis record for one board's one-wire part.",
+      "identity": true,
+      "kind": "file",
+      "name": "chassis-eeprom",
+      "target": {
+        "form": "list",
+        "kind": "machine",
+        "property": "chassis-eeprom"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "A captured board record for one board's one-wire part.",
+      "identity": true,
+      "kind": "file",
+      "name": "board-eeprom",
+      "target": {
+        "form": "list",
+        "kind": "machine",
+        "property": "board-eeprom"
+      }
+    },
+    {
+      "allow-empty": true,
+      "description": "A captured SPD record for one DIMM; an empty value means no record.",
+      "identity": false,
+      "kind": "file",
+      "name": "spd-eeprom",
+      "target": {
+        "form": "list",
+        "kind": "machine",
+        "property": "spd-eeprom"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The Fuel L1's station address image.",
+      "identity": true,
+      "kind": "file",
+      "name": "fuel-mac-eeprom",
+      "size": 512,
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "fuel-mac-eeprom"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "A captured board record for one component of an expansion controller, keyed CONTROLLER/COMPONENT.",
+      "identity": true,
+      "kind": "file",
+      "name": "controller-board-eeprom",
+      "target": {
+        "form": "keyed-list",
+        "kind": "machine",
+        "property": "controller-board-eeprom"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The brick serial one expansion controller reports; it beats brick-serial for that controller.",
+      "identity": true,
+      "kind": "text",
+      "max-length": 32,
+      "min-length": 1,
+      "name": "controller-brick-serial",
+      "pattern": "[!-+--~]+",
+      "target": {
+        "form": "keyed-list",
+        "kind": "machine",
+        "property": "controller-brick-serial"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The brick serial every system controller reports.",
+      "identity": true,
+      "kind": "text",
+      "max-length": 32,
+      "min-length": 1,
+      "name": "brick-serial",
+      "pattern": "[!-+--~]+",
+      "target": {
+        "device": "sgi-l1",
+        "form": "plain",
+        "kind": "global",
+        "property": "brick-serial"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The L1's debug switch word.",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 65535,
+      "minimum": 0,
+      "name": "debug-switches",
+      "target": {
+        "device": "sgi-l1",
+        "form": "plain",
+        "kind": "global",
+        "property": "debug-switches"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "Accept the L1 commands the model marks synthetic.",
+      "identity": false,
+      "kind": "boolean",
+      "name": "origin300-l1cmd-compat",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "origin300-l1cmd-compat"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The Bedrock board identity response.",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 18446744073709551615,
+      "minimum": 0,
+      "name": "board-id-word",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "board-id-word"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The Bedrock revision.",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 255,
+      "minimum": 0,
+      "name": "bedrock-revision",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "bedrock-revision"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The L1's reported type character.",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 255,
+      "minimum": 0,
+      "name": "l1-type-code",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "l1-type-code"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The L1's reported firmware revision, MAJOR.MINOR.PATCH.",
+      "identity": false,
+      "kind": "text",
+      "max-length": 32,
+      "min-length": 5,
+      "name": "l1-revision",
+      "pattern": "[0-9]+\\.[0-9]+\\.[0-9]+",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "l1-revision"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The IOC3 PCI subsystem id.",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 65535,
+      "minimum": 0,
+      "name": "ioc3-subsystem-id",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "ioc3-subsystem-id"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The Octane board's flash select input.",
+      "identity": false,
+      "kind": "boolean",
+      "name": "flash-select",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "flash-select"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The Octane board's flash strap input.",
+      "identity": false,
+      "kind": "boolean",
+      "name": "flash-strap",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "flash-strap"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The processor revision register of the offering's part (the part's own -cpu property: r10000-prid, r12000-prid, r14000-prid or r16000-prid).",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 4294967295,
+      "minimum": 0,
+      "name": "prid",
+      "target": {
+        "form": "plain",
+        "kind": "cpu",
+        "property": "prid"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The FPU revision register of the offering's part (the -cpu property r12000-fpu-id).",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 4294967295,
+      "minimum": 0,
+      "name": "fpu-id",
+      "target": {
+        "form": "plain",
+        "kind": "cpu",
+        "property": "fpu-id"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The O2 board's password clear input, whose fitted value is unknown.",
+      "identity": false,
+      "kind": "enum",
+      "name": "password-clear-input",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "password-clear-input"
+      },
+      "values": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "allow-empty": false,
+      "description": "The O2 ROM part's software data protection at power-up, whose value is unknown.",
+      "identity": false,
+      "kind": "enum",
+      "name": "rom-at29c040a-protection",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "rom-at29c040a-protection"
+      },
+      "values": [
+        "disabled",
+        "enabled"
+      ]
+    },
+    {
+      "allow-empty": false,
+      "description": "The O2 ROM part's lower boot block lock at power-up, whose state is unknown.",
+      "identity": false,
+      "kind": "enum",
+      "name": "rom-at29c040a-lower-lock",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "rom-at29c040a-lower-lock"
+      },
+      "values": [
+        "unlocked",
+        "locked"
+      ]
+    },
+    {
+      "allow-empty": false,
+      "description": "The O2 ROM part's upper boot block lock at power-up, whose state is unknown.",
+      "identity": false,
+      "kind": "enum",
+      "name": "rom-at29c040a-upper-lock",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "rom-at29c040a-upper-lock"
+      },
+      "values": [
+        "unlocked",
+        "locked"
+      ]
+    },
+    {
+      "allow-empty": false,
+      "description": "A captured O2 identity chip image.",
+      "identity": true,
+      "kind": "file",
+      "name": "identity-eprom-file",
+      "size": 128,
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "identity-eprom-file"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "The system controller's DIP switch word, as asserted bits.",
+      "identity": false,
+      "kind": "integer",
+      "maximum": 255,
+      "minimum": 0,
+      "name": "dip-switches",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "elsc-dip-switches"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "A debug input: fit the Hub's junk-bus UART, a bring-up serial port no shipped machine is known to have.",
+      "identity": false,
+      "kind": "boolean",
+      "name": "junk-uart",
+      "target": {
+        "form": "plain",
+        "kind": "machine",
+        "property": "junk-uart"
+      }
+    }
+  ],
   "topologies": [
     {
       "board": "ip45",

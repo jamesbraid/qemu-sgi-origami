@@ -34,10 +34,9 @@ layer:
         launch_recipe: ip32
         prom_dialogue: none
         default_cpu_model: R12000
-        disk_bus: aic0.0
         netboot_adapter: mace-ethernet
         default_topology: o2
         firmware_bytes: 524288
-        identity_inputs: [identity-test-serial, identity-eprom-file, identity-status, password-clear-input]
+        identity_inputs: [identity-eprom-file, password-clear-input]
         supported_guests: [irix]
         install_media: [disk-image, netboot]

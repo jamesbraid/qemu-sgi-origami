@@ -2033,7 +2033,6 @@
       "console": "l1-uart",
       "default_cpu_model": "R12000",
       "default_topology": "origin3200",
-      "disk_bus": "scsi.0",
       "install_media": [
         "netboot"
       ],

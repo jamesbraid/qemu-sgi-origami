@@ -21,6 +21,7 @@ from .model_compile import CompileError, compile_model
 from .registry import (
     DEVICES, HOSTID_SOURCES, clock_record, ip53_runtime_profile,
 )
+from .settings import SETTING_DEFINITIONS, offering_settings
 from .system_model import model_variant
 
 
@@ -1072,62 +1073,6 @@ def _resources_for(topology: dict, harness: dict, product: dict,
     return resources
 
 
-def _hardware_inputs(topology: dict) -> list[dict]:
-    """Launch inputs this configuration binds by name. Overrides of the
-    catalogue's own identity and board values are listed separately, in
-    `_overrides`.
-    """
-    bindings = []
-    for controller in topology["controllers"]:
-        record = controller.get("l1", {})
-        if "mac_eeprom_input" in record:
-            bindings.append(dict(record["mac_eeprom_input"]))
-    return sorted(bindings, key=lambda entry: entry["option"])
-
-
-# The -cpu properties each processor part takes for the values the
-# catalogue describes (target/mips/r10k_cpu.c); the machine applies the
-# catalogue's values through them unless -cpu names one.
-_CPU_OVERRIDES = {
-    "R10000": ("r10000-prid",),
-    "R12000": ("r12000-prid", "r12000-fpu-id"),
-    "R14000": ("r14000-prid",),
-    # Its board's reset-mode word is not overridable.
-    "R16000": ("r16000-prid",),
-}
-
-
-def _overrides(topology: dict, part: str) -> list[dict]:
-    """Every catalogue identity or board value this configuration lets a
-    launch override, and where: a `-M` property, or a `-cpu` property of
-    its processor part @part. The machine refuses a board override its
-    configuration does not bind, so each is listed only where one is."""
-    if topology["generation"] == "IP32":
-        # The O2 takes its station address from -nic and the identity chip,
-        # so only the emu-id, which marks its clock, applies.
-        return [{"property": "emu-id", "target": "machine"}]
-    machine = ["mac", "emu-id", "serial", "hostid"]
-    if any(node["asic_kind"] == "BEDROCK" for node in topology["nodes"]):
-        machine += ["board-id-word", "bedrock-revision"]
-    if any("l1" in controller for controller in topology["controllers"]):
-        machine += ["l1-type-code", "l1-revision"]
-    if any(board["board_kind"] in ("IO8", "FUEL") and board.get("populated")
-           for board in topology["io_boards"]):
-        machine += ["ioc3-subsystem-id"]
-    # The Origin 2000's plain BaseIO card may be built as the BaseIO-G
-    # instead (baseio-preset); a topology whose own record is the BaseIO-G
-    # builds that whatever the property says, so it is not offered there.
-    if any(board["board_kind"] == "BASEIO" and board.get("populated", True)
-           for board in topology["io_boards"]):
-        machine += ["baseio-preset"]
-    if topology["generation"] == "IP30":
-        machine += ["flash-select", "flash-strap"]
-    return ([{"property": name, "target": "machine"}
-             for name in sorted(machine)] +
-            [{"property": name, "target": "cpu"}
-             for name in _CPU_OVERRIDES[part]])
-
-
 def _machine_options(machine_name: str, topology: dict, nodes: int,
                      processor: str | None = None,
                      population: tuple[int, ...] | None = None) -> str:
@@ -1143,6 +1088,11 @@ def _machine_options(machine_name: str, topology: dict, nodes: int,
     if population is not None:
         options += ",population=" + ":".join(str(c) for c in population)
     return options if processor is None else f"{options},processor={processor}"
+
+
+# Resource kinds the offering's settings replace: the identity and SPD
+# records a caller may give.
+_SETTING_RESOURCES = ("identity-eeprom", "spd-eeprom")
 
 
 def _offering_id(topology: dict, cpu_population: tuple[int, ...],
@@ -1489,7 +1439,8 @@ def _offerings_for(model: dict, topology: dict,
                    if launch_recipe in ("ip53-discovery", "ip32") else {}),
                 "init-inputs": init_inputs,
                 "storage": storage,
-                "resources": resources,
+                "resources": [item for item in resources
+                              if item["kind"] not in _SETTING_RESOURCES],
                 "scsi-adapters": scsi_adapters,
                 "consoles": consoles,
                 "networks": networks,
@@ -1497,11 +1448,7 @@ def _offerings_for(model: dict, topology: dict,
                 **({"launch-recipe": launch_recipe}
                    if launch_recipe is not None else {}),
                 "prom-dialogue": harness["prom_dialogue"],
-                "disk-bus": harness["disk_bus"],
                 "netboot-adapter": harness["netboot_adapter"],
-                "identity-inputs": list(identity_inputs),
-                "hardware-inputs": _hardware_inputs(topology),
-                "overrides": _overrides(topology, assembly["kind"]),
                 **diagnostic,
                 "supported-guests": list(harness["supported_guests"]),
                 "install-media": list(harness["install_media"]),
@@ -1513,8 +1460,6 @@ def _offerings_for(model: dict, topology: dict,
                                           harness["default_cpu_model"])
                                       if choice["default"]
                                       else assembly["kind"]),
-                "synthesized-firmware-toggle": harness.get(
-                    "has_synthesized_firmware_toggle", False),
                 "needs-debug-leds-off": harness.get(
                     "needs_debug_leds_off", False),
                 "hostid-source": HOSTID_SOURCES[machine_name],
@@ -1528,6 +1473,13 @@ def _offerings_for(model: dict, topology: dict,
                     topology, machine_name, launch_recipe, consoles,
                     DEVICES[machine_name]["tablet"]),
             })
+            offering = offerings[-1]
+            settings, groups = offering_settings(
+                {**offering, "resources": resources}, topology,
+                assembly.get("prid"), assembly.get("fpu_prid"),
+                choice.get("board_id_word"))
+            offering["settings"] = settings
+            offering["setting-groups"] = groups
     return offerings
 
 
@@ -1565,6 +1517,7 @@ def render_catalogue_json(models: list[dict], *,
         # them with .get().
         "topologies": [_strip_none(topology) for topology in topologies],
         "offerings": [_strip_none(offering) for offering in offerings],
+        "setting-definitions": SETTING_DEFINITIONS,
         "references": sorted(references or [], key=lambda row: row["name"]),
     }
     return json.dumps(catalogue, indent=2, sort_keys=True) + "\n"

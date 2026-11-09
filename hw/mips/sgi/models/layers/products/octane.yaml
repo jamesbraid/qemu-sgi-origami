@@ -119,7 +119,6 @@ layer:
         console: ioc3-serial-a
         prom_dialogue: none
         default_cpu_model: R10000
-        disk_bus: scsi
         netboot_adapter: ioc3-ethernet
         default_topology: octane
         # The candidate part's 1 MiB array (docs/system/mips/sgi/ip30.rst,
