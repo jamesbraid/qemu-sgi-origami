@@ -2955,7 +2955,7 @@ static void test_ip53_runtime_permission_refusals(void)
         /* The runtime profile applies by itself; there is no option. */
         { "origin350,ip53-experimental=on", "2G", "4", "R16000",
           "ip53-experimental' not found", false },
-        { "onyx4-host,topology=onyx4-host-g2n", "8G", "4", "R16000",
+        { "onyx4,topology=onyx4-g2n", "8G", "4", "R16000",
           "unknown topology", false },
         { "origin350,topology=origin300-pci-expansion", "2G", "4", "R16000",
           "unknown topology", false },
@@ -3021,8 +3021,8 @@ static void test_ip53_runtime_permission_refusals(void)
 static void test_sgi_catalogue_references(void)
 {
     static const char *const names[] = {
-        "onyx350-base", "onyx350-observed-module", "onyx4-host-g2",
-        "onyx4-host-g2n", "origin350-reference",
+        "onyx350-base", "onyx350-observed-module", "onyx4-g2",
+        "onyx4-g2n", "origin350-reference",
         "tezro-rack-two-enclosure", "tezro-reference",
     };
     QTestState *qts = qtest_init("-M none");
@@ -3295,10 +3295,10 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start(const char *machine,
 
 static void ip53_runtime_test_stop(IP53RuntimeTestFixture *fixture);
 
-static void test_onyx4_host_ip53_compatibility_construction(void)
+static void test_onyx4_ip53_compatibility_construction(void)
 {
     IP53RuntimeTestFixture *fixture = ip53_runtime_test_start_with_binary_profile(
-        NULL, "onyx4-host", NULL, "4", "8G",
+        NULL, "onyx4", NULL, "4", "8G",
         "0x00edb385");
     QTestState *qts = fixture->qts;
     g_autofree char *pic = qom_child_type(qts, "/machine", "pic-pic");
@@ -3939,7 +3939,7 @@ static void test_ip53_populations_fit_their_r16000s(void)
           16 * MiB, 1000000000, 2 },
         { "tezro,topology=tezro-rack-ip59", "2", "4G", 0x00edb385,
           16 * MiB, 1000000000, 2 },
-        { "onyx4-host,topology=onyx4-host", "4", "8G", 0x00edb385,
+        { "onyx4,topology=onyx4", "4", "8G", 0x00edb385,
           16 * MiB, 1000000000, 4 },
     };
 
@@ -5427,7 +5427,7 @@ static void test_ip53_widget_zero_reports_revision_three(void)
         { "tezro,topology=tezro-one-processor", "1", "4G", "0x009bad85" },
         { "tezro,topology=tezro-ip53", "4", "4G", "0x009bad85" },
         { "tezro,topology=tezro-rack-ip53", "1", "4G", "0x009bad85" },
-        { "onyx4-host,topology=onyx4-host", "4", "8G", "0x00edb385" },
+        { "onyx4,topology=onyx4", "4", "8G", "0x00edb385" },
     };
 
     for (size_t i = 0; i < G_N_ELEMENTS(compositions); i++) {
@@ -5920,8 +5920,8 @@ static void test_ip53_runtime_cpu_property_refusals(void)
             { "tezro,topology=tezro-ip53,board=ip35", "4G", "4",
               "Property 'tezro-machine.board' not found" },
             /* No source gives the Onyx 4 host an IP53 processor tuple. */
-            { "onyx4-host,board=ip53", "8G", "4",
-              "Property 'onyx4-host-machine.board' not found" },
+            { "onyx4,board=ip53", "8G", "4",
+              "Property 'onyx4-machine.board' not found" },
             /* No one-processor IP59 board identity is known. */
             { "tezro,topology=tezro-ip59", "4G", "1",
               "topology 'tezro-ip59' accepts 2 or 4 CPUs, not 1" },
@@ -14468,8 +14468,8 @@ int main(int argc, char **argv)
                    test_ip53_runtime_option_is_gone);
     qtest_add_func("sn/builder/ip53-runtime-construction",
                    test_ip53_runtime_construction);
-    qtest_add_func("sn/builder/onyx4-host-ip53-compatibility-construction",
-                   test_onyx4_host_ip53_compatibility_construction);
+    qtest_add_func("sn/builder/onyx4-ip53-compatibility-construction",
+                   test_onyx4_ip53_compatibility_construction);
     qtest_add_func("sn/builder/tezro-two-four-processor-board",
                    test_tezro_two_four_processor_board_builds_two_pic_hosts);
     qtest_add_func("sn/builder/tezro-board-follows-topology",

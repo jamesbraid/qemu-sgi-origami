@@ -11,7 +11,7 @@ board the Onyx4 host path stands on. It is an IP35-platform board: a
 :term:`Bedrock` node controller, a :term:`PIC` instead of the :term:`XBridge`, and an IO9 PCI
 board carrying :term:`IOC4`, an ISP12160 SCSI controller and a BCM5701
 Ethernet controller. QEMU models four products on it, ``origin350``,
-``onyx350``, ``tezro`` and ``onyx4-host``
+``onyx350``, ``tezro`` and ``onyx4``
 (``hw/mips/sgi/sn1.c``). Each node is an ``sgi-sn1-node``
 (``hw/mips/sgi/sn1-node.c``), and the shared Scalable Node builder in
 ``hw/mips/sgi/sn-machine.c`` assembles the nodes from the compiled
@@ -131,8 +131,8 @@ Products
        two/four-processor board, ``030-1956-002`` or ``030-1959-003``
        revision C with an 800 MHz part; the L1's generic record on one
        processor
-   * - ``onyx4-host``
-     - ``onyx4-host`` (default)
+   * - ``onyx4``
+     - ``onyx4`` (default)
      - four R16000, 1 GHz, 16 MiB
      - 8 GiB
      - IP59 ``030-1989-003`` revision C on the IP53 board path, the only
@@ -141,7 +141,7 @@ Products
 The IP53 machines accept only ``-cpu R16000``. ``-kernel`` is refused.
 ``onyx350`` and ``tezro`` have no default topology and refuse a launch
 that does not name one. Every IP53 topology has an IP59 twin named with
-``-ip59``; ``onyx4-host`` has only the IP59 (:ref:`sgi-ip59-profiles`).
+``-ip59``; ``onyx4`` has only the IP59 (:ref:`sgi-ip59-profiles`).
 The products are
 described in :ref:`sgi-ip35-ip53`.
 
@@ -475,7 +475,7 @@ Selected inputs
      - ``0x009bad85``
      - widget 15
      - 66,666,667 Hz
-   * - ``onyx4-host``
+   * - ``onyx4``
      - four 1 GHz R16000
      - 8 GiB
      - 16 MiB
@@ -675,10 +675,10 @@ as the Onyx 4 host is *inferred*.
 
 The model maps this IP59 board onto the IP53 board path, its PIC and its
 IO9 wiring, an *approximation*: no source describes the IP59 PIC, its
-revision or its routes. ``onyx4-host`` builds only this board: no source
+revision or its routes. ``onyx4`` builds only this board: no source
 gives the Onyx 4 host an IP53 processor tuple, so no IP53 topology is
 offered there. It builds no G2, G2N or NUMAlink peer. The
-``onyx4-host-g2`` and ``onyx4-host-g2n`` compositions are reference
+``onyx4-g2`` and ``onyx4-g2n`` compositions are reference
 models that no machine builds.
 
 .. _sgi-ip35-ip53-io9:
@@ -813,7 +813,7 @@ IP59.
 
 Each IP53 topology also has an IP59 twin, named with ``-ip59`` in place
 of ``-ip53``, at the same memory. The IP53 stays the default of
-``origin350``. ``onyx4-host`` builds only the IP59, which is therefore
+``origin350``. ``onyx4`` builds only the IP59, which is therefore
 its default.
 
 .. list-table::
@@ -839,8 +839,8 @@ its default.
      - ``tezro``, first enclosure of a rack
      - 4 GiB
      - ``ip53`` (default), ``ip59`` with two or four processors
-   * - ``onyx4-host``
-     - ``onyx4-host``
+   * - ``onyx4``
+     - ``onyx4``
      - 8 GiB
      - ``ip59`` only
    * - ``origin3900``
@@ -944,8 +944,8 @@ the start of ``-M`` change:
      - ``tezro,topology=tezro-ip53``, with ``-smp 4``
      - four processors, 4096 MB
    * - Onyx 4 host
-     - ``onyx4-host,topology=onyx4-host,nodes=1``
-     - ``onyx4-host``
+     - ``onyx4,topology=onyx4,nodes=1``
+     - ``onyx4``
      - four processors, 8192 MB
 
 Booting IRIX from here needs a disk on ``scsi.0``, the first onboard SCSI

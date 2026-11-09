@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "d600f85f979b3e2fbe78c4001b22571c1bad7b1fc9fdabcaa4277baf34924f82"
+    "a18ee51b7a687af3e75872e0fb622f903483c70e74a5436f6bee18e6698aced6"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -43,13 +43,13 @@ def _is_ip35_offering(offering):
 
 
 class GeneratorTests(unittest.TestCase):
-    def test_onyx4_host_builds_only_the_ip59(self):
+    def test_onyx4_builds_only_the_ip59(self):
         catalogue = json.loads(
             render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"])
         [topology] = [item for item in catalogue["topologies"]
-                      if item["name"] == "onyx4-host"]
+                      if item["name"] == "onyx4"]
 
-        self.assertEqual(topology["product"], "onyx4-host")
+        self.assertEqual(topology["product"], "onyx4")
         self.assertEqual(topology["board"], "ip59")
         self.assertEqual(len(topology["nodes"]), 1)
         node = topology["nodes"][0]
@@ -619,7 +619,7 @@ class StorageTests(unittest.TestCase):
         image, so a new machine's NVRAM file starts from it too. A
         selected system Timekeeper turns that fixture off. The IP53
         DS1744-compatible profiles start their backed image from zeroes."""
-        ds1744_products = {"origin350", "onyx350", "onyx4-host", "tezro"}
+        ds1744_products = {"origin350", "onyx350", "onyx4", "tezro"}
         for offering in self.catalogue["offerings"]:
             nvram = {item["initial"] for item in offering["storage"]
                      if item["name"].startswith("nvram")
@@ -686,7 +686,7 @@ class StorageTests(unittest.TestCase):
     def test_ip53_offerings_list_the_io9_isp12160(self):
         for offering in self.catalogue["offerings"]:
             if offering["product"] not in {"origin350", "onyx350", "tezro",
-                                           "onyx4-host"}:
+                                           "onyx4"}:
                 continue
             with self.subTest(options=offering["machine-options"]):
                 self.assertEqual(offering["scsi-adapters"], [
@@ -747,7 +747,7 @@ class StorageTests(unittest.TestCase):
     def test_ip53_offerings_list_the_io9_bcm5701(self):
         for offering in self.catalogue["offerings"]:
             if offering["product"] not in {"origin350", "onyx350", "tezro",
-                                           "onyx4-host"}:
+                                           "onyx4"}:
                 continue
             with self.subTest(options=offering["machine-options"]):
                 self.assertEqual(offering["networks"], [{
@@ -947,7 +947,7 @@ class FuelTests(unittest.TestCase):
             # The IP59 boards all share the 1 GHz, 16 MB word.
             "origin350-ip59": 0x4aedb385,
             "onyx350-ip59": 0x4aedb385,
-            "onyx4-host": 0x4aedb385,
+            "onyx4": 0x4aedb385,
             "tezro-ip59": 0x4aedb385,
             "tezro-rack-ip59": 0x4aedb385,
         }
@@ -1001,7 +1001,7 @@ class FuelTests(unittest.TestCase):
                     else ip53_words["origin350-ip59"]})
                 continue
             if product not in ("origin300", "fuel", "origin350",
-                               "onyx350", "tezro", "onyx4-host"):
+                               "onyx350", "tezro", "onyx4"):
                 self.assertNotIn("ip35-firmware", topology)
                 continue
             with self.subTest(topology=topology["name"]):
@@ -1513,7 +1513,7 @@ class Origin350ClockPolicyTests(unittest.TestCase):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
         names = {"origin350-ip53", "origin350-ip59", "onyx350-ip53",
-                 "onyx350-ip59", "onyx4-host", "tezro-one-processor",
+                 "onyx350-ip59", "onyx4", "tezro-one-processor",
                  "tezro-ip53", "tezro-ip59", "tezro-rack-ip53",
                  "tezro-rack-ip59"}
         topologies = [(row["name"], row) for row in catalogue["topologies"]

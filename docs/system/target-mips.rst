@@ -17,7 +17,7 @@ machine types are emulated:
 
 -  SGI machines: \"origin200\", \"origin2000\", \"onyx2\",
    \"origin300\", \"fuel\", \"origin350\", \"onyx350\", \"tezro\",
-   \"onyx4-host\", \"octane\", \"octane2\" and \"o2\".
+   \"onyx4\", \"octane\", \"octane2\" and \"o2\".
    These machines need the 64-bit big-endian
    emulator.
 

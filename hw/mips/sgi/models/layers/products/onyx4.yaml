@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# One-node Onyx 4 host with an IP59 node board.
+# One-node Onyx 4 UltimateVision boot host (IP59).
 layer_version: 1
 sources:
   ip59-node-board: "web:irixnet-thread-2263  module 001c01 of the captured system: Part:030-1989-003;Name:IP59_4CPU;Revision:-C, four 1.0 GHz R16000 revision 3.0 with 16 MB secondary cache"
@@ -14,32 +14,32 @@ sources:
   ip53-l1-contract: "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected local controller 0x37 input and limits"
   ip53-l1-review: "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected local controller 0x37 input and limits"
   ip53-clock-year-review: "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected fresh-clock seed and limits"
-  onyx4-host-hinv: "web:irixnet-thread-2263  source date 2021-06-19, module 001c01 IP59_4CPU CPU, memory, and IO9 inventory"
-  onyx4-host-guide: "SGI Onyx4 UltimateVision User's Guide 007-4634-002 printed pages 21-23: host boot module retains IO9"
-  onyx4-host-contract: "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host candidate and compatibility limit"
+  onyx4-hinv: "web:irixnet-thread-2263  source date 2021-06-19, module 001c01 IP59_4CPU CPU, memory, and IO9 inventory"
+  onyx4-guide: "SGI Onyx4 UltimateVision User's Guide 007-4634-002 printed pages 21-23: host boot module retains IO9"
+  onyx4-contract: "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host candidate and compatibility limit"
 layer:
   kind: product
-  id: onyx4-host
+  id: onyx4
   requires: {assembly: ip53}
   topology:
     min_nodes: 1
     max_nodes: 1
     supported_cpu_populations: [[4]]
     provenance: derived
-    sources: [onyx4-host-hinv, onyx4-host-guide, onyx4-host-contract,
+    sources: [onyx4-hinv, onyx4-guide, onyx4-contract,
               ip53-runtime-review]
   population:
     nodes: 1
     cpus_per_node: [4]
     provenance: derived
-    sources: [onyx4-host-hinv, onyx4-host-contract]
+    sources: [onyx4-hinv, onyx4-contract]
   cpu_selection:
     default: {clock_mhz: 1000, cache_mib: 16}
     slots: [cpu0, cpu1, cpu2, cpu3]
   memory_kits_per_node: [kit-8192-at-banks-0-7-onyx350-observed]
   data:
     machine:
-      name: Onyx 4 host with an IP59 node board
+      name: Onyx 4 UltimateVision boot host (IP59)
       model_role: emulation-target
       notes: >-
         One-node serial host selected from public inventory module 001c01, an
@@ -63,9 +63,9 @@ layer:
         provenance: derived
         sources: [ip53-runtime-review, ip53-flash-review]
       emulation:
-        machine_name: onyx4-host
+        machine_name: onyx4
         display_description: Onyx 4 host, IP59 node board
-        profile: ip59-onyx4-host
+        profile: ip59-onyx4
         lifecycle: implemented
         emulator_constraints:
           accepted_bank_sizes_mib: [8192]
@@ -160,7 +160,7 @@ layer:
           requires_boot_flash: false
           requires_network_identity: false
           discovery_prerequisites: []
-        default_topology: onyx4-host-ip59
+        default_topology: onyx4-ip59
         requires_per_node_flash: false
         has_managed_boot_flash: true
         operator_firmware: true

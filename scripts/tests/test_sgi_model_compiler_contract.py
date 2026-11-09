@@ -278,7 +278,7 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
             _processor(model, cpu)
 
     def test_r16000_reset_word_selects_its_cache(self):
-        model = {"composition": {"product": "onyx4-host"},
+        model = {"composition": {"product": "onyx4"},
                  "machine": {"board_ip": "IP53"}}
         cpu = {"id": "cpu0", "hardware_kind": "r16000", "identity": {
             "clock_mhz": 1000, "cache_mib": 8,
@@ -890,7 +890,7 @@ class Ip53CpuContextTests(unittest.TestCase):
                 ("tezro/two-four-processor", 0x589bad85, 700_000_000,
                  0x009bad85),
                 ("tezro-rack", 0x589bad85, 700_000_000, 0x009bad85),
-                ("onyx4-host", 0x4aedb385, 1_000_000_000, 0x00edb385),
+                ("onyx4", 0x4aedb385, 1_000_000_000, 0x00edb385),
                 ("origin350/ip59", 0x4aedb385, 1_000_000_000, 0x00edb385),
                 ("tezro/two-four-processor-ip59", 0x4aedb385,
                  1_000_000_000, 0x00edb385)):
@@ -3811,7 +3811,7 @@ class CatalogueJsonTests(unittest.TestCase):
 
     def test_no_ip53_offering_asks_for_cpu_properties(self):
         profile_names = (
-            "origin350", "onyx350", "onyx4-host",
+            "origin350", "onyx350", "onyx4",
             "tezro/one-processor", "tezro/two-four-processor", "tezro-rack",
         )  # each composition's default variant, or the one named
         catalogue = json.loads(render_catalogue_json(
@@ -3827,7 +3827,7 @@ class CatalogueJsonTests(unittest.TestCase):
             sorted((item["topology"], tuple(item["cpus-per-node"]))
                    for item in offerings),
             sorted([("origin350-ip53", (4,)), ("origin350-ip53", (4,)),
-                    ("onyx350-ip53", (4,)), ("onyx4-host", (4,)),
+                    ("onyx350-ip53", (4,)), ("onyx4", (4,)),
                     ("tezro-one-processor", (1,)), ("tezro-ip53", (2,)),
                     ("tezro-ip53", (4,)), ("tezro-ip53", (4,)),
                     ("tezro-ip53", (4,)),

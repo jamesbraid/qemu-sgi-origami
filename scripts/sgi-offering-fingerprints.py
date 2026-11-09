@@ -186,11 +186,14 @@ def record_hash(catalogue, offering, topology=None):
     topology = topology or topology_named(catalogue, offering)
     part = {k: offering[k] for k in OFFERING_FIELDS if k in offering}
     top = {k: v for k, v in topology.items() if k not in TOPOLOGY_IGNORED}
-    return sha(canonical([part, top]))
+    # The one product renamed (onyx4-host to onyx4) appears in its records.
+    return sha(canonical([part, top]).replace("onyx4-host", "onyx4"))
 
 
 def normalise(text, directory):
     text = text.replace(directory, "<dir>")
+    # The one machine type renamed with its product (onyx4-host to onyx4).
+    text = text.replace("onyx4-host-machine", "onyx4-machine")
     return re.sub(r"#block\d+", "#blockN", text)
 
 

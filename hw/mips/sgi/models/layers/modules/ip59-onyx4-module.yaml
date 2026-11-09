@@ -4,11 +4,11 @@ layer_version: 1
 sources:
   ip59-node-board: "web:irixnet-thread-2263  module 001c01 of the captured system: Part:030-1989-003;Name:IP59_4CPU;Revision:-C, four 1.0 GHz R16000 revision 3.0 with 16 MB secondary cache"
   ip53-host-compatibility-mapping: "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  selected IP53 guest-board mapping for the Onyx 4 host candidate"
-  onyx4-host-hinv: "web:irixnet-thread-2263  module 001c01 IP59_4CPU, widget 15 carrier, IO9 and HUB inventory in the Onyx 350-labelled system"
+  onyx4-hinv: "web:irixnet-thread-2263  module 001c01 IP59_4CPU, widget 15 carrier, IO9 and HUB inventory in the Onyx 350-labelled system"
   sn-family-closure-origin350: "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  selected Origin 350 module topology and explicit physical limits"
 layer:
   kind: module
-  id: ip59-onyx4-host-module
+  id: ip59-onyx4-module
   requires: {architecture: sn1, assembly: ip53}
   data:
     components:
@@ -28,7 +28,7 @@ layer:
         parent: ip59-board
         identity: {hardware_revision: 2, ni_revision: 2, widget_revision: 2, clock_mhz: 200}
         provenance: derived
-        sources: [onyx4-host-hinv, "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  inherited Bedrock identity for the IP59 host compatibility mapping"]
+        sources: [onyx4-hinv, "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip59-profiles  inherited Bedrock identity for the IP59 host compatibility mapping"]
         notes: >-
           The public inventory reports HUB revision 2 at 200 MHz for module
           001c01. Mapping that report to Bedrock revision 2 is a compatibility
@@ -95,7 +95,7 @@ layer:
         parent: ip59-board
         identity: {notes: "IP53 compatibility carrier selection; the Onyx 4 host carrier identity is unknown."}
         provenance: observed-hardware
-        sources: [onyx4-host-hinv, ip53-host-compatibility-mapping]
+        sources: [onyx4-hinv, ip53-host-compatibility-mapping]
         notes: >-
           The public inventory places 2U_INT_53 at XIO widget 15 of module
           001c01 in an Onyx 350-labelled system. Its physical
@@ -108,7 +108,7 @@ layer:
         parent: ip59-board
         identity: {part: "030-1771-006", notes: "Public HINV reports this IO9 part and revision A for module 001c01; assignment of that module to the Onyx 4 host remains inferred."}
         provenance: observed-hardware
-        sources: [onyx4-host-hinv, ip53-host-compatibility-mapping]
+        sources: [onyx4-hinv, ip53-host-compatibility-mapping]
         notes: >-
           The public inventory places this IO9 under module 001c01 in an
           Onyx 350-labelled system; its Onyx 4 host assignment is inferred.

@@ -95,7 +95,7 @@ processor, and eight slots on four buses with two or four
 carries two PICs is *inferred* from two buses per PIC.
 
 The model places the PIC wherever the machine profile says. The
-``origin350``, ``onyx350`` and ``onyx4-host`` machines fit one PIC at
+``origin350``, ``onyx350`` and ``onyx4`` machines fit one PIC at
 widget 15. The ``tezro`` machine fits one PIC at widget 15 on its
 ``tezro-rack`` topology and on the one-processor board of its ``tezro``
 topology, and PICs at widgets 11 and 15 on the two/four-processor board.

@@ -7544,12 +7544,12 @@
         4
       ],
       "default-cpu-model": "R16000",
-      "default-topology": "onyx4-host",
+      "default-topology": "onyx4",
       "dimms-per-node": [
         8
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Onyx 4 host with an IP59 node board",
+      "display-name": "Onyx 4 UltimateVision boot host (IP59)",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
@@ -7559,7 +7559,7 @@
         "size": 1476264
       },
       "hardware-inputs": [],
-      "id": "onyx4-host.4",
+      "id": "onyx4.4",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -7570,7 +7570,7 @@
       ],
       "install-media": [],
       "launch-recipe": "ip53-discovery",
-      "machine-options": "onyx4-host,topology=onyx4-host,nodes=1",
+      "machine-options": "onyx4,topology=onyx4,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
           8192
@@ -7643,7 +7643,7 @@
         "id": "r16000-1000mhz-16mb",
         "part": "R16000"
       },
-      "product": "onyx4-host",
+      "product": "onyx4",
       "prom-dialogue": "none",
       "resources": [
         {
@@ -7708,7 +7708,7 @@
       ],
       "supported-guests": [],
       "synthesized-firmware-toggle": false,
-      "topology": "onyx4-host"
+      "topology": "onyx4"
     },
     {
       "console": "ioc3-serial-a",
@@ -30817,13 +30817,13 @@
     {
       "description": "The selected Onyx 350 base compute module supplies boot IO9, CPUs and memory. A G2 attaches as an I/O brick through the host's XIO connector. It adds no compute node. The separate G2N product instead adds a node board, processors and memory over NUMAlink. Graphics internals, G2 widget identity, host ASIC revisions, PCI device numbers and installed DIMMs are unknown or outside this reference.",
       "display-name": "Onyx4 host with G2",
-      "name": "onyx4-host-g2",
+      "name": "onyx4-g2",
       "product": "onyx4"
     },
     {
       "description": "This selected host is an Onyx 350 base compute module with boot IO9. A G2N contributes another node board, two selected processors and memory over NUMAlink. G2N has no boot I/O and cannot run alone. Graphics internals are outside this reference. The guide's G2 brick is an I/O device attached over XIO and is not a compute node. G2N board revision, fabric port numbers, ASIC widgets, PCI device numbers and installed DIMMs are unknown.",
       "display-name": "Onyx4 host with G2N",
-      "name": "onyx4-host-g2n",
+      "name": "onyx4-g2n",
       "product": "onyx4"
     },
     {
@@ -38921,7 +38921,7 @@
           "serial": ""
         }
       ],
-      "name": "onyx4-host",
+      "name": "onyx4",
       "node-populations": [
         {
           "cables": [],
@@ -39039,7 +39039,7 @@
           "xio-attachment-index": 0
         }
       ],
-      "product": "onyx4-host",
+      "product": "onyx4",
       "routers": [],
       "xio-attachments": [
         {

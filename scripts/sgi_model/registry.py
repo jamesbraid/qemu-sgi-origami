@@ -10,7 +10,7 @@ PRODUCT_MODELS = {
     "origin300": "origin300",
     "origin3000": "origin3200",
     "origin350": "origin350",
-    "onyx4-host": "onyx4-host",
+    "onyx4": "onyx4",
     "onyx350": "onyx350",
     "tezro": "tezro",
     "onyx2": "onyx2-rack",
@@ -50,7 +50,7 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin300-pci-expansion",
     "origin350-ip53",
     "origin350-ip59",
-    "onyx4-host",
+    "onyx4",
     "onyx350-ip53",
     "onyx350-ip59",
     "tezro-one-processor",
@@ -87,8 +87,8 @@ REFERENCE_TOPOLOGIES = (
     "onyx350-observed-module",
     "tezro-reference",
     "tezro-rack-two-enclosure",
-    "onyx4-host-g2",
-    "onyx4-host-g2n",
+    "onyx4-g2",
+    "onyx4-g2n",
 )
 
 # The IP53-family runtime profiles: topology name to the QEMU machine name
@@ -97,7 +97,7 @@ REFERENCE_TOPOLOGIES = (
 IP53_RUNTIME_PROFILES = {
     "origin350-ip53": ("origin350", "ip53-origin350"),
     "origin350-ip59": ("origin350", "ip59-origin350"),
-    "onyx4-host": ("onyx4-host", "ip59-onyx4-host"),
+    "onyx4": ("onyx4", "ip59-onyx4"),
     "onyx350-ip53": ("onyx350", "ip53-onyx350"),
     "onyx350-ip59": ("onyx350", "ip59-onyx350"),
     "tezro-one-processor": ("tezro", "tezro-serial-compat"),
