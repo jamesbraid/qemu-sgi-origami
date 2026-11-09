@@ -1,6 +1,28 @@
 {
   "offerings": [
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -29,12 +51,17 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin200",
+      "devices": {
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         2
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel loopback",
       "hardware-inputs": [],
+      "hostid-source": "address",
       "id": "origin200-gigachannel-loopback.1.r10000-180mhz-1mb",
       "identity-inputs": [],
       "init-inputs": [
@@ -131,6 +158,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -144,6 +172,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -155,6 +184,50 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "bringup",
+          "kind": "bring-up",
+          "name": "bringup",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
         }
       ],
       "smp": 1,
@@ -194,6 +267,28 @@
       "topology": "origin200-gigachannel-loopback"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -222,12 +317,17 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin200",
+      "devices": {
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         2
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel loopback",
       "hardware-inputs": [],
+      "hostid-source": "address",
       "id": "origin200-gigachannel-loopback.2.r10000-180mhz-1mb",
       "identity-inputs": [],
       "init-inputs": [
@@ -324,6 +424,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -337,6 +438,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -348,6 +450,50 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "bringup",
+          "kind": "bring-up",
+          "name": "bringup",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
         }
       ],
       "smp": 2,
@@ -387,6 +533,28 @@
       "topology": "origin200-gigachannel-loopback"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -415,12 +583,17 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin200",
+      "devices": {
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         2
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel loopback",
       "hardware-inputs": [],
+      "hostid-source": "address",
       "id": "origin200-gigachannel-loopback.1.r10000-180mhz-2mb",
       "identity-inputs": [],
       "init-inputs": [
@@ -517,6 +690,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -530,6 +704,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -541,6 +716,50 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "bringup",
+          "kind": "bring-up",
+          "name": "bringup",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
         }
       ],
       "smp": 1,
@@ -580,6 +799,28 @@
       "topology": "origin200-gigachannel-loopback"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -608,12 +849,17 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin200",
+      "devices": {
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         2
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel loopback",
       "hardware-inputs": [],
+      "hostid-source": "address",
       "id": "origin200-gigachannel-loopback.2.r10000-180mhz-2mb",
       "identity-inputs": [],
       "init-inputs": [
@@ -710,6 +956,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -723,6 +970,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -734,6 +982,50 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "bringup",
+          "kind": "bring-up",
+          "name": "bringup",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
         }
       ],
       "smp": 2,
@@ -773,6 +1065,28 @@
       "topology": "origin200-gigachannel-loopback"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -801,12 +1115,17 @@
       ],
       "default-cpu-model": "R10000",
       "default-topology": "origin200",
+      "devices": {
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         2
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel loopback",
       "hardware-inputs": [],
+      "hostid-source": "address",
       "id": "origin200-gigachannel-loopback.2.r10000-225mhz-2mb",
       "identity-inputs": [],
       "init-inputs": [
@@ -907,6 +1226,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -920,6 +1240,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -931,6 +1252,50 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "bringup",
+          "kind": "bring-up",
+          "name": "bringup",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
         }
       ],
       "smp": 2,
@@ -970,6 +1335,28 @@
       "topology": "origin200-gigachannel-loopback"
     },
     {
+      "clock": {
+        "default-rtc": "vm",
+        "icount-off": true,
+        "icount-shifts": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rtc": [
+          "host",
+          "vm"
+        ],
+        "vm-needs-icount": false
+      },
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -998,12 +1385,17 @@
       ],
       "default-cpu-model": "R12000",
       "default-topology": "origin200",
+      "devices": {
+        "tablet": true,
+        "usb": false
+      },
       "dimms-per-node": [
         2
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel loopback",
       "hardware-inputs": [],
+      "hostid-source": "address",
       "id": "origin200-gigachannel-loopback.2.r12000-270mhz-4mb",
       "identity-inputs": [],
       "init-inputs": [
@@ -1108,6 +1500,7 @@
       "resources": [],
       "scsi-adapters": [
         {
+          "boot-target": 1,
           "bus": "scsi.0",
           "targets": [
             1,
@@ -1121,6 +1514,7 @@
           "type": "scsi"
         },
         {
+          "boot-target": 1,
           "bus": "scsi.1",
           "targets": [
             1,
@@ -1132,6 +1526,50 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "ioc3_a",
+          "kind": "console",
+          "name": "ioc3-a",
+          "node": 0,
+          "serial": 0
+        },
+        {
+          "chardev": "ioc3_b",
+          "kind": "tablet",
+          "name": "ioc3-b",
+          "node": 0,
+          "serial": 1
+        },
+        {
+          "chardev": "elsc",
+          "kind": "system-controller",
+          "name": "elsc",
+          "node": 0,
+          "serial": 2
+        },
+        {
+          "chardev": "bringup",
+          "kind": "bring-up",
+          "name": "bringup",
+          "node": 0,
+          "serial": 3
+        },
+        {
+          "chardev": "ioc3_a_record",
+          "kind": "record",
+          "name": "ioc3-a-record",
+          "node": 0,
+          "serial": 4
+        },
+        {
+          "chardev": "ioc3_b_record",
+          "kind": "record",
+          "name": "ioc3-b-record",
+          "node": 0,
+          "serial": 5
         }
       ],
       "smp": 2,

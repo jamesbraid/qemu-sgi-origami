@@ -18,7 +18,9 @@ import json
 import re
 
 from .model_compile import CompileError, compile_model
-from .registry import ip53_runtime_profile
+from .registry import (
+    DEVICES, HOSTID_SOURCES, clock_record, ip53_runtime_profile,
+)
 from .system_model import model_variant
 
 
@@ -526,7 +528,8 @@ def _scsi_adapters_for(topology: dict) -> list[dict]:
     """
     if topology["generation"] == "IP32":
         return [{"type": "scsi", "bus": f"aic{index}.0",
-                 "targets": list(range(7)) if index == 0 else []}
+                 "targets": list(range(7)) if index == 0 else [],
+                 **({"boot-target": 1} if index == 0 else {})}
                 for index in range(2)]
     adapters = []
     for board in topology["io_boards"]:
@@ -539,6 +542,9 @@ def _scsi_adapters_for(topology: dict) -> list[dict]:
                 "type": _SCSI_BUS_TYPES.get(kind, "scsi"),
                 "bus": f"scsi.{len(adapters)}",
                 "targets": list(targets),
+                # The PROM boots the first disk, which a launcher puts at
+                # target 1 (the loop id 1 on a Fibre Channel loop).
+                **({"boot-target": 1} if 1 in targets else {}),
             })
     return adapters
 
@@ -1226,6 +1232,79 @@ def _validate_export_profiles(model: dict, topology: dict) -> None:
         raise CompileError("qtest-only PIC profile cannot be exported as a product")
 
 
+def _serial_lines_for(topology: dict, machine_name: str,
+                      launch_recipe: str | None, consoles: list[dict],
+                      tablet: bool) -> list[dict]:
+    """Every serial line a launch backs, with its -serial position, as
+    the machines read them: the console, the system controller's, the
+    second IOC3 port (the tablet's, where a launch drives one), and the
+    lines the machine's transmit records come out on. A line the machine
+    reads that a launch leaves unconnected is listed too, so the
+    positions are complete."""
+    generation = topology["generation"]
+
+    def line(name, chardev, kind, node=0, serial=None, prop=None):
+        return {"name": name, "chardev": chardev, "kind": kind,
+                "node": node,
+                **({"serial": serial} if serial is not None else {}),
+                **({"property": prop} if prop is not None else {})}
+
+    if generation == "IP32":
+        return [line("mace-a", "mace_a", "console", serial=0),
+                line("mace-b", "mace_b", "second-port", serial=1)]
+    if generation == "IP30":
+        return [line("ioc3-a", "ioc3_a", "console", serial=0),
+                line("ioc3-b", "none", "unconnected", serial=1),
+                line("ioc3-a-record", "ioc3_a_record", "record", serial=2)]
+    if launch_recipe == "ip53-discovery":
+        return [line(c["launcher-name"], c["argument"].split(":")[1],
+                     {"console": "console",
+                      "system-controller": "system-controller"}.get(
+                          c["kind"], "second-port"), serial=index)
+                for index, c in enumerate(consoles)]
+    b_kind = "tablet" if tablet else "second-port"
+    if generation == "SN1":
+        lines = [line("l1", "l1", "console" if any(
+                     c["kind"] == "console" and "l1" in c["argument"]
+                     for c in consoles) else "system-controller", serial=0),
+                 line("ioc3-a", "ioc3_a", "second-port", serial=1),
+                 line("ioc3-b", "ioc3_b", b_kind, serial=2),
+                 line("ioc3-a-record", "ioc3_a_record", "record", serial=3),
+                 line("ioc3-b-record", "ioc3_b_record", "record", serial=4)]
+        for c in consoles:
+            if c["kind"] == "system-controller" and c["node"]:
+                lines.append(line(f"l1-node{c['node']}",
+                                  f"l1_node{c['node']}",
+                                  "system-controller", node=c["node"],
+                                  serial=c["line"]))
+        return lines
+    # SN0: node n's block starts at 6n (IOC3 A and B, the system
+    # controller's AUX, the bring-up UART, the two records).
+    lines = [line("ioc3-a", "ioc3_a", "console", serial=0),
+             line("ioc3-b", "ioc3_b", b_kind, serial=1),
+             line("elsc", "elsc", "system-controller", serial=2)]
+    if topology["junk_uart"] != -1:
+        lines.append(line("bringup", "bringup", "bring-up",
+                          node=topology["junk_uart"], serial=3))
+    lines += [line("ioc3-a-record", "ioc3_a_record", "record", serial=4),
+              line("ioc3-b-record", "ioc3_b_record", "record", serial=5)]
+    for module in topology["modules"][1:]:
+        if module["nodes"]:
+            node = module["nodes"][0]
+            lines.append(line(f"elsc-node{node}", f"elsc_node{node}",
+                              "system-controller", node=node,
+                              serial=6 * node + 2))
+    if machine_name in ("origin2000", "onyx2"):
+        # The BaseIO-G's MediaIO ports, bound by the card's own properties.
+        lines += [line("mio-a", "mio_a", "media-io",
+                       prop="sgi-xio-baseio.mio-chardev-a"),
+                  line("mio-b", "mio_b", "media-io",
+                       prop="sgi-xio-baseio.mio-chardev-b"),
+                  line("mio-parallel", "mio_parallel", "media-io",
+                       prop="parallel")]
+    return lines
+
+
 def _offerings_for(model: dict, topology: dict,
                    product_models: dict[str, dict]) -> list[dict]:
     """One offering per node-population row and accepted CPU population
@@ -1386,6 +1465,16 @@ def _offerings_for(model: dict, topology: dict,
                     "has_synthesized_firmware_toggle", False),
                 "needs-debug-leds-off": harness.get(
                     "needs_debug_leds_off", False),
+                "hostid-source": HOSTID_SOURCES[machine_name],
+                "clock": clock_record(machine_name),
+                "devices": {
+                    **{k: v for k, v in DEVICES[machine_name].items()
+                       if k != "audio"},
+                    **({"audio": DEVICES[machine_name]["audio"]}
+                       if "audio" in DEVICES[machine_name] else {})},
+                "serial-lines": _serial_lines_for(
+                    topology, machine_name, launch_recipe, consoles,
+                    DEVICES[machine_name]["tablet"]),
             })
     return offerings
 

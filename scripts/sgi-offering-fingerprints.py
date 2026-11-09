@@ -206,6 +206,10 @@ def record_hash(catalogue, offering, topology=None):
     topology = topology or topology_named(catalogue, offering)
     topology = fit_clock_option(topology, offering)
     part = {k: offering[k] for k in OFFERING_FIELDS if k in offering}
+    # An adapter's boot target was added after the first fingerprint.
+    part["scsi-adapters"] = [
+        {k: v for k, v in adapter.items() if k != "boot-target"}
+        for adapter in part.get("scsi-adapters", [])]
     top = {k: v for k, v in topology.items() if k not in TOPOLOGY_IGNORED}
     # The one product renamed (onyx4-host to onyx4) appears in its records.
     return sha(canonical([part, top]).replace("onyx4-host", "onyx4"))
@@ -439,7 +443,7 @@ def compare(args):
         else:
             matched += 1
     print(f"matched {matched} mismatched {mismatched} of {len(mapping)}")
-    for key, target, qom, record, error in bad:
+    for key, target, qom, record, error in bad[:20]:
         print(f"  {key} -> {target}: qom {'ok' if qom else 'DIFF'}, "
               f"record {'ok' if record else 'DIFF'}"
               + (f", {error}" if error else ""))

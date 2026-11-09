@@ -3119,18 +3119,17 @@
 #     the topology offers more than one.  Unique in the catalogue.
 #     For tests and tools; a person types the parts
 #
-# @hostid-source: what the guest's host id derives from.  Present from
-#     catalogue version 3
+# @hostid-source: what the guest's host id derives from.  Every
+#     offering accepts the four identity inputs ``emu-id``,
+#     ``serial``, ``hostid`` and ``mac`` as ``-M`` properties
 #
-# @clock: how a launch may choose the guest's time.  Present from
-#     catalogue version 3
+# @clock: how a launch may choose the guest's time
 #
 # @devices: the pointing, keyboard and audio devices a launch may
-#     attach.  Present from catalogue version 3
+#     attach.
 #
 # @serial-lines: every serial line a launch backs, in the order the
-#     machine reads their ``-serial`` positions.  Present from
-#     catalogue version 3
+#     machine reads their ``-serial`` positions
 #
 # @settings: the machine inputs a launch may give with ``--set``.
 #     Present from catalogue version 3
@@ -3174,10 +3173,10 @@
             'default-cpu-model': 'str',
             'synthesized-firmware-toggle': 'bool',
             'needs-debug-leds-off': 'bool',
-            '*hostid-source': 'SGIModelHostidSource',
-            '*clock': 'SGIModelClock',
-            '*devices': 'SGIModelDevices',
-            '*serial-lines': ['SGIModelSerialLine'],
+            'hostid-source': 'SGIModelHostidSource',
+            'clock': 'SGIModelClock',
+            'devices': 'SGIModelDevices',
+            'serial-lines': ['SGIModelSerialLine'],
             '*settings': ['SGIModelOfferingSetting'],
             '*setting-groups': ['SGIModelSettingGroup'] } }
 

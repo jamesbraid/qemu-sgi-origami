@@ -107,3 +107,66 @@ def ip53_runtime_profile(model: dict) -> tuple[str, str] | None:
     @model's topology must carry, or None for no such profile."""
     return IP53_RUNTIME_PROFILES.get(
         model.get("composition", {}).get("product"))
+
+
+# What the guest's host id derives from, by QEMU machine name: the system
+# serial text, a serial per module, the station address, or the O2's
+# identity chip.
+HOSTID_SOURCES = {
+    "origin300": "text", "origin350": "text", "origin3000": "text",
+    "onyx350": "text", "onyx4": "text", "tezro": "text",
+    "origin2000": "module", "onyx2": "module",
+    "octane": "address", "octane2": "address", "fuel": "address",
+    "origin200": "address",
+    "o2": "o2",
+}
+
+# The user-facing devices a launch may attach, by QEMU machine name.
+# usb: an OHCI controller to put a keyboard and mouse on (read off each
+# machine's device tree). tablet: a serial line a Wacom tablet can drive,
+# the machines whose second IOC3 port a launch connects. audio: the
+# device, whether it plays and captures, and the board product that fits
+# it where the machine does not always have it.
+DEVICES = {
+    "fuel": {"usb": True, "tablet": True},
+    "origin300": {"usb": True, "tablet": True},
+    "origin3000": {"usb": True, "tablet": True},
+    "origin200": {"usb": False, "tablet": True},
+    "origin2000": {"usb": False, "tablet": True,
+                   "audio": {"device": "sgi-rad1-audio", "output": True,
+                             "input": False, "requires-product": "io6g"}},
+    "onyx2": {"usb": False, "tablet": True,
+              "audio": {"device": "sgi-rad1-audio", "output": True,
+                        "input": False}},
+    "octane": {"usb": False, "tablet": False,
+               "audio": {"device": "sgi-rad1-octane", "output": True,
+                         "input": True}},
+    "octane2": {"usb": False, "tablet": False,
+                "audio": {"device": "sgi-rad1-octane", "output": True,
+                          "input": True}},
+    "o2": {"usb": False, "tablet": False,
+           "audio": {"device": "sgi-mace", "output": True, "input": True}},
+    "origin350": {"usb": False, "tablet": False},
+    "onyx350": {"usb": False, "tablet": False},
+    "onyx4": {"usb": False, "tablet": False},
+    "tezro": {"usb": False, "tablet": False},
+}
+
+_ICOUNT_SHIFTS = list(range(11))
+
+
+def clock_record(machine_name: str) -> dict:
+    """How a launch of @machine_name may choose the guest's time. The O2
+    is accepted only at shift 3 (its identity chip and ec0 fail
+    otherwise), so shift 3 is its default and only shift; counting may be
+    off for the diagnostic that boots an installed disk without it. The
+    Octane keeps the battery clock on the host's time unless asked. Every
+    other machine's counted time runs on the virtual clock."""
+    if machine_name == "o2":
+        return {"default-icount-shift": 3, "icount-shifts": [3],
+                "icount-off": True, "default-rtc": "vm",
+                "rtc": ["host", "vm"], "vm-needs-icount": False}
+    return {"icount-shifts": list(_ICOUNT_SHIFTS), "icount-off": True,
+            "default-rtc": ("host" if machine_name in ("octane", "octane2")
+                            else "vm"),
+            "rtc": ["host", "vm"], "vm-needs-icount": False}
