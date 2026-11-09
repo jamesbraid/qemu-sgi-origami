@@ -103,7 +103,7 @@ Family summary
      - SN1, IP35 platform, IP53 board
      - NUMAlink 3 on one LINK connector, and a NUMAlink module for more
        than two modules (*established*, :src:`007-4566-001 p. 69`)
-     - ``origin350``, ``onyx350``, ``tezro``, ``onyx4-host``
+     - ``origin350``, ``onyx350``, ``tezro``, ``onyx4``
 
 The Origin 3000 series sizes are 2 to 8 processors in a short rack for
 the Origin 3200, 4 to 32 for the Origin 3400 and 16 to 512 for the
@@ -194,7 +194,7 @@ does not name one: ``onyx350-ip53`` or ``-ip59``, or a ``tezro`` topology.
 A topology name is unique and fixes the node board: ``origin350``,
 ``onyx350``, ``tezro``, ``tezro-rack`` and ``origin3900`` each have an
 ``-ip53`` topology, the IP53 board, and an ``-ip59`` twin, the 1 GHz IP59,
-at the same memory, and ``onyx4-host`` builds only the IP59
+at the same memory, and ``onyx4`` builds only the IP59
 (:ref:`sgi-ip59-profiles`). ``-smp`` picks a population of the one record
 the name selects; the Tezro's one-processor interface board is its own
 topology, ``tezro-one-processor``. An IP53 machine fits the processors each record lists and refuses any other
@@ -732,12 +732,12 @@ content is built from, described under :ref:`sgi-sn-storage`.
      - ``scsi``
      - ``ioc3-ethernet``
      - R10000, R12000
-   * - ``origin350``, ``onyx350``, ``tezro``, ``onyx4-host``
+   * - ``origin350``, ``onyx350``, ``tezro``, ``onyx4``
      - ``l1-uart``
      - ``none``
      - ``scsi.0``
      - ``bcm5701-ethernet`` (``onyx350``, ``tezro``), ``unsupported``
-       (``origin350``, ``onyx4-host``)
+       (``origin350``, ``onyx4``)
      - R16000
 
 .. _sgi-sn-launch-console:
@@ -790,7 +790,7 @@ the PROM's "Install System Software" from a remote directory. The IRIX
 source for SGI PROMs generally. Every offering of the IP27 products, the
 Octane, the Octane2, the Origin 300 and the Fuel lists both
 ``disk-image`` and ``netboot``. The ``onyx350`` and ``tezro`` offerings
-list ``netboot`` alone, and the ``origin350`` and ``onyx4-host``
+list ``netboot`` alone, and the ``origin350`` and ``onyx4``
 offerings list none. ``disk-image`` means a launcher can boot an
 installed disk image.
 

@@ -43,7 +43,7 @@ static void sn1_machine_class_init(ObjectClass *oc, const void *data)
     SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
     const char *product = data;
     bool ip53 = g_str_equal(product, "origin350") ||
-                g_str_equal(product, "onyx4-host") ||
+                g_str_equal(product, "onyx4") ||
                 g_str_equal(product, "onyx350") ||
                 g_str_equal(product, "tezro");
     const SGIModelTopology *t = sgi_model_machine_topology(product);
@@ -90,10 +90,10 @@ static const TypeInfo sn1_machine_types[] = {
         .class_data = "origin350",
     },
     {
-        .name = MACHINE_TYPE_NAME("onyx4-host"),
+        .name = MACHINE_TYPE_NAME("onyx4"),
         .parent = TYPE_SGI_SN_MACHINE,
         .class_init = sn1_machine_class_init,
-        .class_data = "onyx4-host",
+        .class_data = "onyx4",
     },
     {
         .name = MACHINE_TYPE_NAME("onyx350"),

@@ -139,7 +139,7 @@ hw/mips/sgi/models/layers/modules/ip53-onyx350-module.yaml
 hw/mips/sgi/models/layers/modules/ip53-origin350-module.yaml
 hw/mips/sgi/models/layers/modules/ip59-cx-brick.yaml
 hw/mips/sgi/models/layers/modules/ip59-onyx350-module.yaml
-hw/mips/sgi/models/layers/modules/ip59-onyx4-host-module.yaml
+hw/mips/sgi/models/layers/modules/ip59-onyx4-module.yaml
 hw/mips/sgi/models/layers/modules/ip59-origin350-module.yaml
 hw/mips/sgi/models/layers/modules/ip59-tezro-module.yaml
 hw/mips/sgi/models/layers/modules/ir-graphics-module.yaml
@@ -175,9 +175,9 @@ hw/mips/sgi/models/layers/products/onyx350-base.yaml
 hw/mips/sgi/models/layers/products/onyx350.yaml
 hw/mips/sgi/models/layers/products/onyx350-ip59.yaml
 hw/mips/sgi/models/layers/products/onyx350-observed-module.yaml
-hw/mips/sgi/models/layers/products/onyx4-host-g2.yaml
-hw/mips/sgi/models/layers/products/onyx4-host-g2n.yaml
-hw/mips/sgi/models/layers/products/onyx4-host.yaml
+hw/mips/sgi/models/layers/products/onyx4-g2.yaml
+hw/mips/sgi/models/layers/products/onyx4-g2n.yaml
+hw/mips/sgi/models/layers/products/onyx4.yaml
 hw/mips/sgi/models/layers/products/origin200-dual.yaml
 hw/mips/sgi/models/layers/products/origin200-gigachannel-loopback.yaml
 hw/mips/sgi/models/layers/products/origin200-gigachannel.yaml
@@ -213,9 +213,9 @@ hw/mips/sgi/models/onyx2-rack.yaml
 hw/mips/sgi/models/onyx350-base.yaml
 hw/mips/sgi/models/onyx350.yaml
 hw/mips/sgi/models/onyx350-observed-module.yaml
-hw/mips/sgi/models/onyx4-host-g2.yaml
-hw/mips/sgi/models/onyx4-host-g2n.yaml
-hw/mips/sgi/models/onyx4-host.yaml
+hw/mips/sgi/models/onyx4-g2.yaml
+hw/mips/sgi/models/onyx4-g2n.yaml
+hw/mips/sgi/models/onyx4.yaml
 hw/mips/sgi/models/origin200-dual.yaml
 hw/mips/sgi/models/origin200-gigachannel-loopback.yaml
 hw/mips/sgi/models/origin200-gigachannel.yaml

@@ -4034,7 +4034,7 @@ class CompositionVariantTests(unittest.TestCase):
         self.assertNotEqual(check_schema(default, checked), [])
 
     def test_a_composition_without_variants_is_its_own_default(self):
-        model = _resolver.load_system_model(INPUTS / "onyx4-host.yaml")
+        model = _resolver.load_system_model(INPUTS / "onyx4.yaml")
         self.assertNotIn("variant", model["composition"])
         self.assertIsNone(_resolver.model_variant(model))
         self.assertTrue(_resolver.is_default_variant(model))

@@ -23,7 +23,7 @@ static const char *const quirks[] = {
 static const char *const products[] = {
     "octane", "octane2", "o2",
     "origin200", "origin2000", "onyx2",
-    "origin300", "origin3000", "origin350", "onyx4-host", "onyx350",
+    "origin300", "origin3000", "origin350", "onyx4", "onyx350",
     "tezro", "fuel",
 };
 

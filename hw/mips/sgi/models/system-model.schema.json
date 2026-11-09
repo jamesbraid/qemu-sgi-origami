@@ -112,7 +112,7 @@
         "required": ["composition", "machine"],
         "properties": {
           "composition": { "required": ["product"], "properties": {
-            "product": { "enum": ["origin350-ip53", "origin350-ip59", "onyx4-host", "onyx350-ip53", "onyx350-ip59", "tezro-one-processor", "tezro-ip53", "tezro-ip59", "tezro-rack-ip53", "tezro-rack-ip59"] }
+            "product": { "enum": ["origin350-ip53", "origin350-ip59", "onyx4", "onyx350-ip53", "onyx350-ip59", "tezro-one-processor", "tezro-ip53", "tezro-ip59", "tezro-rack-ip53", "tezro-rack-ip59"] }
           } },
           "machine": {
             "required": ["generation", "harness", "emulation"],
@@ -127,7 +127,7 @@
               "emulation": {
                 "required": ["machine_name", "pic_profiles", "ip53_runtime"],
                 "properties": {
-                  "machine_name": { "enum": ["origin350", "onyx4-host", "onyx350", "tezro"] },
+                  "machine_name": { "enum": ["origin350", "onyx4", "onyx350", "tezro"] },
                   "pic_profiles": {
                     "type": "object", "minProperties": 1,
                     "additionalProperties": {

@@ -354,7 +354,7 @@ two stores are refused when the machine is built.
      - ``nvram<N>``, 32,768 bytes
      - ``nvram<N>-clock``, 16 bytes
      - zeroes
-   * - ``origin350``, ``onyx350``, ``tezro``, ``onyx4-host``
+   * - ``origin350``, ``onyx350``, ``tezro``, ``onyx4``
      - ``nvram<N>``, 32,768 bytes (DS1744)
      - ``nvram<N>-clock``, 16 bytes
      - zeroes

@@ -7,7 +7,7 @@ Bedrock: node controller
 ========================
 
 Used in :ref:`sgi-ip35` (``origin300``, ``fuel``), :ref:`sgi-ip53`
-(``origin350``, ``onyx350``, ``tezro``, ``onyx4-host``), one per node,
+(``origin350``, ``onyx350``, ``tezro``, ``onyx4``), one per node,
 and in the Origin 3000 C-brick and CX-brick node boards
 (:ref:`sgi-bricks`), which the ``origin3000`` machine builds.
 

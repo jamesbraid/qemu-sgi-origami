@@ -5649,7 +5649,7 @@ static void test_machine_node_board_profiles(void)
         { "onyx350,topology=onyx350-ip59", "8G", 4,
           "0x00edb385", "0x1000000", "IP59_4CPU", "030-1989-003", "-C", 0x38,
           { 1, 18, 5 }, 0x4aedb385, 1000, 200 },
-        { "onyx4-host,topology=onyx4-host", "8G", 4,
+        { "onyx4,topology=onyx4", "8G", 4,
           "0x00edb385", "0x1000000", "IP59_4CPU", "030-1989-003", "-C", 0x37,
           { 1, 18, 5 }, 0x4aedb385, 1000, 200 },
         { "tezro,topology=tezro-ip59", "4G", 4,
@@ -5902,7 +5902,7 @@ static void test_machine_cpu_context_global_overrides(void)
           "nvram0=sgi-ds1742-data-io9,"
           "nvram0-clock=sgi-ds1742-clock-io9", "4G", "1",
           "R16000,reset-mode=0x009bad85" },
-        { "onyx4-host,topology=onyx4-host,"
+        { "onyx4,topology=onyx4,"
           "nvram0=sgi-ds1742-data-io9,"
           "nvram0-clock=sgi-ds1742-clock-io9",
           "8G", "4", "R16000,"
@@ -6017,7 +6017,7 @@ static void test_ip53_cpu_context_migration(void)
           "0x400000", 700, 0x589bad85, "IP53_4CPU", "030-1868-001", "-C" },
         { "tezro,topology=tezro-rack-ip53", "4G", 1, "0x009bad85",
           "0x400000", 700, 0x589bad85, NULL, NULL, NULL },
-        { "onyx4-host,topology=onyx4-host", "8G", 4,
+        { "onyx4,topology=onyx4", "8G", 4,
           "0x00edb385", "0x1000000", 1000, 0x4aedb385, "IP59_4CPU",
           "030-1989-003", "-C" },
     };
@@ -6257,7 +6257,7 @@ static void test_machine_port_speed_profiles(void)
           "0x009bad85", "0x400000", 1, 0x39, true },
         { "tezro,topology=tezro-rack-ip53", "4G", 1,
           "0x009bad85", "0x400000", 1, 0x51, true },
-        { "onyx4-host,topology=onyx4-host", "8G", 4,
+        { "onyx4,topology=onyx4", "8G", 4,
           "0x00edb385", "0x1000000", 1, 0x37, true },
     };
     int fd;

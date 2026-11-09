@@ -76,7 +76,7 @@ static const TopologyExtra topology_extras[] = {
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "onyx350-ip59", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "onyx4-host", ",nvram0=sgi-ds1742-data-io9,"
+    { "onyx4", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "tezro-rack-ip53", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },

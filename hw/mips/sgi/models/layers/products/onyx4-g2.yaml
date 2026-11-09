@@ -3,7 +3,7 @@
 layer_version: 1
 layer:
   kind: product
-  id: onyx4-host-g2
+  id: onyx4-g2
   requires: {assembly: ip53}
   topology:
     min_nodes: 1

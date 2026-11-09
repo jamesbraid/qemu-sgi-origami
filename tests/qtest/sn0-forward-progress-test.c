@@ -197,7 +197,7 @@ static const Recipe recipes[] = {
     { "tezro", "-M tezro,topology=tezro-ip53,"
       "nvram0=sgi-ds1742-data-io9,nvram0-clock=sgi-ds1742-clock-io9",
       16 * 1024 * 1024, prepare_ip53, 0, true },
-    { "onyx4-host", "-M onyx4-host,topology=onyx4-host,"
+    { "onyx4", "-M onyx4,topology=onyx4,"
       "nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9",
       16 * 1024 * 1024, prepare_ip53, 0, true },

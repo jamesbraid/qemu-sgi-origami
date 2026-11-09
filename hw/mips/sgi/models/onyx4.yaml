@@ -7,5 +7,5 @@ board: ip59
 layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip53.yaml
-  - layers/modules/ip59-onyx4-host-module.yaml
-  - layers/products/onyx4-host.yaml
+  - layers/modules/ip59-onyx4-module.yaml
+  - layers/products/onyx4.yaml
