@@ -32,7 +32,7 @@ from sgi_model.registry import PRODUCT_MODELS
 class IP53RuntimeExportTests(unittest.TestCase):
     def experiment_model(self):
         return {
-            "composition": {"product": "origin350"},
+            "composition": {"product": "origin350-ip53"},
             "machine": {
                 "emulation": {"machine_name": "origin350",
                               "profile": "ip53-origin350"},
@@ -168,8 +168,8 @@ class IP53RuntimeExportTests(unittest.TestCase):
     def test_origin350_and_tezro_reference_graphs_still_resolve(self):
         model_schema = schema(ROOT / "hw/mips/sgi/models")
         for filename, variant, product in (
-                ("origin350.yaml", None, "origin350"),
-                ("tezro.yaml", "one-processor", "tezro")):
+                ("origin350.yaml", None, "origin350-ip53"),
+                ("tezro.yaml", "one-processor", "tezro-one-processor")):
             with self.subTest(filename=filename):
                 model = load_checked_system_model(
                     ROOT / "hw/mips/sgi/models" / filename,
@@ -178,19 +178,21 @@ class IP53RuntimeExportTests(unittest.TestCase):
 
     def test_tezro_and_rack_compile_as_explicit_ip53_profiles(self):
         model_schema = schema(ROOT / "hw/mips/sgi/models")
-        # Each Tezro interface board is a variant of one tezro topology.
+        # Each Tezro interface board is a variant of the tezro composition,
+        # with a topology name of its own.
         expected = {
-            "one-processor": ("tezro", {"populations": [[1]], "pics": 1}),
+            "one-processor": ("tezro", "tezro-one-processor",
+                              {"populations": [[1]], "pics": 1}),
             "two-four-processor": (
-                "tezro", {"populations": [[4], [2]], "pics": 2}),
-            None: ("tezro-rack",
+                "tezro", "tezro-ip53", {"populations": [[4], [2]], "pics": 2}),
+            None: ("tezro-rack", "tezro-rack-ip53",
                    {"populations": [[1], [2], [4]], "pics": 1}),
         }
         models = []
-        for variant, (name, facts) in expected.items():
+        for variant, (stem, name, facts) in expected.items():
             with self.subTest(name=name, variant=variant):
                 model = load_checked_system_model(
-                    ROOT / "hw/mips/sgi/models" / f"{name}.yaml",
+                    ROOT / "hw/mips/sgi/models" / f"{stem}.yaml",
                     model_schema=model_schema, variant=variant)
                 self.assertEqual(model["machine"]["model_role"],
                                  "emulation-target")
@@ -261,12 +263,13 @@ class IP53RuntimeExportTests(unittest.TestCase):
             sorted((item["topology"], tuple(item["cpus-per-node"]))
                    for item in offerings),
             sorted([(name, tuple(population))
-                    for name, facts in expected.values()
+                    for _stem, name, facts in expected.values()
                     for population in facts["populations"]] +
-                   [("tezro", (4,))] * 2 + [("tezro-rack", (4,))] * 2),
+                   [("tezro-ip53", (4,))] * 2 +
+                   [("tezro-rack-ip53", (4,))] * 2),
         )
         tezro = [item for item in catalogue["topologies"]
-                 if item["name"] == "tezro"]
+                 if item["name"] in ("tezro-one-processor", "tezro-ip53")]
         self.assertEqual([item.get("machine-default", False) for item in tezro],
                          [False, True])
 

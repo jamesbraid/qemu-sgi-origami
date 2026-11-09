@@ -190,17 +190,14 @@ property value.
 
 A launch without ``topology=`` builds the product's default topology,
 except for ``onyx350`` and ``tezro``. Those two refuse a launch that
-does not name one: ``onyx350``, or one of ``tezro`` and ``tezro-rack``.
-``board=`` selects a topology's node board where it takes more than one:
-``origin350``, ``onyx350``, ``tezro``, ``tezro-rack`` and ``origin3900``
-build the IP53 by default and the 1 GHz IP59 with ``board=ip59``, at the
-same memory, and ``onyx4-host`` builds only the IP59
-(:ref:`sgi-ip59-profiles`). A topology may hold more than one catalogue
-record for one board, told apart by the processor counts each accepts,
-and ``-smp`` picks the record: ``tezro`` builds its one-processor
-interface board for ``-smp 1`` and its two/four-processor board for 2 or
-4. A board the topology does not take is refused with a list of the
-boards it does. An IP53 machine fits the processors each record lists and refuses any other
+does not name one: ``onyx350-ip53`` or ``-ip59``, or a ``tezro`` topology.
+A topology name is unique and fixes the node board: ``origin350``,
+``onyx350``, ``tezro``, ``tezro-rack`` and ``origin3900`` each have an
+``-ip53`` topology, the IP53 board, and an ``-ip59`` twin, the 1 GHz IP59,
+at the same memory, and ``onyx4-host`` builds only the IP59
+(:ref:`sgi-ip59-profiles`). ``-smp`` picks a population of the one record
+the name selects; the Tezro's one-processor interface board is its own
+topology, ``tezro-one-processor``. An IP53 machine fits the processors each record lists and refuses any other
 population, memory size or processor, and a ``maxcpus`` above ``-smp``
 (:ref:`sgi-ip53-serial-profiles`).
 

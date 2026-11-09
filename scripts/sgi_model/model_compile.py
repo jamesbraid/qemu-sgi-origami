@@ -29,6 +29,7 @@ from .model_composition import (
 )
 
 from . import model_graphics, synthetic_serial
+from .registry import IP53_RUNTIME_PROFILES
 from .model_shared import (
     _compile_r10000_reset_mode, _integer, _required, _validate_integer, num,
 )
@@ -3928,14 +3929,11 @@ def compile_model(model: dict) -> dict:
         raise CompileError(
             f"topology '{topology['name']}' fits R16000s of more than one "
             "board; a record builds one board on every node")
-    # Every SN record names its board, which board= selects: the one its
-    # composition names, or else the one its board layer describes.
+    # Every SN record names its board: the one its composition names, or
+    # else the one its board layer describes.
     if machine.get("generation") in ("SN0", "SN1"):
-        composition = model["composition"]
-        board = composition.get("board", machine["board_ip"].lower())
-        topology["board"] = board
-        topology["default_board"] = composition.get("default_board", board)
-        topology["boards"] = composition.get("boards", [board])
+        topology["board"] = model["composition"].get(
+            "board", machine["board_ip"].lower())
     return topology
 
 
@@ -3970,8 +3968,7 @@ def _compile_ip35_firmware(model: dict) -> dict:
     """
     machine = model["machine"]
     firmware = machine.get("emulation", {}).get("ip35_firmware")
-    ip53_products = {"origin350", "onyx4-host", "onyx350", "tezro",
-                     "tezro-rack"}
+    ip53_products = set(IP53_RUNTIME_PROFILES)
     if (firmware is None and
             model.get("composition", {}).get("product") in ip53_products):
         firmware = machine.get("firmware_config")

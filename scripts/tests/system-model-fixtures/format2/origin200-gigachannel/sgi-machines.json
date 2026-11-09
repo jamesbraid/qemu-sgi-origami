@@ -1,7 +1,6 @@
 {
   "offerings": [
     {
-      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -36,6 +35,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel",
       "hardware-inputs": [],
+      "id": "origin200-gigachannel.2.r10000-180mhz-1mb",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -205,7 +205,6 @@
       "topology": "origin200-gigachannel"
     },
     {
-      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -240,6 +239,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel",
       "hardware-inputs": [],
+      "id": "origin200-gigachannel.1.r10000-180mhz-1mb",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -409,7 +409,6 @@
       "topology": "origin200-gigachannel"
     },
     {
-      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -444,6 +443,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel",
       "hardware-inputs": [],
+      "id": "origin200-gigachannel.2.r10000-180mhz-2mb",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -613,7 +613,6 @@
       "topology": "origin200-gigachannel"
     },
     {
-      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -648,6 +647,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel",
       "hardware-inputs": [],
+      "id": "origin200-gigachannel.1.r10000-180mhz-2mb",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -817,7 +817,6 @@
       "topology": "origin200-gigachannel"
     },
     {
-      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -852,6 +851,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel",
       "hardware-inputs": [],
+      "id": "origin200-gigachannel.2.r10000-225mhz-2mb",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -1025,7 +1025,6 @@
       "topology": "origin200-gigachannel"
     },
     {
-      "board": "ip29",
       "console": "ioc3-serial-a",
       "consoles": [
         {
@@ -1060,6 +1059,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel",
       "hardware-inputs": [],
+      "id": "origin200-gigachannel.2.r12000-270mhz-4mb",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -1253,7 +1253,6 @@
           "widget-revision": 2
         }
       ],
-      "default-board": "ip29",
       "description": "SGI Origin 200 (IP29)",
       "generation": "sn0",
       "graphics": {
@@ -1903,5 +1902,5 @@
       ]
     }
   ],
-  "version": 2
+  "version": 3
 }

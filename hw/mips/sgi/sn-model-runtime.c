@@ -763,7 +763,6 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     view->has_machine_default = t->has_machine_default;
     view->machine_default = t->machine_default;
     view->board = t->board;
-    view->default_board = t->default_board;
     view->console = node_map[t->console];
     view->junk_uart = sgi_model_kept(node_map, node_total, t->junk_uart) ?
                       node_map[t->junk_uart] : -1;
@@ -1094,69 +1093,6 @@ const SGIModelTopology *sgi_model_product_topology(
     return NULL;
 }
 
-static bool sgi_model_topology_accepts_cpus(const SGIModelTopology *t,
-                                            unsigned int cpus)
-{
-    const SGIModelNodePopulationList *row;
-
-    for (row = t->node_populations; row; row = row->next) {
-        const SGIModelCpuPopulationList *population;
-
-        for (population = row->value->supported_cpu_populations; population;
-             population = population->next) {
-            const uint32List *count;
-            unsigned int total = 0;
-
-            for (count = population->value->cpus_per_node; count;
-                 count = count->next) {
-                total += count->value;
-            }
-            if (total == cpus) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-/* A record names its board; one that names none builds no other. */
-bool sgi_model_topology_builds_board(const SGIModelTopology *t,
-                                     const char *board)
-{
-    if (!t->board) {
-        return !board;
-    }
-    return g_str_equal(t->board, board ? board : t->default_board);
-}
-
-const SGIModelTopology *sgi_model_product_variant(
-    const SGIMachines *machines, const char *product, const char *name,
-    const char *board, unsigned int cpus)
-{
-    const SGIModelTopologyList *entry;
-    const SGIModelTopology *first = NULL, *machine_default = NULL;
-
-    for (entry = machines->topologies; entry; entry = entry->next) {
-        const SGIModelTopology *t = entry->value;
-
-        if (strcmp(t->name, name) ||
-            !sgi_model_topology_matches_product(t, product) ||
-            !sgi_model_topology_builds_board(t, board)) {
-            continue;
-        }
-        if (sgi_model_topology_accepts_cpus(t, cpus)) {
-            return t;
-        }
-        if (!first) {
-            first = t;
-        }
-        if (!machine_default && t->has_machine_default && t->machine_default) {
-            machine_default = t;
-        }
-    }
-    return machine_default ? machine_default : first;
-}
-
 /* "1, 2, 3 or 4": a chassis's accepted node counts, for a refusal. */
 static char *sgi_model_accepted_node_counts(const SGIModelTopology *t)
 {
@@ -1362,6 +1298,27 @@ static bool sgi_model_check_variant_once(const char *options, Error **errp)
     return true;
 }
 
+/* Whether @offering's per-node CPU counts are @text's ("4:2"). */
+static bool sgi_model_offering_has_population(
+    const SGIModelOffering *offering, const char *text)
+{
+    const uint32List *count;
+    const char *at = text;
+
+    for (count = offering->cpus_per_node; count; count = count->next) {
+        const char *end;
+        uint64_t value;
+
+        if (qemu_strtou64(at, &end, 10, &value) < 0 ||
+            value != count->value ||
+            (count->next ? *end != ':' : *end != '\0')) {
+            return false;
+        }
+        at = count->next ? end + 1 : end;
+    }
+    return true;
+}
+
 const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
                                                   const char *options,
                                                   Error **errp)
@@ -1371,7 +1328,7 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
     const SGIModelTopology *chassis, *view;
     const QDictEntry *option;
     const char *product, *name, *nodes_text, *processor, *variant;
-    const char *board;
+    const char *population;
     uint64_t nodes = 0;
 
     if (!args) {
@@ -1384,10 +1341,10 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
         if (!g_str_equal(key, "type") && !g_str_equal(key, "topology") &&
             !g_str_equal(key, "nodes") && !g_str_equal(key, "processor") &&
             !g_str_equal(key, "variant") &&
-            !g_str_equal(key, "board")) {
+            !g_str_equal(key, "population")) {
             error_setg(errp, "machine option '%s' is not part of a "
                        "catalogue selection; give only the machine, "
-                       "topology=, nodes=, processor=, board= or "
+                       "topology=, nodes=, population=, processor= or "
                        "an offered variant=", key);
             return NULL;
         }
@@ -1446,14 +1403,9 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
         error_setg(errp, "%s has no topology '%s'", product, name);
         return NULL;
     }
-    board = qdict_get_try_str(args, "board");
-    if (!board && qdict_haskey(args, "board")) {
-        error_setg(errp, "board must be a string");
-        return NULL;
-    }
-    chassis = sgi_model_product_variant(machines, product, name, board, 0);
-    if (!chassis) {
-        error_setg(errp, "topology '%s' has no board '%s'", name, board);
+    population = qdict_get_try_str(args, "population");
+    if (!population && qdict_haskey(args, "population")) {
+        error_setg(errp, "population must be a string");
         return NULL;
     }
     view = sgi_model_resolve_population(chassis, nodes, errp);
@@ -1473,9 +1425,10 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
 
         if (g_str_equal(offering->product, product) &&
             g_str_equal(offering->topology, chassis->name) &&
-            !g_strcmp0(offering->board, chassis->board) &&
             offering->nodes == QAPI_LIST_LENGTH(view->nodes) &&
-            g_str_equal(offering->processor->id, processor)) {
+            g_str_equal(offering->processor->id, processor) &&
+            (!population ||
+             sgi_model_offering_has_population(offering, population))) {
             return offering;
         }
     }

@@ -12,11 +12,12 @@
 #include "qapi/error.h"
 
 /*
- * The catalogue version this reader understands: 2, under which records
- * that share a topology name differ by board. A reader of another
- * version would take the first record of a name, so it must refuse.
+ * The catalogue version this reader understands: 3, under which every
+ * topology name is unique, so a name selects one record and its board.
+ * A reader of another version would take the first record of a name,
+ * so it must refuse.
  */
-#define SGI_MACHINES_VERSION 2
+#define SGI_MACHINES_VERSION 3
 
 /*
  * The embedded catalogue, parsed on first use and kept for the process
@@ -57,35 +58,12 @@ bool sgi_model_topology_matches_product(const SGIModelTopology *t,
                                         const char *product);
 
 /*
- * @machines' first topology named @name if it is one of @product's, or
- * NULL. A topology with board variants has a record per board under the
- * one name; this returns the first, whatever its board, and only
- * sgi_model_product_variant() tells them apart.
+ * @machines' topology named @name if it is one of @product's, or NULL.
+ * A topology name is unique in the catalogue, so it fixes the record,
+ * its board included.
  */
 const SGIModelTopology *sgi_model_product_topology(
     const SGIMachines *machines, const char *product, const char *name);
-
-/*
- * A composition with board variants compiles one record for each under
- * one name, and within one board no two of them accept the same CPU
- * total. Return @product's record named @name that builds @board (the
- * topology's default board when NULL) and whose node-population rows
- * accept @cpus CPUs in all; when none does, the machine-default record of
- * that name and board, or else the first, so a refusal can still name
- * the topology. NULL when @product has no topology @name building that
- * board.
- */
-const SGIModelTopology *sgi_model_product_variant(
-    const SGIMachines *machines, const char *product, const char *name,
-    const char *board, unsigned int cpus);
-
-/*
- * Whether @t builds @board, or its topology's default board when @board
- * is NULL. A record that names no board builds only when none is asked
- * for.
- */
-bool sgi_model_topology_builds_board(const SGIModelTopology *t,
-                                     const char *board);
 
 /*
  * The topology a machine builds from chassis @chassis with @nodes node

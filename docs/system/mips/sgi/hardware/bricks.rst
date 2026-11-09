@@ -656,7 +656,7 @@ on its own Bedrock's ``xio-ii`` bus. The composition cables an I-brick to
 node board 0's XIO connector at its port A, a choice of the composition
 (*approximation*).
 
-``-M origin3000,topology=origin3900,nodes=4 -cpu R16000`` builds it. No
+``-M origin3000,topology=origin3900-ip53,nodes=4 -cpu R16000`` builds it. No
 source read fixes the CX-brick's processors, node board part, router
 ports, NASIDs, widget numbers or L1 type character, so the model chooses
 each, an *approximation*:
@@ -685,7 +685,7 @@ CX-brick with a memory-only node board
 --------------------------------------
 
 ``-M origin3000,topology=origin3900-memory-node -cpu R16000`` is the
-``origin3900`` brick set with node board 3 fitted with no processors. The
+``origin3900-ip53`` brick set with node board 3 fitted with no processors. The
 addendum allows a brick to mix four-processor and zero-processor boards
 (*established*, :src:`007-4572-001 p. 13`), and the zero-processor board
 keeps its Bedrock, eight DIMM slots, router link and XIO connection

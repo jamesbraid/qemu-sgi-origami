@@ -226,7 +226,7 @@ static QTestState *start_ip53_vpro(void)
     quoted_data = g_shell_quote(data);
     quoted_clock = g_shell_quote(clock);
     qts = qtest_initf(
-        "-M tezro,topology=tezro,nvram0=sgi-ds1742-data-io9,"
+        "-M tezro,topology=tezro-ip53,nvram0=sgi-ds1742-data-io9,"
         "nvram0-clock=sgi-ds1742-clock-io9 "
         "-cpu R16000,"
         "reset-mode=0x009bad85 "

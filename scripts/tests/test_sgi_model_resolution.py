@@ -12,7 +12,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from sgi_model.model_compile import CompileError, compile_model
 from sgi_model.model_validation import discover_model_paths, load_checked_system_models
-from sgi_model.registry import IMPLEMENTED_TOPOLOGIES, REFERENCE_TOPOLOGIES
+from sgi_model.registry import (
+    IMPLEMENTED_COMPOSITIONS, IMPLEMENTED_TOPOLOGIES, REFERENCE_TOPOLOGIES,
+)
 
 
 class ResolutionTests(unittest.TestCase):
@@ -21,7 +23,8 @@ class ResolutionTests(unittest.TestCase):
             discover_model_paths(INPUTS), model_root=INPUTS)
         compiled = {
             compile_model(model)["name"]: model
-            for path, model in checked if path.stem in IMPLEMENTED_TOPOLOGIES
+            for path, model in checked
+            if path.stem in IMPLEMENTED_COMPOSITIONS
         }
         self.assertEqual(set(compiled), set(IMPLEMENTED_TOPOLOGIES))
         for name, model in compiled.items():

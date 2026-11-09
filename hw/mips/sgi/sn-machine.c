@@ -281,8 +281,6 @@ struct SGIMachineState {
     const SGIModelTopology *view;
     /* The chassis record @view is a row of. */
     const SGIModelTopology *view_chassis;
-    /* board=: the node board, when given. */
-    char *board;
     char *baseio_preset;
     /* io-prom: an original I/O PROM image for the BASEIO flash parts. */
     char *io_prom;
@@ -1459,15 +1457,9 @@ static bool sgi_machine_set_expansion_inputs(SGIMachineState *s,
 /*
  * The compiled catalogue holds every product's topologies in one list,
  * so a name match alone is not enough: topology= is product-scoped
- * (origin200 never builds origin2000's wiring).
- *
- * A topology with board variants has one record per board under the one
- * name, told apart by the CPU totals each accepts, so -smp picks the
- * board. Instance init, and a property read before QEMU applies -smp,
- * see machine_initfn()'s smp.cpus, which is mc->default_cpus: the default
- * population of the product's machine-default record, so they resolve
- * that record. A count no variant accepts resolves the machine-default
- * record too, which then refuses it.
+ * (origin200 never builds origin2000's wiring). A topology name is
+ * unique, so it fixes the record, board included; -smp only picks a
+ * population of that record.
  */
 static const SGIModelTopology *sgi_machine_chassis(MachineState *machine)
 {
@@ -1483,65 +1475,12 @@ static const SGIModelTopology *sgi_machine_chassis(MachineState *machine)
     if (!name || !smc->product) {
         return NULL;
     }
-    return sgi_model_product_variant(sgi_machines(), smc->product, name,
-                                     s->board, machine->smp.cpus);
+    return sgi_model_product_topology(sgi_machines(), smc->product, name);
 }
 
 static bool sgi_machine_preflight_io_descriptors(
     const SGIModelTopology *t, bool allow_ip53_fixture,
     bool allow_ip53_runtime, bool tezro, Error **errp);
-
-/*
- * board= named a board the selected topology does not take: refuse it
- * naming the boards the topology does take. False when the topology
- * itself is unknown, which the caller reports with the product's
- * topology list.
- */
-static bool sgi_machine_refuse_board(MachineState *machine, Error **errp)
-{
-    SGIMachineState *s = SGI_MACHINE(machine);
-    SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
-    const char *name = s->topology_name ? s->topology_name :
-                       smc->default_topology;
-    const SGIModelTopologyList *entry;
-    g_autoptr(GString) list = g_string_new(NULL);
-    bool known = false;
-
-    if (!s->board || !name || !smc->product) {
-        return false;
-    }
-    for (entry = sgi_machines()->topologies; entry; entry = entry->next) {
-        const SGIModelTopology *t = entry->value;
-        g_autofree char *quoted = NULL;
-
-        if (strcmp(t->name, name) ||
-            !sgi_model_topology_matches_product(t, smc->product)) {
-            continue;
-        }
-        known = true;
-        if (!t->board) {
-            continue;
-        }
-        /* Board variants repeat a board; list each once. */
-        quoted = g_strdup_printf("'%s'", t->board);
-        if (!strstr(list->str, quoted)) {
-            g_string_append_printf(list, "%s%s", list->len ? ", " : "",
-                                   quoted);
-        }
-    }
-    if (!known) {
-        return false;
-    }
-    if (!list->len) {
-        error_setg(errp, "%s: topology '%s' takes no board=",
-                   MACHINE_GET_CLASS(machine)->name, name);
-    } else {
-        error_setg(errp, "%s: topology '%s' has no board '%s'; it takes %s",
-                   MACHINE_GET_CLASS(machine)->name, name, s->board,
-                   list->str);
-    }
-    return true;
-}
 
 /*
  * The profile a PIC host must select: the IP53 runtime profile's own when
@@ -1571,7 +1510,7 @@ static bool sgi_machine_ip53_runtime_policy(
 
     if (onyx350 && !s->topology_name) {
         error_setg(errp, "Onyx 350 runtime profile requires explicit "
-                   "topology=onyx350 selection");
+                   "topology selection");
         return false;
     }
     if (tezro && !s->topology_name) {
@@ -2522,7 +2461,6 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
             s, smc, chassis, &allow_ip53_runtime, errp)) {
         return NULL;
     }
-    /* -smp, applied after properties, may pick another board variant. */
     if (!s->view || s->view_chassis != chassis) {
         s->view = sgi_model_resolve_population(chassis, s->nodes_requested,
                                                errp);
@@ -2946,41 +2884,20 @@ static void sgi_machine_next_total(const SGIModelNodePopulation *row,
 }
 
 /*
- * "1, 2 or 4": the totals @product's topology @t accepts with its node
- * count, over every board variant of that name and @t's board, for a
+ * "1, 2 or 4": the totals @t accepts with its node count, for a
  * refusal message.
  */
 static char *sgi_machine_accepted_totals(const char *product,
                                          const SGIModelTopology *t)
 {
     GString *out = g_string_new(NULL);
-    size_t node_count = QAPI_LIST_LENGTH(sgi_machine_view_row(t)->nodes);
     unsigned int last = 0;
 
     /* Each pass appends the next larger total, so each appears once. */
     for (;;) {
-        const SGIModelTopologyList *variant;
         unsigned int next = UINT_MAX;
 
         sgi_machine_next_total(sgi_machine_view_row(t), last, &next);
-        for (variant = product ? sgi_machines()->topologies : NULL; variant;
-             variant = variant->next) {
-            const SGIModelNodePopulationList *row;
-
-            if (strcmp(variant->value->name, t->name) ||
-                !sgi_model_topology_matches_product(variant->value,
-                                                    product) ||
-                !sgi_model_topology_builds_board(variant->value,
-                                                 t->board)) {
-                continue;
-            }
-            for (row = variant->value->node_populations; row;
-                 row = row->next) {
-                if (QAPI_LIST_LENGTH(row->value->nodes) == node_count) {
-                    sgi_machine_next_total(row->value, last, &next);
-                }
-            }
-        }
         if (next == UINT_MAX) {
             break;
         }
@@ -7353,10 +7270,6 @@ static bool sgi_machine_ip53_fingerprint(
                                 runtime_permission ? pxbow_revision : 0);
     sgi_machine_fingerprint_string(checksum, t->product ? t->product : "");
     sgi_machine_fingerprint_string(checksum, t->name);
-    /* Two boards of one topology name are different machines. */
-    if (t->board) {
-        sgi_machine_fingerprint_string(checksum, t->board);
-    }
     if (runtime_permission) {
         /* Reset PROM reads use the shared bounded IP35 carrier. */
         sgi_machine_fingerprint_u8(checksum, 1);
@@ -9426,24 +9339,16 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         error_propagate_prepend(errp, local_err, "%s: ", mc->name);
         return false;
     }
-    if (!t && sgi_machine_refuse_board(machine, errp)) {
-        error_free(local_err);
-        return false;
-    }
     if (!t) {
         GString *names = g_string_new(NULL);
         const SGIModelTopologyList *entry;
 
         error_free(local_err);
 
-        /* A topology with board variants is listed once, not per board. */
         for (entry = sgi_machines()->topologies; entry;
              entry = entry->next) {
             if (sgi_model_topology_matches_product(entry->value,
-                                                   smc->product) &&
-                sgi_model_product_variant(sgi_machines(), smc->product,
-                                          entry->value->name, NULL, 0) ==
-                entry->value) {
+                                                   smc->product)) {
                 if (names->len) {
                     g_string_append(names, ", ");
                 }
@@ -11455,26 +11360,6 @@ static void sgi_machine_set_topology(Object *obj, const char *value,
     s->view = NULL;
 }
 
-static char *sgi_machine_get_board(Object *obj, Error **errp)
-{
-    SGIMachineState *s = SGI_MACHINE(obj);
-
-    return g_strdup(s->board ? s->board : "");
-}
-
-static void sgi_machine_set_board(Object *obj, const char *value,
-                                  Error **errp)
-{
-    SGIMachineState *s = SGI_MACHINE(obj);
-
-    if (sgi_machine_built("board", errp)) {
-        return;
-    }
-    g_free(s->board);
-    s->board = g_strdup(value);
-    s->view = NULL;
-}
-
 static void sgi_machine_get_nodes(Object *obj, Visitor *v, const char *name,
                                   void *opaque, Error **errp)
 {
@@ -11841,9 +11726,8 @@ static bool sgi_machine_storage_bindable(const SGIMachineClass *smc,
                                          const char *name)
 {
     const SGIModelTopology *t = smc->default_topology ?
-        sgi_model_product_variant(sgi_machines(), smc->product,
-                                  smc->default_topology, NULL,
-                                  smc->parent_class.default_cpus) : NULL;
+        sgi_model_product_topology(sgi_machines(), smc->product,
+                                   smc->default_topology) : NULL;
     unsigned int index;
     const char *end;
 
@@ -11919,11 +11803,9 @@ static void sgi_machine_instance_init(Object *obj)
 {
     MachineState *machine = MACHINE(obj);
     SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(obj);
-    /* machine_initfn() has set smp.cpus to the class's default_cpus. */
     const SGIModelTopology *t = smc->default_topology ?
-        sgi_model_product_variant(sgi_machines(), smc->product,
-                                  smc->default_topology, NULL,
-                                  machine->smp.cpus) : NULL;
+        sgi_model_product_topology(sgi_machines(), smc->product,
+                                   smc->default_topology) : NULL;
 
     SGI_MACHINE(obj)->debug_leds = true;
     /*
@@ -12019,7 +11901,6 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->slot_links);
     g_free(s->slot_claimed);
     g_free(s->topology_name);
-    g_free(s->board);
     g_free(s->population);
     g_free(s->processor_name);
     g_free(s->baseio_preset);
@@ -12168,13 +12049,6 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
 
     object_class_property_add_str(oc, "topology", sgi_machine_get_topology,
                                   sgi_machine_set_topology);
-    object_class_property_add_str(oc, "board", sgi_machine_get_board,
-                                  sgi_machine_set_board);
-    object_class_property_set_description(oc, "board",
-        "Select the node board, by its IP number in lower case (ip53, "
-        "ip59), of a topology that takes more than one. Defaults to the "
-        "topology's catalogued default board; a board the topology does "
-        "not take is refused with the ones it does.");
     object_class_property_set_description(oc, "topology",
         "Select the product's wiring: nodes, modules, cabling and I/O "
         "population. Defaults to the product's shipped configuration; "

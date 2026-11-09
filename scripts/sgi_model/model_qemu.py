@@ -63,28 +63,18 @@ def _check_default_topology(topologies: list[dict], machine_names: dict[str, str
         )
 
 
-def _check_variant_totals(topologies: list[dict]) -> None:
-    """Require records sharing a name and board to accept disjoint CPU
-    totals.
+def _check_unique_names(topologies: list[dict]) -> None:
+    """Require every topology to have a name of its own.
 
-    A composition's board variants all compile under its one name; QEMU
-    picks the board by board= and then the record whose supported CPU
-    totals contain -smp, so within one board no total may select two of
-    them.
+    A name selects one record and so one board; two records under one
+    name would leave the selection to the CPU total.
     """
-    owners: dict[tuple[str, str | None, int], int] = {}
-    for index, topology in enumerate(topologies):
-        board = topology.get("board")
-        for total in {sum(population)
-                      for population in topology["supported_cpu_populations"]}:
-            other = owners.setdefault(
-                (topology["name"], board, total), index)
-            if other != index:
-                raise ValueError(
-                    f"topology '{topology['name']}' has two variants that "
-                    f"both accept {total} CPUs"
-                    + (f" as {board}" if board else "")
-                    + "; QEMU selects a variant by its CPU total")
+    seen: set[str] = set()
+    for topology in topologies:
+        if topology["name"] in seen:
+            raise ValueError(
+                f"topology name '{topology['name']}' names two records")
+        seen.add(topology["name"])
 
 
 def _check_processor_ids(topologies: list[dict]) -> None:
@@ -174,7 +164,7 @@ def render_qemu_inputs(model_root: pathlib.Path, *,
         and model["machine"].get("model_role") == "reference"
     }
     _check_default_topology(topologies, machine_names, product_models)
-    _check_variant_totals(topologies)
+    _check_unique_names(topologies)
     _check_processor_ids(topologies)
     check_catalogue(topologies)
     catalogue = render_catalogue_json(

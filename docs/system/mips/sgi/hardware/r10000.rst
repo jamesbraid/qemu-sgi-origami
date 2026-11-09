@@ -92,7 +92,7 @@ Family members and selection
      - ``reset-mode``, optional
      - 2 MiB
    * - ``R16000``
-     - the IP53 machines; ``origin3000`` with ``topology=origin3900``
+     - the IP53 machines; ``origin3000`` with ``topology=origin3900-ip53`` or ``-ip59``
      - ``r16000-prid``, default ``0x00000f50``
      - ``reset-mode``, required
      - none: the reset mode word's SS field sets it

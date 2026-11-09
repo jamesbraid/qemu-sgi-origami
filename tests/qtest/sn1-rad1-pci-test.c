@@ -107,7 +107,7 @@ static void test_tezro_option_bus(void)
     g_autofree char *qdata = g_shell_quote(data);
     g_autofree char *qclock = g_shell_quote(clock);
     QTestState *qts = qtest_initf(
-        "-M tezro,topology=tezro,nvram0=sgi-ds1742-data-io9,"
+        "-M tezro,topology=tezro-ip53,nvram0=sgi-ds1742-data-io9,"
         "nvram0-clock=sgi-ds1742-clock-io9 "
         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw "

@@ -3,26 +3,28 @@
 # pages 26-31): a one-processor board with two PCI-X buses and one XIO
 # connector, and a two/four-processor board with four buses and a
 # second XIO connector. The node board is an IP53 or its 1 GHz successor,
-# the IP59. Each variant compiles to its own record named tezro; board=
-# picks the node board and -smp the interface board. No one-processor
-# IP59 board identity is known, so the IP59 has only the two/four-processor
-# interface board.
+# the IP59. Each variant compiles to its own topology: tezro-one-processor,
+# tezro-ip53 and tezro-ip59. No one-processor IP59 board identity is known,
+# so the IP59 has only the two/four-processor interface board.
 configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip53-tezro.yaml
 variants:
   - id: one-processor
+    name: tezro-one-processor
     board: ip53
     layers:
       - layers/modules/ip53-tezro-module.yaml
       - layers/products/tezro-one-processor.yaml
   - id: two-four-processor
+    name: tezro-ip53
     board: ip53
     default: true
     layers:
       - layers/products/tezro-two-four-processor.yaml
   - id: two-four-processor-ip59
+    name: tezro-ip59
     board: ip59
     layers:
       - layers/products/tezro-two-four-processor-ip59.yaml

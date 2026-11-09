@@ -3775,13 +3775,13 @@ class CatalogueJsonTests(unittest.TestCase):
     """
 
     def test_ip53_v12_slot_is_optional_with_no_default(self):
-        assemblies = {"onyx350": "030-1909-008",
-                      "tezro": "030-1884-002"}
+        assemblies = {"onyx350-ip53": ("onyx350", "030-1909-008"),
+                      "tezro-ip53": ("tezro", "030-1884-002")}
         catalogue = json.loads(render_catalogue_json(
-            [_resolved(name) for name in assemblies]))
+            [_resolved(stem) for stem, _assembly in assemblies.values()]))
         topologies = {item["name"]: item for item in catalogue["topologies"]}
 
-        for name, assembly in assemblies.items():
+        for name, (_stem, assembly) in assemblies.items():
             graphics = topologies[name]["graphics"]
             self.assertTrue(graphics["headless"], name)
             self.assertEqual([slot["name"] for slot in graphics["slots"]],
@@ -3799,9 +3799,13 @@ class CatalogueJsonTests(unittest.TestCase):
     def test_cx_brick_offerings_need_no_cpu_properties(self):
         catalogue = json.loads(render_catalogue_json(
             [_resolved("origin3900/ip53"), _resolved("origin3900/ip59")]))
-        self.assertEqual({(offering["topology"], offering["board"])
+        topologies = {item["name"]: item["board"]
+                      for item in catalogue["topologies"]}
+        self.assertEqual({(offering["topology"],
+                           topologies[offering["topology"]])
                           for offering in catalogue["offerings"]},
-                         {("origin3900", "ip53"), ("origin3900", "ip59")})
+                         {("origin3900-ip53", "ip53"),
+                          ("origin3900-ip59", "ip59")})
         for offering in catalogue["offerings"]:
             self.assertNotIn("required-properties", offering["processor"])
 
@@ -3809,7 +3813,7 @@ class CatalogueJsonTests(unittest.TestCase):
         profile_names = (
             "origin350", "onyx350", "onyx4-host",
             "tezro/one-processor", "tezro/two-four-processor", "tezro-rack",
-        )
+        )  # each composition's default variant, or the one named
         catalogue = json.loads(render_catalogue_json(
             [_resolved(name) for name in profile_names]))
         offerings = [item for item in catalogue["offerings"]
@@ -3822,13 +3826,14 @@ class CatalogueJsonTests(unittest.TestCase):
         self.assertEqual(
             sorted((item["topology"], tuple(item["cpus-per-node"]))
                    for item in offerings),
-            sorted([("origin350", (4,)), ("origin350", (4,)),
-                    ("onyx350", (4,)), ("onyx4-host", (4,)),
-                    ("tezro", (1,)), ("tezro", (2,)), ("tezro", (4,)),
-                    ("tezro", (4,)), ("tezro", (4,)),
-                    ("tezro-rack", (1,)), ("tezro-rack", (2,)),
-                    ("tezro-rack", (4,)), ("tezro-rack", (4,)),
-                    ("tezro-rack", (4,))]))
+            sorted([("origin350-ip53", (4,)), ("origin350-ip53", (4,)),
+                    ("onyx350-ip53", (4,)), ("onyx4-host", (4,)),
+                    ("tezro-one-processor", (1,)), ("tezro-ip53", (2,)),
+                    ("tezro-ip53", (4,)), ("tezro-ip53", (4,)),
+                    ("tezro-ip53", (4,)),
+                    ("tezro-rack-ip53", (1,)), ("tezro-rack-ip53", (2,)),
+                    ("tezro-rack-ip53", (4,)), ("tezro-rack-ip53", (4,)),
+                    ("tezro-rack-ip53", (4,))]))
         for offering in offerings:
             key = (offering["topology"], tuple(offering["cpus-per-node"]))
             self.assertNotIn("required-properties", offering["processor"],
@@ -3837,10 +3842,10 @@ class CatalogueJsonTests(unittest.TestCase):
                 "assembly"]
             self.assertNotIn("required-properties", assembly, key)
 
-        # The two Tezro boards are two records under one name; the
+        # The two Tezro interface boards are two records of their own; the
         # two/four-processor one is the machine default.
-        boards = [item for item in catalogue["topologies"]
-                  if item["name"] == "tezro"]
+        boards = [topologies[name] for name in
+                  ("tezro-one-processor", "tezro-ip53")]
         self.assertEqual(
             [[population["cpus-per-node"] for population in
               board["node-populations"][0]["supported-cpu-populations"]]
@@ -3881,7 +3886,7 @@ class CatalogueJsonTests(unittest.TestCase):
     def test_document_shape(self):
         catalogue = json.loads(render_catalogue_json([_resolved("origin200")]))
         self.assertEqual(catalogue["schema"], "sgi-machines")
-        self.assertEqual(catalogue["version"], 2)
+        self.assertEqual(catalogue["version"], 3)
         self.assertEqual(set(catalogue), {
             "schema", "version", "topologies", "offerings", "references"})
         self.assertEqual(catalogue["references"], [])

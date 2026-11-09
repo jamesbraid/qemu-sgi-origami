@@ -20,14 +20,13 @@ Topology
 
 Record
   One catalogue ``SGIModelTopology`` entry: one buildable machine. A
-  topology name can have several records, told apart by board and by
-  interface board.
+  topology name is unique, so it names one record, its board and its
+  interface board included.
 
 Board
   The node board every node of a record carries, named by its :term:`IP number`
-  in lower case (``ip53``, ``ip59``) and chosen with ``board=``. A record
-  builds one board on every node; a topology that takes more than one
-  names its default. The board is not the platform generation
+  in lower case (``ip53``, ``ip59``). A record builds one board on every
+  node, and the topology name fixes it. The board is not the platform generation
   (``generation``: :term:`SN0`, :term:`SN1`, IP30 or IP32) and not the node-board
   identity record below.
 
@@ -69,5 +68,6 @@ Offering
 
 Machine options
   An offering's ``-M`` string. It names the product, ``topology=`` and
-  ``nodes=``, ``board=`` wherever the topology takes more than one board,
-  and ``processor=`` where the processor is not the topology's default.
+  ``nodes=``, ``population=`` where the CPU total alone does not name
+  one population, and ``processor=`` where the processor is not the
+  topology's default.

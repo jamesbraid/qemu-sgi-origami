@@ -31,9 +31,10 @@ slow_qtests = {
   # sgi-heads-test before it did, whose 20 subtests took 65-70s at load
   # 100-150 on 32 threads, 2026-10-23, and overran the default.
   'sgi-graphics-pipes-test': 300,
-  # sgi-catalogue-launch-test builds every catalogue offering once, and
-  # again with a pipe where the topology takes one, about seventy machines.
-  'sgi-catalogue-launch-test': 300,
+  # sgi-catalogue-launch-test builds every catalogue offering by id, 127
+  # machines, and each topology that takes a pipe once more with one. It ran
+  # 196 cases in 300 s at a loaded host, 2026-11-08.
+  'sgi-catalogue-launch-test': 900,
   # 75 cases; alone it took 37.3 s on 2026-10-29 and overran the 60 s
   # default in the merge queue's full run, under load. About three times
   # the quiet figure, rounded up.

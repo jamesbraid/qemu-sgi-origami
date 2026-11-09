@@ -68,15 +68,25 @@ typedef struct TopologyExtra {
 
 static const TopologyExtra topology_extras[] = {
     { "fuel", FUEL_IDENTITY },
-    { "origin350", ",nvram0=sgi-ds1742-data-io9,"
+    { "origin350-ip53", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "onyx350", ",nvram0=sgi-ds1742-data-io9,"
+    { "origin350-ip59", ",nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "onyx350-ip53", ",nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "onyx350-ip59", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "onyx4-host", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "tezro-rack", ",nvram0=sgi-ds1742-data-io9,"
+    { "tezro-rack-ip53", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
-    { "tezro", ",nvram0=sgi-ds1742-data-io9,"
+    { "tezro-rack-ip59", ",nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "tezro-one-processor", ",nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "tezro-ip53", ",nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "tezro-ip59", ",nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "origin300-numalink-pci-expansion",
       STORAGE_BINDING, true },
@@ -98,7 +108,8 @@ static const TopologyExtra topology_extras[] = {
     { "origin3800", "", .unmarked = true },
     { "origin3800-high-bandwidth", "", .unmarked = true },
     { "origin3400-two-partitions", "", .unmarked = true },
-    { "origin3900", "", .unmarked = true },
+    { "origin3900-ip53", "", .unmarked = true },
+    { "origin3900-ip59", "", .unmarked = true },
     { "origin3900-memory-node", "", .unmarked = true },
     /* The Origin 3200's bricks again, with a V12 beside them. */
     { "onyx3000", "", .unmarked = true },
@@ -783,7 +794,7 @@ static bool case_checks_serial(const char *name)
     static const char * const names[] = {
         "fuel", "origin3200", "origin3400-two-routers", "onyx3000",
         "origin350-ip53", "onyx350-ip53", "origin3900-ip53",
-        "tezro-ip53-2cpu", "tezro-rack-ip53",
+        "tezro-ip53", "tezro-rack-ip53",
     };
 
     for (size_t i = 0; i < G_N_ELEMENTS(names); i++) {
@@ -834,81 +845,6 @@ static gint compare_names(gconstpointer a, gconstpointer b, gpointer unused)
     return strcmp(a, b);
 }
 
-/*
- * Whether catalogue topology @record accepts @smp CPUs in all, and in
- * *@smallest the smallest total it accepts.
- */
-static bool record_accepts(QDict *record, int64_t smp, int64_t *smallest)
-{
-    const QListEntry *row, *population, *count;
-    bool accepts = false;
-
-    *smallest = -1;
-    QLIST_FOREACH_ENTRY(qdict_get_qlist(record, "node-populations"), row) {
-        QDict *r = qobject_to(QDict, qlist_entry_obj(row));
-
-        QLIST_FOREACH_ENTRY(qdict_get_qlist(r, "supported-cpu-populations"),
-                            population) {
-            QDict *p = qobject_to(QDict, qlist_entry_obj(population));
-            int64_t total = 0;
-
-            QLIST_FOREACH_ENTRY(qdict_get_qlist(p, "cpus-per-node"), count) {
-                total += qnum_get_int(qobject_to(QNum,
-                                                 qlist_entry_obj(count)));
-            }
-            accepts |= total == smp;
-            if (*smallest < 0 || total < *smallest) {
-                *smallest = total;
-            }
-        }
-    }
-    return accepts;
-}
-
-/*
- * A topology with several node boards or board variants is a record per
- * board under one name, and each is its own case: named for its node
- * board where the topology takes more than one, and for the smallest CPU
- * total it accepts where one board has several variants, as in
- * tezro-ip53-1cpu, tezro-ip53-2cpu and tezro-ip59.
- */
-static char *offering_case_name(QList *records, QDict *offering)
-{
-    const char *topology = qdict_get_str(offering, "topology");
-    const char *board = qdict_haskey(offering, "board") ?
-                        qdict_get_str(offering, "board") : NULL;
-    int64_t smp = qdict_get_int(offering, "smp");
-    int64_t smallest = -1, record_smallest;
-    unsigned int count = 0;
-    bool boards_differ = false;
-    g_autofree char *base = NULL;
-    const QListEntry *entry;
-
-    QLIST_FOREACH_ENTRY(records, entry) {
-        QDict *record = qobject_to(QDict, qlist_entry_obj(entry));
-        const char *record_board = qdict_haskey(record, "board") ?
-                                   qdict_get_str(record, "board") : NULL;
-
-        if (!g_str_equal(qdict_get_str(record, "name"), topology)) {
-            continue;
-        }
-        if (g_strcmp0(record_board, board)) {
-            boards_differ = true;
-            continue;
-        }
-        count++;
-        if (record_accepts(record, smp, &record_smallest)) {
-            smallest = record_smallest;
-        }
-    }
-    g_assert_cmpint(smallest, >, 0);
-    base = boards_differ ? g_strdup_printf("%s-%s", topology, board) :
-           g_strdup(topology);
-    return count > 1 ?
-        g_strdup_printf("%s-%" PRId64 "cpu", base, smallest) :
-        g_steal_pointer(&base);
-}
-
 /* One case per catalogue topology record, from its largest offering. */
 static GPtrArray *catalogue_cases(void)
 {
@@ -917,7 +853,6 @@ static GPtrArray *catalogue_cases(void)
         "{'execute': 'query-sgi-machines'}");
     QDict *catalogue = qdict_get_qdict(reply, "return");
     QList *offerings = qdict_get_qlist(catalogue, "offerings");
-    QList *records = qdict_get_qlist(catalogue, "topologies");
     g_autoptr(GHashTable) largest = g_hash_table_new_full(
         g_str_hash, g_str_equal, g_free, NULL);
     g_autoptr(GHashTable) offered = g_hash_table_new(g_str_hash, g_str_equal);
@@ -927,7 +862,7 @@ static GPtrArray *catalogue_cases(void)
 
     QLIST_FOREACH_ENTRY(offerings, entry) {
         QDict *offering = qobject_to(QDict, qlist_entry_obj(entry));
-        char *name = offering_case_name(records, offering);
+        char *name = g_strdup(qdict_get_str(offering, "topology"));
         QDict *best = g_hash_table_lookup(largest, name);
 
         g_hash_table_add(offered,

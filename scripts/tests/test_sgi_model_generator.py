@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "cdd90d749ad93c01f3201422a79804997ebd0fb5db9b1dfa8b61eb5190469237"
+    "d600f85f979b3e2fbe78c4001b22571c1bad7b1fc9fdabcaa4277baf34924f82"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -30,8 +30,16 @@ from sgi_model.model_qemu import generate_qemu_inputs, render_qemu_inputs
 from sgi_model.model_validation import discover_model_paths, load_checked_system_models
 from sgi_model.system_model import _layer
 from sgi_model.registry import (
-    IMPLEMENTED_TOPOLOGIES, PRODUCT_NAMES, REFERENCE_TOPOLOGIES,
+    IMPLEMENTED_COMPOSITIONS, IMPLEMENTED_TOPOLOGIES, PRODUCT_NAMES,
+    REFERENCE_TOPOLOGIES,
 )
+
+
+def _is_ip35_offering(offering):
+    """Whether @offering runs on an IP35 C-brick node board, which the
+    Origin 3900's IP53 and IP59 Cx-bricks are not."""
+    return (offering["product"] == "origin3000"
+            and not offering["topology"].startswith("origin3900"))
 
 
 class GeneratorTests(unittest.TestCase):
@@ -42,8 +50,7 @@ class GeneratorTests(unittest.TestCase):
                       if item["name"] == "onyx4-host"]
 
         self.assertEqual(topology["product"], "onyx4-host")
-        self.assertEqual((topology["board"], topology["default-board"]),
-                         ("ip59", "ip59"))
+        self.assertEqual(topology["board"], "ip59")
         self.assertEqual(len(topology["nodes"]), 1)
         node = topology["nodes"][0]
         self.assertEqual(node["board-kind"], "ip53")
@@ -145,7 +152,7 @@ class GeneratorTests(unittest.TestCase):
             path.stem + (f"/{model['composition']['variant']['id']}"
                          if "variant" in model["composition"] else ""): model
             for path, model in checked
-            if path.stem in IMPLEMENTED_TOPOLOGIES
+            if path.stem in IMPLEMENTED_COMPOSITIONS
             and model["machine"]["model_role"] == "emulation-target"
             and model["machine"]["emulation"]["lifecycle"] == "implemented"
             and model["machine"]["emulation"]["machine_name"] in PRODUCT_NAMES
@@ -522,30 +529,32 @@ class StorageTests(unittest.TestCase):
         cls.catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
 
-    def default_processor(self, name, board=None):
+    def default_processor(self, name):
         topology = next(item for item in self.catalogue["topologies"]
-                        if item["name"] == name
-                        and item.get("board") == board)
+                        if item["name"] == name)
         return topology["nodes"][0]["cpu-slots"][0]["assembly"]["id"]
-
-    def boards(self, name):
-        return {item.get("board") for item in self.catalogue["topologies"]
-                if item["name"] == name}
 
     def test_every_offering_lists_consistent_storage(self):
         for offering in self.catalogue["offerings"]:
             with self.subTest(options=offering["machine-options"]):
                 # processor= appears only where the module is not the
                 # topology's own, so the default keeps its old spelling.
-                board = offering.get("board")
                 processor = ("" if offering["processor"]["id"] ==
-                             self.default_processor(offering["topology"],
-                                                    board)
+                             self.default_processor(offering["topology"])
                              else f",processor={offering['processor']['id']}")
-                # board= appears wherever the topology takes two boards.
-                board_option = (f",board={board}"
-                                if len(self.boards(offering["topology"])) > 1
-                                else "")
+                # population= appears only where the CPU total alone does
+                # not name one population of the node count.
+                same_total = [
+                    other for other in self.catalogue["offerings"]
+                    if other["topology"] == offering["topology"]
+                    and other["nodes"] == offering["nodes"]
+                    and other["smp"] == offering["smp"]
+                    and other["processor"]["id"] ==
+                    offering["processor"]["id"]]
+                population = (
+                    ",population=" + ":".join(
+                        str(c) for c in offering["cpus-per-node"])
+                    if len(same_total) > 1 else "")
                 if offering.get("launch-recipe") == "ip32":
                     self.assertEqual(offering["machine-options"],
                                      "o2" if offering["topology"] == "o2"
@@ -558,7 +567,7 @@ class StorageTests(unittest.TestCase):
                 self.assertEqual(
                     offering["machine-options"],
                     f"{offering['product']},topology={offering['topology']}"
-                    f",nodes={offering['nodes']}{board_option}{processor}")
+                    f",nodes={offering['nodes']}{population}{processor}")
                 if offering.get("launch-recipe") == "ip53-discovery":
                     self.assertEqual(offering["firmware"]["kind"], "ip35-prom")
                 else:
@@ -610,9 +619,7 @@ class StorageTests(unittest.TestCase):
         image, so a new machine's NVRAM file starts from it too. A
         selected system Timekeeper turns that fixture off. The IP53
         DS1744-compatible profiles start their backed image from zeroes."""
-        ds1744_topologies = {
-            "origin350", "onyx350", "onyx4-host", "tezro", "tezro-rack",
-        }
+        ds1744_products = {"origin350", "onyx350", "onyx4-host", "tezro"}
         for offering in self.catalogue["offerings"]:
             nvram = {item["initial"] for item in offering["storage"]
                      if item["name"].startswith("nvram")
@@ -621,7 +628,7 @@ class StorageTests(unittest.TestCase):
                 {"ip27-nvram"}
                 if offering["product"] in {"origin200", "origin2000", "onyx2"}
                 else {"zero"}
-                if offering["topology"] in ds1744_topologies
+                if offering["product"] in ds1744_products
                 else set()
                 if offering.get("launch-recipe") in ("ip53-discovery", "ip32")
                 else {"zero"})
@@ -932,16 +939,17 @@ class FuelTests(unittest.TestCase):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
         ip53_words = {
-            ("origin350", "ip53"): 0x589bad85,
-            ("onyx350", "ip53"): 0x549caf85,
-            ("tezro", "ip53"): 0x589bad85,
-            ("tezro-rack", "ip53"): 0x589bad85,
+            "origin350-ip53": 0x589bad85,
+            "onyx350-ip53": 0x549caf85,
+            "tezro-one-processor": 0x589bad85,
+            "tezro-ip53": 0x589bad85,
+            "tezro-rack-ip53": 0x589bad85,
             # The IP59 boards all share the 1 GHz, 16 MB word.
-            ("origin350", "ip59"): 0x4aedb385,
-            ("onyx350", "ip59"): 0x4aedb385,
-            ("onyx4-host", "ip59"): 0x4aedb385,
-            ("tezro", "ip59"): 0x4aedb385,
-            ("tezro-rack", "ip59"): 0x4aedb385,
+            "origin350-ip59": 0x4aedb385,
+            "onyx350-ip59": 0x4aedb385,
+            "onyx4-host": 0x4aedb385,
+            "tezro-ip59": 0x4aedb385,
+            "tezro-rack-ip59": 0x4aedb385,
         }
         for topology in catalogue["topologies"]:
             product = topology["product"]
@@ -983,14 +991,14 @@ class FuelTests(unittest.TestCase):
                 self.assertEqual(topology["ip35-firmware"], {
                     "machine-type": 0, "cpu-mode-word": 0x549cad85})
                 continue
-            if topology["name"] == "origin3900":
+            if topology["name"] in ("origin3900-ip53", "origin3900-ip59"):
                 # The Cx-brick's IP53 word is the table row for its
                 # 700 MHz, 8 MiB fit; its IP59 word is the Origin 350's.
                 self.assertEqual(topology["ip35-firmware"], {
                     "machine-type": 0,
                     "cpu-mode-word": 0x549cad85
                     if topology["board"] == "ip53"
-                    else ip53_words[("origin350", "ip59")]})
+                    else ip53_words["origin350-ip59"]})
                 continue
             if product not in ("origin300", "fuel", "origin350",
                                "onyx350", "tezro", "onyx4-host"):
@@ -1000,10 +1008,9 @@ class FuelTests(unittest.TestCase):
                 if product in {"origin300", "fuel"}:
                     machine_type = 2 if product == "fuel" else 1
                     expected_mode = 0x549aa985
-                elif (topology["name"], topology.get("board")) in ip53_words:
+                elif topology["name"] in ip53_words:
                     machine_type = 0
-                    expected_mode = ip53_words[
-                        (topology["name"], topology["board"])]
+                    expected_mode = ip53_words[topology["name"]]
                 else:
                     machine_type = 1
                     expected_mode = topology["nodes"][0]["cpu-slots"][0][
@@ -1171,7 +1178,7 @@ class FuelTests(unittest.TestCase):
         processor = {"id": "r16000-800mhz-8mb", "part": "R16000",
                      "clock-hz": 800000000, "cache-mib": 8}
         fitted = [item for item in catalogue["offerings"]
-                  if item.get("board") == "ip35"
+                  if _is_ip35_offering(item)
                   and item["processor"]["part"] == "R16000"]
         self.assertEqual(
             sorted((item["topology"], item["machine-options"])
@@ -1191,7 +1198,7 @@ class FuelTests(unittest.TestCase):
                 self.assertEqual(item["processor"], processor)
                 self.assertEqual(item["default-cpu-model"], "R16000")
         for item in catalogue["offerings"]:
-            if (item.get("board") == "ip35"
+            if (_is_ip35_offering(item)
                     and not item["topology"].endswith("-r16000")):
                 self.assertNotIn("approximate", item["display-name"])
         # Not offered here: any other R16000 clock or cache on a C-brick,
@@ -1227,7 +1234,7 @@ class FuelTests(unittest.TestCase):
         # The 8 MiB 800 MHz IP53 boards print the same id: one processor.
         shared = [item for item in catalogue["offerings"]
                   if item["processor"]["id"] == "r16000-800mhz-8mb"
-                  and item.get("board") == "ip53"]
+                  and item["topology"].endswith(("-ip53", "-memory-node"))]
         self.assertTrue(shared)
         for item in shared:
             self.assertEqual(item["processor"], processor)
@@ -1243,7 +1250,7 @@ class FuelTests(unittest.TestCase):
         processor = {"id": "r14000-600mhz-8mb", "part": "R14000",
                      "clock-hz": 600000000, "cache-mib": 8}
         fitted = [item for item in catalogue["offerings"]
-                  if item.get("board") == "ip35"
+                  if _is_ip35_offering(item)
                   and item["processor"]["id"] == "r14000-600mhz-8mb"]
         self.assertEqual(
             sorted((item["topology"], item["machine-options"])
@@ -1307,7 +1314,7 @@ class FuelTests(unittest.TestCase):
         processor = {"id": "r14000-500mhz-8mb", "part": "R14000",
                      "clock-hz": 500000000, "cache-mib": 8}
         fitted = [item for item in catalogue["offerings"]
-                  if item.get("board") == "ip35"
+                  if _is_ip35_offering(item)
                   and item["processor"]["id"] == "r14000-500mhz-8mb"]
         self.assertEqual(
             sorted((item["topology"], item["machine-options"])
@@ -1505,14 +1512,14 @@ class Origin350ClockPolicyTests(unittest.TestCase):
     def test_ip53_catalogue_selects_backed_ds1744_timekeepers(self):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
-        names = {"origin350", "onyx350", "onyx4-host", "tezro", "tezro-rack"}
-        # Board variants and node boards share a name, so check every
-        # record: two per product, three for the Tezro, one for the
-        # Onyx 4 host.
+        names = {"origin350-ip53", "origin350-ip59", "onyx350-ip53",
+                 "onyx350-ip59", "onyx4-host", "tezro-one-processor",
+                 "tezro-ip53", "tezro-ip59", "tezro-rack-ip53",
+                 "tezro-rack-ip59"}
         topologies = [(row["name"], row) for row in catalogue["topologies"]
                       if row["name"] in names]
         self.assertEqual({name for name, _row in topologies}, names)
-        self.assertEqual(len(topologies), 2 * len(names))
+        self.assertEqual(len(topologies), len(names))
 
         for name, topology in topologies:
             with self.subTest(topology=name):

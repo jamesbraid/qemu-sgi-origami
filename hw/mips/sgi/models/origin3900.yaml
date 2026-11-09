@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Origin 3900 composition: one Cx-brick and an I-brick, with IP53 node
 # boards or their 1 GHz successor, the IP59; every node of a record has
-# the same board. board= picks the node board. Resolve before validation
-# or generation.
+# the same board. The topology name picks the node board. Resolve before
+# validation or generation.
 configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
@@ -50,6 +50,7 @@ connector_population:
     sources: ["108-0240-002 printed pages 2-28 and 2-29: I-brick ports A and B go to compute nodes"]
 variants:
   - id: ip53
+    name: origin3900-ip53
     board: ip53
     default: true
     layers:
@@ -77,6 +78,7 @@ variants:
             independent owners' IRIX inventories, reused directly for this
             reference I-brick rather than a distinct capture of this exact set.
   - id: ip59
+    name: origin3900-ip59
     board: ip59
     layers:
       - layers/products/origin3900-ip59.yaml

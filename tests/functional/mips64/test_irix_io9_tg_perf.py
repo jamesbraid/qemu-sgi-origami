@@ -34,7 +34,7 @@ if tg_perf.base.QemuSystemTest is not None:
 
         test_irix_tg_perf = None
 
-        MACHINE_OPTIONS = 'origin350,topology=origin350,nodes=1'
+        MACHINE_OPTIONS = 'origin350,topology=origin350-ip53,nodes=1'
         CPU = 'R16000'
         SMP = 4
         MEMORY_MIB = 2048

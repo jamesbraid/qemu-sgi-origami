@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * Launch every offering query-sgi-machines lists from its catalogue data:
- * machine-options, storage bindings, processor, CPU count and memory.
+ * Launch every offering query-sgi-machines lists, by its id, from its
+ * catalogue data: machine-options, storage bindings, processor, CPU count
+ * and memory.
  * The IP32 recipe supplies original synthetic ROM and identity inputs and
  * the selected CPU tuple. All launches use -nodefaults. A topology with
  * graphics slots is launched again with a pipe in its first slot and the
@@ -288,7 +289,7 @@ static void test_launch(const void *opaque)
     bool mediaio = l->pipe &&
                    g_str_equal(qdict_get_str(o, "product"), "origin2000");
     g_autofree char *tag = g_strdup_printf(
-        "%s-%" PRId64 "-%s", topology, nodes, l->pipe ? "pipe" : "bare");
+        "%s-%s", qdict_get_str(o, "id"), l->pipe ? "pipe" : "bare");
     g_autoptr(GString) machine = g_string_new(
         qdict_get_str(o, "machine-options"));
     g_autoptr(GPtrArray) args = g_ptr_array_new_with_free_func(g_free);
@@ -424,6 +425,7 @@ static bool machine_built(QTestState *qts, const char *product)
 int main(int argc, char **argv)
 {
     g_autoptr(GHashTable) seen = g_hash_table_new(g_str_hash, g_str_equal);
+    g_autoptr(GHashTable) piped = g_hash_table_new(g_str_hash, g_str_equal);
     g_autoptr(GPtrArray) launches = g_ptr_array_new_with_free_func(g_free);
     const QListEntry *e;
     QTestState *qts;
@@ -440,27 +442,36 @@ int main(int argc, char **argv)
     qobject_unref(reply);
 
     /*
-     * One launch per -M value: the processor-option offerings of one
-     * population differ only in the processor module, and the shared
-     * population is what fails on a missing input.
+     * One launch per offering id. An id is unique, so the processor
+     * options and populations that share a -M value each launch, and an
+     * offering that needs more than its -M value to launch (the four
+     * Origin 300 splits of two totals) cannot be missed. A pipe goes in
+     * once per topology, on its first offering: what a pipe needs is the
+     * topology's, not the population's.
      */
     QLIST_FOREACH_ENTRY(qdict_get_qlist(catalogue, "offerings"), e) {
         QDict *o = qobject_to(QDict, qlist_entry_obj(e));
-        const char *options = qdict_get_str(o, "machine-options");
+        const char *id = qdict_get_str(o, "id");
         const char *topology = qdict_get_str(o, "topology");
         QDict *graphics;
 
-        if (g_hash_table_contains(seen, options) ||
-            !machine_built(qts, qdict_get_str(o, "product"))) {
+        g_assert_false(g_hash_table_contains(seen, id));
+        g_hash_table_add(seen, (gpointer)id);
+        g_assert_nonnull(topology_record(topology));
+        if (!machine_built(qts, qdict_get_str(o, "product"))) {
             continue;
         }
-        g_hash_table_add(seen, (gpointer)options);
         graphics = qdict_get_qdict(topology_record(topology), "graphics");
         for (int pipe = 0; pipe <= (graphics != NULL); pipe++) {
+            if (pipe) {
+                if (g_hash_table_contains(piped, topology)) {
+                    continue;
+                }
+                g_hash_table_add(piped, (gpointer)topology);
+            }
             Launch *l = g_new0(Launch, 1);
             g_autofree char *path = g_strdup_printf(
-                "/sgi-catalogue-launch/%s/%s", options,
-                pipe ? "pipe" : "bare");
+                "/sgi-catalogue-launch/%s/%s", id, pipe ? "pipe" : "bare");
 
             l->offering = o;
             l->pipe = pipe;
@@ -472,7 +483,7 @@ int main(int argc, char **argv)
         if (qlist_size(qdict_get_qlist(o, "networks")) > 1) {
             Launch *l = g_new0(Launch, 1);
             g_autofree char *path = g_strdup_printf(
-                "/sgi-catalogue-launch/%s/networks", options);
+                "/sgi-catalogue-launch/%s/networks", id);
 
             l->offering = o;
             l->all_networks = true;
