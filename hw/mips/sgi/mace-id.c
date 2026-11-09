@@ -47,6 +47,7 @@ struct SGIMACEIDState {
     Error *migration_blocker;
     char *test_serial;
     char *eprom_file;
+    char *eprom_hex;
     char *status_hex;
     int64_t low_start_ns;
     int64_t startup_low_start_ns;
@@ -312,15 +313,16 @@ static void mace_id_realize(DeviceState *dev, Error **errp)
     SGIMACEIDState *s = SGI_MACE_ID(dev);
     g_autofree char *contents = NULL;
     g_autoptr(GError) io_error = NULL;
+    uint8_t image[DS2502_DATA_SIZE];
     uint8_t serial_bytes[6];
     uint8_t status[DS2502_STATUS_SIZE];
     uint64_t serial = 0;
-    size_t length;
     DeviceState *part;
     GStatBuf image_stat;
 
     if (s->no_responder) {
-        if (s->test_serial || s->eprom_file || s->status_hex) {
+        if (s->test_serial || s->eprom_file || s->eprom_hex ||
+            s->status_hex) {
             error_setg(errp, "sgi-mace-id no-responder rejects synthetic "
                              "identity inputs");
         }
@@ -328,32 +330,45 @@ static void mace_id_realize(DeviceState *dev, Error **errp)
     }
     if (!mace_id_hex(s->test_serial, serial_bytes, sizeof(serial_bytes)) ||
         !mace_id_hex(s->status_hex, status, sizeof(status)) ||
-        !s->eprom_file) {
+        !s->eprom_file == !s->eprom_hex) {
         error_setg(errp, "sgi-mace-id needs 12 hexadecimal test-serial "
-                         "digits, 14 hexadecimal status digits and a "
-                         "128-byte eprom-file");
+                         "digits, 14 hexadecimal status digits and one "
+                         "128-byte image, as eprom-file or as 256 "
+                         "hexadecimal eprom-hex digits");
         return;
     }
-    if (g_stat(s->eprom_file, &image_stat) < 0) {
-        error_setg_errno(errp, errno,
-                         "sgi-mace-id cannot stat eprom-file '%s'",
-                         s->eprom_file);
-        return;
-    }
-    if (!S_ISREG(image_stat.st_mode) ||
-        image_stat.st_size != DS2502_DATA_SIZE) {
-        error_setg(errp, "sgi-mace-id eprom-file needs exactly 128 bytes "
-                         "in a regular file");
-        return;
-    }
-    if (!g_file_get_contents(s->eprom_file, &contents, &length, &io_error)) {
-        error_setg(errp, "sgi-mace-id cannot read eprom-file: %s",
-                   io_error->message);
-        return;
-    }
-    if (length != DS2502_DATA_SIZE) {
-        error_setg(errp, "sgi-mace-id eprom-file needs exactly 128 bytes");
-        return;
+    if (s->eprom_hex) {
+        if (!mace_id_hex(s->eprom_hex, image, sizeof(image))) {
+            error_setg(errp, "sgi-mace-id eprom-hex needs exactly 256 "
+                             "hexadecimal digits");
+            return;
+        }
+    } else {
+        gsize length;
+
+        if (g_stat(s->eprom_file, &image_stat) < 0) {
+            error_setg_errno(errp, errno,
+                             "sgi-mace-id cannot stat eprom-file '%s'",
+                             s->eprom_file);
+            return;
+        }
+        if (!S_ISREG(image_stat.st_mode) ||
+            image_stat.st_size != DS2502_DATA_SIZE) {
+            error_setg(errp, "sgi-mace-id eprom-file needs exactly 128 bytes "
+                             "in a regular file");
+            return;
+        }
+        if (!g_file_get_contents(s->eprom_file, &contents, &length,
+                                 &io_error)) {
+            error_setg(errp, "sgi-mace-id cannot read eprom-file: %s",
+                       io_error->message);
+            return;
+        }
+        if (length != DS2502_DATA_SIZE) {
+            error_setg(errp, "sgi-mace-id eprom-file needs exactly 128 bytes");
+            return;
+        }
+        memcpy(image, contents, sizeof(image));
     }
     for (unsigned i = 0; i < sizeof(serial_bytes); i++) {
         serial |= (uint64_t)serial_bytes[i] << (8 * i);
@@ -363,7 +378,7 @@ static void mace_id_realize(DeviceState *dev, Error **errp)
     qdev_prop_set_uint8(part, "family", 0x09);
     qdev_prop_set_uint64(part, "serial", serial);
     qdev_prop_set_bit(part, "strict-readonly-diagnostic", true);
-    ds2502_set_image(part, (const uint8_t *)contents, length);
+    ds2502_set_image(part, image, sizeof(image));
     if (!ds2502_set_status(part, status, sizeof(status), errp)) {
         object_unparent(OBJECT(part));
         object_unref(OBJECT(part));
@@ -449,6 +464,7 @@ static const Property mace_id_properties[] = {
     DEFINE_PROP_BOOL("no-responder", SGIMACEIDState, no_responder, false),
     DEFINE_PROP_STRING("test-serial", SGIMACEIDState, test_serial),
     DEFINE_PROP_STRING("eprom-file", SGIMACEIDState, eprom_file),
+    DEFINE_PROP_STRING("eprom-hex", SGIMACEIDState, eprom_hex),
     DEFINE_PROP_STRING("status", SGIMACEIDState, status_hex),
 };
 
