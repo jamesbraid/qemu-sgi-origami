@@ -69,6 +69,16 @@ typedef struct SGIKonaTextureNativeImage {
     SGIKonaTextureLevel image;
     uint8_t *coverage;
     uint64_t covered;
+    /*
+     * A level that holds 16-bit words (header word 8 is
+     * SGI_KONA_TEXTURE_WORDS16) has each word in red (high byte) and green
+     * (low byte). When a binding reads it as a 16-bit colour format, the
+     * words are decoded into this copy, made on demand and not migrated;
+     * decoded_level views it.
+     */
+    uint32_t *decoded;
+    uint32_t decoded_storage;
+    SGIKonaTextureLevel decoded_level;
 } SGIKonaTextureNativeImage;
 
 typedef struct SGIKonaTextureObject {

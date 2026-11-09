@@ -663,10 +663,8 @@ an *approximation* and not the pipe's rule: payload word 5 describes the
 source texels to the pipe (*established*), so a read in storage ``0xd``
 with format 6 and type 3 reads memory as 16-bit components. That
 the address is word 16 in both banks is *inferred* from six reads in one
-Quake GL trace, five of them in bank one. Where a texture holds the same
-level twice, as when the library loads a read-back copy back in another
-storage code, the later load is the level (*inferred*); two textures at
-one address leave the read unanswerable. The reply is that level in the
+Quake GL trace, five of them in bank one. Two textures at one address
+leave the read unanswerable. The reply is that level in the
 requested format and type: red, green, blue, alpha, RGB, RGBA, luminance
 and luminance-alpha, as unsigned bytes or unsigned shorts (each byte
 times 257), tightly packed. Luminance and luminance-alpha put an RGB sum
@@ -732,6 +730,32 @@ when the range is one line with no stride and holds the whole image; any
 other bracketed read is answered with zeros, as before, and logged
 ``LOG_UNIMP``.
 
+Levels are found by place, not storage code
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A bind carries no storage code for its level and the pipe keeps none per
+level. It finds the image by the cache entry number (or, for entry
+``0xffffffff``, by the level table and the first-level bank) and samples
+the words found there in the format of bind word 2, bits 20:14, whatever
+storage loaded them (*established* from the firmware, which has no
+comparison or store of a storage code; the client sequence is from a Quake
+GL trace). So a 16-bit level that the library loads, reads back, frees,
+retakes and loads again under storage ``0xd`` is bound as ``0x10`` or
+``0x14`` and samples the original texels.
+
+The model keys a level by target, size exponents, bank, address and a
+volume's layout mode, and a later load at the same place overwrites the
+level whatever storage and layout family it names. A load of another
+format that rewrites the whole level replaces it. One that rewrites only
+a part of it is refused, as the model cannot merge two formats' texels.
+The bind's storage code selects no level. A level that holds 16-bit
+words (a ``0xd`` load of format 6, type 3, see above) is decoded as the
+bind's colour format when the bind names ``0x10`` or ``0x14``, with the
+layouts above, and sampled as luminance when it names ``0xd``. Any
+other pairing samples the model's texels as they are, an *approximation*:
+the pipe would reinterpret the words the level holds. A border read of such
+a decoded level is refused.
+
 Detail textures
 ~~~~~~~~~~~~~~~
 
@@ -744,7 +768,7 @@ finishes it. It is sent once per bank with bit 3 of word 17 flipped, and
 the same image goes to both banks. A Quake GL trace carries a 128x128
 image in storage code ``0x14`` (RGB5) at address zero in both banks
 (*software expectation*). The model stores it as a one-level 2D image
-under its own target, keyed by entry and bank, with its real storage code.
+under its own target, keyed by entry and bank.
 
 ``0x17d`` binds the detail: six words, the entry (or ``0xffffffff``), the
 s and t exponents, the format row and the two-word address pair. The pipe
@@ -756,8 +780,8 @@ pipe firmware). ``0xffffffff`` skips releasing the entry's load id and the
 bind goes ahead. The detail level, the add or modulate mode, the channel
 select and the filter-table slot come from the base texture's bind, not
 from this command (*software expectation*). The model finds the image by
-that address, the base's bank, the storage code of the format row and the
-size; the entry word only narrows the search to one texture first, and
+that address, the base's bank and the size; the entry word only narrows
+the search to one texture first, and
 ``0xffffffff`` searches all of them. An ordinary 2D load at the address
 also qualifies, as the hardware cannot tell them apart in memory. Only the
 firmware's choice of pair word is *established*. That the word it picks

@@ -100,6 +100,7 @@ static void texture_object_free(SGIKonaTextureObject *o)
     }
     for (unsigned k = 0; k < o->native_count; k++) {
         g_free(o->native[k].image.pixels);
+        g_free(o->native[k].decoded);
         g_free(o->native[k].coverage);
     }
     g_free(o);
@@ -327,9 +328,17 @@ static bool texture_native_mode_valid(const uint32_t h[20])
 
 static bool texture_native_key(const uint32_t a[20], const uint32_t b[20])
 {
-    /* DMA byte layout is normalized before these image fragments arrive. */
-    return a[0] == b[0] && a[9] == b[9] &&
-           a[16] == b[16] && (a[17] & ~4u) == (b[17] & ~4u) &&
+    /*
+     * DMA byte layout is normalized before these image fragments arrive.
+     * A level is its entry, bank and address (and a volume's layout mode,
+     * word 17 bits 6:5). The storage code (word 9) and the layout family
+     * and DMA bits of word 17 that go with it say how a load packed its
+     * words, not where they live, and the pipe keeps none per level, so a
+     * later load of the same place overwrites the level whatever storage
+     * it names.
+     */
+    return a[0] == b[0] && a[16] == b[16] &&
+           (a[17] & 0x68) == (b[17] & 0x68) &&
            a[18] == b[18] && a[19] == b[19];
 }
 
@@ -381,6 +390,7 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
     bool one_dimensional = h[0] == SGI_GL_TEXTURE_1D;
     uint8_t *coverage;
     uint64_t old = 0, bytes, count, covered = 0;
+    bool replace;
 
     if ((!volume && !one_dimensional && h[0] != SGI_GL_TEXTURE_2D &&
          h[0] != SGI_GL_DETAIL_TEXTURE_2D_SGIS) ||
@@ -404,24 +414,37 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
     if (!n && o && o->native_count == SGI_GL_TEX_LEVELS_MAX) {
         return false;
     }
+    /*
+     * A load that names another format over a level already there
+     * overwrites it, as the pipe's memory has no format per level, but
+     * only when it rewrites the whole level; the model cannot merge two
+     * formats' texels.
+     */
+    replace = n && !volume &&
+              (n->image.base_format != base_format ||
+               n->image.internal_format != internal_format);
+    if (replace && (h[11] || h[12] || (uint64_t)h[13] + 1 < n->image.width ||
+                    (uint64_t)h[14] + 1 < n->image.height)) {
+        return false;
+    }
     if (h[13] == UINT32_MAX || h[14] == UINT32_MAX ||
         (volume && h[15] == UINT32_MAX)) {
         return false;
     }
-    width = MAX(n ? n->image.width : 0, h[13] + 1);
-    height = MAX(n ? n->image.height : 0, h[14] + 1);
+    width = MAX(n && !replace ? n->image.width : 0, h[13] + 1);
+    height = MAX(n && !replace ? n->image.height : 0, h[14] + 1);
     depth = volume ? MAX(n ? n->image.depth : 0, h[15] + 1) : 1;
     if (!native_volume_dimensions(width, height, depth) ||
         (o && o->native_width && !o->native_layout_valid &&
          (width > o->native_width || height > o->native_height ||
           (volume && o->native_depth && depth > o->native_depth))) ||
-        (n && (n->image.base_format != base_format ||
-               n->image.internal_format != internal_format))) {
+        (n && !replace && (n->image.base_format != base_format ||
+                           n->image.internal_format != internal_format))) {
         return false;
     }
     if (n) {
         old = native_bytes(n);
-        covered = n->covered;
+        covered = replace ? 0 : n->covered;
     }
     count = (uint64_t)width * height * depth;
     bytes = count * sizeof(*pixels) + (count + 7) / 8;
@@ -436,7 +459,7 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
         g_free(coverage);
         return false;
     }
-    if (n) {
+    if (n && !replace) {
         for (uint32_t z = 0; z < n->image.depth; z++) {
             for (uint32_t y = 0; y < n->image.height; y++) {
                 uint64_t old_row = ((uint64_t)z * n->image.height + y) *
@@ -476,6 +499,8 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
         n = &o->native[o->native_count++];
     } else {
         g_free(n->image.pixels);
+        g_free(n->decoded);
+        n->decoded = NULL;
         g_free(n->coverage);
     }
     n->coverage = coverage;
@@ -521,10 +546,9 @@ unsigned sgi_kona_texture_find_level(SGIKonaTextureState *s, uint32_t target,
             }
         }
         /*
-         * A texture the library loads back after a read-back holds both
-         * loads, in different storage codes, at one address. The later
-         * load overwrote the memory, so the last one stored is the level
-         * (inferred: the array keeps load order).
+         * A load of the same entry, bank and address overwrites the level
+         * whatever storage it names, so the array holds one (see
+         * texture_native_key()).
          */
         if (newest) {
             found++;
@@ -1123,6 +1147,44 @@ uint32_t sgi_kona_texture_unpack16(uint32_t storage, uint16_t word)
            texture_expand(word & 15, 4);
 }
 
+/*
+ * A level as a binding that reads storage `storage` sees it. The pipe keeps
+ * no format per level: a binding reads whatever words are there in its own
+ * format. A level loaded as 16-bit luminance, which holds the words as
+ * loaded, is therefore decoded when the binding names a 16-bit colour
+ * storage (the library reloads a read-back colour level this way). Any
+ * other pairing samples the model's texels as they are.
+ */
+static SGIKonaTextureLevel *texture_native_level(SGIKonaTextureNativeImage *n,
+                                                 bool valid, uint32_t storage)
+{
+    uint64_t count;
+
+    if (!valid || n->header[9] != 0xd ||
+        n->header[8] != SGI_KONA_TEXTURE_WORDS16 ||
+        (storage != SGI_KONA_GL_STORAGE_RGB4 &&
+         storage != SGI_KONA_GL_STORAGE_RGB5)) {
+        return &n->image;
+    }
+    count = native_pixels(n);
+    if (!n->decoded || n->decoded_storage != storage) {
+        g_free(n->decoded);
+        n->decoded = g_new(uint32_t, count);
+        for (uint64_t p = 0; p < count; p++) {
+            uint32_t px = n->image.pixels[p];
+
+            n->decoded[p] = sgi_kona_texture_unpack16(storage,
+                                (px >> 24 << 8) | ((px >> 16) & 0xff));
+        }
+        n->decoded_storage = storage;
+    }
+    n->decoded_level = n->image;
+    n->decoded_level.pixels = n->decoded;
+    n->decoded_level.base_format = SGI_GL_RGBA;
+    n->decoded_level.internal_format = SGI_GL_RGBA;
+    return &n->decoded_level;
+}
+
 static uint32_t texture_native_view(SGIKonaTextureObject *o)
 {
     unsigned count = 0;
@@ -1180,8 +1242,6 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                             (!h[19] && h[18] == descriptor));
             }
 
-            matches = matches &&
-                      (!o->native_format_valid || h[9] == o->native_format);
             if (o->native_layout_valid) {
                 matches = matches &&
                           texture_native_interior(o, n, level, &ox, &oy,
@@ -1199,7 +1259,8 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                     ambiguous = true;
                     break;
                 }
-                image = &n->image;
+                image = texture_native_level(n, o->native_format_valid,
+                                             o->native_format);
                 interior = n;
                 image_x = ox;
                 image_y = oy;
@@ -1326,34 +1387,34 @@ typedef struct SGIKonaTextureDetailScan {
 
 /*
  * Count o's complete one-level 2D images in the base's bank at the address
- * and storage code the binding names. The pair is the whole address: the
- * hardware reads texture memory there, as the binding carries no other
- * reference. The pipe writes the word of the pair the base's bank selects,
- * word 4 in bank one and word 5 in bank zero, and a load keeps its address
- * in the matching word 19 or 18. The library loads the image once per
- * bank, so only the base's bank can match.
+ * the binding names. The pair is the whole address: the hardware reads
+ * texture memory there, as the binding carries no other reference, and no
+ * storage code (see texture_native_key()). The pipe writes the word of the
+ * pair the base's bank selects, word 4 in bank one and word 5 in bank zero,
+ * and a load keeps its address in the matching word 19 or 18. The library
+ * loads the image once per bank, so only the base's bank can match.
  */
-static void texture_detail_scan(const SGIKonaTextureObject *o,
+static void texture_detail_scan(SGIKonaTextureObject *o,
                                 const uint32_t args[6], uint32_t storage,
                                 bool bank_one, SGIKonaTextureDetailScan *d)
 {
     uint32_t address = bank_one ? args[4] : args[5];
 
     for (unsigned k = 0; k < o->native_count; k++) {
-        const SGIKonaTextureNativeImage *n = &o->native[k];
+        SGIKonaTextureNativeImage *n = &o->native[k];
         const uint32_t *h = n->header;
 
         if ((h[0] != SGI_GL_TEXTURE_2D &&
              h[0] != SGI_GL_DETAIL_TEXTURE_2D_SGIS) ||
             !!(h[17] & 8) != bank_one ||
             (bank_one ? h[19] : h[18]) != address ||
-            h[9] != storage || n->covered != native_pixels(n) ||
+            n->covered != native_pixels(n) ||
             n->image.width != (1u << args[1]) ||
             n->image.height != (1u << args[2])) {
             continue;
         }
         d->found++;
-        d->image = &n->image;
+        d->image = texture_native_level(n, true, storage);
     }
 }
 
@@ -1397,7 +1458,7 @@ static bool texture_detail_view(SGIKonaTextureState *s,
 
         g_hash_table_iter_init(&iter, s->objects);
         while (g_hash_table_iter_next(&iter, NULL, &value)) {
-            const SGIKonaTextureObject *o = value;
+            SGIKonaTextureObject *o = value;
 
             if (o->owner == s->owner) {
                 texture_detail_scan(o, args, storage, bank_one, &d);
