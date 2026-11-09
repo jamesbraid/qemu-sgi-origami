@@ -735,11 +735,11 @@ static bool texture_detail_args(const uint32_t args[6])
 {
     uint32_t base, internal;
 
-    return args && (args[0] == UINT32_MAX ||
-        (args[1] < 31 && args[2] < 31 &&
-         texture_dimensions(1u << args[1], 1u << args[2]) &&
-         sgi_kona_gl_texture_internal_format(args[3], &base, &internal) &&
-         base != SGI_GL_DEPTH_COMPONENT));
+    /* The entry word may be UINT32_MAX; the rest locates the image. */
+    return args && args[1] < 31 && args[2] < 31 &&
+           texture_dimensions(1u << args[1], 1u << args[2]) &&
+           sgi_kona_gl_texture_internal_format(args[3], &base, &internal) &&
+           base != SGI_GL_DEPTH_COMPONENT;
 }
 
 bool sgi_kona_texture_detail_bind(SGIKonaTextureState *s,
@@ -749,7 +749,7 @@ bool sgi_kona_texture_detail_bind(SGIKonaTextureState *s,
         return false;
     }
     memcpy(s->detail_args, args, sizeof(s->detail_args));
-    s->detail_bound = args[0] != UINT32_MAX;
+    s->detail_bound = true;
     return true;
 }
 
@@ -1282,13 +1282,58 @@ static bool texture_filter_weight(void *opaque, double lambda, double *weight)
     return true;
 }
 
+typedef struct SGIKonaTextureDetailScan {
+    unsigned found;
+    const SGIKonaTextureLevel *image;
+} SGIKonaTextureDetailScan;
+
+/*
+ * Count o's complete one-level 2D images in the base's bank at the address
+ * and storage code the binding names. The pair is the whole address: the
+ * hardware reads texture memory there, as the binding carries no other
+ * reference. The pipe writes the word of the pair the base's bank selects,
+ * word 4 in bank one and word 5 in bank zero, and a load keeps its address
+ * in the matching word 19 or 18. The library loads the image once per
+ * bank, so only the base's bank can match.
+ */
+static void texture_detail_scan(const SGIKonaTextureObject *o,
+                                const uint32_t args[6], uint32_t storage,
+                                bool bank_one, SGIKonaTextureDetailScan *d)
+{
+    uint32_t address = bank_one ? args[4] : args[5];
+
+    for (unsigned k = 0; k < o->native_count; k++) {
+        const SGIKonaTextureNativeImage *n = &o->native[k];
+        const uint32_t *h = n->header;
+
+        if ((h[0] != SGI_GL_TEXTURE_2D &&
+             h[0] != SGI_GL_DETAIL_TEXTURE_2D_SGIS) ||
+            !!(h[17] & 8) != bank_one ||
+            (bank_one ? h[19] : h[18]) != address ||
+            h[9] != storage || n->covered != native_pixels(n) ||
+            n->image.width != (1u << args[1]) ||
+            n->image.height != (1u << args[2])) {
+            continue;
+        }
+        d->found++;
+        d->image = &n->image;
+    }
+}
+
+/*
+ * Resolve the detail binding for primary. The pipe keeps the format row
+ * and the address pair and never looks the entry number up, so the pair
+ * decides: the entry word only narrows the search to one texture first,
+ * and UINT32_MAX (locate by pair) searches them all.
+ */
 static bool texture_detail_view(SGIKonaTextureState *s,
                                   SGIKonaTextureObject *primary)
 {
     const uint32_t *args = s->detail_args;
-    SGIKonaTextureObject *o;
-    SGIKonaTextureLevel *image = NULL;
+    SGIKonaTextureDetailScan d = { 0 };
+    const SGIKonaTextureLevel *image;
     uint32_t base, internal, storage;
+    bool bank_one = primary->native_bank_one;
 
     if (!s->detail_bound) {
         return true;
@@ -1297,30 +1342,32 @@ static bool texture_detail_view(SGIKonaTextureState *s,
         !sgi_kona_gl_texture_format_storage(args[3], &storage)) {
         return false;
     }
-    o = texture_object(s, args[0], false);
-    if (o) {
-        for (unsigned k = 0; k < o->native_count; k++) {
-            SGIKonaTextureNativeImage *n = &o->native[k];
+    if (args[0] != UINT32_MAX) {
+        SGIKonaTextureObject *entry = texture_object(s, args[0], false);
 
-            if (n->header[0] == SGI_GL_TEXTURE_2D &&
-                n->header[18] == args[4] && n->header[19] == args[5] &&
-                n->header[9] == storage && n->covered == native_pixels(n) &&
-                n->image.width == (1u << args[1]) &&
-                n->image.height == (1u << args[2])) {
-                if (image) {
-                    qemu_log_mask(LOG_UNIMP,
-                                  "sgi-kona: ambiguous detail image "
-                                  "for handle 0x%x\n", args[0]);
-                    return false;
-                }
-                image = &n->image;
+        if (entry) {
+            texture_detail_scan(entry, args, storage, bank_one, &d);
+        }
+    }
+    if (!d.found) {
+        GHashTableIter iter;
+        gpointer value;
+
+        g_hash_table_iter_init(&iter, s->objects);
+        while (g_hash_table_iter_next(&iter, NULL, &value)) {
+            const SGIKonaTextureObject *o = value;
+
+            if (o->owner == s->owner) {
+                texture_detail_scan(o, args, storage, bank_one, &d);
             }
         }
     }
+    image = d.found == 1 ? d.image : NULL;
     if (!image) {
         qemu_log_mask(LOG_UNIMP,
-                      "sgi-kona: unresolved detail image for handle 0x%x\n",
-                      args[0]);
+                      "sgi-kona: %s detail image for entry 0x%x pair "
+                      "0x%x 0x%x\n", d.found ? "ambiguous" : "unresolved",
+                      args[0], args[4], args[5]);
         return false;
     }
     primary->detail_pixels = *image;
@@ -1845,9 +1892,8 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
     for (unsigned k = 0; k < ARRAY_SIZE(tmp.detail_args); k++) {
         tmp.detail_args[k] = qemu_get_be32(f);
     }
-    if (detail_valid > 1 || (detail_valid &&
-        (tmp.detail_args[0] == UINT32_MAX ||
-         !texture_detail_args(tmp.detail_args)))) {
+    if (detail_valid > 1 ||
+        (detail_valid && !texture_detail_args(tmp.detail_args))) {
         goto invalid;
     }
     tmp.detail_bound = detail_valid;

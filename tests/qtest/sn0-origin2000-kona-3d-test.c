@@ -6682,8 +6682,13 @@ static void texture_float_rows(QTestState *s, const uint32_t *pixels,
     }
 }
 
-static void texture_constant_upload(QTestState *s, uint32_t handle,
-                                      uint32_t source_format, uint32_t pixel)
+/*
+ * A constant 2x2 image under cache number handle, loaded as target at the
+ * descriptor address a (in word 18, bank zero).
+ */
+static void texture_constant_upload_at(QTestState *s, uint32_t handle,
+                                       uint32_t source_format, uint32_t pixel,
+                                       uint32_t target, uint32_t a)
 {
     uint32_t h[20];
     unsigned bytes = source_format == 4 ? 3 : 4;
@@ -6694,7 +6699,9 @@ static void texture_constant_upload(QTestState *s, uint32_t handle,
     h[5] = 3;
     h[7] = 1;
     kona_command(s, 0x33, (uint32_t[]) { 0xcf2, 3 }, 2);
+    h[0] = target;
     h[10] = handle;
+    h[18] = a;
     kona_command(s, 0x174, h, 20);
     for (unsigned y = 0; y < 2; y++) {
         unsigned phase = (3 + y * stride) & 3;
@@ -6715,6 +6722,12 @@ static void texture_constant_upload(QTestState *s, uint32_t handle,
     }
     kona_command(s, 0x176, (uint32_t[]) { handle }, 1);
     kona_command(s, 0x33, (uint32_t[]) { 0xcf2, 0 }, 2);
+}
+
+static void texture_constant_upload(QTestState *s, uint32_t handle,
+                                      uint32_t source_format, uint32_t pixel)
+{
+    texture_constant_upload_at(s, handle, source_format, pixel, 0xde1, 0);
 }
 
 static void texture_native_format_bind(QTestState *s, unsigned index,
@@ -6888,10 +6901,15 @@ static void test_texture_native_detail(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
     uint32_t words[33] = { 0 };
-    uint32_t args[] = { mode == 4 ? UINT32_MAX : mode == 5 ? 2 : 1,
-                        1, 1, 41, 0, 0 };
+    /*
+     * The detail image is a 0x8095 load at its own address. The binding
+     * finds it by that address, so the entry word may be UINT32_MAX (mode
+     * 4), and an address with no image (mode 5) leaves the draw dropped.
+     */
+    uint32_t args[] = { mode == 4 ? UINT32_MAX : 1, 1, 1, 41,
+                        0, mode == 5 ? 0x3000 : 0x2000 };
     uint32_t expected = mode == 1 ? 0x5060c0 : mode == 3 ? 0x3060d0 :
-                        mode == 4 ? 0x4080c0 : mode == 5 ? 0x0000ff :
+                        mode == 5 ? 0x0000ff :
                         mode == 9 || mode == 11 || mode == 13 ? 0x6060c0 :
                                                               0x8040c0;
     QTestState *s = qtest_init(MACHINE_ARGS), *from = NULL;
@@ -6905,7 +6923,7 @@ static void test_texture_native_detail(gconstpointer opaque)
     gl_window_cleared(s, 0, 0, 1);
     texture_native_bind(s, 0);
     texture_constant_upload(s, 0, 5, 0x4080c080);
-    texture_constant_upload(s, 1, 5, 0xff0080ff);
+    texture_constant_upload_at(s, 1, 5, 0xff0080ff, 0x8095, 0x2000);
     /* Negative bound cases distinguish curve nodes 16 and 32. */
     for (unsigned group = 0; group < 16; group++) {
         uint64_t packed = 0;
@@ -20454,7 +20472,7 @@ int main(int argc, char **argv)
     add_case("sn0/origin2000/kona-3d/texture/negative-bound-filters",
              test_texture_negative_bound_filters);
     static const char *detail_cases[] = {
-        "add", "modulate", "colour", "alpha", "absent", "missing",
+        "add", "modulate", "colour", "alpha", "by-pair", "missing",
         "migrates", "invalid-retained", "scaled", "minimum-rho-quarter",
         "minimum-rho-half", "maximum-rho-quarter", "maximum-rho-half",
         "negative-bound-migrates",
