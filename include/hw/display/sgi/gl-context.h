@@ -186,6 +186,7 @@ enum {
 #define SGI_GL_TEXTURE_1D       0x0de0
 #define SGI_GL_TEXTURE_2D       0x0de1
 #define SGI_GL_TEXTURE_3D       0x806f
+#define SGI_GL_DETAIL_TEXTURE_2D_SGIS 0x8095
 #define SGI_GL_TEXTURE_ENV_MODE 0x2200
 /* Texture coordinate generation (OpenGL 1.2.1, 2.10.4). */
 #define SGI_GL_S                0x2000

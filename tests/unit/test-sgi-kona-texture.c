@@ -1282,6 +1282,68 @@ static void test_native_detail(void)
     sgi_kona_texture_cleanup(&dst);
 }
 
+/*
+ * A detail image loads as a 0x8095 one-level 2D image. It is keyed by
+ * entry and bank, stays apart from an ordinary image, and is no level for
+ * a read-back to find.
+ */
+static void test_native_detail_load(void)
+{
+    SGIKonaTextureState src, dst;
+    SGIKonaTextureObject *o;
+    uint32_t h[20] = {
+        [0] = SGI_GL_DETAIL_TEXTURE_2D_SGIS, [1] = 2, [2] = 2, [9] = 0x14,
+        [10] = 7, [13] = 1, [14] = 1, [16] = 0x23, [17] = 0x2204,
+    };
+    uint32_t level[20] = {
+        [0] = SGI_GL_TEXTURE_2D, [1] = 2, [2] = 2, [9] = 0x14,
+        [10] = 5, [13] = 1, [14] = 1, [16] = 0x23, [17] = 0x2204,
+    };
+    const uint32_t pixels[4] = { 1, 2, 3, 4 };
+    const SGIKonaTextureLevel *image;
+    uint32_t handle;
+    GByteArray *a;
+
+    sgi_kona_texture_init(&src);
+    sgi_kona_texture_init(&dst);
+    g_assert_true(sgi_kona_texture_native_upload(&src, level, pixels,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    g_assert_true(sgi_kona_texture_native_upload(&src, h, pixels,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    /* The same image in the other bank is a second record, not a rewrite. */
+    h[17] |= 8;
+    g_assert_true(sgi_kona_texture_native_upload(&src, h, pixels,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    o = sgi_kona_texture_lookup(&src, 0, 7);
+    g_assert_nonnull(o);
+    g_assert_cmpuint(o->native_count, ==, 2);
+    g_assert_cmphex(o->native[0].header[0], ==,
+                    SGI_GL_DETAIL_TEXTURE_2D_SGIS);
+    /*
+     * A read-back looks a level up by target, size exponents, bank and
+     * address. The detail image sits at the ordinary level's address in
+     * the same bank and is not mistaken for it, nor it for the detail.
+     */
+    g_assert_cmpuint(sgi_kona_texture_find_level(&src, SGI_GL_TEXTURE_2D,
+                                                0x23, false, 0, &handle,
+                                                &image), ==, 1);
+    g_assert_cmpuint(handle, ==, 5);
+    g_assert_cmpuint(sgi_kona_texture_find_level(&src,
+                         SGI_GL_DETAIL_TEXTURE_2D_SGIS, 0x23, false, 0,
+                         &handle, &image), ==, 1);
+    g_assert_cmpuint(handle, ==, 7);
+    a = save(&src);
+    g_assert_true(load(a, &dst));
+    g_assert_cmpuint(sgi_kona_texture_lookup(&dst, 0, 7)->native_count, ==, 2);
+    g_byte_array_unref(a);
+    /* No other target is a detail image. */
+    h[0] = SGI_GL_DETAIL_TEXTURE_2D_SGIS + 1;
+    g_assert_false(sgi_kona_texture_native_upload(&src, h, pixels,
+                                                 SGI_GL_RGBA, SGI_GL_RGBA));
+    sgi_kona_texture_cleanup(&src);
+    sgi_kona_texture_cleanup(&dst);
+}
+
 static void native_volume_setup(SGIKonaTextureState *s,
                                  SGIKonaTextureParams *p)
 {
@@ -2777,6 +2839,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi/kona/texture/native-internal-format",
                     test_native_internal_format);
     g_test_add_func("/sgi/kona/texture/native-detail", test_native_detail);
+    g_test_add_func("/sgi/kona/texture/native-detail-load",
+                    test_native_detail_load);
     g_test_add_func("/sgi/kona/texture/native-repeat-interior",
                     test_native_repeat_interior);
     g_test_add_func("/sgi/kona/texture/native-one-dimensional",
