@@ -105,6 +105,10 @@
 # @node-board: the node board the module is soldered to, as the L1
 #     reports it, in place of the topology's own
 #
+# @board-id-word: the Bedrock board identity response a node reports
+#     with this module, in place of each node's own; the Origin 3000
+#     C-brick's clock options carry one
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelProcessorOption',
@@ -112,7 +116,8 @@
             'accepted-memory-mib': ['uint64'],
             'cpus-per-node': ['uint32'],
             '*firmware-word': 'uint32',
-            '*node-board': 'SGIModelIp53NodeBoard' } }
+            '*node-board': 'SGIModelIp53NodeBoard',
+            '*board-id-word': 'uint64' } }
 
 ##
 # @SGIModelCpuSlot:
@@ -2091,6 +2096,10 @@
 # @default-board: the board the topology builds with no ``board=``;
 #     present wherever @board is
 #
+# @board-slots: every slot a board other than a graphics pipe goes in:
+#     the BaseIO slot and the empty XIO slots.  Present from catalogue
+#     version 3
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelTopology',
@@ -2123,7 +2132,8 @@
             '*ip53-runtime': 'SGIModelIp53Runtime',
             '*machine-default': 'bool',
             '*board': 'str',
-            '*default-board': 'str' } }
+            '*default-board': 'str',
+            '*board-slots': ['SGIModelBoardSlot'] } }
 
 ##
 # @SGIModelConsole:
@@ -2348,12 +2358,18 @@
 #
 # @targets: SCSI ids a launcher may attach a target at
 #
+# @boot-target: the SCSI id (the loop id, on a Fibre Channel loop) the
+#     first disk attaches at, which the PROM boots; each later disk
+#     takes the next free id of @targets.  Absent when the adapter
+#     takes no disk
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelScsiAdapter',
   'data': { 'type': 'str',
             'bus': 'str',
-            'targets': ['uint32'] } }
+            'targets': ['uint32'],
+            '*boot-target': 'uint32' } }
 
 ##
 # @SGIModelNetworkMac:
@@ -2557,6 +2573,461 @@
             'discovery-prerequisites': ['str'] } }
 
 ##
+# @SGIModelHostidSource:
+#
+# What the guest's host id derives from, which decides which identity
+# input a launcher needs to give.
+#
+# @text: the system serial text
+#
+# @module: the serial of each module (Origin 2000 and Onyx2 chassis
+#     carry several)
+#
+# @address: the station address
+#
+# @o2: the O2's identity chip
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelHostidSource',
+  'data': ['text', 'module', 'address', 'o2'] }
+
+##
+# @SGIModelTimeSource:
+#
+# The clock an RTC device reads (``-rtc clock=``).
+#
+# @host: the host's wall clock
+#
+# @vm: the virtual clock, which instruction counting drives
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelTimeSource', 'data': ['host', 'vm'] }
+
+##
+# @SGIModelClock:
+#
+# How a launch of one offering may choose the guest's time:
+# instruction counting (``-icount shift=N``) and the RTC's time
+# source.  With counting off, QEMU's own default (@host) applies and
+# no ``-rtc`` is given.
+#
+# @default-icount-shift: the shift a launch uses when none is asked;
+#     absent for counting off
+#
+# @icount-shifts: the shifts a launch may ask for
+#
+# @icount-off: whether a launch may run without counting
+#
+# @default-rtc: the time source a launch with counting on takes when
+#     none is asked
+#
+# @rtc: the time sources a launch may ask for
+#
+# @vm-needs-icount: whether the @vm time source is accepted only with
+#     counting on (the Octane)
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelClock',
+  'data': { '*default-icount-shift': 'uint32',
+            'icount-shifts': ['uint32'],
+            'icount-off': 'bool',
+            'default-rtc': 'SGIModelTimeSource',
+            'rtc': ['SGIModelTimeSource'],
+            'vm-needs-icount': 'bool' } }
+
+##
+# @SGIModelAudio:
+#
+# The audio device an offering has.
+#
+# @device: the device type, which ``-global DEVICE.audiodev=`` binds
+#
+# @output: whether it plays to an audio backend
+#
+# @input: whether it captures from an audio backend's input
+#
+# @requires-product: the board product (a @SGIModelBoardProduct
+#     @product) that fits it, for a device that sits on an optional
+#     board; absent when the machine always has it
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelAudio',
+  'data': { 'device': 'str',
+            'output': 'bool',
+            'input': 'bool',
+            '*requires-product': 'str' } }
+
+##
+# @SGIModelDevices:
+#
+# What a launcher may attach for the guest's user: pointing and
+# keyboard devices, audio.
+#
+# @usb: whether the machine has a USB controller to put a keyboard and
+#     mouse on
+#
+# @tablet: whether the machine has a serial line a tablet can drive
+#     (the line named in @serial-lines with kind @tablet)
+#
+# @audio: the audio device, absent for none
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelDevices',
+  'data': { 'usb': 'bool',
+            'tablet': 'bool',
+            '*audio': 'SGIModelAudio' } }
+
+##
+# @SGIModelSerialKind:
+#
+# The role of a serial line.
+#
+# @console: the line the PROM and the guest console use
+#
+# @system-controller: a system controller's line (the L1 or ELSC)
+#
+# @second-port: another UART of the same machine
+#
+# @tablet: the line a tablet drives, which is also a @second-port
+#
+# @record: a line the machine's transmit records come out on, which a
+#     launcher captures
+#
+# @unconnected: a line the machine reads that a launch leaves
+#     unconnected
+#
+# @bring-up: the bring-up UART
+#
+# @media-io: a MediaIO serial line, bound by its device's own property
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelSerialKind',
+  'data': ['console', 'system-controller', 'second-port', 'tablet',
+           'record', 'unconnected', 'bring-up', 'media-io'] }
+
+##
+# @SGIModelSerialLine:
+#
+# One serial line a launch backs.
+#
+# @name: the line's stable name, which a launcher names its console by
+#
+# @chardev: the chardev id the launch gives it
+#
+# @kind: the role it plays
+#
+# @node: position in the owning topology's @nodes list this line
+#     serves
+#
+# @serial: the zero-based ``-serial`` position the machine reads this
+#     line from; absent for a line bound by @property
+#
+# @property: the machine or device property that binds the line's
+#     chardev, for one that is not a ``-serial``
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelSerialLine',
+  'data': { 'name': 'str',
+            'chardev': 'str',
+            'kind': 'SGIModelSerialKind',
+            'node': 'uint32',
+            '*serial': 'uint32',
+            '*property': 'str' } }
+
+##
+# @SGIModelBoardFit:
+#
+# How a board product is fitted.
+#
+# @device: by ``-device``, naming the slot
+#
+# @machine-property: by a ``-M`` property, because the machine builds
+#     the board before any ``-device`` exists
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelBoardFit', 'data': ['device', 'machine-property'] }
+
+##
+# @SGIModelBoardProduct:
+#
+# One board a slot takes.
+#
+# @product: the product's stable name, which names the board to a
+#     launcher (menet, mscsi, io6g)
+#
+# @description: the board in words
+#
+# @kind: how the board is fitted
+#
+# @device: the ``-device`` type, present when @kind is @device
+#
+# @properties: the ``-device`` properties besides the slot, or the
+#     single ``-M`` property and value for @machine-property
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelBoardProduct',
+  'data': { 'product': 'str',
+            'description': 'str',
+            'kind': 'SGIModelBoardFit',
+            '*device': 'str',
+            'properties': ['SGIModelGraphicsProperty'] } }
+
+##
+# @SGIModelBoardSlot:
+#
+# One slot a board other than a graphics pipe goes in.
+#
+# @name: the slot's stable name (io1, io5)
+#
+# @description: where this is on the real machine, in words
+#
+# @default: the product the machine fits here with none asked; absent
+#     for an empty slot
+#
+# @products: the products the slot takes
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelBoardSlot',
+  'data': { 'name': 'str',
+            'description': 'str',
+            '*default': 'str',
+            'products': ['SGIModelBoardProduct'] } }
+
+##
+# @SGIModelSettingKind:
+#
+# The kind of value a setting takes.
+#
+# @text: printable text
+# @hex: a fixed number of hexadecimal digits
+# @integer: a decimal or 0x hexadecimal number
+# @boolean: on or off
+# @enum: one of a fixed set of words
+# @file: a regular file whose contents the machine reads
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelSettingKind',
+  'data': ['text', 'hex', 'integer', 'boolean', 'enum', 'file'] }
+
+##
+# @SGIModelSettingTargetKind:
+#
+# Where a setting is applied.
+#
+# @machine: a ``-M`` property of the machine
+# @global: a ``-global DEVICE.PROPERTY=`` setting
+# @cpu: a ``-cpu`` property of the offering's processor part
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelSettingTargetKind',
+  'data': ['machine', 'global', 'cpu'] }
+
+##
+# @SGIModelSettingForm:
+#
+# How a value is written to the target.
+#
+# @plain: ``PROPERTY=VALUE``
+# @list: ``PROPERTY.KEY=VALUE``, only the keys given
+# @keyed-list: ``PROPERTY.I=KEY=VALUE``, I counting up from 0 over the
+#     keys given, in the order of the setting's slot keys
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelSettingForm', 'data': ['plain', 'list', 'keyed-list'] }
+
+##
+# @SGIModelSettingScope:
+#
+# What a slotted setting's keys name.
+#
+# @board: a board record (node board or I/O board)
+# @dimm: a memory module
+# @controller: a controller, such as an expansion controller
+# @controller-component: a component of a controller
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelSettingScope',
+  'data': ['board', 'dimm', 'controller', 'controller-component'] }
+
+##
+# @SGIModelSettingGroupRule:
+#
+# @all: every member must be given
+# @all-or-none: none or every member must be given
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelSettingGroupRule', 'data': ['all', 'all-or-none'] }
+
+##
+# @SGIModelSettingTarget:
+#
+# Where and how a setting is applied.
+#
+# @kind: the target
+#
+# @property: the property's name; for a @cpu target the CPU property
+#     the offering's processor part names (prid, fpu-id)
+#
+# @device: the QOM type, for @global only
+#
+# @form: how the value is written
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelSettingTarget',
+  'data': { 'kind': 'SGIModelSettingTargetKind',
+            'property': 'str',
+            '*device': 'str',
+            'form': 'SGIModelSettingForm' } }
+
+##
+# @SGIModelSettingDefinition:
+#
+# What a setting is, written once for the whole catalogue.  A
+# machine input a launcher gives with ``--set NAME[.KEY]=VALUE``.
+#
+# @name: the setting's name, ``[a-z][a-z0-9-]*``
+#
+# @kind: the kind of value
+#
+# @target: where it is applied
+#
+# @min-length: text: least length in bytes
+# @max-length: text: greatest length in bytes
+# @pattern: text: a regular expression the whole value matches
+# @digits: hex: the exact digit count
+# @minimum: integer: least value
+# @maximum: integer: greatest value
+# @values: enum: the accepted words
+#
+# @size: file: the exact size in bytes; absent for any size
+#
+# @allow-empty: file: whether an empty value passes through, meaning
+#     "no record"
+#
+# @identity: whether the setting is a debug input that sets an
+#     identity the machine otherwise derives
+#
+# @description: the setting in words
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelSettingDefinition',
+  'data': { 'name': 'str',
+            'kind': 'SGIModelSettingKind',
+            'target': 'SGIModelSettingTarget',
+            '*min-length': 'uint32',
+            '*max-length': 'uint32',
+            '*pattern': 'str',
+            '*digits': 'uint32',
+            '*minimum': 'uint64',
+            '*maximum': 'uint64',
+            '*values': ['str'],
+            '*size': 'uint64',
+            'allow-empty': 'bool',
+            'identity': 'bool',
+            'description': 'str' } }
+
+##
+# @SGIModelSettingSlots:
+#
+# The keys of a slotted setting at one offering.
+#
+# @scope: what a key names
+#
+# @keys: every accepted key, in order
+#
+# @labels: what each key is, in the same order
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelSettingSlots',
+  'data': { 'scope': 'SGIModelSettingScope',
+            'keys': ['str'],
+            'labels': ['str'] } }
+
+##
+# @SGIModelSettingChoice:
+#
+# A named value of an integer setting.
+#
+# @name: the word a launcher accepts in the value's place
+#
+# @value: the value it stands for
+#
+# @description: what it selects, in words
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelSettingChoice',
+  'data': { 'name': 'str', 'value': 'uint64', 'description': 'str' } }
+
+##
+# @SGIModelOfferingSetting:
+#
+# One setting an offering offers.
+#
+# @name: the @SGIModelSettingDefinition it is
+#
+# @slots: the keys it takes; absent for a setting with none
+#
+# @required: whether a launch must give it when it has no @default
+#
+# @group: the @SGIModelSettingGroup it belongs to
+#
+# @default: the value a launch uses when none is given
+#
+# @default-provenance: how well the default is known (the model's
+#     fact-provenance word)
+#
+# @choices: named values accepted in place of a number; a launch gives
+#     a list of names joined by commas, which are or-ed
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelOfferingSetting',
+  'data': { 'name': 'str',
+            '*slots': 'SGIModelSettingSlots',
+            'required': 'bool',
+            '*group': 'str',
+            '*default': 'str',
+            '*default-provenance': 'str',
+            '*choices': ['SGIModelSettingChoice'] } }
+
+##
+# @SGIModelSettingGroup:
+#
+# Settings that go together.
+#
+# @name: the group's name
+#
+# @members: the settings in it
+#
+# @rule: what a launch must give
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelSettingGroup',
+  'data': { 'name': 'str',
+            'members': ['str'],
+            'rule': 'SGIModelSettingGroupRule' } }
+
+##
 # @SGIModelOffering:
 #
 # One accepted configuration a launcher may select: a product, a
@@ -2647,10 +3118,37 @@
 # @needs-debug-leds-off: whether this product's PROM dialogue needs
 #     its debug LEDs disabled before booting a guest
 #
+# @id: the offering's stable name,
+#     ``TOPOLOGY.POPULATION[.PROCESSOR]``: the topology's name, each
+#     node's CPU count joined by ``-``, and the processor's id when
+#     the topology offers more than one.  Unique in the catalogue.
+#     For tests and tools; a person types the parts.  Present from
+#     catalogue version 3
+#
+# @hostid-source: what the guest's host id derives from.  Present from
+#     catalogue version 3
+#
+# @clock: how a launch may choose the guest's time.  Present from
+#     catalogue version 3
+#
+# @devices: the pointing, keyboard and audio devices a launch may
+#     attach.  Present from catalogue version 3
+#
+# @serial-lines: every serial line a launch backs, in the order the
+#     machine reads their ``-serial`` positions.  Present from
+#     catalogue version 3
+#
+# @settings: the machine inputs a launch may give with ``--set``.
+#     Present from catalogue version 3
+#
+# @setting-groups: the @settings that go together.  Present from
+#     catalogue version 3
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelOffering',
-  'data': { 'product': 'str',
+  'data': { '*id': 'str',
+            'product': 'str',
             'topology': 'str',
             '*default-topology': 'str',
             '*board': 'str',
@@ -2682,7 +3180,13 @@
             'install-media': ['str'],
             'default-cpu-model': 'str',
             'synthesized-firmware-toggle': 'bool',
-            'needs-debug-leds-off': 'bool' } }
+            'needs-debug-leds-off': 'bool',
+            '*hostid-source': 'SGIModelHostidSource',
+            '*clock': 'SGIModelClock',
+            '*devices': 'SGIModelDevices',
+            '*serial-lines': ['SGIModelSerialLine'],
+            '*settings': ['SGIModelOfferingSetting'],
+            '*setting-groups': ['SGIModelSettingGroup'] } }
 
 ##
 # @SGIMachines:
@@ -2705,6 +3209,9 @@
 # @references: documented configurations retained for comparison
 #     They are not buildable or selectable.
 #
+# @setting-definitions: what every setting an offering lists is.
+#     Present from catalogue version 3
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIMachines',
@@ -2712,7 +3219,8 @@
             'version': 'uint32',
             'topologies': ['SGIModelTopology'],
             'offerings': ['SGIModelOffering'],
-            '*references': ['SGIModelReference'] } }
+            '*references': ['SGIModelReference'],
+            '*setting-definitions': ['SGIModelSettingDefinition'] } }
 
 ##
 # @SGIModelReference:
