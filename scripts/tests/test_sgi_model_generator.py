@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "3ab1be24f46fd6a49191220e0e66668c9952f0298183c294b334987dfbbe3c74"
+    "53fdac592cca7eefc79df88349084748a024a81c43cfb447e001c4dbd578a8ac"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -704,6 +704,39 @@ class StorageTests(unittest.TestCase):
                 if row["product"] == "o2":
                     self.assertEqual(row["clock"]["icount-shifts"], [3])
                     self.assertEqual(row["clock"]["default-icount-shift"], 3)
+
+    def test_board_slots_list_the_baseio_slot_and_the_empty_xio_slots(self):
+        """An Origin 2000 or Onyx 2 topology lists its BaseIO slot, whose
+        card a machine property picks (a plain BaseIO may be built as the
+        BaseIO-G, a BaseIO-G only as itself), and each empty XIO slot with
+        the five cards it takes by -device. Other topologies list none."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        with_slots = {item["name"] for item in catalogue["topologies"]
+                      if "board-slots" in item}
+        self.assertEqual(with_slots, {
+            "onyx2-deskside", "onyx2-rack", "origin200-gigachannel",
+            "origin2000-deskside", "origin2000-rack"})
+        for topology in catalogue["topologies"]:
+            for slot in topology.get("board-slots", []):
+                with self.subTest(topology=topology["name"],
+                                  slot=slot["name"]):
+                    names = [item["product"] for item in slot["products"]]
+                    if slot["name"] == "io1":
+                        self.assertEqual(
+                            names, ["io6", "io6g"] if slot["default"] == "io6"
+                            else ["io6g"])
+                        self.assertEqual(
+                            {item["kind"] for item in slot["products"]},
+                            {"machine-property"})
+                    else:
+                        self.assertNotIn("default", slot)
+                        self.assertEqual(names, [
+                            "menet", "mscsi", "pci-carrier", "pci-shoehorn",
+                            "pci-expansion"])
+                        self.assertEqual(
+                            {item["kind"] for item in slot["products"]},
+                            {"device"})
 
     def test_ip53_offerings_list_the_io9_isp12160(self):
         for offering in self.catalogue["offerings"]:
