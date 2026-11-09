@@ -5457,6 +5457,13 @@ static const uint32_t roundtrip_source[4] = {
 /* The model's own 5-5-5-1 packing of roundtrip_source (see kona.rst). */
 static const uint16_t roundtrip_words[4] = { 0x1121, 0x87c5, 0xf905, 0x27ff };
 
+/* Whole 4-bit steps, which a level held as 0x10 keeps, and their words. */
+static const uint32_t roundtrip_rgb4_source[4] = {
+    0x11223344, 0x55667788, 0x99aabbcc, 0xddeeff00,
+};
+static const uint16_t roundtrip_rgb4_words[4] = { 0x1234, 0x5678, 0x9abc,
+                                                   0xdef0 };
+
 static void roundtrip_load(QTestState *s, uint32_t handle, uint32_t format,
                            uint32_t type, uint32_t storage,
                            const uint32_t *words, unsigned count)
@@ -5489,8 +5496,13 @@ static void roundtrip_bind(QTestState *s, uint32_t handle)
 /*
  * Mode 0: the 0x14 picture reads back as the 16-bit words of its texels,
  * not as a luminance sum of its colour channels (every texel sums past
- * one, so the sum would read 0xffff). Mode 2: a 16-bit luminance level,
- * whose words do not fit one byte, reads back as it was loaded.
+ * one, so the sum would read 0xffff). Mode 1: those words loaded back
+ * under 0xd into the freed entry draw as the picture, bound as 0x14. Mode
+ * 2: a 16-bit luminance level, whose words do not fit one byte, reads back
+ * as it was loaded. Mode 3: the same reload with the entry not freed first,
+ * which overwrites the level at its place whatever storage it names; a key
+ * that included the storage code would leave two levels there and bind
+ * neither. Mode 4: a level held as 0x10 reads back as its 4-4-4-4 words.
  */
 static void test_texture_roundtrip(gconstpointer opaque)
 {
@@ -5505,6 +5517,11 @@ static void test_texture_roundtrip(gconstpointer opaque)
         for (unsigned k = 0; k < 2; k++) {
             stl_be_p(expected + 4 * k, luminance[k]);
         }
+    } else if (mode == 4) {
+        roundtrip_load(s, 0x21, 5, 1, 0x10, roundtrip_rgb4_source, 4);
+        for (unsigned k = 0; k < 4; k++) {
+            stw_be_p(expected + 2 * k, roundtrip_rgb4_words[k]);
+        }
     } else {
         roundtrip_bind(s, 0x21);
         roundtrip_load(s, 0x21, 5, 1, 0x14, roundtrip_source, 4);
@@ -5516,6 +5533,23 @@ static void test_texture_roundtrip(gconstpointer opaque)
     g_assert_cmphex(qtest_readl(s, RETURN_PAGE), ==, 1);
     qtest_memread(s, RETURN_PAGE + 8, actual, sizeof(actual));
     g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
+    if (mode == 1 || mode == 3) {
+        uint32_t words[2];
+
+        for (unsigned k = 0; k < 2; k++) {
+            words[k] = ldl_be_p(actual + 4 * k);
+        }
+        if (mode == 1) {
+            kona_command(s, 0x178, (uint32_t[]) { 0x21 }, 1);
+            kona_command(s, 0x1c5, (uint32_t[]) { 0x21 }, 1);
+            kona_command(s, 0x1c4, (uint32_t[]) { 0x21 }, 1);
+        }
+        roundtrip_load(s, 0x21, 6, 3, 0xd, words, 2);
+        roundtrip_bind(s, 0x21);
+        for (unsigned k = 0; k < 4; k++) {
+            assert_texture_pixel(s, k % 2, k / 2, roundtrip_source[k]);
+        }
+    }
     qtest_quit(s);
 }
 
@@ -5527,7 +5561,8 @@ static void test_texture_roundtrip(gconstpointer opaque)
  * bytes left over, none here. Mode 0 reads a 0x14 level as 16-bit words
  * (the padding is zero), mode 1 as RGBA bytes. Mode 2 opens the bracket
  * with a stride, which the pipe's reply does not use: answered with zeros,
- * logged, still completing the bracket.
+ * logged, still completing the bracket. Mode 3 does the same with a line
+ * shorter than the length.
  */
 static void test_texture_readback_dma(gconstpointer opaque)
 {
@@ -5566,6 +5601,9 @@ static void test_texture_readback_dma(gconstpointer opaque)
     if (mode == 2) {
         kona_command_kicked(s, 0x1f5,
                             (uint32_t[]){ 0, 0x9000, 16, 16, 8, 0 }, 6);
+    } else if (mode == 3) {
+        kona_command_kicked(s, 0x1f5,
+                            (uint32_t[]){ 0, 0x9000, 16, 8, 0, 0 }, 6);
     } else {
         kona_command_kicked(s, 0x1f5,
                             (uint32_t[]){ 0, 0x9000, 16, 16, 0, 0 }, 6);
@@ -5584,7 +5622,7 @@ static void test_texture_readback_dma(gconstpointer opaque)
     g_assert_cmphex(qtest_readl(s, RETURN_PAGE), ==, 0xa5a5a5a5);
     qtest_quit(s);
     found = kona_log_read(log);
-    if (mode == 2) {
+    if (mode == 2 || mode == 3) {
         g_assert_nonnull(strstr(found, "answered with zeros"));
     } else {
         g_assert_null(strstr(found, "answered with zeros"));
@@ -20733,14 +20771,22 @@ int main(int argc, char **argv)
              test_texture_readback_formats);
     add_data_case("sn0/origin2000/kona-3d/texture/roundtrip-words",
                   GUINT_TO_POINTER(0), test_texture_roundtrip);
+    add_data_case("sn0/origin2000/kona-3d/texture/roundtrip-reload",
+                  GUINT_TO_POINTER(1), test_texture_roundtrip);
     add_data_case("sn0/origin2000/kona-3d/texture/roundtrip-luminance",
                   GUINT_TO_POINTER(2), test_texture_roundtrip);
+    add_data_case("sn0/origin2000/kona-3d/texture/roundtrip-in-place",
+                  GUINT_TO_POINTER(3), test_texture_roundtrip);
+    add_data_case("sn0/origin2000/kona-3d/texture/roundtrip-rgb4",
+                  GUINT_TO_POINTER(4), test_texture_roundtrip);
     add_data_case("sn0/origin2000/kona-3d/texture/readback-dma-words",
                   GUINT_TO_POINTER(0), test_texture_readback_dma);
     add_data_case("sn0/origin2000/kona-3d/texture/readback-dma-rgba",
                   GUINT_TO_POINTER(1), test_texture_readback_dma);
     add_data_case("sn0/origin2000/kona-3d/texture/readback-dma-refused",
                   GUINT_TO_POINTER(2), test_texture_readback_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/readback-dma-line-length",
+                  GUINT_TO_POINTER(3), test_texture_readback_dma);
     static const char *lookup_cases[] = {
         "by-address", "other-exponents", "extent-past-level", "other-bank",
         "other-address", "other-target", "no-return-page",
