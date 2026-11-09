@@ -438,6 +438,7 @@ scripts/ci/sgi-docs-model-check.py
 scripts/ci/test_sgi_check.py
 scripts/performance/compare-system.py
 scripts/sgi-model.py
+scripts/sgi-offering-fingerprints.py
 scripts/sgi-replay-convert.py
 scripts/sgi_model/__init__.py
 scripts/sgi_model/citations.py
