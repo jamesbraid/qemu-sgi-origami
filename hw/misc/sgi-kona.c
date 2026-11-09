@@ -9786,8 +9786,10 @@ static void sgi_kona_gl_read_texels_zero(SGIKonaState *s)
  * (established stage selection; the sum clamped at 1.0 is inferred), so
  * a level of colour channels gives R+G+B clamped, and a single-channel
  * level, which the model stores in red, gives that channel. Luminance-alpha
- * keeps alpha. A texture the model does not hold, or a format, type or
- * size it cannot produce, is answered with zeros and logged, so the client
+ * keeps alpha. The exception is a 16-bit level read as format 6, type 3,
+ * storage 0xd, which gives its words (sgi_kona_gl_texels_raw16()).
+ * A texture the model does not hold, or a format, type or size it cannot
+ * produce, is answered with zeros and logged, so the client
  * draws black rather than hanging. What a real pipe returns for a lossy
  * conversion is unknown.
  */
@@ -9806,11 +9808,33 @@ static uint8_t luminance(const SGIKonaTextureLevel *image, const uint8_t c[4])
     }
 }
 
+/*
+ * A 16-bit level read as format 6, type 3, storage 0xd gives its words as
+ * they are in texture memory, not a decoded colour: the pipe's luminance
+ * sum puts (L, 0, 0, fill) through the path for a one-component source
+ * (inferred), which leaves a 16-bit word unchanged, and the library loads
+ * the same words back under storage 0xd. A level loaded as 0x10 or 0x14,
+ * which holds 16-bit words too, reads the same way. Approximated: the model
+ * keeps colour levels as eight-bit components, so those words are its own
+ * packing (sgi_kona_texture_pack16()); only that they load back unchanged
+ * is relied on.
+ */
+static bool sgi_kona_gl_texels_raw16(const uint32_t *load,
+                                     const uint32_t *args)
+{
+    return args[3] == 6 && args[4] == 3 && args[5] == 0xd &&
+           ((load[9] == 0xd && load[8] == SGI_KONA_TEXTURE_WORDS16) ||
+            load[9] == SGI_KONA_GL_STORAGE_RGB4 ||
+            load[9] == SGI_KONA_GL_STORAGE_RGB5);
+}
+
 static bool sgi_kona_gl_texels_pack(const SGIKonaTextureLevel *image,
+                                    const uint32_t *load,
                                     const uint32_t *args, uint32_t width,
                                     uint32_t height, uint8_t *out)
 {
     uint32_t format = args[3], type = args[4];
+    bool raw = image && sgi_kona_gl_texels_raw16(load, args);
     unsigned comps;
 
     if (!image || args[9] || args[12] || (type != 1 && type != 3) ||
@@ -9826,6 +9850,12 @@ static bool sgi_kona_gl_texels_pack(const SGIKonaTextureLevel *image,
             uint8_t c[4] = { px >> 24, px >> 16, px >> 8, px };
             uint8_t v[4];
 
+            if (raw) {
+                stw_be_p(out, load[9] == 0xd ? px >> 16 :
+                              sgi_kona_texture_pack16(load[9], px));
+                out += 2;
+                continue;
+            }
             switch (format) {
             case 0:             /* RED */
                 v[0] = c[0];
@@ -9870,6 +9900,7 @@ static void sgi_kona_gl_read_texels_bare(SGIKonaState *s, const uint32_t *args,
     uint32_t handle = UINT32_MAX;
     g_autofree uint8_t *data = NULL;
     uint64_t bytes;
+    const uint32_t *load = NULL;
     unsigned unit;
 
     if (!sgi_kona_x_read_current(s)) {
@@ -9915,8 +9946,9 @@ static void sgi_kona_gl_read_texels_bare(SGIKonaState *s, const uint32_t *args,
         } else if (args[0] == SGI_GL_TEXTURE_2D &&
                    sgi_kona_texture_find_level(&s->textures, args[0],
                        args[14], (args[13] >> 28) & 1, args[16], &handle,
-                       &image) == 1) {
-            done = sgi_kona_gl_texels_pack(image, args, width, height, data);
+                       &image, &load) == 1) {
+            done = sgi_kona_gl_texels_pack(image, load, args, width, height,
+                                           data);
         }
         if (!done) {
             memset(data, 0, bytes);
@@ -10919,6 +10951,21 @@ static bool sgi_kona_texture_copy(const uint32_t *h)
            h[9] == SGI_KONA_TEXTURE_COPY_STORAGE && (h[17] & 1);
 }
 
+/*
+ * Whether a load keeps the 16-bit words it carries: format 6 (luminance),
+ * type 3 (unsigned short) into storage 0xd, the form the library reloads a
+ * read-back 16-bit level in. The model holds such a level's word whole,
+ * the high byte in red (which a luminance sample reads) and the low byte in
+ * green, and flags the published level with header word 8, zero in every
+ * load, so that a read-back returns the word and a colour binding can read
+ * it (see sgi_kona_texture_pack16()).
+ */
+static bool sgi_kona_texture_words16(const uint32_t *h)
+{
+    return h[3] == 6 && h[4] == 3 && h[9] == 0xd && !(h[17] & 1) &&
+           !h[8] && !sgi_kona_texture_copy(h);
+}
+
 static uint32_t sgi_kona_texture_storage_base(const uint32_t *h)
 {
     if (sgi_kona_texture_copy(h)) {
@@ -11200,6 +11247,7 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaState *s,
      * back as the bytes they went in as (sgi_kona_gl_pixel_rgba8()), so
      * skip the floating-point round trip.
      */
+    bool words16 = sgi_kona_texture_words16(u->header);
     bool rgba8 = base != SGI_GL_DEPTH_COMPONENT && u->header[3] <= 10 &&
                  u->header[4] == 1 && !staged &&
                  sgi_kona_gl_rgba_identity(t);
@@ -11210,9 +11258,9 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaState *s,
     }
     for (uint32_t at = 0; at < u->count; at++) {
         double values[4];
-        uint8_t bytes[4];
+        uint8_t bytes[4], wide[8];
         uint32_t rgba;
-        bool converted;
+        bool converted, sixteen = false;
 
         if (rgba8) {
             /* One source word a texel: words is 1 for unsigned bytes. */
@@ -11264,13 +11312,28 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaState *s,
             return false;
         }
         rgba = ldl_be_p(bytes);
+        if (words16 &&
+            !sgi_kona_gl_pixel_pack_double(5, 3, values, false, wide,
+                                           sizeof(wide))) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-kona: native texture component is unsupported;"
+                          " upload refused\n");
+            return false;
+        }
+        sixteen = words16;
 store:
         switch (base) {
         case SGI_GL_ALPHA:
             rgba &= 0xff;
             break;
         case SGI_GL_LUMINANCE:
-            rgba = (rgba & 0xff000000) | 0xff;
+            /*
+             * A 16-bit load keeps its word: red is the high byte, which
+             * samples as the level, and green the low byte (see
+             * sgi_kona_texture_words16()).
+             */
+            rgba = sixteen ? (lduw_be_p(wide) << 16) | 0xff :
+                             (rgba & 0xff000000) | 0xff;
             break;
         case SGI_GL_LUMINANCE_ALPHA:
             rgba &= 0xff0000ff;
@@ -11767,6 +11830,9 @@ static void sgi_kona_texture_upload_publish(SGIKonaState *s)
     memcpy(header, u->header, sizeof(header));
     if (sgi_kona_texture_copy(header)) {
         header[9] = SGI_KONA_TEXTURE_COPIED_STORAGE;
+    }
+    if (sgi_kona_texture_words16(header)) {
+        header[8] = SGI_KONA_TEXTURE_WORDS16;
     }
     if (!sgi_kona_texture_native_upload(&s->textures, header, u->pixels,
                                         base, base)) {

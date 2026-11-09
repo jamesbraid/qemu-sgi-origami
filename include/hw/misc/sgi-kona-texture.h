@@ -58,6 +58,12 @@ typedef struct SGIKonaTextureLevel {
 #define SGI_KONA_TEXTURE_TABLE_LEVELS 16u
 #define SGI_KONA_TEXTURE_CURVE_SLOTS 4096u
 
+/*
+ * Header word 8 of a published level that holds 16-bit words: zero in every
+ * load, so the model uses it to say so.
+ */
+#define SGI_KONA_TEXTURE_WORDS16 1
+
 typedef struct SGIKonaTextureNativeImage {
     uint32_t header[20];
     SGIKonaTextureLevel image;
@@ -201,12 +207,23 @@ unsigned sgi_kona_texture_find_native(SGIKonaTextureState *s, uint32_t target,
  * The native levels of `target` the current owner holds whose load named
  * `size_exponents` (header word 16), the bank `bank_one` and `address` (word
  * 19 in bank one, word 18 otherwise). Returns how many textures hold such
- * a level; with one, *handle names it and *image is its last load.
+ * a level; with one, *handle names it, *image is its last load and *load
+ * (if not NULL) that load's header.
  */
 unsigned sgi_kona_texture_find_level(SGIKonaTextureState *s, uint32_t target,
                                      uint32_t size_exponents, bool bank_one,
                                      uint32_t address, uint32_t *handle,
-                                     const SGIKonaTextureLevel **image);
+                                     const SGIKonaTextureLevel **image,
+                                     const uint32_t **load);
+/*
+ * The 16-bit word the model keeps for an eight-bit RGBA texel of a level
+ * loaded under storage 0x10 (four bits a component) or 0x14 (five bits and
+ * a one-bit alpha), and its inverse. Approximated: the pipe's own packing
+ * of these formats is not known; only that a word read back and loaded
+ * again is not changed.
+ */
+uint16_t sgi_kona_texture_pack16(uint32_t storage, uint32_t rgba);
+uint32_t sgi_kona_texture_unpack16(uint32_t storage, uint16_t word);
 /* Whether handle's stored level table is table, as find_table matches. */
 bool sgi_kona_texture_table_matches(SGIKonaTextureState *s, uint32_t handle,
                                     const uint32_t table[16], bool volume,

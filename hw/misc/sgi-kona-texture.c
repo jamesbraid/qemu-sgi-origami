@@ -493,7 +493,8 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
 unsigned sgi_kona_texture_find_level(SGIKonaTextureState *s, uint32_t target,
                                      uint32_t size_exponents, bool bank_one,
                                      uint32_t address, uint32_t *handle,
-                                     const SGIKonaTextureLevel **image)
+                                     const SGIKonaTextureLevel **image,
+                                     const uint32_t **load)
 {
     GHashTableIter iter;
     gpointer value;
@@ -506,7 +507,7 @@ unsigned sgi_kona_texture_find_level(SGIKonaTextureState *s, uint32_t target,
         if (o->owner != s->owner) {
             continue;
         }
-        const SGIKonaTextureLevel *newest = NULL;
+        const SGIKonaTextureNativeImage *newest = NULL;
 
         for (unsigned k = 0; k < o->native_count; k++) {
             const SGIKonaTextureNativeImage *n = &o->native[k];
@@ -516,7 +517,7 @@ unsigned sgi_kona_texture_find_level(SGIKonaTextureState *s, uint32_t target,
             if (h[0] == target && h[16] == size_exponents &&
                 !!(h[17] & 8) == bank_one &&
                 (bank_one ? h[19] : h[18]) == address) {
-                newest = &n->image;
+                newest = n;
             }
         }
         /*
@@ -528,7 +529,10 @@ unsigned sgi_kona_texture_find_level(SGIKonaTextureState *s, uint32_t target,
         if (newest) {
             found++;
             *handle = o->handle;
-            *image = newest;
+            *image = &newest->image;
+            if (load) {
+                *load = newest->header;
+            }
         }
     }
     return found;
@@ -1086,6 +1090,37 @@ static bool texture_native_interior(const SGIKonaTextureObject *o,
     *x0 = n->image.width - width;
     *y0 = n->image.height - height;
     return texture_native_covers(n, *x0, *y0, width, height, 1, tests);
+}
+
+static uint32_t texture_expand(uint32_t v, unsigned bits)
+{
+    return bits == 5 ? (v << 3) | (v >> 2) : v * 17;
+}
+
+uint16_t sgi_kona_texture_pack16(uint32_t storage, uint32_t rgba)
+{
+    uint32_t r = rgba >> 24, g = (rgba >> 16) & 0xff, b = (rgba >> 8) & 0xff;
+    uint32_t a = rgba & 0xff;
+
+    if (storage == 0x14) {
+        return ((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) |
+               (a >> 7);
+    }
+    return ((r >> 4) << 12) | ((g >> 4) << 8) | ((b >> 4) << 4) | (a >> 4);
+}
+
+uint32_t sgi_kona_texture_unpack16(uint32_t storage, uint16_t word)
+{
+    if (storage == 0x14) {
+        return (texture_expand(word >> 11, 5) << 24) |
+               (texture_expand((word >> 6) & 31, 5) << 16) |
+               (texture_expand((word >> 1) & 31, 5) << 8) |
+               ((word & 1) ? 0xff : 0);
+    }
+    return (texture_expand(word >> 12, 4) << 24) |
+           (texture_expand((word >> 8) & 15, 4) << 16) |
+           (texture_expand((word >> 4) & 15, 4) << 8) |
+           texture_expand(word & 15, 4);
 }
 
 static uint32_t texture_native_view(SGIKonaTextureObject *o)

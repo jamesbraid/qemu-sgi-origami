@@ -811,6 +811,26 @@ static void test_native_format(void)
     sgi_kona_texture_cleanup(&dst);
 }
 
+/* The words of the two 16-bit colour storages load back as they came. */
+static void test_native_pack16(void)
+{
+    static const uint32_t storage[] = { 0x14, 0x10 };
+
+    /* Every word loads back as it was read, in both formats. */
+    for (unsigned k = 0; k < ARRAY_SIZE(storage); k++) {
+        for (uint32_t word = 0; word < 0x10000; word++) {
+            g_assert_cmphex(sgi_kona_texture_pack16(storage[k],
+                sgi_kona_texture_unpack16(storage[k], word)), ==, word);
+        }
+    }
+    /* Texels of whole 5-bit and 4-bit steps survive both ways. */
+    g_assert_cmphex(sgi_kona_texture_pack16(0x14, 0x102184ff), ==, 0x1121);
+    g_assert_cmphex(sgi_kona_texture_unpack16(0x14, 0x1121), ==, 0x102184ff);
+    g_assert_cmphex(sgi_kona_texture_unpack16(0x14, 0xfffe), ==, 0xffffff00);
+    g_assert_cmphex(sgi_kona_texture_pack16(0x10, 0x112233ff), ==, 0x123f);
+    g_assert_cmphex(sgi_kona_texture_unpack16(0x10, 0x123f), ==, 0x112233ff);
+}
+
 static void test_native_migration(void)
 {
     SGIKonaTextureState src, dst;
@@ -1343,11 +1363,11 @@ static void test_native_detail_load(void)
      */
     g_assert_cmpuint(sgi_kona_texture_find_level(&src, SGI_GL_TEXTURE_2D,
                                                 0x23, false, 0, &handle,
-                                                &image), ==, 1);
+                                                &image, NULL), ==, 1);
     g_assert_cmpuint(handle, ==, 5);
     g_assert_cmpuint(sgi_kona_texture_find_level(&src,
                          SGI_GL_DETAIL_TEXTURE_2D_SGIS, 0x23, false, 0,
-                         &handle, &image), ==, 1);
+                         &handle, &image, NULL), ==, 1);
     g_assert_cmpuint(handle, ==, 7);
     a = save(&src);
     g_assert_true(load(a, &dst));
@@ -3001,6 +3021,7 @@ int main(int argc, char **argv)
                          GUINT_TO_POINTER(0x10101), test_native_volume_border);
     g_test_add_func("/sgi/kona/texture/native-volume/sampling",
                     test_native_volume_sampling);
+    g_test_add_func("/sgi/kona/texture/native-pack16", test_native_pack16);
     g_test_add_func("/sgi/kona/texture/native-migration",
                     test_native_migration);
     g_test_add_func("/sgi/kona/texture/native-sampling", test_native_sampling);
