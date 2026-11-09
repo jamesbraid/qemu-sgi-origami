@@ -246,6 +246,18 @@ static uint8_t *read_store(const char *dir, const char *name, gsize *size)
     return (uint8_t *)bytes;
 }
 
+/* The first @len bytes of a store: its configuration lives there. */
+static void read_store_head(const char *dir, const char *name, uint8_t *buf,
+                            size_t len)
+{
+    g_autofree char *path = g_strdup_printf("%s/%s.raw", dir, name);
+    FILE *f = fopen(path, "rb");
+
+    g_assert_nonnull(f);
+    g_assert_cmpuint(fread(buf, 1, len, f), ==, len);
+    fclose(f);
+}
+
 static void remove_tree(const char *dir)
 {
     g_autoptr(GDir) d = g_dir_open(dir, 0, NULL);
@@ -283,6 +295,11 @@ static char *create_and_check(const char *stem, const char *machine,
 {
     char *dir = scratch_path(stem);
     bool ip35 = g_str_has_prefix(machine, "origin300,") ||
+                g_str_has_prefix(machine, "origin3000,") ||
+                g_str_has_prefix(machine, "origin350,") ||
+                g_str_has_prefix(machine, "onyx350,") ||
+                g_str_has_prefix(machine, "onyx4,") ||
+                g_str_has_prefix(machine, "tezro,") ||
                 g_str_has_prefix(machine, "fuel,");
     const char *args[] = {
         "--machine", machine, "--boot-prom", ip35 ? ip35_prom : boot_prom,
@@ -561,6 +578,133 @@ static void test_origin300(void)
     check_ip35_flash(dir);
     assert_zero_store(dir, "nvram0");
     remove_tree(dir);
+}
+
+/*
+ * Every IP53 and IP59 offering's flash carries the mode word and clock of
+ * the processor it fits, not those of its topology's own part or of
+ * another board: a topology name is unique, so it names the board too.
+ */
+static void test_ip53_offerings(void)
+{
+    static const StoreSize stores[] = {
+        { "node0-flash", 16777216 }, { "nvram0", 32768 },
+        { "nvram0-clock", 16 },
+    };
+    static const struct {
+        const char *machine;
+        uint32_t mode_word;
+        uint32_t clock_hz;
+    } cases[] = {
+        { "origin350,topology=origin350-ip53,nodes=1", 0x589bad85,
+          700000000 },
+        { "origin350,topology=origin350-ip53,nodes=1,"
+          "processor=r16000-800mhz-8mb-rev22", 0x549caf85, 800000000 },
+        { "origin350,topology=origin350-ip59,nodes=1", 0x4aedb385,
+          1000000000 },
+        { "onyx350,topology=onyx350-ip53,nodes=1", 0x549caf85, 800000000 },
+        { "onyx350,topology=onyx350-ip59,nodes=1", 0x4aedb385, 1000000000 },
+        { "onyx4,topology=onyx4,nodes=1", 0x4aedb385, 1000000000 },
+        { "tezro,topology=tezro-one-processor,nodes=1", 0x589bad85,
+          700000000 },
+        { "tezro,topology=tezro-ip53,nodes=1", 0x589bad85, 700000000 },
+        { "tezro,topology=tezro-ip53,nodes=1,"
+          "processor=r16000-800mhz-4mb-rev22", 0x549baf85, 800000000 },
+        { "tezro,topology=tezro-ip53,nodes=1,"
+          "processor=r16000-800mhz-8mb-rev22", 0x549caf85, 800000000 },
+        { "tezro,topology=tezro-ip59,nodes=1", 0x4aedb385, 1000000000 },
+        { "tezro,topology=tezro-rack-ip53,nodes=1", 0x589bad85, 700000000 },
+        { "tezro,topology=tezro-rack-ip53,nodes=1,"
+          "processor=r16000-800mhz-4mb-rev22", 0x549baf85, 800000000 },
+        { "tezro,topology=tezro-rack-ip53,nodes=1,"
+          "processor=r16000-800mhz-8mb-rev22", 0x549caf85, 800000000 },
+        { "tezro,topology=tezro-rack-ip59,nodes=1", 0x4aedb385,
+          1000000000 },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        g_autofree char *dir = create_and_check(
+            "ip53", cases[i].machine, false, stores, ARRAY_SIZE(stores));
+        uint8_t flash[IP27_CONFIG + 0x18];
+
+        read_store_head(dir, "node0-flash", flash, sizeof(flash));
+        g_assert_cmphex(ldl_be_p(flash + IP27_CONFIG + 0x04), ==,
+                        cases[i].mode_word);
+        g_assert_cmpuint(ldl_be_p(flash + IP27_CONFIG + 0x14), ==,
+                         cases[i].clock_hz);
+        remove_tree(dir);
+    }
+}
+
+/*
+ * The Origin 3000's C-brick takes its clock and flash configuration word
+ * from the processor option the offering selects, and the Cx-brick's from
+ * its IP53 or IP59 board. Every node's flash carries them.
+ */
+static void test_origin3000_offerings(void)
+{
+    static const StoreSize two_nodes[] = {
+        { "node0-flash", 16777216 }, { "node1-flash", 16777216 },
+        { "nvram0", 32768 }, { "nvram0-clock", 16 },
+    };
+    static const StoreSize four_nodes[] = {
+        { "node0-flash", 16777216 }, { "node1-flash", 16777216 },
+        { "node2-flash", 16777216 }, { "node3-flash", 16777216 },
+        { "nvram0", 32768 }, { "nvram0-clock", 16 },
+    };
+    static const struct {
+        const char *machine;
+        uint32_t mode_word;
+        uint32_t clock_hz;
+    } cases[] = {
+        { "origin3000,topology=origin3200,nodes=2", 0x5414a785, 400000000 },
+        { "origin3000,topology=origin3200,nodes=2,"
+          "processor=r14000-500mhz-8mb", 0x549ca985, 500000000 },
+        { "origin3000,topology=origin3200,nodes=2,"
+          "processor=r14000-600mhz-8mb", 0x549cab85, 600000000 },
+        { "origin3000,topology=origin3200,nodes=2,"
+          "processor=r16000-800mhz-8mb", 0x569caf85, 800000000 },
+        { "origin3000,topology=onyx3000,nodes=2", 0x5414a785, 400000000 },
+        { "origin3000,topology=onyx3000,nodes=2,"
+          "processor=r14000-500mhz-8mb", 0x549ca985, 500000000 },
+        { "origin3000,topology=onyx3000,nodes=2,"
+          "processor=r14000-600mhz-8mb", 0x549cab85, 600000000 },
+        { "origin3000,topology=onyx3000,nodes=2,"
+          "processor=r16000-800mhz-8mb", 0x569caf85, 800000000 },
+        { "origin3000,topology=origin3400,nodes=4", 0x5414a785, 400000000 },
+        { "origin3000,topology=origin3400,nodes=4,"
+          "processor=r14000-500mhz-8mb", 0x549ca985, 500000000 },
+        { "origin3000,topology=origin3400,nodes=4,"
+          "processor=r14000-600mhz-8mb", 0x549cab85, 600000000 },
+        { "origin3000,topology=origin3400,nodes=4,"
+          "processor=r16000-800mhz-8mb", 0x569caf85, 800000000 },
+        { "origin3000,topology=origin3900-ip53,nodes=4", 0x549cad85,
+          700000000 },
+        { "origin3000,topology=origin3900-memory-node,nodes=4", 0x549cad85,
+          700000000 },
+        { "origin3000,topology=origin3900-ip59,nodes=4", 0x4aedb385,
+          1000000000 },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        bool four = strstr(cases[i].machine, "nodes=4") != NULL;
+        const StoreSize *stores = four ? four_nodes : two_nodes;
+        size_t count = four ? ARRAY_SIZE(four_nodes) : ARRAY_SIZE(two_nodes);
+        g_autofree char *dir = create_and_check("o3000", cases[i].machine,
+                                                false, stores, count);
+
+        for (int node = 0; node < (four ? 4 : 2); node++) {
+            g_autofree char *name = g_strdup_printf("node%d-flash", node);
+            uint8_t flash[IP27_CONFIG + 0x18];
+
+            read_store_head(dir, name, flash, sizeof(flash));
+            g_assert_cmphex(ldl_be_p(flash + IP27_CONFIG + 0x04), ==,
+                            cases[i].mode_word);
+            g_assert_cmpuint(ldl_be_p(flash + IP27_CONFIG + 0x14), ==,
+                             cases[i].clock_hz);
+        }
+        remove_tree(dir);
+    }
 }
 
 /* An IP35 PROM the machine would refuse as -bios is refused here too. */
@@ -843,6 +987,9 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-machine-init/origin200-gigachannel",
                     test_origin200_gigachannel);
     g_test_add_func("/sgi-machine-init/origin300", test_origin300);
+    g_test_add_func("/sgi-machine-init/ip53-offerings", test_ip53_offerings);
+    g_test_add_func("/sgi-machine-init/origin3000-offerings",
+                    test_origin3000_offerings);
     g_test_add_func("/sgi-machine-init/ip35-prom-size", test_ip35_prom_size);
     g_test_add_func("/sgi-machine-init/fuel", test_fuel);
     g_test_add_func("/sgi-machine-init/octane", test_octane);

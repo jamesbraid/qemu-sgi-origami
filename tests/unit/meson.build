@@ -365,6 +365,9 @@ unit_timeouts = {
   # Nine llvmpipe renderer start-ups and no fixed waits: 12-27 s in full
   # eight-process VPro runs, and one that passed 30 s and was stopped.
   'test-sgi-odyssey-native-mesa': 90,
+  # Each offering runs the tool, which writes and syncs a 16 MiB flash per
+  # node (up to 64 MiB): 6-8 s locally, but a CI runner took over 30 s.
+  'test-sgi-machine-init': 120,
 }
 
 slow_tests = {

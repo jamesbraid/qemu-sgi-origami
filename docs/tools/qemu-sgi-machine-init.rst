@@ -75,8 +75,9 @@ Each store starts from one of these:
   IP27 node flash holds the PROM image over a default template, with the
   product's machine type and flash read and write cycle counts written into
   the image's configuration block. IP35 node flash holds the image in its
-  first PROM position and the blank-media label in its second. Octane boot
-  flash holds the image followed by erased bytes.
+  first PROM position and the blank-media label in its second, with the mode
+  word and clock of the processor the selection fits. Octane boot flash
+  holds the image followed by erased bytes.
 
 ``io-prom``
   The I/O PROM file as supplied, followed by erased bytes.
