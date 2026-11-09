@@ -128,6 +128,8 @@ typedef struct SGIKonaTextureState {
     GHashTable *filter_curves;
     bool detail_bound;
     uint32_t detail_args[6];
+    /* Whether the current detail binding's failure was logged; per bind. */
+    bool detail_reported;
     /*
      * The texture colour table (SGI_texture_color_table) the next draw
      * applies after post-texture scale and bias, set by the family before

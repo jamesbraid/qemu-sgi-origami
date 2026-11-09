@@ -1246,7 +1246,8 @@ static void test_native_detail(void)
     /*
      * The pipe keeps the pair and never resolves the entry, so a wrong
      * entry still finds the image at the pair. A different size or pair
-     * finds nothing.
+     * finds nothing, and then the base texture shows instead of the
+     * draw being dropped.
      */
     for (unsigned mismatch = 0; mismatch < 3; mismatch++) {
         args[0] = mismatch == 0 ? 78 : 77;
@@ -1255,13 +1256,13 @@ static void test_native_detail(void)
         g_assert_true(sgi_kona_texture_detail_bind(&src, args));
         im = sgi_kona_texture_resolve(&src);
         out[0] = .123f;
+        g_assert_true(sgi_gl_texture_apply_pixel(&state, im,
+                                                coord, color, out));
         if (mismatch) {
-            g_assert_false(sgi_gl_texture_apply_pixel(&state, im,
-                                                     coord, color, out));
-            g_assert_cmpfloat(out[0], ==, .123f);
+            g_assert_null(im->detail_image);
+            g_assert_cmpuint(im->mag_filter, ==, SGI_GL_LINEAR);
+            g_assert_cmpfloat_with_epsilon(out[0], 128.0 / 255, .000001);
         } else {
-            g_assert_true(sgi_gl_texture_apply_pixel(&state, im,
-                                                    coord, color, out));
             g_assert_nonnull(im->detail_image);
             g_assert_cmpfloat_with_epsilon(out[0], (128.0 / 255) *
                                            (1 + .25 * (129.0 / 255)),
@@ -1285,13 +1286,15 @@ static void test_native_detail(void)
     g_assert_true(sgi_kona_texture_native_upload(&src, h, detail,
                                                 SGI_GL_RGBA, SGI_GL_RGBA));
     im = sgi_kona_texture_resolve(&src);
-    g_assert_false(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
-    /* UINT32_MAX locates by pair, and finds both. */
+    g_assert_null(im->detail_image);
+    g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
+    g_assert_cmpfloat_with_epsilon(out[0], 128.0 / 255, .000001);
     args[0] = UINT32_MAX;
     g_assert_true(sgi_kona_texture_detail_bind(&src, args));
     im = sgi_kona_texture_resolve(&src);
     g_assert_null(im->detail_image);
-    g_assert_false(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
+    g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
+    g_assert_cmpfloat_with_epsilon(out[0], 128.0 / 255, .000001);
     sgi_kona_texture_cleanup(&src);
     sgi_kona_texture_cleanup(&dst);
 }
@@ -1361,7 +1364,9 @@ static void test_native_detail_load(void)
 /*
  * The binding resolves by address pair. UINT32_MAX as the entry locates
  * by pair across every texture; two images at one pair are the two banks
- * of a load, told apart by the bank the base texture binds in.
+ * of a load, told apart by the bank the base texture binds in. A bound
+ * detail the base's format row does not match, or one that was never
+ * bound, leaves linear magnification and the base showing.
  */
 static void test_native_detail_resolve(void)
 {
@@ -1386,7 +1391,12 @@ static void test_native_detail_resolve(void)
     p.mag_filter = SGI_GL_LINEAR_DETAIL_SGIS;
     g_assert_true(sgi_kona_texture_upload(&s, 9, 0, 1, 1, SGI_GL_RGBA,
                                          SGI_GL_RGBA, bank0));
+    /* Nothing bound yet: no flat colour, linear magnification. */
     g_assert_true(sgi_kona_texture_bind(&s, 9, &p));
+    im = sgi_kona_texture_resolve(&s);
+    g_assert_null(im->detail_image);
+    g_assert_cmpuint(im->mag_filter, ==, SGI_GL_LINEAR);
+
     g_assert_true(sgi_kona_texture_native_upload(&s, h, bank0, SGI_GL_RGBA,
                                                 SGI_GL_RGBA));
     /* Bank one keeps the address in word 19. */
@@ -1407,6 +1417,24 @@ static void test_native_detail_resolve(void)
     g_assert_true(im->detail_image->read_texel(im->detail_image->opaque, 0, 0,
                                                0, &texel));
     g_assert_cmphex(texel, ==, 0x50607080);
+    /* An unresolved pair is reported once per binding, not per draw. */
+    args[5] = 99;
+    args[4] = 99;
+    g_assert_true(sgi_kona_texture_detail_bind(&s, args));
+    g_assert_false(s.detail_reported);
+    g_assert_null(sgi_kona_texture_resolve(&s)->detail_image);
+    g_assert_true(s.detail_reported);
+    g_assert_null(sgi_kona_texture_resolve(&s)->detail_image);
+    g_assert_true(sgi_kona_texture_detail_bind(&s, args));
+    g_assert_false(s.detail_reported);
+    args[4] = args[5] = 23;
+    g_assert_true(sgi_kona_texture_detail_bind(&s, args));
+    /* A base of another internal format than the row names: no detail. */
+    g_assert_true(sgi_kona_texture_native_internal_format(&s, 9, SGI_GL_RGB,
+                                                          SGI_GL_RGB));
+    im = sgi_kona_texture_resolve(&s);
+    g_assert_null(im->detail_image);
+    g_assert_cmpuint(im->mag_filter, ==, SGI_GL_LINEAR);
     sgi_kona_texture_cleanup(&s);
 }
 

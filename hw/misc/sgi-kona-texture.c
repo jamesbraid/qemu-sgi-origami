@@ -122,6 +122,7 @@ void sgi_kona_texture_reset(SGIKonaTextureState *s)
     memset(s->owner_bound, 0, sizeof(s->owner_bound));
     memset(s->owner_bound_handle, 0, sizeof(s->owner_bound_handle));
     s->detail_bound = false;
+    s->detail_reported = false;
     memset(s->detail_args, 0, sizeof(s->detail_args));
     s->bytes = 0;
 }
@@ -750,6 +751,7 @@ bool sgi_kona_texture_detail_bind(SGIKonaTextureState *s,
     }
     memcpy(s->detail_args, args, sizeof(s->detail_args));
     s->detail_bound = true;
+    s->detail_reported = false;
     return true;
 }
 
@@ -1325,6 +1327,11 @@ static void texture_detail_scan(const SGIKonaTextureObject *o,
  * and the address pair and never looks the entry number up, so the pair
  * decides: the entry word only narrows the search to one texture first,
  * and UINT32_MAX (locate by pair) searches them all.
+ *
+ * Without a usable detail image the pipe magnifies linearly and the base
+ * texture shows (sgi_kona_texture_resolve()), so a failure here is not a
+ * flat colour. A format row unlike the base's gives the same result by
+ * the pipe's own rule.
  */
 static bool texture_detail_view(SGIKonaTextureState *s,
                                   SGIKonaTextureObject *primary)
@@ -1336,7 +1343,7 @@ static bool texture_detail_view(SGIKonaTextureState *s,
     bool bank_one = primary->native_bank_one;
 
     if (!s->detail_bound) {
-        return true;
+        return false;
     }
     if (!sgi_kona_gl_texture_internal_format(args[3], &base, &internal) ||
         !sgi_kona_gl_texture_format_storage(args[3], &storage)) {
@@ -1364,10 +1371,19 @@ static bool texture_detail_view(SGIKonaTextureState *s,
     }
     image = d.found == 1 ? d.image : NULL;
     if (!image) {
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-kona: %s detail image for entry 0x%x pair "
-                      "0x%x 0x%x\n", d.found ? "ambiguous" : "unresolved",
-                      args[0], args[4], args[5]);
+        if (!s->detail_reported) {
+            s->detail_reported = true;
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-kona: %s detail image for entry 0x%x pair "
+                          "0x%x 0x%x; the base texture is drawn\n",
+                          d.found ? "ambiguous" : "unresolved", args[0],
+                          args[4], args[5]);
+        }
+        return false;
+    }
+    if (primary->native_internal_valid &&
+        (primary->native_base_format != base ||
+         primary->native_internal_format != internal)) {
         return false;
     }
     primary->detail_pixels = *image;
@@ -1441,7 +1457,11 @@ const SGIGLTexImage *sgi_kona_texture_resolve(SGIKonaTextureState *s)
          o->params.mag_filter == SGI_GL_LINEAR_DETAIL_ALPHA_SGIS ||
          o->params.mag_filter == SGI_GL_LINEAR_DETAIL_COLOR_SGIS) &&
         !texture_detail_view(s, o)) {
-        o->image.mag_filter = UINT32_MAX;
+        /*
+         * The pipe's base bind forces magnification code 1, linear, when
+         * it has no detail to apply. The base texture shows.
+         */
+        o->image.mag_filter = SGI_GL_LINEAR;
     }
     memcpy(o->image.border_color, o->params.border_color,
             sizeof(o->image.border_color));

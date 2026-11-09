@@ -6904,12 +6904,13 @@ static void test_texture_native_detail(gconstpointer opaque)
     /*
      * The detail image is a 0x8095 load at its own address. The binding
      * finds it by that address, so the entry word may be UINT32_MAX (mode
-     * 4), and an address with no image (mode 5) leaves the draw dropped.
+     * 4), and an address with no image (mode 5) leaves the base texture
+     * showing.
      */
     uint32_t args[] = { mode == 4 ? UINT32_MAX : 1, 1, 1, 41,
                         0, mode == 5 ? 0x3000 : 0x2000 };
     uint32_t expected = mode == 1 ? 0x5060c0 : mode == 3 ? 0x3060d0 :
-                        mode == 5 ? 0x0000ff :
+                        mode == 5 ? 0x4080c0 :
                         mode == 9 || mode == 11 || mode == 13 ? 0x6060c0 :
                                                               0x8040c0;
     QTestState *s = qtest_init(MACHINE_ARGS), *from = NULL;
