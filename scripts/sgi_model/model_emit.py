@@ -443,6 +443,9 @@ def _render_topology(topology: dict, machine_name: str,
         result["machine-default"] = True
     if "board" in topology:
         result["board"] = topology["board"]
+    board_slots = _board_slots_for(result)
+    if board_slots:
+        result["board-slots"] = board_slots
     return result
 
 def _node_population(raw: dict) -> dict:
@@ -1303,6 +1306,55 @@ def _serial_lines_for(topology: dict, machine_name: str,
                   line("mio-parallel", "mio_parallel", "media-io",
                        prop="parallel")]
     return lines
+
+
+_BOARD_PRODUCTS = [
+    ("menet", "the MENET XIO card, a BaseIO-family board", "sgi-xio-baseio",
+     [("preset", "menet")]),
+    ("mscsi", "the MSCSI XIO card, a BaseIO-family board", "sgi-xio-baseio",
+     [("preset", "mscsi")]),
+    ("pci-carrier", "a PCI carrier on an XIO slot", "sgi-pci-carrier", []),
+    ("pci-shoehorn", "a PCI shoehorn carrying a Cad Duo in PCI slot 1",
+     "sgi-pci-shoehorn", [("cad-duo-slot", "1")]),
+    ("pci-expansion", "a PCI expansion board", "sgi-pci-expansion", []),
+]
+
+
+def _board_slots_for(result: dict) -> list[dict]:
+    """The slots of one rendered topology that take a board other than a
+    graphics pipe: the BaseIO slot, whose card QEMU builds before any
+    -device exists and so a launch picks with a machine property, and the
+    empty XIO slots, which take each XIO card by -device slot=NAME."""
+    slots = []
+    for board in result["io-boards"]:
+        preset = board.get("preset")
+        if board.get("label") != "io1" or preset not in ("io6", "io6g"):
+            continue
+        products = ["io6", "io6g"] if preset == "io6" else ["io6g"]
+        slots.append({
+            "name": "io1",
+            "description": "the BaseIO slot, which holds the machine's "
+                           "own base I/O board",
+            "default": preset,
+            "products": [{
+                "product": name,
+                "description": ("the plain BaseIO" if name == "io6" else
+                                "the BaseIO-G, with a second MediaIO IOC3 "
+                                "and four PS/2 ports"),
+                "kind": "machine-property",
+                "properties": [{"name": "baseio-preset", "value": name}],
+            } for name in products]})
+    for xio in result["xio-slots"]:
+        slots.append({
+            "name": xio["label"],
+            "description": "an empty XIO slot",
+            "products": [{
+                "product": name, "description": text, "kind": "device",
+                "device": device,
+                "properties": [{"name": key, "value": value}
+                               for key, value in props],
+            } for name, text, device, props in _BOARD_PRODUCTS]})
+    return slots
 
 
 def _offerings_for(model: dict, topology: dict,

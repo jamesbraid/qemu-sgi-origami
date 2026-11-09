@@ -2093,8 +2093,7 @@
 #     topology name is unique, so it already selects the board
 #
 # @board-slots: every slot a board other than a graphics pipe goes in:
-#     the BaseIO slot and the empty XIO slots.  Present from catalogue
-#     version 3
+#     the BaseIO slot and the empty XIO slots
 #
 # Since: 11.2
 ##

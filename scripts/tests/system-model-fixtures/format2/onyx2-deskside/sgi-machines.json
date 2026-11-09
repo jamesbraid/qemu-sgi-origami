@@ -1660,6 +1660,250 @@
   "topologies": [
     {
       "board": "ip27",
+      "board-slots": [
+        {
+          "default": "io6g",
+          "description": "the BaseIO slot, which holds the machine's own base I/O board",
+          "name": "io1",
+          "products": [
+            {
+              "description": "the BaseIO-G, with a second MediaIO IOC3 and four PS/2 ports",
+              "kind": "machine-property",
+              "product": "io6g",
+              "properties": [
+                {
+                  "name": "baseio-preset",
+                  "value": "io6g"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "description": "an empty XIO slot",
+          "name": "io2",
+          "products": [
+            {
+              "description": "the MENET XIO card, a BaseIO-family board",
+              "device": "sgi-xio-baseio",
+              "kind": "device",
+              "product": "menet",
+              "properties": [
+                {
+                  "name": "preset",
+                  "value": "menet"
+                }
+              ]
+            },
+            {
+              "description": "the MSCSI XIO card, a BaseIO-family board",
+              "device": "sgi-xio-baseio",
+              "kind": "device",
+              "product": "mscsi",
+              "properties": [
+                {
+                  "name": "preset",
+                  "value": "mscsi"
+                }
+              ]
+            },
+            {
+              "description": "a PCI carrier on an XIO slot",
+              "device": "sgi-pci-carrier",
+              "kind": "device",
+              "product": "pci-carrier",
+              "properties": []
+            },
+            {
+              "description": "a PCI shoehorn carrying a Cad Duo in PCI slot 1",
+              "device": "sgi-pci-shoehorn",
+              "kind": "device",
+              "product": "pci-shoehorn",
+              "properties": [
+                {
+                  "name": "cad-duo-slot",
+                  "value": "1"
+                }
+              ]
+            },
+            {
+              "description": "a PCI expansion board",
+              "device": "sgi-pci-expansion",
+              "kind": "device",
+              "product": "pci-expansion",
+              "properties": []
+            }
+          ]
+        },
+        {
+          "description": "an empty XIO slot",
+          "name": "io3",
+          "products": [
+            {
+              "description": "the MENET XIO card, a BaseIO-family board",
+              "device": "sgi-xio-baseio",
+              "kind": "device",
+              "product": "menet",
+              "properties": [
+                {
+                  "name": "preset",
+                  "value": "menet"
+                }
+              ]
+            },
+            {
+              "description": "the MSCSI XIO card, a BaseIO-family board",
+              "device": "sgi-xio-baseio",
+              "kind": "device",
+              "product": "mscsi",
+              "properties": [
+                {
+                  "name": "preset",
+                  "value": "mscsi"
+                }
+              ]
+            },
+            {
+              "description": "a PCI carrier on an XIO slot",
+              "device": "sgi-pci-carrier",
+              "kind": "device",
+              "product": "pci-carrier",
+              "properties": []
+            },
+            {
+              "description": "a PCI shoehorn carrying a Cad Duo in PCI slot 1",
+              "device": "sgi-pci-shoehorn",
+              "kind": "device",
+              "product": "pci-shoehorn",
+              "properties": [
+                {
+                  "name": "cad-duo-slot",
+                  "value": "1"
+                }
+              ]
+            },
+            {
+              "description": "a PCI expansion board",
+              "device": "sgi-pci-expansion",
+              "kind": "device",
+              "product": "pci-expansion",
+              "properties": []
+            }
+          ]
+        },
+        {
+          "description": "an empty XIO slot",
+          "name": "io5",
+          "products": [
+            {
+              "description": "the MENET XIO card, a BaseIO-family board",
+              "device": "sgi-xio-baseio",
+              "kind": "device",
+              "product": "menet",
+              "properties": [
+                {
+                  "name": "preset",
+                  "value": "menet"
+                }
+              ]
+            },
+            {
+              "description": "the MSCSI XIO card, a BaseIO-family board",
+              "device": "sgi-xio-baseio",
+              "kind": "device",
+              "product": "mscsi",
+              "properties": [
+                {
+                  "name": "preset",
+                  "value": "mscsi"
+                }
+              ]
+            },
+            {
+              "description": "a PCI carrier on an XIO slot",
+              "device": "sgi-pci-carrier",
+              "kind": "device",
+              "product": "pci-carrier",
+              "properties": []
+            },
+            {
+              "description": "a PCI shoehorn carrying a Cad Duo in PCI slot 1",
+              "device": "sgi-pci-shoehorn",
+              "kind": "device",
+              "product": "pci-shoehorn",
+              "properties": [
+                {
+                  "name": "cad-duo-slot",
+                  "value": "1"
+                }
+              ]
+            },
+            {
+              "description": "a PCI expansion board",
+              "device": "sgi-pci-expansion",
+              "kind": "device",
+              "product": "pci-expansion",
+              "properties": []
+            }
+          ]
+        },
+        {
+          "description": "an empty XIO slot",
+          "name": "io6",
+          "products": [
+            {
+              "description": "the MENET XIO card, a BaseIO-family board",
+              "device": "sgi-xio-baseio",
+              "kind": "device",
+              "product": "menet",
+              "properties": [
+                {
+                  "name": "preset",
+                  "value": "menet"
+                }
+              ]
+            },
+            {
+              "description": "the MSCSI XIO card, a BaseIO-family board",
+              "device": "sgi-xio-baseio",
+              "kind": "device",
+              "product": "mscsi",
+              "properties": [
+                {
+                  "name": "preset",
+                  "value": "mscsi"
+                }
+              ]
+            },
+            {
+              "description": "a PCI carrier on an XIO slot",
+              "device": "sgi-pci-carrier",
+              "kind": "device",
+              "product": "pci-carrier",
+              "properties": []
+            },
+            {
+              "description": "a PCI shoehorn carrying a Cad Duo in PCI slot 1",
+              "device": "sgi-pci-shoehorn",
+              "kind": "device",
+              "product": "pci-shoehorn",
+              "properties": [
+                {
+                  "name": "cad-duo-slot",
+                  "value": "1"
+                }
+              ]
+            },
+            {
+              "description": "a PCI expansion board",
+              "device": "sgi-pci-expansion",
+              "kind": "device",
+              "product": "pci-expansion",
+              "properties": []
+            }
+          ]
+        }
+      ],
       "cables": [
         {
           "ends": [

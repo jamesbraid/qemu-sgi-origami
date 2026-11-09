@@ -51,7 +51,7 @@ OFFERING_FIELDS = (
 TOPOLOGY_IGNORED = {
     "name", "description", "display-name", "machine-options", "board",
     "default-board", "machine-default", "id", "processor-options",
-    "clock", "serial-lines", "hostid-source", "settings",
+    "clock", "serial-lines", "hostid-source", "settings", "board-slots",
 }
 
 UNRESERVED_RAM = ["-object",
