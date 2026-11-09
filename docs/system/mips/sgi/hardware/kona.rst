@@ -681,6 +681,69 @@ no current return page is logged ``LOG_GUEST_ERROR`` and posts nothing.
 A bracketed read of a level that is not the copy form is answered with
 zeros as before.
 
+Detail textures
+~~~~~~~~~~~~~~~
+
+The GL client defines a detail texture as the object with target
+``0x8095`` (``GL_DETAIL_TEXTURE_2D_SGIS``), one level, and sends nothing
+until a level is defined and resident (*software expectation*, from the
+client library). The level loads as an ordinary ``0x174`` whose header
+word 0 is ``0x8095`` and whose word 10 is the cache entry, then ``0x176``
+finishes it. It is sent once per bank with bit 3 of word 17 flipped, and
+the same image goes to both banks. A Quake GL trace carries a 128x128
+image in storage code ``0x14`` (RGB5) at address zero in both banks
+(*software expectation*). The model stores it as a one-level 2D image
+under its own target, keyed by entry and bank, with its real storage code.
+
+``0x17d`` binds the detail: six words, the entry (or ``0xffffffff``), the
+s and t exponents, the format row and the two-word address pair. The pipe
+never resolves the entry to an image. It keeps the row and the pair and
+writes the pair word the base texture's bank selects, word 4 in bank one
+and word 5 in bank zero, to the detail-location register, so the hardware
+reads texture memory at that address (*software expectation*, from the
+pipe firmware). ``0xffffffff`` skips releasing the entry's load id and the
+bind goes ahead. The detail level, the add or modulate mode, the channel
+select and the filter-table slot come from the base texture's bind, not
+from this command (*software expectation*). The model finds the image by
+that address, the base's bank, the storage code of the format row and the
+size; the entry word only narrows the search to one texture first, and
+``0xffffffff`` searches all of them. An ordinary 2D load at the address
+also qualifies, as the hardware cannot tell them apart in memory. Only the
+firmware's choice of pair word is *established*. That the word it picks
+equals a load's address word 19 in bank one and word 18 in bank zero is
+*inferred*, and no recording tells the two words apart, since the Quake GL
+trace has address zero in both banks.
+
+When no detail applies, the pipe magnifies linearly and the base texture
+shows: with no ``0x17d`` since reset, or when the detail's format row
+differs from the base's, the base bind forces magnification code 1 (the
+mode-1 ``0x1d5`` bind does the comparison; the ``0x106`` form does
+neither). The pipe has no flat-colour state, so a flat white or black
+surface is not a hardware behaviour (*software expectation*, from the
+pipe firmware). The model does the same for every case where no detail
+applies. It logs ``LOG_UNIMP`` once per binding when it cannot find the
+image, or finds two at one address, and it compares internal formats
+where the pipe compares rows. A row is a public internal format with a
+storage code, and several rows can share a code, so two rows with one
+internal format and different codes differ on the pipe and not in the
+model; the tests agree while each row names one internal format
+(*inferred*).
+
+The combine is add, base plus K(lambda) times the detail minus one half,
+or modulate, that product times the base texel, with K read from the
+stored doubled detail curve at 64 times 2 to the power lambda
+(*inferred*). The curve's 64 samples sit at log2(i/64), detail samples
+doubled and sharpen samples negated, quantised by truncating v times 512
+plus 2, shifted right two and clamped to plus or minus ``0x3ff``, with
+default points (-4, 1) and (0, 0) (*software expectation*, from the
+client library). The model computes in double precision with the public
+weight, half the stored sample, times twice the detail minus one, which
+is the same product (*approximation*). The pipe's widths and rounding, and
+how it derives the detail's s and t from the base's s and t and the level,
+are *unknown*. The model scales the base coordinates by the ratio of the
+two sizes and by two to the power of minus the detail level, *inferred*
+from the detail extension's specification only.
+
 .. _sgi-kona-config:
 
 Configuration answer
@@ -1029,6 +1092,9 @@ Model limits
 - The GVO option, genlock, stereo, swap groups and multiple pipes are not
   modelled. ``reality``, ``ir`` and ``ir4`` are refused.
 - More than 64 logical contexts stops the virtual machine.
+- The detail combine is the model's reading: its arithmetic widths,
+  rounding and coordinate derivation are *unknown*, and only the channel
+  select Quake GL uses (colour) has been exercised against a guest.
 
 Tests
 =====
@@ -1064,7 +1130,8 @@ The qtests fit the pipe with ``-device sgi-kona`` on
 - ``tests/qtest/sn0-origin2000-kona-context-test.c``,
   ``sn0-origin2000-kona-gl-test.c`` and
   ``sn0-origin2000-kona-3d-test.c``: context swap, GL windows and swap,
-  the GL command grammar and texel readback (bare and bracketed).
+  the GL command grammar, texel readback (bare and bracketed) and the
+  detail texture load, binding and fallback.
 - ``tests/qtest/sgi-kona-read-defense-test.c``: malformed command-page
   input through MMIO and migration.
 - ``tests/qtest/sn0-onyx2-test.c``, ``sgi-graphics-pipes-test.c``,
