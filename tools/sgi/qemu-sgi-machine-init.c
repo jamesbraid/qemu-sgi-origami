@@ -247,11 +247,15 @@ static const SGIModelModule *nvram_module(const SGIModelTopology *t,
     return NULL;
 }
 
-/* Fill @buf with @item's initial contents for a machine created @now. */
+/*
+ * Fill @buf with @item's initial contents for a machine created @now.
+ * @cpu is the processor the offering fits and @ip35_mode_word the flash
+ * configuration word that processor module carries.
+ */
 static void build_item(const SGIModelStorageItem *item,
                        const SGIModelInitInput *input,
                        const SGIPromImage *image, const SGIModelTopology *t,
-                       const SGIModelProcessor *cpu,
+                       const SGIModelProcessor *cpu, uint32_t ip35_mode_word,
                        const struct tm *now, uint8_t *buf)
 {
     const uint8_t *data;
@@ -301,9 +305,8 @@ static void build_item(const SGIModelStorageItem *item,
         if (t->ip35_firmware) {
             SGIIP35FlashValues ip35 = {
                 .machine_type = t->ip35_firmware->machine_type,
-                .cpu_mode_word = t->ip35_firmware->cpu_mode_word,
-                .cpu_clock_hz =
-                    t->nodes->value->cpu_slots->value->assembly->clock_hz,
+                .cpu_mode_word = ip35_mode_word,
+                .cpu_clock_hz = cpu->clock_hz,
             };
 
             sgi_ip35_flash_configure(buf, &ip35);
@@ -467,6 +470,7 @@ static bool create_machine(const SGIModelOffering *offering,
     const SGIModelTopology *chassis, *t;
     const SGIModelProcessor *cpu;
     bool published = false, ok = false;
+    uint32_t ip35_mode_word = 0;
     time_t seconds = time(NULL);
     struct tm now;
     Error *sync_err = NULL;
@@ -483,6 +487,9 @@ static bool create_machine(const SGIModelOffering *offering,
         return false;
     }
     cpu = t->nodes->value->cpu_slots->value->assembly;
+    if (t->ip35_firmware) {
+        ip35_mode_word = t->ip35_firmware->cpu_mode_word;
+    }
     if (t->processor_options) {
         const SGIModelProcessorOption *option =
             sgi_model_find_processor_option(t, offering->processor->id, errp);
@@ -491,6 +498,10 @@ static bool create_machine(const SGIModelOffering *offering,
             return false;
         }
         cpu = option->assembly;
+        /* A module whose word differs from the topology's carries its own. */
+        if (option->has_firmware_word) {
+            ip35_mode_word = option->firmware_word;
+        }
     }
     if (!check_absent(dir, errp)) {
         return false;
@@ -570,7 +581,8 @@ static bool create_machine(const SGIModelOffering *offering,
         g_autofree char *file = g_strdup_printf("%s.raw", item->name);
 
         build_item(item, find_input(offering, initial),
-                   g_hash_table_lookup(images, initial), t, cpu, &now, buf);
+                   g_hash_table_lookup(images, initial), t, cpu,
+                   ip35_mode_word, &now, buf);
         if (!write_store(tmp, file, buf, item->size, errp)) {
             error_prepend(errp, "%s: ", tmp);
             goto out;
