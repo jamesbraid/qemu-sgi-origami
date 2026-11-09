@@ -3569,9 +3569,9 @@ static bool sgi_machine_nvram_backing(SGIMachineState *s,
  */
 /*
  * Whether @board is an onboard Ethernet: the IP29 I/O of an Origin 200
- * node, the BaseIO card of an Origin 2000 or Onyx2, or an IP53 IO9 board
- * that fits its BCM5701. Add-in cards such as MENET and the MediaIO's
- * second IOC3 keep taking -nic.
+ * node, the BaseIO card of an Origin 2000 or Onyx2, an Origin 3000
+ * I-brick's IO7, or an IP53 IO9 board that fits its BCM5701. Add-in cards
+ * such as MENET and the MediaIO's second IOC3 keep taking -nic.
  */
 static bool sgi_machine_onboard_ethernet(const SGIModelIoBoard *board)
 {
@@ -3582,6 +3582,7 @@ static bool sgi_machine_onboard_ethernet(const SGIModelIoBoard *board)
     case SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN:
     case SGI_MODEL_IO_BOARD_PRESET_IO6:
     case SGI_MODEL_IO_BOARD_PRESET_IO6G:
+    case SGI_MODEL_IO_BOARD_PRESET_IO7:
         return board->populated;
     case SGI_MODEL_IO_BOARD_PRESET_IO9:
         if (!board->populated) {
@@ -4443,6 +4444,7 @@ static bool sgi_machine_instantiate_io7(
     BlockBackend *nvram_blk = nvram_dinfo ? blk_by_legacy_dinfo(nvram_dinfo) :
                               blk_by_name(nvram_name);
     const char *nvram, *nvram_clock;
+    g_autofree char *mac = NULL;
     DeviceState *io7;
     Chardev *chr;
 
@@ -4452,10 +4454,20 @@ static bool sgi_machine_instantiate_io7(
                    t->name, record->id, attachment->widget);
         return false;
     }
+    /*
+     * The IOC3's station address follows the machine's identity, the same
+     * one the I-brick's L1 serves; without it the NIC would keep QEMU's
+     * generated tail.
+     */
+    mac = sgi_machine_onboard_mac(s, t, board_index, errp);
+    if (!mac) {
+        return false;
+    }
     io7 = qdev_new(TYPE_SGI_BASEIO);
     object_property_add_child(module, "io7", OBJECT(io7));
     object_unref(OBJECT(io7));
     qdev_prop_set_string(io7, "preset", "io7");
+    qdev_prop_set_string(io7, "ioc3-mac", mac);
     if (record->has_fibre_channel && record->fibre_channel) {
         qdev_prop_set_bit(io7, "fibre-channel-fitted", true);
     }

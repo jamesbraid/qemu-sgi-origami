@@ -758,11 +758,11 @@ def _networks_for(topology: dict) -> list[dict]:
     QEMU builds them, which is the order its `-net nic` options bind in.
     Each takes the machine's `mac` property plus the number of onboard
     Ethernets before it as its station address (hw/mips/sgi/sn-machine.c's
-    sgi_machine_onboard_mac()), so one identity address serves them all
-    and no two collide, except an IOC3 on a board whose module L1 gives
-    it no address, which keeps whatever its `-net nic` names. The first
-    is the default a single-NIC launch wires; the others may be left
-    without a backend.
+    sgi_machine_onboard_mac(), which counts an I-brick's IO7 too), so one
+    identity address serves them all and no two collide, except an IOC3 on
+    a board whose module L1 gives it no address, which keeps whatever its
+    `-net nic` names. The first is the default a single-NIC launch wires;
+    the others may be left without a backend.
     """
     if topology["generation"] == "IP32":
         # The adapter takes the machine's address, which its identity chip
@@ -788,8 +788,11 @@ def _networks_for(topology: dict) -> list[dict]:
             unit = per_kind.get(kind, 0)
             per_kind[kind] = unit + 1
             # A Bedrock board whose IOC3 takes no address from its module
-            # L1 (mac-source none) leaves the NIC to its -net nic.
-            if board.get("mac_source") == "none":
+            # L1 (mac-source none) leaves the NIC to its -net nic. An
+            # I-brick's IO7 has no such source in the record, but the
+            # machine addresses it from its identity, as it does its L1.
+            if (board.get("mac_source") == "none" and
+                    board.get("board_kind") != "IO7"):
                 mac = {"derived": False}
             else:
                 mac = {

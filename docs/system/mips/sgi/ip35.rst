@@ -1052,7 +1052,10 @@ established.
 
 The machine places the I-brick's ``io7`` base I/O instance as
 ``/machine/module<M>/io7``, directly on head F of the XBridge in the
-I-brick's module, with no board class (:ref:`sgi-sn-family-ibrick`).
+I-brick's module, with no board class (:ref:`sgi-sn-family-ibrick`). Its
+IOC3 takes the machine's station address (:ref:`sgi-identity`) plus the
+number of onboard Ethernets before it, the address the I-brick's L1
+serves; two I-bricks therefore never share one.
 
 A node with ``role: memory`` is a Bedrock with memory banks and no
 processor, the shape of the CX-brick's zero-processor board. It realizes

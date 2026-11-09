@@ -117,6 +117,9 @@ typedef struct MachineCase {
     bool storage;          /* binds the expansion configuration storage */
     bool io9;              /* needs IO9 timekeeper backends */
     bool unmarked;         /* exposes no synthetic identity */
+    unsigned int networks; /* onboard Ethernets the catalogue lists */
+    unsigned int derived;  /* of those, how many follow the identity */
+    uint32_t offsets[16];  /* each derived one's offset from the identity */
 } MachineCase;
 
 /* What one machine's walk collected. */
@@ -592,7 +595,7 @@ static void test_routes_unavailable_on_bedrock(void)
  */
 static char *serial_for_number(const MachineCase *c, unsigned int number,
                                uint64_t *hostid, GPtrArray *macs,
-                               char **hostids)
+                               char **hostids, char **networks)
 {
     g_autofree char *machine = g_strndup(c->args, strcspn(c->args, ", "));
     const char *rest = c->args + strlen(machine);
@@ -646,6 +649,9 @@ static char *serial_for_number(const MachineCase *c, unsigned int number,
         g_assert_true(qdict_haskey(response, "return"));
         *hostids = g_strdup(qdict_get_str(response, "return"));
     }
+    if (networks) {
+        *networks = qtest_hmp(qts, "info network");
+    }
     qtest_quit(qts);
     check_system_serials(&inv, c);
     serial = g_steal_pointer(&inv.system_serial);
@@ -688,10 +694,10 @@ static void test_serial_sets_hostid(const void *data)
         g_test_skip("machine not built in");
         return;
     }
-    first = serial_for_number(c, 42, &first_id, NULL, &first_ids);
-    again = serial_for_number(c, 42, &again_id, NULL, NULL);
-    other = serial_for_number(c, 43, &other_id, NULL, NULL);
-    zero = serial_for_number(c, 0, &zero_id, NULL, NULL);
+    first = serial_for_number(c, 42, &first_id, NULL, &first_ids, NULL);
+    again = serial_for_number(c, 42, &again_id, NULL, NULL, NULL);
+    other = serial_for_number(c, 43, &other_id, NULL, NULL, NULL);
+    zero = serial_for_number(c, 0, &zero_id, NULL, NULL, NULL);
     g_assert_nonnull(first);
     g_assert_cmpstr(first, ==, again);
     g_assert_cmpstr(first, !=, other);
@@ -754,7 +760,8 @@ static void test_node_offsets(void)
         uint64_t hostid;
         unsigned int seen = 0;
 
-        text = serial_for_number(&c, serials[i], &hostid, macs, &hostids);
+        text = serial_for_number(&c, serials[i], &hostid, macs, &hostids,
+                                NULL);
         g_assert_cmpuint(macs->len, >=, 2);
         for (guint n = 0; n < macs->len; n++) {
             unsigned int b[6];
@@ -782,6 +789,40 @@ static void test_node_offsets(void)
         /* Each node took its own sub-index, 0 up. */
         g_assert_cmpuint(seen, ==, (1u << 2) - 1);
     }
+}
+
+/*
+ * Every onboard Ethernet the catalogue lists takes its address from the
+ * machine's identity, not from QEMU's generated placeholder: with emu-id 42,
+ * the address family's 08:00:69:e1:02:a0 plus the Ethernet's offset. An
+ * Origin 3000 I-brick's IO7 once left its IOC3 unaddressed, so it showed
+ * QEMU's default tail, 12:34:56.
+ */
+static void test_network_addresses(const void *data)
+{
+    const MachineCase *c = data;
+    g_autofree char *machine = g_strndup(c->args, strcspn(c->args, ", "));
+    g_autofree char *networks = NULL;
+    g_autofree char *serial = NULL;
+    uint64_t hostid;
+
+    if (!qtest_has_machine(machine)) {
+        g_test_skip("machine not built in");
+        return;
+    }
+    g_assert_cmpuint(c->derived, ==, c->networks);
+    serial = serial_for_number(c, 42, &hostid, NULL, NULL, &networks);
+    g_assert_nonnull(networks);
+    for (unsigned int i = 0; i < c->derived; i++) {
+        g_autofree char *want = g_strdup_printf(
+            "macaddr=08:00:69:e1:02:%02x", 0xa0 + c->offsets[i]);
+
+        if (!strstr(networks, want)) {
+            g_test_message("%s has no %s in %s", c->name, want, networks);
+        }
+        g_assert_nonnull(strstr(networks, want));
+    }
+    g_assert_null(strstr(networks, "12:34:56"));
 }
 
 /* One of each family is enough to show the serial reaches every kind of L1. */
@@ -883,6 +924,7 @@ static GPtrArray *catalogue_cases(void)
             topology_extra(qdict_get_str(offering, "topology"));
         QDict *memory = qdict_get_qdict(offering, "memory-per-node-mib");
         MachineCase *c = g_new0(MachineCase, 1);
+        const QListEntry *net;
 
         c->name = g_strdup(t->data);
         c->ip35 = boot_flash_is_ip35(offering);
@@ -890,6 +932,16 @@ static GPtrArray *catalogue_cases(void)
         c->storage = extra && extra->storage;
         c->io9 = extra && extra->io9;
         c->unmarked = extra && extra->unmarked;
+        QLIST_FOREACH_ENTRY(qdict_get_qlist(offering, "networks"), net) {
+            QDict *mac = qdict_get_qdict(qobject_to(QDict,
+                                         qlist_entry_obj(net)), "mac");
+
+            c->networks++;
+            if (qdict_get_bool(mac, "derived")) {
+                g_assert_cmpuint(c->derived, <, G_N_ELEMENTS(c->offsets));
+                c->offsets[c->derived++] = qdict_get_int(mac, "offset");
+            }
+        }
         int64_t mib = qdict_get_int(memory, "default") *
                       qdict_get_int(offering, "nodes");
 
@@ -942,6 +994,12 @@ int main(int argc, char **argv)
             "sgi/synthetic-serial/%s", c->name);
 
         qtest_add_data_func(path, c, test_machine_serials);
+        if (!c->ip32 && c->networks) {
+            g_autofree char *net_path = g_strdup_printf(
+                "sgi/synthetic-network/%s", c->name);
+
+            qtest_add_data_func(net_path, c, test_network_addresses);
+        }
         if (case_checks_serial(c->name)) {
             g_autofree char *serial_path = g_strdup_printf(
                 "sgi/synthetic-serial-number/%s", c->name);
