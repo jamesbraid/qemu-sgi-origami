@@ -622,7 +622,7 @@ const SGIKonaVideoCommand sgi_kona_video_commands[] = {
     { 0x4e, "ResizeSyncType", U, NR, 0 }, /* tables only */
     { 0x4f, "Vampire", 7, NR, 0 }, /* sender, 2 sites */
     { 0x50, "QueryMonitorName", 1, 25, 68 }, /* sender and wait, 1 site */
-    { 0x51, "MonitorCommand", U, 26, 136 }, /* tables only */
+    { 0x51, "MonitorCommand", U, NR, 0 }, /* tables only */
     { 0x52, "LoadXilinx", 6, 27, 4 }, /* sender and wait, 2 sites */
     /* sender, 1 site */
     { SGI_KONA_VIDEO_X_SERVER_INIT, "XServerVideoInit", 1, NR, 0 },
@@ -641,6 +641,10 @@ const SGIKonaVideoCommand sgi_kona_video_commands[] = {
 const unsigned sgi_kona_video_num_commands =
     ARRAY_SIZE(sgi_kona_video_commands);
 
+/*
+ * Reply 26 (136 bytes) is no command's: MonitorCommand (0x51) has no
+ * reply (established), so no command in the table sends this one.
+ */
 const uint32_t sgi_kona_video_reply_sizes[SGI_KONA_VIDEO_REPLY_IDS] = {
     4, 4, 4, 4, 4, 4, 20, 76, 72, 4, 4, 24, 4, 4, 4, 4, 24, 12, 4, 8, 4, 4,
     4, 20, 16, 68, 136, 4, 4, 8, 8, 164,
