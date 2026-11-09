@@ -5045,7 +5045,8 @@ static void test_texture_native_publication(void)
  * bracket and IRIX declared it dead ("selectfeed operation timed out").
  * A readback the model cannot answer, one that names no texture or asks
  * for a copy in a storage code other than the 0x28 the library was seen
- * to use (here 0x30, the texture's own), still completes: the target gets
+ * to use (here RGB floats from 0x30, the texture's own), which the model
+ * cannot produce, still completes: the target gets
  * the descriptor's bytes as zeros, and the refusal is logged. Before, it
  * posted no completion, and the select-feed timeout killed the pipe; a
  * model refusal must not.
@@ -5106,6 +5107,9 @@ static void test_texture_readback(gconstpointer opaque)
     if (mode == 1) {
         readback[16] = 0x20000;
     } else if (mode == 2) {
+        /* RGB floats, which no read of the model's packs. */
+        readback[3] = 4;
+        readback[4] = 6;
         readback[5] = 0x30;
     }
     kona_command_kicked(s, 0x1f5,
@@ -5513,6 +5517,78 @@ static void test_texture_roundtrip(gconstpointer opaque)
     qtest_memread(s, RETURN_PAGE + 8, actual, sizeof(actual));
     g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
     qtest_quit(s);
+}
+
+/*
+ * A read-back over 0x3ff0 bytes comes inside a select-feed bracket and is
+ * answered by output DMA, the same packed image as the bare form, written
+ * from the start of the range the bracket opened, which is the padded
+ * length; there is no header and no completion word. The 0x1f6 reports the
+ * bytes left over, none here. Mode 0 reads a 0x14 level as 16-bit words
+ * (the padding is zero), mode 1 as RGBA bytes. Mode 2 opens the bracket
+ * with a stride, which the pipe's reply does not use: answered with zeros,
+ * logged, still completing the bracket.
+ */
+static void test_texture_readback_dma(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged_args(&log, " -d unimp");
+    const uint64_t destination = 0x380000, reason_page = 0x300000;
+    uint32_t readback[18] = {
+        0xde1, 2, 2, 6, 3, 0xd, 0, 0, 0, 0, 1, 1, 0, 0, 0x23, 0x43, 0, 0,
+    };
+    uint8_t expected[16] = { 0 }, actual[16];
+
+    if (mode == 1) {
+        readback[3] = 5;
+        readback[4] = 1;
+        for (unsigned k = 0; k < 4; k++) {
+            stl_be_p(expected + 4 * k, roundtrip_source[k]);
+        }
+    } else if (mode == 0) {
+        for (unsigned k = 0; k < 4; k++) {
+            stw_be_p(expected + 2 * k, roundtrip_words[k]);
+        }
+    }
+    gl_make_current(s);
+    roundtrip_bind(s, 0x21);
+    roundtrip_load(s, 0x21, 5, 1, 0x14, roundtrip_source, 4);
+    kona_command_kicked(s, 0x1f1,
+                        (uint32_t[]){ 0x10000300, 0x9000, 0x4000 }, 3);
+    qtest_writel(s, KONA_REG(0x000034), 0x98000);
+    qtest_writel(s, KONA_REG(0x00003c), 0x1800090);
+    qtest_writel(s, KONA_REG(0x00005c), 0x3e2210);
+    qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+    qtest_memset(s, destination, 0xa5, sizeof(actual));
+    qtest_memset(s, reason_page, 0xa5, 16);
+    if (mode == 2) {
+        kona_command_kicked(s, 0x1f5,
+                            (uint32_t[]){ 0, 0x9000, 16, 16, 8, 0 }, 6);
+    } else {
+        kona_command_kicked(s, 0x1f5,
+                            (uint32_t[]){ 0, 0x9000, 16, 16, 0, 0 }, 6);
+    }
+    kona_command(s, 0x111, (uint32_t[]){ 2, 0x60000000 }, 2);
+    qtest_memset(s, RETURN_PAGE, 0xa5, 0x100);
+    kona_command(s, 0x52, readback, 18);
+    kona_command_kicked(s, 0x1f6, (uint32_t[]){ 0x100, 7 }, 2);
+    qtest_memread(s, destination, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
+    g_assert_cmphex(qtest_readl(s, reason_page), ==, 0x100);
+    g_assert_cmphex(qtest_readl(s, reason_page + 4), ==, 7);
+    g_assert_cmphex(qtest_readl(s, reason_page + 8), ==, 0);
+    g_assert_cmphex(qtest_readl(s, reason_page + 12), ==, 0);
+    /* No return-page reply goes with a bracketed read. */
+    g_assert_cmphex(qtest_readl(s, RETURN_PAGE), ==, 0xa5a5a5a5);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    if (mode == 2) {
+        g_assert_nonnull(strstr(found, "answered with zeros"));
+    } else {
+        g_assert_null(strstr(found, "answered with zeros"));
+    }
 }
 
 static const uint32_t texture_8x8_headers[2][20];
@@ -20659,6 +20735,12 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(0), test_texture_roundtrip);
     add_data_case("sn0/origin2000/kona-3d/texture/roundtrip-luminance",
                   GUINT_TO_POINTER(2), test_texture_roundtrip);
+    add_data_case("sn0/origin2000/kona-3d/texture/readback-dma-words",
+                  GUINT_TO_POINTER(0), test_texture_readback_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/readback-dma-rgba",
+                  GUINT_TO_POINTER(1), test_texture_readback_dma);
+    add_data_case("sn0/origin2000/kona-3d/texture/readback-dma-refused",
+                  GUINT_TO_POINTER(2), test_texture_readback_dma);
     static const char *lookup_cases[] = {
         "by-address", "other-exponents", "extent-past-level", "other-bank",
         "other-address", "other-target", "no-return-page",

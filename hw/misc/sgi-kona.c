@@ -9556,6 +9556,12 @@ static bool sgi_kona_gl_read_dma_layout(const SGIKonaGLReadDMA *d,
     uint64_t io, pitch, row, total;
     uint32_t lines;
 
+    if (selector == SGI_KONA_CMD_GL_READ_TEXELS && h[2]) {
+        /* A packed image: h[0] bytes, written as one line of the length. */
+        return h[0] && h[0] <= d->descriptor[2] &&
+               sgi_kona_gl_read_dma_descriptor(d, &io, &pitch, &lines) &&
+               d->descriptor[3] == d->descriptor[2] && !d->descriptor[4];
+    }
     if (selector == SGI_KONA_CMD_GL_READ_TEXELS) {
         /* h[0] and h[1]: the region's width and height, four bytes each. */
         row = (uint64_t)h[0] * 4;
@@ -9786,10 +9792,8 @@ static void sgi_kona_gl_read_texels_zero(SGIKonaState *s)
  * (established stage selection; the sum clamped at 1.0 is inferred), so
  * a level of colour channels gives R+G+B clamped, and a single-channel
  * level, which the model stores in red, gives that channel. Luminance-alpha
- * keeps alpha. The exception is a 16-bit level read as format 6, type 3,
- * storage 0xd, which gives its words (sgi_kona_gl_texels_raw16()).
- * A texture the model does not hold, or a format, type or size it cannot
- * produce, is answered with zeros and logged, so the client
+ * keeps alpha. A texture the model does not hold, or a format, type or
+ * size it cannot produce, is answered with zeros and logged, so the client
  * draws black rather than hanging. What a real pipe returns for a lossy
  * conversion is unknown.
  */
@@ -9964,6 +9968,59 @@ static void sgi_kona_gl_read_texels_bare(SGIKonaState *s, const uint32_t *args,
     sgi_kona_post_return(s, SGI_KONA_CMD_GL_READ_TEXELS, 8, data, bytes);
 }
 
+/*
+ * The reply to a texel readback inside a select-feed bracket that is not the
+ * copy form: the same packed image the bare form returns, written by output
+ * DMA from the first byte of the range the bracket's start describes. The
+ * range is the image's bytes padded (zero here; the padding is unknown), in
+ * one line with no stride, and no header or completion word goes with it.
+ * Established from the pipe's reply framing for the bracket, with the image
+ * itself the bare form's (inferred). A read the model cannot produce
+ * returns false, to be answered with zeros.
+ */
+static bool sgi_kona_gl_read_texels_dma(SGIKonaState *s, const uint32_t *args,
+                                        uint32_t width, uint32_t height)
+{
+    SGIKonaGLReadDMA *d = &s->gl_read_dma;
+    const SGIKonaTextureLevel *image = NULL;
+    g_autofree uint8_t *data = NULL;
+    const uint32_t *load = NULL;
+    uint32_t handle = UINT32_MAX, unit;
+    uint64_t io, pitch, bytes;
+    uint32_t lines;
+
+    unit = sgi_kona_gl_texture_pixel_bytes(args[3], args[4]);
+    bytes = (uint64_t)width * height * unit;
+    if (!unit || !bytes || args[0] != SGI_GL_TEXTURE_2D ||
+        d->refused || d->count || d->context != s->context_current ||
+        !sgi_kona_context_owner(s, d->context, d->generation) ||
+        !sgi_kona_gl_read_dma_descriptor(d, &io, &pitch, &lines) ||
+        bytes > d->descriptor[2] || d->descriptor[3] != d->descriptor[2] ||
+        d->descriptor[4] ||
+        sgi_kona_texture_find_level(&s->textures, args[0], args[14],
+                                    (args[13] >> 28) & 1, args[16], &handle,
+                                    &image, &load) != 1) {
+        return false;
+    }
+    /* Refuse a region past the level before the reply buffer is allocated. */
+    if (args[10] >= image->width || args[11] >= image->height) {
+        return false;
+    }
+    data = g_malloc0(d->descriptor[2]);
+    if (!sgi_kona_gl_texels_pack(image, load, args, width, height, data)) {
+        return false;
+    }
+    trace_sgi_kona_gl_read_texels(args[0], width, height, args[15],
+                                  args[16], args[17], handle);
+    memset(d->header, 0, sizeof(d->header));
+    d->header[0] = bytes;
+    d->header[2] = 1;
+    d->selector = SGI_KONA_CMD_GL_READ_TEXELS;
+    d->count = d->descriptor[2];
+    d->data = g_steal_pointer(&data);
+    return true;
+}
+
 static void sgi_kona_gl_read_texels(SGIKonaState *s, const uint32_t *args)
 {
     SGIKonaGLReadDMA *d = &s->gl_read_dma;
@@ -9979,6 +10036,13 @@ static void sgi_kona_gl_read_texels(SGIKonaState *s, const uint32_t *args)
             width = height = 0;
         }
         sgi_kona_gl_read_texels_bare(s, args, width, height);
+        return;
+    }
+    if (!(args[3] == SGI_KONA_TEXTURE_COPY_FORMAT &&
+          args[4] == SGI_KONA_TEXTURE_COPY_TYPE &&
+          args[5] == SGI_KONA_TEXTURE_COPY_STORAGE) &&
+        args[10] >= args[7] && args[11] >= args[8] &&
+        sgi_kona_gl_read_texels_dma(s, args, width, height)) {
         return;
     }
     if (args[3] == SGI_KONA_TEXTURE_COPY_FORMAT &&
