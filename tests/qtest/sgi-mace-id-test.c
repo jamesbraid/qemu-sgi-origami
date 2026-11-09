@@ -842,6 +842,49 @@ static void test_missing_and_wrong_size_input(void)
     g_assert_cmpint(g_unlink(image), ==, 0);
 }
 
+/*
+ * The image may come as 256 hex digits instead of a file, which the O2
+ * machine uses so that the chip it builds never touches the disk.
+ */
+static void test_hex_image(void)
+{
+    g_autoptr(GString) hex = g_string_new("");
+    g_autofree char *image = id_image_file();
+    g_autofree char *device = NULL;
+    QTestState *qts;
+    uint8_t tail[2];
+
+    for (unsigned i = 0; i < 128; i++) {
+        g_string_append_printf(hex, "%02x", eprom_byte(i));
+    }
+    device = g_strdup_printf("-device sgi-mace-id,id=identity,"
+                             "test-serial=1032547698ba,eprom-hex=%s,"
+                             "status=0123456789abcd", hex->str);
+    qts = qtest_initf("-M none -cpu R10000 %s", device);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/identity", 0,
+                          MACE_ID_REG);
+    id_select_skip(qts);
+    id_read_header(qts, 0xc3, 0x1e);
+    tail[0] = eprom_byte(0x1e);
+    tail[1] = eprom_byte(0x1f);
+    g_assert_cmphex(id_read_byte(qts), ==, tail[0]);
+    g_assert_cmphex(id_read_byte(qts), ==, tail[1]);
+    g_assert_cmphex(id_read_byte(qts), ==, id_crc8(tail, sizeof(tail)));
+    qtest_quit(qts);
+
+    /* Exactly one source, and 256 digits. */
+    g_free(device);
+    device = g_strdup_printf("sgi-mace-id,id=identity,test-serial=1032547698ba,"
+                             "status=0123456789abcd,eprom-file=%s,"
+                             "eprom-hex=%s", image, hex->str);
+    id_assert_start_rejected(device, "needs 12 hexadecimal");
+    g_free(device);
+    device = g_strdup("sgi-mace-id,id=identity,test-serial=1032547698ba,"
+                      "status=0123456789abcd,eprom-hex=00ff");
+    id_assert_start_rejected(device, "exactly 256 hexadecimal");
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
 static void test_password_clear_input(void)
 {
     g_autofree char *image = id_image_file();
@@ -918,6 +961,7 @@ int main(int argc, char **argv)
                    test_absent_device_has_no_identity_blocker);
     qtest_add_func("/sgi/mace-id/input-validation",
                    test_missing_and_wrong_size_input);
+    qtest_add_func("/sgi/mace-id/hex-image", test_hex_image);
     qtest_add_func("/sgi/mace-id/password-clear-input",
                    test_password_clear_input);
     return g_test_run();

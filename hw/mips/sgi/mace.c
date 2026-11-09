@@ -140,6 +140,7 @@ struct SGIMACEState {
     bool pci_native_word_swap;
     char *identity_test_serial;
     char *identity_eprom_file;
+    char *identity_eprom_hex;
     char *identity_status;
     bool storage_diagnostic_authorized;
     bool storage_diagnostic_realized;
@@ -1292,7 +1293,7 @@ static void mace_realize(DeviceState *dev, Error **errp)
     }
     if (!s->identity_diagnostic &&
         (s->identity_test_serial || s->identity_eprom_file ||
-         s->identity_status)) {
+         s->identity_eprom_hex || s->identity_status)) {
         error_setg(errp, "sgi-mace identity inputs require "
                          "identity-diagnostic=on");
         return;
@@ -1300,13 +1301,6 @@ static void mace_realize(DeviceState *dev, Error **errp)
     if (s->misc_word_pio && !s->identity_diagnostic) {
         error_setg(errp, "sgi-mace misc-word-pio requires "
                          "identity-diagnostic=on");
-        return;
-    }
-    if (s->identity_diagnostic &&
-        (!s->identity_test_serial || !s->identity_eprom_file ||
-         !s->identity_status)) {
-        error_setg(errp, "sgi-mace identity diagnostic requires "
-                         "test-serial, eprom-file and status");
         return;
     }
     if (s->o2_storage_diagnostic &&
@@ -1497,10 +1491,26 @@ static void mace_realize(DeviceState *dev, Error **errp)
     identity = qdev_new(TYPE_SGI_MACE_ID);
     object_property_add_child(OBJECT(dev), "identity", OBJECT(identity));
     qdev_prop_set_bit(identity, "no-responder", !s->identity_diagnostic);
+    /*
+     * Whatever the machine does not give is left to the identity device's
+     * own properties, which a -global may set for a register test.
+     */
     if (s->identity_diagnostic) {
-        qdev_prop_set_string(identity, "test-serial", s->identity_test_serial);
-        qdev_prop_set_string(identity, "eprom-file", s->identity_eprom_file);
-        qdev_prop_set_string(identity, "status", s->identity_status);
+        if (s->identity_test_serial) {
+            qdev_prop_set_string(identity, "test-serial",
+                                 s->identity_test_serial);
+        }
+        if (s->identity_eprom_file) {
+            qdev_prop_set_string(identity, "eprom-file",
+                                 s->identity_eprom_file);
+        }
+        if (s->identity_eprom_hex) {
+            qdev_prop_set_string(identity, "eprom-hex",
+                                 s->identity_eprom_hex);
+        }
+        if (s->identity_status) {
+            qdev_prop_set_string(identity, "status", s->identity_status);
+        }
     }
     qdev_prop_set_bit(identity, "misc-word-pio", s->misc_word_pio);
     qdev_prop_set_bit(identity, "password-clear-input",
@@ -1609,6 +1619,8 @@ static const Property mace_properties[] = {
                        identity_test_serial),
     DEFINE_PROP_STRING("identity-eprom-file", SGIMACEState,
                        identity_eprom_file),
+    DEFINE_PROP_STRING("identity-eprom-hex", SGIMACEState,
+                       identity_eprom_hex),
     DEFINE_PROP_STRING("identity-status", SGIMACEState, identity_status),
 };
 
