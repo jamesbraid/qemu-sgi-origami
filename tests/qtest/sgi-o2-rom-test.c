@@ -1503,6 +1503,61 @@ static void test_at29_backing_validation(void)
     g_assert_cmpmem(stored, length, seed, 512 * 1024);
 }
 
+/*
+ * A state record of zeroes is model state for a flash nothing has
+ * programmed: the digest check is skipped, the power-on states come from the
+ * machine's properties, and the first program leaves a record that matches
+ * its array. A record with any other byte
+ * wrong is still refused (test_at29_backing_validation).
+ */
+static void test_at29_backing_blank_state(void)
+{
+    g_autofree char *seed_path = NULL;
+    g_autofree uint8_t *seed = make_image(512 * 1024,
+                                           "at29-blank-seed.bin", &seed_path);
+    g_autofree char *backing = g_build_filename(test_dir, "blank.raw", NULL);
+    g_autofree char *state = g_build_filename(test_dir, "blank.state", NULL);
+    g_autofree char *expected_path = g_build_filename(test_dir,
+                                                      "blank.expected", NULL);
+    g_autofree char *extra = g_strdup_printf(
+        "-drive if=none,id=o2flash,file=%s,format=raw "
+        "-drive if=none,id=o2flash-state,file=%s,format=raw", backing, state);
+    uint8_t blank[512] = { 0 };
+    uint8_t data[256];
+    g_autofree char *stored = NULL;
+    g_autofree char *record = NULL;
+    g_autofree char *expected = NULL;
+    gsize stored_length, record_length, expected_length;
+    QTestState *qts;
+
+    g_assert_true(g_file_set_contents(backing, (const char *)seed,
+                                      512 * 1024, NULL));
+    g_assert_true(g_file_set_contents(state, (const char *)blank,
+                                      sizeof(blank), NULL));
+    qts = start_at29_extra(seed_path, "disabled", "unlocked", "locked",
+                           extra);
+    memset(data, 0x5a, sizeof(data));
+    qtest_writeq(qts, MACE_MISC, 1);
+    /* The locked upper boot block comes from the property, not the file. */
+    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + 512 * 1024 - 1, 0x62),
+                    !=, MEMTX_OK);
+    at29_prefix(qts);
+    at29_load_sector(qts, 0x10000, data);
+    qtest_clock_step(qts, 10 * 1000 * 1000);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(backing, &stored, &stored_length, NULL));
+    g_assert_cmpuint(stored_length, ==, 512 * 1024);
+    g_assert_true(g_file_get_contents(state, &record, &record_length, NULL));
+    g_assert_cmpuint(record_length, ==, 512);
+    /* The program sequence enabled protection; the upper block is locked. */
+    make_at29_state(expected_path, (const uint8_t *)stored, 5);
+    g_assert_true(g_file_get_contents(expected_path, &expected,
+                                      &expected_length, NULL));
+    g_assert_cmpmem(record, record_length, expected, expected_length);
+    g_assert_cmpmem(stored + 0x10000, sizeof(data), data, sizeof(data));
+}
+
 static void test_at29_backing_incomplete(void)
 {
     g_autofree char *seed_path = NULL;
@@ -1770,6 +1825,8 @@ int main(int argc, char **argv)
                     test_at29_backing_persistence);
     qtest_add_func("/sgi/o2-rom/backing/validation",
                     test_at29_backing_validation);
+    qtest_add_func("/sgi/o2-rom/backing/blank-state",
+                    test_at29_backing_blank_state);
     qtest_add_func("/sgi/o2-rom/backing/incomplete",
                     test_at29_backing_incomplete);
     qtest_add_func("/sgi/o2-rom/backing/io-errors",

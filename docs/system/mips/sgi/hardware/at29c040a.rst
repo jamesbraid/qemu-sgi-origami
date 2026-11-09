@@ -155,7 +155,11 @@ With the machine's ``o2flash`` and ``o2flash-state`` block backends, the
 model reads its array and settings from the backing files and writes each
 completed sector and the settings through to them. The array backend must
 be exactly 512 KiB, the state backend exactly 512 bytes, and the state must
-match a digest of the array. Neither may use snapshot or no-flush modes. A
+match a digest of the array, except that a state of 512 zero bytes is model
+state for a flash nothing has programmed, not a claim about the chip: the
+digest check is then skipped, the protection and lock states are the ones the
+machine was given and the first program writes the record. Neither may use
+snapshot or no-flush modes. A
 backend write failure stops the VM and refuses further programming. This
 persistence is a model facility with no counterpart on the part,
 *approximation*.

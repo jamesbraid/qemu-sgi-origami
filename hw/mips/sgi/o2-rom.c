@@ -186,6 +186,16 @@ static void at29_state_bytes(const uint8_t *array, uint8_t flags,
     g_checksum_free(sum);
 }
 
+static bool at29_state_blank(const uint8_t state[AT29_STATE_SIZE])
+{
+    for (unsigned i = 0; i < AT29_STATE_SIZE; i++) {
+        if (state[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool at29_backend_check(BlockBackend *blk, int64_t size,
                                 const char *what, Error **errp)
 {
@@ -239,14 +249,24 @@ static bool at29_restore_backing(SGIO2ROMState *s, uint8_t *array, Error **errp)
         error_setg_errno(errp, -ret, "sgi-o2-rom: reading state backend");
         return false;
     }
-    at29_state_bytes(array, state[8] & 7, expected);
-    if (memcmp(state, expected, sizeof(state))) {
-        error_setg(errp, "sgi-o2-rom: invalid backing state or array digest");
-        return false;
+    /*
+     * A record of zeroes is model state for a flash nothing has programmed
+     * yet, not a claim about the chip: the array digest check is skipped,
+     * the power-on protection and lock states stay the ones the machine was
+     * given, and the first program writes the record. A record the model
+     * wrote, or any other bytes, must match its array.
+     */
+    if (!at29_state_blank(state)) {
+        at29_state_bytes(array, state[8] & 7, expected);
+        if (memcmp(state, expected, sizeof(state))) {
+            error_setg(errp, "sgi-o2-rom: invalid backing state or array "
+                       "digest");
+            return false;
+        }
+        s->at29_protected = state[8] & 1;
+        s->at29_lower_lock = state[8] & 2;
+        s->at29_upper_lock = state[8] & 4;
     }
-    s->at29_protected = state[8] & 1;
-    s->at29_lower_lock = state[8] & 2;
-    s->at29_upper_lock = state[8] & 4;
     error_setg(&s->backing_migration_blocker,
                "O2 persistent AT29C040A backing cannot migrate or snapshot");
     if (migrate_add_blocker(&s->backing_migration_blocker, errp) < 0) {
