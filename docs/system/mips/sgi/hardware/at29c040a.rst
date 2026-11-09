@@ -151,7 +151,7 @@ at run time.
 Persistence
 -----------
 
-With the machine's ``o2flash`` and ``o2flash-state`` block backends, the
+With the machine's ``node0-flash`` and ``node0-flash-state`` stores, the
 model reads its array and settings from the backing files and writes each
 completed sector and the settings through to them. The array backend must
 be exactly 512 KiB, the state backend exactly 512 bytes, and the state must

@@ -48,6 +48,8 @@ Options
   The node boot PROM image. IP27, IP30 and IP35 images may be raw or SGI's
   version-6 single-segment container, uncompressed or gzip. An IP35 image
   must decode to exactly the PROM size the machine's ``-bios`` requires.
+  An O2 image is the flash array's 524288 bytes as the machine's
+  ``rom-image`` reads them, never decoded.
 
 .. option:: -i FILE, --io-prom FILE
 
@@ -77,7 +79,8 @@ Each store starts from one of these:
   the image's configuration block. IP35 node flash holds the image in its
   first PROM position and the blank-media label in its second, with the mode
   word and clock of the processor the selection fits. Octane boot flash
-  holds the image followed by erased bytes.
+  holds the image followed by erased bytes. The O2's flash array is the
+  image.
 
 ``io-prom``
   The I/O PROM file as supplied, followed by erased bytes.
@@ -106,7 +109,9 @@ Each store starts from one of these:
 
 ``zero``
   Zero-filled. A selected system Timekeeper, as Origin 300 and Fuel fit,
-  and Octane's NVRAM and every clock record start this way.
+  and Octane's and the O2's NVRAM and every clock record start this way,
+  and so does the O2's flash state record, which the machine takes as a
+  flash nothing has programmed.
 
 Creating the directory
 ----------------------

@@ -360,7 +360,10 @@
           "interface": "ec0",
           "kind": "mace-ethernet",
           "mac": {
-            "derived": false
+            "default-address": "08:00:69:e1:00:00",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
           },
           "nic-mac-option": "macaddr",
           "nic-model": "sgi-mace-eth",
@@ -438,7 +441,32 @@
         }
       ],
       "smp": 1,
-      "storage": [],
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 524288
+        },
+        {
+          "initial": "zero",
+          "name": "node0-flash-state",
+          "read-only": false,
+          "size": 512
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 512
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 24
+        }
+      ],
       "supported-guests": [
         "irix"
       ],
@@ -528,7 +556,10 @@
           "interface": "ec0",
           "kind": "mace-ethernet",
           "mac": {
-            "derived": false
+            "default-address": "08:00:69:e1:00:00",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
           },
           "nic-mac-option": "macaddr",
           "nic-model": "sgi-mace-eth",
@@ -606,7 +637,32 @@
         }
       ],
       "smp": 1,
-      "storage": [],
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 524288
+        },
+        {
+          "initial": "zero",
+          "name": "node0-flash-state",
+          "read-only": false,
+          "size": 512
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 512
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 24
+        }
+      ],
       "supported-guests": [
         "irix"
       ],

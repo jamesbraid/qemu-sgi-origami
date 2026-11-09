@@ -90,8 +90,8 @@ static QTestState *o2_store_start(const char *data, const char *clock,
         "-drive if=none,id=nvram0,file=%s,format=raw "
         "-drive if=none,id=nvram0-clock,file=%s,format=raw "
         "-M o2,register-test-profile=on,"
-        "password-clear-input=1 -m 64M -nodefaults "
-        "-rtc base=%s,clock=vm", data, clock, base);
+        "password-clear-input=1,nvram0=nvram0,nvram0-clock=nvram0-clock "
+        "-m 64M -nodefaults -rtc base=%s,clock=vm", data, clock, base);
 
     return qtest_init(args);
 }
@@ -278,28 +278,33 @@ static void test_refused_inputs(void)
                           "-device sgi-mace,drive=missing",
                           "can't find value 'missing'");
     g_assert_true(g_file_set_contents(clock, bytes, 24, NULL));
-    args = g_strdup_printf("-M o2,register-test-profile=on -m 64M "
+    args = g_strdup_printf("-M o2,register-test-profile=on,"
+        "nvram0-clock=nvram0-clock -m 64M "
         "-drive if=none,id=nvram0-clock,file=%s,format=raw", clock);
     assert_start_rejected(args, "clock-drive requires drive");
     g_clear_pointer(&args, g_free);
     g_assert_true(g_file_set_contents(data, bytes, sizeof(bytes), NULL));
-    args = g_strdup_printf("-M o2,register-test-profile=on -m 64M "
-        "-drive if=none,id=nvram0,file=%s,format=raw", data);
-    assert_start_rejected(args, "requires exactly 512");
+    args = g_strdup_printf("-M o2,register-test-profile=on,nvram0=nvram0 "
+        "-m 64M -drive if=none,id=nvram0,file=%s,format=raw", data);
+    assert_start_rejected(args, "nvram0 is 1024 bytes; it must be exactly 512");
     g_clear_pointer(&args, g_free);
     g_assert_true(g_file_set_contents(data, bytes, 512, NULL));
     g_assert_true(g_file_set_contents(clock, bytes, 0, NULL));
-    args = g_strdup_printf("-M o2,register-test-profile=on -m 64M "
+    args = g_strdup_printf("-M o2,register-test-profile=on,nvram0=nvram0,"
+        "nvram0-clock=nvram0-clock -m 64M "
         "-drive if=none,id=nvram0,file=%s,format=raw "
         "-drive if=none,id=nvram0-clock,file=%s,format=raw", data, clock);
-    assert_start_rejected(args, "requires at least 24");
+    assert_start_rejected(args, "nvram0-clock is 0 bytes; it must be at "
+                                "least 24");
     g_clear_pointer(&args, g_free);
-    args = g_strdup_printf("-M o2,register-test-profile=on -m 64M "
-        "-drive if=none,id=nvram0,file=%s,format=raw,readonly=on", data);
+    args = g_strdup_printf("-M o2,register-test-profile=on,nvram0=nvram0 "
+        "-m 64M -drive if=none,id=nvram0,file=%s,format=raw,readonly=on",
+        data);
     assert_start_rejected(args, "read-only");
     g_clear_pointer(&args, g_free);
     g_assert_true(g_file_set_contents(clock, bytes, 24, NULL));
-    args = g_strdup_printf("-M o2,register-test-profile=on -m 64M "
+    args = g_strdup_printf("-M o2,register-test-profile=on,nvram0=nvram0,"
+        "nvram0-clock=nvram0-clock -m 64M "
         "-drive if=none,id=nvram0,file=%s,format=raw "
         "-drive if=none,id=nvram0-clock,file=%s,format=raw,readonly=on",
         data, clock);

@@ -38,7 +38,11 @@ class IP32CatalogueTests(unittest.TestCase):
         self.assertEqual(offering["machine-options"], "o2")
         self.assertEqual(offering["launch-recipe"], "ip32")
         self.assertEqual(offering["console"], "mace-serial-a")
-        self.assertEqual(offering["storage"], [])
+        self.assertEqual(
+            [(i["name"], i["size"], i["initial"]) for i in offering["storage"]],
+            [("node0-flash", 524288, "boot-prom"),
+             ("node0-flash-state", 512, "zero"),
+             ("nvram0", 512, "zero"), ("nvram0-clock", 24, "zero")])
         self.assertEqual(offering["firmware"]["size"], 524288)
         self.assertNotIn("asset", offering["firmware"])
         self.assertEqual([c["launcher-name"] for c in offering["consoles"]], ["mace-a", "mace-b"])
@@ -48,6 +52,9 @@ class IP32CatalogueTests(unittest.TestCase):
         self.assertEqual(offering["scsi-adapters"][0]["boot-target"], 1)
         self.assertEqual(offering["hostid-source"], "o2")
         self.assertEqual(offering["networks"][0]["nic-model"], "sgi-mace-eth")
+        self.assertEqual(offering["networks"][0]["mac"], {
+            "derived": True, "machine-property": "mac", "offset": 0,
+            "default-address": "08:00:69:e1:00:00"})
 
     def test_o2plus_is_a_cpu_variant_of_the_same_machine(self):
         model = load_checked_system_model(MODELS / "o2plus.yaml",

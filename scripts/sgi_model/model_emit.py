@@ -511,6 +511,10 @@ _TIMEKEEPER_BYTES = {
     "ds1685": (512, 24),
     "ds1744": (0x8000, 16),
 }
+# The O2's AT29C040A array and its state record (hw/mips/sgi/o2-rom.c's
+# AT29_SIZE and AT29_STATE_SIZE).
+_IP32_FLASH_BYTES = 512 * 1024
+_IP32_FLASH_STATE_BYTES = 512
 # The BASEIO PROM flash part (hw/mips/sgi/baseio-flash.c), on the boards
 # that fit one.
 _IO_FLASH_BYTES = 0x100000
@@ -761,10 +765,15 @@ def _networks_for(topology: dict) -> list[dict]:
     without a backend.
     """
     if topology["generation"] == "IP32":
+        # The adapter takes the machine's address, which its identity chip
+        # holds, and the machine refuses a -nic mac= that differs.
         return [{"kind": "mace-ethernet", "argument": "-netdev ...,id=net0",
                  "nic-model": "sgi-mace-eth", "nic-mac-option": "macaddr",
                  "index": 0, "interface": "ec0", "default": True,
-                 "required": False, "mac": {"derived": False}}]
+                 "required": False,
+                 "mac": {"derived": True, "machine-property": "mac",
+                         "offset": 0,
+                         "default-address": _mac_text(_BOARD_DEFAULT_MAC)}}]
     networks = []
     per_kind: dict[str, int] = {}
     for board in topology["io_boards"]:
@@ -919,8 +928,19 @@ def _storage_for(topology: dict, harness: dict, product: dict,
     """
     generation = topology["generation"]
     if generation == "IP32":
-        # The IP32 recipe uses the existing flash and RTC backends directly.
-        return []
+        # The O2's boot flash is an AT29C040A array and its state record
+        # (include/hw/mips/sgi/o2-rom.h), then the DS1685's RAM and clock
+        # record. Both flash files start as the PROM and a zeroed record.
+        return [
+            {"name": "node0-flash", "size": _IP32_FLASH_BYTES,
+             "read-only": False, "initial": "boot-prom"},
+            {"name": "node0-flash-state", "size": _IP32_FLASH_STATE_BYTES,
+             "read-only": False, "initial": "zero"},
+            {"name": "nvram0", "size": _TIMEKEEPER_BYTES["ds1685"][0],
+             "read-only": False, "initial": "zero"},
+            {"name": "nvram0-clock", "size": _TIMEKEEPER_BYTES["ds1685"][1],
+             "read-only": False, "initial": "zero"},
+        ]
     storage = []
     for position, node in enumerate(fitted):
         if generation == "SN1":

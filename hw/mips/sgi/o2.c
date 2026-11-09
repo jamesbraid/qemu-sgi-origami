@@ -33,6 +33,8 @@
 #include "hw/mips/sgi/sgi-board-cdrom.h"
 #include "hw/mips/sgi/sgi-board-mac.h"
 #include "hw/mips/sgi/sgi-cpu.h"
+#include "hw/mips/sgi/sgi-machines.h"
+#include "hw/mips/sgi/sgi-storage.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
 #include "hw/pci/pci_host.h"
@@ -87,6 +89,8 @@ typedef struct O2MachineState {
     /* emu-id=: the number the clock serial carries, 0 by default. */
     SGIBoardIdentityInputs identity;
     char *mac;
+    /* Catalogue storage item name -> the block node or drive it binds. */
+    GHashTable *storage;
     char *identity_eprom_file;
     /* The identity chip the product machine built or replayed. */
     uint8_t identity_image[O2_IDENTITY_SIZE];
@@ -1516,6 +1520,24 @@ static void o2_set_identity_inputs(DeviceState *mace, O2MachineState *s,
     }
 }
 
+/*
+ * The NVRAM, clock record and boot flash the machine keeps in files are the
+ * catalogue's node0-flash, node0-flash-state, nvram0 and nvram0-clock items.
+ * Each must be a block node or drive of the size the catalogue lists.
+ */
+static bool o2_check_storage(O2MachineState *s, Error **errp)
+{
+    const SGIModelTopology *chassis = sgi_model_product_topology(
+        sgi_machines(), "o2", s->o2plus ? "o2plus" : "o2");
+    const SGIModelTopology *model = chassis ?
+        sgi_model_resolve_population(chassis, 0, errp) : NULL;
+
+    if (!model) {
+        return false;
+    }
+    return sgi_storage_check(s->storage, "o2", "o2", model, errp);
+}
+
 static void o2_instance_finalize(Object *obj)
 {
     O2MachineState *s = (O2MachineState *)obj;
@@ -1554,6 +1576,9 @@ static void o2_instance_finalize(Object *obj)
     g_free(s->rom_at29_upper_lock);
     g_free(s->storage_event_file);
     g_free(s->mac);
+    if (s->storage) {
+        g_hash_table_destroy(s->storage);
+    }
     g_free(s->identity_eprom_file);
     g_free(s->password_clear_input);
 }
@@ -1881,9 +1906,15 @@ static void o2_init(MachineState *machine)
         error_report("o2 eight-bank profile does not support ROM images");
         exit(1);
     }
-    if ((blk_by_name("o2flash") || blk_by_name("o2flash-state")) &&
-        !s->rom_at29c040a) {
-        error_report("o2 flash backends require rom-at29c040a=on");
+    if (!o2_check_storage(s, &err)) {
+        error_report_err(err);
+        exit(1);
+    }
+    if ((sgi_storage_node(s->storage, "node0-flash") ||
+         sgi_storage_node(s->storage, "node0-flash-state")) &&
+        (!s->rom_at29c040a || !s->rom_image)) {
+        error_report("o2 flash backends require rom-at29c040a=on and a "
+                     "rom-image");
         exit(1);
     }
     if (s->rom_at29c040a &&
@@ -2132,11 +2163,15 @@ static void o2_init(MachineState *machine)
         sgi_mace_enable_serial_ring_offsets(mace, &error_fatal);
         sgi_mace_enable_rx_threshold_retirement(mace, &error_fatal);
     }
-    if (blk_by_name("nvram0")) {
-        qdev_prop_set_drive(mace, "drive", blk_by_name("nvram0"));
+    if (sgi_storage_node(s->storage, "nvram0")) {
+        object_property_set_str(OBJECT(mace), "drive",
+                                sgi_storage_node(s->storage, "nvram0"),
+                                &error_fatal);
     }
-    if (blk_by_name("nvram0-clock")) {
-        qdev_prop_set_drive(mace, "clock-drive", blk_by_name("nvram0-clock"));
+    if (sgi_storage_node(s->storage, "nvram0-clock")) {
+        object_property_set_str(OBJECT(mace), "clock-drive",
+                                sgi_storage_node(s->storage, "nvram0-clock"),
+                                &error_fatal);
     }
     object_property_set_link(OBJECT(mace), "crime-device", OBJECT(crime),
                              &error_fatal);
@@ -2251,10 +2286,18 @@ static void o2_init(MachineState *machine)
             qdev_prop_set_string(rom, "at29c040a-upper-lock",
                                  s->rom_at29_upper_lock);
         }
-        if (blk_by_name("o2flash") || blk_by_name("o2flash-state")) {
-            qdev_prop_set_drive(rom, "drive", blk_by_name("o2flash"));
-            qdev_prop_set_drive(rom, "state-drive",
-                                 blk_by_name("o2flash-state"));
+        if (sgi_storage_node(s->storage, "node0-flash") ||
+            sgi_storage_node(s->storage, "node0-flash-state")) {
+            if (sgi_storage_node(s->storage, "node0-flash")) {
+                object_property_set_str(OBJECT(rom), "drive",
+                    sgi_storage_node(s->storage, "node0-flash"),
+                    &error_fatal);
+            }
+            if (sgi_storage_node(s->storage, "node0-flash-state")) {
+                object_property_set_str(OBJECT(rom), "state-drive",
+                    sgi_storage_node(s->storage, "node0-flash-state"),
+                    &error_fatal);
+            }
         } else {
             qdev_prop_set_string(rom, "image", s->rom_image);
         }
@@ -2493,6 +2536,20 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     mc->no_cdrom = true;
     mc->auto_create_sdcard = false;
     sgi_board_cdrom_class_init(mc);
+    for (const SGIModelOfferingList *entry = sgi_machines()->offerings;
+         entry; entry = entry->next) {
+        if (!g_str_equal(entry->value->product, "o2")) {
+            continue;
+        }
+        for (const SGIModelStorageItemList *item = entry->value->storage;
+             item; item = item->next) {
+            if (!object_class_property_find(oc, item->value->name)) {
+                sgi_storage_class_add_property(
+                    oc, offsetof(O2MachineState, storage),
+                    item->value->name);
+            }
+        }
+    }
     sgi_board_mac_class_add_property(oc, offsetof(O2MachineState, mac),
         "Station address, held in the first six bytes of the identity "
         "chip's memory in reverse order, as IRIX reads it; it sets the host "
