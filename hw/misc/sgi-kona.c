@@ -11650,7 +11650,8 @@ static bool sgi_kona_texture_native_header(const uint32_t *h)
     bool volume = h[0] == SGI_GL_TEXTURE_3D;
     bool one_dimensional = h[0] == SGI_GL_TEXTURE_1D;
 
-    return (volume || one_dimensional || h[0] == SGI_GL_TEXTURE_2D) &&
+    return (volume || one_dimensional || h[0] == SGI_GL_TEXTURE_2D ||
+            h[0] == SGI_GL_DETAIL_TEXTURE_2D_SGIS) &&
            (!one_dimensional || (h[2] == 1 && !h[12] && !h[14] && !h[15])) &&
            h[6] <= 1 &&
            h[7] <= 1 && !h[8] &&
@@ -11831,6 +11832,7 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
     sgi_kona_texture_upload_clear(s);
     /* Unknown source pairs cannot be counted or staged. */
     if ((h[0] != SGI_GL_TEXTURE_1D && h[0] != SGI_GL_TEXTURE_2D &&
+         h[0] != SGI_GL_DETAIL_TEXTURE_2D_SGIS &&
          h[0] != SGI_GL_TEXTURE_3D) || !sgi_kona_texture_source_valid(h) ||
         h[6] > 1 || h[7] > 1 || h[8] || !h[1] || !h[2] ||
         h[1] > SGI_KONA_GL_IMAGE_MAX || h[2] > SGI_KONA_GL_IMAGE_MAX ||

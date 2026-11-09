@@ -381,7 +381,8 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
     uint8_t *coverage;
     uint64_t old = 0, bytes, count, covered = 0;
 
-    if ((!volume && !one_dimensional && h[0] != SGI_GL_TEXTURE_2D) ||
+    if ((!volume && !one_dimensional && h[0] != SGI_GL_TEXTURE_2D &&
+         h[0] != SGI_GL_DETAIL_TEXTURE_2D_SGIS) ||
         (one_dimensional && (h[2] != 1 || h[12] || h[14] || h[15])) ||
         !rgba || h[10] == UINT32_MAX || !texture_native_mode_valid(h) ||
         (!volume && h[18] && h[19]) ||
@@ -1691,6 +1692,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                 !native_dimensions(l->width, l->height) ||
                 !texture_format(l->base_format, l->internal_format) ||
                 (!volume && h[0] != SGI_GL_TEXTURE_2D &&
+                 h[0] != SGI_GL_DETAIL_TEXTURE_2D_SGIS &&
                  h[0] != SGI_GL_TEXTURE_1D) ||
                 (h[0] == SGI_GL_TEXTURE_1D &&
                  (l->height != 1 || h[2] != 1 || h[12] ||

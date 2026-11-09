@@ -485,7 +485,8 @@ bool sgi_kona_gl_texture_native_layout(const uint32_t h[20])
     uint32_t layout, single;
 
     if ((!volume && h[0] != SGI_GL_TEXTURE_1D &&
-         h[0] != SGI_GL_TEXTURE_2D) || h[6] > 1) {
+         h[0] != SGI_GL_TEXTURE_2D &&
+         h[0] != SGI_GL_DETAIL_TEXTURE_2D_SGIS) || h[6] > 1) {
         return false;
     }
     switch (h[9]) {
