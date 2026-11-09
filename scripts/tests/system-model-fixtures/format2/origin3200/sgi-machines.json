@@ -82,7 +82,10 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "derived": false
+            "default-address": "08:00:69:e1:00:00",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
           },
           "nic-mac-option": "macaddr",
           "nic-model": "sgi-ioc3-eth",
@@ -425,7 +428,10 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "derived": false
+            "default-address": "08:00:69:e1:00:00",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
           },
           "nic-mac-option": "macaddr",
           "nic-model": "sgi-ioc3-eth",
@@ -762,7 +768,10 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "derived": false
+            "default-address": "08:00:69:e1:00:00",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
           },
           "nic-mac-option": "macaddr",
           "nic-model": "sgi-ioc3-eth",
@@ -1099,7 +1108,10 @@
           "interface": "ef0",
           "kind": "ioc3-ethernet",
           "mac": {
-            "derived": false
+            "default-address": "08:00:69:e1:00:00",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
           },
           "nic-mac-option": "macaddr",
           "nic-model": "sgi-ioc3-eth",

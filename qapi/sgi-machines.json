@@ -2392,10 +2392,9 @@
 #
 # @default-address: the address a launcher names through
 #     @machine-property to give this NIC the catalogue's listed
-#     address: 08:00:69:12:34:56 plus @offset.  With none named, the
-#     machine derives the address from a hash of the system disk's
-#     path, or of the machine name when there is no disk, under the
-#     same 08:00:69 prefix; present when @derived
+#     address: 08:00:69:e1:00:00, the address of emu-id 0, plus
+#     @offset.  With none named, the machine derives the address from
+#     its emu-id under the same 08:00:69 prefix; present when @derived
 #
 # @required-prefix: the address prefix the product's PROM accepts on
 #     this NIC; with any other the PROM does not bring the interface
