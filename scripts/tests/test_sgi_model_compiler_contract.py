@@ -874,11 +874,12 @@ class BedrockConfigurationTests(unittest.TestCase):
             [_resolved("fuel"), _resolved("origin300")]))
         offerings = catalogue["offerings"]
         fuel = next(item for item in offerings if item["topology"] == "fuel")
-        self.assertEqual(fuel["hardware-inputs"], [
-            {"option": "fuel-mac-eeprom", "required": False}])
+        self.assertIn("fuel-mac-eeprom",
+                      [item["name"] for item in fuel["settings"]])
         for offering in offerings:
             if offering["topology"] == "origin300":
-                self.assertEqual(offering["hardware-inputs"], [])
+                self.assertNotIn("fuel-mac-eeprom", [
+                    item["name"] for item in offering["settings"]])
 
 
 class Ip53CpuContextTests(unittest.TestCase):
@@ -3676,9 +3677,10 @@ class OriginThreeHundredTwoChassisTests(unittest.TestCase):
         self.assertEqual([offering["smp"] for offering in offerings], [4, 6, 6, 8])
         self.assertEqual({offering["default-topology"] for offering in offerings},
                          {"origin300"})
-        counts = {item["argument"]: item["count"] for item in offerings[0]["resources"]
-                  if item["kind"] == "identity-eeprom"}
-        self.assertEqual(counts, {"chassis-eeprom.N=": 4, "board-eeprom.N=": 4})
+        keys = {item["name"]: item["slots"]["keys"]
+                for item in offerings[0]["settings"] if "slots" in item}
+        self.assertEqual(keys["chassis-eeprom"], ["0", "1", "2", "3"])
+        self.assertEqual(keys["board-eeprom"], ["0", "1", "2", "3"])
         flash = [item for item in offerings[0]["storage"]
                  if item["name"].startswith("node")]
         self.assertEqual([(item["name"], item["size"]) for item in flash],
@@ -3888,7 +3890,8 @@ class CatalogueJsonTests(unittest.TestCase):
         self.assertEqual(catalogue["schema"], "sgi-machines")
         self.assertEqual(catalogue["version"], 3)
         self.assertEqual(set(catalogue), {
-            "schema", "version", "topologies", "offerings", "references"})
+            "schema", "version", "topologies", "offerings", "references",
+            "setting-definitions"})
         self.assertEqual(catalogue["references"], [])
 
     def test_enumerations_are_lower_case_and_hyphenated(self):

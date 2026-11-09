@@ -1423,7 +1423,6 @@
       "console": "l1-uart",
       "default_cpu_model": "R14000",
       "default_topology": "one-chassis",
-      "disk_bus": "scsi.0",
       "identity_inputs": [
         "chassis-eeprom",
         "board-eeprom",

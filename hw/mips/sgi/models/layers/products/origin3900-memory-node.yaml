@@ -239,7 +239,6 @@ layer:
         default_cpu_model: R16000
         # The I-brick's Fibre Channel card's private loop: a boot disk
         # there is a loop port, named by the launcher's port_wwn and wwn.
-        disk_bus: scsi.0
         netboot_adapter: ioc3-ethernet
         default_topology: origin3200
         supported_guests: [irix]

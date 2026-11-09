@@ -219,7 +219,6 @@ layer:
         ioc3_serial_ports: [ioc3-serial-a, ioc3-serial-b]
         prom_dialogue: ip35-l1-prompt
         default_cpu_model: R14000
-        disk_bus: scsi.0
         netboot_adapter: ioc3-ethernet
         default_topology: one-chassis
         timekeeper_nvram: true

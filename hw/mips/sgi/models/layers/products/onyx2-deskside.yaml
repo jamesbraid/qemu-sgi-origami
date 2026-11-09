@@ -204,7 +204,6 @@ layer:
         console: ioc3-serial-a
         prom_dialogue: ip27-menu
         default_cpu_model: R10000
-        disk_bus: scsi.0
         netboot_adapter: ioc3-ethernet
         default_topology: onyx2-deskside
         supported_guests: [irix]

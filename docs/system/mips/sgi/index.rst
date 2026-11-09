@@ -168,6 +168,7 @@ References
 .. toctree::
    :maxdepth: 1
 
+   settings
    references
 
 Glossary
