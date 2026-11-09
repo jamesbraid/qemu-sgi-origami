@@ -630,6 +630,57 @@ with display lists run from list memory and textures held per context.
 How a real pipe renders is out of scope of this page and *unknown*;
 selectors whose word count is unsettled are not framed.
 
+Texel readback
+~~~~~~~~~~~~~~
+
+``0x52`` reads a texture level back: 18 words, the target, the width and
+height, the format, type and storage code of the answer, the region's
+first and last texel, and five words copied from the level's load: the
+size exponents (word 14, load header word 16), the format and layout byte
+(word 15), the first-level bank in bit 28 of word 13 and the two bank
+addresses (words 16 and 17, load header words 18 and 19). The client
+library sends it bare when the answer fits 16368 bytes and brackets it
+with ``0x1f5`` and ``0x1f6`` when it does not (*software expectation*,
+from a Quake GL trace). A bracketed read completes by output DMA. A bare
+read is answered on the return page: the data at offset 8, then a nonzero
+word 0, which the client polls with no timeout; an unanswered read hangs
+the client. The order is *inferred*, as for the other return-page
+answers.
+
+The model answers every bare read. It finds the level by target, size
+exponents, bank (bit 28 of word 13, against bit 3 of the load's word 17)
+and address (word 16, against the load's word 19 in bank one and word 18
+in bank zero). The model does not use the storage code to pick the level,
+an *approximation* and not the pipe's rule: payload word 5 describes the
+source texels to the pipe (*established*), so a read in storage ``0xd``
+with format 6 and type 3 reads memory as 16-bit components. That
+the address is word 16 in both banks is *inferred* from six reads in one
+Quake GL trace, five of them in bank one. Where a texture holds the same
+level twice, as when the library loads a read-back copy back in another
+storage code, the later load is the level (*inferred*); two textures at
+one address leave the read unanswerable. The reply is that level in the
+requested format and type: red, green, blue, alpha, RGB, RGBA, luminance
+and luminance-alpha, as unsigned bytes or unsigned shorts (each byte
+times 257), tightly packed. Luminance and luminance-alpha put an RGB sum
+in front of the destination unless the level holds a single channel: the
+sum of the three colour channels clamped at 1.0, with alpha kept (the
+stage selection is *established* from the firmware, the clamped sum is
+*inferred*, and the read of an RGBA texel as luminance has not been seen
+in a recording). A single-channel level, held in the red channel, is
+returned as it is; a texel upload to a luminance texture takes red alone.
+The reading of format 6, type 3 and storage ``0xd`` as luminance in
+unsigned shorts is *inferred* from the model's own format table and the
+2-byte texel the firmware reads; the code meanings beyond the texel size
+are *unknown*. The conversion is an *approximation*: the model holds
+levels as 8-bit RGBA and the pipe's own conversions are *unknown*. The
+bracketed copy form (format 7, type 3, storage ``0x28``) is unchanged. A
+read the model cannot produce, for want of a matching level or of the
+format, type or size, is answered with zeros, so the client draws a black
+texture rather than hanging, and logged ``LOG_UNIMP``. A bare read with
+no current return page is logged ``LOG_GUEST_ERROR`` and posts nothing.
+A bracketed read of a level that is not the copy form is answered with
+zeros as before.
+
 .. _sgi-kona-config:
 
 Configuration answer
@@ -1013,7 +1064,7 @@ The qtests fit the pipe with ``-device sgi-kona`` on
 - ``tests/qtest/sn0-origin2000-kona-context-test.c``,
   ``sn0-origin2000-kona-gl-test.c`` and
   ``sn0-origin2000-kona-3d-test.c``: context swap, GL windows and swap,
-  and the GL command grammar.
+  the GL command grammar and texel readback (bare and bracketed).
 - ``tests/qtest/sgi-kona-read-defense-test.c``: malformed command-page
   input through MMIO and migration.
 - ``tests/qtest/sn0-onyx2-test.c``, ``sgi-graphics-pipes-test.c``,

@@ -488,6 +488,50 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
     return true;
 }
 
+unsigned sgi_kona_texture_find_level(SGIKonaTextureState *s, uint32_t target,
+                                     uint32_t size_exponents, bool bank_one,
+                                     uint32_t address, uint32_t *handle,
+                                     const SGIKonaTextureLevel **image)
+{
+    GHashTableIter iter;
+    gpointer value;
+    unsigned found = 0;
+
+    g_hash_table_iter_init(&iter, s->objects);
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        SGIKonaTextureObject *o = value;
+
+        if (o->owner != s->owner) {
+            continue;
+        }
+        const SGIKonaTextureLevel *newest = NULL;
+
+        for (unsigned k = 0; k < o->native_count; k++) {
+            const SGIKonaTextureNativeImage *n = &o->native[k];
+            const uint32_t *h = n->header;
+
+            /* A load names its address in word 19 in bank one, else 18. */
+            if (h[0] == target && h[16] == size_exponents &&
+                !!(h[17] & 8) == bank_one &&
+                (bank_one ? h[19] : h[18]) == address) {
+                newest = &n->image;
+            }
+        }
+        /*
+         * A texture the library loads back after a read-back holds both
+         * loads, in different storage codes, at one address. The later
+         * load overwrote the memory, so the last one stored is the level
+         * (inferred: the array keeps load order).
+         */
+        if (newest) {
+            found++;
+            *handle = o->handle;
+            *image = newest;
+        }
+    }
+    return found;
+}
+
 bool sgi_kona_texture_native_table(SGIKonaTextureState *s, uint32_t handle,
                                   const uint32_t table[16])
 {

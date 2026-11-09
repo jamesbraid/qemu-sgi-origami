@@ -5161,6 +5161,282 @@ static void test_texture_readback(gconstpointer opaque)
     }
 }
 
+/*
+ * A texel readback sent bare, outside a select-feed bracket, is answered
+ * on the return-data page: the reply at +8 and a non-zero word 0 (the only
+ * word the client polls, with no timeout; before, a request the model did
+ * not copy left it unset and the client waited forever). Quake GL loaded a
+ * level as format 5, type 1 and read it back bare as format 6, type 3,
+ * storage 0xd, then loaded the same bytes back. Mode 0 is that: luminance,
+ * the sum of the level's colour channels clamped at one, as unsigned
+ * shorts (the source's pixels each sum past one, so this tells the sum
+ * from the red channel alone). Mode 1 asks for a type the model
+ * does not produce (RGB floats): zeros, logged, and still posted. Mode 2
+ * is the copy form (format 7, type 3, storage 0x28) inside a bracket, which
+ * completes by DMA and leaves the return page alone.
+ */
+static void test_texture_readback_bare(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+    const uint64_t destination = 0x380000, reason_page = 0x300000;
+    uint32_t readback[18] = {
+        0xde1, 2, 2, 6, 3, 0xd, 0, 0, 0, 0, 1, 1, 0, 0x38c0000, 0x23,
+        0x43, 0, 0,
+    };
+    uint8_t expected[24] = { 0 }, actual[24];
+    uint32_t h[20];
+
+    memcpy(h, texture_header, sizeof(h));
+    h[10] = 0x21;
+    if (mode == 1) {
+        readback[3] = 4;
+        readback[4] = 6;
+    } else if (mode == 2) {
+        readback[3] = 7;
+        readback[5] = 0x28;
+        for (unsigned k = 0; k < 4; k++) {
+            stl_be_p(expected + 4 * k, texture_source[k]);
+        }
+    } else {
+        for (unsigned k = 0; k < 4; k++) {
+            stw_be_p(expected + 2 * k, 255 * 257);
+        }
+    }
+    gl_make_current(s);
+    texture_native_bind(s, h[10]);
+    kona_command(s, 0x174, h, 20);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, texture_source[k]);
+    }
+    kona_command(s, 0x176, (uint32_t[]) { h[10] }, 1);
+    qtest_memset(s, RETURN_PAGE, 0xa5, 0x100);
+    qtest_memset(s, RETURN_PAGE, 0, 4);
+    if (mode == 2) {
+        kona_command_kicked(s, 0x1f1,
+                            (uint32_t[]){ 0x10000300, 0x9000, 0x4000 }, 3);
+        qtest_writel(s, KONA_REG(0x000034), 0x98000);
+        qtest_writel(s, KONA_REG(0x00003c), 0x1800090);
+        qtest_writel(s, KONA_REG(0x00005c), 0x3e2210);
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        qtest_memset(s, destination, 0xa5, sizeof(actual));
+        qtest_memset(s, reason_page, 0, 16);
+        kona_command_kicked(s, 0x1f5,
+                            (uint32_t[]){ 0, 0x9000, 16, 16, 0, 0 }, 6);
+    }
+    kona_command(s, 0x111, (uint32_t[]){ 2, 0x60000000 }, 2);
+    kona_command(s, 0x52, readback, 18);
+    if (mode == 2) {
+        kona_command_kicked(s, 0x1f6, (uint32_t[]){ 0x100, 7 }, 2);
+        g_assert_cmphex(qtest_readl(s, RETURN_PAGE), ==, 0);
+        g_assert_cmphex(qtest_readl(s, RETURN_PAGE + 8), ==, 0xa5a5a5a5);
+        qtest_memread(s, destination, actual, 16);
+        g_assert_cmpmem(actual, 16, expected, 16);
+    } else {
+        g_assert_cmphex(qtest_readl(s, RETURN_PAGE), ==, 1);
+        qtest_memread(s, RETURN_PAGE + 8, actual, sizeof(actual));
+        g_assert_cmpmem(actual, 8, expected, 8);
+        if (mode == 1) {
+            /* 2x2 RGB floats, 48 bytes of zeros; the 0xa5 fill is gone. */
+            uint8_t zeros[48] = { 0 }, page[48];
+
+            qtest_memread(s, RETURN_PAGE + 8, page, sizeof(page));
+            g_assert_cmpmem(page, sizeof(page), zeros, sizeof(zeros));
+        }
+        /* Nothing past the reply is written. */
+        g_assert_cmphex(qtest_readl(s, RETURN_PAGE + 8 + (mode ? 48 : 8)),
+                        ==, 0xa5a5a5a5);
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
+    if (mode == 1) {
+        g_assert_nonnull(strstr(found, "texel readback of format 4 type 6 "
+                                       "storage 0xd, 2x2, not producible; "
+                                       "answered with zeros"));
+    } else {
+        g_assert_null(strstr(found, "not producible"));
+    }
+}
+
+/* Colour channels that differ, with sums on both sides of one. */
+static const uint32_t readback_source[4] = {
+    0x10203040, 0x80808001, 0x000000ff, 0xff010203,
+};
+
+static const unsigned readback_components[8] = { 1, 1, 1, 1, 3, 4, 1, 2 };
+
+/* Component k of pixel px read back as format. */
+static unsigned readback_expected(uint32_t px, unsigned format, unsigned k)
+{
+    uint8_t c[4] = { px >> 24, px >> 16, px >> 8, px };
+    unsigned luminance = MIN(c[0] + c[1] + c[2], 255);
+
+    switch (format) {
+    case 6:
+        return luminance;
+    case 7:
+        return k ? c[3] : luminance;
+    default:
+        return c[format < 4 ? format : k];
+    }
+}
+
+/* Load a 2x2 level of readback_source as texture handle at address. */
+static void readback_load(QTestState *s, uint32_t handle, uint32_t address)
+{
+    uint32_t h[20];
+
+    memcpy(h, texture_header, sizeof(h));
+    h[10] = handle;
+    h[18] = address;
+    texture_native_bind(s, handle);
+    kona_command(s, 0x174, h, 20);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, readback_source[k]);
+    }
+    kona_command(s, 0x176, (uint32_t[]) { handle }, 1);
+}
+
+/* Send a bare read of a 2x2 level at address, with a primed return page. */
+static void readback_ask(QTestState *s, uint32_t format, uint32_t type,
+                         uint32_t exponents, uint32_t bank_word,
+                         uint32_t address, uint32_t last, uint32_t target)
+{
+    uint32_t readback[18] = {
+        target, last + 1, last + 1, format, type, 0xd, 0, 0, 0, 0, last, last,
+        0, bank_word, exponents, 0x43, address, 0,
+    };
+
+    qtest_memset(s, RETURN_PAGE, 0xa5, 0x100);
+    qtest_memset(s, RETURN_PAGE, 0, 4);
+    kona_command(s, 0x111, (uint32_t[]){ 2, 0x60000000 }, 2);
+    kona_command(s, 0x52, readback, 18);
+}
+
+/*
+ * Every format the model packs, in unsigned bytes and unsigned shorts,
+ * from a level whose colour channels differ: red, green, blue, alpha, RGB,
+ * RGBA, and luminance and luminance-alpha as the clamped sum of the colour
+ * channels with alpha kept.
+ */
+static void test_texture_readback_formats(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    readback_load(s, 0x21, 0);
+    for (unsigned format = 0; format < 8; format++) {
+        for (unsigned type = 1; type <= 3; type += 2) {
+            unsigned comps = readback_components[format];
+            unsigned size = type == 3 ? 2 : 1;
+            uint8_t expected[32] = { 0 }, actual[32];
+
+            for (unsigned p = 0; p < 4; p++) {
+                for (unsigned k = 0; k < comps; k++) {
+                    unsigned v = readback_expected(readback_source[p], format,
+                                                   k);
+                    uint8_t *at = expected + (p * comps + k) * size;
+
+                    if (type == 3) {
+                        stw_be_p(at, v * 257);
+                    } else {
+                        *at = v;
+                    }
+                }
+            }
+            readback_ask(s, format, type, 0x23, 0, 0, 1, 0xde1);
+            g_assert_cmphex(qtest_readl(s, RETURN_PAGE), ==, 1);
+            qtest_memread(s, RETURN_PAGE + 8, actual, 4 * comps * size);
+            g_assert_cmpmem(actual, 4 * comps * size, expected,
+                            4 * comps * size);
+        }
+    }
+    qtest_quit(s);
+}
+
+/*
+ * A bare read finds its level by what the read copies from the load: the
+ * size exponents, the bank and the address, and the extent must fit.
+ * Anything else is answered with zeros, logged, and still posted.
+ * Mode 0 names the older of two live levels of one size (by address), and
+ * gets that one's texels. Modes 1 to 5 each name a level that does not
+ * exist: other size exponents, an extent past the level's, the other bank
+ * (at address zero, where both banks' address words are zero), another
+ * address, and a target other than 2D. Mode 6 has no return page and posts
+ * nothing.
+ */
+static void test_texture_readback_lookup(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+    uint32_t h[20];
+    uint8_t zeros[32] = { 0 }, actual[32];
+
+    if (mode == 6) {
+        uint32_t config[10] = { 0, 0xc };
+
+        /* gl_make_current() minus the return page. */
+        kona_command_kicked(s, 0x1fd,
+                            (uint32_t[]){ physical_page_word(SAVE_AREA),
+                                          tagged_offset_word(SAVE_AREA),
+                                          0x10000 }, 3);
+        kona_command(s, 1, config, 10);
+        kona_command(s, 2, (uint32_t[]){ 0 }, 1);
+    } else {
+        gl_make_current(s);
+    }
+    readback_load(s, 0x21, 0);
+    if (!mode) {
+        /* The newer level is another colour at another address. */
+        memcpy(h, texture_header, sizeof(h));
+        h[10] = 0x22;
+        h[18] = 0x100;
+        texture_native_bind(s, 0x22);
+        kona_command(s, 0x174, h, 20);
+        for (unsigned k = 0; k < 4; k++) {
+            qtest_writel(s, REG_COMMAND, 0x01020304 * (k + 1));
+        }
+        kona_command(s, 0x176, (uint32_t[]) { 0x22 }, 1);
+    }
+    readback_ask(s, 5, 1, mode == 1 ? 0x44 : 0x23,
+                 mode == 3 ? 1u << 28 : 0, mode == 4 ? 0x300 : 0,
+                 mode == 2 ? 3 : 1, mode == 5 ? 0xde0 : 0xde1);
+    if (mode == 6) {
+        g_assert_cmphex(qtest_readl(s, RETURN_PAGE), ==, 0);
+        g_assert_cmphex(qtest_readl(s, RETURN_PAGE + 8), ==, 0xa5a5a5a5);
+    } else {
+        unsigned bytes = mode == 2 ? 64 : 16;
+        uint8_t source[16];
+
+        g_assert_cmphex(qtest_readl(s, RETURN_PAGE), ==, 1);
+        qtest_memread(s, RETURN_PAGE + 8, actual, 16);
+        if (mode) {
+            g_assert_cmpmem(actual, 16, zeros, 16);
+            g_assert_cmphex(qtest_readl(s, RETURN_PAGE + 8 + bytes), ==,
+                            0xa5a5a5a5);
+        } else {
+            for (unsigned k = 0; k < 4; k++) {
+                stl_be_p(source + 4 * k, readback_source[k]);
+            }
+            g_assert_cmpmem(actual, 16, source, 16);
+        }
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
+    if (mode == 6) {
+        g_assert_nonnull(strstr(found, "no current return page"));
+    } else if (mode) {
+        g_assert_nonnull(strstr(found, "not producible; answered with "
+                                       "zeros"));
+    } else {
+        g_assert_null(strstr(found, "not producible"));
+    }
+}
+
 static const uint32_t texture_8x8_headers[2][20];
 static const uint32_t texture_8x8_sources[2][64];
 static void texture_words(QTestState *s, const uint32_t *v, unsigned n,
@@ -20274,6 +20550,27 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(3), test_texture_readback);
     add_data_case("sn0/origin2000/kona-3d/texture/readback-wrong-bank",
                   GUINT_TO_POINTER(4), test_texture_readback);
+    add_data_case("sn0/origin2000/kona-3d/texture/readback-bare",
+                  GUINT_TO_POINTER(0), test_texture_readback_bare);
+    add_data_case("sn0/origin2000/kona-3d/texture/readback-bare-zeros",
+                  GUINT_TO_POINTER(1), test_texture_readback_bare);
+    add_data_case("sn0/origin2000/kona-3d/texture/readback-bare-bracketed",
+                  GUINT_TO_POINTER(2), test_texture_readback_bare);
+    add_case("sn0/origin2000/kona-3d/texture/readback-bare-formats",
+             test_texture_readback_formats);
+    static const char *lookup_cases[] = {
+        "by-address", "other-exponents", "extent-past-level", "other-bank",
+        "other-address", "other-target", "no-return-page",
+    };
+
+    for (unsigned mode = 0; mode < ARRAY_SIZE(lookup_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/texture/readback-bare-%s",
+            lookup_cases[mode]);
+
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                      test_texture_readback_lookup);
+    }
     add_data_case("sn0/origin2000/kona-3d/texture/rebind-a-b-a",
                   GUINT_TO_POINTER(0), test_texture_rebind_control);
     add_data_case("sn0/origin2000/kona-3d/texture/rebind-reverse-upload",

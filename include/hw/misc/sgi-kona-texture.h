@@ -195,6 +195,16 @@ unsigned sgi_kona_texture_find_native(SGIKonaTextureState *s, uint32_t target,
                                       uint32_t bank_b, uint32_t width,
                                       uint32_t height, uint32_t *handle,
                                       const SGIKonaTextureLevel **image);
+/*
+ * The native levels of `target` the current owner holds whose load named
+ * `size_exponents` (header word 16), the bank `bank_one` and `address` (word
+ * 19 in bank one, word 18 otherwise). Returns how many textures hold such
+ * a level; with one, *handle names it and *image is its last load.
+ */
+unsigned sgi_kona_texture_find_level(SGIKonaTextureState *s, uint32_t target,
+                                     uint32_t size_exponents, bool bank_one,
+                                     uint32_t address, uint32_t *handle,
+                                     const SGIKonaTextureLevel **image);
 /* Whether handle's stored level table is table, as find_table matches. */
 bool sgi_kona_texture_table_matches(SGIKonaTextureState *s, uint32_t handle,
                                     const uint32_t table[16], bool volume,
