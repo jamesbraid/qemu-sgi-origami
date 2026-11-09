@@ -6447,10 +6447,11 @@ static void test_full_identity_ethernet_aic(void)
         "prom-private-window=on,prom-sb64-reset=on,"
         "gbe11-registers=on,prom-id-word=on,"
         "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238,"
-        "identity-diagnostic=on,identity-test-serial=1032547698ba,"
-        "identity-eprom-file=%s,identity-status=0123456789abcd,"
-        "mace-misc-word-pio=on,mace-eth-low-dma-compat=on,"
-        "phy-ics1890=on,phy-address=8 "
+        "identity-diagnostic=on,mace-misc-word-pio=on,"
+        "mace-eth-low-dma-compat=on,phy-ics1890=on,phy-address=8 "
+        "-global sgi-mace-id.test-serial=1032547698ba "
+        "-global sgi-mace-id.eprom-file=%s "
+        "-global sgi-mace-id.status=0123456789abcd "
         "-cpu R10000 -m 1G -nodefaults -accel qtest "
         "-nic socket,id=n0,fd=%d,model=sgi-mace-eth,"
         "mac=02:a1:4c:73:95:e6",
@@ -8289,11 +8290,11 @@ static void test_product_system_serial(void)
 }
 
 /*
- * emu-id= on the product machine. IRIX reads the O2's station address, which
- * comes from -nic and the identity chip's inputs and which this model does not
- * derive from anything, so the machine takes no serial, hostid or mac and has
- * no hostid, hostids or kind property; emu-id reaches the clock only. An
- * emu-id past 4095 is refused, and nothing changes once the machine is built.
+ * emu-id= on the product machine. It marks the clock and, through the
+ * emulator layout, mints the station address the identity chip holds and so
+ * the host id; the identity chip tests in sgi-o2-id-test read the chip back.
+ * An emu-id past 4095 is refused, and nothing changes once the machine is
+ * built.
  */
 static uint64_t o2_machine_uint(QTestState *qts, const char *property)
 {
@@ -8307,8 +8308,12 @@ static uint64_t o2_machine_uint(QTestState *qts, const char *property)
 
 static void test_product_serial_no_hostid(void)
 {
-    static const char *const absent[] = {
-        "kind", "serial", "hostid", "hostids", "mac",
+    static const char *const absent[] = { "kind" };
+    static const struct {
+        const char *property;
+        const char *value;
+    } built[] = {
+        { "hostid", "69e102a0" }, { "hostids", "69e102a0" },
     };
     O2ProductTest t = { 0 };
     g_autoptr(QDict) response = NULL;
@@ -8328,6 +8333,14 @@ static void test_product_serial_no_hostid(void)
                              absent[i]);
         g_assert_true(qdict_haskey(response, "error"));
     }
+    for (size_t i = 0; i < G_N_ELEMENTS(built); i++) {
+        qobject_unref(response);
+        response = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                             "{'path':'/machine','property':%s}}",
+                             built[i].property);
+        g_assert_cmpstr(qdict_get_str(response, "return"), ==,
+                        built[i].value);
+    }
     qobject_unref(response);
     response = qtest_qmp(qts, "{'execute':'qom-set','arguments':"
                          "{'path':'/machine','property':'emu-id',"
@@ -8345,8 +8358,8 @@ static void test_product_serial_refused(void)
         const char *message;
     } refused[] = {
         { "emu-id=4096", "emu-id must be 0 to 4095, not 4096" },
-        { "serial=M2100887", "serial" },
-        { "hostid=69e102a0", "hostid" },
+        { "serial=M2100887", "serial folds to" },
+        { "hostid=d2100887", "hostid" },
     };
 
     for (size_t i = 0; i < G_N_ELEMENTS(refused); i++) {
@@ -9076,7 +9089,7 @@ static void test_product_configuration(void)
 
     o2_product_prepare(&t);
     assert_o2_banked_rejected("o2", "1G", NULL, NULL,
-                              "requires explicit ROM, identity");
+                              "requires explicit ROM and password-clear");
     assert_o2_banked_rejected(t.machine, "128M", NULL, NULL,
                               "requires exactly 1 GiB");
     assert_o2_banked_rejected(t.machine, "1G", "-cpu", "R12000",

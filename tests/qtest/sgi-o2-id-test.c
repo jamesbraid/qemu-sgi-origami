@@ -7,6 +7,8 @@
 #include "libqtest.h"
 #include "memtx.h"
 #include "sgi-launch.h"
+#include "sgi-o2-product-fixture.h"
+#include "qobject/qdict.h"
 
 #define ID_REG UINT64_C(0x1f310008)
 #define ID_RELEASE (1U << 2)
@@ -31,9 +33,10 @@ static char *id_image_file(void)
 static QTestState *id_machine_start(const char *image)
 {
     return qtest_initf(
-        "-m 64M -M o2,register-test-profile=on,identity-diagnostic=on,"
-        "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
-        "identity-status=0123456789abcd -nic none", image);
+        "-m 64M -M o2,register-test-profile=on,identity-diagnostic=on "
+        "-global sgi-mace-id.test-serial=1032547698ba "
+        "-global sgi-mace-id.eprom-file=%s "
+        "-global sgi-mace-id.status=0123456789abcd -nic none", image);
 }
 
 static bool id_level(QTestState *qts)
@@ -248,8 +251,10 @@ static void test_misc_word_protocol(void)
     QTestState *qts = qtest_initf(
         MEMTX_TEST_DEVICE "-m 64M -M o2,register-test-profile=on,"
         "identity-diagnostic=on,"
-        "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
-        "identity-status=0123456789abcd,mace-misc-word-pio=on "
+        "mace-misc-word-pio=on "
+        "-global sgi-mace-id.test-serial=1032547698ba "
+        "-global sgi-mace-id.eprom-file=%s "
+        "-global sgi-mace-id.status=0123456789abcd "
         "-nic none", image);
     uint8_t tail[2];
 
@@ -295,46 +300,74 @@ static void test_misc_word_protocol(void)
     g_assert_cmpint(g_unlink(image), ==, 0);
 }
 
-static void assert_machine_rejected(const char *machine,
-                                    const char *reason)
+static void assert_machine_rejected_with(const char *machine,
+                                         const char *extra,
+                                         const char *reason)
 {
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", machine, "-m", "64M",
-        "-nodefaults", "-display", "none", "-S", "-qmp", "stdio",
-        NULL
+    static const char *const fixed[] = {
+        "-m", "64M", "-nodefaults", "-display", "none", "-S", "-qmp", "stdio",
     };
+    g_auto(GStrv) words = g_strsplit(extra, " ", -1);
+    g_autoptr(GPtrArray) args = g_ptr_array_new();
 
-    assert_qtest_launch_rejected(args, reason);
+    g_ptr_array_add(args, (gpointer)qtest_qemu_binary(NULL));
+    g_ptr_array_add(args, (gpointer)"-M");
+    g_ptr_array_add(args, (gpointer)machine);
+    for (char **word = words; *word; word++) {
+        if (**word) {
+            g_ptr_array_add(args, *word);
+        }
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(fixed); i++) {
+        g_ptr_array_add(args, (gpointer)fixed[i]);
+    }
+    g_ptr_array_add(args, NULL);
+    assert_qtest_launch_rejected((const char **)args->pdata, reason);
+}
+
+static void assert_machine_rejected(const char *machine, const char *reason)
+{
+    assert_machine_rejected_with(machine, "", reason);
 }
 
 static void test_machine_options(void)
 {
     g_autofree char *image = id_image_file();
-    g_autofree char *without_enable = g_strdup_printf(
-        "o2,register-test-profile=on,identity-test-serial=1032547698ba,"
-        "identity-eprom-file=%s,identity-status=0123456789abcd", image);
-    g_autofree char *without_serial = g_strdup_printf(
-        "o2,register-test-profile=on,"
-        "identity-diagnostic=on,identity-eprom-file=%s,"
-        "identity-status=0123456789abcd", image);
-    g_autofree char *invalid_image = g_strdup_printf(
-        "o2,register-test-profile=on,identity-diagnostic=on,"
-        "identity-test-serial=1032547698ba,"
-        "identity-eprom-file=%s,identity-status=0123456789abcd", image);
+    g_autofree char *serial_global =
+        g_strdup("-global sgi-mace-id.test-serial=1032547698ba ");
+    g_autofree char *image_global = g_strdup_printf(
+        "-global sgi-mace-id.eprom-file=%s ", image);
+    g_autofree char *status_global =
+        g_strdup("-global sgi-mace-id.status=0123456789abcd ");
+    g_autofree char *no_enable = g_strdup_printf(
+        "%s%s%s", serial_global, image_global, status_global);
+    g_autofree char *no_serial = g_strdup_printf(
+        "%s%s", image_global, status_global);
     uint8_t short_image[127] = { 0 };
 
-    assert_machine_rejected(without_enable,
-                            "identity inputs require identity-diagnostic=on");
-    assert_machine_rejected("o2,register-test-profile=on,"
-        "identity-diagnostic=on",
-                            "identity diagnostic requires");
+    /* Inputs without the diagnostic have no responder to feed. */
+    assert_machine_rejected_with("o2,register-test-profile=on", no_enable,
+                                 "no-responder rejects synthetic identity "
+                                 "inputs");
+    assert_machine_rejected_with("o2,register-test-profile=on,"
+                                 "identity-diagnostic=on", "",
+                                 "sgi-mace-id needs 12 hexadecimal");
     assert_machine_rejected("o2,register-test-profile=on,mace-misc-word-pio=on",
                             "requires identity-diagnostic=on");
-    assert_machine_rejected(without_serial,
-                            "identity diagnostic requires");
+    assert_machine_rejected_with("o2,register-test-profile=on,"
+                                 "identity-diagnostic=on", no_serial,
+                                 "sgi-mace-id needs 12 hexadecimal");
     g_assert_true(g_file_set_contents(image, (char *)short_image,
                                       sizeof(short_image), NULL));
-    assert_machine_rejected(invalid_image, "exactly 128 bytes");
+    assert_machine_rejected_with("o2,register-test-profile=on,"
+                                 "identity-diagnostic=on", no_enable,
+                                 "exactly 128 bytes");
+    /* The replay, mac and id inputs belong to the product machine. */
+    assert_machine_rejected("o2,register-test-profile=on,"
+                            "mac=08:00:69:00:00:01",
+                            "need the product machine");
+    assert_machine_rejected("o2,register-test-profile=on,hostid=69000001",
+                            "need the product machine");
     g_assert_cmpint(g_unlink(image), ==, 0);
 }
 
@@ -413,9 +446,10 @@ static void test_misc_word_pio_default_off(void)
     g_autofree char *image = id_image_file();
     QTestState *qts = qtest_initf(
         MEMTX_TEST_DEVICE "-m 64M -M o2,register-test-profile=on,"
-        "identity-diagnostic=on,"
-        "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
-        "identity-status=0123456789abcd -nic none", image);
+        "identity-diagnostic=on "
+        "-global sgi-mace-id.test-serial=1032547698ba "
+        "-global sgi-mace-id.eprom-file=%s "
+        "-global sgi-mace-id.status=0123456789abcd -nic none", image);
     g_autoptr(QDict) option = qtest_qmp(qts,
         "{'execute':'qom-get','arguments':{'path':'/machine',"
         "'property':'mace-misc-word-pio'}}");
@@ -511,8 +545,10 @@ static void test_misc_word_reset_timing(void)
     QTestState *qts = qtest_initf(
         MEMTX_TEST_DEVICE "-m 64M -M o2,register-test-profile=on,"
         "identity-diagnostic=on,"
-        "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
-        "identity-status=0123456789abcd,mace-misc-word-pio=on "
+        "mace-misc-word-pio=on "
+        "-global sgi-mace-id.test-serial=1032547698ba "
+        "-global sgi-mace-id.eprom-file=%s "
+        "-global sgi-mace-id.status=0123456789abcd "
         "-nic none", image);
 
     for (unsigned size = 4; size <= 8; size += 4) {
@@ -546,8 +582,10 @@ static void test_misc_word_presence_without_timer_service(void)
     QTestState *qts = qtest_initf(
         MEMTX_TEST_DEVICE "-m 64M -M o2,register-test-profile=on,"
         "identity-diagnostic=on,"
-        "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
-        "identity-status=0123456789abcd,mace-misc-word-pio=on "
+        "mace-misc-word-pio=on "
+        "-global sgi-mace-id.test-serial=1032547698ba "
+        "-global sgi-mace-id.eprom-file=%s "
+        "-global sgi-mace-id.status=0123456789abcd "
         "-nic none", image);
 
     qtest_clock_timers(qts, false);
@@ -578,8 +616,10 @@ static void test_misc_word_session_without_timer_service(void)
     QTestState *qts = qtest_initf(
         MEMTX_TEST_DEVICE "-m 64M -M o2,register-test-profile=on,"
         "identity-diagnostic=on,"
-        "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
-        "identity-status=0123456789abcd,mace-misc-word-pio=on "
+        "mace-misc-word-pio=on "
+        "-global sgi-mace-id.test-serial=1032547698ba "
+        "-global sgi-mace-id.eprom-file=%s "
+        "-global sgi-mace-id.status=0123456789abcd "
         "-nic none", image);
 
     qtest_clock_timers(qts, false);
@@ -619,8 +659,10 @@ static void test_misc_word_pio_selected(void)
         MEMTX_TEST_DEVICE "-m 64M -M o2,register-test-profile=on,"
         "password-clear-input=1,"
         "identity-diagnostic=on,"
-        "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
-        "identity-status=0123456789abcd,mace-misc-word-pio=on "
+        "mace-misc-word-pio=on "
+        "-global sgi-mace-id.test-serial=1032547698ba "
+        "-global sgi-mace-id.eprom-file=%s "
+        "-global sgi-mace-id.status=0123456789abcd "
         "-nic none -d unimp -D %s", image, log_path);
 
     g_assert_cmpint(memtx_readq(qts, ID_REG, &wide), ==, MEMTX_OK);
@@ -704,6 +746,269 @@ static void test_misc_word_pio_selected(void)
     g_assert_cmpint(g_unlink(image), ==, 0);
 }
 
+
+/*
+ * The product machine builds its own identity chip. Memory bytes 0 to 5 hold
+ * the station address in reverse order, as the PROM reads them, and every
+ * other byte is 0xff, the DS2502's unprogrammed state. Read ROM gives the
+ * marked constant 45 4d 55, the kind and two zero bytes, and Read Status
+ * gives seven 0xff and the fixed 0x00. The vectors' checksums are computed
+ * by id_crc8() above, not by the model, and were also worked by hand from
+ * the DS2502 polynomial x^8 + x^5 + x^4 + 1.
+ */
+static const uint8_t product_rom[8] = {
+    0x09, 0x45, 0x4d, 0x55, 0x01, 0x00, 0x00, 0xa5
+};
+
+typedef struct ProductChip {
+    const char *options;       /* appended to the product -M */
+    uint8_t head[6];           /* memory bytes 0 to 5 */
+    uint8_t data_crc;          /* CRC of all 128 memory bytes */
+    const char *hostids;
+    const char *adapter;       /* the adapter's address */
+} ProductChip;
+
+static QTestState *product_start(O2ProductTest *t, const char *options,
+                                 const char *extra)
+{
+    return qtest_initf("-M %s%s%s -nodefaults -S %s", t->machine,
+                       options[0] ? "," : "", options, extra);
+}
+
+static char *product_qom_str(QTestState *qts, const char *path,
+                             const char *property)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,'property':%s}}",
+        path, property);
+
+    g_assert_true(qdict_haskey(response, "return"));
+    return g_strdup(qdict_get_str(response, "return"));
+}
+
+/* Reads the whole chip over the identity line and checks it against @image. */
+static void product_check_chip(QTestState *qts, const uint8_t image[128],
+                               int data_crc)
+{
+    static const uint8_t status[8] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00
+    };
+    const uint8_t header[3] = { 0xf0, 0, 0 };
+
+    id_reset(qts);
+    id_write_byte(qts, 0x33);
+    for (unsigned i = 0; i < sizeof(product_rom); i++) {
+        g_assert_cmphex(id_read_byte(qts), ==, product_rom[i]);
+    }
+    g_assert_cmphex(id_crc8(product_rom, 7), ==, 0xa5);
+
+    id_reset(qts);
+    id_write_byte(qts, 0xcc);
+    for (unsigned i = 0; i < sizeof(header); i++) {
+        id_write_byte(qts, header[i]);
+    }
+    g_assert_cmphex(id_read_byte(qts), ==, id_crc8(header, sizeof(header)));
+    g_assert_cmphex(id_crc8(header, sizeof(header)), ==, 0x8d);
+    for (unsigned i = 0; i < 128; i++) {
+        g_assert_cmphex(id_read_byte(qts), ==, image[i]);
+    }
+    g_assert_cmphex(id_read_byte(qts), ==, id_crc8(image, 128));
+    if (data_crc >= 0) {
+        g_assert_cmphex(id_crc8(image, 128), ==, data_crc);
+    }
+
+    id_reset(qts);
+    id_write_byte(qts, 0xcc);
+    {
+        const uint8_t status_header[3] = { 0xaa, 0, 0 };
+
+        for (unsigned i = 0; i < sizeof(status_header); i++) {
+            id_write_byte(qts, status_header[i]);
+        }
+        g_assert_cmphex(id_read_byte(qts), ==, 0x9c);
+        g_assert_cmphex(id_crc8(status_header, 3), ==, 0x9c);
+    }
+    for (unsigned i = 0; i < sizeof(status); i++) {
+        g_assert_cmphex(id_read_byte(qts), ==, status[i]);
+    }
+    g_assert_cmphex(id_read_byte(qts), ==, 0xfc);
+    g_assert_cmphex(id_crc8(status, 8), ==, 0xfc);
+}
+
+static void test_product_chip(void)
+{
+    static const ProductChip chips[] = {
+        { "emu-id=42", { 0xa0, 0x02, 0xe1, 0x69, 0x00, 0x08 }, 0x5c,
+          "69e102a0", "08:00:69:e1:02:a0" },
+        { "emu-id=0", { 0x00, 0x00, 0xe1, 0x69, 0x00, 0x08 }, 0xf1,
+          "69e10000", "08:00:69:e1:00:00" },
+        { "emu-id=4095", { 0xf0, 0xff, 0xe1, 0x69, 0x00, 0x08 }, 0x7a,
+          "69e1fff0", "08:00:69:e1:ff:f0" },
+        { "mac=08:00:69:0b:ea:40", { 0x40, 0xea, 0x0b, 0x69, 0x00, 0x08 },
+          0x96, "690bea40", "08:00:69:0b:ea:40" },
+        { "hostid=0bea40", { 0x40, 0xea, 0x0b, 0x69, 0x00, 0x08 }, 0x96,
+          "690bea40", "08:00:69:0b:ea:40" },
+        { "hostid=690bea40", { 0x40, 0xea, 0x0b, 0x69, 0x00, 0x08 }, 0x96,
+          "690bea40", "08:00:69:0b:ea:40" },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(chips); i++) {
+        O2ProductTest t = { 0 };
+        uint8_t image[128];
+        QTestState *qts;
+        g_autofree char *hostids = NULL, *hostid = NULL, *adapter = NULL;
+
+        o2_product_prepare(&t);
+        memset(image, 0xff, sizeof(image));
+        memcpy(image, chips[i].head, 6);
+        qts = product_start(&t, chips[i].options, "");
+        hostids = product_qom_str(qts, "/machine", "hostids");
+        hostid = product_qom_str(qts, "/machine", "hostid");
+        adapter = product_qom_str(qts, "/machine/mace/eth", "mac");
+        g_assert_cmpstr(hostids, ==, chips[i].hostids);
+        g_assert_cmpstr(hostid, ==, chips[i].hostids);
+        g_assert_cmpstr(adapter, ==, chips[i].adapter);
+        /* QEMU never programs the station register; the firmware does. */
+        g_assert_cmphex(qtest_readq(qts, UINT64_C(0x1f2800a0)), ==, 0);
+        product_check_chip(qts, image, chips[i].data_crc);
+        g_assert_cmphex(qtest_readq(qts, UINT64_C(0x1f2800a0)), ==, 0);
+        qtest_system_reset(qts);
+        g_assert_cmphex(qtest_readq(qts, UINT64_C(0x1f2800a0)), ==, 0);
+        qtest_quit(qts);
+        o2_product_cleanup(&t);
+    }
+}
+
+static void assert_product_rejected(const char *options, const char *extra,
+                                    const char *reason)
+{
+    static const char *const fixed[] = {
+        "-nodefaults", "-display", "none", "-S", "-qmp", "stdio",
+    };
+    O2ProductTest t = { 0 };
+    g_autofree char *spec = NULL;
+    g_auto(GStrv) words = g_strsplit(extra, " ", -1);
+    g_autoptr(GPtrArray) args = g_ptr_array_new();
+
+    o2_product_prepare(&t);
+    spec = g_strdup_printf("%s%s%s", t.machine, options[0] ? "," : "",
+                           options);
+    g_ptr_array_add(args, (gpointer)qtest_qemu_binary(NULL));
+    g_ptr_array_add(args, (gpointer)"-M");
+    g_ptr_array_add(args, spec);
+    for (char **word = words; *word; word++) {
+        if (**word) {
+            g_ptr_array_add(args, *word);
+        }
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(fixed); i++) {
+        g_ptr_array_add(args, (gpointer)fixed[i]);
+    }
+    g_ptr_array_add(args, NULL);
+    assert_qtest_launch_rejected((const char **)args->pdata, reason);
+    o2_product_cleanup(&t);
+}
+
+static void test_product_identity_refused(void)
+{
+    assert_product_rejected("mac=52:54:00:12:34:56", "",
+                            "station address must start 08:00:69");
+    assert_product_rejected("hostid=d2100887", "", "hostid");
+    assert_product_rejected("serial=M2100887", "", "serial");
+    assert_product_rejected("mac=08:00:69:0b:ea:40,hostid=69000001", "",
+                            "make them agree");
+    assert_product_rejected("emu-id=4096", "",
+                            "emu-id must be 0 to 4095, not 4096");
+}
+
+/*
+ * The adapter takes the machine's address when -nic gives none, and a -nic
+ * mac= that says otherwise is refused: the guest never sees the adapter's
+ * address, so honouring it would only mislead.
+ */
+static void test_product_nic(void)
+{
+    O2ProductTest t = { 0 };
+    g_autofree char *adapter = NULL;
+    QTestState *qts;
+
+    o2_product_prepare(&t);
+    qts = product_start(&t, "emu-id=42", "-nic user");
+    adapter = product_qom_str(qts, "/machine/mace/eth", "mac");
+    g_assert_cmpstr(adapter, ==, "08:00:69:e1:02:a0");
+    qtest_quit(qts);
+
+    qts = product_start(&t, "emu-id=42", "-nic user,mac=08:00:69:e1:02:a0");
+    g_free(adapter);
+    adapter = product_qom_str(qts, "/machine/mace/eth", "mac");
+    g_assert_cmpstr(adapter, ==, "08:00:69:e1:02:a0");
+    qtest_quit(qts);
+    o2_product_cleanup(&t);
+
+    assert_product_rejected("emu-id=42", "-nic user,mac=08:00:69:00:00:01",
+                            "-nic mac=08:00:69:00:00:01 is not the machine's "
+                            "station address 08:00:69:e1:02:a0");
+    assert_product_rejected("emu-id=42", "-nic user,mac=52:54:00:12:34:56",
+                            "station address 08:00:69:e1:02:a0");
+}
+
+/*
+ * identity-eprom-file replays a captured chip byte for byte. It wins over
+ * the identity inputs, the host id comes from its bytes 3 to 0 and the
+ * adapter takes the address its first six bytes spell, reversed.
+ */
+static void test_product_replay(void)
+{
+    g_autofree char *image_path = id_image_file();
+    g_autofree char *options = g_strdup_printf(
+        "mac=08:00:69:0b:ea:40,identity-eprom-file=%s", image_path);
+    g_autofree char *wrong = g_strdup_printf(
+        "identity-eprom-file=%s", image_path);
+    uint8_t image[128];
+    O2ProductTest t = { 0 };
+    g_autofree char *hostids = NULL, *adapter = NULL;
+    QTestState *qts;
+
+    for (unsigned i = 0; i < sizeof(image); i++) {
+        image[i] = id_eprom_byte(i);
+    }
+    o2_product_prepare(&t);
+    qts = product_start(&t, options, "");
+    hostids = product_qom_str(qts, "/machine", "hostids");
+    adapter = product_qom_str(qts, "/machine/mace/eth", "mac");
+    g_assert_cmpstr(hostids, ==, "caef80a5");
+    g_assert_cmpstr(adapter, ==, "1c:31:ca:ef:80:a5");
+    product_check_chip(qts, image, -1);
+    qtest_quit(qts);
+    o2_product_cleanup(&t);
+
+    /* The file is read once at start: changing it afterwards does nothing. */
+    o2_product_prepare(&t);
+    qts = product_start(&t, options, "");
+    {
+        uint8_t other[128] = { 0 };
+        g_autofree char *again = NULL;
+
+        g_assert_true(g_file_set_contents(image_path, (char *)other,
+                                          sizeof(other), NULL));
+        again = product_qom_str(qts, "/machine", "hostids");
+        g_assert_cmpstr(again, ==, "caef80a5");
+        qtest_system_reset(qts);
+        product_check_chip(qts, image, -1);
+    }
+    qtest_quit(qts);
+    o2_product_cleanup(&t);
+
+    {
+        uint8_t short_image[127] = { 0 };
+
+        g_assert_true(g_file_set_contents(image_path, (char *)short_image,
+                                          sizeof(short_image), NULL));
+    }
+    assert_product_rejected(wrong, "", "exactly 128 bytes");
+    g_assert_cmpint(g_unlink(image_path), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -727,5 +1032,10 @@ int main(int argc, char **argv)
                    test_misc_word_session_without_timer_service);
     qtest_add_func("/o2/identity/misc-word-selected",
                    test_misc_word_pio_selected);
+    qtest_add_func("/o2/identity/product-chip", test_product_chip);
+    qtest_add_func("/o2/identity/product-refused",
+                   test_product_identity_refused);
+    qtest_add_func("/o2/identity/product-nic", test_product_nic);
+    qtest_add_func("/o2/identity/product-replay", test_product_replay);
     return g_test_run();
 }

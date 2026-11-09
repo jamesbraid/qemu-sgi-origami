@@ -350,12 +350,12 @@ requires all of these:
   ``rom-at29c040a-upper-lock``: the flash's software data protection and
   boot block lock states at power-on (:doc:`hardware/at29c040a`). A real
   part's states depend on its history, so the user states them.
-- ``identity-test-serial``, ``identity-eprom-file`` and
-  ``identity-status``: the board identity MACE reads back
-  (:doc:`hardware/mace`). These are the user's values, not a factory
-  record. The Ethernet station address is separate.
 - ``password-clear-input=0`` or ``1``: the board's password-clear input,
   whose fitted level is *unknown*.
+
+The identity chip MACE reads back (:doc:`hardware/mace`) is built from the
+machine's identity properties, so it needs no input of its own
+(:ref:`sgi-ip32-system-serial`).
 
 The machine refuses ``-bios``, ``-kernel``, ``-initrd`` and ``-append``.
 Block backends named ``o2flash`` and ``o2flash-state`` keep the flash and
@@ -379,8 +379,13 @@ any other PCI device, and PCI and SCSI hotplug.
 The CD-ROM's INQUIRY text and block size follow :ref:`sgi-cdrom-identity`:
 the O2 PROM sets 512-byte blocks on any type-5 unit, whatever its vendor.
 
-The default network card is ``sgi-mace-eth``. ``-nic`` or ``-netdev``
-with ``macaddr`` sets its station address.
+The default network card is ``sgi-mace-eth``. Its station address is the
+machine's own (``mac=`` or the address the identity inputs give), whether
+or not ``-nic`` names one; a ``-nic`` or ``-netdev`` ``mac=`` that differs
+is refused with a message naming both addresses. The guest never reads the
+adapter's address, only the identity chip's (:ref:`sgi-ip32-system-serial`), so
+honouring a different ``mac=`` would only mislead: the adapter's address
+shows in ``info network`` and in packet captures.
 
 MACE's two serial ports take the first two ``-serial`` backends. The
 first is the console port. A third is refused.
@@ -390,21 +395,18 @@ first is the console port. A third is refused.
 Running
 =======
 
-A minimal command line, with a PROM image ``ip32prom.bin`` and an
-identity file the user prepared::
+A minimal command line, with a PROM image ``ip32prom.bin``::
 
     qemu-system-mips64 -nographic -m 1G \
       -M o2,rom-image=ip32prom.bin,rom-size=524288,rom-offset=0,\
     rom-pad-byte=255,rom-at29c040a-protection=disabled,\
     rom-at29c040a-lower-lock=unlocked,rom-at29c040a-upper-lock=unlocked,\
-    identity-test-serial=SERIAL,identity-eprom-file=identity.bin,\
-    identity-status=STATUS,password-clear-input=0 \
+    emu-id=42,password-clear-input=0 \
       -drive if=none,id=d0,file=disk.img,format=raw \
       -device scsi-hd,bus=aic0.0,scsi-id=1,drive=d0
 
-``SERIAL`` is 12 hexadecimal digits, ``identity.bin`` holds 128 bytes and
-``STATUS`` is 14 hexadecimal digits, the forms the qtests use. The
-machine names any input that is missing or malformed.
+``emu-id=42`` gives the station address ``08:00:69:e1:02:a0`` and the host
+id ``69e102a0``. The machine names any input that is missing or malformed.
 
 Migration is refused for the product: the eight-bank memory model has no
 saved state, so the machine registers a migration blocker and an
@@ -418,9 +420,13 @@ System serial number
 
 An IRIX guest builds its system id, and so ``sysinfo -s`` and the FLEXlm
 host id, from a number the hardware gives it. On the O2 that is the station
-address, not the real-time clock's serial. The model gives the clock a serial
-that marks the emulator and carries the machine's ``emu-id``
-(:ref:`sgi-identity`).
+address, which the PROM reads from the identity chip, not the real-time
+clock's serial. The machine takes the same identity inputs as the Octane
+(:ref:`sgi-identity`): ``emu-id``, ``serial``, ``hostid`` and ``mac``, and
+reports ``hostids``. They pick the station address by the shared rule. The O2
+needs the address to start ``08:00:69`` as the Octane does, but that is this
+project's policy, not the firmware's: a PROM and IRIX accepted
+``02:00:00:e1:02:a0`` in a model boot.
 
 - MACE lists a unique 56-bit silicon serial number embedded in the
   calendar clock module and describes it as the "system serial # and
@@ -429,18 +435,40 @@ that marks the emulator and carries the machine's ``emu-id``
   ``71h``, ``41h`` to ``46h`` a 48-bit serial and ``47h`` a CRC byte that
   validates them (:src:`maxim-ds1685-ds1687-rev-10-12 p. 19`),
   *established*.
-- An O2 guest printed a host id equal to its station address, ``69123456``
-  for ``08:00:69:12:34:56``, so the guest takes its system id from the
-  address and not from the clock (*software expectation*, measured on this
-  model). The
-  clock serial in that boot came from a different source and was not read, so
-  no run shows a guest reading the clock. The older statement that IRIX reads
-  the clock is withdrawn.
-- Whether the guest takes the address from the identity chip or from the
-  Ethernet device is *unknown*: both held the same value in the one boot. The
-  identity chip keeps the serial the user gave it (``identity-test-serial``).
-  The model derives neither the address nor the chip's contents from any
-  identity input.
+- IRIX 6.5.30 and the stock 6.5.30 PROM take the station address, the
+  ``eaddr`` environment variable, the interface's link address and the host id
+  from the identity chip's memory, bytes 0 to 5 in reverse order, so
+  ``08:00:69:e1:02:a0`` is ``a0 02 e1 69 00 08`` and the host id is
+  ``69e102a0`` (*software expectation*, measured in model boots). A different
+  address on the Ethernet adapter changed nothing the guest printed, and
+  removing the adapter's backend entirely changed nothing. The flash
+  environment, the clock's RAM and the disk kept no copy: a machine booted
+  with a different chip took the new address on its next boot. Only the PROM
+  performed one-wire transactions; none followed after power-on. That the
+  early transactions are the PROM's is *inferred* from boot order.
+  A boot with ``0x00`` filler in bytes 6 to 127 printed the same ``sysinfo``,
+  ``hinv -v`` and ``nvram`` output as one with ``0xff``.
+- The model builds the chip's memory from the station address: bytes 0 to 5
+  as above and every other byte ``0xff``, the DS2502's unprogrammed state
+  (:src:`maxim-ds2502-datasheet p. 5, 12`). That filler is an *approximation*:
+  the contents of a fitted O2 chip are *unknown*, and no guest output depended
+  on them.
+- The chip's ROM serial is the constant ``45 4d 55 01 00 00``, the marker, the
+  kind and two zero bytes, with family code ``09``, so Read ROM returns
+  ``09 45 4d 55 01 00 00 a5``. A die's serial belongs to the part and not to
+  the system, so it carries no machine id. It is synthetic. The seven status
+  bytes are ``0xff``, no page write-protected or redirected, and the eighth
+  is the responder's fixed ``0x00``; the status bytes are an *approximation*
+  like the filler, since a fitted chip's are *unknown*.
+- The adapter takes the same address as host-side labelling, and a different
+  ``-nic mac=`` is refused (:ref:`sgi-ip32-storage`).
+- The model never writes MACE's station-address register or the PROM's
+  ``eaddr``. The firmware reads the chip and programs both.
+- ``identity-eprom-file=FILE``, a debug input of exactly 128 bytes, replays a
+  captured chip. It wins over ``emu-id``, ``serial``, ``hostid`` and ``mac``.
+  ``hostids`` reads bytes 3, 2, 1 and 0 of the file and the adapter takes the
+  address its first six bytes spell, reversed, when that is a unicast
+  address. The file is read when the machine starts.
 - The clock's serial is ``45 4D 55`` (``EMU``), the machine's kind and the
   ``emu-id`` as two bytes, most significant first, so ``emu-id=42`` on a QEMU
   machine is ``45 4d 55 01 00 2a`` in registers ``41h`` to ``46h``. With no
@@ -449,15 +477,12 @@ that marks the emulator and carries the machine's ``emu-id``
   ``40h`` to ``46h``. The data sheet gives neither the byte order nor the
   algorithm, so both are *inferred*, and the values are synthetic, not any
   machine's factory serial. The model returned zero in all seven bytes before
-  the serial existed, an *approximation*.
-- ``emu-id=N`` (0 to 4095, not changeable once the machine is built) is the
-  only identity input the machine takes. It has no ``serial``, ``hostid``,
-  ``hostids`` or ``mac`` property: the address the guest reads comes from
-  ``-nic`` and the identity chip's debug inputs, so the machine cannot say what
-  the guest prints, and a launcher builds the chip image and adapter address.
-- The serial bytes of a real O2's clock, and whether the same number appears
-  in the identity chip, are *unknown*. A published record of a real O2's
-  clock registers would settle them.
+  the serial existed, an *approximation*. No run shows a guest reading the
+  clock's serial.
+- Whether a fitted O2 carries the chip on this line on every assembly, or the
+  clock module's serial holds the address on some, is *unknown*; NetBSD's
+  ``if_mec.c`` notes a DS2502 on the PCI riser of some machines. A published
+  dump of a real O2's identity chip would settle the chip's contents.
 
 .. _sgi-ip32-graphics:
 
@@ -542,6 +567,8 @@ Model limits
 - The product refuses migration; the register test profile does not.
 - The clock's silicon serial is synthetic, and its byte order and CRC
   algorithm are inferred (:ref:`sgi-ip32-system-serial`).
+- The identity chip's bytes 6 to 127 are ``0xff`` filler, an approximation:
+  a fitted chip's contents are unknown.
 - Each chip page lists its own limits and how an unexpected access shows
   up.
 
@@ -556,7 +583,10 @@ Tests
   private boot store, the interrupt chain, the flash aliases, and the SCSI
   paths, and the clock serial the identity key gives; with
   ``register-test-profile=on``, the diagnostic options.
-- ``tests/qtest/sgi-o2-id-test.c``: the MACE identity line.
+- ``tests/qtest/sgi-o2-id-test.c``: the MACE identity line, and the
+  product machine's chip: its Read ROM, Read Memory and Read Status answers
+  with checksums worked independently, ``hostids``, the refused inputs,
+  the adapter's address and refused ``-nic mac=``, and the replay file.
 - ``tests/qtest/sgi-o2-platform-inputs-test.c``: the password-clear input
   and the DS1685 backends and silicon serial.
 - ``tests/qtest/sgi-o2-rom-test.c``: the flash window and synthetic

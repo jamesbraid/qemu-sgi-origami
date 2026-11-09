@@ -284,15 +284,17 @@ static void test_machine_flash_gate_word_pio(void)
                                             "machine-gate-word.bin", &path);
     uint8_t eprom[128] = { 0 };
     g_autofree char *machine_extra = NULL;
+    g_autofree char *qemu_extra = NULL;
     QTestState *qts;
 
     g_assert_true(g_file_set_contents(eprom_path, (const char *)eprom,
                                       sizeof(eprom), NULL));
-    machine_extra = g_strdup_printf(
-        ",identity-diagnostic=on,identity-test-serial=1032547698ba,"
-        "identity-eprom-file=%s,identity-status=0123456789abcd,"
-        "mace-misc-word-pio=on", eprom_path);
-    qts = start_o2(path, machine_extra, "");
+    machine_extra = g_strdup(",identity-diagnostic=on,mace-misc-word-pio=on");
+    qemu_extra = g_strdup_printf(
+        "-global sgi-mace-id.test-serial=1032547698ba "
+        "-global sgi-mace-id.eprom-file=%s "
+        "-global sgi-mace-id.status=0123456789abcd", eprom_path);
+    qts = start_o2(path, machine_extra, qemu_extra);
     g_assert_cmphex(qtest_readl(qts, MACE_MISC + 4) & 1, ==, 0);
     qtest_writel(qts, MACE_MISC + 4, 1 | 8);
     g_assert_cmphex(qtest_readl(qts, MACE_MISC + 4) & 0xf, ==, 1);

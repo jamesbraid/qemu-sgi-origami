@@ -32,13 +32,17 @@ it, through a fixed map for each family:
 - On the Octane, Octane2, Origin 200 and Fuel it takes the last four bytes of
   the station address (*software expectation*). Guests on the model printed,
   for example, ``69e5514e`` for ``08:00:69:e5:51:4e``.
-- The O2 reads a station address, from its identity chip or its network
-  adapter; which is *unknown* (:ref:`sgi-ip32-system-serial`).
+- On the O2 it takes the station address the :term:`PROM` reads from the identity
+  chip's memory, bytes 0 to 5 in reverse order, and the last four bytes of
+  that address are the id (*software expectation*, measured in model boots).
+  The network adapter's own address plays no part
+  (:ref:`sgi-ip32-system-serial`). A guest on the model printed ``69e102a0``
+  for ``08:00:69:e1:02:a0``.
 
 The interface
 =============
 
-The same properties exist on every SGI machine, with the one exception below.
+The same properties exist on every SGI machine.
 Which emulator built the machine, ``1`` for QEMU and ``2`` for Iris, is a
 constant of the emulator (``SGI_BOARD_KIND`` in
 ``include/hw/mips/sgi/sgi-board-identity.h``), not a property.
@@ -117,10 +121,11 @@ What each family accepts
      - 8 digits starting ``69``, or 6 digits; else refused
      - sets the id; node or port ``n`` adds ``n`` to the address
    * - O2
-     - not derived: see below
-     - not accepted
-     - not accepted
-     - not accepted
+     - the station address, held in the identity chip
+     - refused unless the text folds to an id starting ``69``
+     - 8 digits starting ``69``, or 6 digits; else refused
+     - sets the id and the adapter's address; the ``08:00:69`` prefix is
+       this project's policy, not the firmware's
 
 On the text families ``serial`` and ``hostid`` are two spellings of one id and
 must agree. On the address families ``serial``, ``hostid`` and ``mac`` are
@@ -146,11 +151,12 @@ suggestion is accepted:
 - A ``mac`` and ``hostid`` that disagree: the message names both, and says the
   machine would take the id from ``mac``.
 
-The O2 accepts only ``emu-id``, which sets its real-time clock serial, and has
-no ``serial``, ``hostid``, ``hostids`` or ``mac`` property. Its address comes
-from ``-nic`` and from its identity chip's debug inputs, the model derives
-neither, and so the machine cannot say what the guest prints. A launcher builds
-the chip image and adapter address and checks the guest itself.
+The O2 takes all four like the Octane. It builds its identity chip from them
+(:ref:`sgi-ip32-system-serial`): the address reversed in the chip's first six
+bytes, the rest ``0xff``, and its seven status bytes ``0xff``, both an
+*approximation* because a fitted chip's contents are unknown. ``emu-id`` also sets its real-time clock serial. ``hostids``
+reads the chip image the machine built or was given. The adapter takes the
+same address and a different ``-nic mac=`` is refused.
 
 Spelling an id as a serial
 --------------------------
@@ -236,8 +242,9 @@ second emulator can port both.
      - ``08:00:69:E``\ *kind*\ ``:``\ *emu-id >> 4*\ ``:``\ *(emu-id & 15) << 4 | sub-index*
      - ``69E``, kind, ``emu-id``, sub-index
    * - O2
-     - clock serial ``45 4D 55``, the kind, the ``emu-id`` as two bytes
-     - none
+     - the Octane's address, held in the identity chip; the clock serial is
+       ``45 4D 55``, the kind, the ``emu-id`` as two bytes
+     - ``69E``, kind, ``emu-id``, 0
 
 For kind 1: ``emu-id`` 42 on an Origin 300 reads ``LEMU100420`` with host id
 ``d5100420``, module 1 of an Origin 2000 reads ``KEMU100421``, and an Octane's
@@ -300,8 +307,9 @@ nobody needs one to choose an identity.
   so the host id of the Origin 300 family.
 - ``fuel-mac-eeprom=`` replaces the Fuel's address with a 512-byte record image,
   and so its host id.
-- ``identity-test-serial`` on the O2 sets its identity chip; it never feeds an
-  id here.
+- ``identity-eprom-file=`` on the O2 replaces its identity chip's 128 bytes
+  with a captured part's. ``hostids`` then reads the file's bytes 3, 2, 1 and
+  0, and the file wins over every identity input.
 
 ``hostids`` is computed from the values the machine holds once it is built, so
 a debug input changes it and a check against the guest still agrees.
@@ -309,11 +317,13 @@ a debug input changes it and a check against the guest still agrees.
 Compatibility
 =============
 
-Every host id changes once, when the interface lands. A guest whose NVRAM
-already holds a station address may keep printing that address after the
-machine's inputs change, so its ``lmhostid`` can differ from ``hostids``; the
-model does not rewrite the stored address, and this was not tested in a guest
-(*unknown*). A saved machine state from an earlier build does not load into this
+Every host id changes once, when the interface lands. On the O2 nothing stores
+the address, so a machine started on an existing disk and flash takes the new
+one on its next boot (*software expectation*, measured). On the other machines
+a guest whose NVRAM already holds a station address may keep printing that
+address after the machine's inputs change, so its ``lmhostid`` can differ from
+``hostids``; the model does not rewrite the stored address, and this was not
+tested in a guest (*unknown*). A saved machine state from an earlier build does not load into this
 one, because the machine's properties changed; the project does not migrate
 saved states across builds. The identity inputs are machine configuration like
 ``mac``: they are not part of the saved state, and a migration destination must
@@ -340,12 +350,12 @@ expectation*.
 - The Origin 2000 and Onyx2 guests printed an id from the module serial
   (*software expectation*). Which of several module records the kernel reads
   for ``sysinfo -s`` is *unknown*.
-- The O2 guest printed an id equal to its station address, ``69123456`` for
-  ``08:00:69:12:34:56``, and not the clock's serial, so IRIX takes the O2's id
-  from the address (*software expectation*). The clock
-  serial in that boot was not read, and whether the guest takes the address from
-  the identity chip or from the Ethernet device is *unknown*, because both held
-  the same value.
+- O2 guests printed an id equal to the last four bytes of the identity chip's
+  address, ``69e102a0`` for ``08:00:69:e1:02:a0``, and never the clock's
+  serial or the Ethernet adapter's address, which differed from the chip's in
+  six of nine boots. So IRIX takes the O2's id from the chip, reversed from
+  bytes 0 to 5 (*software expectation*). A chip address of ``02:00:00:e1:02:a0``
+  gave ``00e102a0``, so the ``08:00:69`` prefix is this project's choice.
 - The letter spelling of an id is not measured: that a guest folds ``J`` to
   ``O`` and ``P`` to the nibbles ``a`` to ``f`` and 0 is *inferred* from the
   fold rule, as is the left padding of a module serial.

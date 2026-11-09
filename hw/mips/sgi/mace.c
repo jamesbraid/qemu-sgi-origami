@@ -12,6 +12,7 @@
 #include "hw/mips/sgi/mace-id.h"
 #include "hw/mips/sgi/mace-ps2.h"
 #include "hw/net/sgi-mace-eth.h"
+#include "net/util.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
 #include "hw/pci/pci_host.h"
@@ -142,6 +143,7 @@ struct SGIMACEState {
     char *identity_eprom_file;
     char *identity_eprom_hex;
     char *identity_status;
+    char *board_mac;
     bool storage_diagnostic_authorized;
     bool storage_diagnostic_realized;
 };
@@ -1252,6 +1254,7 @@ static void mace_realize(DeviceState *dev, Error **errp)
 {
     SGIMACEState *s = SGI_MACE(dev);
     DeviceState *identity;
+    bool configured;
     unsigned i;
 
     if (s->i2c_untimed_test_profile && !qtest_enabled()) {
@@ -1343,7 +1346,37 @@ static void mace_realize(DeviceState *dev, Error **errp)
     }
     object_property_set_link(OBJECT(&s->eth), "dma-memory",
                              OBJECT(&s->eth_dma), &error_abort);
-    qemu_configure_nic_device(DEVICE(&s->eth), true, NULL);
+    configured = qemu_configure_nic_device(DEVICE(&s->eth), true, NULL);
+    if (s->board_mac) {
+        MACAddr address;
+
+        /*
+         * The guest never sees the adapter's address: the firmware takes
+         * the station address from the identity chip. The adapter carries
+         * the board's address so that info network and packet captures
+         * name the machine the guest believes it is, and a -nic mac= that
+         * says otherwise is refused instead of being believed.
+         */
+        if (net_parse_macaddr(address.a, s->board_mac) < 0) {
+            error_setg(errp, "sgi-mace board-mac '%s' is not a MAC address",
+                       s->board_mac);
+            return;
+        }
+        if (configured && !s->eth.mac_generated &&
+            memcmp(address.a, s->eth.conf.macaddr.a, sizeof(address.a))) {
+            error_setg(errp, "-nic mac=%02x:%02x:%02x:%02x:%02x:%02x is not "
+                       "the machine's station address %s; the guest takes "
+                       "its address from the identity chip, so set the "
+                       "machine's mac=, hostid=, serial= or emu-id= "
+                       "instead", s->eth.conf.macaddr.a[0],
+                       s->eth.conf.macaddr.a[1], s->eth.conf.macaddr.a[2],
+                       s->eth.conf.macaddr.a[3], s->eth.conf.macaddr.a[4],
+                       s->eth.conf.macaddr.a[5], s->board_mac);
+            return;
+        }
+        s->eth.conf.macaddr = address;
+        s->eth.mac_generated = false;
+    }
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->eth), errp)) {
         return;
     }
@@ -1622,6 +1655,7 @@ static const Property mace_properties[] = {
     DEFINE_PROP_STRING("identity-eprom-hex", SGIMACEState,
                        identity_eprom_hex),
     DEFINE_PROP_STRING("identity-status", SGIMACEState, identity_status),
+    DEFINE_PROP_STRING("board-mac", SGIMACEState, board_mac),
 };
 
 static void mace_class_init(ObjectClass *oc, const void *data)
