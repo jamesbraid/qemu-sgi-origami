@@ -1043,6 +1043,21 @@
           "cache_mib": 8,
           "clock_mhz": 400,
           "part": "r12000"
+        },
+        {
+          "cache_mib": 8,
+          "clock_mhz": 500,
+          "part": "r14000"
+        },
+        {
+          "cache_mib": 8,
+          "clock_mhz": 600,
+          "part": "r14000"
+        },
+        {
+          "cache_mib": 8,
+          "clock_mhz": 800,
+          "part": "r16000"
         }
       ]
     }
@@ -1539,7 +1554,47 @@
     "kernel_ip": "IP27",
     "model_role": "emulation-target",
     "name": "Origin 3200",
-    "notes": "Two C-bricks and one I-brick in a short rack, each C-brick fitted as a posted Origin 3200 inventory reports: four 400 MHz R12000s with 8 MB secondary caches on two PIMMs and 4096 MB in eight 512 MB banks. The C-bricks join LINK (NI) to LINK (NI), with no R-brick, which the Origin 3200 does not support, and the I-brick hangs off the first C-brick's XIO (II) connector at its XBridge port A. Port A is the documented compute-node port; which port a boot I-brick uses is unknown. A second I/O brick is a documented expansion this composition does not show. The I-brick's XBridge head and PCI device numbers are the provisional placements the module layers already carry. The C-brick's board-identification word, FPU identification and reset mode are model choices recorded with their values. The Fibre Channel card is fitted at head F device 1; no internal disk is, so disks join its loop only as a launcher attaches them."
+    "notes": "Two C-bricks and one I-brick in a short rack, each C-brick fitted as a posted Origin 3200 inventory reports: four 400 MHz R12000s with 8 MB secondary caches on two PIMMs and 4096 MB in eight 512 MB banks. The C-bricks join LINK (NI) to LINK (NI), with no R-brick, which the Origin 3200 does not support, and the I-brick hangs off the first C-brick's XIO (II) connector at its XBridge port A. Port A is the documented compute-node port; which port a boot I-brick uses is unknown. A second I/O brick is a documented expansion this composition does not show. The I-brick's XBridge head and PCI device numbers are the provisional placements the module layers already carry. The C-brick's board-identification word, FPU identification and reset mode are model choices recorded with their values. The Fibre Channel card is fitted at head F device 1; no internal disk is, so disks join its loop only as a launcher attaches them.",
+    "processor_options": [
+      {
+        "cache_mib": 8,
+        "clock_mhz": 400,
+        "part": "r12000",
+        "processors_per_node": [
+          4
+        ]
+      },
+      {
+        "board_id_word": 1,
+        "cache_mib": 8,
+        "clock_mhz": 500,
+        "cpu_mode_word": "0x549ca985",
+        "part": "r14000",
+        "processors_per_node": [
+          4
+        ]
+      },
+      {
+        "board_id_word": 3,
+        "cache_mib": 8,
+        "clock_mhz": 600,
+        "cpu_mode_word": "0x549cab85",
+        "part": "r14000",
+        "processors_per_node": [
+          4
+        ]
+      },
+      {
+        "board_id_word": 5,
+        "cache_mib": 8,
+        "clock_mhz": 800,
+        "cpu_mode_word": "0x569caf85",
+        "part": "r16000",
+        "processors_per_node": [
+          4
+        ]
+      }
+    ]
   },
   "model_version": 1,
   "open_questions": [],

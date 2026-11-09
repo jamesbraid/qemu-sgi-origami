@@ -1269,6 +1269,74 @@ def _processor_options(model: dict, hub: dict, default: dict) -> list[dict]:
 _SECONDARY_CACHE_CLOCK_DIVISORS = {1: 1, 2: 1.5, 3: 2, 4: 2.5, 5: 3}
 
 
+def _ip35_processor_options(model: dict, default: dict,
+                            ip35_firmware: dict) -> list[dict]:
+    """Every processor a C-brick may be offered with, the default first.
+
+    A C-brick's PIMM brings the reset word, cache clock and identity
+    registers of its clock and cache from the processors catalogue, and
+    the Bedrock board identity and flash word the product authors for it.
+    The checks tie the flash word to the reset word and the reset word's
+    cache size to the part, as for the fitted default, so a mistyped word
+    is refused here, not found in a guest. The default is the processor
+    the topology's nodes already fit.
+    """
+    accepted = _accepted_memory_mib(model)
+    options = []
+    for index, option in enumerate(model["machine"]["processor_options"]):
+        label = (f"offered {option['part']} {option['clock_mhz']} MHz/"
+                 f"{option['cache_mib']} MiB")
+        variant = next(
+            (item for entry in model.get("processors", [])
+             if entry.get("part") == option["part"]
+             for item in entry.get("variants", [])
+             if item.get("clock_mhz") == option["clock_mhz"]
+             and item.get("cache_mib") == option["cache_mib"]), None)
+        missing = [name for name in ("cache_clock_mhz", "reset_mode_bits")
+                   if variant is None or name not in variant]
+        if missing:
+            raise CompileError(f"{label} has no catalogued {missing[0]}")
+        reset_mode = num(variant["reset_mode_bits"])
+        if (512 << ((reset_mode >> 16) & 7)) != option["cache_mib"] * 1024:
+            raise CompileError(
+                f"{label} reset mode {reset_mode:#010x} selects a "
+                f"{(512 << ((reset_mode >> 16) & 7)) // 1024} MiB secondary "
+                "cache")
+        assembly = {
+            "id": f"{option['part']}-{option['clock_mhz']}mhz-"
+                  f"{option['cache_mib']}mb",
+            "kind": option["part"].upper(),
+            "clock_hz": option["clock_mhz"] * 1_000_000,
+            "cache_clock_hz": variant["cache_clock_mhz"] * 1_000_000,
+            "cache_mib": option["cache_mib"],
+            "mode_bits": reset_mode,
+        }
+        if "processor_identification" in variant:
+            assembly["prid"] = num(variant["processor_identification"])
+            assembly["fpu_prid"] = num(variant.get("fpu_identification", 0))
+        record = {
+            "assembly": assembly,
+            "accepted_memory_mib": accepted,
+            "cpus_per_node": list(option["processors_per_node"]),
+        }
+        if index == 0:
+            if assembly != default:
+                raise CompileError(
+                    "the first offered processor is not the node's default "
+                    "assembly")
+            record["assembly"] = default
+        else:
+            word = num(option["cpu_mode_word"])
+            if (word ^ reset_mode) & 0x01ffffff:
+                raise CompileError(
+                    f"{label} flash word {word:#010x} low 25 bits disagree "
+                    f"with reset mode {reset_mode:#010x}")
+            record["firmware_word"] = word
+            record["board_id_word"] = num(option["board_id_word"])
+        options.append(record)
+    return options
+
+
 def _r16000_processor_options(model: dict, hub: dict, default: dict,
                               ip35_firmware: dict) -> list[dict]:
     """Every R16000 module an IP53 board may be offered with, the default
@@ -3902,10 +3970,15 @@ def compile_model(model: dict) -> dict:
     if generation == "SN1":
         topology["ip35_firmware"] = _compile_ip35_firmware(model)
         if machine.get("processor_options"):
-            topology["processor_options"] = _r16000_processor_options(
-                model, graph["nodes"][0]["component"],
-                nodes[0]["cpu_slots"][0]["assembly"],
-                topology["ip35_firmware"])
+            topology["processor_options"] = (
+                _ip35_processor_options(
+                    model, nodes[0]["cpu_slots"][0]["assembly"],
+                    topology["ip35_firmware"])
+                if machine.get("board_ip") == "IP35" else
+                _r16000_processor_options(
+                    model, graph["nodes"][0]["component"],
+                    nodes[0]["cpu_slots"][0]["assembly"],
+                    topology["ip35_firmware"]))
     if machine.get("graphics"):
         topology["graphics"] = copy.deepcopy(machine["graphics"])
         model_graphics.attach_slot_requirements(topology)

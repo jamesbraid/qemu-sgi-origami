@@ -2987,6 +2987,8 @@ class Origin3000BrickTests(unittest.TestCase):
             def change(document):
                 document["layer"]["cpu_selection"]["default"] = {
                     "clock_mhz": clock_mhz, "cache_mib": cache_mib}
+                # The clock options all list the fitted default first.
+                document["layer"]["cpu_selection"].pop("offered", None)
             return change
 
         def catalogue(part, clock_mhz, cache_mib):
@@ -3026,11 +3028,11 @@ class Origin3000BrickTests(unittest.TestCase):
                   (product, default(360, 4))],
                  "does not support CPU 'c0-cpu0', r12000 at 360 MHz with "
                  "4 MiB of cache"),
-                ("the 500 MHz R14000 PIMM option",
-                 [(sn1, catalogue("r14000", 500, 8)),
+                ("a 700 MHz, 8 MiB R14000",
+                 [(sn1, catalogue("r14000", 700, 8)),
                   (cbrick, cbrick_part("r14000")),
-                  (product, default(500, 8))],
-                 "does not support CPU 'c0-cpu0', r14000 at 500 MHz with "
+                  (product, default(700, 8))],
+                 "does not support CPU 'c0-cpu0', r14000 at 700 MHz with "
                  "8 MiB of cache"),
                 ("two processors per C-brick", [(product, two_processors)],
                  r"selected CPU population \[2, 2\] is not supported"),

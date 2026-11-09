@@ -96,14 +96,8 @@ static const TopologyExtra topology_extras[] = {
      * profiles synthesize their records, so nothing here is marked.
      */
     { "origin3200", "", .unmarked = true },
-    { "origin3200-r16000", "", .unmarked = true },
-    { "origin3200-r14000-500mhz", "", .unmarked = true },
-    { "origin3200-r14000-600mhz", "", .unmarked = true },
     { "origin3200-two-ibricks", "", .unmarked = true },
     { "origin3400", "", .unmarked = true },
-    { "origin3400-r16000", "", .unmarked = true },
-    { "origin3400-r14000-500mhz", "", .unmarked = true },
-    { "origin3400-r14000-600mhz", "", .unmarked = true },
     { "origin3400-two-routers", "", .unmarked = true },
     { "origin3800", "", .unmarked = true },
     { "origin3800-high-bandwidth", "", .unmarked = true },
@@ -113,9 +107,6 @@ static const TopologyExtra topology_extras[] = {
     { "origin3900-memory-node", "", .unmarked = true },
     /* The Origin 3200's bricks again, with a V12 beside them. */
     { "onyx3000", "", .unmarked = true },
-    { "onyx3000-r16000", "", .unmarked = true },
-    { "onyx3000-r14000-500mhz", "", .unmarked = true },
-    { "onyx3000-r14000-600mhz", "", .unmarked = true },
 };
 
 typedef struct MachineCase {

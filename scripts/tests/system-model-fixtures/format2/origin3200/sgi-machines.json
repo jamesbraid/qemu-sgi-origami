@@ -29,7 +29,7 @@
       "disk-bus": "scsi.0",
       "display-name": "Origin 3200",
       "hardware-inputs": [],
-      "id": "origin3200.4-4",
+      "id": "origin3200.4-4.r12000-400mhz-8mb",
       "identity-inputs": [],
       "init-inputs": [
         {
@@ -113,6 +113,846 @@
         "clock-hz": 400000000,
         "id": "r12000-400mhz-8mb",
         "part": "R12000"
+      },
+      "product": "origin3000",
+      "prom-dialogue": "ip35-l1-prompt",
+      "resources": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            77,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+            92,
+            93,
+            94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120,
+            121,
+            122,
+            123,
+            124,
+            125
+          ],
+          "type": "fc-loop"
+        }
+      ],
+      "smp": 8,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin3200"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "line": 0,
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:l1_node1",
+          "kind": "system-controller",
+          "line": 5,
+          "node": 1
+        }
+      ],
+      "cpus-per-node": [
+        4,
+        4
+      ],
+      "default-cpu-model": "R14000",
+      "default-topology": "origin3200",
+      "dimms-per-node": [
+        8,
+        8
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Origin 3200",
+      "hardware-inputs": [],
+      "id": "origin3200.4-4.r14000-500mhz-8mb",
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "machine-options": "origin3000,topology=origin3200,nodes=2,processor=r14000-500mhz-8mb",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "derived": false
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
+        }
+      ],
+      "nodes": 2,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
+          "target": "machine"
+        },
+        {
+          "property": "r14000-prid",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 8,
+        "clock-hz": 500000000,
+        "id": "r14000-500mhz-8mb",
+        "part": "R14000"
+      },
+      "product": "origin3000",
+      "prom-dialogue": "ip35-l1-prompt",
+      "resources": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            77,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+            92,
+            93,
+            94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120,
+            121,
+            122,
+            123,
+            124,
+            125
+          ],
+          "type": "fc-loop"
+        }
+      ],
+      "smp": 8,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin3200"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "line": 0,
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:l1_node1",
+          "kind": "system-controller",
+          "line": 5,
+          "node": 1
+        }
+      ],
+      "cpus-per-node": [
+        4,
+        4
+      ],
+      "default-cpu-model": "R14000",
+      "default-topology": "origin3200",
+      "dimms-per-node": [
+        8,
+        8
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Origin 3200",
+      "hardware-inputs": [],
+      "id": "origin3200.4-4.r14000-600mhz-8mb",
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "machine-options": "origin3000,topology=origin3200,nodes=2,processor=r14000-600mhz-8mb",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "derived": false
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
+        }
+      ],
+      "nodes": 2,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
+          "target": "machine"
+        },
+        {
+          "property": "r14000-prid",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 8,
+        "clock-hz": 600000000,
+        "id": "r14000-600mhz-8mb",
+        "part": "R14000"
+      },
+      "product": "origin3000",
+      "prom-dialogue": "ip35-l1-prompt",
+      "resources": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            70,
+            71,
+            72,
+            73,
+            74,
+            75,
+            76,
+            77,
+            78,
+            79,
+            80,
+            81,
+            82,
+            83,
+            84,
+            85,
+            86,
+            87,
+            88,
+            89,
+            90,
+            91,
+            92,
+            93,
+            94,
+            95,
+            96,
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+            119,
+            120,
+            121,
+            122,
+            123,
+            124,
+            125
+          ],
+          "type": "fc-loop"
+        }
+      ],
+      "smp": 8,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin3200"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "line": 0,
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:l1_node1",
+          "kind": "system-controller",
+          "line": 5,
+          "node": 1
+        }
+      ],
+      "cpus-per-node": [
+        4,
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "default-topology": "origin3200",
+      "dimms-per-node": [
+        8,
+        8
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Origin 3200",
+      "hardware-inputs": [],
+      "id": "origin3200.4-4.r16000-800mhz-8mb",
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "machine-options": "origin3000,topology=origin3200,nodes=2,processor=r16000-800mhz-8mb",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "derived": false
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
+        }
+      ],
+      "nodes": 2,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "emu-id",
+          "target": "machine"
+        },
+        {
+          "property": "hostid",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "serial",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-prid",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 8,
+        "clock-hz": 800000000,
+        "id": "r16000-800mhz-8mb",
+        "part": "R16000"
       },
       "product": "origin3000",
       "prom-dialogue": "ip35-l1-prompt",
@@ -639,6 +1479,84 @@
           "module-index": 1,
           "slave-role": true,
           "slot": 0
+        }
+      ],
+      "processor-options": [
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "assembly": {
+            "cache-clock-hz": 266000000,
+            "cache-mib": 8,
+            "clock-hz": 400000000,
+            "fpu-prid": 2357,
+            "id": "r12000-400mhz-8mb",
+            "kind": "R12000",
+            "mode-bits": 1353605,
+            "prid": 3637
+          },
+          "cpus-per-node": [
+            4
+          ]
+        },
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "assembly": {
+            "cache-clock-hz": 250000000,
+            "cache-mib": 8,
+            "clock-hz": 500000000,
+            "fpu-prid": 0,
+            "id": "r14000-500mhz-8mb",
+            "kind": "R14000",
+            "mode-bits": 10267013,
+            "prid": 3860
+          },
+          "board-id-word": 1,
+          "cpus-per-node": [
+            4
+          ],
+          "firmware-word": 1419553157
+        },
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "assembly": {
+            "cache-clock-hz": 300000000,
+            "cache-mib": 8,
+            "clock-hz": 600000000,
+            "fpu-prid": 0,
+            "id": "r14000-600mhz-8mb",
+            "kind": "R14000",
+            "mode-bits": 10267525,
+            "prid": 3876
+          },
+          "board-id-word": 3,
+          "cpus-per-node": [
+            4
+          ],
+          "firmware-word": 1419553669
+        },
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "assembly": {
+            "cache-clock-hz": 400000000,
+            "cache-mib": 8,
+            "clock-hz": 800000000,
+            "id": "r16000-800mhz-8mb",
+            "kind": "R16000",
+            "mode-bits": 10268549
+          },
+          "board-id-word": 5,
+          "cpus-per-node": [
+            4
+          ],
+          "firmware-word": 1453109125
         }
       ],
       "product": "origin3000",

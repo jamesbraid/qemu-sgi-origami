@@ -11788,9 +11788,9 @@ static void test_cbrick_r16000_approximation(void)
         const char *memory;
         unsigned int cpus;
     } cases[] = {
-        { "origin3200-r16000", "8", "8192", 8 },
-        { "origin3400-r16000", "16", "16384", 16 },
-        { "onyx3000-r16000", "8", "8192", 8 },
+        { "origin3200,processor=r16000-800mhz-8mb", "8", "8192", 8 },
+        { "origin3400,processor=r16000-800mhz-8mb", "16", "16384", 16 },
+        { "onyx3000,processor=r16000-800mhz-8mb", "8", "8192", 8 },
     };
     g_autofree char *prom = NULL;
     g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
@@ -11843,7 +11843,8 @@ static void test_cbrick_r16000_refuses_the_r12000(void)
     int fd = g_file_open_tmp("sn-builder-cbrick-r16000-refuse-XXXXXX", &prom,
                              &error);
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin3000,topology=origin3200-r16000",
+        qtest_qemu_binary(NULL), "-M",
+        "origin3000,topology=origin3200,processor=r16000-800mhz-8mb",
         "-cpu", "R12000", "-smp", "8", "-m", "8192", "-bios", NULL,
         "-nodefaults", "-display", "none", NULL
     };
@@ -11853,8 +11854,8 @@ static void test_cbrick_r16000_refuses_the_r12000(void)
                     ORIGIN3200_PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
     args[10] = prom;
-    assert_qemu_rejects(args, "R16000 node board requires R16000, "
-                        "requested R12000");
+    assert_qemu_rejects(args, "processor 'r16000-800mhz-8mb' is an R16000, "
+                        "but -cpu names R12000");
     g_unlink(prom);
 }
 
@@ -11877,9 +11878,9 @@ static void test_cbrick_r14000_600mhz(void)
         const char *memory;
         unsigned int cpus;
     } cases[] = {
-        { "origin3200-r14000-600mhz", "8", "8192", 8 },
-        { "origin3400-r14000-600mhz", "16", "16384", 16 },
-        { "onyx3000-r14000-600mhz", "8", "8192", 8 },
+        { "origin3200,processor=r14000-600mhz-8mb", "8", "8192", 8 },
+        { "origin3400,processor=r14000-600mhz-8mb", "16", "16384", 16 },
+        { "onyx3000,processor=r14000-600mhz-8mb", "8", "8192", 8 },
     };
     g_autofree char *prom = NULL;
     g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
@@ -11946,9 +11947,9 @@ static void test_cbrick_r14000_500mhz(void)
         const char *memory;
         unsigned int cpus;
     } cases[] = {
-        { "origin3200-r14000-500mhz", "8", "8192", 8 },
-        { "origin3400-r14000-500mhz", "16", "16384", 16 },
-        { "onyx3000-r14000-500mhz", "8", "8192", 8 },
+        { "origin3200,processor=r14000-500mhz-8mb", "8", "8192", 8 },
+        { "origin3400,processor=r14000-500mhz-8mb", "16", "16384", 16 },
+        { "onyx3000,processor=r14000-500mhz-8mb", "8", "8192", 8 },
     };
     g_autofree char *prom = NULL;
     g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
@@ -12005,16 +12006,17 @@ static void test_cbrick_r14000_refuses_other_parts(void)
         const char *cpu;
         const char *error;
     } cases[] = {
-        { "origin3200-r14000-600mhz", "R12000",
-          "requires R14000, requested R12000" },
-        { "origin3200-r14000-600mhz", "R16000",
-          "requires R14000, requested R16000" },
-        { "origin3200-r14000-500mhz", "R12000",
-          "requires R14000, requested R12000" },
-        { "origin3200-r14000-500mhz", "R16000",
-          "requires R14000, requested R16000" },
+        { "origin3200,processor=r14000-600mhz-8mb", "R12000",
+          "processor 'r14000-600mhz-8mb' is an R14000, but -cpu names R12000" },
+        { "origin3200,processor=r14000-600mhz-8mb", "R16000",
+          "processor 'r14000-600mhz-8mb' is an R14000, but -cpu names R16000" },
+        { "origin3200,processor=r14000-500mhz-8mb", "R12000",
+          "processor 'r14000-500mhz-8mb' is an R14000, but -cpu names R12000" },
+        { "origin3200,processor=r14000-500mhz-8mb", "R16000",
+          "processor 'r14000-500mhz-8mb' is an R14000, but -cpu names R16000" },
         { "origin3200", "R14000",
-          "R12000 board requires R12000, requested R14000" },
+          "processor 'r12000-400mhz-8mb' is an R12000, but -cpu names "
+          "R14000" },
     };
 
     for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
