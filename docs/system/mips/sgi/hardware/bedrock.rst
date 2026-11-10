@@ -222,6 +222,11 @@ model's reset values below are each an *approximation* unless marked. Rows
 marked "kept" are never changed by any reset in the model, so they keep
 their value across a local reset and a machine reset alike.
 
+.. sgi-registers: base=0x10000000 access=64
+   skip=0x40:population,0x48:population,0x50:kept,0x58:kept,0x3f8:kept,0x400:kept,0x418:kept,0x420:kept,0x428:kept
+   qemu="-M none -cpu R10000 -m 256M -object memory-backend-ram,id=bedrock-dma,size=2M -device sgi-bedrock,id=bedrock,processor-count=4,dma-memory=/objects/bedrock-dma/bedrock-dma[0] -S"
+   map=/machine/peripheral/bedrock:0:0x10000000
+
 .. list-table::
    :header-rows: 1
 
@@ -659,6 +664,11 @@ and the IP35 Linux port take memory size from the configuration records
 the PROM leaves in memory. The unit's boot-path contract is therefore
 what the stock PROM programs, a *software expectation*.
 
+.. sgi-registers: base=0x10000000 access=64
+   skip=0x7c0018:read-to-clear,0x7e0018:read-to-clear
+   map=/machine/peripheral/bedrock:0:0x10000000
+   qemu="-M none -cpu R10000 -m 256M -object memory-backend-ram,id=bedrock-dma,size=2M -device sgi-bedrock,id=bedrock,processor-count=4,dma-memory=/objects/bedrock-dma/bedrock-dma[0] -S"
+
 .. list-table::
    :header-rows: 1
 
@@ -991,6 +1001,11 @@ port 0xa (:doc:`xbridge`), and the ``host-widget`` property sets the value
 the widget control register reads (below). Processor I/O-space accesses leave through
 it; the inbound side takes DMA and interrupt packets from the widgets.
 
+.. sgi-registers: base=0x10000000 access=64
+   skip=0x400000:identity,0x400020:host-widget
+   map=/machine/peripheral/bedrock:0:0x10000000
+   qemu="-M none -cpu R10000 -m 256M -object memory-backend-ram,id=bedrock-dma,size=2M -device sgi-bedrock,id=bedrock,processor-count=4,dma-memory=/objects/bedrock-dma/bedrock-dma[0] -S"
+
 .. list-table::
    :header-rows: 1
 
@@ -1294,6 +1309,11 @@ retry limit, and the model does not implement it. A machine joins two
 Bedrocks with a cable object; the port carries the local block's vector
 requests and port resets across it.
 
+.. sgi-registers: base=0x10000000 access=64
+   skip=0x680118:kept
+   map=/machine/peripheral/bedrock:0:0x10000000
+   qemu="-M none -cpu R10000 -m 256M -object memory-backend-ram,id=bedrock-dma,size=2M -device sgi-bedrock,id=bedrock,processor-count=4,dma-memory=/objects/bedrock-dma/bedrock-dma[0] -S"
+
 .. list-table::
    :header-rows: 1
 
@@ -1428,6 +1448,12 @@ invalidates (:src:`108-0240-002 p. 2-17`), *established*. The Origin
 0 and its write-if-zero twin reset to zero, scratch 1 and 2 are not
 reset, and the error bits survive reset. Every other reset value is
 *unknown*.
+
+.. sgi-registers: base=0x10000000 access=64
+   skip=0x600000:see-notes,0x604040:kept,0x60c038:read-to-clear
+   skiprow="scratch 0-4:see-notes"
+   map=/machine/peripheral/bedrock:0:0x10000000
+   qemu="-M none -cpu R10000 -m 256M -object memory-backend-ram,id=bedrock-dma,size=2M -device sgi-bedrock,id=bedrock,processor-count=4,dma-memory=/objects/bedrock-dma/bedrock-dma[0] -S"
 
 .. list-table::
    :header-rows: 1
@@ -1659,6 +1685,10 @@ units, with arbitration and some error handling
 (:src:`108-0240-002 p. 2-11`), *established*. This is the crossbar inside
 the Bedrock; the one at crosstalk widget 0 is the XBridge's
 (:doc:`xbridge`).
+
+.. sgi-registers: base=0x10000000 access=64
+   map=/machine/peripheral/bedrock:0:0x10000000
+   qemu="-M none -cpu R10000 -m 256M -object memory-backend-ram,id=bedrock-dma,size=2M -device sgi-bedrock,id=bedrock,processor-count=4,dma-memory=/objects/bedrock-dma/bedrock-dma[0] -S"
 
 .. list-table::
    :header-rows: 1
