@@ -308,7 +308,8 @@ boot is *unknown*.
 
 Model limits, each an *approximation*:
 
-- The Origin 200 node keeps Hub revision 3 and the IP29 board record
+- The Origin 200 node keeps Hub revision 3, except on
+  ``origin200-gigachannel`` where it reports 5, and the IP29 board record
   030-1244-001 revision H for every module. Real 225 and 270 MHz
   inventories show Hub revision 5 and board 030-1389-001 (*observed*,
   :src:`nekonomicon-16731033`, :src:`nekonomicon-16726704`).
@@ -435,9 +436,11 @@ Fitted revisions
 The revisions the module layers fit, each a model choice unless a
 capture is named:
 
-- Hub: revision code 3 on the Origin 200, the earliest IRIX 6.5.30
+- Hub: revision code 3 on the Origin 200 except the
+  ``origin200-gigachannel`` topology, the earliest IRIX 6.5.30
   accepts (*approximation*; *software expectation* for the minimum).
-  Code 5 on
+  Code 5 on ``origin200-gigachannel``, where a real GIGAchannel Origin 200
+  prints it (*observed*, :src:`usenet-1123184831`), and on
   every Origin 2000 and Onyx2 node, as a two-node Origin 2200 prints on
   both slots and no Origin 2000 capture contradicts (*observed*,
   :src:`nekonomicon-16729560`).
