@@ -218,6 +218,15 @@ class RegisterTablesTest(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertIn('0x38', [s['offset'] for s in cases[0]['skipped']])
 
+    def test_window_without_a_reset_is_one_skip(self):
+        text = PAGE.replace('``0x38``', '``0x100``-``0x7ff8``').replace(
+            'per machine', 'unsupported')
+        cases, _, _, errors = scan(text)
+        self.assertEqual(errors, [])
+        windows = [s for s in cases[0]['skipped'] if s['offset'] == '0x100']
+        self.assertEqual(len(windows), 1)
+        self.assertIn('slots', windows[0]['reason'])
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])
