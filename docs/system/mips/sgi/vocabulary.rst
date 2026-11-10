@@ -14,8 +14,8 @@ Product
 
 Topology
   One selectable wiring of a product, chosen with ``topology=``: its
-  chassis or bricks, node boards, cabling and I/O. ``tezro-rack`` is a
-  topology of the ``tezro`` product, and ``origin3900`` one of
+  chassis or bricks, node boards, cabling and I/O. ``tezro-rack-ip53`` is a
+  topology of the ``tezro`` product, and ``origin3900-ip53`` one of
   ``origin3000``.
 
 Record
