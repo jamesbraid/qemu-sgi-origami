@@ -3135,10 +3135,10 @@ static const uint16_t migrate_probe_pattern[] = {
 
 /*
  * Commands to an absent target that is still inside its selection timeout.
- * The wait is the adapter's default 250 ms unless a case programs another;
- * docs/datasheets/isp1040.md, "Set-selection-timeout (0x0031)", marks the
- * millisecond unit inferred and the power-on default unknown, so these
- * cases pin the model's choice of both, not a measured contract.
+ * The wait is the adapter's default 250 ms unless a case programs another.
+ * The set-selection-timeout command (0x0031) has its millisecond unit
+ * inferred and its power-on default unknown, so these cases pin the
+ * model's choice of both, not a measured contract.
  */
 #define WAIT_DEFAULT_NS     (250 * 1000 * 1000)
 
@@ -3339,8 +3339,8 @@ static void test_migration_carries_a_waiting_selection(const void *data)
 }
 
 /*
- * The bus-reset hold-off. docs/datasheets/isp1040.md, "Bus-reset hold-off
- * (0x0018)", marks the vendor's setting established and everything the model
+ * The bus-reset hold-off (bus-reset command 0x0018). The vendor's setting is
+ * established and everything the model
  * does with it inferred or unknown: that the mailbox delay starts the same
  * hold, that a command arriving meanwhile waits rather than being refused,
  * and that nothing is posted when the hold ends. These cases pin the model's

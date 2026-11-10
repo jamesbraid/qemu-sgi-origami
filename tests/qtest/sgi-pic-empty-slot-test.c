@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * PIC configuration cycles that no device claims, as the processor sees
- * them (docs/datasheets/pic.md, "Empty-slot configuration reads"). The rule
- * is inferred there from the PROM's probe and the public register header,
+ * them (see docs/system/mips/sgi/hardware/pic.rst). The rule
+ * is inferred from the PROM's probe and the public register header,
  * not established on silicon, so these cases pin the selected model and do
  * not claim the hardware does it.
  *

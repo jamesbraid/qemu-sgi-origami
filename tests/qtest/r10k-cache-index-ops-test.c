@@ -10,13 +10,12 @@
  * 0xee read memory. The host cannot count system-bus reads, so "no memory
  * read" below means the staged value came back instead of the memory bytes.
  *
- * Behaviour follows docs/datasheets/r10000-cache-index-ops.md in the Origami
- * repository. Cases that depend on an inferred choice or on a model choice
- * say so. The model choices are: the word order (TagLo is the word at the
- * lower address; the datasheet lists refill delivery order as not
- * established), a store making a staged line DirtyExclusive (inferred),
- * undefined cache field 10 doing nothing, and staged lines surviving
- * ordinary misses.
+ * Behaviour follows docs/system/mips/sgi/hardware/r10000.rst. Cases that
+ * depend on an inferred choice or on a model choice say so. The model
+ * choices are: the word order (TagLo is the word at the lower address;
+ * the refill delivery order is listed as not established), a store making
+ * a staged line DirtyExclusive (inferred), undefined cache field 10 doing
+ * nothing, and staged lines surviving ordinary misses.
  */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"

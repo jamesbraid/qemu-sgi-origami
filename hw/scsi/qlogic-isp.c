@@ -299,31 +299,32 @@ enum {
 
 /*
  * The unit of the set-selection-timeout value in mailbox 1, and what an
- * adapter waits before a guest programs one. Evidence status, from
- * docs/datasheets/isp1040.md in the origami repository, "Set-selection-
- * timeout (0x0031)": the operand layout is established; the millisecond
- * unit is inferred, from three drivers defaulting to 250 and from Sun's
- * isp(7D), not from a vendor document; the chip's own power-on default is
- * unknown, so 250 is an approximation that only affects a guest that never
- * programs a value; whether a non-zero retry count lengthens the wait is
- * unknown, and the wait is modelled as one attempt. The model also
- * completes exactly at the programmed value, whereas the chip is only
- * known to wait at least that long. This constant is the one place the
- * unit changes if the datasheet settles on another.
+ * adapter waits before a guest programs one. Evidence status for the
+ * set-selection-timeout command (0x0031): the operand layout is
+ * established; the millisecond unit is inferred, from three drivers
+ * defaulting to 250 and from Sun's isp(7D), not from a vendor document;
+ * the chip's own power-on default is unknown, so 250 is an approximation
+ * that only affects a guest that never programs a value; whether a
+ * non-zero retry count lengthens the wait is unknown, and the wait is
+ * modelled as one attempt. The model also completes exactly at the
+ * programmed value, whereas the chip is only known to wait at least that
+ * long. This constant is the one place the unit changes if a vendor
+ * document settles on another.
  */
 #define ISP_SELECTION_TIMEOUT_UNIT_NS   (1000 * 1000)
 #define ISP_SELECTION_TIMEOUT_DEFAULT   250
 
 /*
- * The hold-off after a bus reset: docs/datasheets/isp1040.md, "Bus-reset
- * hold-off (0x0018)". QLogic's installation guides define a setting, "SCSI
- * bus reset delay", 0 to 15 seconds, after which "the firmware does not
- * initiate any SCSI activity for the number of seconds specified"
- * (established, for that NVRAM setting). That mailbox 1 of the bus-reset
- * command starts the same hold-off is inferred, from the shared name and
- * the value the drivers pass. What a command does that arrives during the
- * hold, and whether anything is posted when it ends, are not documented;
- * the model's choices are noted where they are made. The unit is seconds.
+ * The hold-off after a bus reset (bus-reset command 0x0018, documented in
+ * docs/system/mips/sgi/hardware/qlogic-isp.rst). QLogic's installation
+ * guides define a setting, "SCSI bus reset delay", 0 to 15 seconds, after
+ * which "the firmware does not initiate any SCSI activity for the number
+ * of seconds specified" (established, for that NVRAM setting). That
+ * mailbox 1 of the bus-reset command starts the same hold-off is
+ * inferred, from the shared name and the value the drivers pass. What a
+ * command does that arrives during the hold, and whether anything is
+ * posted when it ends, are not documented; the model's choices are noted
+ * where they are made. The unit is seconds.
  */
 #define ISP_BUS_RESET_DELAY_UNIT_NS     (1000LL * 1000 * 1000)
 /* The longest hold a mailbox word can ask for, which a stream is held to. */
@@ -905,7 +906,7 @@ static unsigned qlogic_isp_retire(QLogicISPState *s, int channel, int target,
              * Nothing to cancel behind a command still waiting out its
              * selection timeout. Inferred, not established: the drivers
              * handle a reset completion for a command a bus reset destroyed
-             * (docs/datasheets/isp1040.md, "Set-selection-timeout"), but no
+             * (set-selection-timeout command 0x0031), but no
              * source says the firmware sends one for a command still in
              * selection. The model posts it now, in place of the timeout's
              * own. A command parked behind a hold-off gets the same, which is
@@ -2158,7 +2159,7 @@ static bool qlogic_isp_bus_quiet(const QLogicISPChannel *chan)
  * A command for a bus in its hold-off does not start. Model choice: it
  * waits, and starts when the hold ends, so the guest sees a slow bus. The
  * sources say only that the firmware "does not initiate any SCSI
- * activity" (docs/datasheets/isp1040.md, "Bus-reset hold-off (0x0018)");
+ * activity" (bus-reset command 0x0018);
  * refusing or failing the command is as well supported, and which the
  * firmware does is unknown. Only the bus in its hold waits: the request
  * ring is walked on, so a command for the other bus behind it is not
@@ -2452,7 +2453,7 @@ static void qlogic_isp_start_parked(QLogicISPState *s, uint32_t handle,
  * The hold-off is over: the bus's parked commands start, oldest first.
  * Nothing is posted for the end of the hold itself. Inferred: no driver
  * handles an asynchronous event for it, and none is documented
- * (docs/datasheets/isp1040.md, "Bus-reset hold-off (0x0018)").
+ * (bus-reset command 0x0018).
  */
 static void qlogic_isp_hold_expired(void *opaque)
 {
@@ -2489,13 +2490,13 @@ static void qlogic_isp_hold_expired(void *opaque)
  * at the oldest parked entry while the model walks on. Linux works out its
  * free ring space from this value.
  *
- * Approximation (docs/datasheets/isp1040.md, "Bus-reset hold-off (0x0018)",
- * model choices): this exists because the model reads the entry a second
- * time when the hold ends, and withholding the slot keeps it intact. A real
- * chip that has fetched an entry would plausibly advance request-out at
- * once, so a guest watching the position during a hold sees less ring
- * space than hardware would show, and a ring filled during a hold stalls
- * the guest sooner. No source says when the chip advances it.
+ * Approximation (bus-reset command 0x0018, model choices): this exists
+ * because the model reads the entry a second time when the hold ends, and
+ * withholding the slot keeps it intact. A real chip that has fetched an
+ * entry would plausibly advance request-out at once, so a guest watching
+ * the position during a hold sees less ring space than hardware would
+ * show, and a ring filled during a hold stalls the guest sooner. No
+ * source says when the chip advances it.
  */
 static uint16_t qlogic_isp_request_out(QLogicISPState *s)
 {

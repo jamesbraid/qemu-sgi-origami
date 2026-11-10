@@ -619,7 +619,7 @@ static bool sgi_ioc3_eth_tx_enabled(SGIIOC3EthState *s)
  * Runs from the main loop, never from the MMIO write that schedules it: a
  * synchronous qemu_flush_queued_packets() there would re-enter receive
  * delivery before the guest's store instruction that posted a buffer, or
- * flipped MAC_CONTROL, or left loopback, has even returned (issue #554).
+ * flipped MAC_CONTROL, or left loopback, has even returned.
  * Scheduled through record/replay, so a replay delivers what queued at the
  * same instruction its recording did.
  */

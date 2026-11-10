@@ -1018,8 +1018,8 @@ static void test_shadow_and_bounds(void)
  * it is empty revision 1 wraps to 0 and revision 2 saturates at 63. Writes
  * drain synchronously, so every read sees that empty value and each write
  * has already reached its CMAP entry. The IRIX 6.5.30 X server waits for at
- * least 48 free there and accepts zero only below revision 2 (Origami's O2
- * GBE datasheet).
+ * least 48 free there and accepts zero only below revision 2 (a
+ * software expectation; see docs/system/mips/sgi/hardware/gbe.rst).
  */
 static void test_cmfifo_revision(void)
 {

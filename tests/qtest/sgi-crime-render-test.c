@@ -9544,8 +9544,9 @@ static void ifb_varied_write(QTestState *s, unsigned n)
 }
 
 /*
- * Checks drawn from Origami's O2 graphics driver evidence datasheet, which
- * records what the IRIX 6.5.30 kernel, X server and OpenGL library write.
+ * Checks drawn from what the IRIX 6.5.30 kernel, X server and OpenGL
+ * library write (software expectations; see
+ * docs/system/mips/sgi/hardware/crime.rst).
  */
 #define LINEAR_A (RE + 0x1700)
 #define LINEAR_B (RE + 0x1780)

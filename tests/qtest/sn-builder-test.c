@@ -3451,7 +3451,7 @@ static void test_tezro_two_four_processor_board_builds_two_pic_hosts(void)
 
 /*
  * The second PIC of a two- or four-processor Tezro board on widget 0's
- * crossbar (docs/datasheets/pic.md, "Tezro crossbar discovery"). Link n's
+ * crossbar (docs/system/mips/sgi/hardware/pic.rst, "Widget 0"). Link n's
  * registers start at 0x100 + (n - 8) * 0x40 in widget 0, and the PROM
  * reads the low word of each doubleword, so a register's address here is
  * its word address.
@@ -5407,7 +5407,7 @@ static void test_ip53_widget_zero_pxbow_identity(void)
 /*
  * Widget zero reports revision 3 on every IP53-family composition, as real
  * machines print, while the Crossbow behaviour input keeps its revision 5
- * (docs/datasheets/pic.md, "Widget-zero identity revision").
+ * (docs/system/mips/sgi/hardware/pic.rst, "Widget 0").
  *
  * The word is checked with the 32-bit read the PROM issues. The model
  * refuses an aligned 64-bit read of widget zero's identity, which the
@@ -5496,8 +5496,8 @@ static void ip53_store_ok(QTestState *qts, uint64_t address, uint32_t value)
  * the access-error interrupt enabled a vector 0x10 write to the processor
  * interface's interrupt-modify register. It also locks the crossbar with
  * bit 1 of link 0xf's arbitration-upper register. A real deskside Tezro
- * passes it. It holds with either value of the revision input (docs/
- * datasheets/xbow.md, "IP53 integrated crossbar").
+ * passes it. It holds with either value of the revision input (see
+ * docs/system/mips/sgi/hardware/xbow.rst).
  */
 static void ip53_assert_crossbar_register_check(const char *extra)
 {
@@ -9927,9 +9927,7 @@ static void test_memory_node_serves_node0(void)
 /*
  * The master marks a node with no processor by setting bit 38 of its
  * scratch 1 (hub offset 0x608008) over the vector engine, and the node
- * answers with nothing executing on it. Datasheet: origin3000-topologies,
- * "Marking headless hubs" (established, PROM) and the headless-hub row of
- * "Discriminating tests".
+ * answers with nothing executing on it (established, PROM).
  */
 #define MEMORY_NODE_LB_SCRATCH1 UINT64_C(0x608008)
 #define MEMORY_NODE_HEADLESS_BIT (UINT64_C(1) << 38)
@@ -11467,9 +11465,7 @@ static void test_origin3900_cx_brick(void)
 /*
  * The Origin 3900 with a memory-only node board: board 3 has a Bedrock and
  * memory and no processor, the brick's L1 serves all four boards, and the
- * machine runs the 12 processors of boards 0 to 2. Datasheet:
- * origin3000-topologies, "Node boards with no processors"; Cx-brick
- * datasheet, "Memory-only nodes".
+ * machine runs the 12 processors of boards 0 to 2.
  */
 static QTestState *origin3900_memory_node_start(char **prom)
 {
@@ -11517,8 +11513,7 @@ static void test_origin3900_memory_node(void)
  * its link reads bit 13 clear (the uncabled value is inferred, not
  * measured); board 0, cabled to the I-brick, reads it set. Board 0 reads
  * its own register directly and board 3's with a vector read over the
- * router (port 5), since nothing runs on board 3. Datasheet: the Cx-brick
- * sheet.
+ * router (port 5), since nothing runs on board 3.
  */
 #define ORIGIN3900_MEMORY_NODE_ROUTE 0x5
 #define ORIGIN3900_II_LINK_STATUS_OFFSET UINT64_C(0x400128)
@@ -11560,7 +11555,7 @@ static void test_origin3900_memory_node_ii_link(void)
  * documented configuration). Each C-brick's L1 reaches its own I-brick, both
  * keep widgets 14 and 15, and the two I-bricks take distinct identity
  * indexes: with one shared base I/O identity the stock PROM merges the two
- * hubs into one. Datasheet: origin3000-topologies, "A second I-brick".
+ * hubs into one.
  */
 static void test_origin3200_two_ibricks(void)
 {

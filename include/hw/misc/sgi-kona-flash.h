@@ -2,11 +2,12 @@
 /*
  * The InfiniteReality pipe's flash EEPROM image, shared by the sgi-kona
  * device and the tool that creates a new machine's stores. The layout is
- * the Origami project's InfiniteReality command grammar datasheet's, in
- * its flash EEPROM section: 512 KiB, the boot image from offset 0, the
- * video combination at SGI_KONA_FLASH_COMBO behind its marker and word
- * count, and a twelve-word header at SGI_KONA_FLASH_HEADER whose word 7
- * is the state the PROM and kernel accept only as 2.
+ * described in "Flash EEPROM operation" of
+ * docs/system/mips/sgi/hardware/kona.rst: 512 KiB, the boot image from
+ * offset 0, the video combination at SGI_KONA_FLASH_COMBO behind its
+ * marker and word count, and a twelve-word header at
+ * SGI_KONA_FLASH_HEADER whose word 7 is the state the PROM and kernel
+ * accept only as 2.
  */
 
 #ifndef HW_MISC_SGI_KONA_FLASH_H

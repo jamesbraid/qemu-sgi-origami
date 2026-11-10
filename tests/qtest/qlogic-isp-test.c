@@ -1705,10 +1705,10 @@ static void test_state_flags_track_sense_phase(void *obj, void *data,
 }
 
 /*
- * The selection timeout cases pin the model's choices: docs/datasheets/
- * isp1040.md, "Set-selection-timeout (0x0031)", marks the millisecond unit
- * inferred, the chip's power-on default (250 here) unknown and the effect
- * of a retry count on the wait unknown.
+ * The selection timeout cases pin the model's choices for the
+ * set-selection-timeout command (0x0031): the millisecond unit is inferred,
+ * the chip's power-on default (250 here) unknown and the effect of a retry
+ * count on the wait unknown.
  */
 #define ISP_ABSENT_HANDLE   0x9
 #define ISP_NO_RESET        0xffff
@@ -1912,7 +1912,7 @@ static void test_soft_reset_cancels_selection_wait(void *obj, void *data,
  * (qla1280 CS_RESET, isp RQCS_RESET_OCCURRED, qlw STATUS_RESET) all handle a
  * reset completion for them; that much is established. That the firmware
  * sends one for a selection still waiting for an absent target is inferred
- * (docs/datasheets/isp1040.md, "Set-selection-timeout"), and the model
+ * (set-selection-timeout command 0x0031), and the model
  * does so: it ends with the reset completion at once, not with the
  * selection timeout later, and the command completes only once.
  */
@@ -1997,7 +1997,7 @@ static void test_request_queue_init_keeps_selection_wait(void *obj, void *data,
 /*
  * The ISP1040's one bus holds off after a bus reset the same way: an absent
  * target's command waits out the hold and then its selection timeout
- * (docs/datasheets/isp1040.md, "Bus-reset hold-off (0x0018)": both are model
+ * (bus-reset command 0x0018: both are model
  * choices on inferred ground). The ring-slot withholding is the 12160 test's
  * to pin; here the single-channel part must hold, release, and take a delay
  * of zero as no hold.
@@ -2391,7 +2391,7 @@ static void test_bus_reset_mailbox_resets_scsi_bus(void *obj, void *data,
 
     /*
      * The bus starts no SCSI activity for the delay the reset carried
-     * (docs/datasheets/isp1040.md, "Bus-reset hold-off (0x0018)").
+     * (bus-reset command 0x0018).
      */
     qtest_clock_step(qts, 1000 * ISP_MS_NS);
 

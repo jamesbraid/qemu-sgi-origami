@@ -12,7 +12,7 @@ duplicated the matrix's own smallest cell in all but their pass condition
 (test_prom_boot.py's firmware-boot progress-code check and
 test_prom_copy_speed.py's PROM-relocation copy-speed check).
 
-Every row now boots the real firmware (the synthesized-firmware axis PR #741
+Every row now boots the real firmware (the synthesized-firmware axis, now
 removed), so the fixed checks' own cell -- one CPU, one node, 64M, wallclock --
 is no longer a special case: it is the new prom_full_boot_1cpu row below,
 and the copy-speed check attaches to that row's own boot as an extra

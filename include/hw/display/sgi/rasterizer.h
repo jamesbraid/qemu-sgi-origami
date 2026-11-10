@@ -191,7 +191,7 @@ typedef struct SGIRasterRules {
     bool depth_float;
     /*
      * Stored depth is Odyssey's unsigned float, not a fraction of [0, 1]
-     * (docs/datasheets/odyssey.md, "Depth word"): the top six bits of the
+     * (the Odyssey depth word): the top six bits of the
      * word an exponent e and the rest, depth_bits - 6 of them, a mantissa
      * m with an implied leading one, so the word means
      * (1 + m / 2^mantissa_bits) * 2^(e - 31). A window depth z in [0, 1]
@@ -419,8 +419,7 @@ typedef struct SGIGLTexImage {
      * Select the mipmap level of a filled triangle's fragments once for
      * each aligned 2x2 pixel quad, from the quad's diagonal differences,
      * instead of from each pixel's own derivatives. Applies to 1D and 2D
-     * images only; a volume ignores it. The Odyssey board's rule
-     * (docs/datasheets/odyssey.md, "Mipmap level of detail").
+     * images only; a volume ignores it. The Odyssey board's rule.
      */
     bool quad_lod;
 } SGIGLTexImage;
