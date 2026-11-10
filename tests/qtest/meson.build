@@ -30,7 +30,9 @@ slow_qtests = {
   # sgi-graphics-pipes-test starts a fresh QEMU for nearly every case, as
   # sgi-heads-test before it did, whose 20 subtests took 65-70s at load
   # 100-150 on 32 threads, 2026-10-23, and overran the default.
-  'sgi-graphics-pipes-test': 300,
+  # 130.7 s in a four-process run of the queue's second qtest share, in the
+  # CI container, 2026-11-10; three times that, rounded up.
+  'sgi-graphics-pipes-test': 420,
   # sgi-catalogue-launch-test builds every catalogue offering by id, 127
   # machines, and each topology that takes a pipe once more with one. It ran
   # 196 cases in 300 s at a loaded host, 2026-11-08.
@@ -51,6 +53,20 @@ slow_qtests = {
   # SGI qtests so the budget does not move it to the slow suite and out of
   # the pull-request checks.
   'r5000-cpu-test': 180,
+  # 44.8 s in a four-process run of the queue's first qtest share, in the CI
+  # container, 2026-11-10, against the 60 s default; three times that,
+  # rounded up. Listed with the SGI qtests so the budget does not move it to
+  # the slow suite and out of the pull-request checks.
+  'sgi-mace-eth-test': 150,
+  # 43.1 s in the same first-share run, against the 60 s default.
+  'sgi-l1-pbay-test': 150,
+  # 27.3 s in a four-process run of the second share, against the 60 s
+  # default.
+  'sn0-r10k-test': 90,
+  # Group budgets: 28.8 s (renderer) and 72.8 s (indexed) in the first and
+  # second share runs of 2026-11-10, against 60 s and 180 s.
+  'sgi-crime-legacy-test-renderer': 90,
+  'sgi-crime-render-test-indexed': 240,
   # Alone it took 55.6 s at load average 118, 2026-10-24 (11 s on a quiet
   # host), and overran the default in full runs; three times the loaded
   # figure, rounded up.
@@ -87,7 +103,9 @@ slow_qtests = {
   # a quiet host; budget three times that, rounded up. The earlier figure
   # of 64.77s was before the serial cases.
   'sgi-identity-props-test': 300,
-  'sgi-synthetic-serial-test': 540,
+  # 256.6 s in a four-process run of the queue's third qtest share, in the
+  # CI container, 2026-11-10; three times that, rounded up.
+  'sgi-synthetic-serial-test': 780,
   # Routed cases expand the builder suite beyond its previous budget.
   'sn-builder-test': 1650,
   'sn0-address-map-test': 110,
@@ -609,6 +627,8 @@ sn0_machine_qtests = \
 
 sgi_qtests = \
   ['ds1742-test', 'r5000-cpu-test'] + \
+  (config_all_devices.has_key('CONFIG_SGI_MACE') ?
+    ['sgi-mace-eth-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_O2_ROM') ? ['sgi-o2-rom-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_O2_TEST') ?
     ['o2-r10k-scache-reset-test'] : []) + \
@@ -704,8 +724,6 @@ qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test',
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') and
    config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') ?
     ['sgi-mace-dma-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_SGI_MACE') ?
-    ['sgi-mace-eth-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_MACE') and
    config_all_devices.has_key('CONFIG_SGI_OCTANE') ?
     ['sgi-register-reset-test'] : [])
