@@ -908,8 +908,8 @@ Model limits
 Tests
 =====
 
-``tests/qtest/sgi-gbe-test.c`` has 52 cases, built when ``CONFIG_SGI_O2_GBE``
-is set. It uses synthetic fixtures, not captured data. The cases cover:
+``tests/qtest/sgi-gbe-test.c`` is built when ``CONFIG_SGI_O2_GBE``
+is set. It uses synthetic fixtures, not captured data. Its cases cover:
 
 - ``/sgi-gbe/coverage/*`` and ``/sgi-gbe/reset``: every indexed table
   at its first and last entry, the timing registers, the scalar resets,

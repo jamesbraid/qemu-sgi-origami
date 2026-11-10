@@ -195,7 +195,7 @@ Model limits
 Tests
 =====
 
-``tests/qtest/sgi-o2-rom-test.c`` has 30 cases. They cover the aliases and
+``tests/qtest/sgi-o2-rom-test.c`` covers the aliases and
 image placement, write protection and the MACE-driven write enable, sector
 programming and the busy state, the 150 µs load deadline, protection and the
 prefix, locked boot blocks, command address and data checks, partial loads,

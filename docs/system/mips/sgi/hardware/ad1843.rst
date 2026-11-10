@@ -298,7 +298,7 @@ Model limits
 Tests
 =====
 
-``tests/qtest/sgi-mace-audio-test.c`` has 33 cases on the MACE audio
+``tests/qtest/sgi-mace-audio-test.c`` has cases on the MACE audio
 interface and its codec. Those that pin the codec are ``codec-registers``
 (reset values, masks and reserved bits), ``power-timing`` (INIT, power-up
 and power-down), ``response-pipeline`` and ``serial-start-status`` (the
