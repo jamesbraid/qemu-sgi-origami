@@ -695,6 +695,38 @@ sgi_qtests = \
    config_all_devices.has_key('CONFIG_TEST_DEVICES') ?
     ['sgi-kona-read-defense-test'] : [])
 
+# One test reads the reset values of every marked register table of the SGI
+# manual pages, each from the device or machine its marker names, so it needs
+# all of them.
+sgi_register_reset_configs = [
+  'CONFIG_BCM570X', 'CONFIG_PCF8584', 'CONFIG_PSITECH_RAD1',
+  'CONFIG_PSITECH_RAD4', 'CONFIG_QLOGIC_ISP_SCSI_PCI', 'CONFIG_SGI_BEDROCK_NI',
+  'CONFIG_SGI_ELSC', 'CONFIG_SGI_HUB', 'CONFIG_SGI_IOC3', 'CONFIG_SGI_IOC4',
+  'CONFIG_SGI_KONA', 'CONFIG_SGI_L1', 'CONFIG_SGI_MACE', 'CONFIG_SGI_MGRAS',
+  'CONFIG_SGI_O2_GBE', 'CONFIG_SGI_OCTANE', 'CONFIG_SGI_ODYSSEY',
+  'CONFIG_SGI_PIC', 'CONFIG_SGI_SN0', 'CONFIG_SGI_SN1',
+  'CONFIG_SGI_TEST_FIXTURES', 'CONFIG_SGI_VICE', 'CONFIG_SGI_XBRIDGE',
+  'CONFIG_TIGON', 'CONFIG_TSB12LV22', 'CONFIG_USB_OHCI_PCI',
+  'CONFIG_XFRAME_PCI',
+]
+sgi_register_reset_qtests = ['sgi-register-reset-test']
+sgi_register_reset_missing = []
+foreach config : sgi_register_reset_configs
+  if not config_all_devices.has_key(config)
+    sgi_register_reset_qtests = []
+    sgi_register_reset_missing += config
+  endif
+endforeach
+# The board and the Octane were the whole condition once. A build that keeps
+# them but drops a device the pages are read from would otherwise lose the
+# test without a word.
+if sgi_register_reset_missing.length() > 0 and \
+   config_all_devices.has_key('CONFIG_SGI_MACE') and \
+   config_all_devices.has_key('CONFIG_SGI_OCTANE')
+  warning('sgi-register-reset-test is not built: ' +
+          ', '.join(sgi_register_reset_missing) + ' is off')
+endif
+
 qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test',
                                               'r10k-cache-index-ops-test'] + \
   (config_all_devices.has_key('CONFIG_SGI_VICE') ?
@@ -724,9 +756,7 @@ qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test',
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') and
    config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') ?
     ['sgi-mace-dma-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_SGI_MACE') and
-   config_all_devices.has_key('CONFIG_SGI_OCTANE') ?
-    ['sgi-register-reset-test'] : [])
+  sgi_register_reset_qtests
 
 qtests_mips64el = qtests_mips
 
