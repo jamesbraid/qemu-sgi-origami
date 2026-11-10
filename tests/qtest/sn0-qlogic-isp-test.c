@@ -14,6 +14,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "sgi-scsi-cd-test.h"
+#include "sgi-scsi-inquiry-test.h"
 #include "sgi-test.h"
 #include "sgi-wait.h"
 
@@ -1542,6 +1543,25 @@ static void test_cdrom_block_length(const void *data)
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
+/* scsi-hd-inquiry's standard INQUIRY data (sgi-scsi-inquiry-test.h). */
+static void test_inquiry_data(const void *data)
+{
+    const SgiInquiryCase *c = data;
+    g_autofree char *path = sgi_cd_medium_create();
+    g_autofree char *args = g_strdup_printf(MACHINE_WITH_BRIDGE
+        " -drive id=hd,if=none,file=%s,format=raw"
+        " -device scsi-hd-inquiry,bus=scsi.0,scsi-id=1,drive=hd,%s",
+        path, c->props);
+    CdRing ring = { .qts = qtest_init(args) };
+    const SgiCdTransport t = { cd_command, cd_bus_reset, &ring };
+
+    cd_ring_init(&ring);
+    sgi_inquiry_check(&t, c);
+
+    qtest_quit(ring.qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
 /*
  * The fabric-refused-transfer pair: with 64 MB of memory the first unbacked
  * address is right after it, and a transfer there is refused the way one
@@ -1770,6 +1790,12 @@ int main(int argc, char **argv)
                         test_two_luns_behind_one_target);
     qtest_add_data_func("sn0/qlogic-isp/cdrom-block-length", NULL,
                         test_cdrom_block_length);
+    for (unsigned i = 0; i < ARRAY_SIZE(sgi_inquiry_cases); i++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn0/qlogic-isp/inquiry-data/%s", sgi_inquiry_cases[i].name);
+
+        qtest_add_data_func(name, &sgi_inquiry_cases[i], test_inquiry_data);
+    }
     qtest_add_data_func("sn0/qlogic-isp/refused-cdb-read-drops-the-request",
                         NULL, test_a_refused_cdb_read_drops_the_request);
     qtest_add_data_func("sn0/qlogic-isp/refused-status-write-no-interrupt",

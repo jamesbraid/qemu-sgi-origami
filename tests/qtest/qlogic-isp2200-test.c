@@ -24,6 +24,7 @@
 #include "libqos/pci.h"
 #include "hw/pci/pci_regs.h"
 #include "sgi-scsi-cd-test.h"
+#include "sgi-scsi-inquiry-test.h"
 
 #define ISP_VENDOR_ID       0x1077
 #define ISP_DEVICE_ID       0x2200
@@ -2839,6 +2840,9 @@ typedef struct LoopDisk {
     uint64_t node_wwn;
     const char *serial;
     LoopBacking backing;
+    /* The device type, scsi-hd when NULL, and properties added to it. */
+    const char *driver;
+    const char *props;
 } LoopDisk;
 
 typedef struct LoopConfig {
@@ -2916,11 +2920,15 @@ static void *loop_test_setup(GString *cmd_line, void *arg)
                                " -device %s,bus=isp0.0,drive=disk%u,"
                                "id=port%u,scsi-id=%d,lun=%d,"
                                "port_wwn=0x%" PRIx64 ",wwn=0x%" PRIx64,
-                               d->backing == LOOP_CD ? "scsi-cd" : "scsi-hd",
+                               d->backing == LOOP_CD ? "scsi-cd" :
+                               d->driver ? d->driver : "scsi-hd",
                                i, i, d->loop_id, d->lun, d->port_wwn,
                                d->node_wwn);
         if (d->serial) {
             g_string_append_printf(cmd_line, ",serial=%s", d->serial);
+        }
+        if (d->props) {
+            g_string_append_printf(cmd_line, ",%s", d->props);
         }
     }
     for (i = 0; i < test->config->spares; i++) {
@@ -4219,6 +4227,42 @@ static void test_cdrom_block_length(void *obj, void *data,
 }
 
 /*
+ * scsi-hd-inquiry's standard INQUIRY data (sgi-scsi-inquiry-test.h) from a
+ * loop port. The port and node names are the device's own, as for any disk
+ * on the loop.
+ */
+#define INQUIRY_DISK(n) \
+    { 5, 0, WWN_PORT(5), WWN_NODE(5), NULL, LOOP_ZEROES, \
+      "scsi-hd-inquiry", sgi_inquiry_cases[n].props }
+
+static const LoopDisk inquiry_disks[ARRAY_SIZE(sgi_inquiry_cases)][1] = {
+    { INQUIRY_DISK(0) },
+    { INQUIRY_DISK(1) },
+    { INQUIRY_DISK(2) },
+};
+
+static const LoopConfig inquiry_configs[ARRAY_SIZE(sgi_inquiry_cases)] = {
+    { .disks = inquiry_disks[0], .ndisks = 1 },
+    { .disks = inquiry_disks[1], .ndisks = 1 },
+    { .disks = inquiry_disks[2], .ndisks = 1 },
+};
+
+static void test_inquiry_data(void *obj, void *data, QGuestAllocator *alloc)
+{
+    const LoopTest *test = data;
+    const SgiInquiryCase *c = &sgi_inquiry_cases[test->config -
+                                                 inquiry_configs];
+    Isp t;
+    CdPort port = { &t, guest_alloc(alloc, 2048), 0x0cd00000 };
+    const SgiCdTransport tr = { cd_command, NULL, &port };
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    sgi_inquiry_check(&tr, c);
+    isp_close(&t);
+}
+
+/*
  * Approximation: abort matches the entry's handle bytes read as a
  * little-endian word against m3:m2, and the loop ID and LUN. A handle
  * stored most significant byte first does not match a small m2; one
@@ -5282,6 +5326,17 @@ static void isp2200_register_nodes(void)
     qos_add_test("port-name", "qlogic-isp2200", test_port_name, &loop_opts);
     qos_add_test("cdrom-block-length", "qlogic-isp2200",
                  test_cdrom_block_length, &cd_opts);
+    for (unsigned i = 0; i < ARRAY_SIZE(sgi_inquiry_cases); i++) {
+        g_autofree char *name = g_strdup_printf("inquiry-data-%s",
+                                                sgi_inquiry_cases[i].name);
+        QOSGraphTestOptions inquiry_opts = {
+            .before = loop_test_setup,
+            .arg = (void *)&inquiry_configs[i],
+        };
+
+        qos_add_test(name, "qlogic-isp2200", test_inquiry_data,
+                     &inquiry_opts);
+    }
     qos_add_test("writes-behind-loop-up", "qlogic-isp2200",
                  test_writes_behind_loop_up, &loop_opts);
     qos_add_test("port-name-list-retains-m7", "qlogic-isp2200",

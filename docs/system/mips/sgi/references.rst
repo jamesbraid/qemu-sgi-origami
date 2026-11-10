@@ -948,6 +948,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``st-m48t35-rev-10``
    *M48T35, M48T35Y 5 V, 256 Kbit (32 Kb x 8) TIMEKEEPER SRAM, document 2611, revision 10, June 2011*. STMicroelectronics. Part datasheet, cited by page. `<https://www.st.com/resource/en/datasheet/m48t35.pdf>`__ Archived copy: `<https://web.archive.org/web/20190723212704id_/https://www.st.com/resource/en/datasheet/m48t35.pdf>`__ SHA-256 ``ec4ecb512ec0d9a9621337308ea88af9ff714b638c081199e8037f7eb35ce624``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-t10-spc3-08-309r1:
+
+``t10-spc3-08-309r1``
+   *SCSI Primary Commands - 3 (SPC-3), final draft with ISO editorial changes, T10/08-309r1, 26 November 2008*. INCITS Technical Committee T10. Manual, cited by page. `<https://www.t10.org/ftp/t10/document.08/08-309r1.pdf>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-theretroweb-origin200-image-1:
 
 ``theretroweb-origin200-image-1``

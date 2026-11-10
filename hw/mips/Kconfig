@@ -50,6 +50,12 @@ config SGI_CATALOGUE
 config SGI_BOARD_CDROM
     bool
 
+# A scsi-hd whose standard INQUIRY data is configurable.
+config SGI_SCSI_HD_INQUIRY
+    bool
+    default y if SGI_DEVICES
+    select SCSI
+
 config SGI_PROM_IMAGE
     bool
 

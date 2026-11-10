@@ -10,6 +10,7 @@ docs/devel/sgi-manual-pages.rst
 docs/devel/sgi-mesa-renderer.rst
 docs/devel/testing/sgi.rst
 docs/sphinx/sgiref.py
+docs/system/mips/sgi/hardware/scsi-hd-inquiry.rst
 docs/system/mips/sgi/index.rst
 docs/system/mips/sgi/identity.rst
 docs/system/devices/sgi-mace-i2c.rst
@@ -255,6 +256,7 @@ hw/mips/sgi/origin300-pci-expansion.h
 hw/mips/sgi/pi-gfx-state.c
 hw/mips/sgi/pi-gfx.c
 hw/mips/sgi/prom-image.c
+hw/mips/sgi/scsi-hd-inquiry.c
 hw/mips/sgi/sgi-cpu.c
 hw/mips/sgi/sgi-graphics.c
 hw/mips/sgi/sgi-machines-qmp-stub.c
@@ -880,6 +882,7 @@ tests/qtest/sgi-pic-test.c
 tests/qtest/sgi-prom-container.h
 tests/qtest/sgi-rad1-pci-test.c
 tests/qtest/sgi-replay-test.c
+tests/qtest/sgi-scsi-inquiry-test.h
 tests/qtest/sgi-synthetic-serial-test.c
 tests/qtest/sgi-test.h
 tests/qtest/sgi-wait.h

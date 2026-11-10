@@ -509,6 +509,14 @@ documents:
       sha256: c67e6ec6655b3682b3eaa2cb973236764d8c37ff03defa85eb3ebc6eaddaf804
 
 web:
+  t10-spc3-08-309r1:
+    title: "SCSI Primary Commands - 3 (SPC-3), final draft with ISO editorial changes, T10/08-309r1, 26 November 2008"
+    publisher: "INCITS Technical Committee T10"
+    kind: manual
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.t10.org/ftp/t10/document.08/08-309r1.pdf
   nekonomicon-16719032:
     title: "Nekochan forum archive thread 16719032, two-module rack Tezro inventory"
     publisher: "Nekochan forum archive"
