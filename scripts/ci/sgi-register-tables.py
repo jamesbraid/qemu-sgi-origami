@@ -81,6 +81,9 @@ or "unsupported", or is empty, states no reset value and is reported as
 skipped; any other cell that is not a number must be named in skip=, so
 nothing is skipped by accident. A skip= or expect= offset that matches no
 row is an error, so a stale entry cannot linger.
+Likewise a width=, access=, lane=, xor=, stride=, count=, units= or split=
+that no row uses is an error, a label= is for a table with several
+markers, and bios=blank is for a machine that needs a PROM.
 
 A passing test shows the page and the model agree, not that either matches
 the hardware: the rating beside each value says how well it is known.
@@ -106,6 +109,8 @@ KEYS = {'qemu', 'base', 'width', 'map', 'variant', 'skip', 'expect',
         'setup', 'select', 'skiprow', 'count', 'label', 'lane',
         'stride', 'units', 'split', 'xor', 'access', 'bios'}
 WIDTHS = (8, 16, 32, 64)
+# Machines (and -M none) that build under qtest with no boot PROM at all.
+BLANK_OK = {'none', 'origin200', 'origin2000'}
 NO_RESET = {'', 'n/a', 'none', 'unknown', 'unsupported', '-'}
 NUMBER = re.compile(r'(?:0x[0-9a-fA-F]+|\d+)$')
 LITERAL = re.compile(r'``([^`]+)``')
@@ -174,11 +179,13 @@ def parse_marker(text):
     except ValueError as exc:
         raise Error(f'cannot split the marker: {exc}')
     options = {'map': [], 'setup': [], 'select': [], 'skiprow': []}
+    given = set()
     for word in words:
         key, sep, value = word.partition('=')
         if not sep or key not in KEYS:
             raise Error(f'unknown marker word {word!r}; keys are '
                         + ', '.join(sorted(KEYS)))
+        given.add(key)
         if key in ('map', 'setup', 'select', 'skiprow'):
             options[key].append(value)
         elif key in options:
@@ -187,6 +194,7 @@ def parse_marker(text):
             options[key] = value
     if 'qemu' not in options:
         raise Error('marker has no qemu=')
+    options['given'] = given
     try:
         options['base'] = int(options.get('base', '0'), 0)
         lane, _, below = options.get('lane', '0').partition('/')
@@ -302,8 +310,13 @@ def column(header, *names):
     return None
 
 
-def offsets(cell, width, count=None, stride_bytes=None, units=None):
-    """List the byte offsets a table's Offset cell names."""
+def offsets(cell, width, count=None, stride_bytes=None, units=None,
+            used=None):
+    """List the byte offsets a table's Offset cell names.
+
+    Record in used the marker keys the cell made use of.
+    """
+    used = set() if used is None else used
     text = cell.replace('``', '')
     text = re.sub(r'(?<=[0-9a-fA-F])_(?=[0-9a-fA-F])', '', text)
     stride = re.fullmatch(r'\s*(0x[0-9a-fA-F]+)\s*\+\s*(0x[0-9a-fA-F]+|\d+)'
@@ -311,6 +324,7 @@ def offsets(cell, width, count=None, stride_bytes=None, units=None):
     if stride:
         if count is None:
             raise Error(f'{cell!r} needs count= in the marker')
+        used.add('count')
         return [int(stride.group(1), 16) + int(stride.group(2), 0) * n
                 for n in range(count)]
     unit = re.fullmatch(r'\s*[A-Za-z]+\s+(\+0x[0-9a-fA-F]+'
@@ -318,6 +332,7 @@ def offsets(cell, width, count=None, stride_bytes=None, units=None):
     if unit:
         if units is None:
             raise Error(f'{cell!r} needs units= in the marker')
+        used.add('units')
         return [first + int(rel, 16) for first in units
                 for rel in re.findall(r'0x[0-9a-fA-F]+', unit.group(1))]
     strided = re.fullmatch(r'\s*(0x[0-9a-fA-F]+)\s+to\s+(0x[0-9a-fA-F]+),'
@@ -335,6 +350,8 @@ def offsets(cell, width, count=None, stride_bytes=None, units=None):
     pending_range = None
     for joint, value in zip(joints, values[1:]):
         if joint in ('-', 'to'):
+            if stride_bytes and stride_bytes != width // 8:
+                used.add('stride')
             pending_range = (result.pop(), value)
             result.extend(range(pending_range[0], value + 1, step))
         elif joint in (',', '/'):
@@ -416,6 +433,7 @@ def build(page, table, marker_text, number):
     used = set()
     selected = set()
     skipped_rows = set()
+    consumed = set()
     for line, cells in table.rows:
         need = max(c_off, c_reset, c_width or 0, c_name or 0)
         if len(cells) <= need:
@@ -423,6 +441,14 @@ def build(page, table, marker_text, number):
         per_offset = None
         if 'access' in options:
             width = options['access']
+            natural = None
+            if c_width is not None:
+                found = re.search(r'\d+', cells[c_width])
+                natural = int(found.group()) if found else None
+            elif 'width' in options:
+                natural = options['width']
+            if natural != width:
+                consumed.add('access')
         elif c_width is not None:
             found = re.search(r'\d+', cells[c_width])
             width = int(found.group()) if found else None
@@ -433,16 +459,19 @@ def build(page, table, marker_text, number):
             if width not in WIDTHS:
                 if options.get('width') in WIDTHS and not found:
                     width = options['width']
+                    consumed.add('width')
                 else:
                     raise Error(f'{page}:{line}: cannot read the width '
                                 f'{cells[c_width]!r}')
         else:
             width = options['width']
+            consumed.add('width')
         name = ' '.join(cells[c_name].replace('``', '').split()) \
             if c_name is not None else ''
         try:
             where = offsets(cells[c_off], width, options.get('count'),
-                            options.get('stride'), options.get('units'))
+                            options.get('stride'), options.get('units'),
+                            consumed)
         except Error as exc:
             raise Error(f'{page}:{line}: {exc}')
         kind, got = reset_value(cells[c_reset], variant)
@@ -511,6 +540,15 @@ def build(page, table, marker_text, number):
                 if options.get('split') and width != 64:
                     raise Error(f'{where_}: split=32 reads 64-bit registers '
                                 f'only, not {width}-bit')
+                if lane_of(options, offset):
+                    consumed.add('lane')
+                if options['lane_below'] is not None and \
+                        offset >= options['lane_below']:
+                    consumed.add('lane_below')
+                if offset ^ options['xor'] != offset:
+                    consumed.add('xor')
+                if options.get('split'):
+                    consumed.add('split')
                 reg = {'line': line, 'name': name, 'offset': hex(offset),
                        'address': hex(options['base']
                                       + lane_of(options, offset)
@@ -546,6 +584,21 @@ def build(page, table, marker_text, number):
         raise Error(f'variant={variant!r} matches no Reset cell')
     if not registers:
         raise Error('no register is checked')
+    if options['lane_below'] is not None and 'lane_below' not in consumed:
+        raise Error('lane= limit leaves out no checked register')
+    unused = sorted(k for k in options['given']
+                    if k in ('access', 'count', 'lane', 'split', 'stride',
+                             'units', 'width', 'xor') and k not in consumed)
+    if unused:
+        raise Error(', '.join(f'{k}=' for k in unused)
+                    + ' is not used by any row of the table')
+    machine = re.search(r'(?:^|\s)-M\s+([^\s,]+)', options['qemu'])
+    if 'bios' in options['given'] and (
+            '-bios' in options['qemu'].split() or machine is None or
+            machine.group(1) in BLANK_OK):
+        raise Error('bios=blank is for a machine that refuses to build '
+                    'without a boot PROM, not -M '
+                    + (machine.group(1) if machine else '(none)'))
     return {'id': f'{page}:{number}', 'page': page, 'line': number,
             'qemu': options['qemu'], 'maps': options['map'],
             'setup': options['setup'],
@@ -578,6 +631,9 @@ def scan(root):
                 other.append(table)
                 continue
             annotated.append(table)
+            if len(marks) == 1 and re.search(r'(^|\s)label=', marks[0][1]):
+                errors.append(f'{page}:{marks[0][0]}: label= names one of '
+                              'several markers, and this table has one')
             for number, marker in marks:
                 try:
                     cases.append(build(page, table, marker, number))

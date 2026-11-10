@@ -8,6 +8,7 @@ that must be reported, so a marker cannot turn into a silent skip.
 
 import importlib.machinery
 import importlib.util
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -125,9 +126,10 @@ class RegisterTablesTest(unittest.TestCase):
         out = []
         for row in text.split('\n'):
             out.append(row)
-            if row.startswith('     - ') and row.strip() in (
-                    '- Control', '- Two', '- Range', '- Write only',
-                    '- Prose'):
+            if row.strip() == '- Write only':
+                out.append('     -')
+            elif row.startswith('     - ') and row.strip() in (
+                    '- Control', '- Two', '- Range', '- Prose'):
                 out.append('     - 32')
         cases, _, _, errors = scan('\n'.join(out), skip='0x38')
         self.assertEqual(errors, [])
@@ -181,8 +183,10 @@ class RegisterTablesTest(unittest.TestCase):
             if row.strip() == '- Two':
                 out[-2] = '   * - ``0x08`` / ``0x0c``'
                 out.append('     - 64 / 32')
+            elif row.strip() == '- Write only':
+                out.append('     -')
             elif row.startswith('     - ') and row.strip() in (
-                    '- Control', '- Range', '- Write only', '- Prose'):
+                    '- Control', '- Range', '- Prose'):
                 out.append('     - 64')
         cases, _, _, errors = scan('\n'.join(out), skip='0x38')
         self.assertEqual(errors, [])
@@ -300,10 +304,11 @@ class RegisterTablesTest(unittest.TestCase):
         self.assertIn('needs count=', errors[0])
 
     def test_label_names_the_configuration(self):
-        marker = MARKER.replace('width=64', 'width=64 label=second')
-        cases, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        first = MARKER.replace('width=64', 'width=64 skip=0x38 label=first')
+        second = MARKER.replace('width=64', 'width=64 skip=0x38 label=second')
+        cases, _, _, errors = scan(PAGE, marker=first + '\n' + second)
         self.assertEqual(errors, [])
-        self.assertEqual(cases[0]['label'], 'second')
+        self.assertEqual([c['label'] for c in cases], ['first', 'second'])
 
     def test_a_value_for_each_offset(self):
         text = PAGE.replace('``0x08``, ``0x10``', '``0x08``, ``0x10``'
@@ -430,7 +435,8 @@ class RegisterTablesTest(unittest.TestCase):
         self.assertEqual((regs['0x0'], regs['0x20']), ('0x1004', '0x1020'))
 
     def test_bios_blank_reaches_the_case(self):
-        marker = MARKER.replace('width=64', 'width=64 bios=blank')
+        marker = MARKER.replace('-M none', '-M fuel').replace(
+            'width=64', 'width=64 bios=blank')
         cases, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
         self.assertEqual(errors, [])
         self.assertEqual(cases[0]['bios'], 'blank')
@@ -470,6 +476,96 @@ class RegisterTablesTest(unittest.TestCase):
         self.assertEqual(errors, [])
         reg = [r for r in cases[0]['registers'] if r['offset'] == '0x38'][0]
         self.assertEqual(reg['expect'], '0x5')
+
+    def test_a_label_on_a_lone_marker_is_an_error(self):
+        marker = MARKER.replace('width=64', 'width=64 label=only')
+        _, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(len(errors), 1)
+        self.assertIn('label=', errors[0])
+
+    def test_bios_blank_is_refused_where_no_prom_is_needed(self):
+        for machine in ('-M none', '-M origin200,x=1', '-M origin2000'):
+            marker = MARKER.replace('-M none', machine).replace(
+                'width=64', 'width=64 bios=blank')
+            _, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+            self.assertEqual(len(errors), 1, machine)
+            self.assertIn('bios=blank', errors[0])
+
+    def test_a_key_no_row_uses_is_an_error(self):
+        # Each planted key changes nothing on this page, so it is stale.
+        stale = ('count=4', 'units=0x100:0x40:2', 'stride=8', 'xor=0',
+                 'lane=0')
+        for key in stale:
+            marker = MARKER.replace('width=64', 'width=64 skip=0x38 ' + key)
+            _, _, _, errors = scan(PAGE, marker=marker)
+            self.assertEqual(len(errors), 1, key)
+            self.assertIn(key.split('=')[0] + '=', errors[0], key)
+            self.assertIn('not used', errors[0])
+
+    def test_access_that_repeats_every_width_is_an_error(self):
+        text = PAGE.replace('     - Reset\n', '     - Width\n     - Reset\n')
+        out = []
+        for row in text.split('\n'):
+            out.append(row)
+            if row.startswith('     - ') and row.strip() in (
+                    '- Control', '- Two', '- Range', '- Write only',
+                    '- Prose'):
+                out.append('     - 64')
+        marker = MARKER.replace('width=64', 'access=64 skip=0x38')
+        _, _, _, errors = scan('\n'.join(out), marker=marker)
+        self.assertEqual(len(errors), 1)
+        self.assertIn('access=', errors[0])
+
+    def test_split_is_stale_when_no_register_is_64_bit(self):
+        text = PAGE.replace('     - Reset\n', '     - Width\n     - Reset\n')
+        marker = MARKER.replace('width=64', 'width=32 split=32')
+        _, _, _, errors = scan(text, marker=marker, skip='0x38')
+        self.assertEqual(len(errors), 1)
+
+    def test_a_width_the_rows_never_fall_back_on_is_an_error(self):
+        text = PAGE.replace('     - Reset\n', '     - Width\n     - Reset\n')
+        out = []
+        for row in text.split('\n'):
+            out.append(row)
+            if row.startswith('     - ') and row.strip() in (
+                    '- Control', '- Two', '- Range', '- Write only',
+                    '- Prose'):
+                out.append('     - 32')
+        _, _, _, errors = scan('\n'.join(out), skip='0x38')
+        self.assertEqual(len(errors), 1)
+        self.assertIn('width=', errors[0])
+
+    def test_a_lane_limit_that_excludes_nothing_is_an_error(self):
+        marker = MARKER.replace('width=64', 'width=64 lane=4/0x1000')
+        _, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(len(errors), 1)
+        self.assertIn('leaves out no checked register', errors[0])
+
+    def test_used_keys_are_accepted(self):
+        marker = MARKER.replace('width=64', 'width=64 lane=4 xor=2 '
+                                'stride=16 skip=0x38')
+        _, _, _, errors = scan(PAGE, marker=marker)
+        self.assertEqual(errors, [])
+
+    def test_the_meson_gate_names_real_default_on_configs(self):
+        # The qtest is registered only when every listed config is on, so
+        # a misspelt or never-selected name silently drops the whole test.
+        meson = (SOURCE / 'tests/qtest/meson.build').read_text()
+        start = meson.index('sgi_register_reset_configs = [')
+        names = re.findall(r"'CONFIG_([A-Z0-9_]+)'",
+                           meson[start:meson.index(']', start)])
+        self.assertGreater(len(names), 20)
+        kconfig = '\n'.join(p.read_text() for p in
+                            (SOURCE / 'hw').rglob('Kconfig'))
+        for name in names:
+            body = re.search(r'^config %s\b(.*?)(?=^config |^menuconfig |\Z)'
+                             % name, kconfig, re.M | re.S)
+            self.assertIsNotNone(body, f'{name} is not a Kconfig symbol')
+            selected = re.search(r'^\s*select %s\b' % name, kconfig, re.M)
+            self.assertTrue(selected or 'default y' in body.group(1),
+                            f'{name} is neither selected nor default y')
+        self.assertIn('sgi_register_reset_qtests', meson.split(
+            'qtests_mips64 = ')[1])
 
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
