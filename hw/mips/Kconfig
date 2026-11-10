@@ -93,6 +93,9 @@ config SGI_OCTANE
     select SGI_IOC3
     select SGI_XBOW
     select SGI_XIO_PORT
+    select SGI_PCI_EXPANSION
+    select SGI_PCI_SHOEHORN
+    select QLOGIC_ISP2200_PCI
 
 config SGI_SN0
     bool

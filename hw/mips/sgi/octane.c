@@ -58,10 +58,16 @@
 /*
  * The four Crossbow ports the Octane gives graphics and expansion boards,
  * the catalogue's slots widget-9 to widget-12. Published inventories show
- * IMPACT boards at 10, 11 and 12, and the stock IDE probes 9 to 12.
+ * IMPACT boards at 10, 11 and 12, and the stock IDE probes 9 to 12. Port 13
+ * is the PCI module's own (docs/system/mips/sgi/hardware/pci-expansion.rst),
+ * so the ports a board can claim are 9 to 13.
  */
-#define OCTANE_GRAPHICS_WIDGET_FIRST 9
-#define OCTANE_GRAPHICS_WIDGETS 4
+#define OCTANE_XIO_WIDGET_FIRST 9
+#define OCTANE_PCI_MODULE_WIDGET 13
+#define OCTANE_XIO_WIDGETS (OCTANE_PCI_MODULE_WIDGET - \
+                            OCTANE_XIO_WIDGET_FIRST + 1)
+#define TYPE_SGI_PCI_SHOEHORN "sgi-pci-shoehorn"
+#define TYPE_SGI_OCTANE_PCI_CAGE "sgi-octane-pci-cage"
 #define OCTANE_LONG_SPAN (1ULL << 36)
 #define OCTANE_LONG_BRIDGE (15ULL << 36)
 #define OCTANE_FLASH_SECTOR (64 * KiB)
@@ -96,9 +102,9 @@ typedef struct OctaneMachineState {
     MemoryRegion *physical;
     /* HEART's link to Crossbow port 8. */
     SGIXioLink heart_link;
-    SGIXioLink graphics_links[OCTANE_GRAPHICS_WIDGETS];
-    bool graphics_claimed[OCTANE_GRAPHICS_WIDGETS];
-    MemoryRegion graphics_long[OCTANE_GRAPHICS_WIDGETS];
+    SGIXioLink xio_links[OCTANE_XIO_WIDGETS];
+    bool xio_claimed[OCTANE_XIO_WIDGETS];
+    MemoryRegion xio_long[OCTANE_XIO_WIDGETS];
     bool uncatalogued_graphics;
     SGIGraphicsPipes pipes;
     Notifier machine_done;
@@ -864,12 +870,13 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
 }
 
 /*
- * The machine's side of a graphics board fitted by slot name
- * (TYPE_SGI_XIO_SLOTS, xio-board.h): widget-9 to widget-12, the Crossbow
- * ports the Octane gives graphics boards. The board takes its fabric from
- * the link to the port and attaches to the realized Crossbow live; its
- * long window, the 64 GiB of physical space the processor reaches the
- * widget through by way of HEART's port, maps once a board is there.
+ * The machine's side of a board fitted by slot name (TYPE_SGI_XIO_SLOTS,
+ * xio-board.h): widget-9 to widget-12, the Crossbow ports the Octane gives
+ * graphics boards and PCI shoehorns, and widget-13, which holds only the
+ * PCI module. The board takes its fabric from the link to the port and
+ * attaches to the realized Crossbow live; its long window, the 64 GiB of
+ * physical space the processor reaches the widget through by way of HEART's
+ * port, maps once a board is there.
  */
 static SGIXioLink *octane_claim_xio_slot(Object *obj, Object *board,
                                          const char *name,
@@ -881,47 +888,63 @@ static SGIXioLink *octane_claim_xio_slot(Object *obj, Object *board,
     g_autofree char *link_name = NULL;
     g_autofree char *long_name = NULL;
 
+    bool pci_board = object_dynamic_cast(board, TYPE_SGI_PCI_SHOEHORN) ||
+                     object_dynamic_cast(board, TYPE_SGI_OCTANE_PCI_CAGE);
+
     if (!g_str_has_prefix(name, "widget-") ||
         qemu_strtoui(name + strlen("widget-"), NULL, 10, &widget) ||
-        widget < OCTANE_GRAPHICS_WIDGET_FIRST ||
-        widget >= OCTANE_GRAPHICS_WIDGET_FIRST + OCTANE_GRAPHICS_WIDGETS) {
-        error_setg(errp, "topology '%s' has no graphics slot %s; its slots "
-                   "are widget-9, widget-10, widget-11 and widget-12",
-                   s->model->name, name);
+        widget < OCTANE_XIO_WIDGET_FIRST ||
+        widget >= OCTANE_XIO_WIDGET_FIRST + OCTANE_XIO_WIDGETS) {
+        error_setg(errp, "topology '%s' has no XIO slot %s; its slots are "
+                   "widget-9, widget-10, widget-11 and widget-12, and "
+                   "widget-13 for the PCI module", s->model->name, name);
+        return NULL;
+    }
+    if (widget == OCTANE_PCI_MODULE_WIDGET &&
+        !object_dynamic_cast(board, TYPE_SGI_OCTANE_PCI_CAGE)) {
+        error_setg(errp, "slot %s is the PCI module's port and holds only "
+                   "an %s", name, TYPE_SGI_OCTANE_PCI_CAGE);
+        return NULL;
+    }
+    if (widget != OCTANE_PCI_MODULE_WIDGET &&
+        object_dynamic_cast(board, TYPE_SGI_OCTANE_PCI_CAGE)) {
+        error_setg(errp, "the PCI module goes in widget-%u, not %s",
+                   OCTANE_PCI_MODULE_WIDGET, name);
         return NULL;
     }
     if (place->module != SGI_XIO_BOARD_MODULE_UNSET && place->module) {
-        error_setg(errp, "graphics slot %s is in module 0, not module %u",
+        error_setg(errp, "slot %s is in module 0, not module %u",
                    name, place->module);
         return NULL;
     }
-    index = widget - OCTANE_GRAPHICS_WIDGET_FIRST;
-    if (s->graphics_claimed[index]) {
-        error_setg(errp, "graphics slot %s already holds a board", name);
+    index = widget - OCTANE_XIO_WIDGET_FIRST;
+    if (s->xio_claimed[index]) {
+        error_setg(errp, "slot %s already holds a board", name);
         return NULL;
     }
-    s->graphics_claimed[index] = true;
+    s->xio_claimed[index] = true;
     link_name = g_strdup_printf("%s-link", name);
-    sgi_xio_link_init(&s->graphics_links[index], obj, link_name,
+    sgi_xio_link_init(&s->xio_links[index], obj, link_name,
                       OBJECT(s->crossbow), widget, board, 0);
     long_name = g_strdup_printf("octane.%s-long", name);
-    memory_region_init_alias(&s->graphics_long[index], obj, long_name,
+    memory_region_init_alias(&s->xio_long[index], obj, long_name,
                              sgi_xbow_packet_ingress(s->crossbow, 8),
                              (uint64_t)widget << 48, OCTANE_LONG_SPAN);
     memory_region_add_subregion(s->physical, widget * OCTANE_LONG_SPAN,
-                                &s->graphics_long[index]);
+                                &s->xio_long[index]);
     place->module = 0;
     place->widget = widget;
     place->position = index;
     place->name = g_strdup(name);
     place->label = g_strdup(name);
     /*
-     * The one board keeps its own marked synthetic identity, "EMUG00",
-     * like the other IP30 identities; offsetting it by port would make the
-     * PROM name the same board differently in each port.
+     * The one graphics board keeps its own marked synthetic identity,
+     * "EMUG00", like the other IP30 identities; offsetting it by port would
+     * make the PROM name the same board differently in each port. A PCI
+     * board takes the port's offset, so two of them never share a serial.
      */
-    place->own_identity = true;
-    return &s->graphics_links[index];
+    place->own_identity = !pci_board;
+    return &s->xio_links[index];
 }
 
 /* A board given a fabric outright is a fixture's, not one of the ports. */
@@ -1005,10 +1028,10 @@ static void octane_machine_done(Notifier *notifier, void *data)
                                          machine_done);
 
     sgi_graphics_pipes_done(&s->pipes);
-    for (unsigned int i = 0; i < OCTANE_GRAPHICS_WIDGETS; i++) {
-        if (sgi_xio_link_complete(&s->graphics_links[i])) {
+    for (unsigned int i = 0; i < OCTANE_XIO_WIDGETS; i++) {
+        if (sgi_xio_link_complete(&s->xio_links[i])) {
             sgi_xbow_mark_widget_alive(s->crossbow,
-                                       OCTANE_GRAPHICS_WIDGET_FIRST + i,
+                                       OCTANE_XIO_WIDGET_FIRST + i,
                                        true, &error_fatal);
         }
     }
@@ -1310,6 +1333,8 @@ static void octane_class_init(ObjectClass *oc, const void *data)
     xc->claim_fabric = octane_claim_xio_fabric;
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_MGRAS);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_ODYSSEY);
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_SHOEHORN);
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_OCTANE_PCI_CAGE);
 }
 
 static const TypeInfo octane_machine_types[] = {
