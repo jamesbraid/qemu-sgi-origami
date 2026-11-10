@@ -126,6 +126,12 @@ Reset values are the model's. The drivers always initialise these registers
 before use, and no read of a real board is available, so a reset value is
 *unknown* for hardware unless the notes say otherwise.
 
+.. sgi-registers: base=0x90000000
+   expect=0x5c:0x100000,0xb0:0x1f000,0x600:0x5254,0x604:0x123456
+   map=/machine/peripheral/bridge:0:0x40000000
+   setup=0x40021010:0x10000000,0x40021004:6
+   qemu="-M none -cpu R10000 -device sgi-xio-test-target,id=transfer-ram,size=16M -device sgi-bridge,id=bridge,board-part=030-1244-001,fabric=/machine/unattached/system[0] -device tigon,mac=52:54:00:12:34:56,addr=1"
+
 .. list-table::
    :header-rows: 1
 
@@ -304,6 +310,13 @@ before use, and no read of a real board is available, so a reset value is
      - 0
      - R/W
      - Byte, halfword and word accesses.
+
+Four registers read another value at power-on than the table's reset.
+PCI_STATE reads ``0x100000`` in a narrow slot, bit 20, as on the register test's
+Bridge head. The DMA read state reads ``0x1f000``, its FIFO count all ones
+(:ref:`sgi-tigon-direct-dma`). PAR0 and PAR1 read the configured station
+address, here ``52:54:00:12:34:56``, ``0x5254`` and ``0x123456``. Each is
+an *approximation*.
 
 Mailbox registers other than MB_HOSTINTR are write-only. Reading one logs
 ``LOG_UNIMP`` and returns zero. Register names, offsets and bit meanings
