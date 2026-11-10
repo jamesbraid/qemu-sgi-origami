@@ -345,6 +345,10 @@ def reset_value(cell, variant):
     ones", ('skip', reason) or ('prose', text).
     """
     text = ' '.join(cell.split())
+    # "0, kept" says a reset leaves the register alone; the value is the
+    # same at power-on. "0x0018_1818" groups digits.
+    text = re.sub(r',\s*kept$', '', text)
+    text = re.sub(r'(?<=[0-9a-fA-F])_(?=[0-9a-fA-F])', '', text)
     plain = text.replace('``', '').strip()
     if plain.lower() in NO_RESET:
         return 'skip', plain or 'empty'
