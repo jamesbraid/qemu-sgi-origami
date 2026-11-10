@@ -15,6 +15,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 #include "qapi/error.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
@@ -79,6 +80,24 @@ static void write_steps(QTestState *qts, const QList *steps)
     }
 }
 
+/*
+ * A board that refuses to build without a boot PROM, and runs nothing from
+ * it, takes an erased image of the size a real one has.
+ */
+static char *blank_prom(void)
+{
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    g_autoptr(GError) error = NULL;
+    char *path = NULL;
+    int fd = g_file_open_tmp("sgi-register-prom-XXXXXX.bin", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
 static void check_table(gconstpointer data)
 {
     const QDict *table = data;
@@ -86,9 +105,17 @@ static void check_table(gconstpointer data)
     const QList *registers = qdict_get_qlist(table, "registers");
     const QList *skipped = qdict_get_qlist(table, "skipped");
     const QListEntry *entry;
-    QTestState *qts = qtest_init(qdict_get_str(table, "qemu"));
     const char *page = qdict_get_str(table, "page");
+    g_autofree char *prom = NULL;
+    QTestState *qts;
     unsigned wrong = 0;
+
+    if (qdict_get_try_str(table, "bios")) {
+        prom = blank_prom();
+        qts = qtest_initf("%s -bios %s", qdict_get_str(table, "qemu"), prom);
+    } else {
+        qts = qtest_init(qdict_get_str(table, "qemu"));
+    }
 
     QLIST_FOREACH_ENTRY(maps, entry) {
         const QDict *map = qobject_to(QDict, qlist_entry_obj(entry));
@@ -149,6 +176,9 @@ static void check_table(gconstpointer data)
                    qdict_get_str(table, "id"), (size_t)qlist_size(registers),
                    (size_t)qlist_size(skipped));
     qtest_quit(qts);
+    if (prom) {
+        unlink(prom);
+    }
     if (wrong) {
         g_test_fail();
     }
