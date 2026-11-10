@@ -112,9 +112,10 @@ grows to eight four-processor C-bricks and the Origin 3800 to 128
 (*established*, :src:`007-4311-002 p. 83`). A CX-brick holds the
 equivalent of four C-bricks and one R-brick (*established*,
 :src:`007-4572-001 pp. 1, 3`). The Onyx 3000 is *observed* in one
-published 12-processor inventory (:src:`nekonomicon-16719632`). No QEMU
-machine builds an Origin 3000 :term:`brick`; :doc:`hardware/bricks` describes
-each brick and the catalogue layers that record them.
+published 12-processor inventory (:src:`nekonomicon-16719632`). The
+``origin3000`` machine builds these systems from :term:`brick`
+layers; :doc:`hardware/bricks` describes each brick and the catalogue
+layers that record them.
 
 A Hub carries two processors on one processor interface
 (*established*, :src:`007-3439-002 Figure 2-1`). A Bedrock carries up to
