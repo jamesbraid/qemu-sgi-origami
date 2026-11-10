@@ -238,6 +238,11 @@ the notes say otherwise. Widths are bits. The configuration block below
 either half. The FIFO and port rows take the widths their row gives;
 every other register takes aligned 32-bit accesses only.
 
+.. sgi-registers: base=0x2000d000000 lane=4/0x60
+   skip=0x0:see-notes,0x20:widget-number,0x106c:per-product bios=blank
+   expect=0x233a08:0x400000,0x233c08:0x400000
+   qemu="-M fuel,x-uncatalogued-graphics=on -cpu R14000 -smp 1 -m 512M -S -device sgi-odyssey,slot=widget-13"
+
 .. list-table::
    :header-rows: 1
 
@@ -420,6 +425,11 @@ every other register takes aligned 32-bit accesses only.
      - none
      - write-only
      - :ref:`sgi-odyssey-backend`.
+
+The two I2C status registers, ``0x233a08`` and ``0x233c08``, read
+``0x400000`` at power-on, where the table's reset is 0: bit 22, ready, is
+a status bit that reads set whatever the bus holds, as the I2C command
+words below describe. What the real board reads there is *unknown*.
 
 Only four of these are public. OpenBSD reads command FIFO status at
 ``0x1064`` and treats bits ``0x00008000`` and ``0x00020000`` as
