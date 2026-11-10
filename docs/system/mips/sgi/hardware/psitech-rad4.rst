@@ -151,6 +151,10 @@ BAR0: bus interface
 Offsets follow the PLX 9060 local configuration and runtime register
 layout (:src:`plx-pci9060-data-sheet-1.2 Tables 45, 47, 51, 57`).
 
+.. sgi-registers: base=0x20008700000
+   setup=0x20008023010:0x20000000,0x20008023004:2,0x2000800021c:0x1200
+   qemu="-M origin200,x-uncatalogued-graphics=on -device psitech-rad4,addr=3"
+
 .. list-table::
    :header-rows: 1
 
@@ -259,6 +263,10 @@ model leaves all three unsupported.
 
 Expansion ROM: DMA channel 0
 ----------------------------
+
+.. sgi-registers: base=0x20008700000 width=32
+   setup=0x20008023030:0x40000001,0x20008023004:2,0x2000800021c:0x1400
+   qemu="-M origin200,x-uncatalogued-graphics=on -device psitech-rad4,addr=3"
 
 .. list-table::
    :header-rows: 1
