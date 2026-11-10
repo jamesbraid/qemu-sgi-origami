@@ -151,6 +151,11 @@ other Hub reset value is published. Access codes: R read, RW read and
 write, WO write-only, T a write that acts and stores nothing, RC a read
 that clears, W1C writing ones clears.
 
+.. sgi-registers: base=0x20001000000 access=64
+   skiprow="bring-up UART:junk-uart-only"
+   skip=0x50:released-by-machine-power-on,0x20:per-reader,0x40:per-node,0x48:per-node,0x220000:see-elsc,0x220008:see-elsc,0x220048:per-machine,0x600000:see-network,0x438:read-to-clear,0x458:read-to-clear,0x600380:read-to-clear,0x608088:read-to-clear
+   qemu="-M origin200"
+
 .. list-table::
    :header-rows: 1
 
@@ -625,6 +630,12 @@ that clears, W1C writing ones clears.
      - 0
      - RW
      -
+
+A powered machine reads 1 from PI_CPU_ENABLE_A, where the table and
+`Processor enable, NMI and reset`_ give 0. The Hub's own reset clears the
+bit; the machine's power-on then releases the first processor through it.
+That is state after power-on, not a reset value, so the register test
+leaves ``0x50`` out; PI_CPU_ENABLE_B, which no processor backs, reads 0.
 
 Every other offset reads zero and logs ``LOG_UNIMP`` on a read or a
 write, as does a read of a write-only register above. The unimplemented
