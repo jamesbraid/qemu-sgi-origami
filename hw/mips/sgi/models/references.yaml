@@ -329,6 +329,14 @@ documents:
     rights: published
     obtain:
       url: https://techpubs.jurassic.nl/library/manuals/3000/007-3435-004/pdf/007-3435-004.pdf
+  007-3547-001:
+    title: "OCTANE PCI Module Installation Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3547-001/pdf/007-3547-001.pdf
   007-4207-002:
     title: "Octane2 Workstation Owner's Guide"
     publisher: Silicon Graphics
