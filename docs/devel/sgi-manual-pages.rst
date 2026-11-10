@@ -249,6 +249,11 @@ A row such as ``0x310 + 0x1c*n`` needs ``count=4``, which reads copies
 ``n = 0`` to ``3``. ``label=NAME`` adds a name to the test path, to tell
 two comments on one table apart.
 
+``lane=4`` adds 4 bytes to every address the test reads, for registers kept in
+the low half of an eight-byte slot, and ``stride=8`` spaces the registers
+of a range such as ``0x130``-``0x168`` by slot rather than by access width.
+The offsets in the output stay the page's.
+
 A Reset cell of comma-separated numbers beside the same number of offsets
 (``0x00010000``, 0 beside ``0x240``, ``0x244``) gives one value to each.
 

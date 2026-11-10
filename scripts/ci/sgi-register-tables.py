@@ -40,6 +40,11 @@ continue on indented lines. Keys:
            table's width just before each read of the row whose Name cell
            is NAME. For a register that is chosen by another register's
            bits at a repeated offset (repeatable, one per row);
+  lane     bytes added to every address the test reads or writes (not to
+           the offsets printed), for registers kept in one half of a
+           wider slot: lane=4 reads a 32-bit register at its slot + 4;
+  stride   bytes between the registers of a range such as 0x130-0x168
+           when that is not the access width (stride=8 for 8-byte slots);
   count    how many copies "n" runs over in an offset such as
            "0x310 + 0x1c*n" (n = 0 to count-1);
   skiprow  NAME:reason, the row whose Name cell is NAME and every offset
@@ -81,7 +86,8 @@ SOURCE = Path(__file__).resolve().parents[2]
 PAGES = 'docs/system/mips/sgi'
 MARKER = re.compile(r'\.\.\s+sgi-registers:(.*)')
 KEYS = {'qemu', 'base', 'width', 'map', 'variant', 'skip', 'expect',
-        'setup', 'select', 'skiprow', 'count', 'label'}
+        'setup', 'select', 'skiprow', 'count', 'label', 'lane',
+        'stride'}
 WIDTHS = (8, 16, 32, 64)
 NO_RESET = {'', 'n/a', 'none', 'unknown', 'unsupported', '-'}
 NUMBER = re.compile(r'(?:0x[0-9a-fA-F]+|\d+)$')
@@ -166,6 +172,11 @@ def parse_marker(text):
         raise Error('marker has no qemu=')
     try:
         options['base'] = int(options.get('base', '0'), 0)
+        options['lane'] = int(options.get('lane', '0'), 0)
+        if 'stride' in options:
+            options['stride'] = int(options['stride'], 0)
+            if options['stride'] < 1:
+                raise ValueError
         if 'count' in options:
             options['count'] = int(options['count'])
             if options['count'] < 1:
@@ -194,8 +205,9 @@ def parse_marker(text):
         options['select'] = parse_select(options['select'])
         options['skiprow'] = parse_skiprow(options['skiprow'])
     except ValueError:
-        raise Error('base, width, skip, expect, map, setup, select or skiprow is not a '
-                    'number of the right kind')
+        raise Error('a marker number (base, width, count, lane, stride, skip, '
+                    'expect, setup, select or skiprow) is not of the right '
+                    'kind')
     return options
 
 
@@ -253,7 +265,7 @@ def column(header, *names):
     return None
 
 
-def offsets(cell, width, count=None):
+def offsets(cell, width, count=None, stride_bytes=None):
     """List the byte offsets a table's Offset cell names."""
     text = cell.replace('``', '')
     stride = re.fullmatch(r'\s*(0x[0-9a-fA-F]+)\s*\+\s*(0x[0-9a-fA-F]+|\d+)'
@@ -268,7 +280,7 @@ def offsets(cell, width, count=None):
     joints = [re.sub(r'\s+', ' ', p).strip() for p in pieces[2:-1:2]]
     if not values or pieces[0].strip() or pieces[-1].strip():
         raise Error(f'cannot read the offsets in {cell!r}')
-    step = width // 8
+    step = stride_bytes or width // 8
     result = [values[0]]
     pending_range = None
     for joint, value in zip(joints, values[1:]):
@@ -355,7 +367,8 @@ def build(page, table, marker_text, number):
         name = ' '.join(cells[c_name].replace('``', '').split()) \
             if c_name is not None else ''
         try:
-            where = offsets(cells[c_off], width, options.get('count'))
+            where = offsets(cells[c_off], width, options.get('count'),
+                            options.get('stride'))
         except Error as exc:
             raise Error(f'{page}:{line}: {exc}')
         kind, got = reset_value(cells[c_reset], variant)
@@ -420,12 +433,14 @@ def build(page, table, marker_text, number):
                 kind_here, got_here = kind, got
             if kind_here == 'value':
                 reg = {'line': line, 'name': name, 'offset': hex(offset),
-                       'address': hex(options['base'] + offset),
+                       'address': hex(options['base'] + options['lane']
+                                      + offset),
                        'width': width, 'expect': hex(got_here)}
                 if name in options['select']:
                     selected.add(name)
                     reg['select'] = [
-                        {'address': hex(options['base'] + off),
+                        {'address': hex(options['base'] + options['lane']
+                                        + off),
                          'width': width, 'value': hex(val)}
                         for off, val in options['select'][name]]
                 if note:
