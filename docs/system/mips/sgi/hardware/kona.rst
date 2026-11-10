@@ -700,6 +700,11 @@ mapped to state (*unknown*). The model frames
 the word, logs ``LOG_UNIMP`` and posts no reply, so a client that sends it
 waits. A captured context-copy exchange would settle it.
 
+The restart token ``0x1bc`` takes one word, 0. The client sends it when an
+instruments buffer is registered again, and the pipe reprograms its
+select-feedback output channel from the saved start words if a feed is
+active (*established*). The model frames the word and does nothing.
+
 .. _sgi-kona-window-id:
 
 Window-id ownership

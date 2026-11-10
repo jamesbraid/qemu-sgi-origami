@@ -2512,6 +2512,28 @@ static void test_light_attribute_readback(void)
 }
 
 /*
+ * The feed restart, 0x1bc and one word, is one word that does nothing: the
+ * query after it still frames and is answered, and the trace records the
+ * token as unmodelled. Without the token in the grammar its word reads as
+ * a textport word and the next command is misframed.
+ */
+static void test_feed_restart_framing(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    kona_command(s, 0x1bc, (uint32_t[]){ 0 }, 1);
+    prepare_refused_reply(s);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    assert_reply_posted(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_nonnull(strstr(found, "sgi_kona_command_unmodelled"));
+}
+
+/*
  * A name the pipe has a row for but the model keeps nothing for is
  * answered with the row's words, zero, and no error. 0x81c4 and 0x81c7 are
  * one word, 0x2a00 a callback row of one, 0x8129 three, 0x817e four.
@@ -21016,6 +21038,8 @@ int main(int argc, char **argv)
              test_unmodelled_query_zero_words);
     add_case("sn0/origin2000/kona-3d/setup-rounding-ties-to-even",
              test_setup_rounding_ties_to_even);
+    add_case("sn0/origin2000/kona-3d/feed-restart-framing",
+             test_feed_restart_framing);
     add_case("sn0/origin2000/kona-3d/light-attribute-readback",
              test_light_attribute_readback);
     add_case("sn0/origin2000/kona-3d/unknown-query-empty-reply",

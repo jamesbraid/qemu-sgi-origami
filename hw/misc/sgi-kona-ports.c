@@ -378,6 +378,7 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_RASTER_POS4F, 4 },
     { SGI_KONA_CMD_GL_RASTER_STATE, 15 },
     { SGI_KONA_CMD_GL_GET_LIGHT_ATTRIBS, 1 },
+    { SGI_KONA_CMD_GL_RESTART_FEED, 1 },
     { SGI_KONA_CMD_GL_EVAL_ATTRIB, 4 },
     { SGI_KONA_CMD_GL_EVAL_ATTRIB2, 8 },
     /* Display-list padding: counts inferred, and fitting perfly's lists. */

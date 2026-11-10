@@ -13842,6 +13842,10 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_GL_GET_LIGHT_ATTRIBS:
         sgi_kona_gl_light_attribs(s);
         return;
+    case SGI_KONA_CMD_GL_RESTART_FEED:
+        /* One word consumed. Nothing in the model owns a feed to restart. */
+        trace_sgi_kona_command_unmodelled(selector, 1);
+        return;
     case SGI_KONA_CMD_GL_PUSH_ATTRIB:
         sgi_kona_gl_push_attrib(s, args[0]);
         return;

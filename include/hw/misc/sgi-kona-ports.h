@@ -292,6 +292,13 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  */
 #define SGI_KONA_CMD_GL_GET_LIGHT_ATTRIBS 0x10b
 /*
+ * The client's instruments-buffer call sends 0x1bc and one word, 0, to
+ * restart a select or feedback feed when the same buffer is registered
+ * again (established). The model has no output DMA channel to
+ * reprogram, so it consumes the word.
+ */
+#define SGI_KONA_CMD_GL_RESTART_FEED 0x1bc
+/*
  * The IRIX client library's evaluator attribute update: four words, then
  * 0x29 with eight.
  */
