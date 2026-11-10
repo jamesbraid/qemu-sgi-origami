@@ -455,6 +455,22 @@ class RegisterTablesTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn('is not a number', errors[0])
 
+    def test_offsets_with_digit_groups_and_a_stride(self):
+        text = PAGE.replace('``0x38``', '``0x00_0100`` to ``0x00_0140``, '
+                            'stride ``0x20``').replace('per machine', '0')
+        cases, _, _, errors = scan(text)
+        self.assertEqual(errors, [])
+        offsets = [r['offset'] for r in cases[0]['registers']
+                   if r['name'] == 'Prose']
+        self.assertEqual(offsets, ['0x100', '0x120', '0x140'])
+
+    def test_at_power_on_is_part_of_the_number(self):
+        text = PAGE.replace('per machine', '0x5 at power-on')
+        cases, _, _, errors = scan(text)
+        self.assertEqual(errors, [])
+        reg = [r for r in cases[0]['registers'] if r['offset'] == '0x38'][0]
+        self.assertEqual(reg['expect'], '0x5')
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])
