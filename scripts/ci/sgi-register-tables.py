@@ -43,6 +43,7 @@ continue on indented lines. Keys:
   lane     bytes added to every address the test reads or writes (not to
            the offsets printed), for registers kept in one half of a
            wider slot: lane=4 reads a 32-bit register at its slot + 4;
+           lane=4/0x60 does so for offsets below 0x60 only;
   split    32, to read a 64-bit register as two 32-bit reads, low half at
            the address and high half four above, as a bus window declared
            little-endian delivers it (default: one read of the width);
@@ -188,7 +189,10 @@ def parse_marker(text):
         raise Error('marker has no qemu=')
     try:
         options['base'] = int(options.get('base', '0'), 0)
-        options['lane'] = int(options.get('lane', '0'), 0)
+        lane, _, below = options.get('lane', '0').partition('/')
+        options['lane'] = int(lane, 0)
+        # "4/0x60": the lane applies to offsets below 0x60 only.
+        options['lane_below'] = int(below, 0) if below else None
         options['xor'] = int(options.get('xor', '0'), 0)
         if 'stride' in options:
             options['stride'] = int(options['stride'], 0)
@@ -376,6 +380,11 @@ def reset_value(cell, variant):
     return 'value', chosen
 
 
+def lane_of(options, offset):
+    below = options['lane_below']
+    return options['lane'] if below is None or offset < below else 0
+
+
 def build(page, table, marker_text, number):
     """Turn one table and one marker into a case, or raise Error."""
     options = parse_marker(marker_text)
@@ -492,13 +501,14 @@ def build(page, table, marker_text, number):
                     raise Error(f'{where_}: split=32 reads 64-bit registers '
                                 f'only, not {width}-bit')
                 reg = {'line': line, 'name': name, 'offset': hex(offset),
-                       'address': hex(options['base'] + options['lane']
+                       'address': hex(options['base']
+                                      + lane_of(options, offset)
                                       + (offset ^ options['xor'])),
                        'width': width, 'expect': hex(got_here)}
                 if name in options['select']:
                     selected.add(name)
                     reg['select'] = [
-                        {'address': hex(options['base'] + options['lane']
+                        {'address': hex(options['base'] + lane_of(options, off)
                                         + (off ^ options['xor'])),
                          'width': width, 'value': hex(val)}
                         for off, val in options['select'][name]]
