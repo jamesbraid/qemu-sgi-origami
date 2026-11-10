@@ -3071,7 +3071,8 @@
 #
 # @resources: identity inputs this offering accepts beyond @storage
 #
-# @scsi-adapters: SCSI host adapters this offering's I/O boards carry
+# @scsi-adapters: SCSI host adapters this offering's I/O boards carry,
+#     in the order a launcher fills them with disks
 #
 # @consoles: serial lines this offering's launch places, in order
 #

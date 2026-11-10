@@ -77,6 +77,23 @@ class IP30CatalogueTests(unittest.TestCase):
         self.assertEqual(len(offering["networks"]), 1)
 
 
+    def test_scsi_adapters_list_only_the_ids_the_prom_probes(self):
+        """The stock PROM and IRIX walk IDs 1 to 3 on the first controller
+        (three SCA bays) and 1 to 15 on the second (the external
+        connector). A disk elsewhere is invisible at boot, so the
+        catalogue lists only those IDs, first adapter first."""
+        catalogue = json.loads(render_qemu_inputs(MODELS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        for product in ("octane", "octane2"):
+            offering = next(o for o in catalogue["offerings"]
+                            if o["product"] == product)
+            with self.subTest(product=product):
+                self.assertEqual(
+                    [(a["bus"], a["type"], a["targets"], a["boot-target"])
+                     for a in offering["scsi-adapters"]],
+                    [("scsi.0", "scsi", [1, 2, 3], 1),
+                     ("scsi.1", "scsi", list(range(1, 16)), 1)])
+
     @staticmethod
     def component(model, kind):
         return next(c for c in model["components"]
