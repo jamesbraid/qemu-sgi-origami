@@ -130,8 +130,9 @@ topologies (the ``origin3400*``, ``origin3800`` and ``origin3900*``
 entries, both routers of ``origin3400-two-routers`` and ``origin3800``
 included). The Origin 2000, Onyx 2 and Onyx 3400
 topologies do not set the flag. A router
-created with ``-device`` gets the ordinary profile, so the 4-bit route
-table rule below applies to no catalogue machine: the diagnostic profile
+created with ``-device``, and the R-brick router of the ``onyx3400-ir``
+topology, get the ordinary profile, so the 4-bit route table rule below
+applies to them and to no other catalogue router: the diagnostic profile
 keeps whole 64-bit table words, because the experiments it supports write
 and read them back. Which profile the silicon matches is *unknown*; a qtest
 pins each profile's table behaviour. The profile is fixed before realize
