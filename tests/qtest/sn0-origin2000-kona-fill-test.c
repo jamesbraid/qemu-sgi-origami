@@ -571,8 +571,8 @@ static void test_rect_origin(void)
 /*
  * The rect path's runs, as the X server's solid rectangle fill sends them:
  * X rect6 with six rectangles, and X data4 with two rectangles before a
- * final X rect. Every rectangle takes the position's origin; a box sent
- * later does not.
+ * final X rect. Every rectangle takes the position's origin, and so does a
+ * box sent later.
  */
 static void test_rect_runs(void)
 {
@@ -600,7 +600,44 @@ static void test_rect_runs(void)
     g_assert_cmphex(front_at(qts, 0, 50), ==, 0);
 
     kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(0, 60), XY(2, 62) }, 2);
-    assert_box(qts, 0, 60, 2, 62, 0x52);
+    assert_box(qts, 300, 260, 302, 262, 0x52);
+    g_assert_cmphex(front_at(qts, 0, 60), ==, 0);
+    assert_in_step(qts);
+}
+
+/*
+ * A box lands offset by the X load position, like a rectangle: at position
+ * 100, 50 an X box of (10, 20)-(13, 22) fills (110, 70)-(113, 72) and not
+ * the screen coordinates its words name, and the six boxes of an X box6
+ * each take the same offset. After a position of 0, 0 the same box lands
+ * where its words put it, the way nearly every box sender leaves it.
+ */
+static void test_box_origin(void)
+{
+    uint32_t words[12];
+
+    qtest_system_reset(qts);
+    load_gc(qts, 0x61);
+    kona_command(qts, TOKEN_POSITION, (uint32_t[]){ 100, 50, 200, 200 }, 4);
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(13, 22) }, 2);
+    assert_box(qts, 110, 70, 113, 72, 0x61);
+    g_assert_cmphex(front_at(qts, 10, 20), ==, 0);
+
+    load_gc(qts, 0x62);
+    for (unsigned i = 0; i < 6; i++) {
+        words[2 * i] = XY(20 * i, 100 + i);
+        words[2 * i + 1] = XY(20 * i + 3, 102 + i);
+    }
+    kona_command(qts, TOKEN_BOX6, words, 12);
+    for (unsigned i = 0; i < 6; i++) {
+        assert_box(qts, 100 + 20 * i, 150 + i, 103 + 20 * i, 152 + i, 0x62);
+    }
+    g_assert_cmphex(front_at(qts, 0, 100), ==, 0);
+
+    load_gc(qts, 0x63);
+    kona_command(qts, TOKEN_POSITION, (uint32_t[]){ 0, 0, 200, 200 }, 4);
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(13, 22) }, 2);
+    assert_box(qts, 10, 20, 13, 22, 0x63);
     assert_in_step(qts);
 }
 
@@ -749,14 +786,13 @@ static void test_x_map_past_table(void)
 }
 
 /*
- * X load clip with a count of 1 carries one exclusive clip rectangle, and
- * boxes arrive absolute, so the X load position never offsets them. The
- * greeter run's clips:
+ * X load clip with a count of 1 carries one exclusive clip rectangle in
+ * screen coordinates, while the box words are relative to the X load
+ * position. The greeter run's clips:
  * 1, 240, 295, 312, 327 cuts a larger box down to (240, 295)-(312, 327),
  * and 1, 0, 179, 33, 217, sent after position -192, 179, 225, 38, cuts
  * (-192, 179)-(33, 217) at the screen's left edge. A count of 0, which no
- * sender read makes, clips only to the screen, and a box drawn after a
- * position load lands where its own words put it.
+ * sender read makes, clips only to the screen.
  */
 static void test_clip_rectangle(void)
 {
@@ -765,7 +801,7 @@ static void test_clip_rectangle(void)
     kona_command(qts, TOKEN_POSITION, (uint32_t[]){ 240, 295, 72, 32 }, 4);
     kona_command(qts, TOKEN_CLIP, (uint32_t[]){ 1, 240, 295, 312, 327 }, 5);
     kona_command(qts, TOKEN_BOX,
-                 (uint32_t[]){ XY(230, 285), XY(320, 335) }, 2);
+                 (uint32_t[]){ XY(-10, -10), XY(80, 40) }, 2);
     assert_box(qts, 240, 295, 312, 327, 0x21);
 
     load_gc(qts, 0x22);
@@ -773,21 +809,21 @@ static void test_clip_rectangle(void)
                  (uint32_t[]){ (uint32_t)-192, 179, 225, 38 }, 4);
     kona_command(qts, TOKEN_CLIP, (uint32_t[]){ 1, 0, 179, 33, 217 }, 5);
     kona_command(qts, TOKEN_BOX,
-                 (uint32_t[]){ XY(-192, 179), XY(33, 217) }, 2);
+                 (uint32_t[]){ XY(0, 0), XY(225, 38) }, 2);
     assert_box(qts, 0, 179, 33, 217, 0x22);
-    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(500, 500), XY(502, 502) },
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(692, 321), XY(694, 323) },
                  2);
     g_assert_cmphex(front_at(qts, 500, 500), ==, 0);
 
     load_gc(qts, 0x23);
     kona_command(qts, TOKEN_CLIP, (uint32_t[]){ 0, 0, 179, 33, 217 }, 5);
-    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(500, 500), XY(502, 502) },
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(692, 321), XY(694, 323) },
                  2);
     assert_box(qts, 500, 500, 502, 502, 0x23);
     kona_command(qts, TOKEN_POSITION, (uint32_t[]){ 600, 100, 10, 10 }, 4);
-    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(5, 800), XY(7, 802) }, 2);
-    assert_box(qts, 5, 800, 7, 802, 0x23);
-    g_assert_cmphex(front_at(qts, 605, 900), ==, 0);
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(5, 700), XY(7, 702) }, 2);
+    assert_box(qts, 605, 800, 607, 802, 0x23);
+    g_assert_cmphex(front_at(qts, 5, 700), ==, 0);
     assert_in_step(qts);
 }
 
@@ -1426,9 +1462,12 @@ static void test_absolute_points(void)
     kona_command(qts, 0x141, (uint32_t[]){ XY(10, 20) }, 1);
     g_assert_cmphex(front_at(qts, 10, 20), ==, 0);
     kona_command(qts, 0x14c, (uint32_t[]){ XY(30, 40) }, 1);
-    g_assert_cmphex(front_at(qts, 10, 20), ==, 0x3c);
-    g_assert_cmphex(front_at(qts, 30, 40), ==, 0x3c);
-    g_assert_cmphex(front_at(qts, 110, 70), ==, 0);
+    /* The engine adds the position to every point, absolute or not. */
+    g_assert_cmphex(front_at(qts, 110, 70), ==, 0x3c);
+    g_assert_cmphex(front_at(qts, 130, 90), ==, 0x3c);
+    g_assert_cmphex(front_at(qts, 10, 20), ==, 0);
+    g_assert_cmphex(front_at(qts, 30, 40), ==, 0);
+    kona_command(qts, TOKEN_POSITION, (uint32_t[]){ 0, 0, 200, 200 }, 4);
     kona_command(qts, 0x143,
                  (uint32_t[]){ XY(50, 60), XY(70, 80), XY(90, 100) }, 3);
     g_assert_cmphex(front_at(qts, 50, 60), ==, 0);
@@ -1441,6 +1480,32 @@ static void test_absolute_points(void)
                   XY(1280, 0), XY(0, 1024), XY(-100, -100),
                   XY(2000, 2000) }, 6);
     g_assert_cmphex(front_at(qts, 0, 0), ==, 0);
+    assert_in_step(qts);
+}
+
+/*
+ * The engine's absolute and relative converters both add the position
+ * load's x and y: an absolute line (0x15b), a relative point (0x14f) and
+ * a segment pair (0x159) at position (100, 50) land that far from their
+ * coordinates, and a relative point's sum starts at the position.
+ */
+static void test_position_origin_for_lines_and_points(void)
+{
+    qtest_system_reset(qts);
+    load_point_gc(qts, 0x3c);
+    kona_command(qts, TOKEN_POSITION, (uint32_t[]){ 100, 50, 200, 200 }, 4);
+    kona_command(qts, 0x141, (uint32_t[]){ XY(10, 20) }, 1);
+    kona_command(qts, 0x15b, (uint32_t[]){ XY(14, 20) }, 1);
+    for (unsigned x = 110; x <= 114; x++) {
+        g_assert_cmphex(front_at(qts, x, 70), ==, 0x3c);
+    }
+    g_assert_cmphex(front_at(qts, 10, 20), ==, 0);
+    kona_command(qts, 0x14f, (uint32_t[]){ XY(30, 40) }, 1);
+    g_assert_cmphex(front_at(qts, 130, 90), ==, 0x3c);
+    g_assert_cmphex(front_at(qts, 30, 40), ==, 0);
+    kona_command(qts, 0x159, (uint32_t[]){ XY(50, 60), XY(52, 60) }, 2);
+    g_assert_cmphex(front_at(qts, 150, 110), ==, 0x3c);
+    g_assert_cmphex(front_at(qts, 50, 60), ==, 0);
     assert_in_step(qts);
 }
 
@@ -1782,7 +1847,7 @@ static void test_point_batch(gconstpointer opaque)
     }
     kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
     if (mode == 4) {
-        kona_command(s, TOKEN_POSITION, (uint32_t[]) { 100, 50, 200, 200 }, 4);
+        kona_command(s, TOKEN_POSITION, (uint32_t[]) { 0, 0, 200, 200 }, 4);
         kona_command(s, TOKEN_CLIP, (uint32_t[]) { 1, 10, 20, 70, 21 }, 5);
         kona_command(s, 0x12d, (uint32_t[]) { 20, 20, 16, 1 }, 4);
         kona_command(s, 0x13d, (uint32_t[]) { 5, 4, 1 }, 3);
@@ -1962,7 +2027,7 @@ static void test_solid_line_batch(gconstpointer opaque)
     }
     kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
     if (mode == 4) {
-        kona_command(s, TOKEN_POSITION, (uint32_t[]) { 100, 50, 200, 200 }, 4);
+        kona_command(s, TOKEN_POSITION, (uint32_t[]) { 0, 0, 200, 200 }, 4);
         kona_command(s, TOKEN_CLIP, (uint32_t[]) { 1, 11, 19, 26, 34 }, 5);
         kona_command(s, 0x12d, (uint32_t[]) { 12, 20, 12, 12 }, 4);
         kona_command(s, 0x13d, (uint32_t[]) { 5, 4, 1 }, 3);
@@ -2420,8 +2485,10 @@ static void test_relative_line_coordinates(gconstpointer opaque)
         }
         kona_command(s, 0x15d, (uint32_t[]) { XY(20, 20), XY(4, 0) }, 2);
         g_assert_cmphex(front_at(s, 10, 20), ==, 0);
+        /* The engine adds the position to the first point's offset. */
         for (unsigned x = 20; x <= 24; x++) {
-            g_assert_cmphex(front_at(s, x, 20), ==, 0x3c);
+            g_assert_cmphex(front_at(s, mode == 9 ? x : x + 100,
+                                     mode == 9 ? 20 : 70), ==, 0x3c);
         }
         g_assert_cmphex(front_at(s, 30, 40), ==, 0);
     }
@@ -3545,6 +3612,8 @@ int main(int argc, char **argv)
         add_data_case(name, GUINT_TO_POINTER(mode),
                       test_relative_point_coordinates);
     }
+    add_case("sn0/origin2000/kona-fill/position-origin-for-lines-and-points",
+             test_position_origin_for_lines_and_points);
     add_case("sn0/origin2000/kona-fill/absolute-points",
              test_absolute_points);
     add_case("sn0/origin2000/kona-fill/point-clipping",
@@ -3573,6 +3642,7 @@ int main(int argc, char **argv)
     add_case("sn0/origin2000/kona-fill/clip-list", test_clip_list);
     add_case("sn0/origin2000/kona-fill/rect-origin", test_rect_origin);
     add_case("sn0/origin2000/kona-fill/rect-runs", test_rect_runs);
+    add_case("sn0/origin2000/kona-fill/box-origin", test_box_origin);
     add_case("sn0/origin2000/kona-fill/reset-clears-gc-and-run",
              test_reset_clears_gc_and_run);
     add_case("sn0/origin2000/kona-fill/"

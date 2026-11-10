@@ -15619,9 +15619,13 @@ static void sgi_kona_x_load_gc(SGIKonaState *s, const uint32_t *args)
 /*
  * 0x12a, X load position: the target drawable's x, y, width and height, as
  * the X server's GC loader sends them. It is the origin of X rect
- * coordinates, see sgi_kona_x_fill_rect(). Box and pixel-write coordinates
- * arrive absolute, every sender of them setting the position to 0, 0 first,
- * so the model never adds it to those.
+ * coordinates, see sgi_kona_x_fill_rect(). The engine's absolute and
+ * relative point converters both add its x and y to each point
+ * (inferred, from the engine's converters; that they read the position
+ * words is established), so the model adds it to every point and line
+ * vertex and to both corners of a box too (inferred). Nearly every box
+ * sender zeroes the position first, so that rarely shows. Pixel-write
+ * coordinates arrive absolute and are not offset.
  */
 static void sgi_kona_x_load_position(SGIKonaState *s, const uint32_t *args)
 {
@@ -16268,10 +16272,12 @@ static bool sgi_kona_x_fill(SGIKonaState *s, int64_t x1, int64_t y1,
 static bool sgi_kona_x_fill_box(SGIKonaState *s, uint32_t w0, uint32_t w1,
                                  bool commit)
 {
-    int x1 = (int16_t)(w0 >> 16);
-    int y1 = (int16_t)w0;
-    int x2 = (int16_t)(w1 >> 16);
-    int y2 = (int16_t)w1;
+    int64_t ox = (int32_t)s->x_position[0];
+    int64_t oy = (int32_t)s->x_position[1];
+    int64_t x1 = (int16_t)(w0 >> 16) + ox;
+    int64_t y1 = (int16_t)w0 + oy;
+    int64_t x2 = (int16_t)(w1 >> 16) + ox;
+    int64_t y2 = (int16_t)w1 + oy;
 
     trace_sgi_kona_x_box(x1, y1, x2, y2, sgi_kona_x_gc_index(s->x_gc));
     return sgi_kona_x_fill(s, x1, y1, x2, y2, commit);
@@ -16416,8 +16422,9 @@ static bool sgi_kona_x_point_words(SGIKonaState *s, const uint32_t *words,
                                    bool commit)
 {
     for (unsigned i = 0; i < count; i++) {
-        int x = (int16_t)(words[i] >> 16);
-        int y = (int16_t)words[i];
+        int64_t x = (int16_t)(words[i] >> 16) +
+                    (int64_t)(int32_t)s->x_position[0];
+        int64_t y = (int16_t)words[i] + (int64_t)(int32_t)s->x_position[1];
 
         if (!sgi_kona_x_fill_source(s, x, y, x + 1, y + 1,
                                       background, commit)) {
@@ -16444,7 +16451,14 @@ static bool sgi_kona_x_relative_coordinates(uint32_t *words, unsigned count)
 {
     int x = 0, y = 0;
 
-    /* Relative packets use a fresh absolute anchor in the model. */
+    /*
+     * The sum starts at the drawable origin and restarts there at every
+     * command (inferred: the relative converter reads the position words,
+     * which is established, but that its sum starts from them, restarts at
+     * each command and chains point to point is read from its handlers).
+     * The model keeps it origin-relative: the position is added to every
+     * point where it is drawn, absolute and relative alike.
+     */
     for (unsigned i = 0; i < count; i++) {
         x += (int16_t)(words[i] >> 16);
         y += (int16_t)words[i];
@@ -16464,14 +16478,16 @@ static bool sgi_kona_x_relative_coordinates(uint32_t *words, unsigned count)
 static bool sgi_kona_x_segment(SGIKonaState *s, uint32_t first,
                                uint32_t last, bool endpoint, bool commit)
 {
-    int x = (int16_t)(first >> 16), y = (int16_t)first;
-    int x2 = (int16_t)(last >> 16), y2 = (int16_t)last;
-    int dx = abs(x2 - x), dy = -abs(y2 - y);
+    int64_t x = (int16_t)(first >> 16) + (int64_t)(int32_t)s->x_position[0];
+    int64_t y = (int16_t)first + (int64_t)(int32_t)s->x_position[1];
+    int64_t x2 = (int16_t)(last >> 16) + (int64_t)(int32_t)s->x_position[0];
+    int64_t y2 = (int16_t)last + (int64_t)(int32_t)s->x_position[1];
+    int64_t dx = llabs(x2 - x), dy = -llabs(y2 - y);
     int sx = x < x2 ? 1 : -1, sy = y < y2 ? 1 : -1;
-    int error = dx + dy;
+    int64_t error = dx + dy;
 
     while (x != x2 || y != y2) {
-        int twice = 2 * error;
+        int64_t twice = 2 * error;
 
         if (!sgi_kona_x_fill(s, x, y, x + 1, y + 1, commit)) {
             return false;

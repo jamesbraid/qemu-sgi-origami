@@ -94,7 +94,7 @@ sgi_kona_kernel_mem_region(uint32_t pool_class, uint32_t key, uint32_t offset, u
 # position added, both before clipping, and a run of data-token words:
 # taken, or dropped when a token other than an X box or rect ends it.
 sgi_kona_x_gc(uint32_t fg_h, uint32_t index) "fg_h 0x%x index 0x%x"
-sgi_kona_x_box(int x1, int y1, int x2, int y2, uint32_t index) "(%d, %d) to (%d, %d) index 0x%x"
+sgi_kona_x_box(int64_t x1, int64_t y1, int64_t x2, int64_t y2, uint32_t index) "(%" PRId64 ", %" PRId64 ") to (%" PRId64 ", %" PRId64 ") index 0x%x"
 sgi_kona_x_rect(int64_t x, int64_t y, uint32_t width, uint32_t height, uint32_t index) "(%" PRId64 ", %" PRId64 ") width %u height %u index 0x%x"
 sgi_kona_x_box_data(uint32_t token, unsigned int words) "token 0x%x words %u"
 sgi_kona_x_box_data_dropped(uint32_t words, uint32_t next) "%u box words dropped before 0x%x"

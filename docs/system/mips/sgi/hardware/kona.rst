@@ -806,6 +806,33 @@ polyline of two to six points. The sender sends the remainder's earlier
 points ahead of the token as data words, one to four of them for a
 polyline of two to five points, and they join the line.
 
+The engine's absolute and relative point converters both read the words
+the position load ``0x12a`` stores, the drawable's x and y (*established*),
+and add them to every point (*inferred*, from the engine handlers; that a
+relative sum chains point to point from that origin and restarts at the
+next token is likewise *inferred*). The X server's senders do not zero the
+position: its graphics-context load takes the drawable's own x and y, and
+zero comes only from the screen-wide senders (*established*). So the
+addition is what turns window-relative points into screen points. The
+model adds the position to every point and line vertex, absolute or
+relative, and keeps a relative sum origin-relative.
+
+Rectangles and boxes (``0x152`` to ``0x155``) take the same addition in the
+model, to both corners of a box (*inferred*: the pipe uses whatever position
+was last loaded, and nothing read shows a box exempt). Eighteen of the
+nineteen X-server box senders zero the position before a box, so the add
+rarely shows; the nineteenth reaches the position through a loader that
+writes computed values. The one recorded desktop session has four boxes
+after a nonzero origin among its 209 rectangle and box commands (201 are
+``0x152``, 4 are ``0x153``, 3 are ``0x154`` and 1 is ``0x155``), so the add
+does occur. A recorded command stream shows that the origin was nonzero,
+not where the box landed, so the session cannot separate "the box adds the
+origin" from "the box is exempt". A screen capture of a box drawn after a
+nonzero origin, with the position and the box words known, would: the box
+lands offset by the origin if it adds it, and at its own words if exempt.
+Pixel writes arrive absolute and are not offset; whether their senders zero
+the position first is *unknown*.
+
 The model takes a polyline token's words as its last
 vertices, after any vertices an earlier data token queued. A polyline
 that has fewer than two vertices in all draws no segment; whether it
