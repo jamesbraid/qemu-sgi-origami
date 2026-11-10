@@ -326,7 +326,7 @@ model maps. Where the two differ, the modelled size is an
      - 1 GiB
      - memory without ECC checking
    * - ``0x280000000``
-     - 4 GiB from ``0x200000000``
+     - *unknown*; the MACE page gives 2 GiB at ``0x280000000``, *inferred*
      - 2 GiB
      - MACE high PCI memory window; the model starts at ``0x280000000``
        (see :doc:`hardware/mace`)
