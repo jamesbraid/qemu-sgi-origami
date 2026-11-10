@@ -604,8 +604,17 @@ with each is *unknown*; the model's action is listed.
    * - ``0x1f5``, ``0x1f6``
      - 6, 2
      - Read-DMA bracket for pixel and select-mode returns.
-   * - ``0x1e4``, ``0x1e1``, ``0x172``
-     - 4, 4, 1
+   * - ``0x1e4``
+     - 4
+     - Pipe-memory reserve (privileged): kind, key, page, count. Kind 0
+       with key 0 stores the attribute stack's store, base = ARM base +
+       page x 2 KiB and size = count x 2 KiB, which the push handler
+       reads (*established* for the routine; that kind 0 selects it is
+       *inferred*). Any other key changes nothing. The model takes a
+       display-list region as relocating list addresses and consumes
+       the rest.
+   * - ``0x1e1``, ``0x172``
+     - 4, 1
      - Pipe-memory pool packets. A display-list region relocates list
        addresses; the rest are consumed.
    * - ``0x1e3``, ``0x1e2``
@@ -698,7 +707,24 @@ token has no read-back start, so a bare send gets no completion word
 offset 8 of the return page, with gaps, then 12 words per light) are not
 mapped to state (*unknown*). The model frames
 the word, logs ``LOG_UNIMP`` and posts no reply, so a client that sends it
-waits. A captured context-copy exchange would settle it.
+waits. The firmware also injects the token inside a push's read-back, only
+when the mask has the lighting bit ``0x40`` (*established*); there the
+push's completion ends the client's wait. A captured context-copy exchange
+would settle it.
+
+The push-attributes token ``0xc9`` takes the attribute mask, and the client
+waits on the return page after every push. The pipe's handler opens the
+read-back before it tests the mask and closes it on every path, a push onto
+a full stack included (*established*, as are the 19 mask bits it tests).
+That the finish handler then leaves a non-zero completion word, so each
+``0xc9`` completes, is *inferred*, as for every query. Bits ``0x10000`` and ``0x20000`` are never tested and send
+nothing, so a push of ``0x20000`` is an ordering wait. The model completes
+every push: with no context current the reply is the completion word alone.
+A mask naming the texture (``0x40000``) or transform (``0x1000``) group gets
+the groups the model holds and none of those two groups' words, whose sizes
+are *unknown*, an *approximation* that logs ``LOG_UNIMP``; the placement of
+a section after an unsized ``0x1000`` section is likewise unknown. The
+model's pop restores the texture and transform state it holds.
 
 The restart token ``0x1bc`` takes one word, 0. The client sends it when an
 instruments buffer is registered again, and the pipe reprograms its

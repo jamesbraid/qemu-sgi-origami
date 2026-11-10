@@ -10448,7 +10448,8 @@ static void sgi_kona_reply_material(uint8_t *w, const SGIGLMaterial *m)
  *   0x10   the stipple's 32 rows, leftmost pixel in the high bit
  *
  * Texture (0x40000) and transform (0x1000) sections have no complete
- * model reply and are refused before reaching this serializer.
+ * model reply: their sizes are unknown, so they add no words, an
+ * approximation (sgi_kona_gl_push_attrib() logs it).
  * Returns the reply's bytes.
  */
 static uint32_t sgi_kona_gl_push_reply(SGIKonaState *s, int i, uint32_t mask,
@@ -10518,6 +10519,16 @@ static uint32_t sgi_kona_gl_push_reply(SGIKonaState *s, int i, uint32_t mask,
  * SGI_KONA_GL_ATTRIB_DEPTH copies, OpenGL 1.2.1's least; a push onto a
  * full stack is logged and keeps nothing, as GL_STACK_OVERFLOW requires,
  * but is still answered, since the client waits either way.
+ *
+ * The pipe's handler opens the read-back before it looks at the mask and
+ * closes it on every path, whatever the mask and the stack (established,
+ * as are the 19 mask bits it tests). That the finish handler then leaves
+ * a non-zero completion word, so each push completes, is inferred, as for
+ * every query. The model answers a push with no context current the same
+ * way: the reply is the completion word alone. A mask
+ * naming the texture or transform group is answered with the groups the
+ * model holds and the rest of its words unwritten, an approximation, with
+ * LOG_UNIMP.
  */
 static void sgi_kona_gl_push_attrib(SGIKonaState *s, uint32_t mask)
 {
@@ -10531,14 +10542,15 @@ static void sgi_kona_gl_push_attrib(SGIKonaState *s, uint32_t mask)
 
     if (i == SGI_KONA_CONTEXT_NONE) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glPushAttrib with no current"
-                      " context; no reply\n");
+                      " context; completion word only\n");
+        trace_sgi_kona_gl_reply(SGI_KONA_CMD_GL_PUSH_ATTRIB, mask, 0);
+        sgi_kona_post_return(s, SGI_KONA_CMD_GL_PUSH_ATTRIB, 4, NULL, 0);
         return;
     }
     if (mask & (0x40000 | 0x1000)) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glPushAttrib mask 0x%" PRIx32
                       " requests unmodelled texture or transform data;"
-                      " no reply\n", mask);
-        return;
+                      " those words are not written\n", mask);
     }
     len = sgi_kona_gl_push_reply(s, i, mask, reply, sizeof(reply));
     depth = &s->state[i]->attrib_depth;

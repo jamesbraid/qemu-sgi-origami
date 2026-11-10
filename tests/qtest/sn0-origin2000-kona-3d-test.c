@@ -2805,8 +2805,14 @@ static void test_native_attrib_depth_reset(void)
     assert_attrib_depth(qts, 1);
 }
 
-/* A refused push must not add an entry above a supported saved group. */
-static void test_push_attrib_refused(gconstpointer opaque)
+/*
+ * A push naming the texture or transform group completes: the pipe closes
+ * the read-back on every path. The model answers with the groups it holds,
+ * keeps its copy and says so in the log. The second push here keeps the
+ * red it was made under, so its pop brings red back and the pop below it
+ * brings the first push's colour.
+ */
+static void test_push_attrib_completes(gconstpointer opaque)
 {
     uint32_t mask = GPOINTER_TO_UINT(opaque);
     g_autofree char *log = NULL, *found = NULL;
@@ -2819,7 +2825,14 @@ static void test_push_attrib_refused(gconstpointer opaque)
     kona_command_f(s, 0x6b, (float[]){ 1, 0, 0, 1 }, 4);
     prepare_refused_reply(s);
     kona_command(s, 0xc9, (uint32_t[]){ mask | 1 }, 1);
-    assert_reply_unchanged(s);
+    assert_reply_posted(s);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 4), ==, fbits(1));
+    assert_attrib_depth(s, 2);
+    kona_command_f(s, 0x6b, (float[]){ 0, 1, 0, 1 }, 4);
+    kona_command(s, 0xc8, (uint32_t[]){ 0 }, 1);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xb00 }, 1);
+    assert_reply_posted(s);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, fbits(1));
     assert_attrib_depth(s, 1);
     kona_command(s, 0xc8, (uint32_t[]){ 0 }, 1);
     kona_command(s, 0x4c, (uint32_t[]){ 0xb00 }, 1);
@@ -2831,7 +2844,23 @@ static void test_push_attrib_refused(gconstpointer opaque)
     g_assert_nonnull(strstr(found, "sgi-kona: glPushAttrib"));
 }
 
-/* The outgoing page exists, but reads and pushes need a current context. */
+/*
+ * The all-attributes mask, glPushAttrib(GL_ALL_ATTRIB_BITS), completes
+ * too: it carries both unmodelled groups and every modelled one.
+ */
+static void test_push_attrib_all_bits_completes(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    prepare_refused_reply(s);
+    kona_command(s, 0xc9, (uint32_t[]){ 0xfffff }, 1);
+    assert_reply_posted(s);
+    assert_attrib_depth(s, 1);
+    qtest_quit(s);
+}
+
+/* The outgoing page exists, but reads need a current context. */
 static void test_reply_without_context_refused(void)
 {
     QTestState *s = qtest_init(MACHINE_ARGS);
@@ -2841,8 +2870,9 @@ static void test_reply_without_context_refused(void)
     prepare_refused_reply(s);
     kona_command(s, 0x39, (uint32_t[]){ 0, 0, 1, 1, 0x1908, 0x1401, 0 }, 7);
     assert_reply_unchanged(s);
+    /* The push still completes, with the completion word alone. */
     kona_command(s, 0xc9, (uint32_t[]){ 1 }, 1);
-    assert_reply_unchanged(s);
+    assert_reply_posted(s);
     kona_command(s, 0x4c, (uint32_t[]){ 0xb00 }, 1);
     assert_reply_unchanged(s);
     qtest_quit(s);
@@ -4448,8 +4478,10 @@ static void test_native_hints_attrib(void)
         prepare_refused_reply(qts);
         kona_command(qts, 0xc9,
                      (uint32_t[]){ 0x8000 | (k ? 0x1000 : 0x40000) }, 1);
-        assert_reply_unchanged(qts);
+        assert_reply_posted(qts);
         assert_hints(qts, hints_a);
+        assert_attrib_depth(qts, 1);
+        kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
         assert_attrib_depth(qts, 0);
     }
     for (unsigned k = 0; k < 16; k++) {
@@ -4854,8 +4886,10 @@ static void test_native_query_attrib(void)
     set_native_query_state(qts, &native_query_b);
     prepare_refused_reply(qts);
     kona_command(qts, 0xc9, (uint32_t[]){ 0x3400 }, 1);
-    assert_reply_unchanged(qts);
-    assert_attrib_depth(qts, 1);
+    assert_reply_posted(qts);
+    assert_attrib_depth(qts, 2);
+    assert_native_query_state(qts, &native_query_b, false);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
     assert_native_query_state(qts, &native_query_b, false);
     kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
     assert_native_query_state(qts, &native_query_a, false);
@@ -21107,10 +21141,12 @@ int main(int argc, char **argv)
                   GINT_TO_POINTER(false), test_read_destination_refused);
     add_data_case("sn0/origin2000/kona-3d/read-failed-page-refused",
                   GINT_TO_POINTER(true), test_read_destination_refused);
-    add_data_case("sn0/origin2000/kona-3d/push-texture-refused",
-                  GUINT_TO_POINTER(0x40000), test_push_attrib_refused);
-    add_data_case("sn0/origin2000/kona-3d/push-transform-refused",
-                  GUINT_TO_POINTER(0x1000), test_push_attrib_refused);
+    add_data_case("sn0/origin2000/kona-3d/push-texture-completes",
+                  GUINT_TO_POINTER(0x40000), test_push_attrib_completes);
+    add_data_case("sn0/origin2000/kona-3d/push-transform-completes",
+                  GUINT_TO_POINTER(0x1000), test_push_attrib_completes);
+    add_case("sn0/origin2000/kona-3d/push-all-bits-completes",
+             test_push_attrib_all_bits_completes);
     add_case("sn0/origin2000/kona-3d/reply-without-context-refused",
              test_reply_without_context_refused);
 
