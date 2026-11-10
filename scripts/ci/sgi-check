@@ -414,6 +414,24 @@ def merge_base(base):
         return None
 
 
+# The pages mark register tables whose reset values this qtest reads back
+# from the model, so an edit to the extractor or to a marked page runs it.
+REGISTER_TABLES = 'scripts/ci/sgi-register-tables.py'
+REGISTER_TEST = 'sgi-register-reset-test'
+MANUAL_PAGES = 'docs/system/mips/sgi'
+REGISTER_MARKER = '.. sgi-registers:'
+
+
+def register_tables_edited(path):
+    """Say whether an edited path can change what the register test reads."""
+    if path == REGISTER_TABLES:
+        return True
+    page = SOURCE / path
+    return (path.startswith(MANUAL_PAGES + '/') and path.endswith('.rst') and
+            page.is_file() and
+            REGISTER_MARKER in page.read_text(encoding='utf-8'))
+
+
 def select_qtests(build, base):
     """Choose the qtests a pull request runs: the ones whose files it edits.
 
@@ -422,7 +440,8 @@ def select_qtests(build, base):
     An edited test source selects that test, or each of its groups when
     it is split into groups, as does an edited groups file, and a change
     confined to meson.build's per-test tables selects the tests whose
-    entries changed.
+    entries changed. An edit to the register table extractor or to a page
+    that marks register tables selects sgi-register-reset-test.
     Nothing else selects a test. Code a test reaches, shared test helpers
     and edits to meson.build outside the tables select none: the full run
     runs every qtest before a land, and the registration check in the
@@ -442,9 +461,12 @@ def select_qtests(build, base):
                  'qtests are unknown; fetch more history')
     selected = set()
     paths = output(['git', '-C', SOURCE, 'diff', '--name-only', fork,
-                    'HEAD', '--', 'tests/qtest']).splitlines()
+                    'HEAD', '--', 'tests/qtest', REGISTER_TABLES,
+                    MANUAL_PAGES]).splitlines()
     for path in paths:
-        if path.endswith('.c') and (SOURCE / path).is_file():
+        if register_tables_edited(path):
+            selected |= qtest_targets(REGISTER_TEST) & registered
+        elif path.endswith('.c') and (SOURCE / path).is_file():
             selected |= qtest_targets(Path(path).stem) & registered
         elif (path.endswith(QTEST_GROUPS) and
                 (SOURCE / path).is_file()):
