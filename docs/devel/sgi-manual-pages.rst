@@ -252,7 +252,9 @@ two comments on one table apart.
 ``lane=4`` adds 4 bytes to every address the test reads, for registers kept in
 the low half of an eight-byte slot, and ``stride=8`` spaces the registers
 of a range such as ``0x130``-``0x168`` by slot rather than by access width.
-The offsets in the output stay the page's.
+``xor=2`` XORs every offset with 2 first, for the halfword registers behind
+a Bridge, which places a narrow access by address lane. The offsets in the
+output stay the page's.
 A row whose Offset is relative to its unit, such as "link +0x08", takes
 ``units=0x100:0x40:8`` (base, stride, count) and is read once per unit.
 
