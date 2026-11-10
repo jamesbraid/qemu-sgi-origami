@@ -66,6 +66,7 @@ extensions = [
     'qapi_domain',
     'qapidoc',
     'qmp_lexer',
+    'sgidiagram',
     'sgiref',
     'sgirun',
 ]
