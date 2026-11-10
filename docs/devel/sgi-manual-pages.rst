@@ -253,6 +253,8 @@ two comments on one table apart.
 the low half of an eight-byte slot, and ``stride=8`` spaces the registers
 of a range such as ``0x130``-``0x168`` by slot rather than by access width.
 The offsets in the output stay the page's.
+A row whose Offset is relative to its unit, such as "link +0x08", takes
+``units=0x100:0x40:8`` (base, stride, count) and is read once per unit.
 
 A Reset cell of comma-separated numbers beside the same number of offsets
 (``0x00010000``, 0 beside ``0x240``, ``0x244``) gives one value to each.

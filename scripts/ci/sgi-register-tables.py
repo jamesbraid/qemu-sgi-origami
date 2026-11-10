@@ -43,6 +43,9 @@ continue on indented lines. Keys:
   lane     bytes added to every address the test reads or writes (not to
            the offsets printed), for registers kept in one half of a
            wider slot: lane=4 reads a 32-bit register at its slot + 4;
+  units    BASE:STRIDE:COUNT, the places that repeat for a row whose Offset
+           is relative to its unit, such as "link ``+0x08``" (units=
+           0x100:0x40:8 reads it at 0x108, 0x148 and so on);
   stride   bytes between the registers of a range such as 0x130-0x168
            when that is not the access width (stride=8 for 8-byte slots);
   count    how many copies "n" runs over in an offset such as
@@ -87,7 +90,7 @@ PAGES = 'docs/system/mips/sgi'
 MARKER = re.compile(r'\.\.\s+sgi-registers:(.*)')
 KEYS = {'qemu', 'base', 'width', 'map', 'variant', 'skip', 'expect',
         'setup', 'select', 'skiprow', 'count', 'label', 'lane',
-        'stride'}
+        'stride', 'units'}
 WIDTHS = (8, 16, 32, 64)
 NO_RESET = {'', 'n/a', 'none', 'unknown', 'unsupported', '-'}
 NUMBER = re.compile(r'(?:0x[0-9a-fA-F]+|\d+)$')
@@ -177,6 +180,12 @@ def parse_marker(text):
             options['stride'] = int(options['stride'], 0)
             if options['stride'] < 1:
                 raise ValueError
+        if 'units' in options:
+            base, stride, count = (int(v, 0) for v in
+                                   options['units'].split(':'))
+            if count < 1 or stride < 1:
+                raise ValueError
+            options['units'] = [base + stride * n for n in range(count)]
         if 'count' in options:
             options['count'] = int(options['count'])
             if options['count'] < 1:
@@ -265,7 +274,7 @@ def column(header, *names):
     return None
 
 
-def offsets(cell, width, count=None, stride_bytes=None):
+def offsets(cell, width, count=None, stride_bytes=None, units=None):
     """List the byte offsets a table's Offset cell names."""
     text = cell.replace('``', '')
     stride = re.fullmatch(r'\s*(0x[0-9a-fA-F]+)\s*\+\s*(0x[0-9a-fA-F]+|\d+)'
@@ -275,6 +284,13 @@ def offsets(cell, width, count=None, stride_bytes=None):
             raise Error(f'{cell!r} needs count= in the marker')
         return [int(stride.group(1), 16) + int(stride.group(2), 0) * n
                 for n in range(count)]
+    unit = re.fullmatch(r'\s*[A-Za-z]+\s+(\+0x[0-9a-fA-F]+'
+                        r'(?:\s*,\s*\+0x[0-9a-fA-F]+)*)\s*', text)
+    if unit:
+        if units is None:
+            raise Error(f'{cell!r} needs units= in the marker')
+        return [first + int(rel, 16) for first in units
+                for rel in re.findall(r'0x[0-9a-fA-F]+', unit.group(1))]
     pieces = re.split(r'(0x[0-9a-fA-F]+)', text)
     values = [int(p, 16) for p in pieces[1::2]]
     joints = [re.sub(r'\s+', ' ', p).strip() for p in pieces[2:-1:2]]
@@ -368,7 +384,7 @@ def build(page, table, marker_text, number):
             if c_name is not None else ''
         try:
             where = offsets(cells[c_off], width, options.get('count'),
-                            options.get('stride'))
+                            options.get('stride'), options.get('units'))
         except Error as exc:
             raise Error(f'{page}:{line}: {exc}')
         kind, got = reset_value(cells[c_reset], variant)
