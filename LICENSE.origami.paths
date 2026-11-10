@@ -445,6 +445,7 @@ scripts/ci/runner-setup
 scripts/ci/sgi-check
 scripts/ci/sgi-docs-lint.py
 scripts/ci/sgi-docs-model-check.py
+scripts/ci/sgi-register-tables.py
 scripts/ci/test_sgi_check.py
 scripts/performance/compare-system.py
 scripts/sgi-model.py
@@ -560,6 +561,7 @@ scripts/tests/test_sgi_docs_citations.py
 scripts/tests/test_sgi_running_pages.py
 scripts/tests/test_sgi_docs_lint.py
 scripts/tests/test_sgi_docs_model_check.py
+scripts/tests/test_sgi_register_tables.py
 scripts/tests/test_sgi_synthetic_serial.py
 subprojects/libslirp.wrap
 target/mips/r10k.h

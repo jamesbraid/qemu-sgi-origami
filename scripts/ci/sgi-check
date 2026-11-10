@@ -89,6 +89,7 @@ SCRIPT_SUITES = MODEL_SUITES + [
     'scripts/tests/test_sgi_docs_publish_workflow.py',
     'scripts/tests/test_sgi_docs_lint.py',
     'scripts/tests/test_sgi_docs_model_check.py',
+    'scripts/tests/test_sgi_register_tables.py',
     'scripts/tests/test_sgi_docs_citations.py',
     'scripts/tests/test_sgi_running_pages.py',
     'scripts/test_sanitizer_workflow.py',
@@ -326,6 +327,10 @@ def docs(args):
     # the catalogue the emulator offers, so a page cannot go stale.
     run([args.python or sys.executable, '-B',
          SOURCE / 'scripts/ci/sgi-docs-model-check.py'])
+    # Reset values the pages mark are read back from the model by
+    # tests/qtest/sgi-register-reset-test.c; this validates the markers.
+    run([args.python or sys.executable, '-B',
+         SOURCE / 'scripts/ci/sgi-register-tables.py'])
     with tempfile.TemporaryDirectory() as out:
         run([args.python or sys.executable, '-m', 'sphinx', '-W', '--keep-going',
              '-q', '-b', 'html', '-d', os.path.join(out, 'doctrees'),
