@@ -156,6 +156,11 @@ Offsets are from the mapped base. Widths are the specification's. "Reset"
 is the value after a device reset in the model. The specification page
 column gives the page of the field table.
 
+.. sgi-registers: base=0x17000000 access=64
+   skiprow="Local memories:memories"
+   map=/machine/peripheral/vice:0:0x17000000
+   qemu="-M none -m 32M -cpu R10000 -device sgi-vice,id=vice,part-id=225,device-clock-hz=50000000,msp-clock-hz=66000000,stable-reference=on"
+
 .. list-table::
    :header-rows: 1
 
