@@ -73,6 +73,39 @@ that each named test exists, and
 ``tests/functional/mips64/test_sgi_manual_commands.py`` starts each
 command on a built emulator.
 
+A platform page draws its topologies with ``.. sgi-diagram:: <platform or
+product>`` in a short "Topology diagrams" section. The argument is a
+platform (``ip27``, as the running pages name them) or a catalogue
+product. The directive renders one inline SVG for each topology the
+catalogue offers for it when the manual is built
+(``scripts/sgi_model/topology_diagram.py``), so the structure cannot
+drift from the catalogue. It draws the nodes, routers, crossbars, PCI
+host bridges, I/O boards, slots, modules and controllers the catalogue
+lists and a link for each cable and widget, labelled with the cable name
+and ports or the widget number. It reads ``xio-attachments`` as the machine builder does for the node's
+ASIC. For a Hub, a node's first entry on a crossbar is its host link and
+later entries place its I/O boards in order; each board's ``attachment``
+field is then not an index. For a Bedrock, each board's ``attachment`` is
+the index of its entry, and behind a cable the node's entries are its
+XBridge's heads (widgets 14 and 15), drawn at the crossbar. The Octane's
+HEART and Bridge are at widgets 8 and 15. Where the catalogue does not
+say where a device attaches, the device sits in a box with no link.
+
+The diagram is drawn from the catalogue, not from the hardware, so the
+section's text rates it: a widget or slot wiring the page already states
+keeps that sentence's rating by linking to it, and wiring the diagram
+takes from slot names or the catalogue's numbering alone is rated
+*inferred* or *approximation*. Never rate a drawn widget *established*
+without a source. Do not hand-draw a topology that the directive covers.
+
+``scripts/tests/test_sgi_topology_diagrams.py`` works out each topology's
+parts and each link's endpoints and widget from the catalogue and checks
+that the picture draws exactly those, that a catalogue change changes the
+picture, that every platform page draws every product its running page
+covers, and that each picture is accessible, under 30 KiB, readable on a
+light and a dark page and the same on every build. Every diagram starts
+open, so a printed or static copy shows it.
+
 Facts
 -----
 

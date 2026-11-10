@@ -92,6 +92,7 @@ SCRIPT_SUITES = MODEL_SUITES + [
     'scripts/tests/test_sgi_register_tables.py',
     'scripts/tests/test_sgi_docs_citations.py',
     'scripts/tests/test_sgi_running_pages.py',
+    'scripts/tests/test_sgi_topology_diagrams.py',
     'scripts/test_sanitizer_workflow.py',
 ]
 
