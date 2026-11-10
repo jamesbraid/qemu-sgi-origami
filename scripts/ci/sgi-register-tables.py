@@ -206,7 +206,7 @@ def offsets(cell, width):
         if joint in ('-', 'to'):
             pending_range = (result.pop(), value)
             result.extend(range(pending_range[0], value + 1, step))
-        elif joint == ',':
+        elif joint in (',', '/'):
             result.append(value)
         else:
             raise Error(f'cannot read the offsets in {cell!r}')
@@ -259,9 +259,14 @@ def build(page, table, marker_text, number):
         need = max(c_off, c_reset, c_width or 0, c_name or 0)
         if len(cells) <= need:
             raise Error(f'{page}:{line}: row has too few cells')
+        per_offset = None
         if c_width is not None:
             found = re.search(r'\d+', cells[c_width])
             width = int(found.group()) if found else None
+            if '/' in cells[c_width]:
+                # "64 / 32" beside "0x08 / 0x0c": one width for each offset.
+                per_offset = [int(w) for w in
+                              re.findall(r'\d+', cells[c_width])]
             if width not in WIDTHS:
                 if options.get('width') in WIDTHS and not found:
                     width = options['width']
@@ -278,13 +283,17 @@ def build(page, table, marker_text, number):
             raise Error(f'{page}:{line}: {exc}')
         kind, got = reset_value(cells[c_reset], variant)
         if kind == 'value' and got is None:
-            raise Error(f'{page}:{line}: Reset cell {cells[c_reset]!r} '
-                        f'has no value for variant {variant!r}')
+            kind, got = 'nothing', cells[c_reset]
         if variant is not None and re.search(
                 r'\bon\s+' + re.escape(variant) + r'\b', cells[c_reset],
                 re.I):
             seen_variant = True
-        for offset in where:
+        if per_offset is not None and len(per_offset) != len(where):
+            raise Error(f'{page}:{line}: {len(per_offset)} widths for '
+                        f'{len(where)} offsets')
+        for index, offset in enumerate(where):
+            if per_offset is not None:
+                width = per_offset[index]
             where_ = f'{page}:{line}: offset {offset:#x}'
             note = None
             if offset in options['expect']:
@@ -303,6 +312,9 @@ def build(page, table, marker_text, number):
                                 'a reason, as skip=OFFSET:reason')
                 kind_here = 'skip'
                 got_here = reason or ('listed in skip=: ' + str(got))
+            elif kind == 'nothing':
+                raise Error(f'{where_}: Reset cell {got!r} has no value '
+                            f'for variant {variant!r}')
             elif kind == 'prose':
                 raise Error(f'{where_}: Reset cell {got!r} is not a '
                             'number; name the offset in skip= if it '

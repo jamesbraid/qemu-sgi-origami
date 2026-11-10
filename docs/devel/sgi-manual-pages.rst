@@ -194,8 +194,9 @@ regions first (repeat it for several).
 --json``, starts each configuration, reads every documented register and
 fails with ``page:line`` when the model reads another value, so the page
 is the only source of the expected values. Offsets may be a list
-(``0x08``, ``0x10``) or a range (``0x20``-``0x3c``, read at the table's
-width). Several comments above one table check it in several
+(``0x08``, ``0x10``), a range (``0x20``-``0x3c``, read at the table's
+width) or a pair such as ``0x08`` / ``0x0c`` beside the Width cell
+``64 / 32``. Several comments above one table check it in several
 configurations. A cell that lists a value per variant, ``0; 0x8118 on
 revision F``, takes the plain value, or the labelled one when the comment
 says ``variant="revision F"``.

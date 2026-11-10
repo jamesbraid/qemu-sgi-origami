@@ -173,6 +173,29 @@ class RegisterTablesTest(unittest.TestCase):
         errors = scan(text, skip='0x38')[3]
         self.assertTrue(any('markers but 0 tables' in e for e in errors))
 
+    def test_slash_pairs_each_offset_with_its_width(self):
+        text = PAGE.replace('     - Reset\n', '     - Width\n     - Reset\n')
+        out = []
+        for row in text.split('\n'):
+            out.append(row)
+            if row.strip() == '- Two':
+                out[-2] = '   * - ``0x08`` / ``0x0c``'
+                out.append('     - 64 / 32')
+            elif row.startswith('     - ') and row.strip() in (
+                    '- Control', '- Range', '- Write only', '- Prose'):
+                out.append('     - 64')
+        cases, _, _, errors = scan('\n'.join(out), skip='0x38')
+        self.assertEqual(errors, [])
+        regs = {r['offset']: r['width'] for r in cases[0]['registers']}
+        self.assertEqual((regs['0x8'], regs['0xc']), (64, 32))
+
+    def test_expect_may_pin_a_cell_with_no_plain_value(self):
+        text = PAGE.replace('``0x20000001``', '1 on read')
+        cases, _, _, errors = scan(text, skip='0x38', expect='0x0:1')
+        self.assertEqual(errors, [])
+        regs = {r['offset']: r['expect'] for r in cases[0]['registers']}
+        self.assertEqual(regs['0x0'], '0x1')
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])
