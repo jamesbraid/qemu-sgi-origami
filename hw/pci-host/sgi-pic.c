@@ -428,14 +428,82 @@ static MemTxResult pic_linked_write(void *opaque, hwaddr addr, uint64_t value,
     return pic_linked_rw(opaque, addr, bytes + 8 - size, size, true);
 }
 
+typedef MemTxResult (*PICSwapRW)(void *opaque, hwaddr addr, void *buffer,
+                                 size_t size, bool write, MemTxAttrs attrs);
+
+/*
+ * A byte-swapped DMA puts the byte addressed at a at a ^ lane_xor, which
+ * reverses the bytes of each aligned (lane_xor + 1)-byte data phase in
+ * place: a 32-bit phase for a 32-bit requester, a 64-bit phase for one
+ * that drives REQ64#. The bytes an access covers within one phase stay
+ * contiguous under that, so each phase moves as one transfer of just
+ * those bytes, reversed, and an aligned 16-bit or 32-bit field a device
+ * writes reaches memory whole. A burst as a whole is not atomic: a
+ * processor can see one phase updated before the next.
+ *
+ * Accesses arrive as naturally aligned pieces of at most 8 bytes, the
+ * memory core's cut of the device's transfer. A partial phase of 3, 5, 6
+ * or 7 bytes at a ragged end therefore moves as two or three pieces where
+ * the hardware is expected to write it once, an approximation; no piece
+ * splits an aligned field.
+ *
+ * No PIC specification is held. The exchange within a data phase, one
+ * byte-enabled memory write per phase and the enabled bytes only at a
+ * ragged end are inferred from the sibling XBridge's DMA data path. The
+ * swap attribute is direct64 address bit 55, whose clear state selects
+ * the exchange, as on the XBridge. In the 32-bit direct window the swap
+ * comes from the requester's Device register bit 19, a per-device setting
+ * rather than an address bit, but the model exchanges bytes when that bit
+ * is set: the opposite sense to bit 55 and to the XBridge's bit 19, kept
+ * from the fixture model until a guest settles it.
+ */
+static MemTxResult pic_swapped_rw(PICSwapRW rw, void *opaque, hwaddr addr,
+                                  uint8_t *bytes, size_t size, bool write,
+                                  unsigned lane_xor, MemTxAttrs attrs)
+{
+    while (size) {
+        size_t run = MIN(size, lane_xor + 1 - (addr & lane_xor));
+        uint8_t word[8];
+        MemTxResult result;
+        size_t i;
+
+        for (i = 0; i < run; i++) {
+            word[run - 1 - i] = bytes[i];
+        }
+        result = rw(opaque, (addr + run - 1) ^ lane_xor, word, run, write,
+                    attrs);
+        if (!write) {
+            for (i = 0; i < run; i++) {
+                bytes[i] = word[run - 1 - i];
+            }
+        }
+        if (result != MEMTX_OK) {
+            return result;
+        }
+        addr += run;
+        bytes += run;
+        size -= run;
+    }
+    return MEMTX_OK;
+}
+
+static MemTxResult pic_linked_swap_rw(void *opaque, hwaddr addr,
+                                      void *buffer, size_t size, bool write,
+                                      MemTxAttrs attrs)
+{
+    return pic_linked_rw(opaque, addr, buffer, size, write);
+}
+
 static MemTxResult pic_linked_swap_read(void *opaque, hwaddr addr,
                                         uint64_t *value, unsigned size,
                                         MemTxAttrs attrs)
 {
-    uint8_t byte;
-    MemTxResult result = pic_linked_rw(opaque, addr ^ 3, &byte, 1, false);
+    uint8_t bytes[8] = { 0 };
+    MemTxResult result = pic_swapped_rw(pic_linked_swap_rw, opaque, addr,
+                                        bytes + 8 - size, size, false, 3,
+                                        attrs);
 
-    *value = byte;
+    *value = ldq_be_p(bytes);
     return result;
 }
 
@@ -443,9 +511,11 @@ static MemTxResult pic_linked_swap_write(void *opaque, hwaddr addr,
                                          uint64_t value, unsigned size,
                                          MemTxAttrs attrs)
 {
-    uint8_t byte = value;
+    uint8_t bytes[8];
 
-    return pic_linked_rw(opaque, addr ^ 3, &byte, 1, true);
+    stq_be_p(bytes, value);
+    return pic_swapped_rw(pic_linked_swap_rw, opaque, addr, bytes + 8 - size,
+                          size, true, 3, attrs);
 }
 
 static bool pic_direct64_valid(SGIPICDMA *dma, hwaddr address, size_t size)
@@ -477,41 +547,39 @@ static bool pic_direct64_valid(SGIPICDMA *dma, hwaddr address, size_t size)
     return true;
 }
 
-static MemTxResult pic_direct64_rw(SGIPICDMA *dma, hwaddr address,
-                                   void *buffer, size_t size, bool write)
+/* One packet of a direct64 transfer, to the widget address packet. */
+static MemTxResult pic_direct64_send(void *opaque, hwaddr packet,
+                                     void *buffer, size_t size, bool write,
+                                     MemTxAttrs attrs)
 {
+    SGIPICDMA *dma = opaque;
     SGIPICHead *head = dma->head;
-    SGIPICState *pic = head->pic;
-    uint64_t payload = address & ((UINT64_C(1) << 48) - 1);
-    uint8_t *bytes = buffer;
     SGIXioSource source = {
         .widget_known = true,
         .device_known = false,
         .widget = REG(head, 0x20) & 0xf,
     };
-    unsigned widget = address >> 60;
+
+    return pic_send_typed(head->pic, packet, buffer, size, write, &source);
+}
+
+static MemTxResult pic_direct64_rw(SGIPICDMA *dma, hwaddr address,
+                                   void *buffer, size_t size, bool write)
+{
+    SGIPICHead *head = dma->head;
+    uint64_t payload = address & ((UINT64_C(1) << 48) - 1);
+    hwaddr packet = (hwaddr)(address >> 60) * SGI_XIO_PACKET_SIZE + payload;
     unsigned lane_xor = head->dma_64bit & BIT(dma->slot) ? 7 : 3;
-    size_t i;
 
     if (!pic_direct64_valid(dma, address, size)) {
         return MEMTX_DECODE_ERROR;
     }
     if (address & (UINT64_C(1) << 55)) {
-        return pic_send_typed(pic, (hwaddr)widget * SGI_XIO_PACKET_SIZE +
-                              payload, buffer, size, write, &source);
+        return pic_direct64_send(dma, packet, buffer, size, write,
+                                 MEMTXATTRS_UNSPECIFIED);
     }
-
-    for (i = 0; i < size; i++) {
-        hwaddr packet = (hwaddr)widget * SGI_XIO_PACKET_SIZE +
-                        ((payload + i) ^ lane_xor);
-        MemTxResult result = pic_send_typed(pic, packet, bytes + i, 1,
-                                            write, &source);
-
-        if (result != MEMTX_OK) {
-            return result;
-        }
-    }
-    return MEMTX_OK;
+    return pic_swapped_rw(pic_direct64_send, dma, packet, buffer, size, write,
+                          lane_xor, MEMTXATTRS_UNSPECIFIED);
 }
 
 static MemTxResult pic_direct64_read(void *opaque, hwaddr addr,
@@ -543,7 +611,12 @@ static const MemoryRegionOps pic_direct64_ops = {
     .valid.unaligned = true,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
-    .impl.unaligned = true,
+    /*
+     * Aligned pieces only: the memory core then cuts a device's transfer
+     * into naturally aligned 1-, 2-, 4- and 8-byte pieces, which never
+     * split an aligned field of up to 8 bytes. Unaligned 8-byte pieces
+     * from an unaligned start would split a halfword across two packets.
+     */
     .impl.min_access_size = 1,
     .impl.max_access_size = 8,
 };
@@ -565,30 +638,38 @@ static const MemoryRegionOps pic_linked_swap_ops = {
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
     .impl.min_access_size = 1,
-    .impl.max_access_size = 1,
+    .impl.max_access_size = 8,
 };
+
+static MemTxResult pic_swap_target_rw(void *opaque, hwaddr addr,
+                                      void *buffer, size_t size, bool write,
+                                      MemTxAttrs attrs)
+{
+    SGIPICTarget *target = opaque;
+
+    return address_space_rw(&target->as, addr, attrs, buffer, size, write);
+}
 
 static MemTxResult pic_swap_read(void *opaque, hwaddr addr, uint64_t *value,
                                  unsigned size, MemTxAttrs attrs)
 {
-    SGIPICTarget *target = opaque;
-    uint8_t byte;
-    MemTxResult result;
+    uint8_t bytes[8] = { 0 };
+    MemTxResult result = pic_swapped_rw(pic_swap_target_rw, opaque, addr,
+                                        bytes + 8 - size, size, false, 3,
+                                        attrs);
 
-    assert(size == 1);
-    result = address_space_read(&target->as, addr ^ 3, attrs, &byte, 1);
-    *value = byte;
+    *value = ldq_be_p(bytes);
     return result;
 }
 
 static MemTxResult pic_swap_write(void *opaque, hwaddr addr, uint64_t value,
                                   unsigned size, MemTxAttrs attrs)
 {
-    SGIPICTarget *target = opaque;
-    uint8_t byte = value;
+    uint8_t bytes[8];
 
-    assert(size == 1);
-    return address_space_write(&target->as, addr ^ 3, attrs, &byte, 1);
+    stq_be_p(bytes, value);
+    return pic_swapped_rw(pic_swap_target_rw, opaque, addr, bytes + 8 - size,
+                          size, true, 3, attrs);
 }
 
 static const MemoryRegionOps pic_swap_ops = {
@@ -598,7 +679,7 @@ static const MemoryRegionOps pic_swap_ops = {
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
     .impl.min_access_size = 1,
-    .impl.max_access_size = 1,
+    .impl.max_access_size = 8,
 };
 
 static IOMMUTLBEntry pic_translate(IOMMUMemoryRegion *iommu, hwaddr addr,

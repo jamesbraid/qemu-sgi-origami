@@ -1742,9 +1742,9 @@ static void test_direct64_attribute_matrix(void)
                 g_assert_cmphex(qtest_readl(qts, CARD(head) + 0x28), ==,
                                 MEMTX_OK);
                 g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"),
-                                 ==, calls + (swap ? 2 : 8));
+                                 ==, calls + 2);
                 g_assert_cmpuint(target_metric(qts, "x-test-packet-size"),
-                                 ==, swap ? sizeof(source) : 1);
+                                 ==, sizeof(source));
                 g_assert_cmphex(target_metric(qts, "x-test-packet-address"),
                                 ==, 0x5000);
                 qtest_memread(qts, TARGET + 0x5000, observed,
@@ -1766,6 +1766,91 @@ static void test_direct64_attribute_matrix(void)
         }
     }
     qtest_quit(qts);
+}
+
+/*
+ * With bit 55 clear each byte lands at its address with the low bits
+ * flipped, but a word the transfer covers still reaches the target as one
+ * packet. Byte-sized packets would let a processor read a 16-bit field
+ * written by a device half old and half new.
+ */
+static void test_direct64_swap_keeps_words_whole(void)
+{
+    const uint64_t widget = UINT64_C(0xa) << 60;
+    const char *requester[] = {
+        "sgi-bridge-dma-test", "sgi-bridge-dma-test-64bit",
+    };
+    uint8_t sentinel[16], observed[16];
+
+    memset(sentinel, 0xa5, sizeof(sentinel));
+    for (unsigned wide = 0; wide < 2; wide++) {
+        unsigned lane_xor = wide ? 7 : 3;
+        QTestState *qts = qtest_initf(
+            "-M none -cpu R10000 -S -d unimp,guest_errors "
+            "-device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on,"
+            "pic-runtime-profile=on,pic-linked=off,"
+            "pic-bedrock-interrupts=off "
+            "-device %s,bus=pic-head-0.0,addr=1 "
+            "-global sgi-pic.req64-slots-head0=%s",
+            requester[wide], wide ? "0x2" : "0");
+        uint64_t calls;
+
+        qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+        qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+        qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+        direct64_card_enable(qts, 0);
+
+        /* An aligned doubleword: one packet per swapped word. */
+        qtest_memwrite(qts, TARGET + 0x6000, sentinel, sizeof(sentinel));
+        calls = target_metric(qts, "x-test-packet-calls");
+        direct64_card_write(qts, 0, widget | 0x6000, 8, 0x10);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                         calls + 8 / (lane_xor + 1));
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-size"), ==,
+                         lane_xor + 1);
+        qtest_memread(qts, TARGET + 0x6000, observed, 8);
+        for (unsigned i = 0; i < 8; i++) {
+            g_assert_cmphex(observed[i ^ lane_xor], ==, 0x10 + i);
+        }
+
+        /* A 16-bit field inside a word arrives as one 2-byte packet. */
+        qtest_memwrite(qts, TARGET + 0x6010, sentinel, sizeof(sentinel));
+        calls = target_metric(qts, "x-test-packet-calls");
+        direct64_card_write(qts, 0, widget | 0x6012, 2, 0x20);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                         calls + 1);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-size"), ==, 2);
+        qtest_memread(qts, TARGET + 0x6010, observed, sizeof(observed));
+        for (unsigned i = 0; i < sizeof(observed); i++) {
+            unsigned offset = i ^ lane_xor;
+
+            g_assert_cmphex(observed[i], ==,
+                            offset == 2 || offset == 3 ?
+                            0x20 + offset - 2 : 0xa5);
+        }
+
+        /*
+         * Ragged ends keep their bytes and leave their neighbours alone.
+         * The transfer arrives in naturally aligned pieces of 1, 4, 4
+         * and 2 bytes, one packet each, so the halfword at 0x602a is not
+         * split as an 8-byte piece from 0x6023 would split it.
+         */
+        qtest_memwrite(qts, TARGET + 0x6020, sentinel, sizeof(sentinel));
+        calls = target_metric(qts, "x-test-packet-calls");
+        direct64_card_write(qts, 0, widget | 0x6023, 11, 0x30);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                         calls + 4);
+        g_assert_cmpuint(target_metric(qts, "x-test-packet-size"), ==, 2);
+        qtest_memread(qts, TARGET + 0x6020, observed, sizeof(observed));
+        for (unsigned i = 0; i < sizeof(observed); i++) {
+            unsigned offset = i ^ lane_xor;
+
+            g_assert_cmphex(observed[i], ==,
+                            offset >= 3 && offset < 14 ?
+                            0x30 + offset - 3 : 0xa5);
+        }
+        qtest_quit(qts);
+    }
 }
 
 static QTestState *pic_runtime_packet_window_start(void)
@@ -3973,8 +4058,10 @@ static void test_linked_dma(void)
     for (i = 0; i < sizeof(bytes); i++) {
         g_assert_cmpuint(bytes[i], ==, 0x51 + (i ^ 3));
     }
+    /* One packet per swapped word, not one per byte. */
     g_assert_cmpuint(target_metric(qts, "x-test-packet-calls") - calls_before,
-                     ==, 8);
+                     ==, 2);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-size"), ==, 4);
     g_assert_cmpuint(target_metric(qts, "x-test-packet-address"), ==,
                      0x2004);
     g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 7);
@@ -5341,6 +5428,8 @@ int main(int argc, char **argv)
                    test_direct64_requester_width);
     qtest_add_func("/sgi-pic/direct64-attribute-matrix",
                    test_direct64_attribute_matrix);
+    qtest_add_func("/sgi-pic/direct64-swap-keeps-words-whole",
+                   test_direct64_swap_keeps_words_whole);
     qtest_add_func("/sgi-pic/direct64-kernel-queue-addresses",
                    test_direct64_kernel_queue_addresses);
     qtest_add_func("/sgi-pic/direct64-range-boundary-is-split",
