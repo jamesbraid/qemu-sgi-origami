@@ -11439,6 +11439,90 @@ static void test_origin3800_high_bandwidth_cables(void)
 }
 
 /*
+ * The catalogue's Origin 3800 of two compute racks and an I/O rack. Every
+ * L1 answers its own rack and bay: the two racks repeat the one-rack bays,
+ * their R-bricks sit at units 19 and 27, and the I-brick is at bay 20 of
+ * rack 101. No two L1s answer one location, and the builder reports 16
+ * nodes and 64 processors. Nothing runs guest code, so the 16 GiB of RAM
+ * is mapped unreserved and never touched.
+ */
+static void test_origin3800_64p_racks(void)
+{
+    static const unsigned int bays[] = { 10, 13, 16, 21, 24, 29, 32, 35 };
+    g_autofree char *prom = zero_prom_file("sn-builder-origin3800-64p-XXXXXX");
+    g_autoptr(GHashTable) seen = g_hash_table_new(g_direct_hash,
+                                                  g_direct_equal);
+    unsigned int per_node[16];
+    unsigned int total = 0;
+    QTestState *qts;
+    QDict *response;
+    const QListEntry *entry;
+    unsigned int nodes = 0, modules = 0;
+
+    qts = qtest_initf("-M origin3000,topology=origin3800-64p "
+                      "-cpu R12000 -smp 64 " SGI_UNRESERVED_RAM("16384M")
+                      " -bios %s -nodefaults -display none", prom);
+
+    /* C-bricks 0 to 7 are rack 1 and 8 to 15 rack 2, at the same bays. */
+    for (unsigned int node = 0; node < 16; node++) {
+        g_autofree char *l1 = g_strdup_printf("/machine/node%u/l1", node);
+        unsigned int rack = 1 + node / 8, bay = bays[node % 8];
+
+        expect_l1_location(qts, l1, rack, bay);
+        g_assert_true(g_hash_table_add(seen,
+                          GUINT_TO_POINTER((rack << 6) | bay)));
+    }
+    /* Four R-bricks: units 19 and 27 of each rack, then the I-brick. */
+    for (unsigned int router = 0; router < 4; router++) {
+        g_autofree char *l1 = g_strdup_printf("/machine/module%u/l1",
+                                              16 + router);
+        unsigned int rack = 1 + router / 2, bay = router % 2 ? 27 : 19;
+
+        expect_l1_location(qts, l1, rack, bay);
+        g_assert_true(g_hash_table_add(seen,
+                          GUINT_TO_POINTER((rack << 6) | bay)));
+    }
+    expect_l1_location(qts, "/machine/module20/l1", 101, 20);
+    g_assert_true(g_hash_table_add(seen,
+                      GUINT_TO_POINTER((101 << 6) | 20)));
+    g_assert_cmpuint(g_hash_table_size(seen), ==, 21);
+
+    /* The rack and bay each C-brick answers when asked, not just the QOM. */
+    g_assert_cmphex(cbrick_l1_identity(qts, 0), ==, (1 << 6) | 10);
+    g_assert_cmphex(cbrick_l1_identity(qts, 32), ==, (2 << 6) | 10);
+
+    count_cpus_per_node(qts, per_node, 16);
+    for (unsigned int node = 0; node < 16; node++) {
+        g_assert_cmpuint(per_node[node], ==, 4);
+        total += per_node[node];
+    }
+    g_assert_cmpuint(total, ==, 64);
+
+    response = qtest_qmp(qts, "{ 'execute': 'qom-list',"
+                              " 'arguments': { 'path': '/machine' } }");
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(response, "return"), entry) {
+        const char *name = qdict_get_str(
+            qobject_to(QDict, qlist_entry_obj(entry)), "name");
+        const char *rest;
+
+        /* "node3" and "module17" only, not their sub-objects. */
+        if (g_str_has_prefix(name, "node")) {
+            rest = name + strlen("node");
+            nodes += rest[strspn(rest, "0123456789")] == '\0';
+        } else if (g_str_has_prefix(name, "module")) {
+            rest = name + strlen("module");
+            modules += rest[strspn(rest, "0123456789")] == '\0';
+        }
+    }
+    qobject_unref(response);
+    g_assert_cmpuint(nodes, ==, 16);
+    /* One module per brick: 16 C-bricks, four R-bricks and the I-brick. */
+    g_assert_cmpuint(modules, ==, 21);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
  * The catalogue's Onyx 3400 with InfiniteReality3: four C-bricks, an I-brick
  * on c0 and an N-brick on c1 to c3. Each I/O brick has a controller that
  * every C-brick cabled to it reaches, and each C-brick whose chip has a
@@ -14972,6 +15056,8 @@ int main(int argc, char **argv)
                    test_origin3800_cables);
     qtest_add_func("sn/builder/origin3800-high-bandwidth/cables",
                    test_origin3800_high_bandwidth_cables);
+    qtest_add_func("sn/builder/origin3800-64p/racks",
+                   test_origin3800_64p_racks);
     qtest_add_func("sn/builder/onyx3000/vbrick-l1-and-heads",
                    test_onyx3000_vbrick_l1_and_heads);
     qtest_add_func("sn/builder/origin3900/cx-brick",
