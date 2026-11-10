@@ -184,6 +184,11 @@ below is a model choice, an *approximation*, unless the notes say
 otherwise. "64" means aligned 64-bit access on both views; "+4" means the
 processor view's 32-bit word view also reaches the slot.
 
+.. sgi-registers: base=0x100000000000 width=64
+   map=/machine/peripheral/fabric:1:0x100000000000
+   skip=0x0:per-head-value,0x200:see-below,0x208:see-below,0x210:see-below,0x218:see-below
+   qemu="-M none -cpu R10000 -S -device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on,pic-runtime-profile=on,pic-linked=off,pic-bedrock-interrupts=off"
+
 .. list-table::
    :header-rows: 1
    :widths: 12 18 10 18 12 30
