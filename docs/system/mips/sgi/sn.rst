@@ -191,10 +191,12 @@ property value.
 
 A launch without ``topology=`` builds the product's default topology,
 except for ``onyx350`` and ``tezro``. Those two refuse a launch that
-does not name one: ``onyx350-ip53`` or ``-ip59``, or a ``tezro`` topology.
-A topology name is unique and fixes the node board: ``origin350``,
-``onyx350``, ``tezro``, ``tezro-rack`` and ``origin3900`` each have an
-``-ip53`` topology, the IP53 board, and an ``-ip59`` twin, the 1 GHz IP59,
+does not name one: ``onyx350-ip53`` or ``-ip59``, or a Tezro topology.
+A topology name is unique and fixes the node board: the
+Origin 350, Onyx 350, Tezro, rack Tezro and Origin 3900 each have an
+``-ip53`` topology (``origin350-ip53``, ``onyx350-ip53``, ``tezro-ip53``,
+``tezro-rack-ip53``, ``origin3900-ip53``), the IP53 board, and an
+``-ip59`` twin, the 1 GHz IP59,
 at the same memory, and ``onyx4`` builds only the IP59
 (:ref:`sgi-ip59-profiles`). ``-smp`` picks a population of the one record
 the name selects; the Tezro's one-processor interface board is its own
@@ -611,7 +613,7 @@ widget-facing device, then re-parents the board under
 puts it.
 
 A topology's catalogue places its own boards: the BaseIO in every Origin
-2000 and Onyx2 and the GIGAchannel's cabinet Bridge. The ``onyx2``
+2000 and Onyx2 and the GIGAchannel's cabinet Bridge. The ``onyx2-deskside`` and ``onyx2-rack``
 topologies also record the KONA pipe's slot
 (:ref:`sgi-onyx2-graphics-module`), but that slot starts empty and the
 pipe is fitted as a graphics pipe (:ref:`sgi-sn-graphics-pipes`). Every

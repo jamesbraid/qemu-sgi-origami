@@ -208,7 +208,7 @@ that is not listed is refused with the ones that are.
      - ``030-1959-003``
 
 The Origin 350 offers the 700 MHz and the 800 MHz, 8 MiB parts. The Tezro
-offers all three, on both its ``tezro`` and ``tezro-rack`` topologies;
+offers all three, on both its single-enclosure and rack topologies;
 the 800 MHz boards are four-processor boards, so the one- and
 two-processor Tezro keeps its 700 MHz part. The id carries the revision
 because the Onyx 350's 800 MHz, 8 MiB part is revision 3.0
@@ -430,6 +430,9 @@ default.
 Selected inputs
 ---------------
 
+The first column names a topology without its ``-ip53`` or ``-ip59``
+suffix.
+
 .. list-table::
    :header-rows: 1
 
@@ -454,14 +457,14 @@ Selected inputs
      - ``0x009caf85``
      - widget 15
      - 33,333,333 Hz
-   * - ``tezro``, ``-smp 1``: one-processor board
+   * - ``tezro-one-processor``: one-processor board
      - one 700 MHz R16000
      - 4 GiB
      - 4 MiB
      - ``0x009bad85``
      - widget 15
      - 66,666,667 Hz
-   * - ``tezro``, ``-smp 2`` or ``4``: two/four-processor board
+   * - ``tezro-ip53``, ``-smp 2`` or ``4``: two/four-processor board
      - two or four 700 MHz R16000
      - 4 GiB
      - 4 MiB
@@ -814,7 +817,8 @@ IP59.
 Each IP53 topology also has an IP59 twin, named with ``-ip59`` in place
 of ``-ip53``, at the same memory. The IP53 stays the default of
 ``origin350``. ``onyx4`` builds only the IP59, which is therefore
-its default.
+its default. The first column below names a topology without its
+``-ip53`` or ``-ip59`` suffix.
 
 .. list-table::
    :header-rows: 1
