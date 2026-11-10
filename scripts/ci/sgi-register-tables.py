@@ -305,6 +305,7 @@ def column(header, *names):
 def offsets(cell, width, count=None, stride_bytes=None, units=None):
     """List the byte offsets a table's Offset cell names."""
     text = cell.replace('``', '')
+    text = re.sub(r'(?<=[0-9a-fA-F])_(?=[0-9a-fA-F])', '', text)
     stride = re.fullmatch(r'\s*(0x[0-9a-fA-F]+)\s*\+\s*(0x[0-9a-fA-F]+|\d+)'
                           r'\s*\*\s*n\s*', text)
     if stride:
@@ -319,6 +320,11 @@ def offsets(cell, width, count=None, stride_bytes=None, units=None):
             raise Error(f'{cell!r} needs units= in the marker')
         return [first + int(rel, 16) for first in units
                 for rel in re.findall(r'0x[0-9a-fA-F]+', unit.group(1))]
+    strided = re.fullmatch(r'\s*(0x[0-9a-fA-F]+)\s+to\s+(0x[0-9a-fA-F]+),'
+                           r'\s*stride\s+(0x[0-9a-fA-F]+)\s*', text)
+    if strided:
+        first, last, every = (int(g, 16) for g in strided.groups())
+        return list(range(first, last + 1, every))
     pieces = re.split(r'(0x[0-9a-fA-F]+)', text)
     values = [int(p, 16) for p in pieces[1::2]]
     joints = [re.sub(r'\s+', ' ', p).strip() for p in pieces[2:-1:2]]
@@ -348,6 +354,7 @@ def reset_value(cell, variant):
     # "0, kept" says a reset leaves the register alone; the value is the
     # same at power-on. "0x0018_1818" groups digits.
     text = re.sub(r',\s*kept$', '', text)
+    text = re.sub(r'\s+at power-on$', '', text)
     text = re.sub(r'(?<=[0-9a-fA-F])_(?=[0-9a-fA-F])', '', text)
     plain = text.replace('``', '').strip()
     if plain.lower() in NO_RESET:
