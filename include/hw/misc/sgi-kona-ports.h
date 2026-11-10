@@ -284,6 +284,14 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  */
 #define SGI_KONA_CMD_GL_RASTER_STATE 0x10e
 /*
+ * The IRIX client library's context copy asks for the lighting attributes
+ * with 0x10b and one word, then waits on the return page. Whether the
+ * pipe's engines complete that read-back, and what they return, is
+ * unknown and inferred to give a bare send no completion word; the model
+ * answers nothing.
+ */
+#define SGI_KONA_CMD_GL_GET_LIGHT_ATTRIBS 0x10b
+/*
  * The IRIX client library's evaluator attribute update: four words, then
  * 0x29 with eight.
  */

@@ -10199,11 +10199,31 @@ static uint32_t sgi_kona_gl_draw_buffer(SGIKonaGLState *st)
            mask == SGI_GL_DRAW_FRONT ? SGI_GL_FRONT : 0;
 }
 
+/*
+ * A glGet reply of @words zero words. With none it is the empty reply the
+ * pipe sends for a name it has no row for: the count word, 0, at byte 4,
+ * and the ready word. The client waits for the ready word and has no
+ * timeout, so a query must always end in one.
+ */
+static void sgi_kona_gl_reply_zeros(SGIKonaState *s, uint32_t name,
+                                    unsigned words)
+{
+    uint8_t zeros[SGI_GL_GET_WORDS * 4] = { 0 };
+
+    trace_sgi_kona_gl_reply(SGI_KONA_CMD_GL_GET, name, words * 4);
+    if (words) {
+        sgi_kona_post_return(s, SGI_KONA_CMD_GL_GET, 8, zeros, words * 4);
+    } else {
+        sgi_kona_post_return(s, SGI_KONA_CMD_GL_GET, 4, zeros, 4);
+    }
+}
+
 /* Native descriptors authorize layout; the source mapping authorizes values. */
 static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
 {
     static const SGIKonaGLQueryInfo current_colour = { 0xb00, 0x03, 4 };
     const SGIKonaGLQueryInfo *info = sgi_kona_gl_query_lookup(name);
+    int rows = sgi_kona_gl_state_words(name);
     uint32_t out[SGI_GL_GET_WORDS];
     uint64_t native[SGI_GL_GET_WORDS];
     uint8_t bytes[SGI_GL_GET_WORDS * 8];
@@ -10212,11 +10232,29 @@ static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
     int i = s->context_current;
 
     if (name == current_colour.pname) {
-        /* Explicit model compatibility, not an observed kind-2 descriptor. */
+        /*
+         * Explicit model compatibility, not an observed kind-2 descriptor.
+         * The pipe has no row for it (the client reads the colour with
+         * 0x3b), so a client never asks; the model answers it anyway.
+         */
         info = &current_colour;
+        rows = current_colour.count;
     }
-    if (i == SGI_KONA_CONTEXT_NONE || !info || name == 0x2a00) {
-        goto unsupported;
+    if (i == SGI_KONA_CONTEXT_NONE) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: glGet of 0x%" PRIx32 " with no"
+                      " current context; no reply\n", name);
+        return;
+    }
+    if (rows < 0) {
+        /* No row: the pipe finishes the read-back with nothing in it. */
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: glGet of 0x%" PRIx32 " has no"
+                      " row; empty reply, invalid enumerant\n", name);
+        sgi_kona_gl_set_error(s, SGI_GL_INVALID_ENUM);
+        sgi_kona_gl_reply_zeros(s, name, 0);
+        return;
+    }
+    if (!info || name == 0x2a00) {
+        goto unfilled;
     }
     if (name == 0xb70) {
         memcpy(native, s->state[i]->pipe.returns.depth_range,
@@ -10274,14 +10312,14 @@ static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
         n = 1;
     } else if (name == 0xc02) {
         if (sgi_kona_gl_read_bank(s, i, &out[0]) < 0) {
-            goto unsupported;
+            goto unfilled;
         }
         native[0] = out[0];
         n = 1;
     } else {
         if (!sgi_gl_get(&s->state[i]->gl, name, out, &n) ||
             (info->type != 0x03 && info->type != 0x04 && info->type != 0x13)) {
-            goto unsupported;
+            goto unfilled;
         }
         for (unsigned k = 0; k < n; k++) {
             native[k] = out[k];
@@ -10289,15 +10327,20 @@ static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
     }
     if (!sgi_kona_gl_query_serialize(info, native, n, bytes, sizeof(bytes),
                                      &length)) {
-        goto unsupported;
+        goto unfilled;
     }
     trace_sgi_kona_gl_reply(SGI_KONA_CMD_GL_GET, name, length);
     sgi_kona_post_return(s, SGI_KONA_CMD_GL_GET, 8, bytes, length);
     return;
 
-unsupported:
+unfilled:
+    /*
+     * The pipe has a row and the model keeps no value for it: answer the
+     * row's length in zeros, so the client's read-back ends.
+     */
     qemu_log_mask(LOG_UNIMP, "sgi-kona: glGet of 0x%" PRIx32 " is not"
-                  " answered; no reply\n", name);
+                  " modelled; %d words of zeros\n", name, rows);
+    sgi_kona_gl_reply_zeros(s, name, rows);
 }
 
 /* A float's bits into reply word k. */
@@ -10477,6 +10520,18 @@ static void sgi_kona_gl_push_attrib(SGIKonaState *s, uint32_t mask)
     }
     trace_sgi_kona_gl_reply(SGI_KONA_CMD_GL_PUSH_ATTRIB, mask, len);
     sgi_kona_post_return(s, SGI_KONA_CMD_GL_PUSH_ATTRIB, 4, reply, len);
+}
+
+/*
+ * 0x10b, the context copy's lighting read-back. The engine's handler for
+ * the token has no read-back start, so a bare send gets no completion word
+ * (inferred); the model posts nothing, and a client that sends it waits as
+ * it would on the pipe. What the engine would return is unknown.
+ */
+static void sgi_kona_gl_light_attribs(SGIKonaState *s)
+{
+    qemu_log_mask(LOG_UNIMP, "sgi-kona: light attribute read-back 0x10b is"
+                  " not answered; no reply\n");
 }
 
 #define SGI_KONA_RESTORE(field) (c->field = saved->field)
@@ -13735,6 +13790,9 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         return;
     case SGI_KONA_CMD_GL_GET:
         sgi_kona_gl_get(s, args[0]);
+        return;
+    case SGI_KONA_CMD_GL_GET_LIGHT_ATTRIBS:
+        sgi_kona_gl_light_attribs(s);
         return;
     case SGI_KONA_CMD_GL_PUSH_ATTRIB:
         sgi_kona_gl_push_attrib(s, args[0]);

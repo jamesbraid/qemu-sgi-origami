@@ -83,6 +83,13 @@ typedef struct SGIKonaGLQueryInfo {
 } SGIKonaGLQueryInfo;
 
 const SGIKonaGLQueryInfo *sgi_kona_gl_query_lookup(uint32_t pname);
+
+/*
+ * Reply words for a generic state name the pipe has a row for, or -1 when
+ * it has none. 171 names have rows.
+ */
+int sgi_kona_gl_state_words(uint32_t pname);
+int sgi_kona_gl_state_row_count(void);
 const SGIKonaGLQueryInfo *sgi_kona_gl_query_table(size_t *count);
 
 /* Values are native representation bits, not client getter conversions. */

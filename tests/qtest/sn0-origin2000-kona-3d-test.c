@@ -1906,8 +1906,10 @@ static void test_read_selection(void)
         qtest_memset(qts, RETURN_PAGE, 0, 4);
         kona_command(qts, 0x39, (uint32_t[]){ 0, 0, 3, 2, 4, 1, 0 }, 7);
         assert_read_answered_zero(qts);
+        /* The row is the pipe's, so the read ends, with no buffer to name. */
         kona_command(qts, 0x4c, (uint32_t[]){ 0xc02 }, 1);
-        g_assert_cmphex(guest_word(qts, RETURN_PAGE), ==, 0);
+        assert_reply_posted(qts);
+        g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 0);
         kona_command(qts, 0x37, (uint32_t[]){ 0x404 }, 1);
         assert_read_buffer(qts, 0x404);
         assert_read_colour(qts, 0x0000ff);
@@ -2036,7 +2038,9 @@ static void assert_source_refused(QTestState *s)
     assert_read_answered_zero(s);
     prepare_refused_reply(s);
     kona_command(s, 0x4c, (uint32_t[]){ 0xc02 }, 1);
-    assert_reply_unchanged(s);
+    assert_reply_posted(s);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 0);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 12), ==, 0xa5a5a5a5);
 }
 
 static void test_read_visual_records(void)
@@ -2408,24 +2412,18 @@ static void test_read_double_buffers(void)
     assert_read_colour(qts, 0x0000ff);
 }
 
-static void test_unknown_query_refused(void)
-{
-    g_autofree char *log = NULL, *found = NULL;
-    QTestState *s = kona_init_logged(&log);
+static void assert_native_error(QTestState *s, uint32_t error);
 
-    gl_make_current(s);
-    prepare_refused_reply(s);
-    kona_command(s, 0x4c, (uint32_t[]){ 0xd33 }, 1);
-    assert_reply_unchanged(s);
-    qtest_quit(s);
-    found = kona_log_read(log);
-    g_assert_nonnull(strstr(found, "sgi-kona: glGet of 0xd33"));
-}
-
-/* Known wire metadata cannot stand in for an unknown state meaning. */
-static void test_unmodeled_queries_refused(void)
+/*
+ * A generic state name the pipe has no row for gets the empty reply the
+ * table gives: count 0 at byte 4, the ready word, nothing after, and an
+ * invalid-enumerant error. 0xd33 is outside the pipe's rows; 0xb14 is the
+ * one name the client asks that has none. The client has no timeout, so a
+ * missing ready word is a hang.
+ */
+static void test_unknown_query_empty_reply(void)
 {
-    static const uint32_t names[] = { 0xb14, 0x81c4, 0x81c7, 0x2a00 };
+    static const uint32_t names[] = { 0xd33, 0xb14 };
     g_autofree char *log = NULL, *found = NULL;
     QTestState *s = kona_init_logged(&log);
 
@@ -2433,11 +2431,72 @@ static void test_unmodeled_queries_refused(void)
     for (unsigned k = 0; k < ARRAY_SIZE(names); k++) {
         prepare_refused_reply(s);
         kona_command(s, 0x4c, &names[k], 1);
-        assert_reply_unchanged(s);
+        assert_reply_posted(s);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 4), ==, 0);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 0xa5a5a5a5);
+        assert_native_error(s, 0x500);
+        assert_native_error(s, 0);
     }
     qtest_quit(s);
     found = kona_log_read(log);
-    g_assert_null(strstr(found, "sgi_kona_return_post token 0x4c "));
+    g_assert_nonnull(strstr(found, "sgi-kona: glGet of 0xd33"));
+    g_assert_false(log_shows_misframing(found));
+}
+
+/*
+ * The context copy's light-attribute read-back, 0x10b and one word, is
+ * framed as one word, so the next command still decodes, and gets no
+ * completion word: the engine's handler has no read-back start (inferred).
+ * The return page stays as it was and the log says so.
+ */
+static void test_light_attribute_readback(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    prepare_refused_reply(s);
+    kona_command(s, 0x10b, (uint32_t[]){ 0 }, 1);
+    assert_reply_unchanged(s);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    assert_reply_posted(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "light attribute read-back 0x10b"));
+    g_assert_false(log_shows_misframing(found));
+}
+
+/*
+ * A name the pipe has a row for but the model keeps nothing for is
+ * answered with the row's words, zero, and no error. 0x81c4 and 0x81c7 are
+ * one word, 0x2a00 a callback row of one, 0x8129 three, 0x817e four.
+ */
+static void test_unmodelled_query_zero_words(void)
+{
+    static const struct {
+        uint32_t name;
+        unsigned words;
+    } rows[] = {
+        { 0x81c4, 1 }, { 0x81c7, 1 }, { 0x2a00, 1 }, { 0x8129, 3 },
+        { 0x817e, 4 },
+    };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    for (unsigned k = 0; k < ARRAY_SIZE(rows); k++) {
+        prepare_refused_reply(s);
+        kona_command(s, 0x4c, &rows[k].name, 1);
+        assert_reply_posted(s);
+        for (unsigned w = 0; w < rows[k].words; w++) {
+            g_assert_cmphex(guest_word(s, RETURN_PAGE + 8 + 4 * w), ==, 0);
+        }
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8 + 4 * rows[k].words),
+                        ==, 0xa5a5a5a5);
+        assert_native_error(s, 0);
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
     g_assert_false(log_shows_misframing(found));
 }
 
@@ -3058,12 +3117,20 @@ static void test_native_attrib_depth_refused(gconstpointer opaque)
                                       tagged_offset_word(RETURN_PAGE),
                                       0x4000 }, 3);
     assert_attrib_depth(s, 0);
-    for (unsigned k = 0; k < 3; k++) {
-        const uint32_t names[] = { 0xd33, 0x2a00, 0x8148 };
+    /* 0xd33 has no row; the other two have rows the model keeps nothing for. */
+    prepare_refused_reply(s);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xd33 }, 1);
+    assert_reply_posted(s);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 4), ==, 0);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 0xa5a5a5a5);
+    for (unsigned k = 0; k < 2; k++) {
+        const uint32_t names[] = { 0x2a00, 0x8148 };
 
         prepare_refused_reply(s);
         kona_command(s, 0x4c, &names[k], 1);
-        assert_reply_unchanged(s);
+        assert_reply_posted(s);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 0);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 12), ==, 0xa5a5a5a5);
     }
     qtest_quit(s);
 }
@@ -4635,9 +4702,13 @@ static void test_native_query_invalid(void)
     for (unsigned k = 0; k < ARRAY_SIZE(unknown); k++) {
         kona_command(qts, 0x24, &unknown[k], 1);
         assert_native_query_state(qts, &native_query_a, false);
+        /* No row: an empty reply and an invalid-enumerant error. */
         prepare_refused_reply(qts);
         kona_command(qts, 0x4c, &unknown[k], 1);
-        assert_reply_unchanged(qts);
+        assert_reply_posted(qts);
+        g_assert_cmphex(guest_word(qts, RETURN_PAGE + 4), ==, 0);
+        g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 0xa5a5a5a5);
+        assert_native_error(qts, 0x500);
     }
 }
 
@@ -15789,7 +15860,6 @@ static void test_renderer_legacy_failure(void)
     g_assert_null(strstr(found, "sgi_kona_return_post token 0xc6 "));
 }
 
-static void assert_native_error(QTestState *s, uint32_t error);
 static void renderer_assert_image(QTestState *s);
 static void renderer_assert_image_colour(QTestState *s, uint32_t rgb);
 
@@ -20890,10 +20960,12 @@ int main(int argc, char **argv)
              test_texture_rebind_interrupted);
     add_case("sn0/origin2000/kona-3d/texture/captured",
              test_texture_captured);
-    add_case("sn0/origin2000/kona-3d/unmodeled-queries-refused",
-             test_unmodeled_queries_refused);
-    add_case("sn0/origin2000/kona-3d/unknown-query-refused",
-             test_unknown_query_refused);
+    add_case("sn0/origin2000/kona-3d/unmodelled-query-zero-words",
+             test_unmodelled_query_zero_words);
+    add_case("sn0/origin2000/kona-3d/light-attribute-readback",
+             test_light_attribute_readback);
+    add_case("sn0/origin2000/kona-3d/unknown-query-empty-reply",
+             test_unknown_query_empty_reply);
     add_data_case("sn0/origin2000/kona-3d/read-format-refused",
                   bad_format, test_read_pixels_refused);
     add_data_case("sn0/origin2000/kona-3d/read-type-refused",

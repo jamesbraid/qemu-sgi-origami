@@ -561,6 +561,55 @@ static void test_query_inventory(void)
     g_assert_null(sgi_kona_gl_query_lookup(0xd33));
 }
 
+/*
+ * The pipe's own rows (171 of them), not the client's value table. Reply
+ * words per the table: one for most names, and the exceptions below.
+ */
+static void test_state_rows(void)
+{
+    static const struct {
+        uint32_t pname;
+        int words;
+    } want[] = {
+        { 0xb10, 1 }, { 0xb40, 2 }, { 0xb53, 4 }, { 0xb66, 4 },
+        { 0xb70, 4 }, /* depth range: two doubles */
+        { 0xb73, 2 }, /* depth clear: one double */
+        { 0xb80, 4 }, { 0xba2, 4 }, { 0xba6, 16 }, { 0xba7, 16 },
+        { 0xba8, 16 }, { 0xc10, 4 }, { 0xc22, 4 }, { 0xc23, 4 },
+        { 0x8005, 4 }, { 0x8129, 3 }, { 0x814a, 3 }, { 0x814b, 3 },
+        { 0x80b1, 16 }, { 0x817e, 4 }, { 0x8199, 4 }, { 0x2a00, 1 },
+        /* Rows the client never asks for, and a callback of unknown size. */
+        { 0xd80, 1 }, { 0x801c, 1 }, { 0x806f, 1 }, { 0x812a, 0 },
+        /* No row: the client's 0xb14, and names beyond the table. */
+        { 0xb14, -1 }, { 0xd33, -1 }, { 0x8000, -1 }, { 0x81c8, -1 },
+    };
+    size_t count;
+    const SGIKonaGLQueryInfo *table = sgi_kona_gl_query_table(&count);
+    unsigned widths[256] = {
+        [0] = 1, [3] = 4, [4] = 4, [0x13] = 4, [0x12] = 8,
+    };
+
+    g_assert_cmpint(sgi_kona_gl_state_row_count(), ==, 171);
+    for (unsigned i = 0; i < ARRAY_SIZE(want); i++) {
+        g_assert_cmpint(sgi_kona_gl_state_words(want[i].pname), ==,
+                        want[i].words);
+    }
+    /* The client's table is the pipe's rows less 13 plus 0xb14. */
+    for (unsigned i = 0; i < count; i++) {
+        int words = sgi_kona_gl_state_words(table[i].pname);
+
+        if (table[i].pname == 0xb14) {
+            g_assert_cmpint(words, ==, -1);
+        } else {
+            g_assert_cmpint(words, >, 0);
+            if (table[i].type) {
+                g_assert_cmpuint(widths[table[i].type] * table[i].count, ==,
+                                 words * 4);
+            }
+        }
+    }
+}
+
 static void test_query_native_bytes(void)
 {
     static const uint64_t doubles[] = {
@@ -3437,6 +3486,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-kona-gl-decode/result-names", test_result_names);
     g_test_add_func("/sgi-kona-gl-decode/query-inventory",
                     test_query_inventory);
+    g_test_add_func("/sgi-kona-gl-decode/state-rows", test_state_rows);
     g_test_add_func("/sgi-kona-gl-decode/query-native-bytes",
                     test_query_native_bytes);
     g_test_add_func("/sgi-kona-gl-decode/query-word-bytes",

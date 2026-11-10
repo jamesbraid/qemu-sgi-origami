@@ -638,6 +638,54 @@ with display lists run from list memory and textures held per context.
 How a real pipe renders is out of scope of this page and *unknown*;
 selectors whose word count is unsettled are not framed.
 
+Queries
+~~~~~~~
+
+A query asks the pipe a question and waits on the return page. The page
+holds a completion word at offset 0, a count of reply words at offset 4
+and the reply from offset 8. The client polls word 0 with no timeout, so a
+query the pipe leaves unanswered hangs it (*established*, from the
+firmware's wait loop). The pipe finishes the read-back for every handler
+a valid request reaches, with a count of 0 and an error for a bad name
+(*established*). The exceptions are the bare ``0x10b`` and a bare texel
+read-back, which get no completion word (*inferred*; both are described
+below), and the colour-table and pixel-map reader, which returns without
+opening the read-back for a table record of -1 or a range past twice the
+table width, a call the client's own checks keep a valid program from
+making (*established*).
+
+The generic state query ``0x4c`` takes one word, the parameter name. The
+pipe answers 171 names (*established*, from the firmware's row table), each
+with a fixed reply length in words: one for most, two for polygon mode and
+the depth clear value, three for the point attenuation and sprite axis and
+translation, four for the light-model ambient colour, fog colour, depth
+range, accumulation clear, viewport, scissor box, colour clear, colour
+write mask, blend colour, fog offset value and reference-plane equation,
+and sixteen for the three matrices and the colour matrix. The depth range
+(two doubles, four words) and the depth clear value (one double, two
+words) are doubles (*established*). A name with no row, such as ``0xb14``,
+gets the empty reply, a count of 0, and an invalid-enumerant error
+(*established*). The model answers that way, except for 0xb00, the
+current colour, which the client reads with 0x3b and never sends
+here; the model answers it with four floats, an *approximation*. For a name with a row whose
+value the model does not keep, the model replies zeros of the row's
+length, an *approximation*, and logs ``LOG_UNIMP``. The fog function name ``0x812a``, whose
+reply count the pipe reads from a word before the reply, is answered
+empty without an error; its length is *unknown*, and the model's row of
+0 words is a labelled *approximation*. The reference table is itself
+inconsistent on this name: its row says the client answers it, and its
+text says the client asks through the fog-function reader.
+
+The light-attribute query ``0x10b`` (one word) is sent by the client
+library when it copies a context, and the client waits on the return page
+for it (*established*, from the library). The engine's handler for the
+token has no read-back start, so a bare send gets no completion word
+(*inferred*), and the words the client would take (about 46 floats from
+offset 8 of the return page, with gaps, then 12 words per light) are not
+mapped to state (*unknown*). The model frames
+the word, logs ``LOG_UNIMP`` and posts no reply, so a client that sends it
+waits. A captured context-copy exchange would settle it.
+
 Texel readback
 ~~~~~~~~~~~~~~
 
