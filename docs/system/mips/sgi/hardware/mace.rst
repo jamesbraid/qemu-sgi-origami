@@ -455,7 +455,8 @@ devices in reset. Bits 31:15 are the 32 KiB-aligned base of the eight
 outputs 1 and 2, a scratch page and the four serial rings. Bits 14:1
 read zero :src:`sgi-mace-2.0-spec p. 123`, *established*.
 
-In the model the register holds ``0xffff8001`` and accepts those bits.
+In the model the writable bits are ``0xffff8001``; the register resets to
+``0x1``.
 A 0-to-1 transition of bit 0 resets both UARTs. While bit 0 is set, the
 UARTs discard received characters, and register accesses to them log
 ``LOG_GUEST_ERROR``, return 0 and drop writes. The same bit drives the
