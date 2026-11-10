@@ -112,7 +112,14 @@ static void check_table(gconstpointer data)
         if (qdict_haskey(reg, "select")) {
             write_steps(qts, qdict_get_qlist(reg, "select"));
         }
-        got = read_at(qts, hex_of(reg, "address"), width);
+        if (qdict_haskey(reg, "split")) {
+            /* A little-endian 64-bit window: low half first, then high. */
+            g_assert_cmpint(qdict_get_int(reg, "split"), ==, 32);
+            got = read_at(qts, hex_of(reg, "address"), 32);
+            got |= read_at(qts, hex_of(reg, "address") + 4, 32) << 32;
+        } else {
+            got = read_at(qts, hex_of(reg, "address"), width);
+        }
         if (note) {
             g_test_message("%s:%" PRId64 ": %s at %s: %s", page,
                            qdict_get_int(reg, "line"),
