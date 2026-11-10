@@ -28,6 +28,8 @@ continue on indented lines. Keys:
   width    the access width in bits when the table has no Width column;
   map      PATH:INDEX:ADDRESS, a sysbus device's MMIO region mapped before
            the reads, for a device started on its own (repeatable);
+  label    a name for this configuration in the test path, to tell several
+           markers on one table apart;
   variant  the label that picks a reset from a cell that lists several,
            such as "0; 0x8118 on revision F" (default: the plain one);
   setup    ADDRESS:VALUE[:WIDTH] items (comma list) written, in order,
@@ -38,6 +40,8 @@ continue on indented lines. Keys:
            table's width just before each read of the row whose Name cell
            is NAME. For a register that is chosen by another register's
            bits at a repeated offset (repeatable, one per row);
+  count    how many copies "n" runs over in an offset such as
+           "0x310 + 0x1c*n" (n = 0 to count-1);
   skiprow  NAME:reason, the row whose Name cell is NAME and every offset
            of it left out, for rows that share an offset (repeatable);
   skip     OFFSET[:reason] items (comma list) the test leaves out. A row
@@ -77,7 +81,7 @@ SOURCE = Path(__file__).resolve().parents[2]
 PAGES = 'docs/system/mips/sgi'
 MARKER = re.compile(r'\.\.\s+sgi-registers:(.*)')
 KEYS = {'qemu', 'base', 'width', 'map', 'variant', 'skip', 'expect',
-        'setup', 'select', 'skiprow'}
+        'setup', 'select', 'skiprow', 'count', 'label'}
 WIDTHS = (8, 16, 32, 64)
 NO_RESET = {'', 'n/a', 'none', 'unknown', 'unsupported', '-'}
 NUMBER = re.compile(r'(?:0x[0-9a-fA-F]+|\d+)$')
@@ -162,6 +166,10 @@ def parse_marker(text):
         raise Error('marker has no qemu=')
     try:
         options['base'] = int(options.get('base', '0'), 0)
+        if 'count' in options:
+            options['count'] = int(options['count'])
+            if options['count'] < 1:
+                raise ValueError
         if 'width' in options:
             options['width'] = int(options['width'])
             if options['width'] not in WIDTHS:
@@ -245,9 +253,16 @@ def column(header, *names):
     return None
 
 
-def offsets(cell, width):
+def offsets(cell, width, count=None):
     """List the byte offsets a table's Offset cell names."""
     text = cell.replace('``', '')
+    stride = re.fullmatch(r'\s*(0x[0-9a-fA-F]+)\s*\+\s*(0x[0-9a-fA-F]+|\d+)'
+                          r'\s*\*\s*n\s*', text)
+    if stride:
+        if count is None:
+            raise Error(f'{cell!r} needs count= in the marker')
+        return [int(stride.group(1), 16) + int(stride.group(2), 0) * n
+                for n in range(count)]
     pieces = re.split(r'(0x[0-9a-fA-F]+)', text)
     values = [int(p, 16) for p in pieces[1::2]]
     joints = [re.sub(r'\s+', ' ', p).strip() for p in pieces[2:-1:2]]
@@ -334,7 +349,7 @@ def build(page, table, marker_text, number):
         name = ' '.join(cells[c_name].replace('``', '').split()) \
             if c_name is not None else ''
         try:
-            where = offsets(cells[c_off], width)
+            where = offsets(cells[c_off], width, options.get('count'))
         except Error as exc:
             raise Error(f'{page}:{line}: {exc}')
         kind, got = reset_value(cells[c_reset], variant)
@@ -421,7 +436,8 @@ def build(page, table, marker_text, number):
     return {'id': f'{page}:{number}', 'page': page, 'line': number,
             'qemu': options['qemu'], 'maps': options['map'],
             'setup': options['setup'],
-            'variant': variant, 'registers': registers,
+            'variant': variant, 'label': options.get('label'),
+            'registers': registers,
             'skipped': skipped}
 
 
@@ -489,7 +505,8 @@ def coverage(cases, annotated, other):
     out.append('')
     out.append('annotated (registers checked, skipped):')
     for case in cases:
-        label = case['variant'] and f" [{case['variant']}]" or ''
+        label = case['variant'] or case['label']
+        label = f' [{label}]' if label else ''
         out.append(f"  {case['id']}{label}: {len(case['registers'])}, "
                    f"{len(case['skipped'])}")
         rows = {}

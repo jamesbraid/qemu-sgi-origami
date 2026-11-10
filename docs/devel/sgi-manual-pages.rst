@@ -245,6 +245,10 @@ row. ``skiprow="S1, control:write-only"`` leaves out every offset of the
 row with that Name when ``skip=`` would also catch a row that shares the
 offset. A ``select=`` or ``skiprow=`` that names no row is an error.
 
+A row such as ``0x310 + 0x1c*n`` needs ``count=4``, which reads copies
+``n = 0`` to ``3``. ``label=NAME`` adds a name to the test path, to tell
+two comments on one table apart.
+
 The test proves the page and the model agree, not that either matches the
 hardware. The rating beside a value says how well it is known: a page may
 say that every reset value of a part is the model's choice, an

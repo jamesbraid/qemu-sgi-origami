@@ -188,10 +188,12 @@ int main(int argc, char **argv)
     QLIST_FOREACH_ENTRY(tables, entry) {
         QDict *table = qobject_to(QDict, qlist_entry_obj(entry));
         const char *variant = qdict_get_try_str(table, "variant");
+        const char *label = qdict_get_try_str(table, "label");
         g_autofree char *path = g_strdup_printf(
-            "/sgi/register-reset/%s@%" PRId64 "%s%s",
+            "/sgi/register-reset/%s@%" PRId64 "%s%s%s%s",
             qdict_get_str(table, "page"), qdict_get_int(table, "line"),
-            variant ? "/" : "", variant ? variant : "");
+            variant ? "/" : "", variant ? variant : "",
+            label ? "/" : "", label ? label : "");
 
         g_strdelimit(path, " ", '-');
         qtest_add_data_func(path, table, check_table);
