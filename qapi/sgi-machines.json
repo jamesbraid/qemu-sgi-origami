@@ -1440,6 +1440,10 @@
 #
 # @initial-module-number: module number the PROM programs at reset
 #
+# @rack: number of the rack the module sits in, the setting its L1
+#     keeps beside the bay; omitted when the topology does not number
+#     its racks, and every L1 then keeps its default rack 1
+#
 # @controller-index: position in the topology's own @controllers list,
 #     or -1 when the module has no shared controller: either its nodes
 #     each carry their own (Origin 200, @controller absent) or it has
@@ -1471,6 +1475,7 @@
   'data': { 'id': 'str',
             'serial': 'str',
             'initial-module-number': 'uint8',
+            '*rack': 'uint16',
             'controller-index': 'int',
             '*controller': 'SGIModelModuleController',
             '*brick-type': 'str',
