@@ -611,7 +611,7 @@ sgi_qtests = \
      'octane-timer-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') and
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
-    ['octane-test', 'octane-mgras-test'] : []) + \
+    ['octane-test', 'octane-mgras-test', 'octane-pci-boards-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') ?
     ['octane-vpro-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') and

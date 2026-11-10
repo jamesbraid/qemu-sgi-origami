@@ -827,6 +827,7 @@ tests/qtest/libqos/sgi-bridge-machine.c
 tests/qtest/memtx.h
 tests/qtest/o2-r10k-cache-test.c
 tests/qtest/octane-mgras-test.c
+tests/qtest/octane-pci-boards-test.c
 tests/qtest/octane-test.c
 tests/qtest/octane-vpro-test.c
 tests/qtest/prereq.h
