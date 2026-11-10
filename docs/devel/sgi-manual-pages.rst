@@ -149,11 +149,10 @@ under ``docs/system/mips/sgi/``:
 - no pointer to material outside this repository, in the pages and in the
   comments of ``hw/mips/sgi/`` and ``hw/*/sgi-*``: a path under ``refs/``,
   ``assets/``, ``/storage`` or ``/scratch``, or ``/tmp`` outside a literal
-  block, a path under
-  ``docs/datasheets/``, a Markdown file name, a decision record code
-  such as ``D-0021``, "Library", "notebook" or "reviewed datasheet". The
-  check cannot recognise vendor kernel names and does not try, so keep
-  those out by review;
+  block, a path into a private document tree, a decision record code,
+  or a reference to a private library or notebook. The check cannot
+  recognise vendor kernel names and does not try, so keep those out by
+  review;
 - a listing of the page, and of this guide, in ``LICENSE.origami.paths``.
 
 Three more checks run in the same required job, and each fails it:

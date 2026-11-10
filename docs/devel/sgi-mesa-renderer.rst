@@ -809,6 +809,6 @@ Synthetic tests establish the shared code's behaviour, not physical SGI
 hardware behaviour. Hardware-visible claims need the family's reviewed
 contract, public evidence, and separate device register and guest acceptance
 tests. Do not copy SGI or IRIX source text or identifiers into this tree.
-Someone exposed to restricted source for a device cannot implement or
-independently review that device's emulator code. Record hardware facts in
-the owning public specification with citations to permitted sources.
+A contributor who has read restricted source for a device must not write or
+review that device's emulator code. Record hardware facts in the owning
+public specification with citations to permitted sources.

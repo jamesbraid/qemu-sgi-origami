@@ -114,26 +114,25 @@ test_mips64_timeouts = {
   'irix_miniroot' : 900,
   # One target per irix-diag-matrix row (test_irix_diag.py and the
   # test_irix_diag_<flavour>.py beside it), each selectable on its own so a
-  # diagnostics-only nightly job can run one or two rows. The nightly job
-  # is cancelled at 200 minutes (.forgejo/workflows/nightly.yml), and no
-  # timeout here is above 9000s, leaving the build, the asset downloads and
-  # the result steps 3000s. Each timeout is the row's budget in
-  # irix-diag-matrix plus 120s for its summary and the machines' shutdown,
-  # and every wait inside a row (boots, shell steps, diagnostics, reboot,
-  # stop) is cut to what is left of that budget, so a slow run marks its
-  # remaining checks not run and still writes <row>-summary.json before
-  # meson's timeout: 1500 + 120 = 1620 for origin200 and 2880 + 120 = 3000
-  # for the other five rows. The slowest whole runs measured, with matrix
-  # code not yet committed (2026-09-26), were 896s (origin200), 1755s
-  # (two-chassis), 2382s (one-node), 3032s (shoehorn, before its reboot
-  # and relaunch were dropped), 1934s (carrier) and 2608s (origin300,
-  # including a 300s wait on its stalled reboot, #875, now 180s); the
-  # one-node maximum came from a build carrying jamesb/qemu#866's missed
-  # Compare matches, which slowed oldisk up to ninefold. With the committed
-  # code on trunk 75f534457b (2026-09-27) the rows took 1071s, 1659s,
-  # 2085s, 2060s, 2124s and 1835s of their budgets, in that order; the
-  # one-node's and carrier's 2085s and 2124s were within 200s of the
-  # 2280s they had, so they now have 2880s like the others.
+  # diagnostics-only nightly job can run one or two rows. The nightly job is
+  # cancelled at 200 minutes, and no timeout here is above 9000s, leaving
+  # the build, the asset downloads and the result steps 3000s. Each timeout
+  # is the row's budget in irix-diag-matrix plus 120s for its summary and
+  # the machines' shutdown, and every wait inside a row (boots, shell steps,
+  # diagnostics, reboot, stop) is cut to what is left of that budget, so a
+  # slow run marks its remaining checks not run and still writes
+  # <row>-summary.json before meson's timeout: 1500 + 120 = 1620 for
+  # origin200 and 2880 + 120 = 3000 for the other five rows. The slowest
+  # whole runs measured, with matrix code not yet committed (2026-09-26),
+  # were 896s (origin200), 1755s (two-chassis), 2382s (one-node), 3032s
+  # (shoehorn, before its reboot and relaunch were dropped), 1934s (carrier)
+  # and 2608s (origin300, including a 300s wait on its stalled reboot, #875,
+  # now 180s); the one-node maximum came from a build carrying
+  # jamesb/qemu#866's missed Compare matches, which slowed oldisk up to
+  # ninefold. With the committed code on trunk 75f534457b (2026-09-27) the
+  # rows took 1071s, 1659s, 2085s, 2060s, 2124s and 1835s of their budgets,
+  # in that order; the one-node's and carrier's 2085s and 2124s were within
+  # 200s of the 2280s they had, so they now have 2880s like the others.
   #
   # The Origin 300 rows gained olpci, olperi, olsio, olusb, olvst and
   # pandora, which took about 2000s together at two and four processors in

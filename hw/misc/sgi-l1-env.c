@@ -258,7 +258,7 @@ static const EnvFan u2_fans[] = {
 
 /*
  * The rack-mounted workstation replaces the second exhaust fan with an Odyssey
- * fan, which warns at 1679 RPM in the captured module. The IP53 list is the
+ * fan, which warns at 1679 RPM in the observed module. The IP53 list is the
  * first five; the three N0 fans are IP59's. The current readings, including
  * the Odyssey fan's 1850 RPM, are model choices. The exhaust fan's low level
  * is 210 on both generations: 190 is the IP59 2U row's level, and 210 is the
@@ -350,7 +350,7 @@ static const EnvZone ws_zones_ip59[] = {
 
 /*
  * The rack-mounted workstation's zones: the default table for the 8 and Q
- * personalities, which matches the captured modules. The current percentage
+ * personalities, which matches the observed modules. The current percentage
  * follows the zone's first fan's drive byte, so at idle it equals the minimum.
  * The NODE zone's exhaust fan is inverted.
  */
