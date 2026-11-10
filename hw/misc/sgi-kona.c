@@ -16149,7 +16149,7 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
                 sgi_kona_x_row(memory, tag[bank], x1, x2, row, &tag_run);
                 for (int x = x1; x < x2; x++) {
                     if (!sgi_kona_x_clip_contains(s, x, y) ||
-                        (!gc.opaque_or_tiled &&
+                        (!background && !gc.opaque_or_tiled &&
                          !sgi_kona_x_stipple_bit(s, x, y))) {
                         continue;
                     }
@@ -16194,8 +16194,9 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
                 if (!sgi_kona_x_clip_contains(s, x, y)) {
                     continue;
                 }
-                set = sgi_kona_x_stipple_bit(s, x, y);
-                if (!set && !gc.opaque_or_tiled) {
+                /* A background point never goes through the stipple. */
+                set = !background && sgi_kona_x_stipple_bit(s, x, y);
+                if (!set && !background && !gc.opaque_or_tiled) {
                     continue;
                 }
                 old = sgi_kona_x_row_load(memory, front[bank], &front_run,

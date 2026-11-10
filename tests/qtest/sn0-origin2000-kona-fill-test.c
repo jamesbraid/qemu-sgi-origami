@@ -1821,7 +1821,8 @@ static void test_point_batch(gconstpointer opaque)
     for (unsigned i = 0; i < count; i++) {
         unsigned x = 10 + 2 * i;
         bool drawn = mode != 5 &&
-                     (mode != 4 || (x >= 20 && x < 36 && x % 4 == 0));
+                     (mode != 4 || (x >= 20 && x < 36 &&
+                                    (background || x % 4 == 0)));
         uint32_t expected = mode == 5 && i == count - 1 ? 0x123456 :
                             drawn ? result : dest;
 

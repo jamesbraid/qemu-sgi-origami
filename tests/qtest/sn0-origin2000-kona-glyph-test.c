@@ -1341,6 +1341,72 @@ static void test_opaque_stipple_paints_background(void)
 }
 
 /*
+ * A point in the background colour (0x15f) is a plain point: it does not go
+ * through the loaded stipple. The stipple here has only its even columns
+ * set, so an ordinary point at an odd column paints nothing, while a
+ * background point at the same column paints the GC's second colour.
+ */
+static void test_background_point_skips_stipple(void)
+{
+    const uint32_t gc[13] = { INDEX_RED << 12, 0x1ffe, INDEX_GREEN << 12,
+                              0x1ffe, 0xf00fff, 0, 0x180c, 0x40001, 1, 6,
+                              5, 1, 1 };
+
+    qtest_system_reset(qts);
+    full_screen_clip(qts);
+    x_command(qts, TOKEN_STORE_STIPPLE, (uint32_t[]){ 2, 2, 1 }, 3);
+    data_words(qts, (uint32_t[]){ 0x80000000 }, 1);
+    x_command(qts, TOKEN_LOAD_STIPPLE, (uint32_t[]){ 2 }, 1);
+    x_command(qts, TOKEN_GC, gc, 13);
+    x_command(qts, 0x14c, (uint32_t[]){ XY(1, 2) }, 1);
+    g_assert_cmphex(front_tag_at(qts, 1, 2), ==, 0);
+    x_command(qts, 0x14c, (uint32_t[]){ XY(0, 2) }, 1);
+    g_assert_cmphex(front_at(qts, 0, 2), ==, INDEX_RED);
+    x_command(qts, 0x15f, (uint32_t[]){ XY(1, 3) }, 1);
+    g_assert_cmphex(front_tag_at(qts, 1, 3), ==, TAG_X_INDEX);
+    g_assert_cmphex(front_at(qts, 1, 3), ==, INDEX_GREEN);
+    x_command(qts, 0x15f, (uint32_t[]){ XY(0, 3) }, 1);
+    g_assert_cmphex(front_at(qts, 0, 3), ==, INDEX_GREEN);
+    assert_in_step(qts);
+}
+
+/*
+ * The same, under a logic operation: an XOR GC reads the destination
+ * first, and that pass checks the destination is one it can combine with
+ * (a pixel the X server painted). A background point at a stippled-out
+ * column is checked like any other, so it is refused over an unpainted
+ * pixel and leaves it alone; a pass that skipped the point as the stipple
+ * does an ordinary one would let it through and write the pixel. Over a
+ * painted pixel it toggles it back to zero.
+ */
+static void test_background_point_skips_stipple_under_xor(void)
+{
+    uint32_t gc[13] = { INDEX_RED << 12, 0x1ffe, INDEX_GREEN << 12,
+                        0x1ffe, 0xf00fff, 0, 0x180c, 0x40001, 1, 6,
+                        5, 1, 1 };
+
+    qtest_system_reset(qts);
+    full_screen_clip(qts);
+    x_command(qts, TOKEN_STORE_STIPPLE, (uint32_t[]){ 2, 2, 1 }, 3);
+    data_words(qts, (uint32_t[]){ 0x80000000 }, 1);
+    x_command(qts, TOKEN_LOAD_STIPPLE, (uint32_t[]){ 2 }, 1);
+    x_command(qts, TOKEN_GC, gc, 13);
+    x_command(qts, 0x15f, (uint32_t[]){ XY(1, 3) }, 1);
+    g_assert_cmphex(front_at(qts, 1, 3), ==, INDEX_GREEN);
+
+    gc[9] = 12;                         /* GXxor */
+    x_command(qts, TOKEN_GC, gc, 13);
+    x_command(qts, 0x15f, (uint32_t[]){ XY(1, 3) }, 1);
+    g_assert_cmphex(front_tag_at(qts, 1, 3), ==, TAG_X_INDEX);
+    g_assert_cmphex(front_at(qts, 1, 3), ==, 0);
+    /* Over an unpainted pixel at another stippled-out column: refused. */
+    x_command(qts, 0x15f, (uint32_t[]){ XY(3, 3) }, 1);
+    g_assert_cmphex(front_tag_at(qts, 3, 3), ==, 0);
+    g_assert_cmphex(front_at(qts, 3, 3), ==, 0);
+    assert_in_step(qts);
+}
+
+/*
  * A store that does not fit the model's cache, an entry past it or a
  * pattern over 32 bits wide, is logged and its rows consumed; loading an
  * entry past the cache is logged and unloads the stipple, and loading one
@@ -1697,6 +1763,11 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-glyph/"
                    "stipple-masks-boxes-and-ignores-stray-bits",
                    test_stipple_masks_boxes_and_ignores_stray_bits);
+    qtest_add_func("sn0/origin2000/kona-glyph/background-point-skips-stipple",
+                   test_background_point_skips_stipple);
+    qtest_add_func("sn0/origin2000/kona-glyph/"
+                   "background-point-skips-stipple-under-xor",
+                   test_background_point_skips_stipple_under_xor);
     qtest_add_func("sn0/origin2000/kona-glyph/opaque-stipple-paints-background",
                    test_opaque_stipple_paints_background);
     qtest_add_func("sn0/origin2000/kona-glyph/stipple-outside-cache",

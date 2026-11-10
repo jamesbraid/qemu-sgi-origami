@@ -757,6 +757,15 @@ rule for pixel centres on an edge, and the sample point, are an
 *approximation*. A capture of a triangle with a vertex half way between
 two grid steps would settle the first.
 
+The background-point tokens ``0x15f`` to ``0x161`` draw each point in the
+GC's background colour without the loaded stipple, which the ordinary
+point tokens apply (*inferred*). Word 4 of the graphics-context load is
+the plane write mask, written under ``0xffffff`` (*established*), so its
+bit 31 cannot reach a raster register. The model nonetheless reads that
+bit as the opaque-stipple flag, which paints the background where the
+stipple is clear. What the bit means, and how the board is given an opaque
+stipple, is *unknown*, and the model's reading is an *approximation*.
+
 Texel readback
 ~~~~~~~~~~~~~~
 
