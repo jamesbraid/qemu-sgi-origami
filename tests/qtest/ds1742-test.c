@@ -11,6 +11,8 @@
 #define BASE UINT64_C(0x10000000)
 #define REG(n) (BASE + (n))
 #define NS_PER_SEC UINT64_C(1000000000)
+/* 2024-01-01T00:00:00 UTC, the -rtc base most tests start from. */
+#define RTC_2024 INT64_C(1704067200)
 
 static QTestState *start_at(const char *base, const char *device_extra,
                              const char *extra)
@@ -290,6 +292,101 @@ static void test_ds1744_backed_reopen(void)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
+static QTestState *ds1744_start_backed(const char *base, const char *image,
+                                       const char *reference)
+{
+    QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
+                                  "-rtc base=%s,clock=vm "
+                                  "-drive if=none,id=nvram,file=%s,format=raw "
+                                  "-drive if=none,id=reference,file=%s,"
+                                  "format=raw "
+                                  "-device ds1744,id=clock,drive=nvram,"
+                                  "clock-drive=reference",
+                                  base, image, reference);
+
+    qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
+    return qts;
+}
+
+/*
+ * A date the guest set survives a restart and gains the time that passed
+ * while QEMU was stopped, measured on the -rtc clock as the M48T35 and
+ * DS1685 measure it. A record from that clock's future adds nothing rather
+ * than winding the calendar back, and a store kept without its record
+ * restores the saved calendar with no time added.
+ */
+static void test_ds1744_restart_adds_offline_time(void)
+{
+    g_autofree char *directory = g_dir_make_tmp("ds1744-offline-XXXXXX", NULL);
+    g_autofree char *image = g_build_filename(directory, "nvram.img", NULL);
+    g_autofree char *reference =
+        g_build_filename(directory, "clock.img", NULL);
+    char contents[0x8000] = { 0 }, clock_record[16] = { 0 };
+    g_autofree char *saved = NULL;
+    gsize saved_length;
+    QTestState *qts;
+
+    g_assert_nonnull(directory);
+    g_assert_true(g_file_set_contents(image, contents, sizeof(contents), NULL));
+    g_assert_true(g_file_set_contents(reference, clock_record,
+                                      sizeof(clock_record), NULL));
+
+    /* 2004-01-01 12:00:00, set while the -rtc clock reads 2024. */
+    qts = ds1744_start_backed("2024-01-01T00:00:00", image, reference);
+    wr(qts, 0x7ff7, 0x5a);
+    wr(qts, 0x7ff8, 0x80);
+    wr(qts, 0x7ff9, 0x00);
+    wr(qts, 0x7ffa, 0x00);
+    wr(qts, 0x7ffb, 0x12);
+    wr(qts, 0x7ffc, 0x05);
+    wr(qts, 0x7ffd, 0x01);
+    wr(qts, 0x7ffe, 0x01);
+    wr(qts, 0x7fff, 0x04);
+    wr(qts, 0x7ff8, 0x20);
+    qtest_clock_step(qts, 2 * NS_PER_SEC);
+    g_assert_cmphex(rd(qts, 0x7ff9), ==, 0x02);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(reference, &saved, &saved_length,
+                                      NULL));
+    g_assert_cmpuint(saved_length, ==, 16);
+    g_assert_cmpmem(saved, 8, "DS1742R1", 8);
+    g_assert_cmpint(ldq_le_p(saved + 8), ==, RTC_2024 + 2);
+
+    /* Ten seconds of the -rtc clock pass while QEMU is stopped. */
+    qts = ds1744_start_backed("2024-01-01T00:00:12", image, reference);
+    g_assert_cmphex(rd(qts, 0x7ff7), ==, 0x5a);
+    g_assert_cmphex(rd(qts, 0x7ff8), ==, 0x20);
+    g_assert_cmphex(rd(qts, 0x7ff9), ==, 0x12);
+    g_assert_cmphex(rd(qts, 0x7ffa), ==, 0x00);
+    g_assert_cmphex(rd(qts, 0x7ffb), ==, 0x12);
+    g_assert_cmphex(rd(qts, 0x7ffd), ==, 0x01);
+    g_assert_cmphex(rd(qts, 0x7ffe), ==, 0x01);
+    g_assert_cmphex(rd(qts, 0x7fff), ==, 0x04);
+    qtest_clock_step(qts, NS_PER_SEC);
+    g_assert_cmphex(rd(qts, 0x7ff9), ==, 0x13);
+    qtest_quit(qts);
+
+    /* A -rtc clock behind the record adds nothing. */
+    qts = ds1744_start_backed("2023-06-01T00:00:00", image, reference);
+    g_assert_cmphex(rd(qts, 0x7ff9), ==, 0x13);
+    g_assert_cmphex(rd(qts, 0x7fff), ==, 0x04);
+    qtest_quit(qts);
+
+    /* A store kept without its clock record restores what it saved. */
+    g_assert_true(g_file_set_contents(reference, clock_record,
+                                      sizeof(clock_record), NULL));
+    qts = ds1744_start_backed("2024-01-01T01:00:00", image, reference);
+    g_assert_cmphex(rd(qts, 0x7ff7), ==, 0x5a);
+    g_assert_cmphex(rd(qts, 0x7ff9), ==, 0x13);
+    g_assert_cmphex(rd(qts, 0x7ffb), ==, 0x12);
+    g_assert_cmphex(rd(qts, 0x7fff), ==, 0x04);
+    qtest_quit(qts);
+
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_unlink(reference), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 static void test_ds1744_migration(void)
 {
     g_autofree char *directory = g_dir_make_tmp("ds1744-migrate-XXXXXX", NULL);
@@ -437,8 +534,12 @@ static void test_fresh_seed_reopen(void)
     qtest_clock_step(qts, 2 * NS_PER_SEC);
     qtest_quit(qts);
 
+    /*
+     * Reopen on -rtc clocks that read before the saved record, so no
+     * offline time is added and only a reseed could change the calendar.
+     */
     qts = qtest_initf("-M none -cpu R10000 -S "
-                      "-rtc base=2040-05-06T07:08:09,clock=vm "
+                      "-rtc base=2010-05-06T07:08:09,clock=vm "
                       "-drive if=none,id=nvram,file=%s,format=raw "
                       "-drive if=none,id=reference,file=%s,format=raw "
                       "-device ds1742,id=clock,drive=nvram,clock-drive=reference",
@@ -459,7 +560,7 @@ static void test_fresh_seed_reopen(void)
     qtest_quit(qts);
 
     qts = qtest_initf("-M none -cpu R10000 -S "
-                      "-rtc base=2068-05-06T07:08:09,clock=vm "
+                      "-rtc base=2009-05-06T07:08:09,clock=vm "
                       "-drive if=none,id=nvram,file=%s,format=raw "
                       "-drive if=none,id=reference,file=%s,format=raw "
                       "-device ds1742,id=clock,drive=nvram,clock-drive=reference,"
@@ -882,8 +983,8 @@ static void test_backed_destination_persistence(const void *data)
                                       &saved_ref_len, NULL));
     g_assert_cmpuint(saved_ref_len, >=, 16);
     g_assert_cmpmem(saved_ref, 8, "DS1742R1", 8);
-    /* Keep real elapsed time from changing the expected reopened calendar. */
-    stq_le_p(saved_ref + 8, g_get_real_time() / G_USEC_PER_SEC + 3600);
+    /* A save after the reopen's -rtc time adds no offline time. */
+    stq_le_p(saved_ref + 8, RTC_2024 + 3600);
     g_assert_true(g_file_set_contents(dest_ref, saved_ref,
                                       saved_ref_len, NULL));
     to = qtest_initf("-M none -cpu R10000 -S "
@@ -923,7 +1024,7 @@ static void test_restart_persistence(void)
     g_assert_true(g_file_set_contents(reference, clock_record,
                                       sizeof(clock_record), NULL));
     qts = qtest_initf("-M none -cpu R10000 -S "
-                      "-rtc base=2024-01-01T00:00:00 %s", extra);
+                      "-rtc base=2024-01-01T00:00:00,clock=vm %s", extra);
     qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
     wr(qts, 0, 0xa5);
     wr(qts, 0x7f7, 0x5a);
@@ -933,20 +1034,21 @@ static void test_restart_persistence(void)
                                        &saved_length, NULL));
     g_assert_cmpuint(saved_length, >=, 16);
     g_assert_cmpmem(saved_record, 8, "DS1742R1", 8);
-    stq_le_p(saved_record + 8, g_get_real_time() / G_USEC_PER_SEC - 3600);
+    g_assert_cmpint(ldq_le_p(saved_record + 8), ==, RTC_2024);
+    /* As if QEMU had been stopped for an hour of the -rtc clock. */
+    stq_le_p(saved_record + 8, RTC_2024 - 3600);
     g_assert_true(g_file_set_contents(reference, saved_record,
                                       saved_length, NULL));
 
     qts = qtest_initf("-M none -cpu R10000 -S "
-                      "-rtc base=2024-01-01T00:00:00 %s", extra);
+                      "-rtc base=2024-01-01T00:00:00,clock=vm %s", extra);
     qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
     g_assert_cmphex(rd(qts, 0), ==, 0xa5);
     g_assert_cmphex(rd(qts, 0x7f7), ==, 0x5a);
     g_assert_cmphex(rd(qts, 0x7f8), ==, 0x20);
     g_assert_cmphex(rd(qts, 0x7fb), ==, 0x11);
     persisted_sec = rd(qts, 0x7f9);
-    g_assert_cmpuint(from_bcd(persisted_sec), >=, 47);
-    g_assert_cmpuint(from_bcd(persisted_sec), <, 59);
+    g_assert_cmphex(persisted_sec, ==, 0x47);
     g_assert_cmphex(rd(qts, 0x7fa), ==, 0x23);
     g_assert_cmphex(rd(qts, 0x7fd), ==, 0x25);
     qtest_clock_step(qts, NS_PER_SEC);
@@ -955,12 +1057,12 @@ static void test_restart_persistence(void)
     qtest_quit(qts);
 
     qts = qtest_initf("-M none -cpu R10000 -S "
-                      "-rtc base=2024-01-01T00:00:00 %s", extra);
+                      "-rtc base=2024-01-01T00:00:00,clock=vm %s", extra);
     qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
     set_time(qts, 0x80 | 0x12, 0x23, 0x10, 0x25, 0x09, 0x26, 0x20);
     qtest_quit(qts);
     qts = qtest_initf("-M none -cpu R10000 -S "
-                      "-rtc base=2024-01-01T00:00:00 %s", extra);
+                      "-rtc base=2024-01-01T00:00:00,clock=vm %s", extra);
     qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
     qtest_clock_step(qts, 3 * NS_PER_SEC);
     g_assert_cmphex(rd(qts, 0x7f9), ==, 0x92);
@@ -968,14 +1070,14 @@ static void test_restart_persistence(void)
     qtest_quit(qts);
 
     qts = qtest_initf("-M none -cpu R10000 -S "
-                      "-rtc base=2024-01-01T00:00:00 %s", extra);
+                      "-rtc base=2024-01-01T00:00:00,clock=vm %s", extra);
     qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
     set_time(qts, 0x47, 0x23, 0x10, 0x25, 0x09, 0x26, 0x20);
     wr(qts, 0x7f8, 0x80);
     wr(qts, 0x7f9, 0x05);
     qtest_quit(qts);
     qts = qtest_initf("-M none -cpu R10000 -S "
-                      "-rtc base=2024-01-01T00:00:00 %s", extra);
+                      "-rtc base=2024-01-01T00:00:00,clock=vm %s", extra);
     qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
     g_assert_cmphex(rd(qts, 0x7f8), ==, 0x20);
     g_assert_cmpuint(from_bcd(rd(qts, 0x7f9)), >=, 47);
@@ -983,7 +1085,7 @@ static void test_restart_persistence(void)
     qtest_clock_step(qts, 3 * NS_PER_SEC);
     qtest_quit(qts);
     qts = qtest_initf("-M none -cpu R10000 -S "
-                      "-rtc base=2024-01-01T00:00:00 %s", extra);
+                      "-rtc base=2024-01-01T00:00:00,clock=vm %s", extra);
     qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
     g_assert_cmphex(rd(qts, 0x7f8), ==, 0x20);
     g_assert_cmpuint(from_bcd(rd(qts, 0x7f9)), >=, 50);
@@ -1083,6 +1185,8 @@ int main(int argc, char **argv)
     qtest_add_func("/ds1742/fresh-seed-reset", test_fresh_seed_reset);
     qtest_add_func("/ds1744/geometry", test_ds1744_geometry);
     qtest_add_func("/ds1744/backed-reopen", test_ds1744_backed_reopen);
+    qtest_add_func("/ds1744/restart-adds-offline-time",
+                   test_ds1744_restart_adds_offline_time);
     qtest_add_func("/ds1744/migration", test_ds1744_migration);
     qtest_add_data_func("/ds1744/rejects-ds1742-migration", NULL,
                         test_ds1744_rejects_ds1742_migration);

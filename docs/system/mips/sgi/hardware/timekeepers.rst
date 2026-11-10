@@ -590,8 +590,13 @@ unchanged byte is not rewritten unless an earlier write failed.
 
 ``clock-drive`` is a record the block layer must report as at least 16
 bytes (for a raw file, anything but an empty one), the magic ``DS1742R1``
-followed by the host's wall-clock seconds in little-endian 64-bit. It
-requires ``drive``. It uses the wall clock, not ``-rtc``.
+followed by the instant of the last save as little-endian 64-bit seconds of
+the clock ``-rtc`` selects, ``base=`` included. The M48T35 and DS1685
+records use the same time base, so all three parts add the same offline
+time across a restart. It requires ``drive``. Records written before the
+record took the ``-rtc`` clock held the host's wall-clock seconds, which is
+the same value under the default ``-rtc base=utc``; a launch with another
+``base=`` reads one as a different instant.
 
 The machines bind the IP53 DS1744 as ``nvram<N>`` and ``nvram<N>-clock``,
 both required, 32,768 and 16 bytes (:ref:`sgi-timekeepers-m48t35-stores`).
@@ -607,10 +612,11 @@ machine stops, at shutdown and at unrealize, and not when the drive is
 inactive. If R or W is set at the time of a save, the model logs
 ``LOG_UNIMP``: the transaction is not restored. At realize a nonblank image
 is restored through the same validation as a guest write. An invalid saved
-calendar keeps the seed and logs ``LOG_UNIMP``. A valid one adds the wall
-time since the record and advances the day of week by the whole days elapsed.
-A stopped clock, or one with no record, gets no time added; the second case
-logs ``LOG_UNIMP``.
+calendar keeps the seed and logs ``LOG_UNIMP``. A valid one adds the time
+the ``-rtc`` clock has advanced since the record, none if that clock reads
+earlier than the record, and advances the day of week by the whole days
+elapsed. A stopped clock, or one with no record, gets no time added; the
+second case logs ``LOG_UNIMP``.
 
 Reset and migration
 -------------------
@@ -707,8 +713,10 @@ DS1742 and DS1744:
   with W and with R set, the stop and test modes, the fresh seed and its
   range, saved-seed fallbacks, migration (including refusing the other
   part's stream), backed migration with source quit, destination
-  persistence of running and stopped clocks, restart persistence, backing
-  retries, and the 32 KiB geometry.
+  persistence of running and stopped clocks, restart persistence, the
+  offline time a DS1744 restart adds on the ``-rtc`` clock (and adds none
+  for a record ahead of it or a missing one), backing retries, and the
+  32 KiB geometry.
 - ``tests/qtest/sgi-ioc4-test.c`` covers the clock alias, the 32 KiB window
   (``nvram-window``), the refused region size, wide-access rejection, reset
   and migration of the clock behind IOC4.
