@@ -10,7 +10,7 @@
  * endian and counting themselves, so the stream delimits itself.
  *
  * The field offsets are those of the router segment described in
- * docs/system/mips/sgi/hardware/l1.rst, "L2 link".
+ * docs/system/mips/sgi/hardware/l1-l2-link.rst, "L2 link".
  */
 #ifndef HW_MISC_SGI_L1_L2_LINK_H
 #define HW_MISC_SGI_L1_L2_LINK_H

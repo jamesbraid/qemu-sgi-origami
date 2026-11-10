@@ -8,8 +8,9 @@
  * Most of what is checked here is a declared model choice, not captured
  * controller output: one window per board named by its board number, the
  * console default, the per-link position and port field, the graded request
- * codes and the board-scoped records. docs/system/mips/sgi/hardware/l1.rst
- * lists them, and these cases pin them so a change to one is deliberate.
+ * codes and the board-scoped records.
+ * docs/system/mips/sgi/hardware/l1-brick-profiles.rst lists them, and
+ * these cases pin them so a change to one is deliberate.
  */
 #include "qemu/osdep.h"
 #include <poll.h>

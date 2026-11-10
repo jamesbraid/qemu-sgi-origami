@@ -6,7 +6,8 @@
  *
  * What these profiles answer is a declared model, not captured controller
  * output: the type letters, the attached-brick numbering and the command
- * refusals are choices that docs/system/mips/sgi/hardware/l1.rst marks as
+ * refusals are choices that
+ * docs/system/mips/sgi/hardware/l1-brick-profiles.rst marks as
  * approximations, and these cases pin the choices so a change to one is
  * deliberate.
  */
