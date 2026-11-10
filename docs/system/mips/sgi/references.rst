@@ -1058,6 +1058,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``usenet-3be33f04``
    *comp.sys.sgi.hardware, 2001-11-03, Q:R12k 270 upgrade in older Octane, Message-ID <3BE33F04.848B3CEE@odense.kollegienet.dk>*. Usenet. Capture, cited by line. Message-ID ``<3BE33F04.848B3CEE@odense.kollegienet.dk>``. Public web page; may be quoted.
 
+.. _sgi-ref-usenet-3cc2392b:
+
+``usenet-3cc2392b``
+   *comp.sys.sgi.hardware, 2002-04-21, Greg Douglas, Message-ID <3CC2392B.6D549E5B@reputable.com>*. Usenet. Capture, cited by line. Message-ID ``<3CC2392B.6D549E5B@reputable.com>``. Public web page; may be quoted.
+
 .. _sgi-ref-usenet-3e2794b8:
 
 ``usenet-3e2794b8``
@@ -1118,6 +1123,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``usenet-au03s8``
    *Usenet post, Octane V6 gfxinfo, Message-ID <au03s8$3d2kg$1@ID-18853.news.dfncis.de>*. Usenet. Capture, cited by line. Message-ID ``<au03s8$3d2kg$1@ID-18853.news.dfncis.de>``. Public web page; may be quoted.
 
+.. _sgi-ref-usenet-b92bss:
+
+``usenet-b92bss``
+   *comp.sys.sgi.hardware, 2003-05-04, Benjamin Gawert, Message-ID <b92bss$e2msi$2@ID-22005.news.dfncis.de>*. Usenet. Capture, cited by line. Message-ID ``<b92bss$e2msi$2@ID-22005.news.dfncis.de>``. Public web page; may be quoted.
+
 .. _sgi-ref-usenet-bqfo2p:
 
 ``usenet-bqfo2p``
@@ -1168,10 +1178,25 @@ Stock firmware, cited as ``firmware:<id>`` and identified by version and SHA-256
 ``ip27-prom-6.156``
    *IP27 node-board PROM*. Silicon Graphics. Firmware, cited by address. For Origin 200, Origin 2000 and Onyx2 IP27 node boards. Version 6.156. Banner ``SGI Version 6.156  built 11:27:56 AM Nov 18, 2003``. Found on IRIX 6.5.30 installation media, /usr/cpu/firmware/ip27prom.img. Hashed as the payload image. SHA-256 ``c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-ip30-prom-3-7:
+
+``ip30-prom-3.7``
+   *IP30 PROM*. Silicon Graphics. Firmware, cited by address. For Octane IP30 system board. Version 3.7. Found on IRIX 6.5 base installation media. Hashed as the payload image. SHA-256 ``73bf108723ea9206300b25cb42c12962a94d50318118967f2556f121d1da5ef5``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-ip30-prom-4-17:
 
 ``ip30-prom-4.17``
    *IP30 PROM*. Silicon Graphics. Firmware, cited by address. For Octane and Octane2 IP30 system boards. Version 4.17. Banner ``PROM Monitor SGI Version 6.5 Rev 4.17 IP30 Jan 20, 2004 - 64 Bit``. Found on IRIX 6.5.30 installation media. Hashed as the payload image. SHA-256 ``ee4722ca6f9b821ffadf156346c4d69bf5be71fc4b911cee75e36a1f51a49972``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-ip30-scsi-driver-6-5:
+
+``ip30-scsi-driver-6.5``
+   *IP30 QLogic SCSI driver object*. Silicon Graphics. Firmware, cited by address. For Octane and Octane2 IP30 onboard QLogic SCSI controllers. Version 6.5. Found on IRIX 6.5 base installation media, the driver's relocatable object for the IP30 kernel; addresses are offsets into its code section. Hashed as the payload image. SHA-256 ``e2ccf0d8b940e4953428b9d57e56ce80541fbb8eaa890d6d1a8b00c5edbccc36``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-ip30-scsi-driver-6-5-30:
+
+``ip30-scsi-driver-6.5.30``
+   *IP30 QLogic SCSI driver object*. Silicon Graphics. Firmware, cited by address. For Octane and Octane2 IP30 onboard QLogic SCSI controllers. Version 6.5.30. Found on IRIX 6.5.30 installation media, the driver's relocatable object for the IP30 kernel; addresses are offsets into its code section. Hashed as the payload image. SHA-256 ``dc71c39349a00ba767fafba951ee5f11919af4057aee9b856236b6f2e1d67414``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-ip32-prom-4-18:
 

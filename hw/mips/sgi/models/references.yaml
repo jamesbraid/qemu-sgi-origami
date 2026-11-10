@@ -1128,6 +1128,24 @@ web:
     obtain:
       url: null
       message_id: "<9uhh6o$j75@dispatch.concentric.net>"
+  usenet-b92bss:
+    title: "comp.sys.sgi.hardware, 2003-05-04, Benjamin Gawert, Message-ID <b92bss$e2msi$2@ID-22005.news.dfncis.de>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<b92bss$e2msi$2@ID-22005.news.dfncis.de>"
+  usenet-3cc2392b:
+    title: "comp.sys.sgi.hardware, 2002-04-21, Greg Douglas, Message-ID <3CC2392B.6D549E5B@reputable.com>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<3CC2392B.6D549E5B@reputable.com>"
   usenet-8ns2m5:
     title: "comp.sys.sgi.hardware, 2000-08-21, Octane Graphics Problem, Message-ID <8ns2m5$7u0$1@nnrp1.deja.com>"
     publisher: "Usenet"
@@ -2011,6 +2029,42 @@ firmware:
       distribution: "IRIX 6.5.30 installation media"
       image: payload
       sha256: ee4722ca6f9b821ffadf156346c4d69bf5be71fc4b911cee75e36a1f51a49972
+  ip30-prom-3.7:
+    title: "IP30 PROM"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "Octane IP30 system board"
+    version: "3.7"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5 base installation media"
+      image: payload
+      sha256: 73bf108723ea9206300b25cb42c12962a94d50318118967f2556f121d1da5ef5
+  ip30-scsi-driver-6.5.30:
+    title: "IP30 QLogic SCSI driver object"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "Octane and Octane2 IP30 onboard QLogic SCSI controllers"
+    version: "6.5.30"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5.30 installation media, the driver's relocatable object for the IP30 kernel; addresses are offsets into its code section"
+      image: payload
+      sha256: dc71c39349a00ba767fafba951ee5f11919af4057aee9b856236b6f2e1d67414
+  ip30-scsi-driver-6.5:
+    title: "IP30 QLogic SCSI driver object"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "Octane and Octane2 IP30 onboard QLogic SCSI controllers"
+    version: "6.5"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5 base installation media, the driver's relocatable object for the IP30 kernel; addresses are offsets into its code section"
+      image: payload
+      sha256: e2ccf0d8b940e4953428b9d57e56ce80541fbb8eaa890d6d1a8b00c5edbccc36
   ip35-prom-6.210:
     title: "IP35 PROM"
     publisher: Silicon Graphics

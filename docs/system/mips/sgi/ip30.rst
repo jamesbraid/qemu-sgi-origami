@@ -673,16 +673,60 @@ These are emulator choices for launchers, not hardware facts.
   controller. The reference Octane2's hardware graph places its disk at PCI
   device 0, target 1 (:ref:`sgi-measured-octane2-graph`); the physical bay
   and channel wiring are *unknown*.
+- Disk placement: the catalogue lists ``scsi.0`` at targets 1 to 3 and
+  ``scsi.1`` at targets 1 to 15, in that fill order, for the Octane and the
+  Octane2. The 4.17 PROM sets its target limit by controller index, 4 for
+  index 0 and 16 for every other, and asks at LUN 0 only, skipping the
+  controller's own ID (:src:`ip30-prom-4.17 0x1fc43730-0x1fc43744`). Its
+  power-on scan uses the same limits (:src:`ip30-prom-4.17 0x1fc385b0`).
+  The 3.7 PROM of the 6.5 base release makes the same choice
+  (:src:`ip30-prom-3.7 0x1fc445a8-0x1fc445b8`). The QLogic driver in the
+  IRIX kernel limits the first controller it attaches to 4 and each later
+  one to 16, and probes LUNs 1 to 7 on every ID that answers at LUN 0, in
+  6.5.30 (:src:`ip30-scsi-driver-6.5.30 0x4b80`) and in the 6.5 base
+  release (:src:`ip30-scsi-driver-6.5 0x482c`). Each of these is a
+  *software expectation*. The own ID defaults to 0 in the PROM
+  (:src:`ip30-prom-4.17 0x1fc44350-0x1fc44374`) and in the 6.5.30 driver
+  (:src:`ip30-scsi-driver-6.5.30 0x56b8-0x56c8`), so ID 0 is skipped and IDs
+  1 to 3 are probed on the first controller, a *software expectation*. The
+  PROM's ``scsihostid`` variable (0 to 7) and the driver's own host-ID
+  setting move the skipped ID and make ID 0 visible there. A bus rescan
+  asks for IDs 0 to 15 on every controller, so it reaches IDs 4 to 15 on
+  the first (6.5.30, :src:`ip30-scsi-driver-6.5.30 0x5ed8`), a *software
+  expectation*; the 6.5 base driver's rescan was not examined. A disk at
+  ``scsi.0`` target 4 or above is therefore not found at boot, while IDs 1
+  to 15 on ``scsi.1`` are all asked about; whether a device answers at IDs 8
+  to 15 depends on wiring that is *unknown* (below). These are the defaults
+  only. The factory ``scsihostid`` is *unknown*.
+
+  That IRIX 6.5.13f and 6.5.23m use the same limits is *inferred*: their
+  kernels were not examined, and the 6.5 base and 6.5.30 drivers agree.
+  That the Octane2 uses the same stock PROM is *inferred*. That the
+  driver's limit follows attach order rather than PCI device number is
+  *inferred*, so a QLogic controller attached before the onboard pair would
+  take the limit of 4. That PROM controller index 0 is the model's
+  ``scsi.0`` is *inferred*. Two newsgroup posters say the Octane has three
+  internal 3.5-inch SCA bays and that a CD-ROM goes only on the external
+  connector (:src:`usenet-b92bss`, :src:`usenet-3cc2392b`). They name no
+  controller number or ID range, so that the internal bus is controller 0,
+  ``scsi.0``, and the external connector ``scsi.1`` is *inferred* from the
+  limits above. The kernel driver supports wide operation, a *software
+  expectation* (:src:`ip30-scsi-driver-6.5.30`). The PROM does not enable
+  it, *inferred* from one cleared bit in its default controller flags
+  (:src:`ip30-prom-4.17 0x1fc4444c`). Whether the second controller is
+  wired for 16 bits, and so whether IDs 8 to 15 are reachable on the
+  hardware, is *unknown*.
 - CD-ROM: ``-cdrom FILE`` puts a ``scsi-cd`` on the first onboard
   controller's bus, ``scsi.0``, at target 2. The second controller's bus
   is ``scsi.1``. On the model, the stock Octane2 PROM never selects a
   target above 3 on ``scsi.0``, so a ``scsi-cd`` there at target 4 is not
   found; at target 4 on ``scsi.1`` it is, as ``scsi(1)cdrom(4)``. The PROM's
   code probes targets 0 to 3 on controller index 0 and 0 to 15 on the
-  others, skipping the adapter's own ID; which index is ``scsi.0`` comes
-  from model runs. The machine's ``scsi-cd`` reports a block descriptor and
-  takes a MODE SELECT block length, and the PROM sets the 512-byte blocks it
-  reads a CD in (``hw/mips/sgi/board-cdrom.c``).
+  others, skipping the adapter's own ID (:src:`ip30-prom-4.17
+  0x1fc43730-0x1fc43744`), a *software expectation*; which index is
+  ``scsi.0`` comes from model runs. The machine's ``scsi-cd`` reports a
+  block descriptor and takes a MODE SELECT block length, and the PROM sets
+  the 512-byte blocks it reads a CD in (``hw/mips/sgi/board-cdrom.c``).
 - Netboot adapter ``ioc3-ethernet``, the onboard IOC3's Ethernet; install
   media ``disk-image`` and ``netboot``. The stock PROM's "Install System
   Software" netbooted the IRIX 6.5.30 miniroot through it on the model,

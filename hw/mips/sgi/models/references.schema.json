@@ -103,7 +103,7 @@
         "publisher": { "type": "string", "minLength": 1 },
         "kind": { "const": "firmware" },
         "product": { "type": "string", "minLength": 1 },
-        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9]+)?$" },
         "banner": { "type": "string", "description": "The version line the image prints." },
         "locator": { "const": "address", "description": "A citation names an address, table or string within the image." },
         "rights": { "$ref": "#/$defs/rights" },

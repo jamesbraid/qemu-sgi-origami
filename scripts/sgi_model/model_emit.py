@@ -484,6 +484,13 @@ _SCSI_TARGETS = {
     # A loop disk's target is its loop ID, any loop port address.
     "qlogic-isp2200": list(range(0, 0x7e)),
 }
+# The Octane and Octane2 PROM and IRIX walk only IDs 1 to 3 on the first
+# onboard controller (the internal bus, three SCA bays) and IDs 1 to 15 on
+# the second (the external connector), so a disk elsewhere is not seen at
+# boot. Listed per adapter, in fill order: a launcher takes the next free
+# ID of the first adapter, then of the next. An adapter with no entry here
+# is an error, not a default. See the IP30 manual page.
+_IP30_SCSI_TARGETS = {0: list(range(1, 4)), 1: list(range(1, 16))}
 # Adapters whose bus is not plain SCSI. A disk on a Fibre Channel private
 # loop is a loop port and needs the port_wwn and wwn names that port has.
 _SCSI_BUS_TYPES = {"qlogic-isp2200": "fc-loop"}
@@ -530,7 +537,8 @@ _BOOT_PROM_KINDS = {
 def _scsi_adapters_for(topology: dict) -> list[dict]:
     """One `scsi-adapters` entry per SCSI host adapter any I/O board carries, in
     the same device order `_compile_io_board`/`_compile_bedrock_pci_function`
-    already sort PCI functions into. `bus` follows QEMU's own generic-SCSI
+    already sort PCI functions into, which is the order a launcher fills them
+    in. `bus` follows QEMU's own generic-SCSI
     numbering, one bus per host adapter instantiated. IP32 uses the
     explicitly named onboard AIC controllers' child buses instead.
     """
@@ -546,6 +554,12 @@ def _scsi_adapters_for(topology: dict) -> list[dict]:
             targets = _SCSI_TARGETS.get(kind)
             if targets is None:
                 continue
+            if topology["generation"] == "IP30":
+                if len(adapters) not in _IP30_SCSI_TARGETS:
+                    raise CompileError(
+                        f"IP30 SCSI adapter {len(adapters)} has no listed "
+                        "targets")
+                targets = _IP30_SCSI_TARGETS[len(adapters)]
             adapters.append({
                 "type": _SCSI_BUS_TYPES.get(kind, "scsi"),
                 "bus": f"scsi.{len(adapters)}",
