@@ -1669,13 +1669,12 @@ static void vbrick_test_add_module(unsigned int module)
 }
 
 /*
- * An Onyx 3000 with a V-brick, arranged as the V-brick datasheet's
- * one-pipe attachment: the C-brick fixture's I-brick on c0, and c1's XIO
- * cable on port A of the V-brick's midplane XBridge, with one V12 on
- * Crosstalk port 8. The V-brick has no L1 in the model. Which Crosstalk
- * port a V12 sits on, and which of A and B the cable meets, are unknown
- * (007-4264-002 printed pages 52 to 56 draw the slots and ports but number
- * neither), so both are fixture values.
+ * An Onyx 3000 with a V-brick, arranged as a one-pipe attachment: the C-brick
+ * fixture's I-brick on c0, and c1's XIO cable on port A of the V-brick's
+ * midplane XBridge, with one V12 on Crosstalk port 8. The V-brick has no L1 in
+ * the model. Which Crosstalk port a V12 sits on, and which of A and B the
+ * cable meets, are unknown (007-4264-002 printed pages 52 to 56 draw the slots
+ * and ports but number neither), so both are fixture values.
  */
 static void bedrock_test_install_vbrick(void)
 {

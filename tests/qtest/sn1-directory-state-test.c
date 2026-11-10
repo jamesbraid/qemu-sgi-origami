@@ -11,15 +11,14 @@
  * directory word they read back through the directory backdoor after each
  * step.
  *
- * Expected words follow the Origin directory protocol (the SGI Origin
- * ccNUMA paper, ISCA 1997, section 3.2), the R10000's requests (R10000
- * User's Manual version 2.0, Table 4-2 and the processor block read, write
- * and eliminate protocols) and the public SN1 standard directory layout
- * (hubmd_next.h at Linux v2.5.40): format in bits 1:0, a pointer entry's
- * state in 4:2 and pointer in 15:8, a shared-fine entry's first tag in 4:2
- * and first vector in 15:8. The pointer value of the processor in slot C
- * of node zero is 4 and its shared-vector bit is 1, which the memory
- * unit's datasheet records as inferred.
+ * Expected words follow the Origin directory protocol (the SGI Origin ccNUMA
+ * paper, ISCA 1997, section 3.2), the R10000's requests (R10000 User's Manual
+ * version 2.0, Table 4-2 and the processor block read, write and eliminate
+ * protocols) and the public SN1 standard directory layout (hubmd_next.h at
+ * Linux v2.5.40): format in bits 1:0, a pointer entry's state in 4:2 and
+ * pointer in 15:8, a shared-fine entry's first tag in 4:2 and first vector in
+ * 15:8. The pointer value of the processor in slot C of node zero is 4 and its
+ * shared-vector bit is 1, which is inferred.
  */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"

@@ -139,11 +139,10 @@ static char *log_file_take(const char *path)
 }
 
 /*
- * The bits of II scratch 0 the PROM's partition path sets and later reads
- * (the partitioning datasheet, test 2): bit 0 marks the global master, bit 9
- * the partition master, and bits 4+i mark processor i's progress. The
- * register must keep each independently; a model that dropped these writes
- * would skip the fences and the KLCONFIG update.
+ * The bits of II scratch 0 the PROM's partition path sets and later reads: bit
+ * 0 marks the global master, bit 9 the partition master, and bits 4+i mark
+ * processor i's progress. The register must keep each independently; a model
+ * that dropped these writes would skip the fences and the KLCONFIG update.
  */
 static void test_scratch0_master_marks(void)
 {

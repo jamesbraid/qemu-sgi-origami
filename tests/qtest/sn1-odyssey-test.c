@@ -609,10 +609,9 @@ static void cmd_push(QTestState *qts, uint32_t word)
 }
 
 /*
- * Two command-FIFO words as a single 64-bit store -- the width the
- * datasheet's qtest checklist item 21 establishes alongside the 32-bit
- * store cmd_push() above, upper half first (odyssey_cmd_fifo_write(),
- * hw/misc/sgi-odyssey.c).
+ * Two command-FIFO words as a single 64-bit store -- the width the FIFO
+ * accepts alongside the 32-bit store cmd_push() above, upper half first
+ * (odyssey_cmd_fifo_write(), hw/misc/sgi-odyssey.c).
  */
 static void cmd_push64(QTestState *qts, uint32_t first, uint32_t second)
 {
@@ -1919,15 +1918,14 @@ static unsigned count_occurrences(const char *haystack, const char *needle)
 }
 
 /*
- * Everything past the modeled ladder -- the indirect write port, the
- * display back end, and the command FIFO's read side (it is write-only,
- * hw/misc/sgi-odyssey.c) -- reads zero, swallows writes and says so once
- * per offset in the log. The command FIFO's write side now recognizes
- * the fill/copy/glyph grammar (the dedicated command-FIFO tests below),
- * so this pins its two remaining unmodeled paths instead: a store width
- * the FIFO does not accept (datasheet qtest checklist item 21 establishes
- * 32-bit and 64-bit only), and a command word that shape-matches nothing
- * the grammar recognizes.
+ * Everything past the modeled ladder -- the indirect write port, the display
+ * back end, and the command FIFO's read side (it is write-only,
+ * hw/misc/sgi-odyssey.c) -- reads zero, swallows writes and says so once per
+ * offset in the log. The command FIFO's write side now recognizes the
+ * fill/copy/glyph grammar (the dedicated command-FIFO tests below), so this
+ * pins its two remaining unmodeled paths instead: a store width the FIFO does
+ * not accept (it takes 32-bit and 64-bit only), and a command word that
+ * shape-matches nothing the grammar recognizes.
  */
 static void test_unmodeled_offsets_are_visible(void)
 {
@@ -4067,10 +4065,9 @@ static void test_command_work_read_waits(void)
 
 /*
  * The flow-control target store (+0x1074) is a direct register write: the
- * kernel stores it, issues a sync and clears +0x107c with no wait on the
- * FIFO (datasheet, "Flags, status and flow control"). The store does not
- * finish the queued command work. Only the store is pinned: a read of the
- * register waits like any other.
+ * kernel stores it, issues a sync and clears +0x107c with no wait on the FIFO.
+ * The store does not finish the queued command work. Only the store is pinned:
+ * a read of the register waits like any other.
  */
 static void test_flow_control_store_no_drain(void)
 {
@@ -5708,11 +5705,10 @@ static void test_command_fifo_image_raster_formats(void)
 
 /*
  * Luminance sources into an RGBA window take their burst tag from the expand
- * flag (datasheet, "Pixel burst tags"): 0x62 and 0x68 under 0x12 (16-bit
- * components, the earlier one in the high half), 0x48 under 0x11 (packed
- * bytes, luminance then alpha). The same codes under 0x10 are the
- * luminance-object control. Pairings the table does not list are refused,
- * logged, and paint nothing.
+ * flag: 0x62 and 0x68 under 0x12 (16-bit components, the earlier one in the
+ * high half), 0x48 under 0x11 (packed bytes, luminance then alpha). The same
+ * codes under 0x10 are the luminance-object control. Pairings the table does
+ * not list are refused, logged, and paint nothing.
  */
 static void test_command_fifo_image_luminance_tags(void)
 {
@@ -9249,9 +9245,9 @@ static void test_command_fifo_gl_line_stipple_migration(void)
 /*
  * Polygon offset: 0x0404 bit 7 is the fill-polygon GL_POLYGON_OFFSET_FILL
  * enable, and 0x0458 is a signed 25-bit count in bits 24:0 of steps of the
- * stored depth word (the datasheet's polygon offset). Two coplanar triangles
- * under GL_LESS: without the offset the second one's equal depth ties and
- * loses; with a negative bias large enough to be unambiguous, it wins.
+ * stored depth word. Two coplanar triangles under GL_LESS: without the offset
+ * the second one's equal depth ties and loses; with a negative bias large
+ * enough to be unambiguous, it wins.
  */
 #define ODSY_MODE_OFFSET_FILL (1u << 7)
 #define ODSY_REG_POLYGON_OFFSET 0x00010458
@@ -13797,12 +13793,11 @@ static void odsy_buffer_pixel_write(QTestState *qts, uint32_t buffer,
 #define ODSY_TEST_HEIGHT 1024
 
 /*
- * Rectangle copies inside the id and overlay plane (datasheet, "Rectangle
- * copies inside the id and overlay plane"). The X server's tiled fill sends
- * 0x2031 copies with both base words at the id-plane base under the id-plane
- * destination select; the board performs them in the overlay byte (drawing
- * mask 0xc) or the id byte (0x3) under the plane mask, leaving colour alone.
- * That routing is INFERRED, and the overlap staging is model policy.
+ * Rectangle copies inside the id and overlay plane. The X server's tiled fill
+ * sends 0x2031 copies with both base words at the id-plane base under the
+ * id-plane destination select; the board performs them in the overlay byte
+ * (drawing mask 0xc) or the id byte (0x3) under the plane mask, leaving colour
+ * alone. That routing is INFERRED, and the overlap staging is model policy.
  */
 static void odsy_did_write(QTestState *qts, uint32_t x, uint32_t y,
                            uint32_t value)
@@ -14112,8 +14107,8 @@ static void test_command_fifo_copy_id_plane_dispatch(void)
 
 /*
  * The base compared is the one the last id-plane select named, not a fixed
- * value, and a mask naming both buffers copies both bytes (UNKNOWN in the
- * datasheet; model policy).
+ * value, and a mask naming both buffers copies both bytes (UNKNOWN; model
+ * policy).
  */
 static void test_command_fifo_copy_id_plane_select_base(void)
 {
@@ -17435,10 +17430,10 @@ static void texture_public_border_bind_3d(QTestState *qts,
 
 /*
  * The texels are the public probe's authored 4x4x4 grid. Their placement,
- * level_base + (15 + z) * 0x400, is the Odyssey datasheet's bounded policy
- * for this captured stored RGBA8, border-one, 2x2x2 profile: it approximates
- * software writes seen in Octane2 V12 model traces at the level bases
- * 0x16a800 and 0x16b800. Physical V12 texture layout is unqualified.
+ * level_base + (15 + z) * 0x400, is a bounded policy for this captured stored
+ * RGBA8, border-one, 2x2x2 profile: it approximates software writes seen in
+ * Octane2 V12 model traces at the level bases 0x16a800 and 0x16b800. Physical
+ * V12 texture layout is unqualified.
  */
 #define PUBLIC_VOLUME_STRIDE 0x400
 /* Each slice's upload box starts at (15, 15) inside its object. */
@@ -17551,13 +17546,12 @@ static void public_stored_volume_decoys(QTestState *qts, uint32_t level_base)
 }
 
 /*
- * Mode and level-entry framing come from the retained public transport.
- * The environment word 0x141b = 1 does not: neither the transport nor the
- * datasheet records it. It is a precondition taken from the model, whose
- * texture setup drops a draw without an environment and decodes 1 as
- * replace. It is not capture or hardware evidence. Replace makes the
- * expected pixels the texels themselves rather than texels modulated by
- * the yellow vertex colour.
+ * Mode and level-entry framing come from the retained public transport. The
+ * environment word 0x141b = 1 does not: neither the transport nor any other
+ * source records it. It is a precondition taken from the model, whose texture
+ * setup drops a draw without an environment and decodes 1 as replace. It is
+ * not capture or hardware evidence. Replace makes the expected pixels the
+ * texels themselves rather than texels modulated by the yellow vertex colour.
  */
 static void public_stored_volume_bind_with(QTestState *qts,
                                            const uint32_t sampler[7],
@@ -17771,10 +17765,10 @@ static void test_public_stored_volume_second_base_missing_all(void)
 }
 
 /*
- * The same encoded profile with complete authored slices only at
- * level_base + z * 0x400 and nothing at the high origin. The datasheet
- * gives no selector for this low placement, so it must not be sampled.
- * The high slices added afterwards are.
+ * The same encoded profile with complete authored slices only at level_base +
+ * z * 0x400 and nothing at the high origin. Nothing gives a selector for this
+ * low placement, so it must not be sampled. The high slices added afterwards
+ * are.
  */
 static void test_public_stored_volume_low_origin(void)
 {
@@ -23150,14 +23144,13 @@ static void test_draw_sentinel_short_rejections(void)
 }
 
 /*
- * GL image writes to the draw sentinel decode word 7's format code (bits
- * 4:0) and type code (bits 8:5), whatever the pair is, not three captured
- * words (datasheet, "Image-write table"). Each row writes one pixel at the
- * window's own row i and reads the stored word back. The size field in
- * word 4 (bits 15:13) rides along with the destination class and must not
- * change the pixel, so the rows vary it over 0 to 2. A row that only
- * passes because the decode ignores a channel or its width would need the
- * channel values here to differ, which they do.
+ * GL image writes to the draw sentinel decode word 7's format code (bits 4:0)
+ * and type code (bits 8:5), whatever the pair is, not three captured words.
+ * Each row writes one pixel at the window's own row i and reads the stored
+ * word back. The size field in word 4 (bits 15:13) rides along with the
+ * destination class and must not change the pixel, so the rows vary it over 0
+ * to 2. A row that only passes because the decode ignores a channel or its
+ * width would need the channel values here to differ, which they do.
  */
 typedef struct GLWriteCase {
     uint32_t format, type, size_field;
@@ -23297,10 +23290,9 @@ static void test_draw_sentinel_gl_luminance(void)
 }
 
 /*
- * Packed types: the format names the components from the most significant
- * bits down, so a reversed packed type arrives under the format whose
- * order it has in memory (INFERRED from the datasheet's wording). Each
- * channel is scaled from its own width.
+ * Packed types: the format names the components from the most significant bits
+ * down, so a reversed packed type arrives under the format whose order it has
+ * in memory (INFERRED). Each channel is scaled from its own width.
  */
 static void test_draw_sentinel_gl_packed_types(void)
 {
@@ -23341,10 +23333,10 @@ static void test_draw_sentinel_gl_index_types(void)
 }
 
 /*
- * A pair the datasheet does not define leaves the window alone and says so
- * once; so does a size field above 2, byte swapping (bit 10), whose board
- * effect is unknown, and a bytes-per-pixel code that disagrees with the
- * pair. A bit the decode does not read (bit 30, bit 31) changes nothing.
+ * A pair the model does not define leaves the window alone and says so once;
+ * so does a size field above 2, byte swapping (bit 10), whose board effect is
+ * unknown, and a bytes-per-pixel code that disagrees with the pair. A bit the
+ * decode does not read (bit 30, bit 31) changes nothing.
  */
 static void test_draw_sentinel_gl_unmodeled(void)
 {
@@ -24259,15 +24251,14 @@ static void test_readback_gl_layouts(void)
 }
 
 /*
- * The GL read table: word 4's
- * class (bits 2:0) and code (bits 7:3) name the host bytes. Each row below
- * reads one pixel, red 0x9a, green 0x5e, blue 0xc3, alpha 0xd1, and checks
- * the bytes against the GL packing of the row's format and type (written
- * from the GL packing rules, not from the model's tables; every alternative
- * pair the datasheet lists for a code gives the same bytes). Packed
- * channels keep their top bits, and a 10-bit channel repeats them: the
- * planes hold eight bits a channel. The same rows read from a board-memory
- * object, as a texture readback does.
+ * The GL read table: word 4's class (bits 2:0) and code (bits 7:3) name the
+ * host bytes. Each row below reads one pixel, red 0x9a, green 0x5e, blue 0xc3,
+ * alpha 0xd1, and checks the bytes against the GL packing of the row's format
+ * and type (written from the GL packing rules, not from the model's tables;
+ * every alternative pair listed for a code gives the same bytes). Packed
+ * channels keep their top bits, and a 10-bit channel repeats them: the planes
+ * hold eight bits a channel. The same rows read from a board-memory object, as
+ * a texture readback does.
  */
 static const struct {
     uint32_t cls, code;
@@ -24478,15 +24469,14 @@ static void test_readback_gl_unlisted_rows(void)
 /*
  * Class 0 code 0 and class 2 code 2 are colour index and BGRA bytes in the
  * read table and also a stencil byte and a 32-bit depth word. Word 4's field
- * codes (bits 23:20 and 27:24) tell them apart (datasheet, "Read table"):
- * depth and stencil send (0, 0) or (4, 0), BGRA (2, 2), (3, 2), (6, 2),
- * (7, 3) or (2, 0); an eight-bit colour index is class 0 code 1 and not
- * a shared row. Each case reads one window, here an RGB-mode one holding colour
- * 0x0000007b, with the headers the datasheet lists, so a model that told
- * them apart by the window's mode would answer every one alike. A stencil
- * stencil header of (0, 0) is also a storage-0 index read, which only
- * word 2 separates, so it is reported. A pair the datasheet does not list
- * is reported too.
+ * codes (bits 23:20 and 27:24) tell them apart: depth and stencil send (0, 0)
+ * or (4, 0), BGRA (2, 2), (3, 2), (6, 2), (7, 3) or (2, 0); an eight-bit
+ * colour index is class 0 code 1 and not a shared row. Each case reads one
+ * window, here an RGB-mode one holding colour 0x0000007b, with the headers
+ * listed here, so a model that told them apart by the window's mode would
+ * answer every one alike. A stencil stencil header of (0, 0) is also a
+ * storage-0 index read, which only word 2 separates, so it is reported. A pair
+ * not listed here is reported too.
  */
 static unsigned readback_depth_reports(uint32_t cls, uint32_t code,
                                        uint32_t bytes, uint32_t mode,
@@ -24557,7 +24547,7 @@ static void test_readback_gl_depth_shared_rows(void)
                                                 rgb[i].f1, rgb[i].f2,
                                                 rgb[i].first), ==, 0);
     }
-    /* A pair the datasheet does not list: colour, reported. */
+    /* A pair not listed above: colour, reported. */
     g_assert_cmpuint(readback_depth_reports(2, 2, 4, ODSY_DISPMODE_RGB,
                                             5, 1, 0x7b), ==, 1);
     /* Depth fields read the same on an index-mode window. */
@@ -24580,12 +24570,11 @@ static void test_readback_gl_depth_shared_rows(void)
 }
 
 /*
- * Depth and stencil DMA (the datasheet's "Depth and stencil headers"). The
- * write is the draw sentinel with word 7's format code 0 and type code 4,
- * four bytes a pixel. Register 0x0452 chooses the plane, not word 4's size
- * field (which these headers still set, as a header always has one); the
- * read is class 1 code 0 (16-bit depth), class 2 code 2 (32-bit depth)
- * or class 0 code 0 (stencil byte).
+ * Depth and stencil DMA. The write is the draw sentinel with word 7's format
+ * code 0 and type code 4, four bytes a pixel. Register 0x0452 chooses the
+ * plane, not word 4's size field (which these headers still set, as a header
+ * always has one); the read is class 1 code 0 (16-bit depth), class 2 code 2
+ * (32-bit depth) or class 0 code 0 (stencil byte).
  */
 #define RB_ZS_DEPTH_WRITE 0x80033000u
 #define RB_ZS_STENCIL_WRITE 0x80031000u
@@ -24766,16 +24755,14 @@ static void test_readback_gl_zs_write_rules(void)
 }
 
 /*
- * A format-0 type-4 write takes its plane from register 0x0452 when the
- * pixels arrive, and word 4's size field has no say (the datasheet's "Depth
- * and stencil by pixel burst"). Bit 24 enables depth; the stencil byte is
- * (index & mask) | (old & ~mask) under bits 19:12, the index being word
- * bits 23:16. Depth with mask 0 leaves
- * stencil alone; a partial mask keeps the old bits the mask clears; with
- * bit 24 clear a stencil write leaves depth alone, whichever size field the
- * header carries; with both clear nothing is stored; with both set one
- * word takes both planes. Whether the depth and
- * stencil test bits gate such a write is unknown and not modelled.
+ * A format-0 type-4 write takes its plane from register 0x0452 when the pixels
+ * arrive, and word 4's size field has no say. Bit 24 enables depth; the
+ * stencil byte is (index & mask) | (old & ~mask) under bits 19:12, the index
+ * being word bits 23:16. Depth with mask 0 leaves stencil alone; a partial
+ * mask keeps the old bits the mask clears; with bit 24 clear a stencil write
+ * leaves depth alone, whichever size field the header carries; with both clear
+ * nothing is stored; with both set one word takes both planes. Whether the
+ * depth and stencil test bits gate such a write is unknown and not modelled.
  */
 static void test_readback_gl_zs_write_enables(void)
 {
@@ -25007,13 +24994,12 @@ static void test_readback_failures(void)
 }
 
 /*
- * The display back end's hardware cursor (the datasheet's
- * "Hardware cursor"; hw/misc/sgi-odyssey.c). The test glyph's top row is
- * values 1, 2, 0, 1 in columns 0 to 3, and its plane is 3 under columns 0 to
- * 2 and 0 from column 3 on, so along that row the cursor shows colour word
- * 1, word 2, word 0, then nothing over a glyph value of 1. Word 1 holds a
- * ten-bit green of 0x2c4, which shows as its top eight bits, 0xb1; its low
- * eight bits, 0xc4, would tell a wrong truncation apart.
+ * The display back end's hardware cursor (hw/misc/sgi-odyssey.c). The test
+ * glyph's top row is values 1, 2, 0, 1 in columns 0 to 3, and its plane is 3
+ * under columns 0 to 2 and 0 from column 3 on, so along that row the cursor
+ * shows colour word 1, word 2, word 0, then nothing over a glyph value of 1.
+ * Word 1 holds a ten-bit green of 0x2c4, which shows as its top eight bits,
+ * 0xb1; its low eight bits, 0xc4, would tell a wrong truncation apart.
  */
 #define ODSY_CURSOR_GLYPH 0x2500
 #define ODSY_CURSOR_POSITION 0x2580

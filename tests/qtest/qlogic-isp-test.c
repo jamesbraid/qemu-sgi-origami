@@ -136,12 +136,11 @@
 #define ISP_SEG_SIZE             8
 
 /*
- * The 64-bit addressing pair (datasheet's "64-bit addressing entries"
- * section): Linux/IP27's only request format. LUN and target are two
- * separate bytes, not one packed word; each segment is 12 bytes (a 64-bit
- * address as two 32-bit words, low half first, then a 32-bit length)
- * instead of 8; two inline segments instead of four; five per continuation
- * instead of seven.
+ * The 64-bit addressing pair (see qlogic-isp.rst): Linux/IP27's only request
+ * format. LUN and target are two separate bytes, not one packed word; each
+ * segment is 12 bytes (a 64-bit address as two 32-bit words, low half first,
+ * then a 32-bit length) instead of 8; two inline segments instead of four;
+ * five per continuation instead of seven.
  */
 #define ISP_ENTRY_TYPE_COMMAND_A64  0x09
 #define ISP_ENTRY_TYPE_CONTINUE_A64 0x0a
@@ -1955,9 +1954,9 @@ static void test_bus_reset_retires_selection_wait(void *obj, void *data,
 
 /*
  * The driver builds the request ring again while a selection waits. Model
- * choice; the datasheet is silent on what the chip does to a selection in
- * progress. Here the wait is not tied to a ring entry, so it still posts its
- * completion, once, when the timeout runs out.
+ * choice; nothing says what the chip does to a selection in progress. Here the
+ * wait is not tied to a ring entry, so it still posts its completion, once,
+ * when the timeout runs out.
  */
 static void test_request_queue_init_keeps_selection_wait(void *obj, void *data,
                                                          QGuestAllocator *alloc)

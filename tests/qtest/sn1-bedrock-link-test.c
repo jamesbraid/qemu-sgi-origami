@@ -836,11 +836,10 @@ static void test_port_reset_crosses_two_routers_by_permit_and_mask(void)
 }
 
 /*
- * Partition publication (the partitioning datasheet, discriminating tests 1
- * and 3). The stock PROM stores its partition ID in bits 55:48 of its own
- * local-block scratch 0 with a read-modify-write that keeps the other 56
- * bits, and learns a peer's ID by a routed read of the peer's scratch 0.
- * It also tells a headless peer its ID by a routed write of the same byte.
+ * Partition publication. The stock PROM stores its partition ID in bits 55:48
+ * of its own local-block scratch 0 with a read-modify-write that keeps the
+ * other 56 bits, and learns a peer's ID by a routed read of the peer's scratch
+ * 0. It also tells a headless peer its ID by a routed write of the same byte.
  * Bits 63:56 and 47:0 must survive each of those, and a node's reset must
  * leave the peer's scratch 1 alone, whose bit 38 is the peer's
  * outside-the-reset-space mark.

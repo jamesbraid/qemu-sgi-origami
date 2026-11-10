@@ -464,12 +464,11 @@ static void settle(void)
 }
 
 /*
- * Port reset bit 0 restarts the whole machine, whichever Hub it is written
- * at: every node's processors start again and every Hub returns to reset,
- * while the error-spool addresses the firmware keeps across a reset
- * survive; neither controller notices, and the machine's own reset is not
- * requested. The datasheet describes the node resetting; the model does not
- * restart one node alone.
+ * Port reset bit 0 restarts the whole machine, whichever Hub it is written at:
+ * every node's processors start again and every Hub returns to reset, while
+ * the error-spool addresses the firmware keeps across a reset survive; neither
+ * controller notices, and the machine's own reset is not requested. The real
+ * part resets the node; the model does not restart one node alone.
  */
 static void test_port_reset_bit0_restarts_every_node(void)
 {
@@ -844,12 +843,12 @@ static uint64_t bte_copy(QTestState *qts, unsigned int cpu, uint64_t source,
 }
 
 /*
- * An unpowered module's memory is as gone as its registers. Its peer's
- * loads and stores find nothing at the node's address and neither lands, and
- * a block transfer aimed at it fails with the error bit and moves nothing,
- * where it copied the line while the module had power. The bytes are there
- * again when power returns, which the model allows (the datasheet's loss of
- * memory is an approximation it leaves to the PROM's own test).
+ * An unpowered module's memory is as gone as its registers. Its peer's loads
+ * and stores find nothing at the node's address and neither lands, and a block
+ * transfer aimed at it fails with the error bit and moves nothing, where it
+ * copied the line while the module had power. The bytes are there again when
+ * power returns, which the model allows (the loss of memory is an
+ * approximation it leaves to the PROM's own test).
  */
 static void test_off_module_memory_is_unreachable(void)
 {

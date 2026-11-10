@@ -750,9 +750,9 @@ static void test_xbow_prom_error_writes(void)
 }
 
 /*
- * Origin 2000 reconnects BaseIO after a Crossbow per-link reset, and the
- * reset reaches the Bridge's core (the Bridge datasheet's "Reset received
- * from Crossbow"): control is back at its reset value afterwards.
+ * Origin 2000 reconnects BaseIO after a Crossbow per-link reset, and the reset
+ * reaches the Bridge's core (see bridge.rst): control is back at its reset
+ * value afterwards.
  */
 #define BRIDGE_CONTROL_RESET 0x7f0033ffu
 

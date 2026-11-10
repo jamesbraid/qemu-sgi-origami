@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Power-bay controller link: the bay end of the L1's power-bay serial link,
- * driven over a socket the test holds. Each case cites the rows of the
- * power-bay controller datasheet it checks. Wire bytes are written out
- * rather than built by the helpers wherever a case is about the encoding.
+ * driven over a socket the test holds. Each case checks a row of the power-bay
+ * link in l1.rst, "Power-bay link". Wire bytes are written out rather than
+ * built by the helpers wherever a case is about the encoding.
  */
 #include "qemu/osdep.h"
 #include <poll.h>
@@ -33,7 +33,7 @@ static uint16_t checksum(const uint8_t *body, size_t len)
     return 0xffff - (sum + len + 1);
 }
 
-/* Datasheet link table: 0xa0, 0xa5, 0xaa travel as 0xaa 0xb0/0xb5/0xba. */
+/* Link table: 0xa0, 0xa5, 0xaa travel as 0xaa 0xb0/0xb5/0xba. */
 static void stuff(GByteArray *wire, const uint8_t *body, size_t len)
 {
     for (size_t i = 0; i < len; i++) {
@@ -578,10 +578,10 @@ static void pbay_set_u8(Rig *r, const char *prop, uint8_t v)
 }
 
 /*
- * Datasheet error replies: with the loader's status 0xff, a command in the
- * table answers 0xff (header-only for a link command, the short prefix for
- * a tunnelled request of network function 00 10 18 28, silence for any
- * other), 0xa2 stays silent and a command not in the table still gets 0xc1.
+ * Error replies: with the loader's status 0xff, a command in the table answers
+ * 0xff (header-only for a link command, the short prefix for a tunnelled
+ * request of network function 00 10 18 28, silence for any other), 0xa2 stays
+ * silent and a command not in the table still gets 0xc1.
  */
 static void test_frame_status(void)
 {

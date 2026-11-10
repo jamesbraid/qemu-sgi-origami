@@ -8,21 +8,19 @@
  * capture. The IP53 2U table has no capture: it is the IP59 2U table with
  * the board's name, VCPU limits and fan list, which is inferred.
  *
- * The firmware has one copy of each row format, so the workstation rows
- * use the same 14-wide supply names and two-wide temperature indexes as
- * the 2U rows. The workstation captures show them one column narrower
- * because the captured forum page drops the leading run of spaces (the
- * datasheet establishes this from the page's alternating space and
- * no-break space).
+ * The firmware has one copy of each row format, so the workstation rows use
+ * the same 14-wide supply names and two-wide temperature indexes as the 2U
+ * rows. The workstation captures show them one column narrower because the
+ * captured forum page drops the leading run of spaces (inferred from the
+ * page's alternating space and no-break space).
  *
- * The rack-mounted workstation (type Q) uses the 2U supply and
- * temperature tables with its XIO rails fitted, the Odyssey fan list and
- * automatic fan control. Its zone sensors, fan indexes, targets and
- * minimum fan percentages are the datasheet's; the current fan percentage
- * follows the first fan's drive byte, which starts at its low level. The
- * Q vectors are generated from the
- * model's tables, so they check the row format only: their readings are
- * not evidence. The captured rows are checked separately by the
+ * The rack-mounted workstation (type Q) uses the 2U supply and temperature
+ * tables with its XIO rails fitted, the Odyssey fan list and automatic fan
+ * control. Its zone sensors, fan indexes, targets and minimum fan percentages
+ * are those of the real module; the current fan percentage follows the first
+ * fan's drive byte, which starts at its low level. The Q vectors are generated
+ * from the model's tables, so they check the row format only: their readings
+ * are not evidence. The captured rows are checked separately by the
  * q-captured-rows test.
  */
 #ifndef SGI_L1_CHIMERA_ENV_VECTORS_H

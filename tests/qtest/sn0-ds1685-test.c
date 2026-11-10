@@ -397,7 +397,7 @@ static void test_the_extended_flags_clear_only_by_writing_zero(const void *data)
         uint8_t base = reg_read(qts, R_EXT_CTRL_4A) & ~(X4A_RF | X4A_WF |
                                                         X4A_KF);
 
-        /* Software can set these, as the datasheet describes. */
+        /* Software can set these, as the DS1685 documents. */
         reg_write(qts, R_EXT_CTRL_4A, base | flags[i]);
 
         g_assert_cmphex(reg_read(qts, R_EXT_CTRL_4A) & flags[i], ==, flags[i]);

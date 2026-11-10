@@ -747,11 +747,11 @@ static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
 
 /*
  * Modem status takes a write into its four change indicators, and the live
- * line levels above them are untouched by it. Unlike line status, the
- * PC16550D datasheet does not describe a write to this register at all.
- * The Origin 300 board test is the whole of the evidence, and it writes 0x0f
- * and requires those four bits back. A read clears them, which is the
- * datasheet's own rule for the indicators.
+ * line levels above them are untouched by it. Unlike line status, the PC16550D
+ * datasheet does not describe a write to this register at all. The Origin 300
+ * board test is the whole of the evidence, and it writes 0x0f and requires
+ * those four bits back. A read clears them, which is the rule for the
+ * indicators.
  */
 static void test_modem_status_takes_a_factory_test_write(const void *data)
 {
@@ -788,9 +788,9 @@ static void test_modem_status_takes_a_factory_test_write(const void *data)
  * and requires all seven low bits back, where the shared 16550 core this
  * chip embeds drops the write entirely. Bit 7 is not one of them.
  *
- * Reading line status is what clears the error bits it reports, so the
- * written bits last exactly one read. See the datasheet for what that
- * models and what it does not.
+ * Reading line status is what clears the error bits it reports, so the written
+ * bits last exactly one read. See ioc3.rst for what that models and what it
+ * does not.
  */
 static void test_line_status_takes_a_factory_test_write(const void *data)
 {
@@ -829,8 +829,8 @@ static void test_line_status_takes_a_factory_test_write(const void *data)
  * shared 16550 core this chip embeds masks that bit away. Bits 6 and 7 stay
  * zero: the test never writes them, so neither does this.
  *
- * Only the bit is modelled, not automatic flow control itself. See the
- * datasheet for what that leaves out.
+ * Only the bit is modelled, not automatic flow control itself. See ioc3.rst
+ * for what that leaves out.
  */
 static void test_modem_control_holds_the_autoflow_bit(const void *data)
 {

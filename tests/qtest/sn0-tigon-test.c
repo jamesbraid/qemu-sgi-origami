@@ -4270,18 +4270,17 @@ static void test_standard_shortage_discards_without_waiting(const void *data)
  *
  * OPMODE BYTESWAP_DATA set puts a frame on the bus as a byte stream; clear,
  * each aligned 32-bit word is reversed. That is the model's reading of the
- * public driver names and the datasheet's per-word premise, an approximation
- * (no Tigon reference is held). The Bridge then places each bus byte:
- * identity when swap is set, p ^ 3 in narrow device 3 when clear, and
- * p ^ 7 in option slot 5 when clear. Slot 5 drives REQ64#, so this matrix
- * checks the model's different 32-bit and 64-bit placements.
- * A frame byte at address a therefore sits in memory
- * at (a & ~7) + ((a & 7) ^ t ^ u), t being 3 with the swap clear and 0 set,
- * u the Bridge's unit. Descriptors are written the way the card reads them:
- * with BYTESWAP_BD set each word is big-endian on the bus, and every bus byte
- * is placed by u. The frame goes at an unaligned address with an odd length,
- * against a sentinel. The IRIX configuration is swap-clear, 32-bit, data swap
- * clear, where the two reversals cancel.
+ * public driver names and the per-word premise, an approximation (no Tigon
+ * reference is held). The Bridge then places each bus byte: identity when swap
+ * is set, p ^ 3 in narrow device 3 when clear, and p ^ 7 in option slot 5 when
+ * clear. Slot 5 drives REQ64#, so this matrix checks the model's different
+ * 32-bit and 64-bit placements. A frame byte at address a therefore sits in
+ * memory at (a & ~7) + ((a & 7) ^ t ^ u), t being 3 with the swap clear and 0
+ * set, u the Bridge's unit. Descriptors are written the way the card reads
+ * them: with BYTESWAP_BD set each word is big-endian on the bus, and every bus
+ * byte is placed by u. The frame goes at an unaligned address with an odd
+ * length, against a sentinel. The IRIX configuration is swap-clear, 32-bit,
+ * data swap clear, where the two reversals cancel.
  */
 #define MATRIX_OPMODE_BD    (TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD)
 

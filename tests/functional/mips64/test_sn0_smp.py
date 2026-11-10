@@ -1360,9 +1360,8 @@ class SN0SMPMachine(QemuSystemTest):
         # The data register read during the pre-START delay is not the
         # staged address once an ELSC grant lands in that window: an
         # adapter with a nonzero own address copies each unmatched grant
-        # address into its read buffer (pcf8584_observe_address, the
-        # software-required approximation in the PCF8584/ELSC datasheet's
-        # "Origin 2000 address-only grants" section), while START still
+        # address into its read buffer (pcf8584_observe_address, a
+        # software-required approximation; see elsc.rst), while START still
         # sends the staged byte.  Accept either; the clear LRB and the ver
         # reply below prove the staged address reached the wire.
         start_address = state[SLICE_B_START_ADDRESS // 8]

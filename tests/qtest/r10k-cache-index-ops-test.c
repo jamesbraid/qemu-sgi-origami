@@ -848,7 +848,7 @@ static void test_stores(gconstpointer opaque)
     qtest_quit(qts);
 }
 
-/* The DirtyExclusive state after a store is INFERRED in the datasheet. */
+/* The DirtyExclusive state after a store is INFERRED. */
 static void test_store_dirties(gconstpointer opaque)
 {
     const Geo *g = opaque;
@@ -960,9 +960,9 @@ static void test_virtual_index(gconstpointer opaque)
 
 /*
  * Hit operations ignore the low bits of their operand: bit 0 set, as a
- * kernel's secondary flush leaves it, still hits and takes no Address
- * Error. The model keeps this tolerance although the manual's wording
- * conflicts (datasheet, "Unresolved wording"); this pins the choice.
+ * kernel's secondary flush leaves it, still hits and takes no Address Error.
+ * The model keeps this tolerance although the manual's wording conflicts (see
+ * r10000.rst); this pins the choice.
  */
 static void test_hit_low_bit(gconstpointer opaque)
 {

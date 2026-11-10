@@ -1476,8 +1476,8 @@ static void expect_partition(QTestState *s, unsigned n, unsigned want)
 {
     g_autofree char *output = command(s, n, "brick", NULL);
     /*
-     * Zero prints none and 255 or more prints ?, as the L1 datasheet's brick
-     * row has it (inferred for the Origin 3000 C-brick image).
+     * Zero prints none and 255 or more prints ?, as the brick line has it
+     * (inferred for the Origin 3000 C-brick image).
      */
     g_autofree char *needle = want >= 255 ? g_strdup("partition: ?,") :
         want ? g_strdup_printf("partition: %u,", want) :
@@ -1819,9 +1819,9 @@ static void test_unnamed_attachment_gets_named(void)
 }
 
 /*
- * L1 datasheet, brick: "partition none" clears the stored partition and the
- * reply is "brick partition cleared."; like a number, it applies at the
- * next L1 boot.
+ * The "brick" command: "partition none" clears the stored partition and the
+ * reply is "brick partition cleared."; like a number, it applies at the next
+ * L1 boot.
  */
 static void test_partition_clear(void)
 {
@@ -1914,13 +1914,12 @@ static void test_partition_limit(void)
 }
 
 /*
- * Partition identity as the partitioning datasheet's L1 rows state it. A
- * C-brick stores its own ID, which 0x0009 returns and the brick line
- * prints. 0x000b answers 0 (an L2-less system:
- * the PROM never fetches a partition record). A router prints N/A and
- * refuses a set; an I/O brick has no ID of its own, reports its C-brick's
- * and refuses a set. The refusal texts are the datasheet's; their exit
- * code is the model's choice.
+ * Partition identity as the L1 documents it (l1.rst, "Requests"). A C-brick
+ * stores its own ID, which 0x0009 returns and the brick line prints. 0x000b
+ * answers 0 (an L2-less system: the PROM never fetches a partition record). A
+ * router prints N/A and refuses a set; an I/O brick has no ID of its own,
+ * reports its C-brick's and refuses a set. The refusal texts are the L1's own;
+ * their exit code is the model's choice.
  */
 static void expect_partition_request(QTestState *s, unsigned n,
                                      uint16_t request, uint32_t want)
@@ -1934,11 +1933,11 @@ static void expect_partition_request(QTestState *s, unsigned n,
 }
 
 /*
- * The brick line's partition field and tail follow the L1 datasheet's brick
- * row: zero prints none, the type is followed by a flash-size text and the
- * brick serial, with (null) for none. That the Origin 3000 C-brick image
- * does the same as the Chimera and Origin 300 images is inferred, and the
- * flash text is the unknown-size form.
+ * The brick line's partition field and tail follow the L1's brick line: zero
+ * prints none, the type is followed by a flash-size text and the brick serial,
+ * with (null) for none. That the Origin 3000 C-brick image does the same as
+ * the Chimera and Origin 300 images is inferred, and the flash text is the
+ * unknown-size form.
  */
 static void expect_brick_partition(QTestState *s, unsigned n,
                                    const char *want)
@@ -1951,8 +1950,8 @@ static void expect_brick_partition(QTestState *s, unsigned n,
 
 /*
  * PROVISIONAL for the I-brick: it follows its C-brick's partition and refuses
- * a set, one reading of two conflicting datasheets (the partitioning sheet
- * and the L1 sheet). Revisit when the conflict is settled.
+ * a set, one reading of two conflicting sources. Revisit when the conflict is
+ * settled.
  */
 static void test_partition_identity(void)
 {

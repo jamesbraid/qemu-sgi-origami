@@ -3682,15 +3682,15 @@ static void tezro_finish_pulse(QTestState *qts)
 }
 
 /*
- * A link reset shows that link not alive for the pulse and leaves every
- * other link alive; the widget's registers survive it. The crossbar model
- * keeps a link that restores alive carrying traffic through the pulse
- * (see sgi_xbow_carries()), so only the status shows it and a read of the
- * widget still completes. That completed read goes beyond the datasheet,
- * which states no rule for a read during the pulse: it is the crossbar
- * model's behaviour, pinned here, not a hardware fact. A model that failed
- * the read would need a crossbar change this suite does not make. The 20 ns
- * pulse is the crossbar model's too, not a Tezro measurement.
+ * A link reset shows that link not alive for the pulse and leaves every other
+ * link alive; the widget's registers survive it. The crossbar model keeps a
+ * link that restores alive carrying traffic through the pulse (see
+ * sgi_xbow_carries()), so only the status shows it and a read of the widget
+ * still completes. That completed read goes beyond the manual, which states no
+ * rule for a read during the pulse: it is the crossbar model's behaviour,
+ * pinned here, not a hardware fact. A model that failed the read would need a
+ * crossbar change this suite does not make. The 20 ns pulse is the crossbar
+ * model's too, not a Tezro measurement.
  */
 static void test_tezro_link_reset_isolates_widgets(void)
 {
@@ -5409,10 +5409,10 @@ static void test_ip53_widget_zero_pxbow_identity(void)
  * machines print, while the Crossbow behaviour input keeps its revision 5
  * (docs/system/mips/sgi/hardware/pic.rst, "Widget 0").
  *
- * The word is checked with the 32-bit read the PROM issues. The model
- * refuses an aligned 64-bit read of widget zero's identity, which the
- * datasheet's test list asks for. That refusal is the Crossbow model's own
- * access rule and goes beyond the sheet, so this test does not assert it.
+ * The word is checked with the 32-bit read the PROM issues. The model refuses
+ * an aligned 64-bit read of widget zero's identity, which a strict reading of
+ * the manual would ask for. That refusal is the Crossbow model's own access
+ * rule and goes beyond it, so this test does not assert it.
  */
 static void test_ip53_widget_zero_reports_revision_three(void)
 {
@@ -10924,11 +10924,11 @@ static void test_origin3400_two_routers_cables(void)
 }
 
 /*
- * The two-partition Origin 3400 (the partitioning datasheet's minimum
- * topology): two C-bricks on R-brick ports 2 and 3, each with its own
- * I-brick. Each C-brick's controller holds its own partition ID, the
- * I-bricks hold none of their own, and each C-brick reaches a different
- * I-brick, so each partition has a disk and console path of its own.
+ * The two-partition Origin 3400 (the smallest partitioned topology): two
+ * C-bricks on R-brick ports 2 and 3, each with its own I-brick. Each C-brick's
+ * controller holds its own partition ID, the I-bricks hold none of their own,
+ * and each C-brick reaches a different I-brick, so each partition has a disk
+ * and console path of its own.
  */
 static void test_origin3400_two_partitions(void)
 {
