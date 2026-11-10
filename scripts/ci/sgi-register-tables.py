@@ -43,6 +43,9 @@ continue on indented lines. Keys:
   lane     bytes added to every address the test reads or writes (not to
            the offsets printed), for registers kept in one half of a
            wider slot: lane=4 reads a 32-bit register at its slot + 4;
+  split    32, to read a 64-bit register as two 32-bit reads, low half at
+           the address and high half four above, as a bus window declared
+           little-endian delivers it (default: one read of the width);
   units    BASE:STRIDE:COUNT, the places that repeat for a row whose Offset
            is relative to its unit, such as "link ``+0x08``" (units=
            0x100:0x40:8 reads it at 0x108, 0x148 and so on);
@@ -90,7 +93,7 @@ PAGES = 'docs/system/mips/sgi'
 MARKER = re.compile(r'\.\.\s+sgi-registers:(.*)')
 KEYS = {'qemu', 'base', 'width', 'map', 'variant', 'skip', 'expect',
         'setup', 'select', 'skiprow', 'count', 'label', 'lane',
-        'stride', 'units'}
+        'stride', 'units', 'split'}
 WIDTHS = (8, 16, 32, 64)
 NO_RESET = {'', 'n/a', 'none', 'unknown', 'unsupported', '-'}
 NUMBER = re.compile(r'(?:0x[0-9a-fA-F]+|\d+)$')
@@ -180,6 +183,10 @@ def parse_marker(text):
             options['stride'] = int(options['stride'], 0)
             if options['stride'] < 1:
                 raise ValueError
+        if 'split' in options:
+            if options['split'] != '32':
+                raise ValueError
+            options['split'] = 32
         if 'units' in options:
             base, stride, count = (int(v, 0) for v in
                                    options['units'].split(':'))
@@ -311,13 +318,18 @@ def offsets(cell, width, count=None, stride_bytes=None, units=None):
 
 
 def reset_value(cell, variant):
-    """Return ('value', int), ('list', [int, ...]), ('skip', reason) or
-    ('prose', text)."""
+    """Classify a Reset cell.
+
+    Return ('value', int), ('list', [int, ...]), ('ones', None) for "all
+    ones", ('skip', reason) or ('prose', text).
+    """
     text = ' '.join(cell.split())
     plain = text.replace('``', '').strip()
     if plain.lower() in NO_RESET:
         return 'skip', plain or 'empty'
     parts = [p.strip() for p in plain.split(',')]
+    if plain.lower() == 'all ones':
+        return 'ones', None
     if len(parts) > 1 and ';' not in plain and \
             all(NUMBER.match(p) for p in parts):
         # "0x00010000, 0" beside two offsets: one value for each.
@@ -416,6 +428,8 @@ def build(page, table, marker_text, number):
                 kind, got = 'value', got_row[index]
             if per_offset is not None:
                 width = per_offset[index]
+            if kind_row == 'ones':
+                kind, got = 'value', (1 << width) - 1
             where_ = f'{page}:{line}: offset {offset:#x}'
             note = None
             if offset in options['expect']:
@@ -448,6 +462,9 @@ def build(page, table, marker_text, number):
             else:
                 kind_here, got_here = kind, got
             if kind_here == 'value':
+                if options.get('split') and width != 64:
+                    raise Error(f'{where_}: split=32 reads 64-bit registers '
+                                f'only, not {width}-bit')
                 reg = {'line': line, 'name': name, 'offset': hex(offset),
                        'address': hex(options['base'] + options['lane']
                                       + offset),
@@ -459,6 +476,8 @@ def build(page, table, marker_text, number):
                                         + off),
                          'width': width, 'value': hex(val)}
                         for off, val in options['select'][name]]
+                if options.get('split'):
+                    reg['split'] = options['split']
                 if note:
                     reg['note'] = note
                 registers.append(reg)
@@ -540,7 +559,7 @@ def ready(table):
         except Error:
             continue
         kind, got = reset_value(cells[c_reset], None)
-        if kind == 'value' and got is not None:
+        if kind in ('ones', 'list') or kind == 'value' and got is not None:
             good += 1
     return good
 

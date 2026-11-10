@@ -367,6 +367,29 @@ class RegisterTablesTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn('needs units=', errors[0])
 
+    def test_all_ones_is_the_width_of_the_register(self):
+        text = PAGE.replace('per machine', 'all ones')
+        cases, _, _, errors = scan(text)
+        self.assertEqual(errors, [])
+        reg = [r for r in cases[0]['registers'] if r['offset'] == '0x38'][0]
+        self.assertEqual(reg['expect'], '0xffffffffffffffff')
+
+    def test_split_reads_64_bit_registers_as_two_halves(self):
+        marker = MARKER.replace('width=64', 'width=64 split=32')
+        cases, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(errors, [])
+        self.assertTrue(all(r['split'] == 32
+                            for r in cases[0]['registers']))
+
+    def test_split_needs_32_and_a_64_bit_register(self):
+        marker = MARKER.replace('width=64', 'width=64 split=16')
+        _, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(len(errors), 1)
+        marker = MARKER.replace('width=64', 'width=32 split=32')
+        _, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(len(errors), 1)
+        self.assertIn('64-bit registers only', errors[0])
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])

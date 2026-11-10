@@ -256,6 +256,11 @@ The offsets in the output stay the page's.
 A row whose Offset is relative to its unit, such as "link +0x08", takes
 ``units=0x100:0x40:8`` (base, stride, count) and is read once per unit.
 
+A register in a window declared little-endian, such as the Xframe's, is
+read with ``split=32``: two 32-bit reads, low half at the address and
+high half four above. A Reset cell that says ``all ones`` is the width's
+all-ones value.
+
 A Reset cell of comma-separated numbers beside the same number of offsets
 (``0x00010000``, 0 beside ``0x240``, ``0x244``) gives one value to each.
 
