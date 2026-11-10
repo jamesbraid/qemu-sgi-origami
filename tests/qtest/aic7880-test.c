@@ -11376,7 +11376,7 @@ static void test_o2_diagnostics_are_exclusive(void)
                             "AIC PCI and storage diagnostics are exclusive"));
 }
 
-/* Manual transfers follow the independently reviewed public contract. */
+/* Manual transfers follow the public register contract. */
 static const uint8_t manual_guard_regs[] = {
     0x01, 0x03, 0x04, 0x05, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
     0x10, 0x11, 0x14, 0x15, 0x16, 0x17,
