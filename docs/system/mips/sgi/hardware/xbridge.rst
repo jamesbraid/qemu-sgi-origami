@@ -151,6 +151,16 @@ OpenBSD ``xbridgereg.h``. "Storage" means the model keeps the written
 bits and gives them no effect. Reset values are the specification's
 unless the notes say otherwise.
 
+.. sgi-registers: base=0xf00000000000 width=32 lane=4 stride=8 label=head-e expect=0x20:0xf00321f
+   skiprow="Device 0-7:per-slot-base"
+   map=/machine/peripheral/xbridge:0:0x100000000000
+   qemu="-M none -cpu R10000 -S -device sgi-xio-test-target,id=fabric -device sgi-xbridge,id=xbridge,host-port=0xb,xio-port=0xc,fabric=/machine/peripheral/fabric/fabric.ram[0]"
+
+.. sgi-registers: base=0x1000000000000 width=32 lane=4 stride=8 label=head-f
+   skiprow="Device 0-7:per-slot-base"
+   map=/machine/peripheral/xbridge:0:0x100000000000
+   qemu="-M none -cpu R10000 -S -device sgi-xio-test-target,id=fabric -device sgi-xbridge,id=xbridge,host-port=0xb,xio-port=0xc,fabric=/machine/peripheral/fabric/fabric.ram[0]"
+
 .. list-table::
    :header-rows: 1
 
@@ -336,6 +346,11 @@ unless the notes say otherwise.
      - 0
      - read zero
      - Writes log ``LOG_UNIMP``.
+
+Head E's ``pci-speed-e`` property defaults to 1, so the model reads
+``0x0f00321f`` from Control at power-on, where the table's reset has speed
+bits 5:4 clear. Head F's property defaults to 0 and reads the table's
+value. The default is an *approximation*.
 
 A write to the identification, status or error address registers logs
 ``LOG_UNIMP`` and changes nothing. Reads of the write-only registers
