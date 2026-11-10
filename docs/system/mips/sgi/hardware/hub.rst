@@ -25,10 +25,10 @@ One Hub per node joins the node's two R10000-family processors, its
 memory and directory, one :term:`XIO` port and one :term:`CrayLink` network port
 (:src:`007-3439-002 Figure 2-1`). QEMU models it as ``sgi-hub`` in
 ``hw/misc/sgi-hub.c``, with the graphics flow-control block in
-``hw/mips/sgi/pi-gfx.c``. The ``origin200`` machines and the plain
-``origin2000`` reference report Hub revision code 3 (Hub 2.1); the
-Origin 2000 rack and deskside and the Onyx2 models report code 5
-(Hub 2.3). The model is a functional profile: it gives the stock IP27
+``hw/mips/sgi/pi-gfx.c``. The ``origin200`` machines
+report Hub revision code 3 (Hub 2.1), except the
+``origin200-gigachannel`` topology, which reports code 5 (Hub 2.3); the
+Origin 2000 rack and deskside and the Onyx2 models report code 5. The model is a functional profile: it gives the stock IP27
 :term:`PROM` 6.156, IRIX 6.5.30, Linux and OpenBSD the registers they use, and
 it is not a revision-matched description of the chip. Facts are rated
 as described in :ref:`sgi-ratings`. No Hub specification is public, so
@@ -103,8 +103,9 @@ separately.
      - Model value
      - Basis
    * - Network-interface status bits 7:4 (chip revision)
-     - 3 on ``origin200`` and plain ``origin2000``; 5 on the Origin 2000
-       rack and deskside and the Onyx2 models
+     - 3 on ``origin200`` except its ``origin200-gigachannel`` topology;
+       5 on ``origin200-gigachannel``, the Origin 2000 rack and deskside
+       and the Onyx2 models
      - Linux ``hub.h`` maps codes 1 to 6 to Hub 1.0, 2.0, 2.1, 2.2, 2.3
        and 2.4, a *software expectation*. Published inventories show
        code 5 on a two-node Origin 2200, an Origin 2000 deskside, an
@@ -112,10 +113,12 @@ separately.
        *observed* (:src:`nekonomicon-16729560 board list`,
        :src:`nekonomicon-16727716 hinv`,
        :src:`nekonomicon-16723250 hinv`,
-       :src:`nekonomicon-16726704 hinv`). The IRIX 6.5.30 kernel warns
+       :src:`nekonomicon-16726704 hinv`). A GIGAchannel Origin 200
+       prints code 5 too, *observed* (:src:`usenet-1123184831`), which
+       is why the ``origin200-gigachannel`` topology reports 5. The IRIX 6.5.30 kernel warns
        about a code below 3, so 3 is the earliest it accepts, a
-       *software expectation*. Which code a given Origin 200 shipped
-       with is *unknown*.
+       *software expectation*. Which code the other Origin 200
+       configurations shipped with is *unknown*.
    * - Widget identification bits 31:28
      - 1
      - *approximation*. No published capture of this field is known.
