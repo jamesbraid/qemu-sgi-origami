@@ -1143,6 +1143,56 @@ static void test_channel_gamma_map(void)
     g_rmdir(dir);
 }
 
+/* A one-entry gamma load through the command port. */
+static void kona_gamma_entry(QTestState *s, uint32_t addr, uint32_t value)
+{
+    qtest_writel(s, KONA_REG(0xc1000c + 0x20 * 0x12f), addr);
+    qtest_writel(s, REG_COMMAND_DATA, 1);
+    qtest_writel(s, REG_COMMAND_DATA, value);
+}
+
+/*
+ * The XMAP cursor passes through the gamma table like a colour-map pixel
+ * (inferred): its 0x3ff red takes the table's entry 0xfff, whose top eight
+ * bits are shown, and a gamma load after the cursor is up recolours it. On
+ * the linear map the cursor is its own colour again.
+ */
+static void test_xmap_cursor_takes_gamma(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    uint32_t image[260] = { 0 };
+    uint8_t *frame;
+    unsigned w, h;
+    QTestState *s = qtest_init(DG5_2_ARGS);
+
+    kona_draw_halves(s);
+    image[0] = 0x80000000;
+    image[257] = 0x3ff00000;
+    qtest_writel(s, KONA_REG(0xc1000c + 0x20 * 0x130), 0);
+    for (unsigned i = 0; i < ARRAY_SIZE(image); i++) {
+        qtest_writel(s, REG_COMMAND_DATA, image[i]);
+    }
+    cursor_register(s, 0x100, 0);
+    cursor_register(s, 0x101, 0);
+    cursor_register(s, 0x102, (100 + 32) | ((50 + 32) << 13));
+    cursor_register(s, 0x103, 2);
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 100, 50), ==, 0xff0000);
+    g_free(frame);
+
+    kona_gamma_entry(s, 0xfff, 0x800);
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 100, 50), ==, 0x800000);
+    g_free(frame);
+
+    kona_video(s, 0x0f, (uint32_t[]){ 0, 0xfffffffe }, 2);
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 100, 50), ==, 0xff0000);
+    g_free(frame);
+    qtest_quit(s);
+    g_rmdir(dir);
+}
+
 /*
  * The channels cross a migration: the destination's channel 1 shows the
  * same rectangle, scaled the same way, and channel 0 the managed area.
@@ -1373,6 +1423,8 @@ int main(int argc, char **argv)
                    test_cursor_follows_its_channel);
     qtest_add_func("sn0/origin2000/kona-scanout/channel-gamma-map",
                    test_channel_gamma_map);
+    qtest_add_func("sn0/origin2000/kona-scanout/xmap-cursor-takes-gamma",
+                   test_xmap_cursor_takes_gamma);
     qtest_add_func("sn0/origin2000/kona-scanout/migration-carries-channels",
                    test_migration_carries_channels);
     qtest_add_func("sn0/origin2000/kona-scanout/"

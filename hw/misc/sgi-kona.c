@@ -4742,6 +4742,7 @@ static void sgi_kona_gamma_update(SGIKonaState *s)
 static void sgi_kona_gamma_complete(SGIKonaState *s)
 {
     sgi_kona_gamma_update(s);
+    sgi_kona_cursor_update(s);
     if (s->gamma_outside) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: gamma load at 0x%" PRIx32 " count %" PRIu32
@@ -4803,6 +4804,14 @@ static int sgi_kona_cursor_coord(uint32_t value)
 }
 
 /*
+ * The XMAP cursor's colours are 10:10:10 colour-map words injected ahead
+ * of the colour map and gamma, so they pass through the channel's gamma
+ * table like a colour-map pixel (inferred, from the display chain's
+ * order; whether a separate bypass for cursor pixels exists is unknown).
+ * The shared scanout composes the cursor after the row, so the model
+ * corrects the cursor's colours here, when it defines them, and again
+ * when a gamma load or a channel's gamma map changes them.
+ *
  * The cursor shows on one channel, the one the kernel last selected with
  * selector 0x100, at the position selector 0x102 gives, which the kernel
  * computes relative to that channel's origin (see the command grammar's
@@ -4831,7 +4840,9 @@ static void sgi_kona_cursor_update(SGIKonaState *s)
 
         for (unsigned code = 1; code < 4; code++) {
             colors[code] = 0xff000000 |
-                           sgi_kona_rgb10(image[color_word[code]]);
+                           sgi_kona_gamma_apply(s, channel,
+                               SGI_KONA_PIXEL_WIDE |
+                               (image[color_word[code]] & 0x3fffffff));
         }
         for (unsigned row = 0; row < 64; row++) {
             for (unsigned col = 0; col < 64; col++) {

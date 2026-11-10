@@ -1419,7 +1419,10 @@ channels select a linear ramp or the loaded table. The XMAP cursor is
 64x64 at two bits per pixel with three colours, up to 64 images loaded
 with ``0x130``; the kernel selects channel, image, position and mode
 through the indirect pair with selectors ``0x100``-``0x103``, a *software
-expectation*. Only mode 0 (off) and 2 (on) are modelled.
+expectation*. Only mode 0 (off) and 2 (on) are modelled. The XMAP cursor
+is injected ahead of the colour map and gamma, so its colours pass through
+the channel's gamma table like a colour-map pixel (*inferred*; whether a
+separate bypass for cursor pixels exists is *unknown*).
 
 The retrace runs at 60 Hz on channel 0, an *approximation*: ``0x1e6``
 names a timing-table index the model does not decode, and no timing
