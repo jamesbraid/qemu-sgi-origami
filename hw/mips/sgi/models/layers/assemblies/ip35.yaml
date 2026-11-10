@@ -29,3 +29,10 @@ layer:
       banks: [512, 512, 512, 512, 512, 512, 512, 512]
       provenance: observed-hardware
       sources: ["web:nekonomicon-16723604 hinv -mv of an Origin 3200, each module's Bank 0 to Bank 7 lines, 512 MB each and 4096 MB per module", "108-0240-002 printed pages 2-5 and 2-6: eight 512 MB banks give 4 GB"]
+    - id: kit-1024-two-512-banks
+      dimms: 2
+      dimm_mib: 512
+      banks: [512, 512]
+      provenance: derived
+      sources: ["108-0240-002 printed pages 2-5 and 2-6: banks 2n and 2n+1 on DIMM pair n, the two DIMMs of a pair matching, 512 MB DIMMs; one pair gives two banks"]
+      notes: A single DIMM pair, banks 0 and 1. The bundles ship C-bricks without memory, so a small fit is a model choice for systems whose PROM memory test would otherwise take hours.
