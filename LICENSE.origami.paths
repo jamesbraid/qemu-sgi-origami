@@ -575,6 +575,7 @@ scripts/tests/test_sgi_model_resolution.py
 scripts/tests/test_sgi_model_resolution_contract.py
 scripts/tests/test_sgi_model_validation_contract.py
 scripts/tests/test_sgi_model_rack_numbers.py
+scripts/tests/test_sgi_origin3800_64p.py
 scripts/tests/test_sgi_model_references_doc.py
 scripts/tests/test_sgi_docs_citations.py
 scripts/tests/test_sgi_running_pages.py
