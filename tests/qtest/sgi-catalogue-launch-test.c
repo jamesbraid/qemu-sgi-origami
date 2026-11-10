@@ -101,23 +101,44 @@ static char *first_pipe(QDict *graphics, int64_t nodes)
 }
 
 /*
- * Run QEMU with @args (NULL-terminated) and the QMP @commands on its
- * standard input, after qmp_capabilities and before quit. Returns its
- * exit status; @out and @err hold what it printed.
+ * Whether @line is the reply to a QMP command, as opposed to the greeting
+ * or an event.
+ */
+static bool is_reply(const char *line)
+{
+    return g_str_has_prefix(line, "{\"return\"") ||
+           g_str_has_prefix(line, "{\"error\"");
+}
+
+/*
+ * Run QEMU with @args (NULL-terminated) and the QMP @commands, one per
+ * line, after qmp_capabilities and before quit. Returns its exit status;
+ * @out and @err hold what it printed.
+ *
+ * quit goes out only once every reply has been read. QEMU drops the
+ * monitor output still queued when it exits, so a quit sent with the
+ * commands loses the tail of a long reply (the device tree of an Origin 3800
+ * is over 64 KiB) whenever this process reads the pipe slower than QEMU
+ * fills it.
  */
 static int run_qemu(GPtrArray *args, const char *commands, char **out,
                     char **err)
 {
+    static const char quit[] = "{\"execute\":\"quit\"}\n";
     g_autofree char *input = g_strdup_printf(
-        "{\"execute\":\"qmp_capabilities\"}\n%s"
-        "{\"execute\":\"quit\"}\n", commands);
+        "{\"execute\":\"qmp_capabilities\"}\n%s", commands);
+    g_autoptr(GString) text = g_string_new(NULL);
     struct sigaction ignore = { .sa_handler = SIG_IGN }, previous;
+    unsigned int expected = 0, replies = 0;
     GPid pid;
     int input_fd, output_fd, error_fd, status;
     GIOChannel *channel;
     gsize length;
     ssize_t written;
 
+    for (const char *c = input; *c; c++) {
+        expected += *c == '\n';
+    }
     g_assert_true(g_spawn_async_with_pipes(NULL, (char **)args->pdata, NULL,
                     G_SPAWN_DO_NOT_REAP_CHILD, NULL, NULL, &pid, &input_fd,
                     &output_fd, &error_fd, NULL));
@@ -129,13 +150,34 @@ static int run_qemu(GPtrArray *args, const char *commands, char **out,
     g_assert_cmpint(sigaction(SIGPIPE, &ignore, &previous), ==, 0);
     written = qemu_write_full(input_fd, input, strlen(input));
     g_assert_cmpint(written, <=, strlen(input));
+    channel = g_io_channel_unix_new(output_fd);
+    while (replies < expected) {
+        g_autofree char *line = NULL;
+        GIOStatus st = g_io_channel_read_line(channel, &line, &length, NULL,
+                                              NULL);
+
+        if (st == G_IO_STATUS_EOF) {
+            break;
+        }
+        g_assert_cmpint(st, ==, G_IO_STATUS_NORMAL);
+        g_string_append_len(text, line, length);
+        replies += is_reply(line);
+    }
+    written = qemu_write_full(input_fd, quit, strlen(quit));
+    g_assert_cmpint(written, <=, strlen(quit));
     g_assert_cmpint(sigaction(SIGPIPE, &previous, NULL), ==, 0);
     close(input_fd);
-    channel = g_io_channel_unix_new(output_fd);
-    g_assert_cmpint(g_io_channel_read_to_end(channel, out, &length, NULL),
-                    ==, G_IO_STATUS_NORMAL);
+    {
+        g_autofree char *rest = NULL;
+
+        g_assert_cmpint(g_io_channel_read_to_end(channel, &rest, &length,
+                                                 NULL),
+                        ==, G_IO_STATUS_NORMAL);
+        g_string_append_len(text, rest, length);
+    }
     g_io_channel_unref(channel);
     close(output_fd);
+    *out = g_string_free(g_steal_pointer(&text), false);
     channel = g_io_channel_unix_new(error_fd);
     g_assert_cmpint(g_io_channel_read_to_end(channel, err, &length, NULL),
                     ==, G_IO_STATUS_NORMAL);
