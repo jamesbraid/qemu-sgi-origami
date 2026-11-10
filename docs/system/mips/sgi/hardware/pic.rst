@@ -622,10 +622,17 @@ The Linux IP35 port programs the master widget shifted left by 20, a
 *software expectation* that agrees. The runtime mask keeps only these two
 fields; other bits are logged and cleared, an *approximation*.
 
-With the slot's Device bit 19 clear, the model moves bytes unchanged.
-With it set, each byte moves to address XOR 3, reversing every 32-bit
-word. PCI addresses below ``0x80000000``, including the translated window
-at ``0x40000000``, log ``LOG_UNIMP`` and are refused.
+The swap control for this window is the requesting slot's Device bit 19,
+a per-device setting, not an address bit. With the bit clear, the model
+moves bytes unchanged. With it set, each byte moves to address XOR 3,
+reversing every 32-bit word, one write per word as for 64-bit direct
+DMA below. The XBridge uses the
+bit the other way round: set gives a byte stream and clear reverses
+(:ref:`sgi-xbridge-dma-placement`). The model's sense is an
+*approximation* carried from the original fixture; which sense PIC uses
+is *unknown*. A guest whose 32-bit direct DMA depends on the bit would
+settle it. PCI addresses below ``0x80000000``, including the translated
+window at ``0x40000000``, log ``LOG_UNIMP`` and are refused.
 
 .. _sgi-pic-direct64:
 
@@ -688,13 +695,28 @@ XOR 7 instead, reversing each 64-bit doubleword. The board sets the
 BCM5701 at device 4. The model samples each device's width at the end of
 reset.
 
+The model receives a device's transfer as naturally aligned pieces of 1,
+2, 4 or 8 bytes, and writes each piece to memory once per data phase it
+touches: an aligned 4-byte word, or an 8-byte doubleword for a
+``REQ64#`` slot. No aligned field of up to 8 bytes is split between two
+writes, and a burst as a whole is not atomic. A partial data phase of 3,
+5, 6 or 7 bytes at a ragged end is written as two or three pieces, where
+the hardware is expected to write only its enabled bytes in one access,
+an *approximation*. Transfers with bit 55 set are cut into the same
+pieces.
+
 These placements are each an *approximation*. They rest on two software
 expectations: the Linux IP35 port's producer, which names bit 55 the
 swap attribute (``pci-sgipic.c``), and the IRIX 6.5.30 BCM5701 driver,
 which writes big-endian descriptors with the chip's own swap bits
-clear. Which byte placement each value of bit 55 selects is the model's
-choice. PIC's physical byte placement, the IO9 ``REQ64#`` wiring
-and the real effect of prefetch, precise, barrier and virtual channel are
+clear. The XBridge uses bit 55 the same way, a byte stream when set and
+a byte exchange within each 32-bit or 64-bit data phase when clear, with
+no halfword or word swap (:ref:`sgi-xbridge-dma-placement`), and its
+DMA write packets carry an enable for each byte, so a ragged end writes
+only the enabled bytes. No PIC specification is held, so that data
+path and the one-write-per-phase rule are *inferred* for PIC from its
+sibling. PIC's physical byte placement, the IO9 ``REQ64#`` wiring and
+the real effect of prefetch, precise, barrier and virtual channel are
 *unknown*.
 
 .. _sgi-pic-interrupts:
@@ -895,11 +917,11 @@ registers, the processor word view, the widget timeout and destination
 slots, the runtime reset values, the short windows with their attribute
 refusals and boundaries, processor byte lanes against conventional
 devices, the IOC4 and the ISP12160, 32-bit and 64-bit direct DMA with the
-attribute matrix, requester width and refusals, interrupt pins, edges,
-clear and enable effects, packets to a Bedrock, held-input reassertion
-with migration, the link-error interrupt, the direct-map mask, and
-migration between matching and mismatched profiles and older stream
-versions.
+attribute matrix, requester width and refusals, swapped transfers written
+a data phase at a time, interrupt pins, edges, clear and enable effects,
+packets to a Bedrock, held-input reassertion with migration, the
+link-error interrupt, the direct-map mask, and migration between
+matching and mismatched profiles and older stream versions.
 
 ``tests/qtest/sn-builder-test.c`` builds IP53 machines with one and two
 PICs and IO9 on either head, and checks reset, independent per-widget
