@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * Graphics-head qdev id and QMP screendump-by-device qtest (issue #895).
+ * Graphics-head qdev id and QMP screendump-by-device qtest.
  *
  * sgi_machine_instantiate_mgras() and sgi_machine_instantiate_kona()
  * (hw/mips/sgi/sn-machine.c) used to parent each graphics board with only

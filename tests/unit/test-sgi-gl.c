@@ -3077,7 +3077,7 @@ static void test_depth_float_code(void)
 }
 
 /*
- * Odyssey's depth word (docs/datasheets/odyssey.md, "Depth word"): a
+ * Odyssey's depth word: a
  * 6-bit exponent and an 18-bit mantissa with an implied one, the value
  * (1 + m / 2^18) 2^(e - 31), and a 10-bit-mantissa form of 16 bits. The
  * encoder truncates, gives 0 below the range and the largest word at and

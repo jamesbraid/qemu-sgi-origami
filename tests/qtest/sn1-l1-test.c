@@ -5599,7 +5599,7 @@ static void test_machine_node_board_profiles(void)
           { 1, 48, 1 }, 0x589bad85, 700, 200 },
         /*
          * The IP53 Tezro boards the published inventories show
-         * (docs/datasheets/ip53-tezro-node-board-identity.md); no
+         * (see docs/system/mips/sgi/ip53.rst, "Identity"); no
          * one-processor board has been captured, so one processor keeps
          * the generic record. The rack's first enclosure takes the
          * tower's record for its processor count.

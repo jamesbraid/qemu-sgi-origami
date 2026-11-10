@@ -1571,7 +1571,7 @@ static void test_opaque_renderer_write(gconstpointer data)
      * The last three are the IRIX 6.5.30 kernel's interface-buffer control
      * words: count | stall << 7 | empty << 14 | full << 21, first with
      * full 127, empty 63, stall 126, then the R10000-family and R5000-class
-     * thresholds (Origami's O2 graphics driver evidence datasheet).
+     * thresholds (software expectations from the IRIX 6.5.30 kernel).
      */
     static const uint32_t payloads[] = {
         0, UINT32_MAX, 0x13579bdf, 0xa6c319e7,
