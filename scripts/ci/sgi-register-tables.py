@@ -335,6 +335,12 @@ def reset_value(cell, variant):
     parts = [p.strip() for p in plain.split(',')]
     if plain.lower() == 'all ones':
         return 'ones', None
+    # "not specified; model 0": the specification gives none, the page
+    # states the model's choice.
+    chosen = re.fullmatch(r'not specified; model (0x[0-9a-fA-F]+|\d+)',
+                          plain, re.I)
+    if chosen:
+        return 'value', int(chosen.group(1), 0)
     if len(parts) > 1 and ';' not in plain and \
             all(NUMBER.match(p) for p in parts):
         # "0x00010000, 0" beside two offsets: one value for each.

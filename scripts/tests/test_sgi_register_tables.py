@@ -397,6 +397,13 @@ class RegisterTablesTest(unittest.TestCase):
         regs = {r['offset']: r['address'] for r in cases[0]['registers']}
         self.assertEqual((regs['0x0'], regs['0x8']), ('0x1012', '0x101a'))
 
+    def test_not_specified_model_value_is_the_models(self):
+        text = PAGE.replace('per machine', 'not specified; model 0x7')
+        cases, _, _, errors = scan(text)
+        self.assertEqual(errors, [])
+        reg = [r for r in cases[0]['registers'] if r['offset'] == '0x38'][0]
+        self.assertEqual(reg['expect'], '0x7')
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])
