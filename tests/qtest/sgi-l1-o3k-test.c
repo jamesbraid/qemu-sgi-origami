@@ -1359,6 +1359,31 @@ static void test_broadcast_and_relay(void)
     qtest_quit(s);
 }
 
+/*
+ * Two C-bricks at one bay in racks 1 and 2: each answers the packed rack
+ * and bay of its own, and a broadcast from one lists both by their rack
+ * and bay, in rack order.
+ */
+static void test_racks_share_a_bay(void)
+{
+    const char *const props[] = {
+        "brick-type=cbrick,named=on,rack=1,bay=10",
+        "brick-type=cbrick,named=on,rack=2,bay=10",
+    };
+    QTestState *s = start_with(2, props, "");
+
+    link_peer(s, 0, 1);
+    expect_identity(s, 0, LOCAL_GENERAL, packed(1, 10), 'C');
+    expect_identity(s, 1, LOCAL_GENERAL, packed(2, 10), 'C');
+    expect_command(s, 0, "* power check",
+                   "001c10:\npower appears on\n"
+                   "002c10:\npower appears on\n");
+    expect_command(s, 1, "brick",
+                   "rack: 002, slot: 10, partition: none, type: C [?MB flash], "
+                   "serial:(null), source: EEPROM\n");
+    qtest_quit(s);
+}
+
 static void test_restart_window(void)
 {
     const char *const props[] = {
@@ -3472,6 +3497,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/relay", test_broadcast_and_relay);
     qtest_add_func("sgi-l1-o3k/task3-line-endings",
                    test_task3_line_endings);
+    qtest_add_func("sgi-l1-o3k/racks-share-a-bay", test_racks_share_a_bay);
     qtest_add_func("sgi-l1-o3k/restart-window", test_restart_window);
     qtest_add_func("sgi-l1-o3k/link-refusals", test_link_refusals);
     qtest_add_func("sgi-l1-o3k/origin300-unchanged", test_origin300_unchanged);

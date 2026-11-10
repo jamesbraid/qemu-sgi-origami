@@ -2009,6 +2009,123 @@ static bool bedrock_test_install_rbrick_fixture(const char *name)
 }
 
 /*
+ * Number a fixture module's location. @rack of zero leaves the rack out of
+ * the record, which is how a topology that numbers no rack is compiled.
+ */
+static void cbrick_test_locate(unsigned int module, unsigned int rack,
+                               unsigned int bay)
+{
+    cbrick_test_modules[module].initial_module_number = bay;
+    cbrick_test_modules[module].has_rack = rack != 0;
+    cbrick_test_modules[module].rack = rack;
+}
+
+/*
+ * The C-brick fixture's I/O brick module with a controller of its own, an
+ * I-brick's or, for "vbrick", a V-brick's, in rack 3 at bay 12. Both come
+ * from the builder's one I/O brick function. The L1 profile is the only
+ * thing that decides which; the module's boards are the fixture's.
+ */
+static void bedrock_test_install_io_brick_rack(const char *name)
+{
+    static SGIModelL1Config ibrick_l1 = {
+        .has_profile = true, .profile = SGI_MODEL_L1_PROFILE_IBRICK,
+        .revision = &bedrock_test_l1_revision,
+    };
+    static SGIModelL1Config vbrick_l1 = {
+        .has_profile = true, .profile = SGI_MODEL_L1_PROFILE_VBRICK,
+        .revision = &bedrock_test_l1_revision,
+    };
+    /* The host C-brick's L1 must have the profile an I/O peer link needs. */
+    static SGIModelL1Config host_l1 = {
+        .has_profile = true, .profile = SGI_MODEL_L1_PROFILE_CBRICK,
+        .revision = &bedrock_test_l1_revision,
+    };
+    SGIModelControllerList **tail;
+    bool vbrick = !strcmp(name, "vbrick");
+
+    bedrock_test_install_cbrick_descriptor(0xa);
+    cbrick_test_controllers[0].l1 = &host_l1;
+    if (!vbrick) {
+        bedrock_test_install_cbrick_io7();
+    }
+    cbrick_test_controllers[2] = (SGIModelController) {
+        .id = (char *)"l1-io-brick", .module_index = 2,
+        .kind = SGI_MODEL_CONTROLLER_KIND_L1,
+        .l1 = vbrick ? &vbrick_l1 : &ibrick_l1,
+    };
+    tail = &bedrock_test_topology.controllers;
+    while (*tail) {
+        tail = &(*tail)->next;
+    }
+    QAPI_LIST_APPEND(tail, &cbrick_test_controllers[2]);
+    fixture_remember(*tail);
+    cbrick_test_modules[2].has_controller = false;
+    cbrick_test_modules[2].controller_index = 2;
+    cbrick_test_modules[2].initial_module_number = 12;
+    cbrick_test_modules[2].has_rack = true;
+    cbrick_test_modules[2].rack = 3;
+}
+
+/*
+ * C-bricks c0 and c1 at the same bay in racks 1 and 2, or named by bay
+ * alone; with "router" an R-brick joins them; "ibrick" and "vbrick" give
+ * the I/O brick module a controller of that profile. The "duplicate" forms
+ * put two L1s on one rack and bay. None of the numbers is a hardware claim
+ * beyond the L1 accepting them.
+ */
+static bool bedrock_test_install_racks(const char *name)
+{
+    static const unsigned int ports[] = { 2, 3 };
+    /* The C-brick profile is the one that names itself by rack and bay. */
+    static SGIModelL1Config o3k_l1 = {
+        .has_profile = true, .profile = SGI_MODEL_L1_PROFILE_CBRICK,
+        .revision = &bedrock_test_l1_revision,
+    };
+    bool router = g_str_has_prefix(name, "router");
+
+    if (!strcmp(name, "ibrick") || !strcmp(name, "vbrick")) {
+        bedrock_test_install_io_brick_rack(name);
+        return true;
+    }
+    if (router) {
+        if (strcmp(name, "router") && strcmp(name, "router-duplicate")) {
+            return false;
+        }
+        bedrock_test_install_rbrick(2, ports, false, false);
+        cbrick_test_locate(0, 1, 10);
+        cbrick_test_locate(1, 2, 10);
+        /* The R-brick sits in rack 2, clear of c1, unless it repeats c0. */
+        if (!strcmp(name, "router")) {
+            cbrick_test_locate(2, 2, 11);
+        } else {
+            cbrick_test_locate(2, 1, 10);
+        }
+    } else {
+        cbrick_test_install_nodes(2);
+        cbrick_test_publish(2, 0, 0, 0);
+        if (!strcmp(name, "same-bay")) {
+            cbrick_test_locate(0, 1, 10);
+            cbrick_test_locate(1, 2, 10);
+        } else if (!strcmp(name, "duplicate")) {
+            cbrick_test_locate(0, 2, 10);
+            cbrick_test_locate(1, 2, 10);
+        } else if (!strcmp(name, "unnumbered")) {
+            cbrick_test_locate(0, 0, 10);
+            cbrick_test_locate(1, 0, 11);
+        } else if (!strcmp(name, "unnumbered-duplicate")) {
+            cbrick_test_locate(0, 0, 10);
+            cbrick_test_locate(1, 0, 10);
+        } else {
+            return false;
+        }
+    }
+    cbrick_test_controllers[0].l1 = &o3k_l1;
+    cbrick_test_controllers[1].l1 = &o3k_l1;
+    return true;
+}
+
+/*
  * The two C-bricks with c1 a memory node: its processor slot empty and
  * banks 2 and 3 fitted on both nodes, so only c0 brings a processor. No
  * board layer yet allows such a board; the fixture stands in for the
@@ -2037,6 +2154,12 @@ static void bedrock_test_install_memory_node(void)
     cbrick_test_population.cpus_per_node = uint32_list(
         memory_node_test_population, ARRAY_SIZE(memory_node_test_population));
 }
+
+static SGIModelRouter ip53_cx_test_router = {
+    .id = (char *)"cx-router", .module_index = 0, .part = 0x3017,
+    .revision = 1, .serial = 0x5200000003ULL,
+};
+static SGIModelRouterList ip53_cx_test_router_list;
 
 /*
  * The two IP53 nodes as boards 0 and 2 of one Cx-brick, behind the
@@ -2072,6 +2195,19 @@ static bool bedrock_test_install_ip53_cx_l1(const char *variant)
         bedrock_test_topology.node_populations = whole_population(
             &bedrock_test_topology,
             cpu_population_list(&ip53_test_population, 1));
+    } else if (!strcmp(variant, "-racked") ||
+               !strcmp(variant, "-racked-router")) {
+        bedrock_test_modules[0].initial_module_number = 10;
+        bedrock_test_modules[0].has_rack = true;
+        bedrock_test_modules[0].rack = 2;
+        if (!strcmp(variant, "-racked-router")) {
+            /* The router window behind the brick's fifth port. */
+            ip53_cx_test_router_list.value = &ip53_cx_test_router;
+            bedrock_test_topology.routers = &ip53_cx_test_router_list;
+            bedrock_test_topology.node_populations = whole_population(
+                &bedrock_test_topology,
+                cpu_population_list(&ip53_test_population, 1));
+        }
     } else if (!strcmp(variant, "-node-owned")) {
         controller->has_owner = false;
     } else if (!strcmp(variant, "-slot-reused")) {
@@ -2298,6 +2434,12 @@ static void bedrock_test_set_construction_fault(Object *obj,
             cbrick_test_controllers[1].has_owner = true;
             cbrick_test_controllers[1].owner =
                 SGI_MODEL_CONTROLLER_OWNER_MODULE;
+        }
+    } else if (g_str_has_prefix(value, "cbrick-racks-")) {
+        if (!bedrock_test_install_racks(value + strlen("cbrick-racks-"))) {
+            error_setg(errp, "unknown sn-builder-bedrock-test construction "
+                       "fault '%s'", value);
+            return;
         }
     } else if (g_str_has_prefix(value, "cbrick-rbrick") &&
                bedrock_test_install_rbrick_fixture(value + strlen("cbrick-"))) {
@@ -2851,6 +2993,19 @@ static void expansion_test_set_ownership_mismatch(Object *obj, bool value,
     }
 }
 
+/* Number the expansion module: rack 3, bay 12. */
+static void expansion_test_set_located(Object *obj, bool value, Error **errp)
+{
+    SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(obj);
+    SGIModelModule *module = smc->test_topology->modules->next->value;
+
+    if (value) {
+        module->initial_module_number = 12;
+        module->has_rack = true;
+        module->rack = 3;
+    }
+}
+
 static void expansion_test_machine_init(MachineState *machine)
 {
     if (expansion_test_activate) {
@@ -2971,6 +3126,8 @@ static void expansion_test_class_init(ObjectClass *oc, const void *data)
                                    expansion_test_set_attachment_mismatch);
     object_class_property_add_bool(oc, "ownership-mismatch", NULL,
                                    expansion_test_set_ownership_mismatch);
+    object_class_property_add_bool(oc, "located", NULL,
+                                   expansion_test_set_located);
 }
 
 static const TypeInfo expansion_test_type = {
