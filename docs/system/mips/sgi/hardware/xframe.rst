@@ -146,6 +146,12 @@ SW_RESET key. Reset values are each an *approximation*, except where noted.
 Bit positions count from the low end, so the public drivers' ``s2BIT(n)``
 is bit ``63 - n``.
 
+.. sgi-registers: base=0x90000000 width=64 split=32
+   expect=0x2110:0x05dc000000000000 skip=0x2120:write-only
+   map=/machine/peripheral/bridge:0:0x40000000
+   setup=0x40024010:0x10000000,0x40024004:6
+   qemu="-nodefaults -M none -cpu R10000 -device sgi-xio-test-target,id=transfer-ram,size=16M -device sgi-bridge,id=bridge,board-part=030-1244-001,fabric=/machine/unattached/system[0] -device xframe,mac=52:54:00:12:34:56,addr=4.0"
+
 .. list-table::
    :header-rows: 1
    :widths: 14 22 18 46
