@@ -102,7 +102,8 @@ class DocsLintTests(unittest.TestCase):
 
     def test_italic_near_misses(self):
         for bad in ('Inferred', 'Observed', 'approximated', 'estimated',
-                    'assumed', 'establish', 'Software expectation'):
+                    'assumed', 'establish', 'Software expectation',
+                    'model choice'):
             text = GOOD_PART + f'\nThe width is *{bad}* here.\n'
             self.assertIn(f'*{bad}*', self.messages({'hardware/demo.rst': text}))
 

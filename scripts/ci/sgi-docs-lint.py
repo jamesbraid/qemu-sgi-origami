@@ -31,7 +31,7 @@ RATING_STEMS = ('establish', 'observ', 'software expect', 'infer',
                 'approximat', 'unknown')
 # Italic phrases that read as a rating but share no stem with one.
 NEAR_MISSES = ('estimated', 'assumed', 'infered', 'expectation',
-               'expectations')
+               'expectations', 'model choice', 'model choices')
 
 # Directives whose body is literal text, not prose.
 LITERAL_DIRECTIVE = re.compile(
