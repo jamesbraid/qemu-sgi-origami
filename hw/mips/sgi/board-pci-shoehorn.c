@@ -61,6 +61,21 @@
  * any card interrupt does: the Bridge composes an interrupt packet for the
  * host node's Hub, the Crossbow routes it, and the Hub latches it.
  *
+ * ---- On an Octane ----
+ *
+ * The same adapter fits the Octane's XIO slots, Crossbow ports 9 to 12
+ * (slot=widget-10). The Octane inventories that show it print part
+ * 030-1275-004 revision A, not the photographed label's -002 revision B, so
+ * "board-part" and "board-revision" replace the record's part and revision;
+ * the catalogue's Octane product sets them. Nothing gives the adapter's
+ * Bridge revision on an Octane, so it keeps revision 4. A board with no
+ * flash fitted is not known to fault when the flash window is read, which
+ * "flash-empty-reads-high" turns into reads of all ones; the Origin 2000
+ * default leaves an empty select failing. "slots" and "first-slot" limit the
+ * PCI devices a card may take to first-slot .. first-slot + slots - 1, the
+ * adapter's one slot at device 1; 0 slots, the default, leaves every Bridge
+ * device open.
+ *
  * "sio-slot" fits SGI's dual-serial PCI card (030-1657-003, PCI_SIO_UFC)
  * instead: an IOC3 with serial ports A and B and nothing else, its board
  * record on the chip's one-wire bus. IRIX 6.5.30 takes that card's SuperIO
@@ -134,6 +149,11 @@ struct SGIPciShoehornState {
     uint64_t cad_duo_onewire_serial;
     uint32_t sio_slot;
     uint64_t sio_onewire_serial;
+    char *board_part;
+    char *board_revision;
+    bool flash_empty_reads_high;
+    uint32_t slots;
+    uint32_t first_slot;
 
     SGIBridgeState *bridge;
 };
@@ -231,6 +251,13 @@ static bool pci_shoehorn_build_widget(SGIXioBoardState *board, Error **errp)
                    "device slot, 0 to %u", SGI_BRIDGE_PINS - 1);
         return false;
     }
+    if (s->slots && (s->first_slot >= SGI_BRIDGE_PINS ||
+                     s->slots > SGI_BRIDGE_PINS - s->first_slot)) {
+        error_setg(errp, "sgi-pci-shoehorn first-slot %u with %u slots "
+                   "runs past Bridge device %u", s->first_slot, s->slots,
+                   SGI_BRIDGE_PINS - 1);
+        return false;
+    }
     if (s->cad_duo_slot != SGI_PCI_SHOEHORN_NO_CARD &&
         s->sio_slot != SGI_PCI_SHOEHORN_NO_CARD) {
         error_setg(errp, "sgi-pci-shoehorn has one PCI position: set "
@@ -243,19 +270,28 @@ static bool pci_shoehorn_build_widget(SGIXioBoardState *board, Error **errp)
     s->bridge = SGI_BRIDGE(bridge);
     qdev_prop_set_uint32(bridge, "revision", SGI_SHOEHORN_BRIDGE_REVISION);
     qdev_prop_set_string(bridge, "board-part",
+                         s->board_part ? s->board_part :
                          SGI_SHOEHORN_BRIDGE_BOARD_PART);
     sgi_synthetic_barcode(barcode, 'O', s->onewire_serial);
     qdev_prop_set_string(bridge, "board-barcode", barcode);
     qdev_prop_set_string(bridge, "board-revision",
+                         s->board_revision ? s->board_revision :
                          SGI_SHOEHORN_BRIDGE_BOARD_REVISION);
     qdev_prop_set_string(bridge, "board-name",
                          SGI_SHOEHORN_BRIDGE_BOARD_NAME);
     qdev_prop_set_uint64(bridge, "onewire-serial", s->onewire_serial);
+    qdev_prop_set_bit(bridge, "flash-empty-reads-high",
+                      s->flash_empty_reads_high);
     sgi_xio_board_name_pci_bus(SGI_XIO_BOARD(s), bridge, s->pci_bus_name);
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(s->fabric),
                              &error_abort);
     if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
         return false;
+    }
+    if (s->slots) {
+        pci_bus_set_slot_reserved_mask(PCI_HOST_BRIDGE(bridge)->bus,
+                                       ~MAKE_64BIT_MASK(s->first_slot,
+                                                        s->slots));
     }
 
     if (s->cad_duo_slot != SGI_PCI_SHOEHORN_NO_CARD &&
@@ -293,6 +329,12 @@ static const Property pci_shoehorn_properties[] = {
                        SGI_PCI_SHOEHORN_NO_CARD),
     DEFINE_PROP_UINT64("sio-onewire-serial", SGIPciShoehornState,
                        sio_onewire_serial, PCI_SHOEHORN_SIO_ONEWIRE),
+    DEFINE_PROP_STRING("board-part", SGIPciShoehornState, board_part),
+    DEFINE_PROP_STRING("board-revision", SGIPciShoehornState, board_revision),
+    DEFINE_PROP_BOOL("flash-empty-reads-high", SGIPciShoehornState,
+                     flash_empty_reads_high, false),
+    DEFINE_PROP_UINT32("slots", SGIPciShoehornState, slots, 0),
+    DEFINE_PROP_UINT32("first-slot", SGIPciShoehornState, first_slot, 0),
 };
 
 /* The internal Bridge and IOC3 carry all state. */
