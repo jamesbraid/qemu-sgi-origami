@@ -329,6 +329,27 @@ class RegisterTablesTest(unittest.TestCase):
         self.assertEqual(len(windows), 1)
         self.assertEqual(windows[0]['reason'], 'bulk (4064 slots)')
 
+    def test_lane_moves_the_read_not_the_offset(self):
+        marker = MARKER.replace('width=64', 'width=64 lane=4')
+        cases, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(errors, [])
+        reg = [r for r in cases[0]['registers'] if r['offset'] == '0x0'][0]
+        self.assertEqual(reg['address'], '0x1004')
+
+    def test_stride_spaces_a_range(self):
+        marker = MARKER.replace('width=64', 'width=64 stride=16')
+        cases, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(errors, [])
+        offsets = [r['offset'] for r in cases[0]['registers']
+                   if r['name'] == 'Range']
+        self.assertEqual(offsets, ['0x20'])
+
+    def test_lane_and_stride_must_be_numbers(self):
+        for bad in ('lane=x', 'stride=0', 'stride=y'):
+            marker = MARKER.replace('width=64', 'width=64 ' + bad)
+            _, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+            self.assertEqual(len(errors), 1, bad)
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])
