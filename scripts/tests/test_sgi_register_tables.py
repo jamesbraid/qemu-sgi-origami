@@ -350,6 +350,23 @@ class RegisterTablesTest(unittest.TestCase):
             _, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
             self.assertEqual(len(errors), 1, bad)
 
+    def test_units_expand_a_row_relative_to_its_unit(self):
+        text = PAGE.replace('``0x38``', 'link ``+0x08``, ``+0x10``'
+                            ).replace('per machine', '0')
+        marker = MARKER.replace('width=64', 'width=64 units=0x100:0x40:2')
+        cases, _, _, errors = scan(text, marker=marker)
+        self.assertEqual(errors, [])
+        offsets = [r['offset'] for r in cases[0]['registers']
+                   if r['name'] == 'Prose']
+        self.assertEqual(offsets, ['0x108', '0x110', '0x148', '0x150'])
+
+    def test_unit_row_without_units_is_an_error(self):
+        text = PAGE.replace('``0x38``', 'link ``+0x08``').replace(
+            'per machine', '0')
+        _, _, _, errors = scan(text)
+        self.assertEqual(len(errors), 1)
+        self.assertIn('needs units=', errors[0])
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])
