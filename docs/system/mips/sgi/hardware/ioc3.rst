@@ -297,6 +297,11 @@ and returns a decode error to the PCI bus. :doc:`bridge` and
 Main control block
 ------------------
 
+.. sgi-registers: base=0x20008600000 expect=0x28:0x400000
+   skip=0x0:stored-dword,0x4:stored-dword,0x8:stored-dword,0xc:stored-dword,0x10:stored-dword
+   setup=0x20008022010:0x10000000,0x20008022004:2,0x20008000214:0x1100,0x20008000084:0
+   qemu="-M origin200"
+
 .. list-table::
    :header-rows: 1
 
@@ -382,6 +387,13 @@ Main control block
      - ``0``
      - RW
      - Bit 0 views one bit of pin data.
+
+The model reads ``0x400000`` from chip control at power-on, where the
+stored bits reset to 0. Bit 22, PCI arbiter idle, is a read-only status
+bit that reads set while no serial DMA transfer is in progress
+(`Chip control`_). The only source for that is the IRIX console setup,
+which waits for the bit to read idle, a *software expectation*; no
+specification gives the bit's value.
 
 Access widths and byte lanes
 ----------------------------
