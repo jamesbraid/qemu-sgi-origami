@@ -908,8 +908,11 @@ all arrived (*established*).
 Texture memory is one pool for the whole pipe. The kernel gives each owner
 disjoint blocks and tells the pipe each block's offset through two
 registers the context switch saves, one for loads and one for drawing
-(``0x5001`` and ``0x101a``), as the block's page number masked with
-``0x3fff`` shifted left 12 bits (*software expectation*). Level addresses in
+(``0x5001`` and ``0x101a``). Each holds the block's page number shifted
+left 18 bits and arithmetic-shifted right 6, so it is sign-extended
+(*established*, from the pipe firmware). A swap-in zeroes them once the
+transfer is done, as a swap-out does, and only a reserve leaves the value
+alone (*established*). Level addresses in
 loads and binds are relative to the block (*software expectation*), so
 the hardware adds the offset; that it adds it is *inferred*. The tables
 from entries to addresses belong to each context (*software expectation*).
@@ -933,7 +936,7 @@ loaded last.
 Texture objects are keyed by context and entry, so the pool is not
 shared: two contexts that load the same entry number hold two textures,
 as the kernel's disjoint blocks and per-context tables make them, but the
-global-offset registers are not modelled, a block shared within a share
+global-offset registers (value and zeroing as above) are not modelled, a block shared within a share
 group is not shared, and the flush of the id table at activation is not
 modelled. These are limits of the model, not hardware behaviour.
 
