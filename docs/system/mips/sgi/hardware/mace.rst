@@ -408,6 +408,10 @@ logs ``LOG_UNIMP``, a read returning 0. The exception is the
 miscellaneous control register, where another width gets a bus error
 with no log.
 
+.. sgi-registers: base=0x1f000000 width=64
+   skip=0x318000,0x31c000 expect=0x310010:0x1400
+   qemu="-m 64M -M o2,register-test-profile=on -nic none"
+
 .. list-table::
    :header-rows: 1
 

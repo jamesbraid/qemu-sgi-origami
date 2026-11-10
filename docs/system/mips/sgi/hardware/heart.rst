@@ -176,6 +176,14 @@ narrower or unaligned accesses are refused by QEMU's memory core. Names
 follow Linux ``heart.h``. Every reset value is the model's choice
 (*approximation*); no HEART reset value is published or measured.
 
+.. sgi-registers: base=0x0ff00000
+   map=/machine/peripheral/heart:0:0x0ff00000
+   qemu="-M none -cpu R10000 -device sgi-heart,id=heart,widget-revision=4"
+
+.. sgi-registers: base=0x0ff00000 variant="revision F"
+   map=/machine/peripheral/heart:0:0x0ff00000
+   qemu="-M none -cpu R10000 -device sgi-heart,id=heart,widget-revision=6"
+
 .. list-table::
    :header-rows: 1
 
