@@ -37,9 +37,9 @@ flash and management USB are not modelled. No controller board or
 firmware revision is modelled. Where this page says what "the 1.44.0
 image" does, it states what the shipped L1 firmware image version 1.44.0
 for the Origin 300 product group, :src:`l1-firmware-1.44.0`, was read to
-do. Those statements are rated *inferred*: the image is the controller's
-software, and its behaviour on a fitted chassis follows only if that
-image runs there. Captures show Origin 300s running L1 1.18.5
+do. Those statements are each a *software expectation*: the image is the
+controller's software, and its behaviour on a fitted chassis follows only
+if that image runs there, which is *inferred*. Captures show Origin 300s running L1 1.18.5
 (:src:`irixnet-thread-2737`) and 1.48.1 (:src:`nekonomicon-16724335`),
 and other versions may differ. Facts are rated as described in
 :ref:`sgi-ratings`.
@@ -963,11 +963,11 @@ with a code, an integer diagnostic number and a text line
 event: the first ``power down`` of a brick whose type letter is ``9``,
 ``A`` or ``Q``, with an event subchannel registered, sends code
 ``0x8000``, diagnostic 0 and ``Power Down: issue 'pwr d' again to
-immediately power down.``, and waits for the second (established). An
+immediately power down.``, and waits for the second (*software expectation*). An
 Origin 300 (``4``), C-brick (``C``) or I-brick (``I``) never defers: its
 first request acts and prints nothing on the console, and every
 power-down clears the registered event subchannel, so a later event
-needs a new ``0x1007`` (established). No environmental event is
+needs a new ``0x1007`` (*software expectation*). No environmental event is
 generated. A registered event subchannel of 4 or more survives
 a controller restart; a lower one is cleared, as in the image.
 
@@ -1024,10 +1024,10 @@ works only while both have compute services and ``network-422`` set
 request is an in-process call, an *approximation*, since nothing public
 describes what the two L1s exchange. ``* power up`` and ``* power down``
 act locally and then on the peer :src:`007-4365-002 p. 36-37`,
-*established*; ``* reset`` doing the same is a model choice. Both chassis
+*established*; ``* reset`` doing the same is an *approximation*. Both chassis
 are one QEMU machine, so the peer only records its power state, display
 and log entry. A plain ``power up`` or ``power down`` publishes a
-power-state notice to the peer (*established* for the sender, the
+power-state notice to the peer (*software expectation* for the sender, the
 configuration event carrying rack, bay and power word); a plain ``reset``
 publishes none. What the peer does with a notice is *unknown*, so it
 only records the last one, readable as the ``peer-power-notice``
@@ -1164,7 +1164,7 @@ two bytes (big endian, counting themselves, at least 6 and at most
 1,024) delimit it. Other kinds are reserved: the L1 logs one with
 ``LOG_GUEST_ERROR`` and skips the byte. The format is the project's own
 (``include/hw/misc/sgi-l1-l2-link.h``); the segment inside it is the
-field map of the controller's management USB stream, *established* for
+field map of the controller's management USB stream, *software expectation* for
 the L1 side and *inferred* for what the L2 expects:
 
 .. list-table::
@@ -1243,7 +1243,7 @@ its ``l2`` chardev as a client, for example ``-chardev
 socket,id=l2a,path=DIR/l1.sock,reconnect-ms=1000``. Each link gets the lowest
 free slot from 0 to 39, which is a USB attach, and a close is a detach. A
 slot's 9-byte device record is synthetic (bus 1, two hub ports, device
-address slot + 2, ports 1 and slot + 1): its layout is *established*, the
+address slot + 2, ports 1 and slot + 1): its layout is a *software expectation*, the
 values the real L2 would show are *unknown* until a rack topology supplies
 them. A segment that reaches the hub before the program has opened the
 slot's node is queued, up to 256 segments, and delivered in order on open.
@@ -1277,7 +1277,7 @@ does not see it. The messages between the hub and the plugin are in
   ``0x2000000``. A fresh flash is all ones. The daemon reads the flashed
   version from the window, and only the controller image's payload (the
   file without its 0x2c-byte file header) placed at window offset 0 passes
-  its header check; the sizes and checksums are *established*, that the
+  its header check; the sizes and checksums are a *software expectation*, that the
   flash holds the payload there is *inferred*. The plugin does not fill the
   flash: whoever prepares the file writes the payload.
 - Stores into the flash window are decoded after they happen and the plugin
@@ -1287,7 +1287,7 @@ does not see it. The messages between the hub and the plugin are in
   (31 sectors of 128 KiB, then 8 of 16 KiB) and chip erase fills the
   window, and the command cycles leave nothing behind. All operations
   complete at once. The command addresses, the doubled halfwords and the
-  sector map are *established* by the L2 controller sheet; the plugin does
+  sector map are *inferred*; the plugin does
   not model the toggle bits the real chip shows during an operation.
 
 Without ``hub`` the plugin only logs the opens and ioctls on ``/dev``
@@ -1314,7 +1314,7 @@ Requests toward the L2
 
 A plain request from the node for type 1 or 2 is forwarded as one
 request segment when every argument is an integer, because no other
-descriptor form is established. A request with another argument type
+descriptor form is known. A request with another argument type
 keeps the router error reply. The stock PROM sends its partition-record
 fetch another way, as the multi-frame transport (below) carrying a
 complete inner message for controller type 1, task ``0xa``; the inner
@@ -1333,7 +1333,7 @@ In both forms the source word is rewritten to the controller's own
 rack and bay key in bits 31:12, the requester's UART index and
 subchannel in bits 11:5 and task 21 in bits 4:0, the packing the
 multi-frame transport uses for its replies. That the controller's key
-fills the rest is an *approximation*; the real base is not established.
+fills the rest is an *approximation*; the real base is *unknown*.
 The peer addresses its response to that word, which is how the model finds
 the requester.
 
@@ -1385,7 +1385,7 @@ The L2's configuration request
 The L2 daemon sends each attached L1 a recurring request to destination
 ``0x0ffff00e``: class request, code 0, three descriptors, the integer 6,
 the L2's serial setting as a string (or the integer 0 when it has none)
-and an integer (*established* for the shipped 1.44.0 daemon). Attaching
+and an integer (*software expectation* for the shipped 1.44.0 daemon). Attaching
 gives the L2 no route to an L1. The L1 becomes routable at the L2 only
 when it answers this request, because the daemon registers it from the
 reply. With the link up, the model answers a request with exactly these
@@ -1406,11 +1406,11 @@ the L2 link.
 
 The reply is one segment: class response, destination the request's
 source word, status byte 0, the request's code, and these descriptors
-(*established*): the integer 7; the request's third
+(*software expectation*): the integer 7; the request's third
 descriptor, echoed; the record count ``N``; the record size 0x70; a bytes
 descriptor holding ``N`` index bytes, each a record's position; a bytes
 descriptor holding ``N`` records of 0x70 bytes. A nonzero third request
-descriptor makes the reply the single integer 7 (*established*). The reply
+descriptor makes the reply the single integer 7 (*software expectation*). The reply
 carries the request's two sequence bytes unchanged; that a real L1 copies
 them is *inferred*, and what it puts there otherwise is *unknown*, so the
 copy is an *approximation*.
@@ -1420,14 +1420,14 @@ in bits 15:6 and the bay in bits 5:0; that these are the controller's own
 settings is *inferred*. The records come from the controller's module table
 of fifteen entries of 0x70 bytes: its own entries at 0 to 4, the entries
 learned from the peer on serial port 1 at 5 to 9 and from port 2 at 10 to 14
-(*established* for the stores; the naming is *inferred*). An entry is listed
-when its word at +0x60 is nonzero (*established*), and a group of five whose
+(*software expectation* for the stores; the naming is *inferred*). An entry is listed
+when its word at +0x60 is nonzero (*software expectation*), and a group of five whose
 first entry's string at +0x40 repeats an earlier group's is left out
-(*established* for the omission; that the L2 is the consumer of the
+(*software expectation* for the omission; that the L2 is the consumer of the
 entries learned from a peer is *inferred*). The index array holds each
 listed entry's table index. A record has a nonzero word at +0x00, the rack
 in the word at +0x08 and the bay in the word at +0x0c, big endian
-(*established* as the fields the L2 routes by); the word at +0x60 is 1, an
+(*software expectation* as the fields the L2 routes by); the word at +0x60 is 1, an
 *approximation* since its meaning is *unknown*. Every other field is zero
 except two the model chooses: the text at +0x40, which holds the brick's
 module name so the repeat test has something to compare, and the serial
@@ -1442,7 +1442,7 @@ The reply's descriptors are built the way the L1's packet builder builds
 them. The integers have type ``0x00``. The index array (descriptor 4) is
 referenced in place, type ``0x01``, and the record block (descriptor 5) is a
 copy, type ``0x09``; the two are different bytes in one packet
-(*established* for the values the L1 builds, *inferred* that they reach the
+(*software expectation* for the values the L1 builds, *inferred* that they reach the
 wire unchanged, because the L1's USB path was not traced for a rewrite). The
 low three bits of a type are the kind (0 integer, 1 bytes, 2 string); bit 3
 (``0x08``) is a construction flag, "free the caller's buffer", that stays in
@@ -1451,7 +1451,7 @@ eight bytes: type, segment byte, 16-bit length and a 32-bit offset from the
 start of the segment record, which sits 0x10 bytes before the first wire
 byte. The segment byte is the 1-based number of the segment that holds the
 payload, so it is 1 on both blobs of this single-segment reply
-(*established*: the L1's own reader returns nothing for a data descriptor
+(*software expectation*: the L1's own reader returns nothing for a data descriptor
 whose segment byte is 0). A reply of more than eight records would continue
 into a second segment whose descriptors carry 2 (*inferred*); the model's
 table never reaches that size. The reply follows the sheets' reading of the
@@ -1470,7 +1470,7 @@ The table exchange with a peer L1
 Selectors 2 and 13 are the L1's exchange of module-table entries with a
 peer L1 over a peer serial port, not requests to the L2: selector 2 goes to
 port 1 and selector 13 to port 2, posted to that port's writer only when its
-handles are open (*established* from one reading of the 1.44.0 package for
+handles are open (*software expectation* from one reading of the 1.44.0 package for
 the Fuel, Origin 300 and PE builds; which package a C-brick ships is
 *inferred*). A C-brick opens ports 1 and 9, so a paired C-brick is port 1,
 selector 13 is never sent, and selector 2 is sent only while the pair's
@@ -1483,18 +1483,18 @@ not modelled. ``sgi_l1_peer_segment`` traces each packet.
 
 The request is one 628-byte segment: class 0 (*inferred*, the
 builder's class argument), code 0, destination ``0x0ffff00e``, the sender's
-task 14 word as source, six descriptors (*established*): the selector as an
+task 14 word as source, six descriptors (*software expectation*): the selector as an
 integer, then five byte copies, type ``0x09``, segment byte 1, length 0x70,
 the sender's own entries 0 to 4. The receiver clears the five entries of the
 arrival port's group, copies descriptors 1 to 5 into them, each the smaller
 of 0x70 and descriptor 1's length, and sets the first entry's +0x60 to 1
-(*established*). Nothing is stored when the status byte is nonzero or the
+(*software expectation*). Nothing is stored when the status byte is nonzero or the
 arrival is not a peer port. It then answers with a response, class 1,
 status 0, to the request's source word, the same selector and its own entries
-0 to 4, also when it stored nothing (*established* from the branch order).
+0 to 4, also when it stored nothing (*software expectation* from the branch order).
 The sender stores the response's entries as the group for the selector it
 sent. A selector 2 or 13 request that arrives on the L2 link is answered the
-same way and stores nothing; no sender of one is known (*established* for the
+same way and stores nothing; no sender of one is known (*software expectation* for the
 branch, *unknown* whether any L2 sends it).
 
 Not modelled: the follow-up that sends the opposite selector to the other
@@ -1634,7 +1634,7 @@ controller serves no processor. A system reset of the machine is a mains
 cycle: a controller whose node is off applies its start-up power decision
 again, so with ``auto-power`` set it switches its node back on. The
 ``reset`` command and the ``0x2001`` request restart the controller's own
-node and nothing else (*established* for the controller, which acts on its
+node and nothing else (*software expectation* for the controller, which acts on its
 brick only; that a front-panel reset switch takes the same path is
 *inferred*, and the switch is not modelled): ``node-reset`` is the
 first node's ``reset`` input, and the machine restarts every board's
@@ -1653,7 +1653,7 @@ only the named brick's node restarts and no ``RESET`` event is emitted. The
 Bedrock resets that a guest writes reach nodes by registers (see the
 Bedrock page) and use the same rule. The ``reset`` command, a ``reset hold`` and
 release pair, the front-panel reset switch and ``0x2001`` all drive one
-group of Bedrock control lines (*established* for the L1 image; that the
+group of Bedrock control lines (*software expectation* for the L1 image; that the
 switch input is the physical switch is *inferred*), while ``nmi`` drives one
 other line and ``softreset`` a third. Which Bedrock input each line reaches
 is *unknown*: the model sends the one pulse to the node's restart
@@ -1758,7 +1758,7 @@ captured controller output.
        and the machine's ``l1-revision`` replaces it. ``version`` prints
        ``L1 1.44.0 (Image EMU-UNKNOWN)``, naming no image bank or product
        image.
-     - established for the firmware; inferred for a fitted brick
+     - *software expectation* for the firmware; inferred for a fitted brick
      - Every brick image in the L1 firmware IRIX 6.5.30 ships is version
        1.44.0 and answers ``0x0005`` with 1, 44 and 0 whatever the brick.
        Which of its two Origin 3000 images a brick runs depends on its L1
@@ -1770,7 +1770,7 @@ captured controller output.
        1.44.0 passes both, *software expectation*.
    * - ``0x000a`` answers two integers. The first is 0 for a 400 MHz I/O
        link and 1 for 600 MHz (``port-speed-first``, default 0).
-     - established for the meaning
+     - *software expectation* for the meaning
      - The stock IP35 PROM 6.210 compares the first integer with the speed
        it expects for the attached brick's letter, 400 MHz for ``I``,
        ``N`` and ``X`` and 600 MHz for ``P`` and ``V``, and warns on a
@@ -1891,11 +1891,11 @@ What the model chooses, and the limit of each choice:
   several. The model does not count its connectors. After ``reboot_l1`` a brick answers no peer for one second of
   virtual time.
 - An I-brick at mains is off with its bridges in reset, and has no
-  power-up task of its own (*established*, firmware reading). It powers
+  power-up task of its own (*software expectation*, firmware reading). It powers
   on its own L1's ``power up`` or the front On/Off switch (the
   ``power-button`` input, a rising edge), unless setting 0x77 disables the
   switch, which the ``power-button-disabled`` property stands for
-  (*established* for the code path; that input bit 0 is the switch is
+  (*software expectation* for the code path; that input bit 0 is the switch is
   *inferred*; the disabled switch's message is not modelled). In a
   machine its C-brick's auto power-up ends in ``* power up``,
   *inferred*, which reaches the I-brick, so it starts powered, logging
@@ -1906,7 +1906,7 @@ What the model chooses, and the limit of each choice:
   it first; ``power up`` releases it after the supplies are on, ``power
   up hold`` leaves it raised; ``reset`` raises and releases it, ``reset
   hold`` leaves it raised, and ``reset`` is refused with ``power appears
-  off`` while the brick is off (*established*). The three bits are the
+  off`` while the brick is off (*software expectation*). The three bits are the
   bridges' resets by the expander's own label; which chip pins they reach
   is *unknown*, so in a machine the one line is the XBridge chip's
   ``reset-hold`` input and stands for all three (*approximation*). The
@@ -1923,11 +1923,11 @@ What the model chooses, and the limit of each choice:
   off at mains with its router in reset and accepts ``power up``,
   ``power up hold``, ``power down``, ``reset`` and ``reset hold`` from any
   request source, drives the same ``reset-hold`` line and takes the same
-  front switch (*established*, firmware reading). Its ``reset`` is not
+  front switch (*software expectation*, firmware reading). Its ``reset`` is not
   refused while off: it holds the router in reset and releases it only if
   a supply is on. It opens no RS-422 peer port, so ``peer`` and
   ``io-peer`` refuse it, and ``*``, ``ctc`` and ``cti`` are refused on it
-  (*established*: it cannot forward). Nothing in the stock protocol
+  (*software expectation*: it cannot forward). Nothing in the stock protocol
   powers a router without an L2, so ``auto-power``, on by default,
   starts it powered as a declared *approximation* of a machine that has
   powered it; with ``auto-power`` off it starts off and in reset.
@@ -1986,7 +1986,7 @@ next brick's name line, and on task 3 they arrive as separate fields.
        (:src:`007-3938-001 pp. 17-18`; :src:`007-3938-006 p. 27`).
        The typed-at brick's own command runs last and the others first, as
        the firmware hands its remote requests to the router before it runs
-       its own (*established*); the replies still print own answer first.
+       its own (*software expectation*); the replies still print own answer first.
        ``*`` does not reach the other C-brick's I-brick, which the guides
        imply it should. ``ctci`` is not implemented: it is reported as an
        unknown command and nothing runs. The other C-brick runs the plain
@@ -2122,8 +2122,8 @@ What the model chooses, and the limit of each choice:
   the Origin 350's carries, which the stock PROM compares with its flash.
   Approximations:
 
-  - Link ``n`` is node board ``n``'s port. The numbering is established for
-    the firmware; the port to board mapping is inferred.
+  - Link ``n`` is node board ``n``'s port. The numbering is a *software expectation* from
+    the firmware; the port to board mapping is *inferred*.
   - The router's own port is the router window: a router-profile L1 behind
     the window answers component 1 with the ``ROUTER`` record (name
     inferred, part ``NOTOBSERVED0`` and revision ``00`` not observed,
@@ -2217,12 +2217,12 @@ reads each. A read that times out goes to the next transmission, which waits
 20 ticks first; a frame that fails the reply checks costs a read and the next
 read is made without resending, *software expectation*. A read lasts 1 to 2
 periods of 100 ticks, *software expectation*; the model gives each read 150
-ticks, a *model choice* because the phase is *unknown*. A tick is 10 ms
+ticks, an *approximation* because the phase is *unknown*. A tick is 10 ms
 (*inferred* from the 100 Hz timer); the ``pbay-tick-us`` property (default
 10000, at least 1) sets it in microseconds, so tests can shorten every tick
 timing at once. The first start-up request, command ``0x10``, has no reply
 and is sent once: the source material does not say whether it is sent three
-times, and no reply could be accepted for it, a *model choice*. A write that
+times, and no reply could be accepted for it, an *approximation*. A write that
 finds a byte waiting in the UART is retried after a tick in the L1; the model's
 receiver is never busy, so that retry is not modelled. The timers run on the
 host's real-time clock, because the bay is a host peer that answers in real
@@ -2262,8 +2262,8 @@ layouts): a sensor record of entity ``0x0a`` and sensor type 8 maps its
 sensors to supplies 1 to 6, one of entity ``0x15`` and type 9 to DC ports 1 to
 8, and a FRU locator of entity ``0x0a`` (instances 1 to 6), ``0xb0`` or
 ``0x15`` gives the device of FRU slot 1 to 6, 0 or 7. The records do not say
-how many sensors a record covers, so the model takes six and eight, a *model
-choice*. The count of records read is exposed as ``pbay-records`` and slot 0's
+how many sensors a record covers, so the model takes six and eight, an
+*approximation*. The count of records read is exposed as ``pbay-records`` and slot 0's
 device as ``pbay-fru-slot0``.
 
 .. _sgi-l1-pbay-poll:
@@ -2303,7 +2303,7 @@ ticks. The source material does not say whether the two port re-reads are one
 wait each or one wait in all, nor whether a supply with an AC candidate that
 fails the debounce still lets the fail test run; the model waits 100 ticks
 before each of two re-reads and lets the AC candidate take the supply's turn,
-a *model choice*. A consequence of that choice: a supply with a new AC-fail
+an *approximation*. A consequence of that choice: a supply with a new AC-fail
 bit that then fails the debounce, and whose fail bit is also set, logs
 neither fault on that pass, and the fail is new again only if its bit goes
 from 0 to 1 later. The fail and predictive tests use the last reading.
@@ -2318,7 +2318,7 @@ expectation*. A supply whose single read fails (no answer after the retries)
 is treated like one that is not present for that pass, so with the other
 supplies answering it is logged as removed and as inserted when it answers
 again; how the task treats one failed read is not in the source material, so
-this is a *model choice*. Settings 85 and 105 are the L1's, so a restart of the
+this is an *approximation*. Settings 85 and 105 are the L1's, so a restart of the
 link keeps them; the previous readings are RAM and are cleared. The model does
 not migrate any of this, because a configured link blocks migration.
 
@@ -2335,7 +2335,7 @@ The operator command is accepted on the brick types ``C356P%#=IXYRN&!``
 model prints ``ERROR: command not found.``, because the refusal's text is
 *unknown*. Its fourteen forms share one handler, *software expectation*.
 The texts below paraphrase the source material, so the column heads and widths
-are a *model choice*; the rows' words and their order are *software
+are an *approximation*; the rows' words and their order are *software
 expectation*.
 
 - Whatever the form, a link that is not ready prints its state text
@@ -2345,12 +2345,12 @@ expectation*.
   bay held by a polling pass or another command prints the busy text. In
   state 5 ``pbay init`` runs the initialisation order again and prints ``PBay
   ready`` or the state text; in any other state it prints ``PBay already
-  initialized``. The model does not repeat the task's start delay, a *model
-  choice*.
+  initialized``. The model does not repeat the task's start delay, an
+  *approximation*.
 - ``pbay version`` sends link command ``0xc0`` and prints ``PBay FW Version
   00.18, Built 09/29/2000 14:00:00``: the version bytes second then first,
   and the build time read as a Unix time in UTC (*inferred*). With no reply
-  it prints ``PBay version unavailable``, a *model choice*: the source
+  it prints ``PBay version unavailable``, an *approximation*: the source
   material gives no text.
 - ``pbay dps [digits]`` and ``pbay dcport [digits]`` read the mapped sensors
   of the supplies 1 to 6 or the ports 1 to 8 (or the digits given) and print
@@ -2372,7 +2372,7 @@ expectation*.
   model reads 128 bytes from address 0, takes the columns from the product
   area and the date from the board area, labels slot 0 ``Bay`` and the
   seventh slot ``Card``, and prints the date as month, day and year. All of
-  that is a *model choice*. The bay model returns zeros, so against it the rows read ``**FRU
+  that is an *approximation*. The bay model returns zeros, so against it the rows read ``**FRU
   checksum error**``.
 - ``pbay reset`` sends the pair ``0x18,0x03`` and prints ``Ok`` or
   ``Timeout``.
@@ -2382,7 +2382,7 @@ expectation*.
 - ``pbay serial`` prints the serial in slot 0's product area (*inferred* to
   be the fifth field), nothing when there is no slot 0. The L1 caches it at
   start-up; the model reads it on first use, then keeps it until the link
-  starts again, a *model choice* with the same output.
+  starts again, an *approximation* with the same output.
 - Bare ``pbay`` prints a line per FRU device with a current in amps. Its
   arithmetic and record selection are *unknown*: the model prints nothing and
   logs ``LOG_UNIMP``.
