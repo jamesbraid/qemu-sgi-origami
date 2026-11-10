@@ -352,8 +352,8 @@ pipe has been read.
      - Indirect selector and data
      - 0
      - W, R/W
-     - Cursor selectors ``0x100``-``0x103``; class reads ``0x8800``,
-       ``0xb00``.
+     - Cursor selectors ``0x100``-``0x103``, DAC cursor registers
+       ``0xb00``-``0x1203``; class reads ``0x8800``, ``0xb00``.
    * - ``0x8003e8``
      - Internal address
      - 0
@@ -1424,6 +1424,44 @@ is injected ahead of the colour map and gamma, so its colours pass through
 the channel's gamma table like a colour-map pixel (*inferred*; whether a
 separate bypass for cursor pixels exists is *unknown*).
 
+The video DAC has its own cursor, reached through the indirect pair at
+selectors ``0xb00 + 0x100 * n`` (register 0, the 16-bit index, written low
+byte then high) and ``0xb02 + 0x100 * n`` (register 2, the indexed data
+port) for channel ``n`` (*established*; the kernel re-sends the selector
+before every byte, and no selector ``0x22`` is ever written). The index
+advances after each access in ``0x200``-``0x204`` and ``0x400``-``0x7ff``
+(``0x7ff`` wraps to 0) and after each blue component in ``0x303``-``0x304``
+(*inferred* for these ranges: the kernel's and firmware's streams show the
+accesses, and the advance rule comes from a register description of an
+ADV716x-family DAC. No public copy of that description was found, so none
+is cited; the part identity itself is *inferred* from the board's
+scan-chain names. The advance in ``0x000``-``0x00f`` is *unknown* and not
+modelled). The position is ``0x200`` to ``0x203`` as x
+low, x high, y low, y high: a signed 16-bit top-left in output pixels with
+no bias or offset (*established*), where the pixel at (0, 0) falls against
+active video being *unknown*, and the model takes the first pixel. Control
+``0x204`` has the mode in bits 1:0 (1 is X11), enable in bit 2 and
+interlace in bit 3; the model draws mode 1 only, and logs ``LOG_UNIMP`` for
+mode 2 and for interlace use. The pixel mask ``0x004`` is 8 bits, reset
+``0xff``, kept and not applied. In X11 mode pixel value 3 shows Cursor
+Color 2 (``0x303``, the foreground) and 2 shows Cursor Color 1 (``0x304``,
+the background); 0 and 1 are transparent (*established* for the
+senders; the part's table that gives the values their meaning is
+*inferred*, from the same uncited register description, and holds only if
+this board's DAC follows it). Each colour is three 10-bit components, red first. The model
+narrows each to the scanout's 8 bits by rounding to nearest, an
+*approximation* (the same habit as its colour-map narrowing); the board's
+own narrowing is *unknown*. The image
+RAM at ``0x400`` holds 64 rows of 16 bytes, four pixels a byte with the
+leftmost in bits 7:6, each row's 16-pixel groups running right to left
+(*established* as derived from the X server's builder; that the DAC fills
+ascending addresses from ``0x400`` is *inferred*). The load (display
+request 56: the channel, six colour words, 256 image words sent low byte
+first) writes the same registers. The DAC cursor replaces the XMAP cursor
+on its channel and bypasses the gamma table, being generated inside the DAC
+after the pixel port (*established*, by topology). Other DAC indexes are
+logged ``LOG_UNIMP``. The state is migrated.
+
 The retrace runs at 60 Hz on channel 0, an *approximation*: ``0x1e6``
 names a timing-table index the model does not decode, and no timing
 table is held. A ``0x1e7`` request completes at the next retrace, one per
@@ -1624,8 +1662,8 @@ Model limits
   pipe splits a scale of exactly 1.0 into two half passes is *established*
   from the sequencing, but its storage format is *unknown*, so no visible
   difference follows.
-- The DAC cursor load (display request 56, 263 words) is framed and
-  consumed; the image and colours are not kept and the cursor is not drawn.
+- The DAC cursor is drawn in X11 mode only; XGA mode, interlaced use and
+  the DAC's other registers (palette, mode, identity) are not modelled.
 - Select mode returns hit records; feedback mode returns no records.
 - A small texture level's origin is not taken from the last of its copies,
   and a load at a new address does not retire the levels it overlaps; the

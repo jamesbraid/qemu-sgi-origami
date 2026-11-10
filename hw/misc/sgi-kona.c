@@ -4211,6 +4211,7 @@ static void sgi_kona_setup_frame_buffer(SGIKonaState *s, uint32_t width,
  * one retrace rate.
  */
 static void sgi_kona_cursor_update(SGIKonaState *s);
+static void sgi_kona_dac_cursor_load(SGIKonaState *s);
 
 static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
 {
@@ -4232,6 +4233,9 @@ static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
         break;
     case SGI_KONA_VIDEO_SETUP_FRAME_BUFFER:
         sgi_kona_setup_frame_buffer(s, d[0], d[1], d[2]);
+        return;
+    case SGI_KONA_VIDEO_LOAD_DAC_CURSOR:
+        sgi_kona_dac_cursor_load(s);
         return;
     default:
         return;
@@ -4818,6 +4822,9 @@ static int sgi_kona_cursor_coord(uint32_t value)
  * cursor section). Every other channel shows none. A channel number the
  * display generator does not have shows the cursor nowhere.
  */
+static bool sgi_kona_dac_cursor_on(SGIKonaState *s, unsigned c);
+static void sgi_kona_dac_draw(SGIKonaState *s, unsigned c);
+
 static void sgi_kona_cursor_update(SGIKonaState *s)
 {
     uint32_t argb[64 * 64];
@@ -4853,13 +4860,237 @@ static void sgi_kona_cursor_update(SGIKonaState *s)
                 argb[row * 64 + col] = colors[a + 2 * b];
             }
         }
-        sgi_scanout_cursor_define(sgi_kona_channel_scanout(s, channel),
-                                  64, 64, 0, 0, argb);
     }
     for (unsigned c = 0; c < sgi_kona_channel_count(s); c++) {
-        sgi_scanout_cursor_move(sgi_kona_channel_scanout(s, c), x, y,
-                                on && c == channel);
+        SGIScanout *so = sgi_kona_channel_scanout(s, c);
+
+        /* A DAC cursor on a channel replaces its XMAP cursor. */
+        if (sgi_kona_dac_cursor_on(s, c)) {
+            sgi_kona_dac_draw(s, c);
+        } else if (on && c == channel) {
+            sgi_scanout_cursor_define(so, 64, 64, 0, 0, argb);
+            sgi_scanout_cursor_move(so, x, y, true);
+        } else {
+            sgi_scanout_cursor_move(so, x, y, false);
+        }
     }
+}
+
+/*
+ * The video DAC cursor.
+ *
+ * The kernel reaches a channel's DAC through the indirect port: the
+ * selector 0xb00 + 0x100 * n is the block's register 0, a 16-bit index
+ * written as two bytes, low then high; 0xb02 + 0x100 * n is register 2,
+ * the indexed data port. The kernel re-sends the selector before every
+ * byte (established; there is no data port at selector 0x22). Any access
+ * to another register starts the next index write at its low byte again
+ * (the part's rule for the address register).
+ *
+ * Indexes the model keeps (inferred from a register description of an
+ * ADV716x-family DAC; no public copy was found, so none is cited; the
+ * part identity is inferred from the board's scan-chain names):
+ *
+ * - 0x004, the pixel mask, 8 bits, 0xff at start-up;
+ * - 0x200 to 0x203, the cursor position as x low, x high, y low, y high,
+ *   a signed 16-bit top-left in output pixels with no bias or offset, and
+ *   0x204, the control byte: bits 1:0 the mode (1 X11, 2 XGA), bit 2 the
+ *   enable, bit 3 interlace, bits 7:4 zero. The index advances after
+ *   each access in 0x200 to 0x204;
+ * - 0x303 and 0x304, Cursor Color 2 and Cursor Color 1, three 10-bit
+ *   components each, red then green then blue, the index advancing after
+ *   each blue;
+ * - 0x400 to 0x7ff, the image RAM, advancing after each access and
+ *   wrapping from 0x7ff to 0.
+ *
+ * The accesses are established from the kernel's and firmware's streams;
+ * the advance rules are inferred as above, and the index advance in 0x000
+ * to 0x00f is unknown and not modelled.
+ * Every other index is logged LOG_UNIMP and its data dropped.
+ *
+ * In X11 mode pixel value 3 is Cursor Color 2 (index 0x303, the
+ * foreground the X server sends first) and 2 is Cursor Color 1 (0x304,
+ * the background); 0 and 1 are transparent (established for the senders;
+ * the part's table that gives the values their meaning is inferred, and
+ * holds only if this board's DAC follows it). The image RAM holds 64 rows
+ * of 16 bytes, four pixels a byte, the leftmost in bits 7:6, with each
+ * row's 16-pixel groups running right to left (established as derived from
+ * the X server's builder; that the DAC fills ascending addresses from
+ * 0x400 is inferred). Mode 2 (XGA) is not drawn: it is logged LOG_UNIMP.
+ *
+ * The cursor is generated inside the DAC, after the pixel port, so it
+ * bypasses the gamma table (established by topology). Where pixel (0, 0)
+ * of the position falls against active video depends on the BLANK
+ * timing the board feeds the part and is unknown: the model takes the
+ * first pixel of the output. Interlaced use is unknown and not modelled.
+ * The load (display request 0x38) writes the same registers, which the
+ * pipe's display firmware does in the order of the DAC; the model applies
+ * it directly.
+ */
+static int sgi_kona_dac_block(uint32_t selector, unsigned *reg)
+{
+    if (selector < 0xb00 || ((selector - 0xb00) & 0xff) > 3 ||
+        ((selector - 0xb00) >> 8) >= SGI_KONA_DAC_BLOCKS) {
+        return -1;
+    }
+    *reg = (selector - 0xb00) & 0xff;
+    return (selector - 0xb00) >> 8;
+}
+
+/* The 10-bit components narrow to 8 bits by rounding, an approximation. */
+static uint32_t sgi_kona_dac_colour(const SGIKonaDac *d, unsigned which)
+{
+    uint32_t rgb = 0;
+
+    for (unsigned c = 0; c < 3; c++) {
+        rgb = (rgb << 8) | ((d->colour[which][c] * 255u + 511) / 1023);
+    }
+    return rgb;
+}
+
+/* Pixel (x, y) of the image RAM: the 2-bit value. */
+static unsigned sgi_kona_dac_pixel(const SGIKonaDac *d, unsigned x,
+                                   unsigned y)
+{
+    unsigned byte = 16 * y + 4 * (3 - x / 16) + (x % 16) / 4;
+
+    return (d->image[byte] >> (6 - 2 * (x % 4))) & 3;
+}
+
+static bool sgi_kona_dac_cursor_on(SGIKonaState *s, unsigned c)
+{
+    const SGIKonaDac *d;
+    SGIKonaChannelView v;
+
+    if (c >= SGI_KONA_DAC_BLOCKS) {
+        return false;
+    }
+    d = &s->dac[c];
+    return (d->control & 4) && (d->control & 3) == 1 &&
+           sgi_kona_channel_view(s, c, &v);
+}
+
+static void sgi_kona_dac_draw(SGIKonaState *s, unsigned c)
+{
+    const SGIKonaDac *d = &s->dac[c];
+    int x = (int16_t)(d->position[0] | d->position[1] << 8);
+    int y = (int16_t)(d->position[2] | d->position[3] << 8);
+    uint32_t argb[64 * 64];
+    uint32_t colours[4] = {
+        0, 0, 0xff000000 | sgi_kona_dac_colour(d, 1),
+        0xff000000 | sgi_kona_dac_colour(d, 0),
+    };
+
+    for (unsigned row = 0; row < 64; row++) {
+        for (unsigned col = 0; col < 64; col++) {
+            argb[row * 64 + col] = colours[sgi_kona_dac_pixel(d, col, row)];
+        }
+    }
+    sgi_scanout_cursor_define(sgi_kona_channel_scanout(s, c), 64, 64, 0, 0,
+                              argb);
+    sgi_scanout_cursor_move(sgi_kona_channel_scanout(s, c), x, y, true);
+}
+
+static void sgi_kona_dac_reset(SGIKonaState *s)
+{
+    memset(s->dac, 0, sizeof(s->dac));
+    for (unsigned c = 0; c < SGI_KONA_DAC_BLOCKS; c++) {
+        s->dac[c].pixel_mask = 0xff;
+    }
+    s->dac_used = false;
+}
+
+/* One data byte (a 10-bit component for the colours) at the block's index. */
+static void sgi_kona_dac_data(SGIKonaState *s, unsigned n, uint32_t value)
+{
+    SGIKonaDac *d = &s->dac[n];
+    unsigned index = d->index;
+
+    if (index == 0x004) {
+        d->pixel_mask = value;
+    } else if (index >= 0x200 && index <= 0x204) {
+        if (index == 0x204) {
+            d->control = value & 0x0f;
+            if ((d->control & 4) && (d->control & 3) != 1) {
+                qemu_log_mask(LOG_UNIMP, "sgi-kona: DAC cursor mode %u is"
+                              " not drawn\n", d->control & 3);
+            }
+        } else {
+            d->position[index - 0x200] = value;
+        }
+        d->index++;
+    } else if (index == 0x303 || index == 0x304) {
+        d->colour[index - 0x303][d->colour_part] = value & 0x3ff;
+        if (++d->colour_part == 3) {
+            d->colour_part = 0;
+            d->index++;
+        }
+    } else if (index >= 0x400 && index <= 0x7ff) {
+        d->image[index - 0x400] = value;
+        d->index = index == 0x7ff ? 0 : index + 1;
+    } else {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: DAC %u index 0x%x value 0x%x"
+                      " is not modelled\n", n, index, value);
+    }
+}
+
+/* A write to the DAC block's register reg through the indirect port. */
+static void sgi_kona_dac_write(SGIKonaState *s, unsigned n, unsigned reg,
+                               uint32_t value)
+{
+    SGIKonaDac *d = &s->dac[n];
+
+    s->dac_used = true;
+    if (reg == 0) {
+        if (d->index_high) {
+            d->index = (d->index & 0xff) | (value & 0xff) << 8;
+        } else {
+            d->index = (d->index & 0xff00) | (value & 0xff);
+        }
+        d->index_high = !d->index_high;
+        d->colour_part = 0;
+        return;
+    }
+    d->index_high = false;
+    if (reg == 2) {
+        sgi_kona_dac_data(s, n, value);
+    } else {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: DAC %u register %u write 0x%x is"
+                      " not modelled\n", n, reg, value);
+        return;
+    }
+    sgi_kona_cursor_update(s);
+}
+
+/*
+ * The DAC cursor load, display request 0x38: the channel (0 to 7, or
+ * 0xde), the foreground then background colour as six 10-bit words, and
+ * 256 image words sent low byte first to index 0x400 (established).
+ */
+static void sgi_kona_dac_cursor_load(SGIKonaState *s)
+{
+    const uint32_t *d = s->video_data;
+    SGIKonaDac *dac;
+
+    if (d[0] >= SGI_KONA_DAC_BLOCKS) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: DAC cursor load for channel"
+                      " 0x%x is not modelled\n", d[0]);
+        return;
+    }
+    dac = &s->dac[d[0]];
+    s->dac_used = true;
+    for (unsigned k = 0; k < 6; k++) {
+        dac->colour[k / 3][k % 3] = d[1 + k] & 0x3ff;
+    }
+    for (unsigned k = 0; k < SGI_KONA_DAC_IMAGE_BYTES / 4; k++) {
+        for (unsigned b = 0; b < 4; b++) {
+            dac->image[4 * k + b] = d[7 + k] >> (8 * b);
+        }
+    }
+    dac->index = 0x400;
+    dac->index_high = false;
+    dac->colour_part = 0;
+    sgi_kona_cursor_update(s);
 }
 
 static void sgi_kona_cursor_register(SGIKonaState *s, uint32_t value)
@@ -4902,11 +5133,19 @@ static void sgi_kona_cursor_register(SGIKonaState *s, uint32_t value)
                           value);
         }
         break;
-    default:
+    default: {
+        unsigned reg;
+        int n = sgi_kona_dac_block(s->cursor_selector, &reg);
+
+        if (n >= 0) {
+            sgi_kona_dac_write(s, n, reg, value);
+            return;
+        }
         qemu_log_mask(LOG_UNIMP,
                       "sgi-kona: unsupported cursor selector 0x%x value 0x%x\n",
                       s->cursor_selector, value);
         return;
+    }
     }
     sgi_kona_cursor_update(s);
 }
@@ -21948,6 +22187,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     memset(s->cursor_images, 0, sizeof(s->cursor_images));
     memset(s->cursor_valid, 0, sizeof(s->cursor_valid));
     s->cursor_selector = 0;
+    sgi_kona_dac_reset(s);
     s->cursor_channel = 0;
     s->cursor_offset = 0;
     s->cursor_position = 0;
@@ -22162,6 +22402,7 @@ static int sgi_kona_cursor_pre_load(void *opaque)
     s->packed_index_short_reported = false;
     s->fb_word_low_bits_reported = false;
     s->cursor_state_loaded = false;
+    sgi_kona_dac_reset(s);
     s->cursor_stage_words = 0;
     s->cursor_stage_entry = SGI_KONA_CURSOR_ENTRIES;
     memset(s->cursor_stage, 0, sizeof(s->cursor_stage));
@@ -22518,6 +22759,7 @@ static int sgi_kona_post_load(void *opaque, int version_id)
     }
 
     sgi_kona_gamma_update(s);
+    sgi_kona_cursor_update(s);
     if (result) {
         sgi_kona_renderer_stop(s);
         sgi_kona_contexts_clear(s);
@@ -24945,6 +25187,62 @@ static const VMStateDescription vmstate_sgi_kona_cursor = {
     },
 };
 
+static bool sgi_kona_dac_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    return s->dac_used;
+}
+
+static int sgi_kona_dac_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    for (unsigned c = 0; c < SGI_KONA_DAC_BLOCKS; c++) {
+        if (s->dac[c].colour_part > 2) {
+            return -EINVAL;
+        }
+        for (unsigned k = 0; k < 6; k++) {
+            if (s->dac[c].colour[k / 3][k % 3] > 0x3ff) {
+                return -EINVAL;
+            }
+        }
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_dac_block = {
+    .name = TYPE_SGI_KONA "/dac-block",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT16(index, SGIKonaDac),
+        VMSTATE_BOOL(index_high, SGIKonaDac),
+        VMSTATE_UINT8(colour_part, SGIKonaDac),
+        VMSTATE_UINT8(pixel_mask, SGIKonaDac),
+        VMSTATE_UINT8(control, SGIKonaDac),
+        VMSTATE_UINT8_ARRAY(position, SGIKonaDac, 4),
+        VMSTATE_UINT16_ARRAY(colour[0], SGIKonaDac, 3),
+        VMSTATE_UINT16_ARRAY(colour[1], SGIKonaDac, 3),
+        VMSTATE_UINT8_ARRAY(image, SGIKonaDac, SGI_KONA_DAC_IMAGE_BYTES),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_sgi_kona_dac = {
+    .name = TYPE_SGI_KONA "/dac-cursor",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_dac_needed,
+    .post_load = sgi_kona_dac_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(dac, SGIKonaState, SGI_KONA_DAC_BLOCKS, 1,
+                             vmstate_sgi_kona_dac_block, SGIKonaDac),
+        VMSTATE_BOOL(dac_used, SGIKonaState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static bool sgi_kona_gl_read_dma_valid(const SGIKonaGLReadDMA *d)
 {
     uint64_t io, pitch;
@@ -25913,6 +26211,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_x_run_owner,
         &vmstate_sgi_kona_retrace,
         &vmstate_sgi_kona_cursor,
+        &vmstate_sgi_kona_dac,
         &vmstate_sgi_kona_mailbox,
         &vmstate_sgi_kona_textures,
         &vmstate_sgi_kona_image_discard,

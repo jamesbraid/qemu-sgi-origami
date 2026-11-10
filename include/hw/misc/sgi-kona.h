@@ -1086,6 +1086,30 @@ typedef enum SGIKonaBitmapState {
  */
 #define SGI_KONA_FORMAT_NAME_WORDS 17
 
+/*
+ * One channel's video DAC cursor state. The DAC's indexed registers are
+ * reached through the block's register 0 (a 16-bit index written low byte
+ * then high) and register 2 (the data port); see sgi_kona_dac_write().
+ * index_high says the next index byte is the high one. The colours are
+ * the 10-bit components of Cursor Color 2 (index 0x303, red, green, blue;
+ * pixel value 3, the foreground) and Cursor Color 1 (0x304; pixel value
+ * 2, the background); colour_part counts the components written since the
+ * index last moved.
+ */
+#define SGI_KONA_DAC_BLOCKS 8
+#define SGI_KONA_DAC_IMAGE_BYTES 1024
+
+typedef struct SGIKonaDac {
+    uint16_t index;
+    bool index_high;
+    uint8_t colour_part;
+    uint8_t pixel_mask;
+    uint8_t control;
+    uint8_t position[4];
+    uint16_t colour[2][3];
+    uint8_t image[SGI_KONA_DAC_IMAGE_BYTES];
+} SGIKonaDac;
+
 typedef struct SGIKonaChannel {
     bool enabled;
     bool loaded;                /* a LoadFormat since its DisableChannel */
@@ -1734,6 +1758,14 @@ struct SGIKonaState {
     uint32_t cursor_offset;
     uint32_t cursor_position;
     uint32_t cursor_mode;
+
+    /*
+     * The video DAC's cursor registers, one block per channel, 8 blocks
+     * (see sgi_kona_dac_write()). dac_used is set by the first write or
+     * load and says whether the migration subsection is sent.
+     */
+    SGIKonaDac dac[SGI_KONA_DAC_BLOCKS];
+    bool dac_used;
 
     /*
      * A GL texture table (SGI_KONA_CMD_GL_TEX_TABLE) still taking its data

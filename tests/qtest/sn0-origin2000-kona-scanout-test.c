@@ -1193,6 +1193,232 @@ static void test_xmap_cursor_takes_gamma(void)
     g_rmdir(dir);
 }
 
+/* Write the DAC block n's 16-bit index through its register 0. */
+static void dac_index(QTestState *s, unsigned n, uint32_t index)
+{
+    cursor_register(s, 0xb00 + 0x100 * n, index & 0xff);
+    cursor_register(s, 0xb00 + 0x100 * n, index >> 8);
+}
+
+/* A data byte through its register 2; the selector is re-sent each time. */
+static void dac_data(QTestState *s, unsigned n, uint32_t value)
+{
+    cursor_register(s, 0xb02 + 0x100 * n, value);
+}
+
+/*
+ * The managed area's grey (0x404040) once the red table holds its one
+ * marker entry: every other red entry is 0.
+ */
+#define DAC_BACKGROUND 0x004040
+
+/* The cursor image byte 12, holding pixels 3, 2, 1, 0 of the top row. */
+#define DAC_PIXELS 0xe4
+
+/*
+ * The video DAC cursor through the indirect port, as the kernel drives
+ * it. The image byte 12 holds the top row's left four pixels, values 3, 2,
+ * 1 and 0 from the left: the foreground at (x, y), the background beside
+ * it, then two transparent pixels. The colours stream from index 0x303 with
+ * no second index write, so the index must advance after each blue, and
+ * the position bytes stream from 0x200 the same way into the control
+ * byte's index, which a following write of 5 enables in X11 mode. The
+ * cursor bypasses the gamma table, which here turns red into 0x80.
+ */
+static void test_dac_cursor_registers(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    uint8_t *frame;
+    unsigned w, h;
+    QTestState *s = qtest_init(DG5_2_ARGS);
+
+    kona_draw_halves(s);
+    kona_gamma_entry(s, 0xfff, 0x800);
+    dac_index(s, 0, 0x40c);
+    dac_data(s, 0, DAC_PIXELS);
+    dac_index(s, 0, 0x303);
+    for (unsigned k = 0; k < 6; k++) {
+        static const uint32_t c[] = { 0x3ff, 0, 0, 0, 0x3ff, 0 };
+
+        dac_data(s, 0, c[k]);
+    }
+    dac_index(s, 0, 0x200);
+    for (unsigned k = 0; k < 4; k++) {
+        static const uint32_t pos[] = { 100, 0, 50, 0 };
+
+        dac_data(s, 0, pos[k]);
+    }
+    /* The index has advanced to the control byte: not yet enabled. */
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 100, 50), ==, DAC_BACKGROUND);
+    g_free(frame);
+    dac_data(s, 0, 5);
+
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 100, 50), ==, 0xff0000);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 101, 50), ==, 0x00ff00);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 102, 50), ==, DAC_BACKGROUND);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 103, 50), ==, DAC_BACKGROUND);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 100, 51), ==, DAC_BACKGROUND);
+    g_free(frame);
+
+    /* Signed 16-bit position, no bias: -3 puts image column 3 at 0. */
+    dac_index(s, 0, 0x40c);
+    dac_data(s, 0, 0x03);
+    dac_index(s, 0, 0x200);
+    for (unsigned k = 0; k < 4; k++) {
+        static const uint32_t pos[] = { 0xfd, 0xff, 20, 0 };
+
+        dac_data(s, 0, pos[k]);
+    }
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 0, 20), ==, 0xff0000);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 1, 20), ==, DAC_BACKGROUND);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 100, 50), ==, DAC_BACKGROUND);
+    g_free(frame);
+
+    /* Disabled again, and in XGA mode: nothing is drawn. */
+    dac_index(s, 0, 0x204);
+    dac_data(s, 0, 0);
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 0, 20), ==, DAC_BACKGROUND);
+    g_free(frame);
+    dac_index(s, 0, 0x204);
+    dac_data(s, 0, 6);
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 0, 20), ==, DAC_BACKGROUND);
+    g_free(frame);
+    qtest_quit(s);
+    g_rmdir(dir);
+}
+
+/*
+ * The DAC cursor load, display request 56: the channel, six 10-bit colour
+ * words and 256 image words whose bytes go low first to the image RAM. A
+ * load for channel 1 draws on head 1 once that channel's block is enabled,
+ * and the state crosses a migration.
+ */
+static void test_dac_cursor_load_and_migration(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    g_autofree char *dest_args = NULL;
+    uint32_t load[263] = { 1, 0, 0, 0x3ff, 0x3ff, 0x3ff, 0x3ff };
+    uint8_t *frame;
+    unsigned w, h;
+    QTestState *from, *to;
+
+    from = qtest_init(DG5_2_ARGS);
+    kona_draw_halves(from);
+    kona_load_channel(from, 1, 640, 480, 640, 0, 640, 480);
+    load[7 + 3] = DAC_PIXELS;
+    kona_video(from, 0x38, load, ARRAY_SIZE(load));
+    dac_index(from, 1, 0x200);
+    for (unsigned k = 0; k < 4; k++) {
+        static const uint32_t pos[] = { 10, 0, 20, 0 };
+
+        dac_data(from, 1, pos[k]);
+    }
+    dac_data(from, 1, 5);
+    frame = kona_screendump_head(from, dir, 1, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 10, 20), ==, 0x0000ff);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 11, 20), ==, 0xffffff);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 12, 20), ==, 0xc08040);
+    g_free(frame);
+    frame = kona_screendump_head(from, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 10, 20), ==, 0x404040);
+    g_free(frame);
+
+    dest_args = g_strdup_printf("%s -incoming %s", DG5_2_ARGS, uri);
+    to = qtest_init(dest_args);
+    sgi_migrate_stopped(from, uri);
+    frame = kona_screendump_head(to, dir, 1, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 10, 20), ==, 0x0000ff);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 11, 20), ==, 0xffffff);
+    g_free(frame);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+/*
+ * The image RAM index wraps from 0x7ff to 0, not on to 0x800: after the
+ * last image byte the next access is at index 0, which the model does not
+ * keep and logs, naming that index.
+ */
+static void test_dac_image_index_wraps(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    g_autofree char *log = g_build_filename(dir, "unimp.log", NULL);
+    g_autofree char *found = NULL;
+    QTestState *s = qtest_initf("%s -d unimp -D %s", DG5_2_ARGS, log);
+
+    dac_index(s, 0, 0x7ff);
+    dac_data(s, 0, 0xaa);
+    dac_data(s, 0, 0x55);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "DAC 0 index 0x0 value 0x55 is not "
+                                   "modelled"));
+    g_assert_null(strstr(found, "index 0x800"));
+    g_rmdir(dir);
+}
+
+/*
+ * The XMAP cursor, through the gamma table, on channel 0 and a DAC cursor
+ * on channel 1 both cross a migration with their colours: the destination
+ * redraws the cursors from the migrated device state.
+ */
+static void test_cursors_cross_migration(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    g_autofree char *dest_args = NULL;
+    uint32_t image[260] = { 0 };
+    uint32_t load[263] = { 1, 0, 0, 0x3ff, 0x3ff, 0x3ff, 0x3ff };
+    uint8_t *frame;
+    unsigned w, h;
+    QTestState *from, *to;
+
+    from = qtest_init(DG5_2_ARGS);
+    kona_draw_halves(from);
+    kona_load_channel(from, 1, 640, 480, 640, 0, 640, 480);
+    kona_gamma_entry(from, 0xfff, 0x800);
+    image[0] = 0x80000000;
+    image[257] = 0x3ff00000;
+    qtest_writel(from, KONA_REG(0xc1000c + 0x20 * 0x130), 0);
+    for (unsigned i = 0; i < ARRAY_SIZE(image); i++) {
+        qtest_writel(from, REG_COMMAND_DATA, image[i]);
+    }
+    cursor_register(from, 0x100, 0);
+    cursor_register(from, 0x101, 0);
+    cursor_register(from, 0x102, (100 + 32) | ((50 + 32) << 13));
+    cursor_register(from, 0x103, 2);
+    load[7 + 3] = DAC_PIXELS;
+    kona_video(from, 0x38, load, ARRAY_SIZE(load));
+    dac_index(from, 1, 0x200);
+    for (unsigned k = 0; k < 4; k++) {
+        static const uint32_t pos[] = { 10, 0, 20, 0 };
+
+        dac_data(from, 1, pos[k]);
+    }
+    dac_data(from, 1, 5);
+
+    dest_args = g_strdup_printf("%s -incoming %s", DG5_2_ARGS, uri);
+    to = qtest_init(dest_args);
+    sgi_migrate_stopped(from, uri);
+    frame = kona_screendump_head(to, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 100, 50), ==, 0x800000);
+    g_free(frame);
+    frame = kona_screendump_head(to, dir, 1, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 10, 20), ==, 0x0000ff);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 11, 20), ==, 0xffffff);
+    g_free(frame);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 /*
  * The channels cross a migration: the destination's channel 1 shows the
  * same rectangle, scaled the same way, and channel 0 the managed area.
@@ -1425,6 +1651,14 @@ int main(int argc, char **argv)
                    test_channel_gamma_map);
     qtest_add_func("sn0/origin2000/kona-scanout/xmap-cursor-takes-gamma",
                    test_xmap_cursor_takes_gamma);
+    qtest_add_func("sn0/origin2000/kona-scanout/dac-cursor-registers",
+                   test_dac_cursor_registers);
+    qtest_add_func("sn0/origin2000/kona-scanout/dac-cursor-load-and-migration",
+                   test_dac_cursor_load_and_migration);
+    qtest_add_func("sn0/origin2000/kona-scanout/dac-image-index-wraps",
+                   test_dac_image_index_wraps);
+    qtest_add_func("sn0/origin2000/kona-scanout/cursors-cross-migration",
+                   test_cursors_cross_migration);
     qtest_add_func("sn0/origin2000/kona-scanout/migration-carries-channels",
                    test_migration_carries_channels);
     qtest_add_func("sn0/origin2000/kona-scanout/"
