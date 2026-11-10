@@ -179,9 +179,10 @@ Board catalogue
        serial ports, parallel and an M48T35 Timekeeper, with a DP83843
        transceiver. Fuel also fits keyboard and mouse (:doc:`xbridge`).
    * - Origin 3000 I-brick IO7
-     - none
-     - Device 4 on the XBridge (Linux ``bridge_setup_io7``). The model has
-       no I-brick board.
+     - ``sgi-baseio`` preset ``io7``
+     - Device 4 on the XBridge (Linux ``bridge_setup_io7``). The model
+       fits Ethernet, serial port A and an M48T35 Timekeeper, with no
+       keyboard, mouse or parallel port (:doc:`baseio`).
    * - Octane IP30 system board
      - built by the ``octane`` machine, not an ``sgi-xio-baseio`` preset
        (:doc:`/system/mips/sgi/ip30`)
@@ -356,7 +357,6 @@ fitted with ``-device``.
 Model limits
 ============
 
-- The I-brick IO7 has no QEMU board.
 - The Octane system board and any Octane placement of a MENET are outside
   the ``sgi-sn`` family.
 - The MENET's Ethernet transceiver, its IOC3 PCI revision and the absence

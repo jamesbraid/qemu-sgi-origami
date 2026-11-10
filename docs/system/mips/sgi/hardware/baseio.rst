@@ -129,7 +129,9 @@ board, so an inventory from the model never reads as a real unit.
        serial port A only and an M48T35-compatible Timekeeper; no
        keyboard, mouse or parallel port. AT&T/Lucent OHCI USB at
        device 5 (:doc:`lucent-ohci`), TI TSB12LV22 IEEE 1394 link at
-       device 6 (:doc:`tsb12lv22`). No SCSI controller.
+       device 6 (:doc:`tsb12lv22`). No SCSI controller. When the topology
+       fits a Fibre Channel loop, a ``qlogic-isp2200`` at device 1
+       (:doc:`qlogic-isp2200`).
    * - ``io8``
      - Origin 300 IO-8, placed on XBridge head F (widget 15).
      - ISP12160 at device 1 (:doc:`qlogic-isp`). IOC3 at device 4
