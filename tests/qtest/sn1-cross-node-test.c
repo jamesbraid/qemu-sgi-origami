@@ -275,11 +275,10 @@ static void test_cable_down_makes_the_peer_unreachable(void)
 }
 
 /*
- * The cross-partition probe (the partitioning datasheet, test 6): a kernel
- * reads another node's directory slot with a fault-tolerant copy and treats
- * a fault as "not present". A read of a node no number claims, or whose
- * cable is down, must fail as a bus error at the reader and leave every
- * other access working; it must not stop the machine.
+ * The cross-partition probe: a kernel reads another node's directory slot with
+ * a fault-tolerant copy and treats a fault as "not present". A read of a node
+ * no number claims, or whose cable is down, must fail as a bus error at the
+ * reader and leave every other access working; it must not stop the machine.
  */
 static void test_remote_probe_faults_and_machine_runs_on(void)
 {

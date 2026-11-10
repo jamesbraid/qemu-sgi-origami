@@ -326,11 +326,10 @@ static void test_identity(void)
 }
 
 /*
- * Router board records datasheet "Other answers from the same handler": on
- * letter 6 the brick-serial request (0x0004) answers per position, the
- * board serial of NODE n on node link n. The brick-serial property is not
- * what a node link returns. The serials are the model's synthetic ones,
- * "EMUN" and the board's index, identity-index * 4 + n.
+ * On letter 6 the brick-serial request (0x0004) answers per position, the
+ * board serial of NODE n on node link n. The brick-serial property is not what
+ * a node link returns. The serials are the model's synthetic ones, "EMUN" and
+ * the board's index, identity-index * 4 + n.
  */
 static void test_board_serials(void)
 {
@@ -629,20 +628,20 @@ static void expect_spd(const GByteArray *spd, unsigned board, unsigned dimm)
 }
 
 /*
- * The Cx-brick L1's numbering by requesting port, router board records
- * datasheet "Component numbers by requesting port" (personality 6; the port
- * to board mapping is inferred). A node link n asking component c reaches
- * table entry 0 -> 2 + 9n (NODE n), 1 -> 3 + 9n (its DIMM 0, not the
- * router), c >= 2 -> c + 9n, and 38 or more is minus 104. The table: 2, 11,
- * 20 and 29 the node boards, each followed by eight SPDs in the order 0, 2,
- * 4, 6, 1, 3, 5, 7. The router and power inlet belong to the router's own
- * port, which is the router window (below), so this L1 serves neither.
+ * The Cx-brick L1's numbering by requesting port (personality 6; see l1.rst,
+ * "Origin 3900 Cx-brick profile"; the port to board mapping is inferred). A
+ * node link n asking component c reaches table entry 0 -> 2 + 9n (NODE n), 1
+ * -> 3 + 9n (its DIMM 0, not the router), c >= 2 -> c + 9n, and 38 or more is
+ * minus 104. The table: 2, 11, 20 and 29 the node boards, each followed by
+ * eight SPDs in the order 0, 2, 4, 6, 1, 3, 5, 7. The router and power inlet
+ * belong to the router's own port, which is the router window (below), so this
+ * L1 serves neither.
  *
- * Contents are the model's. SPDs exist for the two 1 GiB DIMMs the
- * catalogue's 2048 MiB per node needs, DIMM 0 and DIMM 1 (components 3 and 7
- * of the node's own); the other DIMMs answer minus 104 (datasheet "DIMM SPD
- * records": serve fitted DIMMs only). The inferred port mapping, the absent
- * inlet and the fit are approximations.
+ * Contents are the model's. SPDs exist for the two 1 GiB DIMMs the catalogue's
+ * 2048 MiB per node needs, DIMM 0 and DIMM 1 (components 3 and 7 of the node's
+ * own); the other DIMMs answer minus 104 (fitted DIMMs only; see l1.rst,
+ * "EEPROM records"). The inferred port mapping, the absent inlet and the fit
+ * are approximations.
  */
 static void test_component_table(void)
 {
@@ -749,12 +748,11 @@ static void test_component_table(void)
 }
 
 /*
- * The router's own port, router board records datasheet "Component numbers
- * by requesting port": component 1 is the ROUTER record, component 0 the
- * power inlet (absent here, contents unknown) and components 2 and above
- * minus 104. The router-window L1 stands in for that port (an
- * approximation: the real port belongs to the brick's one L1). The record's
- * part and revision are the model's not-observed placeholders.
+ * The router's own port: component 1 is the ROUTER record, component 0 the
+ * power inlet (absent here, contents unknown) and components 2 and above minus
+ * 104. The router-window L1 stands in for that port (an approximation: the
+ * real port belongs to the brick's one L1). The record's part and revision are
+ * the model's not-observed placeholders.
  */
 static void window_read(QTestState *window, unsigned component, unsigned area,
                         unsigned offset, uint8_t *reply, size_t *length)
@@ -802,8 +800,8 @@ static void test_router_window_record(void)
     }
     /*
      * The router port's brick-serial request is the ROUTER record's serial,
-     * not a configured brick serial (datasheet: on letter 6 the brick serial
-     * is the ROUTER record's).
+     * not a configured brick serial (on letter 6 the brick serial is the
+     * ROUTER record's).
      */
     {
         uint8_t request[8] = { 0x10, 0x0f, 0xff, 0xf0, 0x06, 0, 4, 0 };

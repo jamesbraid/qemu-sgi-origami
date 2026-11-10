@@ -5,12 +5,11 @@
  * The pipe's flash holds its boot image, a video combination and a 48-byte
  * header. IRIX's EEPROM programming tool reads and programs it with command
  * 0x1ec, an operation number and that operation's words, and reads the pipe's
- * answer from a reply buffer: word 0 goes non-zero last, word 1 is a word count
- * and the data follows. The PROM and the kernel read the same header through
- * the indirect port at internal 0x87ff00. The contract is the command grammar
- * datasheet's "The flash EEPROM operation, 0x1ec, and the EEPROM programming
- * tool". Each case fails on a model without the behaviour for the reason its
- * comment gives.
+ * answer from a reply buffer: word 0 goes non-zero last, word 1 is a word
+ * count and the data follows. The PROM and the kernel read the same header
+ * through the indirect port at internal 0x87ff00. The contract is kona.rst,
+ * "Flash EEPROM operation". Each case fails on a model without the behaviour
+ * for the reason its comment gives.
  *
  * The fixture is sn0-origin2000-kona-bringup-test.c's: KONA as a -device
  * at the empty slot IO4, crossbow0's widget 11, with its fabric writes

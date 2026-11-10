@@ -855,7 +855,7 @@ static void test_request_buffer_timeout(void)
     g_assert_cmphex(qtest_readq(s, PI(1, RQ_TIMEOUT_MAX)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(0, RQ_TIMEOUT_SCALE)), ==, 0xffffff);
 
-    /* The datasheet leaves the reset value unknown; the model clears it. */
+    /* The reset value is unknown; the model clears it. */
     qtest_writeq(s, NI(0x08), 4);
     g_assert_cmphex(qtest_readq(s, PI(0, RQ_TIMEOUT_MAX)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(0, RQ_TIMEOUT_SCALE)), ==, 0);

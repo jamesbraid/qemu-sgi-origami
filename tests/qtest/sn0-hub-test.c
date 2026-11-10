@@ -4863,10 +4863,10 @@ static void test_the_crosstalk_timeouts(const void *data)
 }
 
 /*
- * The I/O interface's access protection, widget access, device error
- * mask, interrupt destination and error-shutdown enables: stored at their
- * datasheet reset values and widths, and put back by a reset. Nothing
- * enforces them, so the checks are storage only.
+ * The I/O interface's access protection, widget access, device error mask,
+ * interrupt destination and error-shutdown enables: stored at their reset
+ * values and widths, and put back by a reset. Nothing enforces them, so the
+ * checks are storage only.
  */
 #define IO_LOCAL_ACCESS     0x400100
 #define IO_ACCESS_OVERRIDE  0x400108

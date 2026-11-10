@@ -1097,10 +1097,10 @@ static uint16_t rx_producer_without_clock(QTestState *qts, uint16_t want)
  * Jumbo shortage discards immediately. Advancing the virtual clock past a
  * possible hold gives the same final state, so keep it frozen. Holding the
  * frame refuses it and stops backend reads; the following standard frame
- * cannot arrive. Immediate discard keeps reads active and delivers that
- * frame on the next main-loop pass. This is an approximation: the BCM570x
- * datasheet's jumbo receive contract does not prescribe discard timing.
- * A bounded hold delivered fewer bytes and would fail this test.
+ * cannot arrive. Immediate discard keeps reads active and delivers that frame
+ * on the next main-loop pass. This is an approximation: bcm570x.rst's jumbo
+ * receive contract does not prescribe discard timing. A bounded hold delivered
+ * fewer bytes and would fail this test.
  */
 static void test_jumbo_shortage_discards_without_waiting(const void *data)
 {
@@ -1165,7 +1165,7 @@ static void test_jumbo_shortage_discards_without_waiting(const void *data)
  * standard frame cannot use a jumbo buffer and is discarded immediately.
  * Freeze virtual time: advancing past a possible hold hides the difference,
  * while only immediate discard lets the queued jumbo frame arrive. A bounded
- * hold delivered fewer bytes on the MTU 1500 path (BCM570x datasheet).
+ * hold delivered fewer bytes on the MTU 1500 path (see bcm570x.rst).
  * nicNoMoreRXBDs has one counter with no per-ring companion (PG105 page 110,
  * Table 49; page 114, Table 54). Check the same offset used by jumbo shortage
  * before and after the drop; the following jumbo delivery adds no count.
@@ -1253,19 +1253,19 @@ static void test_standard_shortage_discards_without_waiting(const void *data)
  * The card's own DMA swap controls against every Bridge placement.
  *
  * The chip is big-endian internally. Its byte at lane l of an aligned
- * doubleword (lane 0 the most significant) reaches the PCI bus at lane
- * l ^ t, where t is 7 with no swap and 0 with the byte and word swap both
- * set [57XX-PG105-R Tables 102-103 and 108-109; the single-swap values are
- * the datasheet's inference]. The Bridge then places each PCI byte: a
- * swap-set slot is identity, a swap-clear 32-bit slot reverses each word
- * (p ^ 3) and a swap-clear 64-bit slot each doubleword (p ^ 7). Memory
- * therefore holds the chip's image with its in-doubleword offsets XORed by
- * t ^ u. The expected bytes are built here from that rule, not read back
- * through the model, and checked raw against a sentinel so an untouched byte
- * and a lost one differ. Frame data and non-frame data (the posted
- * descriptor, the status block, the completed descriptor) are checked
- * separately, each with its own pair of swap bits, and the frame lands at an
- * aligned and an unaligned address with an odd length.
+ * doubleword (lane 0 the most significant) reaches the PCI bus at lane l ^ t,
+ * where t is 7 with no swap and 0 with the byte and word swap both set
+ * [57XX-PG105-R Tables 102-103 and 108-109; the single-swap values are an
+ * inference]. The Bridge then places each PCI byte: a swap-set slot is
+ * identity, a swap-clear 32-bit slot reverses each word (p ^ 3) and a
+ * swap-clear 64-bit slot each doubleword (p ^ 7). Memory therefore holds the
+ * chip's image with its in-doubleword offsets XORed by t ^ u. The expected
+ * bytes are built here from that rule, not read back through the model, and
+ * checked raw against a sentinel so an untouched byte and a lost one differ.
+ * Frame data and non-frame data (the posted descriptor, the status block, the
+ * completed descriptor) are checked separately, each with its own pair of swap
+ * bits, and the frame lands at an aligned and an unaligned address with an odd
+ * length.
  */
 #define DEV_SWAP_DIRECT     (1u << 19)
 #define MODE_CTL            0x6800

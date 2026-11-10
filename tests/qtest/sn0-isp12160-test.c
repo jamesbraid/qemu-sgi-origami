@@ -3254,8 +3254,8 @@ static void test_bus_reset_retires_a_waiting_selection(const void *data)
 }
 
 /*
- * Model choice, the datasheet being silent about zero: a programmed wait
- * of zero is no wait.
+ * Model choice, nothing saying what zero does: a programmed wait of zero is no
+ * wait.
  */
 static void test_zero_selection_timeout_answers_at_once(const void *data)
 {

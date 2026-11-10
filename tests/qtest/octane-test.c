@@ -4590,10 +4590,9 @@ static void test_rad_clock_select(void)
 }
 
 /*
- * The stock PROM's boot tune, as software behaviour from its datasheet: the
- * register order of the Rev 4.17 image, a one-shot descriptor with end of
- * descriptor set (4504 units of 128 bytes, 72,064 frames) and generator 2
- * loaded for 32 kHz.
+ * The stock PROM's boot tune, as software behaviour: the register order of the
+ * Rev 4.17 image, a one-shot descriptor with end of descriptor set (4504 units
+ * of 128 bytes, 72,064 frames) and generator 2 loaded for 32 kHz.
  */
 #define RAD_TUNE_PCI        0xa1000000ULL
 #define RAD_TUNE_CTRL       0xfff73404u

@@ -794,11 +794,11 @@ static void test_the_data_register_holds_a_byte(const void *data)
 }
 
 /*
- * The status register reflects the cable rather than storing a value. With
- * no -parallel the machine gives the port a null backend, and an explicit
- * null backend or -parallel none is the same bare connector: every input
- * reads at its pulled-up level. Only nFault's level is specified by a
- * source; the rest is the pull-up inference documented with the datasheet.
+ * The status register reflects the cable rather than storing a value. With no
+ * -parallel the machine gives the port a null backend, and an explicit null
+ * backend or -parallel none is the same bare connector: every input reads at
+ * its pulled-up level. Only nFault's level is specified by a source; the rest
+ * is the pull-up inference documented in ioc3.rst.
  */
 static void test_the_status_register_reports_an_empty_cable(const void *data)
 {

@@ -79,8 +79,7 @@ def emit_assign_peer_nasid_if_master(program, nasid):
     """No PROM ran to number the direct peer's Hub, so a node-one-qualified
     address -- this file's own, and the host's read_state() polls -- names
     nothing until this runs: a vector-routed write over the CrayLink, the
-    technique the Hub network-interface datasheet's "Vector routing"
-    section and sn0_program_nasid() both use. Every CPU in this file's
+    technique sn0_program_nasid() also uses. Every CPU in this file's
     images runs this same code; only the master module's issue the write,
     since a vector operation always reaches the direct peer, and a slave
     module's CPU running it would renumber the master instead. Both of a
@@ -105,9 +104,8 @@ def emit_wait_for_own_nasid_if_slave(program):
 
     Nothing orders the slave's CPUs after the master's vector-routed write
     in emit_assign_peer_nasid_if_master.  Until it lands the slave's Hub
-    still believes it is node zero, and the Hub network-interface
-    datasheet's "Vector routing" section is explicit that before numbers
-    are assigned no node-numbered address means anything.  A slave CPU
+    still believes it is node zero, and before numbers are assigned no
+    node-numbered address means anything.  A slave CPU
     that raced ahead to a node-one-qualified store took a bus error and
     never published, so poll the local NI_STATUS node field (bits 16:8)
     until it is nonzero.  Master CPUs fall straight through.

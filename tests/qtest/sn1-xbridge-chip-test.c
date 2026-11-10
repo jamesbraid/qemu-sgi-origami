@@ -559,7 +559,7 @@ static void test_xio_port_unpopulated(void)
     g_assert_cmphex(link_aux(qts, XIO_PORT) & (1U << 5), ==, 0);
     g_assert_cmphex(link_aux(qts, XIO_PORT) & (1U << 6), ==, 1U << 6);
     g_assert_cmphex(link_status(qts, XIO_PORT) & (1U << 31), ==, 0);
-    /* The reset fence and link control the datasheet gives the port. */
+    /* The reset fence and link control the port has. */
     g_assert_cmphex(reg_read(qts, 0, 0x80 + (XIO_PORT - 8) * 8), ==, 0xff);
     g_assert_cmphex(reg_read(qts, 0, 0x100 + (XIO_PORT - 8) * 0x40 + 0x08),
                     ==, 0x00080000);

@@ -3255,12 +3255,12 @@ static void test_eye_float_depth(void)
 }
 
 /*
- * Polygon offset under the board's depth word: block 0x058's field is a
- * signed count of steps of the stored word, added after the encode, with
- * no slope term (INFERRED; the datasheet's polygon offset section). The
- * same count moves a polygon one word step at any depth, so the eye gap
- * it makes shrinks toward the near plane; OpenGL's units and factor are
- * not read; the sum stays within the words 0 through the far plane's.
+ * Polygon offset under the board's depth word: block 0x058's field is a signed
+ * count of steps of the stored word, added after the encode, with no slope
+ * term (INFERRED). The same count moves a polygon one word step at any depth,
+ * so the eye gap it makes shrinks toward the near plane; OpenGL's units and
+ * factor are not read; the sum stays within the words 0 through the far
+ * plane's.
  */
 static void test_eye_float_polygon_offset(void)
 {

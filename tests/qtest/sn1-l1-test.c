@@ -2454,10 +2454,9 @@ static void test_env(gconstpointer opaque)
 }
 
 /*
- * The state column of every row reads "Wait Pwr" with the node off, and
- * the rows keep their format. The BEDROCK sensor is on the node, so it
- * prints "Not currently available" in place of its four values (L1
- * datasheet, "With the node unpowered").
+ * The state column of every row reads "Wait Pwr" with the node off, and the
+ * rows keep their format. The BEDROCK sensor is on the node, so it prints "Not
+ * currently available" in place of its four values.
  */
 static void test_env_unpowered(gconstpointer opaque)
 {
@@ -2534,8 +2533,8 @@ static char *env_run(int fd, const char *line)
     "brick-serial=XQ4471,system-serial=SZ900213,auto-power=off"
 
 /*
- * L1 datasheet, "config": one line per attachment position, ":%-2d %c " and
- * the brick name, then a label. A single Chimera brick has only itself.
+ * The "config" command: one line per attachment position, ":%-2d %c " and the
+ * brick name, then a label. A single Chimera brick has only itself.
  */
 static void test_chimera_config(void)
 {
@@ -2553,11 +2552,10 @@ static void test_chimera_config(void)
 }
 
 /*
- * L1 datasheet, "env forms, banners and limits": with monitoring off the
- * report starts and ends with the starred banner, and "env temp off" adds
- * the failsafe banner to both. With monitoring on one status line replaces
- * them. "env on" and "env off" print nothing, except that a second
- * disabling prints the overtemp warning.
+ * The "env" forms: with monitoring off the report starts and ends with the
+ * starred banner, and "env temp off" adds the failsafe banner to both. With
+ * monitoring on one status line replaces them. "env on" and "env off" print
+ * nothing, except that a second disabling prints the overtemp warning.
  */
 static void test_env_on_off(void)
 {
@@ -2604,9 +2602,8 @@ static void test_env_on_off(void)
 }
 
 /*
- * L1 datasheet: in monitor-only mode the supply table is preceded and
- * followed by the monitor-only line. "env power on" returns to shutdown on
- * faults.
+ * In monitor-only mode the supply table is preceded and followed by the
+ * monitor-only line. "env power on" returns to shutdown on faults.
  */
 static void test_env_monitor_only(void)
 {
@@ -2637,13 +2634,13 @@ static void test_env_monitor_only(void)
 }
 
 /*
- * L1 datasheet, acknowledgements table: env reset, altitude and power print
- * nothing; the warning, fault and temperature test events print "test event
- * generated." and then an ATTN line; pwrdn prints only its ATTN line;
- * env messages prints its filter and the setters repeat it with "will be";
- * the five-value form prints "temperature limits set.". With faultsonly,
- * events below fault severity are dropped but the acknowledgement stays.
- * Whether the acknowledgement comes before the ATTN line is not recorded.
+ * Acknowledgements: env reset, altitude and power print nothing; the warning,
+ * fault and temperature test events print "test event generated." and then an
+ * ATTN line; pwrdn prints only its ATTN line; env messages prints its filter
+ * and the setters repeat it with "will be"; the five-value form prints
+ * "temperature limits set.". With faultsonly, events below fault severity are
+ * dropped but the acknowledgement stays. Whether the acknowledgement comes
+ * before the ATTN line is not recorded.
  */
 static void test_env_acknowledgements(void)
 {
@@ -2689,9 +2686,9 @@ static void test_env_acknowledgements(void)
 }
 
 /*
- * L1 datasheet, temperature limits: type 7 is 31/48/55 with maximum 60, Q
- * is 70/71/72 and 9 is 70/72/74 (BEDROCK on 9 is 70/75/80); high altitude
- * lowers advisory by 3, critical by 4 and fault and maximum by 5.
+ * Temperature limits: type 7 is 31/48/55 with maximum 60, Q is 70/71/72 and 9
+ * is 70/72/74 (BEDROCK on 9 is 70/75/80); high altitude lowers advisory by 3,
+ * critical by 4 and fault and maximum by 5.
  */
 static void test_env_limits(void)
 {
@@ -2729,16 +2726,16 @@ static void test_env_limits(void)
 }
 
 /*
- * L1 datasheet, "fan": plain fan prints "fan(s) are on." and then one
- * "fan %d %-8s rpm %d" line per fan; fan on and off print nothing; fan
- * speed prints the raw drive byte "fan %d %-8s speed: %d", which starts at
- * each fan's low level (PS 140, exhaust 210 on IP53 and the rack-mounted
- * workstation, PCI and ODY 140, N0 10). fan speed high writes 255 to a
- * normal channel, 0 to an inverted one and 31 to an N0 fan; a fan number
- * and a value write one fan; env reset restores the low levels. The zone
- * table's current percentage follows the first fan's drive byte, inverted
- * for the NODE zone. With fan auto off the fan table ends with
- * "Automatic fan control is disabled" while the zone table still prints.
+ * The "fan" command: plain fan prints "fan(s) are on." and then one "fan %d
+ * %-8s rpm %d" line per fan; fan on and off print nothing; fan speed prints
+ * the raw drive byte "fan %d %-8s speed: %d", which starts at each fan's low
+ * level (PS 140, exhaust 210 on IP53 and the rack-mounted workstation, PCI and
+ * ODY 140, N0 10). fan speed high writes 255 to a normal channel, 0 to an
+ * inverted one and 31 to an N0 fan; a fan number and a value write one fan;
+ * env reset restores the low levels. The zone table's current percentage
+ * follows the first fan's drive byte, inverted for the NODE zone. With fan
+ * auto off the fan table ends with "Automatic fan control is disabled" while
+ * the zone table still prints.
  */
 static void test_fan_commands(void)
 {
@@ -2915,10 +2912,10 @@ static void test_env_migration(void)
 }
 
 /*
- * L1 datasheet, Origin 300 "brick": the console prints the live rack, slot
- * and partition, the unknown flash label, and an unconfigured serial as
- * EMU-UNKNOWN-BSN from source EMULATED (CONFIGURED once brick-serial is
- * set). The wire path prints the same fields.
+ * The Origin 300 "brick" command: the console prints the live rack, slot and
+ * partition, the unknown flash label, and an unconfigured serial as
+ * EMU-UNKNOWN-BSN from source EMULATED (CONFIGURED once brick-serial is set).
+ * The wire path prints the same fields.
  */
 static void test_o300_console_brick(void)
 {
@@ -2948,7 +2945,7 @@ static void test_o300_console_brick(void)
 }
 
 /*
- * L1 datasheet, brick: "partition none|<n>" is accepted by the Origin 300
+ * The "brick" command: "partition none|<n>" is accepted by the Origin 300
  * console too, and "none" answers "brick partition cleared.". The change
  * applies at the next L1 boot, like the rack and slot setters.
  */
@@ -2976,9 +2973,9 @@ static void test_o300_console_brick_partition(void)
 }
 
 /*
- * L1 datasheet, "brick": no letter precedes the type name; the 2MB image
- * prints [2MB flash]; the source is EEPROM; a brick with no board-record
- * serial prints the C library's "(null)" (inferred).
+ * The "brick" command: no letter precedes the type name; the 2MB image prints
+ * [2MB flash]; the source is EEPROM; a brick with no board-record serial
+ * prints the C library's "(null)" (inferred).
  */
 static void test_chimera_brick(void)
 {
@@ -3023,10 +3020,10 @@ static void test_chimera_brick(void)
 }
 
 /*
- * L1 datasheet, "serial" (plain): "BSN: %s    SSN: %s    Time: <date>" with
- * the date as "%m/%d/%Y %X %Z"; the zone name defaults to GMT (inferred),
- * and the "Security: OFF" suffix follows only when a security setting is
- * non-zero, which the model has none of.
+ * The plain "serial" command: "BSN: %s    SSN: %s    Time: <date>" with the
+ * date as "%m/%d/%Y %X %Z"; the zone name defaults to GMT (inferred), and the
+ * "Security: OFF" suffix follows only when a security setting is non-zero,
+ * which the model has none of.
  */
 static void test_chimera_serial(void)
 {
@@ -3043,10 +3040,10 @@ static void test_chimera_serial(void)
 }
 
 /*
- * L1 datasheet, "serial all": the Data table, then the EEPROM table with
- * the profile's row list: the 2U list for the 7 family and Q, the
- * workstation list for 9. An empty position reads "no hardware detected".
- * The reference rows' locations and values are not recorded.
+ * The "serial all" command: the Data table, then the EEPROM table with the
+ * profile's row list: the 2U list for the 7 family and Q, the workstation list
+ * for 9. An empty position reads "no hardware detected". The reference rows'
+ * locations and values are not recorded.
  */
 static void test_chimera_serial_all(void)
 {
@@ -3115,8 +3112,7 @@ static void test_chimera_serial_all(void)
 }
 
 /*
- * L1 datasheet, "States" and "Temperatures": a row's state is Disabled when
- * monitoring is off.
+ * A row's state is Disabled when monitoring is off.
  */
 static void test_env_disabled_rows(void)
 {
@@ -3185,11 +3181,11 @@ static unsigned count_of(const char *haystack, const char *needle)
 }
 
 /*
- * L1 datasheet, limits: high altitude lowers every sensor except the fixed
- * on-node row of the workstation (type 9). On types 7 and Q the BEDROCK
- * sensor is an ordinary row, so it drops too. The node is powered so that
- * the BEDROCK row prints; the datasheet's altitude sentence is ambiguous
- * for 7 and Q, and this pins the reading.
+ * Limits: high altitude lowers every sensor except the fixed on-node row of
+ * the workstation (type 9). On types 7 and Q the BEDROCK sensor is an ordinary
+ * row, so it drops too. The node is powered so that the BEDROCK row prints;
+ * the documentation of altitude is ambiguous for 7 and Q, and this pins the
+ * reading.
  */
 static void test_env_altitude_powered(void)
 {
@@ -3231,10 +3227,10 @@ static void test_env_altitude_powered(void)
 }
 
 /*
- * L1 datasheet, "power": the supply table of env with an on/off state from
- * the enable bit or NC, voltages from the same readings and a margin name
- * and value or N/A. Margin value 0 is the model's choice. The 2U list is
- * checked on a powered module and the workstation list unpowered.
+ * The "power" command: the supply table of env with an on/off state from the
+ * enable bit or NC, voltages from the same readings and a margin name and
+ * value or N/A. Margin value 0 is the model's choice. The 2U list is checked
+ * on a powered module and the workstation list unpowered.
  */
 static void test_chimera_power(void)
 {
@@ -3290,8 +3286,8 @@ static void test_chimera_power(void)
 }
 
 /*
- * L1 datasheet: "env on" sets monitoring and also clears temperature-off
- * and monitor-only. It does not clear "env power off" (power mode 1).
+ * "env on" sets monitoring and also clears temperature-off and monitor-only.
+ * It does not clear "env power off" (power mode 1).
  */
 static void test_env_on_clears(void)
 {
@@ -3318,7 +3314,7 @@ static void test_env_on_clears(void)
     close(fd);
 }
 
-/* L1 datasheet: IP53 and IP59 do not read the same; VCPU differs. */
+/* IP53 and IP59 do not read the same; VCPU differs. */
 static void test_chimera_vcpu_differs(void)
 {
     g_autofree char *rows[2] = { NULL, NULL };
@@ -3345,9 +3341,8 @@ static void test_chimera_vcpu_differs(void)
 }
 
 /*
- * L1 datasheet, "env power off": the power-monitoring setting clears the
- * state of every supply row, which then read Disabled; fans and
- * temperatures are untouched.
+ * "env power off": the power-monitoring setting clears the state of every
+ * supply row, which then read Disabled; fans and temperatures are untouched.
  */
 static void test_env_power_off_rows(void)
 {
@@ -3374,10 +3369,10 @@ static void test_env_power_off_rows(void)
 }
 
 /*
- * L1 datasheet, limits: custom limits from the five-value form replace the
- * defaults of every sensor on 7 and Q, including BEDROCK; the workstation's
- * fixed on-node row keeps its own. Autofan running wins over "env temp off".
- * High altitude on Q gives 67/67/67 for the full form.
+ * Limits: custom limits from the five-value form replace the defaults of every
+ * sensor on 7 and Q, including BEDROCK; the workstation's fixed on-node row
+ * keeps its own. Autofan running wins over "env temp off". High altitude on Q
+ * gives 67/67/67 for the full form.
  */
 static void test_env_custom_limits(void)
 {
@@ -3499,10 +3494,10 @@ static void test_fan_speed_ranges(void)
 }
 
 /*
- * What survives a controller restart is inferred from the datasheet:
- * monitoring, temperature checking, altitude and the power-monitoring mode
- * are kept; the message filter, fan auto off, custom limits and written
- * fan levels are RAM-only and lost. This fixes that chosen behaviour.
+ * What survives a controller restart is inferred: monitoring, temperature
+ * checking, altitude and the power-monitoring mode are kept; the message
+ * filter, fan auto off, custom limits and written fan levels are RAM-only and
+ * lost. This fixes that chosen behaviour.
  */
 static void test_env_restart_resets(void)
 {
@@ -3543,11 +3538,11 @@ static void test_env_restart_resets(void)
 }
 
 /*
- * The rack-mounted workstation's captured rows, written out from the
- * datasheet and not from the model's tables: its fans and their warning
- * RPM, the fault limit of every temperature, and the zones' names, sensors
- * and fan indexes. Readings, targets and percentages are model values and
- * are not checked here.
+ * The rack-mounted workstation's rows as a real module prints them, written
+ * out here and not taken from the model's tables: its fans and their warning
+ * RPM, the fault limit of every temperature, and the zones' names, sensors and
+ * fan indexes. Readings, targets and percentages are model values and are not
+ * checked here.
  */
 static void test_env_q_captured_rows(void)
 {
@@ -3578,7 +3573,7 @@ static void test_env_q_captured_rows(void)
     }
     g_assert_nonnull(strstr(text, "75C/167F"));
     g_assert_null(strstr(text, "76C/"));
-    /* The datasheet's zone format is %-10s %8s  %12s: exact rows. */
+    /* The zone format is %-10s %8s  %12s: exact rows. */
     g_assert_nonnull(strstr(text, "\r\nNODE       Wait Pwr     0,1,2,5,6  "
                                   "47C/116F  41C/105F          0   "
                                   "18%/ 18%\r\n"));
@@ -7137,8 +7132,8 @@ static void test_reboot_request(void)
 /*
  * Only a brick whose type letter is 9, A or Q defers its first power-off
  * request, and only with an event subchannel registered (established by the
- * firmware reading in the L1 datasheet): it sends the 0x8000 event and the
- * second request acts. The power-down also clears the registered subchannel.
+ * firmware): it sends the 0x8000 event and the second request acts. The
+ * power-down also clears the registered subchannel.
  */
 static void power_down_event(const char *props)
 {

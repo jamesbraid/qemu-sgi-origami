@@ -974,7 +974,7 @@ static void fence_pass(QTestState *s, const uint64_t reg[9], bool clear,
 }
 
 /*
- * Rbrick datasheet, "Partition reset fences", discriminating check, on an
+ * Partition reset fences (sn1-router.rst, "Warm reset forwarding"), on an
  * ordinary-profile router reached over the vector path.
  */
 static void test_reset_fence_masks(void)
@@ -1674,10 +1674,9 @@ static void test_routing(void)
 }
 
 /*
- * The programming order the datasheet records: scratch 0 keeps the booted
- * bit and the 7-bit local ID in 63:56 beside the 48-bit serial, and the
- * protection configuration keeps the meta ID in 11:8 and the force-local
- * byte at 12 and up.
+ * The programming order: scratch 0 keeps the booted bit and the 7-bit local ID
+ * in 63:56 beside the 48-bit serial, and the protection configuration keeps
+ * the meta ID in 11:8 and the force-local byte at 12 and up.
  */
 static void test_programming_registers(void)
 {
@@ -2196,13 +2195,12 @@ static void test_uart_adjacent_registers(void)
 }
 
 /*
- * What the stock PROM leaves in a router two partitions share (the
- * partitioning datasheet, test 4 and the router vote rows): the winning
- * partition's fence pass ends with protection configuration bits 7:0 and
- * all eight per-link reset masks at 0x02, and router set-up marks scratch 0
- * with bit 63 and the router's 7-bit identifier in bits 62:56 over the
- * 48-bit NIC. The router stores each as written and keeps the NIC bits
- * when the mark is added by a read-modify-write.
+ * What the stock PROM leaves in a router two partitions share: the winning
+ * partition's fence pass ends with protection configuration bits 7:0 and all
+ * eight per-link reset masks at 0x02, and router set-up marks scratch 0 with
+ * bit 63 and the router's 7-bit identifier in bits 62:56 over the 48-bit NIC.
+ * The router stores each as written and keeps the NIC bits when the mark is
+ * added by a read-modify-write.
  */
 static void test_partition_fence_state(void)
 {
@@ -2239,9 +2237,9 @@ static void test_partition_fence_state(void)
 }
 
 /*
- * Power and reset hold. The L1 of a router brick drives both lines; the
- * tests drive them through the router's named inputs. Grades follow the
- * R-brick datasheet: that the held chip answers nothing, and that its
+ * Power and reset hold. The L1 of a router brick drives both lines; the tests
+ * drive them through the router's named inputs. Grades follow sn1-router.rst,
+ * "Power and reset hold": that the held chip answers nothing, and that its
  * registers come back cold, are approximations.
  */
 #define PAIR_ARGS "-M none -cpu R10000 " \

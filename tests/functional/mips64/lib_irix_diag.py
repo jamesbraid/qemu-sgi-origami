@@ -803,8 +803,8 @@ FLAVOURS = {
             ('RAD1', r'Iris Audio Processor: version RAD'),
             ('board IOC3 real-time interrupt',
              r'IOC3/IOC4 external interrupts: 1\b'),
-            # IRIX 6.5.30 prints the PCI identity in hex; the inventory
-            # the BaseIO datasheet cites, from another release, prints
+            # IRIX 6.5.30 prints the PCI identity in hex; another release's
+            # inventory prints
             # "vendor 4265, device 5) pci slot 7".
             ('RAD1 at PCI slot 7',
              r'vendor 0x10a9, device 0x0005\) PCI slot 7\b'),

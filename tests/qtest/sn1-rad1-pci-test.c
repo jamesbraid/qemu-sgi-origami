@@ -8,7 +8,7 @@
 /*
  * The card is an optional PCI board, not a fixed part of any machine, so a
  * machine only has to accept it on the bus its option slots sit on. Two
- * machines do, each placement taken from a datasheet's slot record:
+ * machines do, each placement taken from the machine's slot record:
  *
  * - Fuel: XBridge head E (widget 14, the 66 MHz option bus), configuration
  *   device 2, where a real option card was observed.

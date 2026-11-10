@@ -1,7 +1,6 @@
 /*
  * Origin 200 ELSC configuration NVRAM: the store behind I2C 0x50-0x57 on the
- * Hub's own bus, as the configuration NVRAM section of the project's PCF8584
- * and ELSC datasheet specifies it.
+ * Hub's own bus, as elsc.rst specifies it.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */

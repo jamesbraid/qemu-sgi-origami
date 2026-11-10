@@ -757,15 +757,15 @@ static void wait_for_landed(Bcm *b, const uint8_t *frame, size_t len)
  * standard, and the SGI subsystem identity sits in the standard PCI subsystem
  * fields: subsystem vendor at config 0x2C, subsystem id at 0x2E.
  *
- * Note on offsets: the BCM570x datasheet's config table places the subsystem
- * device* at 0x2C and the subsystem *vendor* at 0x2E, taking OpenBSD bge's
- * header macro names (BGE_PCI_SUBSYS 0x2C / BGE_PCI_SUBVID 0x2E) at face
- * value. Those macro names are backwards: bge's own driver (if_bge.c) reads
- * the subsystem through the standard PCI_SUBSYS_ID_REG (0x2C) dword and takes
- * PCI_VENDOR() (the low half at 0x2C) as the subsystem vendor and
- * PCI_PRODUCT() (the high half at 0x2E) as the device. That is plain
- * standard-PCI layout, which is what real silicon and IRIX both use, so the
- * card presents SGI vendor 0x10a9 at 0x2C and the board id 0x8010 at 0x2E.
+ * Note on offsets: bcm570x.rst's config table places the subsystem device* at
+ * 0x2C and the subsystem *vendor* at 0x2E, taking OpenBSD bge's header macro
+ * names (BGE_PCI_SUBSYS 0x2C / BGE_PCI_SUBVID 0x2E) at face value. Those macro
+ * names are backwards: bge's own driver (if_bge.c) reads the subsystem through
+ * the standard PCI_SUBSYS_ID_REG (0x2C) dword and takes PCI_VENDOR() (the low
+ * half at 0x2C) as the subsystem vendor and PCI_PRODUCT() (the high half at
+ * 0x2E) as the device. That is plain standard-PCI layout, which is what real
+ * silicon and IRIX both use, so the card presents SGI vendor 0x10a9 at 0x2C
+ * and the board id 0x8010 at 0x2E.
  */
 static void test_pci_four_tuple(const void *data)
 {
@@ -2056,9 +2056,9 @@ static void test_status_block_hostaddr_wordswap(const void *data)
 }
 
 /*
- * A 64-bit target access with ENDIAN_WORDSWAP set is unknown in the datasheet.
- * The model rejects it and logs it rather than choosing a half: neither
- * register of the status-block address pair changes.
+ * A 64-bit target access with ENDIAN_WORDSWAP set is unknown. The model
+ * rejects it and logs it rather than choosing a half: neither register of the
+ * status-block address pair changes.
  */
 static void test_wordswap_64bit_target_unknown(const void *data)
 {
@@ -5911,14 +5911,14 @@ static void test_receive_dma_error_after_progress(const void *data)
 }
 
 /*
- * Interrupt coalescing on receive. The host-coalescing block batches
- * completed receive descriptors into one status-block update and one
- * interrupt instead of one per frame: with RX_MAX_COAL_BDS set to K, K
- * received frames raise a single status-block DMA. The status tag, bumped
- * once per status DMA, therefore advances by N/K over N frames, not by N.
- * This is the receive path's per-packet interrupt cost; honouring the value
- * the driver programs is both the fidelity contract (the datasheet's
- * host-coalescing registers) and the performance win.
+ * Interrupt coalescing on receive. The host-coalescing block batches completed
+ * receive descriptors into one status-block update and one interrupt instead
+ * of one per frame: with RX_MAX_COAL_BDS set to K, K received frames raise a
+ * single status-block DMA. The status tag, bumped once per status DMA,
+ * therefore advances by N/K over N frames, not by N. This is the receive
+ * path's per-packet interrupt cost; honouring the value the driver programs is
+ * both the fidelity contract (the host-coalescing registers) and the
+ * performance win.
  *
  * The coalescing timer is parked far out so the descriptor count, not the
  * timer, closes each group. The qtest virtual clock does not advance on its

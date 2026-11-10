@@ -10,10 +10,10 @@
  * machine places the card here. tests/qtest/sn1-rad1-pci-test.c covers the
  * machines that do.
  *
- * Offsets, values and channel types are restated from the board-13 datasheet
- * rather than shared with the device, so the test pins the contract
- * independently of the implementation. Where the datasheet grades a fact
- * unknown the model makes a stated choice; those checks name the choice.
+ * Offsets, values and channel types are restated from rad1-audio.rst rather
+ * than shared with the device, so the test pins the contract independently of
+ * the implementation. Where a fact is unknown the model makes a stated choice;
+ * those checks name the choice.
  *
  * The cases cover the PCI identity (revision 0xd0, class 0, no interrupt
  * pin), BAR0 sizing, the board-13 start-up stores, the absence of the analog

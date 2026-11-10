@@ -776,10 +776,10 @@ static void test_texture_sampler(void)
 }
 
 /*
- * The GL client library's per-axis LOD bias byte, as the command grammar
- * datasheet gives it: a bias b >= 0 becomes trunc((16 << i) * (1 + b -
- * i)) with i = trunc(b), a negative one trunc((16 >> i) * (1 + b + i))
- * with i = trunc(1 - b), saturated to 1..255.
+ * The GL client library's per-axis LOD bias byte, as the library computes it:
+ * a bias b >= 0 becomes trunc((16 << i) * (1 + b - i)) with i = trunc(b), a
+ * negative one trunc((16 >> i) * (1 + b + i)) with i = trunc(1 - b), saturated
+ * to 1..255.
  */
 static uint32_t client_lod_bias_byte(double b)
 {
@@ -930,14 +930,14 @@ static void test_texture_detail_sampler(void)
 }
 
 /*
- * Word 17 of a texel load, field by field as the raster datasheet gives
- * the library's construction: texel size code in bits 0-1, load scissor
- * 2, target bank 3-4, tiling kind 5-6, s and t bits per page 7-10 and
- * 11-14, interlace 15. The bits per page come from a 12-row table indexed
- * by tiling kind times 3 plus size code. Every word the model accepts,
- * scanned over all 16-bit values for each storage family, 2D and volume,
- * must be one the library could build: a size code below 3, a table row
- * that exists and agrees, bank at most 1 and no interlace.
+ * Word 17 of a texel load, field by field as the library constructs it: texel
+ * size code in bits 0-1, load scissor 2, target bank 3-4, tiling kind 5-6, s
+ * and t bits per page 7-10 and 11-14, interlace 15. The bits per page come
+ * from a 12-row table indexed by tiling kind times 3 plus size code. Every
+ * word the model accepts, scanned over all 16-bit values for each storage
+ * family, 2D and volume, must be one the library could build: a size code
+ * below 3, a table row that exists and agrees, bank at most 1 and no
+ * interlace.
  */
 static void test_texture_load_word17_fields(void)
 {
@@ -1799,11 +1799,10 @@ static void test_texture_filter_curve(void)
 }
 
 /*
- * The GL client library's spline-table producer, as the command grammar
- * datasheet gives it: v = trunc(w * 512 + 2) >> 2, clamped to -1024 to
- * 1023, then halved (arithmetically) until it fits a signed byte, at
- * most three times, counting the exponent; the code is (v & 0xff) << 2
- * | exponent.
+ * The GL client library's spline-table producer, as the library computes it: v
+ * = trunc(w * 512 + 2) >> 2, clamped to -1024 to 1023, then halved
+ * (arithmetically) until it fits a signed byte, at most three times, counting
+ * the exponent; the code is (v & 0xff) << 2 | exponent.
  */
 static uint32_t client_curve_code(double w, double *sent)
 {

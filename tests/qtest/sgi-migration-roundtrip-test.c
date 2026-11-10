@@ -111,13 +111,13 @@ typedef struct RtMachine {
 /* ---- Device tables ---- */
 
 /*
- * Every probe below is a register whose read in the model returns stored
- * state and changes nothing: no clear-on-read status, no FIFO or data
- * port that advances, no strobe. That is a fact about the model, checked
- * against its code; for some registers, such as the IMPACT colour-map
- * data port, the hardware's read behaviour is not documented. The register
- * maps are in each device's datasheet, and the values written follow the
- * device's own register qtest, which already reads each one back.
+ * Every probe below is a register whose read in the model returns stored state
+ * and changes nothing: no clear-on-read status, no FIFO or data port that
+ * advances, no strobe. That is a fact about the model, checked against its
+ * code; for some registers, such as the IMPACT colour-map data port, the
+ * hardware's read behaviour is not documented. The register maps are in each
+ * device's manual page, and the values written follow the device's own
+ * register qtest, which already reads each one back.
  *
  * Some tables write interrupt enables and masks (the Bridge interrupt
  * enable, the Hub's PI mask 0A, the Heart masks, the Bedrock CC pending
