@@ -285,6 +285,14 @@ every other register takes aligned 32-bit accesses only.
      - read/write
      - A write acknowledges and reads back zero.
    * - ``0x1004``
+     - Memory controller configuration
+     - 32
+     - none
+     - write-only
+     - The model stores the word and logs ``LOG_UNIMP`` on the first
+       write. It logs ``LOG_GUEST_ERROR`` when the size, bank or latency
+       fields disagree with the memory configuration word at ``0x106c``.
+   * - ``0x100c``
      - Reset control
      - 32
      - none
@@ -294,8 +302,8 @@ every other register takes aligned 32-bit accesses only.
      - Interrupt flags
      - 32
      - ``0x200``
-     - read
-     - A write logs ``LOG_UNIMP`` and changes nothing.
+     - read/write
+     - A write replaces the flags.
    * - ``0x101c``
      - Interrupt flag clear
      - 32
@@ -793,8 +801,12 @@ reloads the board's widget number. Properties, the identity, the memory
 word and the one-wire image are configuration and survive reset. With
 the Mesa renderer on, reset recreates it; a failure stops the machine.
 
-Writes to ``0x1004`` log ``LOG_UNIMP`` and change nothing
-(*approximation*). The board's warm, link and board-local resets are
+Writes to the reset control register at ``0x100c`` log ``LOG_UNIMP``
+and change nothing (*approximation*). A write to the memory controller
+configuration at ``0x1004`` is stored without a controller behind it
+(*approximation*); the model reports a size, bank or latency field that
+disagrees with the memory configuration word as a guest error, a model
+choice whose board behaviour is *unknown*. The board's warm, link and board-local resets are
 *unknown*.
 
 .. _sgi-odyssey-migration:
@@ -912,11 +924,11 @@ Model limits
   ``LOG_UNIMP``, read zero and drop writes without a bus error. Each
   offset and direction reports once, up to 64 distinct reports;
   undecoded command words have their own budget of 64. Reads of the
-  write-only address registers and ``0x1004``, and writes to the
-  identity, status, error address, memory configuration, I2C read-back
-  and back-end version registers, log ``LOG_GUEST_ERROR``. Reads of
-  ``0x101c`` and ``0x103c`` and writes to ``0x1064`` and ``0x201594``
-  log ``LOG_UNIMP``, as does any write to ``0x1014``. Every access is traced with ``sgi_odyssey_mmio``,
+  write-only address registers, ``0x1004`` and ``0x100c``, and writes to
+  the identity, status, error address, memory configuration, I2C
+  read-back and back-end version registers, log ``LOG_GUEST_ERROR``.
+  Reads of ``0x101c`` and ``0x103c`` and writes to ``0x1064`` and
+  ``0x201594`` log ``LOG_UNIMP``. Every access is traced with ``sgi_odyssey_mmio``,
   including the ones whose report is suppressed.
 
 .. _sgi-odyssey-tests:
