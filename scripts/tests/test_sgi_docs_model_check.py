@@ -254,6 +254,23 @@ class DocsModelCheckTests(unittest.TestCase):
         self.assertFlags('prose', 'origin200-dual', 'origin200-trio',
                          '``origin200-trio`` is called a machine')
 
+    def test_topology_names(self):
+        text = 'The ``origin2000-xpress`` topology and the ``fuel`` machine.\n'
+        out = '\n'.join(check.check_pages({'p': text}, self.cat()))
+        self.assertIn('``origin2000-xpress`` is called a topology', out)
+        text = '``origin350`` is a topology of the ``origin350`` product.\n'
+        out = '\n'.join(check.check_pages({'p': text}, self.cat()))
+        self.assertEqual(out, '')
+        text = ('Use topology ``origin350-ip53``, ``origin200-dual`` and '
+                '``origin350`` topologies.\n')
+        out = '\n'.join(check.check_pages({'p': text}, self.cat()))
+        self.assertIn('``origin350-ip53`` is called a topology', out)
+
+    def test_topology_names_across_a_line_break(self):
+        text = 'Both record the\n``origin2000-xpress``\ntopologies too.\n'
+        out = '\n'.join(check.check_pages({'p': text}, self.cat()))
+        self.assertIn('p:2: ``origin2000-xpress`` is called a topology', out)
+
     def test_machine_option_is_not_a_machine(self):
         text = 'The ``origin300-compat`` machine option turns it on.\n'
         self.assertEqual(check.check_pages({'p': text}, self.cat()), [])
