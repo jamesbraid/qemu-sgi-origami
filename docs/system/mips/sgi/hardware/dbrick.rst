@@ -55,14 +55,14 @@ What the host sees
      - inferred
      - 007-4311-002 p. 51
    * - Every occupied bay is a port on the one attached loop.
-     - model choice
+     - approximation
      - 007-4240-002 p. 156; 108-0240-002 Figure 2-26
    * - Which loop ID each bay takes, and how the LRC's ID selector
        (settings 1 to 7) sets them.
      - unknown
      - 007-4240-002 p. 168
    * - The disks' worldwide names.
-     - per disk
+     - established
      - each disk's label carries its own (007-4240-002 p. 158)
 
 Each LRC reaches all twelve disks (007-4240-002 p. 156), but the same

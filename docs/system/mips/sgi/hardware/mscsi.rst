@@ -178,8 +178,8 @@ GIGAchannel cabinet:
   ``ioc3``;
 - ``not-a-baseio-preset`` and ``refuses-backends-it-cannot-take``: the
   refusals described above;
-- ``placed/widgets-answer``: three boards at ``io2`` to ``io4`` answer at
-  their own widgets, the cabinet's startup population stays unchanged
+- ``placed/widgets-answer``: an MSCSI at ``io2``, a MENET at ``io3`` and an MSCSI at ``io4``
+  answer at their own widgets, the cabinet's startup population stays unchanged
   and ``io5`` and ``io6`` stay empty.
 
 ``tests/qtest/sn0-bridge-identity-test.c`` reads the board record back
