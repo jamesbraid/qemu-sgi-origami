@@ -232,6 +232,11 @@ PROM and the IRIX 6.5.30 kernel, X server and firmware loader, each a *software
 expectation*; reset values are model choices unless stated, since no
 pipe has been read.
 
+.. sgi-registers: base=0x2000b000000 width=32
+   skip=0x64:probe-value,0x800230:write-only,0x8003c0:write-only,0xc00108:write-only
+   skiprow="XG map RAM:bulk"
+   qemu="-M origin2000,nodes=1,x-uncatalogued-graphics=on -smp 1 -m 64M -device sgi-kona,id=kona0,slot=io4"
+
 .. list-table::
    :header-rows: 1
 
