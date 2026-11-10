@@ -39,6 +39,10 @@ slow_qtests = {
   # default in the merge queue's full run, under load. About three times
   # the quiet figure, rounded up.
   'sgi-crime-mte-test': 120,
+  # The ecc-values group took 25 to 56 s alone on 2026-11-10 and was killed at
+  # the 60 s default in a four-process run of the queue's third qtest share;
+  # about three times the slowest figure, rounded up.
+  'sgi-crime-legacy-test-ecc-values': 180,
   # Alone it took 55.6 s at load average 118, 2026-10-24 (11 s on a quiet
   # host), and overran the default in full runs; three times the loaded
   # figure, rounded up.
