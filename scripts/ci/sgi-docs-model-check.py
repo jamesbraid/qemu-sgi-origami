@@ -75,8 +75,10 @@ def tables(page, text):
             if stripped.startswith('* -'):
                 row = (j + 1, [stripped[3:].strip()])
                 rows.append(row)
-            elif stripped.startswith('- ') and row is not None and \
+            elif (stripped == '-' or stripped.startswith('- ')) and \
+                    row is not None and \
                     indent_of(line) == indent_of(lines[row[0] - 1]) + 2:
+                # A bare "-" is an empty cell.
                 row[1].append(stripped[2:].strip())
             elif stripped and row is not None:
                 row[1][-1] += ' ' + stripped
