@@ -11,6 +11,14 @@
 
 #define MAILBOX 0x1000
 #define FIXTURE "R5000,r5000-ec=3,r5000-ep=5"
+
+/*
+ * Cause bits 15:10 follow the hardware interrupt lines. Malta's PIIX4 timer
+ * pulses IRQ0 on the interrupt controller, nothing masks it, and the line
+ * reaches Cause bit 10 once the guest has run long enough, so a Cause
+ * value is compared without these bits.
+ */
+#define CAUSE_EXTERNAL_IP 0xfc00u
 #define CONFIG_RO 0x3551e6f0u
 
 static char *image_path;
@@ -421,7 +429,8 @@ static void test_warm_reset(gconstpointer opaque)
     emit(0x10000001);
     emit(0x0000000d); /* break in the delay slot */
     execute(qts);
-    g_assert_cmphex(qtest_readl(qts, MAILBOX + 0x90), ==, 0x80000324);
+    g_assert_cmphex(qtest_readl(qts, MAILBOX + 0x90) & ~CAUSE_EXTERNAL_IP, ==,
+                    0x80000324);
 
     /* The user loop and another live mapping must survive the warm entry. */
     for (unsigned int i = 0; i < 2; i++) {
@@ -497,7 +506,8 @@ static void test_warm_reset(gconstpointer opaque)
     emit(0x8d280000); emit(0xaf480040);
     execute(qts);
     g_assert_cmphex(qtest_readl(qts, MAILBOX + 0x40), ==, 0xfeed1234);
-    g_assert_cmphex(qtest_readl(qts, MAILBOX + 0x44), ==, 0x80000324);
+    g_assert_cmphex(qtest_readl(qts, MAILBOX + 0x44) & ~CAUSE_EXTERNAL_IP, ==,
+                    0x80000324);
     g_assert_cmphex(qtest_readl(qts, MAILBOX + 0x48), ==, 0x30000);
     g_assert_cmphex(qtest_readl(qts, MAILBOX + 0x4c), ==, 0x02800003);
     g_assert_cmphex(qtest_readq(qts, MAILBOX + 0xc8), ==, 0x12345678);
