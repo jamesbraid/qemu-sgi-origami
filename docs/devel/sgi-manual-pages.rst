@@ -246,7 +246,9 @@ row with that Name when ``skip=`` would also catch a row that shares the
 offset. A ``select=`` or ``skiprow=`` that names no row is an error.
 A ``width=``, ``access=``, ``lane=``, ``xor=``, ``stride=``, ``count=``,
 ``units=`` or ``split=`` that no row uses is an error too, as is a
-``label=`` on a table with one comment.
+``label=`` on a table with one comment. A skip reason names the cause; a
+bare ``none`` is refused, and a Reset cell of ``none`` prints with the
+row's Access cell.
 
 A row such as ``0x310 + 0x1c*n`` needs ``count=4``, which reads copies
 ``n = 0`` to ``3``. ``label=NAME`` adds a name to the test path, to tell

@@ -547,6 +547,20 @@ class RegisterTablesTest(unittest.TestCase):
         _, _, _, errors = scan(PAGE, marker=marker)
         self.assertEqual(errors, [])
 
+    def test_a_no_reset_skip_says_why(self):
+        cases, _, _, errors = scan(PAGE, skip='0x38')
+        self.assertEqual(errors, [])
+        skipped = {s['offset']: s['reason'] for s in cases[0]['skipped']}
+        self.assertNotEqual(skipped['0x30'], 'n/a')
+        self.assertTrue(skipped['0x30'].startswith('n/a ('))
+
+    def test_a_none_reason_is_refused(self):
+        for bad in ('skip=0x38:none', 'skiprow="Prose:none"'):
+            marker = MARKER.replace('width=64', 'width=64 ' + bad)
+            _, _, _, errors = scan(PAGE, marker=marker)
+            self.assertEqual(len(errors), 1, bad)
+            self.assertIn('"none" says nothing', errors[0])
+
     def test_the_meson_gate_names_real_default_on_configs(self):
         # The qtest is registered only when every listed config is on, so
         # a misspelt or never-selected name silently drops the whole test.
