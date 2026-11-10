@@ -204,6 +204,11 @@ model's registers are big-endian.
      - CPU error status, CRIME 1.5 position
      - Bits 2:0 0; bits 8:3 undefined
      - Reads 0 in the 1.5 profile only.
+   * - ``0x058``
+     - Error register without a modelled source
+     - n/a
+     - Reads 0 in the legacy profile, with ``LOG_UNIMP``; otherwise
+       unsupported.
    * - ``0x200``
      - Memory control and status
      - 0
@@ -227,11 +232,13 @@ model's registers are big-endian.
    * - ``0x260``
      - ECC syndrome
      - 0
-     - Reads 0 in the transfer profile; otherwise unsupported.
+     - Reads 0 in the legacy and transfer profiles, and logs
+       ``LOG_UNIMP`` in the legacy one; otherwise unsupported.
    * - ``0x268``
      - ECC check bits
      - 0
-     - Unsupported.
+     - Reads 0 in the legacy profile, with ``LOG_UNIMP``; otherwise
+       unsupported.
    * - ``0x270``
      - ECC replacement
      - 0
