@@ -442,6 +442,19 @@ class RegisterTablesTest(unittest.TestCase):
         _, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
         self.assertEqual(len(errors), 1)
 
+    def test_kept_and_digit_groups_read_as_the_number(self):
+        text = PAGE.replace('per machine', '``0x0018_1818_0c0c``, kept')
+        cases, _, _, errors = scan(text)
+        self.assertEqual(errors, [])
+        reg = [r for r in cases[0]['registers'] if r['offset'] == '0x38'][0]
+        self.assertEqual(reg['expect'], '0x181818' + '0c0c')
+
+    def test_kept_alone_states_no_number(self):
+        text = PAGE.replace('per machine', 'kept')
+        _, _, _, errors = scan(text)
+        self.assertEqual(len(errors), 1)
+        self.assertIn('is not a number', errors[0])
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])
