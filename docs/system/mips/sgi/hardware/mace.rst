@@ -180,6 +180,10 @@ registers in the PCI block and no others; reads of unlisted addresses
 return all ones and writes are dropped :src:`sgi-mace-2.0-spec p. 161`,
 *established*. The registers repeat nowhere.
 
+.. sgi-registers: base=0x1f000000 width=32 expect=0x8000c:1
+   skip=0x80cf8:write-only
+   qemu="-m 64M -M o2,register-test-profile=on -nic none"
+
 .. list-table::
    :header-rows: 1
 
@@ -828,6 +832,9 @@ returns the register's low half and a read of the word at offset 0
 returns zero. A write to the word at offset 0 is dropped. The
 specification defines 64-bit access only, so this is an *approximation*.
 Other widths and misaligned accesses log ``LOG_GUEST_ERROR``.
+
+.. sgi-registers: base=0x1f300000 width=64
+   qemu="-m 64M -M o2,register-test-profile=on -nic none"
 
 .. list-table::
    :header-rows: 1
