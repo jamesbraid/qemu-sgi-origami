@@ -1053,15 +1053,30 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``usenet-39b750e0``
    *comp.sys.sgi.hardware, 2000-09-07, HU-\* for Octanes (Alexis Cousein, SGI), Message-ID <39B750E0.CA1E23C4@brussels.sgi.com>*. Usenet. Capture, cited by line. Message-ID ``<39B750E0.CA1E23C4@brussels.sgi.com>``. Public web page; may be quoted.
 
+.. _sgi-ref-usenet-3a0602c2:
+
+``usenet-3a0602c2``
+   *comp.sys.sgi post with an Octane hinv showing two AIC-1160 controllers, Message-ID <3A0602C2.9D1C6F58@al.com.au>*. Usenet. Capture, cited by line. Message-ID ``<3A0602C2.9D1C6F58@al.com.au>``. Public web page; may be quoted.
+
 .. _sgi-ref-usenet-3a23907e:
 
 ``usenet-3a23907e``
    *comp.sys.sgi.admin, 2000-11-28, sysinfo doesn't work anymore after upgrade. (D. Voetelink), Message-ID <3A23907E.A0A6BD61@ecn.nl>*. Usenet. Capture, cited by line. Message-ID ``<3A23907E.A0A6BD61@ecn.nl>``. Public web page; may be quoted.
 
+.. _sgi-ref-usenet-3adb3ac0:
+
+``usenet-3adb3ac0``
+   *comp.sys.sgi post reading the markings of an XIO Fibre Channel board, Message-ID <3ADB3AC0.D64D9952@xiotech.com>*. Usenet. Capture, cited by line. Message-ID ``<3ADB3AC0.D64D9952@xiotech.com>``. Public web page; may be quoted.
+
 .. _sgi-ref-usenet-3be33f04:
 
 ``usenet-3be33f04``
    *comp.sys.sgi.hardware, 2001-11-03, Q:R12k 270 upgrade in older Octane, Message-ID <3BE33F04.848B3CEE@odense.kollegienet.dk>*. Usenet. Capture, cited by line. Message-ID ``<3BE33F04.848B3CEE@odense.kollegienet.dk>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-3be73104:
+
+``usenet-3be73104``
+   *comp.sys.sgi post with the hardware-graph paths of an XIO Fibre Channel board, Message-ID <3BE73104.DDD0B052@sgi.com>*. Usenet. Capture, cited by line. Message-ID ``<3BE73104.DDD0B052@sgi.com>``. Public web page; may be quoted.
 
 .. _sgi-ref-usenet-3cc2392b:
 
@@ -1073,6 +1088,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``usenet-3e2794b8``
    *comp.sys.sgi.hardware, 2003-01-17, Origin 200 inventory with PIMM\_1XT5\_2MB (Michael Schmidt), Message-ID <3E2794B8.669DBAE1@machtnix.net>*. Usenet. Capture, cited by line. Message-ID ``<3E2794B8.669DBAE1@machtnix.net>``. Public web page; may be quoted.
 
+.. _sgi-ref-usenet-3fafc818:
+
+``usenet-3fafc818``
+   *comp.sys.sgi post naming the XT-FC-2P two-port Fibre Channel XIO controller, Message-ID <3fafc818.0304010217.1b59be6e@posting.google.com>*. Usenet. Capture, cited by line. Message-ID ``<3fafc818.0304010217.1b59be6e@posting.google.com>``. Public web page; may be quoted.
+
 .. _sgi-ref-usenet-3fef80f1:
 
 ``usenet-3fef80f1``
@@ -1082,6 +1102,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``usenet-40c20497``
    *comp.sys.sgi.hardware, 2004-06-05, Message-ID <40C20497.1D26A44A@machtnix.net>*. Usenet. Capture, cited by line. Message-ID ``<40C20497.1D26A44A@machtnix.net>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-4197ca17:
+
+``usenet-4197ca17``
+   *comp.sys.sgi post describing a two-port XIO Fibre Channel card, with its hinv and fcadp loop-initialisation log, Message-ID <4197CA17.AF164514@kpp.kiev.ua>*. Usenet. Capture, cited by line. Message-ID ``<4197CA17.AF164514@kpp.kiev.ua>``. Public web page; may be quoted.
 
 .. _sgi-ref-usenet-6kd8bj:
 

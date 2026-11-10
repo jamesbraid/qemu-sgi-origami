@@ -52,6 +52,7 @@ docs/system/mips/sgi/hardware/mace-ethernet.rst
 docs/system/mips/sgi/hardware/gbe.rst
 docs/system/mips/sgi/hardware/vice.rst
 docs/system/mips/sgi/hardware/ad1843.rst
+docs/system/mips/sgi/hardware/adaptec-aic1160.rst
 docs/system/mips/sgi/hardware/aic7880.rst
 docs/system/mips/sgi/hardware/at29c040a.rst
 docs/system/mips/sgi/hardware/hub.rst

@@ -740,6 +740,51 @@ web:
     obtain:
       url: null
       message_id: "<3BE33F04.848B3CEE@odense.kollegienet.dk>"
+  usenet-4197ca17:
+    title: "comp.sys.sgi post describing a two-port XIO Fibre Channel card, with its hinv and fcadp loop-initialisation log, Message-ID <4197CA17.AF164514@kpp.kiev.ua>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<4197CA17.AF164514@kpp.kiev.ua>"
+  usenet-3be73104:
+    title: "comp.sys.sgi post with the hardware-graph paths of an XIO Fibre Channel board, Message-ID <3BE73104.DDD0B052@sgi.com>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<3BE73104.DDD0B052@sgi.com>"
+  usenet-3a0602c2:
+    title: "comp.sys.sgi post with an Octane hinv showing two AIC-1160 controllers, Message-ID <3A0602C2.9D1C6F58@al.com.au>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<3A0602C2.9D1C6F58@al.com.au>"
+  usenet-3adb3ac0:
+    title: "comp.sys.sgi post reading the markings of an XIO Fibre Channel board, Message-ID <3ADB3AC0.D64D9952@xiotech.com>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<3ADB3AC0.D64D9952@xiotech.com>"
+  usenet-3fafc818:
+    title: "comp.sys.sgi post naming the XT-FC-2P two-port Fibre Channel XIO controller, Message-ID <3fafc818.0304010217.1b59be6e@posting.google.com>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<3fafc818.0304010217.1b59be6e@posting.google.com>"
   sgistuff-octane:
     title: "SGIStuff: Octane system page"
     publisher: "SGIStuff"

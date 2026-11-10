@@ -19,6 +19,7 @@ scsi_ss.add(when: 'CONFIG_NCR710_SCSI', if_true: files('ncr53c710.c', 'lasi_ncr7
 scsi_ss.add(when: 'CONFIG_MEGASAS_SCSI_PCI', if_true: files('megasas.c'))
 scsi_ss.add(when: 'CONFIG_MPTSAS_SCSI_PCI', if_true: files('mptsas.c', 'mptconfig.c', 'mptendian.c'))
 scsi_ss.add(when: 'CONFIG_QLOGIC_ISP_SCSI_PCI', if_true: files('qlogic-isp.c'))
+scsi_ss.add(when: 'CONFIG_AIC1160_PCI', if_true: files('adaptec-aic1160.c'))
 scsi_ss.add(when: 'CONFIG_QLOGIC_ISP2200_PCI', if_true: files('qlogic-isp2200.c'))
 scsi_ss.add(when: 'CONFIG_SGI_DBRICK', if_true: files('sgi-dbrick.c'))
 scsi_ss.add(when: 'CONFIG_SGI_SCSI_CD', if_true: files('sgi-scsi-cd.c'))
