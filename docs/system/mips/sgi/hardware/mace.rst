@@ -352,7 +352,9 @@ CPU view of PCI
 The CPU sees the first 32 MiB of PCI memory and I/O in KSEG1 windows and
 larger windows above them: a 2 GiB PCI memory window at
 ``0x2_8000_0000`` and I/O at ``0x1_0000_0000``
-:src:`sgi-mace-2.0-spec p. 160`, *established*. Linux
+:src:`sgi-mace-2.0-spec p. 160`, *inferred*: the IP32 address map gives
+4 GiB from ``0x2_0000_0000`` for the same window, and neither figure has
+been checked against that page. Linux
 uses ``0x1a000000`` for low memory, ``0x18000000`` for low I/O and
 ``0x2_8000_0000`` for high memory (``mace.h``, ``pci-ip32.c``), *software
 expectation*.
