@@ -116,6 +116,12 @@ Offsets are from ``0x16000000``. "Stored" lists the bits the model keeps;
 the rest read as zero. Resets come from the specification pages given,
 *established*, unless the Notes column says otherwise.
 
+.. sgi-registers: base=0x16000000 width=32 expect=0x0:0x3ffffd1
+   qemu="-M none -cpu R10000 -display none -device sgi-o2-gbe,id=gbe"
+   map=/machine/peripheral/gbe:0:0x16000000
+   skiprow="VT_0 to VT_19:per-register" skiprow="CMFIFO:revision-dependent"
+   skiprow="VC_2 to VC_8:not-modelled"
+
 .. list-table::
    :header-rows: 1
 
