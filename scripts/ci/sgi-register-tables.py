@@ -30,6 +30,16 @@ continue on indented lines. Keys:
            the reads, for a device started on its own (repeatable);
   variant  the label that picks a reset from a cell that lists several,
            such as "0; 0x8118 on revision F" (default: the plain one);
+  setup    ADDRESS:VALUE[:WIDTH] items (comma list) written, in order,
+           after the maps and before any read: the steps a guest takes to
+           make the device answer, such as a Bridge attach (repeatable;
+           ADDRESS is physical, WIDTH defaults to 32);
+  select   NAME|OFFSET=VALUE[,OFFSET=VALUE...], writes made at the
+           table's width just before each read of the row whose Name cell
+           is NAME. For a register that is chosen by another register's
+           bits at a repeated offset (repeatable, one per row);
+  skiprow  NAME:reason, the row whose Name cell is NAME and every offset
+           of it left out, for rows that share an offset (repeatable);
   skip     OFFSET[:reason] items (comma list) the test leaves out. A row
            whose Reset cell is prose may give no reason; a row with a
            number must, as in skip=0x10:poll-flags, and the page explains
@@ -66,7 +76,8 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parents[2]
 PAGES = 'docs/system/mips/sgi'
 MARKER = re.compile(r'\.\.\s+sgi-registers:(.*)')
-KEYS = {'qemu', 'base', 'width', 'map', 'variant', 'skip', 'expect'}
+KEYS = {'qemu', 'base', 'width', 'map', 'variant', 'skip', 'expect',
+        'setup', 'select', 'skiprow'}
 WIDTHS = (8, 16, 32, 64)
 NO_RESET = {'', 'n/a', 'none', 'unknown', 'unsupported', '-'}
 NUMBER = re.compile(r'(?:0x[0-9a-fA-F]+|\d+)$')
@@ -135,14 +146,14 @@ def parse_marker(text):
         words = shlex.split(text)
     except ValueError as exc:
         raise Error(f'cannot split the marker: {exc}')
-    options = {'map': []}
+    options = {'map': [], 'setup': [], 'select': [], 'skiprow': []}
     for word in words:
         key, sep, value = word.partition('=')
         if not sep or key not in KEYS:
             raise Error(f'unknown marker word {word!r}; keys are '
                         + ', '.join(sorted(KEYS)))
-        if key == 'map':
-            options['map'].append(value)
+        if key in ('map', 'setup', 'select', 'skiprow'):
+            options[key].append(value)
         elif key in options:
             raise Error(f'{key}= appears twice')
         else:
@@ -170,10 +181,53 @@ def parse_marker(text):
                     raise ValueError
                 options['expect'][int(offset, 0)] = int(value, 0)
         options['map'] = [parse_map(m) for m in options['map']]
+        options['setup'] = [step for item in options['setup']
+                            for step in parse_setup(item)]
+        options['select'] = parse_select(options['select'])
+        options['skiprow'] = parse_skiprow(options['skiprow'])
     except ValueError:
-        raise Error('base, width, skip, expect or map is not a number of the '
-                    'right kind')
+        raise Error('base, width, skip, expect, map, setup, select or skiprow is not a '
+                    'number of the right kind')
     return options
+
+
+def parse_setup(value):
+    steps = []
+    for item in value.split(','):
+        parts = item.split(':')
+        if len(parts) not in (2, 3):
+            raise ValueError
+        width = int(parts[2]) if len(parts) == 3 else 32
+        if width not in WIDTHS:
+            raise ValueError
+        steps.append({'address': hex(int(parts[0], 0)),
+                      'value': hex(int(parts[1], 0)), 'width': width})
+    return steps
+
+
+def parse_select(items):
+    chosen = {}
+    for item in items:
+        name, bar, writes = item.partition('|')
+        if not bar or not name or name in chosen:
+            raise ValueError
+        chosen[name] = []
+        for write in writes.split(','):
+            offset, eq, value = write.partition('=')
+            if not eq:
+                raise ValueError
+            chosen[name].append((int(offset, 0), int(value, 0)))
+    return chosen
+
+
+def parse_skiprow(items):
+    rows = {}
+    for item in items:
+        name, colon, reason = item.rpartition(':')
+        if not colon or not name or not reason or name in rows:
+            raise ValueError
+        rows[name] = reason
+    return rows
 
 
 def parse_map(value):
@@ -255,6 +309,8 @@ def build(page, table, marker_text, number):
     registers = []
     skipped = []
     used = set()
+    selected = set()
+    skipped_rows = set()
     for line, cells in table.rows:
         need = max(c_off, c_reset, c_width or 0, c_name or 0)
         if len(cells) <= need:
@@ -310,6 +366,10 @@ def build(page, table, marker_text, number):
                     raise Error(f'{where_}: expect= repeats the page value')
                 kind_here, got_here = 'value', options['expect'][offset]
                 note = f'page says {cells[c_reset]}; the model is pinned'
+            elif name in options['skiprow']:
+                skipped_rows.add(name)
+                kind_here = 'skip'
+                got_here = options['skiprow'][name]
             elif offset in options['skip']:
                 used.add(offset)
                 reason = options['skip'][offset]
@@ -331,6 +391,12 @@ def build(page, table, marker_text, number):
                 reg = {'line': line, 'name': name, 'offset': hex(offset),
                        'address': hex(options['base'] + offset),
                        'width': width, 'expect': hex(got_here)}
+                if name in options['select']:
+                    selected.add(name)
+                    reg['select'] = [
+                        {'address': hex(options['base'] + off),
+                         'width': width, 'value': hex(val)}
+                        for off, val in options['select'][name]]
                 if note:
                     reg['note'] = note
                 registers.append(reg)
@@ -341,12 +407,20 @@ def build(page, table, marker_text, number):
     if stale:
         raise Error('skip= or expect= names no row at offset '
                     + ', '.join(f'{o:#x}' for o in sorted(stale)))
+    if set(options['skiprow']) - skipped_rows:
+        raise Error('skiprow= names no row: '
+                    + ', '.join(sorted(set(options['skiprow'])
+                                       - skipped_rows)))
+    if set(options['select']) - selected:
+        raise Error('select= names no checked row: '
+                    + ', '.join(sorted(set(options['select']) - selected)))
     if not seen_variant:
         raise Error(f'variant={variant!r} matches no Reset cell')
     if not registers:
         raise Error('no register is checked')
     return {'id': f'{page}:{number}', 'page': page, 'line': number,
             'qemu': options['qemu'], 'maps': options['map'],
+            'setup': options['setup'],
             'variant': variant, 'registers': registers,
             'skipped': skipped}
 

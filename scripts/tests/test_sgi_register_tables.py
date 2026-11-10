@@ -227,6 +227,61 @@ class RegisterTablesTest(unittest.TestCase):
         self.assertEqual(len(windows), 1)
         self.assertIn('slots', windows[0]['reason'])
 
+    def test_setup_steps_come_with_the_table(self):
+        marker = MARKER.replace('width=64', 'width=64 setup=0x20:0x1100,'
+                                '0x28:0x5:8')
+        cases, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(errors, [])
+        self.assertEqual(cases[0]['setup'], [
+            {'address': '0x20', 'value': '0x1100', 'width': 32},
+            {'address': '0x28', 'value': '0x5', 'width': 8}])
+
+    def test_select_writes_ride_with_the_row(self):
+        # "Two" shares offsets with other rows in a real map; the writes
+        # that choose it belong to that row's reads alone.
+        marker = MARKER.replace('width=64',
+                                'width=64 select="Two|0x40=0xa0,0x48=1"')
+        cases, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(errors, [])
+        regs = [r for r in cases[0]['registers'] if r['name'] == 'Two']
+        self.assertEqual(len(regs), 2)
+        for reg in regs:
+            self.assertEqual(reg['select'], [
+                {'address': '0x1040', 'width': 64, 'value': '0xa0'},
+                {'address': '0x1048', 'width': 64, 'value': '0x1'}])
+        other = [r for r in cases[0]['registers'] if r['name'] != 'Two']
+        self.assertTrue(all('select' not in r for r in other))
+
+    def test_select_naming_no_row_is_an_error(self):
+        marker = MARKER.replace('width=64', 'width=64 select="Nope|0x40=1"')
+        _, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(len(errors), 1)
+        self.assertIn('select= names no checked row', errors[0])
+
+    def test_select_needs_a_row_and_a_write(self):
+        for bad in ('select=Two', 'select="Two|0x40"', 'select="|0x40=1"'):
+            marker = MARKER.replace('width=64', 'width=64 ' + bad)
+            _, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+            self.assertEqual(len(errors), 1, bad)
+
+    def test_skiprow_leaves_a_row_out_by_name(self):
+        marker = MARKER.replace(
+            'width=64', 'width=64 skiprow="Two:shared-offset" skip=0x38')
+        cases, _, _, errors = scan(PAGE, marker=marker)
+        self.assertEqual(errors, [])
+        names = {r['name'] for r in cases[0]['registers']}
+        self.assertNotIn('Two', names)
+        reasons = {s['offset']: s['reason'] for s in cases[0]['skipped']}
+        self.assertEqual((reasons['0x8'], reasons['0x10']),
+                         ('shared-offset', 'shared-offset'))
+
+    def test_skiprow_naming_no_row_is_an_error(self):
+        marker = MARKER.replace('width=64',
+                                'width=64 skiprow="Nope:why" skip=0x38')
+        _, _, _, errors = scan(PAGE, marker=marker)
+        self.assertEqual(len(errors), 1)
+        self.assertIn('skiprow= names no row', errors[0])
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])

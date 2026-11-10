@@ -234,6 +234,17 @@ value, is an error. Every skip and every pinned value is printed by
 ``--verbose``). A read taken after firmware initialisation is not a reset
 value (`Facts`_), so it does not belong in a checked cell.
 
+Three more keys cover a device that does not answer straight after reset.
+``setup=0x20008022004:2,0x20008000214:0x1100`` lists physical writes
+(``ADDRESS:VALUE[:WIDTH]``, 32 bits by default) made in order before the
+first read: a Bridge attach, for example. Where rows repeat an offset and
+other bits choose the register, ``select="S2, clock|0x8=0xa0"`` writes the
+listed ``OFFSET=VALUE`` pairs, at the table's width, just before each read
+of the row whose Name cell is ``S2, clock``. Repeat the key for another
+row. ``skiprow="S1, control:write-only"`` leaves out every offset of the
+row with that Name when ``skip=`` would also catch a row that shares the
+offset. A ``select=`` or ``skiprow=`` that names no row is an error.
+
 The test proves the page and the model agree, not that either matches the
 hardware. The rating beside a value says how well it is known: a page may
 say that every reset value of a part is the model's choice, an
