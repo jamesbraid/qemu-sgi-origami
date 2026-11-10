@@ -121,6 +121,19 @@ OpenBSD uses 32-bit accesses here and bytes in the UART windows,
 *software expectation*; the full set of widths the chip accepts is
 *unknown*.
 
+.. sgi-registers: base=0xf00000200000 count=4 label=serial-dma skip=0x24:clock-dependent,0x80000:timekeeper
+   map=/machine/peripheral/xbridge:0:0x100000000000
+   skiprow="UART n:16550A"
+   setup=0xf00000020010:0x1000000,0xf00000020004:2,0xf00000000204:0x3010
+   qemu="-M none -cpu R10000 -S -device sgi-xio-test-target,id=fabric -device sgi-xbridge,id=xbridge,host-port=0xb,xio-port=0xc,fabric=/machine/peripheral/fabric/fabric.ram[0] -device sgi-ioc4,bus=head-e.0,addr=0,clock-hz=66666667,serial-dma-experimental=on"
+
+.. sgi-registers: base=0xf00000200000 count=4 label=default
+   skip=0x20:serial-dma-profile-only,0x24:clock-dependent,0x80000:timekeeper
+   map=/machine/peripheral/xbridge:0:0x100000000000
+   skiprow="UART n:16550A"
+   setup=0xf00000020010:0x1000000,0xf00000020004:2,0xf00000000204:0x3010
+   qemu="-M none -cpu R10000 -S -device sgi-xio-test-target,id=fabric -device sgi-xbridge,id=xbridge,host-port=0xb,xio-port=0xc,fabric=/machine/peripheral/fabric/fabric.ram[0] -device sgi-ioc4,bus=head-e.0,addr=0,clock-hz=66666667"
+
 .. list-table::
    :header-rows: 1
 
