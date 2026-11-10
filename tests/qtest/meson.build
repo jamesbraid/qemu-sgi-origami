@@ -43,6 +43,12 @@ slow_qtests = {
   # the 60 s default in a four-process run of the queue's third qtest share;
   # about three times the slowest figure, rounded up.
   'sgi-crime-legacy-test-ecc-values': 180,
+  # Its 27 cases each start a Malta machine: 39 to 83 s alone in eleven runs on
+  # 2026-11-10, and 3 of 5 runs on a loaded host were killed at the 60 s
+  # default. About twice the slowest figure. It is listed with the
+  # SGI qtests so the budget does not move it to the slow suite and out of
+  # the pull-request checks.
+  'r5000-cpu-test': 180,
   # Alone it took 55.6 s at load average 118, 2026-10-24 (11 s on a quiet
   # host), and overran the default in full runs; three times the loaded
   # figure, rounded up.
@@ -600,7 +606,7 @@ sn0_machine_qtests = \
                                                    'sn0-display-heads-test'] : [])
 
 sgi_qtests = \
-  ['ds1742-test'] + \
+  ['ds1742-test', 'r5000-cpu-test'] + \
   (config_all_devices.has_key('CONFIG_SGI_O2_ROM') ? ['sgi-o2-rom-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_O2_TEST') ?
     ['o2-r10k-scache-reset-test'] : []) + \
@@ -667,7 +673,7 @@ sgi_qtests = \
    config_all_devices.has_key('CONFIG_TEST_DEVICES') ?
     ['sgi-kona-read-defense-test'] : [])
 
-qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test', 'r5000-cpu-test',
+qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test',
                                               'r10k-cache-index-ops-test'] + \
   (config_all_devices.has_key('CONFIG_SGI_VICE') ?
     ['sgi-vice-test', 'sgi-vice-msp-test'] : []) + \
