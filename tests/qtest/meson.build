@@ -37,8 +37,10 @@ slow_qtests = {
   'sgi-catalogue-launch-test': 900,
   # 75 cases; alone it took 37.3 s on 2026-10-29 and overran the 60 s
   # default in the merge queue's full run, under load. About three times
-  # the quiet figure, rounded up.
-  'sgi-crime-mte-test': 120,
+  # the quiet figure, rounded up. On 2026-11-10 it took 61 to 94 s alone
+  # and was killed at 120 s in a four-process run of the queue's third
+  # share (batch for the R5000 fix); 300 s is about three times the slowest.
+  'sgi-crime-mte-test': 300,
   # The ecc-values group took 25 to 56 s alone on 2026-11-10 and was killed at
   # the 60 s default in a four-process run of the queue's third qtest share;
   # about three times the slowest figure, rounded up.
