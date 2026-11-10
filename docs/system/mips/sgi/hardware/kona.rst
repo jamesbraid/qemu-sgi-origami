@@ -1330,6 +1330,16 @@ on format loads, channel enable and disable, resize, blanking, gamma map
 selection, cursor priority and channel source. Other commands are framed
 and consumed.
 
+The colour chain is 10-bit colour-map entries, then a 12-bit gamma index,
+with the 10-bit value widened to 12 bits by replicating its top bits
+(*inferred*; the table says replication is suggested). The model does not
+follow that chain: it narrows a colour-map entry to 8 bits when it
+resolves the pixel, then widens the 8 bits to the 12-bit gamma index by
+replication, and shows the top eight bits of the 12-bit gamma entry. Each
+rounding is a model choice, an *approximation*; the pipe's own output
+rounding is *unknown*. Following the 12-bit chain needs 12-bit rows
+through the shared scanout, which the model does not carry.
+
 The gamma load ``0x12f`` fills three components of 4,096 entries;
 channels select a linear ramp or the loaded table. The cursor is 64x64 at
 two bits per pixel with three colours, up to 64 images loaded with
