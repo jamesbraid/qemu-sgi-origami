@@ -1485,6 +1485,22 @@ Model limits
 - The GVO option, genlock, stereo, swap groups and multiple pipes are not
   modelled. ``reality``, ``ir`` and ``ir4`` are refused.
 - More than 64 logical contexts stops the virtual machine.
+- Multisample is not drawn: the visual is accepted and drawing is
+  single-sample. The control, sampling and depth-clear words, and the
+  resolve and coverage rules, are not modelled; the resolve rule and the
+  sample positions are *unknown*.
+- Accumulation is single-pass floating point for every scale. That the
+  pipe splits a scale of exactly 1.0 into two half passes is *established*
+  from the sequencing, but its storage format is *unknown*, so no visible
+  difference follows.
+- The DAC cursor load (display request 56, 263 words) is framed and
+  consumed; the image and colours are not kept and the cursor is not drawn.
+- Select mode returns hit records; feedback mode returns no records.
+- A small texture level's origin is not taken from the last of its copies,
+  and a load at a new address does not retire the levels it overlaps; the
+  model keys levels by place instead.
+- The start-up display state is channel 0 over the whole area, not the
+  video combination stored in the flash.
 - The detail combine is the model's reading: its arithmetic widths,
   rounding and coordinate derivation are *unknown*, and only the channel
   select Quake GL uses (colour) has been exercised against a guest.
