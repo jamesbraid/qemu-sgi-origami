@@ -33,6 +33,8 @@ OUTPUT = ROOT / "docs/system/mips/sgi/settings.rst"
 
 def _target(definition: dict) -> str:
     target = definition["target"]
+    if target["kind"] == "serial-lines":
+        return "the serial lines that name it"
     text = {"machine": "-M", "global": "-global", "cpu": "-cpu"}[
         target["kind"]]
     prop = target["property"]

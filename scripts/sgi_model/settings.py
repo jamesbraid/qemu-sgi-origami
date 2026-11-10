@@ -17,10 +17,16 @@ _L1_REVISION = r"[0-9]+\.[0-9]+\.[0-9]+"
 
 
 def _definition(name: str, kind: str, target_kind: str, property_name: str,
-                form: str, description: str, *, device: str | None = None,
+                form: str | None, description: str, *,
+                device: str | None = None,
                 identity: bool = False, allow_empty: bool = False,
                 **limits) -> dict:
-    target = {"kind": target_kind, "property": property_name, "form": form}
+    # A serial-lines target has no property or form: the boolean turns on
+    # the serial lines that name it, and each carries its own property.
+    target = {"kind": target_kind}
+    if property_name is not None:
+        target["property"] = property_name
+        target["form"] = form
     if device is not None:
         target["device"] = device
     return {"name": name, "kind": kind, "target": target,
@@ -113,6 +119,12 @@ SETTING_DEFINITIONS: list[dict] = [
     _definition("dip-switches", "integer", "machine", "elsc-dip-switches",
                 "plain", "The system controller's DIP switch word, as "
                 "asserted bits.", minimum=0, maximum=255),
+    _definition("l2-controller", "boolean", "serial-lines", None, None,
+                "Bind the C-brick L1s' L2 links to chardevs for a companion "
+                "process to serve. The model has no L2 of its own; the "
+                "rack L2 is an optional part of the Origin 3200 and Onyx "
+                "3200. A launch backs each of the offering's l2-link serial "
+                "lines that names this setting."),
     _definition("junk-uart", "boolean", "machine", "junk-uart", "plain",
                 "A debug input: fit the Hub's junk-bus UART, a bring-up "
                 "serial port no shipped machine is known to have."),
@@ -159,6 +171,11 @@ DEFAULT_BASIS = {
     "origin300-l1cmd-compat": (
         "The machine property's own default, off; the commands it "
         "enables are an approximation (hardware/l1.rst)."),
+    "l2-controller": (
+        "A launch choice, off: both a 3200 with and without an L2 shipped "
+        "(hardware/l1.rst); with it off the L1s' links stay unbacked, "
+        "which hardware/l1.rst describes as the model running without "
+        "an L2 peer."),
 }
 
 
@@ -180,7 +197,7 @@ def default_provenance(product: str, name: str, value: str) -> str:
     if name in ("prid", "fpu-id"):
         return "inferred"
     if name in ("flash-select", "flash-strap", "debug-switches",
-                "origin300-l1cmd-compat"):
+                "origin300-l1cmd-compat", "l2-controller"):
         return "approximated"
     raise KeyError(f"no basis for the default of {name} on {product}")
 
@@ -310,6 +327,10 @@ def offering_settings(offering: dict, topology: dict,
             {} if board_id is None else {"default": str(board_id)}))]
         chosen += [_entry(name) for name in _BEDROCK[1:]]
         chosen += prid_entries()
+        if not topology["routers"]:
+            # An L2 is optional without an R-brick (the Origin 3200 and
+            # Onyx 3200) and standard with one.
+            chosen.append(_entry("l2-controller", default="off"))
     elif product in ("origin350", "onyx350", "onyx4", "tezro"):
         board_id = node_board("board-id-word")
         chosen += [_entry("board-id-word", **(

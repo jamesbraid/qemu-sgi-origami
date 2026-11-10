@@ -2238,6 +2238,16 @@
     },
     {
       "allow-empty": false,
+      "description": "Bind the C-brick L1s' L2 links to chardevs for a companion process to serve. The model has no L2 of its own; the rack L2 is an optional part of the Origin 3200 and Onyx 3200. A launch backs each of the offering's l2-link serial lines that names this setting.",
+      "identity": false,
+      "kind": "boolean",
+      "name": "l2-controller",
+      "target": {
+        "kind": "serial-lines"
+      }
+    },
+    {
+      "allow-empty": false,
       "description": "A debug input: fit the Hub's junk-bus UART, a bring-up serial port no shipped machine is known to have.",
       "identity": false,
       "kind": "boolean",

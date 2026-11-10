@@ -8906,6 +8906,24 @@
           "name": "l1-node1",
           "node": 1,
           "serial": 5
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0",
+          "setting": "l2-controller"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1",
+          "setting": "l2-controller"
         }
       ],
       "setting-groups": [],
@@ -8938,6 +8956,12 @@
           "default": "0x935",
           "default-provenance": "inferred",
           "name": "fpu-id",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "l2-controller",
           "required": false
         }
       ],
@@ -9252,6 +9276,24 @@
           "name": "l1-node1",
           "node": 1,
           "serial": 5
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0",
+          "setting": "l2-controller"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1",
+          "setting": "l2-controller"
         }
       ],
       "setting-groups": [],
@@ -9278,6 +9320,12 @@
           "default": "0xf14",
           "default-provenance": "established",
           "name": "prid",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "l2-controller",
           "required": false
         }
       ],
@@ -9592,6 +9640,24 @@
           "name": "l1-node1",
           "node": 1,
           "serial": 5
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0",
+          "setting": "l2-controller"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1",
+          "setting": "l2-controller"
         }
       ],
       "setting-groups": [],
@@ -9618,6 +9684,12 @@
           "default": "0xf24",
           "default-provenance": "established",
           "name": "prid",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "l2-controller",
           "required": false
         }
       ],
@@ -9932,6 +10004,24 @@
           "name": "l1-node1",
           "node": 1,
           "serial": 5
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0",
+          "setting": "l2-controller"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1",
+          "setting": "l2-controller"
         }
       ],
       "setting-groups": [],
@@ -9956,6 +10046,12 @@
         },
         {
           "name": "prid",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "l2-controller",
           "required": false
         }
       ],
@@ -10300,6 +10396,38 @@
           "name": "l1-node3",
           "node": 3,
           "serial": 15
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1"
+        },
+        {
+          "chardev": "l2_node2",
+          "controller": 2,
+          "kind": "l2-link",
+          "name": "l2-link-node2",
+          "node": 2,
+          "property": "controller-l2-chardev.2"
+        },
+        {
+          "chardev": "l2_node3",
+          "controller": 3,
+          "kind": "l2-link",
+          "name": "l2-link-node3",
+          "node": 3,
+          "property": "controller-l2-chardev.3"
         }
       ],
       "setting-groups": [],
@@ -34283,6 +34411,24 @@
           "name": "l1-node1",
           "node": 1,
           "serial": 5
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0",
+          "setting": "l2-controller"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1",
+          "setting": "l2-controller"
         }
       ],
       "setting-groups": [],
@@ -34315,6 +34461,12 @@
           "default": "0x935",
           "default-provenance": "inferred",
           "name": "fpu-id",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "l2-controller",
           "required": false
         }
       ],
@@ -34641,6 +34793,24 @@
           "name": "l1-node1",
           "node": 1,
           "serial": 5
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0",
+          "setting": "l2-controller"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1",
+          "setting": "l2-controller"
         }
       ],
       "setting-groups": [],
@@ -34673,6 +34843,12 @@
           "default": "0x935",
           "default-provenance": "inferred",
           "name": "fpu-id",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "l2-controller",
           "required": false
         }
       ],
@@ -34987,6 +35163,24 @@
           "name": "l1-node1",
           "node": 1,
           "serial": 5
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0",
+          "setting": "l2-controller"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1",
+          "setting": "l2-controller"
         }
       ],
       "setting-groups": [],
@@ -35013,6 +35207,12 @@
           "default": "0xf14",
           "default-provenance": "established",
           "name": "prid",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "l2-controller",
           "required": false
         }
       ],
@@ -35327,6 +35527,24 @@
           "name": "l1-node1",
           "node": 1,
           "serial": 5
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0",
+          "setting": "l2-controller"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1",
+          "setting": "l2-controller"
         }
       ],
       "setting-groups": [],
@@ -35353,6 +35571,12 @@
           "default": "0xf24",
           "default-provenance": "established",
           "name": "prid",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "l2-controller",
           "required": false
         }
       ],
@@ -35667,6 +35891,24 @@
           "name": "l1-node1",
           "node": 1,
           "serial": 5
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0",
+          "setting": "l2-controller"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1",
+          "setting": "l2-controller"
         }
       ],
       "setting-groups": [],
@@ -35691,6 +35933,12 @@
         },
         {
           "name": "prid",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "l2-controller",
           "required": false
         }
       ],
@@ -36154,6 +36402,22 @@
           "name": "l1-node1",
           "node": 1,
           "serial": 5
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1"
         }
       ],
       "setting-groups": [],
@@ -36542,6 +36806,38 @@
           "name": "l1-node3",
           "node": 3,
           "serial": 15
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1"
+        },
+        {
+          "chardev": "l2_node2",
+          "controller": 2,
+          "kind": "l2-link",
+          "name": "l2-link-node2",
+          "node": 2,
+          "property": "controller-l2-chardev.2"
+        },
+        {
+          "chardev": "l2_node3",
+          "controller": 3,
+          "kind": "l2-link",
+          "name": "l2-link-node3",
+          "node": 3,
+          "property": "controller-l2-chardev.3"
         }
       ],
       "setting-groups": [],
@@ -36930,6 +37226,38 @@
           "name": "l1-node3",
           "node": 3,
           "serial": 15
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1"
+        },
+        {
+          "chardev": "l2_node2",
+          "controller": 2,
+          "kind": "l2-link",
+          "name": "l2-link-node2",
+          "node": 2,
+          "property": "controller-l2-chardev.2"
+        },
+        {
+          "chardev": "l2_node3",
+          "controller": 3,
+          "kind": "l2-link",
+          "name": "l2-link-node3",
+          "node": 3,
+          "property": "controller-l2-chardev.3"
         }
       ],
       "setting-groups": [],
@@ -37318,6 +37646,38 @@
           "name": "l1-node3",
           "node": 3,
           "serial": 15
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1"
+        },
+        {
+          "chardev": "l2_node2",
+          "controller": 2,
+          "kind": "l2-link",
+          "name": "l2-link-node2",
+          "node": 2,
+          "property": "controller-l2-chardev.2"
+        },
+        {
+          "chardev": "l2_node3",
+          "controller": 3,
+          "kind": "l2-link",
+          "name": "l2-link-node3",
+          "node": 3,
+          "property": "controller-l2-chardev.3"
         }
       ],
       "setting-groups": [],
@@ -37700,6 +38060,38 @@
           "name": "l1-node3",
           "node": 3,
           "serial": 15
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1"
+        },
+        {
+          "chardev": "l2_node2",
+          "controller": 2,
+          "kind": "l2-link",
+          "name": "l2-link-node2",
+          "node": 2,
+          "property": "controller-l2-chardev.2"
+        },
+        {
+          "chardev": "l2_node3",
+          "controller": 3,
+          "kind": "l2-link",
+          "name": "l2-link-node3",
+          "node": 3,
+          "property": "controller-l2-chardev.3"
         }
       ],
       "setting-groups": [],
@@ -38082,6 +38474,38 @@
           "name": "l1-node3",
           "node": 3,
           "serial": 15
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1"
+        },
+        {
+          "chardev": "l2_node2",
+          "controller": 2,
+          "kind": "l2-link",
+          "name": "l2-link-node2",
+          "node": 2,
+          "property": "controller-l2-chardev.2"
+        },
+        {
+          "chardev": "l2_node3",
+          "controller": 3,
+          "kind": "l2-link",
+          "name": "l2-link-node3",
+          "node": 3,
+          "property": "controller-l2-chardev.3"
         }
       ],
       "setting-groups": [],
@@ -39360,6 +39784,70 @@
           "name": "l1-node7",
           "node": 7,
           "serial": 35
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1"
+        },
+        {
+          "chardev": "l2_node2",
+          "controller": 2,
+          "kind": "l2-link",
+          "name": "l2-link-node2",
+          "node": 2,
+          "property": "controller-l2-chardev.2"
+        },
+        {
+          "chardev": "l2_node3",
+          "controller": 3,
+          "kind": "l2-link",
+          "name": "l2-link-node3",
+          "node": 3,
+          "property": "controller-l2-chardev.3"
+        },
+        {
+          "chardev": "l2_node4",
+          "controller": 4,
+          "kind": "l2-link",
+          "name": "l2-link-node4",
+          "node": 4,
+          "property": "controller-l2-chardev.4"
+        },
+        {
+          "chardev": "l2_node5",
+          "controller": 5,
+          "kind": "l2-link",
+          "name": "l2-link-node5",
+          "node": 5,
+          "property": "controller-l2-chardev.5"
+        },
+        {
+          "chardev": "l2_node6",
+          "controller": 6,
+          "kind": "l2-link",
+          "name": "l2-link-node6",
+          "node": 6,
+          "property": "controller-l2-chardev.6"
+        },
+        {
+          "chardev": "l2_node7",
+          "controller": 7,
+          "kind": "l2-link",
+          "name": "l2-link-node7",
+          "node": 7,
+          "property": "controller-l2-chardev.7"
         }
       ],
       "setting-groups": [],
@@ -39832,6 +40320,70 @@
           "name": "l1-node7",
           "node": 7,
           "serial": 35
+        },
+        {
+          "chardev": "l2",
+          "controller": 0,
+          "kind": "l2-link",
+          "name": "l2-link",
+          "node": 0,
+          "property": "controller-l2-chardev.0"
+        },
+        {
+          "chardev": "l2_node1",
+          "controller": 1,
+          "kind": "l2-link",
+          "name": "l2-link-node1",
+          "node": 1,
+          "property": "controller-l2-chardev.1"
+        },
+        {
+          "chardev": "l2_node2",
+          "controller": 2,
+          "kind": "l2-link",
+          "name": "l2-link-node2",
+          "node": 2,
+          "property": "controller-l2-chardev.2"
+        },
+        {
+          "chardev": "l2_node3",
+          "controller": 3,
+          "kind": "l2-link",
+          "name": "l2-link-node3",
+          "node": 3,
+          "property": "controller-l2-chardev.3"
+        },
+        {
+          "chardev": "l2_node4",
+          "controller": 4,
+          "kind": "l2-link",
+          "name": "l2-link-node4",
+          "node": 4,
+          "property": "controller-l2-chardev.4"
+        },
+        {
+          "chardev": "l2_node5",
+          "controller": 5,
+          "kind": "l2-link",
+          "name": "l2-link-node5",
+          "node": 5,
+          "property": "controller-l2-chardev.5"
+        },
+        {
+          "chardev": "l2_node6",
+          "controller": 6,
+          "kind": "l2-link",
+          "name": "l2-link-node6",
+          "node": 6,
+          "property": "controller-l2-chardev.6"
+        },
+        {
+          "chardev": "l2_node7",
+          "controller": 7,
+          "kind": "l2-link",
+          "name": "l2-link-node7",
+          "node": 7,
+          "property": "controller-l2-chardev.7"
         }
       ],
       "setting-groups": [],
@@ -45262,6 +45814,16 @@
         "form": "plain",
         "kind": "machine",
         "property": "elsc-dip-switches"
+      }
+    },
+    {
+      "allow-empty": false,
+      "description": "Bind the C-brick L1s' L2 links to chardevs for a companion process to serve. The model has no L2 of its own; the rack L2 is an optional part of the Origin 3200 and Onyx 3200. A launch backs each of the offering's l2-link serial lines that names this setting.",
+      "identity": false,
+      "kind": "boolean",
+      "name": "l2-controller",
+      "target": {
+        "kind": "serial-lines"
       }
     },
     {

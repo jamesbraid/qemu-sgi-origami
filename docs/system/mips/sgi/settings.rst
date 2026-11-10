@@ -463,6 +463,11 @@ Group ``fuel-node-records``: all-or-none of ``chassis-eeprom``, ``board-eeprom``
      - none
      - -cpu ``fpu-id``
      - ``0x935`` (inferred)
+   * - ``l2-controller``
+     - boolean
+     - none
+     - the serial lines that name it
+     - ``off`` (approximated)
 
 ``origin350``
 -------------
@@ -587,6 +592,9 @@ tool never shows a value with nothing behind it.
    * - ``fpu-id``
      - inferred
      - The processor assembly in the model file, for the FPU revision the product's inventory prints; not a raw read.
+   * - ``l2-controller``
+     - approximated
+     - A launch choice, off: both a 3200 with and without an L2 shipped (hardware/l1.rst); with it off the L1s' links stay unbacked, which hardware/l1.rst describes as the model running without an L2 peer.
    * - ``origin300-l1cmd-compat``
      - approximated
      - The machine property's own default, off; the commands it enables are an approximation (hardware/l1.rst).

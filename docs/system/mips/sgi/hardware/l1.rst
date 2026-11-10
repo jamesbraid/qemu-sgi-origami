@@ -1126,6 +1126,23 @@ controller in the selected topology, the same numbering as
   chardev. Each chardev serves one controller; a second entry for the
   same controller or the same chardev id, a chardev that does not
   exist, or one that ``controller-chardev`` already uses is refused.
+  The catalogue lists each C-brick L1's link as a serial line of kind
+  ``l2-link`` (the other bricks' L1s take the same option but have no
+  line). A launcher with no L2 peer to attach leaves the line's chardev
+  unbacked, may report that and does not refuse the launch; the
+  machine runs and the L1 answers as with the property unset. A consumer
+  that does not know the kind ignores the line. Router machines always
+  list the links. On the Origin 3200 and Onyx 3200 (the ``origin3200``
+  and ``onyx3000`` topologies) the line names the ``l2-controller``
+  setting (:ref:`sgi-settings`), off by default, whose target is the
+  lines rather than a property, and a launch binds only the lines whose
+  setting is on. The owner's guides split the cases by rack height: the
+  L2 is included with every tall rack that holds C-bricks, optional in a
+  short rack, and required with an R-brick
+  (:src:`007-4311-002 p. 42`, :src:`007-4240-002 p. 6, 15, 75, 82-83`,
+  :src:`007-4264-002 p. 24, 26, 96`, :src:`007-4653-001 p. 116` for the
+  Origin 3900), *established*. The catalogue takes a rack with no
+  routers to be a short rack, which holds for every current offering.
 
 ``controller-l2-partition-flag.N=<index>=<0 to 3>``
   Sets ``l2-partition-flag`` on that controller's L1. It needs no

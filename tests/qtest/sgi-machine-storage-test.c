@@ -327,6 +327,42 @@ static QDict *setting_definition(QList *definitions, const char *name)
 }
 
 /*
+ * Every serial line of the offering that names the setting binds through
+ * a property the machine type has, and at least one line names it.
+ */
+static void check_serial_line_properties(QTestState *qts, QDict *offering,
+                                         const char *setting,
+                                         const char *machine)
+{
+    const QListEntry *line;
+    unsigned int lines = 0;
+
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(offering, "serial-lines"), line) {
+        QDict *l = qobject_to(QDict, qlist_entry_obj(line));
+        g_autofree char *found = NULL;
+        const char *property;
+        g_autofree char *base = NULL;
+
+        if (!qdict_haskey(l, "setting") ||
+            !g_str_equal(qdict_get_str(l, "setting"), setting)) {
+            continue;
+        }
+        g_assert_true(qdict_haskey(l, "property"));
+        property = qdict_get_str(l, "property");
+        /* A list slot, "name.N", is a property "name". */
+        base = g_strndup(property, strcspn(property, "."));
+        found = property_type(qts, machine, base);
+        if (!found) {
+            g_error("%s: line %s of setting %s names property %s, which %s "
+                    "lacks", qdict_get_str(offering, "id"),
+                    qdict_get_str(l, "name"), setting, property, machine);
+        }
+        lines++;
+    }
+    g_assert_cmpuint(lines, >, 0);
+}
+
+/*
  * Every setting an offering lists names a property that exists on the
  * machine type, the global device type or the processor part's CPU type,
  * with a QOM type its kind and form can set, so a launcher can take the
@@ -357,13 +393,26 @@ static void test_settings_name_properties(void)
             QDict *definition = setting_definition(definitions, name);
             QDict *target = qdict_get_qdict(definition, "target");
             const char *kind = qdict_get_str(definition, "kind");
-            const char *form = qdict_get_str(target, "form");
             const char *where = qdict_get_str(target, "kind");
-            const char *property = qdict_get_str(target, "property");
+            const char *form;
+            const char *property;
             g_autofree char *cpu_property = NULL;
             g_autofree char *found = NULL;
             const char *type;
 
+            if (g_str_equal(where, "serial-lines")) {
+                /*
+                 * The setting backs serial lines, each of which names its
+                 * own property; the target carries none.
+                 */
+                g_assert_false(qdict_haskey(target, "property"));
+                g_assert_false(qdict_haskey(target, "form"));
+                check_serial_line_properties(qts, offering, name, machine);
+                checked++;
+                continue;
+            }
+            form = qdict_get_str(target, "form");
+            property = qdict_get_str(target, "property");
             if (g_str_equal(where, "cpu")) {
                 /* One prid and one fpu-id; the part names the property. */
                 g_autofree char *lower = g_ascii_strdown(part, -1);
