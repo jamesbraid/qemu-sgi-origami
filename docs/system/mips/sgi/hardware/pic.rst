@@ -97,8 +97,10 @@ carries two PICs is *inferred* from two buses per PIC.
 The model places the PIC wherever the machine profile says. The
 ``origin350``, ``onyx350`` and ``onyx4`` machines fit one PIC at
 widget 15. The ``tezro`` machine fits one PIC at widget 15 on its
-``tezro-rack`` topology and on the one-processor board of its ``tezro``
-topology, and PICs at widgets 11 and 15 on the two/four-processor board.
+``tezro-rack-ip53`` and ``tezro-rack-ip59`` topologies and on the
+one-processor board of ``tezro-one-processor``, and PICs at widgets 11
+and 15 on the two/four-processor board of ``tezro-ip53`` and
+``tezro-ip59``.
 IO9 is behind head 0 of the widget-15 PIC on every Tezro board
 (:ref:`sgi-ip53-serial-profiles`).
 

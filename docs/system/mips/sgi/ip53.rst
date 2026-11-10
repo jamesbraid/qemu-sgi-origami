@@ -624,19 +624,19 @@ tower or a rack is *inferred* from the product family. An 800 MHz
 Tezro inventory reports the same two interface-board widgets
 (:src:`irixnet-post-26015`), *observed*.
 
-The ``tezro`` topology holds both interface boards, and ``-smp`` picks
-one: one processor builds the one-processor board, two or four the
-two/four-processor board. The two/four-processor board builds two PICs,
+The ``tezro-one-processor`` topology builds the one-processor board and
+``tezro-ip53`` and ``tezro-ip59`` the two/four-processor board. The
+two/four-processor board builds two PICs,
 at widgets 11 and 15, with the IO9 on the widget-15 PIC's head 0 and
 nothing on the other. The model routes its widget-0 view through the PIC
 that owns the IO9, an *approximation*: through the widget-11 PIC, the
 stock PROM could not build its configuration for the node on the model.
 The one-processor board builds one PIC, at widget 15. That it has one is
 *inferred* from that board's two PCI-X buses
-(:src:`007-4564-001 p. 26-31`); no inventory shows it. ``tezro-rack``
-builds one PIC, at widget 15, and models the first enclosure only. Every
-Tezro profile builds the IO9 BCM5701, and the netboot adapter is the
-BCM5701 on each.
+(:src:`007-4564-001 p. 26-31`); no inventory shows it. The
+``tezro-rack-ip53`` and ``tezro-rack-ip59`` topologies build one PIC, at
+widget 15, and model the first enclosure only. Every Tezro profile builds
+the IO9 BCM5701, and the netboot adapter is the BCM5701 on each.
 
 The 4 GiB is a selected memory kit, not a measured population. It
 matches the observed four-processor 700 MHz population above, with the

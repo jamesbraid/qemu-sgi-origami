@@ -531,6 +531,39 @@ def check_prose_names(page, text, cat):
     return out
 
 
+TOPOLOGY_WORDS = re.compile(
+    r'``([a-z][a-z0-9-]*)``(?:,? and ``[a-z][a-z0-9-]*``)*'
+    r'\s+(?:(?:is|are) an? |(?:is|are) the )?topolog(?:y|ies)\b'
+    r'(?!\s+option)'
+    r'|\btopology\s+``([a-z][a-z0-9-]*)``')
+
+
+def check_topology_names(page, text, cat):
+    """A literal the text calls a topology is a topology the catalogue
+    offers, not a machine, a reference composition or a layer name.
+    The text is joined across line breaks so a wrapped phrase counts."""
+    out = []
+    joined = re.sub(r'[ \t]*\n[ \t]*', ' ', text)
+    breaks = [m for m in re.finditer(r'[ \t]*\n[ \t]*', text)]
+    shifts = [(m.start(), m.end()) for m in breaks]
+    cuts = []
+    delta = 0
+    for a, b in shifts:
+        cuts.append(a - delta)
+        delta += (b - a) - 1
+    for m in TOPOLOGY_WORDS.finditer(joined):
+        line = 1 + sum(1 for c in cuts if c < m.start())
+        for word in LITERAL.findall(m.group(0)):
+            if word in cat.topologies or word == 'help' or \
+                    not re.match(r'(origin|onyx|octane|fuel|tezro|o2)',
+                                 word):
+                continue
+            out.append(f'{page}:{line}: ``{word}`` is called a topology '
+                       f'but the catalogue offers no topology of that '
+                       f'name')
+    return out
+
+
 def layer_names(root):
     names = set()
     for path in (root / LAYERS).rglob('*.yaml'):
@@ -550,6 +583,7 @@ def check_pages(pages, cat, covered=None):
                         covered.append((label, page, table.line))
         out += check_commands(page, text, cat)
         out += check_prose_names(page, text, cat)
+        out += check_topology_names(page, text, cat)
     return out
 
 
