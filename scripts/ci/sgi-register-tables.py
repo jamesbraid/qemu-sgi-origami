@@ -283,11 +283,17 @@ def offsets(cell, width, count=None):
 
 
 def reset_value(cell, variant):
-    """Return ('value', int), ('skip', reason) or ('prose', text)."""
+    """Return ('value', int), ('list', [int, ...]), ('skip', reason) or
+    ('prose', text)."""
     text = ' '.join(cell.split())
     plain = text.replace('``', '').strip()
     if plain.lower() in NO_RESET:
         return 'skip', plain or 'empty'
+    parts = [p.strip() for p in plain.split(',')]
+    if len(parts) > 1 and ';' not in plain and \
+            all(NUMBER.match(p) for p in parts):
+        # "0x00010000, 0" beside two offsets: one value for each.
+        return 'list', [int(p, 0) for p in parts]
     chosen = None
     for segment in text.split(';'):
         segment = segment.strip()
@@ -362,13 +368,23 @@ def build(page, table, marker_text, number):
         if per_offset is not None and len(per_offset) != len(where):
             raise Error(f'{page}:{line}: {len(per_offset)} widths for '
                         f'{len(where)} offsets')
-        if kind == 'skip' and len(where) > 64:
+        if kind == 'list' and len(got) != len(where):
+            raise Error(f'{page}:{line}: {len(got)} reset values for '
+                        f'{len(where)} offsets')
+        if len(where) > 64 and (kind == 'skip' or name in options['skiprow']):
             # A window with no reset value: one entry, not one per slot.
+            reason = got
+            if kind != 'skip':
+                skipped_rows.add(name)
+                reason = options['skiprow'][name]
             skipped.append({'line': line, 'name': name,
                             'offset': hex(where[0]),
-                            'reason': f'{got} ({len(where)} slots)'})
+                            'reason': f'{reason} ({len(where)} slots)'})
             continue
+        kind_row, got_row = kind, got
         for index, offset in enumerate(where):
+            if kind_row == 'list':
+                kind, got = 'value', got_row[index]
             if per_offset is not None:
                 width = per_offset[index]
             where_ = f'{page}:{line}: offset {offset:#x}'
