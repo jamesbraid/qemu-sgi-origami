@@ -1791,6 +1791,51 @@ static void gl_rect_scene(QTestState *s)
     gl_end(s);
 }
 
+static uint32_t read_one_pixel(QTestState *s, unsigned x, unsigned y)
+{
+    uint8_t got[3];
+
+    qtest_memset(s, RETURN_PAGE, 0, 4);
+    kona_command(s, 0x39, (uint32_t[]){ x, y, 1, 1, 4, 1, 0 }, 7);
+    assert_reply_posted(s);
+    qtest_memread(s, RETURN_PAGE + 8, got, sizeof(got));
+    return got[0] << 16 | got[1] << 8 | got[2];
+}
+
+/*
+ * Vertices land on the 1/256 grid, nearest, ties to even. A rectangle with
+ * its left edge at 10.5 + 1/512 sits on a tie: 2688.5 grid steps, which
+ * rounds down to 2688, exactly the centre of pixel column 10, so the left
+ * edge takes that pixel. Half away from zero would round up to 2689 and
+ * leave it out. The right edge at 20.5 + 1/512 mirrors it: ties to even
+ * leaves the edge on the centre of column 20, which a right edge excludes,
+ * and half away would include it.
+ */
+static void test_setup_rounding_ties_to_even(void)
+{
+    static const float rect[4][2] = {
+        { 10.501953125f, 21 }, { 20.501953125f, 21 },
+        { 20.501953125f, 70 }, { 10.501953125f, 70 },
+    };
+
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    kona_command(qts, 0xd0, (uint32_t[]){ 0x1701 }, 1);
+    kona_command_d(qts, 0xd7, (double[]){ 0, 128, 0, 128, -1, 1 }, 6);
+    kona_command(qts, 0xd0, (uint32_t[]){ 0x1700 }, 1);
+    kona_command_f(qts, 0x63, (float[]){ 1, 0, 0 }, 3);
+    kona_command(qts, 0x3, (uint32_t[]){ 14 }, 1);
+    for (int k = 0; k < 4; k++) {
+        kona_command_f(qts, 0x8c, rect[k], 2);
+    }
+    gl_end(qts);
+    g_assert_cmphex(read_one_pixel(qts, 9, 30), ==, 0x0000ff);
+    g_assert_cmphex(read_one_pixel(qts, 10, 30), ==, 0xff0000);
+    g_assert_cmphex(read_one_pixel(qts, 19, 30), ==, 0xff0000);
+    g_assert_cmphex(read_one_pixel(qts, 20, 30), ==, 0x0000ff);
+}
+
 /* Native RGB bytes are dense at byte 8, independently of pack stride. */
 static void test_read_pixels(void)
 {
@@ -20969,6 +21014,8 @@ int main(int argc, char **argv)
              test_texture_captured);
     add_case("sn0/origin2000/kona-3d/unmodelled-query-zero-words",
              test_unmodelled_query_zero_words);
+    add_case("sn0/origin2000/kona-3d/setup-rounding-ties-to-even",
+             test_setup_rounding_ties_to_even);
     add_case("sn0/origin2000/kona-3d/light-attribute-readback",
              test_light_attribute_readback);
     add_case("sn0/origin2000/kona-3d/unknown-query-empty-reply",

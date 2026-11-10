@@ -414,12 +414,17 @@ static SGIRenderRefusal sgi_render_draw_supported(
  * The scalar comparisons that establish this path use 8 subpixel bits,
  * rounding half away from zero, the bottom-origin top-left tie rule and
  * double arithmetic, as every family does; the worker cannot follow other
- * rules.
+ * rules. Ties to even is taken as well: it differs from half away only
+ * for a vertex exactly half way between two 1/256 steps, and the worker
+ * hands the host its window coordinates unrounded. At such a vertex the
+ * host path therefore rounds by the host GL's rule, not by ties to even,
+ * and no test compares it with the scalar rasterizer.
  */
 static bool sgi_render_rules_supported(const SGIRasterRules *rules)
 {
     return rules->subpixel_bits == 8 &&
-           rules->rounding == SGI_ROUND_HALF_AWAY &&
+           (rules->rounding == SGI_ROUND_HALF_AWAY ||
+            rules->rounding == SGI_ROUND_HALF_EVEN) &&
            rules->tie_rule == SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN &&
            rules->arith == SGI_ARITH_DOUBLE;
 }

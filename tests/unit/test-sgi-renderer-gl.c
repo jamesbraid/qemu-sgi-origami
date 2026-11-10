@@ -4214,7 +4214,7 @@ static SGIRenderResult prim_mesa_draw(SGIRenderer *renderer, PrimCase *p,
     } else if (p->rules_case == 3) {
         rules.arith = SGI_ARITH_FIXED16;
     } else if (p->rules_case == 4) {
-        rules.rounding = SGI_ROUND_HALF_EVEN;
+        rules.rounding = SGI_ROUND_HALF_UP;
     } else if (p->rules_case == 5) {
         rules.line_rule = SGI_LINE_CENTRE_SAMPLED;
     }
@@ -6850,7 +6850,7 @@ static void test_raster_rules_refused(void)
     for (unsigned i = 0; i < 4; i++) {
         static const char *const names[] = {
             "subpixel bits 4", "top-left tie rule", "fixed-point arithmetic",
-            "round half to even",
+            "round half up",
         };
 
         prim_case_init(p, SGI_GL_TRIANGLES, 4);

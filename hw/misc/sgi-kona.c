@@ -5046,7 +5046,11 @@ static void sgi_kona_gl_get_block(SGIKonaState *s, uint32_t token)
  * The rules the GL client's drawing is rasterized under (OpenGL 1.1's
  * polygon rule: a pixel is drawn when its centre is inside).
  *
- * Chosen, pending capture: the subpixel bits, rounding and tie rule are
+ * Vertices round to the nearest 1/256 with ties to even: the engine's
+ * subtract that places window coordinates on that grid is a single
+ * precision subtract, whose tie rule the table infers to be nearest-even
+ * (inferred; no capture separates it from truncation). The tie rule for
+ * pixels and the other settings are chosen, pending capture: they are
  * the shared rasterizer's first implemented set, not measured on this
  * pipe; the minimal GLX probe puts no pixel centre on an edge, so none of
  * them changes its images, and a capture of a triangle with a centre on
@@ -5065,7 +5069,7 @@ static const SGIRasterRules sgi_kona_gl_rules = {
     .subpixel_bits = 8,
     .color_bits = 8,
     .depth_bits = 24,
-    .rounding = SGI_ROUND_HALF_AWAY,
+    .rounding = SGI_ROUND_HALF_EVEN,
     .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
     .arith = SGI_ARITH_DOUBLE,
     .line_rule = SGI_LINE_COVERAGE_DOUBLE,

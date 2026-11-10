@@ -700,6 +700,26 @@ mapped to state (*unknown*). The model frames
 the word, logs ``LOG_UNIMP`` and posts no reply, so a client that sends it
 waits. A captured context-copy exchange would settle it.
 
+.. _sgi-kona-setup-rounding:
+
+Set-up rounding
+~~~~~~~~~~~~~~~
+
+The geometry engine places window coordinates on a 12.8 fixed-point grid
+by a single-precision subtract of 49152.0 (*inferred*, from the engine
+microcode's store data). Whether that subtract rounds a tie to even or
+truncates is *inferred*: the one diagnostic tie vector fits both, and
+nearest-even is assumed. The model rounds each vertex to the nearest
+1/256, ties to even, an *approximation* of that rule. The host renderer
+accepts a draw under this rule, but it is handed the window coordinates
+unrounded, so at a vertex exactly half way between two grid steps it
+places the vertex by the host GL's own rounding, not by ties to even. The
+scalar rasterizer and the host path can therefore differ at such a vertex;
+no test compares them, so that difference is an untested limit. The tie
+rule for pixel centres on an edge, and the sample point, are an
+*approximation*. A capture of a triangle with a vertex half way between
+two grid steps would settle the first.
+
 Texel readback
 ~~~~~~~~~~~~~~
 
