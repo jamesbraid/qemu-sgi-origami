@@ -782,6 +782,12 @@ access error :src:`xbridge-asic-spec-0.5 p. 58, 60, 63, 75`,
 *established*. The model logs ``LOG_GUEST_ERROR`` and completes the
 access with zero; the data a real read returns is *unknown*.
 
+.. sgi-registers: base=0x100000000000 width=32 lane=4 stride=8
+   expect=0x8:0x2c0 units=0x100:0x40:8 skiprow="Link status, clearing alias:per-link-state"
+   skiprow="Link auxiliary status:per-link-state"
+   map=/machine/peripheral/xbridge:0:0x100000000000
+   qemu="-M none -cpu R10000 -S -device sgi-xio-test-target,id=fabric -device sgi-xbridge,id=xbridge,host-port=0xb,xio-port=0xc,fabric=/machine/peripheral/fabric/fabric.ram[0]"
+
 .. list-table::
    :header-rows: 1
 
@@ -908,6 +914,11 @@ access with zero; the data a real read returns is *unknown*.
      - see below
      - read
      -
+
+The table's 0 is Widget 0 status with the port field clear. Bits 9:6
+hold the number of the port the read arrived on
+:src:`xbridge-asic-spec-0.5 p. 75`, *established*, so a read on host
+port ``0xb`` returns ``0x2c0``.
 
 Link registers start at ``0x100``, ``0x40`` per link from link 8. The
 reset values that differ from the Crossbow (control ``0x80``,
