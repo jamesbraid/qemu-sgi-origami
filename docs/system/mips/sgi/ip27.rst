@@ -1334,14 +1334,14 @@ Address map
 
 Every node shares one 40-bit physical address space. The node number is
 bits 39:32 (M mode), so each node owns a 4 GiB window and a node's
-resources sit at its base plus the number shifted left 32 (*established*,
+resources sit at its base plus the number shifted left 32 (*software expectation*,
 Linux ``asm/sn/sn0/addrs.h``; OpenBSD ``hub.h``). OpenBSD reads the mode
 from a Hub network-interface status bit rather than assuming it, and the
 model resets that bit to M mode (:doc:`hardware/hub`).
 
 The processor drives a two-bit uncached attribute beside the address,
 recorded in virtual-address bits 58:57, which picks one of four spaces
-(*established*, Linux ``mach-ip27/spaces.h``):
+(*software expectation*, Linux ``mach-ip27/spaces.h``):
 
 .. list-table::
    :header-rows: 1
@@ -1378,8 +1378,8 @@ special at ``0x100_0000_0000``, I/O at ``0x200_0000_0000`` and memory
 special at ``0x300_0000_0000``. That is an emulator representation, not
 hardware; qtests and the monitor speak it.
 
-Node offsets in each space (*established* from the Linux and OpenBSD
-headers):
+Node offsets in each space (*software expectation* from the Linux and
+OpenBSD headers):
 
 .. list-table::
    :header-rows: 1
