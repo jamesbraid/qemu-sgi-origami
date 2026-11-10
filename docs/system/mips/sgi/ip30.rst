@@ -105,14 +105,14 @@ Products
      - ``030-1467-001`` revision B
      - the reference Octane2's ``hinv -mvv`` (:ref:`sgi-measured-octane2-hinv`)
 
-``octane`` (*established*, with one model choice): the Technical Report's
+``octane`` (*observed*, with one *approximation*): the Technical Report's
 standard configurations (page 7-1) include 128 MiB single-processor
 Octanes at 195 MHz, the published inventory reports a 195 MHz R10000
 revision 2.7 on board ``030-0887-003`` revision F, and the SGIStuff page
-gives the 195 MHz part 1 MB of secondary cache (neither the inventory nor
-the Technical Report states the cache size). That inventory
-reports 256 MiB; pairing its board and processor with 128 MiB is a
-model choice. A 175 MHz, 128 MiB Octane also exists (the OpenBSD
+gives the 195 MHz part 1 MB of secondary cache, *inferred* because neither
+the inventory nor the Technical Report states the cache size. That inventory
+reports 256 MiB; pairing its board and processor with 128 MiB is an
+*approximation*. A 175 MHz, 128 MiB Octane also exists (the OpenBSD
 capture), so memory size does not fix processor speed.
 
 ``octane2`` (*established* for one machine,
@@ -128,7 +128,7 @@ Processors
 ----------
 
 ``octane`` fits an R10000 at 195 MHz with 1 MiB secondary cache
-(*established*, :ref:`sgi-ip30-products`). Its processor identification
+(*observed*, :ref:`sgi-ip30-products`; the cache size is *inferred*). Its processor identification
 word ``0x927`` is *inferred*: Linux ``cpu.h`` gives the R10000
 implementation code ``0x09``, and the published inventory reports chip
 revision 2.7. No raw PRId read was published.
@@ -248,15 +248,15 @@ Components and connections
      - *established*: Technical Report section 2.3.2, printed page 2-15
    * - HEART
      - SysAD endpoint; Crossbow widget 8
-     - *established*: OpenBSD ``ip30.h`` (``IP30_HEART_WIDGET``); OpenBSD
+     - *software expectation*: OpenBSD ``ip30.h`` (``IP30_HEART_WIDGET``); OpenBSD
        ``xbowdevs`` gives HEART part ``0xc001``, manufacturer ``0x36``
    * - Crossbow
      - seven of eight ports used
      - *established*: Technical Report printed page 2-3
    * - Onboard Bridge
      - Crossbow widget 15
-     - *established*: OpenBSD ``ip30.h`` (``IP30_BRIDGE_WIDGET``); the
-       OpenBSD capture finds the Bridge at widget 15 and prints "Bridge
+     - *software expectation*: OpenBSD ``ip30.h`` (``IP30_BRIDGE_WIDGET``);
+       the OpenBSD capture, *observed*, finds the Bridge at widget 15 and prints "Bridge
        revision 3". A Crossbow link reset of widget 15 resets the Bridge's
        core, as on an :term:`XIO` board. The Bridge specification describes that
        path for revision D, the Octane2's, *established*; for the Octane's
@@ -272,8 +272,9 @@ Components and connections
        (:ref:`measured <sgi-qlogic-isp-measurements>`)
    * - IOC3
      - onboard PCI device 2, function 0
-     - *established*: OpenBSD ``ip30.h`` (``IP30_IOC_SLOTNO``), Linux
-       ``pci-xtalk-bridge.c``, and the OpenBSD capture (revision 1)
+     - *software expectation*: OpenBSD ``ip30.h`` (``IP30_IOC_SLOTNO``),
+       Linux ``pci-xtalk-bridge.c``; *observed* in the OpenBSD capture
+       (revision 1)
    * - RAD1 audio
      - onboard PCI device 3, function 0, identity ``10a9:0005``
      - *observed* for the captured Octane (revision ``0xc0``);
@@ -357,9 +358,9 @@ the control word.
 Processor address map
 ---------------------
 
-Established from OpenBSD ``ip30.h`` and ``ip30_machdep.c``, with Linux
-``ip30-xtalk.c`` and ``mach-ip30/spaces.h`` agreeing on the widget
-windows and the memory offset:
+A *software expectation* from OpenBSD ``ip30.h`` and ``ip30_machdep.c``,
+with Linux ``ip30-xtalk.c`` and ``mach-ip30/spaces.h`` agreeing on the
+widget windows and the memory offset:
 
 .. list-table::
    :header-rows: 1
@@ -454,7 +455,7 @@ one-wire bus beside its Ethernet-address part.
      - A
      - same
 
-Names, parts and revisions are *established* from the inventories
+Names, parts and revisions are *observed* in the inventories
 (:ref:`sgi-measured-octane2-hinv` for the Octane2). The
 rest of each record is not:
 
