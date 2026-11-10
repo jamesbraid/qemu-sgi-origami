@@ -173,9 +173,9 @@ DEFAULT_BASIS = {
         "enables are an approximation (hardware/l1.rst)."),
     "l2-controller": (
         "A launch choice, off: both a 3200 with and without an L2 shipped "
-        "(hardware/l1.rst); with it off the L1s' links stay unbacked, "
-        "which hardware/l1.rst describes as the model running without "
-        "an L2 peer."),
+        "(hardware/l1-l2-link.rst); with it off the L1s' links stay "
+        "unbacked, which hardware/l1-l2-link.rst describes as the model "
+        "running without an L2 peer."),
 }
 
 
