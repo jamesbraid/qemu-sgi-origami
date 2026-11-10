@@ -594,7 +594,7 @@ tool never shows a value with nothing behind it.
      - The processor assembly in the model file, for the FPU revision the product's inventory prints; not a raw read.
    * - ``l2-controller``
      - approximated
-     - A launch choice, off: both a 3200 with and without an L2 shipped (hardware/l1.rst); with it off the L1s' links stay unbacked, which hardware/l1.rst describes as the model running without an L2 peer.
+     - A launch choice, off: both a 3200 with and without an L2 shipped (hardware/l1-l2-link.rst); with it off the L1s' links stay unbacked, which hardware/l1-l2-link.rst describes as the model running without an L2 peer.
    * - ``origin300-l1cmd-compat``
      - approximated
      - The machine property's own default, off; the commands it enables are an approximation (hardware/l1.rst).
