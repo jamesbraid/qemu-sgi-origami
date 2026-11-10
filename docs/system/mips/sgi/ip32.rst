@@ -240,9 +240,11 @@ Components and connections
 
 The processor reaches CRIME over its system interface, and CRIME owns
 memory (:src:`sgi-crime-1.5-spec PDF p. 47-48`), *established*. In the
-model, CRIME's five processor interrupt outputs drive CPU interrupt lines
-2 to 6, GBE's four interrupt outputs drive CRIME's external inputs 0 to 3,
-and MACE drives sixteen CRIME inputs. The CRIME page gives the bit
+model, CRIME's ``legacy-software`` profile ORs every pending interrupt
+cause into CPU interrupt line 2 and holds the other four processor
+outputs low, an *approximation* (:doc:`hardware/crime`). GBE's four
+interrupt outputs drive CRIME's external inputs 0 to 3, and MACE drives
+sixteen CRIME inputs. The CRIME page gives the bit
 assignment (:src:`sgi-crime-1.5-spec PDF p. 106-108`). MACE's Ethernet,
 peripheral and PCI DMA reach memory through CRIME's decoded banks.
 
