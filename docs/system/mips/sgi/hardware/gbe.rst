@@ -833,7 +833,9 @@ vertically (:src:`099-0123-003 p. 36`), *established*. That is the GBE tile
 of :ref:`sgi-gbe-tiles` read as 512 columns of bytes by 128 lines, so a
 frame buffer GBE displays can be addressed by VICE through its tile
 mode, an *inferred* reading. The specification says nothing about GBE
-beyond this. QEMU has no VICE model, so the shared layout has no model behaviour or test of its own.
+beyond this. QEMU's VICE model (:doc:`vice`) translates through a tiled index, but the
+``o2`` machine does not fit VICE, so the layout GBE shares with it has no
+behaviour or test of its own in the machine.
 
 Migration
 =========
