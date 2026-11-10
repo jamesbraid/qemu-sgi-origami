@@ -45663,6 +45663,157 @@
       "xio-slots": []
     },
     {
+      "board-slots": [
+        {
+          "description": "an XIO slot",
+          "name": "widget-9",
+          "products": [
+            {
+              "description": "a PCI shoehorn with its one PCI slot empty",
+              "device": "sgi-pci-shoehorn",
+              "kind": "device",
+              "product": "pci-shoehorn",
+              "properties": [
+                {
+                  "name": "board-part",
+                  "value": "030-1275-004"
+                },
+                {
+                  "name": "board-revision",
+                  "value": "A"
+                },
+                {
+                  "name": "flash-empty-reads-high",
+                  "value": "true"
+                },
+                {
+                  "name": "first-slot",
+                  "value": "1"
+                },
+                {
+                  "name": "slots",
+                  "value": "1"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "description": "an XIO slot",
+          "name": "widget-10",
+          "products": [
+            {
+              "description": "a PCI shoehorn with its one PCI slot empty",
+              "device": "sgi-pci-shoehorn",
+              "kind": "device",
+              "product": "pci-shoehorn",
+              "properties": [
+                {
+                  "name": "board-part",
+                  "value": "030-1275-004"
+                },
+                {
+                  "name": "board-revision",
+                  "value": "A"
+                },
+                {
+                  "name": "flash-empty-reads-high",
+                  "value": "true"
+                },
+                {
+                  "name": "first-slot",
+                  "value": "1"
+                },
+                {
+                  "name": "slots",
+                  "value": "1"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "description": "an XIO slot",
+          "name": "widget-11",
+          "products": [
+            {
+              "description": "a PCI shoehorn with its one PCI slot empty",
+              "device": "sgi-pci-shoehorn",
+              "kind": "device",
+              "product": "pci-shoehorn",
+              "properties": [
+                {
+                  "name": "board-part",
+                  "value": "030-1275-004"
+                },
+                {
+                  "name": "board-revision",
+                  "value": "A"
+                },
+                {
+                  "name": "flash-empty-reads-high",
+                  "value": "true"
+                },
+                {
+                  "name": "first-slot",
+                  "value": "1"
+                },
+                {
+                  "name": "slots",
+                  "value": "1"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "description": "an XIO slot",
+          "name": "widget-12",
+          "products": [
+            {
+              "description": "a PCI shoehorn with its one PCI slot empty",
+              "device": "sgi-pci-shoehorn",
+              "kind": "device",
+              "product": "pci-shoehorn",
+              "properties": [
+                {
+                  "name": "board-part",
+                  "value": "030-1275-004"
+                },
+                {
+                  "name": "board-revision",
+                  "value": "A"
+                },
+                {
+                  "name": "flash-empty-reads-high",
+                  "value": "true"
+                },
+                {
+                  "name": "first-slot",
+                  "value": "1"
+                },
+                {
+                  "name": "slots",
+                  "value": "1"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "description": "the PCI module's Crossbow port",
+          "name": "widget-13",
+          "products": [
+            {
+              "description": "the Octane PCI module, three PCI slots",
+              "device": "sgi-octane-pci-cage",
+              "kind": "device",
+              "product": "pci-cage",
+              "properties": []
+            }
+          ]
+        }
+      ],
       "cables": [],
       "console": 0,
       "controllers": [],
@@ -46286,6 +46437,157 @@
       "xio-slots": []
     },
     {
+      "board-slots": [
+        {
+          "description": "an XIO slot",
+          "name": "widget-9",
+          "products": [
+            {
+              "description": "a PCI shoehorn with its one PCI slot empty",
+              "device": "sgi-pci-shoehorn",
+              "kind": "device",
+              "product": "pci-shoehorn",
+              "properties": [
+                {
+                  "name": "board-part",
+                  "value": "030-1275-004"
+                },
+                {
+                  "name": "board-revision",
+                  "value": "A"
+                },
+                {
+                  "name": "flash-empty-reads-high",
+                  "value": "true"
+                },
+                {
+                  "name": "first-slot",
+                  "value": "1"
+                },
+                {
+                  "name": "slots",
+                  "value": "1"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "description": "an XIO slot",
+          "name": "widget-10",
+          "products": [
+            {
+              "description": "a PCI shoehorn with its one PCI slot empty",
+              "device": "sgi-pci-shoehorn",
+              "kind": "device",
+              "product": "pci-shoehorn",
+              "properties": [
+                {
+                  "name": "board-part",
+                  "value": "030-1275-004"
+                },
+                {
+                  "name": "board-revision",
+                  "value": "A"
+                },
+                {
+                  "name": "flash-empty-reads-high",
+                  "value": "true"
+                },
+                {
+                  "name": "first-slot",
+                  "value": "1"
+                },
+                {
+                  "name": "slots",
+                  "value": "1"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "description": "an XIO slot",
+          "name": "widget-11",
+          "products": [
+            {
+              "description": "a PCI shoehorn with its one PCI slot empty",
+              "device": "sgi-pci-shoehorn",
+              "kind": "device",
+              "product": "pci-shoehorn",
+              "properties": [
+                {
+                  "name": "board-part",
+                  "value": "030-1275-004"
+                },
+                {
+                  "name": "board-revision",
+                  "value": "A"
+                },
+                {
+                  "name": "flash-empty-reads-high",
+                  "value": "true"
+                },
+                {
+                  "name": "first-slot",
+                  "value": "1"
+                },
+                {
+                  "name": "slots",
+                  "value": "1"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "description": "an XIO slot",
+          "name": "widget-12",
+          "products": [
+            {
+              "description": "a PCI shoehorn with its one PCI slot empty",
+              "device": "sgi-pci-shoehorn",
+              "kind": "device",
+              "product": "pci-shoehorn",
+              "properties": [
+                {
+                  "name": "board-part",
+                  "value": "030-1275-004"
+                },
+                {
+                  "name": "board-revision",
+                  "value": "A"
+                },
+                {
+                  "name": "flash-empty-reads-high",
+                  "value": "true"
+                },
+                {
+                  "name": "first-slot",
+                  "value": "1"
+                },
+                {
+                  "name": "slots",
+                  "value": "1"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "description": "the PCI module's Crossbow port",
+          "name": "widget-13",
+          "products": [
+            {
+              "description": "the Octane PCI module, three PCI slots",
+              "device": "sgi-octane-pci-cage",
+              "kind": "device",
+              "product": "pci-cage",
+              "properties": []
+            }
+          ]
+        }
+      ],
       "cables": [],
       "console": 0,
       "controllers": [],
