@@ -310,6 +310,10 @@ slots with the 32-bit register in the low (higher-addressed) half. The
 model serves only the widths listed; any other access in the window
 fails the transaction and logs ``LOG_UNIMP``.
 
+.. sgi-registers: base=0x11000000 skip=0x0,0x4,0x20
+   map=/machine/peripheral/heart:1:0x11000000
+   qemu="-M none -cpu R10000 -device sgi-heart,id=heart,widget-revision=4"
+
 .. list-table::
    :header-rows: 1
 
