@@ -291,6 +291,12 @@ def build(page, table, marker_text, number):
         if per_offset is not None and len(per_offset) != len(where):
             raise Error(f'{page}:{line}: {len(per_offset)} widths for '
                         f'{len(where)} offsets')
+        if kind == 'skip' and len(where) > 64:
+            # A window with no reset value: one entry, not one per slot.
+            skipped.append({'line': line, 'name': name,
+                            'offset': hex(where[0]),
+                            'reason': f'{got} ({len(where)} slots)'})
+            continue
         for index, offset in enumerate(where):
             if per_offset is not None:
                 width = per_offset[index]
