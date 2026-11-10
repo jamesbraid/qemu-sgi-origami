@@ -436,6 +436,12 @@ with no log.
      - see `Serial ports`_
      - R/W
 
+The model reads ``0x1400`` from the interrupt status register at
+power-on, where the specification's reset is 0: the PS/2 poll flags, bits
+10 and 12, stay set while the ports are idle
+(:ref:`poll flags <sgi-mace-poll-flags>`),
+an *approximation*.
+
 Ring base and external reset
 ----------------------------
 
@@ -568,6 +574,8 @@ set. A write to the status register clears serial pair-request bits
 registers. A write in bits 0-12 or 16-19 logs ``LOG_UNIMP`` and has no
 effect. The specification does not say how the read-only bits clear,
 *unknown*; the sources of the audio, PS/2 and serial bits clear them.
+
+.. _sgi-mace-poll-flags:
 
 The poll flags are "unmasked non-interrupt" versions of the PS/2
 interrupts. The model sets a poll flag whenever the port's transmit buffer
