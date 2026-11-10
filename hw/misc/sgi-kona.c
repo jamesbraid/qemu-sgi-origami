@@ -16445,7 +16445,10 @@ static bool sgi_kona_x_relative_coordinates(uint32_t *words, unsigned count)
     return true;
 }
 
-/* Endpoint and Bresenham tie rules are the documented solid-line policy. */
+/*
+ * Endpoint and Bresenham tie rules are the model's own: the pipe's line
+ * pixel rule is unknown, so lines are an approximation.
+ */
 static bool sgi_kona_x_segment(SGIKonaState *s, uint32_t first,
                                uint32_t last, bool endpoint, bool commit)
 {
@@ -16493,10 +16496,15 @@ static void sgi_kona_x_lines(SGIKonaState *s, uint32_t token,
                       "sgi-kona: invalid X solid-line vertex count; dropped\n");
         goto done;
     }
-    if (s->x_gc[10] || !sgi_kona_x_decode(s, &gc) ||
-        gc.first_selector != 1 || (s->x_gc[7] & ~0xcU) != 1) {
+    /*
+     * Lines draw under the current GC like any other fill: the pipe has no
+     * device restriction to a solid line (the sender's invariant is the
+     * server's, not the board's). A GC the model cannot decode drops the
+     * run, and the fill refuses a destination it cannot draw.
+     */
+    if (!sgi_kona_x_decode(s, &gc)) {
         qemu_log_mask(LOG_UNIMP,
-                      "sgi-kona: unsupported X solid-line GC; dropped\n");
+                      "sgi-kona: unsupported X line GC; dropped\n");
         goto done;
     }
     memcpy(vertices, s->x_boxes, s->x_boxes_have * sizeof(*vertices));

@@ -1512,11 +1512,11 @@ static void test_point_run_discard(void)
     uint32_t words[24];
     const uint32_t gc[] = {
         0x3c000, 0x1ffe, 0, 0, 0xf00fff, 0,
-        0xc, 2, 1, 6, 0, 1, 1,
+        0xc, 1, 1, 7, 0, 1, 1,
     };
 
     for (unsigned i = 0; i < ARRAY_SIZE(lines); i++) {
-        /* Solid lines require operation one; reject the complete run. */
+        /* An odd logic-operation field is undecodable; reject the run. */
         kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
         for (unsigned j = 0; j < ARRAY_SIZE(words); j++) {
             words[j] = 0x14c;
@@ -1547,7 +1547,7 @@ static void test_point_run_discard(void)
     g_assert_cmphex(front_at(s, 110, 120), ==, 0x3c);
     qtest_quit(s);
     found = kona_log_read(log);
-    g_assert_nonnull(strstr(found, "unsupported X solid-line GC"));
+    g_assert_nonnull(strstr(found, "unsupported X line GC"));
     g_assert_null(strstr(found, "X data run of 3 words dropped before 0x129"));
     g_assert_nonnull(strstr(found, "X data run of 3 words dropped"));
     g_assert_nonnull(strstr(found, "more than 32 box words"));
@@ -2180,6 +2180,29 @@ static void test_solid_line_octant(gconstpointer opaque)
         }
     }
     g_free(rect.pixels);
+    qtest_quit(s);
+}
+
+/*
+ * A line draws under the current GC like a point does: the board has no
+ * solid-line restriction. With the bus pixel format 5 and the second
+ * operation-word fields set, which the old check refused, the line's pixels
+ * are the ones a point under the same GC paints.
+ */
+static void test_line_follows_gc(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    uint32_t gc[] = { 0x3c000, 0x1ffe, 0, 0x1ffe, 0xf00fff, 0,
+                      0x180c, 0x40001, 1, 6, 5, 1, 1 };
+
+    kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    kona_command(s, 0x14c, (uint32_t[]) { XY(30, 20) }, 1);
+    kona_command(s, 0x159, (uint32_t[]) { XY(10, 20), XY(14, 20) }, 2);
+    for (unsigned x = 10; x <= 14; x++) {
+        g_assert_cmphex(front_at(s, x, 20), ==, front_at(s, 30, 20));
+    }
+    g_assert_cmphex(front_at(s, 30, 20), ==, 0x3c);
+    assert_in_step(s);
     qtest_quit(s);
 }
 
@@ -3471,6 +3494,8 @@ int main(int argc, char **argv)
         add_data_case(name, GUINT_TO_POINTER(octant),
                       test_solid_line_octant);
     }
+    qtest_add_func("sn0/origin2000/kona-fill/solid-line/follows-gc",
+                   test_line_follows_gc);
     static const char *line_control_cases[] = {
         "closed-xor", "degenerate", "odd-segment", "no-anchor", "bad-gc",
         "reset", "interrupted", "signed-clip", "ties",
