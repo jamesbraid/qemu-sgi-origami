@@ -422,6 +422,19 @@ class RegisterTablesTest(unittest.TestCase):
         _, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
         self.assertEqual(len(errors), 1)
 
+    def test_bios_blank_reaches_the_case(self):
+        marker = MARKER.replace('width=64', 'width=64 bios=blank')
+        cases, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(errors, [])
+        self.assertEqual(cases[0]['bios'], 'blank')
+        cases, _, _, errors = scan(PAGE, skip='0x38')
+        self.assertIsNone(cases[0]['bios'])
+
+    def test_bios_takes_only_blank(self):
+        marker = MARKER.replace('width=64', 'width=64 bios=real')
+        _, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(len(errors), 1)
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])

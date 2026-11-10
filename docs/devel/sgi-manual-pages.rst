@@ -262,6 +262,9 @@ A row whose Offset is relative to its unit, such as "link +0x08", takes
 Width cell says, for a device whose registers are slots read whole: the
 VICE lists a nine-bit register that is still read as a doubleword.
 
+A board that refuses to build without a boot PROM, and runs nothing from
+it, takes ``bios=blank``: the test starts it with an erased image.
+
 A register in a window declared little-endian, such as the Xframe's, is
 read with ``split=32``: two 32-bit reads, low half at the address and
 high half four above. A Reset cell that says ``all ones`` is the width's

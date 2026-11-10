@@ -49,6 +49,9 @@ continue on indented lines. Keys:
   access   32 or 64 and so on, the width of every access, whatever the
            Width column says, for a device whose registers are slots read
            whole (a nine-bit register is still read as a doubleword);
+  bios     blank, to start the machine with an erased boot PROM image of
+           the size a machine needs, for a board that refuses to build
+           without one and runs nothing from it (the test appends -bios);
   units    BASE:STRIDE:COUNT, the places that repeat for a row whose Offset
            is relative to its unit, such as "link ``+0x08``" (units=
            0x100:0x40:8 reads it at 0x108, 0x148 and so on);
@@ -100,7 +103,7 @@ PAGES = 'docs/system/mips/sgi'
 MARKER = re.compile(r'\.\.\s+sgi-registers:(.*)')
 KEYS = {'qemu', 'base', 'width', 'map', 'variant', 'skip', 'expect',
         'setup', 'select', 'skiprow', 'count', 'label', 'lane',
-        'stride', 'units', 'split', 'xor', 'access'}
+        'stride', 'units', 'split', 'xor', 'access', 'bios'}
 WIDTHS = (8, 16, 32, 64)
 NO_RESET = {'', 'n/a', 'none', 'unknown', 'unsupported', '-'}
 NUMBER = re.compile(r'(?:0x[0-9a-fA-F]+|\d+)$')
@@ -191,6 +194,8 @@ def parse_marker(text):
             options['stride'] = int(options['stride'], 0)
             if options['stride'] < 1:
                 raise ValueError
+        if options.get('bios', 'blank') != 'blank':
+            raise ValueError
         if 'access' in options:
             options['access'] = int(options['access'])
             if options['access'] not in WIDTHS:
@@ -233,7 +238,7 @@ def parse_marker(text):
         options['select'] = parse_select(options['select'])
         options['skiprow'] = parse_skiprow(options['skiprow'])
     except ValueError:
-        raise Error('a marker number (base, width, access, count, lane, '
+        raise Error('a marker value (base, width, access, count, lane, bios, '
                     'xor, stride, units, skip, expect, setup, select or '
                     'skiprow) is not of the right kind')
     return options
@@ -524,6 +529,7 @@ def build(page, table, marker_text, number):
             'qemu': options['qemu'], 'maps': options['map'],
             'setup': options['setup'],
             'variant': variant, 'label': options.get('label'),
+            'bios': options.get('bios'),
             'registers': registers,
             'skipped': skipped}
 
