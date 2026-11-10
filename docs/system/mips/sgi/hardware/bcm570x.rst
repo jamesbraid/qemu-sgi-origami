@@ -187,6 +187,12 @@ register file, widths are 32 bits, and every register reads zero after
 reset unless noted. Names follow :src:`broadcom-57xx-pg105-r`. The access
 column shows the model's behaviour.
 
+.. sgi-registers: base=0x90000000 width=32
+   skip=0x410:station-address,0x414:station-address,0x450:derived
+   map=/machine/peripheral/bridge:0:0x40000000
+   setup=0x40024010:0x10000000,0x40024004:6
+   qemu="-nodefaults -M none -cpu R10000 -device sgi-xio-test-target,id=transfer-ram,size=16M -device sgi-bridge,id=bridge,board-part=030-1244-001,fabric=/machine/unattached/system[0] -netdev user,id=n0 -device bcm570x,addr=4.0,netdev=n0"
+
 .. list-table::
    :header-rows: 1
 
