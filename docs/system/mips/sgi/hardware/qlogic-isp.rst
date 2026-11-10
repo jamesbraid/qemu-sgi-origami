@@ -33,6 +33,9 @@ covers three of them and the tape drive that sits behind them.
   :doc:`qlogic-isp2200`.
 - ``scsi-tape`` is a generic SCSI sequential-access target, not a QLogic
   part. It attaches to any of the adapters above.
+- ``scsi-hd-inquiry`` is ``scsi-hd`` with configurable standard INQUIRY
+  data (:doc:`scsi-hd-inquiry`). It attaches to any of the adapters
+  above.
 
 The two SCSI adapters share ``hw/scsi/qlogic-isp.c`` and its header
 ``include/hw/scsi/qlogic-isp.h``. They are two parts of one abstract type,

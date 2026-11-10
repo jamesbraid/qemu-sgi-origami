@@ -13,6 +13,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
+#include "sgi-scsi-inquiry-test.h"
 #include "sgi-test.h"
 #include "sgi-wait.h"
 
@@ -2093,6 +2094,63 @@ static void test_inquiry_real_payload_on_both_channels(const void *data)
     }
 
     qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/* scsi-hd-inquiry's standard INQUIRY data (sgi-scsi-inquiry-test.h). */
+typedef struct InquiryPort {
+    QTestState *qts;
+    uint32_t handle;
+} InquiryPort;
+
+static uint8_t inquiry_command(void *opaque, const uint8_t *cdb,
+                               size_t cdb_len, uint8_t *data, uint32_t len,
+                               bool out, uint8_t *sense)
+{
+    InquiryPort *p = opaque;
+    const RingSeg seg = { DIRECT64(BUF_PHYS), len };
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint32_t handle = p->handle++;
+    uint8_t buf[128];
+
+    g_assert_false(out);
+    g_assert_cmpuint(len, <=, sizeof(buf));
+    qtest_memset(p->qts, BUF_PHYS, WRAP_SENTINEL, ROUND_UP(len, 4));
+    submit_a64(p->qts, ring.rqst_next, handle, 0, DISK_TARGET, 0, cdb,
+               cdb_len, ISP_REQ_CONTROL_DATA_IN, &seg, 1);
+    wait_status(p->qts, handle, status);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    qtest_memread(p->qts, BUF_PHYS, buf, ROUND_UP(len, 4));
+    normalise_words(buf, ROUND_UP(len, 4));
+    memcpy(data, buf, len);
+    return get16le(status + ISP_STATUS_OFF_SCSI_STATUS) & 0xff;
+}
+
+static void test_inquiry_data(const void *data)
+{
+    const SgiInquiryCase *c = data;
+    DiskPair disks;
+    g_autofree char *args = NULL;
+    InquiryPort port;
+    SgiCdTransport t = { .command = inquiry_command, .opaque = &port };
+
+    disks_create(&disks);
+    args = g_strdup_printf(MACHINE
+        " -drive if=none,id=d0,format=raw,file=%s"
+        " -device scsi-hd-inquiry,bus=scsi.2,scsi-id=1,drive=d0,%s",
+        disks.path[0], c->props);
+    port.qts = qtest_init(args);
+    port.handle = 0x00000070;
+    aim_window_at_memory_bar(port.qts);
+    qtest_memset(port.qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
+    qtest_memset(port.qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RESP_SLOTS);
+    init_queues(port.qts, DIRECT64(RQST_PHYS), RQST_SLOTS,
+                DIRECT64(RESP_PHYS), RESP_SLOTS, true);
+
+    sgi_inquiry_check(&t, c);
+
+    qtest_quit(port.qts);
     disks_remove(&disks);
 }
 
@@ -4381,6 +4439,12 @@ int main(int argc, char **argv)
                         test_write_persists_on_channel_1);
     qtest_add_data_func("sn0/isp12160/inquiry-real-payload-on-both-channels",
                         NULL, test_inquiry_real_payload_on_both_channels);
+    for (unsigned i = 0; i < ARRAY_SIZE(sgi_inquiry_cases); i++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn0/isp12160/inquiry-data/%s", sgi_inquiry_cases[i].name);
+
+        qtest_add_data_func(name, &sgi_inquiry_cases[i], test_inquiry_data);
+    }
     qtest_add_data_func("sn0/isp12160/cursor-roles-are-distinct", NULL,
                         test_cursor_roles_are_distinct);
     qtest_add_data_func(
