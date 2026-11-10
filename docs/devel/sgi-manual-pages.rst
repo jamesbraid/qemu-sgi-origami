@@ -39,6 +39,25 @@ platform pages (``ip<NN>.rst``, or ``sn.rst``) back. Link related parts
 with a ``.. seealso::`` too. On every page, mark an SGI
 glossary term with ``:term:`` at its first use.
 
+A part page that grows past what a reader can scan may move whole behaviour
+sections to detail pages, ``hardware/<part>-<topic>.rst``, each titled
+"<Part> <topic>: <function>". A detail page opens like its parent: a label
+before the title, the same "Used in" paragraph, the same ``.. seealso::`` of
+platform pages and a second ``.. seealso::`` linking the parent, then a
+paragraph saying what the page covers. The parent keeps its path, Sources,
+Identity, Register map, Reset, Migration, Measurements, Model limits and
+Tests. Each moved section keeps its heading, labels and subsections as
+written, and leaves a heading in the parent with a short summary and a
+``:doc:`` link to the detail page. Give the detail page a new top label, not
+one a section already uses. List each detail page in ``index.rst`` after its
+parent and in ``LICENSE.origami.paths``, and mark a glossary term at its first
+use on the detail page as on any other. The lint treats a detail page as a
+part page, so every rule below applies to it.
+
+A platform detail page, ``ip<NN>-<topic>.rst`` in the manual root, falls
+outside the lint rules for ``hardware/`` and ``ip<NN>.rst`` pages. It needs
+the SPDX line, a top label, a title and the licence listing.
+
 The running pages, ``running.rst`` and ``running-ip<NN>.rst``, say how
 to start a machine. They state no hardware fact, so they carry no ratings.
 Write a table of selections, inputs, devices or heads, or a command that
