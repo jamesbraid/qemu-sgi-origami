@@ -196,6 +196,28 @@ class RegisterTablesTest(unittest.TestCase):
         regs = {r['offset']: r['expect'] for r in cases[0]['registers']}
         self.assertEqual(regs['0x0'], '0x1')
 
+    def test_empty_cells_stay_cells(self):
+        # A bare "-" is an empty cell; it must not fold into the cell
+        # before it and shift the Reset column.
+        text = PAGE.replace(
+            '''   * - ``0x38``
+     - Prose
+     - per machine
+''', '''   * - ``0x38``
+     - Gap
+     -
+     -
+''')
+        text = text.replace('     - Reset\n', '     - Width\n     - Reset\n')
+        text = text.replace('     - Control\n', '     - Control\n     - 64\n')
+        text = text.replace('     - Two\n', '     - Two\n     - 64\n')
+        text = text.replace('     - Range\n', '     - Range\n     - 64\n')
+        text = text.replace('     - Write only\n',
+                            '     - Write only\n     - 64\n')
+        cases, _, _, errors = scan(text)
+        self.assertEqual(errors, [])
+        self.assertIn('0x38', [s['offset'] for s in cases[0]['skipped']])
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])
