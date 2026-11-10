@@ -62,6 +62,9 @@ expectation*. The specification lists offset ``0x98`` twice; the model
 leaves both incoming-message-queue registers (``0x80`` to ``0x98``)
 unmodelled.
 
+.. sgi-registers: base=0x1f280000 width=64
+   qemu="-m 64M -M o2,register-test-profile=on -nic none"
+
 .. list-table::
    :header-rows: 1
 

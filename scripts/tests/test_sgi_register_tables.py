@@ -176,6 +176,7 @@ class RegisterTablesTest(unittest.TestCase):
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])
+        self.assertGreaterEqual(len(annotated), 3)
         for case in cases:
             self.assertTrue(case['registers'], case['id'])
 
