@@ -790,11 +790,14 @@ point) is *unknown*, so the model's line drawing is an *approximation*.
 The background-point tokens ``0x15f`` to ``0x161`` draw each point in the
 GC's background colour without the loaded stipple, which the ordinary
 point tokens apply (*inferred*). Word 4 of the graphics-context load is
-the plane write mask, written under ``0xffffff`` (*established*), so its
-bit 31 cannot reach a raster register. The model nonetheless reads that
-bit as the opaque-stipple flag, which paints the background where the
-stipple is clear. What the bit means, and how the board is given an opaque
-stipple, is *unknown*, and the model's reading is an *approximation*.
+the plane write mask, written under ``0xffffff`` (*established*), and the
+X server sets its bit 31 for an opaque stipple, the only wire difference
+between that fill and a plain one (*established*; the meaning is
+*inferred*). Whether the board honours the bit is *unknown*, since the
+chip probably masks it. The model reads the bit as sender intent and
+paints the background where the stipple is clear, an *approximation*. A
+raster-side observation of the pixels an opaque stipple writes would
+settle it.
 
 Texel readback
 ~~~~~~~~~~~~~~
@@ -1024,16 +1027,34 @@ The combine is add, base plus K(lambda) times the detail minus one half,
 or modulate, that product times the base texel, with K read from the
 stored doubled detail curve at 64 times 2 to the power lambda
 (*inferred*). The curve's 64 samples sit at log2(i/64), detail samples
-doubled and sharpen samples negated, quantised by truncating v times 512
-plus 2, shifted right two and clamped to plus or minus ``0x3ff``, with
-default points (-4, 1) and (0, 0) (*software expectation*, from the
-client library). The model computes in double precision with the public
+doubled and sharpen samples negated, with default points (-4, 1) and
+(0, 0) (*software expectation*, from the client library). Each sample is
+quantised to a 10-bit code: the value is clamped to -1024 to 1023, halved
+arithmetically while it lies outside -128 to 127, counting 0 to 3 halvings,
+and sent as ``((n & 0xff) << 2) | count``, so a code decodes as the signed
+mantissa in bits 9:2 times 2 to the power of the exponent in bits 1:0,
+over 128 (*established*). The model decodes the codes that way.
+Sharpen binds use bind mode 2 and detail binds mode 1 (*established*). The
+detail level in the bind is the public level negated and stored 0 to 4,
+public -4 to 0 (*established*), and the model reads it so. When both the
+2D and 3D enables are set, 3D wins (*established*); the model's draw does
+the same. The model computes in double precision with the public
 weight, half the stored sample, times twice the detail minus one, which
 is the same product (*approximation*). The pipe's widths and rounding, and
 how it derives the detail's s and t from the base's s and t and the level,
-are *unknown*. The model scales the base coordinates by the ratio of the
-two sizes and by two to the power of minus the detail level, *inferred*
-from the detail extension's specification only.
+are *unknown*; the position is inferred to be the base level-0 coordinate
+times 2 to the power of the level's magnitude, with K twice the stored
+curve value (*inferred*). The model scales the base coordinates by the
+ratio of the two sizes and by two to the power of minus the detail level,
+which differs from that inference when the sizes differ, an
+*approximation*.
+
+A bind that follows a format-row mismatch forces magnification code 1 for
+every mode-1 bind of a 2D target, whatever its code (*established*); the
+model applies the fallback to detail magnifications and has not been
+checked against other codes. ``0x17c`` leaves the r and LOD scales as they
+were, since it never writes the registers for them (*established*); the
+model has not been checked against that.
 
 .. _sgi-kona-config:
 
