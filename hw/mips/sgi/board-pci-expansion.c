@@ -33,13 +33,17 @@
  * the Bridge keeps its older text page, and with "bridge-revision" 0 its
  * default revision.
  *
- * "slots" limits the PCI device positions a card may take to 0 .. slots-1,
- * for a carrier with fewer physical slots than the Bridge has device
- * positions:
- * the Origin 2000 PCI Carrier Assembly has three (itser's guide, 007-3456-003
- * printed page 34). Which device number each physical slot is wired to is not
- * established, so the first three are an approximation. 0, the default,
- * leaves every Bridge device position open.
+ * "slots" limits the PCI device positions a card may take to
+ * first-slot .. first-slot + slots - 1, for a carrier with fewer physical
+ * slots than the Bridge has device positions: the Origin 2000 PCI Carrier
+ * Assembly has three (itser's guide, 007-3456-003 printed page 34). Which
+ * device number each physical slot is wired to is not established, so the
+ * first three are an approximation. 0, the default, leaves every Bridge
+ * device position open. "first-slot" defaults to 0.
+ *
+ * "flash-empty-reads-high" makes a read of a flash chip select with nothing
+ * fitted complete with all ones instead of failing, for a board whose
+ * empty select is not known to fail. A write to it still fails.
  *
  * "fabric" passes straight through to the internal Bridge; the link to the
  * board's slot sets it.
@@ -75,6 +79,8 @@ struct SGIPciExpansionState {
     uint64_t onewire_serial;
     char *pci_bus_name;
     uint32_t slots;
+    uint32_t first_slot;
+    bool flash_empty_reads_high;
     char *board_part;
     char *board_barcode;
     char *board_revision;
@@ -131,6 +137,13 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
                    SGI_BRIDGE_PINS);
         return false;
     }
+    if (s->slots && (s->first_slot >= SGI_BRIDGE_PINS ||
+                     s->slots > SGI_BRIDGE_PINS - s->first_slot)) {
+        error_setg(errp, "sgi-pci-expansion first-slot %u with %u slots "
+                   "runs past Bridge device %u", s->first_slot, s->slots,
+                   SGI_BRIDGE_PINS - 1);
+        return false;
+    }
 
     bridge = qdev_new(TYPE_SGI_BRIDGE);
     object_property_add_child(OBJECT(board), "bridge", OBJECT(bridge));
@@ -156,6 +169,8 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
         qdev_prop_set_string(bridge, "board-name", s->board_name);
     }
     qdev_prop_set_uint64(bridge, "onewire-serial", s->onewire_serial);
+    qdev_prop_set_bit(bridge, "flash-empty-reads-high",
+                      s->flash_empty_reads_high);
     sgi_xio_board_name_pci_bus(SGI_XIO_BOARD(s), bridge, s->pci_bus_name);
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(s->fabric),
                              &error_abort);
@@ -164,7 +179,8 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
     }
     if (s->slots) {
         pci_bus_set_slot_reserved_mask(PCI_HOST_BRIDGE(bridge)->bus,
-                                       ~MAKE_64BIT_MASK(0, s->slots));
+                                       ~MAKE_64BIT_MASK(s->first_slot,
+                                                        s->slots));
     }
 
     board->cpu_face = sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0);
@@ -185,6 +201,9 @@ static const Property pci_expansion_properties[] = {
                        onewire_serial, PCI_EXPANSION_SERIAL_PLACEHOLDER),
     DEFINE_PROP_STRING("pci-bus-name", SGIPciExpansionState, pci_bus_name),
     DEFINE_PROP_UINT32("slots", SGIPciExpansionState, slots, 0),
+    DEFINE_PROP_UINT32("first-slot", SGIPciExpansionState, first_slot, 0),
+    DEFINE_PROP_BOOL("flash-empty-reads-high", SGIPciExpansionState,
+                     flash_empty_reads_high, false),
     DEFINE_PROP_STRING("board-part", SGIPciExpansionState, board_part),
     DEFINE_PROP_STRING("board-barcode", SGIPciExpansionState, board_barcode),
     DEFINE_PROP_STRING("board-revision", SGIPciExpansionState,
@@ -260,6 +279,41 @@ static void pci_carrier_class_init(ObjectClass *oc, const void *data)
     dc->desc = "Origin 2000 PCI Carrier Assembly (three PCI slots)";
 }
 
+/*
+ * The Octane's PCI module, SGI's "OCTANE PCI Module" (the PCI card cage): a
+ * three-slot PCI board on the Crossbow port of its own, 13, beside the four
+ * XIO slots at 9 to 12 (installation guide 007-3547-001 printed pages 3 and
+ * 13). Slot N of the module is taken to be PCI device N, so it holds
+ * devices 1 to 3; the guide numbers the slots but not their IDSEL wiring, so
+ * that is inferred, not established.
+ *
+ * Real Octane inventories print the board as part 030-0952-005 revision E,
+ * name XTALKPCI. Its Bridge revision is unknown; the onboard Octane
+ * Bridge's, 3, stands in. A board with no flash fitted is not known to fault
+ * when the flash window is read, so both chip selects read high.
+ */
+#define TYPE_SGI_OCTANE_PCI_CAGE "sgi-octane-pci-cage"
+
+static void octane_pci_cage_instance_init(Object *obj)
+{
+    SGIPciExpansionState *s = SGI_PCI_EXPANSION(obj);
+
+    s->slots = 3;
+    s->first_slot = 1;
+    s->board_part = g_strdup("030-0952-005");
+    s->board_revision = g_strdup("E");
+    s->board_name = g_strdup("XTALKPCI");
+    s->bridge_revision = 3;
+    s->flash_empty_reads_high = true;
+}
+
+static void octane_pci_cage_class_init(ObjectClass *oc, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+
+    dc->desc = "Octane PCI module (three PCI slots, Crossbow port 13)";
+}
+
 static const TypeInfo pci_expansion_types[] = {
     {
         .name = TYPE_SGI_PCI_EXPANSION,
@@ -273,6 +327,12 @@ static const TypeInfo pci_expansion_types[] = {
         .parent = TYPE_SGI_PCI_EXPANSION,
         .instance_init = pci_carrier_instance_init,
         .class_init = pci_carrier_class_init,
+    },
+    {
+        .name = TYPE_SGI_OCTANE_PCI_CAGE,
+        .parent = TYPE_SGI_PCI_EXPANSION,
+        .instance_init = octane_pci_cage_instance_init,
+        .class_init = octane_pci_cage_class_init,
     },
 };
 
