@@ -212,8 +212,9 @@ slot on a big-endian host; this page uses the aligned offset.
        the lock reads zero; any write to ``0x00c8`` clears it. Both
        offsets read the stored value with no side effect. Eight bits are
        stored. Reset zero.
-     - Existence and zero after power-on *established* on the measured
-       Octane2. The acquire and release rule is an *approximation*: the
+     - Existence and a zero read after PROM startup are *observed* on the
+       measured Octane2; that read is not a cold-reset value, so reset zero
+       is *inferred*. The acquire and release rule is an *approximation*: the
        model copies its own XBridge model's rule, and the Crossbow
        behaviour is unknown.
 

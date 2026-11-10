@@ -117,9 +117,9 @@ Identity
    * - Cabinet Bridge
      - Bridge widget revision 4, printed ``ASIC BRIDGE Rev 4, (widget 8)``.
        The letter this revision corresponds to is not printed anywhere.
-     - *established* as printed in the upgrade guide's listing
-       (:src:`108-0187-001 p. 3-8`); *observed* in the 2012 inventory
-       (:src:`nekonomicon-16726704`)
+     - *observed* in the 2012 inventory (:src:`nekonomicon-16726704`); the
+       upgrade guide's listing (:src:`108-0187-001 p. 3-8`) prints the same
+       but is a composed example, so it adds only an *inferred* match
    * - Upgrade kits
      - ``HU-CONNECT-XBOX`` (module hardware) and ``561-CHAS-XBOX`` (two
        ``018-0575-001`` XIO cables and a ``018-0649-001`` grounding cable)
@@ -225,7 +225,8 @@ carries which link is *unknown*.
      - ``io7``, board ``xbox_dualxtown``
      - *observed*: ``PCI_XIO ... Slot io7`` and ``ASIC BRIDGE Rev 4,
        (widget 8)`` :src:`nekonomicon-16726704`. The upgrade guide's
-       listing prints the same, *established* :src:`108-0187-001 p. 3-8`
+       listing prints the same, as a composed example, *inferred*
+       :src:`108-0187-001 p. 3-8`
    * - 9
      - The module's IP29 Bridge (base I/O)
      - ``io1``, board ``MotherBoard``
@@ -235,7 +236,8 @@ carries which link is *unknown*.
        with ``ASIC BRIDGE Rev 3, (widget 8)`` beside the cabinet's own
        widget 8. Two Bridges cannot share widget 8 on one Crossbow, so the
        guide's example reads as a composed listing and the model follows
-       the capture. The base I/O Bridge revision (3 or 4) is *unknown*
+       the capture. The base I/O Bridge revision is 4 as the capture prints
+       it, *observed*; the guide's 3 is not relied on
    * - A
      - The module's Hub
      - The node's own slot (``n1``)

@@ -31,7 +31,8 @@ device through a third, directly mapped window (see
 :ref:`sgi-ds1685-direct`).
 
 Facts below are rated *established* (the manufacturer's datasheet),
-*observed* (a published capture), *inferred* (a stated step from
+*observed* (a published capture), *software expectation* (a public driver),
+*inferred* (a stated step from
 established facts), *approximation* (a model choice where the hardware is
 not known) or *unknown*. A model run shows what the model does, not what
 the hardware does.
@@ -73,8 +74,8 @@ shared board design. No revision-matched measurement of an Octane2 clock
 exists.
 
 The chip has a multiplexed address and data bus. The IOC3 reaches it with two
-byte-wide ports, *established* by Linux ``drivers/mfd/ioc3.c`` and OpenBSD
-``dsrtc.c``, which both use them this way:
+byte-wide ports, a *software expectation* from Linux ``drivers/mfd/ioc3.c``
+and OpenBSD ``dsrtc.c``, which both use them this way:
 
 .. list-table::
    :header-rows: 1
@@ -293,7 +294,7 @@ update while the counter runs and ``SET`` is clear
 always reads zero, because an update is one atomic step here. Linux spins on
 ``INCR`` with no timeout in probe and on every time read, so an ``INCR``
 that read one would hang the guest before the clock is named. That is a
-driver expectation, *established* by ``rtc-ds1685.c``; the model's choice is
+*software expectation* from ``rtc-ds1685.c``; the model's choice is
 an *approximation* of the 122 microsecond window the datasheet describes.
 
 ``DM`` and ``24/12`` do not convert stored bytes. Software must rewrite the

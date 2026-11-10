@@ -172,8 +172,9 @@ attach.
      - ``ge14-4`` 030-1129-002 rev F, four engines; ``ge14-2``
        030-1051-002 rev K, two engines; ``ge16-4`` 030-1398-001 rev E,
        four engines
-     - *observed* parts. The GE14-2 presents the GE14-4's chip words, an
-       *approximation*.
+     - The GE14-4 and GE16-4 parts are *observed*. The GE14-2 part is an
+       *approximation*, since no cited capture shows one, and it presents
+       the GE14-4's chip words, also an *approximation*.
    * - ``rm-type``
      - ``rm7`` 030-1054-001 rev G; ``rm9`` 030-1402-001 rev E
      - Fixed by the product; another value is refused.

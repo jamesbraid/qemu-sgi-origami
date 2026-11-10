@@ -547,7 +547,7 @@ bit 26 data to the EEPROM, bit 27 data from it
 (:src:`plx-pci9060-data-sheet-1.2 Table 45`). The driver's commands are
 the 93C46 64 x 16 set: READ, WRITE, EWEN and EWDS, each a start bit, two
 opcode bits and six address bits (:src:`microchip-93c46`). The opcode
-match is *established* from the driver; that the part is a 93C46 is
+match is a *software expectation* from the driver; that the part is a 93C46 is
 *inferred*.
 
 The driver reads 40 bytes from byte address ``0x58`` at attach. The first
