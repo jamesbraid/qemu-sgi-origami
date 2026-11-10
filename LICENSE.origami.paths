@@ -63,6 +63,9 @@ docs/system/mips/sgi/ip32.rst
 docs/system/mips/sgi/ip35.rst
 docs/system/mips/sgi/ip53.rst
 docs/system/mips/sgi/hardware/l1.rst
+docs/system/mips/sgi/hardware/l1-l2-link.rst
+docs/system/mips/sgi/hardware/l1-brick-profiles.rst
+docs/system/mips/sgi/hardware/l1-power-bay-link.rst
 docs/system/mips/sgi/hardware/lucent-ohci.rst
 docs/system/mips/sgi/hardware/mscsi.rst
 docs/system/mips/sgi/ip27.rst
