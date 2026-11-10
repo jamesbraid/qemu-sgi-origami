@@ -440,14 +440,21 @@ class RackFieldIsInTheQapiRecord(unittest.TestCase):
             self.assertNotIn("rack", module)
 
 
+# The topologies that number their racks; every other keeps rack 1.
+RACKED_TOPOLOGIES = frozenset({"origin3800-64p"})
+
+
 class ShippedTopologiesAreUnracked(unittest.TestCase):
-    def test_no_implemented_topology_numbers_a_rack(self):
+    def test_only_the_multi_rack_topologies_number_a_rack(self):
         for name in sorted(IMPLEMENTED_COMPOSITIONS):
             path = INPUTS / f"{name}.yaml"
             with self.subTest(name=name):
                 model = _resolver.load_system_model(path)
-                self.assertNotIn(
-                    "rack_numbers", model["machine"].get("emulation", {}))
+                emulation = model["machine"].get("emulation", {})
+                if name in RACKED_TOPOLOGIES:
+                    self.assertIn("rack_numbers", emulation)
+                else:
+                    self.assertNotIn("rack_numbers", emulation)
 
 
 if __name__ == "__main__":

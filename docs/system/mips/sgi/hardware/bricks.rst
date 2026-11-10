@@ -1226,6 +1226,51 @@ Origin 3400's is, with 4096 MB.
 joins ports 7 to 7 and 8 to 8. That the extra cables use equal port numbers
 is the draft's table (*inferred*) and the fit is not an orderable option.
 
+.. _sgi-sn-origin3800-64p:
+
+``topology=origin3800-64p`` is an Origin 3800 of two compute racks, 001 and
+002, and 64 processors: 16 four-processor C-bricks, four R-bricks and an
+I-brick in I/O rack 101. It is the first topology to number its racks
+(:ref:`below <sgi-sn-rack-numbers>`). Each compute rack repeats the one-rack
+layout: C-bricks at bays 10, 13, 16 and 21 on ports 2 to 5 of the unit-19
+R-brick and at 24, 29, 32 and 35 on ports 2 to 5 of the unit-27 R-brick, so
+a bay repeats across the racks and only the rack tells the bricks apart.
+The wiring is the cabling draft's 64-processor table (*established* as the
+draft's content, with the cable and R-brick counts matching the shipped
+drawing in :src:`007-4311-002 p. 56`; the port numbers are *inferred*,
+because the draft is preliminary): in each rack the two R-bricks join port
+1 to 1 and 6 to 6, and the racks join 001 unit 19 port 7 to 002 unit 19
+port 7, 001 unit 19 port 8 to 002 unit 27 port 8, 001 unit 27 port 7 to 002
+unit 27 port 7 and 001 unit 27 port 8 to 002 unit 19 port 8. With the
+16 C-brick cables that is 24 cables.
+
+The I-brick sits at bay 20, units 20 to 23, the middle I/O position of the
+shipped rack layouts (*inferred*: the position is read from those layouts,
+not from a cabling rule). Its rack name, 101, follows the
+numbering rule for the first I/O rack and is *inferred*. Which C-brick the
+I-brick's cable reaches is *unknown*: the cabling guide's I/O chapter is
+empty and its example drawing is not a rule. The model cables it to the
+first C-brick, 001c10, on that brick's XIO (II) connector and the I-brick's
+XIO 10 (*approximation*, a model choice), as the one-rack topologies do.
+
+Each C-brick holds 1024 MB in one pair of 512 MB DIMMs, two 512 MB banks
+(*approximation*): the bundles ship C-bricks without memory, and the stock
+PROM's memory test grows with installed memory, so the default total is 16
+GiB. ``-m 65536`` selects the 4096 MB fit the one-rack topologies use.
+
+One manual run of the stock PROM on the 1024 MB fit (*observed*: a single
+run, not repeated) found 20 objects (16 hubs and four routers) on 16 nodes
+with 64 processors and reached the System Maintenance Menu with all
+diagnostics passing, in about 54 minutes. The capture has caveats. The run
+used a local, uncommitted patch that added this topology, not the committed
+topology. The 54 minutes is the capture's own annotation, not a clocked
+trace. Ports 6 and 8 printed ``UNUSED`` in the master router's port-type
+table, although the fabric graph listed every link. The run also named the
+second rack 001, because racks were not yet numbered, so it says nothing
+about how the PROM treats rack 002. No check boots the stock PROM on this
+topology; a boot is a manual run. The catalogue launch test builds the
+machine and runs no guest code.
+
 .. _sgi-sn-rack-numbers:
 
 A topology may number its racks with ``machine.emulation.rack_numbers``, a
@@ -1258,28 +1303,28 @@ model checks these rules only when racks are numbered:
   MetaRouter slot, whose wiring the PROM accepts is *unknown*.
 
 Topologies that number no rack keep the module number rules above
-unchanged: unique across the whole system, 1 to 255. No shipped topology
-numbers a rack yet, and the compiled catalogue carries no rack field for
-any of them. A numbered topology's module records carry ``rack``, an
-optional member of the catalogue's QAPI module record. The machine builder
-gives every SN1 L1 its module's rack beside its bay: the C-brick, I-brick,
-R-brick, V-brick, Cx-brick (and its router port) and expansion controllers
-all take it, and a module with no rack leaves the L1's default, rack 1. The
-L1 answers that rack and bay in its ``0x0002`` and ``0x0003`` replies and
-routes traffic between L1s by them. The rack and bay are properties set
-when the machine is built, and the L1 already migrates them, so the rack
-adds no state of its own. The builder refuses a machine in which two L1s
-would answer the same rack and bay, in an unnumbered topology as well (both
-are then in rack 1). That is a rule of the model, because two controllers
-at one location would answer one address (*inferred*). It is stricter than
-the check it replaces, which covered V-bricks only, for every topology; no
-shipped topology repeats a location, as the catalogue launch test shows.
-In an unnumbered topology a Cx-brick also claims its number plus four for
-its router port, as it does in a numbered rack, and the model compiler and
-the builder both refuse a collision there. Where the
-V-brick's graphics bay is reported to its host C-brick's L1, the host's
-rack is used, so a V-brick in a different rack from its host is not
-modelled.
+unchanged: unique across the whole system, 1 to 255. Only
+``origin3800-64p`` numbers its racks, and the compiled catalogue carries
+no rack field for any other topology. A numbered topology's module records
+carry ``rack``, an optional member of the catalogue's QAPI module record.
+The machine builder gives every SN1 L1
+its module's rack beside its bay: the C-brick, I-brick, R-brick, V-brick,
+Cx-brick (and its router port) and expansion controllers all take it, and a
+module with no rack leaves the L1's default, rack 1. The L1 answers that
+rack and bay in its ``0x0002`` and ``0x0003`` replies and routes traffic
+between L1s by them. The rack and bay are properties set when the machine is
+built, and the L1 already migrates them, so the rack adds no state of its
+own. The builder refuses a machine in which two L1s would answer the same
+rack and bay, in an unnumbered topology as well (both are then in rack 1).
+That is a rule of the model, because two controllers at one location would
+answer one address (*inferred*). It is stricter than the check it replaces,
+which covered V-bricks only, for every topology; no shipped topology repeats
+a location, as the catalogue launch test shows. In an unnumbered topology a
+Cx-brick also claims its number plus four for its router port, as it does in
+a numbered rack, and the model compiler and the builder both refuse a
+collision there. Where the V-brick's graphics bay is reported to its host
+C-brick's L1, the host's rack is used, so a V-brick in a different rack from
+its host is not modelled.
 
 Model limits of a routed Origin 3000 build:
 

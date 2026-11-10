@@ -31,6 +31,7 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin3400-two-partitions",
     "origin3800",
     "origin3800-high-bandwidth",
+    "origin3800-64p",
     "origin3900-ip53",
     "origin3900-ip59",
     "origin3900-memory-node",

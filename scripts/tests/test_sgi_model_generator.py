@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "a488c9e175e99b9dda4fc8ca144ec8c6e31b7dddbb94b2be679d821d88de4f53"
+    "4d271abf34b0d7fff74d17b9bb4087109fd7bd9d98cb7acaebfbc57e68385e15"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -219,9 +219,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 160)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 48)
-        self.assertEqual(len(layers), 110)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 162)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 49)
+        self.assertEqual(len(layers), 111)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -1203,7 +1203,8 @@ class FuelTests(unittest.TestCase):
                                     "origin3400-two-routers",
                                     "origin3400-two-partitions",
                                     "origin3800",
-                                    "origin3800-high-bandwidth"):
+                                    "origin3800-high-bandwidth",
+                                    "origin3800-64p"):
                 # The C-brick's machine-type byte and reset-mode word come
                 # from the PROM's CPU-configuration table row.
                 self.assertEqual(topology["ip35-firmware"], {
