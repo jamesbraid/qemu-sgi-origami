@@ -1,0 +1,489 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Origin 3800 of two compute racks (64 processors) and an I/O rack: in each
+# compute rack four C-bricks on ports 2 to 5 of each of two R-bricks, the
+# racks' R-bricks joined as the cabling draft's 64-processor table has it,
+# and an I-brick in rack 101 on the first C-brick's XIO (II) connector.
+layer_version: 1
+sources:
+  007-4311-002-3800: "007-4311-002 printed pages 79 and 80 and Appendix C, printed page 93: an Origin 3800 compute rack holds up to eight C-bricks and three R-bricks, eight-port R-bricks, and only C- and R-bricks; I-bricks sit in an I/O rack"
+  007-4311-002-bundles: "007-4311-002 printed pages 79 and 80: the 16- and 32-processor Origin 3800 bundles list two R-bricks and one L2 controller per compute rack"
+  007-4311-002-64p: "007-4311-002 printed page 56: the 64-processor interconnect is sixteen C-bricks and four R-bricks, with 24 cables"
+  108-xxxx-PR2-64p: "108-xxxx-PR2 printed page 2-39, Table 2-14 (preliminary draft, graded inferred): two racks of eight C-bricks on ports 2 to 5 of routers at units 19 and 27, each rack's routers joined 1 to 1 and 6 to 6, and the racks joined 001R19 port 7 to 002R19 port 7, 001R19 port 8 to 002R27 port 8, 001R27 port 7 to 002R27 port 7 and 001R27 port 8 to 002R19 port 8"
+  007-4311-002-numbering: "007-4311-002 Appendix C, printed pages 94 to 97, and 108-xxxx-PR2 Figure 1-2 (printed page 1-6): compute racks are numbered 001 and up, I/O racks 101 and up, and a brick is named by its bottom rack unit; an I-brick sits at units 20 to 23, bay 20, of an I/O rack"
+  007-4311-002-router-ports: "007-4311-002 printed pages 36 and 37: ports 1, 6, 7 and 8 join R-bricks and ports 2 to 5 take C-bricks"
+  007-4311-002-l2: "007-4311-002 printed page 42: an L2 controller is required in a rack that holds an R-brick"
+  007-4240-002-cbrick-ports: "007-4240-002 printed page 196 and 007-4311-002 printed page 36: C-bricks are cabled only to router ports 2, 3, 4 and 5"
+  007-4240-002-xio: "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick"
+  108-0240-002-ports: "108-0240-002 printed pages 2-28 and 2-29: I-brick ports A and B go to compute nodes"
+layer:
+  kind: product
+  id: origin3800-64p
+  requires: {assembly: ip35}
+  topology:
+    min_nodes: 1
+    max_nodes: 16
+    # This composition fixes the selected fit, four processors in each of
+    # sixteen C-bricks, so it is the only population an emulator built from
+    # it would accept.
+    supported_cpu_populations: [[4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4]]
+    supported_processors:
+      - {part: r12000, clock_mhz: 400, cache_mib: 8}
+    supported_bank_mib_per_node:
+      - [512, 512, 0, 0, 0, 0, 0, 0]
+      - [512, 512, 512, 512, 512, 512, 512, 512]
+    provenance: vendor-document
+    sources: [007-4311-002-3800, 007-4311-002-bundles]
+  population:
+    nodes: 16
+    cpus_per_node: [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4]
+    provenance: vendor-document
+    sources: [007-4311-002-bundles, 007-4311-002-3800]
+  cpu_selection:
+    default: {clock_mhz: 400, cache_mib: 8}
+    slots: [cpu0, cpu1, cpu2, cpu3]
+  memory_kits_per_node: [kit-1024-two-512-banks, kit-1024-two-512-banks, kit-1024-two-512-banks, kit-1024-two-512-banks, kit-1024-two-512-banks, kit-1024-two-512-banks, kit-1024-two-512-banks, kit-1024-two-512-banks, kit-1024-two-512-banks, kit-1024-two-512-banks, kit-1024-two-512-banks, kit-1024-two-512-banks, kit-1024-two-512-banks, kit-1024-two-512-banks, kit-1024-two-512-banks, kit-1024-two-512-banks]
+  composition_rules:
+    counts:
+      - {bricks: [c-brick], min: 1, max: 16}
+      - {bricks: [r-brick], min: 2, max: 4}
+      - {bricks: [i-brick, p-brick, x-brick], max: 8, require: i-brick}
+    provenance: vendor-document
+    sources: [007-4311-002-3800, 007-4311-002-bundles]
+    notes: >-
+      Two R-bricks per compute rack, as the 32-processor bundle ships.
+      Each compute rack holds eight C-bricks and two R-bricks, and the I/O
+      rack holds the I-brick; the third R-brick a compute rack can take is
+      the MetaRouter slot, which the model leaves out.
+  data:
+    machine:
+      name: Origin 3800 (64 processors)
+      model_role: emulation-target
+      notes: >-
+        An Origin 3800 of two compute racks, 001 and 002, and 64
+        processors: 16 four-processor C-bricks, eight in each rack, four on
+        ports 2 to 5 of each of four eight-port R-bricks, two R-bricks to a
+        rack. The R-bricks of a rack are joined port 1 to port 1 and 6 to 6,
+        and the racks by four cables as the cabling draft's 64-processor
+        table has them: port 7 to port 7 between the racks' unit-19
+        R-bricks and between their unit-27 R-bricks, and port 8 to the other
+        rack's other R-brick's port 8. The draft is preliminary, so the port
+        numbers are inferred, not established; the cable and R-brick counts
+        match the shipped drawing, and the wiring is established as the
+        draft's content. Each rack repeats the one-rack layout: C-bricks at
+        bays 10, 13, 16 and 21 on the unit-19 R-brick and 24, 29, 32 and 35
+        on the unit-27 R-brick, so a bay repeats across the two racks and
+        only the rack tells the bricks apart. An I-brick sits in I/O rack
+        101 at bay 20, the middle I/O position of the shipped rack layouts
+        (inferred: the position is read from those layouts, not from a
+        cabling rule). The rack name 101 for a 64-processor system's I/O
+        rack is inferred from the numbering rule, and which C-brick the
+        I-brick's cable reaches is unknown (the guide's I/O chapter is
+        empty): the I-brick is cabled to the first C-brick's XIO (II)
+        connector at its XBridge port A, a model choice and an
+        approximation. Each R-brick presents all eight ports. The rack L2
+        controllers are not modelled, nor is the R-brick's USB hub traffic
+        to the C-brick L1s. Each C-brick carries four 400 MHz R12000s with
+        8 MB secondary caches and, by default, 1024 MB in two 512 MB banks,
+        the fit that keeps the stock PROM's memory test short; 4096 MB in
+        eight 512 MB banks is accepted too. The bundles ship C-bricks
+        without memory, so the memory is a model choice. The routers answer
+        the model's synthetic diagnostics, which no hardware record settles.
+        No automated check boots the stock PROM on this topology; a boot is
+        a manual run.
+      emulation:
+        bedrock_nodes:
+          c00-bedrock: &cbrick-bedrock
+            # Product code 0 in bits 15:12 is a C-brick to OpenBSD and the
+            # stock PROM. The low nibble selects the PROM's configuration
+            # row; 2 is the 400 MHz, 8 MB row this fit matches. The other
+            # bits are unknown and read zero.
+            board_id_word: 2
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask: {mode: fitted-banks}
+            provenance: derived
+            sources: ["openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick", "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row"]
+            notes: >-
+              Approximation. Established: product code 0. Chosen: low nibble
+              2, the configuration row of the selected fit; which nibble a
+              physical C-brick presents is unknown, and a register read on a
+              matching board would settle it.
+          c01-bedrock: *cbrick-bedrock
+          c02-bedrock: *cbrick-bedrock
+          c03-bedrock: *cbrick-bedrock
+          c04-bedrock: *cbrick-bedrock
+          c05-bedrock: *cbrick-bedrock
+          c06-bedrock: *cbrick-bedrock
+          c07-bedrock: *cbrick-bedrock
+          c08-bedrock: *cbrick-bedrock
+          c09-bedrock: *cbrick-bedrock
+          c10-bedrock: *cbrick-bedrock
+          c11-bedrock: *cbrick-bedrock
+          c12-bedrock: *cbrick-bedrock
+          c13-bedrock: *cbrick-bedrock
+          c14-bedrock: *cbrick-bedrock
+          c15-bedrock: *cbrick-bedrock
+        l1_controllers:
+          c00-l1: &cbrick-l1
+            profile: cbrick
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            revision: {major: 1, minor: 44, patch: 0}
+            notes: >-
+              The C-brick profile of the L1 model. Its firmware revision,
+              for request 0x0005, is 1.44.0: every brick image in the IRIX
+              6.5.30 L1 firmware composite carries that version and answers
+              1, 44, 0. Which image a fitted C-brick runs is inferred, and no
+              capture gives its revision.
+          c01-l1: *cbrick-l1
+          c02-l1: *cbrick-l1
+          c03-l1: *cbrick-l1
+          c04-l1: *cbrick-l1
+          c05-l1: *cbrick-l1
+          c06-l1: *cbrick-l1
+          c07-l1: *cbrick-l1
+          c08-l1: *cbrick-l1
+          c09-l1: *cbrick-l1
+          c10-l1: *cbrick-l1
+          c11-l1: *cbrick-l1
+          c12-l1: *cbrick-l1
+          c13-l1: *cbrick-l1
+          c14-l1: *cbrick-l1
+          c15-l1: *cbrick-l1
+          ibrick-l1:
+            profile: ibrick
+            revision: {major: 1, minor: 44, patch: 0}
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            notes: The I-brick profile of the L1 model, reached from c0's L1 over the XIO cable. Its firmware revision is the same approximation as the C-bricks'.
+        io_boards:
+          ibrick-xbridge-bridge-f:
+            ioc3_subsystem_id: 65535
+            mac_source: none
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-sn-family-ibrick, hw/misc/tsb12lv22.c]
+            notes: >-
+              The IOC3 subsystem field is the unobserved placeholder, and no
+              source gives where the IO7's Ethernet address comes from. The
+              IEEE 1394 link controller's PHY is the model's lone
+              unconnected PHY, an approximation: the fitted PHY part is
+              unidentified, and no 1394 bus or CD-ROM is modelled.
+        system_timekeepers:
+          ibrick-xbridge-bridge-f:
+            kind: m48t35-compatible
+            year_base: 1968
+            initial_ip27_fixture: false
+            provenance: derived
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174"]
+            notes: >-
+              The IO7's time-of-day part is not identified; this is the
+              Origin 300's M48T35-compatible choice, an approximation. IP35
+              software uses the 1968 year convention.
+        # The IP35 flash configuration block's product values: machine type
+        # 0, the C-brick rows' class, and the 400 MHz, 8 MB row's word.
+        ip35_firmware:
+          machine_type: 0
+          cpu_mode_word: 0x5414a785
+          provenance: derived
+          sources: ["firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row and its machine-type byte"]
+          notes: Inferred from the PROM's own table, as the Origin 300's values are; no C-brick flash block has been captured.
+        # The router answers the model's synthetic diagnostics, which no
+        # hardware record settles.
+        synthetic_router_diagnostics: true
+        machine_name: origin3000
+        display_description: SGI Origin 3800 (IP35), 64 processors, 16 C-bricks in two racks on four R-bricks and an I-brick in an I/O rack
+        profile: origin3800-64p
+        lifecycle: implemented
+        # Each C-brick runs the 1024 MB fit by default, or the 4096 MB fit
+        # the one-rack products ship.
+        emulator_constraints:
+          accepted_bank_sizes_mib: [1024, 4096]
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - name: CPU reset view
+              address: "0x000_001fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: local Hub-special boot view
+              address: "0x100_18000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: bounded high local Hub-special boot view
+              address: "0x100_1fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: node-zero remote Hub-special boot view
+              address: "0x100_38000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+          second_selection:
+            address: "0x100_1a000000"
+            size: "0x0080_0000"
+          provenance: derived
+          sources: [qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-carrier, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-trampolines, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip35-views]
+          notes: >-
+            The Origin 300's stock IP35 PROM 6.210 payload and views, carried
+            by each C-brick's node; the Origin 3200 inventory reports the same
+            PROM revision. Emulator compatibility policy; no fitted flash part
+            or physical reset decoder is claimed.
+        # The racks are numbered here and the bay is the number of the
+        # brick's bottom rack unit, so a bay repeats across racks. The
+        # cabling draft's 64-processor table gives each rack's C-bricks the
+        # units below and its R-bricks units 19 and 27.
+        rack_numbers:
+          - {component: rack-001, number: 1, reason: "The cabling draft's 64-processor table, Table 2-14: the first compute rack is 001."}
+          - {component: rack-002, number: 2, reason: "The cabling draft's 64-processor table, Table 2-14: the second compute rack is 002."}
+          - {component: rack-101, number: 101, reason: "Inferred: the base I/O rack of a system with two compute racks takes the first I/O rack number, 101; no source prints it."}
+        initial_module_numbers:
+          - {component: c00-chassis, number: 10, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 10 of rack 001."}
+          - {component: c01-chassis, number: 13, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 13 of rack 001."}
+          - {component: c02-chassis, number: 16, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 16 of rack 001."}
+          - {component: c03-chassis, number: 21, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 21 of rack 001."}
+          - {component: c04-chassis, number: 24, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 24 of rack 001."}
+          - {component: c05-chassis, number: 29, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 29 of rack 001."}
+          - {component: c06-chassis, number: 32, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 32 of rack 001."}
+          - {component: c07-chassis, number: 35, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 35 of rack 001."}
+          - {component: c08-chassis, number: 10, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 10 of rack 002."}
+          - {component: c09-chassis, number: 13, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 13 of rack 002."}
+          - {component: c10-chassis, number: 16, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 16 of rack 002."}
+          - {component: c11-chassis, number: 21, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 21 of rack 002."}
+          - {component: c12-chassis, number: 24, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 24 of rack 002."}
+          - {component: c13-chassis, number: 29, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 29 of rack 002."}
+          - {component: c14-chassis, number: 32, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 32 of rack 002."}
+          - {component: c15-chassis, number: 35, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 35 of rack 002."}
+          - {component: ibrick-brick, number: 20, reason: "The I-brick position of the shipped I/O rack layouts, units 20 to 23, in rack 101 (rack name inferred). Which C-brick it cables to is a model choice."}
+          - {component: rbrick0-brick, number: 19, reason: "The cabling draft's 64-processor table, Table 2-14: this R-brick at unit 19 of rack 001."}
+          - {component: rbrick1-brick, number: 27, reason: "The cabling draft's 64-processor table, Table 2-14: this R-brick at unit 27 of rack 001."}
+          - {component: rbrick2-brick, number: 19, reason: "The cabling draft's 64-processor table, Table 2-14: this R-brick at unit 19 of rack 002."}
+          - {component: rbrick3-brick, number: 27, reason: "The cabling draft's 64-processor table, Table 2-14: this R-brick at unit 27 of rack 002."}
+        synthetic_identities:
+          - component: c00-bedrock
+            serial: "0x51454d554e00"
+            reason: Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.
+          - component: c01-bedrock
+            serial: "0x51454d554e01"
+            reason: Synthetic node identity N1, carrying the "QEMU" marker; not hardware evidence.
+          - component: c02-bedrock
+            serial: "0x51454d554e02"
+            reason: Synthetic node identity N2, carrying the "QEMU" marker; not hardware evidence.
+          - component: c03-bedrock
+            serial: "0x51454d554e03"
+            reason: Synthetic node identity N3, carrying the "QEMU" marker; not hardware evidence.
+          - component: c04-bedrock
+            serial: "0x51454d554e04"
+            reason: Synthetic node identity N4, carrying the "QEMU" marker; not hardware evidence.
+          - component: c05-bedrock
+            serial: "0x51454d554e05"
+            reason: Synthetic node identity N5, carrying the "QEMU" marker; not hardware evidence.
+          - component: c06-bedrock
+            serial: "0x51454d554e06"
+            reason: Synthetic node identity N6, carrying the "QEMU" marker; not hardware evidence.
+          - component: c07-bedrock
+            serial: "0x51454d554e07"
+            reason: Synthetic node identity N7, carrying the "QEMU" marker; not hardware evidence.
+          - component: c08-bedrock
+            serial: "0x51454d554e08"
+            reason: Synthetic node identity N8, carrying the "QEMU" marker; not hardware evidence.
+          - component: c09-bedrock
+            serial: "0x51454d554e09"
+            reason: Synthetic node identity N9, carrying the "QEMU" marker; not hardware evidence.
+          - component: c10-bedrock
+            serial: "0x51454d554e0a"
+            reason: Synthetic node identity N10, carrying the "QEMU" marker; not hardware evidence.
+          - component: c11-bedrock
+            serial: "0x51454d554e0b"
+            reason: Synthetic node identity N11, carrying the "QEMU" marker; not hardware evidence.
+          - component: c12-bedrock
+            serial: "0x51454d554e0c"
+            reason: Synthetic node identity N12, carrying the "QEMU" marker; not hardware evidence.
+          - component: c13-bedrock
+            serial: "0x51454d554e0d"
+            reason: Synthetic node identity N13, carrying the "QEMU" marker; not hardware evidence.
+          - component: c14-bedrock
+            serial: "0x51454d554e0e"
+            reason: Synthetic node identity N14, carrying the "QEMU" marker; not hardware evidence.
+          - component: c15-bedrock
+            serial: "0x51454d554e0f"
+            reason: Synthetic node identity N15, carrying the "QEMU" marker; not hardware evidence.
+          - component: ibrick-xbridge
+            serial: "0x51454d555800"
+            reason: Synthetic I-brick XBridge identity; no physical barcode is claimed.
+          - component: ibrick-ioc3
+            serial: "0x5e7454d55000"
+            reason: Synthetic I-brick IOC3 identity; no physical barcode is claimed.
+          - component: rbrick0-router
+            serial: "0x51454d555200"
+            reason: Synthetic router descriptor identity; no physical barcode is claimed.
+          - component: rbrick1-router
+            serial: "0x51454d555201"
+            reason: Synthetic router descriptor identity; no physical barcode is claimed.
+          - component: rbrick2-router
+            serial: "0x51454d555202"
+            reason: Synthetic router descriptor identity; no physical barcode is claimed.
+          - component: rbrick3-router
+            serial: "0x51454d555203"
+            reason: Synthetic router descriptor identity; no physical barcode is claimed.
+    evidence_policy: strict
+    components:
+      - id: rack-001
+        name: Origin 3800 compute rack 001
+        kind: chassis
+        provenance: vendor-document
+        description: The first compute rack, which holds eight C-bricks and two R-bricks.
+        sources: [007-4311-002-3800, 007-4311-002-numbering]
+      - id: rack-002
+        name: Origin 3800 compute rack 002
+        kind: chassis
+        provenance: vendor-document
+        description: The second compute rack, which holds eight C-bricks and two R-bricks.
+        sources: [007-4311-002-3800, 007-4311-002-numbering]
+      - id: rack-101
+        name: Origin 3800 I/O rack 101
+        kind: chassis
+        provenance: derived
+        description: The I/O rack that holds the I-brick. Its number is inferred from the numbering rule.
+        sources: [007-4311-002-numbering]
+    # The two router-to-router cables replace each R-brick's own port 1 and
+    # port 6 buses, which the composition omits.
+    buses:
+      - id: router-link-0-1-1
+        name: NUMAlink 3 cable, R-brick 0 port 1 to R-brick 1 port 1
+        kind: fabric
+        master: rbrick0-router
+        link: {kind: cable}
+        provenance: vendor-document
+        sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]
+        notes: The port numbers are the cabling draft's table (inferred, not established).
+      - id: router-link-0-1-6
+        name: NUMAlink 3 cable, R-brick 0 port 6 to R-brick 1 port 6
+        kind: fabric
+        master: rbrick0-router
+        link: {kind: cable}
+        provenance: vendor-document
+        sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]
+        notes: The port numbers are the cabling draft's table (inferred, not established).
+      - id: router-link-2-3-1
+        name: NUMAlink 3 cable, R-brick 2 port 1 to R-brick 3 port 1
+        kind: fabric
+        master: rbrick2-router
+        link: {kind: cable}
+        provenance: vendor-document
+        sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]
+        notes: The port numbers are the cabling draft's table (inferred, not established).
+      - id: router-link-2-3-6
+        name: NUMAlink 3 cable, R-brick 2 port 6 to R-brick 3 port 6
+        kind: fabric
+        master: rbrick2-router
+        link: {kind: cable}
+        provenance: vendor-document
+        sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]
+        notes: The port numbers are the cabling draft's table (inferred, not established).
+      - id: router-link-0-2-7
+        name: NUMAlink 3 cable, R-brick 0 port 7 to R-brick 2 port 7
+        kind: fabric
+        master: rbrick0-router
+        link: {kind: cable}
+        provenance: vendor-document
+        sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]
+        notes: The port numbers are the cabling draft's table (inferred, not established).
+      - id: router-link-0-3-8
+        name: NUMAlink 3 cable, R-brick 0 port 8 to R-brick 3 port 8
+        kind: fabric
+        master: rbrick0-router
+        link: {kind: cable}
+        provenance: vendor-document
+        sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]
+        notes: The port numbers are the cabling draft's table (inferred, not established).
+      - id: router-link-1-3-7
+        name: NUMAlink 3 cable, R-brick 1 port 7 to R-brick 3 port 7
+        kind: fabric
+        master: rbrick1-router
+        link: {kind: cable}
+        provenance: vendor-document
+        sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]
+        notes: The port numbers are the cabling draft's table (inferred, not established).
+      - id: router-link-1-2-8
+        name: NUMAlink 3 cable, R-brick 1 port 8 to R-brick 2 port 8
+        kind: fabric
+        master: rbrick1-router
+        link: {kind: cable}
+        provenance: vendor-document
+        sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]
+        notes: The port numbers are the cabling draft's table (inferred, not established).
+    # Each C-brick cable is the R-brick port bus it is fitted to.
+    connections:
+      - {component: c00-bedrock, bus: rbrick0-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c00-link-connector, bus: rbrick0-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c01-bedrock, bus: rbrick0-port-3-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c01-link-connector, bus: rbrick0-port-3-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c02-bedrock, bus: rbrick0-port-4-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c02-link-connector, bus: rbrick0-port-4-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c03-bedrock, bus: rbrick0-port-5-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c03-link-connector, bus: rbrick0-port-5-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c04-bedrock, bus: rbrick1-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c04-link-connector, bus: rbrick1-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c05-bedrock, bus: rbrick1-port-3-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c05-link-connector, bus: rbrick1-port-3-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c06-bedrock, bus: rbrick1-port-4-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c06-link-connector, bus: rbrick1-port-4-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c07-bedrock, bus: rbrick1-port-5-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c07-link-connector, bus: rbrick1-port-5-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c08-bedrock, bus: rbrick2-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c08-link-connector, bus: rbrick2-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c09-bedrock, bus: rbrick2-port-3-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c09-link-connector, bus: rbrick2-port-3-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c10-bedrock, bus: rbrick2-port-4-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c10-link-connector, bus: rbrick2-port-4-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c11-bedrock, bus: rbrick2-port-5-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c11-link-connector, bus: rbrick2-port-5-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c12-bedrock, bus: rbrick3-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c12-link-connector, bus: rbrick3-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c13-bedrock, bus: rbrick3-port-3-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c13-link-connector, bus: rbrick3-port-3-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c14-bedrock, bus: rbrick3-port-4-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c14-link-connector, bus: rbrick3-port-4-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c15-bedrock, bus: rbrick3-port-5-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: c15-link-connector, bus: rbrick3-port-5-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      - {component: rbrick0-router, bus: router-link-0-1-1, role: master, fabric_port: 1, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick1-router, bus: router-link-0-1-1, role: endpoint, fabric_port: 1, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick0-port-1, bus: router-link-0-1-1, role: endpoint, fabric_port: 1, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick1-port-1, bus: router-link-0-1-1, role: endpoint, fabric_port: 1, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick0-router, bus: router-link-0-1-6, role: master, fabric_port: 6, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick1-router, bus: router-link-0-1-6, role: endpoint, fabric_port: 6, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick0-port-6, bus: router-link-0-1-6, role: endpoint, fabric_port: 6, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick1-port-6, bus: router-link-0-1-6, role: endpoint, fabric_port: 6, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick2-router, bus: router-link-2-3-1, role: master, fabric_port: 1, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick3-router, bus: router-link-2-3-1, role: endpoint, fabric_port: 1, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick2-port-1, bus: router-link-2-3-1, role: endpoint, fabric_port: 1, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick3-port-1, bus: router-link-2-3-1, role: endpoint, fabric_port: 1, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick2-router, bus: router-link-2-3-6, role: master, fabric_port: 6, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick3-router, bus: router-link-2-3-6, role: endpoint, fabric_port: 6, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick2-port-6, bus: router-link-2-3-6, role: endpoint, fabric_port: 6, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick3-port-6, bus: router-link-2-3-6, role: endpoint, fabric_port: 6, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick0-router, bus: router-link-0-2-7, role: master, fabric_port: 7, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick2-router, bus: router-link-0-2-7, role: endpoint, fabric_port: 7, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick0-port-7, bus: router-link-0-2-7, role: endpoint, fabric_port: 7, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick2-port-7, bus: router-link-0-2-7, role: endpoint, fabric_port: 7, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick0-router, bus: router-link-0-3-8, role: master, fabric_port: 8, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick3-router, bus: router-link-0-3-8, role: endpoint, fabric_port: 8, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick0-port-8, bus: router-link-0-3-8, role: endpoint, fabric_port: 8, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick3-port-8, bus: router-link-0-3-8, role: endpoint, fabric_port: 8, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick1-router, bus: router-link-1-3-7, role: master, fabric_port: 7, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick3-router, bus: router-link-1-3-7, role: endpoint, fabric_port: 7, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick1-port-7, bus: router-link-1-3-7, role: endpoint, fabric_port: 7, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick3-port-7, bus: router-link-1-3-7, role: endpoint, fabric_port: 7, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick1-router, bus: router-link-1-2-8, role: master, fabric_port: 8, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick2-router, bus: router-link-1-2-8, role: endpoint, fabric_port: 8, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick1-port-8, bus: router-link-1-2-8, role: endpoint, fabric_port: 8, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      - {component: rbrick2-port-8, bus: router-link-1-2-8, role: endpoint, fabric_port: 8, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+    xio_cables:
+      - id: c00-to-ibrick
+        ends: [c00-xio-ii-connector, ibrick-port-a]
+        provenance: vendor-document
+        sources: [007-4240-002-xio, 108-0240-002-ports]
+        notes: Port A is this composition's choice; which port a boot I-brick uses is unknown.

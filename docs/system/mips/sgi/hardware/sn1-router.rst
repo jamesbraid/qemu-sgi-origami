@@ -126,21 +126,20 @@ Two profiles exist, an *approximation* in both. The machine builder
 selects the diagnostic profile, through the topology record's
 ``synthetic-diagnostics`` flag, for every router of the ``origin300``
 expansion topology and of the Origin 3400, Origin 3800 and Origin 3900
-topologies (the ``origin3400*``, ``origin3800`` and ``origin3900*``
+topologies (the ``origin3400*``, ``origin3800*`` and ``origin3900*``
 entries, both routers of ``origin3400-two-routers`` and ``origin3800``
-included). The Origin 2000, Onyx 2 and Onyx 3400
-topologies do not set the flag. A router
-created with ``-device``, and the R-brick router of the ``onyx3400-ir``
-topology, get the ordinary profile, so the 4-bit route table rule below
-applies to them and to no other catalogue router: the diagnostic profile
-keeps whole 64-bit table words, because the experiments it supports write
-and read them back. Which profile the silicon matches is *unknown*; a qtest
-pins each profile's table behaviour. The profile is fixed before realize
-and migration refuses a mismatch. The diagnostic profile accepts more
-registers and masks some of them. The ordinary profile keeps each route
-table entry to its 4-bit field, stores full words elsewhere, and refuses
-everything outside the public layout. Both are
-bounded model policy, not statements about the silicon.
+and the four of ``origin3800-64p`` included). The Origin 2000, Onyx 2 and
+Onyx 3400 topologies do not set the flag. A router created with
+``-device``, and the R-brick router of the ``onyx3400-ir`` topology, get the
+ordinary profile, so the 4-bit route table rule below applies to them and to
+no other catalogue router: the diagnostic profile keeps whole 64-bit table
+words, because the experiments it supports write and read them back. Which
+profile the silicon matches is *unknown*; a qtest pins each profile's table
+behaviour. The profile is fixed before realize and migration refuses a
+mismatch. The diagnostic profile accepts more registers and masks some of
+them. The ordinary profile keeps each route table entry to its 4-bit field,
+stores full words elsewhere, and refuses everything outside the public
+layout. Both are bounded model policy, not statements about the silicon.
 
 .. _sgi-sn1-router-registers:
 

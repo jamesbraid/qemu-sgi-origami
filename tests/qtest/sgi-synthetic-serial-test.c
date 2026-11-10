@@ -101,6 +101,7 @@ static const TopologyExtra topology_extras[] = {
     { "origin3400-two-routers", "", .unmarked = true },
     { "origin3800", "", .unmarked = true },
     { "origin3800-high-bandwidth", "", .unmarked = true },
+    { "origin3800-64p", "", .unmarked = true },
     { "origin3400-two-partitions", "", .unmarked = true },
     { "origin3900-ip53", "", .unmarked = true },
     { "origin3900-ip59", "", .unmarked = true },
