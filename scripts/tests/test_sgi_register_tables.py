@@ -305,6 +305,30 @@ class RegisterTablesTest(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(cases[0]['label'], 'second')
 
+    def test_a_value_for_each_offset(self):
+        text = PAGE.replace('``0x08``, ``0x10``', '``0x08``, ``0x10``'
+                            ).replace('     - 0\n', '     - ``0x5``, 0\n', 1)
+        cases, _, _, errors = scan(text, skip='0x38')
+        self.assertEqual(errors, [])
+        regs = {r['offset']: r['expect'] for r in cases[0]['registers']}
+        self.assertEqual((regs['0x8'], regs['0x10']), ('0x5', '0x0'))
+
+    def test_values_for_the_wrong_number_of_offsets_is_an_error(self):
+        text = PAGE.replace('     - 0\n', '     - 1, 2, 3\n', 1)
+        _, _, _, errors = scan(text, skip='0x38')
+        self.assertEqual(len(errors), 1)
+        self.assertIn('3 reset values for 2 offsets', errors[0])
+
+    def test_skiprow_of_a_wide_window_is_one_entry(self):
+        text = PAGE.replace('``0x38``', '``0x100``-``0x7ff8``').replace(
+            'per machine', '0')
+        marker = MARKER.replace('width=64', 'width=64 skiprow="Prose:bulk"')
+        cases, _, _, errors = scan(text, marker=marker)
+        self.assertEqual(errors, [])
+        windows = [s for s in cases[0]['skipped'] if s['offset'] == '0x100']
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0]['reason'], 'bulk (4064 slots)')
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])
