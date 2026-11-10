@@ -263,6 +263,9 @@ read with ``split=32``: two 32-bit reads, low half at the address and
 high half four above. A Reset cell that says ``all ones`` is the width's
 all-ones value.
 
+A Reset cell that reads ``not specified; model 0`` states the model's
+value, which the test checks.
+
 A Reset cell of comma-separated numbers beside the same number of offsets
 (``0x00010000``, 0 beside ``0x240``, ``0x244``) gives one value to each.
 
