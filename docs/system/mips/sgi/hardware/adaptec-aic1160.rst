@@ -6,14 +6,17 @@
 Adaptec AIC-1160: Fibre Channel controller
 =============================================
 
-Used in no machine. The controller is the one on the Fibre Channel :term:`XIO` boards,
-whose placement is a separate part of the model.
+Used in the Fibre Channel :term:`XIO` boards: the XT-FC-2P of the Origin 2000
+and Onyx2 (:ref:`sgi-ip27`) and the X9-FC-2P of the Octane (:ref:`sgi-ip30`). A board is placed with ``-device sgi-fc-board`` (see
+`The board`_).
 
 .. seealso::
 
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip30`.
    Related parts: :doc:`qlogic-isp2200` is the other Fibre Channel
    controller the models carry, behind a PCI slot; :doc:`bridge` is the chip
-   a PCI card sits behind.
+   the controllers sit behind; :doc:`pci-expansion` covers the board family
+   the Fibre Channel boards belong to.
 
 The AIC-1160 is a Fibre Channel controller built around a microsequencer.
 The host downloads microcode into an on-chip sequencer RAM through a data
@@ -679,6 +682,118 @@ Nothing of the Fibre Channel wire is modelled: no frames, arbitration or
 login state. Devices do not migrate with commands in flight, an
 *approximation*.
 
+The board
+=========
+
+``sgi-fc-board`` (``hw/mips/sgi/board-pci-expansion.c``) is an XIO board
+with a :term:`Bridge` and a controller on each of PCI devices 0 and 1, the
+positions the hardware-graph paths name (*observed*, :src:`usenet-3be73104`).
+Only the positions its ports use are open. It is ``-device`` creatable at an
+empty XIO slot, as the other boards of its family are (:doc:`pci-expansion`):
+``slot=io2`` on the Origin 2000 and Onyx2, and ``slot=widget-9`` to
+``slot=widget-12`` on the Octane and Octane2. Each controller's interrupt
+reaches the Bridge on the pin of its device number (*software expectation*,
+the Bridge's line rule on :doc:`pci-expansion`). The controllers are named
+``port0`` and ``port1`` under the board in the QOM tree. With an ``id`` on the
+board, such as ``id=fc``, port 0's loop bus is ``fc-p0`` and port 1's
+``fc-p1``, and a disk is placed with ``-device scsi-hd,bus=fc-p0,scsi-id=5``.
+
+The ``product`` property names which board it is:
+
+.. list-table::
+   :header-rows: 1
+
+   * - ``product``
+     - Board
+     - Default in
+   * - ``xt-fc-2p``
+     - XT-FC-2P, copper, part ``030-0927-00x``
+     - the Origin 2000 and Onyx2 slots
+   * - ``x9-fc-2p``
+     - X9-FC-2P, copper, part ``013-2119-00x``
+     - the Octane slots
+
+The XT-FC-2P is the board for the Origin 2000, Origin 200 and Onyx2, and the
+X9-FC-2P is the identical Octane board (*inferred*, from the Octane owner's
+guide, document 007-3633-006). Both are Class 3 and FC-AL only, with no
+fabric login (*software expectation*). The optical X9-FC-2POPT-B and
+X9-FC-1POPT-B are separate products whose controller is not established, so
+they are not modelled, and an unknown product is refused. The default
+follows the slot name: ``widget-N`` is an Octane slot.
+
+One XT-FC-2P sample carries an assembly marking of ``030-0927003E`` and a
+board fabrication marking of ``034-0927-002``, build date 04-20-99
+(*observed*, :src:`usenet-3adb3ac0`). The model reads the assembly marking as
+part ``030-0927-003``, an *approximation*; the revision ``E`` is not
+recorded, because the Bridge's board record takes a revision only with a board
+name, which is *unknown*. The last digit of the family's part numbers is
+*unknown*. The X9-FC-2P keeps the placeholder
+part the bare PCI expansion board has. Neither has a known Bridge revision, so
+the Bridge's default stands, an *approximation*. The XIO widget identity the real board answers with is
+*unknown*; the model uses whatever the Bridge answers.
+
+The Octane kernel probes the flash window of every Bridge in PCI mode that it
+finds, without a fault handler: it sets Bridge control bit 31, stores
+``0x9090`` at window offset ``0xc00000``, reads the halfwords at offsets 0
+and 2 and wants ``0x00b0`` and ``0x66a8``, repeats once at ``0xe00000``, then
+clears the bit and gives up silently (*software expectation*, the IP30 kernel
+of IRIX 6.5.21; the IP27 kernel has no such probe). A read of an
+empty select that fails is *inferred* to be a kernel fault that stops the
+boot: the CPU model raises a bus error on a failed load and the probe has
+no handler.
+The model fits no flash part and sets ``flash-empty-reads-high`` on the
+board's Bridge, so the reads return all ones, which do not match the
+identifiers: an *approximation*, since what a real board's Bridge answers is
+*unknown* and only "does not fault, does not match" is known. The stores to
+both selects fail on the model and are logged, and the guest takes no fault
+from them (*observed*, an Octane PCI module boot, whose Bridge behaves the
+same way). ``sgi-fc-board-test`` drives the probe's reads on each machine
+that has an XIO Bridge.
+
+On an Octane under IRIX 6.5.21, the second controller attaches and the
+first does not. The first prints ``error -2 in getting config`` for
+``pci/0`` and lists no disk; the second lists its disks in ``hinv`` and
+``fx`` opens one (*observed* on the model, with the board at ``widget-9``
+and at ``widget-12``). The driver returns that error when its link-speed
+read of the chip does not give a listed value (*software expectation*), so
+the read on device 0 is *inferred* to have missed the registers: no capture
+holds the value, and the register trace shows no access reaching device 0.
+
+A trace of the type-0 configuration cycles shows why (*observed*). The
+boot firmware places BAR 0 of each controller, at ``0x200000`` on device 0
+and ``0x400000`` on device 1, and writes command ``0x7``; it also probes BAR 1,
+which reads 0, and does not touch BARs 2 and 3. The kernel leaves BAR 0
+alone, sizes BAR 3 as a 256-byte I/O window, and gives it ``0x200000`` and
+``0x300000``. On device 0 the sequencer memory therefore sits on top of the
+registers (*observed* in the memory map), which is what would send the
+driver's register reads elsewhere (*inferred*). A memory-space BAR 3 does
+not help: the kernel enables I/O decode only for this part, and the Bridge
+reports a device-select time-out (*observed*).
+
+Why the kernel allocates over the firmware's BAR is read from a debugger
+breakpoint on the allocator in the 6.5.21 kernel. The *observed* values are
+the pool selector that each call passes. The two reserves for this board's
+BAR 0 pass ``0xffffffffa8000000``. The onboard Bridge's four reserves pass 5,
+and the BAR 3 allocations on both Bridges pass 2. The reading of those
+values is *inferred* from the kernel code: the kernel reserves each
+firmware-placed BAR in a per-Bridge pool before allocating the unplaced
+ones, 2 names the I/O pool and 5 the second memory pool, and
+``0xffffffffa8000000`` names no pool, so the reservation does nothing and
+BAR 3 is allocated over BAR 0. The selector is read from a stack slot that
+the I/O-BAR path never sets (*inferred* from the binary), and the value
+looks like the upper word of a kernel address left by earlier code. The
+calls' return values do not show a drop by themselves. The same selectors
+appear with ``widget-12``. The model gives the kernel values that a PCI
+function with an I/O BAR 0 and an I/O BAR 3 can give (command ``0x7``, a
+BAR 0 that reads back with its type bit and address, a BAR 3 that sizes to
+256 bytes); the real chip's BAR types and sizes are *unknown*, so those
+are an *approximation*, and whether a real Octane shows the same failure
+is *unknown*. The model is not changed to avoid it.
+
+IRIX 6.5.30 on the same Octane model attaches both controllers, and the
+disks on port 0 appear in ``hinv`` with no error (*observed*, one run on
+the 6.5.30m kernel).
+
 Model limits
 ============
 
@@ -691,6 +806,9 @@ Model limits
   restarts.
 - Hardware error status at ``0x23``.
 - The PCI class code, the XIO widget identity and the Bridge revision.
+- Port 0 of the board on an Octane under IRIX 6.5.21: the two I/O BARs
+  overlap, as above, and the guest's reservation is *inferred* to be
+  dropped. Whether a real Octane does the same is *unknown*.
 - Commands in flight do not migrate.
 
 Tests
@@ -711,3 +829,13 @@ and ADISC accepts, a malformed login, held receive buffers, the LIP
 request, the loop-position map, the whole loop bring-up, a done queue lapped
 past its end with the consumer index, and a batch of commands posted
 with one doorbell.
+
+``tests/qtest/sgi-fc-board-test.c`` fits the board on an Origin 2000, an
+Octane, an Octane2 and an Onyx2, with a disk on a port's loop bus. It checks
+the default product of each machine, a named product, that an unknown
+product is refused, that both controllers exist, and on the first three that
+devices 0 and 1 answer with the controller's identity, device 2 does not, the two
+controllers' registers are separate through the Bridge, and each interrupt
+reaches the Bridge on its own pin. The Onyx2 case checks the tree only. A
+flash-probe case does the Octane kernel's sequence on the first three and
+requires it to complete.

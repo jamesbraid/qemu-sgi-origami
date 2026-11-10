@@ -1112,6 +1112,17 @@ What the model fits:
   (:ref:`sgi-bridge-octane2-flash`). Whether a part is fitted there is
   *unknown*, so what an unpopulated select returns is *unknown* too.
 
+The IP30 kernel of IRIX 6.5.21 probes the flash of every Bridge that reports
+PCI mode, a *software expectation* (:src:`ip30-kernel-6.5.21`, the probe's first
+read at text offset ``0xd850c``). It sets control bit 31, stores
+``0x9090`` at the first select, reads the halfwords at offsets 0 and 2
+expecting ``0x00b0`` and ``0x66a8``, repeats at the second select, then
+clears the bit. It sets no fault handler, so a read that fails is
+*inferred* to fault: the CPU model raises a bus error on a failed load, and
+an earlier model whose empty select failed took a bus error at the window in
+the Octane boot. A store that fails on the model's empty select
+causes no fault in the guest (*observed* with the Octane PCI module).
+
 The IP27 PROM loads the BASEIO PROM from the BaseIO card's flash, a
 *software expectation* (:src:`ip27-prom-6.156`). It sets control bit 31,
 identifies the part with the AMD autoselect sequence as 16-bit stores, and

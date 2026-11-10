@@ -866,6 +866,7 @@ tests/qtest/sgi-crime-render-test-groups.txt
 tests/qtest/sgi-crime-render-test.c
 tests/qtest/sgi-crime-test.c
 tests/qtest/sgi-debug-tools-test.c
+tests/qtest/sgi-fc-board-test.c
 tests/qtest/sgi-gbe-test.c
 tests/qtest/sgi-graphics-pipes-test.c
 tests/qtest/sgi-heart-cpu-test.c

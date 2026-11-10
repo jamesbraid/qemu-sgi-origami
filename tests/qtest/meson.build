@@ -650,6 +650,10 @@ sgi_qtests = \
     ['octane-vpro-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') and
    config_all_devices.has_key('CONFIG_SGI_SN0') and
+   config_all_devices.has_key('CONFIG_AIC1160_PCI') ?
+    ['sgi-fc-board-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_OCTANE') and
+   config_all_devices.has_key('CONFIG_SGI_SN0') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sgi-graphics-pipes-test', 'sgi-catalogue-launch-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BOARD_CDROM') ?
