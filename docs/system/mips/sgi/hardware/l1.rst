@@ -314,6 +314,10 @@ core and logged under ``LOG_GUEST_ERROR``; through the Hub windows the
 processor sees a decode error. The Hub's region protection applies to
 both forms.
 
+.. sgi-registers: base=0x11000000 width=64 skip=0x0:read-pops
+   map=/machine/peripheral/l1:0:0x11000000
+   qemu="-M none -cpu R10000 -S -device sgi-l1,id=l1c -device sgi-l1-uart,id=l1,controller=l1c"
+
 .. list-table::
    :header-rows: 1
    :widths: 9 22 9 60
