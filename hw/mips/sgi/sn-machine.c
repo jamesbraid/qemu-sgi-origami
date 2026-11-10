@@ -448,6 +448,8 @@ struct SGIMachineState {
     SGIMachinePeerNotifier *io_peer_notifiers;
     SGIMachineAssemblyOwnership *assembly_ownership;
     DeviceState **controllers;
+    /* Every rack and bay the builder gave an SN1 L1, to refuse a repeat. */
+    GArray *l1_locations;
     bool *controller_reset_registered;
     DeviceState **controller_bics;
     uint32_t controller_count;
@@ -629,6 +631,85 @@ void sgi_machine_set_l1_system_serial(MachineState *machine, DeviceState *l1)
     }
     serial = sgi_board_default_system_serial(&s->identity.id);
     qdev_prop_set_string(l1, "system-serial", serial);
+}
+
+/*
+ * Gives an L1 the location its module names. The bay is the module's
+ * initial module number plus @bay_offset; the rack is the module's, or the
+ * L1's default rack 1 when the topology numbers none. The L1 keeps both as
+ * build-time properties, so none of this is migrated state. A zero bay
+ * leaves the L1's default and is not recorded; the others are, so the
+ * builder can refuse two L1s that would answer one rack and bay.
+ */
+typedef struct SGIMachineL1Location {
+    const SGIModelModule *module;
+    uint32_t rack;
+    uint32_t bay;
+} SGIMachineL1Location;
+
+/*
+ * Several nodes of one module share its L1, and each reports the same
+ * location, which is recorded once.
+ */
+static void sgi_machine_record_l1_location(SGIMachineState *s,
+                                           const SGIModelModule *module,
+                                           uint32_t bay)
+{
+    SGIMachineL1Location location = {
+        .module = module, .rack = module->has_rack ? module->rack : 1,
+        .bay = bay,
+    };
+
+    if (!bay) {
+        return;
+    }
+    if (!s->l1_locations) {
+        s->l1_locations = g_array_new(false, false,
+                                      sizeof(SGIMachineL1Location));
+    }
+    for (guint i = 0; i < s->l1_locations->len; i++) {
+        SGIMachineL1Location *seen =
+            &g_array_index(s->l1_locations, SGIMachineL1Location, i);
+
+        if (seen->module == module && seen->bay == bay) {
+            return;
+        }
+    }
+    g_array_append_val(s->l1_locations, location);
+}
+
+static void sgi_machine_set_l1_location(SGIMachineState *s, DeviceState *l1,
+                                        const SGIModelModule *module,
+                                        uint32_t bay)
+{
+    qdev_prop_set_uint32(l1, "bay", bay);
+    if (module->has_rack) {
+        qdev_prop_set_uint32(l1, "rack", module->rack);
+    }
+    sgi_machine_record_l1_location(s, module, bay);
+}
+
+/* No two SN1 L1s may answer the same rack and bay. */
+static bool sgi_machine_check_l1_locations(SGIMachineState *s, Error **errp)
+{
+    GArray *locations = s->l1_locations;
+
+    for (guint i = 0; locations && i < locations->len; i++) {
+        SGIMachineL1Location a =
+            g_array_index(locations, SGIMachineL1Location, i);
+
+        for (guint j = i + 1; j < locations->len; j++) {
+            SGIMachineL1Location b =
+                g_array_index(locations, SGIMachineL1Location, j);
+
+            if (a.rack == b.rack && a.bay == b.bay) {
+                error_setg(errp, "two L1 controllers answer rack %u, bay %u",
+                           a.rack, a.bay);
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 static void sgi_machine_set_module_serial(SGIMachineState *s,
@@ -4885,7 +4966,7 @@ static bool sgi_machine_supply_cx_l1(SGIMachineState *s,
         qdev_prop_set_uint32(l1, "brick-type-code", c->l1->reported_type);
     }
     if (m->initial_module_number) {
-        qdev_prop_set_uint32(l1, "bay", m->initial_module_number);
+        sgi_machine_set_l1_location(s, l1, m, m->initial_module_number);
         qdev_prop_set_bit(l1, "named", true);
     }
     qdev_prop_set_uint32(l1, "boards", boards);
@@ -7122,7 +7203,8 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
             qdev_prop_set_string(l1, "mac", mac);
         }
         if (module->initial_module_number) {
-            qdev_prop_set_uint32(l1, "bay", module->initial_module_number);
+            sgi_machine_set_l1_location(s, l1, module,
+                                        module->initial_module_number);
             qdev_prop_set_bit(l1, "named", true);
         }
         if (!qdev_realize(l1, NULL, errp)) {
@@ -7805,9 +7887,9 @@ static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
             sgi_machine_set_module_serial(s, owner, l1);
             qdev_prop_set_string(l1, "brick-type", "router");
             qdev_prop_set_uint32(l1, "brick-type-code", 0x52);
-            qdev_prop_set_uint32(l1, "bay",
-                                 model_module->initial_module_number +
-                                 SGI_L1_CX_BOARDS);
+            sgi_machine_set_l1_location(s, l1, model_module,
+                                        model_module->initial_module_number +
+                                        SGI_L1_CX_BOARDS);
             qdev_prop_set_string(l1, "router-board", "cxbrick");
             if (!qdev_realize(l1, NULL, errp)) {
                 return false;
@@ -7826,8 +7908,8 @@ static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
             sgi_machine_set_module_serial(s, owner, l1);
             qdev_prop_set_string(l1, "brick-type", "router");
             qdev_prop_set_uint32(l1, "brick-type-code", 0x52);
-            qdev_prop_set_uint32(l1, "bay",
-                                 model_module->initial_module_number);
+            sgi_machine_set_l1_location(s, l1, model_module,
+                                        model_module->initial_module_number);
             board = sgi_machine_router_board(record->id);
             if (board) {
                 qdev_prop_set_string(l1, "router-board", board);
@@ -8004,7 +8086,8 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
         s->controllers[owner] = l1;
         qdev_prop_set_string(l1, "brick-type", "vbrick-discovery-reference");
         sgi_machine_set_l1_system_serial(MACHINE(s), l1);
-        qdev_prop_set_uint32(l1, "bay", model_module->initial_module_number);
+        sgi_machine_set_l1_location(s, l1, model_module,
+                                    model_module->initial_module_number);
         if (!qdev_realize(l1, NULL, errp)) {
             return false;
         }
@@ -8033,7 +8116,7 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
         qdev_prop_set_string(l1, "brick-type", a->controller_profile);
         sgi_machine_set_l1_system_serial(MACHINE(s), l1);
         if (modules[a->module_index]->initial_module_number) {
-            qdev_prop_set_uint32(l1, "bay",
+            sgi_machine_set_l1_location(s, l1, modules[a->module_index],
                 modules[a->module_index]->initial_module_number);
         }
         object_property_add_child(module, "board-interface", OBJECT(interface));
@@ -9993,10 +10076,21 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                     qdev_prop_set_string(DEVICE(node), "flash-node", flash);
                 }
             }
-            qdev_prop_set_uint32(DEVICE(node), "l1-bay",
-                                 sgi_machine_node_module(t, node_index) ?
-                                 sgi_machine_node_module(t, node_index)->
-                                 initial_module_number : 0);
+            {
+                const SGIModelModule *node_module =
+                    sgi_machine_node_module(t, node_index);
+
+                qdev_prop_set_uint32(DEVICE(node), "l1-bay", node_module ?
+                                     node_module->initial_module_number : 0);
+                if (node_module && node_module->has_rack) {
+                    qdev_prop_set_uint32(DEVICE(node), "l1-rack",
+                                         node_module->rack);
+                }
+                if (node_module) {
+                    sgi_machine_record_l1_location(s, node_module,
+                        node_module->initial_module_number);
+                }
+            }
             if (nodes[node_index]->has_option_intx_map) {
                 uint8_t map[SGI_PCI_INTX_MAP_SIZE];
                 const uint8List *entry;
@@ -10056,7 +10150,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             return false;
         }
         if (!sgi_machine_build_ibrick_l1s(s, t, errp) ||
-            !sgi_machine_build_l1_peer_links(s, t, errp)) {
+            !sgi_machine_build_l1_peer_links(s, t, errp) ||
+            !sgi_machine_check_l1_locations(s, errp)) {
             return false;
         }
         for (node_index = 0; node_index < node_count; node_index++) {
@@ -11897,6 +11992,9 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->enclosure_xbridges);
     g_free(s->pic_links);
     g_free(s->controllers);
+    if (s->l1_locations) {
+        g_array_free(s->l1_locations, true);
+    }
     g_free(s->controller_bics);
     g_free(s->controller_reset_registered);
     g_free(s->owner_controllers);

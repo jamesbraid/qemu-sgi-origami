@@ -1260,10 +1260,26 @@ model checks these rules only when racks are numbered:
 Topologies that number no rack keep the module number rules above
 unchanged: unique across the whole system, 1 to 255. No shipped topology
 numbers a rack yet, and the compiled catalogue carries no rack field for
-any of them. A numbered topology's module records carry ``rack``. The
-machine builder does not read it yet, so every L1 answers rack 1. The
-catalogue's QAPI module record has no ``rack`` field, so a topology that
-numbers a rack cannot be catalogued until the builder stage adds it.
+any of them. A numbered topology's module records carry ``rack``, an
+optional member of the catalogue's QAPI module record. The machine builder
+gives every SN1 L1 its module's rack beside its bay: the C-brick, I-brick,
+R-brick, V-brick, Cx-brick (and its router port) and expansion controllers
+all take it, and a module with no rack leaves the L1's default, rack 1. The
+L1 answers that rack and bay in its ``0x0002`` and ``0x0003`` replies and
+routes traffic between L1s by them. The rack and bay are properties set
+when the machine is built, and the L1 already migrates them, so the rack
+adds no state of its own. The builder refuses a machine in which two L1s
+would answer the same rack and bay, in an unnumbered topology as well (both
+are then in rack 1). That is a rule of the model, because two controllers
+at one location would answer one address (*inferred*). It is stricter than
+the check it replaces, which covered V-bricks only, for every topology; no
+shipped topology repeats a location, as the catalogue launch test shows.
+In an unnumbered topology a Cx-brick also claims its number plus four for
+its router port, as it does in a numbered rack, and the model compiler and
+the builder both refuse a collision there. Where the
+V-brick's graphics bay is reported to its host C-brick's L1, the host's
+rack is used, so a V-brick in a different rack from its host is not
+modelled.
 
 Model limits of a routed Origin 3000 build:
 
@@ -1529,10 +1545,36 @@ any numbered rack, an empty rack, an I-brick in a compute rack, a C-brick in
 an I/O rack, a brick with no letter and too many C-, R- or I/O bricks, and
 acceptance of two racks that share a bay. It also checks that the Origin
 2000 module number rules and the unnumbered SN1 rules are unchanged, that a
-Cx-brick claims its router bay and none passes bay 39, that a null
+Cx-brick claims its router bay and none passes bay 39 (unnumbered: its number
+plus four, and none passes 255), that a null
 ``rack_numbers`` leaves the module number rules in force, that a module
-record carries ``rack`` only in a numbered topology and that no shipped
-topology numbers a rack.
+record carries ``rack`` only in a numbered topology, that the QAPI module
+record has the optional ``rack`` member that record uses and that no shipped
+topology numbers a rack. ``tests/unit/test-sn-model.c`` parses a module
+record with and without ``rack``.
+
+The C-brick fixtures ``racks-same-bay``, ``racks-unnumbered`` and
+``racks-router`` in ``sn-builder-test.c`` check that two C-bricks at bay 10
+in racks 1 and 2 are built with those racks, answer ``(1 << 6) | 10`` and
+``(2 << 6) | 10`` to the identity request, that an unnumbered topology and
+a fixture with no bay keep rack 1, and that an R-brick's L1 takes its
+module's rack. The refusal cases ``racks-duplicate``,
+``racks-unnumbered-duplicate`` and ``racks-router-duplicate`` check that
+one rack and bay on two L1s is refused. The Cx-brick fixtures ``-racked``
+and ``-racked-router`` check the Cx-brick's L1 and the router-profile L1
+behind its fifth port, at its bay plus four. The fixtures ``racks-ibrick``
+and ``racks-vbrick`` give the I/O brick module a controller of that profile
+in rack 3, and the expansion fixture's ``located`` property does the same
+for the Origin 300 PCI expansion's controller. The catalogue's Origin 3200
+two-I-brick and Onyx 3000 topologies check that an unnumbered I-brick and
+V-brick stay in rack 1. One site has no fixture: the experimental V-brick preset an
+Origin 300 topology can name (the ``vbrick-discovery-reference`` L1). No
+shipped topology uses it, it is refused beside XIO cables, and building it
+needs the preset's graphics bridge, so it is covered by inspection: it sets
+its location through the same function as the others.
+``sgi-l1-o3k-test`` checks that two controllers at one bay in different
+racks answer their own rack, list themselves by rack in a broadcast and
+print their own rack.
 
 ``tests/qtest/sn-builder-test.c`` builds the C-brick fixtures from
 ``tests/qtest/sn-builder-fault-test.c``. ``sn/builder/cbrick/origin3200-xbrick-slots``

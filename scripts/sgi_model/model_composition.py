@@ -1267,6 +1267,32 @@ def validate_initial_module_numbers(model: dict[str, Any]) -> None:
     if missing:
         raise ResolutionError(
             f"initial_module_numbers missing module '{sorted(missing)[0]}'")
+    if not racked:
+        _validate_cx_router_numbers(components, policy)
+
+
+def _validate_cx_router_numbers(components: dict[str, dict[str, Any]],
+                                policy: list[dict[str, Any]]) -> None:
+    """With no rack numbers, a Cx-brick's router port also answers its
+    number plus CX_BRICK_ROUTER_BAY_OFFSET, so no other module may hold
+    that number and no two Cx-bricks may reach the same one. The racked
+    rule in validate_rack_numbers is the same claim made per rack."""
+    claimed: dict[int, str] = {}
+    for entry in policy:
+        claimed[entry["number"]] = entry["component"]
+    for entry in policy:
+        cid = entry["component"]
+        if components[cid].get("name") != "Cx-brick":
+            continue
+        router = entry["number"] + CX_BRICK_ROUTER_BAY_OFFSET
+        if router > 255:
+            raise ResolutionError(
+                f"module '{cid}' claims router number {router}, past 255")
+        if router in claimed:
+            raise ResolutionError(
+                f"modules '{claimed[router]}' and '{cid}' have repeated "
+                f"number {router}")
+        claimed[router] = cid
 
 
 # The rack numbers the PROM's module-identifier encoder accepts (Origin

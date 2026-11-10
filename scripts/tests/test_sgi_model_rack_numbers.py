@@ -343,6 +343,29 @@ class RackNumberValidationTests(unittest.TestCase):
             "number"] = 255
         _resolver._validate_resolved_system_model(copy.deepcopy(model))
 
+    def test_unracked_cx_brick_claims_its_router_number(self):
+        # With no rack numbers the number is global: a Cx-brick at 200 also
+        # holds 204, which no other module may take.
+        model = _origin3800()
+        _component(model, "c0-chassis")["name"] = "Cx-brick"
+        _set_bay(model, "c0-chassis", 200)
+        _set_bay(model, "c1-chassis", 204)
+        self.reject(model, "repeated number 204")
+        _set_bay(model, "c1-chassis", 205)
+        _resolver._validate_resolved_system_model(copy.deepcopy(model))
+        # Two Cx-bricks four apart collide through the first one's router.
+        _component(model, "c1-chassis")["name"] = "Cx-brick"
+        _set_bay(model, "c1-chassis", 196)
+        self.reject(model, "repeated number 200")
+
+    def test_unracked_cx_router_number_must_stay_in_range(self):
+        model = _origin3800()
+        _component(model, "c0-chassis")["name"] = "Cx-brick"
+        _set_bay(model, "c0-chassis", 252)
+        self.reject(model, "router number 256")
+        _set_bay(model, "c0-chassis", 251)
+        _resolver._validate_resolved_system_model(model)
+
     def test_unracked_sn1_keeps_its_bay_rules(self):
         model = _origin3800()
         _set_bay(model, "c1-chassis", 10)

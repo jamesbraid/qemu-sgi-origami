@@ -10084,6 +10084,128 @@ static void test_module_owned_l1_for_one_node(void)
 }
 
 /*
+ * The packed rack and bay a C-brick's L1 answers the identity request
+ * with, asked through the node's own processor.
+ */
+static uint32_t cbrick_l1_identity(QTestState *qts, unsigned int cpu)
+{
+    /* The general request 3, sent to the controller itself. */
+    static const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3, 0 };
+    ModuleL1Uart uart = { qts, cpu };
+    SGIL1TestIO io = { &uart, module_l1_uart_read, module_l1_uart_write };
+    uint8_t reply[32];
+
+    sgi_l1_test_send_io(&io, request, sizeof(request), false);
+    g_assert_cmpuint(sgi_l1_test_receive_io(&io, reply, sizeof(reply)), ==,
+                     16);
+    return ldl_be_p(reply + 7);
+}
+
+static void expect_l1_location(QTestState *qts, const char *l1,
+                               unsigned int rack, unsigned int bay)
+{
+    g_assert_cmpuint(qom_get_uint(qts, l1, "rack"), ==, rack);
+    g_assert_cmpuint(qom_get_uint(qts, l1, "bay"), ==, bay);
+}
+
+/*
+ * Two C-bricks at bay 10 in racks 1 and 2: each L1 is built with its
+ * module's rack and answers the packed (rack << 6) | bay of its own.
+ */
+static void test_cbrick_racks_share_a_bay(void)
+{
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = cbrick_start("cbrick-racks-same-bay", prom, "-S");
+
+    expect_l1_location(qts, "/machine/node0/l1", 1, 10);
+    expect_l1_location(qts, "/machine/node1/l1", 2, 10);
+    g_assert_cmphex(cbrick_l1_identity(qts, 0), ==, (1 << 6) | 10);
+    g_assert_cmphex(cbrick_l1_identity(qts, 1), ==, (2 << 6) | 10);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * A topology that numbers no rack leaves every L1 in rack 1, whatever
+ * its bay, and the L1 of a module with no bay at all keeps its default.
+ */
+static void test_cbrick_without_racks_stay_in_rack_1(void)
+{
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = cbrick_start("cbrick-racks-unnumbered", prom, "-S");
+
+    expect_l1_location(qts, "/machine/node0/l1", 1, 10);
+    expect_l1_location(qts, "/machine/node1/l1", 1, 11);
+    g_assert_cmphex(cbrick_l1_identity(qts, 0), ==, (1 << 6) | 10);
+    g_assert_cmphex(cbrick_l1_identity(qts, 1), ==, (1 << 6) | 11);
+    qtest_quit(qts);
+    qts = cbrick_start("cbrick-l1-node", prom, "-S");
+    expect_l1_location(qts, "/machine/node0/l1", 1, 1);
+    expect_l1_location(qts, "/machine/node1/l1", 1, 1);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/* An R-brick's L1 takes its module's rack and bay like a C-brick's. */
+static void test_rbrick_l1_takes_its_rack(void)
+{
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = cbrick_start("cbrick-racks-router", prom, "-S");
+
+    expect_l1_location(qts, "/machine/node0/l1", 1, 10);
+    expect_l1_location(qts, "/machine/node1/l1", 2, 10);
+    expect_l1_location(qts, "/machine/module2/l1", 2, 11);
+    g_assert_cmphex(cbrick_l1_identity(qts, 0), ==, (1 << 6) | 10);
+    g_assert_cmphex(cbrick_l1_identity(qts, 1), ==, (2 << 6) | 10);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * An I-brick's and a V-brick's controller take their module's rack and
+ * bay; the builder gives both through one function, and the profile alone
+ * tells them apart.
+ */
+static void test_io_brick_l1_takes_its_rack(void)
+{
+    static const char *const names[] = { "cbrick-racks-ibrick",
+                                         "cbrick-racks-vbrick" };
+    static const char *const profiles[] = { "ibrick", "vbrick" };
+    g_autofree char *prom = cbrick_blank_prom();
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(names); i++) {
+        QTestState *qts = cbrick_start(names[i], prom, "-S");
+        g_autofree char *profile = qom_get_str(qts, "/machine/module2/l1",
+                                               "brick-type");
+
+        g_assert_cmpstr(profile, ==, profiles[i]);
+        expect_l1_location(qts, "/machine/module2/l1", 3, 12);
+        qtest_quit(qts);
+    }
+    g_unlink(prom);
+}
+
+/*
+ * The Origin 300 PCI expansion's controller takes its module's rack and
+ * bay, and one with no rack stays in rack 1.
+ */
+static void test_expansion_l1_takes_its_rack(void)
+{
+    g_autofree char *prom = expansion_prom();
+    QTestState *qts = qtest_initf("-M sn-builder-expansion-test,"
+        "activate=true,located=true -cpu R14000 -bios %s -nodefaults "
+        "-display none -S", prom);
+
+    expect_l1_location(qts, "/machine/module1/l1", 3, 12);
+    qtest_quit(qts);
+    qts = qtest_initf("-M sn-builder-expansion-test,activate=true "
+        "-cpu R14000 -bios %s -nodefaults -display none -S", prom);
+    expect_l1_location(qts, "/machine/module1/l1", 1, 1);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
  * The R-brick fixtures with four C-bricks: C-brick i on router port i + 2,
  * or, reversed, on port 5 - i. Each node has one processor, cpu i, and
  * banks 2 and 3 fitted.
@@ -10339,6 +10461,24 @@ static void test_cx_l1_shared_by_nodes(void)
                                   "transport-index"), ==, 2);
     g_assert_cmpuint(cx_l1_position(qts, 0, 1), ==, 0);
     g_assert_cmpuint(cx_l1_position(qts, 1, 0), ==, 2);
+    cx_l1_stop(qts, files);
+}
+
+/* A Cx-brick's one L1 takes its module's rack and bay. */
+static void test_cx_l1_takes_its_rack(void)
+{
+    char *files[4];
+    QTestState *qts = cx_l1_start("-racked", files);
+
+    expect_l1_location(qts, "/machine/module0/l1", 2, 10);
+    cx_l1_stop(qts, files);
+    /*
+     * The router window behind the brick's fifth port is a second L1 in
+     * the same rack, on the slot after the brick's four boards'.
+     */
+    qts = cx_l1_start("-racked-router", files);
+    expect_l1_location(qts, "/machine/module0/l1", 2, 10);
+    expect_l1_location(qts, "/machine/module0/router-l1", 2, 14);
     cx_l1_stop(qts, files);
 }
 
@@ -11386,6 +11526,8 @@ static void test_onyx3000_vbrick_l1_and_heads(void)
         g_assert_cmpstr(c0_profile, ==, "ibrick");
         g_assert_cmpstr(c1_profile, ==, "vbrick");
         g_assert_cmpuint(qom_get_uint(qts, c1_io, "bay"), ==, 10);
+        /* A topology that numbers no rack leaves it at the default. */
+        g_assert_cmpuint(qom_get_uint(qts, c1_io, "rack"), ==, 1);
         /*
          * The V-brick's boards take the I-brick's serial letters, so its
          * instance differs from the I-brick's.
@@ -11600,8 +11742,9 @@ static void test_origin3200_two_ibricks(void)
         g_assert_cmpuint(qom_get_uint(qts, io_peer, "identity-index"), ==,
                          node + 2);
     }
-    g_assert_cmpuint(qom_get_uint(qts, "/machine/module2/l1", "bay"), ==, 14);
+    expect_l1_location(qts, "/machine/module2/l1", 1, 14);
     g_assert_cmpuint(qom_get_uint(qts, "/machine/module3/l1", "bay"), !=, 14);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module3/l1", "rack"), ==, 1);
     qtest_quit(qts);
     /*
      * One I-brick keeps the shared index, so the single-I-brick entry is
@@ -13679,6 +13822,12 @@ typedef struct CbrickRefusalCase {
     "sn-builder-bedrock-test,activate=on,construction-fault=cbrick-" fault
 
 static const CbrickRefusalCase cbrick_refusal_cases[] = {
+    { CBRICK_FIXTURE("racks-duplicate"),
+      "two L1 controllers answer rack 2, bay 10" },
+    { CBRICK_FIXTURE("racks-unnumbered-duplicate"),
+      "two L1 controllers answer rack 1, bay 10" },
+    { CBRICK_FIXTURE("racks-router-duplicate"),
+      "two L1 controllers answer rack 1, bay 10" },
     { CBRICK_FIXTURE("cable-out-of-range"),
       "XIO cable 'c0-to-ibrick' names an end out of range" },
     { CBRICK_FIXTURE("node-cabled-twice"),
@@ -14923,8 +15072,20 @@ int main(int argc, char **argv)
                         test_rbrick_nodes_reach_remote_memory);
     qtest_add_func("sn/builder/cbrick/module-owned-l1",
                    test_module_owned_l1_for_one_node);
+    qtest_add_func("sn/builder/cbrick/racks-share-a-bay",
+                   test_cbrick_racks_share_a_bay);
+    qtest_add_func("sn/builder/cbrick/unnumbered-racks-stay-rack-1",
+                   test_cbrick_without_racks_stay_in_rack_1);
+    qtest_add_func("sn/builder/cbrick/rbrick-l1-takes-its-rack",
+                   test_rbrick_l1_takes_its_rack);
+    qtest_add_func("sn/builder/cbrick/io-brick-l1-takes-its-rack",
+                   test_io_brick_l1_takes_its_rack);
+    qtest_add_func("sn/builder/expansion/l1-takes-its-rack",
+                   test_expansion_l1_takes_its_rack);
     qtest_add_func("sn/builder/cxbrick/l1-shared-by-nodes",
                    test_cx_l1_shared_by_nodes);
+    qtest_add_func("sn/builder/cxbrick/l1-takes-its-rack",
+                   test_cx_l1_takes_its_rack);
     qtest_add_func("sn/builder/cxbrick/l1-memory-board",
                    test_cx_l1_memory_board);
     qtest_add_func("sn/builder/cxbrick/l1-refusals", test_cx_l1_refusals);

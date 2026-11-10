@@ -255,9 +255,11 @@ memory and a change takes effect at the next L1 boot
 :src:`marc-openbsd-sgi-139223952727384 lines 17-62`, *observed*.
 
 The model takes rack and bay from the ``rack`` and ``bay`` properties
-(both default 1; rack below ``0x3ff``, bay below ``0x3f``). ``brick rack``
-and ``brick slot`` store a pending value applied at the next controller
-restart. The brick serial (``0x0004``) comes from ``brick-serial`` and
+(both default 1; rack below ``0x3ff``, bay below ``0x3f``). The machine
+builder sets both from the brick's module, and sets ``rack`` only when the
+topology numbers its racks (see :ref:`numbered racks <sgi-sn-rack-numbers>`).
+``brick rack`` and ``brick slot`` store a pending value applied at the next
+controller restart. The brick serial (``0x0004``) comes from ``brick-serial`` and
 the system serial (``0x0008``) from ``system-serial``, or from a station
 address (see :ref:`sgi-l1-records`). Without them both requests answer
 minus 104, except that the Fuel's brick serial defaults to ``EMUN`` and

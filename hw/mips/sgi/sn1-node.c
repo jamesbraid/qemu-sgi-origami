@@ -3224,6 +3224,9 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
             qdev_prop_set_uint32(node->l1, "bay", node->l1_bay);
             qdev_prop_set_bit(node->l1, "named", true);
         }
+        if (node->l1_rack) {
+            qdev_prop_set_uint32(node->l1, "rack", node->l1_rack);
+        }
         qdev_prop_set_uint32(node->l1, "partition", node->l1_partition);
         if (!sn1_node_set_l1_l2_link(node, errp) ||
             !qdev_realize(node->l1, NULL, errp)) {
@@ -3262,6 +3265,9 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
      */
     if (node->l1_bay) {
         qdev_prop_set_uint32(node->l1, "bay", node->l1_bay);
+    }
+    if (node->l1_rack) {
+        qdev_prop_set_uint32(node->l1, "rack", node->l1_rack);
     }
     qdev_prop_set_int32(node->l1, "revision-major", node->l1_revision[0]);
     qdev_prop_set_int32(node->l1, "revision-minor", node->l1_revision[1]);
@@ -4070,6 +4076,8 @@ static const Property sn1_node_properties[] = {
                        x_test_start_delay_ms, 0),
     DEFINE_PROP_UINT32("nasid", SN1NodeState, nasid, 0),
     DEFINE_PROP_UINT32("l1-bay", SN1NodeState, l1_bay, 0),
+    /* Zero leaves the L1's default, rack 1. */
+    DEFINE_PROP_UINT32("l1-rack", SN1NodeState, l1_rack, 0),
     DEFINE_PROP_UINT64("board-id-word", SN1NodeState, board_id_word, 0),
     /*
      * The machine sets both from the catalogue's ip35-firmware record;
