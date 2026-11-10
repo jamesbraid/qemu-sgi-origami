@@ -700,6 +700,38 @@ mapped to state (*unknown*). The model frames
 the word, logs ``LOG_UNIMP`` and posts no reply, so a client that sends it
 waits. A captured context-copy exchange would settle it.
 
+.. _sgi-kona-window-id:
+
+Window-id ownership
+~~~~~~~~~~~~~~~~~~~
+
+The window and clip set-up request ``0x1f3`` carries the window's display
+id in word 9 and an "obscured" flag in word 10. The pipe encodes them into
+one raster register: bit 0 is the test enable (word 10 nonzero), bits 12:1
+a reference id and bits 24:13 a mask (*established*, from the firmware).
+Word 9 from 0 to 0x3e gives reference and mask over the six main-plane
+bits; 0x3f, the popup, gives bit 11 alone; 0x40 to 0x5f gives the overlay
+group, word 9 less 0x40, over bits 10:6; any other value, including all
+ones, the kernel's null clip, gives the ordinary pair 0x3f under 0x3f
+(*established*). All ones is therefore not a case of its own.
+
+The compared value is the painted pixel word shifted right by 2, so a main
+id painted in bits 7:2 is tested at bits 5:0 and an overlay or popup group
+painted in bits 12:8 at bits 10:6 (*inferred*). A set mask bit is a
+compared bit and a fragment passes when ``(plane ^ reference) & mask`` is
+zero (*inferred*; the opposite polarity would compare nothing for any pair
+the encoder makes). The model tests only while word 10 is set, which the
+encoding states (*established*).
+
+Whether the popup compare matches the way the popup is painted is
+*unknown*. The compare tests bit 11, but the painter writes the popup as
+overlay group 31 and never sets it. The model passes a pixel whose group
+field is all ones for a popup window, an *approximation* of the leading
+reading that group 31 means the popup. A capture of a popup validated
+through the clip path would settle it. How the display chip composes the
+overlay layers over the main one is *unknown*; the model shows an overlay
+or popup window across its rectangle.
+
 .. _sgi-kona-setup-rounding:
 
 Set-up rounding

@@ -740,6 +740,69 @@ static void test_unassigned_id_owns_nothing(void)
 }
 
 /*
+ * An overlay window (word 9 from 0x40 to 0x5f) tests the overlay group
+ * field, bits 10:6 of the plane value that is the painted word shifted
+ * right by 2: group g is painted as g << 8 and compared as g << 6. The
+ * window here is group 5, word 9 = 0x45; the X server paints the left half
+ * of its rectangle with group 5 and the right half with group 6. With word
+ * 10 set a clear fills the left half only; with it clear the window owns
+ * its whole rectangle. The popup, word 9 = 0x3f, compares bit 11 of the
+ * plane value, which the painter never sets, so the model passes a pixel
+ * whose group field is all ones (31) for it instead, an approximation:
+ * a pixel with group 31 takes the clear, a main-plane id does not.
+ */
+static void test_overlay_and_popup_window_ids(void)
+{
+    const uint32_t y = 640, top = FB_HEIGHT - y - PROBE_SIZE;
+
+    gl_reset();
+    gl_make_current(qts, false);
+    x_paint_display_id(qts, PROBE_X, top, PROBE_X + PROBE_SIZE,
+                       top + PROBE_SIZE, 6 << 6);
+    x_paint_display_id(qts, PROBE_X, top, PROBE_X + 64, top + PROBE_SIZE,
+                       5 << 6);
+    gl_place_window_id(qts, PROBE_X, y, 0x45, 1);
+    gl_clear(qts, F1, F0, F1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0xff00ff);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + 63, y), ==, 0xff00ff);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + 64, y), ==, 0);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + PROBE_SIZE - 1, y), ==, 0);
+    gl_place_window_id(qts, PROBE_X, y, 0x45, 0);
+    gl_clear(qts, F0, F1, F0);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + 64, y), ==, 0x00ff00);
+
+    x_paint_display_id(qts, PROBE_X, top, PROBE_X + PROBE_SIZE,
+                       top + PROBE_SIZE, 0xd);
+    x_paint_display_id(qts, PROBE_X, top, PROBE_X + 64, top + PROBE_SIZE,
+                       31 << 6);
+    gl_place_window_id(qts, PROBE_X, y, 0x3f, 1);
+    gl_clear(qts, F0, F0, F1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0x0000ff);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + 64, y), ==, 0x00ff00);
+}
+
+/*
+ * Word 9 all ones is the ordinary pair 0x3f under mask 0x3f, not a case of
+ * its own: the window owns the pixels whose main id is 63, which the X
+ * server never paints for a window, and nothing else.
+ */
+static void test_all_ones_is_the_ordinary_pair(void)
+{
+    const uint32_t y = 640, top = FB_HEIGHT - y - PROBE_SIZE;
+
+    gl_reset();
+    gl_make_current(qts, false);
+    x_paint_display_id(qts, PROBE_X, top, PROBE_X + PROBE_SIZE,
+                       top + PROBE_SIZE, 1);
+    x_paint_display_id(qts, PROBE_X, top, PROBE_X + 64, top + PROBE_SIZE,
+                       0x3f);
+    gl_place_window_id(qts, PROBE_X, y, UINT32_MAX, 1);
+    gl_clear(qts, F1, F0, F1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0xff00ff);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + 64, y), ==, 0);
+}
+
+/*
  * A client killed with its window showing bank 1 sends no teardown; the
  * X server repaints the window's pixels with the IDs beneath, here the
  * root window's ID 1, and paints bank 0. The display then shows bank 0
@@ -1400,6 +1463,10 @@ int main(int argc, char **argv)
                    test_overlap_clipped_to_display_id);
     qtest_add_func("sn0/origin2000/kona-gl/overlap-beyond-clip-list",
                    test_overlap_beyond_clip_list);
+    qtest_add_func("sn0/origin2000/kona-gl/overlay-and-popup-window-ids",
+                   test_overlay_and_popup_window_ids);
+    qtest_add_func("sn0/origin2000/kona-gl/all-ones-is-the-ordinary-pair",
+                   test_all_ones_is_the_ordinary_pair);
     qtest_add_func("sn0/origin2000/kona-gl/unassigned-id-owns-nothing",
                    test_unassigned_id_owns_nothing);
     qtest_add_func("sn0/origin2000/kona-gl/"

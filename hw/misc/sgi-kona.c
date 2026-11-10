@@ -280,64 +280,107 @@ static bool sgi_kona_gl_window_rect(const SGIKonaState *s,
 }
 
 /*
- * Whether window w owns only the pixels showing its display ID. Word 9
- * all ones with word 10 set is the kernel's word for a window the X
- * server has not given an ID yet (observed: ivview's contexts, and mag's
- * first placement, before the X server mapped the window), which is also
- * what its null clip sends. No pixel holds that ID, so such a window
- * owns none: mag's first clear, sent while its unmapped window was still
- * at the screen's corner, otherwise drew a grey box over the Toolchest
- * that nothing repainted. Inferred from the same ownership test as an
- * ID in the main planes'; how the pipe treats word 9 all ones is unknown.
+ * The window-id test the pipe encodes from 0x1f3's word 9 (command-table
+ * section 10.1, established): a reference id and a mask over the 12-bit
+ * plane value. Word 9 in 0 to 0x3e compares the six main-plane bits; 0x3f,
+ * the popup, compares bit 11 alone; 0x40 to 0x5f compares the five overlay
+ * group bits (word 9 less 0x40, in bits 10:6); anything else, including
+ * all ones, the kernel's null clip, is the ordinary pair 0x3f under 0x3f.
  */
-static bool sgi_kona_gl_window_tests_id(const SGIKonaGLWindow *w)
+static void sgi_kona_window_id_pair(uint32_t word9, unsigned *ref,
+                                    unsigned *mask)
 {
-    return w->partial && (w->display_id <= SGI_KONA_DISPLAY_ID_MAX ||
-                          w->display_id == UINT32_MAX);
+    if (word9 <= 0x3e) {
+        *ref = word9;
+        *mask = 0x3f;
+    } else if (word9 == 0x3f) {
+        *ref = 0x800;
+        *mask = 0x800;
+    } else if (word9 >= 0x40 && word9 <= 0x5f) {
+        *ref = (word9 - 0x40) << 6;
+        *mask = 0x7c0;
+    } else {
+        *ref = 0x3f;
+        *mask = 0x3f;
+    }
 }
 
 /*
- * Whether window w owns plane pixel (x, y) of its rectangle, for drawing.
- *
- * Inferred: the kernel gives the pipe no clip list for a GL window, only
- * its rectangle and, in 0x1f3, the display ID the X server paints into
- * the pixels the window owns and a word that is 1 while another window
- * covers part of it (observed in the runs). The GL library sends no
- * window clip either, yet OpenGL's pixel ownership test (1.2.1, 4.1.1)
- * keeps a context out of pixels another window owns. So the model keeps
- * a partly covered window to the pixels that show its ID. How the pipe
- * performs the test, and whether it tests a wholly visible window at
- * all, is unknown; the model tests only while word 10 is set. A window
- * whose word 9 is outside the main planes' IDs (an overlay ID, or all
- * ones before the X server has given it one) keeps its rectangle.
+ * The compared plane value at plane pixel (x, y): the painted word shifted
+ * right by 2, 12 bits (inferred; v bits 1:0 are not compared).
  */
+static unsigned sgi_kona_plane_value_at(SGIKonaState *s, int x, int y)
+{
+    return (sgi_plane_load(&s->desktop_mem,
+                           sgi_board_memory_plane(&s->desktop_mem, 0),
+                           x, y) >> 2) & 0xfff;
+}
+
+/*
+ * Whether window w's id test passes at plane pixel (x, y): a set mask bit
+ * is a compared bit, so it passes when ((plane ^ ref) & mask) == 0
+ * (inferred; the opposite polarity would test nothing for any window the
+ * encoder produces).
+ *
+ * The popup is the open case. Word 9 = 0x3f compares bit 11, but the
+ * painter writes the popup as overlay group 31 and never sets that bit, so
+ * the compare alone would pass nothing. The model also passes a pixel whose
+ * overlay group field is all ones for a popup window, an *approximation*
+ * of the leading reading that an all-ones group means popup; a capture of
+ * a popup validated through the clip path would settle it. This is the only
+ * place that approximation lives.
+ */
+static bool sgi_kona_window_id_passes(SGIKonaState *s,
+                                      const SGIKonaGLWindow *w, int x, int y)
+{
+    unsigned ref, mask, plane = sgi_kona_plane_value_at(s, x, y);
+
+    sgi_kona_window_id_pair(w->display_id, &ref, &mask);
+    if (w->display_id == 0x3f && (plane & 0x7c0) == 0x7c0) {
+        return true;
+    }
+    return !((plane ^ ref) & mask);
+}
+
+/*
+ * Whether window w tests the id at all: word 10, the "obscured" flag the X
+ * server sends as 1 unless the clip is one rectangle equal to the window,
+ * is the test-enable bit of the encoded register (established). A window
+ * with it clear owns its whole rectangle, and one with it set, including
+ * an overlay, a popup or the null clip's all-ones word, owns the pixels
+ * whose plane value passes sgi_kona_window_id_passes().
+ */
+static bool sgi_kona_gl_window_tests_id(const SGIKonaGLWindow *w)
+{
+    return w->partial;
+}
+
+/* Whether window w owns plane pixel (x, y) of its rectangle, for drawing. */
 static bool sgi_kona_gl_window_owns(SGIKonaState *s,
                                     const SGIKonaGLWindow *w, int x, int y)
 {
     return !sgi_kona_gl_window_tests_id(w) ||
-           sgi_kona_display_id_at(s, x, y) == w->display_id;
+           sgi_kona_window_id_passes(s, w, x, y);
 }
 
 /*
  * Whether the display shows window w's colour bank at plane pixel (x, y)
- * of its rectangle: where the display-ID planes hold its ID, whether or
- * not another window covers part of it. The X server repaints a window's
- * pixels with the IDs of what lies beneath when it unmaps the window,
- * which retires the bank of a client that died without its context
- * being torn down (observed in the runs: a killed client sends no
- * 0x1f8). Inferred, as for sgi_kona_gl_window_owns(); a window whose
- * word 9 is all ones with word 10 set, the kernel's words for a window
- * with no display ID, shows no pixel, as it owns none; another word 9
- * outside the main planes' IDs shows across its rectangle.
+ * of its rectangle: where the id test passes, whether or not another
+ * window covers part of it. The X server repaints a window's pixels with
+ * the IDs of what lies beneath when it unmaps the window, which retires
+ * the bank of a client that died without its context being torn down
+ * (observed in the runs: a killed client sends no 0x1f8). Inferred, as for
+ * the ownership test. A window outside the main planes' ids that does not
+ * test shows across its rectangle: how the display chip composes overlay
+ * layers is unknown.
  */
 static bool sgi_kona_gl_window_shows(SGIKonaState *s,
                                      const SGIKonaGLWindow *w, int x, int y)
 {
-    if (sgi_kona_gl_window_tests_id(w)) {
-        return sgi_kona_display_id_at(s, x, y) == w->display_id;
+    if (sgi_kona_gl_window_tests_id(w) || w->display_id <= 0x3f) {
+        return sgi_kona_window_id_passes(s, w, x, y);
     }
-    return w->display_id > SGI_KONA_DISPLAY_ID_MAX ||
-           sgi_kona_display_id_at(s, x, y) == w->display_id;
+    return true;
 }
 
 typedef struct SGIKonaOwnedRun {
@@ -7278,12 +7321,6 @@ static void sgi_kona_gl_window(SGIKonaState *s, uint32_t selector,
     if (selector == SGI_KONA_CMD_CONTEXT_RECORDS) {
         w->display_id = args[9];
         w->partial = args[10];
-        if (w->partial && w->display_id > SGI_KONA_DISPLAY_ID_MAX &&
-            w->display_id != UINT32_MAX) {
-            qemu_log_mask(LOG_UNIMP, "sgi-kona: context %d's window with"
-                          " display ID 0x%x outside the main planes keeps"
-                          " its rectangle\n", i, w->display_id);
-        }
         if (!w->placed) {
             /* Retirement clears placement, retaining the context visual. */
             w->double_buffered = s->state[i]->pipe.draw_config_received &&
