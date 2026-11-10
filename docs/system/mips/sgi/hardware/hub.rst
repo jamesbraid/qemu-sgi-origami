@@ -1193,7 +1193,8 @@ A packet arriving on the XIO link is decoded by address. A memory
 address below 2\ :sup:`40` goes to the node's memory view, resolved by
 programmed node number as a processor's access is. A doubleword write
 to a node's interrupt-modify register, with bit 47 set and the node in
-bits 46:38, is a device interrupt and lands on that node's Hub. A
+bits 46:38, is a device interrupt and lands on that node's Hub. The model
+decodes the node from bits 45:38 and ignores bit 46, an *approximation*. A
 doubleword read at I/O-view offset ``0x0160_0000`` with node field zero
 is a peer's identity probe and returns this Hub's ``NI_STATUS_REV_ID``.
 Anything else logs ``LOG_GUEST_ERROR`` and fails.
