@@ -471,3 +471,17 @@ qlogic_isp2200_loop_id(uint8_t loop_id) "adapter takes loop id %u"
 scsi_tape_command(uint8_t op, uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4, uint8_t b5) "cdb %02x %02x %02x %02x %02x %02x"
 scsi_tape_mode_sense(int pc, int page, int dbd, int alloc, int len) "pc %d page 0x%02x dbd %d alloc %d -> %d bytes"
 scsi_tape_mode_select(int len, int bd_len, int block_size, int density) "len %d bd_len %d block_size %d density %d"
+
+# adaptec-aic1160.c
+aic1160_irq(bool level) "level %d"
+aic1160_reg_read(uint64_t addr, unsigned size, uint64_t val) "0x%02" PRIx64 " size %u -> 0x%04" PRIx64
+aic1160_reg_write(uint64_t addr, unsigned size, uint64_t val) "0x%02" PRIx64 " size %u <- 0x%04" PRIx64
+aic1160_chip_reset(void) ""
+aic1160_sequencer_run(uint32_t words) "%u words loaded"
+aic1160_tcb(unsigned slot, uint16_t handle, uint8_t d_id, uint8_t r_ctl, uint8_t f_ctl2, uint8_t type, uint8_t control, uint8_t mode) "slot %u handle 0x%04x d_id 0x%02x r_ctl 0x%02x f_ctl2 0x%02x type 0x%02x control 0x%02x mode 0x%02x"
+aic1160_tcb_dump(unsigned slot, const char *bytes) "slot %u %s"
+aic1160_receive_buffer(unsigned slot, uint16_t handle) "slot %u handle 0x%04x held"
+aic1160_lip_request(uint8_t val) "config 0x4b <- 0x%02x"
+aic1160_loop_init(unsigned tcb, uint64_t map) "LIP TCB %u, map buffer 0x%" PRIx64
+aic1160_residual(uint16_t handle, uint32_t fcp_dl, uint64_t transferred, uint64_t described, uint32_t ndesc) "handle 0x%04x fcp_dl %u transferred %" PRIu64 " described %" PRIu64 " descriptors %u"
+aic1160_done(uint16_t handle, uint8_t status, unsigned index, uint8_t pass) "handle 0x%04x status %u slot %u pass %u"

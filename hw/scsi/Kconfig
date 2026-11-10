@@ -38,6 +38,14 @@ config QLOGIC_ISP_SCSI_PCI
     select SCSI
     select SGI_SCSI_CD
 
+config AIC1160_PCI
+    bool
+    default y if SGI_DEVICES
+    depends on PCI
+    # The source set the controller builds in is linked only with SCSI.
+    select SCSI
+    select SGI_SCSI_CD
+
 config QLOGIC_ISP2200_PCI
     bool
     default y if SGI_DEVICES
