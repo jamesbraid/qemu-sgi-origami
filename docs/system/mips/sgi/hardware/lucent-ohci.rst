@@ -184,6 +184,11 @@ to the core, after dropping power commands the switching mode does not
 allow. The HcInterruptEnable and HcFmInterval values are set by the reset
 hook.
 
+.. sgi-registers: base=0x20008900000 width=32
+   skip=0x4:core,0x8:core,0x50:core
+   setup=0x20008025010:0x10000000,0x20008025004:6,0x2000800022c:0x101100
+   qemu="-nodefaults -machine origin200 -device lucent-ohci,id=ohci,addr=05.0"
+
 .. list-table::
    :header-rows: 1
    :widths: 9 18 15 58
