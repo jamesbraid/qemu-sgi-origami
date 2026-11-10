@@ -390,6 +390,13 @@ class RegisterTablesTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn('64-bit registers only', errors[0])
 
+    def test_xor_swaps_the_lane_of_a_narrow_access(self):
+        marker = MARKER.replace('width=64', 'width=64 xor=2 lane=0x10')
+        cases, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(errors, [])
+        regs = {r['offset']: r['address'] for r in cases[0]['registers']}
+        self.assertEqual((regs['0x0'], regs['0x8']), ('0x1012', '0x101a'))
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])

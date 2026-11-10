@@ -49,6 +49,10 @@ continue on indented lines. Keys:
   units    BASE:STRIDE:COUNT, the places that repeat for a row whose Offset
            is relative to its unit, such as "link ``+0x08``" (units=
            0x100:0x40:8 reads it at 0x108, 0x148 and so on);
+  xor      a value XORed into every offset before the base and lane are
+           added, for a window that places a narrow access by address
+           lane (xor=2 for the halfword registers behind a Bridge); the
+           offsets printed stay the page's;
   stride   bytes between the registers of a range such as 0x130-0x168
            when that is not the access width (stride=8 for 8-byte slots);
   count    how many copies "n" runs over in an offset such as
@@ -93,7 +97,7 @@ PAGES = 'docs/system/mips/sgi'
 MARKER = re.compile(r'\.\.\s+sgi-registers:(.*)')
 KEYS = {'qemu', 'base', 'width', 'map', 'variant', 'skip', 'expect',
         'setup', 'select', 'skiprow', 'count', 'label', 'lane',
-        'stride', 'units', 'split'}
+        'stride', 'units', 'split', 'xor'}
 WIDTHS = (8, 16, 32, 64)
 NO_RESET = {'', 'n/a', 'none', 'unknown', 'unsupported', '-'}
 NUMBER = re.compile(r'(?:0x[0-9a-fA-F]+|\d+)$')
@@ -179,6 +183,7 @@ def parse_marker(text):
     try:
         options['base'] = int(options.get('base', '0'), 0)
         options['lane'] = int(options.get('lane', '0'), 0)
+        options['xor'] = int(options.get('xor', '0'), 0)
         if 'stride' in options:
             options['stride'] = int(options['stride'], 0)
             if options['stride'] < 1:
@@ -221,9 +226,9 @@ def parse_marker(text):
         options['select'] = parse_select(options['select'])
         options['skiprow'] = parse_skiprow(options['skiprow'])
     except ValueError:
-        raise Error('a marker number (base, width, count, lane, stride, skip, '
-                    'expect, setup, select or skiprow) is not of the right '
-                    'kind')
+        raise Error('a marker number (base, width, count, lane, xor, stride, '
+                    'units, skip, expect, setup, select or skiprow) is not '
+                    'of the right kind')
     return options
 
 
@@ -467,13 +472,13 @@ def build(page, table, marker_text, number):
                                 f'only, not {width}-bit')
                 reg = {'line': line, 'name': name, 'offset': hex(offset),
                        'address': hex(options['base'] + options['lane']
-                                      + offset),
+                                      + (offset ^ options['xor'])),
                        'width': width, 'expect': hex(got_here)}
                 if name in options['select']:
                     selected.add(name)
                     reg['select'] = [
                         {'address': hex(options['base'] + options['lane']
-                                        + off),
+                                        + (off ^ options['xor'])),
                          'width': width, 'value': hex(val)}
                         for off, val in options['select'][name]]
                 if options.get('split'):
