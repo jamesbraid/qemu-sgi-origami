@@ -393,6 +393,10 @@ kernel, X server, OpenGL client or the stock IDE diagnostic uses, and
 what the model answers is an *approximation* unless the notes say
 otherwise.
 
+.. sgi-registers: base=0x2000f000000
+   skip=0x0:see-notes,0x28004:ge-revision,0x2c578:see-notes,0x71308:see-notes,0x71708:see-notes,0x71910:see-notes,0x72408:per-board,0x72488:per-board
+   qemu="-M origin2000 -device sgi-mgras,slot=io3"
+
 .. list-table::
    :header-rows: 1
    :widths: 14 22 10 10 10 34
