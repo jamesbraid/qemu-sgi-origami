@@ -29,8 +29,9 @@ covers three of them and the tape drive that sits behind them.
   Origin 300 and Fuel IO8 boards, the Origin 350 IO9 board and the PCI
   carriers. QEMU models it as ``qlogic-isp12160``, PCI revision 6.
 - The ISP2200, a Fibre Channel adapter, is modelled as ``qlogic-isp2200``.
-  No machine fits one by default. It has its own page,
-  :doc:`qlogic-isp2200`.
+  The Origin 3000 I-brick's ``io7`` board fits one when the topology
+  asks for it, and it can also be added with ``-device``. It has its own
+  page, :doc:`qlogic-isp2200`.
 - ``scsi-tape`` is a generic SCSI sequential-access target, not a QLogic
   part. It attaches to any of the adapters above.
 - ``scsi-hd-inquiry`` is ``scsi-hd`` with configurable standard INQUIRY
@@ -169,8 +170,9 @@ devices 0 to 3. The Origin 300 IO8 and Fuel boards each place one ISP12160
 at device 1, the Origin 350 IO9 board places one on its PCI head, and PCI
 carriers accept either part with ``-device``. The Origin board models set
 the PCI revision byte after they create the device. The Octane models keep
-the type's default of 5. No machine instantiates
-``qlogic-isp2200``. It is a PCI device for ``-device``.
+the type's default of 5. Only the ``io7``
+base I/O preset instantiates ``qlogic-isp2200``, at device 1, and only
+when the topology fits a Fibre Channel loop.
 
 Two adapters per BaseIO is *established* by :src:`007-3439-002 Figure 2-25,
 printed page 69`, which draws two controllers on the BaseIO PCI bus. The

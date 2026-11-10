@@ -10,7 +10,8 @@ Used in the Origin 3000 and Onyx 3000 I-brick, where published
 inventories show one at slot 1 of the base I/O bus
 (:ref:`sgi-bricks-ibrick`, *observed*), and as the host side of a D-brick
 (:ref:`sgi-bricks-dbrick`). The Origin 3200 machine fits one in its
-I-brick (:ref:`sgi-sn-origin3200`). No base I/O preset fits one. It is an
+I-brick (:ref:`sgi-sn-origin3200`). Only the ``io7`` base I/O preset fits one, at device 1, when the topology
+fits a Fibre Channel loop (:doc:`baseio`). Elsewhere it is an
 add-in card placed with ``-device qlogic-isp2200``.
 
 The ISP2200 is a single-chip Fibre Channel host adapter: an on-chip
