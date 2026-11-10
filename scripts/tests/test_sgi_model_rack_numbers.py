@@ -381,6 +381,42 @@ class RackNumberCompileTests(unittest.TestCase):
             self.assertNotIn("rack", module)
 
 
+class RackFieldIsInTheQapiRecord(unittest.TestCase):
+    """The catalogue's module record only uses members the QAPI struct has."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from qapi.parser import QAPISchemaParser
+        doc = QAPISchemaParser(str(ROOT / "qapi/sgi-machines.json"))
+        struct = next(e for e in doc.exprs
+                      if e.get("struct") == "SGIModelModule")
+        cls.types = struct["data"]
+        cls.members = {name.lstrip("*"): name.startswith("*")
+                       for name in cls.types}
+
+    def test_rack_is_an_optional_member(self):
+        self.assertTrue(self.members["rack"])
+        self.assertEqual(self.types["*rack"], "uint16")
+
+    def test_a_numbered_catalogue_record_is_covered(self):
+        topology = _render_topology(compile_model(_racked_origin3800()),
+                                    "origin3800")
+        required = {name for name, optional in self.members.items()
+                    if not optional}
+        for module in topology["modules"]:
+            self.assertLessEqual(set(module), set(self.members))
+            self.assertLessEqual(required, set(module))
+            self.assertIn("rack", module)
+            self.assertLess(module["rack"], 1 << 16)
+
+    def test_an_unnumbered_record_has_no_rack_member(self):
+        topology = _render_topology(compile_model(_origin3800()), "origin3800")
+        for module in topology["modules"]:
+            self.assertLessEqual(set(module), set(self.members))
+            self.assertNotIn("rack", module)
+
+
 class ShippedTopologiesAreUnracked(unittest.TestCase):
     def test_no_implemented_topology_numbers_a_rack(self):
         for name in sorted(IMPLEMENTED_COMPOSITIONS):

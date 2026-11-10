@@ -987,6 +987,34 @@ static void test_io_peer_descriptor(void)
     qobject_unref(object);
 }
 
+/* A module record names its rack only when the topology numbers racks. */
+static void test_module_rack_field(void)
+{
+    g_autoptr(SGIModelModule) racked = NULL;
+    g_autoptr(SGIModelModule) plain = NULL;
+    QObject *object = qobject_from_json(
+        "{ 'id': 'c0', 'serial': 'SYNTHETIC', 'initial-module-number': 10,"
+        " 'rack': 101, 'controller-index': -1, 'nodes': [] }",
+        &error_abort);
+    Visitor *v = qobject_input_visitor_new(object);
+
+    visit_type_SGIModelModule(v, NULL, &racked, &error_abort);
+    visit_free(v);
+    g_assert_true(racked->has_rack);
+    g_assert_cmpuint(racked->rack, ==, 101);
+    g_assert_cmpuint(racked->initial_module_number, ==, 10);
+    qobject_unref(object);
+
+    object = qobject_from_json(
+        "{ 'id': 'c0', 'serial': 'SYNTHETIC', 'initial-module-number': 10,"
+        " 'controller-index': -1, 'nodes': [] }", &error_abort);
+    v = qobject_input_visitor_new(object);
+    visit_type_SGIModelModule(v, NULL, &plain, &error_abort);
+    visit_free(v);
+    g_assert_false(plain->has_rack);
+    qobject_unref(object);
+}
+
 static void test_io_peer_requires_identity(void)
 {
     g_autoptr(SGIModelIoPeer) peer = NULL;
@@ -2096,6 +2124,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sn-model/io-peer/population-rejects-missing-cable",
                     test_io_peer_population_rejects_missing_cable);
     g_test_add_func("/sn-model/io-peer/descriptor", test_io_peer_descriptor);
+    g_test_add_func("/sn-model/module/rack-field", test_module_rack_field);
     g_test_add_func("/sn-model/io-peer/requires-identity",
                     test_io_peer_requires_identity);
     g_test_add_func("/sn-model/io-peer/rejects-processors",
